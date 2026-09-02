@@ -53,6 +53,7 @@ from ruamel.yaml.error import YAMLError
 from self_learn.records import Record, RecordError
 
 from .models import CliRead
+from .runner import SELF_LEARN_BIN_ENV
 
 __all__ = [
     "DEBOUNCE_MS",
@@ -77,6 +78,7 @@ __all__ = [
     "read_registry",
     "report",
     "sentinel_mtime",
+    "settings",
     "status",
     "watch_ledger",
     "watch_paths",
@@ -97,7 +99,26 @@ def _self_learn_bin() -> str:
     (self-learn-ui, self-learn-cli) install into the SAME uv-managed
     venv (self-learn-cli is a path dependency), so it is normally on
     PATH; the ``sys.executable``-relative fallback covers environments
-    where PATH was stripped before this process started."""
+    where PATH was stripped before this process started.
+
+    Coordinator's ``MINE`` item (code-gate review r1 2026-09-01): this
+    used to have NO override at all and resolved via ``shutil.which``
+    against the raw process ``PATH`` unconditionally -- a test process
+    invoked in some non-canonical way (``.venv/bin`` not first on
+    ``PATH``) could silently resolve to PRODUCTION's real
+    ``~/bin/self-learn`` instead of this worktree's own venv binary
+    (measured: 10 of 11 ``test_settings_route.py`` tests 503'd exactly
+    this way, because production's ``self-learn`` on master has no
+    ``config`` verb at all). Now checks :data:`runner.SELF_LEARN_BIN_ENV`
+    FIRST -- the SAME override :func:`runner.resolve_self_learn_argv_
+    prefix` already honors, so both resolvers agree under the one env
+    var a test conftest pins. (``runner``'s override also accepts a
+    space-separated interpreter+script pair for POST-path fixtures;
+    this read-only resolver only ever needs a single bare path, so it
+    takes the override string as-is rather than re-splitting it.)"""
+    override = os.environ.get(SELF_LEARN_BIN_ENV)
+    if override:
+        return override
     exe = shutil.which("self-learn")
     if exe:
         return exe
@@ -173,6 +194,16 @@ def report(home: Path, *, env: dict[str, str] | None = None) -> CliRead:
 
 def mine_status(home: Path, *, env: dict[str, str] | None = None) -> CliRead:
     return _invoke_json(["mine", "status", "--json"], home=home, env=env)
+
+
+def settings(home: Path, *, env: dict[str, str] | None = None) -> CliRead:
+    """U-settings Phase 2 (the settings page): every registry entry's
+    resolved value/source/tier, verbatim from ``self-learn config get
+    --json`` -- the CLI's own computed shape (09 §3's rule for this
+    module: never re-derived here). ``data`` is a list of row dicts
+    (``settings.setting_row``'s shape); a CLI failure comes back as
+    ``CliRead(data=None, error=...)``, same as every other read here."""
+    return _invoke_json(["config", "get", "--json"], home=home, env=env)
 
 
 def commit_drift_dry_run(

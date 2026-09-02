@@ -31,6 +31,7 @@ from starlette.responses import StreamingResponse
 
 from self_learn.hosts import HOST_MODES, effective_default_mode, is_repo_root
 from self_learn.records import Record
+from self_learn.settings import REGISTRY as SETTINGS_REGISTRY
 from self_learn.verbs import GITOPS_DIRTY_MARKER, NO_PROPOSAL_MARKER
 
 from . import ledger, models, pane, proposals, rendering, runner
@@ -1290,6 +1291,170 @@ def report_page(request: Request) -> HTMLResponse:
             "status_error": status_read.error,
         },
     )
+
+
+# ---------------------------------------------------------------- settings
+#
+# U-settings Phase 2 (the settings page, sitting on the Phase 1 registry):
+# one table per section (worker/miner/analyst/sdk/serve/ledger), rendering
+# `self-learn config get --json`'s own rows verbatim -- 09 §3's rule for
+# this app applies here exactly as it does to `/report`: no derived
+# numbers this module computes itself, only what the CLI already
+# resolved. Tier A rows POST to `/settings/set`, which builds the CLI's
+# own argv and runs it through the SAME `VerbRunner` seam every other
+# write in this app uses (never a second mutation path).
+
+#: The registry's own section order (`settings.py`'s `REGISTRY` literal,
+#: worker -> miner -> analyst -> sdk -> serve -> ledger today) -- the
+#: page reads in the same order a human reading the registry source
+#: would, never re-sorted alphabetically.
+#:
+#: NIT-3 (code-gate review r1 2026-09-01): this used to be a HAND-
+#: MAINTAINED tuple, a second copy of a fact `settings.REGISTRY` already
+#: states -- a new section added there and never mirrored here would
+#: silently vanish from the page (no error, no test failure, just a
+#: table that never renders). Derived directly from the registry now:
+#: `dict.fromkeys` dedupes while preserving first-seen order (a section
+#: appears once per `Setting` entry, `REGISTRY` has many entries per
+#: section), and `config_section is not None` skips the one reserved
+#: shape (MINOR-4, same review) that has no section to group under.
+_SETTINGS_SECTION_ORDER: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        s.config_section for s in SETTINGS_REGISTRY if s.config_section is not None
+    )
+)
+
+
+def _setting_section(name: str) -> str:
+    """The top-level `config.yaml` section a dotted setting name lives
+    under -- `"worker.no_notify"` -> `"worker"`, `"sdk.max_turns.worker"`
+    -> `"sdk"`. Mirrors `settings.Setting.config_section` without
+    needing the CLI package's registry object here (`config get --json`
+    already gives every row's plain fields; this is a display-grouping
+    derivation over the `name` string it returns, not a second source of
+    truth for what the section actually is)."""
+    return name.split(".", 1)[0]
+
+
+def _group_settings(rows: list[dict]) -> list[dict[str, Any]]:
+    """`config get --json`'s flat row list, grouped by section in the
+    registry's own order (`_SETTINGS_SECTION_ORDER`) -- a section with no
+    rows (should not happen against the real registry, but a partial/
+    filtered read must not crash the page) is simply omitted."""
+    by_section: dict[str, list[dict]] = {}
+    for row in rows:
+        by_section.setdefault(_setting_section(row["name"]), []).append(row)
+    return [
+        {"section": section, "rows": by_section[section]}
+        for section in _SETTINGS_SECTION_ORDER
+        if by_section.get(section)
+    ]
+
+
+@router.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request) -> HTMLResponse:
+    home = _home(request)
+    settings_read = ledger.settings(home)
+    groups = _group_settings(settings_read.data) if settings_read.ok and settings_read.data else []
+    return _render(
+        request,
+        "settings.html",
+        {
+            "groups": groups,
+            "settings_error": settings_read.error,
+        },
+    )
+
+
+@router.post("/settings/set", response_class=HTMLResponse)
+async def settings_set(
+    request: Request, name: str = Form(...), value: str = Form(...)
+) -> Response:
+    """Builds `["config", "set", NAME, "--json", "--", VALUE]` and runs
+    it through the runner seam -- never a second mutation path.
+
+    NIT-1 (code-gate review r2 2026-09-02): VALUE sits after a `--`
+    separator (with `--json` placed BEFORE it, since argparse stops
+    recognizing flags once `--` appears) so a posted value beginning
+    with `-` (e.g. `ledger.actor=-alex`) can never be swallowed by
+    argparse's own "looks like a flag" matching -- the CLI's own
+    `_swallowed_config_set_value` pre-check (`cli.py`) never even fires
+    on an argv shape that already carries `--`. Before this, the CLI's
+    refusal for that shape ("put `--` before it, e.g. `self-learn
+    config set NAME -- -alex`") is terminal advice with no meaning on a
+    web form, and it was reaching this row's error strip verbatim. A
+    CLI user invoking `config set` directly still gets that hint --
+    only THIS route's own argv construction changed.
+
+    Server-side tier enforcement (Y-17 pattern: posted bits only ever
+    WEAKEN what runs, never strengthen it): the template renders no
+    editor for a tier-C row, but that alone is not enforcement -- a
+    forged POST for `worker.autokick`/`miner.autokick` (the spawn-
+    containment kill switches, `settings.py`'s own tier ruling) must
+    refuse here too, read fresh from the CLI's own `tier` field for the
+    posted name, never a name list hardcoded in this module (the one
+    place a drifted copy could quietly re-open the boundary)."""
+    home = _home(request)
+    settings_read = ledger.settings(home)
+    if not settings_read.ok or not settings_read.data:
+        return HTMLResponse(settings_read.error or "settings unavailable", status_code=503)
+    current = next((r for r in settings_read.data if r["name"] == name), None)
+    if current is None:
+        return HTMLResponse(f"unknown setting {name!r}", status_code=404)
+    if current["tier"] != "A":
+        return HTMLResponse(
+            f"{name} is tier C (a boundary, not a preference) -- read-only in "
+            "the UI; set it with the CLI verb instead",
+            status_code=400,
+        )
+
+    runner = request.app.state.runner
+    result = await runner.run(["config", "set", name, "--json", "--", value])
+    if result.ok and result.evidence is not None:
+        row = result.evidence
+    else:
+        # The verb refused (a malformed value, a dirty config.yaml, ...):
+        # re-render the row from what this handler already read, plus
+        # the verb's own stderr -- the row must still render SOMETHING
+        # (never a blank swap), never the client's unvalidated posted
+        # value.
+        #
+        # MAJOR-1 (code-gate review r1 2026-09-01): `config set` used to
+        # be reachable with an UNCAUGHT Python exception on a malformed
+        # `config.yaml` (a scalar section, an unparseable file, a
+        # non-mapping top level, a mid-walk scalar) -- Python's own
+        # traceback (absolute repo paths included) landed here VERBATIM,
+        # painted straight into this row's error strip. `cli.py`'s
+        # `_cmd_config` now catches that family and prints one clean
+        # sentence instead, so ordinarily `stderr` is already safe -- this
+        # is belt-and-suspenders: if stderr EVER again looks like a
+        # Python traceback, render a generic refusal instead of
+        # forwarding raw internals to a browser.
+        row = dict(current)
+        stderr = result.stderr or ""
+        if "Traceback (most recent call last)" in stderr:
+            row["error"] = f"self-learn config set {name} failed (internal error -- check server logs)"
+        else:
+            # MINOR-2 (code-gate review r2 2026-09-02): this used to
+            # forward `stderr` WHOLE -- on a malformed config.yaml the
+            # CLI's read path also warns once per OTHER known setting
+            # it resolves on the way (two of which, `miner.enabled`/
+            # `miner.autokick`, come from `_main`'s miner-watchdog
+            # tick, a path this page's user never invoked), so the row
+            # could carry ~24 lines in one `<td>` above the actual
+            # refusal. `cli.py`'s `_cmd_config` refusal branches all
+            # print starting with `self-learn config set:` (this route
+            # only ever runs `config set`) -- trim to that marker
+            # onward. No diagnostic content is lost: the refusal
+            # sentence already carries the full detail (e.g. the
+            # unparseable case's ruamel error, line and column
+            # included); only the OTHER settings' repeated warnings
+            # above it are dropped.
+            marker = "self-learn config set:"
+            idx = stderr.find(marker)
+            trimmed = stderr[idx:].strip() if idx != -1 else stderr
+            row["error"] = trimmed or f"self-learn config set {name} failed"
+    return _render(request, "partials/settings_row.html", {"row": row})
 
 
 # ------------------------------------------------------------------ cluster

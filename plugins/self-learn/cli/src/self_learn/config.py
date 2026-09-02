@@ -42,23 +42,31 @@ policy decision).
 
 from __future__ import annotations
 
+import io
 import sys
 from pathlib import Path
 
 from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap
 from ruamel.yaml.error import YAMLError
 
 __all__ = [
     "CONFIG_BASENAME",
     "PROVIDER_KEYS",
+    "ConfigWriteError",
     "config_path",
+    "dump_editable",
     "effective_default_mode",
     "invocation_backend",
+    "load_editable",
     "one_motion_enabled",
+    "present",
     "provider_setting",
     "provider_unknown_keys",
+    "set_leaf",
     "settings_leaf",
     "settings_unknown_keys",
+    "unset_leaf",
 ]
 
 CONFIG_BASENAME = "config.yaml"
@@ -431,3 +439,212 @@ def effective_default_mode(home: Path | str) -> str:
         f"'plain' or 'git', got {value!r}; defaulting to git"
     )
     return "git"
+
+
+# ===================================================================== #
+# U-settings Phase 2 -- the settings page's WRITE path. Every reader
+# above (`settings_leaf` included) loads with `YAML(typ="safe")`: that
+# stays the security boundary, strict, no arbitrary tag construction
+# (this file's own module docstring). A WRITE needs the round-trip
+# type instead, so the operator's own comments and key ordering survive
+# an edit -- `hosts.py`'s `_yaml()`/`save_hosts` is the model this
+# mirrors, generalized over an arbitrary section the way `settings_leaf`
+# already generalizes the READ side over `provider_setting`'s one
+# section.
+# ===================================================================== #
+
+
+class ConfigWriteError(Exception):
+    """A `config.yaml` write could not proceed without either clobbering
+    operator content it cannot safely merge past (a path segment that is
+    already a scalar, not a mapping) or writing over a top level that
+    is not a mapping at all. Never raised by a READER above -- those
+    stay fail-closed-to-default; a WRITE must refuse loudly instead,
+    the same asymmetry `hosts.HostsError` already draws for hosts.yaml."""
+
+
+def _rt_yaml() -> YAML:
+    y = YAML(typ="rt")
+    y.default_flow_style = False
+    return y
+
+
+def load_editable(home: Path | str) -> CommentedMap:
+    """Round-trip load of `config.yaml` for a WRITE. A missing file (or
+    an empty one) loads as a fresh, empty mapping -- `config.yaml` is
+    created on first write, same as `hosts.yaml` is not required to
+    exist before `host add`'s first call. Raises :class:`ConfigWriteError`
+    on a non-mapping top level (a malformed file a WRITE must not paper
+    over silently, unlike the fail-closed-to-default readers above)."""
+    path = config_path(home)
+    if not path.is_file():
+        return CommentedMap()
+    try:
+        data = _rt_yaml().load(path.read_text(encoding="utf-8"))
+    except (YAMLError, OSError, UnicodeDecodeError) as exc:
+        raise ConfigWriteError(f"{path} is unparseable ({exc}) -- refusing to write over it") from exc
+    if data is None:
+        return CommentedMap()
+    if not isinstance(data, dict):
+        raise ConfigWriteError(
+            f"{path} must be a YAML mapping, got {type(data).__name__} -- refusing to write over it"
+        )
+    return data
+
+
+def dump_editable(home: Path | str, data: CommentedMap) -> Path:
+    """Serialize `data` back to `config.yaml`, round-trip (comments,
+    key order, and every untouched key survive). Returns the path
+    written -- the caller's `gitops.stage`/`commit` pathspec."""
+    path = config_path(home)
+    buf = io.StringIO()
+    _rt_yaml().dump(data, buf)
+    path.write_text(buf.getvalue(), encoding="utf-8")
+    return path
+
+
+def _walk_leaf(
+    data: CommentedMap, section: str, key: str, *, create: bool
+) -> tuple[list[tuple[dict, str]], bool]:
+    """The one walk-and-refuse behind `set_leaf`/`unset_leaf`/`present`
+    (NIT-2, code-gate review r2 2026-09-02: three near-identical
+    walkers, each with its own copy of the same "not a mapping" refusal
+    under a slightly different wording, collapsed into one walker and
+    one message).
+
+    Descends `section`, then `key`'s dotted segments, through `data`.
+    The instant an ALREADY-WALKED segment holds something other than a
+    mapping, refuses loudly with :class:`ConfigWriteError` -- the leaf
+    ITSELF is never type-checked here (overwriting, deleting, or
+    reading a scalar leaf is fine; only a scalar mid-walk, blocking
+    whatever comes after it, is the refusal).
+
+    Returns `(chain, found)`: `chain[i]` is `(dict, key-within-that-
+    dict)` for every segment walked, `section` first -- `chain[-1]` is
+    always `(the leaf's own parent mapping, the leaf's own key)` when
+    `found`, so `chain[-1][0][chain[-1][1]]` reads/writes/deletes the
+    leaf directly, and a caller pruning empty maps back upward (`unset_
+    leaf`) walks `chain[:-1]` in reverse.
+
+    `create=True` (`set_leaf`'s mode): a missing OR `None`-valued
+    segment (`section` included -- a bare `section:` key with no value
+    parses as `None`) is (re)created as a fresh empty mapping as the
+    walk passes through it, so the walk always reaches the leaf and
+    `found` is always `True`. `create=False` (`unset_leaf`/`present`'s
+    mode): a missing segment stops the walk early and `found` is
+    `False` -- genuinely absent is not an error for either of those
+    two, just "nothing (yet) to unset/read". Kept asymmetric on
+    purpose: a `None`-valued MID-WALK segment under `create=False`
+    still falls through to the mapping check below and refuses (same
+    as this function has always done) -- only the creating mode treats
+    `None` as "as good as absent"."""
+    node: dict = data
+    chain: list[tuple[dict, str]] = []
+    segments = [section, *key.split(".")]
+    path_so_far = ""
+    for segment in segments[:-1]:
+        path_so_far = segment if not path_so_far else f"{path_so_far}.{segment}"
+        if segment not in node:
+            if not create:
+                return chain, False
+            node[segment] = CommentedMap()
+        elif create and node[segment] is None:
+            node[segment] = CommentedMap()
+        chain.append((node, segment))
+        node = node[segment]
+        if not isinstance(node, dict):
+            raise ConfigWriteError(
+                f"{path_so_far}: already a {type(node).__name__}, not a mapping -- "
+                f"refusing to write {section}.{key} over it"
+            )
+    leaf = segments[-1]
+    if not create and leaf not in node:
+        return chain, False
+    chain.append((node, leaf))
+    return chain, True
+
+
+def set_leaf(home: Path | str, section: str, key: str, value: object) -> Path:
+    """Write `value` at `section.key` (dotted `key` walks/creates nested
+    maps, e.g. `sdk`/`max_turns.worker` -> `sdk: {max_turns: {worker:
+    ...}}`) preserving every other key and comment. A path segment that
+    already holds a non-mapping value (e.g. `sdk: 5` in the file, mid-
+    walk toward `sdk.max_turns.worker`) REFUSES with
+    :class:`ConfigWriteError` rather than clobbering it -- the write-path
+    counterpart to `settings_leaf`'s own "must be a mapping" warn, made
+    loud instead of fail-closed-silent because a write, unlike a read,
+    has no safe default to fall back to."""
+    data = load_editable(home)
+    chain, _found = _walk_leaf(data, section, key, create=True)
+    parent, leaf = chain[-1]
+    parent[leaf] = value
+    return dump_editable(home, data)
+
+
+def unset_leaf(home: Path | str, section: str, key: str) -> bool:
+    """Remove `section.key`, pruning now-empty nested maps upward --
+    including `section` itself when it becomes empty. Returns `True` iff
+    something was actually removed; a section/segment that is simply
+    ABSENT is a silent no-op (`False`), never an error -- `unset` of an
+    already-unset key stays idempotent, same posture as `host_add`'s
+    already-registered leg.
+
+    U-settings Phase 2 code-gate MINOR-2 (review r1 2026-09-01): a
+    section/mid-walk segment that IS PRESENT but not a mapping (the
+    same `worker: 5` / `sdk.max_turns: 5` shapes `set_leaf` refuses)
+    now RAISES :class:`ConfigWriteError` here too, instead of the old
+    silent `False` -- same file, same refusal, matching `set`'s own
+    posture rather than reporting "nothing to remove" against a file
+    `config set` would refuse outright."""
+    data = load_editable(home)
+    chain, found = _walk_leaf(data, section, key, create=False)
+    if not found:
+        return False
+    parent, leaf = chain[-1]
+    del parent[leaf]
+    current: dict = parent
+    for ancestor, at_key in reversed(chain[:-1]):
+        if len(current) > 0:
+            break
+        del ancestor[at_key]
+        current = ancestor
+    dump_editable(home, data)
+    return True
+
+
+def present(home: Path | str, section: str, key: str) -> tuple[bool, object]:
+    """A validated, NON-mutating "is `section.key` set" check -- both
+    `config_set`'s idempotency check and `config_unset`'s existence
+    pre-check need this BEFORE opening the ledger's commit lock. Uses
+    the SAME round-trip WRITE-path load as `set_leaf`/`unset_leaf`
+    (never the lenient `settings_leaf`, which warns-and-returns-`None`
+    on a malformed file or a non-mapping mid-path -- exactly the
+    silence code-gate MINOR-2 found: `config unset` reported "already
+    unset" against a file `config set` refused outright).
+
+    `config_set` used to keep its idempotency check on `settings_leaf`
+    instead, on the theory that a malformed file there just means "not
+    idempotent, proceed to the write" and `set_leaf` would raise this
+    same family one step later, under the lock. Code-gate MINOR-1
+    (review r2 2026-09-02) found the flaw in that theory: "proceed to
+    the write" means proceeding all the way to `gitops.commit_lock`,
+    and if another producer already held that lock, `set` sat out the
+    full 150s `COMMIT_LOCK_TIMEOUT` before reporting a wedged-producer
+    error that misdiagnosed a malformed file as lock contention.
+    `config_set` now uses THIS function too, for the same reason
+    `config_unset` already did: raising here happens before the lock is
+    ever requested, so the real problem surfaces fast, held lock or not.
+
+    Raises :class:`ConfigWriteError` on any of the same malformed shapes
+    `set_leaf`/`unset_leaf` refuse (unparseable file, non-mapping top
+    level, a scalar section, a scalar mid-walk segment) -- so a caller
+    doing this check FIRST refuses IDENTICALLY to the write itself,
+    before ever touching the lock. Returns `(True, raw_value)` when the
+    leaf is set, `(False, None)` when the path is well-formed but the
+    leaf genuinely is not."""
+    data = load_editable(home)
+    chain, found = _walk_leaf(data, section, key, create=False)
+    if not found:
+        return False, None
+    parent, leaf = chain[-1]
+    return True, parent[leaf]

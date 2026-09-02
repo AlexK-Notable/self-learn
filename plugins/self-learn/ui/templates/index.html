@@ -13,6 +13,7 @@
   <span class="status-item" title="Whether background syncing of the lesson ledger is running normally. It pauses only while a change is being written.">{{ model.status.sentinel_label }}</span>
   <span class="status-item" title="The background pass that reads finished conversations looking for lessons worth keeping.">{{ model.miner.stale_label }}</span>
   <a class="status-item" href="/report" title="Open the full activity report: what landed, what's held, and how the system is doing.">report</a>
+  <a class="status-item" href="/settings" title="Every operator setting, its current value, and where it comes from — override, config.yaml, environment, or the built-in default.">settings</a>
 </div>
 {% endblock %}
 
