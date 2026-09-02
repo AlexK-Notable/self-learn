@@ -1137,11 +1137,11 @@ def _cmd_doctor_settings(home: Path) -> int:
     `_cmd_doctor`'s own discipline for `invocation`: every verdict comes
     from :func:`settings.preflight`, the single source of truth; this
     function computes nothing itself. This surface never FAILs (§4:
-    introspection only, nothing here gates) -- a non-zero exit is
-    reserved for an unknown config.yaml key (WARN), matching `doctor
-    invocation`'s "any WARN still exits 0, only FAIL exits 1" posture
-    would if this verb had one; since it never does, `WARN` still exits
-    0 here too."""
+    introspection only, nothing here gates) -- an unknown config.yaml
+    key only ever produces a WARN row, and this verb has no FAIL tier
+    at all, so the exit code is unconditionally EXIT_OK regardless of
+    verdict, matching `doctor invocation`'s "WARN still exits 0" half
+    of its posture without needing the FAIL half."""
     for row in settings.preflight(home):
         print(f"doctor: {row.verdict} {row.name} — {row.detail}")
     return EXIT_OK
