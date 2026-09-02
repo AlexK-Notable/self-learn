@@ -32,7 +32,7 @@ from self_learn_ui.runner import FakeRunner, RunResult
 from self_learn.ledger_ops import defer_record
 from self_learn.records import Record
 
-from support import make_behavior, make_env, resolve_record_directly, seed_record
+from support import make_behavior, make_env, resolve_record_directly, seed_record, days_ahead
 
 TOKEN = "test-token"
 HX = {"HX-Request": "true"}
@@ -299,7 +299,7 @@ class TestViewableRendersEveryStatus:
 
         deferred = make_behavior(scope="skill:s", trigger=TRIGGER)
         seed_record(sb.ledger, deferred)
-        defer_record(sb.ledger, deferred.id, "2026-09-01")
+        defer_record(sb.ledger, deferred.id, days_ahead(30))
 
         c, _runner = make_client(sb)
         for rec in (routed, rejected, graduated, pending, deferred):

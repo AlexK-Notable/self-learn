@@ -132,6 +132,14 @@ def days_ago(n: int) -> str:
     return iso(datetime.now(timezone.utc) - timedelta(days=n))
 
 
+def days_ahead(n: int) -> str:
+    """A calendar date ``n`` days out, ``YYYY-MM-DD``, on the UTC clock
+    ``defer_record`` checks an explicit ``until`` against (U-verbs §4.2:
+    strictly-before-today refuses). Never a literal: ``"2026-09-01"``
+    went red at 00:00 UTC on 2026-09-02, in two tests at once."""
+    return (datetime.now(timezone.utc) + timedelta(days=n)).strftime("%Y-%m-%d")
+
+
 def make_behavior(
     scope: str = "skill:s",
     record_id: str | None = None,

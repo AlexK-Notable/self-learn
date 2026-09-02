@@ -21,6 +21,7 @@ from self_learn.hosts import host_add
 from self_learn.ledger_ops import LedgerOpsError, create_record, write_proposal
 from self_learn.records import Record
 from support import (
+
     commit_all,
     git,
     init_repo,
@@ -28,6 +29,14 @@ from support import (
     make_env,
     proposal_dict,
 )
+
+
+def _far_future() -> str:
+    """``YYYY-MM-DD`` 90 days out on the UTC clock ``defer`` checks against
+    (U-verbs §4.2). Not a literal: ``"2026-09-01"`` expired under two UI
+    tests at 00:00 UTC 2026-09-02, and ``"2026-12-01"`` here would have
+    followed on its own date."""
+    return (datetime.now(timezone.utc) + timedelta(days=90)).strftime("%Y-%m-%d")
 
 OLD = "lrn-0000aaaa"
 NEW = "lrn-0000bbbb"
@@ -646,16 +655,17 @@ class TestReject:
 class TestDefer:
     def test_explicit_until_pinned_message(self, env):
         seed(env)
-        result = verbs.defer(env.home, OLD, until="2026-12-01", note="revisit later")
+        until = _far_future()  # a literal here went red on its own date; see _far_future
+        result = verbs.defer(env.home, OLD, until=until, note="revisit later")
 
-        assert result.commit_message == f"self-learn: defer {OLD} until 2026-12-01"
+        assert result.commit_message == f"self-learn: defer {OLD} until {until}"
         assert env.local_body().startswith(
-            f"self-learn: defer {OLD} until 2026-12-01\n\nrevisit later"
+            f"self-learn: defer {OLD} until {until}\n\nrevisit later"
         )
         # deferral is not a resolution: the record STAYS in pending/
         record = Record.from_path(env.pending(OLD))
         assert record.status == "deferred"
-        assert str(record.deferred_until) == "2026-12-01"
+        assert str(record.deferred_until) == until
         assert record.deferred_count == 1
         assert record.resolution_note is None  # note rides the commit only
 

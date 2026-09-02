@@ -28,6 +28,7 @@ from self_learn_ui.runner import FakeRunner, RunResult
 from self_learn.ledger_ops import create_record, defer_record
 
 from support import (
+    days_ahead,
     commit_all,
     init_repo,
     make_behavior,
@@ -479,7 +480,7 @@ class TestResolvedRecordRedirectsAwayFromItsOwnDetailPage:
         `record_detail`'s viewable set (`("pending", "deferred")`)
         accepts."""
         sb, rec = _seed(tmp_path)
-        defer_record(sb.ledger, rec.id, "2026-09-01")
+        defer_record(sb.ledger, rec.id, days_ahead(30))
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}", follow_redirects=False)
         assert r.status_code == 200
