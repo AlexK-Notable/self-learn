@@ -31,15 +31,15 @@ from __future__ import annotations
 
 import fcntl
 import json
-import os
 import secrets
-import socket
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
 
+from . import settings
+from .ledger import resolve_home
 from .scan import format_refusal
 from .scan import scan as secret_scan
 
@@ -130,8 +130,16 @@ def telemetry_dir(home: Path | str) -> Path:
 
 def actor() -> str:
     """Machine name — the single-writer filename component (11 §4.2).
-    ``SELF_LEARN_ACTOR`` overrides (tests; team-scale ``machine.user``)."""
-    return os.environ.get("SELF_LEARN_ACTOR") or socket.gethostname()
+    ``SELF_LEARN_ACTOR`` overrides (tests; team-scale ``machine.user``).
+
+    U-settings Phase 1: resolves through the registry's ``ledger.actor``
+    entry (env ``SELF_LEARN_ACTOR`` > config.yaml ``ledger.actor`` >
+    ``socket.gethostname()``, called lazily). Neither caller in this
+    module (:func:`spool_event`) threads a ``home`` — telemetry spooling
+    is home-independent (XDG cache, not the ledger) — so this falls back
+    to :func:`resolve_home` for the config.yaml rung only."""
+    value, _source = settings.resolve_setting(resolve_home(), settings.by_name("ledger.actor"))
+    return str(value)
 
 
 def _month(now: datetime | None = None) -> str:

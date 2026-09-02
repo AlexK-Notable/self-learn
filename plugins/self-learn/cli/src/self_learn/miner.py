@@ -26,7 +26,9 @@ pane reads the same file.
 
 Kill switches: ``SELF_LEARN_MINER=0`` disables runs entirely;
 ``SELF_LEARN_MINER_AUTOKICK=0`` disables only the verb watchdog (the
-test suite sets it globally in conftest).
+test suite sets it globally in conftest). U-settings Phase 1: both now
+also resolve a ``config.yaml`` rung below the env var (``miner.enabled``,
+``miner.autokick`` — see ``settings.py``'s registry); env still wins.
 """
 
 from __future__ import annotations
@@ -45,12 +47,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import gitops, invocation, sentinel, telemetry, worker
+from . import gitops, invocation, sentinel, settings, telemetry, worker
 from . import reconcile as reconcile_mod
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
 from .hosts import load_hosts
 from .import_common import existing_origins
-from .ledger import discover_buckets, home_state, home_state_message
+from .ledger import discover_buckets, home_state, home_state_message, resolve_home
 from .ledger_ops import LedgerOpsError, create_record, record_title
 from .records import GENERALITIES, KINDS, RECORD_ID_RE, Record, RecordError
 from .scan import scan as secret_scan
@@ -157,25 +159,28 @@ def log(message: str) -> None:
     worker._truncate_oldest(path, worker.LOG_CAP_BYTES)
 
 
-def _int_env(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if not raw:
-        return default
-    try:
-        return max(0, int(raw))
-    except ValueError:
-        return default
+def cap_for(sessions_scanned: int, *, home: Path | str | None = None) -> int:
+    """Use-scaled landing cap (§8 Q3): min(per-session × scanned, max).
 
-
-def cap_for(sessions_scanned: int) -> int:
-    """Use-scaled landing cap (§8 Q3): min(per-session × scanned, max)."""
-    per = _int_env("SELF_LEARN_MINE_CAP_PER_SESSION", DEFAULT_CAP_PER_SESSION)
-    cap_max = _int_env("SELF_LEARN_MINE_CAP_MAX", DEFAULT_CAP_MAX)
+    U-settings Phase 1: both caps resolve through the registry (env >
+    config.yaml `miner.cap_per_session`/`miner.cap_max` > their module
+    defaults) rather than a bare env read; `home` defaults to
+    :func:`resolve_home` so the existing single-arg call shape is
+    unaffected."""
+    resolved_home = home if home is not None else resolve_home()
+    per, _per_source = settings.resolve_setting(resolved_home, settings.by_name("miner.cap_per_session"))
+    cap_max, _max_source = settings.resolve_setting(resolved_home, settings.by_name("miner.cap_max"))
     return min(per * max(sessions_scanned, 1), cap_max)
 
 
-def pending_gate() -> int:
-    return _int_env("SELF_LEARN_MINE_PENDING_GATE", DEFAULT_PENDING_GATE)
+def pending_gate(*, home: Path | str | None = None) -> int:
+    """U-settings Phase 1: resolves through the registry's `miner.
+    pending_gate` entry (env > config.yaml `miner.pending_gate` >
+    :data:`DEFAULT_PENDING_GATE`)."""
+    value, _source = settings.resolve_setting(
+        home if home is not None else resolve_home(), settings.by_name("miner.pending_gate")
+    )
+    return value
 
 
 def miner_model() -> str:
@@ -193,8 +198,13 @@ def reader_timeout_secs() -> float:
 
 
 def transcripts_root() -> Path:
-    raw = os.environ.get("SELF_LEARN_TRANSCRIPTS_DIR")
-    return Path(raw).expanduser() if raw else Path("~/.claude/projects").expanduser()
+    """U-settings Phase 1: resolves through the registry's `miner.
+    transcripts_dir` entry (env > config.yaml `miner.transcripts_dir` >
+    `"~/.claude/projects"`); neither caller (:func:`initialize_cursors`,
+    :func:`walk`) threads a `home`, so this falls back to
+    :func:`resolve_home` the same way :func:`telemetry.actor` does."""
+    raw, _source = settings.resolve_setting(resolve_home(), settings.by_name("miner.transcripts_dir"))
+    return Path(raw).expanduser()
 
 
 def last_run_iso() -> str | None:
@@ -235,8 +245,14 @@ def stale() -> bool:
     """SessionStart alarm predicate (R1 layer 3): no completed run in 36 h.
     A missing marker counts as infinitely old — self-healing, because the
     verb watchdog spawns a run on the next CLI use, which touches the
-    marker even when idle. A deliberately disabled miner never alarms."""
-    if os.environ.get("SELF_LEARN_MINER") == "0":
+    marker even when idle. A deliberately disabled miner never alarms.
+
+    U-settings Phase 1: resolves through the registry's `miner.enabled`
+    entry (env `SELF_LEARN_MINER` > config.yaml `miner.enabled` >
+    `True`); no `home` is threaded here, so this falls back to
+    :func:`resolve_home` the same way :func:`telemetry.actor` does."""
+    enabled, _source = settings.resolve_setting(resolve_home(), settings.by_name("miner.enabled"))
+    if not enabled:
         return False
     return _last_run_age_secs() > STALE_AFTER_SECS
 
@@ -1769,10 +1785,11 @@ def maybe_kick(home: Path | str, *, no_push: bool = False) -> str:
     the EXACT SAME condition a spawn would have, and nothing else. With
     no live daemon, every leg below is byte-identical to before this
     unit."""
-    if (
-        os.environ.get("SELF_LEARN_MINER") == "0"
-        or os.environ.get("SELF_LEARN_MINER_AUTOKICK") == "0"
-    ):
+    # U-settings Phase 1: both switches resolve through the registry
+    # (`miner.enabled` / `miner.autokick`, env > config.yaml > `True`).
+    enabled, _e_source = settings.resolve_setting(home, settings.by_name("miner.enabled"))
+    autokick, _a_source = settings.resolve_setting(home, settings.by_name("miner.autokick"))
+    if not enabled or not autokick:
         return "disabled"
     if _last_run_age_secs() <= KICK_AFTER_SECS:
         return "fresh"
@@ -1820,7 +1837,10 @@ def run(
     home = Path(home)
     if no_push is None:
         no_push = worker.no_push_requested()
-    if os.environ.get("SELF_LEARN_MINER") == "0":
+    # U-settings Phase 1: resolves through the registry's `miner.enabled`
+    # entry (env `SELF_LEARN_MINER` > config.yaml `miner.enabled` > `True`).
+    enabled, _source = settings.resolve_setting(home, settings.by_name("miner.enabled"))
+    if not enabled:
         return MineResult(status="disabled")
     t0 = time.time()
     run_id = uuid.uuid4().hex[:8]

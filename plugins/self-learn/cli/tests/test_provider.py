@@ -179,6 +179,12 @@ def test_pr1_provider_setting_and_all(tmp_path):
         "one_motion_enabled",
         "provider_setting",
         "provider_unknown_keys",
+        # U-settings Phase 1: the settings registry's two generic,
+        # section-agnostic primitives (generalizing `provider_setting`/
+        # `provider_unknown_keys`'s pattern rather than a second one —
+        # `config.py`'s own module docstring, "U-settings Phase 1" note).
+        "settings_leaf",
+        "settings_unknown_keys",
     ]
 
 

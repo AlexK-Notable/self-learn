@@ -597,6 +597,11 @@ _ARGV_FOR = {
     # actual empty bucket to remove in the fixture.
     "_cmd_canary": None,  # writes canaries.json (cache-local), not the ledger
     "_cmd_doctor": [["doctor", "invocation"]],
+    "_cmd_doctor_settings": None,  # driven through _cmd_doctor (U-settings
+    # Phase 1's `doctor settings` verb) -- same precedent as
+    # `_cmd_host_inner` below: a read-only helper, never a direct
+    # dispatch target, and (like `_cmd_doctor` itself) never touches the
+    # ledger's commit_lock at all.
     "_cmd_followup": [["followup", "done", "lrn-eeee0001"]],
     "_cmd_host": [
         ["host", "add", "{host}"],

@@ -37,12 +37,13 @@ import random
 import signal
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dataclass_replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import miner, worker
+from . import miner, settings, worker
+from .ledger import resolve_home
 
 __all__ = [
     "DEFAULT_TICK_SECS",
@@ -111,15 +112,20 @@ class JobRecord:
     error: str | None = None
 
 
-def tick_secs_from_env(default: float = DEFAULT_TICK_SECS) -> float:
-    raw = os.environ.get("SELF_LEARN_SERVE_TICK_SECS")
-    if not raw:
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    return value if value > 0 else default
+def tick_secs_from_env(default: float = DEFAULT_TICK_SECS, *, home: Path | str | None = None) -> float:
+    """U-settings Phase 1: resolves through the registry's `serve.
+    tick_secs` entry (env `SELF_LEARN_SERVE_TICK_SECS` > config.yaml
+    `serve.tick_secs` > `default`). `default` overrides the registry
+    entry's own built-in default (`dataclasses.replace`) rather than
+    being a second, parallel fallback — the one real call site
+    (:func:`run_forever`) never passes a non-default value, but the
+    parameter stays honoured for any caller that does. `home` defaults
+    to :func:`resolve_home`."""
+    setting = settings.by_name("serve.tick_secs")
+    if default != setting.default:
+        setting = _dataclass_replace(setting, default=default)
+    value, _source = settings.resolve_setting(home if home is not None else resolve_home(), setting)
+    return float(value)
 
 
 # ----------------------------------------------------------------- heartbeat
@@ -227,9 +233,9 @@ def cache_dir_readonly() -> Path:
     merely asking whether a heartbeat exists. Mirrors `worker.cache_dir`'s
     path formula exactly; if the directory does not exist yet, callers
     read that as "no heartbeat" (`read_heartbeat` already treats a
-    missing file as `None`), which is the correct answer regardless."""
-    from .ledger import resolve_home
-
+    missing file as `None`), which is the correct answer regardless.
+    (U-settings Phase 1: `resolve_home` moved to a module-level import --
+    `tick_secs_from_env` below needs it too.)"""
     cache = os.environ.get("XDG_CACHE_HOME")
     base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
     digest = hashlib.sha256(str(resolve_home()).encode("utf-8")).hexdigest()[:8]
@@ -555,7 +561,7 @@ def run_forever(
     hazard) never triggers."""
     home = Path(home)
     cd = cache_dir if cache_dir is not None else worker.cache_dir()
-    secs = tick_secs if tick_secs is not None else tick_secs_from_env()
+    secs = tick_secs if tick_secs is not None else tick_secs_from_env(home=home)
     pid = os.getpid()
     stop = threading.Event()
 

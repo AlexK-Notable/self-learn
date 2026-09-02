@@ -47,7 +47,7 @@ from pathlib import Path
 from . import report as report_mod
 from . import hosts as hosts_mod
 from . import reconcile as reconcile_mod
-from . import batch, gitops, miner, provider, refread, selfcheck, sentinel, serve, telemetry, verbs, worker
+from . import batch, gitops, miner, provider, refread, selfcheck, sentinel, serve, settings, telemetry, verbs, worker
 from .compilers import CompileError, ReferenceResult
 from .import_backlog import import_backlog
 from .import_common import ImporterError
@@ -646,8 +646,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     doctor_p = sub.add_parser(
         "doctor",
-        help="read-only diagnostics: invocation (provider/backend config); "
-        "bare `doctor` defaults to `doctor invocation`",
+        help="read-only diagnostics: invocation (provider/backend config), "
+        "settings (the U-settings registry); bare `doctor` defaults to "
+        "`doctor invocation`",
     )
     doctor_sub = doctor_p.add_subparsers(dest="doctor_command", metavar="[<verb>]")
     doctor_sub.add_parser(
@@ -655,15 +656,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="provider/backend switches, model ids, and Bedrock env assembly "
         "(U-bedrock) — the default when no <verb> is given",
     )
+    doctor_sub.add_parser(
+        "settings",
+        help="the U-settings registry: every operator-facing setting, its "
+        "resolved value, and its source (env/config.yaml/default)",
+    )
     # Bare `doctor` (no <verb>) behaves exactly as `doctor invocation` —
     # there is only one verb today, and forcing operators to spell it out
     # was a papercut nobody chose on purpose (U-papercuts P-2). This sets
     # the namespace default BEFORE parsing; an explicit `doctor invocation`
     # still sets the same value via the subparser action itself, and an
     # unknown verb (`doctor bogus`) is still rejected by argparse's own
-    # choice validation before this default is ever consulted — `_cmd_doctor`
-    # is unchanged, its `!= "invocation"` guard is now unreachable but kept
-    # as a defensive backstop.
+    # choice validation before this default is ever consulted. `doctor
+    # settings` (U-settings Phase 1) is a SECOND real verb now, added
+    # alongside `invocation` without touching its output — `_cmd_doctor`'s
+    # dispatch below branches on `doctor_command` explicitly.
     doctor_p.set_defaults(doctor_command="invocation")
 
     rec = sub.add_parser(
@@ -1125,17 +1132,36 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return serve.run_forever(home, max_ticks=args.max_ticks)
 
 
+def _cmd_doctor_settings(home: Path) -> int:
+    """U-settings Phase 1 -- `doctor settings`'s thin printer, mirroring
+    `_cmd_doctor`'s own discipline for `invocation`: every verdict comes
+    from :func:`settings.preflight`, the single source of truth; this
+    function computes nothing itself. This surface never FAILs (§4:
+    introspection only, nothing here gates) -- a non-zero exit is
+    reserved for an unknown config.yaml key (WARN), matching `doctor
+    invocation`'s "any WARN still exits 0, only FAIL exits 1" posture
+    would if this verb had one; since it never does, `WARN` still exits
+    0 here too."""
+    for row in settings.preflight(home):
+        print(f"doctor: {row.verdict} {row.name} — {row.detail}")
+    return EXIT_OK
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     """`Doc-0` -- a THIN PRINTER. Computes no verdict of its own and
     calls no probe directly: every verdict comes from
-    :func:`provider.preflight`, the single source of truth. Never home-
-    gated (`_home_gate` guards WRITE surfaces against a missing/
-    uninitialized ledger; this command never writes and must work on a
-    pristine home with no `config.yaml` at all — `Doc-c`)."""
+    :func:`provider.preflight` (`invocation`) or :func:`settings.
+    preflight` (`settings`, U-settings Phase 1), the single source of
+    truth for each verb. Never home-gated (`_home_gate` guards WRITE
+    surfaces against a missing/uninitialized ledger; this command never
+    writes and must work on a pristine home with no `config.yaml` at all
+    — `Doc-c`)."""
+    home = resolve_home()
+    if args.doctor_command == "settings":
+        return _cmd_doctor_settings(home)
     if args.doctor_command != "invocation":
         print("usage: self-learn doctor invocation", file=sys.stderr)
         return EXIT_USAGE
-    home = resolve_home()
     rows = provider.preflight(home)
     failed = False
     for row in rows:
