@@ -25,6 +25,7 @@ import json
 import os
 import stat
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,7 @@ from self_learn_ui.runner import (
     RealRunner,
     RunResult,
     SELF_LEARN_BIN_ENV,
+    communicate_bounded,
     extract_record_id,
     resolve_self_learn_argv_prefix,
 )
@@ -347,6 +349,159 @@ class TestRealRunnerSpawn:
                 "home": str(home),
             }
         ]
+
+
+# ------------------------------------------------------- M-H: bounded runner
+#
+# C05: `RealRunner.run` used to hold its server-wide lock across a bare
+# `await proc.communicate()` -- a hung verb blocked every later UI verb
+# forever, and a cancelled request left the child running. Below: the
+# pinned fixture itself (a REAL TERM-ignoring child, killable only by
+# SIGKILL) exercised directly against `communicate_bounded`, then through
+# the real `RealRunner.run()` to prove the lock/busy/interrupt-hook
+# contract holds end to end.
+
+
+async def _spawn_term_ignoring_child() -> asyncio.subprocess.Process:
+    """The pinned fixture (M-H task brief): a REAL OS process that
+    ignores SIGTERM outright -- `terminate()` is a no-op against it, only
+    `kill()` (SIGKILL, which cannot be blocked or ignored) ends it."""
+    return await asyncio.create_subprocess_exec(
+        "bash",
+        "-c",
+        'trap "" TERM; sleep 60',
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+
+class TestCommunicateBoundedAgainstRealTermIgnoringChild:
+    """`test_runner.py`'s `_ScriptedProcess` proves the escalation logic
+    in isolation; this proves it against the real signal semantics a
+    scripted double can only simulate."""
+
+    async def test_bounded_and_actually_reaped_not_a_zombie(self) -> None:
+        proc = await _spawn_term_ignoring_child()
+        try:
+            start = time.monotonic()
+            stdout_b, stderr_b, code = await communicate_bounded(
+                proc, timeout=0.2, kill_grace=0.3
+            )
+            elapsed = time.monotonic() - start
+            # Bounded: the fixture sleeps 60s -- an unbounded wait would
+            # take at least that long. Generous slack over timeout +
+            # 2*kill_grace below, not a tight timing assertion.
+            assert elapsed < 5.0
+            assert code != 0
+            assert proc.returncode is not None  # reaped -- no zombie left
+            assert b"terminated" in stderr_b
+            # Independent of asyncio's own bookkeeping: the OS itself
+            # agrees the pid is gone (a still-alive pid would raise
+            # nothing here -- this must raise).
+            with pytest.raises(ProcessLookupError):
+                os.kill(proc.pid, 0)
+        finally:
+            if proc.returncode is None:  # pragma: no cover - safety net only
+                proc.kill()
+                await proc.wait()
+
+    async def test_task_cancellation_kills_and_reaps_the_real_child(self) -> None:
+        proc = await _spawn_term_ignoring_child()
+        try:
+            task = asyncio.ensure_future(communicate_bounded(proc, timeout=60, kill_grace=0.3))
+            await asyncio.sleep(0.1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5.0)
+            assert proc.returncode is not None
+            with pytest.raises(ProcessLookupError):
+                os.kill(proc.pid, 0)
+        finally:
+            if proc.returncode is None:  # pragma: no cover - safety net only
+                proc.kill()
+                await proc.wait()
+
+
+class TestRealRunnerBoundedTimeoutAndLockRelease:
+    async def test_hung_verb_no_longer_blocks_a_later_verb_forever(
+        self, tmp_path: Path
+    ) -> None:
+        """The C05 regression itself, through the real `RealRunner.run`:
+        before M-H this would hang forever on the first call, so a
+        second call would never even start. Proven by actually running
+        the TERM-ignoring child through the runner, then a second verb
+        through the SAME instance right after."""
+        home = tmp_path / "ledger-home"
+        runner = RealRunner(
+            home=home, argv_prefix=["bash", "-c"], verb_timeout=0.2, kill_grace=0.3
+        )
+        start = time.monotonic()
+        first = await runner.run(['trap "" TERM; sleep 60'])
+        elapsed = time.monotonic() - start
+        assert elapsed < 5.0
+        assert first.ok is False
+        assert runner.busy is False
+
+        # The lock is genuinely free -- not just reporting False -- proven
+        # by a second call through the SAME runner actually completing.
+        second = await runner.run(["true"])
+        assert second.ok is True
+        assert runner.busy is False
+
+    async def test_cancelled_run_releases_the_lock_and_kills_the_child(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "ledger-home"
+        runner = RealRunner(
+            home=home, argv_prefix=["bash", "-c"], verb_timeout=60, kill_grace=0.3
+        )
+        task = asyncio.ensure_future(runner.run(['trap "" TERM; sleep 60']))
+        await asyncio.sleep(0.1)
+        assert runner.busy is True
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5.0)
+        assert runner.busy is False
+
+        second = await runner.run(["true"])
+        assert second.ok is True
+
+    async def test_interrupt_hook_bounded_verb_still_runs(self, tmp_path: Path) -> None:
+        """Task brief point 4: the injected interrupt hook is bounded
+        too -- a wedged pane engine must not hold the lock (and every
+        OTHER tab's dispatch behind it) forever. Proven against a REAL
+        fake-self-learn subprocess so the verb's actual execution is
+        also confirmed, not just that `run()` returns."""
+
+        async def hangs_forever(record_id: str) -> None:
+            await asyncio.Event().wait()
+
+        log = tmp_path / "calls.jsonl"
+        home = tmp_path / "ledger-home"
+        runner = RealRunner(
+            home=home,
+            argv_prefix=_direct_prefix(),
+            env={"FAKE_SELF_LEARN_LOG": str(log)},
+            interrupt_active_session=hangs_forever,
+            interrupt_timeout=0.05,
+        )
+        result = await asyncio.wait_for(runner.run(["route", "lrn-aa000001"]), timeout=5.0)
+        assert result.ok is True
+        entries = _read_log(log)
+        assert entries[0]["argv"] == ["route", "lrn-aa000001"]
+        assert runner.busy is False
+
+    async def test_fast_verb_unaffected_by_the_bounded_communicate_change(
+        self, tmp_path: Path
+    ) -> None:
+        """Positive control (task brief): the bounded wrapper must not
+        perturb an ordinary fast verb -- default timeouts, real
+        fake-self-learn subprocess, exact same shape as pre-M-H."""
+        home = tmp_path / "ledger-home"
+        runner = RealRunner(home=home, argv_prefix=_direct_prefix())
+        result = await runner.run(["push"])
+        assert result.ok is True
+        assert runner.busy is False
 
 
 # ------------------------------------------------- argv shapes (full matrix)

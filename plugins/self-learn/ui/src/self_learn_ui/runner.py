@@ -34,7 +34,13 @@ import shlex
 import shutil
 import sys
 from abc import ABC, abstractmethod
-from asyncio import Lock, create_subprocess_exec, subprocess as asyncio_subprocess
+from asyncio import (
+    CancelledError,
+    Lock,
+    create_subprocess_exec,
+    subprocess as asyncio_subprocess,
+    wait_for,
+)
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +52,7 @@ __all__ = [
     "RealRunner",
     "RunResult",
     "VerbRunner",
+    "communicate_bounded",
     "extract_record_id",
     "resolve_self_learn_argv_prefix",
 ]
@@ -225,6 +232,103 @@ async def _default_interrupt_hook(record_id: str) -> None:
     return None
 
 
+# ------------------------------------------------------- bounded communicate
+#
+# C05 (M-H): ``RealRunner.run`` used to hold its server-wide lock across a
+# BARE ``await proc.communicate()`` — a hung verb (a wedged git index, a
+# network fs stall, a child that never exits) blocked every later UI verb
+# forever, and a cancelled request (HTTP disconnect, server shutdown) left
+# the child running with nobody left to reap it. Everything below fixes
+# that: a verb subprocess is always bounded, and on EITHER a timeout or a
+# task cancellation the child is escalated terminate -> grace -> kill ->
+# reap, never left running (leaked) or left a zombie (un-reaped).
+
+#: Ceiling on a verb subprocess's `communicate()` — generous by design:
+#: `mine run` drives the SDK-backed analyst and can legitimately run for
+#: minutes. This is a backstop against a HANG, never a normal-operation
+#: budget, so it errs long.
+DEFAULT_VERB_TIMEOUT_SECS = 600.0
+
+#: Ceiling on the injected interrupt hook (U6's pane-session interrupt,
+#: task brief point 4: "the injected interrupt hook is bounded") — a
+#: wedged pane engine must not hold the lock, and every OTHER tab's verb
+#: dispatch behind it, forever.
+DEFAULT_INTERRUPT_TIMEOUT_SECS = 30.0
+
+#: SIGTERM -> SIGKILL grace window when a subprocess must be forced to
+#: exit. Long enough for an ordinary child to clean up after SIGTERM;
+#: short enough that a TERM-ignoring child (test_runner_real.py's own
+#: worst case: ``bash -c 'trap "" TERM; sleep 60'``) doesn't hold the
+#: lock for long once the timeout above has already fired.
+DEFAULT_KILL_GRACE_SECS = 5.0
+
+
+def _exit_code_of(proc: asyncio_subprocess.Process) -> int:
+    return proc.returncode if proc.returncode is not None else 1
+
+
+async def _terminate_then_kill(
+    proc: asyncio_subprocess.Process, *, kill_grace: float
+) -> None:
+    """terminate -> grace -> kill -> reap. Never raises: a process that
+    exits between our own check and the signal is not an error —
+    ``ProcessLookupError`` is exactly that race, caught and ignored.
+    Every wait here is itself bounded by ``kill_grace``, so a child that
+    ignores BOTH signals (not a real scenario — SIGKILL cannot be
+    blocked or ignored — but kept bounded defensively) still returns
+    control to the caller rather than hanging this function forever."""
+    if proc.returncode is not None:
+        return  # already exited — nothing to escalate
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        await wait_for(proc.wait(), timeout=kill_grace)
+        return
+    except TimeoutError:
+        pass
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return
+        try:
+            await wait_for(proc.wait(), timeout=kill_grace)
+        except TimeoutError:
+            pass  # best-effort reap; SIGKILL cannot be ignored, so the
+            # process is dying regardless — a later ``proc.wait()`` still
+            # reaps it cleanly (asyncio's child watcher owns that).
+
+
+async def communicate_bounded(
+    proc: asyncio_subprocess.Process,
+    *,
+    timeout: float,
+    kill_grace: float = DEFAULT_KILL_GRACE_SECS,
+) -> tuple[bytes, bytes, int]:
+    """Bounded replacement for a bare ``await proc.communicate()`` — the
+    C05 defect this move closes. Returns ``(stdout, stderr, returncode)``
+    on a clean completion OR on a timeout (the caller turns a timeout
+    into an ordinary failed :class:`RunResult`, never an exception — the
+    same contract as ``self-learn`` failing on its own). On the awaiting
+    task itself being CANCELLED (an HTTP client disconnect, a server
+    shutdown — ``CancelledError`` raised through the ``await`` below),
+    the child is still terminate -> grace -> kill -> reaped before the
+    ``CancelledError`` is RE-RAISED: this function's only job is the
+    CHILD's lifecycle, never swallowing the caller's own cancellation."""
+    try:
+        stdout_b, stderr_b = await wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError:
+        await _terminate_then_kill(proc, kill_grace=kill_grace)
+        message = f"self-learn-ui: verb exceeded {timeout}s and was terminated\n"
+        return b"", message.encode("utf-8"), _exit_code_of(proc)
+    except CancelledError:
+        await _terminate_then_kill(proc, kill_grace=kill_grace)
+        raise
+    return stdout_b, stderr_b, _exit_code_of(proc)
+
+
 class RealRunner(VerbRunner):
     """The serialized async subprocess queue (10 §1 Verb runner row; 09
     §3 "Verb invocation"). ONE ``self-learn <argv>`` subprocess at a time
@@ -259,6 +363,9 @@ class RealRunner(VerbRunner):
         argv_prefix: list[str] | None = None,
         env: dict[str, str] | None = None,
         interrupt_active_session: InterruptHook | None = None,
+        verb_timeout: float = DEFAULT_VERB_TIMEOUT_SECS,
+        interrupt_timeout: float = DEFAULT_INTERRUPT_TIMEOUT_SECS,
+        kill_grace: float = DEFAULT_KILL_GRACE_SECS,
     ) -> None:
         """``home`` is pinned onto ``SELF_LEARN_HOME`` for every spawned
         subprocess (exactly :mod:`self_learn_ui.ledger`'s own pattern for
@@ -270,7 +377,9 @@ class RealRunner(VerbRunner):
         :func:`resolve_self_learn_argv_prefix` entirely — the cleanest
         override for tests); when omitted, resolution runs once at
         construction time against ``env`` (or real ``os.environ`` if
-        ``env`` is also omitted — the production path)."""
+        ``env`` is also omitted — the production path). ``verb_timeout``/
+        ``interrupt_timeout``/``kill_grace`` are M-H's bounds (C05) —
+        tests shrink them; production keeps the generous defaults."""
         self._home = home
         self._refresh_callback = refresh_callback
         self._argv_prefix = (
@@ -283,6 +392,9 @@ class RealRunner(VerbRunner):
         self._interrupt_active_session: InterruptHook = (
             interrupt_active_session or _default_interrupt_hook
         )
+        self._verb_timeout = verb_timeout
+        self._interrupt_timeout = interrupt_timeout
+        self._kill_grace = kill_grace
 
     @property
     def busy(self) -> bool:
@@ -301,13 +413,30 @@ class RealRunner(VerbRunner):
 
     async def run(self, argv: list[str]) -> RunResult:
         record_id = extract_record_id(argv)
+        # `async with` is Python's own try/finally for a context manager
+        # (M-H pin: "the lock is released on every path") — it releases
+        # on a normal return, on an ordinary exception, AND on this
+        # coroutine's own task being cancelled, so a hand-rolled
+        # acquire()/release() pair would add risk (a forgotten release on
+        # some path) without adding any guarantee this doesn't already
+        # have.
         async with self._lock:
             if record_id is not None:
                 # Interrupt-first (P1-4): awaited BEFORE the verb spawns,
                 # never concurrently with it — the pane agent could
                 # otherwise still hold live write permission on the exact
-                # files the verb is about to git mv/git rm.
-                await self._interrupt_active_session(record_id)
+                # files the verb is about to git mv/git rm. BOUNDED
+                # (M-H): a wedged pane engine must not hold this lock —
+                # and every OTHER tab's verb dispatch behind it — forever;
+                # on timeout the verb still proceeds (best-effort
+                # courtesy, never a gate on whether the verb may run).
+                try:
+                    await wait_for(
+                        self._interrupt_active_session(record_id),
+                        timeout=self._interrupt_timeout,
+                    )
+                except TimeoutError:
+                    pass
             result = await self._spawn(argv)
         if self._refresh_callback is not None:
             scope = f"record:{record_id}" if record_id is not None else "front"
@@ -328,8 +457,12 @@ class RealRunner(VerbRunner):
             )
         except OSError as exc:
             return RunResult(1, stderr=f"{label} failed to start: {exc}")
-        stdout_b, stderr_b = await proc.communicate()
-        exit_code = proc.returncode if proc.returncode is not None else 1
+        # BOUNDED (M-H / C05): never a bare `await proc.communicate()` —
+        # see `communicate_bounded` for the terminate -> grace -> kill ->
+        # reap contract on timeout AND on this task being cancelled.
+        stdout_b, stderr_b, exit_code = await communicate_bounded(
+            proc, timeout=self._verb_timeout, kill_grace=self._kill_grace
+        )
         return RunResult(
             exit_code=exit_code,
             stdout=stdout_b.decode("utf-8", errors="replace"),

@@ -1,13 +1,20 @@
 """runner.py — the verb-execution seam (U3 task brief). No I/O, no
-FastAPI — a plain async unit test of the seam + FakeRunner."""
+FastAPI — a plain async unit test of the seam + FakeRunner.
+
+``TestCommunicateBounded`` (M-H) tests the terminate -> grace -> kill ->
+reap escalation logic against a scripted in-process fake ``Process``
+double — no real OS subprocess, keeping this file I/O-free per its own
+rule above. The REAL end-to-end proof against an actual TERM-ignoring
+``bash`` child lives in ``tests/test_runner_real.py``."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
 
-from self_learn_ui.runner import FakeRunner, NotWiredRunner, RunResult
+from self_learn_ui.runner import FakeRunner, NotWiredRunner, RunResult, communicate_bounded
 
 
 class TestRunResult:
@@ -114,3 +121,97 @@ class TestNotWiredRunner:
         runner = NotWiredRunner()
         with pytest.raises(RuntimeError, match="no VerbRunner wired"):
             await runner.run(["route", "lrn-aa000001"])
+
+
+class _ScriptedProcess:
+    """A minimal async-``Process`` double for testing
+    ``communicate_bounded``'s escalation logic in isolation — no real OS
+    process. ``ignores_term=True`` models the exact fixture
+    ``test_runner_real.py`` drives for real (``bash -c 'trap "" TERM;
+    sleep 60'``): ``terminate()`` is a no-op, only ``kill()`` ends it."""
+
+    def __init__(self, *, hang_forever: bool = False, ignores_term: bool = False) -> None:
+        self.returncode: int | None = None
+        self.terminate_calls = 0
+        self.kill_calls = 0
+        self._hang_forever = hang_forever
+        self._ignores_term = ignores_term
+        self._exited = asyncio.Event()
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        if self._hang_forever:
+            await asyncio.Event().wait()  # a future that never resolves on its own
+        await self._exited.wait()
+        return b"", b""
+
+    async def wait(self) -> int:
+        await self._exited.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+        if not self._ignores_term:
+            self.returncode = -15
+            self._exited.set()
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        self.returncode = -9
+        self._exited.set()
+
+
+class TestCommunicateBounded:
+    async def test_normal_completion_returns_promptly_without_escalation(self) -> None:
+        """Positive control: a fast/well-behaved process is returned
+        exactly as before — no terminate/kill ever fires."""
+        proc = _ScriptedProcess()
+        proc.returncode = 0
+        proc._exited.set()
+        stdout_b, stderr_b, code = await communicate_bounded(proc, timeout=5.0)
+        assert (stdout_b, stderr_b, code) == (b"", b"", 0)
+        assert proc.terminate_calls == 0
+        assert proc.kill_calls == 0
+
+    async def test_process_exiting_on_term_never_escalates_to_kill(self) -> None:
+        proc = _ScriptedProcess(hang_forever=True, ignores_term=False)
+        _, _, code = await communicate_bounded(proc, timeout=0.05, kill_grace=5.0)
+        assert proc.terminate_calls == 1
+        assert proc.kill_calls == 0
+        assert code == -15
+
+    async def test_term_ignoring_process_escalates_to_kill(self) -> None:
+        proc = _ScriptedProcess(hang_forever=True, ignores_term=True)
+        _, _, code = await communicate_bounded(proc, timeout=0.05, kill_grace=0.05)
+        assert proc.terminate_calls == 1
+        assert proc.kill_calls == 1
+        assert code == -9
+
+    async def test_timeout_reports_a_diagnosable_stderr_message(self) -> None:
+        proc = _ScriptedProcess(hang_forever=True, ignores_term=True)
+        _, stderr_b, _ = await communicate_bounded(proc, timeout=0.05, kill_grace=0.05)
+        assert b"terminated" in stderr_b
+
+    async def test_already_exited_process_is_a_no_op(self) -> None:
+        proc = _ScriptedProcess()
+        proc.returncode = 0
+        proc._exited.set()
+        await communicate_bounded(proc, timeout=5.0)
+        assert proc.terminate_calls == 0
+        assert proc.kill_calls == 0
+
+    async def test_cancellation_terminates_kills_reaps_then_reraises(self) -> None:
+        """The other trigger for escalation (M-H): the AWAITING TASK
+        itself cancelled (HTTP disconnect, server shutdown) — not a
+        timeout at all (the passed ``timeout`` here is 60s, never hit).
+        Cleanup must still run, and the cancellation must still
+        propagate to the caller (never silently swallowed)."""
+        proc = _ScriptedProcess(hang_forever=True, ignores_term=True)
+        task = asyncio.ensure_future(communicate_bounded(proc, timeout=60, kill_grace=0.2))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert proc.terminate_calls == 1
+        assert proc.kill_calls == 1
+        assert proc.returncode == -9
