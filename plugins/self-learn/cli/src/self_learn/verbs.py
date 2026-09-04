@@ -64,7 +64,6 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field, replace
@@ -3640,15 +3639,25 @@ def _show_canon_info(home: Path, bucket, record: Record) -> dict:
 
 def _show_lifecycle(home: Path, record_id: str) -> list[dict]:
     """The record's commit history — ``git -C <home> log --grep=<id>
-    --oneline``, newest-first as git itself orders it."""
-    proc = subprocess.run(
-        [
-            "git", "-C", str(home), "log",
-            f"--grep={record_id}", "--fixed-strings",
-            "--pretty=format:%H%x09%ad%x09%s", "--date=short",
-        ],
-        capture_output=True, text=True, check=False,
-    )
+    --oneline``, newest-first as git itself orders it. M-G: a LOCAL,
+    read-only git call — bounded the same as every other one
+    (``gitops.GIT_LOCAL_TIMEOUT``) via the shared primitive rather than a
+    bare, unbounded ``subprocess.run``. A wedged git here is a detail-view
+    surface, not a mutation: it degrades to an empty history rather than
+    raising and taking the whole ``show`` verb down with it."""
+    from .primitives import procs
+
+    try:
+        proc = procs.run_bounded(
+            [
+                "git", "-C", str(home), "log",
+                f"--grep={record_id}", "--fixed-strings",
+                "--pretty=format:%H%x09%ad%x09%s", "--date=short",
+            ],
+            timeout=gitops.GIT_LOCAL_TIMEOUT,
+        )
+    except procs.BoundedTimeout:
+        return []
     out: list[dict] = []
     for line in proc.stdout.splitlines():
         parts = line.split("\t", 2)

@@ -43,8 +43,9 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 from pathlib import Path
+
+from .primitives import procs
 
 __all__ = [
     "GUARDABLE_TOOLS",
@@ -107,17 +108,30 @@ def settings_snippet(tools: list[str], name: str) -> str:
     return f'"PreToolUse": [{{"matcher": {json.dumps(matcher)}, "hooks": {hooks}}}]'
 
 
+#: M-G: `grep -qE` against an empty stdin is a pattern-syntax check only
+#: — no data to scan — so it is effectively instant; 5s (matches
+#: `gitops._git_nolock`'s convention for "should be instant" diagnostics)
+#: catches a genuine hang without pressuring routine work.
+VALIDATE_ERE_TIMEOUT_S = 5.0
+
+
 def validate_ere(pattern: str) -> str | None:
     """Validate ``pattern`` against the ENGINE that will run it — grep -E
     on this machine, not Python's ``re`` approximation. Returns the error
     text, or None when the pattern is usable. (grep exits 1 for
-    "no match", ≥2 for a broken pattern.)"""
-    proc = subprocess.run(
-        ["grep", "-qE", "--", pattern],
-        input="",
-        capture_output=True,
-        text=True,
-    )
+    "no match", ≥2 for a broken pattern; a `grep -qE` that somehow wedges
+    on a pathological pattern — M-G's ``VALIDATE_ERE_TIMEOUT_S`` bound —
+    is reported the same way, as a rejected pattern, rather than
+    propagating a bounded-child exception through a validator whose whole
+    contract is "return the problem, or None.")"""
+    try:
+        proc = procs.run_bounded(
+            ["grep", "-qE", "--", pattern],
+            input="",
+            timeout=VALIDATE_ERE_TIMEOUT_S,
+        )
+    except procs.BoundedTimeout:
+        return f"grep -E did not finish within {VALIDATE_ERE_TIMEOUT_S:g}s — pattern rejected"
     if proc.returncode >= 2:
         return (proc.stderr.strip() or "grep -E rejected the pattern").splitlines()[0]
     return None
@@ -250,21 +264,38 @@ exit 0
 """
 
 
+#: M-G: the guard script is a compiled bash script of fixed, small size —
+#: string comparisons and `grep -qE` against ONE value, nothing that
+#: scales with repo/ledger size. 10s catches a genuine hang (a
+#: pathological regex, a wedged shell) without pressuring the replay of
+#: several examples in a row.
+REPLAY_EXAMPLE_TIMEOUT_S = 10.0
+
+
 def replay_examples(script_path: Path, examples: dict) -> list[str]:
     """M3-12: run the analyst's allow/deny example inputs against the
     generated script. Returns one human sentence per MISMATCH (empty =
     replay clean); the route verb aborts on any. An unexpected exit code
     (neither 0 nor 2) is always a mismatch — a guard may only allow or
-    deny."""
+    deny. A guard that does not finish within
+    ``REPLAY_EXAMPLE_TIMEOUT_S`` (M-G) counts as a mismatch too — a
+    wedged guard is exactly the kind of guard the replay must abort a
+    route over, not one hung request that hangs the whole verb."""
     mismatches: list[str] = []
     for verdict, expected_rc in (("allow", 0), ("deny", 2)):
         for i, example in enumerate(examples.get(verdict, [])):
-            proc = subprocess.run(
-                [str(script_path)],
-                input=json.dumps(example),
-                capture_output=True,
-                text=True,
-            )
+            try:
+                proc = procs.run_bounded(
+                    [str(script_path)],
+                    input=json.dumps(example),
+                    timeout=REPLAY_EXAMPLE_TIMEOUT_S,
+                )
+            except procs.BoundedTimeout:
+                mismatches.append(
+                    f"{verdict}[{i}] the guard did not finish within "
+                    f"{REPLAY_EXAMPLE_TIMEOUT_S:g}s: {json.dumps(example)}"
+                )
+                continue
             if proc.returncode != expected_rc:
                 got = {0: "allowed", 2: "denied"}.get(
                     proc.returncode, f"exit {proc.returncode}"

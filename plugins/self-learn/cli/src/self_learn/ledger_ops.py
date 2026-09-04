@@ -28,7 +28,6 @@ import glob as glob_mod
 import io
 import os
 import re
-import subprocess
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -255,24 +254,35 @@ def _dump_yaml(data: dict, path: Path) -> None:
 # ---------------------------------------------------------------------- git
 
 
-def _git(home: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", str(home), *args], capture_output=True, text=True
-    )
-
-
-def _git_ok(home: Path, *args: str) -> None:
-    proc = _git(home, *args)
-    if proc.returncode != 0:
-        raise LedgerOpsError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
-
-
 def _is_tracked(home: Path, path: Path) -> bool:
     """M-D: routes through the bounded seam (:func:`gitops.is_tracked`)
     instead of shelling ``git`` out directly (closes A8/C12a)."""
     from . import gitops
 
     return gitops.is_tracked(home, path)
+
+
+def _git_mv(home: Path, src: Path, dest: Path) -> None:
+    """``git mv`` *src* -> *dest*, bounded. M-G: this module's own
+    ``_git``/``_git_ok`` (a bare, unbounded ``subprocess.run`` — the same
+    "blocking with a sane timeout was fiction" defect ``gitops.py``'s
+    docstring names for ITS pre-fix ``_git``) are retired once this, the
+    last direct caller of either, is migrated onto the shared bounded
+    primitive instead. Raises :class:`LedgerOpsError` on a non-zero exit
+    OR a timeout — same failure surface callers already handle, one more
+    way to reach it."""
+    from . import gitops
+    from .primitives import procs
+
+    try:
+        proc = procs.run_bounded(
+            ["git", "-C", str(home), "mv", str(src), str(dest)],
+            timeout=gitops.GIT_LOCAL_TIMEOUT,
+        )
+    except procs.BoundedTimeout as exc:
+        raise LedgerOpsError(f"git mv {src} {dest} did not finish: {exc}") from exc
+    if proc.returncode != 0:
+        raise LedgerOpsError(f"git mv {src} {dest} failed: {proc.stderr.strip()}")
 
 
 def _remove_file(home: Path, path: Path) -> bool:
@@ -282,9 +292,7 @@ def _remove_file(home: Path, path: Path) -> bool:
     Proposal-lifecycle pin). True iff the file existed.
 
     M-D: routes through :func:`gitops.is_tracked` / :func:`gitops.remove`
-    instead of this module's own ``_git`` (closes A8/C12a). ``_git`` /
-    ``_git_ok`` stay for now — the three ``git mv`` call sites below still
-    use them; M-G retires those and then deletes both."""
+    instead of this module's own ``_git`` (closes A8/C12a)."""
     from . import gitops
 
     if not path.exists():
@@ -2407,7 +2415,7 @@ def resolve_record(
         resolved_dir.mkdir(parents=True, exist_ok=True)
         dest_path = resolved_dir / path.name
         if _is_tracked(home, path):
-            _git_ok(home, "mv", str(path), str(dest_path))
+            _git_mv(home, path, dest_path)
         else:
             path.rename(dest_path)
         touched.append(path)
@@ -2478,7 +2486,7 @@ def move_record(
     record.set_scope(target_scope)  # written unconditionally (§3.2a step 5)
     dest_path = target_bucket / "pending" / path.name
     if _is_tracked(home, path):
-        _git_ok(home, "mv", str(path), str(dest_path))
+        _git_mv(home, path, dest_path)
     else:
         path.rename(dest_path)
     record.write(dest_path)  # rewrite AT THE DESTINATION — mv-first (§6.4)
@@ -2515,7 +2523,7 @@ def reopen_record(home: Path, record_id: str) -> tuple[list[Path], list[Path]]:
     pending_dir.mkdir(parents=True, exist_ok=True)
     dest_path = pending_dir / path.name
     if _is_tracked(home, path):
-        _git_ok(home, "mv", str(path), str(dest_path))
+        _git_mv(home, path, dest_path)
     else:
         path.rename(dest_path)
     record.write(dest_path)  # rewrite AT THE DESTINATION — mv-first (§6.4)

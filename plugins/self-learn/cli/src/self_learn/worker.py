@@ -1282,21 +1282,32 @@ def _digest(home: Path, limit: int = 20) -> str:
     DATE, newest first (audit 2026-07-15: topo order diverges from
     author-date order under rebase-based autosync, so the rows are
     sorted explicitly; the grep is line-anchored so a Revert subject
-    quoting the message does not re-list an undone rejection)."""
-    proc = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(home),
-            "log",
-            "--grep",
-            "^self-learn: reject ",
-            "--format=%ad%x09%s",
-            "--date=iso-strict",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    quoting the message does not re-list an undone rejection).
+
+    M-G: a LOCAL, read-only git call — bounded like every other one
+    (``gitops.GIT_LOCAL_TIMEOUT``) via the shared primitive instead of a
+    bare, unbounded ``subprocess.run``. A wedged git degrades this digest
+    the same way a real failure already does (``returncode != 0``): the
+    reader gets no negative exemplars this run, not a hung worker."""
+    from . import gitops
+    from .primitives import procs
+
+    try:
+        proc = procs.run_bounded(
+            [
+                "git",
+                "-C",
+                str(home),
+                "log",
+                "--grep",
+                "^self-learn: reject ",
+                "--format=%ad%x09%s",
+                "--date=iso-strict",
+            ],
+            timeout=gitops.GIT_LOCAL_TIMEOUT,
+        )
+    except procs.BoundedTimeout:
+        return "(no rejected-proposal history available)"
     if proc.returncode != 0:
         return "(no rejected-proposal history available)"
     rows = sorted(
