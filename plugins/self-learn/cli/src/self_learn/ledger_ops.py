@@ -268,15 +268,29 @@ def _git_ok(home: Path, *args: str) -> None:
 
 
 def _is_tracked(home: Path, path: Path) -> bool:
-    return _git(home, "ls-files", "--error-unmatch", "--", str(path)).returncode == 0
+    """M-D: routes through the bounded seam (:func:`gitops.is_tracked`)
+    instead of shelling ``git`` out directly (closes A8/C12a)."""
+    from . import gitops
+
+    return gitops.is_tracked(home, path)
 
 
 def _remove_file(home: Path, path: Path) -> bool:
-    """``git rm --ignore-unmatch`` + fs remove (the file may be untracked
-    mid-review — 08 §1 Proposal-lifecycle pin). True iff the file existed."""
+    """``git rm --quiet`` (only when tracked — :func:`gitops.remove` has
+    no ``--ignore-unmatch``, unlike this function's pre-M-D direct ``_git``
+    call) + fs remove (the file may be untracked mid-review — 08 §1
+    Proposal-lifecycle pin). True iff the file existed.
+
+    M-D: routes through :func:`gitops.is_tracked` / :func:`gitops.remove`
+    instead of this module's own ``_git`` (closes A8/C12a). ``_git`` /
+    ``_git_ok`` stay for now — the three ``git mv`` call sites below still
+    use them; M-G retires those and then deletes both."""
+    from . import gitops
+
     if not path.exists():
         return False
-    _git(home, "rm", "-f", "-q", "--ignore-unmatch", "--", str(path))
+    if gitops.is_tracked(home, path):
+        gitops.remove(home, path)
     if path.exists():  # untracked (or no git repo): git rm left it in place
         path.unlink()
     return True
