@@ -9,16 +9,20 @@ Each test builds its own throwaway repo (`support.init_repo`/`commit_all`
 
 from __future__ import annotations
 
+import ast
 import os
 import shutil
 from pathlib import Path
 
 import pytest
 
+import self_learn
 from self_learn import gitops, ledger_ops, verbs
 from self_learn.hosts import host_add, slug_for
 from self_learn.ledger_ops import create_record
 from support import commit_all, failing_git_shim, git, init_repo, make_env, make_knowledge
+
+SRC = Path(self_learn.__file__).parent
 
 
 @pytest.fixture
@@ -246,3 +250,129 @@ class TestRemoveFileHalfWritten:
         # per-path stand-in -- proves this was built by bucket_prune
         # itself, not reconstructed inside _remove_file.
         assert "bucket prune" in excinfo.value.repair, excinfo.value.repair
+
+
+# =============================================== M-D fold r4: structural gate
+
+
+#: M-D fold r3 duplicated the HalfWrittenError conversion by hand to four
+#: call sites (`bucket_prune`, `route`'s merge-path cleanup,
+#: `remove_proposal_siblings`'s two). Gate r3 MAJOR 1/2: two of those four
+#: wrappers had no test that reddened when deleted -- "protection, not
+#: correctness" (the caller-side conversion ITSELF was ruled correct).
+#: Same shape as `test_lock_invariant.py`'s `_guarded_lines` / this
+#: file's own P3 scanner in `test_bounded_children.py`: parse, don't
+#: hand-enumerate, and pin a real count so a NEW call site is a visible
+#: diff here too, not a silent gap.
+
+
+def _dotted(node: ast.AST | None) -> str | None:
+    if node is None:
+        return None
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _dotted(node.value)
+        return f"{base}.{node.attr}" if base else None
+    return None
+
+
+def _catches_gitops_git_ops_error(handler: ast.ExceptHandler) -> bool:
+    if handler.type is None:
+        return False
+    types = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    return any(_dotted(t) == "gitops.GitOpsError" for t in types)
+
+
+def _raises_half_written_for_commit(handler: ast.ExceptHandler) -> bool:
+    for stmt in ast.walk(handler):
+        if (
+            isinstance(stmt, ast.Raise)
+            and isinstance(stmt.exc, ast.Call)
+            and _dotted(stmt.exc.func) == "gitops.HalfWrittenError.for_commit"
+        ):
+            return True
+    return False
+
+
+def _half_written_protected_lines(tree: ast.AST) -> set[int]:
+    """Every line number lexically inside the `try` body of a `try` whose
+    handlers include `except gitops.GitOpsError as ...:` raising
+    `gitops.HalfWrittenError.for_commit(...)` — mirrors
+    `test_lock_invariant.py`'s `_guarded_lines` (a `with lock:` body)
+    exactly, keyed on `Try`/`except` instead of `With`."""
+    protected: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        if not any(
+            _catches_gitops_git_ops_error(h) and _raises_half_written_for_commit(h)
+            for h in node.handlers
+        ):
+            continue
+        for body_stmt in node.body:
+            for inner in ast.walk(body_stmt):
+                if hasattr(inner, "lineno"):
+                    protected.add(inner.lineno)
+    return protected
+
+
+class _RemoveFileCallFinder(ast.NodeVisitor):
+    """Every call to `_remove_file(` — bare name or `<module>._remove_file`
+    — EXCEPT inside `_remove_file`'s own definition (it does not call
+    itself; excluded defensively, per the fold instruction, rather than
+    assumed)."""
+
+    def __init__(self) -> None:
+        self.linenos: list[int] = []
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if node.name == "_remove_file":
+            return  # do not descend — this IS the definition, not a call site
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        func = node.func
+        name = (
+            func.id
+            if isinstance(func, ast.Name)
+            else func.attr if isinstance(func, ast.Attribute) else None
+        )
+        if name == "_remove_file":
+            self.linenos.append(node.lineno)
+        self.generic_visit(node)
+
+
+def test_every_remove_file_call_site_converts_to_half_written():
+    """Walks `src/self_learn/**/*.py`: every `_remove_file(` call site
+    (its own definition excluded) must sit inside a `try` whose
+    `except gitops.GitOpsError:` handler raises
+    `gitops.HalfWrittenError.for_commit(...)` — the shape M-D fold r3
+    hand-applied at four sites (`bucket_prune`; `route`'s merge-path
+    cleanup; `remove_proposal_siblings` x2). A fifth call site added
+    later without the wrapper reddens HERE, naming its file:line,
+    instead of silently reopening the exit-6-over-a-half-written-ledger
+    bug this whole lane exists to close."""
+    offenders: list[str] = []
+    total = 0
+    for path in sorted(SRC.rglob("*.py")):
+        rel = str(path.relative_to(SRC))
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        protected = _half_written_protected_lines(tree)
+        finder = _RemoveFileCallFinder()
+        finder.visit(tree)
+        for lineno in finder.linenos:
+            total += 1
+            if lineno not in protected:
+                offenders.append(f"{rel}:{lineno}")
+    # positive control: this assertion passes at HEAD with exactly 4 —
+    # `test_it_catches_a_planted_violation`-style tests (test_lock_
+    # invariant.py, test_bounded_children.py) already prove THIS test's
+    # sibling scanners bite; the fold's own red/green mutation (see
+    # build-ledger-git.md "Fold r4") proves this one does too.
+    assert total == 4, f"expected exactly 4 _remove_file(...) call sites, found {total}"
+    assert not offenders, (
+        "_remove_file(...) call site(s) not wrapped in a `try` whose "
+        "`except gitops.GitOpsError:` handler raises "
+        "`gitops.HalfWrittenError.for_commit(...)`: " + ", ".join(offenders)
+    )
