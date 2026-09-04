@@ -324,6 +324,11 @@ def hold() -> SentinelHold:
     if is_live(path):
         return SentinelHold(path=path, owned=False)
     with _lock_section(path) as acquired:
+        # gate r2 nit: this is the AUTHORITATIVE liveness decision — the
+        # pre-lock is_live(path) check above is only an optimization that
+        # skips the lock for the common case; this one, taken under the
+        # lock, is what actually prevents two processes from both
+        # publishing.
         if not acquired or is_live(path):
             return SentinelHold(path=path, owned=False)
         token = _new_token()

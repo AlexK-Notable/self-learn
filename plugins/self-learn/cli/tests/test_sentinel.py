@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import sentinel
+from self_learn import cli, sentinel
 
 LINE_RE = re.compile(
     r"pid=\d+ host=\S+ started=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n"
@@ -249,3 +249,53 @@ class TestPublishFailureCleanup:
         cache_root = sentinel.sentinel_path().parent
         leftover = list(cache_root.glob("*.tmp")) if cache_root.exists() else []
         assert leftover == []
+
+
+class TestCliSentinelHoldAction:
+    def test_hold_action_reports_lock_contention_distinctly(
+        self, monkeypatch, capsys
+    ):
+        """gate r2 nit: the lock-contended branch in
+        cli._cmd_sentinel('hold') (~:2277-2284, added by fold r1) was
+        untested -- the gate collapsed the branch and 70 tests stayed
+        green regardless. Force a genuine LOCK_EX contention (held
+        externally via a second, independent open()+flock() on the same
+        lock path -- the same technique as TestLockDiagnostics above,
+        since flock is per-open-file-description, not per process) so
+        hold() answers owned=False with is_live(path) ALSO False -- the
+        only way to reach the "lock contended" branch rather than the
+        "already held (live)" one.
+
+        sentinel._LOCK_TIMEOUT_SECONDS is bound as a DEFAULT ARGUMENT on
+        _lock_section, so patching the module constant after import would
+        NOT shorten hold()'s real ~5s wait (default arguments are
+        evaluated once, at def time, not re-read from the module on every
+        call). Monkeypatch _lock_section itself instead: hold() looks the
+        name up in the module's globals at CALL time, so this does take
+        effect. The replacement still calls the real implementation (the
+        genuine flock contention and its own stderr diagnostic still fire
+        for real), just with a short timeout regardless of what the
+        caller passes."""
+        path = sentinel.sentinel_path()
+        lock_path = sentinel._lock_path(path)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        real_lock_section = sentinel._lock_section
+
+        def fast_lock_section(p, timeout=0.05):
+            return real_lock_section(p, timeout=0.05)
+
+        monkeypatch.setattr(sentinel, "_lock_section", fast_lock_section)
+
+        holder = open(lock_path, "a+", encoding="utf-8")
+        try:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+            rc = cli._cmd_sentinel("hold")
+        finally:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+            holder.close()
+
+        assert rc == cli.EXIT_OK
+        captured = capsys.readouterr()
+        assert "lock contended, not held" in captured.out
+        assert "already held (live)" not in captured.out
+        assert "lock timeout" in captured.err
