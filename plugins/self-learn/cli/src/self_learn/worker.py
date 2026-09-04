@@ -667,18 +667,60 @@ def compose_record_block(
     )
 
 
-def cache_dir() -> Path:
+def cache_dir(home: Path | str | None = None) -> Path:
     """Per-ledger-home cache namespace (doc 13 §6, H-4):
     ``${XDG_CACHE_HOME:-~/.cache}/self-learn/home-<sha256(home)[:8]>/`` —
-    a future second home (06's team ledger) is a config away. Resolves
-    the home itself via :func:`ledger.resolve_home` (cheap env read).
+    a future second home (06's team ledger) is a config away. ``home``
+    defaults to :func:`ledger.resolve_home` (cheap env read) when
+    omitted, so every existing bare call is unchanged (M-P, sprint 1
+    audit A14/A13: a caller that already holds an explicit ``home`` can
+    now pass it through instead of this namespace silently tracking the
+    ambient ``SELF_LEARN_HOME`` even when it differs from that home).
 
     Migration shim from the OLD un-namespaced path
     (``…/claude-skills/self-learn`` — the name embeds the host the cache
-    no longer belongs to): see :func:`_migrate_cache`."""
+    no longer belongs to): see :func:`_migrate_cache`.
+
+    M-P fold r1 (F3): an explicit ``home`` is ``.expanduser()``'d before
+    hashing, the same normalization :func:`ledger.resolve_home` already
+    applies to the ambient path -- otherwise ``cache_dir(Path("~/x"))``
+    and ``cache_dir(Path.home() / "x")`` (the SAME directory) hashed to
+    two different namespaces.
+
+    M-P fold r1 (F2), restated in fold r2 (M1: names/call-shapes, not
+    line numbers, which rot; N2: the actual rule, not the old
+    approximation of it) -- six call sites stay DELIBERATELY bare (call
+    this with no ``home``): :func:`kick`'s and :func:`run`'s own
+    ``cache_dir().mkdir(parents=True, exist_ok=True)`` prologues, and
+    four operator-facing message strings shaped
+    ``f"... see the event log in {cache_dir()}"`` (two inside
+    :func:`kick`/:func:`run` in this module, two inside
+    :mod:`miner`'s ``_invoke_reader``).
+
+    The rule is NOT "an intra-function split is worse than
+    consistent-bare" -- fold r1's F1 fix deliberately makes exactly that
+    split inside :func:`miner.maybe_kick` (its heartbeat check now
+    threads `home` while the SAME function's ``miner_dir()``-backed
+    staleness/lock checks stay bare), and that fix is correct. The real
+    rule: pair each READ with its WRITER -- thread `home` wherever the
+    writer that produced the file already did, and leave a function
+    uniformly bare only when its OWN file namespace is itself bare by
+    design. Applied here: :func:`_p` is itself confirmed bare (no
+    ``home`` parameter at all) and is the writer for every
+    lock/log/stage/window file `kick`/`run` touch -- threading
+    ``cache_dir`` alone at the prologue would pair that ONE read with a
+    DIFFERENT (home-namespaced) writer than every ``_p(...)`` call
+    beside it, which already agrees with ITS bare writer. The four
+    message strings must name the directory :mod:`invocation_sdk.events`
+    actually wrote its event log to, and that module's own event-log
+    path helpers are themselves confirmed bare, by design (see their
+    docstrings) -- so threading `home` into just the STRING would point
+    the operator at a directory the event log was never actually written
+    under: the same pair-with-the-writer rule, applied the other way."""
     cache = os.environ.get("XDG_CACHE_HOME")
     base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
-    digest = hashlib.sha256(str(resolve_home()).encode("utf-8")).hexdigest()[:8]
+    resolved_home = Path(home).expanduser() if home is not None else resolve_home()
+    digest = hashlib.sha256(str(resolved_home).encode("utf-8")).hexdigest()[:8]
     new = base / "self-learn" / f"home-{digest}"
     new.mkdir(parents=True, exist_ok=True)
     _migrate_cache(base / "claude-skills" / "self-learn", new)
@@ -3266,7 +3308,7 @@ def render_notification(n: int, buckets: list[str], total: int, scopes: int) -> 
     )
 
 
-def _notifications_suppressed() -> bool:
+def _notifications_suppressed(home: Path | str | None = None) -> bool:
     """True iff ``SELF_LEARN_NO_NOTIFY=1`` — the EXPLICIT kill switch for
     BOTH notify transports (:func:`_notify`, :func:`_notify_with_ids`).
 
@@ -3293,10 +3335,19 @@ def _notifications_suppressed() -> bool:
     U-settings Phase 1: resolves through the registry's ``worker.
     no_notify`` entry (config.yaml `worker.no_notify` > env > `False` --
     U-flip 2026-09-01, S-58: config wins) rather than reading the env
-    var directly — the two callers below (neither of which threads a
-    `home`) keep working unchanged since neither writes a config.yaml;
-    :func:`resolve_home` supplies the home for the config.yaml rung."""
-    value, _source = settings.resolve_setting(resolve_home(), settings.by_name("worker.no_notify"))
+    var directly. ``home`` defaults to :func:`resolve_home` when omitted
+    (M-P, sprint 1 audit A14/A13) — the two callers below still call
+    this bare (neither threads a `home`; neither writes a config.yaml),
+    so their behaviour is unchanged; a future caller that DOES hold an
+    explicit `home` can now pass it through instead of racing the
+    ambient `SELF_LEARN_HOME`.
+
+    M-P fold r1 (F3): an explicit `home` is `.expanduser()`'d before use,
+    matching :func:`resolve_home`'s own normalization -- `config_path`
+    never expands `~` on its own, so an unexpanded `home` would silently
+    miss `config.yaml` entirely."""
+    resolved_home = Path(home).expanduser() if home is not None else resolve_home()
+    value, _source = settings.resolve_setting(resolved_home, settings.by_name("worker.no_notify"))
     return bool(value)
 
 

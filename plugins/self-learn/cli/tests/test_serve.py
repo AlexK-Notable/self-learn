@@ -311,7 +311,11 @@ def test_hp6_fresh_heartbeat_pokes_and_spawns_nothing(monkeypatch, tmp_path):
         AssertionError("Popen must not be called when serve pokes")
     ))
     home = tmp_path / "home"
-    cache_dir = worker.cache_dir()
+    # M-P fold r1 (F1): `maybe_kick`'s heartbeat read now threads `home`
+    # (previously bare/ambient) -- the heartbeat this test writes must
+    # therefore live under THIS `home`'s own cache_dir, matching what
+    # `maybe_kick(home)` now actually checks.
+    cache_dir = worker.cache_dir(home)
     serve.write_heartbeat(cache_dir, pid=os.getpid(), next_job="idle", tick_secs=60.0)
 
     result = miner.maybe_kick(home)
