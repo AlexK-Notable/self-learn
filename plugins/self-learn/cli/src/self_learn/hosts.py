@@ -57,7 +57,6 @@ import io
 import os
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 
 from ruamel.yaml import YAML
@@ -65,6 +64,7 @@ from ruamel.yaml.error import YAMLError
 
 from . import config as _config
 from . import gitops
+from .primitives import chrono, yamlio
 
 __all__ = [
     "HOST_KINDS",
@@ -202,9 +202,7 @@ def host_marker_path(path: Path | str) -> Path:
 
 
 def _yaml() -> YAML:
-    y = YAML(typ="rt")
-    y.default_flow_style = False
-    return y
+    return yamlio.rt_yaml(default_flow_style=False)
 
 
 def _parse_mode(path: Path, where: str, raw: object) -> str:
@@ -590,7 +588,7 @@ def validate_host_path(
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return chrono.now_iso()
 
 
 def _write_host_marker(home: Path, target: Path) -> Path:

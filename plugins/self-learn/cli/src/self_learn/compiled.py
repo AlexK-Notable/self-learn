@@ -49,13 +49,13 @@ from __future__ import annotations
 
 import hashlib
 import io
-from datetime import datetime, timezone
 from pathlib import Path
 
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from .compilers import BEGIN_MARKER, END_MARKER, POINTER_BEGIN_MARKER, POINTER_END_MARKER
+from .primitives import chrono, yamlio
 
 __all__ = [
     "REGION_KINDS",
@@ -139,9 +139,7 @@ def compiled_record_path(home: Path | str, slug: str) -> Path:
 
 
 def _yaml() -> YAML:
-    y = YAML(typ="rt")
-    y.default_flow_style = False
-    return y
+    return yamlio.rt_yaml(default_flow_style=False)
 
 
 def sha256_hex(data: bytes) -> str:
@@ -149,7 +147,7 @@ def sha256_hex(data: bytes) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return chrono.now_iso()
 
 
 def region_bytes(text: str, kind: str) -> bytes | None:

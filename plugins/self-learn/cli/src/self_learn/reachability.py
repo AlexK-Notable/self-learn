@@ -41,6 +41,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import domain
 from .compilers import has_paths_key, read_paths_frontmatter
 from .hosts import HostsError, load_hosts
 from .ledger import Bucket, discover_buckets
@@ -693,7 +694,7 @@ def reachability_rows(
             except (RecordError, UnicodeDecodeError):
                 unparseable += 1
                 continue
-            if record.status != "routed" or record.superseded_by is not None:
+            if not domain.is_canon_live(record):
                 continue
             routing = record.routing or {}
             destination = routing.get("destination")

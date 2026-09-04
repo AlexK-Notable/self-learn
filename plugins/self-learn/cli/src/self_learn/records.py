@@ -34,11 +34,12 @@ import copy
 import io
 import re
 import secrets
-from datetime import datetime, timezone
 from pathlib import Path
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
+
+from .primitives import chrono, text, yamlio
 
 __all__ = [
     "GENERALITIES",
@@ -85,7 +86,7 @@ OPTIONAL_SECTIONS = {
     "knowledge": ("Context", "Episode brief"),
 }
 
-_HEADING_RE = re.compile(r"^## +(.+?)\s*$", re.MULTILINE)
+_HEADING_RE = text.HEADING_RE
 _DELIM = "---"
 
 
@@ -146,20 +147,11 @@ def _make_yaml() -> YAML:
     """Round-trip YAML configured for byte-identical re-emission of the
     02 §1 example: preserve quotes/comments, 2-space sequence-item indent,
     explicit ``null`` for None, no line wrapping."""
-    yaml = YAML(typ="rt")
-    yaml.preserve_quotes = True
-    yaml.width = 4096
-    yaml.indent(mapping=2, sequence=4, offset=2)
-
-    def _represent_none(representer, _data):
-        return representer.represent_scalar("tag:yaml.org,2002:null", "null")
-
-    yaml.representer.add_representer(type(None), _represent_none)
-    return yaml
+    return yamlio.rt_yaml(preserve_quotes=True, width=4096, sequence_indent=(2, 4, 2))
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return chrono.now_iso()
 
 
 def _is_record_id(value: object) -> bool:

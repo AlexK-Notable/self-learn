@@ -58,7 +58,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
-from . import invocation, sentinel, settings, telemetry
+from . import domain, invocation, sentinel, settings, telemetry
+from .primitives import chrono, truncate
 from .compilers import BEGIN_MARKER, END_MARKER
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
 from .hosts import Hosts, HostsError, ancestors_of, load_hosts, skill_dir_for, unregistered_ancestor_dirs
@@ -801,7 +802,7 @@ def _p(name: str) -> Path:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return chrono.now_iso()
 
 
 def _log_to(path: Path, message: str) -> None:
@@ -823,20 +824,11 @@ def log(message: str) -> None:
 
 
 def _truncate_oldest(path: Path, cap: int) -> None:
-    try:
-        if path.stat().st_size <= cap:
-            return
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-        keep: list[str] = []
-        size = 0
-        for line in reversed(lines):
-            size += len(line.encode("utf-8"))
-            if size > cap:
-                break
-            keep.append(line)
-        path.write_text("".join(reversed(keep)), encoding="utf-8")
-    except OSError:
-        pass
+    """Facade over :func:`self_learn.primitives.truncate.truncate_oldest`
+    -- kept as its own name/def (never inlined or renamed):
+    ``tests/test_lock_invariant.py`` enumerates ``worker._truncate_oldest``
+    by name in its ``NOT_REPO_TRUTH`` exemption table (M-J, plan v2 SS2)."""
+    truncate.truncate_oldest(path, cap)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -3434,16 +3426,16 @@ def _notify_with_ids(message: str, ids: list[str]) -> None:
 
 
 def _oldest_pending_days(home: Path) -> int:
+    # M-B: full-timestamp floor via domain.record_age_days — the old
+    # ``str(created_at)[:10]`` truncation dropped the record's real
+    # time-of-day before subtracting, which is exactly the A1 divergence
+    # from ``list --json``/``status --json``'s ages (both already used the
+    # full timestamp).
     oldest = 0
     now = datetime.now(timezone.utc)
     for bucket in discover_buckets(home):
         for entry in queue(bucket):
-            created = str(entry.record.created_at)[:10]
-            try:
-                then = datetime.fromisoformat(created).replace(tzinfo=timezone.utc)
-            except ValueError:
-                continue
-            oldest = max(oldest, (now - then).days)
+            oldest = max(oldest, domain.record_age_days(entry.record, now))
     return oldest
 
 
@@ -3486,7 +3478,7 @@ def last_run_iso() -> str | None:
     except FileNotFoundError:
         return None
     return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
+        chrono.ISO_FORMAT
     )
 
 
@@ -3529,26 +3521,18 @@ def fast_status(home: Path | str) -> dict:
                 continue
             if not isinstance(fm, dict):
                 continue
-            until = fm.get("deferred_until")
-            if until is not None:
-                try:
-                    until_d = datetime.fromisoformat(str(until)[:10]).replace(
-                        tzinfo=timezone.utc
-                    )
-                    if until_d > now:
-                        continue  # hidden — same rule as the queue
-                except ValueError:
-                    pass
+            # M-B: domain.is_queued is THE membership rule (mapping form —
+            # this scan never loads a full Record) — a lapsed deferral
+            # (``deferred_until`` in the past) is queued, same as
+            # ``list``/``status`` already compute via ``ledger_ops.queue``.
+            if not domain.is_queued(fm, now):
+                continue  # hidden or non-draft — same rule as the queue
             pending += 1
-            created = str(fm.get("created_at", ""))[:10]
-            try:
-                age = (
-                    now
-                    - datetime.fromisoformat(created).replace(tzinfo=timezone.utc)
-                ).days
-                oldest = age if oldest is None else max(oldest, age)
-            except ValueError:
-                age = None
+            # Full-timestamp floor (domain.record_age_days) — the old
+            # ``str(created_at)[:10]`` truncation here was the A1
+            # divergence from ``list --json``/``status --json``'s ages.
+            age = domain.record_age_days(fm, now)
+            oldest = age if oldest is None else max(oldest, age)
             body = "\n".join(lines[close + 1 :])
             ppath = bucket.path / "proposals" / f"{fm.get('id')}.yaml"
             fresh = False

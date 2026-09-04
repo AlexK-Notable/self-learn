@@ -31,11 +31,12 @@ place this is decided.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import self_learn.domain as sl_domain
+import self_learn.primitives.text as sl_text
 from self_learn import sentinel as sl_sentinel
 from self_learn import worker as sl_worker
 from self_learn.records import Record
@@ -617,9 +618,15 @@ def _bare_scope(scope: object) -> str:
 def _is_deferred(deferred_until: str | None, now: datetime) -> bool:
     """Deferred membership per 02 §2: ``deferred_until`` is in the FUTURE
     relative to ``now`` (a past date means deferral has lapsed — the
-    record resurfaces, and ``deferred_until`` may still be populated)."""
-    dt = _parse_dt(deferred_until)
-    return dt is not None and dt > now
+    record resurfaces, and ``deferred_until`` may still be populated).
+
+    M-B: delegates to ``self_learn.domain.is_queued`` (the CLI's single
+    queue-membership predicate) instead of re-deriving the comparison —
+    a status of ``"pending"`` is a safe stand-in here (any DRAFT status
+    clears ``is_queued``'s status gate identically; this call site only
+    ever cares about the deferral half). Signature unchanged so every
+    caller (and ``test_models_bucket``/``test_models_front``) stays put."""
+    return not sl_domain.is_queued({"status": "pending", "deferred_until": deferred_until}, now)
 
 
 def host_add_command(scope: str, project_path: str | None) -> str | None:
@@ -1598,10 +1605,10 @@ class DetailModel:
     host_add_command: str | None
 
 
-#: Local heading matcher — mirrors records.py's private ``_HEADING_RE``
-#: (not exported; the model builder owns section EXTRACTION the same way
-#: compilers.py's ``_body_sections`` does for the CLI package, 02 §1).
-_HEADING_RE = re.compile(r"^## +(.+?)\s*$", re.MULTILINE)
+#: The one heading matcher (M-J, plan v2 §2) -- was a local mirror of
+#: records.py's private ``_HEADING_RE``; now the same compiled pattern
+#: both packages share (``self_learn.primitives.text.HEADING_RE``).
+_HEADING_RE = sl_text.HEADING_RE
 
 
 def _split_episode_brief(body: str) -> tuple[str, str | None]:

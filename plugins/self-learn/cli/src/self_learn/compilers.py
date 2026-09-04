@@ -123,6 +123,8 @@ from typing import Iterable, Sequence
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
+from . import domain
+from .primitives import chrono, text
 from .records import Record
 
 __all__ = [
@@ -180,7 +182,12 @@ _LEARNINGS_HEADER = (
     "verbs (U-verbs S-54), never hand-edited in place.\n"
 )
 
-_HEADING_RE = re.compile(r"^## +(.+?)\s*$", re.MULTILINE)
+#: Aliases the shared pattern (Sprint 1 M-J fold r1, plan v2 §2 --
+#: missed in the original M-J commit; records.py/ledger_ops.py/UI
+#: models.py already aliased it). Text and flags are byte-identical
+#: to what this module compiled inline before, so this changes
+#: nothing about ``_body_sections``'s behavior.
+_HEADING_RE = text.HEADING_RE
 
 
 class CompileError(Exception):
@@ -267,14 +274,15 @@ def entry_line(record: Record) -> str:
 
 def _iso(value: object) -> str:
     if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return value.strftime(chrono.ISO_FORMAT)
     return str(value)
 
 
 def _eligible(records: Iterable[Record]) -> list[Record]:
     """Filter to compiling records and apply the pinned deterministic order:
-    (routing.routed_at, id)."""
-    kept = [r for r in records if r.status == "routed" and r.superseded_by is None]
+    (routing.routed_at, id). M-B: the filter IS ``domain.is_canon_live`` —
+    routed AND not superseded, never a second inline definition."""
+    kept = [r for r in records if domain.is_canon_live(r)]
     kept.sort(key=lambda r: (_iso((r.routing or {}).get("routed_at") or ""), r.id))
     return kept
 

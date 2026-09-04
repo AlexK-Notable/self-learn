@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import cast
 
 from . import gitops, invocation, sentinel, settings, telemetry, worker
+from .primitives import chrono
 from . import reconcile as reconcile_mod
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
 from .hosts import load_hosts
@@ -153,7 +154,7 @@ def journal_path() -> Path:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return chrono.now_iso()
 
 
 def log(message: str) -> None:
@@ -227,7 +228,7 @@ def last_run_iso() -> str | None:
     except FileNotFoundError:
         return None
     return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
+        chrono.ISO_FORMAT
     )
 
 
@@ -244,7 +245,7 @@ def last_attempt_iso() -> str | None:
     except FileNotFoundError:
         return None
     return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
+        chrono.ISO_FORMAT
     )
 
 

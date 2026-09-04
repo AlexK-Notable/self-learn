@@ -64,7 +64,6 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from datetime import datetime, timezone
 from typing import Any
 
 from pathlib import Path
@@ -73,6 +72,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from . import analyst, gitops, telemetry, verbs
+from .primitives import chrono
 from .compilers import CompileError
 from .gitops import EXIT_GIT_FAILED as _EXIT_GIT_FAILED
 from .gitops import EXIT_HALF_WRITTEN as _EXIT_HALF_WRITTEN
@@ -259,7 +259,7 @@ def _clean(value: str | None) -> str | None:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return chrono.now_iso()
 
 
 def _project_path() -> Path:

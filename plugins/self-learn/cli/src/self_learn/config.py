@@ -50,6 +50,8 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 from ruamel.yaml.error import YAMLError
 
+from .primitives import yamlio
+
 __all__ = [
     "CONFIG_BASENAME",
     "PROVIDER_KEYS",
@@ -464,9 +466,7 @@ class ConfigWriteError(Exception):
 
 
 def _rt_yaml() -> YAML:
-    y = YAML(typ="rt")
-    y.default_flow_style = False
-    return y
+    return yamlio.rt_yaml(default_flow_style=False)
 
 
 def load_editable(home: Path | str) -> CommentedMap:

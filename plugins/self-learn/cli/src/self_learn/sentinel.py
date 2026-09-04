@@ -118,6 +118,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from .primitives import chrono
+
 __all__ = [
     "SENTINEL_TTL_SECONDS",
     "SentinelHold",
@@ -167,7 +169,7 @@ def sentinel_line(now: datetime | None = None) -> str:
     UI test that builds a raw file straight from it) keeps working
     unmodified."""
     now = now if now is not None else datetime.now(timezone.utc)
-    started = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    started = now.strftime(chrono.ISO_FORMAT)
     return f"pid={os.getpid()} host={socket.gethostname()} started={started}\n"
 
 

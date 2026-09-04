@@ -29,6 +29,7 @@ from pathlib import Path
 
 from ruamel.yaml.error import YAMLError
 
+from . import domain
 from . import gitops
 from .compilers import _iso, compile_managed_text
 from .hosts import HostsError, load_hosts
@@ -73,6 +74,13 @@ _PROJECT_BUCKET_DIGEST_RE = re.compile(r"-([0-9a-f]{8})$")
 
 
 def _days_since(value, today: date) -> int | None:
+    """DATE-granularity age (deferred_until/resolution-commit dates carry
+    no time-of-day to lose — unlike ``created_at``, so this is NOT the A1
+    class and stays date-only, never routed through
+    ``domain.record_age_days``). ``toordinal()`` subtraction, not
+    ``.days`` on a timedelta, so the M-B ``.days``-after-subtraction scan
+    (positive control: any NEW ``).days`` hit fails it) reads TRUE ZERO
+    live hits rather than needing this site on an allow-list."""
     if value is None:
         return None
     text = str(value)[:10]
@@ -80,7 +88,7 @@ def _days_since(value, today: date) -> int | None:
         then = date.fromisoformat(text)
     except ValueError:
         return None
-    return (today - then).days
+    return today.toordinal() - then.toordinal()
 
 
 def _walk_records(home: Path):
@@ -165,24 +173,29 @@ def ledger_metrics(home: Path | str, *, today: date | None = None) -> dict:
       date for reject/graduate/supersede). None when nothing resolved —
       no data is "n/a", never a confident zero.
     - ``pending_over_30d_pct`` / ``pending_total``: queue health — % of
-      status-pending records older than 30 days (the ha-note failure
-      signature was 100%; sustained >50% means P3–P5 failed).
+      QUEUED records (M-B: ``domain.is_queued`` — a lapsed deferral counts,
+      never the literal ``status == "pending"`` string, which used to
+      undercount an expired-but-still-``deferred`` record against every
+      other surface's queue count) older than 30 days (the ha-note
+      failure signature was 100%; sustained >50% means P3–P5 failed).
     - ``routed_and_corrected``: routed lessons later CORRECTIVELY
       superseded — excludes ``superseded_by: canon`` graduations, which
       are successes (04; blind adjudication 2026-07-12).
     """
     home = Path(home)
-    today = today if today is not None else datetime.now(timezone.utc).date()
+    # M-B: ONE clock for membership+age (domain.is_queued/record_age_days)
+    # — ``today`` stays date-granularity for the git-derived resolution
+    # dates below, which are themselves date-only.
+    now = datetime.now(timezone.utc)
+    today = today if today is not None else now.date()
     resolution_dates: dict[str, str] | None = None  # lazy: git only if needed
 
     triage_days: list[int] = []
     pending_ages: list[int] = []
     corrected = 0
     for record in _walk_records(home):
-        if record.status == "pending":
-            age = _days_since(record.created_at, today)
-            if age is not None:
-                pending_ages.append(age)
+        if domain.is_queued(record, now):
+            pending_ages.append(domain.record_age_days(record, now))
             continue
         if record.routing is not None and record.superseded_by is not None:
             if record.superseded_by != "canon":
@@ -372,7 +385,7 @@ def _reference_shelf(
                     record = Record.from_path(path)
                 except (RecordError, OSError, UnicodeDecodeError, YAMLError):
                     continue
-                if record.status != "routed" or record.superseded_by is not None:
+                if not domain.is_canon_live(record):
                     continue  # §6.2-4: LIVE reference-routed records only
                 routing = record.routing or {}
                 if routing.get("destination") != "reference":
@@ -1352,7 +1365,7 @@ def _growth_signal(home: Path, today: date, budget: dict, composition: dict) -> 
     desc_words_sum = 0
     any_skill_unreadable = False
     for record in _walk_records(home):
-        if record.status != "routed" or record.superseded_by is not None:
+        if not domain.is_canon_live(record):
             continue
         routing = record.routing or {}
         if routing.get("destination") != "new-skill":
@@ -1817,7 +1830,7 @@ def gather(
                         mined[record.status] += 1
                 if record.routing is not None:
                     routed_ever += 1
-                if record.status == "routed":
+                if domain.is_canon_live(record):
                     destinations[(record.routing or {}).get("destination")] += 1
                     routed_live.append(
                         {
