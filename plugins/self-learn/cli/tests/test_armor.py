@@ -293,7 +293,22 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         nodes=85, dump_sha="6bd9c4787b4d5a2f2887548228694edf88d76f82596ce4f4c2ed9d2598e1730d"
     ),
     "test_attrib.py": Behaviour(
-        nodes=68, dump_sha="124dcc0dd69f9868195289eed661c5ad3d7d6569dc0fe41558d5fd54e8825c0d"
+        nodes=68, dump_sha="124dcc0dd69f9868195289eed661c5ad3d7d6569dc0fe41558d5fd54e8825c0d",
+        edited={
+            "func:test_in8_interrupted_install_is_recovered_not_stalled_forever": (
+                "2026-09-04 Sprint 1 integration, PLAN-remediation v2 §2 (M-E, M-T), "
+                "commit 9e51b83: part (e)'s `os.replace` fake is scoped to the "
+                "install copy (destination under the proposals dir) instead of "
+                "every rename in the process. The global fake was surgical only "
+                "while the install copy was the sole rename on worker.run's path; "
+                "the sprint's two new atomic writes (M-T's pid window, M-E's "
+                "sentinel publish) tripped it first and run() never reached the "
+                "copy the part simulates crashing. The behaviour under test -- "
+                "temp written, destination untouched, next run sweeps and "
+                "installs -- is unchanged; controls: unscoped fake fails via "
+                "sentinel.py, fake removed fails the pre-install asserts."
+            ),
+        },
     ),
     "test_route_cli.py": Behaviour(
         nodes=58, dump_sha="5bb83e2da3fe5e85d8e1c261e316c20f7116de4530d34d993a86902caba21f48"
@@ -835,14 +850,17 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=1,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-09-01, transcribed at ANCHOR 2d7db74 from this module's own "
-            "STALE refusal (U-browserfail landing): 2 -> 0. The two "
-            "test_repair.py `edited` doors U-settings (0aadcd1, S-58 M-3) "
-            "opened became VACUOUS once that landing was at or behind the "
-            "anchor, and were dropped with this transcription."
+            "2026-09-04, transcribed at ANCHOR 1f8d485 from this module's own "
+            "STALE refusal (Sprint 1 integration, commit 9e51b83): 0 -> 1. "
+            "test_attrib.py's `func:test_in8_...` is genuinely edited relative "
+            "to the anchor (part (e)'s rename fake scoped to the install copy, "
+            "PLAN-remediation v2 §2 M-E/M-T) and carries its dated `edited` "
+            "door in ARMOR above. Previous value 0 (2026-09-01, U-browserfail "
+            "landing at ANCHOR 2d7db74: the two test_repair.py doors had gone "
+            "VACUOUS)."
         ),
         measure=_measure_census_edited,
     ),
