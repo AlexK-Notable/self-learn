@@ -210,8 +210,13 @@ def transcripts_root(home: Path | str | None = None) -> Path:
     threads a `home`, so this still falls back to :func:`resolve_home`
     when `home` is omitted, the same way :func:`telemetry.actor` does
     (M-P, sprint 1 audit A14/A13 -- the optional `home` closes the gap
-    for a future caller that DOES hold one)."""
-    resolved_home = home if home is not None else resolve_home()
+    for a future caller that DOES hold one).
+
+    M-P fold r1 (F3): an explicit `home` is `.expanduser()`'d before use,
+    matching :func:`resolve_home`'s own normalization -- `config_path`
+    never expands `~` on its own, so an unexpanded `home` would silently
+    miss `config.yaml` entirely."""
+    resolved_home = Path(home).expanduser() if home is not None else resolve_home()
     raw, _source = settings.resolve_setting(resolved_home, settings.by_name("miner.transcripts_dir"))
     return Path(cast(str, raw)).expanduser()
 
@@ -257,8 +262,13 @@ def miner_enabled(home: Path | str | None = None) -> bool:
     :func:`stale` (M-P, sprint 1 audit A14/A13 -- the inline check there
     had no standalone name, so nothing could ever thread an explicit
     `home` through it); `home` defaults to :func:`resolve_home` when
-    omitted, so :func:`stale`'s existing bare call is unchanged."""
-    resolved_home = home if home is not None else resolve_home()
+    omitted, so :func:`stale`'s existing bare call is unchanged.
+
+    M-P fold r1 (F3): an explicit `home` is `.expanduser()`'d before use,
+    matching :func:`resolve_home`'s own normalization -- `config_path`
+    never expands `~` on its own, so an unexpanded `home` would silently
+    miss `config.yaml` entirely."""
+    resolved_home = Path(home).expanduser() if home is not None else resolve_home()
     enabled, _source = settings.resolve_setting(resolved_home, settings.by_name("miner.enabled"))
     return bool(enabled)
 
@@ -1832,8 +1842,8 @@ def maybe_kick(home: Path | str, *, no_push: bool = False) -> str:
             # before.
             from . import serve as serve_mod
 
-            if serve_mod.heartbeat_is_fresh(worker.cache_dir()):
-                serve_mod.request_poke(worker.cache_dir())
+            if serve_mod.heartbeat_is_fresh(worker.cache_dir(home)):
+                serve_mod.request_poke(worker.cache_dir(home))
                 return "poked"
             pid = _spawn_run(Path(home), no_push=no_push)
             log(f"watchdog: last run >24h — spawned run (pid {pid})")

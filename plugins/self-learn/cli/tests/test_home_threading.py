@@ -34,16 +34,34 @@ were VERIFIED against this move's defect class and found already
 correct — no code change and no new test for either here; existing
 coverage (`test_settings.py::test_worker_autokick_disabled_reads_
 config`) already exercises the former.
+
+M-P fold r1 (blind code-gate, CLEAN + 3 Minors + 1 Nit): F1 --
+`miner.maybe_kick`'s two heartbeat reads (`heartbeat_is_fresh`/
+`request_poke`) were the same defect on the READ side of `run_forever`'s
+WRITE fix, and now thread their own `home` too (`maybe_kick` already
+holds one); `test_maybe_kick_fold_r1_f1_hostile_ambient_sees_homes_own_
+heartbeat` covers it. F3 -- `cache_dir`/`transcripts_root`/
+`miner_enabled`/`_notifications_suppressed` all now `.expanduser()` an
+explicit `home` before using it, matching `resolve_home()`'s own
+normalization (`config_path` never expands `~` on its own, so an
+unexpanded `home` silently missed `config.yaml`);
+`test_cache_dir_fold_r1_f3_an_unexpanded_home_hashes_the_same_as_its_
+expansion` covers `cache_dir`, the one of the four that derives a path
+(a hash) from `home` directly in its own body. F2's rationale for the
+sites that stay deliberately bare now lives in `worker.cache_dir`'s own
+docstring, not just this file's report. N1 dropped a stale `noqa: F401`
+on an import that IS used.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 from self_learn import miner, serve, worker
 
-from test_settings import _write_config  # noqa: F401 -- imported by name, suite convention
+from test_settings import _write_config  # imported by name, suite convention
 
 
 # ===================================================================== #
@@ -74,6 +92,20 @@ def test_cache_dir_positive_control_bare_call_uses_the_ambient_home(tmp_path, mo
     resolved = worker.cache_dir()
     digest_b = hashlib.sha256(str(home_b).encode("utf-8")).hexdigest()[:8]
     assert resolved.name == f"home-{digest_b}"
+
+
+def test_cache_dir_fold_r1_f3_an_unexpanded_home_hashes_the_same_as_its_expansion(
+    tmp_path, monkeypatch
+):
+    """F1 fold F3: `cache_dir(Path("~/x"))` and `cache_dir(Path.home() /
+    "x")` name the SAME directory and must hash to the SAME namespace —
+    before this fold, hashing `home` raw (no `.expanduser()`) made the
+    unexpanded spelling collide with a DIFFERENT, wrong namespace."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    monkeypatch.setenv("SELF_LEARN_HOME", str(tmp_path / "home-ambient"))
+    unexpanded = worker.cache_dir(Path("~") / "x")
+    expanded = worker.cache_dir(Path.home() / "x")
+    assert unexpanded == expanded
 
 
 # ===================================================================== #
@@ -188,3 +220,31 @@ def test_run_forever_cache_dir_none_resolves_from_home_not_the_ambient_env(tmp_p
     serve.run_forever(home_a, tick_secs=0.01, max_ticks=1)
     assert captured == [worker.cache_dir(home_a)]
     assert captured[0] != worker.cache_dir()  # the ambient (home_b) cache dir
+
+
+# ===================================================================== #
+# fold r1, F1: miner.maybe_kick's poke-vs-spawn read must match the SAME
+# home run_forever's heartbeat was written under, not ambient
+# ===================================================================== #
+
+
+def test_maybe_kick_fold_r1_f1_hostile_ambient_sees_homes_own_heartbeat(tmp_path, monkeypatch):
+    """A `run_forever(A)`-style heartbeat, written under Home A's own
+    `cache_dir`, must still read FRESH to `maybe_kick(home=A)` even while
+    ambient `SELF_LEARN_HOME` names a different Home B — before this
+    fold, `heartbeat_is_fresh`/`request_poke` inside `maybe_kick` read
+    bare, ambient `worker.cache_dir()` (Home B's cache), so they could
+    never see a heartbeat written under an explicitly-passed Home A that
+    disagreed with ambient, and would spawn a redundant run instead of
+    poking the daemon that is already covering it."""
+    home_a = tmp_path / "home-a"
+    home_b = tmp_path / "home-b"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home_b))
+    monkeypatch.delenv("SELF_LEARN_MINER", raising=False)
+    monkeypatch.setenv("SELF_LEARN_MINER_AUTOKICK", "1")  # conftest default is "0"
+    serve.write_heartbeat(worker.cache_dir(home_a), pid=os.getpid(), next_job="idle")
+    spawned: list[Path] = []
+    monkeypatch.setattr(miner, "_spawn_run", lambda h, **kw: spawned.append(h) or 4242)
+    assert miner.maybe_kick(home_a) == "poked"
+    assert spawned == []  # a fresh heartbeat under A must poke, never spawn

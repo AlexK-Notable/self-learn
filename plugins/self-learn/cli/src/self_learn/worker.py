@@ -679,10 +679,35 @@ def cache_dir(home: Path | str | None = None) -> Path:
 
     Migration shim from the OLD un-namespaced path
     (``…/claude-skills/self-learn`` — the name embeds the host the cache
-    no longer belongs to): see :func:`_migrate_cache`."""
+    no longer belongs to): see :func:`_migrate_cache`.
+
+    M-P fold r1 (F3): an explicit ``home`` is ``.expanduser()``'d before
+    hashing, the same normalization :func:`ledger.resolve_home` already
+    applies to the ambient path -- otherwise ``cache_dir(Path("~/x"))``
+    and ``cache_dir(Path.home() / "x")`` (the SAME directory) hashed to
+    two different namespaces.
+
+    M-P fold r1 (F2): six call sites stay DELIBERATELY bare (call this
+    with no ``home``) rather than threading one, even where the
+    enclosing function holds one -- ``kick``'s and ``run``'s own
+    ``cache_dir().mkdir(...)`` prologues (``worker.py`` ~1209, ~3442)
+    and four operator-facing message strings that name where an event
+    log actually lives (``worker.py`` ~3564, ~3840; ``miner.py`` ~849,
+    ~863). Two reasons, not one style: the two prologues sit beside
+    :func:`_p`, which is itself confirmed bare (no ``home`` parameter at
+    all) and backs every lock/log/stage/window file `kick`/`run` touch
+    -- threading ``cache_dir`` alone at the prologue would make ONE call
+    target a different, home-namespaced directory than every ``_p(...)``
+    call beside it in the SAME function, an intra-function split worse
+    than consistent-bare; the four message strings must literally name
+    the directory ``invocation_sdk/events.py`` really wrote its event
+    log to (that module's own event-log path helpers are themselves
+    confirmed bare, by design -- see their docstrings), so a threaded,
+    home-namespaced path in the STRING would point the operator at a
+    directory the event log was never actually written under."""
     cache = os.environ.get("XDG_CACHE_HOME")
     base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
-    resolved_home = home if home is not None else resolve_home()
+    resolved_home = Path(home).expanduser() if home is not None else resolve_home()
     digest = hashlib.sha256(str(resolved_home).encode("utf-8")).hexdigest()[:8]
     new = base / "self-learn" / f"home-{digest}"
     new.mkdir(parents=True, exist_ok=True)
@@ -3096,8 +3121,13 @@ def _notifications_suppressed(home: Path | str | None = None) -> bool:
     this bare (neither threads a `home`; neither writes a config.yaml),
     so their behaviour is unchanged; a future caller that DOES hold an
     explicit `home` can now pass it through instead of racing the
-    ambient `SELF_LEARN_HOME`."""
-    resolved_home = home if home is not None else resolve_home()
+    ambient `SELF_LEARN_HOME`.
+
+    M-P fold r1 (F3): an explicit `home` is `.expanduser()`'d before use,
+    matching :func:`resolve_home`'s own normalization -- `config_path`
+    never expands `~` on its own, so an unexpanded `home` would silently
+    miss `config.yaml` entirely."""
+    resolved_home = Path(home).expanduser() if home is not None else resolve_home()
     value, _source = settings.resolve_setting(resolved_home, settings.by_name("worker.no_notify"))
     return bool(value)
 

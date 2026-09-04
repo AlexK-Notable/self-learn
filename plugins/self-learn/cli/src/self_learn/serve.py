@@ -577,7 +577,20 @@ def run_forever(
     daemon's own housekeeping files (`serve.heartbeat`/`serve.poke`/
     `serve.schedule`) must land under the home it is actually serving,
     not whatever `SELF_LEARN_HOME` happens to be set to in this
-    process's environment when the two disagree."""
+    process's environment when the two disagree.
+
+    M-P fold r1: `miner.maybe_kick`'s two heartbeat reads
+    (`heartbeat_is_fresh`/`request_poke`) were the same defect on the
+    READ side and now thread THEIR OWN `home` too (`maybe_kick` already
+    holds one). One ambient reader remains, deliberately: `provider.
+    preflight`'s `serve` doctor row (`_serve_row`) calls `cache_dir_
+    readonly()` bare -- `_serve_row` takes no `home` param, and adding
+    one would change `preflight`'s signature in `provider.py`, another
+    lane's file. So a `run_forever(A)`/`maybe_kick(A)` pair with
+    `SELF_LEARN_HOME=B` writes and reads its own heartbeat consistently
+    under A, but `self-learn doctor`'s serve row still reads B's
+    `cache_dir_readonly()`/`read_heartbeat()` -- a documented, accepted
+    residual, not a regression."""
     home = Path(home)
     cd = cache_dir if cache_dir is not None else worker.cache_dir(home)
     secs = tick_secs if tick_secs is not None else tick_secs_from_env(home=home)
