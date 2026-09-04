@@ -515,15 +515,27 @@ class TestSurfaceBudgets:
         [
             ("not-instrumented", "UNKNOWN"),
             ("none-enumerable", "UNKNOWN"),
-            ("no-reads-observed", "never"),
+            # cross-lane M-A fold: `no-reads-observed` RETIRED from the
+            # CLI's own `REFERENCE_READ_RATE_STATES` (report.py),
+            # `never-observed` ADDED — a distinct state (see
+            # `TestNeverObservedReferenceRow` below for the wording
+            # itself; this table just checks EVERY state routes to a
+            # row that renders — the "row rendered" positive control IS
+            # the successful `by_dest["reference"]` lookup below: a
+            # state that fell through to no row at all would KeyError
+            # here, not silently pass).
+            ("never-observed", "UNKNOWN"),
             ("partly-cold", "never"),
+            ("ok", "read at least once"),
         ],
     )
     def test_reference_row_text_by_state(self, state, expect_word):
         fill = {
             "reference": {
                 "read_rate_state": state,
-                "safe_overflow": None if "instrument" in state or "enumerable" in state else False,
+                "safe_overflow": (
+                    None if state in ("not-instrumented", "none-enumerable", "never-observed") else True
+                ),
                 "why": "x", "targets_zero_read": 1, "targets_total": 2,
                 "reads_30d_total": 0,
             },
@@ -531,6 +543,53 @@ class TestSurfaceBudgets:
         model = _build(_item(surface_fill=fill), scope="skill")
         by_dest = {b.destination: b for b in model.why.budgets}
         assert expect_word in by_dest["reference"].text
+
+
+class TestNeverObservedReferenceRow:
+    """Cross-lane M-A fold (UI half): the CLI's OWN
+    `REFERENCE_READ_RATE_STATES` (report.py) changed —
+    `no-reads-observed` retired, `never-observed` added. `never-observed`
+    means the read hook IS registered (unlike `not-instrumented`/
+    `none-enumerable`) but has never observed a read for this target
+    yet — it needs its OWN sentence, distinct from the shared "(not
+    instrumented)" one those two share, which would be FALSE here."""
+
+    def test_never_observed_gets_its_own_distinct_sentence(self):
+        fill = {
+            "reference": {
+                "read_rate_state": "never-observed",
+                "safe_overflow": None,
+                "why": "x", "targets_zero_read": None, "targets_total": 3,
+                "reads_30d_total": None,
+            },
+        }
+        model = _build(_item(surface_fill=fill), scope="skill")
+        by_dest = {b.destination: b for b in model.why.budgets}
+        text = by_dest["reference"].text  # positive control: the row exists at all
+        assert "UNKNOWN" in text
+        assert "registered but has never observed a read yet" in text
+        # THE regression this fold guards: never the OTHER unknown
+        # states' shared wording, which claims no instrumentation exists.
+        assert "not instrumented" not in text
+
+    def test_never_observed_text_differs_from_not_instrumented_text(self):
+        """Side by side, so a regression that re-collapses the two
+        states onto the same sentence shows up as an equality, not just
+        a missing branch."""
+
+        def _text_for(state: str) -> str:
+            fill = {
+                "reference": {
+                    "read_rate_state": state,
+                    "safe_overflow": None,
+                    "why": "x", "targets_zero_read": None, "targets_total": 3,
+                    "reads_30d_total": None,
+                },
+            }
+            model = _build(_item(surface_fill=fill), scope="skill")
+            return {b.destination: b for b in model.why.budgets}["reference"].text
+
+        assert _text_for("never-observed") != _text_for("not-instrumented")
 
     def test_missing_key_renders_nothing_for_that_destination(self):
         # skill-md omitted (as a VerbError leg would leave it, F5) —

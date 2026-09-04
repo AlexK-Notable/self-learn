@@ -1202,6 +1202,64 @@ class TestSurfaceFillWhyRegion:
         assert "reference files have no cap" not in r.text
         assert "UNKNOWN" in r.text
 
+    def test_why_region_shows_the_never_observed_read_rate_verdict(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cross-lane M-A fold (UI half): the CLI's OWN
+        `REFERENCE_READ_RATE_STATES` (report.py) changed —
+        `no-reads-observed` retired, `never-observed` added. That state
+        means the read hook IS registered (unlike `not-instrumented`) but
+        has never observed a read for this target yet — DISTINCT wording
+        is required; the shared "(not instrumented)" phrasing would be
+        FALSE for it. No real refread hook infrastructure exists in this
+        sandbox to reach this state naturally (CLI package internals,
+        out of this lane's scope) — monkeypatches `ledger.list_items`
+        directly (this repo's own FakeRunner-trap rule: a page READ,
+        controls nothing via the runner) to inject the state."""
+        from self_learn_ui import ledger as ledger_mod
+        from self_learn_ui.models import CliRead
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+
+        item = {
+            "id": rec.id,
+            "has_proposal": False,
+            "proposal_fresh": False,
+            "destination": None,
+            "already_canon": False,
+            "deferred_until": None,
+            "source": rec.source,
+            "bucket": "s",
+            "host_registered": True,
+            "title": "reference never-observed fixture",
+            "surface_fill": {
+                "reference": {
+                    "read_rate_state": "never-observed",
+                    "safe_overflow": None,
+                    "why": "x",
+                    "targets_zero_read": None,
+                    "targets_total": 3,
+                    "reads_30d_total": None,
+                },
+            },
+        }
+        monkeypatch.setattr(ledger_mod, "list_items", lambda *a, **kw: CliRead(data=[item]))
+        c, _runner = make_client(sb)
+
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        # Positive control: the fill fact rendered at all -- a blank/
+        # missing row would fail HERE first, before either phrasing
+        # assertion below is trusted.
+        assert "reference read rate is UNKNOWN" in r.text
+        # THE regression this fold closes: `never-observed` gets its OWN
+        # sentence, never the shared "(not instrumented)" one -- which
+        # would misdescribe a hook that IS registered and working.
+        assert "not instrumented" not in r.text
+        assert "registered but has never observed a read yet" in r.text
+
     def test_missing_skill_md_renders_nothing_for_that_destination(self, tmp_path: Path) -> None:
         # a registered skill dir with no SKILL.md file inside -> the CLI
         # omits the skill-md key (VerbError, F5) -> no row, no sentence.

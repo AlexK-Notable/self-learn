@@ -1736,16 +1736,35 @@ def _build_change(
     return ChangeRegion(kind="none", content=None, caption="", message=NO_ANALYSIS_MESSAGE)
 
 
-#: U-cap §6.6: the three interesting `reference` read-rate states, and the
-#: line rendered for each — verbatim from the spec. Any `read_rate_state`
-#: not covered here (there are none — the ladder is closed, §4.5) would be
-#: a builder error, not a silent fallback.
-_REFERENCE_UNKNOWN_STATES = frozenset({"not-instrumented", "none-enumerable"})
-_REFERENCE_COLD_STATES = frozenset({"no-reads-observed", "partly-cold"})
+#: U-cap §6.6: the `reference` read-rate states, and the line rendered for
+#: each — verbatim from the spec. NOT a closed ladder (cross-lane M-A
+#: fold, 2026-09-03: the CLI's OWN `REFERENCE_READ_RATE_STATES`
+#: (report.py) just changed — `no-reads-observed` retired,
+#: `never-observed` added — proving a prior version of this comment's
+#: claim that "there are none [uncovered states] — the ladder is closed"
+#: false the moment it needed to change). A `read_rate_state` not covered
+#: by either set below falls through SILENTLY to the final "ok" branch —
+#: there is no explicit builder-error raise here; a genuinely new state
+#: would misrender as "read", not fail loudly.
+_REFERENCE_UNKNOWN_STATES = frozenset({"not-instrumented", "none-enumerable", "never-observed"})
+_REFERENCE_COLD_STATES = frozenset({"partly-cold"})
 
 
 def _reference_row_text(fill: dict) -> str:
     state = fill.get("read_rate_state")
+    if state == "never-observed":
+        # Cross-lane M-A fold: a MEMBER of `_REFERENCE_UNKNOWN_STATES`
+        # above (epistemically it's still "we don't know if this is
+        # read") but with its OWN sentence, checked before the shared
+        # one below — the read hook IS registered here (instrumentation
+        # exists and is working), it has simply never observed a read
+        # for this target yet. The shared "(not instrumented)" wording
+        # below would be FALSE for this state.
+        return (
+            "reference read rate is UNKNOWN (the read hook is "
+            "registered but has never observed a read yet) — routing "
+            "here trades a measured cost for an unmeasured one."
+        )
     if state in _REFERENCE_UNKNOWN_STATES or fill.get("safe_overflow") is None:
         return (
             "reference read rate is UNKNOWN (not instrumented) — routing "
