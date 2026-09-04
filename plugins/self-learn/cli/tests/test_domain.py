@@ -395,6 +395,17 @@ def _imports_domain(tree: ast.Module) -> bool:
 
 
 class TestConsumerDependency:
+    def test_the_consumer_list_itself_is_non_empty_and_known_populated(self):
+        """M-B fold r3, MINOR-1: a ``pytest.mark.parametrize`` over an
+        EMPTY collection generates ZERO test cases -- pytest reports
+        that as nothing to run, not a failure, so the whole scan
+        would silently "pass" (by simply not existing) if
+        ``_CONSUMERS`` were ever emptied by a bad edit. This control
+        is never parametrized away: it always collects, and checks the
+        collection itself before anything iterates over it."""
+        assert _CONSUMERS, "_CONSUMERS resolved to zero entries"
+        assert "ledger_ops.py" in _CONSUMERS
+
     @pytest.mark.parametrize("name", sorted(_CONSUMERS))
     def test_consumer_imports_domain(self, name):
         path = _CONSUMERS[name]
@@ -510,6 +521,19 @@ class TestCanonLiveShapeScan:
         )
         assert _canon_live_shape_hits(tree) == [1]
 
+    def test_the_file_list_itself_is_non_empty_and_known_populated(self):
+        """M-B fold r3, MINOR-1: if the glob root (``CLI_SRC``/
+        ``UI_SRC``) is ever wrong -- a renamed package, a cwd change,
+        a typo'd relative path -- ``_all_source_files()`` silently
+        resolves to ``[]``, the parametrize below generates ZERO
+        cases, and this whole scan "passes" by not existing. This
+        control is never parametrized away."""
+        files = [p for p in _all_source_files() if p.name != "domain.py"]
+        assert files, "the source-tree walk resolved to zero files"
+        names = {p.name for p in files}
+        assert "ledger_ops.py" in names
+        assert "models.py" in names
+
     @pytest.mark.parametrize(
         "path",
         [p for p in _all_source_files() if p.name != "domain.py"],
@@ -545,6 +569,18 @@ class TestDaysAfterSubtractionScan:
     def test_positive_control_the_pattern_is_detected(self):
         tree = ast.parse("age = (now - then).days\n", filename="<memory>")
         assert _bare_subtraction_days_hits(tree) == [1]
+
+    def test_the_file_list_itself_is_non_empty_and_known_populated(self):
+        """M-B fold r3, MINOR-1: same fail-open risk as
+        ``TestCanonLiveShapeScan``'s control above -- an empty
+        ``_all_source_files()`` makes the parametrize below generate
+        zero cases, and the scan silently "passes" by never running.
+        Never parametrized away."""
+        files = _all_source_files()
+        assert files, "the source-tree walk resolved to zero files"
+        names = {p.name for p in files}
+        assert "ledger_ops.py" in names
+        assert "models.py" in names
 
     @pytest.mark.parametrize("path", _all_source_files(), ids=str)
     def test_tree_has_zero_hits(self, path):
@@ -597,7 +633,6 @@ class TestImportCycleCheck:
         )
         assert proc.returncode == 0, proc.stderr
         assert proc.stdout.strip() == "", proc.stdout
-
 
 
 # ------------------------------------ queue()/is_unanalyzed() status gate
