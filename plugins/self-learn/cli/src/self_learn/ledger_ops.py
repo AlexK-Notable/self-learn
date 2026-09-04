@@ -296,34 +296,29 @@ def _remove_file(home: Path, path: Path) -> bool:
     M-D: routes through :func:`gitops.is_tracked` / :func:`gitops.remove`
     instead of this module's own ``_git`` (closes A8/C12a).
 
-    M-D fold r2 (BLOCKER): all four callers (``remove_proposal_siblings``'s
-    two call sites here; ``verbs._route_record``'s belt-and-braces
-    merge-path cleanup; ``verbs.bucket_prune``'s per-bucket ``meta.yaml``
-    loop) call this AFTER an earlier mutation in the same sequence — a
-    ``git mv`` (``move_record``/``reopen_record``), an earlier
-    ``supersede_record``, or an earlier loop iteration's own successful
-    removal (``bucket_prune``: probed end to end, ``D skills/a/meta.yaml``
-    lands staged before a second bucket's removal fails). A bare
-    :class:`gitops.GitOpsError` escaping HERE would violate the contract
-    ``cli.py``'s dispatch states outright (~:1899-1906): ``EXIT_GIT_FAILED``
-    (6, "nothing was written") is safe ONLY because every post-mutation git
-    failure is re-raised as :class:`gitops.HalfWrittenError` (-> exit 7)
-    before it can reach that handler. So: same conversion
-    ``verbs._commit_ledger`` already does for ``stage``/``commit``,
-    applied here for ``remove`` — a failed removal is ALWAYS "half
-    written" once ``is_tracked`` said yes, because by construction this
-    call never happens as the very first step of an empty sequence."""
+    Raises :class:`gitops.GitOpsError` on a failed ``git rm`` — NOT
+    :class:`gitops.HalfWrittenError`. M-D fold r2 (BLOCKER) had this
+    function catch and convert itself, naming only the ONE path it was
+    working on; M-D fold r3 (MINOR) undid that, because every one of
+    this function's four callers (``remove_proposal_siblings``'s two
+    call sites; ``verbs.route``'s belt-and-braces merge-path cleanup;
+    ``verbs.bucket_prune``'s per-bucket ``meta.yaml`` loop) calls this
+    AFTER an earlier mutation in the same sequence — a ``git mv``, an
+    earlier ``supersede_record``, or an earlier loop iteration's own
+    successful removal — and only the CALLER holds that accumulated
+    ``touched`` list. A bare :class:`gitops.GitOpsError` reaching
+    ``cli.py``'s dispatch (~:1899-1906) is fine ONLY when nothing was
+    mutated yet; every caller here is past that point, so every caller
+    converts to :class:`gitops.HalfWrittenError` via ``.for_commit(...)``
+    built with its own enclosing ``touched`` — see
+    :func:`remove_proposal_siblings`, :func:`verbs.bucket_prune`,
+    :func:`verbs.route`."""
     from . import gitops
 
     if not path.exists():
         return False
     if gitops.is_tracked(home, path):
-        try:
-            gitops.remove(home, path)
-        except gitops.GitOpsError as exc:
-            raise gitops.HalfWrittenError.for_commit(
-                home, f"self-learn: remove {path.name}", [path], exc
-            ) from exc
+        gitops.remove(home, path)
     if path.exists():  # untracked (or no git repo): git rm left it in place
         path.unlink()
     return True
@@ -2290,15 +2285,42 @@ def _generate_hook_script(record: Record, data: dict) -> str:
         raise ProposalError(str(exc)) from exc
 
 
-def remove_proposal_siblings(home: Path, bucket_dir: Path, record_id: str) -> list[Path]:
+def remove_proposal_siblings(
+    home: Path, bucket_dir: Path, record_id: str, *, touched: list[Path] | None = None
+) -> list[Path]:
     """08 §1 Proposal-lifecycle pin: at resolution, remove the record's own
     ``lrn-<id>.{yaml,diff}`` AND every ``merge-*.yaml`` whose ``records``
-    list names it (a partial cluster is invalid). Returns removed paths."""
+    list names it (a partial cluster is invalid). Returns removed paths.
+
+    ``touched``: paths the CALLER has already staged before this sweep
+    (e.g. the record's own ``git mv``, an ``ensure_project_meta`` write).
+    M-D fold r3 (MINOR): a failed removal here is converted to
+    :class:`gitops.HalfWrittenError` naming ``touched`` + this sweep's
+    own progress + the failing path, per :func:`_remove_file`'s docstring
+    — the caller's mutations are just as half-written as this sweep's."""
+    from . import gitops
+
     pdir = bucket_dir / "proposals"
     removed: list[Path] = []
+    already = list(touched) if touched else []
+    message = f"self-learn: remove proposal siblings of {record_id}"
+
+    # M-D fold r3 (MINOR): a local closure here (rather than these two
+    # inline try/excepts, duplicated) tripped test_lock_invariant.py's
+    # walker — it qualifies a nested function as its OWN reachable node
+    # (`remove_proposal_siblings._remove`) rather than inheriting the
+    # enclosing function's already-verified lock reachability. Direct
+    # calls, matching every other converted call site in this fold
+    # (`bucket_prune`, `route`), keep the walker's call graph the shape
+    # it already verifies.
     for path in (pdir / f"{record_id}.yaml", pdir / f"{record_id}.diff"):
-        if _remove_file(home, path):
-            removed.append(path)
+        try:
+            if _remove_file(home, path):
+                removed.append(path)
+        except gitops.GitOpsError as exc:
+            raise gitops.HalfWrittenError.for_commit(
+                home, message, [*already, *removed, path], exc
+            ) from exc
     if pdir.is_dir():
         for path in sorted(pdir.glob("merge-*.yaml")):
             try:
@@ -2307,8 +2329,13 @@ def remove_proposal_siblings(home: Path, bucket_dir: Path, record_id: str) -> li
                 continue  # unparseable → cannot name the id; worker policy owns it
             records = data.get("records")
             if isinstance(records, list) and record_id in records:
-                if _remove_file(home, path):
-                    removed.append(path)
+                try:
+                    if _remove_file(home, path):
+                        removed.append(path)
+                except gitops.GitOpsError as exc:
+                    raise gitops.HalfWrittenError.for_commit(
+                        home, message, [*already, *removed, path], exc
+                    ) from exc
     return removed
 
 
@@ -2448,7 +2475,7 @@ def resolve_record(
         dest_path = path
     record.write(dest_path)
     touched.append(dest_path)
-    touched.extend(remove_proposal_siblings(home, bucket_dir, record_id))
+    touched.extend(remove_proposal_siblings(home, bucket_dir, record_id, touched=touched))
     return touched
 
 
@@ -2515,10 +2542,10 @@ def move_record(
     else:
         path.rename(dest_path)
     record.write(dest_path)  # rewrite AT THE DESTINATION — mv-first (§6.4)
-    swept = remove_proposal_siblings(home, source_bucket, record_id)
     touched: list[Path] = [path, dest_path]
     if meta_path is not None:
         touched.append(meta_path)
+    swept = remove_proposal_siblings(home, source_bucket, record_id, touched=touched)
     touched.extend(swept)
     return touched, swept
 
@@ -2552,8 +2579,9 @@ def reopen_record(home: Path, record_id: str) -> tuple[list[Path], list[Path]]:
     else:
         path.rename(dest_path)
     record.write(dest_path)  # rewrite AT THE DESTINATION — mv-first (§6.4)
-    swept = remove_proposal_siblings(home, bucket_dir, record_id)
-    touched: list[Path] = [path, dest_path, *swept]
+    touched_so_far: list[Path] = [path, dest_path]
+    swept = remove_proposal_siblings(home, bucket_dir, record_id, touched=touched_so_far)
+    touched: list[Path] = [*touched_so_far, *swept]
     return touched, swept
 
 

@@ -986,11 +986,14 @@ def _commit_ledger(
 
     Everything this function does is post-mutation by construction — the
     caller has already run ``resolve_record`` (a ``git mv`` + a record
-    rewrite) — and ``ledger_ops`` raises ``LedgerOpsError``, never
-    ``GitOpsError``. So a ``GitOpsError`` reaching HERE can only come from
-    ``stage``/``commit``, which means: the ledger is mutated and the commit
-    did not land. That is :class:`gitops.HalfWrittenError`, and it is
-    raised HERE — in the verb layer — precisely because ``gitops`` cannot
+    rewrite) — and by the time control reaches HERE, any earlier
+    ``GitOpsError`` from a ledger_ops mutation (e.g. ``_remove_file``) has
+    already been caught and converted by THAT call's own caller (see
+    ``_remove_file``'s docstring). So a ``GitOpsError`` reaching HERE can
+    only come from ``stage``/``commit``, which means: the ledger is
+    mutated and the commit did not land. That is
+    :class:`gitops.HalfWrittenError`, and it is raised HERE — in the
+    verb layer — precisely because ``gitops`` cannot
     know it (audit 2026-07-16 round 7 BLOCKER 2; the gitops docstring
     already said "that is the verb's fact to state, not this module's",
     and the verb was stating the opposite fact unconditionally)."""
@@ -3980,8 +3983,18 @@ def route(
                 # the survivor; an inconsistent leftover is removed here.
                 from .ledger_ops import _remove_file
 
-                if _remove_file(home, merge_path):
-                    touched = touched + [merge_path]
+                try:
+                    if _remove_file(home, merge_path):
+                        touched = touched + [merge_path]
+                except gitops.GitOpsError as exc:
+                    # M-D fold r3 (MINOR): `touched` already holds this
+                    # record's own git-mv and any supersede_record
+                    # mutations from earlier in this same route — built
+                    # HERE so the repair names all of it, not just this
+                    # cleanup's own path (see `_remove_file`'s docstring).
+                    raise gitops.HalfWrittenError.for_commit(
+                        home, message, [*touched, merge_path], exc
+                    ) from exc
             # U-hostmode REC1/REC9: the compile record's EXPECTATION can
             # only be computed now — `_compile_set` reads `resolved/`,
             # and `resolve_record` (above) just moved this record there.
@@ -7434,8 +7447,20 @@ def bucket_prune(
             touched: list[Path] = []
             for b in candidates:
                 meta = b.path / "meta.yaml"
-                if _remove_file(home, meta):
-                    touched.append(meta)
+                try:
+                    if _remove_file(home, meta):
+                        touched.append(meta)
+                except gitops.GitOpsError as exc:
+                    # M-D fold r3 (MINOR): built HERE, not inside
+                    # `_remove_file` — this loop is the only place that
+                    # holds `touched`, the earlier buckets' removals
+                    # already staged in this same sequence. Naming only
+                    # `meta` (the FAILING path) would leave an operator
+                    # who runs the repair literally with those earlier
+                    # deletions still sitting uncommitted.
+                    raise gitops.HalfWrittenError.for_commit(
+                        home, message, [*touched, meta], exc
+                    ) from exc
             staged, sha = _commit_ledger(home, touched, message, None)
             for b in candidates:
                 if b.path.is_dir():

@@ -152,20 +152,35 @@ class TestRemoveFileHalfWritten:
     failure is re-raised as gitops.HalfWrittenError (-> exit 7) before
     reaching that handler. `_remove_file` calling the un-`-f`'d
     `gitops.remove` (M-D) reopened a way for a bare `GitOpsError` to
-    violate that — closed here for all four of `_remove_file`'s callers
-    at once, since the fix lives in `_remove_file` itself."""
+    violate that.
 
-    def test_remove_file_itself_raises_half_written_not_git_failed(
+    M-D fold r2 (BLOCKER) closed it by having `_remove_file` itself
+    catch and convert — but that primitive only ever sees the ONE path
+    it is working on, so the repair it built could name a failing path
+    while omitting an earlier-succeeded removal already staged in the
+    same sequence (M-D fold r3 MINOR: the gate's own repro,
+    `test_bucket_prune_...` below). Fixed by moving the conversion OUT
+    of `_remove_file` and INTO each of its four callers — the VERB
+    layer, the only place that holds the enclosing `touched` list, per
+    `gitops.HalfWrittenError`'s own docstring ("constructed by the
+    verb, never by this module")."""
+
+    def test_remove_file_itself_raises_git_ops_error_not_half_written(
         self, repo: Path, tmp_path, monkeypatch
     ):
+        """The primitive no longer converts — it has no `touched`
+        context to build a correct repair from. A bare GitOpsError
+        propagating out of `_remove_file` itself is now the CORRECT
+        shape; the class docstring above is where the conversion
+        promise actually lives, honored by each of the four callers."""
         f = repo / "d.txt"
         f.write_text("x\n", encoding="utf-8")
         commit_all(repo, "seed")
         flag = failing_git_shim(tmp_path, monkeypatch, sub="rm")
         flag.touch()
-        with pytest.raises(gitops.HalfWrittenError) as excinfo:
+        with pytest.raises(gitops.GitOpsError) as excinfo:
             ledger_ops._remove_file(repo, f)
-        assert f.name in excinfo.value.repair or str(f) in excinfo.value.repair
+        assert not isinstance(excinfo.value, gitops.HalfWrittenError)
         assert f.exists()  # git rm never landed — the fs is untouched too
 
     def test_remove_proposal_siblings_raises_half_written_not_git_failed(
@@ -212,7 +227,7 @@ class TestRemoveFileHalfWritten:
         second_meta = buckets[1] / "meta.yaml"
         _failing_rm_shim_for_path(tmp_path, monkeypatch, str(second_meta))
 
-        with pytest.raises(gitops.HalfWrittenError):
+        with pytest.raises(gitops.HalfWrittenError) as excinfo:
             verbs.bucket_prune(sb.ledger, no_push=True)
 
         # the first bucket's removal DID land, staged -- the exact
@@ -220,3 +235,14 @@ class TestRemoveFileHalfWritten:
         # here would have claimed "nothing was written" over this.
         status = git(sb.ledger, "status", "--porcelain").stdout
         assert "D " in status and "meta.yaml" in status, status
+
+        # M-D fold r3 (MINOR): the repair must name the MUTATION that
+        # needs committing (the already-staged first bucket's deletion),
+        # not just the path that failed -- an operator following the
+        # repair line literally must not leave the ledger half-written.
+        first_meta = buckets[0] / "meta.yaml"
+        assert str(first_meta) in excinfo.value.repair, excinfo.value.repair
+        # and the real verb message reached the repair, not a generic
+        # per-path stand-in -- proves this was built by bucket_prune
+        # itself, not reconstructed inside _remove_file.
+        assert "bucket prune" in excinfo.value.repair, excinfo.value.repair

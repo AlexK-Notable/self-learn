@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import ast
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -43,9 +42,9 @@ from pathlib import Path
 import pytest
 
 import self_learn
-from self_learn import gitops, hook_compiler, hosts, ledger_ops, verbs, worker
+from self_learn import hook_compiler, hosts, ledger_ops, verbs, worker
 from self_learn.primitives import procs
-from support import git, init_repo
+from support import init_repo
 
 SRC = Path(self_learn.__file__).parent
 
@@ -253,6 +252,11 @@ def census(root: Path) -> list[Site]:
 #: forcing a human to look at it and consciously re-pin; the positive
 #: control after it proves the census function actually is that
 #: sensitive, not just asserted to be.
+#: POSIX form only — `_census_module`'s `rel` (like `_scan_module`'s own
+#: `rel`, which is why `exempt_run_timeout` above checks BOTH separator
+#: forms) is `str(path.relative_to(root))`, native-separated. The
+#: comparison below normalizes a backslash-separated hit back to POSIX
+#: first, so this frozenset never needs a second, Windows-only literal.
 MEASURED_CENSUS_MODULES = frozenset(
     {
         "gitops.py",
@@ -276,7 +280,7 @@ def test_p3_gate_census_matches_the_measured_count():
     census move at all"."""
     sites = census(SRC)
     assert len(sites) == MEASURED_CENSUS_SITE_COUNT, sites
-    modules = {s.path for s in sites}
+    modules = {s.path.replace("\\", "/") for s in sites}  # no POSIX-only literal
     assert modules == MEASURED_CENSUS_MODULES, sorted(modules)
 
 
