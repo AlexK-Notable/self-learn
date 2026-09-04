@@ -1935,6 +1935,11 @@ def _run_locked(
             )
         for line in healed.blocked:
             log(f"run {run_id}: reconcile left a half-committed change: {line}")
+        # M-C: an invalid orphan refuses the whole reconcile batch the
+        # same as a blocked rename does — logged the same way, never
+        # fatal. A miner that cannot heal must still mine.
+        for line in healed.invalid:
+            log(f"run {run_id}: reconcile left an invalid orphan uncommitted: {line}")
     except gitops.GitOpsError as exc:
         log(f"run {run_id}: reconcile step skipped ({exc})")
 

@@ -266,7 +266,8 @@ which:
   anything** (commonly: another producer — a worker or the miner — held
   the commit lock too long). The lock is taken before the first mutation,
   so nothing is half-done: it is safe to retry once the other producer
-  finishes.
+  finishes. `reconcile` also returns 6 when it refuses an invalid orphan;
+  there the repair is the one it prints, not a retry.
 - **7** — the record WAS written but its **commit failed**. This is the
   opposite of 6 and must never be treated as it: the record has already
   moved (e.g. pending→resolved) and a blind retry fails with 64 "record
