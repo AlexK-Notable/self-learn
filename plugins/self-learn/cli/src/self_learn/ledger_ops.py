@@ -292,13 +292,36 @@ def _remove_file(home: Path, path: Path) -> bool:
     Proposal-lifecycle pin). True iff the file existed.
 
     M-D: routes through :func:`gitops.is_tracked` / :func:`gitops.remove`
-    instead of this module's own ``_git`` (closes A8/C12a)."""
+    instead of this module's own ``_git`` (closes A8/C12a).
+
+    M-D fold r2 (BLOCKER): all four callers (``remove_proposal_siblings``'s
+    two call sites here; ``verbs._route_record``'s belt-and-braces
+    merge-path cleanup; ``verbs.bucket_prune``'s per-bucket ``meta.yaml``
+    loop) call this AFTER an earlier mutation in the same sequence — a
+    ``git mv`` (``move_record``/``reopen_record``), an earlier
+    ``supersede_record``, or an earlier loop iteration's own successful
+    removal (``bucket_prune``: probed end to end, ``D skills/a/meta.yaml``
+    lands staged before a second bucket's removal fails). A bare
+    :class:`gitops.GitOpsError` escaping HERE would violate the contract
+    ``cli.py``'s dispatch states outright (~:1899-1906): ``EXIT_GIT_FAILED``
+    (6, "nothing was written") is safe ONLY because every post-mutation git
+    failure is re-raised as :class:`gitops.HalfWrittenError` (-> exit 7)
+    before it can reach that handler. So: same conversion
+    ``verbs._commit_ledger`` already does for ``stage``/``commit``,
+    applied here for ``remove`` — a failed removal is ALWAYS "half
+    written" once ``is_tracked`` said yes, because by construction this
+    call never happens as the very first step of an empty sequence."""
     from . import gitops
 
     if not path.exists():
         return False
     if gitops.is_tracked(home, path):
-        gitops.remove(home, path)
+        try:
+            gitops.remove(home, path)
+        except gitops.GitOpsError as exc:
+            raise gitops.HalfWrittenError.for_commit(
+                home, f"self-learn: remove {path.name}", [path], exc
+            ) from exc
     if path.exists():  # untracked (or no git repo): git rm left it in place
         path.unlink()
     return True

@@ -561,10 +561,13 @@ def known_paths(repo: Path, paths: Iterable[Path | str]) -> list[str]:
 
 
 def is_tracked(repo: Path, path: Path | str) -> bool:
-    """Whether *path* is known to git in *repo* — index or, right after a
-    ``git mv`` of it, HEAD-only (the rename source is gone from disk and
-    the index yet still counts as tracked until the mv is committed; see
-    :func:`known_paths`, which widens the same way for the same reason)."""
+    """Whether *path* is known to git in *repo* — the INDEX only (plain
+    ``ls-files --error-unmatch``, no ``--with-tree=HEAD``). Right after a
+    ``git mv`` of it, the OLD path reads as untracked HERE: it is gone
+    from the index (the new path is what is staged), even though it
+    still lives in HEAD until the mv is committed. :func:`known_paths` is
+    the HEAD-widened variant — use that one where an old, git-mv'd path
+    must still count."""
     return _git(repo, "ls-files", "--error-unmatch", "--", str(path)).returncode == 0
 
 

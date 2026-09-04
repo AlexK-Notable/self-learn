@@ -9,12 +9,16 @@ Each test builds its own throwaway repo (`support.init_repo`/`commit_all`
 
 from __future__ import annotations
 
+import os
+import shutil
 from pathlib import Path
 
 import pytest
 
-from self_learn import gitops
-from support import commit_all, git, init_repo
+from self_learn import gitops, ledger_ops, verbs
+from self_learn.hosts import host_add, slug_for
+from self_learn.ledger_ops import create_record
+from support import commit_all, failing_git_shim, git, init_repo, make_env, make_knowledge
 
 
 @pytest.fixture
@@ -109,3 +113,110 @@ class TestRemove:
 def test_both_wrappers_are_exported():
     assert "is_tracked" in gitops.__all__
     assert "remove" in gitops.__all__
+
+
+# ============================ M-D fold r2 BLOCKER: _remove_file HalfWritten
+
+
+#: A REAL git that fails `rm` only when NEEDLE appears in argv — unlike
+#: `support.failing_git_shim` (one flag, one subcommand, no path
+#: selectivity), this lets a two-removal sequence have its FIRST
+#: succeed and its SECOND fail, reproducing the gate's exact repro
+#: ("`D skills/a/meta.yaml` sits staged" while the second removal's
+#: failure is what escapes).
+_PATH_FAILING_RM_SHIM = '''#!/usr/bin/env python3
+import subprocess, sys
+
+args = sys.argv[1:]
+if "rm" in args and any({needle!r} in a for a in args):
+    sys.stderr.write("fatal: simulated git rm failure for {needle}\\n")
+    sys.exit(1)
+sys.exit(subprocess.run([{real!r}, *args]).returncode)
+'''
+
+
+def _failing_rm_shim_for_path(tmp_path: Path, monkeypatch, needle: str) -> None:
+    real = shutil.which("git")
+    assert real, "no git on PATH"
+    d = tmp_path / "git-shim-rm-path"
+    d.mkdir(parents=True, exist_ok=True)
+    shim = d / "git"
+    shim.write_text(_PATH_FAILING_RM_SHIM.format(needle=needle, real=real))
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{d}{os.pathsep}{os.environ['PATH']}")
+
+
+class TestRemoveFileHalfWritten:
+    """cli.py's own dispatch contract (~:1899-1906): EXIT_GIT_FAILED (6,
+    'nothing was written') is safe ONLY because every post-mutation git
+    failure is re-raised as gitops.HalfWrittenError (-> exit 7) before
+    reaching that handler. `_remove_file` calling the un-`-f`'d
+    `gitops.remove` (M-D) reopened a way for a bare `GitOpsError` to
+    violate that — closed here for all four of `_remove_file`'s callers
+    at once, since the fix lives in `_remove_file` itself."""
+
+    def test_remove_file_itself_raises_half_written_not_git_failed(
+        self, repo: Path, tmp_path, monkeypatch
+    ):
+        f = repo / "d.txt"
+        f.write_text("x\n", encoding="utf-8")
+        commit_all(repo, "seed")
+        flag = failing_git_shim(tmp_path, monkeypatch, sub="rm")
+        flag.touch()
+        with pytest.raises(gitops.HalfWrittenError) as excinfo:
+            ledger_ops._remove_file(repo, f)
+        assert f.name in excinfo.value.repair or str(f) in excinfo.value.repair
+        assert f.exists()  # git rm never landed — the fs is untouched too
+
+    def test_remove_proposal_siblings_raises_half_written_not_git_failed(
+        self, repo: Path, tmp_path, monkeypatch
+    ):
+        bucket_dir = repo / "skills" / "s"
+        pdir = bucket_dir / "proposals"
+        pdir.mkdir(parents=True)
+        (pdir / "lrn-00000001.yaml").write_text("x: 1\n", encoding="utf-8")
+        commit_all(repo, "seed proposal")
+        flag = failing_git_shim(tmp_path, monkeypatch, sub="rm")
+        flag.touch()
+        with pytest.raises(gitops.HalfWrittenError):
+            ledger_ops.remove_proposal_siblings(repo, bucket_dir, "lrn-00000001")
+
+    def test_bucket_prune_raises_half_written_not_git_failed_when_a_later_removal_fails(
+        self, tmp_path, monkeypatch
+    ):
+        """The gate's own repro, reproduced directly: two empty project
+        buckets. The first bucket's `meta.yaml` removal SUCCEEDS (lands
+        staged); the second's is made to fail. `bucket_prune` must let
+        `HalfWrittenError` escape -- never a bare `GitOpsError`, which
+        would report exit 6 ("nothing was written") while the first
+        bucket's staged deletion sits in the index."""
+        sb = make_env(tmp_path, skills=("s",))
+        buckets = []
+        for name in ("empty1", "empty2"):
+            host = tmp_path / "repos" / name
+            init_repo(host)
+            (host / "README.md").write_text(f"{name}\n", encoding="utf-8")
+            commit_all(host, "seed")
+            host_add(sb.ledger, host, "project")
+            rid = f"lrn-{name[-1]}0000001"
+            create_record(sb.ledger, make_knowledge(record_id=rid, scope="project"), project_path=host)
+            commit_all(sb.ledger, f"seed {name}")
+            verbs.rehome(sb.ledger, rid, to="user", no_push=True)
+            buckets.append(sb.ledger / "projects" / slug_for(host))
+        for b in buckets:
+            assert (b / "meta.yaml").is_file()  # positive control: prune has work to do
+
+        # fail ONLY the second bucket's meta.yaml removal -- the FULL path
+        # (both buckets share the basename "meta.yaml", so a needle any
+        # shorter than the full path would fail BOTH removals)
+        second_meta = buckets[1] / "meta.yaml"
+        _failing_rm_shim_for_path(tmp_path, monkeypatch, str(second_meta))
+
+        with pytest.raises(gitops.HalfWrittenError):
+            verbs.bucket_prune(sb.ledger, no_push=True)
+
+        # the first bucket's removal DID land, staged -- the exact
+        # contract violation the gate's report names: a bare GitOpsError
+        # here would have claimed "nothing was written" over this.
+        status = git(sb.ledger, "status", "--porcelain").stdout
+        assert "D " in status and "meta.yaml" in status, status
