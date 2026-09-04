@@ -124,6 +124,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from . import domain
+from .primitives import text
 from .records import Record
 
 __all__ = [
@@ -181,7 +182,12 @@ _LEARNINGS_HEADER = (
     "verbs (U-verbs S-54), never hand-edited in place.\n"
 )
 
-_HEADING_RE = re.compile(r"^## +(.+?)\s*$", re.MULTILINE)
+#: Aliases the shared pattern (Sprint 1 M-J fold r1, plan v2 §2 --
+#: missed in the original M-J commit; records.py/ledger_ops.py/UI
+#: models.py already aliased it). Text and flags are byte-identical
+#: to what this module compiled inline before, so this changes
+#: nothing about ``_body_sections``'s behavior.
+_HEADING_RE = text.HEADING_RE
 
 
 class CompileError(Exception):

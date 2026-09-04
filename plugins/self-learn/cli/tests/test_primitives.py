@@ -328,9 +328,15 @@ class TestTruncateOldest:
 #: qual -> (module path, function/attribute name, must-contain substring
 #: proving delegation, must-not-contain substring proving the raw
 #: reimplementation is gone). Exactly the 12 + 4 + 5 + 2 = 23 sites this
-#: move names (``primitives/chrono.py`` and the reference impls in
-#: ``records.py``/``compilers.py`` for HEADING_RE are the sources, not
-#: consumers, and are excluded below).
+#: move names (``primitives/chrono.py`` is the source, not a consumer,
+#: and is excluded below). Fold r1: ``compilers.py`` was originally
+#: excluded here alongside ``records.py`` on the theory both were
+#: "sources, not consumers" of ``text.HEADING_RE`` -- false for
+#: ``records.py`` (it was already an alias in the M-J commit) and, at
+#: the time, also false for the CLAIM that ``compilers.py`` was
+#: migrated (it wasn't; this list simply never checked it, so nothing
+#: caught the miss). Both are now in ``_HEADING_RE_FACADES`` below,
+#: making it 4 of 4 real sites, matching the 23-site total.
 _NOW_ISO_FACADES = [
     CLI_SRC / "records.py",
     CLI_SRC / "ledger_ops.py",
@@ -347,7 +353,9 @@ _NOW_ISO_FACADES = [
 ]
 
 _HEADING_RE_FACADES = [
+    CLI_SRC / "records.py",
     CLI_SRC / "ledger_ops.py",
+    CLI_SRC / "compilers.py",
     UI_SRC / "models.py",
 ]
 
@@ -378,6 +386,33 @@ def _source_of(path: Path, name: str) -> str:
     return ast.get_source_segment(path.read_text(encoding="utf-8"), node) or ""
 
 
+def _heading_re_assignment_rhs(source_text: str) -> str | None:
+    """Parse arbitrary source text (a real file's contents, or a
+    synthetic snippet for a positive control) and return the unparsed
+    RHS of a module-level ``_HEADING_RE = ...`` assignment, or ``None``
+    if the source has no such assignment."""
+    tree = ast.parse(source_text)
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "_HEADING_RE"
+        ):
+            return ast.unparse(node.value)
+    return None
+
+
+def _assert_heading_re_rhs_is_an_alias(label: str, rhs: str | None) -> None:
+    """The actual delegation check (fold r1: pulled out of the
+    parametrized test so a positive control can exercise the exact
+    same assertions against a synthetic ``rhs``, not just a real
+    file's live content)."""
+    assert rhs is not None, f"{label} has no _HEADING_RE assignment"
+    assert "re.compile(" not in rhs, f"{label} still compiles its own pattern"
+    assert "HEADING_RE" in rhs  # text.HEADING_RE / sl_text.HEADING_RE
+
+
 class TestP1FacadeScan:
     """P1 corrected: match the OWNER-QUALIFIED body, not the public
     name -- a rename or a private alias (``ledger_ops._yaml``,
@@ -394,19 +429,24 @@ class TestP1FacadeScan:
 
     @pytest.mark.parametrize("path", _HEADING_RE_FACADES, ids=lambda p: p.name)
     def test_heading_re_site_is_an_alias(self, path):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        assigned = None
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Assign)
-                and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id == "_HEADING_RE"
-            ):
-                assigned = ast.unparse(node.value)
-        assert assigned is not None, f"{path} has no _HEADING_RE assignment"
-        assert "re.compile(" not in assigned, f"{path} still compiles its own pattern"
-        assert "HEADING_RE" in assigned  # text.HEADING_RE / sl_text.HEADING_RE
+        rhs = _heading_re_assignment_rhs(path.read_text(encoding="utf-8"))
+        _assert_heading_re_rhs_is_an_alias(str(path), rhs)
+
+    def test_heading_re_scan_would_have_caught_the_compilers_py_regression(self):
+        """Positive control (fold r1). Before this fold, ``compilers.py``
+        was simply absent from ``_HEADING_RE_FACADES`` -- the AST-based
+        assertion below was never run against it, so the M-J commit's
+        "4 of 4 migrated" claim went unchecked and was false (3 of 4).
+        This reproduces ``compilers.py:184``'s EXACT pre-fold source,
+        byte-for-byte, and proves the assertion logic itself -- not just
+        list membership -- would have failed loudly had that site been
+        included."""
+        slipped_through_source = (
+            '_HEADING_RE = re.compile(r"^## +(.+?)\\s*$", re.MULTILINE)\n'
+        )
+        rhs = _heading_re_assignment_rhs(slipped_through_source)
+        with pytest.raises(AssertionError, match="still compiles its own pattern"):
+            _assert_heading_re_rhs_is_an_alias("compilers.py (pre-fold)", rhs)
 
     @pytest.mark.parametrize(
         "path,name", _YAML_FACTORY_FACADES, ids=[f"{p.name}:{n}" for p, n in _YAML_FACTORY_FACADES]
