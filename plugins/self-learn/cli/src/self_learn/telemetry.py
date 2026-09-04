@@ -317,32 +317,53 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                         + format_refusal(hits)
                     )
 
-        # Phase 2: everything scanned clean — move file by file.
-        for spool_path, fh, lines in opened:
-            if not lines:
-                continue
-            target = telemetry_dir(home) / spool_path.name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with open(target, "a+", encoding="utf-8") as out:
-                fcntl.flock(out.fileno(), fcntl.LOCK_EX)
-                try:
-                    # Heal a torn trailing line from a previous crashed
-                    # append: never concatenate onto it.
-                    out.seek(0)
-                    existing = out.read()
-                    if existing and not existing.endswith("\n"):
-                        out.write("\n")
-                    out.write("\n".join(lines) + "\n")
-                    out.flush()
-                finally:
-                    fcntl.flock(out.fileno(), fcntl.LOCK_UN)
-            # Truncate in place: the inode stays stable, so a writer
-            # blocked on our flock appends to THIS file, never a
-            # deleted one.
-            fh.seek(0)
-            fh.truncate()
-            report.events += len(lines)
-            report.files.append(target)
+        # Phase 2: everything scanned clean — move file by file, all
+        # under commit_lock (M-M / P7 lock-start gate, plan v2 §2/§5):
+        # a tracked-plane append is a mutation of the ledger exactly like
+        # `resolve_record`'s git mv, so the lock must open BEFORE it, not
+        # merely span the later stage+commit inside :func:`_commit_flush`
+        # — the same round-7 rule (module docstring above) applied to the
+        # one producer round 7 never looked at. Locked as one unit: if
+        # the lock cannot be taken (another producer wedged mid-commit),
+        # the whole flush aborts loud-but-not-fatal, same spirit as a git
+        # failure inside `_commit_flush` — nothing below has run yet, so
+        # the spool is untouched and the next flush's scan retries it.
+        from . import gitops  # deferred: gitops is imported by every verb path
+
+        try:
+            with gitops.commit_lock(home):
+                for spool_path, fh, lines in opened:
+                    if not lines:
+                        continue
+                    target = telemetry_dir(home) / spool_path.name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with open(target, "a+", encoding="utf-8") as out:
+                        fcntl.flock(out.fileno(), fcntl.LOCK_EX)
+                        try:
+                            # Heal a torn trailing line from a previous
+                            # crashed append: never concatenate onto it.
+                            out.seek(0)
+                            existing = out.read()
+                            if existing and not existing.endswith("\n"):
+                                out.write("\n")
+                            out.write("\n".join(lines) + "\n")
+                            out.flush()
+                        finally:
+                            fcntl.flock(out.fileno(), fcntl.LOCK_UN)
+                    # Truncate in place: the inode stays stable, so a
+                    # writer blocked on our flock appends to THIS file,
+                    # never a deleted one.
+                    fh.seek(0)
+                    fh.truncate()
+                    report.events += len(lines)
+                    report.files.append(target)
+        except gitops.GitOpsError as exc:
+            print(
+                f"self-learn: telemetry flush deferred — commit lock busy "
+                f"({exc}); spool intact, the next flush retries",
+                file=sys.stderr,
+            )
+            return report
     finally:
         for _path, fh, _lines in opened:
             try:
