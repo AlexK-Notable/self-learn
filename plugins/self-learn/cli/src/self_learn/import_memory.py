@@ -279,14 +279,27 @@ def prune_memory(home: Path, memory_dir: Path, dry_run: bool = False) -> PruneRe
                     report.refused_in_flight.append(item)
                     continue
                 if not target.is_file():
+                    # C14 (M) / plan v2 §2: the target is already gone (a
+                    # prior sweep's unlink, or a hand-deletion outside
+                    # prune_memory) but the index line may still be
+                    # dangling from that half-pruned state -- drop it here
+                    # too so this branch SELF-HEALS instead of reporting
+                    # "missing" forever with a stale link left behind.
+                    if not dry_run:
+                        _drop_index_line(memory_dir, filename)
                     report.missing.append(item)
                     continue
                 if sha_anchor(target.read_text(encoding="utf-8")) != sha:
                     report.drifted.append(item)  # changed since import
                     continue
                 if not dry_run:
-                    target.unlink()
+                    # Index line first (idempotent: dropping it twice is a
+                    # no-op), THEN unlink -- so a crash between the two
+                    # calls leaves at worst a dangling file with its index
+                    # entry already gone, never a live index link pointing
+                    # at nothing.
                     _drop_index_line(memory_dir, filename)
+                    target.unlink()
                 report.pruned.append(item)
 
     return report
