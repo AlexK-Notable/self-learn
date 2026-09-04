@@ -425,6 +425,7 @@ DOCTOR_ROWS = (
     "env",
     "orphans",
     "serve",
+    "ui",
 )
 VERDICTS = ("PASS", "WARN", "FAIL", "SKIP", "INFO")
 
@@ -771,6 +772,38 @@ def _orphan_report_row() -> Row:
     return Row(name="orphans", verdict="INFO", detail=str(report))
 
 
+def _ui_row() -> Row:
+    """M-N -- `self-learn-ui.service`'s sibling to `_serve_row` above,
+    minus the heartbeat legs: the UI service writes no heartbeat (10
+    §1; U7), so this row can only report the unit's linked/enabled
+    state, and says so plainly rather than implying a liveness check it
+    cannot make. Local import of `serve` -- same reasoning as
+    `_serve_row`: `provider.py` stays import-light at module load, and
+    `serve` does not import `provider`, so there is no cycle either
+    way.
+
+    Three verdicts: not linked -> SKIP (this machine does not use it,
+    same posture as `_serve_row`'s unconfigured leg); linked but not
+    enabled -> WARN (a stopped/never-started convenience, not a fault);
+    linked and enabled -> PASS."""
+    from . import serve as serve_mod
+
+    unit_name = "self-learn-ui.service"
+    if not serve_mod.is_configured(unit_name):
+        return Row(name="ui", verdict="SKIP", detail=f"{unit_name} is not linked on this machine")
+    if serve_mod.is_enabled(unit_name, "default.target"):
+        return Row(
+            name="ui",
+            verdict="PASS",
+            detail=f"{unit_name} is linked and enabled — state only, it writes no heartbeat",
+        )
+    return Row(
+        name="ui",
+        verdict="WARN",
+        detail=f"{unit_name} is linked but not enabled — state only, it writes no heartbeat",
+    )
+
+
 # --------------------------------------------------------- preflight
 
 
@@ -868,6 +901,9 @@ def preflight(home: Path | str) -> list[Row]:
 
     # serve (U-engine Phase 2, Doc-g)
     rows.append(_serve_row())
+
+    # ui (M-N) — self-learn-ui.service's linked/enabled state
+    rows.append(_ui_row())
 
     return rows
 

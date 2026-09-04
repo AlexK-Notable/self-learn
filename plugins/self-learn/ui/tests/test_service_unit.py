@@ -145,6 +145,30 @@ def test_carries_the_same_b1_env_pin_as_the_miner_unit() -> None:
     assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in miner_service
 
 
+def test_carries_a_start_limit() -> None:
+    """M-N/B-9: `Restart=on-failure` with no start limit lets a
+    boot-order or environment fault restart forever, silently, with no
+    eventual "give up" signal."""
+    content = UI_UNIT.read_text(encoding="utf-8")
+    unit = _section(content, "Unit")
+    assert "StartLimitIntervalSec=" in unit
+    assert "StartLimitBurst=" in unit
+
+
+def test_success_exit_status_includes_sigterm() -> None:
+    """M-N/B-8: a clean, externally-delivered SIGTERM shutdown
+    (`systemctl --user stop`) must not log as a failed exit -- systemd's
+    default success set is {0} only, and SIGTERM is not in it. This
+    unit's OWN idle self-exit (09 §3) is a different path -- since the
+    U13 live trial it sets uvicorn's `should_exit` flag and returns a
+    genuine exit 0, no signal involved -- so it is unaffected by this
+    declaration either way; see cli.py's `_build_server_app` for why a
+    self-SIGTERM draft was abandoned there."""
+    content = UI_UNIT.read_text(encoding="utf-8")
+    service = _section(content, "Service")
+    assert "SuccessExitStatus=143 SIGTERM" in service
+
+
 def test_carries_a_path_floor_including_home_local_bin() -> None:
     """U-uvpath (2026-08-29): self-learn-host.service crash-looped six
     times on 2026-08-28 22:17-22:18 with `exec: uv: not found` (exit
@@ -253,6 +277,27 @@ def test_host_unit_carries_the_same_b1_env_pin_as_the_miner_unit() -> None:
     miner_service = _section(MINER_UNIT.read_text(encoding="utf-8"), "Service")
     assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in host_service
     assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in miner_service
+
+
+def test_host_unit_carries_a_start_limit() -> None:
+    """M-N/B-9: `Restart=on-failure` with no start limit lets a
+    boot-order or environment fault restart forever, silently, with no
+    eventual "give up" signal -- this is the unit that was actually
+    measured crash-looping (2026-08-28), so it is the one this defect
+    matters most for."""
+    content = HOST_UNIT.read_text(encoding="utf-8")
+    unit = _section(content, "Unit")
+    assert "StartLimitIntervalSec=" in unit
+    assert "StartLimitBurst=" in unit
+
+
+def test_host_unit_success_exit_status_includes_sigterm() -> None:
+    """M-N/B-8: a clean SIGTERM shutdown (`systemctl --user stop`) must
+    not log as a failed exit -- systemd's default success set is {0}
+    only, and SIGTERM is not in it."""
+    content = HOST_UNIT.read_text(encoding="utf-8")
+    service = _section(content, "Service")
+    assert "SuccessExitStatus=143 SIGTERM" in service
 
 
 def test_host_unit_carries_a_path_floor_including_home_local_bin() -> None:

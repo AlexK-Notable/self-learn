@@ -97,7 +97,7 @@ def test_dc1_pristine_home_zero_fail_all_rows_once(capsys):
     lines = [ln for ln in out.splitlines() if ln.startswith("doctor: ") and "---" not in ln and "handoff" not in ln]
     for ln in lines:
         assert " FAIL " not in ln
-    single_line_rows = ("switches", "provider", "config", "sdk", "rollout", "region", "credentials", "orphans")
+    single_line_rows = ("switches", "provider", "config", "sdk", "rollout", "region", "credentials", "orphans", "ui")
     for row in single_line_rows:
         assert len(_rows_by_name(out, row)) == 1, row
     assert len(_rows_by_name(out, "models")) == 5  # 4 surfaces + small_fast

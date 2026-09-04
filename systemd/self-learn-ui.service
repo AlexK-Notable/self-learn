@@ -22,9 +22,31 @@
 # convenience, not a hard dependency.
 [Unit]
 Description=self-learn adjudication UI (localhost web server)
+# B-9: neither this unit nor self-learn-host.service carried a start
+# limit -- with Restart=on-failure and no burst cap, a boot-order or
+# environment fault that keeps failing restarts forever, silently, with
+# no eventual "give up" signal for a human or `doctor` to see. A 5-minute
+# window with a burst of 5 mirrors RestartSec=5 below (five back-to-back
+# restarts fill the window); systemd stops trying and marks the unit
+# failed once the burst is exceeded, rather than looping quietly forever.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
+# B-8: a `systemctl --user stop` (an externally-delivered SIGTERM) used
+# to log as a FAILED exit, because systemd's default success set is {0}
+# only and SIGTERM is not in it. Declaring 143 (128+SIGTERM, the POSIX
+# shell convention) AND the bare signal name SIGTERM as additional
+# success statuses makes an intentional stop read as clean, matching
+# what actually happened. NOTE this unit's OWN idle self-exit (09 §3
+# above, cli.py's _build_server_app) is unaffected either way: since the
+# U13 live trial it sets uvicorn's `should_exit` flag and returns a
+# genuine exit 0 -- no signal at all, self-delivered or otherwise (an
+# earlier self-SIGTERM draft was abandoned there for exactly this
+# reason: uvicorn re-raises a captured signal after shutdown, so that
+# draft exited 143 and Restart=on-failure kept restarting it).
+SuccessExitStatus=143 SIGTERM
 # B-1 (doc 13 §7.1), carried from self-learn-miner.service: the systemd
 # user manager does not inherit the shell's env — pin the ledger home
 # explicitly so the unit and the shell agree.
