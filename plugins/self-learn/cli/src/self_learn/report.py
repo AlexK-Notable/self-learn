@@ -610,10 +610,6 @@ _REFERENCE_WHY = {
         "observed, so routing here trades a measured cost for an "
         "unmeasured one."
     ),
-    "no-reads-observed": (
-        "every known reference target has zero reads — this shelf may be "
-        "coverage that isn't."
-    ),
     "partly-cold": (
         "some reference targets have zero reads — part of this shelf may "
         "be coverage that isn't."
@@ -1429,15 +1425,23 @@ def reference_read_verdict(
     elif shelf["enumeration_state"] == "none-enumerable":
         state, safe = "none-enumerable", None
     elif shelf["observation_start"] is None:
-        # U-cap plan v2 §2 (M-A): no `reference-read` event has ever been
-        # recorded anywhere in the tracked plane — this is NOT the same
-        # fact as "every target was read zero times" (`no-reads-observed`
-        # below): the latter implies an observation WINDOW existed and
-        # came back cold, this implies observation never started at all.
-        # Distinct state, `safe_overflow: None` (unknown, not "unsafe").
+        # U-cap plan v2 §2 (M-A) / code-gate r1 fold MINOR m1: no
+        # `reference-read` event has ever been recorded anywhere in the
+        # tracked plane. Within this `instrumented`/enumerable region,
+        # "every target zero-read" (`targets_zero_read == targets_total`)
+        # can ONLY hold when `observation_start is None`: any event with a
+        # valid timestamp anywhere in the ledger makes `observation_start`
+        # non-None, and that event's own target always lands in `rows`
+        # with `reads_all_time >= 1` (every `events_by_target` key is
+        # folded into `rows`, merged or newly created, above). So this
+        # branch subsumes what used to be a separate `no-reads-observed`
+        # state (removed: it could never be reached once this branch
+        # ran first) — the JSON contract now emits `never-observed`
+        # where it once emitted `no-reads-observed`. Distinct meaning
+        # from a genuine "observed and came back cold": observation
+        # never started at all. `safe_overflow: None` (unknown, not
+        # "unsafe").
         state, safe = "never-observed", None
-    elif shelf["targets_zero_read"] == shelf["targets_total"]:
-        state, safe = "no-reads-observed", False
     elif shelf["targets_zero_read"]:
         state, safe = "partly-cold", False
     else:
