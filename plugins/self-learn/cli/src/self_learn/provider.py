@@ -555,28 +555,73 @@ def _bundled_cli_version(sdk_module: Any) -> str:
     return str(getattr(cli_version_ns, "__cli_version__", "?"))
 
 
-def _host_cli_version() -> tuple[str | None, str]:
-    """`Doc-a`'s ONE permitted subprocess: `[<resolved claude>,
+def _resolve_sdk_cli_path() -> tuple[str | None, str]:
+    """The CLI path `claude_agent_sdk` itself would invoke, absent a
+    `SELF_LEARN_SDK_CLI_PATH` override: constructs the SDK's own
+    transport and calls its own `_find_cli` (bundled binary first, then
+    PATH and the SDK's hardcoded fallback locations) -- the SAME
+    resolution a real SDK invocation performs. No subprocess is spawned
+    here (`_find_cli` is pure filesystem/`shutil.which` checks); every
+    failure leg -> `(None, reason)`, never a traceback."""
+    try:
+        from claude_agent_sdk._internal.transport.subprocess_cli import (
+            SubprocessCLITransport,
+        )
+        from claude_agent_sdk.types import ClaudeAgentOptions
+    except ImportError:
+        return None, "claude_agent_sdk transport not importable"
+    try:
+        transport = SubprocessCLITransport(prompt="", options=ClaudeAgentOptions())
+        return transport._find_cli(), ""
+    except Exception as exc:  # noqa: BLE001 - CLINotFoundError et al., never a traceback
+        return None, f"sdk could not resolve a cli path ({exc})"
+
+
+def _operative_cli_version() -> tuple[str | None, str]:
+    """`Doc-a`'s ONE permitted subprocess: `[<operative claude>,
     "--version"]`, argv byte-pinned to two elements, `timeout=10`, every
-    failure leg -> SKIP (never FAIL, never a traceback)."""
-    cli_path = os.environ.get("SELF_LEARN_SDK_CLI_PATH") or shutil.which("claude")
+    failure leg -> SKIP (never FAIL, never a traceback).
+
+    `B-5`: the OPERATIVE cli path is `SELF_LEARN_SDK_CLI_PATH` if set
+    (mirrors `ClaudeAgentOptions.cli_path`, which makes the SDK skip its
+    own `_find_cli` entirely and use the configured path as-is), else
+    whatever `_find_cli` itself would resolve (`_resolve_sdk_cli_path`)
+    -- NOT whatever `claude` happens to be on PATH. That PATH lookup is
+    a different, unrelated tool most of the time (this SDK ships its
+    own bundled binary, found first by `_find_cli`), so comparing IT
+    against the declared bundled-cli requirement produced false WARNs;
+    see `_host_cli_context` below for where that PATH lookup now lives
+    (context only, never compared)."""
+    override = os.environ.get("SELF_LEARN_SDK_CLI_PATH")
+    if override:
+        cli_path: str | None = override
+        skip_reason = ""
+    else:
+        cli_path, skip_reason = _resolve_sdk_cli_path()
     if not cli_path:
-        return None, "claude not found on PATH"
+        return None, skip_reason or "sdk cli path not resolved"
     argv = [cli_path, "--version"]
     try:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=10)
     except FileNotFoundError:
-        return None, "claude binary not found"
+        return None, "resolved cli binary not found"
     except OSError as exc:
-        return None, f"claude --version failed ({exc})"
+        return None, f"resolved cli --version failed ({exc})"
     except subprocess.TimeoutExpired:
-        return None, "claude --version timed out"
+        return None, "resolved cli --version timed out"
     if result.returncode != 0:
-        return None, f"claude --version exited {result.returncode}"
+        return None, f"resolved cli --version exited {result.returncode}"
     tokens = (result.stdout or "").split()
     if not tokens:
-        return None, "claude --version produced no output"
+        return None, "resolved cli --version produced no output"
     return tokens[0], ""
+
+
+def _host_cli_context() -> str:
+    """`B-5`: the `claude` on PATH is NEVER part of the operative pair --
+    a labeled context line only (no subprocess: path only, never
+    executed, never a WARN source)."""
+    return shutil.which("claude") or "not found on PATH"
 
 
 def _sdk_row(*, importer: Callable[[], Any] = _default_sdk_importer) -> Row:
@@ -587,26 +632,33 @@ def _sdk_row(*, importer: Callable[[], Any] = _default_sdk_importer) -> Row:
 
     sdk_version = str(getattr(sdk_module, "__version__", "?"))
     bundled = _bundled_cli_version(sdk_module)
-    host, skip_reason = _host_cli_version()
-    if host is None:
+    resolved, skip_reason = _operative_cli_version()
+    host_context = f"host-cli={_host_cli_context()} (context, not compared)"
+    if resolved is None:
         return Row(
             name="sdk",
             verdict="SKIP",
             detail=(
-                f"sdk={sdk_version} bundled-cli={bundled} — host cli version not probed "
-                f"({skip_reason})"
+                f"sdk={sdk_version} bundled-cli={bundled} — operative cli version not probed "
+                f"({skip_reason}); {host_context}"
             ),
         )
-    if host != bundled:
+    if resolved != bundled:
         return Row(
             name="sdk",
             verdict="WARN",
-            detail=f"sdk={sdk_version} bundled-cli={bundled} host-cli={host} — versions differ",
+            detail=(
+                f"sdk={sdk_version} bundled-cli={bundled} operative-cli={resolved} — versions "
+                f"differ; {host_context}"
+            ),
         )
     return Row(
         name="sdk",
         verdict="PASS",
-        detail=f"sdk={sdk_version} bundled-cli={bundled} host-cli={host} — versions match",
+        detail=(
+            f"sdk={sdk_version} bundled-cli={bundled} operative-cli={resolved} — versions match; "
+            f"{host_context}"
+        ),
     )
 
 

@@ -204,17 +204,17 @@ def test_dc4_sdk_row_injected_importer(monkeypatch):
     def _match_importer():
         return fake
 
-    def _host_match():
+    def _operative_match():
         return "2.1.999", ""
 
-    monkeypatch.setattr(provider, "_host_cli_version", _host_match)
+    monkeypatch.setattr(provider, "_operative_cli_version", _operative_match)
     row = provider._sdk_row(importer=_match_importer)
     assert row.verdict == "PASS"
 
-    def _host_differ():
+    def _operative_differ():
         return "2.1.212", ""
 
-    monkeypatch.setattr(provider, "_host_cli_version", _host_differ)
+    monkeypatch.setattr(provider, "_operative_cli_version", _operative_differ)
     row2 = provider._sdk_row(importer=_match_importer)
     assert row2.verdict == "WARN"
 
@@ -223,6 +223,23 @@ def test_dc4_sdk_row_injected_importer(monkeypatch):
 
     row3 = provider._sdk_row(importer=_raises_import_error)
     assert row3.verdict == "SKIP"
+
+    # `B-5`: the operative pair (SDK-resolved cli vs the declared
+    # bundled requirement) decides the verdict -- the host `claude` on
+    # PATH is a labeled context line ONLY, never a WARN source. A host
+    # that differs wildly from the bundled requirement must still PASS
+    # when the operative probe matches it.
+    #
+    # MUTATION that turns this red: revert `_sdk_row` to compare
+    # `_host_cli_context()` (or the old `_host_cli_version()`) against
+    # `bundled` instead of `_operative_cli_version()` -- this sub-test
+    # would then read WARN (host "9.9.9-unrelated-tool" != bundled
+    # "2.1.999"), not PASS.
+    monkeypatch.setattr(provider, "_operative_cli_version", _operative_match)
+    monkeypatch.setattr(provider, "_host_cli_context", lambda: "9.9.9-unrelated-tool")
+    row_host_differs = provider._sdk_row(importer=_match_importer)
+    assert row_host_differs.verdict == "PASS"
+    assert "9.9.9-unrelated-tool" in row_host_differs.detail  # still surfaced, as context
 
     # the real importer must not raise
     row4 = provider._sdk_row()
@@ -405,9 +422,10 @@ def test_dc10_no_network_no_extra_spawn(monkeypatch, capsys, _home, tmp_path):
     monkeypatch.setattr(socket, "socket", _socket_fail)
 
     # BLOCKER-1(b) -- `subprocess.run` alone was patched here before; the
-    # ONE permitted spawn (`_host_cli_version`) uses `run`, but nothing
-    # guarded `Popen`, and `Popen` at the top of `preflight` (reached on
-    # every default-posture run) survived undetected. Guard both.
+    # ONE permitted spawn (`_operative_cli_version`, née `_host_cli_version`)
+    # uses `run`, but nothing guarded `Popen`, and `Popen` at the top of
+    # `preflight` (reached on every default-posture run) survived
+    # undetected. Guard both.
     def _popen_fail(*a, **kw):
         pytest.fail("subprocess.Popen() was called")
 
