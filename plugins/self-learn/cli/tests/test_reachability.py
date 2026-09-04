@@ -946,6 +946,44 @@ def test_render_null_leg3_both_usable_nothing_null(env, tmp_path, monkeypatch):
         assert counts["reachable"] is not None
 
 
+def test_render_null_settings_absent_top_level_and_by_destination_null(
+    env, tmp_path, monkeypatch
+):
+    """M-F3 / B-15: `settings-absent` (no settings.json file at all) is
+    `claude_dir_usable=True, settings_usable=True` BY DESIGN
+    (test_instrument_four_states, PINNED — this test must never make that
+    assertion false). The two existing per-facet gates in
+    `_surface_reach` are keyed off those two flags, so neither ever fires
+    for this state — before this move, the top-level `checked`/
+    `unmeasurable` and every `by_destination` count rendered as concrete
+    zeros for a settings surface that plain doesn't exist yet,
+    indistinguishable from "measured, and empty" (B-15's stated
+    collapse). The null gate here is keyed directly off
+    `instrument_state`, never by flipping `settings_usable`."""
+    claude_dir = make_claude_dir(
+        tmp_path, monkeypatch, settings=None, name="null-settings-absent"
+    )
+    route_cmd_project(env)
+    facts = report._surface_reach(env.ledger, claude_dir)
+
+    assert facts["instrument_state"] == "settings-absent"
+    # The pinned flags — never flipped by this move.
+    assert facts["claude_dir_usable"] is True
+    assert facts["settings_usable"] is True
+
+    assert facts["checked"] is None
+    assert facts["unmeasurable"] is None
+    for key, counts in facts["by_destination"].items():
+        assert counts == {
+            "reachable": None,
+            "unreachable": None,
+            "unmeasurable": None,
+        }, key
+
+    text = report.render_text(report.gather(env.ledger, claude_dir=claude_dir))
+    assert "NOT MEASURED" in text
+
+
 def test_render_byvariant(env, tmp_path, monkeypatch):
     claude_dir = make_claude_dir(tmp_path, monkeypatch, settings={})
     route_cmd_project(env, record_id="lrn-f1000001")

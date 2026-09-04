@@ -1599,10 +1599,10 @@ def _surface_reach(home: Path, claude_dir: Path) -> dict:
     instrument_state = getattr(rows, "instrument_state", "ok")
     unparseable_records = getattr(rows, "unparseable_records", 0)
 
-    checked = len(rows)
+    checked: int | None = len(rows)
     reachable_n = sum(1 for r in rows if r.state == "reachable")
     unreachable_n = sum(1 for r in rows if r.state == "unreachable")
-    unmeasurable_n = sum(1 for r in rows if r.state == "unmeasurable")
+    unmeasurable_n: int | None = sum(1 for r in rows if r.state == "unmeasurable")
 
     by_destination: dict[str, dict] = {
         key: {"reachable": 0, "unreachable": 0, "unmeasurable": 0}
@@ -1611,8 +1611,12 @@ def _surface_reach(home: Path, claude_dir: Path) -> dict:
     for r in rows:
         by_destination[_surface_variant_key(r)][r.state] += 1
 
-    # §6 rule 2: nulling is PER FACET, never blanket. `checked`,
-    # `unmeasurable`, `unparseable_records` and `rows` always render.
+    # §6 rule 2: nulling is PER FACET, never blanket, for THIS gate
+    # (`claude_dir_usable`/`settings_usable`). `unparseable_records` and
+    # `rows` always render regardless of instrument state; `checked` and
+    # `unmeasurable` render here too — see the `instrument_state ==
+    # "settings-absent"` gate below, which nulls them (and every
+    # `by_destination` value) for that ONE state specifically.
     if not claude_dir_usable or not settings_usable:
         for key in _SETTINGS_DEPENDENT_KEYS:
             by_destination[key] = {"reachable": None, "unreachable": None, "unmeasurable": None}
@@ -1625,6 +1629,23 @@ def _surface_reach(home: Path, claude_dir: Path) -> dict:
     if not claude_dir_usable or not settings_usable:
         top_reachable = None
         top_unreachable = None
+
+    # B-15: `settings-absent` (no settings.json at all) is
+    # `claude_dir_usable=True, settings_usable=True` BY DESIGN (§5.5 —
+    # "absent" is not "broken"; test_instrument_four_states pins this and
+    # stays untouched), so the two per-facet gates above never fire for
+    # it. But every `by_destination` count and the top-level `checked`/
+    # `unmeasurable` totals are corpus-wide aggregates taken against a
+    # settings surface that plain doesn't exist yet — rendering them as
+    # concrete zeros/counts reads as "measured, and empty" when it is
+    # really "not measured at all" (the collapse this move closes).
+    # Keyed directly off `instrument_state`, never by flipping
+    # `settings_usable` — that flag stays pinned True for this state.
+    if instrument_state == "settings-absent":
+        checked = None
+        unmeasurable_n = None
+        for key in _SURFACE_REACH_KEYS:
+            by_destination[key] = {"reachable": None, "unreachable": None, "unmeasurable": None}
 
     try:
         skills_root = load_hosts(home).skills_root
