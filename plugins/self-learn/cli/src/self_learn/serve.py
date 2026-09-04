@@ -595,7 +595,7 @@ def run_forever(
     home, ...)` -- DO thread `home` into `miner.run`/`worker.run`
     themselves, but those two functions' OWN internal housekeeping
     (`miner.miner_dir()`, `worker._p()`) stays bare by the SAME rule
-    this module's `cache_dir` docstring states: `miner_dir`/`_p` are
+    `worker.cache_dir`'s docstring states: `miner_dir`/`_p` are
     themselves confirmed bare writers, so reads paired to them stay
     bare too, not threaded.
     So a `run_forever(A)`/`maybe_kick(A)` pair with `SELF_LEARN_HOME=B`
