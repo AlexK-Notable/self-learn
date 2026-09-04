@@ -523,8 +523,13 @@ class TestSurfaceBudgets:
             # row that renders — the "row rendered" positive control IS
             # the successful `by_dest["reference"]` lookup below: a
             # state that fell through to no row at all would KeyError
-            # here, not silently pass).
-            ("never-observed", "UNKNOWN"),
+            # here, not silently pass). Fold n-4 (gate-flagged NIT):
+            # "UNKNOWN" alone is ALSO in the shared "(not instrumented)"
+            # fallback sentence, so it didn't guard this row actually
+            # took the dedicated `never-observed` branch rather than
+            # falling through to that shared one — a substring unique to
+            # this branch's own sentence catches disabling the branch.
+            ("never-observed", "registered but has never observed a read"),
             ("partly-cold", "never"),
             ("ok", "read at least once"),
         ],

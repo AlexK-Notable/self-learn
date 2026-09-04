@@ -304,7 +304,7 @@ def _verb_timeout_for(
     link-contradicts/followup-done/push/worker-kick) is fast — seconds,
     not minutes — and keeps the flat ``default`` (still generous: a hang
     backstop, not a normal-operation budget)."""
-    if argv and argv[0] == "mine":
+    if argv[:2] == ["mine", "run"]:
         source = env if env is not None else os.environ
         raw = source.get(MINE_RUN_TIMEOUT_ENV)
         if raw:
@@ -322,16 +322,27 @@ def _signal_group(proc: asyncio_subprocess.Process, sig: int) -> bool:
     """Send ``sig`` to the whole process GROUP ``proc`` leads — not just
     ``proc.pid`` (fold m-3: a per-pid kill left a verb's grandchildren —
     ``git``, an editor hook — running when the direct child forked rather
-    than exec'd them). Requires the process to have been spawned with
-    ``start_new_session=True`` (:func:`RealRunner._spawn` does — that
-    call makes ``proc.pid`` its own session AND process group leader, so
-    ``os.getpgid(proc.pid) == proc.pid`` and this signals exactly that
-    subtree, never a group this process happens to share with anything
-    else). Returns ``False`` when the group is already gone
+    than exec'd them). Group-kill is only correct when ``proc.pid`` LEADS
+    its own group — true for everything :func:`RealRunner._spawn` starts
+    (``start_new_session=True`` makes ``proc.pid`` its own session AND
+    process group leader, so ``os.getpgid(proc.pid) == proc.pid``). But
+    this function is public (:data:`__all__`) and ``communicate_bounded``
+    with it, so fold m-1 (gate-flagged MINOR): a caller handed a
+    ``Process`` spawned WITHOUT ``start_new_session=True`` shares the
+    CALLER's own process group — signalling that group would hit the
+    caller too (the UI server, or the test runner), not just the child.
+    Checked here instead of trusted: only ``os.killpg`` when ``proc.pid``
+    actually leads the group; otherwise fall back to a per-pid
+    ``os.kill``, which only ever reaches the one process asked for.
+    Returns ``False`` when the target is already gone
     (``ProcessLookupError`` — the same exited-before-we-signaled race as
-    a per-pid kill, now checked at group granularity)."""
+    a per-pid kill, now checked at whichever granularity applies)."""
     try:
-        os.killpg(os.getpgid(proc.pid), sig)
+        pgid = os.getpgid(proc.pid)
+        if pgid == proc.pid:
+            os.killpg(pgid, sig)
+        else:
+            os.kill(proc.pid, sig)
     except ProcessLookupError:
         return False
     return True

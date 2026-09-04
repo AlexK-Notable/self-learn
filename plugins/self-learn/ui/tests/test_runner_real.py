@@ -511,6 +511,70 @@ class TestProcessGroupKillsGrandchildren:
                     pass
 
 
+class TestSignalGroupRequiresGroupLeadership:
+    """Fold m-1 (gate-flagged MINOR): the fold m-3 change above made
+    `_signal_group` call `os.killpg(os.getpgid(proc.pid), sig)`
+    unconditionally. That is only safe when `proc.pid` LEADS its own
+    process group -- true for everything `RealRunner._spawn` starts
+    (`start_new_session=True`), but `communicate_bounded` is PUBLIC
+    (`__all__`), so a caller handing it a `Process` spawned WITHOUT
+    `start_new_session=True` shares THAT CALLER's own process group with
+    the child -- `killpg` would then signal the caller's whole group
+    (the UI server process, or -- proven here -- this very pytest
+    process), not just the child being bounded. `_signal_group` now
+    checks `os.getpgid(proc.pid) == proc.pid` first and only calls
+    `os.killpg` when that holds; otherwise it falls back to a per-pid
+    `os.kill`, which can only ever reach the one process asked for.
+
+    `os.killpg` is monkeypatched to RAISE (not merely record) if called
+    at all -- both the test's own assertion (a call blows up loudly
+    instead of silently passing) and a safety net: were the fix actually
+    broken here, a real `os.killpg` call against this shared group would
+    signal the pytest process running this very test."""
+
+    async def test_killpg_never_called_for_a_child_outside_its_own_group(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import self_learn_ui.runner as runner_module
+
+        killpg_calls: list[tuple[int, int]] = []
+
+        def _raising_killpg(pgid: int, sig: int) -> None:
+            killpg_calls.append((pgid, sig))
+            raise AssertionError(
+                "os.killpg must never be called for a process that does "
+                "not lead its own group -- fold m-1 regressed"
+            )
+
+        monkeypatch.setattr(runner_module.os, "killpg", _raising_killpg)
+
+        # Deliberately NOT start_new_session=True: this child shares OUR
+        # OWN process group -- exactly the caller shape fold m-1 guards
+        # against. A bare `sleep 60` (no TERM-ignoring trap) dies on the
+        # very first per-pid SIGTERM, so a correct fix never needs the
+        # SIGKILL escalation either.
+        proc = await asyncio.create_subprocess_exec(
+            "sleep",
+            "60",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout_b, stderr_b, code = await communicate_bounded(
+                proc, timeout=0.2, kill_grace=0.3
+            )
+            assert killpg_calls == []
+            assert proc.returncode is not None  # reaped via the per-pid path
+            assert code != 0
+        finally:
+            if proc.returncode is None:  # pragma: no cover - safety net only
+                try:
+                    os.kill(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                await proc.wait()
+
+
 class TestInterruptHookOwnTimeoutErrorNotSwallowed:
     """Fold n-1 (gate-flagged NIT): a bare `except TimeoutError` around
     the interrupt hook's bound cannot tell OUR bound firing from the

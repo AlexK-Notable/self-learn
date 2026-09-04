@@ -1753,10 +1753,14 @@ _REFERENCE_COLD_STATES = frozenset({"partly-cold"})
 def _reference_row_text(fill: dict) -> str:
     state = fill.get("read_rate_state")
     if state == "never-observed":
-        # Cross-lane M-A fold: a MEMBER of `_REFERENCE_UNKNOWN_STATES`
-        # above (epistemically it's still "we don't know if this is
-        # read") but with its OWN sentence, checked before the shared
-        # one below — the read hook IS registered here (instrumentation
+        # Cross-lane M-A fold: THIS branch decides for `never-observed`,
+        # not its membership in `_REFERENCE_UNKNOWN_STATES` above — the
+        # check below never gets a chance to look at this state because
+        # this branch already returns first. (It stays IN that set
+        # anyway, harmlessly: epistemically it agrees with the other
+        # UNKNOWN states, and dropping it would silently fall through to
+        # the wrong sentence below if this dedicated branch were ever
+        # removed.) The read hook IS registered here (instrumentation
         # exists and is working), it has simply never observed a read
         # for this target yet. The shared "(not instrumented)" wording
         # below would be FALSE for this state.

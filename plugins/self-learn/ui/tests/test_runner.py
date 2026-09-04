@@ -150,7 +150,12 @@ class _ScriptedProcess:
     real OS process, keeping this file I/O-free per its own module
     docstring."""
 
-    _next_pid = 900_001  # arbitrary fake-pid range, unique per instance
+    # Fold n-3 (gate-flagged NIT): 900_001 sat INSIDE this host's live pid
+    # range (pid_max 4194304) — a missed monkeypatch would have signalled
+    # a real, unrelated stranger process instead of failing loudly. Seeded
+    # above pid_max so the same mistake can only ever target a pid that
+    # cannot exist.
+    _next_pid = 10_000_001  # arbitrary fake-pid range, unique per instance
 
     def __init__(self, *, hang_forever: bool = False, ignores_term: bool = False) -> None:
         self.pid = _ScriptedProcess._next_pid
