@@ -268,14 +268,19 @@ def unit_dir() -> Path:
     return Path.home() / ".config" / "systemd" / "user"
 
 
-def is_configured() -> bool:
-    """`SUP2`'s "configured" bit: has this machine opted into `serve` by
-    linking the reference unit? A machine running `serve` ad hoc from a
-    terminal (no unit ever linked) reads as unconfigured — correct,
-    because nothing here claims a persistent intent to keep it running,
-    so a doctor check catching it momentarily down is a `SKIP`, not an
-    alarm."""
-    return (unit_dir() / "self-learn-host.service").is_file()
+def is_configured(unit_name: str = "self-learn-host.service") -> bool:
+    """`SUP2`'s "configured" bit: has this machine opted into `unit_name`
+    by linking the reference unit? A machine running the unit's command
+    ad hoc from a terminal (no unit ever linked) reads as unconfigured —
+    correct, because nothing here claims a persistent intent to keep it
+    running, so a doctor check catching it momentarily down is a
+    `SKIP`, not an alarm.
+
+    M-N: generalized to take a unit name (was hardcoded to the host
+    unit) so the `ui` doctor row can ask the same question about
+    `self-learn-ui.service`; the default preserves every existing
+    caller's behaviour unchanged."""
+    return (unit_dir() / unit_name).is_file()
 
 
 def is_enabled(unit_name: str, wanted_by: str) -> bool:

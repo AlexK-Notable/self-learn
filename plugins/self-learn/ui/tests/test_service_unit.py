@@ -48,6 +48,17 @@ def _section(text: str, name: str) -> str:
     return rest[:end]
 
 
+def _has_directive(section: str, literal: str) -> bool:
+    """M-N MINOR (gate r1): a bare `literal in section` substring check
+    is satisfied by a commented-out line (`#SuccessExitStatus=143
+    SIGTERM`) just as readily as a live one -- the whole section's text,
+    comments included, is what `_section` returns. True only when some
+    line, after stripping leading/trailing whitespace, starts with the
+    literal itself (so a `#`-prefixed line never matches: the `#` is
+    part of the stripped line, not the literal)."""
+    return any(line.strip().startswith(literal) for line in section.splitlines())
+
+
 def test_unit_file_exists() -> None:
     assert UI_UNIT.is_file(), f"missing unit at {UI_UNIT}"
 
@@ -143,6 +154,30 @@ def test_carries_the_same_b1_env_pin_as_the_miner_unit() -> None:
     miner_service = _section(MINER_UNIT.read_text(encoding="utf-8"), "Service")
     assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in ui_service
     assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in miner_service
+
+
+def test_carries_a_start_limit() -> None:
+    """M-N/B-9: `Restart=on-failure` with no start limit lets a
+    boot-order or environment fault restart forever, silently, with no
+    eventual "give up" signal."""
+    content = UI_UNIT.read_text(encoding="utf-8")
+    unit = _section(content, "Unit")
+    assert _has_directive(unit, "StartLimitIntervalSec=")
+    assert _has_directive(unit, "StartLimitBurst=")
+
+
+def test_success_exit_status_includes_sigterm() -> None:
+    """M-N/B-8: a clean, externally-delivered SIGTERM shutdown
+    (`systemctl --user stop`) must not log as a failed exit -- systemd's
+    default success set is {0} only, and SIGTERM is not in it. This
+    unit's OWN idle self-exit (09 §3) is a different path -- since the
+    U13 live trial it sets uvicorn's `should_exit` flag and returns a
+    genuine exit 0, no signal involved -- so it is unaffected by this
+    declaration either way; see cli.py's `_build_server_app` for why a
+    self-SIGTERM draft was abandoned there."""
+    content = UI_UNIT.read_text(encoding="utf-8")
+    service = _section(content, "Service")
+    assert _has_directive(service, "SuccessExitStatus=143 SIGTERM")
 
 
 def test_carries_a_path_floor_including_home_local_bin() -> None:
@@ -253,6 +288,27 @@ def test_host_unit_carries_the_same_b1_env_pin_as_the_miner_unit() -> None:
     miner_service = _section(MINER_UNIT.read_text(encoding="utf-8"), "Service")
     assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in host_service
     assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in miner_service
+
+
+def test_host_unit_carries_a_start_limit() -> None:
+    """M-N/B-9: `Restart=on-failure` with no start limit lets a
+    boot-order or environment fault restart forever, silently, with no
+    eventual "give up" signal -- this is the unit that was actually
+    measured crash-looping (2026-08-28), so it is the one this defect
+    matters most for."""
+    content = HOST_UNIT.read_text(encoding="utf-8")
+    unit = _section(content, "Unit")
+    assert _has_directive(unit, "StartLimitIntervalSec=")
+    assert _has_directive(unit, "StartLimitBurst=")
+
+
+def test_host_unit_success_exit_status_includes_sigterm() -> None:
+    """M-N/B-8: a clean SIGTERM shutdown (`systemctl --user stop`) must
+    not log as a failed exit -- systemd's default success set is {0}
+    only, and SIGTERM is not in it."""
+    content = HOST_UNIT.read_text(encoding="utf-8")
+    service = _section(content, "Service")
+    assert _has_directive(service, "SuccessExitStatus=143 SIGTERM")
 
 
 def test_host_unit_carries_a_path_floor_including_home_local_bin() -> None:
