@@ -220,12 +220,31 @@ def spool_quiet(kind: str, **payload) -> Path | None:
 
 @dataclass
 class FlushReport:
-    """What one flush moved: event count per tracked file touched."""
+    """What one flush moved: event count per tracked file touched.
+
+    ``deferred_reason`` (M-M fold r1, gate MAJOR M-1) is set iff this
+    flush could not even START moving events — ``commit_lock`` could not
+    be taken (busy, or the repo itself is unavailable) — in which case
+    every spooled line is STILL spooled (``deferred_events`` says how
+    many) and ``events``/``files`` stay at their zero defaults. Without
+    this field a deferral and an empty spool were indistinguishable to
+    every caller: :meth:`summary` printed "spool empty",
+    ``_flush_spool_best_effort`` returned ``"ok"``, and
+    ``report.gather``'s ``counts_are_lower_bound`` read ``False`` while
+    unflushed events sat invisibly in the spool."""
 
     events: int = 0
     files: list[Path] = field(default_factory=list)
+    deferred_reason: str | None = None
+    deferred_events: int = 0
 
     def summary(self) -> str:
+        if self.deferred_reason is not None:
+            plural = "s" if self.deferred_events != 1 else ""
+            return (
+                f"telemetry flush deferred: {self.deferred_events} "
+                f"event{plural} remain spooled — {self.deferred_reason}"
+            )
         if not self.events:
             return "telemetry flush: spool empty"
         names = ", ".join(p.name for p in self.files)
@@ -256,6 +275,14 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
     publishes nothing — a verb invoked with ``--no-push`` said "keep this
     local", and a flush that pushed anyway would publish that verb's
     commit out from under it.
+
+    M-M fold r1 (gate MINOR m-1): the tracked-plane append and its stage+
+    commit are ONE continuous ``commit_lock`` hold, not two separate
+    acquisitions — the lock opens before the first append and is still
+    held when :func:`_commit_flush` stages and commits, closing the
+    window a second producer could otherwise slip into between "append
+    done" and "committed". Push stays OUTSIDE that hold (a push touches
+    no index).
 
     That commit is this function's job because nothing else does it any
     more (audit 2026-07-16 MAJOR 3): the old docstring justified appending
@@ -317,17 +344,24 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                         + format_refusal(hits)
                     )
 
-        # Phase 2: everything scanned clean — move file by file, all
-        # under commit_lock (M-M / P7 lock-start gate, plan v2 §2/§5):
-        # a tracked-plane append is a mutation of the ledger exactly like
-        # `resolve_record`'s git mv, so the lock must open BEFORE it, not
-        # merely span the later stage+commit inside :func:`_commit_flush`
-        # — the same round-7 rule (module docstring above) applied to the
-        # one producer round 7 never looked at. Locked as one unit: if
-        # the lock cannot be taken (another producer wedged mid-commit),
-        # the whole flush aborts loud-but-not-fatal, same spirit as a git
-        # failure inside `_commit_flush` — nothing below has run yet, so
-        # the spool is untouched and the next flush's scan retries it.
+        # Phase 2: everything scanned clean — move file by file, then
+        # stage+commit, all under ONE commit_lock hold (M-M / P7 lock-
+        # start gate, plan v2 §2/§5; M-M fold r1 MINOR m-1): a tracked-
+        # plane append is a mutation of the ledger exactly like
+        # `resolve_record`'s git mv, so the lock must open BEFORE it —
+        # the same round-7 rule (module docstring above) applied to the
+        # one producer round 7 never looked at — and stay held through
+        # :func:`_commit_flush`'s stage+commit, not released and
+        # reacquired, or a second producer could slip into the gap
+        # between "appended" and "committed". Push stays OUTSIDE this
+        # hold (see :func:`_commit_flush`'s docstring).
+        #
+        # If the lock cannot be taken at all (another producer wedged
+        # mid-commit, or the repo itself is unavailable), NOTHING below
+        # has run yet: the whole flush defers loud-but-not-fatal and the
+        # spool is untouched (fold r1 MAJOR M-1 — `report.files` is still
+        # empty in that case, which is exactly how the `except` below
+        # tells "never appended" apart from "appended, commit failed").
         from . import gitops  # deferred: gitops is imported by every verb path
 
         try:
@@ -357,12 +391,36 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                     fh.truncate()
                     report.events += len(lines)
                     report.files.append(target)
+                # Still inside the SAME hold (m-1): stage+commit, never a
+                # second acquisition.
+                _commit_flush(home, report)
         except gitops.GitOpsError as exc:
-            print(
-                f"self-learn: telemetry flush deferred — commit lock busy "
-                f"({exc}); spool intact, the next flush retries",
-                file=sys.stderr,
-            )
+            if not report.files:
+                # Fold r1 MAJOR M-1: the lock itself could not be taken
+                # (or the repo is unavailable) — nothing was appended,
+                # every spooled line is still on disk. The reason comes
+                # straight from the exception text (fold r1 NIT n-1: a
+                # `GitOpsError` here is not always "lock busy" — it can
+                # also be "not a git repository" — so it is never
+                # hardcoded).
+                report.deferred_reason = str(exc)
+                report.deferred_events = sum(len(lines) for _, _, lines in opened)
+                print(
+                    f"self-learn: telemetry flush deferred — {exc}; spool "
+                    "intact, the next flush retries",
+                    file=sys.stderr,
+                )
+            else:
+                # The append already happened (still holding the lock);
+                # `_commit_flush`'s stage/commit is what failed. Genuinely
+                # benign (unchanged from pre-fold): the events are on disk
+                # and the NEXT flush's commit sweeps them in.
+                print(
+                    f"self-learn: telemetry flush commit failed ({exc}) — "
+                    "the events are flushed but uncommitted; the next "
+                    "flush commits them",
+                    file=sys.stderr,
+                )
             return report
     finally:
         for _path, fh, _lines in opened:
@@ -371,48 +429,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
             finally:
                 fh.close()
 
-    _commit_flush(home, report, push=push)
-    return report
-
-
-def _commit_flush(home: Path, report: FlushReport, *, push: bool = True) -> None:
-    """H-5 (doc 13 §5): the producer commits its own writes. Surgical
-    staging (only the flushed files), pinned subject, best-effort push.
-    The lock covers stage→commit only; the push sits outside it (a push
-    touches no index — see the :mod:`self_learn.gitops` docstring for the
-    scope and the probe behind it).
-
-    Unlike a capture, an uncommitted flush is genuinely benign and stays a
-    warning: the events are already on disk and the NEXT flush commits
-    them (BLOCKER B's "wrote something, then reported success" audit —
-    this is the one path where that is actually true)."""
-    if not report.files:
-        return
-    from . import gitops  # deferred: gitops is imported by every verb path
-
-    try:
-        # This flush was the reported thief: it runs from the DETACHED
-        # worker (run end) as well as from foreground verbs, and its bare
-        # index-wide commit swept a racing verb's git mv-ed rename into
-        # "self-learn: telemetry flush N events" — the verb's pinned
-        # subject then never entered history (H-6). Lock the section;
-        # scope the commit to the flushed files.
-        with gitops.commit_lock(home):
-            gitops.stage(home, report.files)
-            plural = "s" if report.events != 1 else ""
-            gitops.commit(
-                home,
-                f"self-learn: telemetry flush {report.events} event{plural}",
-                paths=report.files,
-            )
-    except gitops.GitOpsError as exc:
-        print(
-            f"self-learn: telemetry flush commit failed ({exc}) — the events "
-            "are flushed but uncommitted; the next flush commits them",
-            file=sys.stderr,
-        )
-        return
-    if push:
+    if report.files and push:
         try:
             gitops.push_if_remote(home)
         except gitops.GitOpsError as exc:
@@ -420,6 +437,41 @@ def _commit_flush(home: Path, report: FlushReport, *, push: bool = True) -> None
                 f"self-learn: telemetry flush committed but not pushed ({exc})",
                 file=sys.stderr,
             )
+    return report
+
+
+def _commit_flush(home: Path, report: FlushReport) -> None:
+    """H-5 (doc 13 §5): the producer commits its own writes. Surgical
+    staging (only the flushed files), pinned subject. Raises
+    :class:`gitops.GitOpsError` on failure — the caller (:func:`flush`)
+    is the one that knows whether anything was appended yet, and prints
+    accordingly.
+
+    M-M fold r1 (MINOR m-1): this function no longer opens its own
+    ``commit_lock`` or pushes — the CALLER must already hold the lock
+    (opened before the first append, per :func:`flush`'s docstring), so
+    append and commit are one continuous critical section rather than two
+    separate hand-offs a racing writer could slip between. The push half
+    lives in :func:`flush`, after that hold is released (a push touches
+    no index — see the :mod:`self_learn.gitops` docstring for the scope
+    and the probe behind it)."""
+    if not report.files:
+        return
+    from . import gitops  # deferred: gitops is imported by every verb path
+
+    # This flush was the reported thief: it runs from the DETACHED
+    # worker (run end) as well as from foreground verbs, and its bare
+    # index-wide commit swept a racing verb's git mv-ed rename into
+    # "self-learn: telemetry flush N events" — the verb's pinned
+    # subject then never entered history (H-6). Scope the commit to the
+    # flushed files (the lock itself is the CALLER's, already held).
+    gitops.stage(home, report.files)
+    plural = "s" if report.events != 1 else ""
+    gitops.commit(
+        home,
+        f"self-learn: telemetry flush {report.events} event{plural}",
+        paths=report.files,
+    )
 
 
 def read_events(home: Path | str) -> list[dict]:

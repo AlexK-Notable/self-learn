@@ -1368,6 +1368,39 @@ class TestT12FlushState:
 
         assert observed == {"ok", "refused", "failed", "not-attempted"}
 
+    def test_t12_6_deferred_when_flush_could_not_start(self, env, monkeypatch):
+        """M-M fold r1 MAJOR M-1: a flush that never got to append (its
+        `commit_lock` busy, or the repo itself unavailable) must not read
+        as "ok" — `FlushReport.deferred_reason` is how `telemetry.flush`
+        says so, and `_flush_spool_best_effort` must pass a non-"ok"
+        state through, not swallow it the way it did before the fold
+        (when a deferral and an empty spool were indistinguishable)."""
+
+        def fake_flush(home, *, push=True):
+            return telemetry.FlushReport(
+                deferred_reason="commit lock <path> still held after 0.3s",
+                deferred_events=2,
+            )
+
+        monkeypatch.setattr(cli.telemetry, "flush", fake_flush)
+        state = cli._flush_spool_best_effort(env.ledger)
+        assert state == "deferred"
+
+    def test_t12_7_deferred_makes_counts_a_lower_bound(self, env):
+        """The one caller that consumes `_flush_spool_best_effort`'s
+        outcome (`_cmd_report` -> `report.gather(flush_state=...)`) must
+        see its `counts_are_lower_bound` flip True on "deferred" exactly
+        like it already does on "refused"/"failed" — this is the whole
+        point of `_flush_spool_best_effort` no longer returning "ok" for
+        a deferral (fold r1 MAJOR M-1)."""
+        facts = report.gather(env.ledger, today=TODAY, flush_state="deferred")
+        assert (
+            facts["context_budget"]["conditional"]["reference"][
+                "counts_are_lower_bound"
+            ]
+            is True
+        )
+
 
 # ------------------------------------------------------------------ T13
 

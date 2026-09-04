@@ -27,13 +27,17 @@ memo. So nothing here is enumerated by hand:
   ``def``, every module, no list);
 - the mutating primitives are the leaves (``Path.write_text`` / ``.rename``
   / ``.unlink`` / ``shutil.move`` / ``os.replace`` / ``Record.write`` /
-  ``git mv|rm|add|commit`` / ``gitops.stage`` / ``gitops.commit`` /
-  ``open(path, "a"/"a+").write`` — P7 (M-M, plan v2 §5): a tracked-plane
-  append is a mutation exactly like ``Record.write``, but was INVISIBLE
-  to the ``Record.write`` check above whenever the bound name happened to
-  sit in :data:`_STREAMS` (``out``/``fh``/…) — this leaf is keyed on the
-  ``open`` call's OWN append mode, not the receiver's name, precisely so
-  it cannot be dodged the same way), and every function that reaches one
+  ``git mv|rm|add|commit`` / ``gitops.stage`` / ``gitops.commit`` / the
+  "open(a+) append" leaf — P7 (M-M, plan v2 §5; widened fold r1 NIT n-2):
+  ``.write``/``.writelines`` on the bound name, ``print(..., file=name)``,
+  and ``json.dump(obj, name)``/``json.dump(obj, fp=name)`` on ANY name
+  bound by ``open(path, "a"/"a+"/…)`` (or ``path.open(...)``) — a
+  tracked-plane append is a mutation exactly like ``Record.write``, but
+  was INVISIBLE to the ``Record.write`` check above whenever the bound
+  name happened to sit in :data:`_STREAMS` (``out``/``fh``/…) — this leaf
+  is keyed on the ``open`` call's OWN append mode and the call SHAPE, not
+  the receiver's name, precisely so it cannot be dodged the same way),
+  and every function that reaches one
   is derived by fixpoint over the call graph;
 - the ENTRYPOINTS are derived too: a "root" is any function with no
   in-package caller. Nobody declares them.
@@ -329,17 +333,32 @@ def _is_append_open(call: ast.Call) -> bool:
     )
 
 
-def _append_write_calls(node) -> set[int]:
-    """``id()`` of every ``.write(...)`` Call inside a ``with`` block that
-    opened its bound name via :func:`_is_append_open` — the P7 leaf (M-M):
-    an append-mode append is a tracked-or-cache mutation regardless of
+def _append_mutation_calls(node) -> set[int]:
+    """``id()`` of every mutating Call inside a ``with`` block that opened
+    its bound name via :func:`_is_append_open` — the P7 leaf (M-M): an
+    append-mode append is a tracked-or-cache mutation regardless of
     whether the receiver's bare NAME sits in :data:`_STREAMS` (``out``,
     ``fh``, …), which is precisely the gap that made ``telemetry.flush``'s
-    tracked-plane append invisible before M-M. Keyed on ``id(call)`` (the
-    SAME ast.Call objects are walked again in :meth:`_Analysis.mutations`,
-    since the tree is parsed once and re-walked, never re-parsed) rather
-    than line number, so two calls sharing one physical line can never be
-    confused for each other."""
+    tracked-plane append invisible before M-M.
+
+    Three call SHAPES on the bound name all count (fold r1 NIT n-2: a
+    ``.write``-only leaf dodges every one of these on the SAME
+    append-opened stream):
+
+    - ``<name>.write(...)`` / ``<name>.writelines(...)`` — the receiver-
+      attribute shape ``.write`` already covered;
+    - ``print(..., file=<name>)`` — the builtin, matched only by its
+      ``file=`` keyword (never ``stdout=``/other keywords, which is
+      exactly what keeps ``subprocess.Popen(..., stdout=out)`` — worker.py
+      ``_spawn_window`` / miner.py ``_spawn_run``'s real shape — unflagged:
+      neither passes ``out`` to ``print`` at all);
+    - ``json.dump(obj, <name>)`` / ``json.dump(obj, fp=<name>)`` — checked
+      by dotted ``json.dump`` specifically, positional OR ``fp=`` keyword.
+
+    Keyed on ``id(call)`` (the SAME ast.Call objects are walked again in
+    :meth:`_Analysis.mutations`, since the tree is parsed once and
+    re-walked, never re-parsed) rather than line number, so two calls
+    sharing one physical line can never be confused for each other."""
     hits: set[int] = set()
     for stmt in ast.walk(node):
         if not isinstance(stmt, ast.With):
@@ -355,14 +374,38 @@ def _append_write_calls(node) -> set[int]:
             continue
         for body_stmt in stmt.body:
             for inner in ast.walk(body_stmt):
+                if not isinstance(inner, ast.Call):
+                    continue
+                func = inner.func
                 if (
-                    isinstance(inner, ast.Call)
-                    and isinstance(inner.func, ast.Attribute)
-                    and inner.func.attr == "write"
-                    and isinstance(inner.func.value, ast.Name)
-                    and inner.func.value.id in names
+                    isinstance(func, ast.Attribute)
+                    and func.attr in ("write", "writelines")
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id in names
                 ):
                     hits.add(id(inner))
+                elif isinstance(func, ast.Name) and func.id == "print":
+                    if any(
+                        kw.arg == "file"
+                        and isinstance(kw.value, ast.Name)
+                        and kw.value.id in names
+                        for kw in inner.keywords
+                    ):
+                        hits.add(id(inner))
+                elif (
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "dump"
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == "json"
+                ):
+                    target = inner.args[1] if len(inner.args) >= 2 else None
+                    if target is None:
+                        target = next(
+                            (kw.value for kw in inner.keywords if kw.arg == "fp"),
+                            None,
+                        )
+                    if isinstance(target, ast.Name) and target.id in names:
+                        hits.add(id(inner))
     return hits
 
 
@@ -402,7 +445,7 @@ class _Analysis:
             self.aliases[path.stem] = alias
             self.imported[path.stem] = imported
         self._guarded = {q: self._guarded_lines(n) for q, n in self.funcs.items()}
-        self._appends = {q: _append_write_calls(n) for q, n in self.funcs.items()}
+        self._appends = {q: _append_mutation_calls(n) for q, n in self.funcs.items()}
 
     # -- guarding
 
@@ -487,7 +530,7 @@ class _Analysis:
         for call in [n for n in ast.walk(node) if isinstance(n, ast.Call)]:
             what = _primitive(call) or _git_primitive(call)
             if what is None and id(call) in appends:
-                what = 'open(a+).write'
+                what = "open(a+) append"
             if what is None:
                 targets = [
                     t
@@ -625,10 +668,17 @@ class TestNoMutationPrecedesItsLock:
             ("verbs", "    compile_reference(a, b)\n    with gitops.commit_lock(home):\n        gitops.commit(home, 'm', paths=[])\n"),
             ("miner", "    _reconcile_and_land(home, p, r, c, w)\n    with gitops.commit_lock(home):\n        gitops.commit(home, 'm', paths=[])\n"),
             ("teach", "    create_record(home, record)\n    with gitops.commit_lock(home):\n        gitops.commit(home, 'm', paths=[])\n"),
-            # P7 widening (M-M): the new open(a+).write leaf's own bug
+            # P7 widening (M-M): the new open(a+) append leaf's own bug
             # class — an append BEFORE the lock, exactly the shape moving
             # M-M's lock back would recreate in `flush` itself.
             ("telemetry", "    with open(home / 'x.jsonl', 'a+') as out:\n        out.write('x')\n    with gitops.commit_lock(home):\n        gitops.commit(home, 'm', paths=[])\n"),
+            # fold r1 NIT n-2: the SAME bug class through the three call
+            # shapes a `.write`-only leaf would dodge — one planted case
+            # per shape, each a positive control that the widened leaf
+            # actually fires on it (not just on `.write`).
+            ("telemetry", "    with open(home / 'x.jsonl', 'a+') as out:\n        out.writelines(['x'])\n    with gitops.commit_lock(home):\n        gitops.commit(home, 'm', paths=[])\n"),
+            ("telemetry", "    with open(home / 'x.jsonl', 'a+') as out:\n        print('x', file=out)\n    with gitops.commit_lock(home):\n        gitops.commit(home, 'm', paths=[])\n"),
+            ("telemetry", "    with open(home / 'x.jsonl', 'a+') as out:\n        json.dump({'a': 1}, out)\n    with gitops.commit_lock(home):\n        gitops.commit(home, 'm', paths=[])\n"),
         ],
     )
     def test_it_catches_a_planted_violation(self, module, snippet, tmp_path):

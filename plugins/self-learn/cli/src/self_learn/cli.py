@@ -2414,6 +2414,14 @@ def _cmd_telemetry(args: argparse.Namespace) -> int:
             print(f"self-learn telemetry flush: {exc}", file=sys.stderr)
             return exc.exit_code
         print(flush_report.summary())
+        # Fold r1 MAJOR M-1: `summary()` now says "deferred" honestly on
+        # stdout when the lock could not be taken (was "spool empty"
+        # before the fold) — the CLI's exit namespace has no existing
+        # non-error, non-OK code for "deferred" (EXIT_BATCH_PARTIAL is
+        # `batch`'s own multi-item semantics; every other non-OK code
+        # names an actual failure), so this stays EXIT_OK: a deferred
+        # flush is not an error, it retries on its own next time, and the
+        # text is now honest either way.
         return EXIT_OK
     if args.telemetry_command == "read-observed":
         return _cmd_telemetry_read_observed(args)
@@ -2475,11 +2483,13 @@ def _flush_spool_best_effort(home=None, *, no_push: bool = False) -> str:
     MAJOR 3) but must not PUSH, or it would publish the very commit the
     verb was told to keep local.
 
-    Returns the outcome — ``"ok"`` | ``"refused"`` | ``"failed"`` (U-readref
-    §6.7/§10.2) — the three cases this function already distinguishes
+    Returns the outcome — ``"ok"`` | ``"refused"`` | ``"failed"`` |
+    ``"deferred"`` (U-readref §6.7/§10.2; ``"deferred"`` added M-M fold r1
+    MAJOR M-1) — the four cases this function now distinguishes
     internally. `_cmd_report` is the one caller that consumes it (passed to
-    `report.gather` as `flush_state`); every other caller may still ignore
-    it, unchanged."""
+    `report.gather` as `flush_state`, which gates
+    ``counts_are_lower_bound`` on anything other than ``"ok"``); every
+    other caller may still ignore it, unchanged."""
     try:
         flush_report = telemetry.flush(
             home if home is not None else resolve_home(), push=not no_push
@@ -2491,6 +2501,15 @@ def _flush_spool_best_effort(home=None, *, no_push: bool = False) -> str:
         print(f"self-learn: telemetry flush failed: {exc}", file=sys.stderr)
         return "failed"
     else:
+        if flush_report.deferred_reason is not None:
+            # Fold r1 MAJOR M-1: a deferred flush is NOT "ok" — the
+            # spool still holds events `read_events` never sees, so the
+            # one caller that consumes this outcome (`_cmd_report`, via
+            # `report.gather`'s `flush_state`) must see something other
+            # than "ok" or its `counts_are_lower_bound` reads False while
+            # counts silently under-report.
+            print(flush_report.summary(), file=sys.stderr)
+            return "deferred"
         if flush_report.events:
             print(flush_report.summary(), file=sys.stderr)
         return "ok"

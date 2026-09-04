@@ -176,6 +176,14 @@ def test_flush_locks_before_tracked_append_and_scan_runs_first(home, monkeypatch
     assert report.events == 1
 
     kinds = [k for k, _ in events]
+    # M-M fold r1 MINOR m-1: append and its commit are now ONE continuous
+    # hold, not two separate acquisitions — so there is exactly ONE
+    # enter/exit pair for the whole flush, not one around the append and
+    # a second inside the (pre-fold) `_commit_flush`.
+    assert kinds.count("enter") == 1, (
+        f"commit_lock entered {kinds.count('enter')} times in one flush "
+        f"— append and its commit must share ONE hold: {kinds}"
+    )
     first_enter = kinds.index("enter")
     # positive control: the scan really ran, and only BEFORE the first lock
     assert kinds[:first_enter] == ["scan"], (
@@ -187,6 +195,34 @@ def test_flush_locks_before_tracked_append_and_scan_runs_first(home, monkeypatch
     exit_idx = first_enter + 1
     assert kinds[exit_idx] == "exit"
     assert events[exit_idx][1] and "offer-made" in events[exit_idx][1]
+
+
+def test_flush_holds_commit_lock_once_across_append_and_commit(home, monkeypatch):
+    """M-M fold r1 MINOR m-1, isolated: counts how many times the REAL
+    `commit_lock` is entered during one `flush()` call. The pre-fold
+    shape opened it TWICE — once around the tracked append in `flush`,
+    once again inside `_commit_flush`'s own stage+commit — leaving a gap
+    a second writer could slip into between "appended" and "committed".
+    After the fold there must be exactly one entry: one continuous hold
+    spanning append through commit, push still outside it."""
+    telemetry.spool_event("offer-made", now=NOW)
+    real_lock = gitops.commit_lock
+    entries: list[int] = []
+
+    @contextlib.contextmanager
+    def counting_lock(repo, **kwargs):
+        entries.append(1)
+        with real_lock(repo, **kwargs):
+            yield
+
+    monkeypatch.setattr(gitops, "commit_lock", counting_lock)
+    report = telemetry.flush(home, push=False)
+
+    assert report.events == 1
+    assert len(entries) == 1, (
+        f"commit_lock was entered {len(entries)} time(s) in one flush — "
+        "expected exactly 1 (append and commit sharing one hold)"
+    )
 
 
 def test_flush_defers_loud_but_not_fatal_when_commit_lock_is_busy(
@@ -213,7 +249,52 @@ def test_flush_defers_loud_but_not_fatal_when_commit_lock_is_busy(
     assert report.events == 0
     assert list(telemetry.telemetry_dir(home).iterdir()) == []
     assert spool.read_text() == before  # nothing moved, nothing truncated
-    assert "deferred" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "deferred" in err
+    # Fold r1 MAJOR M-1: the deferral is on the REPORT OBJECT, not just
+    # stderr — every reader of `FlushReport` (not only one printing it)
+    # must be able to tell "deferred" from "spool empty". The reason
+    # comes straight from the exception text (fold r1 NIT n-1: never
+    # hardcoded — a `GitOpsError` here is not always "lock busy").
+    assert report.deferred_reason == "commit lock <path> still held after 0.3s"
+    assert report.deferred_events == 1
+    assert "commit lock <path> still held after 0.3s" in err
+    assert "1 event" in report.summary()
+    assert "remain spooled" in report.summary()
+
+
+def test_flush_drains_the_spool_on_the_next_attempt_after_a_deferral(
+    home, monkeypatch
+):
+    """Fold r1 MAJOR M-1's other half: a deferred flush must not lose the
+    event — the NEXT flush (once the lock is free again) drains it like
+    nothing happened."""
+    telemetry.spool_event("offer-made", now=NOW)
+    real_lock = gitops.commit_lock  # NOT monkeypatch.undo(): the autouse
+    # `redirect` fixture shares this SAME monkeypatch instance (fixture
+    # caching, one per test) for its own XDG_CACHE_HOME/SELF_LEARN_ACTOR
+    # setenv calls — `.undo()` would revert THOSE too, silently pointing
+    # `spool_dir()` at a different (real) cache dir and making this test
+    # pass for the wrong reason (measured: `.undo()` here made the
+    # "drained" flush read an empty spool — a DIFFERENT directory, not a
+    # genuinely-drained one). Re-setattr only the one thing patched.
+
+    def wedged(repo, **kwargs):
+        raise gitops.GitOpsError("commit lock <path> still held after 0.3s")
+
+    monkeypatch.setattr(gitops, "commit_lock", wedged)
+    deferred = telemetry.flush(home, push=False)
+    assert deferred.deferred_reason is not None
+    assert deferred.events == 0
+
+    monkeypatch.setattr(gitops, "commit_lock", real_lock)
+    drained = telemetry.flush(home, push=False)
+
+    assert drained.deferred_reason is None
+    assert drained.events == 1
+    tracked = telemetry.telemetry_dir(home) / "2026-07.testhost.jsonl"
+    assert "offer-made" in tracked.read_text()
+    assert (telemetry.spool_dir() / "2026-07.testhost.jsonl").read_text() == ""
 
 
 # ------------------------------------------------------------- read_events
