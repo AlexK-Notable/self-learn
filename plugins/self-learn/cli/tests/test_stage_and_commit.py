@@ -149,6 +149,54 @@ def test_commit_failure_becomes_half_written_with_the_touched_paths(
     assert "f.txt" in git(repo, "status", "--porcelain").stdout
 
 
+def test_a_failing_stage_becomes_half_written_not_a_bare_giterror(
+    tmp_path, monkeypatch
+):
+    """Fold r1 BLOCKER 1. ``stage`` is exactly as post-mutation as
+    ``commit`` — the caller's own write already landed on disk before
+    either is ever called — so a failing ``git add`` must convert to
+    :class:`gitops.HalfWrittenError` (exit 7, "here is the repair") the
+    same way a failing ``git commit`` does, never surface as a bare
+    :class:`gitops.GitOpsError` (exit 6, "nothing was written" — false
+    here, the worktree write is real)."""
+    repo, path = _seed(tmp_path, "stage-failure")
+    _rewrite(path, "changed\n")
+    flag = failing_git_shim(tmp_path, monkeypatch, sub="add")
+    flag.touch()
+    try:
+        with pytest.raises(gitops.HalfWrittenError) as excinfo:
+            gitops.stage_and_commit(repo, [path], "self-learn: add will fail")
+    finally:
+        flag.unlink()
+
+    assert str(path) in excinfo.value.repair
+
+
+def test_paths_are_actually_staged_by_the_seam(tmp_path, monkeypatch):
+    """Fold r1 MINOR 2. The seam's own ``stage()`` call, observed
+    directly rather than inferred from a commit landing: ``git commit --
+    <paths>`` reads WORKTREE content and bypasses the index (see
+    :func:`gitops.commit`'s own docstring), so a positive-control commit
+    landing does not, by itself, prove ``stage()`` ran. Forcing the
+    COMMIT to fail (not the add) leaves the index exactly as ``stage()``
+    left it — proving the paths were really staged, not just that a
+    commit eventually happened to land."""
+    repo, path = _seed(tmp_path, "stage-observed")
+    _rewrite(path, "changed\n")
+    flag = failing_git_shim(tmp_path, monkeypatch)  # sub="commit"
+    flag.touch()
+    try:
+        with pytest.raises(gitops.HalfWrittenError):
+            gitops.stage_and_commit(repo, [path], "self-learn: will fail")
+    finally:
+        flag.unlink()
+
+    assert gitops.staged_diff(repo, [path]).strip(), (
+        "the path was never staged — stage_and_commit's own stage() call "
+        "did not run (or ran too late to be observed)"
+    )
+
+
 # ============================================================= lock-agnostic
 
 
@@ -213,6 +261,24 @@ class TestHostsShapeDelegate:
             flag.unlink()
         assert str(path) in excinfo.value.repair
 
+    def test_stage_failure_raises_half_written_not_a_bare_giterror(
+        self, tmp_path, monkeypatch
+    ):
+        """Fold r1 BLOCKER 1, through the real delegate."""
+        repo, path = _seed(tmp_path, "hosts-stage-failure")
+        _rewrite(path, "changed\n")
+        flag = failing_git_shim(tmp_path, monkeypatch, sub="add")
+        flag.touch()
+        try:
+            with gitops.commit_lock(repo):
+                with pytest.raises(gitops.HalfWrittenError) as excinfo:
+                    hosts._commit_or_half_written(
+                        repo, [path], "self-learn: add will fail"
+                    )
+        finally:
+            flag.unlink()
+        assert str(path) in excinfo.value.repair
+
 
 class TestSettingsShapeDelegate:
     """``settings._commit_or_half_written(home, touched, message, body)``
@@ -254,6 +320,24 @@ class TestSettingsShapeDelegate:
             flag.unlink()
         assert str(path) in excinfo.value.repair
 
+    def test_stage_failure_raises_half_written_not_a_bare_giterror(
+        self, tmp_path, monkeypatch
+    ):
+        """Fold r1 BLOCKER 1, through the real delegate."""
+        repo, path = _seed(tmp_path, "settings-stage-failure")
+        _rewrite(path, "changed\n")
+        flag = failing_git_shim(tmp_path, monkeypatch, sub="add")
+        flag.touch()
+        try:
+            with gitops.commit_lock(repo):
+                with pytest.raises(gitops.HalfWrittenError) as excinfo:
+                    settings._commit_or_half_written(
+                        repo, [path], "self-learn: add will fail", None
+                    )
+        finally:
+            flag.unlink()
+        assert str(path) in excinfo.value.repair
+
 
 class TestVerbsShapeDelegate:
     """``verbs._commit_ledger(home, touched, message, note=None)`` — the
@@ -289,6 +373,24 @@ class TestVerbsShapeDelegate:
             with gitops.commit_lock(repo):
                 with pytest.raises(gitops.HalfWrittenError) as excinfo:
                     verbs._commit_ledger(repo, [path], "self-learn: will fail")
+        finally:
+            flag.unlink()
+        assert str(path) in excinfo.value.repair
+
+    def test_stage_failure_raises_half_written_not_a_bare_giterror(
+        self, tmp_path, monkeypatch
+    ):
+        """Fold r1 BLOCKER 1, through the real delegate."""
+        repo, path = _seed(tmp_path, "verbs-stage-failure")
+        _rewrite(path, "changed\n")
+        flag = failing_git_shim(tmp_path, monkeypatch, sub="add")
+        flag.touch()
+        try:
+            with gitops.commit_lock(repo):
+                with pytest.raises(gitops.HalfWrittenError) as excinfo:
+                    verbs._commit_ledger(
+                        repo, [path], "self-learn: add will fail"
+                    )
         finally:
             flag.unlink()
         assert str(path) in excinfo.value.repair

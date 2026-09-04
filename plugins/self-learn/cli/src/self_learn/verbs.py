@@ -1000,15 +1000,26 @@ def _commit_ledger(
     docstring already said "that is the verb's fact to state, not this
     module's", and the verb used to state the opposite fact
     unconditionally — the seam function inherits that same posture, not
-    a new one)."""
-    staged = gitops.stage(home, touched)
+    a new one).
+
+    Fold r1 MINOR 1: ``staged`` is the same existence-filter
+    :func:`gitops.stage` itself applies (``[p for p in touched if
+    p.exists()]``) — computed here directly rather than by calling
+    ``gitops.stage`` a second time, since :func:`gitops.stage_and_commit`
+    below already stages every one of ``touched`` for real. Two ``git
+    add`` calls for the same paths were harmless (idempotent) but
+    redundant."""
+    staged = [p for p in touched if p.exists()]
     sha = gitops.stage_and_commit(home, touched, message, note)
-    if sha is None:
-        # Unreachable in practice: `allow_empty` defaults False, so
-        # `stage_and_commit` only returns `None` when a caller opts into
-        # it, which `_commit_ledger` never does. Narrows the type for
-        # the tuple return below rather than asserting past it silently.
-        raise gitops.GitOpsError(f"commit {message!r}: no sha returned")
+    # Fold r1 NIT 1: unreachable, not asserted past silently — `allow_empty`
+    # defaults False, so `stage_and_commit` only returns `None` when a
+    # caller opts into it, which `_commit_ledger` never does. An `assert`
+    # (not a raised `GitOpsError`) so this can never masquerade as a real
+    # git failure if the invariant it names ever stops holding.
+    assert sha is not None, (
+        f"commit {message!r}: stage_and_commit returned None without "
+        "allow_empty=True"
+    )
     return staged, sha
 
 

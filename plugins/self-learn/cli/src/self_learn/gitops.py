@@ -633,12 +633,23 @@ def stage_and_commit(
     ``allow_empty=True`` is the other half of the union, for a future
     caller with no pre-check of its own: skip the commit and return
     ``None`` when staging *paths* produced no staged diff, instead of
-    surfacing a false half-written state."""
+    surfacing a false half-written state.
+
+    **Fold r1, BLOCKER 1**: ``stage`` (and the ``allow_empty`` check that
+    reads what it staged) must run INSIDE this same ``try`` — a failing
+    ``git add`` is exactly as post-mutation as a failing ``git commit``
+    (the caller's own write already landed before either is called), so
+    it gets the identical conversion to :class:`HalfWrittenError`. All
+    three former copies had ``stage`` inside their ``try`` (hosts.py:766,
+    settings.py:1083, verbs.py:999 at 77e6078); the first draft of this
+    seam moved it above the ``try`` by mistake, which downgraded a
+    stage failure to a bare :class:`GitOpsError` (exit 6, "nothing was
+    written") over paths that were, in fact, on disk."""
     touched = list(paths)
-    stage(root, touched)
-    if allow_empty and not staged_diff(root, touched):
-        return None
     try:
+        stage(root, touched)
+        if allow_empty and not staged_diff(root, touched):
+            return None
         return commit(root, subject, body=body, paths=touched)
     except HalfWrittenError:
         raise
