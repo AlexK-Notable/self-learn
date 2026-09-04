@@ -28,7 +28,7 @@ TOPIC_FILES = ("beacon-host.md", "research-archive.md", "review-doctrine.md")
 ORIGIN_RE = re.compile(r"^memory/[a-z-]+\.md#sha256:[0-9a-f]{12}$")
 
 
-def setup(tmp_path: Path) -> tuple[Path, Path]:
+def setup(tmp_path: Path) -> tuple[Path, Path, Path]:
     # doc 13 §3: project-scoped memories bind to a per-project bucket keyed
     # by the project's path; import_memory takes it via ``project_path``
     # (default: git toplevel of cwd). Tests pass one explicit sandbox repo
@@ -193,10 +193,21 @@ def test_prune_rejected_and_superseded_also_prune(tmp_path):
 
 
 def test_prune_dry_run_touches_nothing(tmp_path):
+    """M-Q code-gate r1 fold, MAJOR (must fold): the missing-target
+    branch's `if not dry_run:` guard was untested -- deleting it left the
+    suite fully green while a dry run rewrote MEMORY.md. `rejected` puts
+    that branch LIVE during this same dry run (its file is gone before
+    the snapshot below, so a dry-run index-drop would show up as a
+    changed `MEMORY.md` in `after`), so `assert after == before` now
+    covers both branches: the routed/pruned path AND the
+    already-missing path."""
     home, memory_dir, project = setup(tmp_path)
     report = _import(home, memory_dir, project)
     routed = id_for(report, "research-archive.md")
     resolve_record(home, routed, "routed", destination="reference")
+    rejected = id_for(report, "beacon-host.md")
+    resolve_record(home, rejected, "rejected")
+    (memory_dir / "beacon-host.md").unlink()
 
     before = {p.name: p.read_text(encoding="utf-8") for p in memory_dir.glob("*.md")}
     prune = prune_memory(home, memory_dir, dry_run=True)
@@ -204,8 +215,11 @@ def test_prune_dry_run_touches_nothing(tmp_path):
     assert [(rid, f) for rid, f, _ in prune.pruned] == [
         (routed, "research-archive.md")
     ]
+    assert [(rid, f) for rid, f, _ in prune.missing] == [
+        (rejected, "beacon-host.md")
+    ]
     after = {p.name: p.read_text(encoding="utf-8") for p in memory_dir.glob("*.md")}
-    assert after == before  # nothing deleted, nothing rewritten
+    assert after == before  # nothing deleted, nothing rewritten -- either branch
     assert "would prune" in prune.summary()
 
 

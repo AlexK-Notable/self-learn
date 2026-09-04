@@ -285,6 +285,26 @@ def prune_memory(home: Path, memory_dir: Path, dry_run: bool = False) -> PruneRe
                     # dangling from that half-pruned state -- drop it here
                     # too so this branch SELF-HEALS instead of reporting
                     # "missing" forever with a stale link left behind.
+                    # code-gate r1 fold MAJOR: this drop is filename-only
+                    # (no provenance check possible -- the target that
+                    # would let us verify content, as the success branch's
+                    # sha_anchor gate does, is by definition absent here;
+                    # MEMORY.md's `- [Title](file.md)` line carries no
+                    # record id or sha of its own, and it is authored by
+                    # the native memory tool, not by this importer, so
+                    # there is no title/shape self-learn ever wrote to
+                    # cross-check against). Residual: if a DIFFERENT
+                    # memory were ever re-authored under this exact
+                    # filename after this one's file vanished but before
+                    # this sweep runs, its index line would still be
+                    # dropped -- bounded by the fact that `target.is_file()`
+                    # would be True the moment such a file actually
+                    # existed again (routing that case through the
+                    # sha-gated success/drifted branches instead, never
+                    # this one), and by import's own origin-based dedupe,
+                    # which does not create a second record for the same
+                    # filename+sha. Gated by dry_run so a dry run mutates
+                    # nothing, matching the success branch below.
                     if not dry_run:
                         _drop_index_line(memory_dir, filename)
                     report.missing.append(item)
