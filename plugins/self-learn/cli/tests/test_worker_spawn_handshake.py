@@ -25,11 +25,13 @@ This file exercises ONLY that handshake, at the `worker._open_window` /
 real ledger (git) home, since `worker.cache_dir()` only hashes the
 resolved home PATH (`ledger.resolve_home`), never reads it. It does not
 import from `tests/test_worker.py` (armor-pinned; that file is run
-unchanged alongside this one). The one exception is
+unchanged alongside this one). Two tests call `worker.run()` directly:
 `test_run_registers_the_pid_before_the_coalesce_sleep_and_the_lock`
-(fold r3), which DOES call `worker.run()` directly — the only way to
-observe ORDER between its first few statements — but never lets it run
-to completion against the fake `home`; see that test's own docstring.
+(fold r3), which observes ORDER between its first few statements and
+stops it there, and
+`test_a_failed_registration_is_logged_and_does_not_abort_run` (fold r4),
+which lets it run to completion against the fake `home` (an idle run: no
+`worker.dirty`, so no follow-on spawn); see each test's own docstring.
 
 Fold history: **r1** (audit 2026-09-02 gate, 1 MAJOR + 1 MINOR + 3 NIT)
 folded MAJOR 1 (an exception out of `_spawn_window` now leaves no marker
@@ -41,10 +43,15 @@ DONE WHEN forbade. **r2** shipped MINOR 1 once the coordinator confirmed
 that file's `NOT_REPO_TRUTH` allowlist may take exactly one new entry per
 lane — but proved only that `run()` calls the registration function
 somewhere, not that it runs before the coalesce sleep and the lock,
-which is the entire point of MINOR 1. **r3** (this state) closes that:
-pins the order with a real test, and rewrites the deadline rationale and
-value now that the child registers at startup rather than after its own
-coalesce sleep (see the paragraph above).
+which is the entire point of MINOR 1. **r3** closes that: pins the
+order with a real test, and rewrites the deadline rationale and value
+now that the child registers at startup rather than after its own
+coalesce sleep (see the paragraph above). **r4** (this state; an
+integration find, not a gate round) makes the registration BEST-EFFORT:
+an `OSError` out of the window write is logged and swallowed, because
+the armor-pinned `tests/test_attrib.py` IN8 test patches `os.replace`
+globally and the escaping error aborted `worker.run()` on the merged
+sprint tree.
 """
 
 from __future__ import annotations
@@ -67,7 +74,9 @@ def home(tmp_path, monkeypatch) -> Path:
     `worker.spawn.lock`) is exercised here, never the ledger itself, so
     `home` need not exist or be a git repo — but every function under
     test still takes one (it rides into a real spawn's `cwd`, irrelevant
-    once `_spawn_window` is mocked, as it is in every test below).
+    once `_spawn_window` is mocked, as it is in every test below except
+    the fold-r4 run-to-completion test, whose idle `run()` never reaches
+    `_open_window` because no `worker.dirty` exists).
     Explicit `SELF_LEARN_HOME`/`XDG_CACHE_HOME` redirection (rather than
     relying on `tests/conftest.py`'s autouse `_worker_test_defaults`)
     keeps this file self-contained and independent of fixture ordering."""

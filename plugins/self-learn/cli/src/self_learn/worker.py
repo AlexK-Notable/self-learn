@@ -1318,18 +1318,25 @@ def _register_running_pid() -> None:
     stalled_forever` part (e) monkeypatching `os.replace` globally to
     simulate a crash mid-install-copy, which this function's own write
     shares the same `os.replace` call with) must NEVER abort the whole
-    `run()`. If the child never registers, nothing is lost: the
-    parent's "spawning" marker (or the child's own crash, mid-write,
-    which `_write_window_durable`'s own `except BaseException:
-    tmp.unlink(...); raise` already leaves no temp-file litter for)
-    simply ages out at `SPAWN_MARKER_DEADLINE_SECS` and is reclaimable
-    by a later kick exactly as if this function had never run at all —
-    the ORIGINAL, pre-fold-r2 behavior, not a new failure mode. Logged,
-    not silent, so the skip is visible in `worker.log`."""
+    `run()`. If the child never registers, the window keeps whatever the
+    parent wrote, exactly as before fold r2 (`fb34978`): in the common
+    case the parent has already rewritten the marker with the child's
+    real pid microseconds after `Popen`, so a later kick reads a live
+    pid and reports `absorbed-window` — no deadline exposure at all;
+    only if the parent died between its marker write and that rewrite
+    does the "spawning" marker stand (fresh → `absorbed-race`, older
+    than `SPAWN_MARKER_DEADLINE_SECS` → reclaimed); and once this child
+    reaches `worker.lock` it clears the window itself. A crash mid-write
+    leaves no temp-file litter (`_write_window_durable`'s own
+    `except BaseException: tmp.unlink(...); raise`). Not a new failure
+    mode. Logged, not silent, so the skip is visible in `worker.log`."""
     try:
         _write_window_durable(_p("worker.window"), str(os.getpid()))
     except OSError as exc:
-        log(f"pid registration skipped: {exc}; the spawn marker ages out at the deadline")
+        log(
+            f"pid registration skipped: {exc}; the window keeps what the parent "
+            "wrote (a real pid, or a marker the deadline reclaims)"
+        )
 
 
 def _open_window(home: Path, *, no_push: bool = False) -> str:
