@@ -102,11 +102,13 @@ __all__ = [
     "has_remote",
     "host_lock",
     "host_lock_path",
+    "is_tracked",
     "known_paths",
     "paths_dirty",
     "push_if_remote",
     "push_pending",
     "push_with_retry",
+    "remove",
     "unpushed_commits",
     "stage",
     "stage_and_commit",
@@ -557,6 +559,26 @@ def known_paths(repo: Path, paths: Iterable[Path | str]) -> list[str]:
         if probe.returncode == 0:
             out.append(str(p))
     return out
+
+
+def is_tracked(repo: Path, path: Path | str) -> bool:
+    """Whether *path* is known to git in *repo* — the INDEX only (plain
+    ``ls-files --error-unmatch``, no ``--with-tree=HEAD``). Right after a
+    ``git mv`` of it, the OLD path reads as untracked HERE: it is gone
+    from the index (the new path is what is staged), even though it
+    still lives in HEAD until the mv is committed. :func:`known_paths` is
+    the HEAD-widened variant — use that one where an old, git-mv'd path
+    must still count."""
+    return _git(repo, "ls-files", "--error-unmatch", "--", str(path)).returncode == 0
+
+
+def remove(repo: Path, path: Path | str) -> None:
+    """``git rm --quiet`` *path* out of the index and the worktree. A thin
+    wrapper, not a forgiving one: no ``--ignore-unmatch`` (an untracked
+    *path* raises — callers guard with :func:`is_tracked` first) and no
+    ``-f`` (a tracked *path* modified since its last commit also raises;
+    see M-D's report for whether either caller here can reach that shape)."""
+    _git_ok(repo, "rm", "--quiet", "--", str(path))
 
 
 def commit(

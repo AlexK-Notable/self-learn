@@ -64,7 +64,6 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field, replace
@@ -992,15 +991,17 @@ def _commit_ledger(
 
     Everything this function does is post-mutation by construction — the
     caller has already run ``resolve_record`` (a ``git mv`` + a record
-    rewrite) — and ``ledger_ops`` raises ``LedgerOpsError``, never
-    ``GitOpsError``. So a ``GitOpsError`` from ``stage``/``commit`` means
-    the ledger is mutated and the commit did not land — that is
-    :class:`gitops.HalfWrittenError`, which :func:`gitops.stage_and_commit`
-    now raises directly (audit 2026-07-16 round 7 BLOCKER 2; the gitops
-    docstring already said "that is the verb's fact to state, not this
-    module's", and the verb used to state the opposite fact
-    unconditionally — the seam function inherits that same posture, not
-    a new one).
+    rewrite) — and by the time control reaches HERE, any earlier
+    ``GitOpsError`` from a ledger_ops mutation (e.g. ``_remove_file``) has
+    already been caught and converted by THAT call's own caller (see
+    ``_remove_file``'s docstring). So a ``GitOpsError`` from
+    ``stage``/``commit`` means the ledger is mutated and the commit did
+    not land — that is :class:`gitops.HalfWrittenError`, which
+    :func:`gitops.stage_and_commit` now raises directly (audit
+    2026-07-16 round 7 BLOCKER 2; the gitops docstring already said
+    "that is the verb's fact to state, not this module's", and the verb
+    used to state the opposite fact unconditionally — the seam function
+    inherits that same posture, not a new one).
 
     Fold r1 MINOR 1: ``staged`` is the same existence-filter
     :func:`gitops.stage` itself applies (``[p for p in touched if
@@ -3663,15 +3664,25 @@ def _show_canon_info(home: Path, bucket, record: Record) -> dict:
 
 def _show_lifecycle(home: Path, record_id: str) -> list[dict]:
     """The record's commit history — ``git -C <home> log --grep=<id>
-    --oneline``, newest-first as git itself orders it."""
-    proc = subprocess.run(
-        [
-            "git", "-C", str(home), "log",
-            f"--grep={record_id}", "--fixed-strings",
-            "--pretty=format:%H%x09%ad%x09%s", "--date=short",
-        ],
-        capture_output=True, text=True, check=False,
-    )
+    --oneline``, newest-first as git itself orders it. M-G: a LOCAL,
+    read-only git call — bounded the same as every other one
+    (``gitops.GIT_LOCAL_TIMEOUT``) via the shared primitive rather than a
+    bare, unbounded ``subprocess.run``. A wedged git here is a detail-view
+    surface, not a mutation: it degrades to an empty history rather than
+    raising and taking the whole ``show`` verb down with it."""
+    from .primitives import procs
+
+    try:
+        proc = procs.run_bounded(
+            [
+                "git", "-C", str(home), "log",
+                f"--grep={record_id}", "--fixed-strings",
+                "--pretty=format:%H%x09%ad%x09%s", "--date=short",
+            ],
+            timeout=gitops.GIT_LOCAL_TIMEOUT,
+        )
+    except procs.BoundedTimeout:
+        return []
     out: list[dict] = []
     for line in proc.stdout.splitlines():
         parts = line.split("\t", 2)
@@ -3994,8 +4005,18 @@ def route(
                 # the survivor; an inconsistent leftover is removed here.
                 from .ledger_ops import _remove_file
 
-                if _remove_file(home, merge_path):
-                    touched = touched + [merge_path]
+                try:
+                    if _remove_file(home, merge_path):
+                        touched = touched + [merge_path]
+                except gitops.GitOpsError as exc:
+                    # M-D fold r3 (MINOR): `touched` already holds this
+                    # record's own git-mv and any supersede_record
+                    # mutations from earlier in this same route — built
+                    # HERE so the repair names all of it, not just this
+                    # cleanup's own path (see `_remove_file`'s docstring).
+                    raise gitops.HalfWrittenError.for_commit(
+                        home, message, [*touched, merge_path], exc
+                    ) from exc
             # U-hostmode REC1/REC9: the compile record's EXPECTATION can
             # only be computed now — `_compile_set` reads `resolved/`,
             # and `resolve_record` (above) just moved this record there.
@@ -7448,8 +7469,20 @@ def bucket_prune(
             touched: list[Path] = []
             for b in candidates:
                 meta = b.path / "meta.yaml"
-                if _remove_file(home, meta):
-                    touched.append(meta)
+                try:
+                    if _remove_file(home, meta):
+                        touched.append(meta)
+                except gitops.GitOpsError as exc:
+                    # M-D fold r3 (MINOR): built HERE, not inside
+                    # `_remove_file` — this loop is the only place that
+                    # holds `touched`, the earlier buckets' removals
+                    # already staged in this same sequence. Naming only
+                    # `meta` (the FAILING path) would leave an operator
+                    # who runs the repair literally with those earlier
+                    # deletions still sitting uncommitted.
+                    raise gitops.HalfWrittenError.for_commit(
+                        home, message, [*touched, meta], exc
+                    ) from exc
             staged, sha = _commit_ledger(home, touched, message, None)
             for b in candidates:
                 if b.path.is_dir():

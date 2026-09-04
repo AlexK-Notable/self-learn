@@ -461,16 +461,32 @@ def _init_for_registration(path: Path | str) -> None:
             f"{what}; create the project directory first, then re-run"
         )
     target = target.resolve()
-    init = subprocess.run(
-        ["git", "init", str(target)], capture_output=True, text=True
-    )
+    # M-G: LOCAL git calls (init/commit --allow-empty) — same bound as
+    # every other local git call in this module (:func:`_is_git_repo`,
+    # :func:`is_repo_root`), now routed through the bounded primitive
+    # instead of a bare, unbounded `subprocess.run`.
+    from .primitives import procs
+
+    try:
+        init = procs.run_bounded(
+            ["git", "init", str(target)], timeout=gitops.GIT_LOCAL_TIMEOUT
+        )
+    except procs.BoundedTimeout as exc:
+        raise HostsError(f"git init {target} did not finish: {exc}") from exc
     if init.returncode != 0:
         raise HostsError(f"git init {target} failed: {init.stderr.strip()}")
-    commit = subprocess.run(
-        ["git", "-C", str(target), "commit", "--allow-empty", "-m", INIT_COMMIT_SUBJECT],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        commit = procs.run_bounded(
+            ["git", "-C", str(target), "commit", "--allow-empty", "-m", INIT_COMMIT_SUBJECT],
+            timeout=gitops.GIT_LOCAL_TIMEOUT,
+        )
+    except procs.BoundedTimeout as exc:
+        raise HostsError(
+            f"{target} was initialized (git init) but the empty root "
+            f"commit did not finish: {exc} — nothing was registered; the "
+            "path stays a zero-commit repo and a retry skips the init "
+            "step (inspect the repo by hand, then re-run)"
+        ) from exc
     if commit.returncode != 0:
         raise HostsError(
             f"{target} was initialized (git init) but the empty root "
