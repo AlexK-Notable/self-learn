@@ -32,6 +32,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import sys
 from abc import ABC, abstractmethod
 from asyncio import (
@@ -39,6 +40,7 @@ from asyncio import (
     Lock,
     create_subprocess_exec,
     subprocess as asyncio_subprocess,
+    timeout as asyncio_timeout,
     wait_for,
 )
 from collections.abc import Awaitable, Callable
@@ -47,7 +49,9 @@ from pathlib import Path
 from re import compile as re_compile
 
 __all__ = [
+    "DEFAULT_MINE_RUN_TIMEOUT_SECS",
     "FakeRunner",
+    "MINE_RUN_TIMEOUT_ENV",
     "NotWiredRunner",
     "RealRunner",
     "RunResult",
@@ -243,11 +247,30 @@ async def _default_interrupt_hook(record_id: str) -> None:
 # task cancellation the child is escalated terminate -> grace -> kill ->
 # reap, never left running (leaked) or left a zombie (un-reaped).
 
-#: Ceiling on a verb subprocess's `communicate()` — generous by design:
-#: `mine run` drives the SDK-backed analyst and can legitimately run for
-#: minutes. This is a backstop against a HANG, never a normal-operation
-#: budget, so it errs long.
+#: Ceiling on a SHORT verb subprocess's `communicate()` (every pinned verb
+#: except `mine run` — route/reject/defer/graduate/confirm-recurrence/
+#: link-contradicts/followup-done/push/worker-kick: all seconds, not
+#: minutes) — generous by design, a backstop against a HANG, never a
+#: normal-operation budget. `mine run` gets its OWN, much longer bound;
+#: see :func:`_verb_timeout_for` and :data:`MINE_RUN_TIMEOUT_ENV` below
+#: (fold m-4).
 DEFAULT_VERB_TIMEOUT_SECS = 600.0
+
+#: Env var carrying `mine run`'s bound (fold m-4: a flat 600s ceiling on
+#: the OUTER subprocess could SIGKILL a legitimate run before the CLI's
+#: OWN inner timeout — `self_learn.worker.INVOKE_TIMEOUT_SECS`, the batch
+#: invocation the miner drives — even fires). Read directly from the
+#: environment rather than importing the CLI package (this module has no
+#: dependency on the cli package's internals, module docstring above), so
+#: the UI's outer bound tracks whatever the operator has configured for
+#: the CLI's own inner timeout instead of hardcoding a second, possibly
+#: -drifting copy of the same number. Same var the CLI's own
+#: `settings.py` registers as `worker.invoke_timeout_secs`.
+MINE_RUN_TIMEOUT_ENV = "SELF_LEARN_INVOKE_TIMEOUT_SECS"
+
+#: Fallback when the env var above is unset/unparseable/non-positive —
+#: mirrors `worker.INVOKE_TIMEOUT_SECS`'s own default exactly (30 min).
+DEFAULT_MINE_RUN_TIMEOUT_SECS = 1800.0
 
 #: Ceiling on the injected interrupt hook (U6's pane-session interrupt,
 #: task brief point 4: "the injected interrupt hook is bounded") — a
@@ -267,38 +290,89 @@ def _exit_code_of(proc: asyncio_subprocess.Process) -> int:
     return proc.returncode if proc.returncode is not None else 1
 
 
+def _verb_timeout_for(
+    argv: list[str], *, default: float, env: dict[str, str] | None
+) -> float:
+    """Per-verb bound (fold m-4). `mine run` legitimately runs for
+    minutes — it drives the SDK-backed analyst through the CLI's own
+    worker/miner pipeline, itself bounded internally by
+    :data:`MINE_RUN_TIMEOUT_ENV` (default 1800s/30min — the same number
+    `self_learn.worker.INVOKE_TIMEOUT_SECS` uses). A flat ``default``
+    ceiling on the OUTER subprocess this UI spawns would SIGKILL a
+    legitimate run before that INNER timeout even fires. Every other
+    pinned verb (route/reject/defer/graduate/confirm-recurrence/
+    link-contradicts/followup-done/push/worker-kick) is fast — seconds,
+    not minutes — and keeps the flat ``default`` (still generous: a hang
+    backstop, not a normal-operation budget)."""
+    if argv and argv[0] == "mine":
+        source = env if env is not None else os.environ
+        raw = source.get(MINE_RUN_TIMEOUT_ENV)
+        if raw:
+            try:
+                value = float(raw)
+            except ValueError:
+                value = None
+            if value is not None and value > 0:
+                return value
+        return DEFAULT_MINE_RUN_TIMEOUT_SECS
+    return default
+
+
+def _signal_group(proc: asyncio_subprocess.Process, sig: int) -> bool:
+    """Send ``sig`` to the whole process GROUP ``proc`` leads — not just
+    ``proc.pid`` (fold m-3: a per-pid kill left a verb's grandchildren —
+    ``git``, an editor hook — running when the direct child forked rather
+    than exec'd them). Requires the process to have been spawned with
+    ``start_new_session=True`` (:func:`RealRunner._spawn` does — that
+    call makes ``proc.pid`` its own session AND process group leader, so
+    ``os.getpgid(proc.pid) == proc.pid`` and this signals exactly that
+    subtree, never a group this process happens to share with anything
+    else). Returns ``False`` when the group is already gone
+    (``ProcessLookupError`` — the same exited-before-we-signaled race as
+    a per-pid kill, now checked at group granularity)."""
+    try:
+        os.killpg(os.getpgid(proc.pid), sig)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 async def _terminate_then_kill(
     proc: asyncio_subprocess.Process, *, kill_grace: float
 ) -> None:
-    """terminate -> grace -> kill -> reap. Never raises: a process that
-    exits between our own check and the signal is not an error —
-    ``ProcessLookupError`` is exactly that race, caught and ignored.
-    Every wait here is itself bounded by ``kill_grace``, so a child that
-    ignores BOTH signals (not a real scenario — SIGKILL cannot be
-    blocked or ignored — but kept bounded defensively) still returns
-    control to the caller rather than hanging this function forever."""
+    """terminate -> grace -> kill -> reap, at PROCESS-GROUP granularity
+    (fold m-3). Never raises: a group that's already gone between our own
+    check and the signal is not an error — :func:`_signal_group`'s
+    ``False`` return is exactly that race, and is treated as "already
+    handled", never retried. Every wait here is itself bounded by
+    ``kill_grace``, so a child that ignores BOTH signals (not a real
+    scenario — SIGKILL cannot be blocked or ignored — but kept bounded
+    defensively) still returns control to the caller rather than hanging
+    this function forever."""
     if proc.returncode is not None:
         return  # already exited — nothing to escalate
-    try:
-        proc.terminate()
-    except ProcessLookupError:
+    if not _signal_group(proc, signal.SIGTERM):
         return
     try:
         await wait_for(proc.wait(), timeout=kill_grace)
         return
     except TimeoutError:
         pass
-    if proc.returncode is None:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            return
-        try:
-            await wait_for(proc.wait(), timeout=kill_grace)
-        except TimeoutError:
-            pass  # best-effort reap; SIGKILL cannot be ignored, so the
-            # process is dying regardless — a later ``proc.wait()`` still
-            # reaps it cleanly (asyncio's child watcher owns that).
+    # `wait_for` above only raises `TimeoutError` when `proc.wait()` had
+    # NOT yet resolved by the deadline — asyncio sets `proc.returncode`
+    # via the exact same child-watcher callback that resolves `wait()`,
+    # so reaching here already guarantees `proc.returncode is None`; a
+    # second `if proc.returncode is None:` guard here would be an
+    # equivalent mutant (n-3 fold — no real execution path makes it
+    # false, so no test can observe removing it).
+    if not _signal_group(proc, signal.SIGKILL):
+        return
+    try:
+        await wait_for(proc.wait(), timeout=kill_grace)
+    except TimeoutError:
+        pass  # best-effort reap; SIGKILL cannot be ignored, so the
+        # process is dying regardless — a later ``proc.wait()`` still
+        # reaps it cleanly (asyncio's child watcher owns that).
 
 
 async def communicate_bounded(
@@ -353,6 +427,19 @@ class RealRunner(VerbRunner):
     scoped to the touched record when one is identifiable
     (:func:`extract_record_id`), else ``front`` (``push``, ``mine
     run``).
+
+    Per-verb subprocess bound (fold m-4, :func:`_verb_timeout_for`):
+    ``mine run`` — the only pinned verb that legitimately runs for
+    minutes (it drives the SDK-backed analyst through the CLI's own
+    worker/miner pipeline) — is bounded by :data:`MINE_RUN_TIMEOUT_ENV`
+    (``SELF_LEARN_INVOKE_TIMEOUT_SECS``, default 1800s/30min — the same
+    number the CLI's own inner batch timeout,
+    ``self_learn.worker.INVOKE_TIMEOUT_SECS``, uses). Every OTHER pinned
+    verb (``route``/``reject``/``defer``/``graduate``/
+    ``confirm-recurrence``/``link contradicts``/``followup done``/
+    ``push``/``worker kick``) is fast (seconds) and keeps the flat
+    ``verb_timeout`` constructor default (600s — still a hang backstop,
+    never a normal-operation budget).
     """
 
     def __init__(
@@ -430,13 +517,23 @@ class RealRunner(VerbRunner):
                 # and every OTHER tab's verb dispatch behind it — forever;
                 # on timeout the verb still proceeds (best-effort
                 # courtesy, never a gate on whether the verb may run).
+                #
+                # `asyncio.timeout()` (not `wait_for`) + `.expired()`
+                # (fold n-1): a bare `except TimeoutError` around
+                # `wait_for(...)` cannot tell OUR bound firing from the
+                # hook's OWN code raising an unrelated `TimeoutError` —
+                # both look identical at that point, and a hook's genuine
+                # error must never be silently swallowed as if it were
+                # just our deadline. `Timeout.expired()` distinguishes
+                # them precisely (empirically verified: it is `True` only
+                # when THIS context's own deadline elapsed).
+                bound = asyncio_timeout(self._interrupt_timeout)
                 try:
-                    await wait_for(
-                        self._interrupt_active_session(record_id),
-                        timeout=self._interrupt_timeout,
-                    )
+                    async with bound:
+                        await self._interrupt_active_session(record_id)
                 except TimeoutError:
-                    pass
+                    if not bound.expired():
+                        raise
             result = await self._spawn(argv)
         if self._refresh_callback is not None:
             scope = f"record:{record_id}" if record_id is not None else "front"
@@ -454,14 +551,26 @@ class RealRunner(VerbRunner):
                 env=full_env,
                 stdout=asyncio_subprocess.PIPE,
                 stderr=asyncio_subprocess.PIPE,
+                # fold m-3: a new session (and therefore a new process
+                # GROUP, `setsid()` under the hood) makes `proc.pid` its
+                # own group leader — required for `_terminate_then_kill`'s
+                # `os.killpg` to signal exactly this verb's subtree
+                # (including any grandchildren it forks, e.g. `git`, an
+                # editor hook) and NEVER a group this server process
+                # happens to share with anything else.
+                start_new_session=True,
             )
         except OSError as exc:
             return RunResult(1, stderr=f"{label} failed to start: {exc}")
         # BOUNDED (M-H / C05): never a bare `await proc.communicate()` —
         # see `communicate_bounded` for the terminate -> grace -> kill ->
         # reap contract on timeout AND on this task being cancelled.
+        # Per-verb bound (fold m-4): `mine run` gets a much longer
+        # ceiling than every other pinned verb — see
+        # `_verb_timeout_for`'s own docstring.
+        timeout = _verb_timeout_for(argv, default=self._verb_timeout, env=self._env)
         stdout_b, stderr_b, exit_code = await communicate_bounded(
-            proc, timeout=self._verb_timeout, kill_grace=self._kill_grace
+            proc, timeout=timeout, kill_grace=self._kill_grace
         )
         return RunResult(
             exit_code=exit_code,
