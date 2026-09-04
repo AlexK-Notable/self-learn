@@ -111,6 +111,7 @@ __all__ = [
     "remove",
     "unpushed_commits",
     "stage",
+    "stage_and_commit",
     "staged_diff",
     "toplevel",
 ]
@@ -612,6 +613,70 @@ def commit(
         args += ["--", *scoped]
     _git_ok(repo, *args)
     return _git_ok(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def stage_and_commit(
+    root: Path,
+    paths: Iterable[Path | str],
+    subject: str,
+    body: str | None = None,
+    *,
+    allow_empty: bool = False,
+) -> str | None:
+    """Stage → pinned commit, with the state fact attached to a failure —
+    the one seam under :func:`hosts._commit_or_half_written`,
+    :func:`settings._commit_or_half_written`, and :func:`verbs.
+    _commit_ledger` (audit 2026-09-02 sprint-1 plan v2 §2, move M-O).
+    **Lock-agnostic**: it neither takes nor assumes a lock. Every one of
+    its callers already held one before this move (or, for
+    :func:`verbs._stage_and_commit`, opens one itself before delegating)
+    and keeps doing exactly that after it — this function only
+    consolidates what used to run INSIDE that lock, never the lock
+    itself.
+
+    Everything here is post-mutation by construction: callers only reach
+    this after their own registry/ledger write already landed on disk, so
+    a :class:`GitOpsError` from either :func:`stage` or :func:`commit`
+    means the write happened and the commit did NOT — exactly
+    :class:`HalfWrittenError`'s state (never raised by ``stage``/
+    ``commit`` themselves; whether a repo was already mutated is the
+    CALLER's fact to state, not this module's — see
+    :class:`HalfWrittenError`'s own docstring).
+
+    ``allow_empty`` (default ``False``) is the union of the three
+    replaced copies' behaviour on "nothing to commit": none of them
+    special-cased it — each instead guards with its OWN idempotent
+    pre-check before ever reaching a commit call (``hosts.host_add``'s
+    unchanged-registration return, ``settings.config_set``'s
+    ``type(...) is type(...)`` compare, ``settings.config_unset``'s
+    ``config.present`` check) — so the default reproduces that
+    byte-for-byte: a byte-identical rewrite still lets ``git commit``
+    fail "nothing to commit" and still becomes ``HalfWrittenError``.
+    ``allow_empty=True`` is the other half of the union, for a future
+    caller with no pre-check of its own: skip the commit and return
+    ``None`` when staging *paths* produced no staged diff, instead of
+    surfacing a false half-written state.
+
+    **Fold r1, BLOCKER 1**: ``stage`` (and the ``allow_empty`` check that
+    reads what it staged) must run INSIDE this same ``try`` — a failing
+    ``git add`` is exactly as post-mutation as a failing ``git commit``
+    (the caller's own write already landed before either is called), so
+    it gets the identical conversion to :class:`HalfWrittenError`. All
+    three former copies had ``stage`` inside their ``try`` (hosts.py:766,
+    settings.py:1083, verbs.py:999 at 77e6078); the first draft of this
+    seam moved it above the ``try`` by mistake, which downgraded a
+    stage failure to a bare :class:`GitOpsError` (exit 6, "nothing was
+    written") over paths that were, in fact, on disk."""
+    touched = list(paths)
+    try:
+        stage(root, touched)
+        if allow_empty and not staged_diff(root, touched):
+            return None
+        return commit(root, subject, body=body, paths=touched)
+    except HalfWrittenError:
+        raise
+    except GitOpsError as exc:
+        raise HalfWrittenError.for_commit(root, subject, touched, exc) from exc
 
 
 def head_sha(repo: Path) -> str:

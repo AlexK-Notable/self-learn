@@ -1075,17 +1075,14 @@ def _dirty_config_check(home: Path) -> None:
 
 def _commit_or_half_written(home: Path, touched: list[Path], message: str, body: str | None) -> None:
     """stage -> pinned commit, with the state fact attached to a
-    failure -- `hosts.py`'s own `_commit_or_half_written`, ported
-    rather than imported (hosts.py does not export it, and importing a
-    private name across modules is worse than the few duplicated
-    lines). **Callers must already hold** `gitops.commit_lock(home)`."""
-    try:
-        gitops.stage(home, touched)
-        gitops.commit(home, message, body=body, paths=touched)
-    except gitops.HalfWrittenError:
-        raise
-    except gitops.GitOpsError as exc:
-        raise gitops.HalfWrittenError.for_commit(home, message, touched, exc) from exc
+    failure -- now the thin `settings` face of :func:`gitops.stage_and_
+    commit` (audit 2026-09-02 sprint-1 M-O), which replaces the ported
+    copy of `hosts.py`'s own `_commit_or_half_written` this docstring
+    used to describe (hosts.py does not export it, and importing a
+    private name across modules was worse than the duplication -- moot
+    now that both delegate to the same seam instead). **Callers must
+    already hold** `gitops.commit_lock(home)`."""
+    gitops.stage_and_commit(home, touched, message, body)
 
 
 def _scan_config_write_or_refuse(name: str, note: str | None, value: str | None) -> None:

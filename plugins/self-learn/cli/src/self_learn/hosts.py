@@ -769,7 +769,11 @@ def host_add(
 def _commit_or_half_written(
     home: Path, touched: list[Path], message: str
 ) -> None:
-    """stage → pinned commit, with the state fact attached to the failure.
+    """stage → pinned commit, with the state fact attached to the
+    failure — now the thin `hosts` face of :func:`gitops.stage_and_commit`
+    (audit 2026-09-02 sprint-1 M-O): the try/except this docstring used to
+    describe moved there verbatim, so every one of `hosts`'s three call
+    sites keeps behaving exactly as before.
 
     **Callers must already hold** ``gitops.commit_lock(home)``: everything
     here is post-mutation by construction, so a :class:`gitops.GitOpsError`
@@ -778,13 +782,7 @@ def _commit_or_half_written(
     carries the repair (audit 2026-07-16 round 7 BLOCKER 2: the ``host``
     verbs raised the bare class, which dispatch would have rendered as
     "nothing was written")."""
-    try:
-        gitops.stage(home, touched)
-        gitops.commit(home, message, paths=touched)
-    except gitops.HalfWrittenError:
-        raise
-    except gitops.GitOpsError as exc:
-        raise gitops.HalfWrittenError.for_commit(home, message, touched, exc) from exc
+    gitops.stage_and_commit(home, touched, message)
 
 
 def _project_bucket_for(home: Path, ref: str) -> Path | None:
