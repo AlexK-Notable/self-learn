@@ -667,18 +667,23 @@ def compose_record_block(
     )
 
 
-def cache_dir() -> Path:
+def cache_dir(home: Path | str | None = None) -> Path:
     """Per-ledger-home cache namespace (doc 13 §6, H-4):
     ``${XDG_CACHE_HOME:-~/.cache}/self-learn/home-<sha256(home)[:8]>/`` —
-    a future second home (06's team ledger) is a config away. Resolves
-    the home itself via :func:`ledger.resolve_home` (cheap env read).
+    a future second home (06's team ledger) is a config away. ``home``
+    defaults to :func:`ledger.resolve_home` (cheap env read) when
+    omitted, so every existing bare call is unchanged (M-P, sprint 1
+    audit A14/A13: a caller that already holds an explicit ``home`` can
+    now pass it through instead of this namespace silently tracking the
+    ambient ``SELF_LEARN_HOME`` even when it differs from that home).
 
     Migration shim from the OLD un-namespaced path
     (``…/claude-skills/self-learn`` — the name embeds the host the cache
     no longer belongs to): see :func:`_migrate_cache`."""
     cache = os.environ.get("XDG_CACHE_HOME")
     base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
-    digest = hashlib.sha256(str(resolve_home()).encode("utf-8")).hexdigest()[:8]
+    resolved_home = home if home is not None else resolve_home()
+    digest = hashlib.sha256(str(resolved_home).encode("utf-8")).hexdigest()[:8]
     new = base / "self-learn" / f"home-{digest}"
     new.mkdir(parents=True, exist_ok=True)
     _migrate_cache(base / "claude-skills" / "self-learn", new)
@@ -3059,7 +3064,7 @@ def render_notification(n: int, buckets: list[str], total: int, scopes: int) -> 
     )
 
 
-def _notifications_suppressed() -> bool:
+def _notifications_suppressed(home: Path | str | None = None) -> bool:
     """True iff ``SELF_LEARN_NO_NOTIFY=1`` — the EXPLICIT kill switch for
     BOTH notify transports (:func:`_notify`, :func:`_notify_with_ids`).
 
@@ -3086,10 +3091,14 @@ def _notifications_suppressed() -> bool:
     U-settings Phase 1: resolves through the registry's ``worker.
     no_notify`` entry (config.yaml `worker.no_notify` > env > `False` --
     U-flip 2026-09-01, S-58: config wins) rather than reading the env
-    var directly — the two callers below (neither of which threads a
-    `home`) keep working unchanged since neither writes a config.yaml;
-    :func:`resolve_home` supplies the home for the config.yaml rung."""
-    value, _source = settings.resolve_setting(resolve_home(), settings.by_name("worker.no_notify"))
+    var directly. ``home`` defaults to :func:`resolve_home` when omitted
+    (M-P, sprint 1 audit A14/A13) — the two callers below still call
+    this bare (neither threads a `home`; neither writes a config.yaml),
+    so their behaviour is unchanged; a future caller that DOES hold an
+    explicit `home` can now pass it through instead of racing the
+    ambient `SELF_LEARN_HOME`."""
+    resolved_home = home if home is not None else resolve_home()
+    value, _source = settings.resolve_setting(resolved_home, settings.by_name("worker.no_notify"))
     return bool(value)
 
 

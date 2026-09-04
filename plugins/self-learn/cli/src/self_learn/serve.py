@@ -569,9 +569,17 @@ def run_forever(
     seam's own `run_sync`/`asyncio.run` (one level below, inside
     `invocation_sdk/backend.py`) sees no ambient loop here to nest
     inside, so `run_sync`'s thread-blocking branch (§4.6 R-2's actual
-    hazard) never triggers."""
+    hazard) never triggers.
+
+    M-P (sprint 1 audit A14/A13): the `cache_dir=None` fallback now
+    resolves `worker.cache_dir(home)` -- namespaced to THIS call's own
+    `home` -- instead of the bare, ambient `worker.cache_dir()`; this
+    daemon's own housekeeping files (`serve.heartbeat`/`serve.poke`/
+    `serve.schedule`) must land under the home it is actually serving,
+    not whatever `SELF_LEARN_HOME` happens to be set to in this
+    process's environment when the two disagree."""
     home = Path(home)
-    cd = cache_dir if cache_dir is not None else worker.cache_dir()
+    cd = cache_dir if cache_dir is not None else worker.cache_dir(home)
     secs = tick_secs if tick_secs is not None else tick_secs_from_env(home=home)
     pid = os.getpid()
     stop = threading.Event()
