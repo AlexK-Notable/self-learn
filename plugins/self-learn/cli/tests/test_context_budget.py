@@ -1350,7 +1350,21 @@ class TestT8ReferenceVerdict:
         assert v2["safe_overflow"] is not True
         assert v2["safe_overflow"] is not False
 
-    def test_t8_4_all_zero_read(self, env, tmp_path, monkeypatch):
+    def test_t8_4_never_observed_when_no_reads_ever_recorded(
+        self, env, tmp_path, monkeypatch
+    ):
+        """M-A / plan v2 §2: a live reference-routed target with ZERO
+        `reference-read` events anywhere in the tracked plane (never
+        `write_tracked_event`-ed) means `_reference_shelf`'s
+        `observation_start` is `None` — the read-rate OBSERVATION WINDOW
+        never opened, which is a different fact from "opened and came
+        back cold". Before M-A this scenario was misreported as
+        `no-reads-observed`/`safe_overflow: False` (a confident "unsafe"
+        verdict from a mechanism that was never running); the mutation
+        this proves is the `elif shelf["observation_start"] is None`
+        branch in `reference_read_verdict` — delete it and this test
+        reverts to asserting the old (wrong) `no-reads-observed`/`False`
+        pair and fails."""
         claude_dir = tmp_path / "t8-4-claude"
         monkeypatch.setenv("SELF_LEARN_CLAUDE_DIR", str(claude_dir))
         _instrument(claude_dir)
@@ -1360,8 +1374,8 @@ class TestT8ReferenceVerdict:
         )
         v = report.reference_read_verdict(env.ledger, TODAY)
         assert v["targets_total"] >= 1
-        assert v["read_rate_state"] == "no-reads-observed"
-        assert v["safe_overflow"] is False
+        assert v["read_rate_state"] == "never-observed"
+        assert v["safe_overflow"] is None
 
     def test_t8_5_partly_cold(self, env, tmp_path, monkeypatch):
         claude_dir = tmp_path / "t8-5-claude"
@@ -1401,12 +1415,21 @@ class TestT8ReferenceVerdict:
         assert v_bad["read_rate_state"] == v_ok["read_rate_state"]
 
     def test_t8_7_why_mapping_covers_every_state(self):
+        """Verdict-coverage (M-A prevention line, plan v2 §2): every state
+        in `REFERENCE_READ_RATE_STATES` — including the new
+        `never-observed` — has its own non-empty `_REFERENCE_WHY`
+        sentence, and no two states share the exact same sentence text
+        (a distinct verdict per state, not a silently-merged one)."""
         assert set(report.REFERENCE_READ_RATE_STATES) == {
-            "not-instrumented", "none-enumerable", "no-reads-observed",
-            "partly-cold", "ok",
+            "not-instrumented", "none-enumerable", "never-observed",
+            "no-reads-observed", "partly-cold", "ok",
         }
+        seen_sentences: set[str] = set()
         for state in report.REFERENCE_READ_RATE_STATES:
-            assert report._REFERENCE_WHY[state]
+            sentence = report._REFERENCE_WHY[state]
+            assert sentence
+            assert sentence not in seen_sentences
+            seen_sentences.add(sentence)
 
 
 # ===================================================================== #

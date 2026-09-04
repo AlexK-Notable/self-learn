@@ -605,6 +605,11 @@ _REFERENCE_WHY = {
         "read rate UNKNOWN — no reference targets are enumerable, so "
         "routing here trades a measured cost for an unmeasured one."
     ),
+    "never-observed": (
+        "read rate UNKNOWN — no reference-read event has ever been "
+        "observed, so routing here trades a measured cost for an "
+        "unmeasured one."
+    ),
     "no-reads-observed": (
         "every known reference target has zero reads — this shelf may be "
         "coverage that isn't."
@@ -1423,6 +1428,14 @@ def reference_read_verdict(
         state, safe = "not-instrumented", None
     elif shelf["enumeration_state"] == "none-enumerable":
         state, safe = "none-enumerable", None
+    elif shelf["observation_start"] is None:
+        # U-cap plan v2 §2 (M-A): no `reference-read` event has ever been
+        # recorded anywhere in the tracked plane — this is NOT the same
+        # fact as "every target was read zero times" (`no-reads-observed`
+        # below): the latter implies an observation WINDOW existed and
+        # came back cold, this implies observation never started at all.
+        # Distinct state, `safe_overflow: None` (unknown, not "unsafe").
+        state, safe = "never-observed", None
     elif shelf["targets_zero_read"] == shelf["targets_total"]:
         state, safe = "no-reads-observed", False
     elif shelf["targets_zero_read"]:
