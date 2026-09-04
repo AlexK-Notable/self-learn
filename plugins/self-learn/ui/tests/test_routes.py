@@ -4933,3 +4933,125 @@ class TestA18DeferredRecordApproveRefusesEndToEnd:
         # reference's structural refusal.
         assert runner.calls == [["route", rec.id, "--by", "analyst", "--json"]]
         assert "S-23" in r.text
+
+
+# ------------------------------------------------- M-F4: unrenderable proposal
+#
+# B-11/I: the detail page used to render the identical "no analysis yet"
+# message whether a proposal sibling was absent OR present-but-unparseable
+# -- routes.py's `_gather_detail_bundle` discarded `ledger.read_proposal_raw`'s
+# parse error entirely (the old `_err`). `_seed_unparseable_proposal` below
+# writes a proposal sibling that EXISTS but is not a YAML mapping (a bare
+# flow-sequence) -- never through `support.py`'s `seed_raw_proposal` (always
+# a valid mapping) or `write_proposal` (schema-valid); `support.py` is a
+# shared fixture module this lane does not own (BUILDER-CONTRACT.md rule 2),
+# so this stays local here rather than appending a new helper there.
+
+
+def _seed_unparseable_proposal(ledger: Path, record_id: str) -> Path:
+    """A proposal sibling that EXISTS but fails to parse (a YAML value
+    that isn't a mapping -- `self_learn.ledger_ops._load_yaml_map`'s
+    "not a YAML mapping" `ProposalError` branch, the simplest
+    deterministic way to hit `ledger.read_proposal_raw`'s error leg
+    without relying on YAML syntax-error edge cases). Mirrors
+    `support.py`'s own `seed_raw_proposal` path derivation."""
+    from self_learn.ledger_ops import find_record_path
+
+    record_path = find_record_path(ledger, record_id)
+    path = record_path.parent.parent / "proposals" / f"{record_id}.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("[1, 2, 3]\n", encoding="utf-8")
+    return path
+
+
+class TestDetailReadBundleProposalError:
+    """Bundle-shape tests (brief: "note :3956-3977 monkeypatches
+    routes_mod._gather_detail_bundle" -- that spy wraps the REAL
+    function, so adding `proposal_error` to `DetailReadBundle` cannot
+    break it; these test the new field directly)."""
+
+    def test_bundle_carries_the_parse_error_when_proposal_is_unparseable(
+        self, tmp_path: Path
+    ) -> None:
+        import self_learn_ui.routes as routes_mod
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        _seed_unparseable_proposal(sb.ledger, rec.id)
+
+        bundle = routes_mod._gather_detail_bundle(sb.ledger, rec.id)
+        assert bundle is not None
+        assert bundle.proposal is None
+        assert bundle.proposal_error is not None
+        assert "not a YAML mapping" in bundle.proposal_error
+
+    def test_bundle_proposal_error_is_none_when_no_proposal_sibling_exists(
+        self, tmp_path: Path
+    ) -> None:
+        import self_learn_ui.routes as routes_mod
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+
+        bundle = routes_mod._gather_detail_bundle(sb.ledger, rec.id)
+        assert bundle is not None
+        assert bundle.proposal is None
+        assert bundle.proposal_error is None
+
+    def test_bundle_proposal_error_is_none_when_proposal_parses_fine(
+        self, tmp_path: Path
+    ) -> None:
+        import self_learn_ui.routes as routes_mod
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id)
+
+        bundle = routes_mod._gather_detail_bundle(sb.ledger, rec.id)
+        assert bundle is not None
+        assert bundle.proposal is not None
+        assert bundle.proposal_error is None
+
+
+class TestDetailUnrenderableProposalEndToEnd:
+    def test_unrenderable_state_renders_distinctly_from_no_proposal(
+        self, tmp_path: Path
+    ) -> None:
+        from self_learn_ui.models import NO_ANALYSIS_MESSAGE
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        _seed_unparseable_proposal(sb.ledger, rec.id)
+        c, _runner = make_client(sb)
+
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        # Positive control FIRST (the FakeRunner trap's own lesson,
+        # generalized: a page read like this one never goes through
+        # FakeRunner at all -- assert the region actually rendered
+        # something before trusting any absence assertion below).
+        assert 'aria-label="change"' in r.text
+        assert "not a YAML mapping" in r.text  # the real parse error surfaced
+        # THE regression this move closes: must NOT silently collapse to
+        # the generic "no analysis yet" CTA.
+        assert NO_ANALYSIS_MESSAGE not in r.text
+
+    def test_genuinely_no_proposal_is_unaffected_by_this_move(self, tmp_path: Path) -> None:
+        """Sibling control: the TRUE no-proposal-at-all state still
+        renders exactly as before -- this move only ADDS a new distinct
+        state, it never changes the existing one."""
+        from self_learn_ui.models import NO_ANALYSIS_MESSAGE
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert 'aria-label="change"' in r.text
+        assert NO_ANALYSIS_MESSAGE in r.text

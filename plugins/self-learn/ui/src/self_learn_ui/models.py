@@ -1510,11 +1510,14 @@ class FindingRegion:
 @dataclass(frozen=True)
 class ChangeRegion:
     """09 §2.3 region 2 / Y-7. ``kind`` selects what U3 renders:
-    ``none`` (no proposal — ``message`` carries the CTA), ``diff``
-    (Pygments DiffLexer), ``proposal-yaml`` (Pygments YAML lexer, the
-    proposal's raw sibling text), ``hook`` (the FULL stored script + its
-    replay examples, M3 verbatim-apply caption), ``new-skill`` (scaffold
-    preview)."""
+    ``none`` (no proposal — ``message`` carries the CTA), ``unrenderable``
+    (M-F4: a proposal sibling EXISTS but failed to parse — ``message``
+    carries the actual parse error, never the ``none`` CTA; distinct so
+    the human isn't told "no analysis yet" about a record that HAS one,
+    just unreadable), ``diff`` (Pygments DiffLexer), ``proposal-yaml``
+    (Pygments YAML lexer, the proposal's raw sibling text), ``hook`` (the
+    FULL stored script + its replay examples, M3 verbatim-apply caption),
+    ``new-skill`` (scaffold preview)."""
 
     kind: str
     content: str | None
@@ -1650,9 +1653,24 @@ def _build_finding(record: Record, title: str) -> FindingRegion:
 
 
 def _build_change(
-    proposal: dict | None, diff_text: str | None, proposal_raw_text: str | None
+    proposal: dict | None,
+    diff_text: str | None,
+    proposal_raw_text: str | None,
+    proposal_error: str | None = None,
 ) -> ChangeRegion:
     if proposal is None:
+        # M-F4 (B-11, I): a proposal sibling that EXISTS but fails to
+        # parse (`ledger.read_proposal_raw`'s second return value) is a
+        # DIFFERENT state from no proposal at all — this used to render
+        # the identical NO_ANALYSIS_MESSAGE either way (the parse error
+        # was discarded at the read site, routes.py's old `_err`).
+        # `kind="unrenderable"` carries the actual error text so
+        # detail.html can render it distinctly (never silently as "no
+        # analysis yet").
+        if proposal_error is not None:
+            return ChangeRegion(
+                kind="unrenderable", content=None, caption="", message=proposal_error
+            )
         return ChangeRegion(
             kind="none", content=None, caption="", message=NO_ANALYSIS_MESSAGE
         )
@@ -1819,6 +1837,7 @@ def build_detail_model(
     proposal_raw_text: str | None,
     registry: list[dict],
     *,
+    proposal_error: str | None = None,
     bucket: str,
     scope: str,
     host_registered: bool,
@@ -1845,7 +1864,7 @@ def build_detail_model(
         status=record.status,
         cards=build_card_sections((proposal or {}).get("card"), registry),
         finding=_build_finding(record, title),
-        change=_build_change(proposal, diff_text, proposal_raw_text),
+        change=_build_change(proposal, diff_text, proposal_raw_text, proposal_error),
         why=_build_why(item, proposal, scope),
         contradicts=contradicts,
         # U-demand-user §3.3(f): per-record now, not the scope-level

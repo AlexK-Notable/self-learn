@@ -72,13 +72,28 @@ def _item(**overrides):
     return base
 
 
-def _build(item, proposal=None, diff_text=None, proposal_raw_text=None, record=None, **kw):
+def _build(
+    item,
+    proposal=None,
+    diff_text=None,
+    proposal_raw_text=None,
+    record=None,
+    proposal_error=None,
+    **kw,
+):
     kwargs: dict[str, Any] = dict(
         bucket="s", scope="skill", host_registered=True, host_add_command=None, now=NOW
     )
     kwargs.update(kw)
     return build_detail_model(
-        item, record or _record(), proposal, diff_text, proposal_raw_text, REGISTRY, **kwargs
+        item,
+        record or _record(),
+        proposal,
+        diff_text,
+        proposal_raw_text,
+        REGISTRY,
+        proposal_error=proposal_error,
+        **kwargs,
     )
 
 
@@ -149,6 +164,49 @@ class TestChangeRegionNoProposal:
         assert model.change.kind == "none"
         assert model.change.content is None
         assert model.change.message == NO_ANALYSIS_MESSAGE
+
+
+class TestChangeRegionUnrenderable:
+    """M-F4 (B-11, I): a proposal sibling that EXISTS but fails to parse
+    (`ledger.read_proposal_raw`'s second return value, threaded here as
+    `proposal_error`) must render DISTINCTLY from the true "no proposal
+    at all" state above — routes.py used to discard this parse error
+    entirely, so both states produced the identical NO_ANALYSIS_MESSAGE."""
+
+    def test_present_but_unparseable_proposal_is_a_distinct_kind(self):
+        model = _build(_item(), proposal=None, proposal_error="lrn-aa000001.yaml is not a YAML mapping")
+        assert model.change.kind == "unrenderable"
+        assert model.change.content is None
+        assert model.change.message == "lrn-aa000001.yaml is not a YAML mapping"
+        # THE regression this closes: the parse error must never be
+        # silently swapped for the generic "no analysis yet" CTA.
+        assert model.change.message != NO_ANALYSIS_MESSAGE
+
+    def test_unrenderable_and_no_proposal_are_different_kinds_for_the_same_absent_proposal(self):
+        """Both states share `proposal is None` -- `proposal_error` is
+        the ONLY thing distinguishing them. Proven side by side so a
+        regression that re-collapses them shows up as an equality, not
+        just a missing branch."""
+        no_proposal = _build(_item())
+        unreadable = _build(_item(), proposal_error="unparseable YAML at proposals/lrn-aa000001.yaml: x")
+        assert no_proposal.change.kind == "none"
+        assert unreadable.change.kind == "unrenderable"
+        assert no_proposal.change.kind != unreadable.change.kind
+        assert no_proposal.change.message != unreadable.change.message
+
+    def test_proposal_error_is_ignored_when_a_proposal_actually_parsed(self):
+        """`proposal_error` only matters when `proposal is None` -- a
+        stray non-None value alongside a successfully parsed proposal
+        (should never happen in practice; `ledger.read_proposal_raw`
+        never returns both) must not derail the ordinary render."""
+        proposal = {"destination": "skill-md", "rationale": "x"}
+        model = _build(
+            _item(has_proposal=True, destination="skill-md"),
+            proposal=proposal,
+            diff_text="--- a\n+++ b\n",
+            proposal_error="should be ignored",
+        )
+        assert model.change.kind == "diff"
 
 
 class TestChangeRegionDiff:
