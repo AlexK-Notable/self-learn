@@ -6,6 +6,7 @@ ledger home. No real ~/.cache, no real ledger.
 """
 
 import contextlib
+import fcntl
 import json
 from datetime import datetime, timezone
 
@@ -367,6 +368,52 @@ def test_flush_appended_but_commit_failed_is_not_deferred(home, monkeypatch):
     telemetry.spool_event("offer-made", now=NOW)
     state = cli._flush_spool_best_effort(home, no_push=True)
     assert state == "ok"
+
+
+def test_flush_releases_each_spool_flock_before_the_git_commit(home, monkeypatch):
+    """M-M fold r3 MINOR m-1: fold r2's spool-flock narrowing (release +
+    close each spool file's flock right after ITS OWN truncate, before
+    `_commit_flush`'s stage+commit runs) had no witness -- reverting to
+    fold r1's wider hold (flock held through the git commit too) leaves
+    every visible consequence identical (same report, same tracked
+    file, same drained spool), because nothing else in this suite reads
+    the flock's STATE, only its eventual effects. Only WHEN a
+    concurrent producer is unblocked differs -- exactly the regression
+    that happened once already in this lane (fold r1 widened the hold
+    as an unintended side effect of the single-hold restructure).
+
+    `flock` is per open-file-description, so a SEPARATE, independent
+    open of the same spool file can probe -- non-blockingly, no timing,
+    no second process -- whether flush()'s own open still holds an
+    exclusive lock on it at the moment `gitops.commit` runs (i.e.
+    still inside `commit_lock`, mid stage+commit)."""
+    telemetry.spool_event("offer-made", now=NOW)
+    spool = telemetry.spool_dir() / "2026-07.testhost.jsonl"
+    held: list[int] = []
+    probed: list[int] = []
+    real_commit = gitops.commit
+
+    def probing_commit(h, msg, paths=None):
+        probed.append(1)
+        fh = open(spool, "r+b")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except BlockingIOError:
+            held.append(1)
+        finally:
+            fh.close()
+        return real_commit(h, msg, paths=paths)
+
+    monkeypatch.setattr(gitops, "commit", probing_commit)
+    assert telemetry.flush(home, push=False).events == 1
+    # probed guards the probe itself: if flush() is ever refactored to call
+    # the commit function by a different name/path, the monkeypatch stops
+    # landing and probing_commit silently never runs -- without this check
+    # `held == []` would then pass VACUOUSLY (no probe, so nothing recorded),
+    # not because the property holds.
+    assert probed == [1], "probing_commit never ran -- the monkeypatch didn't land on the name flush() calls"
+    assert held == [], "the spool flock was still held during the git commit"
 
 
 # ------------------------------------------------------------- read_events
