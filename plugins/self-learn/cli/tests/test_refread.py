@@ -1349,7 +1349,10 @@ class TestT12FlushState:
         state = cli._flush_spool_best_effort(env.ledger)
         assert state == "failed"
 
-    def test_t12_5_all_four_states_reachable(self, env, monkeypatch, capsys):
+    def test_t12_5_all_five_states_reachable(self, env, monkeypatch, capsys):
+        """M-M fold r2 NIT n-1: a fifth state ("deferred") was added by
+        fold r1 MAJOR M-1; this enumeration must name all five, not the
+        four that predate it."""
         observed = set()
 
         def refused(home, *, push=True):
@@ -1361,12 +1364,15 @@ class TestT12FlushState:
         def ok(home, *, push=True):
             return telemetry.FlushReport(events=0, files=[])
 
-        for fn in (refused, failed, ok):
+        def deferred(home, *, push=True):
+            return telemetry.FlushReport(deferred_reason="x", deferred_events=1)
+
+        for fn in (refused, failed, ok, deferred):
             monkeypatch.setattr(cli.telemetry, "flush", fn)
             observed.add(cli._flush_spool_best_effort(env.ledger))
         observed.add(report.gather(env.ledger, today=TODAY)["reference_shelf"]["flush_state"])
 
-        assert observed == {"ok", "refused", "failed", "not-attempted"}
+        assert observed == {"ok", "refused", "failed", "not-attempted", "deferred"}
 
     def test_t12_6_deferred_when_flush_could_not_start(self, env, monkeypatch):
         """M-M fold r1 MAJOR M-1: a flush that never got to append (its

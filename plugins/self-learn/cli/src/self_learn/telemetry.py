@@ -364,6 +364,15 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
         # tells "never appended" apart from "appended, commit failed").
         from . import gitops  # deferred: gitops is imported by every verb path
 
+        # Fold r2 MINOR m-1: nothing to flush (every spool file was
+        # empty) is NOT a deferral, even if commit_lock happens to be
+        # busy right now — there is nothing pending for a busy lock to
+        # defer. Return before the lock is even attempted, so an empty
+        # spool never blocks on, or reports about, a lock it has no
+        # need of. `finally` below still releases every spool handle.
+        if not any(lines for _, _, lines in opened):
+            return report
+
         try:
             with gitops.commit_lock(home):
                 for spool_path, fh, lines in opened:
@@ -389,6 +398,19 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                     # never a deleted one.
                     fh.seek(0)
                     fh.truncate()
+                    # Fold r2 n-2/n-3: release THIS spool file's flock
+                    # (and close it) the instant its own read-and-
+                    # truncate cycle is done, rather than holding it
+                    # through the git stage+commit that follows. The
+                    # spool flock's only job is to stop a concurrent
+                    # producer's write from being lost between the read
+                    # (phase 1) and this truncate — it has nothing to
+                    # do with the git index, which commit_lock already
+                    # guards on its own. Holding it further was scope
+                    # creep from the single-hold restructure (fold r1
+                    # MINOR m-1), not a deliberate widening.
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                    fh.close()
                     report.events += len(lines)
                     report.files.append(target)
                 # Still inside the SAME hold (m-1): stage+commit, never a
@@ -423,7 +445,17 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                 )
             return report
     finally:
+        # Fold r2 n-2/n-3: a spool file whose truncate already ran (and
+        # already released/closed its own handle, above) must not be
+        # touched again here — `fh.fileno()` on an already-closed file
+        # object raises `ValueError` before `flock` ever runs, and a
+        # double-close is itself a bug even where it wouldn't. Every
+        # OTHER handle (skipped as empty, or never reached because the
+        # scan/lock/commit raised first) is still open and still needs
+        # this cleanup.
         for _path, fh, _lines in opened:
+            if fh.closed:
+                continue
             try:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
             finally:

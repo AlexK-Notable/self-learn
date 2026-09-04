@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from self_learn import gitops, telemetry
+from self_learn import cli, gitops, telemetry
 from support import make_home
 
 
@@ -295,6 +295,78 @@ def test_flush_drains_the_spool_on_the_next_attempt_after_a_deferral(
     tracked = telemetry.telemetry_dir(home) / "2026-07.testhost.jsonl"
     assert "offer-made" in tracked.read_text()
     assert (telemetry.spool_dir() / "2026-07.testhost.jsonl").read_text() == ""
+
+
+def test_flush_reports_not_deferred_when_spool_is_empty_even_if_lock_is_busy(
+    home, monkeypatch, capsys
+):
+    """M-M fold r2 MINOR m-1: an empty spool meeting a busy commit_lock
+    is NOT a deferral -- there is nothing pending for a busy lock to
+    defer. Before this fix, `flush()` still tried to acquire the lock
+    for an empty spool (it had nothing to protect there) and, on a busy
+    lock, reported `deferred_reason` set with `deferred_events == 0` --
+    flipping `counts_are_lower_bound` True for a run where nothing was
+    actually held back."""
+    # A spool file that EXISTS but carries no events (as opposed to no
+    # spool directory at all, which `flush()` already short-circuits on
+    # before ever reaching the lock -- that pre-existing early return
+    # would make this test vacuous if it were the only spool state
+    # exercised).
+    telemetry.spool_dir().mkdir(parents=True, exist_ok=True)
+    (telemetry.spool_dir() / "2026-07.testhost.jsonl").write_text("")
+
+    calls: list[int] = []
+
+    def wedged(repo, **kwargs):
+        calls.append(1)
+        raise gitops.GitOpsError("commit lock <path> still held after 0.3s")
+
+    monkeypatch.setattr(gitops, "commit_lock", wedged)
+
+    report = telemetry.flush(home, push=False)
+
+    assert report.events == 0
+    assert report.deferred_reason is None
+    assert report.deferred_events == 0
+    # The lock must never even be attempted for an empty spool -- not
+    # just "attempted and correctly not reported as a deferral".
+    assert calls == []
+    assert "deferred" not in capsys.readouterr().err
+
+
+def test_flush_appended_but_commit_failed_is_not_deferred(home, monkeypatch):
+    """M-M fold r2 MINOR m-2: the discriminator's OTHER branch -- append
+    succeeded, only `_commit_flush`'s stage+commit failed -- was
+    unwitnessed after fold r1 (collapsing it reddened nothing). This
+    must read as NOT deferred: the event already landed in the tracked
+    plane, `read_events` sees it, the spool is drained, and the caller
+    that consumes the outcome (`cli._flush_spool_best_effort`) must
+    report "ok" -- not "deferred" -- for exactly this case (gate's
+    prescribed shape, r2)."""
+
+    def failing_commit(*args, **kwargs):
+        raise gitops.GitOpsError("simulated commit failure")
+
+    monkeypatch.setattr(gitops, "commit", failing_commit)
+
+    telemetry.spool_event("offer-made", now=NOW)
+    report = telemetry.flush(home, push=False)
+
+    assert report.events == 1
+    assert report.deferred_reason is None
+    events = telemetry.read_events(home)
+    assert len(events) == 1
+    assert events[0]["kind"] == "offer-made"
+    assert (telemetry.spool_dir() / "2026-07.testhost.jsonl").read_text() == ""
+
+    # The consumer-facing path (`cli._flush_spool_best_effort`), still
+    # under the same commit-failure condition, on a FRESH event -- not
+    # the one already drained above, which would take the empty-spool
+    # early-return path (m-1, above) and prove nothing about THIS
+    # branch.
+    telemetry.spool_event("offer-made", now=NOW)
+    state = cli._flush_spool_best_effort(home, no_push=True)
+    assert state == "ok"
 
 
 # ------------------------------------------------------------- read_events
