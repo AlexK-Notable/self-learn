@@ -8,6 +8,7 @@ the placeholder table; `MD6` enforces the boundary over both test files.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import types
@@ -244,6 +245,100 @@ def test_dc4_sdk_row_injected_importer(monkeypatch):
     # the real importer must not raise
     row4 = provider._sdk_row()
     assert row4.verdict in provider.VERDICTS
+
+
+def test_dc4b_operative_probe_executes_the_sdk_resolved_path_not_path_claude(monkeypatch, tmp_path):
+    """B-5 MAJOR (gate r1 on M-L): every assertion in `test_dc4` above
+    stubs `_operative_cli_version` itself -- one seam above
+    `_resolve_sdk_cli_path` and the real `subprocess.run` call -- so none
+    of them ever exercise the SDK integration or observe WHICH binary
+    actually gets executed. A regression that guts `_resolve_sdk_cli_path`
+    back to `shutil.which("claude")` (the pre-M-L, host-vs-bundled
+    resolution B-5 was written to retire) would sail through all of
+    `test_dc4` undetected, because `_operative_cli_version` is never
+    called for real there.
+
+    This test instead fakes only the SDK's own `_find_cli` (the resolver
+    `_resolve_sdk_cli_path` calls, one level below the seam `test_dc4`
+    stubs) and `shutil.which("claude")` (the PATH lookup
+    `_host_cli_context` calls) -- letting `_resolve_sdk_cli_path`,
+    `_operative_cli_version`, and `_sdk_row` all run for real -- then
+    spies on the real `subprocess.run` (the same
+    `monkeypatch.setattr(subprocess, "run", ...)` seam `test_dc10` uses
+    in this file, but wrapping the real call rather than replacing it)
+    to pin the literal argv actually executed.
+
+    MUTATION that turns this red: revert `_resolve_sdk_cli_path`'s body
+    to `return shutil.which("claude"), ""` (the old PATH-based
+    resolution). Case 1 below would then execute the PATH-`claude` fake
+    script (reporting "9.9.9", never seen by the real fix) instead of the
+    SDK-resolved one ("1.0.0") -- the argv assertion fails; Case 2's WARN
+    would name the wrong pair, or PASS wrongly, depending on what the
+    fake PATH script happens to report.
+
+    ALSO catches the gate's own ML1 mutation: `_operative_cli_version`
+    calling `shutil.which("claude")` directly instead of going through
+    `_resolve_sdk_cli_path` at all -- `_fake_which` below answers that
+    call too, so the same argv assertion fails the same way."""
+    import claude_agent_sdk._internal.transport.subprocess_cli as subprocess_cli_mod
+
+    def _make_fake_cli(name: str, version_line: str) -> Path:
+        script = tmp_path / name
+        script.write_text(f"#!/bin/sh\necho '{version_line}'\n")
+        script.chmod(0o755)
+        return script
+
+    calls: list[list[str]] = []
+    real_run = subprocess.run
+
+    def _spy_run(argv, *a, **kw):
+        calls.append(list(argv))
+        return real_run(argv, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", _spy_run)
+
+    sdk_script_x = _make_fake_cli("sdk-claude-x", "1.0.0 (Claude Code)")
+    path_script_y = _make_fake_cli("path-claude-y", "9.9.9 (Claude Code)")
+    real_which = shutil.which
+
+    def _fake_which(name, *a, **kw):
+        if name == "claude":
+            return str(path_script_y)
+        return real_which(name, *a, **kw)
+
+    monkeypatch.setattr(shutil, "which", _fake_which)
+
+    fake = types.SimpleNamespace(
+        __version__="0.2.999",
+        _cli_version=types.SimpleNamespace(__cli_version__="1.0.0"),
+    )
+
+    # -- Case 1: operative pair agrees (bundled == sdk-resolved "1.0.0");
+    # PATH claude differs wildly ("9.9.9") -- must PASS, and the executed
+    # argv must be the sdk-resolved script, never the PATH one.
+    monkeypatch.setattr(
+        subprocess_cli_mod.SubprocessCLITransport, "_find_cli", lambda self: str(sdk_script_x)
+    )
+    row = provider._sdk_row(importer=lambda: fake)
+    assert row.verdict == "PASS", row.detail
+    assert calls == [[str(sdk_script_x), "--version"]], calls
+    # host-cli-path is a PATH only (B-5: never executed, never a version) --
+    # the PATH script's location is surfaced as context, its "9.9.9" content
+    # is never read because it is never run.
+    assert str(path_script_y) in row.detail
+
+    # -- Case 2: operative pair disagrees ("1.0.0" bundled, "2.0.0"
+    # sdk-resolved) -- WARN naming both; PATH claude ("9.9.9") still
+    # never touched.
+    calls.clear()
+    sdk_script_z = _make_fake_cli("sdk-claude-z", "2.0.0 (Claude Code)")
+    monkeypatch.setattr(
+        subprocess_cli_mod.SubprocessCLITransport, "_find_cli", lambda self: str(sdk_script_z)
+    )
+    row2 = provider._sdk_row(importer=lambda: fake)
+    assert row2.verdict == "WARN", row2.detail
+    assert "1.0.0" in row2.detail and "2.0.0" in row2.detail
+    assert calls == [[str(sdk_script_z), "--version"]], calls
 
 
 def test_dc5_region_row(monkeypatch, capsys, _home):

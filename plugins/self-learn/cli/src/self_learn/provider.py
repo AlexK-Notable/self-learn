@@ -563,7 +563,13 @@ def _resolve_sdk_cli_path() -> tuple[str | None, str]:
     PATH and the SDK's hardcoded fallback locations) -- the SAME
     resolution a real SDK invocation performs. No subprocess is spawned
     here (`_find_cli` is pure filesystem/`shutil.which` checks); every
-    failure leg -> `(None, reason)`, never a traceback."""
+    failure leg -> `(None, reason)`, never a traceback. Gate r1 NIT
+    (recorded, not changed): narrowing this to `_find_cli`'s own
+    `CLINotFoundError` was considered and rejected -- a future SDK
+    release that asserts or raises something else inside `_find_cli`
+    would then surface as an uncaught traceback out of `doctor
+    invocation`, exactly what this docstring promises never to happen,
+    which is worse than folding it into a SKIP row."""
     try:
         from claude_agent_sdk._internal.transport.subprocess_cli import (
             SubprocessCLITransport,
@@ -634,7 +640,15 @@ def _sdk_row(*, importer: Callable[[], Any] = _default_sdk_importer) -> Row:
     sdk_version = str(getattr(sdk_module, "__version__", "?"))
     bundled = _bundled_cli_version(sdk_module)
     resolved, skip_reason = _operative_cli_version()
-    host_context = f"host-cli={_host_cli_context()} (context, not compared)"
+    # Gate r1 NIT: this field carries a PATH now (`_host_cli_context`
+    # returns `shutil.which("claude")` or a not-found label), not a
+    # version string the way the old `host-cli=` name implied. Renamed
+    # to `host-cli-path=` rather than restored to a version -- probing a
+    # version would mean running `--version` on the host binary, a
+    # second subprocess spawn this row deliberately never makes (B-5;
+    # `test_dc10_no_network_no_extra_spawn`'s "ONE permitted spawn"
+    # invariant).
+    host_context = f"host-cli-path={_host_cli_context()} (context, not compared)"
     if resolved is None:
         return Row(
             name="sdk",
