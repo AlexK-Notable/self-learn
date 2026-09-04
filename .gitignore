@@ -7,3 +7,6 @@
 .codeboarding/*.lock
 .codeboarding/static_analysis.pkl
 .codeboarding/static_analysis.sha
+
+# per-machine Claude Code instructions (the committed CLAUDE.md is the project's)
+CLAUDE.local.md

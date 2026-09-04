@@ -125,21 +125,36 @@ renders every read count as ABSENT — never as a false zero.
 | `SELF_LEARN_MINE_PENDING_GATE` | `25` | miner lands nothing while total pending ≥ this |
 | `SELF_LEARN_TRANSCRIPTS_DIR` | `~/.claude/projects` | transcript corpus root (tests redirect it) |
 
-## Transcript miner (doc 12) — nightly timer registration
+These variables are one source among several. `self-learn doctor settings`
+lists every operator-facing setting with its value and source (built-in
+default, environment variable, the ledger's `config.yaml`, or an ambient
+`SELF_LEARN_OVERRIDE_<name>` variable, which outranks `config.yaml` and is
+flagged as an active override); `self-learn config get|set|unset` is the
+write path (registry-validated, commit-locked, secret-scanned), and the
+UI's `/settings` page edits the same registry.
+
+## Transcript miner (doc 12) — nightly scheduling
 
 The miner is the third capture producer: it walks session transcripts,
-digests them structurally, runs one contained `claude -p` reader (same
+digests them structurally, runs one contained SDK reader session (same
 write-restriction posture as the worker, pointed at a cache spool), and
 lands `source: session` records in `pending/` — capped, secret-scanned,
-never routed. `install.sh` already links the nightly timer's unit files
-into `~/.config/systemd/user/` (or `$XDG_CONFIG_HOME/systemd/user/` if
-that variable is set — U-servehermetic, 2026-08-27) (R1 layer 1;
-`Persistent=true` covers a machine asleep at 03:30); enabling it is the
-one step it deliberately leaves to you:
+never routed. Since U-engine (2026-08-27) the nightly run is scheduled by the resident
+host process, `self-learn-host.service` (`self-learn serve`; 03:30,
+mirroring the legacy timer). `install.sh` links that unit and the legacy
+`self-learn-miner.{service,timer}` into `~/.config/systemd/user/` (or
+`$XDG_CONFIG_HOME/systemd/user/` if that variable is set — U-servehermetic,
+2026-08-27); enabling is the one step it deliberately leaves to you:
 
 ```bash
-systemctl --user enable --now self-learn-miner.timer
+systemctl --user enable --now self-learn-host.service
 ```
+
+The timer is the no-host fallback (R1 layer 1; `Persistent=true` covers a
+machine asleep at 03:30). A timer left enabled alongside the host service
+is a supported belt-and-braces poke, and `self-learn doctor invocation`
+WARNs when both are enabled. Without systemd, run `self-learn serve` in
+the foreground.
 
 Layers 2–3 need no registration: any `self-learn` verb spawns a catch-up
 run when the last one is >24 h old, and the SessionStart hook prints a
