@@ -96,27 +96,45 @@ __all__ = [
 ]
 
 #: Every exception a per-kind validator below can raise for content that
-#: is parseable-as-YAML/mapping but wrong, or not even parseable. The
-#: proposal/meta/compiled paths already wrap unparseable YAML and bad
-#: UTF-8 into their own domain error (`ledger_ops._load_yaml_map` /
-#: `compiled.load_record`, both `except (YAMLError, OSError,
-#: UnicodeDecodeError)`) — but `records.Record.from_text` does NOT: a
-#: malformed frontmatter or an undecodable byte raises `YAMLError` /
-#: `UnicodeDecodeError` RAW (probed: a corrupt `pending/lrn-*.md` orphan
-#: crashed the whole mine run with "'utf-8' codec can't decode ..."
-#: instead of being reported invalid, mirroring the exact skip
-#: `miner._find_record` already gives this same byte shape (its own
-#: `except (RecordError, UnicodeDecodeError): return None`) —
-#: `records.py` is out of lane scope to fix at its source, so both are
-#: caught here too). Caught BY NAME (never a bare ``except Exception``)
-#: so a *bug* in a validator — a ``TypeError``, an ``AttributeError`` —
-#: still surfaces as a crash, not a silently "invalid" orphan.
+#: is parseable-as-YAML/mapping but wrong, or not even parseable, or not
+#: even READABLE. What each asset path can actually raise, by kind:
+#:
+#: - **record** (`Record.from_path` → `Record.from_text`): no guard at
+#:   all — a malformed frontmatter raises `YAMLError` RAW, an undecodable
+#:   byte raises `UnicodeDecodeError` RAW (probed: a corrupt
+#:   `pending/lrn-*.md` orphan crashed the whole mine run with "'utf-8'
+#:   codec can't decode ..." instead of being reported invalid, mirroring
+#:   the exact skip `miner._find_record` already gives this same byte
+#:   shape — its own `except (RecordError, UnicodeDecodeError): return
+#:   None`), and — the fold's BLOCKER-1 — an UNREADABLE file (permission
+#:   denied, EIO) raises `OSError` RAW too, since `Path.read_text` is
+#:   called with no `try` at all. A validated record raises the wrapped
+#:   `RecordError`.
+#: - **proposal**/**meta**: already wrap unparseable YAML, bad UTF-8, AND
+#:   an unreadable file into their own domain error
+#:   (`ledger_ops._load_yaml_map`'s own `except (YAMLError, OSError,
+#:   UnicodeDecodeError)`) before this module ever sees it.
+#: - **compiled**: `_validate_compiled` reads *path* itself (see its own
+#:   docstring for why, a fold NIT) and wraps the identical three classes
+#:   the same way `compiled.load_record` would have.
+#:
+#: `OSError` is listed here regardless of which kind actually needs it,
+#: so a record orphan's raw case and every other kind's already-wrapped
+#: case are refused uniformly by the same tuple, not by kind-specific
+#: reasoning at the call site.
+#:
+#: `records.py` is out of lane scope to fix at its source, so all three
+#: raw classes are caught here instead. Caught BY NAME (never a bare
+#: ``except Exception``) so a *bug* in a validator — a ``TypeError``, an
+#: ``AttributeError`` — still surfaces as a crash, not a silently
+#: "invalid" orphan.
 _ASSET_ERRORS = (
     RecordError,
     ledger_ops.LedgerOpsError,
     compiled.CompiledRecordError,
     YAMLError,
     UnicodeDecodeError,
+    OSError,
 )
 
 #: The pinned commit subject. ``{n}`` is the record count.
@@ -133,11 +151,6 @@ _RECONCILABLE_KINDS: tuple[tuple[str, str], ...] = (
     ("proposals/*.yaml", "proposal"),
     ("meta.yaml", "meta"),
 )
-
-#: Kept for anything still reading it as "the reconcilable bucket-relative
-#: shapes" (module docstrings/comments elsewhere name it) — derived, not
-#: hand-duplicated, from `_RECONCILABLE_KINDS`.
-_RECONCILABLE = tuple(pattern for pattern, _kind in _RECONCILABLE_KINDS)
 
 #: U-hostmode RCN1: the compile record is ledger truth too — one file per
 #: host, HOME-relative (never inside a bucket, so it needs its own check
@@ -242,30 +255,46 @@ def _validate_meta(path: Path) -> None:
         )
 
 
-def _validate_compiled(home: Path, path: Path) -> None:
-    """The compile record's schema (M-C) — C09 itself: :func:`compiled.
-    load_record` turns an unparseable file (``host: [``) into
-    :class:`compiled.CompiledRecordError` already, but a PARSEABLE
-    mapping missing its required keys sailed through uncaught. The
-    writer, :func:`compiled.write_entry`, always sets ``host``, ``mode``,
-    and a ``targets`` mapping at the top level; this checks those three.
+def _validate_compiled(path: Path) -> None:
+    """The compile record's schema (M-C) — C09 itself: an unparseable
+    file (``host: [``) is turned into :class:`compiled.CompiledRecordError`
+    below, same as :func:`compiled.load_record` already does, but a
+    PARSEABLE mapping missing its required keys sailed through uncaught.
+    The writer, :func:`compiled.write_entry`, always sets ``host``,
+    ``mode``, and a ``targets`` mapping at the top level; this checks
+    those three.
 
-    A second gap probed live, the same crash class as the
-    ``_ASSET_ERRORS`` widening above: ``load_record``'s own ``dict(data)
-    if data else {}`` is unguarded against a PARSEABLE non-mapping top
-    level — a compiled record whose entire content is ``- a`` (a
-    sequence) or ``5`` (a scalar) parses fine, then ``dict(['a'])``
-    raises ``ValueError`` and ``dict(5)`` raises ``TypeError``, neither
-    caught by ``load_record`` itself. Caught here, by name, and wrapped
+    Reads *path* directly (`compiled._yaml()`, an existing function of
+    that module, same as :func:`compiled.load_record` uses internally)
+    rather than calling ``compiled.load_record(home, path.stem)`` — a
+    fold NIT: that call RE-DERIVES ``<home>/compiled/<slug>.yaml`` from
+    ``home``/``path.stem`` instead of using the exact ``path`` this
+    function was handed, the same path `find_orphans` found orphaned;
+    only ever the same file today, but a needless round-trip that could
+    silently validate a different file than the one flagged.
+
+    A second gap, the same crash class as the ``_ASSET_ERRORS`` widening
+    above: ``load_record``'s own ``dict(data) if data else {}`` is
+    unguarded against a PARSEABLE non-mapping top level — a compiled
+    record whose entire content is ``- a`` (a sequence) or ``5`` (a
+    scalar) parses fine, then ``dict(['a'])`` raises ``ValueError`` and
+    ``dict(5)`` raises ``TypeError``. Caught here, by name, and wrapped
     into the same :class:`compiled.CompiledRecordError` the unparseable
     case already raises — never a bare ``except Exception``, so an
-    actual bug in ``load_record`` still surfaces as a crash."""
-    try:
-        data = compiled.load_record(home, path.stem)
-    except (TypeError, ValueError) as exc:
-        raise compiled.CompiledRecordError(
-            f"{path.name} is not a YAML mapping (load_record's dict(): {exc})"
-        ) from exc
+    actual bug still surfaces as a crash."""
+    if not path.is_file():
+        data: dict = {}
+    else:
+        try:
+            raw = compiled._yaml().load(path.read_text(encoding="utf-8"))  # noqa: SLF001
+        except (YAMLError, OSError, UnicodeDecodeError) as exc:
+            raise compiled.CompiledRecordError(f"unparseable {path}: {exc}") from exc
+        try:
+            data = dict(raw) if raw else {}
+        except (TypeError, ValueError) as exc:
+            raise compiled.CompiledRecordError(
+                f"{path.name} is not a YAML mapping (dict(): {exc})"
+            ) from exc
     missing = [key for key in ("host", "mode", "targets") if key not in data]
     if missing:
         raise compiled.CompiledRecordError(
@@ -312,7 +341,7 @@ def _validate_orphans(home: Path, orphans: list[Path]) -> list[str]:
             elif kind == "meta":
                 _validate_meta(path)
             elif kind == "compiled":
-                _validate_compiled(home, path)
+                _validate_compiled(path)
             # kind is never None here: every `path` came from
             # `find_orphans`, which already filtered by `_is_reconcilable`.
         except _ASSET_ERRORS as exc:

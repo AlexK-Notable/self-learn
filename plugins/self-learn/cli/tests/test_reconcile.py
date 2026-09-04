@@ -17,11 +17,12 @@ way each asset's own writer would leave them uncommitted.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
-from self_learn import compiled, ledger_ops, miner, reconcile as reconcile_mod
+from self_learn import cli, compiled, gitops, ledger_ops, miner, reconcile as reconcile_mod
 from self_learn.ledger_ops import create_record
 from support import (
     commit_all,
@@ -240,6 +241,53 @@ def test_reconcile_refuses_a_record_with_invalid_utf8_bytes(home):
     assert any("lrn-90000009" in line for line in result.invalid), result.invalid
 
 
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="root bypasses file permissions — chmod 000 is a no-op"
+)
+def test_reconcile_refuses_an_unreadable_record_orphan(home, monkeypatch, tmp_path):
+    """BLOCKER-1 (fold r1): `Record.from_path` calls `Path.read_text`
+    with NO guard at all — an unreadable record orphan (permission
+    denied, EIO) raises `OSError` RAW, which was not in `_ASSET_ERRORS`
+    before this fold. Uncaught, it would propagate straight through
+    `reconcile()` into the miner's `except gitops.GitOpsError` (which
+    catches neither), crashing the whole mine run — the identical
+    "silent crash instead of a reported refusal" shape as the two gaps
+    already pinned above, this time for a plain permission error on the
+    FIRST kind M-C dispatches to."""
+    monkeypatch.delenv("SELF_LEARN_MINER", raising=False)
+    transcripts = tmp_path / "transcripts"
+    (transcripts / "-home-u-proj").mkdir(parents=True)
+    monkeypatch.setenv("SELF_LEARN_TRANSCRIPTS_DIR", str(transcripts))
+
+    create_record(home, make_behavior(record_id="lrn-90000010"))
+    orphan = home / "skills" / "s" / "pending" / "lrn-90000010.md"
+    assert orphan.is_file()
+    before = git(home, "rev-parse", "HEAD").stdout
+    orphan.chmod(0o000)
+    try:
+        result = reconcile_mod.reconcile(home, no_push=True)
+
+        assert not result.healed
+        assert result.refused
+        assert any("lrn-90000010" in line for line in result.invalid), result.invalid
+        assert git(home, "rev-parse", "HEAD").stdout == before, (
+            "the batch was refused, so HEAD must not have moved"
+        )
+        assert "skills/s/pending/lrn-90000010.md" not in head_files(home)
+
+        # the miner path: never fatal, logs the offender, still mines.
+        mine_result = miner.run(home, trigger="timer", no_push=True)
+        assert mine_result.status != "failed", (
+            "an unreadable orphan must not crash the whole mine run"
+        )
+        log_text = (miner.miner_dir() / "miner.log").read_text(encoding="utf-8")
+        assert "lrn-90000010" in log_text, (
+            f"the miner did not log the reconcile refusal's offender:\n{log_text}"
+        )
+    finally:
+        orphan.chmod(0o644)
+
+
 def test_reconcile_refuses_a_meta_yaml_without_a_path(home, tmp_path):
     """`meta.yaml`'s own schema (M-C writes it, no schema existed
     before): `ledger_ops.ensure_project_meta` always writes a non-empty
@@ -256,6 +304,60 @@ def test_reconcile_refuses_a_meta_yaml_without_a_path(home, tmp_path):
     assert not result.healed
     assert result.refused
     assert any("meta.yaml" in line for line in result.invalid), result.invalid
+
+
+def test_reconcile_refuses_a_proposal_with_an_invalid_destination(home):
+    """MAJOR-2 (fold r1): the `kind == "proposal"` dispatch branch
+    (`_validate_proposal`) is what this test protects — the gate found
+    the branch itself could be DELETED with the whole suite still green.
+    A proposal sibling with a `destination` outside
+    `ledger_ops.PROPOSAL_DESTINATIONS` must refuse, not commit."""
+    create_record(home, make_behavior(record_id="lrn-90000011"))
+    commit_all(home, "seed record")  # only the proposal orphan is left
+    bucket_dir = home / "skills" / "s"
+    (bucket_dir / "proposals").mkdir(parents=True, exist_ok=True)
+    ledger_ops._dump_yaml(  # noqa: SLF001 — same module family as read_proposal
+        proposal_dict(scope="skill:s", destination="not-a-real-destination"),
+        bucket_dir / "proposals" / "lrn-90000011.yaml",
+    )
+    orphan = bucket_dir / "proposals" / "lrn-90000011.yaml"
+    assert orphan.is_file()
+    before = git(home, "rev-parse", "HEAD").stdout
+
+    result = reconcile_mod.reconcile(home, no_push=True)
+
+    assert not result.healed
+    assert result.refused
+    assert any("lrn-90000011" in line for line in result.invalid), result.invalid
+    assert git(home, "rev-parse", "HEAD").stdout == before
+    assert "skills/s/proposals/lrn-90000011.yaml" not in head_files(home)
+
+
+def test_reconcile_refuses_an_invalid_merge_proposal_sibling(home):
+    """MAJOR-2 (fold r1): the `merge-*.yaml` branch inside
+    `_validate_proposal` (``if path.stem.startswith("merge-"):
+    ledger_ops.validate_merge_proposal(data); return``) is equally
+    unprotected by the suite — the gate found it too could be deleted
+    with everything still green. A `merge-<8hex>.yaml` orphan missing
+    its required fields must refuse, not commit — and the assertion
+    checks for `validate_merge_proposal`'s OWN error text ("records must
+    list"), not merely the filename, so this test cannot be satisfied by
+    the sibling falling through to the single-record path instead (which
+    would fail for the unrelated reason that "merge-deadbeef" is not a
+    record id — still caught, but proof of the wrong branch firing)."""
+    bucket_dir = home / "skills" / "s"
+    (bucket_dir / "proposals").mkdir(parents=True, exist_ok=True)
+    orphan = bucket_dir / "proposals" / "merge-deadbeef.yaml"
+    orphan.write_text("cluster_id: merge-deadbeef\n", encoding="utf-8")
+    before = git(home, "rev-parse", "HEAD").stdout
+
+    result = reconcile_mod.reconcile(home, no_push=True)
+
+    assert not result.healed
+    assert result.refused
+    assert any("records must list" in line for line in result.invalid), result.invalid
+    assert git(home, "rev-parse", "HEAD").stdout == before
+    assert "skills/s/proposals/merge-deadbeef.yaml" not in head_files(home)
 
 
 # ==================================================== the miner must proceed
@@ -290,4 +392,53 @@ def test_the_miner_logs_a_refusal_and_still_mines(home, monkeypatch, tmp_path):
     log_text = log_path.read_text(encoding="utf-8")
     assert "broken.yaml" in log_text, (
         f"the miner did not log the reconcile refusal's offender:\n{log_text}"
+    )
+
+
+# ============================== the CLI surfaces a refusal, not a false all-clear
+
+
+def test_cli_reconcile_exits_git_failed_and_names_the_offender_on_a_refusal(
+    home, capsys
+):
+    """MAJOR-1 (fold r1): the gate found `_cmd_reconcile`'s own
+    `if result.refused: return EXIT_GIT_FAILED` unprotected — replacing
+    it with `pass` left all 24 tests green, and `self-learn reconcile`
+    then exited 0 printing "the ledger is whole" over the C09 fixture
+    itself. This drives the real CLI entrypoint, not `reconcile()`
+    directly, so a regression in `_cmd_reconcile`'s own wiring (as
+    opposed to `reconcile()`'s return value) cannot hide behind a green
+    suite again."""
+    compiled_dir = home / "compiled"
+    compiled_dir.mkdir(parents=True, exist_ok=True)
+    (compiled_dir / "host.yaml").write_text("host: [\n", encoding="utf-8")
+
+    code = cli.main(["reconcile", "--no-push"])
+    captured = capsys.readouterr()
+
+    assert code == gitops.EXIT_GIT_FAILED
+    assert "host.yaml" in captured.err
+    assert "the ledger is whole" not in captured.out
+    assert "compiled/host.yaml" not in head_files(home)
+
+
+def test_cli_push_prints_the_offender_and_never_commits_it(home, capsys):
+    """MAJOR-1 (fold r1): `_cmd_push`'s offender-printing loop (added by
+    this same move — before it, `push` never looked at a blocked/invalid
+    orphan at all) is likewise unprotected by any existing test. Push's
+    OWN exit code is unaffected by a refusal (decision 3: push still
+    republishes whatever IS already committed) — what this test protects
+    is that the offender is actually named on stderr, and that it never
+    slips into what gets committed (and so never reaches "published")."""
+    compiled_dir = home / "compiled"
+    compiled_dir.mkdir(parents=True, exist_ok=True)
+    (compiled_dir / "host.yaml").write_text("host: [\n", encoding="utf-8")
+
+    cli.main(["push"])
+    captured = capsys.readouterr()
+
+    assert "host.yaml" in captured.err
+    assert "compiled/host.yaml" not in head_files(home), (
+        "the invalid orphan must never be committed — push must not "
+        "proceed with publishing it"
     )
