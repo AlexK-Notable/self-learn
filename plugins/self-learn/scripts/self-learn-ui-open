@@ -79,6 +79,13 @@
 # sibling-project dependency to resolve — it never reads $0 — so the
 # P3-1 readlink -f pattern does not apply here; nothing in it depends on
 # where the ~/bin symlink (vs. the repo) lives.
+#
+# C22 (sprint-1 M-F2): every `systemctl`/`hyprctl` call this script makes
+# is wrapped in `timeout 4` — a wedged compositor or user systemd manager
+# must not hang the launcher forever. Each site already tolerated the
+# tool being ABSENT (`command -v` guards, `|| return 0`/`|| true`); the
+# same tolerance absorbs a `timeout`-induced failure identically, so no
+# additional guard was needed for `timeout` itself.
 set -euo pipefail
 
 WINDOW_CLASS="self-learn-ui"
@@ -167,11 +174,11 @@ _START_OK=0
 if command -v systemctl >/dev/null 2>&1; then
   # is-active prints the state word (active/inactive/failed/activating/
   # deactivating) even when it exits non-zero — capture, never gate on rc.
-  _PRE_STATE="$(systemctl --user is-active self-learn-ui.service 2>/dev/null || true)"
+  _PRE_STATE="$(timeout 4 systemctl --user is-active self-learn-ui.service 2>/dev/null || true)"
   if [[ -r "$TOKEN_PATH" ]]; then
     _PRE_TOKEN="$(cat "$TOKEN_PATH" 2>/dev/null || true)"
   fi
-  if systemctl --user start self-learn-ui.service >/dev/null 2>&1; then
+  if timeout 4 systemctl --user start self-learn-ui.service >/dev/null 2>&1; then
     _START_OK=1
   fi
 fi
@@ -255,7 +262,8 @@ _TITLE_PREFIX="self-learn — "
 _ui_window_address() {
   command -v jq >/dev/null 2>&1 || return 0
   local clients
-  clients="$(hyprctl clients -j 2>/dev/null)" || return 0
+  # C22: bounded — a wedged compositor must not hang the launcher.
+  clients="$(timeout 4 hyprctl clients -j 2>/dev/null)" || return 0
   # `|| true`: hyprctl can exit 0 yet print non-JSON (review F1, delta
   # round: jq then exits 5, and under set -e a bare pipeline here kills
   # the whole launcher from inside $() — at the presence check AND ×50
@@ -280,12 +288,13 @@ _MONITOR="${SELF_LEARN_UI_MONITOR:-}"
 _window_monitor_name() {
   command -v jq >/dev/null 2>&1 || return 0
   local clients monitors mon_id
-  clients="$(hyprctl clients -j 2>/dev/null)" || return 0
+  # C22: bounded — a wedged compositor must not hang the launcher.
+  clients="$(timeout 4 hyprctl clients -j 2>/dev/null)" || return 0
   mon_id="$(jq -r --arg addr "$1" \
     'first(.[]? | select(.address == $addr) | .monitor) // ""' \
     2>/dev/null <<<"$clients" || true)"
   case "$mon_id" in '' | *[!0-9]*) return 0 ;; esac
-  monitors="$(hyprctl monitors -j 2>/dev/null)" || return 0
+  monitors="$(timeout 4 hyprctl monitors -j 2>/dev/null)" || return 0
   jq -r --argjson id "$mon_id" \
     'first(.[]? | select(.id == $id) | .name) // ""' \
     2>/dev/null <<<"$monitors" || true
@@ -299,7 +308,8 @@ _window_monitor_name() {
 _ensure_on_monitor() {
   [[ -n "$_MONITOR" && -n "${1:-}" ]] || return 0
   [[ "$(_window_monitor_name "$1")" == "$_MONITOR" ]] && return 0
-  hyprctl dispatch focuswindow "address:${1}" >/dev/null 2>&1 || true
+  # C22: bounded — a wedged compositor must not hang the launcher.
+  timeout 4 hyprctl dispatch focuswindow "address:${1}" >/dev/null 2>&1 || true
   # Stale-address gate (review F2): the window can vanish between the
   # address resolve and this dispatch, in which case the focus lands
   # nowhere and movewindow would relocate whatever UNRELATED window the
@@ -307,10 +317,12 @@ _ensure_on_monitor() {
   # reading `hyprctl activewindow -j` — a JSON read, never an rc branch
   # (X-3) — and skip the move on any mismatch or gap (degrade).
   local active active_addr
-  active="$(hyprctl activewindow -j 2>/dev/null)" || return 0
+  # C22: bounded — a wedged compositor must not hang the launcher.
+  active="$(timeout 4 hyprctl activewindow -j 2>/dev/null)" || return 0
   active_addr="$(jq -r '.address // ""' 2>/dev/null <<<"$active" || true)"
   [[ "$active_addr" == "$1" ]] || return 0
-  hyprctl dispatch movewindow "mon:${_MONITOR}" >/dev/null 2>&1 || true
+  # C22: bounded — a wedged compositor must not hang the launcher.
+  timeout 4 hyprctl dispatch movewindow "mon:${_MONITOR}" >/dev/null 2>&1 || true
 }
 
 # Fresh-launch placement: the window takes time to appear, so poll the
@@ -363,7 +375,8 @@ if command -v hyprctl >/dev/null 2>&1; then
   if [[ -n "$_ui_addr" ]]; then
     # Focus the matched window by ADDRESS (works whether the class is the
     # pinned one or the URL-derived chromium-Wayland form — T-D fix).
-    hyprctl dispatch focuswindow "address:${_ui_addr}" >/dev/null 2>&1 || true
+    # C22: bounded — a wedged compositor must not hang the launcher.
+    timeout 4 hyprctl dispatch focuswindow "address:${_ui_addr}" >/dev/null 2>&1 || true
     _ensure_on_monitor "$_ui_addr"
   else
     _launch

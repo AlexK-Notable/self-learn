@@ -43,6 +43,12 @@ _REQUIRED_REAL_BINS = (
     "dirname",
     "readlink",
     "sleep",
+    # M-F2 (C22): the script now wraps every systemctl/hyprctl call in
+    # `timeout 4` — a fully hermetic PATH (no fallback to the real
+    # system PATH, per this file's own header) must supply it too, or
+    # every one of those calls "command not found"s instead of
+    # exercising the fake systemctl/hyprctl this suite installs.
+    "timeout",
 )
 
 _EXEC_MODE = (
@@ -123,6 +129,19 @@ echo "$*" >> "{log}"
 if [[ "$1" == "clients" ]]; then
   echo '{clients_json}'
 fi
+exit 0
+"""
+
+# M-F2 (C22): a `hyprctl` that never returns on its own — logs its args
+# immediately (so the call DID happen), then blocks well past the
+# script's own `timeout 4` bound before ever printing anything. Proves
+# the launcher's hyprctl calls are actually BOUNDED, not merely
+# preceded by a `command -v hyprctl` presence check (presence says
+# nothing about a wedged compositor that hangs mid-call).
+_SLEEPY_HYPRCTL_TMPL = """
+echo "$*" >> "{log}"
+sleep {sleep_s}
+echo '[]'
 exit 0
 """
 
@@ -246,6 +265,191 @@ def test_hyprctl_absent_skips_detection_and_launches(tmp_path: Path) -> None:
     assert result.returncode == 0
     content = _wait_for_nonempty(chromium_log)
     assert "--class=self-learn-ui" in content
+
+
+def test_hyprctl_call_is_bounded_by_timeout(tmp_path: Path) -> None:
+    """M-F2 (C22): every hyprctl call this script makes is wrapped in
+    `timeout 4` — a wedged compositor must not hang the launcher forever.
+
+    Mutation target: strip any `timeout N ` prefix from a hyprctl
+    invocation (starting with the `clients -j` read inside
+    `_ui_window_address`, the very first hyprctl call on this code path)
+    and this fake, which sleeps well past that bound before ever
+    printing, makes the whole script run long past it too — this test's
+    own generous ceiling (well under the fake's sleep duration) then
+    fails instead of the ~4s a correctly-bounded call takes.
+    """
+    hyprctl_log = tmp_path / "hyprctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_SLEEPY_HYPRCTL_TMPL.format(log=hyprctl_log, sleep_s=12),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(tmp_path, bindir, XDG_RUNTIME_DIR=str(runtime_dir))
+
+    start = time.monotonic()
+    result = subprocess.run(
+        [str(SCRIPT)], env=env, capture_output=True, text=True, timeout=20
+    )
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed < 8.0, (
+        f"hyprctl call took {elapsed:.1f}s (fake sleeps 12s) — the "
+        "`timeout 4` wrap around the launcher's hyprctl calls appears to "
+        "be missing"
+    )
+    # The wrap bounds the CALL only; the launcher still degrades exactly
+    # as it does for an absent window (a timed-out `clients -j` reads as
+    # empty via the existing `|| return 0`) and launches normally.
+    content = _wait_for_nonempty(chromium_log)
+    assert "--class=self-learn-ui" in content
+    hyprctl_content = hyprctl_log.read_text(encoding="utf-8")
+    assert "clients -j" in hyprctl_content
+
+
+# M-F2 gate follow-up: the mutation-test coverage above only reaches ONE
+# of the script's nine `timeout`-wrapped external calls (`clients -j`
+# inside `_ui_window_address`). The two tests below close the remaining
+# gap: a sleepy `systemctl` (the is-active/start pair near the top of
+# the script) and a sleepy `hyprctl dispatch` (the focuswindow/movewindow
+# pair inside `_ensure_on_monitor`, which a first pass of this move left
+# UNWRAPPED — nine call sites exist, not seven; see the build report).
+
+_SLEEPY_SYSTEMCTL_TMPL = """
+echo "$*" >> "{log}"
+sleep {sleep_s}
+if [[ "$2" == "is-active" ]]; then
+  echo "{state}"
+fi
+exit 0
+"""
+
+
+def test_systemctl_calls_are_bounded_by_timeout(tmp_path: Path) -> None:
+    """M-F2 (C22): both `systemctl --user is-active` and `systemctl
+    --user start` are wrapped in `timeout 4`.
+
+    `state="active"` skips the Y-14 readiness-wait loop entirely (its
+    guard is `_PRE_STATE != "active"`), isolating this test to just the
+    two systemctl calls themselves — no confound from the poll loop's
+    own up-to-10s budget. hyprctl is left absent (irrelevant to this
+    call pair) so the script falls straight through to `_launch`.
+
+    Mutation target: strip `timeout 4` from EITHER the `is-active` or
+    the `start` invocation. This fake sleeps unconditionally on every
+    call, so a stripped wrap lets that one call run the full 12s
+    uninstead of being cut to ~4s — pushing total elapsed past this
+    test's ceiling.
+    """
+    systemctl_log = tmp_path / "systemctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        systemctl=_SLEEPY_SYSTEMCTL_TMPL.format(
+            log=systemctl_log, sleep_s=12, state="active"
+        ),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(tmp_path, bindir, XDG_RUNTIME_DIR=str(runtime_dir))
+
+    start = time.monotonic()
+    result = subprocess.run(
+        [str(SCRIPT)], env=env, capture_output=True, text=True, timeout=40
+    )
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed < 15.0, (
+        f"systemctl calls took {elapsed:.1f}s (fake sleeps 12s per call) — "
+        "a `timeout 4` wrap around is-active or start appears to be missing"
+    )
+    log = systemctl_log.read_text(encoding="utf-8")
+    assert "is-active" in log
+    assert "start" in log
+    assert _wait_for_nonempty(chromium_log), "the launch must still happen"
+
+
+_SLEEPY_DISPATCH_HYPRCTL_TMPL = """
+echo "$*" >> "{log}"
+if [[ "$1" == "clients" ]]; then
+  echo '{clients_json}'
+elif [[ "$1" == "monitors" ]]; then
+  echo '{monitors_json}'
+elif [[ "$1" == "activewindow" ]]; then
+  echo '{active_json}'
+elif [[ "$1" == "dispatch" ]]; then
+  sleep {sleep_s}
+fi
+exit 0
+"""
+
+
+def test_ensure_on_monitor_dispatch_calls_are_bounded_by_timeout(
+    tmp_path: Path,
+) -> None:
+    """M-F2 (C22): the focuswindow/movewindow dispatches INSIDE
+    `_ensure_on_monitor` are wrapped in `timeout 4`, same as every other
+    hyprctl call.
+
+    `clients`/`monitors`/`activewindow` all answer instantly here; only
+    `dispatch` sleeps. `monitors_json="[]"` (unknown current placement)
+    forces the unconditional-move path, and `active_json` echoes OUR
+    address so the F2 stale-address gate passes — walking through all
+    THREE dispatch calls the script makes on this code path: the
+    top-level focus-on-presence-check dispatch (already wrapped before
+    this move), then `_ensure_on_monitor`'s own focuswindow and
+    movewindow dispatches (the two this follow-up wraps).
+
+    Mutation target: strip `timeout 4` from either dispatch inside
+    `_ensure_on_monitor`. Each unwrapped dispatch then runs the fake's
+    full 12s sleep instead of being cut to ~4s, and this test's ceiling
+    (well under two full unbounded sleeps) catches it.
+    """
+    hyprctl_log = tmp_path / "hyprctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_SLEEPY_DISPATCH_HYPRCTL_TMPL.format(
+            log=hyprctl_log,
+            clients_json='[{"class":"self-learn-ui","address":"0xAAA","title":"self-learn — Front","monitor":0}]',
+            monitors_json="[]",
+            active_json='{"address":"0xAAA"}',
+            sleep_s=12,
+        ),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(
+        tmp_path,
+        bindir,
+        XDG_RUNTIME_DIR=str(runtime_dir),
+        SELF_LEARN_UI_MONITOR="DP-9",
+    )
+
+    start = time.monotonic()
+    result = subprocess.run(
+        [str(SCRIPT)], env=env, capture_output=True, text=True, timeout=40
+    )
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed < 20.0, (
+        f"dispatch calls took {elapsed:.1f}s (fake sleeps 12s per dispatch) "
+        "— a `timeout 4` wrap around one of _ensure_on_monitor's two "
+        "dispatch calls appears to be missing"
+    )
+    log = hyprctl_log.read_text(encoding="utf-8")
+    assert log.count("dispatch") == 3, (
+        "expected the top-level focus dispatch plus _ensure_on_monitor's "
+        f"focuswindow and movewindow dispatches (3 total); log was: {log!r}"
+    )
 
 
 def test_window_present_by_title_focuses_when_class_is_url_derived(
