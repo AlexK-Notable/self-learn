@@ -2297,8 +2297,14 @@ def _cmd_sentinel(action: str) -> int:
         hold = sentinel.hold()
         if hold.owned:
             print(f"sentinel held: {path}")
-        else:
+        elif sentinel.is_live(path):
             print(f"sentinel already held (live) — left in place: {path}")
+        else:
+            # fold r1 (m1): owned=False here is NOT proof of a live
+            # foreign holder — a lock timeout degrades to the same
+            # answer (sentinel.py's _lock_section never raises), and
+            # claiming "already held (live)" in that case is false.
+            print(f"sentinel: lock contended, not held — left untouched: {path}")
         return EXIT_OK
     if action == "heartbeat":
         if sentinel.heartbeat():
