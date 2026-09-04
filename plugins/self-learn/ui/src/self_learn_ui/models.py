@@ -1652,6 +1652,34 @@ def _build_finding(record: Record, title: str) -> FindingRegion:
     )
 
 
+#: n-2 fold (M-F4, gate-flagged NIT): the raw sibling text's first line,
+#: truncated — long enough to be recognizable, short enough to never turn
+#: the Change region into a second raw-text viewer (that's the
+#: `proposal-yaml` kind's job, only reachable once a proposal DOES parse).
+_UNRENDERABLE_EXCERPT_CHARS = 120
+
+
+def _unrenderable_message(error: str, proposal_raw_text: str | None) -> str:
+    """The parse error alone (`ledger.read_proposal_raw`'s error string —
+    the file path + the YAML library's own complaint) never shows the
+    operator WHAT actually failed to parse. The raw sibling text is
+    already available regardless of parse success
+    (`ledger.read_proposal_text` reads the file directly, no YAML
+    involved) and was being discarded here — appends a bounded excerpt
+    of its FIRST LINE. Plain text, never HTML-escaped here: `detail.html`
+    renders `model.change.message` through a bare `{{ }}` under the
+    app's explicit `autoescape=True` (`app.py`'s AUTOESCAPE MARKER, "never
+    `{% autoescape false %}` anywhere") — escaping it a second time here
+    would double-escape."""
+    first_line = proposal_raw_text.splitlines()[0] if proposal_raw_text else ""
+    if not first_line:
+        return error
+    excerpt = first_line[:_UNRENDERABLE_EXCERPT_CHARS]
+    if len(first_line) > _UNRENDERABLE_EXCERPT_CHARS:
+        excerpt += "…"
+    return f"{error} — starts with: {excerpt}"
+
+
 def _build_change(
     proposal: dict | None,
     diff_text: str | None,
@@ -1664,12 +1692,16 @@ def _build_change(
         # DIFFERENT state from no proposal at all — this used to render
         # the identical NO_ANALYSIS_MESSAGE either way (the parse error
         # was discarded at the read site, routes.py's old `_err`).
-        # `kind="unrenderable"` carries the actual error text so
+        # `kind="unrenderable"` carries the actual error text (plus a
+        # bounded excerpt of the raw sibling text, fold n-2) so
         # detail.html can render it distinctly (never silently as "no
         # analysis yet").
         if proposal_error is not None:
             return ChangeRegion(
-                kind="unrenderable", content=None, caption="", message=proposal_error
+                kind="unrenderable",
+                content=None,
+                caption="",
+                message=_unrenderable_message(proposal_error, proposal_raw_text),
             )
         return ChangeRegion(
             kind="none", content=None, caption="", message=NO_ANALYSIS_MESSAGE

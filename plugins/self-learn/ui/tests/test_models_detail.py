@@ -165,6 +165,14 @@ class TestChangeRegionNoProposal:
         assert model.change.content is None
         assert model.change.message == NO_ANALYSIS_MESSAGE
 
+    def test_no_proposal_message_wording_is_pinned(self):
+        """n-1 fold (M-F4, gate-flagged NIT): every test above compares
+        `model.change.message` against the IMPORTED `NO_ANALYSIS_MESSAGE`
+        constant itself -- self-referential, so a wording change to the
+        constant would sail through unnoticed. This pins the literal
+        text so an accidental wording change is a visible diff here."""
+        assert NO_ANALYSIS_MESSAGE == "no analysis yet — `i` to analyze now"
+
 
 class TestChangeRegionUnrenderable:
     """M-F4 (B-11, I): a proposal sibling that EXISTS but fails to parse
@@ -207,6 +215,48 @@ class TestChangeRegionUnrenderable:
             proposal_error="should be ignored",
         )
         assert model.change.kind == "diff"
+
+
+class TestChangeRegionUnrenderableExcerpt:
+    """n-2 fold (M-F4, gate-flagged NIT): the raw sibling text was
+    already available (`proposal_raw_text` — `ledger.read_proposal_text`
+    reads the file regardless of parse success) and discarded; the
+    unrenderable message now appends a bounded excerpt of its first line
+    so the operator sees what actually failed to parse, not just the
+    YAML library's own complaint."""
+
+    def test_excerpt_of_the_first_line_is_appended(self):
+        model = _build(
+            _item(),
+            proposal_error="lrn-aa000001.yaml is not a YAML mapping",
+            proposal_raw_text="[1, 2, 3]\nsecond line ignored\n",
+        )
+        assert model.change.message == (
+            "lrn-aa000001.yaml is not a YAML mapping — starts with: [1, 2, 3]"
+        )
+
+    def test_excerpt_is_bounded_to_120_chars_with_an_ellipsis(self):
+        long_first_line = "x" * 200
+        model = _build(
+            _item(),
+            proposal_error="unparseable",
+            proposal_raw_text=long_first_line + "\nrest ignored\n",
+        )
+        excerpt_part = model.change.message.split("starts with: ", 1)[1]
+        assert excerpt_part == ("x" * 120) + "…"
+
+    def test_no_raw_text_falls_back_to_the_bare_error(self):
+        """No sibling text at all (e.g. an OSError reading it,
+        `ledger.read_proposal_text`'s own `None` leg) -- the message is
+        exactly the parse error, no dangling "starts with:" for nothing."""
+        model = _build(_item(), proposal_error="unparseable", proposal_raw_text=None)
+        assert model.change.message == "unparseable"
+
+    def test_blank_raw_text_falls_back_to_the_bare_error(self):
+        """An empty or whitespace-only sibling file -- no non-empty
+        first line to excerpt."""
+        model = _build(_item(), proposal_error="unparseable", proposal_raw_text="")
+        assert model.change.message == "unparseable"
 
 
 class TestChangeRegionDiff:

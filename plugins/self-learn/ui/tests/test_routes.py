@@ -4948,19 +4948,22 @@ class TestA18DeferredRecordApproveRefusesEndToEnd:
 # so this stays local here rather than appending a new helper there.
 
 
-def _seed_unparseable_proposal(ledger: Path, record_id: str) -> Path:
+def _seed_unparseable_proposal(ledger: Path, record_id: str, *, body: str = "[1, 2, 3]\n") -> Path:
     """A proposal sibling that EXISTS but fails to parse (a YAML value
     that isn't a mapping -- `self_learn.ledger_ops._load_yaml_map`'s
     "not a YAML mapping" `ProposalError` branch, the simplest
     deterministic way to hit `ledger.read_proposal_raw`'s error leg
     without relying on YAML syntax-error edge cases). Mirrors
-    `support.py`'s own `seed_raw_proposal` path derivation."""
+    `support.py`'s own `seed_raw_proposal` path derivation. ``body``
+    defaults to a bare flow-sequence; a caller can override it (n-2
+    fold's excerpt/escaping tests need control over the file's actual
+    bytes)."""
     from self_learn.ledger_ops import find_record_path
 
     record_path = find_record_path(ledger, record_id)
     path = record_path.parent.parent / "proposals" / f"{record_id}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("[1, 2, 3]\n", encoding="utf-8")
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -5030,15 +5033,76 @@ class TestDetailUnrenderableProposalEndToEnd:
 
         r = c.get(f"/record/{rec.id}")
         assert r.status_code == 200
-        # Positive control FIRST (the FakeRunner trap's own lesson,
-        # generalized: a page read like this one never goes through
-        # FakeRunner at all -- assert the region actually rendered
-        # something before trusting any absence assertion below).
-        assert 'aria-label="change"' in r.text
+        # Positive control FIRST (n-3 fold, gate-flagged NIT: the
+        # ORIGINAL control here, `'aria-label="change"' in r.text`, is an
+        # UNCONDITIONAL element -- the wrapping <section> renders that
+        # attribute regardless of which `model.change.kind` branch fires,
+        # so it would still pass even if the branch's own content were
+        # completely blank. The FakeRunner-trap rule -- "a blank page
+        # must fail the control" -- means the control has to be a string
+        # ONLY the unrenderable branch itself emits: the
+        # `banner banner-notice`/`role="alert"` markup detail.html's
+        # `unrenderable` elif renders (verified against
+        # partials/host_add_bar.html's OWN banner, which uses
+        # `banner-warning`, never `banner-notice` -- no collision within
+        # this page's render tree).
+        assert 'class="banner banner-notice" role="alert"' in r.text
         assert "not a YAML mapping" in r.text  # the real parse error surfaced
         # THE regression this move closes: must NOT silently collapse to
         # the generic "no analysis yet" CTA.
         assert NO_ANALYSIS_MESSAGE not in r.text
+
+    def test_unrenderable_message_includes_a_bounded_excerpt_of_the_raw_text(
+        self, tmp_path: Path
+    ) -> None:
+        """n-2 fold end-to-end proof: the raw sibling text was already
+        being read into the bundle (`proposal_raw_text` -- regardless of
+        parse success) and discarded at the message-building site; now a
+        bounded excerpt of its first line reaches the actual rendered
+        page, not just the model layer (already covered by
+        `test_models_detail.py::TestChangeRegionUnrenderableExcerpt`)."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        # A YAML LIST (not a syntax error -- a genuinely valid, PARSEABLE
+        # document that just isn't a mapping, `_load_yaml_map`'s clean
+        # "not a YAML mapping" branch): a two-line body where only the
+        # FIRST line should reach the excerpt. A flow-sequence followed
+        # by a second top-level line (tried first) is instead a YAML
+        # SYNTAX error whose own message embeds a source snippet
+        # (ruamel's line/column context) -- indistinguishable from this
+        # move's own excerpt without picking content the parser itself
+        # never echoes back.
+        _seed_unparseable_proposal(
+            sb.ledger, rec.id, body="- item one\n- second line never excerpted\n"
+        )
+        c, _runner = make_client(sb)
+
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert 'class="banner banner-notice" role="alert"' in r.text  # positive control
+        assert "starts with: - item one" in r.text
+        assert "second line never excerpted" not in r.text  # first line only
+
+    def test_unrenderable_excerpt_is_escaped_not_raw_html(self, tmp_path: Path) -> None:
+        """The raw sibling text is operator-authored-adjacent, not
+        trusted markup -- a first line containing HTML-special
+        characters must render escaped (the app's explicit
+        `autoescape=True`, app.py's AUTOESCAPE MARKER), never as live
+        HTML in the response."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        _seed_unparseable_proposal(
+            sb.ledger, rec.id, body="<script>alert(1)</script> not yaml\n"
+        )
+        c, _runner = make_client(sb)
+
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert 'class="banner banner-notice" role="alert"' in r.text  # positive control
+        assert "<script>alert(1)</script>" not in r.text  # never live/unescaped
+        assert "&lt;script&gt;" in r.text  # escaped, per the app's autoescape
 
     def test_genuinely_no_proposal_is_unaffected_by_this_move(self, tmp_path: Path) -> None:
         """Sibling control: the TRUE no-proposal-at-all state still
