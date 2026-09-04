@@ -1146,6 +1146,71 @@ def _spawn_window(home: Path, *, no_push: bool = False) -> int:
     return proc.pid
 
 
+#: C17 (audit 2026-09-02): `_open_window` used to spawn the child (below)
+#: and write its pid to `worker.window` only afterwards — a crash (or the
+#: whole process getting SIGKILLed) in that gap left no window on disk at
+#: all, so a later kick saw nothing live and spawned a SECOND worker
+#: alongside the detached first one. This sentinel is written into
+#: `worker.window` durably, BEFORE the spawn, so a crash in the gap still
+#: leaves proof on disk that an attempt was underway; a later kick reads
+#: a fresh one as "absorbed-race" rather than "nothing is running".
+_SPAWN_MARKER = "spawning"
+
+#: Margin added on top of `coalesce_secs(home)` before a marker is
+#: reclaimed (:func:`_spawn_marker_stale`). The ORDINARY (non-crash) path
+#: never sees this at all: the parent rewrites the marker with the real
+#: pid immediately after `Popen` returns (milliseconds), long before
+#: either bound could elapse. The marker's only legitimate LONG life is
+#: a crash strictly between `Popen` returning and that immediate
+#: rewrite — vanishingly rare, but when it lands, the detached child
+#: that was already launched is the one that eventually clears
+#: `worker.window` itself, and only after ITS OWN coalesce sleep ends
+#: and it takes `worker.lock` (:func:`run` calls
+#: `_cache_clear("worker.window")` right after the blocking lock
+#: acquire) — never sooner. A flat deadline shorter than that reclaims
+#: while the first child is still alive and coalescing, and a second
+#: kick then spawns a SECOND worker (serialized by `worker.lock`, but
+#: still exactly the double-spawn C17 exists to prevent) — hence
+#: `coalesce_secs(home)`, not a fixed number, is the floor.
+SPAWN_MARKER_DEADLINE_MARGIN_SECS = 30.0
+
+
+def _write_window_durable(window: Path, text: str) -> None:
+    """Temp + rename + fsync (C17). `Path.write_text` alone is neither
+    atomic (a reader mid-write could see a partial file) nor durable (the
+    bytes can still be sitting in the page cache, not on disk, when a
+    crash hits) — exactly the two properties the spawn marker needs,
+    since its whole job is to survive the crash a plain write would not.
+    `os.replace` gives the atomicity; the two `fsync` calls (the temp
+    file's data, then the directory entry the rename produced) give the
+    durability."""
+    window.parent.mkdir(parents=True, exist_ok=True)
+    tmp = window.parent / f".{window.name}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, window)  # same filesystem — atomic
+    dir_fd = os.open(window.parent, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)  # the rename itself, durable too
+    finally:
+        os.close(dir_fd)
+
+
+def _spawn_marker_stale(window: Path, home: Path) -> bool:
+    """A marker older than ``coalesce_secs(home) +
+    SPAWN_MARKER_DEADLINE_MARGIN_SECS`` is an abandoned attempt, not a
+    live one — reclaimable by the next kick. Missing entirely (raced
+    away, or never existed) counts as stale too: there is nothing left
+    to absorb against."""
+    try:
+        age = time.time() - window.stat().st_mtime
+    except OSError:
+        return True
+    return age >= coalesce_secs(home) + SPAWN_MARKER_DEADLINE_MARGIN_SECS
+
+
 def _open_window(home: Path, *, no_push: bool = False) -> str:
     """Lock-guarded window opener, shared by :func:`kick` and the
     run-end follow-on (audit 2026-07-15: the follow-on previously
@@ -1154,6 +1219,17 @@ def _open_window(home: Path, *, no_push: bool = False) -> str:
     | ``depth-limited`` (D3, 2026-08-09: `_spawn_window` refused under
     the chain-depth ceiling — nothing was actually spawned, so no pid is
     recorded to `worker.window`).
+
+    C17: before ever calling :func:`_spawn_window`, `worker.window` is
+    durably (:func:`_write_window_durable`) set to :data:`_SPAWN_MARKER`
+    — after the only other refusal check this function makes itself (the
+    live-window absorption check just above), and before the spawn. A
+    non-spawn outcome (depth-limited) removes it again; a real spawn
+    rewrites it with the pid, same as before. A later kick that finds a
+    fresh marker (no crash, or a crash too recent to trust) reports
+    ``absorbed-race`` — the same vocabulary as a held flock, since both
+    mean "someone else's spawn already covers this kick" — and reclaims a
+    stale one (:func:`_spawn_marker_stale`) instead.
 
     ``no_push`` propagates to a spawned child (BLOCKER 3). An ABSORBED kick
     inherits the already-running window's policy — correct: absorption
@@ -1167,16 +1243,24 @@ def _open_window(home: Path, *, no_push: bool = False) -> str:
         try:
             window = _p("worker.window")
             if window.is_file():
-                try:
-                    pid = int(window.read_text(encoding="utf-8").strip())
-                except ValueError:
-                    pid = -1
-                if pid > 0 and _pid_alive(pid):
-                    return "absorbed-window"
+                raw = window.read_text(encoding="utf-8").strip()
+                if raw == _SPAWN_MARKER:
+                    if not _spawn_marker_stale(window, home):
+                        return "absorbed-race"  # a spawn is (or just was) in flight
+                    # else: stale — an abandoned attempt; reclaim below.
+                else:
+                    try:
+                        pid = int(raw)
+                    except ValueError:
+                        pid = -1
+                    if pid > 0 and _pid_alive(pid):
+                        return "absorbed-window"
+            _write_window_durable(window, _SPAWN_MARKER)  # C17: before the spawn
             pid = _spawn_window(home, no_push=no_push)
             if pid <= 0:
+                window.unlink(missing_ok=True)  # non-spawn outcome — no marker left
                 return "depth-limited"  # already logged by _spawn_window
-            window.write_text(str(pid), encoding="utf-8")
+            _write_window_durable(window, str(pid))
             log(f"window opened (pid {pid})")
             return "spawned"
         finally:
