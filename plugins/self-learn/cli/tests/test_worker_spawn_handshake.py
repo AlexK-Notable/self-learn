@@ -8,38 +8,49 @@ first one. The fix writes a durable "spawning" marker into `worker.window`
 (temp + rename + fsync, `worker._write_window_durable`) BEFORE ever
 calling `_spawn_window`, so a crash in the gap still leaves proof on disk;
 a later kick that finds a fresh marker reports ``absorbed-race`` instead
-of racing a double spawn, and a marker older than
-``worker.coalesce_secs(home) + worker.SPAWN_MARKER_DEADLINE_MARGIN_SECS``
-is reclaimed as an abandoned attempt — the coalesce floor matters because
-the ONE realistic way a marker outlives a plain Popen call is a crash
-between `Popen` returning and the immediate pid-rewrite that follows it,
-and in that case the already-launched detached child is what eventually
-clears `worker.window`, only after its OWN coalesce sleep ends.
+of racing a double spawn.
+
+A marker older than `worker.SPAWN_MARKER_DEADLINE_SECS` is reclaimed as
+an abandoned attempt. As of fold r3 this deadline is a fixed, startup-
+scale number, NOT `coalesce_secs(home) + margin` — the spawned child now
+registers its own real pid (`worker._register_running_pid`, fold r2)
+before its coalesce sleep and before `worker.lock`, so a live, coalescing
+child no longer sits behind a bare marker for the length of its own
+sleep; the deadline only needs to cover a crash between `Popen` returning
+(parent side) and that registration write landing (child side) —
+interpreter startup and one import, not a multi-minute coalesce window.
 
 This file exercises ONLY that handshake, at the `worker._open_window` /
 `worker.kick` level, against a bare XDG cache namespace — it never needs a
 real ledger (git) home, since `worker.cache_dir()` only hashes the
 resolved home PATH (`ledger.resolve_home`), never reads it. It does not
 import from `tests/test_worker.py` (armor-pinned; that file is run
-unchanged alongside this one).
+unchanged alongside this one). The one exception is
+`test_run_registers_the_pid_before_the_coalesce_sleep_and_the_lock`
+(fold r3), which DOES call `worker.run()` directly — the only way to
+observe ORDER between its first few statements — but never lets it run
+to completion against the fake `home`; see that test's own docstring.
 
-Fold r1 (audit 2026-09-02 gate, one MAJOR + one MINOR + three NIT):
-folds MAJOR 1 (an exception out of `_spawn_window` now leaves no marker
-behind — the two original crash-simulation tests are rewritten to
-construct the real crash state directly on disk instead of raising a
-Python exception, which only ever modeled a HANDLED outcome; a new test
-covers the exception case itself), NIT 1 (`_write_window_durable` now
-cleans up its own temp file on a mid-write failure), and NIT 2 (the D3
-ceiling check moved ahead of the marker write in `_open_window`, so a
-certain refusal never writes one). MINOR 1 (the spawned child
-self-registering its own pid at startup) is DEFERRED — see
-`misc/audit-2026-09-02/sprint-1/build-worker-spawn.md`'s "Fold r1"
-section for why it conflicts with `tests/test_lock_invariant.py`, which
-this fold may not edit.
+Fold history: **r1** (audit 2026-09-02 gate, 1 MAJOR + 1 MINOR + 3 NIT)
+folded MAJOR 1 (an exception out of `_spawn_window` now leaves no marker
+behind), NIT 1 (`_write_window_durable` cleans up its own temp file on a
+mid-write failure), and NIT 2 (the D3 ceiling check moved ahead of the
+marker write) — MINOR 1 (child self-registration) was BLOCKED, deferred,
+because it required one `tests/test_lock_invariant.py` line that r1's
+DONE WHEN forbade. **r2** shipped MINOR 1 once the coordinator confirmed
+that file's `NOT_REPO_TRUTH` allowlist may take exactly one new entry per
+lane — but proved only that `run()` calls the registration function
+somewhere, not that it runs before the coalesce sleep and the lock,
+which is the entire point of MINOR 1. **r3** (this state) closes that:
+pins the order with a real test, and rewrites the deadline rationale and
+value now that the child registers at startup rather than after its own
+coalesce sleep (see the paragraph above).
 """
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import os
 import time
 from pathlib import Path
@@ -93,7 +104,7 @@ def test_a_marker_left_by_a_real_crash_absorbs_a_later_kick(home, monkeypatch):
     check, not the held-lock one.)
 
     Mutation that proves this bites: replacing the `if not _spawn_marker_
-    stale(window, home): return "absorbed-race"` staleness check in
+    stale(window): return "absorbed-race"` staleness check in
     `_open_window` with a bare `pass` (the fresh marker is recognized
     but no longer short-circuits absorption) fails this test — the
     marker constructed here falls straight through to the guarded
@@ -123,10 +134,9 @@ def test_an_exception_from_spawn_window_leaves_no_marker_and_the_next_kick_spawn
     True); raise` removes the marker and re-raises, exactly like the
     `pid <= 0` (depth-limited) branch just below it in the source. Left
     un-cleaned, EVERY later kick would read the leftover marker as fresh
-    and report `absorbed-race` for up to `coalesce_secs(home) +
-    SPAWN_MARKER_DEADLINE_MARGIN_SECS`, even though no child was ever
-    spawned to eventually clear it — C17's double-spawn risk inverted
-    into a permanent-refusal risk.
+    and report `absorbed-race` for up to `SPAWN_MARKER_DEADLINE_SECS`,
+    even though no child was ever spawned to eventually clear it — C17's
+    double-spawn risk inverted into a permanent-refusal risk.
 
     Mutation that proves this bites: removing the `except BaseException:
     window.unlink(missing_ok=True); raise` wrapper around the
@@ -216,7 +226,7 @@ def test_open_window_never_touches_the_window_at_the_real_ceiling(home, monkeypa
     on disk at all, not even transiently (a SIGKILL landing between an
     earlier marker-write and the ceiling check would otherwise strand an
     un-clearable marker with no child anywhere, reclaimed only after
-    `coalesce_secs(home) + SPAWN_MARKER_DEADLINE_MARGIN_SECS`). This test
+    `SPAWN_MARKER_DEADLINE_SECS`). This test
     sets the REAL env var (`worker.FOLLOWON_DEPTH_ENV`) to the REAL
     ceiling (`worker.FOLLOWON_DEPTH_CEILING`) rather than mocking
     `_spawn_window` to return `-1` (as the test above does) — and guards
@@ -247,16 +257,15 @@ def test_open_window_never_touches_the_window_at_the_real_ceiling(home, monkeypa
 
 
 def test_stale_marker_is_reclaimed_past_the_deadline(home, monkeypatch):
-    """A marker older than ``coalesce_secs(home) +
-    SPAWN_MARKER_DEADLINE_MARGIN_SECS`` is an abandoned attempt (the
-    writer died before rewriting or removing it) — a later kick must
-    reclaim the window and actually spawn, not absorb forever. The
-    deadline is computed from `worker.coalesce_secs`/`worker.
-    SPAWN_MARKER_DEADLINE_MARGIN_SECS` rather than a literal number so
-    this test holds regardless of the suite's own coalesce default.
+    """A marker older than `worker.SPAWN_MARKER_DEADLINE_SECS` is an
+    abandoned attempt (the writer died before registering or removing
+    it) — a later kick must reclaim the window and actually spawn, not
+    absorb forever. The deadline is read from `worker.SPAWN_MARKER_
+    DEADLINE_SECS` rather than a literal number so this test holds even
+    if that constant's value changes.
 
     Mutation that proves this bites: replacing the ``if not
-    _spawn_marker_stale(window, home): return "absorbed-race"`` branch
+    _spawn_marker_stale(window): return "absorbed-race"`` branch
     with an unconditional ``return "absorbed-race"`` (i.e. treating
     every marker as permanently live) fails this test — the outcome
     would be ``"absorbed-race"``, not the asserted ``"spawned"``, and
@@ -264,8 +273,7 @@ def test_stale_marker_is_reclaimed_past_the_deadline(home, monkeypatch):
     happened) would never be reached at all."""
     window = _window(home)
     worker._write_window_durable(window, worker._SPAWN_MARKER)
-    deadline = worker.coalesce_secs(home) + worker.SPAWN_MARKER_DEADLINE_MARGIN_SECS
-    stale_mtime = time.time() - deadline - 5
+    stale_mtime = time.time() - worker.SPAWN_MARKER_DEADLINE_SECS - 5
     os.utime(window, (stale_mtime, stale_mtime))
 
     real_pid = os.getpid()
@@ -277,38 +285,39 @@ def test_stale_marker_is_reclaimed_past_the_deadline(home, monkeypatch):
     assert window.read_text(encoding="utf-8").strip() == str(real_pid)
 
 
-def test_marker_survives_at_least_the_coalesce_window(home, monkeypatch):
-    """The crash-after-Popen case: a SIGKILL strictly between `Popen`
-    returning and the immediate pid-rewrite that follows it leaves the
-    ALREADY-LAUNCHED detached child alive, coalescing — and that child,
-    not a later kick, is what eventually clears `worker.window` (only
-    after ITS OWN `coalesce_secs` sleep ends and it takes `worker.lock`).
-    A marker aged past a fixed short deadline but still within the
-    CURRENT `coalesce_secs(home)` must not be reclaimed, or a second kick
-    spawns a second worker while the first is still alive and asleep —
-    exactly the double-spawn C17 exists to prevent.
+def test_marker_is_reclaimed_independent_of_the_coalesce_window(home, monkeypatch):
+    """Fold r3 (MINOR 1 + NIT 3) replaces `test_marker_survives_at_
+    least_the_coalesce_window` (pre-r3: proved a marker must survive at
+    least `coalesce_secs(home)` before reclaim, since the child used to
+    clear it only after its own coalesce sleep). That premise is now
+    FALSE: the child registers its own pid at startup (fold r2), before
+    its coalesce sleep even begins, so a bare marker outliving
+    `SPAWN_MARKER_DEADLINE_SECS` means the child crashed before
+    registering — full stop, regardless of how long the configured
+    coalesce window is. A LARGE configured coalesce window (600s) must
+    NOT extend the deadline: a marker aged just past `SPAWN_MARKER_
+    DEADLINE_SECS` is reclaimed anyway.
 
-    Mutation that proves this bites: computing the deadline from a flat
-    constant (e.g. the pre-fix ``SPAWN_MARKER_DEADLINE_SECS = 60.0``)
-    instead of `coalesce_secs(home) + SPAWN_MARKER_DEADLINE_MARGIN_SECS`
-    fails this test — 90s exceeds a flat 60s deadline, so `_open_window`
-    would reclaim and reach the guarded `_spawn_window` below."""
-    monkeypatch.setenv("SELF_LEARN_COALESCE_SECS", "120")
+    Mutation that proves this bites: reintroducing `coalesce_secs(home)`
+    into `_spawn_marker_stale`'s formula (e.g. `age >= coalesce_secs
+    (home) + SPAWN_MARKER_DEADLINE_SECS`) fails this test — with a 600s
+    coalesce window, a marker aged `SPAWN_MARKER_DEADLINE_SECS + 5`
+    would no longer be stale, and `_open_window` would report
+    `absorbed-race` (reaching the guarded `_spawn_window`) instead of
+    the asserted `spawned`."""
+    monkeypatch.setenv("SELF_LEARN_COALESCE_SECS", "600")
     window = _window(home)
     worker._write_window_durable(window, worker._SPAWN_MARKER)
-    # 90s old: past a flat 60s deadline, but well inside a 120s coalesce
-    # window (the child that already exists has not even reached its own
-    # `worker.lock` acquisition yet).
-    aged_mtime = time.time() - 90
+    aged_mtime = time.time() - worker.SPAWN_MARKER_DEADLINE_SECS - 5
     os.utime(window, (aged_mtime, aged_mtime))
+
+    real_pid = os.getpid()
     monkeypatch.setattr(
-        worker,
-        "_spawn_window",
-        lambda home, *, no_push=False: pytest.fail(
-            "must not spawn while the first detached child is still coalescing"
-        ),
+        worker, "_spawn_window", lambda home, *, no_push=False: real_pid
     )
-    assert worker._open_window(home) == "absorbed-race"
+    outcome = worker._open_window(home)
+    assert outcome == "spawned"
+    assert window.read_text(encoding="utf-8").strip() == str(real_pid)
 
 
 # ------------------------------------------------- child self-registration
@@ -318,16 +327,14 @@ def test_a_registered_child_absorbs_a_later_kick_as_a_live_pid_not_a_marker(
     home, monkeypatch
 ):
     """Fold r2 MINOR 1: the spawned child registers its own pid
-    (`worker._register_running_pid`) at the very start of `run()`,
-    before its coalesce sleep and before `worker.lock` — bounding the
-    marker's exposure to child STARTUP instead of the whole
-    `coalesce_secs(home)` sleep that follows (the old floor, still the
-    safety net for a child that dies before registering). Simulates the
-    sequence directly: the parent's marker write
-    (`_open_window`/`_spawn_window`, not re-exercised here — see the
-    crash tests above), then the child's own registration call, exactly
-    as `run()` performs it as its very first act (see the companion
-    wiring test below for proof `run()` actually calls it there).
+    (`worker._register_running_pid`) early in `run()`, before its
+    coalesce sleep and before `worker.lock` (order proven by the
+    companion test below, fold r3) — bounding the marker's exposure to
+    child STARTUP instead of the multi-minute window a bare marker
+    could otherwise sit for. Simulates the sequence directly: the
+    parent's marker write (`_open_window`/`_spawn_window`, not
+    re-exercised here — see the crash tests above), then the child's
+    own registration call, exactly as `run()` performs it.
 
     Mutation that proves this bites: replacing `_register_running_pid`'s
     body with a no-op fails this test — `worker.window` would still hold
@@ -352,35 +359,68 @@ def test_a_registered_child_absorbs_a_later_kick_as_a_live_pid_not_a_marker(
     assert worker._open_window(home) == "absorbed-window"
 
 
-def test_run_calls_register_running_pid_before_anything_else(home, monkeypatch):
-    """Wiring check, companion to the test above: `run()` must call
-    `_register_running_pid()` as literally its first act — before the
-    coalesce sleep, before `worker.lock`, before the sentinel hold and
-    `_cache_clear("worker.window")` that immediately follows taking that
-    lock (which would otherwise erase the very pid the previous test
-    proves gets written). A spy replacing `_register_running_pid` raises
-    immediately once called, aborting `run()` before it ever needs a
-    real git ledger `home` — this file otherwise never exercises `run()`
-    itself, exactly because of that `_cache_clear` call.
+def test_run_registers_the_pid_before_the_coalesce_sleep_and_the_lock(
+    home, monkeypatch
+):
+    """Fold r3 MAJOR 1: MINOR 1's whole fix only matters if the ORDER
+    holds — `_register_running_pid()` must run before BOTH the coalesce
+    sleep and the `worker.lock` acquisition, or a kick can still reclaim
+    the marker while the (not-yet-registered) child is asleep or
+    waiting on the lock, exactly the race MINOR 1 exists to close.
+    Fold r2's wiring test only proved `run()` calls the function
+    somewhere before a spy-raised exception aborts it — never that the
+    sleep and the lock come strictly AFTER it, which is the entire
+    point. This test records a timeline instead: `time.sleep` and
+    `fcntl.flock` are wrapped, not replaced (`run()` still needs to
+    actually reach and pass the lock to keep going, and a follow-on
+    `worker.spawn.lock` acquisition inside `_open_window` — never
+    reached here, since `home` fails before then — would otherwise also
+    need real behavior), each appending an event before delegating to
+    the real call; `_register_running_pid` is wrapped the same way.
+    `coalesce=True` forces the sleep branch to actually execute;
+    `SELF_LEARN_COALESCE_SECS=0` keeps the (real, delegated) sleep from
+    costing any wall-clock time. `run()` is let run past the lock into
+    its real body, which fails fast against the fake `home` (empirically
+    confirmed by fold r2's own mutation run, which reached this same
+    depth without hanging) — `contextlib.suppress` absorbs whatever it
+    raises, or doesn't; only the recorded timeline is asserted.
 
-    Mutation that proves this bites: deleting the `_register_running_
-    pid()` call from `run()` (fold r2's "drop the self-registration"
-    case, as opposed to gutting the function's own body, which the test
-    above already covers) fails this test — the spy is never invoked, so
-    `run()` proceeds unaborted (either completing against the non-git
-    `home` or raising some OTHER, unrelated exception), and
-    `pytest.raises(RuntimeError, match="stop-after-registration")` does
-    not see the expected exception."""
-    calls: list[bool] = []
+    Mutation that proves this bites: moving `run()`'s
+    `_register_running_pid()` call to AFTER the `if coalesce:
+    time.sleep(...)` block (still before `worker.lock`) fails this test
+    — `"sleep"` appears before `"register"` in the recorded timeline."""
+    events: list[str] = []
 
-    def spy() -> None:
-        calls.append(True)
-        raise RuntimeError("stop-after-registration")
+    real_sleep = time.sleep
 
-    monkeypatch.setattr(worker, "_register_running_pid", spy)
-    with pytest.raises(RuntimeError, match="stop-after-registration"):
-        worker.run(home)
-    assert calls == [True]
+    def recording_sleep(seconds: float) -> None:
+        events.append("sleep")
+        real_sleep(0)
+
+    monkeypatch.setattr(worker.time, "sleep", recording_sleep)
+
+    real_flock = fcntl.flock
+
+    def recording_flock(fd, op, *args, **kwargs):
+        if "lock" not in events:
+            events.append("lock")
+        return real_flock(fd, op, *args, **kwargs)
+
+    monkeypatch.setattr(worker.fcntl, "flock", recording_flock)
+
+    real_register = worker._register_running_pid
+
+    def recording_register() -> None:
+        events.append("register")
+        real_register()
+
+    monkeypatch.setattr(worker, "_register_running_pid", recording_register)
+
+    monkeypatch.setenv("SELF_LEARN_COALESCE_SECS", "0")
+    with contextlib.suppress(BaseException):
+        worker.run(home, coalesce=True)
+
+    assert events[:3] == ["register", "sleep", "lock"]
 
 
 # --------------------------------------------------------- positive control

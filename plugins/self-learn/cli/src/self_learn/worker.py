@@ -1119,7 +1119,7 @@ def _ceiling_refused() -> bool:
     SIGKILL landing between that write and `_spawn_window`'s own
     (redundant) ceiling check would otherwise strand an un-clearable
     marker with no child anywhere, reclaimed only after
-    `coalesce_secs(home) + SPAWN_MARKER_DEADLINE_MARGIN_SECS`.
+    :data:`SPAWN_MARKER_DEADLINE_SECS`.
     `_spawn_window` still calls this itself too (below), so a call
     straight to `_spawn_window` — armor-pinned
     `test_d3_depth_ceiling_refuses_a_real_spawn` calls it directly, in
@@ -1186,23 +1186,34 @@ def _spawn_window(home: Path, *, no_push: bool = False) -> int:
 #: a fresh one as "absorbed-race" rather than "nothing is running".
 _SPAWN_MARKER = "spawning"
 
-#: Margin added on top of `coalesce_secs(home)` before a marker is
-#: reclaimed (:func:`_spawn_marker_stale`). The ORDINARY (non-crash) path
-#: never sees this at all: the parent rewrites the marker with the real
-#: pid immediately after `Popen` returns (milliseconds), long before
-#: either bound could elapse. The marker's only legitimate LONG life is
-#: a crash strictly between `Popen` returning and that immediate
-#: rewrite — vanishingly rare, but when it lands, the detached child
-#: that was already launched is the one that eventually clears
-#: `worker.window` itself, and only after ITS OWN coalesce sleep ends
-#: and it takes `worker.lock` (:func:`run` calls
-#: `_cache_clear("worker.window")` right after the blocking lock
-#: acquire) — never sooner. A flat deadline shorter than that reclaims
-#: while the first child is still alive and coalescing, and a second
-#: kick then spawns a SECOND worker (serialized by `worker.lock`, but
-#: still exactly the double-spawn C17 exists to prevent) — hence
-#: `coalesce_secs(home)`, not a fixed number, is the floor.
-SPAWN_MARKER_DEADLINE_MARGIN_SECS = 30.0
+#: How long a "spawning" marker may sit before :func:`_spawn_marker_
+#: stale` reclaims it. Fold r3 (audit 2026-09-02 gate r2 MINOR 1):
+#: earlier revisions of this comment said the child clears
+#: `worker.window` only after ITS OWN `coalesce_secs(home)` sleep ends
+#: and it takes `worker.lock` — true before fold r2, false since:
+#: `run()` now calls `_register_running_pid()` (proven ordered ahead of
+#: both by `test_run_registers_the_pid_before_the_coalesce_sleep_and_
+#: the_lock`) as one of its first acts, durably rewriting `worker.window`
+#: with the child's own real pid BEFORE either the sleep or the lock —
+#: so a live, coalescing child no longer holds a bare marker for the
+#: length of its own sleep; it holds one, at most, for the time between
+#: `Popen` returning (parent side) and this registration write landing
+#: (child side).
+#:
+#: What this deadline actually bounds now: a crash strictly between
+#: `Popen` returning and the child's registration write — interpreter
+#: start, importing `self_learn.cli` (the whole CLI surface), and one
+#: `_write_window_durable` call. That is normally well under a second;
+#: 30s is a deliberately generous multiple of it (a cold page cache, a
+#: loaded/throttled host, a slow disk under `_write_window_durable`'s
+#: fsync calls) while staying startup-scale, not the ~600s-plus a
+#: `coalesce_secs(home)`-derived deadline (the pre-fold-r3 formula) would
+#: have allowed for the same crash window. `coalesce_secs(home)` is
+#: dropped from the formula entirely: the child can no longer
+#: legitimately hold a bare marker for anything coalesce-scale, so
+#: adding it back would only widen the double-spawn window this deadline
+#: exists to close, for no live case it protects.
+SPAWN_MARKER_DEADLINE_SECS = 30.0
 
 
 def _write_window_durable(window: Path, text: str) -> None:
@@ -1238,12 +1249,16 @@ def _write_window_durable(window: Path, text: str) -> None:
         os.close(dir_fd)
 
 
-def _spawn_marker_stale(window: Path, home: Path) -> bool:
-    """A marker older than ``coalesce_secs(home) +
-    SPAWN_MARKER_DEADLINE_MARGIN_SECS`` is an abandoned attempt, not a
-    live one — reclaimable by the next kick. Missing entirely (raced
-    away, or never existed) counts as stale too: there is nothing left
-    to absorb against.
+def _spawn_marker_stale(window: Path) -> bool:
+    """A marker older than :data:`SPAWN_MARKER_DEADLINE_SECS` is an
+    abandoned attempt, not a live one — reclaimable by the next kick.
+    Missing entirely (raced away, or never existed) counts as stale too:
+    there is nothing left to absorb against.
+
+    Fold r3: no longer takes `home` — the deadline used to be
+    `coalesce_secs(home) + margin` (see :data:`SPAWN_MARKER_DEADLINE_
+    SECS`'s comment for why that formula is gone, not just shrunk), so
+    `home` was the only reason this function needed it.
 
     Fold NIT 3 (residual, disclosed): age is `mtime`-based, so a
     backwards wall-clock step makes a marker un-stale-able for the size
@@ -1254,22 +1269,26 @@ def _spawn_marker_stale(window: Path, home: Path) -> bool:
     function is never consulted for it again (the marker string is gone,
     replaced by a real pid `_pid_alive` judges directly, clock-
     independent) — the exposure a backwards step can extend is only the
-    child-startup window a crash-before-registration marker sits in, not
-    the whole `coalesce_secs(home)` life a pre-registration marker
-    could have."""
+    child-startup window a crash-before-registration marker sits in."""
     try:
         age = time.time() - window.stat().st_mtime
     except OSError:
         return True
-    return age >= coalesce_secs(home) + SPAWN_MARKER_DEADLINE_MARGIN_SECS
+    return age >= SPAWN_MARKER_DEADLINE_SECS
 
 
 def _register_running_pid() -> None:
     """Fold r2 MINOR 1 (audit 2026-09-02 gate, unblocked by the
     coordinator once `tests/test_lock_invariant.py`'s `NOT_REPO_TRUTH`
-    carried this function's own entry): called at the very start of
-    :func:`run`, before its coalesce sleep and before it takes
-    `worker.lock` — durably (:func:`_write_window_durable`) overwrites
+    carried this function's own entry): called from :func:`run`,
+    preceded only by argument normalization (`home = Path(home)`,
+    resolving `no_push`) and `cache_dir().mkdir(...)` — which this
+    function's own write depends on, `worker.window` living inside that
+    directory — and BEFORE anything else: the coalesce sleep and
+    `worker.lock` both come strictly after (proven ordered by
+    `test_run_registers_the_pid_before_the_coalesce_sleep_and_the_lock`
+    in `tests/test_worker_spawn_handshake.py`, fold r3). Durably
+    (:func:`_write_window_durable`) overwrites
     `worker.window` with THIS process's own, now-real, pid, replacing
     whatever was there (typically the parent's "spawning" marker,
     written by `_open_window` just before `_spawn_window`'s `Popen`
@@ -1333,7 +1352,7 @@ def _open_window(home: Path, *, no_push: bool = False) -> str:
             if window.is_file():
                 raw = window.read_text(encoding="utf-8").strip()
                 if raw == _SPAWN_MARKER:
-                    if not _spawn_marker_stale(window, home):
+                    if not _spawn_marker_stale(window):
                         return "absorbed-race"  # a spawn is (or just was) in flight
                     # else: stale — an abandoned attempt; reclaim below.
                 else:
@@ -1357,7 +1376,7 @@ def _open_window(home: Path, *, no_push: bool = False) -> str:
                 # interpreter) is a non-spawn outcome exactly like a
                 # ceiling refusal — nothing was actually spawned, so the
                 # marker must not survive it either, or every later kick
-                # absorbs (coalesce_secs(home) + margin) against a child
+                # absorbs (SPAWN_MARKER_DEADLINE_SECS) against a child
                 # that never existed.
                 window.unlink(missing_ok=True)
                 raise
