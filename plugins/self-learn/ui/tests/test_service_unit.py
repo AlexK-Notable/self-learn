@@ -48,6 +48,17 @@ def _section(text: str, name: str) -> str:
     return rest[:end]
 
 
+def _has_directive(section: str, literal: str) -> bool:
+    """M-N MINOR (gate r1): a bare `literal in section` substring check
+    is satisfied by a commented-out line (`#SuccessExitStatus=143
+    SIGTERM`) just as readily as a live one -- the whole section's text,
+    comments included, is what `_section` returns. True only when some
+    line, after stripping leading/trailing whitespace, starts with the
+    literal itself (so a `#`-prefixed line never matches: the `#` is
+    part of the stripped line, not the literal)."""
+    return any(line.strip().startswith(literal) for line in section.splitlines())
+
+
 def test_unit_file_exists() -> None:
     assert UI_UNIT.is_file(), f"missing unit at {UI_UNIT}"
 
@@ -151,8 +162,8 @@ def test_carries_a_start_limit() -> None:
     eventual "give up" signal."""
     content = UI_UNIT.read_text(encoding="utf-8")
     unit = _section(content, "Unit")
-    assert "StartLimitIntervalSec=" in unit
-    assert "StartLimitBurst=" in unit
+    assert _has_directive(unit, "StartLimitIntervalSec=")
+    assert _has_directive(unit, "StartLimitBurst=")
 
 
 def test_success_exit_status_includes_sigterm() -> None:
@@ -166,7 +177,7 @@ def test_success_exit_status_includes_sigterm() -> None:
     self-SIGTERM draft was abandoned there."""
     content = UI_UNIT.read_text(encoding="utf-8")
     service = _section(content, "Service")
-    assert "SuccessExitStatus=143 SIGTERM" in service
+    assert _has_directive(service, "SuccessExitStatus=143 SIGTERM")
 
 
 def test_carries_a_path_floor_including_home_local_bin() -> None:
@@ -287,8 +298,8 @@ def test_host_unit_carries_a_start_limit() -> None:
     matters most for."""
     content = HOST_UNIT.read_text(encoding="utf-8")
     unit = _section(content, "Unit")
-    assert "StartLimitIntervalSec=" in unit
-    assert "StartLimitBurst=" in unit
+    assert _has_directive(unit, "StartLimitIntervalSec=")
+    assert _has_directive(unit, "StartLimitBurst=")
 
 
 def test_host_unit_success_exit_status_includes_sigterm() -> None:
@@ -297,7 +308,7 @@ def test_host_unit_success_exit_status_includes_sigterm() -> None:
     only, and SIGTERM is not in it."""
     content = HOST_UNIT.read_text(encoding="utf-8")
     service = _section(content, "Service")
-    assert "SuccessExitStatus=143 SIGTERM" in service
+    assert _has_directive(service, "SuccessExitStatus=143 SIGTERM")
 
 
 def test_host_unit_carries_a_path_floor_including_home_local_bin() -> None:

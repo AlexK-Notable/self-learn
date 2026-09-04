@@ -27,8 +27,9 @@ Description=self-learn adjudication UI (localhost web server)
 # environment fault that keeps failing restarts forever, silently, with
 # no eventual "give up" signal for a human or `doctor` to see. A 5-minute
 # window with a burst of 5 mirrors RestartSec=5 below (five back-to-back
-# restarts fill the window); systemd stops trying and marks the unit
-# failed once the burst is exceeded, rather than looping quietly forever.
+# restarts exhaust the burst well inside the window); systemd stops
+# trying and marks the unit failed once the burst is exceeded, rather
+# than looping quietly forever.
 StartLimitIntervalSec=300
 StartLimitBurst=5
 

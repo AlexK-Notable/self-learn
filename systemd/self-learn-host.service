@@ -33,9 +33,9 @@ Description=self-learn host process (scheduler + heartbeat)
 # Restart=on-failure and no burst cap, a boot-order or environment fault
 # that keeps failing restarts forever, silently, with no eventual "give
 # up" signal. A 5-minute window with a burst of 5 mirrors RestartSec=5
-# below (five back-to-back restarts fill the window); systemd stops
-# trying and marks the unit failed once the burst is exceeded, rather
-# than looping quietly forever.
+# below (five back-to-back restarts exhaust the burst well inside the
+# window); systemd stops trying and marks the unit failed once the
+# burst is exceeded, rather than looping quietly forever.
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -53,8 +53,7 @@ Type=simple
 # path where the process is torn down BY the signal rather than exiting
 # through its own handler. It is not a "self-signal" mechanism -- this
 # unit has none (contrast self-learn-ui.service's SuccessExitStatus
-# comment, corrected of exactly that false claim for its idle self-exit
-# path, which uses no signal at all).
+# comment, whose idle self-exit path uses no signal at all).
 SuccessExitStatus=143 SIGTERM
 # B-1 (doc 13 Sec 7.1), carried from self-learn-miner.service/self-learn-ui.service:
 # the systemd user manager does not inherit the shell's env -- pin the

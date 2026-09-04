@@ -46,8 +46,12 @@ def test_ui_row_not_linked_skips(tmp_path, monkeypatch):
     `serve.is_configured("self-learn-ui.service")` -- this test's
     unit_dir is genuinely empty either way, so this particular test
     would not itself catch that swap; see
-    `test_is_configured_distinguishes_host_and_ui_units` below for the
-    mutation that does."""
+    `test_ui_row_linked_but_not_enabled_warns` and
+    `test_ui_row_linked_and_enabled_passes` below for the mutations that
+    do. (Gate r1 NIT: this docstring previously named
+    `test_is_configured_distinguishes_host_and_ui_units` instead -- that
+    test exercises `serve.is_configured` directly and never calls
+    `_ui_row`, so it passes untouched under this mutation.)"""
     home = _home(tmp_path, monkeypatch)
     # Deliberately create nothing under unit_dir.
     row = _ui_row(home)
