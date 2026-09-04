@@ -28,7 +28,7 @@ TOPIC_FILES = ("beacon-host.md", "research-archive.md", "review-doctrine.md")
 ORIGIN_RE = re.compile(r"^memory/[a-z-]+\.md#sha256:[0-9a-f]{12}$")
 
 
-def setup(tmp_path: Path) -> tuple[Path, Path]:
+def setup(tmp_path: Path) -> tuple[Path, Path, Path]:
     # doc 13 §3: project-scoped memories bind to a per-project bucket keyed
     # by the project's path; import_memory takes it via ``project_path``
     # (default: git toplevel of cwd). Tests pass one explicit sandbox repo
@@ -193,10 +193,21 @@ def test_prune_rejected_and_superseded_also_prune(tmp_path):
 
 
 def test_prune_dry_run_touches_nothing(tmp_path):
+    """M-Q code-gate r1 fold, MAJOR (must fold): the missing-target
+    branch's `if not dry_run:` guard was untested -- deleting it left the
+    suite fully green while a dry run rewrote MEMORY.md. `rejected` puts
+    that branch LIVE during this same dry run (its file is gone before
+    the snapshot below, so a dry-run index-drop would show up as a
+    changed `MEMORY.md` in `after`), so `assert after == before` now
+    covers both branches: the routed/pruned path AND the
+    already-missing path."""
     home, memory_dir, project = setup(tmp_path)
     report = _import(home, memory_dir, project)
     routed = id_for(report, "research-archive.md")
     resolve_record(home, routed, "routed", destination="reference")
+    rejected = id_for(report, "beacon-host.md")
+    resolve_record(home, rejected, "rejected")
+    (memory_dir / "beacon-host.md").unlink()
 
     before = {p.name: p.read_text(encoding="utf-8") for p in memory_dir.glob("*.md")}
     prune = prune_memory(home, memory_dir, dry_run=True)
@@ -204,8 +215,11 @@ def test_prune_dry_run_touches_nothing(tmp_path):
     assert [(rid, f) for rid, f, _ in prune.pruned] == [
         (routed, "research-archive.md")
     ]
+    assert [(rid, f) for rid, f, _ in prune.missing] == [
+        (rejected, "beacon-host.md")
+    ]
     after = {p.name: p.read_text(encoding="utf-8") for p in memory_dir.glob("*.md")}
-    assert after == before  # nothing deleted, nothing rewritten
+    assert after == before  # nothing deleted, nothing rewritten -- either branch
     assert "would prune" in prune.summary()
 
 
@@ -229,12 +243,67 @@ def test_prune_leaves_drifted_files_alone(tmp_path):
 
 
 def test_prune_reports_already_missing_files(tmp_path):
+    """M-Q / plan v2 §2 (C14): constructs the HALF-PRUNED state directly
+    -- the index line still present, the target file already gone (a
+    hand-deletion outside `prune_memory`, standing in for anything that
+    can remove the file without going through the sweep) -- and proves
+    one `prune_memory` run heals it. Before M-Q this pinned the
+    non-self-healing behaviour: the missing-target branch reported the
+    record as missing but never touched the index, so a dangling
+    `(beacon-host.md)` link would have survived every future sweep
+    forever. The mutation this proves is the `if not dry_run:
+    _drop_index_line(...)` call added to the missing-target branch --
+    remove it and `index_after` below reverts to containing
+    "beacon-host.md" and this test fails."""
     home, memory_dir, project = setup(tmp_path)
     report = _import(home, memory_dir, project)
     rid = id_for(report, "beacon-host.md")
     resolve_record(home, rid, "rejected")
+
+    # Half-pruned state: the target vanishes WITHOUT going through
+    # prune_memory, so its index line is never touched -- unlike a normal
+    # prune, which drops file and index line together.
+    (memory_dir / "beacon-host.md").unlink()
+    index_before = (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
+    assert "beacon-host.md" in index_before  # sanity: half-pruned, not clean
+
     first = prune_memory(home, memory_dir)
-    assert {f for _, f, _ in first.pruned} == {"beacon-host.md"}
+    assert first.pruned == []
+    assert [(r, f) for r, f, _ in first.missing] == [(rid, "beacon-host.md")]
+    index_after = (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
+    assert "beacon-host.md" not in index_after  # healed in the SAME run
+
     second = prune_memory(home, memory_dir)  # sweep is re-runnable
     assert second.pruned == []
     assert [(r, f) for r, f, _ in second.missing] == [(rid, "beacon-host.md")]
+
+
+def test_prune_drops_index_line_before_unlink(tmp_path, monkeypatch):
+    """M-Q / plan v2 §2 (C14): `_drop_index_line` runs BEFORE `unlink` in
+    the success branch (idempotent-first ordering), so a crash between
+    the two calls leaves at worst a dangling FILE with its index entry
+    already gone -- never a dangling INDEX LINK pointing at a file
+    that's already gone (the failure mode the missing-target self-heal
+    above exists to recover from). Proven by making `unlink()` raise:
+    with the new order the index line is already dropped by the time the
+    exception propagates; reverting to `unlink()` then `_drop_index_line`
+    would still show the index line intact here, and this test fails."""
+    home, memory_dir, project = setup(tmp_path)
+    report = _import(home, memory_dir, project)
+    routed = id_for(report, "research-archive.md")
+    resolve_record(home, routed, "routed", destination="reference")
+
+    real_unlink = Path.unlink
+
+    def boom(self, *a, **kw):
+        if self.name == "research-archive.md":
+            raise OSError("simulated crash between index-drop and unlink")
+        return real_unlink(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "unlink", boom)
+    with pytest.raises(OSError):
+        prune_memory(home, memory_dir)
+
+    index = (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
+    assert "research-archive.md" not in index  # dropped before the raise
+    assert (memory_dir / "research-archive.md").exists()  # unlink never ran
