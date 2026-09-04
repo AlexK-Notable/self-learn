@@ -31,14 +31,24 @@ command -v self-learn >/dev/null 2>&1 || _degraded "self-learn is not on PATH"
 command -v jq >/dev/null 2>&1 || _degraded "jq is not on PATH"
 command -v timeout >/dev/null 2>&1 || _degraded "timeout is not on PATH"
 
-# `|| true` is LOAD-BEARING under `set -e` (audit 2026-07-16 BLOCKER 1).
-# --fast exits 5 for a missing / not-a-repo home while still printing the
-# valid JSON that carries home_state. Without `|| true`, `set -e` killed
-# the script on that very assignment — so the home warning below was DEAD
-# CODE in exactly the state it exists to report (doc 13 §7.1 B-1), and a
-# SessionStart hook that must never fail the session exited 5 instead.
-# The `[ -n "$out" ]` guard already covers a genuinely empty read.
-out="$(timeout 4 self-learn status --fast 2>/dev/null)" || true
+# `&& rc=0 || rc=$?` is LOAD-BEARING under `set -e` (audit 2026-07-16
+# BLOCKER 1; extended fold r1 MAJOR 1). --fast exits 5 for a missing /
+# not-a-repo home while still printing the valid JSON that carries
+# home_state, so a GENERIC non-zero check would misfire on that
+# legitimate shape — the rc is captured and only rc 124 (this `timeout`
+# actually firing) gets its own degraded line; every other rc (0, 5,
+# ...) falls through exactly as before. Without capturing rc via a
+# plain assignment-then-test, `set -e` would kill the script on the
+# substitution itself — so the home warning below was DEAD CODE in
+# exactly the state it exists to report (doc 13 §7.1 B-1).
+out="$(timeout 4 self-learn status --fast 2>/dev/null)" && rc=0 || rc=$?
+if [ "$rc" -eq 124 ]; then
+  # Fold r1 MAJOR 1: a wedged/hung `self-learn status --fast` used to
+  # degrade SILENTLY here (the same "nothing printed, rc 0" collapse
+  # this whole move exists to abolish) — say it, same as every other
+  # dependency guard above.
+  _degraded "self-learn status timed out after 4s"
+fi
 [ -n "$out" ] || exit 0
 
 # A wrong/unset SELF_LEARN_HOME used to render a silent, confident "0
@@ -66,16 +76,25 @@ stale="$(jq -r '.staleness_alarm // false' <<<"$out" 2>/dev/null)" || exit 0
 escalate="$(jq -r '.escalate // false' <<<"$out" 2>/dev/null)" || exit 0
 unanalyzed="$(jq -r '.unanalyzed_total // 0' <<<"$out" 2>/dev/null)" || exit 0
 
-if [ "$total" -gt 0 ]; then
+# B-7 consumer half: `total_unreadable` is `status --fast`'s own
+# honest-null field (absent, never a confident zero, when the scan
+# cannot tell) — the producer side was already fixed; this hook never
+# read it. `jq -e` (no fallback) so an absent key reads as "" here
+# rather than manufacturing a "0 unreadable" that isn't real. Read
+# BEFORE the `total -gt 0` gate (fold r1 MAJOR 2): a payload with ZERO
+# readable records and N unreadable ones must still say so — gating the
+# whole line on `total -gt 0` was B-7's silent shape again, just moved
+# one level up (a fully-unreadable backlog printed nothing at all).
+unreadable="$(jq -e -r '.total_unreadable' <<<"$out" 2>/dev/null)" || unreadable=""
+unreadable_positive=0
+if [ -n "$unreadable" ] && [ "$unreadable" -gt 0 ] 2>/dev/null; then
+  unreadable_positive=1
+fi
+
+if [ "$total" -gt 0 ] || [ "$unreadable_positive" -eq 1 ]; then
   # pinned example format (08 §7.1): "📥 self-learn: 7 pending, oldest 9d — /self-learn:review"
   line="📥 self-learn: ${total} pending, oldest ${oldest}d — /self-learn:review"
-  # B-7 consumer half: `total_unreadable` is `status --fast`'s own
-  # honest-null field (absent, never a confident zero, when the scan
-  # cannot tell) — the producer side was already fixed; this hook never
-  # read it. `jq -e` (no fallback) so an absent key is silently skipped
-  # here rather than manufacturing a "0 unreadable" that isn't real.
-  if unreadable="$(jq -e -r '.total_unreadable' <<<"$out" 2>/dev/null)" \
-      && [ "$unreadable" -gt 0 ] 2>/dev/null; then
+  if [ "$unreadable_positive" -eq 1 ]; then
     line="${line} (${unreadable} unreadable)"
   fi
   echo "$line"
