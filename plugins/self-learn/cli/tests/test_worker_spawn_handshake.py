@@ -22,6 +22,20 @@ real ledger (git) home, since `worker.cache_dir()` only hashes the
 resolved home PATH (`ledger.resolve_home`), never reads it. It does not
 import from `tests/test_worker.py` (armor-pinned; that file is run
 unchanged alongside this one).
+
+Fold r1 (audit 2026-09-02 gate, one MAJOR + one MINOR + three NIT):
+folds MAJOR 1 (an exception out of `_spawn_window` now leaves no marker
+behind — the two original crash-simulation tests are rewritten to
+construct the real crash state directly on disk instead of raising a
+Python exception, which only ever modeled a HANDLED outcome; a new test
+covers the exception case itself), NIT 1 (`_write_window_durable` now
+cleans up its own temp file on a mid-write failure), and NIT 2 (the D3
+ceiling check moved ahead of the marker write in `_open_window`, so a
+certain refusal never writes one). MINOR 1 (the spawned child
+self-registering its own pid at startup) is DEFERRED — see
+`misc/audit-2026-09-02/sprint-1/build-worker-spawn.md`'s "Fold r1"
+section for why it conflicts with `tests/test_lock_invariant.py`, which
+this fold may not edit.
 """
 
 from __future__ import annotations
@@ -59,64 +73,119 @@ def _window(home: Path) -> Path:
 # --------------------------------------------------------- marker durability
 
 
-def test_marker_written_durably_before_a_crashed_spawn(home, monkeypatch):
-    """A crash INSIDE `_spawn_window` (the only realistic stand-in, in a
-    single-process test, for the parent getting SIGKILLed between the
-    marker write and the pid rewrite: a real crash never runs `_open_
-    window`'s own `finally`-unlock either, so the exception path here is
-    the closest same-process analogue) must still leave the marker on
-    disk — that is the entire point of writing it BEFORE the spawn
-    instead of the pid AFTER it.
+def test_a_marker_left_by_a_real_crash_absorbs_a_later_kick(home, monkeypatch):
+    """Fold MAJOR 1 rewrite (audit 2026-09-02 gate r1): the ORIGINAL
+    versions of this pair of tests modeled "crash between the marker
+    write and the pid rewrite" as a Python exception raised INSIDE
+    `_spawn_window` — but that models a HANDLED non-spawn outcome (fold
+    MAJOR 1's own `except BaseException: window.unlink(...); raise`
+    cleans the marker up and re-raises), not the real crash the marker
+    exists to survive. A real SIGKILL never runs any of `_open_window`'s
+    Python code afterwards, handled or not — it just stops, mid-critical
+    -section, with whatever was durably on disk at that instant. The
+    true crash state is constructed directly here instead: the marker
+    written (`_write_window_durable`, the same durable helper `_open_
+    window` itself uses) and nothing else touched — no `_spawn_window`
+    call, no `_open_window` call, no exception anywhere. (A real crash
+    also releases the `worker.spawn.lock` flock automatically — the
+    kernel drops it when the holding process's last fd closes — so the
+    later `_open_window` call below reaches its ordinary fresh-marker
+    check, not the held-lock one.)
 
-    Mutation that proves this bites: reverting `_open_window` to its
-    pre-M-T shape (spawn first, `window.write_text(pid)` only after)
-    fails this test — the original code writes NOTHING to `worker.window`
-    until `_spawn_window` returns, so a crash inside it leaves the file
-    absent, not marked."""
-
-    def crash(home, *, no_push=False):
-        raise RuntimeError("simulated crash between marker and spawn")
-
-    monkeypatch.setattr(worker, "_spawn_window", crash)
-    with pytest.raises(RuntimeError, match="simulated crash"):
-        worker._open_window(home)
+    Mutation that proves this bites: replacing the `if not _spawn_marker_
+    stale(window, home): return "absorbed-race"` staleness check in
+    `_open_window` with a bare `pass` (the fresh marker is recognized
+    but no longer short-circuits absorption) fails this test — the
+    marker constructed here falls straight through to the guarded
+    `_spawn_window` call, reddening with `Failed: must not spawn a
+    second worker while a crash-left marker is fresh`."""
     window = _window(home)
-    assert window.is_file()
+    worker._write_window_durable(window, worker._SPAWN_MARKER)
     assert window.read_text(encoding="utf-8").strip() == worker._SPAWN_MARKER
-
-
-def test_fresh_marker_absorbs_a_later_kick_instead_of_double_spawning(
-    home, monkeypatch
-):
-    """After the crash above, the flock is released (the dead writer no
-    longer holds it — same as a real SIGKILL) but the marker survives.
-    A LATER `_open_window` call — the crash-recovery kick, or a
-    concurrent one that lost the race for entirely different reasons —
-    must not attempt a second spawn while the marker is still fresh: the
-    first (detached, `start_new_session=True`) child may well still be
-    alive and about to write its own pid.
-
-    Mutation that proves this bites: reverting to pre-M-T `_open_window`
-    fails this test two ways — the marker was never written in the first
-    place (see the test above), so this second call sees an empty
-    `worker.window` and proceeds straight to `_spawn_window`, which is
-    guarded here with `pytest.fail` precisely to catch a double spawn."""
-
-    def crash(home, *, no_push=False):
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(worker, "_spawn_window", crash)
-    with pytest.raises(RuntimeError):
-        worker._open_window(home)
 
     monkeypatch.setattr(
         worker,
         "_spawn_window",
         lambda home, *, no_push=False: pytest.fail(
-            "must not spawn a second worker while the marker is fresh"
+            "must not spawn a second worker while a crash-left marker is fresh"
         ),
     )
     assert worker._open_window(home) == "absorbed-race"
+
+
+def test_an_exception_from_spawn_window_leaves_no_marker_and_the_next_kick_spawns(
+    home, monkeypatch
+):
+    """Fold MAJOR 1 (new test, audit 2026-09-02 gate r1): an exception
+    out of `_spawn_window` ITSELF (a failed `Popen`, ENOSPC on its log
+    open, a missing interpreter) is a HANDLED non-spawn outcome —
+    `_open_window`'s `except BaseException: window.unlink(missing_ok=
+    True); raise` removes the marker and re-raises, exactly like the
+    `pid <= 0` (depth-limited) branch just below it in the source. Left
+    un-cleaned, EVERY later kick would read the leftover marker as fresh
+    and report `absorbed-race` for up to `coalesce_secs(home) +
+    SPAWN_MARKER_DEADLINE_MARGIN_SECS`, even though no child was ever
+    spawned to eventually clear it — C17's double-spawn risk inverted
+    into a permanent-refusal risk.
+
+    Mutation that proves this bites: removing the `except BaseException:
+    window.unlink(missing_ok=True); raise` wrapper around the
+    `_spawn_window(...)` call in `_open_window` (letting the exception
+    propagate with the marker still on disk) fails this test — the
+    marker survives the raise, and the follow-up kick reads it as fresh
+    and returns `absorbed-race` instead of the asserted `spawned`."""
+
+    def boom(home, *, no_push=False):
+        raise RuntimeError("simulated Popen failure")
+
+    monkeypatch.setattr(worker, "_spawn_window", boom)
+    with pytest.raises(RuntimeError, match="simulated Popen failure"):
+        worker._open_window(home)
+    window = _window(home)
+    assert not window.exists()
+
+    real_pid = os.getpid()
+    monkeypatch.setattr(
+        worker, "_spawn_window", lambda home, *, no_push=False: real_pid
+    )
+    assert worker._open_window(home) == "spawned"
+    assert window.read_text(encoding="utf-8").strip() == str(real_pid)
+
+
+def test_write_window_durable_cleans_up_its_temp_file_on_a_mid_write_failure(
+    home, monkeypatch
+):
+    """Fold NIT 1 (audit 2026-09-02 gate r1): a failure between creating
+    the temp file and the rename (disk full mid-write, a permission
+    error) must not leave `.worker.window.<pid>.tmp` litter behind for a
+    later run to trip over. Faking the FIRST `os.fsync` call (the temp
+    file's data fsync, before `os.replace` ever runs) to raise models
+    exactly that gap; the second call (the directory-entry fsync after
+    a successful rename) is left real so an unrelated write later in the
+    suite is not silently broken by this monkeypatch.
+
+    Mutation that proves this bites: removing the `except BaseException:
+    tmp.unlink(missing_ok=True); raise` wrapper in `_write_window_
+    durable` (letting a mid-write failure propagate with the temp file
+    still on disk) fails this test — the glob below finds the leftover
+    `.tmp` file instead of an empty list."""
+    window = _window(home)
+    real_fsync = os.fsync
+    calls = {"n": 0}
+
+    def flaky_fsync(fd):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("simulated disk-full mid-write")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", flaky_fsync)
+    with pytest.raises(OSError, match="simulated disk-full"):
+        worker._write_window_durable(window, "irrelevant")
+
+    leftovers = list(window.parent.glob(f".{window.name}.*.tmp"))
+    assert leftovers == []
+    assert not window.exists()
 
 
 # ------------------------------------------------------- non-spawn cleanup
@@ -135,6 +204,40 @@ def test_marker_removed_on_a_depth_limited_refusal(home, monkeypatch):
     test — `worker.window` would still hold ``"spawning"`` afterwards
     instead of being gone."""
     monkeypatch.setattr(worker, "_spawn_window", lambda home, *, no_push=False: -1)
+    outcome = worker._open_window(home)
+    assert outcome == "depth-limited"
+    assert not _window(home).exists()
+
+
+def test_open_window_never_touches_the_window_at_the_real_ceiling(home, monkeypatch):
+    """Fold NIT 2 (audit 2026-09-02 gate r1): the D3 chain-depth ceiling
+    check (`_ceiling_refused`) now runs in `_open_window` BEFORE the
+    marker is ever written — a certain refusal must never see a marker
+    on disk at all, not even transiently (a SIGKILL landing between an
+    earlier marker-write and the ceiling check would otherwise strand an
+    un-clearable marker with no child anywhere, reclaimed only after
+    `coalesce_secs(home) + SPAWN_MARKER_DEADLINE_MARGIN_SECS`). This test
+    sets the REAL env var (`worker.FOLLOWON_DEPTH_ENV`) to the REAL
+    ceiling (`worker.FOLLOWON_DEPTH_CEILING`) rather than mocking
+    `_spawn_window` to return `-1` (as the test above does) — and guards
+    `_spawn_window` with `pytest.fail`, so this also proves `_open_
+    window` refuses BEFORE ever calling it, not merely reacts after.
+
+    Mutation that proves this bites: deleting the `if _ceiling_refused():
+    return "depth-limited"` pre-check fold NIT 2 added to `_open_window`
+    (leaving only `_spawn_window`'s own internal check) fails this test
+    two ways at once — `worker.window` would transiently hold the marker
+    (written before the call), and `_spawn_window` itself would be
+    called (hitting the `pytest.fail` guard) instead of being refused
+    before ever being reached."""
+    monkeypatch.setenv(worker.FOLLOWON_DEPTH_ENV, str(worker.FOLLOWON_DEPTH_CEILING))
+    monkeypatch.setattr(
+        worker,
+        "_spawn_window",
+        lambda home, *, no_push=False: pytest.fail(
+            "must refuse before ever calling _spawn_window at the real ceiling"
+        ),
+    )
     outcome = worker._open_window(home)
     assert outcome == "depth-limited"
     assert not _window(home).exists()
