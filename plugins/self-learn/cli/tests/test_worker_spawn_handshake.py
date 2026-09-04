@@ -445,6 +445,49 @@ def test_run_registers_the_pid_before_the_coalesce_sleep_and_the_lock(
     assert events[:3] == ["register", "sleep", "lock"]
 
 
+def test_a_failed_registration_is_logged_and_does_not_abort_run(home, monkeypatch):
+    """Fold r4 (integration find, gate on the merged tree): registration
+    is BEST-EFFORT — an `OSError` out of `_write_window_durable`'s
+    `os.replace` call (disk full, a permission error, or — measured
+    live — the armor-pinned `test_attrib.py::test_in8_interrupted_
+    install_is_recovered_not_stalled_forever` part (e), which
+    monkeypatches `os.replace` GLOBALLY to simulate a crash mid-install-
+    copy, and this function's write shares that same `os.replace` call)
+    must never abort the whole `worker.run()`. This test reproduces that
+    exact shape — `os.replace` monkeypatched globally, `worker.run(home)`
+    called directly (not `_register_running_pid()` in isolation), the
+    same call the real armor-pinned test makes — and checks the THREE
+    things `_register_running_pid`'s fix promises: `run()` does not
+    raise, the skip is logged (not silent), and no `.worker.window.
+    <pid>.tmp` litter survives (already guaranteed by fold r1 NIT 1's
+    cleanup inside `_write_window_durable` itself — this test re-proves
+    it end-to-end through `run()`, not just the unit call).
+
+    Mutation that proves this bites: removing the `try: ... except
+    OSError as exc: log(...)` wrapper from `_register_running_pid`
+    (letting the OSError propagate) fails this test — `worker.run(home)`
+    raises `OSError("simulated os.replace crash")` instead of returning
+    normally."""
+
+    def raising_replace(src, dst):
+        raise OSError("simulated os.replace crash")
+
+    monkeypatch.setattr(os, "replace", raising_replace)
+
+    try:
+        worker.run(home)
+    except Exception as exc:  # pragma: no cover - failure path only
+        pytest.fail(f"run() must not raise when pid registration fails: {exc!r}")
+
+    log_path = worker.cache_dir() / "worker.log"
+    assert log_path.is_file()
+    assert "pid registration skipped" in log_path.read_text(encoding="utf-8")
+
+    window = _window(home)
+    leftovers = list(window.parent.glob(f".{window.name}.*.tmp"))
+    assert leftovers == []
+
+
 # --------------------------------------------------------- positive control
 
 
