@@ -982,26 +982,49 @@ def _stage_and_commit(
 def _commit_ledger(
     home: Path, touched: list[Path], message: str, note: str | None = None
 ) -> tuple[list[Path], str]:
-    """Stage → pinned commit, INSIDE the caller's :func:`_ledger_write`,
-    with the state fact attached to any failure.
+    """Stage → pinned commit, INSIDE the caller's :func:`_ledger_write` —
+    now the thin `verbs` face of :func:`gitops.stage_and_commit` (audit
+    2026-09-02 sprint-1 M-O). The try/except this docstring used to
+    describe moved there verbatim; what stays HERE is `_commit_ledger`'s
+    own contract — the ``(staged, sha)`` tuple every one of its call
+    sites unpacks, which :func:`gitops.stage_and_commit` (pinned to
+    return only ``str | None``) does not itself carry.
 
     Everything this function does is post-mutation by construction — the
     caller has already run ``resolve_record`` (a ``git mv`` + a record
     rewrite) — and ``ledger_ops`` raises ``LedgerOpsError``, never
-    ``GitOpsError``. So a ``GitOpsError`` reaching HERE can only come from
-    ``stage``/``commit``, which means: the ledger is mutated and the commit
-    did not land. That is :class:`gitops.HalfWrittenError`, and it is
-    raised HERE — in the verb layer — precisely because ``gitops`` cannot
-    know it (audit 2026-07-16 round 7 BLOCKER 2; the gitops docstring
-    already said "that is the verb's fact to state, not this module's",
-    and the verb was stating the opposite fact unconditionally)."""
-    try:
-        staged = gitops.stage(home, touched)
-        sha = gitops.commit(home, message, body=note, paths=touched)
-    except gitops.HalfWrittenError:
-        raise
-    except gitops.GitOpsError as exc:
-        raise gitops.HalfWrittenError.for_commit(home, message, touched, exc) from exc
+    ``GitOpsError``. So a ``GitOpsError`` from ``stage``/``commit`` means
+    the ledger is mutated and the commit did not land — that is
+    :class:`gitops.HalfWrittenError`, which :func:`gitops.stage_and_commit`
+    now raises directly (audit 2026-07-16 round 7 BLOCKER 2; the gitops
+    docstring already said "that is the verb's fact to state, not this
+    module's", and the verb used to state the opposite fact
+    unconditionally — the seam function inherits that same posture, not
+    a new one).
+
+    Fold r1 MINOR 1: ``staged`` is the same existence-filter
+    :func:`gitops.stage` itself applies (``[p for p in touched if
+    p.exists()]``) — computed here directly rather than by calling
+    ``gitops.stage`` a second time, since :func:`gitops.stage_and_commit`
+    below already stages every one of ``touched`` for real. Two ``git
+    add`` calls for the same paths were harmless (idempotent) but
+    redundant."""
+    staged = [p for p in touched if p.exists()]
+    sha = gitops.stage_and_commit(home, touched, message, note)
+    if sha is None:
+        # D-3 (code-gate r2 fold on this lane): an `assert` here is
+        # STRIPPED under `python -O` (D-3's own finding, applied
+        # verbatim to this guard's Fold r1 version, matching the same
+        # fix at verbs.py's own ~:4026 and settings.py's
+        # NoConfigRungError) -- an explicit raise stays load-bearing
+        # regardless of interpreter flags. Provably unreachable in
+        # practice: `allow_empty` defaults False, and `_commit_ledger`
+        # never passes `allow_empty=True`, so `gitops.stage_and_commit`
+        # cannot return `None` here unless that changes.
+        raise VerbError(
+            "internal invariant violated: stage_and_commit returned "
+            f"None without allow_empty=True (commit {message!r})"
+        )
     return staged, sha
 
 
