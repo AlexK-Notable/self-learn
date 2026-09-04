@@ -382,8 +382,25 @@ def test_run_registers_the_pid_before_the_coalesce_sleep_and_the_lock(
     costing any wall-clock time. `run()` is let run past the lock into
     its real body, which fails fast against the fake `home` (empirically
     confirmed by fold r2's own mutation run, which reached this same
-    depth without hanging) — `contextlib.suppress` absorbs whatever it
-    raises, or doesn't; only the recorded timeline is asserted.
+    depth without hanging) — `contextlib.suppress(Exception)` absorbs
+    whatever ordinary exception that raises, or doesn't; only the
+    recorded timeline is asserted. `Exception`, not `BaseException`
+    (fold nits NIT 1): a bare `BaseException` also swallows
+    `KeyboardInterrupt`/`SystemExit`, which this test has no business
+    intercepting — nothing about "let run() fail against the fake home"
+    needs those.
+
+    `recording_flock` (fold nits NIT 2) records a `"lock"` event only
+    for the flock call whose fd resolves (`/proc/self/fd/<fd>`) to a
+    path ending in `worker.lock` — the SPECIFIC lock this test's name
+    and docstring are about — not just whichever flock call happens
+    first. Today `worker.lock`'s is the only flock call `run()` reaches
+    before failing against the fake `home`, so an unfiltered "first
+    flock call" wrapper currently means the same thing; the filter
+    exists so a FUTURE flock call earlier in `run()` (a new lock, a
+    lint/audit hook, anything) can't silently satisfy this test's
+    `"lock"` slot while the real `worker.lock` vs. registration order
+    goes unchecked.
 
     Mutation that proves this bites: moving `run()`'s
     `_register_running_pid()` call to AFTER the `if coalesce:
@@ -403,7 +420,12 @@ def test_run_registers_the_pid_before_the_coalesce_sleep_and_the_lock(
 
     def recording_flock(fd, op, *args, **kwargs):
         if "lock" not in events:
-            events.append("lock")
+            try:
+                fd_path = os.readlink(f"/proc/self/fd/{fd}")
+            except OSError:
+                fd_path = ""
+            if fd_path.endswith("worker.lock"):
+                events.append("lock")
         return real_flock(fd, op, *args, **kwargs)
 
     monkeypatch.setattr(worker.fcntl, "flock", recording_flock)
@@ -417,7 +439,7 @@ def test_run_registers_the_pid_before_the_coalesce_sleep_and_the_lock(
     monkeypatch.setattr(worker, "_register_running_pid", recording_register)
 
     monkeypatch.setenv("SELF_LEARN_COALESCE_SECS", "0")
-    with contextlib.suppress(BaseException):
+    with contextlib.suppress(Exception):
         worker.run(home, coalesce=True)
 
     assert events[:3] == ["register", "sleep", "lock"]
