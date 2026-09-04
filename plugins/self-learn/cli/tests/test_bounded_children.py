@@ -43,7 +43,9 @@ from pathlib import Path
 import pytest
 
 import self_learn
+from self_learn import gitops, hook_compiler, hosts, ledger_ops, verbs, worker
 from self_learn.primitives import procs
+from support import git, init_repo
 
 SRC = Path(self_learn.__file__).parent
 
@@ -110,7 +112,15 @@ def _scan_module(path: Path, rel: str) -> list[Violation]:
         if not isinstance(node, ast.Call):
             continue
         name = _callee_name(node)
-        if name == "run" and _is_subprocess_dot(node, "run"):
+        if name == "run" and (
+            _is_subprocess_dot(node, "run")
+            or (isinstance(node.func, ast.Name) and node.func.id == "run")
+        ):
+            # M-G fold r1 MINOR 3: mirrors the Popen arm below exactly.
+            # `subprocess.run(` alone was asymmetric with the Popen check
+            # — bypassable by `from subprocess import run; run(...)`, an
+            # import style the scanner would silently miss while still
+            # catching the same bypass on Popen.
             if not exempt_run_timeout and not _has_kw(node, "timeout"):
                 hits.append(Violation(rel, node.lineno, "run-no-timeout"))
         elif name == "Popen" and (
@@ -159,17 +169,17 @@ def unallowed(
     return out
 
 
-#: Production allowlist for `src/self_learn`. Measured empty: the census
-#: below (and the report's "Brief statements found false") found 18
-#: `subprocess`-invoking call sites across 9 modules pre-migration, not
-#: the brief's claimed 20 across ten -- 7 `subprocess.run(` lacked
-#: `timeout=` (the six file sites the brief names plus `ledger_ops.py`'s
-#: own `_git`, retired whole by this move), and the 3 pre-existing
-#: `Popen` sites already carried `start_new_session=True`. After the
-#: migrations every site either lives in `primitives/procs.py`, already
-#: carried `timeout=`, or already carried `start_new_session=True` --
-#: zero violations, so zero allowlist entries are needed. An empty dict
-#: is a claim the tests below prove is checkable, not just asserted:
+#: Production allowlist for `src/self_learn`. Measured empty: the
+#: PRE-migration census (report's "Brief statements found false") found
+#: 18 `subprocess`-invoking call sites across 9 modules, not the brief's
+#: claimed 20 across ten -- 7 `subprocess.run(` lacked `timeout=` (the
+#: six file sites the brief names plus `ledger_ops.py`'s own `_git`,
+#: retired whole by this move), and the 3 pre-existing `Popen` sites
+#: already carried `start_new_session=True`. After the migrations every
+#: site either lives in `primitives/procs.py`, already carried
+#: `timeout=`, or already carried `start_new_session=True` -- zero
+#: violations, so zero allowlist entries are needed. An empty dict is a
+#: claim the tests below prove is checkable, not just asserted:
 #: `test_p3_gate_...` fails loudly the moment a real violation appears,
 #: and the synthetic tests below prove the accept/reject machinery
 #: around a NON-empty allowlist actually works.
@@ -181,15 +191,113 @@ def test_p3_gate_src_has_no_unallowed_bounded_children_violations():
     assert not bad, "\n".join(f"{v.path}:{v.lineno} {v.kind}" for v in bad)
 
 
+# ---------------------------------------------------------- the census
+
+
+@dataclass(frozen=True)
+class Site:
+    """One subprocess-invoking call site, regardless of compliance --
+    the census counts ALL of `run`/`Popen`/`.communicate()`, not just
+    violations (which is what `test_p3_gate_...` above already pins at
+    zero). Two counts answer two different questions: violations answers
+    "is anything unbounded"; the census answers "did the SHAPE of
+    src's subprocess usage change at all" -- a brand-new, perfectly
+    bounded call site changes the second without moving the first, and a
+    test that only watches violations cannot see it land."""
+
+    path: str
+    lineno: int
+    kind: str  # "run" | "Popen" | "communicate"
+
+
+def _census_module(path: Path, rel: str) -> list[Site]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    hits: list[Site] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _callee_name(node)
+        if name == "run" and (
+            _is_subprocess_dot(node, "run")
+            or (isinstance(node.func, ast.Name) and node.func.id == "run")
+        ):
+            hits.append(Site(rel, node.lineno, "run"))
+        elif name == "Popen" and (
+            _is_subprocess_dot(node, "Popen")
+            or (isinstance(node.func, ast.Name) and node.func.id == "Popen")
+        ):
+            hits.append(Site(rel, node.lineno, "Popen"))
+        elif name == "communicate":
+            hits.append(Site(rel, node.lineno, "communicate"))
+    return hits
+
+
+def census(root: Path) -> list[Site]:
+    """Every `run`/`Popen`/`.communicate()` call site under *root*,
+    compliant or not (mirrors `scan`'s traversal and callee-matching
+    exactly, minus the compliance filter)."""
+    out: list[Site] = []
+    for path in sorted(root.rglob("*.py")):
+        out.extend(_census_module(path, str(path.relative_to(root))))
+    return out
+
+
+#: M-G fold r1 MAJOR 1: pins what the gate's own independent AST count
+#: measured at HEAD (post-migration) -- 15 sites across 7 modules. This
+#: is NOT the same number as the pre-migration 18/9 in
+#: `PRODUCTION_ALLOWLIST`'s comment above (that census answers "how much
+#: was unbounded before this lane started"; this one answers "how much
+#: subprocess-invoking surface does `src` have RIGHT NOW, compliant
+#: sites included"). A single new call site anywhere in `src` --
+#: bounded or not -- changes this number and reddens the test below,
+#: forcing a human to look at it and consciously re-pin; the positive
+#: control after it proves the census function actually is that
+#: sensitive, not just asserted to be.
+MEASURED_CENSUS_MODULES = frozenset(
+    {
+        "gitops.py",
+        "hosts.py",
+        "ledger.py",
+        "miner.py",
+        "primitives/procs.py",
+        "provider.py",
+        "worker.py",
+    }
+)
+MEASURED_CENSUS_SITE_COUNT = 15
+
+
 def test_p3_gate_census_matches_the_measured_count():
-    """Pins the measured census so a future change to this file (or a
-    new subprocess call site landing anywhere in `src`) is a visible
-    diff here, not a silent drift of what "clean" means. See the report
-    for the corrected count against the brief's stated 20/ten/14."""
-    violations = scan(SRC)
-    assert len(violations) == 0, violations
-    modules = {p.stem for p in SRC.rglob("*.py")}
-    assert "gitops" in modules and "ledger_ops" in modules
+    """Pins the TOTAL subprocess-invoking site count (run + Popen +
+    `.communicate()`, compliant sites included) so a future call site --
+    even a correctly-bounded one -- is a visible diff here, not a silent
+    drift of what "measured" means. `test_p3_gate_...violations` above
+    already covers "is anything unbounded" at zero; this covers "did the
+    census move at all"."""
+    sites = census(SRC)
+    assert len(sites) == MEASURED_CENSUS_SITE_COUNT, sites
+    modules = {s.path for s in sites}
+    assert modules == MEASURED_CENSUS_MODULES, sorted(modules)
+
+
+def test_positive_control_census_count_changes_when_a_new_site_lands(tmp_path):
+    """The census is only worth pinning if adding a site actually moves
+    it -- proven directly, independent of `src`'s own current state."""
+    (tmp_path / "a.py").write_text(
+        "import subprocess\n\ndef f():\n    subprocess.run(['true'], timeout=5)\n",
+        encoding="utf-8",
+    )
+    before = len(census(tmp_path))
+    assert before == 1
+    (tmp_path / "b.py").write_text(
+        "import subprocess\n\ndef g():\n    subprocess.run(['true'], timeout=5)\n",
+        encoding="utf-8",
+    )
+    after = len(census(tmp_path))
+    assert after == before + 1, (
+        "a brand-new, perfectly-bounded call site did not move the census "
+        "count -- the census is blind to exactly what it exists to see"
+    )
 
 
 # -------------------------------------------------- positive controls
@@ -298,6 +406,27 @@ def test_scanner_exempts_a_bare_run_call_inside_primitives_procs_py(tmp_path):
     assert scan(tmp_path) == []
 
 
+def test_positive_control_catches_run_imported_by_name(tmp_path):
+    """M-G fold r1 MINOR 3: `from subprocess import run; run(...)` used to
+    be a bypass — the Popen arm already matched a bare `Popen(...)` name
+    call, but the run arm required the `subprocess.run(` attribute form
+    literally, so this exact import style evaded detection entirely."""
+    (tmp_path / "offender.py").write_text(
+        "from subprocess import run\n\ndef f():\n    run(['true'])\n",
+        encoding="utf-8",
+    )
+    violations = scan(tmp_path)
+    assert violations and violations[0].kind == "run-no-timeout", violations
+
+
+def test_scanner_does_not_flag_a_bounded_run_imported_by_name(tmp_path):
+    (tmp_path / "clean.py").write_text(
+        "from subprocess import run\n\ndef f():\n    run(['true'], timeout=5)\n",
+        encoding="utf-8",
+    )
+    assert scan(tmp_path) == []
+
+
 # ============================================================ run_bounded
 
 
@@ -354,10 +483,15 @@ def test_env_is_honored():
 
 
 def test_timeout_raises_bounded_timeout_naming_argv():
+    """M-G fold r1 NIT 1: exact text, not a disjunctive 'either shape is
+    fine' assertion — pins the precise message a human reads on a real
+    timeout, and would catch a change to either `argv`'s own value or how
+    it gets rendered."""
     argv = [sys.executable, "-c", "import time; time.sleep(30)"]
     with pytest.raises(procs.BoundedTimeout) as excinfo:
         procs.run_bounded(argv, timeout=0.3)
-    assert str(list(excinfo.value.cmd)) == str(argv) or argv[0] in str(excinfo.value)
+    assert excinfo.value.cmd == argv
+    assert str(excinfo.value) == f"Command '{argv}' timed out after 0.3 seconds"
 
 
 def test_bounded_timeout_is_a_subprocess_timeout_expired():
@@ -451,4 +585,171 @@ def test_timeout_kills_the_whole_process_group_a_grandchild_dies_too(tmp_path):
     assert dead, (
         f"grandchild pid {gpid} was still alive after run_bounded's timeout — "
         "killing only the immediate child leaves orphaned descendants running"
+    )
+
+
+# ============================================ M-G fold r1 NIT 2 / MINOR 2
+
+
+def test_validate_ere_rejects_a_genuinely_broken_pattern():
+    """M-G fold r1 NIT 2: `validate_ere`'s `>= 2` branch (grep -E itself
+    rejects the pattern, as opposed to a plain "no match", exit 1) had no
+    test at all before this fold. `[` is an unterminated bracket
+    expression — grep -E always rejects it, exit 2, on every grep
+    implementation on this host."""
+    problem = hook_compiler.validate_ere("[")
+    assert problem is not None
+    assert problem != ""
+
+
+def test_validate_ere_accepts_a_usable_pattern():
+    assert hook_compiler.validate_ere("abc") is None
+
+
+#: M-G fold r1 MINOR 2: seven new `except procs.BoundedTimeout:` branches
+#: landed with this move and none had a test driving them — this table
+#: drives each one and asserts its DOCUMENTED fallback (the behavior
+#: named in that site's own comment/docstring in the production code).
+#: Every case patches the SAME shared `primitives.procs.run_bounded` --
+#: whether a call site imports it at module level (`ledger_ops.py`,
+#: M-G fold r1 MINOR 1) or locally inside the function (`hosts.py`,
+#: `verbs.py`, `worker.py`, `hook_compiler.py`), `from .primitives import
+#: procs` always binds to the ONE cached module object, so patching
+#: `procs.run_bounded` here reaches every call site regardless of import
+#: style or timing.
+def _always_bounded_timeout(argv, *, timeout, **kwargs):
+    raise procs.BoundedTimeout(list(argv), timeout)
+
+
+def _bounded_timeout_only_for(needle: str):
+    """Real `run_bounded` for everything except an argv containing
+    *needle*, which times out — lets a two-call sequence (git init THEN
+    commit) have its FIRST call really succeed and its SECOND time out,
+    isolating that one branch."""
+    real = procs.run_bounded
+
+    def fake(argv, *, timeout, **kwargs):
+        if needle in argv:
+            raise procs.BoundedTimeout(list(argv), timeout)
+        return real(argv, timeout=timeout, **kwargs)
+
+    return fake
+
+
+def _case_validate_ere(monkeypatch, tmp_path):
+    monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
+    result = hook_compiler.validate_ere("a")
+    assert result is not None and "did not finish" in result, result
+
+
+def _case_replay_examples(monkeypatch, tmp_path):
+    monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
+    script = tmp_path / "guard.sh"
+    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    script.chmod(0o755)
+    mismatches = hook_compiler.replay_examples(script, {"allow": [{"tool_input": {}}]})
+    assert mismatches and "did not finish" in mismatches[0], mismatches
+
+
+def _case_hosts_init_git_init_timeout(monkeypatch, tmp_path):
+    monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
+    target = tmp_path / "host_init_case"
+    target.mkdir()
+    with pytest.raises(hosts.HostsError) as excinfo:
+        hosts._init_for_registration(target)
+    assert "did not finish" in str(excinfo.value)
+
+
+def _case_hosts_init_git_commit_timeout(monkeypatch, tmp_path):
+    # git init runs for REAL (needs an actual repo for commit to fail
+    # against); only the commit call times out.
+    monkeypatch.setattr(procs, "run_bounded", _bounded_timeout_only_for("commit"))
+    target = tmp_path / "host_commit_case"
+    target.mkdir()
+    with pytest.raises(hosts.HostsError) as excinfo:
+        hosts._init_for_registration(target)
+    assert "did not finish" in str(excinfo.value)
+
+
+def _case_show_lifecycle(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
+    result = verbs._show_lifecycle(repo, "lrn-00000001")
+    assert result == []
+
+
+def _case_worker_digest(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
+    result = worker._digest(repo)
+    assert result == "(no rejected-proposal history available)"
+
+
+def _case_ledger_ops_git_mv(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    monkeypatch.setattr(procs, "run_bounded", _always_bounded_timeout)
+    with pytest.raises(ledger_ops.LedgerOpsError) as excinfo:
+        ledger_ops._git_mv(repo, repo / "a.txt", repo / "b.txt")
+    assert "did not finish" in str(excinfo.value)
+
+
+_BOUNDED_TIMEOUT_CASES = [
+    pytest.param(_case_validate_ere, id="hook_compiler.validate_ere"),
+    pytest.param(_case_replay_examples, id="hook_compiler.replay_examples"),
+    pytest.param(_case_hosts_init_git_init_timeout, id="hosts._init_for_registration:git-init"),
+    pytest.param(_case_hosts_init_git_commit_timeout, id="hosts._init_for_registration:git-commit"),
+    pytest.param(_case_show_lifecycle, id="verbs._show_lifecycle"),
+    pytest.param(_case_worker_digest, id="worker._digest"),
+    pytest.param(_case_ledger_ops_git_mv, id="ledger_ops._git_mv"),
+]
+
+
+@pytest.mark.parametrize("case", _BOUNDED_TIMEOUT_CASES)
+def test_bounded_timeout_fallback_at_each_migrated_call_site(case, monkeypatch, tmp_path):
+    case(monkeypatch, tmp_path)
+
+
+# ================================================== M-G fold r1 MAJOR 2
+
+
+def test_lock_invariant_walker_flags_a_planted_unlocked_git_mv(tmp_path):
+    """`test_lock_invariant.py`'s `_git_primitive` was blind to `git mv`
+    once `ledger_ops._git_mv` replaced `_git_ok(repo, "mv", ...)` — its
+    callee has no constant subcommand argument (the OLD shape
+    `_git_ok(repo, "mv", ...)` matched on `args[1] == "mv"`; `_git_mv`'s
+    args are `(home, src, dest)`, no string literal anywhere). Fixed
+    there with the minimal, gate-authorized edit: recognize the callee
+    NAME `_git_mv` directly as `git mv`, nothing else in that file
+    touched (another lane widened a different part of the same walker).
+
+    Proven HERE, not by adding to that file's own diff: plant an
+    unlocked call to the (module-private, name-only) `_git_mv` primitive
+    into a COPY of `ledger_ops.py` — same "plant into a COPY, assert the
+    walker flags it" discipline `test_lock_invariant.py`'s OWN
+    `test_it_catches_a_planted_violation` uses — and assert the fixpoint
+    flags it. A `_git_mv`-named function whose only body is a call to
+    something that isn't `ledger_ops._git_mv` would NOT trip this
+    (`_git_primitive` matches by literal callee name, not by target
+    resolution), so this is a real exercise of the fix, not a tautology."""
+    import shutil
+
+    import test_lock_invariant as tli
+
+    sandbox = tmp_path / "src" / "self_learn"
+    shutil.copytree(tli.SRC, sandbox)
+    planted = (
+        "\n\ndef _planted_git_mv_violation(home, src, dest):\n"
+        "    _git_mv(home, src, dest)\n"
+    )
+    (sandbox / "ledger_ops.py").write_text(
+        (sandbox / "ledger_ops.py").read_text(encoding="utf-8") + planted,
+        encoding="utf-8",
+    )
+    requires = tli._Analysis(sandbox).requires_lock()
+    assert "ledger_ops._planted_git_mv_violation" in requires, (
+        "the walker did not flag a planted unlocked _git_mv call — it is "
+        "blind to the exact primitive it was just taught to recognize"
     )

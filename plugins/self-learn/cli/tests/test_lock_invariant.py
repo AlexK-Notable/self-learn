@@ -262,13 +262,19 @@ def _record_write(func: ast.Attribute) -> bool:
 
 
 def _git_primitive(call: ast.Call) -> str | None:
-    """``_git(repo, "<mutating subcmd>", …)`` — either module's ``_git``."""
+    """``_git(repo, "<mutating subcmd>", …)`` — either module's ``_git``;
+    ``_git_mv(repo, src, dest)`` (M-G: ``ledger_ops``'s replacement for
+    ``_git_ok(repo, "mv", …)``) — always ``git mv``, no constant
+    subcommand argument to read since the function's NAME is the one
+    operation it ever performs."""
     func = call.func
     name = (
         func.attr
         if isinstance(func, ast.Attribute)
         else func.id if isinstance(func, ast.Name) else None
     )
+    if name == "_git_mv":
+        return "git mv"
     if name not in ("_git", "_git_ok"):
         return None
     if len(call.args) >= 2 and isinstance(call.args[1], ast.Constant):

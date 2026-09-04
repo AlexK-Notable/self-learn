@@ -43,6 +43,7 @@ from . import settings
 from .compilers import BEGIN_MARKER, END_MARKER
 from .ledger import Bucket, discover_buckets, home_state, home_state_message, resolve_home
 from .normalize import sha_anchor
+from .primitives import procs
 from .records import RECORD_ID_RE, Record, RecordError
 from .skill_scaffold import SkillScaffoldError, validate_skill_name
 
@@ -270,9 +271,10 @@ def _git_mv(home: Path, src: Path, dest: Path) -> None:
     last direct caller of either, is migrated onto the shared bounded
     primitive instead. Raises :class:`LedgerOpsError` on a non-zero exit
     OR a timeout — same failure surface callers already handle, one more
-    way to reach it."""
+    way to reach it. M-G fold r1 MINOR 1: ``procs`` is a module-level
+    import (the pinned slot after ``from .normalize import sha_anchor``)
+    — no cycle (``primitives`` is a leaf); local import dropped."""
     from . import gitops
-    from .primitives import procs
 
     try:
         proc = procs.run_bounded(
