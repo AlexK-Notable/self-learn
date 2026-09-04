@@ -2208,6 +2208,13 @@ def _cmd_push() -> int:
                 f"push: reconciled {len(healed.committed)} orphaned record(s) "
                 "first (a producer wrote them but could not commit them)"
             )
+        # M-C: a refusal here is informational, never fatal to the push —
+        # `push` republishes whatever IS already committed regardless.
+        # But this is "the one moment the gap is most visible" (module
+        # docstring), so name every offender instead of the silence a
+        # refused-with-nothing-committed `reconcile()` used to pass through.
+        for line in (*healed.blocked, *healed.invalid):
+            print(f"push: NOT reconciled — {line}", file=sys.stderr)
         report = verbs.push_pending(home)
     except gitops.HalfWrittenError as exc:
         return _report_half_written("push", exc)
@@ -2248,6 +2255,22 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
             "the verb printed.",
             file=sys.stderr,
         )
+    for line in result.invalid:
+        print(
+            f"reconcile: NOT touched — {line}\n"
+            "  this orphan failed its asset-kind content check (M-C) — "
+            "path shape alone is not enough (that is how C09's unparseable "
+            "compiled/host.yaml healed as a clean commit). Repair or remove "
+            "the file by hand, then re-run reconcile.",
+            file=sys.stderr,
+        )
+    if result.refused:
+        # M-C: an invalid member or a blocked rename refuses the WHOLE
+        # batch — nothing was staged, even for orphans that validated
+        # fine. That is exactly EXIT_GIT_FAILED's own promise ("6 means
+        # NOTHING WAS WRITTEN"), reused here rather than minting a ninth
+        # exit code for the identical guarantee.
+        return EXIT_GIT_FAILED
     if not result.committed:
         print("reconcile: nothing uncommitted — the ledger is whole")
         return EXIT_OK
