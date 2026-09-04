@@ -716,6 +716,11 @@ def test_opener_still_works_without_timeout_on_path(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert "timeout" not in {p.name for p in bindir.iterdir()}
+    # Fold r2 / M-F2 NIT 1: name the failure — without this, a broken
+    # `_TO` degrade (systemctl never invoked) reddens this test via a
+    # bare FileNotFoundError from read_text() on a log that was never
+    # written, not a message that says what actually went wrong.
+    assert systemctl_log.exists(), "systemctl was never invoked — _TO did not degrade"
     systemctl_content = systemctl_log.read_text(encoding="utf-8")
     assert "is-active" in systemctl_content
     assert "start" in systemctl_content
@@ -1512,6 +1517,51 @@ def test_monitor_set_window_never_appears_degrades_silently(
     assert elapsed >= 4.0, "the placement budget must actually be spent"
     assert _wait_for_nonempty(chromium_log), "degrade never loses the launch"
     assert "movewindow" not in hyprctl_log.read_text(encoding="utf-8")
+
+
+def test_place_fresh_window_deadline_is_wall_clock_not_iteration_count(
+    tmp_path: Path,
+) -> None:
+    # Fold r2 / M-F2 MAJOR 1 (r2 gate): fold r1 replaced
+    # _place_fresh_window's 50-ITERATION poll count with a `SECONDS`-based
+    # wall-clock deadline (self-learn-ui-open ~:355-365), because each
+    # iteration now costs up to `timeout 4` under C22 — 50 iterations at
+    # ~4s each is ~205s, not the documented ~5s. The sibling test above
+    # (test_monitor_set_window_never_appears_degrades_silently) cannot
+    # tell the two designs apart: its hyprctl is INSTANT, so 50 iterations
+    # x 0.1s sleep costs ~5s under EITHER design. This test makes every
+    # iteration expensive with the SLEEPY hyprctl (each `clients -j` call
+    # costs ~4s under the timeout wrap) and a window that never appears,
+    # so the two designs diverge sharply.
+    hyprctl_log = tmp_path / "hyprctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_SLEEPY_HYPRCTL_TMPL.format(log=hyprctl_log, sleep_s=4),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(
+        tmp_path,
+        bindir,
+        XDG_RUNTIME_DIR=str(runtime_dir),
+        SELF_LEARN_UI_MONITOR="DP-2",
+    )
+
+    start = time.monotonic()
+    result = subprocess.run(
+        [str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60
+    )
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed < 25.0, (
+        f"took {elapsed:.1f}s — an iteration count at ~4s per (sleepy, "
+        "timeout-wrapped) hyprctl call is ~205s; only a wall-clock "
+        "deadline bounds _place_fresh_window's poll loop this tightly"
+    )
+    assert _wait_for_nonempty(chromium_log), "degrade never loses the launch"
 
 
 def test_monitor_unset_never_dispatches_movewindow(tmp_path: Path) -> None:

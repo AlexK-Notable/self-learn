@@ -419,11 +419,20 @@ class TestHookDependencyDegradation:
         exactly as before, with no manufactured "(0 unreadable)" — the
         `unreadable` read now happens BEFORE the `total -gt 0` branch
         (fold r1 MAJOR 2), so this also proves that reordering did not
-        start inventing an annotation where none exists. Mutation target:
-        an implementation that defaults the field to 0 with `// 0`
-        instead of gating on presence would still pass this one alone (0
-        is not > 0), which is why it is paired with the
-        present-and-nonzero test above rather than relied on by itself."""
+        start inventing an annotation where none exists.
+
+        Fold r2 / M-F1 NIT 1: an implementation that defaults the field
+        to 0 with `jq -r '.total_unreadable // 0'` instead of gating on
+        presence (`jq -e -r '.total_unreadable'`) is a BEHAVIOURALLY
+        EQUIVALENT mutant, not one this pairing separates — re-measured:
+        that swap still passes the full `TestHookDependencyDegradation`
+        class (8 passed, 0 failed — re-verified this fold session), because
+        absent -> 0 (via `// 0`) and
+        absent -> "" (via presence-gating, `unreadable_positive` stays 0)
+        produce byte-identical stdout in every case these fixtures
+        exercise. There is no observable-from-stdout case that separates
+        the two; this test alone is the honest guard against a
+        manufactured "(0 unreadable)" ever appearing."""
         env = make_env(tmp_path / "ledger")
         create_record(env.ledger, make_behavior(record_id="lrn-cccc1111"))
         commit_all(env.ledger, "record")

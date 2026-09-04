@@ -1653,6 +1653,11 @@ def _surface_reach(home: Path, claude_dir: Path) -> dict:
         unmeasurable_n = None
         for key in _SETTINGS_DEPENDENT_KEYS:
             by_destination[key] = {"reachable": None, "unreachable": None, "unmeasurable": None}
+    # Fold r2 / M-F3 MINOR 1 (orchestrator ruling): a facet is nulled here
+    # when ANY row aggregated into it is unmeasurable, because a partial
+    # total lies — the same rule the fold above applies to the top-level
+    # counts. The measured project-scope claude-md rows stay visible per
+    # record in `rows`, not in this facet total.
     if not claude_dir_usable:
         for key in ("claude-md", "claude-md:local", "claude-md:rules"):
             by_destination[key] = {"reachable": None, "unreachable": None, "unmeasurable": None}
@@ -2190,6 +2195,11 @@ def render_text(facts: dict) -> str:
             if sr["checked"] is None
             else f"{sr['checked']} record(s) checked"
         )
+        # Fold r2 / M-F3 NIT 1: `unmeasurable_txt`'s "NOT MEASURED" arm is
+        # unreachable today (checked/unmeasurable are nulled together with
+        # reachable/unreachable, so the branch below always takes the
+        # top-level NOT MEASURED path first) — kept as defence in depth
+        # against a future change decoupling the two.
         unmeasurable_txt = (
             "NOT MEASURED" if sr["unmeasurable"] is None else str(sr["unmeasurable"])
         )
