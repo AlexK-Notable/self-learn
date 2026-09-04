@@ -687,24 +687,36 @@ def cache_dir(home: Path | str | None = None) -> Path:
     and ``cache_dir(Path.home() / "x")`` (the SAME directory) hashed to
     two different namespaces.
 
-    M-P fold r1 (F2): six call sites stay DELIBERATELY bare (call this
-    with no ``home``) rather than threading one, even where the
-    enclosing function holds one -- ``kick``'s and ``run``'s own
-    ``cache_dir().mkdir(...)`` prologues (``worker.py`` ~1209, ~3442)
-    and four operator-facing message strings that name where an event
-    log actually lives (``worker.py`` ~3564, ~3840; ``miner.py`` ~849,
-    ~863). Two reasons, not one style: the two prologues sit beside
-    :func:`_p`, which is itself confirmed bare (no ``home`` parameter at
-    all) and backs every lock/log/stage/window file `kick`/`run` touch
-    -- threading ``cache_dir`` alone at the prologue would make ONE call
-    target a different, home-namespaced directory than every ``_p(...)``
-    call beside it in the SAME function, an intra-function split worse
-    than consistent-bare; the four message strings must literally name
-    the directory ``invocation_sdk/events.py`` really wrote its event
-    log to (that module's own event-log path helpers are themselves
-    confirmed bare, by design -- see their docstrings), so a threaded,
-    home-namespaced path in the STRING would point the operator at a
-    directory the event log was never actually written under."""
+    M-P fold r1 (F2), restated in fold r2 (M1: names/call-shapes, not
+    line numbers, which rot; N2: the actual rule, not the old
+    approximation of it) -- six call sites stay DELIBERATELY bare (call
+    this with no ``home``): :func:`kick`'s and :func:`run`'s own
+    ``cache_dir().mkdir(parents=True, exist_ok=True)`` prologues, and
+    four operator-facing message strings shaped
+    ``f"... see the event log in {cache_dir()}"`` (two inside
+    :func:`kick`/:func:`run` in this module, two inside
+    :mod:`miner`'s ``_invoke_reader``).
+
+    The rule is NOT "an intra-function split is worse than
+    consistent-bare" -- fold r1's F1 fix deliberately makes exactly that
+    split inside :func:`miner.maybe_kick` (its heartbeat check now
+    threads `home` while the SAME function's ``miner_dir()``-backed
+    staleness/lock checks stay bare), and that fix is correct. The real
+    rule: pair each READ with its WRITER -- thread `home` wherever the
+    writer that produced the file already did, and leave a function
+    uniformly bare only when its OWN file namespace is itself bare by
+    design. Applied here: :func:`_p` is itself confirmed bare (no
+    ``home`` parameter at all) and is the writer for every
+    lock/log/stage/window file `kick`/`run` touch -- threading
+    ``cache_dir`` alone at the prologue would pair that ONE read with a
+    DIFFERENT (home-namespaced) writer than every ``_p(...)`` call
+    beside it, which already agrees with ITS bare writer. The four
+    message strings must name the directory :mod:`invocation_sdk.events`
+    actually wrote its event log to, and that module's own event-log
+    path helpers are themselves confirmed bare, by design (see their
+    docstrings) -- so threading `home` into just the STRING would point
+    the operator at a directory the event log was never actually written
+    under: the same pair-with-the-writer rule, applied the other way."""
     cache = os.environ.get("XDG_CACHE_HOME")
     base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
     resolved_home = Path(home).expanduser() if home is not None else resolve_home()

@@ -582,15 +582,29 @@ def run_forever(
     M-P fold r1: `miner.maybe_kick`'s two heartbeat reads
     (`heartbeat_is_fresh`/`request_poke`) were the same defect on the
     READ side and now thread THEIR OWN `home` too (`maybe_kick` already
-    holds one). One ambient reader remains, deliberately: `provider.
-    preflight`'s `serve` doctor row (`_serve_row`) calls `cache_dir_
-    readonly()` bare -- `_serve_row` takes no `home` param, and adding
-    one would change `preflight`'s signature in `provider.py`, another
-    lane's file. So a `run_forever(A)`/`maybe_kick(A)` pair with
-    `SELF_LEARN_HOME=B` writes and reads its own heartbeat consistently
+    holds one).
+
+    M-P fold r2 (M2): two ambient readers remain, both deliberately,
+    neither touched by this move:
+    (1) `provider.preflight`'s `serve` doctor row (`_serve_row`) calls
+    `cache_dir_readonly()` bare -- `_serve_row` takes no `home` param,
+    and adding one would change `preflight`'s signature in
+    `provider.py`, another lane's file.
+    (2) THIS function's own daemon tick jobs -- `_run_mine_job(home)` ->
+    `miner.run(home, ...)` and `_run_worker_job(home)` -> `worker.run(
+    home, ...)` -- DO thread `home` into `miner.run`/`worker.run`
+    themselves, but those two functions' OWN internal housekeeping
+    (`miner.miner_dir()`, `worker._p()`) stays bare by the SAME rule
+    this module's `cache_dir` docstring states: `miner_dir`/`_p` are
+    themselves confirmed bare writers, so reads paired to them stay
+    bare too, not threaded.
+    So a `run_forever(A)`/`maybe_kick(A)` pair with `SELF_LEARN_HOME=B`
+    writes and reads its OWN `serve.heartbeat`/`serve.poke` consistently
     under A, but `self-learn doctor`'s serve row still reads B's
-    `cache_dir_readonly()`/`read_heartbeat()` -- a documented, accepted
-    residual, not a regression."""
+    `cache_dir_readonly()`/`read_heartbeat()`, and this same daemon's own
+    tick-driven `miner.run`/`worker.run` calls still lock/log under B's
+    `miner_dir()`/`_p()` -- two documented, accepted residuals, not
+    regressions."""
     home = Path(home)
     cd = cache_dir if cache_dir is not None else worker.cache_dir(home)
     secs = tick_secs if tick_secs is not None else tick_secs_from_env(home=home)

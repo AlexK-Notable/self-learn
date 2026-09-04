@@ -51,6 +51,22 @@ expansion` covers `cache_dir`, the one of the four that derives a path
 sites that stay deliberately bare now lives in `worker.cache_dir`'s own
 docstring, not just this file's report. N1 dropped a stale `noqa: F401`
 on an import that IS used.
+
+M-P fold r2 (blind code-gate r2, CLEAN + M3 + N1): M3 -- `transcripts_root`,
+`miner_enabled`, and `_notifications_suppressed` each get their own
+`.expanduser()`-mirror test now too (previously only `cache_dir` did);
+each proved by mutation to redden when its function's `.expanduser()`
+call is dropped. N1 -- the existing F1 test now also asserts the
+`serve.poke` file itself lands under Home A's `cache_dir`, observing the
+`request_poke(worker.cache_dir(home))` site directly in this file rather
+than only via `tests/test_serve.py::
+test_hp6_fresh_heartbeat_pokes_and_spawns_nothing`. (M1, M2, N2 --
+docstring-only changes with no test surface: `worker.cache_dir`'s F2
+rationale now names functions/call-shapes instead of line numbers,
+`serve.run_forever`'s residual note names both remaining ambient
+readers, and the stated F2 principle was corrected from "avoid an
+intra-function split" to "pair each read with its writer" -- see
+`worker.py`/`serve.py` docstrings and the report's Fold r2 section.)
 """
 
 from __future__ import annotations
@@ -132,6 +148,27 @@ def test_transcripts_root_positive_control_bare_call_uses_the_ambient_home(tmp_p
     assert miner.transcripts_root() == tmp_path / "transcripts-b"
 
 
+def test_transcripts_root_fold_r2_m3_an_unexpanded_home_reads_the_same_config_as_its_expansion(
+    tmp_path, monkeypatch
+):
+    """Fold r2 M3: `transcripts_root(Path("~/x"))` and
+    `transcripts_root(Path.home() / "x")` must read the SAME
+    `config.yaml` -- before this fold, `resolved_home` was never
+    `.expanduser()`'d, so `settings.resolve_setting` -> `config.
+    config_path(home)` (`home / "config.yaml"`, which never expands `~`
+    on its own) silently missed the real file for the unexpanded
+    spelling and fell back to the ambient/default value instead, exactly
+    as `cache_dir`'s F3 test proved for its own hashed path."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SELF_LEARN_TRANSCRIPTS_DIR", raising=False)
+    monkeypatch.delenv("SELF_LEARN_HOME", raising=False)
+    expanded_home = Path.home() / "x"
+    _write_config(expanded_home, "miner", "transcripts_dir", str(tmp_path / "transcripts-tilde"))
+    unexpanded = miner.transcripts_root(Path("~") / "x")
+    expanded = miner.transcripts_root(expanded_home)
+    assert unexpanded == expanded == tmp_path / "transcripts-tilde"
+
+
 # ===================================================================== #
 # miner.miner_enabled(home) -- extracted from miner.stale()'s inline check
 # ===================================================================== #
@@ -154,6 +191,23 @@ def test_miner_enabled_positive_control_bare_call_uses_the_ambient_home(tmp_path
     monkeypatch.setenv("SELF_LEARN_HOME", str(home_b))
     _write_config(home_b, "miner", "enabled", False)
     assert miner.miner_enabled() is False
+
+
+def test_miner_enabled_fold_r2_m3_an_unexpanded_home_reads_the_same_config_as_its_expansion(
+    tmp_path, monkeypatch
+):
+    """Fold r2 M3: `miner_enabled(Path("~/x"))` and `miner_enabled(
+    Path.home() / "x")` must read the SAME `config.yaml` -- mirrors
+    `cache_dir`'s F3 test for this function's own `resolve_setting`
+    read."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SELF_LEARN_MINER", raising=False)
+    monkeypatch.delenv("SELF_LEARN_HOME", raising=False)
+    expanded_home = Path.home() / "x"
+    _write_config(expanded_home, "miner", "enabled", False)
+    unexpanded = miner.miner_enabled(Path("~") / "x")
+    expanded = miner.miner_enabled(expanded_home)
+    assert unexpanded is expanded is False
 
 
 def test_stale_still_calls_miner_enabled_bare_unchanged_by_the_extraction(tmp_path, monkeypatch):
@@ -181,6 +235,23 @@ def test_notifications_suppressed_hostile_ambient_reads_homes_own_config(tmp_pat
     _write_config(home_b, "worker", "no_notify", False)
     assert worker._notifications_suppressed(home_a) is True
     assert worker._notifications_suppressed(home_b) is False
+
+
+def test_notifications_suppressed_fold_r2_m3_an_unexpanded_home_reads_the_same_config_as_its_expansion(
+    tmp_path, monkeypatch
+):
+    """Fold r2 M3: `_notifications_suppressed(Path("~/x"))` and
+    `_notifications_suppressed(Path.home() / "x")` must read the SAME
+    `config.yaml` -- mirrors `cache_dir`'s F3 test for this function's
+    own `resolve_setting` read."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)
+    monkeypatch.delenv("SELF_LEARN_HOME", raising=False)
+    expanded_home = Path.home() / "x"
+    _write_config(expanded_home, "worker", "no_notify", True)
+    unexpanded = worker._notifications_suppressed(Path("~") / "x")
+    expanded = worker._notifications_suppressed(expanded_home)
+    assert unexpanded is expanded is True
 
 
 def test_notifications_suppressed_positive_control_bare_call_uses_the_ambient_home(
@@ -236,7 +307,20 @@ def test_maybe_kick_fold_r1_f1_hostile_ambient_sees_homes_own_heartbeat(tmp_path
     bare, ambient `worker.cache_dir()` (Home B's cache), so they could
     never see a heartbeat written under an explicitly-passed Home A that
     disagreed with ambient, and would spawn a redundant run instead of
-    poking the daemon that is already covering it."""
+    poking the daemon that is already covering it.
+
+    Fold r2 (N1): the `maybe_kick(home_a) == "poked"` assertion alone
+    observes only the `heartbeat_is_fresh(worker.cache_dir(home))` site
+    (a bare `heartbeat_is_fresh` reads Home B, finds no heartbeat there,
+    and returns "spawned" instead — already caught). It does NOT observe
+    the `request_poke(worker.cache_dir(home))` site on its own: a bare
+    `request_poke` still writes ITS poke file somewhere (just the wrong,
+    ambient-B cache dir) while `heartbeat_is_fresh(home)` still correctly
+    finds A's heartbeat fresh and still returns "poked" — the return
+    value alone cannot tell the two sites apart. The `serve.poke`
+    existence assertion below closes that gap directly in this file
+    (previously observed only indirectly, via `tests/test_serve.py::
+    test_hp6_fresh_heartbeat_pokes_and_spawns_nothing`)."""
     home_a = tmp_path / "home-a"
     home_b = tmp_path / "home-b"
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
@@ -248,3 +332,7 @@ def test_maybe_kick_fold_r1_f1_hostile_ambient_sees_homes_own_heartbeat(tmp_path
     monkeypatch.setattr(miner, "_spawn_run", lambda h, **kw: spawned.append(h) or 4242)
     assert miner.maybe_kick(home_a) == "poked"
     assert spawned == []  # a fresh heartbeat under A must poke, never spawn
+    # Fold r2 (N1): directly observes the `request_poke` site -- must
+    # land under Home A's cache_dir, never Home B's.
+    assert (worker.cache_dir(home_a) / "serve.poke").is_file()
+    assert not (worker.cache_dir(home_b) / "serve.poke").is_file()
