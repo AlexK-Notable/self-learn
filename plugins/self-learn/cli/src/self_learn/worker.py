@@ -1349,9 +1349,10 @@ def _register_running_pid() -> None:
     BEST-EFFORT — an `OSError` out of `_write_window_durable` (disk
     full, a permission error, or — measured live — the armor-pinned
     `test_attrib.py::test_in8_interrupted_install_is_recovered_not_
-    stalled_forever` part (e) monkeypatching `os.replace` globally to
-    simulate a crash mid-install-copy, which this function's own write
-    shares the same `os.replace` call with) must NEVER abort the whole
+    stalled_forever` part (e) monkeypatching `os.replace` — globally at
+    the time, scoped to the install copy on 2026-09-04 — to simulate a
+    crash mid-install-copy, which this function's own write shared) must
+    NEVER abort the whole
     `run()`. If the child never registers, the window keeps whatever the
     parent wrote, exactly as before fold r2 (`fb34978`): in the common
     case the parent has already rewritten the marker with the child's

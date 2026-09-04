@@ -460,10 +460,11 @@ def test_a_failed_registration_is_logged_and_does_not_abort_run(home, monkeypatc
     `os.replace` call (disk full, a permission error, or — measured
     live — the armor-pinned `test_attrib.py::test_in8_interrupted_
     install_is_recovered_not_stalled_forever` part (e), which
-    monkeypatches `os.replace` GLOBALLY to simulate a crash mid-install-
-    copy, and this function's write shares that same `os.replace` call)
+    monkeypatched `os.replace` GLOBALLY to simulate a crash mid-install-
+    copy until the 2026-09-04 integration scoping, so this function's
+    write shared the fake)
     must never abort the whole `worker.run()`. This test reproduces that
-    exact shape — `os.replace` monkeypatched globally, `worker.run(home)`
+    shape — `os.replace` patched to fail for the window write, `worker.run(home)`
     called directly (not `_register_running_pid()` in isolation), the
     same call the real armor-pinned test makes — and checks the THREE
     things `_register_running_pid`'s fix promises: `run()` does not
@@ -478,8 +479,15 @@ def test_a_failed_registration_is_logged_and_does_not_abort_run(home, monkeypatc
     raises `OSError("simulated os.replace crash")` instead of returning
     normally."""
 
+    real_replace = os.replace
+
     def raising_replace(src, dst):
-        raise OSError("simulated os.replace crash")
+        # Scoped to the window write (2026-09-04 integration find): a
+        # global fake also trips M-E's sentinel publish later in run(),
+        # which is not this test's subject.
+        if Path(dst).name == "worker.window":
+            raise OSError("simulated os.replace crash")
+        return real_replace(src, dst)
 
     monkeypatch.setattr(os, "replace", raising_replace)
 
