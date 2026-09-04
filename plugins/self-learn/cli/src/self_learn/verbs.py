@@ -73,6 +73,7 @@ from pathlib import Path
 
 from . import config as policy_config
 from . import domain, gitops, ledger_ops, sentinel, telemetry
+from .primitives import chrono
 from .hook_compiler import replay_examples, script_name, settings_snippet
 from .normalize import sha_anchor
 from .skill_scaffold import (
@@ -450,7 +451,7 @@ class VerbResult:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return chrono.now_iso()
 
 
 def _date_str(value) -> str:

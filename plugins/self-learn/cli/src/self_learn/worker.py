@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from . import domain, invocation, sentinel, settings, telemetry
+from .primitives import chrono, truncate
 from .compilers import BEGIN_MARKER, END_MARKER
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
 from .hosts import Hosts, HostsError, ancestors_of, load_hosts, skill_dir_for, unregistered_ancestor_dirs
@@ -759,7 +760,7 @@ def _p(name: str) -> Path:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return chrono.now_iso()
 
 
 def _log_to(path: Path, message: str) -> None:
@@ -781,20 +782,11 @@ def log(message: str) -> None:
 
 
 def _truncate_oldest(path: Path, cap: int) -> None:
-    try:
-        if path.stat().st_size <= cap:
-            return
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-        keep: list[str] = []
-        size = 0
-        for line in reversed(lines):
-            size += len(line.encode("utf-8"))
-            if size > cap:
-                break
-            keep.append(line)
-        path.write_text("".join(reversed(keep)), encoding="utf-8")
-    except OSError:
-        pass
+    """Facade over :func:`self_learn.primitives.truncate.truncate_oldest`
+    -- kept as its own name/def (never inlined or renamed):
+    ``tests/test_lock_invariant.py`` enumerates ``worker._truncate_oldest``
+    by name in its ``NOT_REPO_TRUTH`` exemption table (M-J, plan v2 SS2)."""
+    truncate.truncate_oldest(path, cap)
 
 
 def _pid_alive(pid: int) -> bool:

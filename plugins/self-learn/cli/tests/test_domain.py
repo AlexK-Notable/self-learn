@@ -218,8 +218,18 @@ class TestCrossSurfaceExpiredDeferralFixture:
         assert entry["overdue_days"] > 0
 
     def test_all_four_surfaces_agree_on_the_count(self, fixture_home, capsys):
-        """The tightest single assertion: four independently-computed
-        counts of "how many records are queued", all equal."""
+        """The tightest single assertion: FIVE independently-computed
+        counts of "how many records are queued/tracked", all equal —
+        including ``report --json``'s own tally (M-B gap closed in
+        M-J, per code-gate review: the report leg previously lived in
+        a separate test and asserted no count of its own). ``report``
+        never surfaces a queue-membership predicate directly, but its
+        per-bucket ``counts`` Counter increments unconditionally on
+        every record's ``status`` (``counts[record.status] += 1``,
+        report.py) — for this fixture (9 pending + 1 deferred, no other
+        statuses), summing bucket "s"'s counts is report's own
+        equivalent tally of the same 10 records every other surface
+        counts via ``domain.is_queued``."""
         import json
 
         assert cli.main(["status", "--json"]) == 0
@@ -231,14 +241,26 @@ class TestCrossSurfaceExpiredDeferralFixture:
         assert cli.main(["status", "--fast"]) == 0
         fast_payload = json.loads(capsys.readouterr().out)
 
+        assert cli.main(["report", "--json"]) == 0
+        report_facts = json.loads(capsys.readouterr().out)
+        report_bucket = next(b for b in report_facts["buckets"] if b["bucket"] == "s")
+        report_total = sum(report_bucket["counts"].values())
+        overdue = next(
+            d["overdue_days"]
+            for d in report_facts["deferred"]
+            if d["id"] == "lrn-bb000001"
+        )
+
         counts = {
             "status.total_pending": status_payload["total_pending"],
             "status.metrics.pending_total": status_payload["metrics"]["pending_total"],
             "list.count": len(list_items),
             "status_fast.total_pending": fast_payload["total_pending"],
+            "report.bucket_counts_total": report_total,
         }
         assert len(set(counts.values())) == 1, counts
         assert counts["list.count"] == 10
+        assert overdue > 0
 
 
 # ------------------------------------------------- consumer-dependency scan

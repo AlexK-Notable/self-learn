@@ -42,7 +42,7 @@ from ruamel.yaml.error import YAMLError
 from . import hosts as hosts_mod
 from . import settings
 from . import domain
-from .primitives import chrono
+from .primitives import chrono, text, yamlio
 from .compilers import BEGIN_MARKER, END_MARKER
 from .ledger import Bucket, discover_buckets, home_state, home_state_message, resolve_home
 from .normalize import sha_anchor
@@ -215,7 +215,7 @@ ROSTER_UNAVAILABLE = "unavailable"
 TRACE_REQUIRED = True
 
 _TITLE_SECTION = {"behavior": "Trigger", "knowledge": "Fact"}
-_HEADING_RE = re.compile(r"^## +(.+?)\s*$")
+_HEADING_RE = text.HEADING_RE
 
 
 class LedgerOpsError(Exception):
@@ -230,11 +230,7 @@ class ProposalError(LedgerOpsError):
 
 
 def _yaml() -> YAML:
-    y = YAML(typ="rt")
-    y.preserve_quotes = True
-    y.width = 4096
-    y.indent(mapping=2, sequence=4, offset=2)
-    return y
+    return yamlio.rt_yaml(preserve_quotes=True, width=4096, sequence_indent=(2, 4, 2))
 
 
 def _load_yaml_map(path: Path) -> dict:
@@ -291,7 +287,7 @@ def _now(now: datetime | None) -> datetime:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return chrono.now_iso()
 
 
 def _ts_str(value) -> str | None:

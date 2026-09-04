@@ -21,9 +21,10 @@ consistent behavior.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 
+import self_learn.primitives.chrono as chrono
+import self_learn.primitives.truncate as truncate
 from self_learn.worker import cache_dir
 
 #: Same cap as worker.log (worker.py's LOG_CAP_BYTES) — kept as its own
@@ -40,24 +41,11 @@ def ui_log_path() -> Path:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return chrono.now_iso()
 
 
 def _truncate_oldest(path: Path, cap: int) -> None:
-    try:
-        if path.stat().st_size <= cap:
-            return
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-        keep: list[str] = []
-        size = 0
-        for line in reversed(lines):
-            size += len(line.encode("utf-8"))
-            if size > cap:
-                break
-            keep.append(line)
-        path.write_text("".join(reversed(keep)), encoding="utf-8")
-    except OSError:
-        pass
+    truncate.truncate_oldest(path, cap)
 
 
 def log(message: str) -> None:

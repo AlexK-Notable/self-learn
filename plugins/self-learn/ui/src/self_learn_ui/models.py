@@ -31,12 +31,12 @@ place this is decided.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 import self_learn.domain as sl_domain
+import self_learn.primitives.text as sl_text
 from self_learn import sentinel as sl_sentinel
 from self_learn import worker as sl_worker
 from self_learn.records import Record
@@ -1602,10 +1602,10 @@ class DetailModel:
     host_add_command: str | None
 
 
-#: Local heading matcher — mirrors records.py's private ``_HEADING_RE``
-#: (not exported; the model builder owns section EXTRACTION the same way
-#: compilers.py's ``_body_sections`` does for the CLI package, 02 §1).
-_HEADING_RE = re.compile(r"^## +(.+?)\s*$", re.MULTILINE)
+#: The one heading matcher (M-J, plan v2 §2) -- was a local mirror of
+#: records.py's private ``_HEADING_RE``; now the same compiled pattern
+#: both packages share (``self_learn.primitives.text.HEADING_RE``).
+_HEADING_RE = sl_text.HEADING_RE
 
 
 def _split_episode_brief(body: str) -> tuple[str, str | None]:

@@ -14,11 +14,27 @@ from datetime import date, datetime, timezone
 #: operand loses its time-of-day component before the subtraction).
 _SECONDS_PER_DAY = 86400
 
+#: THE one timestamp format -- second precision, ``Z``-suffixed, no
+#: microseconds, no ``+00:00`` offset. Every ``_now_iso`` this leaf
+#: replaces (12 sites, M-J) rendered exactly this string; UI
+#: ``store.py``'s own copy instead called ``.isoformat()`` (microseconds
+#: + ``+00:00``) -- that drift, not this constant, was the bug the
+#: migration closes. Exported (not just embedded in :func:`now_iso`) so
+#: :func:`self_learn.telemetry._now_iso`'s thin ``now:``-parameterized
+#: wrapper can format explicitly without duplicating the literal itself
+#: (a duplicate literal would itself trip the M-J P1 body scan).
+ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
-def now_iso() -> str:
-    """UTC now, second precision, ``Z``-suffixed -- the one format every
-    ``created_at``/``routed_at``/timestamp field in the ledger uses."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+def now_iso(now: datetime | None = None) -> str:
+    """UTC now (or *now*, for a caller that already has a clock reading
+    it must not re-sample -- ``telemetry``'s test-injected clock is the
+    one caller that needs this), second precision, ``Z``-suffixed -- the
+    one format every ``created_at``/``routed_at``/timestamp field in the
+    ledger uses."""
+    return (now if now is not None else datetime.now(timezone.utc)).strftime(
+        ISO_FORMAT
+    )
 
 
 def to_dt(value: object) -> datetime | None:

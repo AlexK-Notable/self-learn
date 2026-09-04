@@ -40,6 +40,7 @@ from typing import BinaryIO
 
 from . import settings
 from .ledger import resolve_home
+from .primitives import chrono
 from .scan import format_refusal
 from .scan import scan as secret_scan
 
@@ -150,7 +151,10 @@ def _month(now: datetime | None = None) -> str:
 
 
 def _now_iso(now: datetime | None = None) -> str:
-    return (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """Thin wrapper kept for its ``now:`` parameter (a test-injected clock
+    that must not be re-sampled) -- the format itself lives once, in
+    :func:`self_learn.primitives.chrono.now_iso`."""
+    return chrono.now_iso(now)
 
 
 def spool_event(kind: str, *, now: datetime | None = None, **payload) -> Path:
