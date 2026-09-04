@@ -937,13 +937,114 @@ def test_render_null_leg2_settings_broken_claude_md_survives(tmp_path, monkeypat
     assert "NOT MEASURED" in text
 
 
-def test_render_null_leg3_both_usable_nothing_null(env, tmp_path, monkeypatch):
+def test_render_null_both_usable_nothing_null(env, tmp_path, monkeypatch):
+    # Fold r1 / M-F3 n1: renamed off "leg3" — the build brief used "leg 3"
+    # as its own shorthand for the settings-absent scenario (see the test
+    # below), which collided in meaning with this pre-existing "both
+    # facets usable, nothing null" baseline. Two different scenarios must
+    # not share one ambiguous label.
     claude_dir = make_claude_dir(tmp_path, monkeypatch, settings={})
     route_cmd_project(env)
     facts = report._surface_reach(env.ledger, claude_dir)
     assert facts["reachable"] is not None and facts["unreachable"] is not None
     for counts in facts["by_destination"].values():
         assert counts["reachable"] is not None
+
+
+def test_settings_absent_keeps_measured_facets(env, tmp_path, monkeypatch):
+    """M-F3 fold r1 / m2 — orchestrator ruling ("null only what's
+    unmeasured; keep what the instrument measured; keep the top-level
+    checked/unmeasurable null whenever any facet is unmeasured") applied
+    against the ACTUAL predicates rather than the build's original
+    premise. `settings-absent` (no settings.json file at all) is
+    `claude_dir_usable=True, settings_usable=True` BY DESIGN
+    (test_instrument_four_states, PINNED — this test must never make
+    that assertion false), so neither per-facet gate in
+    `_surface_reach` fires for it.
+
+    The build's original version additionally nulled every
+    `by_destination` value and the top-level `checked`/`unmeasurable`
+    for this state specifically, on the premise that a
+    settings-dependent facet is "unmeasured" whenever settings.json is
+    absent. That premise is false, verified against the running
+    predicates: `_rp_hook` has an explicit
+    `instrument.state == "settings-absent"` branch returning a
+    confident `unreachable/no-registrations` (reachability.py:562), and
+    `_rp_skill` (shared by `skill-md`/`new-skill` via `_verdict_for`)
+    has no settings-absent special case at all — it falls through on
+    empty `enabled_plugins`/`skill_overrides` to a confident verdict
+    (`unreachable/not-indexed` here, or a real `reachable` via a
+    personal skill symlink). Settings-absent measures everything; it
+    just usually measures "unreachable" because nothing can register
+    without settings.json content. Nulling those facets for this state
+    was the exact "blanks facets that were measured" bug B-15 exists to
+    fix, just for three keys instead of six — so this test now asserts
+    the opposite of the original pin: nothing is null here."""
+    claude_dir = make_claude_dir(
+        tmp_path, monkeypatch, settings=None, name="null-settings-absent"
+    )
+    route_skill_md(env, record_id="lrn-f0abcd01")
+    route_cmd_project(env, record_id="lrn-f0abcd02")
+    facts = report._surface_reach(env.ledger, claude_dir)
+
+    assert facts["instrument_state"] == "settings-absent"
+    # The pinned flags — never flipped by this move.
+    assert facts["claude_dir_usable"] is True
+    assert facts["settings_usable"] is True
+
+    # Every facet gets a genuine measurement under settings-absent —
+    # nothing is null.
+    assert facts["checked"] == 2
+    assert facts["unmeasurable"] == 0
+    assert facts["reachable"] == 1
+    assert facts["unreachable"] == 1
+    assert facts["by_destination"]["skill-md"] == {
+        "reachable": 0, "unreachable": 1, "unmeasurable": 0,
+    }
+    assert facts["by_destination"]["claude-md"]["reachable"] == 1
+    for key in ("new-skill", "hook"):
+        assert facts["by_destination"][key] == {
+            "reachable": 0, "unreachable": 0, "unmeasurable": 0,
+        }, key
+
+    text = report.render_text(report.gather(env.ledger, claude_dir=claude_dir))
+    assert (
+        "Surface reach (2 record(s) checked, instrument: settings-absent):" in text
+    )
+    assert "1 reachable, 1 unreachable, 0 unmeasurable" in text
+    assert "None" not in text[text.index("Surface reach"):]
+
+
+def test_settings_unparseable_nulls_top_level(env, tmp_path, monkeypatch):
+    """M-F3 fold r1 BLOCKER mutation proof. The per-facet gate keyed on
+    `not claude_dir_usable or not settings_usable` is the one real path
+    where `checked`/`unmeasurable` go null now (moved there off the
+    removed settings-absent gate — see
+    test_settings_absent_keeps_measured_facets): a total taken over a
+    mix of measured (claude-md) and unmeasurable
+    (skill-md/new-skill/hook) facets would lie if rendered as a
+    concrete count. render_text must guard both `checked` and
+    `unmeasurable` with a "NOT MEASURED" string, never interpolate the
+    raw `None` — reverting either `checked_txt`/`unmeasurable_txt` guard
+    reddens this on the literal "None" it would print."""
+    claude_dir = make_claude_dir(
+        tmp_path, monkeypatch, settings="{", name="null-settings-unparseable"
+    )
+    route_skill_md(env, record_id="lrn-f0abcd01")
+    route_cmd_project(env, record_id="lrn-f0abcd02")
+    facts = report._surface_reach(env.ledger, claude_dir)
+
+    assert facts["instrument_state"] == "settings-unparseable"
+    assert facts["checked"] is None
+    assert facts["unmeasurable"] is None
+    # claude-md is not settings-dependent — it survives.
+    assert facts["by_destination"]["claude-md"]["reachable"] == 1
+
+    text = report.render_text(report.gather(env.ledger, claude_dir=claude_dir))
+    assert (
+        "Surface reach (NOT MEASURED, instrument: settings-unparseable):" in text
+    )
+    assert "None" not in text[text.index("Surface reach"):]
 
 
 def test_render_byvariant(env, tmp_path, monkeypatch):

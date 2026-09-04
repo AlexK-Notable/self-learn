@@ -1616,10 +1616,10 @@ def _surface_reach(home: Path, claude_dir: Path) -> dict:
     instrument_state = getattr(rows, "instrument_state", "ok")
     unparseable_records = getattr(rows, "unparseable_records", 0)
 
-    checked = len(rows)
+    checked: int | None = len(rows)
     reachable_n = sum(1 for r in rows if r.state == "reachable")
     unreachable_n = sum(1 for r in rows if r.state == "unreachable")
-    unmeasurable_n = sum(1 for r in rows if r.state == "unmeasurable")
+    unmeasurable_n: int | None = sum(1 for r in rows if r.state == "unmeasurable")
 
     by_destination: dict[str, dict] = {
         key: {"reachable": 0, "unreachable": 0, "unmeasurable": 0}
@@ -1628,11 +1628,53 @@ def _surface_reach(home: Path, claude_dir: Path) -> dict:
     for r in rows:
         by_destination[_surface_variant_key(r)][r.state] += 1
 
-    # §6 rule 2: nulling is PER FACET, never blanket. `checked`,
-    # `unmeasurable`, `unparseable_records` and `rows` always render.
+    # §6 rule 2: nulling is PER FACET, never blanket, for THIS gate
+    # (`claude_dir_usable`/`settings_usable`). `unparseable_records` and
+    # `rows` always render regardless of instrument state.
+    #
+    # Fold r1 / M-F3 m2 (orchestrator ruling — "null only what's
+    # unmeasured, keep what the instrument measured"): the original
+    # build added a THIRD gate here keyed on `instrument_state ==
+    # "settings-absent"` that blanket-nulled `checked`/`unmeasurable`
+    # and every `by_destination` value for that state. That gate's
+    # premise does not hold against the actual reachability predicates:
+    # `_rp_hook` has an explicit `instrument.state == "settings-absent"`
+    # branch returning a confident `unreachable/no-registrations`
+    # (reachability.py:562), and `_rp_skill` (shared by `skill-md` and
+    # `new-skill` via `_verdict_for`) has no settings-absent special
+    # case at all — it falls through on empty `enabled_plugins`/
+    # `skill_overrides` to a confident `unreachable/not-indexed` (or a
+    # real `reachable` via a personal skill symlink). Verified directly
+    # against the running predicates (source read of both functions,
+    # plus two throwaway probe scripts exercising `_rp_skill`/
+    # `reachability_rows` under a constructed settings-absent
+    # `Instrument`): every one of `_SETTINGS_DEPENDENT_KEYS`
+    # (`skill-md`, `new-skill`, `hook`) gets a genuine, non-null verdict
+    # when settings.json is merely absent — settings-absent measures
+    # everything, it just usually measures "unreachable" because
+    # nothing can register without settings.json content. Nulling those
+    # facets for that state was the exact "blanks facets that were
+    # measured" bug B-15 exists to fix, just for three keys instead of
+    # six. The settings-absent gate is removed; only the two REAL
+    # per-facet gates below (keyed on `claude_dir_usable`/
+    # `settings_usable`, which stay True for settings-absent by design
+    # per test_instrument_four_states) still null anything, and now
+    # `checked`/`unmeasurable` are wired into the first of those —
+    # they are corpus-wide aggregates over `_SETTINGS_DEPENDENT_KEYS`
+    # rows among others, so when that gate fires (settings-unparseable,
+    # or claude-dir-absent) the totals are a sum over partial facets
+    # and must be null too, not a concrete count that reads as
+    # "measured, and empty".
     if not claude_dir_usable or not settings_usable:
+        checked = None
+        unmeasurable_n = None
         for key in _SETTINGS_DEPENDENT_KEYS:
             by_destination[key] = {"reachable": None, "unreachable": None, "unmeasurable": None}
+    # Fold r2 / M-F3 MINOR 1 (orchestrator ruling): a facet is nulled here
+    # when ANY row aggregated into it is unmeasurable, because a partial
+    # total lies — the same rule the fold above applies to the top-level
+    # counts. The measured project-scope claude-md rows stay visible per
+    # record in `rows`, not in this facet total.
     if not claude_dir_usable:
         for key in ("claude-md", "claude-md:local", "claude-md:rules"):
             by_destination[key] = {"reachable": None, "unreachable": None, "unmeasurable": None}
@@ -2160,10 +2202,25 @@ def render_text(facts: dict) -> str:
     sr = facts.get("surface_reach")
     if sr is not None:
         lines.append("")
-        lines.append(
-            f"Surface reach ({sr['checked']} record(s) checked, instrument: "
-            f"{sr['instrument_state']}):"
+        # Fold r1 / M-F3 BLOCKER: `sr["checked"]`/`sr["unmeasurable"]` are
+        # `None` whenever the per-facet gate in `_surface_reach` fires
+        # (settings-unparseable, claude-dir-absent) — interpolating them
+        # raw used to print the literal string "None" into the
+        # human-facing report ("None record(s) checked"). Guard both.
+        checked_txt = (
+            "NOT MEASURED"
+            if sr["checked"] is None
+            else f"{sr['checked']} record(s) checked"
         )
+        # Fold r2 / M-F3 NIT 1: `unmeasurable_txt`'s "NOT MEASURED" arm is
+        # unreachable today (checked/unmeasurable are nulled together with
+        # reachable/unreachable, so the branch below always takes the
+        # top-level NOT MEASURED path first) — kept as defence in depth
+        # against a future change decoupling the two.
+        unmeasurable_txt = (
+            "NOT MEASURED" if sr["unmeasurable"] is None else str(sr["unmeasurable"])
+        )
+        lines.append(f"Surface reach ({checked_txt}, instrument: {sr['instrument_state']}):")
         if sr["reachable"] is None or sr["unreachable"] is None:
             lines.append(
                 "  NOT MEASURED (top-level reachable/unreachable) — a depended-on "
@@ -2173,7 +2230,7 @@ def render_text(facts: dict) -> str:
         else:
             lines.append(
                 f"  {sr['reachable']} reachable, {sr['unreachable']} unreachable, "
-                f"{sr['unmeasurable']} unmeasurable"
+                f"{unmeasurable_txt} unmeasurable"
             )
         if sr["unparseable_records"]:
             lines.append(

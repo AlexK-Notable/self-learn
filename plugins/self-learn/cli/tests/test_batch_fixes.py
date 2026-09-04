@@ -20,6 +20,7 @@ under pytest tmpdirs, no mocks, and no contact with the real
 ~/.self-learn, ~/repos/claude-skills, or ~/.claude.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -174,7 +175,10 @@ class TestHookHomeWarning:
         assert "NOT an empty ledger" not in proc.stdout
 
     def test_hook_exits_zero_when_cli_is_absent(self, tmp_path):
-        """The pre-existing guard still holds (no self-learn on PATH).
+        """The pre-existing guard still holds (no self-learn on PATH) — and,
+        post M-F1 (B-6 (e)), it no longer degrades SILENTLY: a missing
+        dependency used to mean nothing printed at all, indistinguishable
+        from "0 pending, nothing to say" (the exact shape B-6 flags).
 
         NB: bash is invoked by ABSOLUTE path and PATH points at an empty
         dir — a PATH of "/nonexistent" hides `bash` itself, and the 127
@@ -191,7 +195,303 @@ class TestHookHomeWarning:
             timeout=60,
         )
         assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
-        assert proc.stdout.strip() == ""
+        assert "self-learn is not on PATH" in proc.stdout
+
+
+# ============================================== M-F1: hook dependency guards
+
+
+class TestHookDependencyDegradation:
+    """M-F1 (sprint-1 plan v2 §2, B-6 (d)/(e) + B-6's secondary `// 0`
+    collapse shape + B-7's consumer half): a fully hermetic PATH lets each
+    of the hook's THREE `command -v` guards (self-learn, jq, timeout) be
+    probed independently, and a controllable fake `self-learn` lets the
+    JSON shapes ``status --fast`` does not currently produce (a missing
+    ``total_pending``, a present ``total_unreadable``) be exercised too.
+
+    Modeled on ``tests/test_refread.py:202-227``'s ``_minimal_bin_dir`` —
+    duplicated here rather than imported: that harness lives in a
+    different (non-owned) test file, ``support.py`` is armor-pinned, and
+    no new non-``test_*.py`` module may appear under ``cli/tests/`` (sprint
+    contract §"Code and test rules" item 3).
+
+    ``worker.fast_status`` (worker.py:3224-3230) always emits
+    ``total_pending`` and NEVER emits ``total_unreadable`` at all — both
+    deliberate (comments at cli.py:1358-1360 / worker.py:3248-3251: the
+    ``--fast`` scan's omission of ``total_unreadable`` is honest-null, not
+    a bug). So the ``status_json=`` tests below are forward regression
+    guards against a future CLI JSON-shape change / the day B-7's producer
+    gains this field, not reproductions of a currently-live bug.
+    """
+
+    def _bin_dir(
+        self,
+        tmp_path: Path,
+        name: str,
+        *,
+        jq: bool = True,
+        self_learn: bool = True,
+        timeout: bool = True,
+        status_json: str | None = None,
+        self_learn_sleep_s: float | None = None,
+        home: Path | None = None,
+    ) -> Path:
+        bindir = tmp_path / f"bin-{name}"
+        bindir.mkdir()
+        # `git` is required by the real-CLI shim's `home_state()` (it
+        # shells out to `git -C <home> rev-parse --show-toplevel` via
+        # hosts.is_repo_root) — irrelevant to the `status_json=`/
+        # `self_learn_sleep_s=` tests, but the real CLI ones below would
+        # otherwise crash with FileNotFoundError before ever reaching the
+        # hook's own guards.
+        for tool in ("bash", "cat", "sleep", "git"):
+            real = shutil.which(tool)
+            assert real, f"{tool} not found on host PATH"
+            (bindir / tool).symlink_to(real)
+        if jq:
+            real = shutil.which("jq")
+            assert real, "jq not found on host PATH"
+            (bindir / "jq").symlink_to(real)
+        if timeout:
+            real = shutil.which("timeout")
+            assert real, "timeout not found on host PATH"
+            (bindir / "timeout").symlink_to(real)
+        if self_learn:
+            shim = bindir / "self-learn"
+            if self_learn_sleep_s is not None:
+                # MAJOR 1 (fold r1): a `self-learn` that never returns on
+                # its own — proves the hook's `timeout 4` wrap around
+                # `self-learn status --fast` is actually bounded, not
+                # merely preceded by a `command -v self-learn` presence
+                # check (presence says nothing about a hung/wedged CLI).
+                shim.write_text(
+                    "#!/usr/bin/env bash\n"
+                    'if [ "$1" = status ] && [ "$2" = --fast ]; then\n'
+                    f"  sleep {self_learn_sleep_s}\n"
+                    "  echo '{}'\n"
+                    "  exit 0\n"
+                    "fi\n"
+                    "exit 1\n",
+                    encoding="utf-8",
+                )
+            elif status_json is not None:
+                # A literal, hand-authored JSON payload on stdout for
+                # `status --fast` — the only way to drive a JSON shape
+                # the real CLI does not currently produce. Also the
+                # cheapest self-learn shim for tests where a `command -v`
+                # guard ahead of self-learn fires first (jq/timeout
+                # missing) and self-learn is never actually invoked — no
+                # real ledger home needed for those.
+                shim.write_text(
+                    "#!/usr/bin/env bash\n"
+                    'if [ "$1" = status ] && [ "$2" = --fast ]; then\n'
+                    f"  cat <<'HOOKSHIM_JSON'\n{status_json}\nHOOKSHIM_JSON\n"
+                    "  exit 0\n"
+                    "fi\n"
+                    "exit 1\n",
+                    encoding="utf-8",
+                )
+            else:
+                # Same-interpreter shim dispatching to the REAL
+                # self_learn.cli.main, same idiom as TestHookHomeWarning
+                # ._shim above. Only reachable with a REAL ledger home —
+                # fold r1 NIT: this used to fall back to a synthesized,
+                # never-created "unused-home" path for callers that
+                # never actually invoke self-learn (a `command -v`
+                # guard ahead of it always fired first); those callers
+                # now pass `status_json=` instead, so a real `home` is
+                # required here rather than silently inventing one.
+                assert home is not None, (
+                    "the real-CLI dispatch shim needs an actual ledger "
+                    "home; pass status_json= (or self_learn_sleep_s=) "
+                    "instead when the test never actually reaches "
+                    "self-learn"
+                )
+                shim.write_text(
+                    textwrap.dedent(
+                        f"""\
+                        #!/usr/bin/env bash
+                        export PYTHONPATH="{CLI_SRC}"
+                        export SELF_LEARN_HOME="{home}"
+                        exec {sys.executable} -m self_learn.cli "$@"
+                        """
+                    ),
+                    encoding="utf-8",
+                )
+            shim.chmod(0o755)
+        return bindir
+
+    def _run(self, tmp_path: Path, bindir: Path, run_timeout: int = 60):
+        return subprocess.run(
+            [str(HOOK)],
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": str(bindir),
+                "HOME": str(tmp_path),
+                "XDG_CACHE_HOME": str(tmp_path / "xdg-cache"),
+            },
+            timeout=run_timeout,
+        )
+
+    def test_jq_missing_prints_degraded_line(self, tmp_path):
+        """The self-learn guard passes (never actually invoked — `command
+        -v` never executes it) and the jq guard fires next. `status_json`
+        (rather than a real ledger `home=`) is enough here — the shim is
+        never actually run."""
+        bindir = self._bin_dir(
+            tmp_path, "jqmiss", jq=False, status_json="{}"
+        )
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert "jq is not on PATH" in proc.stdout
+        assert "📥" not in proc.stdout
+
+    def test_timeout_missing_prints_degraded_line(self, tmp_path):
+        """Mutation target: dropping the new third `command -v timeout`
+        guard entirely still reaches `$(timeout 4 self-learn …)`, which
+        fails with "command not found" (rc 127) — `|| true` (line 41)
+        absorbs it into an EMPTY `$out`, and `[ -n "$out" ] || exit 0`
+        exits silently with NOTHING printed, the exact B-6 shape this
+        guard closes. This test only passes when the guard fires FIRST
+        and prints its own named message."""
+        bindir = self._bin_dir(
+            tmp_path, "tomiss", timeout=False, status_json="{}"
+        )
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert "timeout is not on PATH" in proc.stdout
+        assert "📥" not in proc.stdout
+
+    def test_self_learn_missing_prints_degraded_line(self, tmp_path):
+        """The "CLI-missing" leg — self-learn absent, jq and timeout both
+        present (so this exercises the FIRST guard specifically, distinct
+        from TestHookHomeWarning's fully-empty-PATH variant above)."""
+        bindir = self._bin_dir(tmp_path, "climiss", self_learn=False)
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert "self-learn is not on PATH" in proc.stdout
+
+    def test_total_pending_absent_prints_degraded_line(self, tmp_path):
+        """B-6 secondary shape: a `status --fast` JSON missing
+        `total_pending` entirely must not collapse to a silent,
+        healthy-looking "0 pending" (the pre-fix `// 0` behavior) —
+        `jq -e` (no fallback) now catches the absent key and reports it."""
+        bindir = self._bin_dir(
+            tmp_path, "nototal", status_json=json.dumps({"home_state": "ok"})
+        )
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert "no total_pending" in proc.stdout
+        assert "📥" not in proc.stdout
+
+    def test_unreadable_count_appended_when_present(self, tmp_path):
+        """B-7 consumer half: the hook now reads `total_unreadable` when
+        the JSON carries it and appends "(N unreadable)" to the pending
+        line — the exact literal format the brief pins."""
+        bindir = self._bin_dir(
+            tmp_path,
+            "unread",
+            status_json=json.dumps(
+                {
+                    "home_state": "ok",
+                    "total_pending": 5,
+                    "oldest_days": 3,
+                    "staleness_alarm": False,
+                    "escalate": False,
+                    "unanalyzed_total": 1,
+                    "miner_stale": False,
+                    "total_unreadable": 2,
+                }
+            ),
+        )
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert (
+            "📥 self-learn: 5 pending, oldest 3d — /self-learn:review (2 unreadable)"
+            in proc.stdout
+        )
+
+    def test_unreadable_count_absent_no_annotation(self, tmp_path):
+        """The honest-null default, against the REAL CLI end to end: the
+        real `--fast` path never emits `total_unreadable` at all (a live
+        record, no unreadable ones), so the pending line must render
+        exactly as before, with no manufactured "(0 unreadable)" — the
+        `unreadable` read now happens BEFORE the `total -gt 0` branch
+        (fold r1 MAJOR 2), so this also proves that reordering did not
+        start inventing an annotation where none exists.
+
+        Fold r2 / M-F1 NIT 1: an implementation that defaults the field
+        to 0 with `jq -r '.total_unreadable // 0'` instead of gating on
+        presence (`jq -e -r '.total_unreadable'`) is a BEHAVIOURALLY
+        EQUIVALENT mutant, not one this pairing separates — re-measured:
+        that swap still passes the full `TestHookDependencyDegradation`
+        class (8 passed, 0 failed — re-verified this fold session), because
+        absent -> 0 (via `// 0`) and
+        absent -> "" (via presence-gating, `unreadable_positive` stays 0)
+        produce byte-identical stdout in every case these fixtures
+        exercise. There is no observable-from-stdout case that separates
+        the two; this test alone is the honest guard against a
+        manufactured "(0 unreadable)" ever appearing."""
+        env = make_env(tmp_path / "ledger")
+        create_record(env.ledger, make_behavior(record_id="lrn-cccc1111"))
+        commit_all(env.ledger, "record")
+        bindir = self._bin_dir(tmp_path, "noann", home=env.ledger)
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert "📥 self-learn: 1 pending" in proc.stdout
+        assert "unreadable" not in proc.stdout
+
+    def test_zero_pending_with_unreadable_still_reports(self, tmp_path):
+        """MAJOR 2 (fold r1): a payload with ZERO readable pending records
+        and N unreadable ones must still say so — gating the whole
+        pending-count line on `total -gt 0` silently swallowed this case
+        (B-7's silent shape recurring one level up: an all-unreadable
+        backlog printed nothing at all, reading as a healthy empty
+        queue)."""
+        bindir = self._bin_dir(
+            tmp_path,
+            "zeropend",
+            status_json=json.dumps(
+                {
+                    "home_state": "ok",
+                    "total_pending": 0,
+                    "oldest_days": 0,
+                    "staleness_alarm": False,
+                    "escalate": False,
+                    "unanalyzed_total": 0,
+                    "miner_stale": False,
+                    "total_unreadable": 3,
+                }
+            ),
+        )
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert (
+            "📥 self-learn: 0 pending, oldest 0d — /self-learn:review (3 unreadable)"
+            in proc.stdout
+        )
+
+    def test_status_call_is_bounded_by_timeout(self, tmp_path):
+        """MAJOR 1 (fold r1): the `timeout 4` wrap around `self-learn
+        status --fast` was itself uncovered by any test node — a fake
+        `self-learn` that sleeps well past the bound (using the
+        already-symlinked real `sleep`) proves the hook actually RETURNS,
+        with the fold r1 degraded line, instead of hanging for the
+        fake's full sleep.
+
+        This node gets its own generous-but-finite `subprocess.run`
+        bound (well under the fake's 30s sleep, comfortably above the
+        hook's ~4s wrap) so a reverted wrap fails this node FAST — via
+        `TimeoutExpired` at ~10s — rather than hanging for the full 30s.
+
+        Mutation target: strip the `timeout 4` prefix from the `self-learn
+        status --fast` call (or the rc-124 branch that follows it) and
+        this node times out / never sees the degraded line."""
+        bindir = self._bin_dir(tmp_path, "slowcli", self_learn_sleep_s=30)
+        proc = self._run(tmp_path, bindir, run_timeout=10)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert "self-learn status timed out after 4s" in proc.stdout
 
 
 # ================================================ BLOCKER 2: teach exit codes
