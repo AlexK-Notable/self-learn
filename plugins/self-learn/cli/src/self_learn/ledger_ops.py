@@ -41,6 +41,8 @@ from ruamel.yaml.error import YAMLError
 
 from . import hosts as hosts_mod
 from . import settings
+from . import domain
+from .primitives import chrono
 from .compilers import BEGIN_MARKER, END_MARKER
 from .ledger import Bucket, discover_buckets, home_state, home_state_message, resolve_home
 from .normalize import sha_anchor
@@ -212,7 +214,6 @@ ROSTER_UNAVAILABLE = "unavailable"
 #: builder decision 14).
 TRACE_REQUIRED = True
 
-_SECONDS_PER_DAY = 86400
 _TITLE_SECTION = {"behavior": "Trigger", "knowledge": "Fact"}
 _HEADING_RE = re.compile(r"^## +(.+?)\s*$")
 
@@ -293,28 +294,6 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _to_dt(value) -> datetime | None:
-    """Lenient timestamp coercion: ruamel hands back datetime/date for plain
-    ISO scalars, str otherwise. None / unparseable → None."""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        dt = value
-    elif isinstance(value, date):
-        dt = datetime(value.year, value.month, value.day)
-    else:
-        s = str(value).strip()
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        try:
-            dt = datetime.fromisoformat(s)
-        except ValueError:
-            return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
 def _ts_str(value) -> str | None:
     """Render a frontmatter timestamp for JSON output."""
     if value is None:
@@ -327,17 +306,9 @@ def _ts_str(value) -> str | None:
 
 
 def _age_days(created_at, now: datetime) -> int:
-    dt = _to_dt(created_at)
-    if dt is None:
-        return 0
-    return max(0, int((now - dt).total_seconds() // _SECONDS_PER_DAY))
-
-
-def _deferred_hidden(record: Record, now: datetime) -> bool:
-    """THE membership rule's deferral half: hidden iff ``deferred_until`` is
-    in the future (status may still say deferred — computed, 02 §2)."""
-    until = _to_dt(record.deferred_until)
-    return until is not None and until > now
+    # M-B: ``_to_dt`` moved to ``primitives.chrono`` (domain.py's clock) —
+    # this call site is repointed, not a new domain consumer.
+    return chrono.age_days(chrono.to_dt(created_at), now)
 
 
 # ---------------------------------------------------------- bucket routing
@@ -2756,7 +2727,7 @@ def queue(
     entries, _bad = _load_pending(bucket)
     if include_deferred:
         return entries
-    return [e for e in entries if not _deferred_hidden(e.record, now)]
+    return [e for e in entries if domain.is_queued(e.record, now)]
 
 
 def unparseable_pending(bucket: Bucket) -> list[Path]:
@@ -2813,7 +2784,7 @@ def is_unanalyzed(entry: QueueEntry, *, now: datetime | None = None) -> bool:
     pending, non-deferred, AND (no proposal file, or schema-invalid /
     unparseable proposal, or ``record_sha`` ≠ current normalized-body hash).
     ``list``/``status``/the worker all call this — never a second definition."""
-    if _deferred_hidden(entry.record, _now(now)):
+    if not domain.is_queued(entry.record, _now(now)):
         return False
     return not proposal_info(entry)["proposal_fresh"]
 
@@ -2836,7 +2807,7 @@ def record_title(record: Record) -> str:
 
 
 def _sort_key(entry: QueueEntry):
-    dt = _to_dt(entry.record.created_at)
+    dt = chrono.to_dt(entry.record.created_at)
     return (dt or datetime.fromtimestamp(0, tz=timezone.utc), entry.record.id)
 
 

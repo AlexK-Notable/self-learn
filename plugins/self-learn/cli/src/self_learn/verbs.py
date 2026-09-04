@@ -72,7 +72,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import config as policy_config
-from . import gitops, ledger_ops, sentinel, telemetry
+from . import domain, gitops, ledger_ops, sentinel, telemetry
 from .hook_compiler import replay_examples, script_name, settings_snippet
 from .normalize import sha_anchor
 from .skill_scaffold import (
@@ -6645,9 +6645,11 @@ def recompile(
                 "skill-md", "claude-md", "reference", "hook", "new-skill"
             ):
                 continue
-            retired = (
-                record.status != "routed" or record.superseded_by is not None
-            )
+            # M-B: retired is the negation of domain.is_canon_live — the
+            # SAME routed-and-not-superseded predicate compilers._eligible
+            # and report's routed_live accumulation use, never a third
+            # inline definition of "is this routing still live".
+            retired = not domain.is_canon_live(record)
             if destination == "hook":
                 meta = (record.routing or {}).get("hook") or {}
                 if retired:

@@ -123,6 +123,7 @@ from typing import Iterable, Sequence
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
+from . import domain
 from .records import Record
 
 __all__ = [
@@ -273,8 +274,9 @@ def _iso(value: object) -> str:
 
 def _eligible(records: Iterable[Record]) -> list[Record]:
     """Filter to compiling records and apply the pinned deterministic order:
-    (routing.routed_at, id)."""
-    kept = [r for r in records if r.status == "routed" and r.superseded_by is None]
+    (routing.routed_at, id). M-B: the filter IS ``domain.is_canon_live`` —
+    routed AND not superseded, never a second inline definition."""
+    kept = [r for r in records if domain.is_canon_live(r)]
     kept.sort(key=lambda r: (_iso((r.routing or {}).get("routed_at") or ""), r.id))
     return kept
 
