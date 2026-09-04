@@ -25,14 +25,16 @@ plugins/self-learn/
   skills/self-learn/    SKILL.md + references (routing doctrine, card registry)
   commands/             /self-learn:review, /self-learn:teach
   hooks/                self-learn-pending.sh (SessionStart pending-count line)
+                        self-learn-refread.sh (PostToolUse reference-read observer)
   scripts/self-learn    ~/bin shim (readlink -f → uv run against cli/)
   scripts/self-learn-ui        ~/bin shim (readlink -f → uv run against ui/; `serve` = the systemd entry point)
   scripts/self-learn-ui-open   ~/bin deep-link launcher / window-focuser (the only WM/browser-aware file)
   scripts/self-learn-notify    ~/bin desktop notifier (swaync action → self-learn-ui-open)
 docs/specs/self-learn/  the ratified spec corpus (00–13 + fixtures + reviews)
-systemd/                self-learn-miner.{service,timer} (nightly mine, 03:40)
+systemd/                self-learn-host.service (resident host process: nightly mine at 03:30 + worker)
                         self-learn-ui.service (G-3 surface, resident web server)
-install.sh              idempotent live-symlink deploy (eight surfaces + units)
+                        self-learn-miner.{service,timer} (legacy timer route; superseded by the host service)
+install.sh              idempotent live-symlink deploy (shims, hooks, skill, commands, units)
 ```
 
 ## Install
@@ -53,10 +55,13 @@ the parts that live outside a plugin's boundary:
 
 - the `~/bin` shims — `self-learn`, `self-learn-ui`, `self-learn-ui-open`,
   `self-learn-notify`
-- the two `systemd --user` units (nightly miner timer; the G-3 UI service)
+- the `systemd --user` units: `self-learn-host.service` (the resident host
+  process that schedules the nightly mine and the worker), `self-learn-ui.service`
+  (the G-3 surface), and the legacy `self-learn-miner.{service,timer}`
 - the desktop launcher + icon
-- the SessionStart pending-count hook symlink into `~/.claude/hooks/`
-  (registration in `settings.json` stays manual either way)
+- the two hook symlinks into `~/.claude/hooks/` — the SessionStart
+  pending-count hook and the PostToolUse reference-read hook (registration
+  in `settings.json` stays manual either way; see `plugins/self-learn/README.md`)
 - `uv sync` of the CLI project
 
 For those, clone and run `install.sh`:
@@ -64,22 +69,24 @@ For those, clone and run `install.sh`:
 ```bash
 git clone https://github.com/AlexK-Notable/self-learn.git ~/repos/self-learn
 cd ~/repos/self-learn && ./install.sh
-# then (manual, load-bearing): register the SessionStart hook in ~/.claude/settings.json
-systemctl --user enable --now self-learn-miner.timer
-systemctl --user enable --now self-learn-ui.service   # G-3 surface, see below
+# then (manual, load-bearing): register both hooks in ~/.claude/settings.json
+systemctl --user enable --now self-learn-host.service  # nightly mine + worker
+systemctl --user enable --now self-learn-ui.service    # G-3 surface, see below
 ```
+
+`self-learn-host.service` is the U-engine host process (`self-learn serve`;
+run it in the foreground where there is no systemd). It supersedes the older
+`self-learn-miner.timer` route: a timer left enabled alongside it is a
+supported belt-and-braces poke, and `self-learn doctor invocation` WARNs
+(never fails) when both are enabled.
 
 `install.sh` is a **live-symlink** deploy: the repo working tree *is* the
 installed copy, so edits are live next session. The two routes are
 alternatives for the skill and commands, not a sequence — pick one.
 
-**If you intend to run any surface on the `sdk` invocation backend**,
-install the CLI's optional extra as well — `install.sh` does not
-(`uv sync --project plugins/self-learn/cli` installs the base
-dependency set only), so a surface flipped to `sdk` without it refuses
-at invocation time with *the "sdk" invocation backend is not built yet*.
-`uv sync --project plugins/self-learn/cli --extra sdk`, or
-`pip install 'self-learn-cli[sdk]'`. See
+The model-invoking surfaces run on `claude-agent-sdk`, a base dependency of
+the CLI project (`uv sync` installs it; the `[sdk]` extra is now empty and
+kept only so older install lines keep working). See
 `docs/specs/self-learn/17-invocation-runbook.md`.
 
 The ledger needs a git repo at `$SELF_LEARN_HOME` (default
@@ -165,19 +172,26 @@ subprocess-based engine satisfying the same event protocol; it is not
 built yet, so setting `SELF_LEARN_PANE_ENGINE=cli` is a deliberate,
 documented no-op-with-explanation, not a silent fallback.
 
-### Invocation backend (CLI surfaces)
+### Invocation backend and settings (CLI surfaces)
 
 The three CLI surfaces that invoke a model — the pre-analysis worker
 (and its repair round), the transcript miner's reader, and the
-`teach --route` analyst — run behind one seam whose backend is
-selectable per surface: `cli` (a `claude -p` subprocess) or `sdk` (an
-in-process `claude_agent_sdk` session). **Every surface defaults to
-`cli`**; nothing is flipped by installing. A second, orthogonal,
-install-wide switch selects the `provider` (`anthropic` or `bedrock`).
+`teach --route` analyst — run behind one seam as in-process
+`claude_agent_sdk` sessions. `sdk` is the only backend
+(`invocation/registry.py`, `KNOWN_BACKENDS`); the former `cli` backend (a
+`claude -p` subprocess) was removed in U-cleanup, and a stale `cli` setting
+is reported and `sdk` used. A second, orthogonal, install-wide switch
+selects the `provider` (`anthropic` or `bedrock`).
 
-Check what is resolved on this machine with `self-learn doctor
-invocation`. The full procedure — flip and rollback one-liners, the
-measured traps, the per-surface burn-in gates — is
+Operator-facing settings live in one registry (U-settings). `self-learn
+doctor settings` lists every setting with its value and source — built-in
+default, environment variable, the ledger's `config.yaml`, or an ambient
+`SELF_LEARN_OVERRIDE_<name>` variable, which outranks `config.yaml` and is
+flagged as an active override. `self-learn config get|set|unset` is the
+write path (registry-validated, committed under the ledger's commit lock,
+secret-scanned), and the UI's `/settings` page shows the same registry with
+source badges and inline editors. `self-learn doctor invocation` reports
+what is resolved on this machine; the measured traps are in
 `docs/specs/self-learn/17-invocation-runbook.md`. These switches are
 deliberately absent from the environment table above: that table is
 the UI's.
@@ -215,7 +229,12 @@ also relies on.
 
 ## Development
 
-- Tests: `cd plugins/self-learn/cli && uv run pytest -q`
+- Tests: `plugins/self-learn/cli/scripts/suite` (the sanctioned CLI runner:
+  one pytest-xdist run; `SUITE_WORKERS=N` caps the workers) or, for one
+  file, `cd plugins/self-learn/cli && uv run pytest -q tests/<file>.py`.
+  UI: `cd plugins/self-learn/ui && uv run pytest -q` — the browser tests need
+  Playwright's Chromium and FAIL loudly when it is absent; set
+  `SELF_LEARN_UI_NO_BROWSER=1` to opt out of them explicitly.
 - Self-check: `self-learn --selftest`
 - **No autosync on this repo** (13 §7.3 D3) — commit and push manually.
 - The spec corpus in `docs/specs/self-learn/` is the authority; code
