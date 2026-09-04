@@ -311,6 +311,78 @@ def test_marker_survives_at_least_the_coalesce_window(home, monkeypatch):
     assert worker._open_window(home) == "absorbed-race"
 
 
+# ------------------------------------------------- child self-registration
+
+
+def test_a_registered_child_absorbs_a_later_kick_as_a_live_pid_not_a_marker(
+    home, monkeypatch
+):
+    """Fold r2 MINOR 1: the spawned child registers its own pid
+    (`worker._register_running_pid`) at the very start of `run()`,
+    before its coalesce sleep and before `worker.lock` — bounding the
+    marker's exposure to child STARTUP instead of the whole
+    `coalesce_secs(home)` sleep that follows (the old floor, still the
+    safety net for a child that dies before registering). Simulates the
+    sequence directly: the parent's marker write
+    (`_open_window`/`_spawn_window`, not re-exercised here — see the
+    crash tests above), then the child's own registration call, exactly
+    as `run()` performs it as its very first act (see the companion
+    wiring test below for proof `run()` actually calls it there).
+
+    Mutation that proves this bites: replacing `_register_running_pid`'s
+    body with a no-op fails this test — `worker.window` would still hold
+    the "spawning" marker, `_open_window` would judge it by
+    `_spawn_marker_stale`'s deadline heuristic instead of `_pid_alive`,
+    and (since it is still fresh) report `absorbed-race`, not the
+    asserted `absorbed-window`."""
+    window = _window(home)
+    worker._write_window_durable(window, worker._SPAWN_MARKER)
+
+    worker._register_running_pid()  # exactly what run() does, first thing
+
+    assert window.read_text(encoding="utf-8").strip() == str(os.getpid())
+
+    monkeypatch.setattr(
+        worker,
+        "_spawn_window",
+        lambda home, *, no_push=False: pytest.fail(
+            "a registered live pid must absorb the kick without spawning"
+        ),
+    )
+    assert worker._open_window(home) == "absorbed-window"
+
+
+def test_run_calls_register_running_pid_before_anything_else(home, monkeypatch):
+    """Wiring check, companion to the test above: `run()` must call
+    `_register_running_pid()` as literally its first act — before the
+    coalesce sleep, before `worker.lock`, before the sentinel hold and
+    `_cache_clear("worker.window")` that immediately follows taking that
+    lock (which would otherwise erase the very pid the previous test
+    proves gets written). A spy replacing `_register_running_pid` raises
+    immediately once called, aborting `run()` before it ever needs a
+    real git ledger `home` — this file otherwise never exercises `run()`
+    itself, exactly because of that `_cache_clear` call.
+
+    Mutation that proves this bites: deleting the `_register_running_
+    pid()` call from `run()` (fold r2's "drop the self-registration"
+    case, as opposed to gutting the function's own body, which the test
+    above already covers) fails this test — the spy is never invoked, so
+    `run()` proceeds unaborted (either completing against the non-git
+    `home` or raising some OTHER, unrelated exception), and
+    `pytest.raises(RuntimeError, match="stop-after-registration")` does
+    not see the expected exception."""
+    calls: list[bool] = []
+
+    def spy() -> None:
+        calls.append(True)
+        raise RuntimeError("stop-after-registration")
+
+    monkeypatch.setattr(worker, "_register_running_pid", spy)
+    with pytest.raises(RuntimeError, match="stop-after-registration"):
+        worker.run(home)
+    assert calls == [True]
+
+
 # --------------------------------------------------------- positive control
 
 

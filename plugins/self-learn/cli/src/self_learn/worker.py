@@ -1247,29 +1247,51 @@ def _spawn_marker_stale(window: Path, home: Path) -> bool:
 
     Fold NIT 3 (residual, disclosed): age is `mtime`-based, so a
     backwards wall-clock step makes a marker un-stale-able for the size
-    of the step. Fold r1's MINOR 1 finding proposed bounding this
-    exposure to child STARTUP (a spawned child durably rewriting
-    `worker.window` with its own pid before its coalesce sleep and
-    before `worker.lock`, so this function would never be consulted for
-    a registered child again) — that fix is DEFERRED, not shipped: doing
-    it from `run()` (an unexempted function) reaches `_write_window_
-    durable`'s `os.replace` with no recognized lock on the path, which
-    `tests/test_lock_invariant.py`'s AST-based invariant correctly
-    flags (measured chain: `cli.entrypoint` -> ... -> `worker.run` ->
-    the new registration call -> `_write_window_durable` -> `os.replace`).
-    Closing it needs exactly one new `NOT_REPO_TRUTH` entry in that test
-    file, which this fold's own DONE WHEN forbids editing — see
-    `misc/audit-2026-09-02/sprint-1/build-worker-spawn.md`'s "Fold r1"
-    section for the full analysis and the exact line recommended for a
-    follow-up. Until then, a backwards clock step's exposure is NOT
-    bounded to child-startup — it spans the marker's whole remaining
-    `coalesce_secs(home) + SPAWN_MARKER_DEADLINE_MARGIN_SECS` life, same
-    as every other marker."""
+    of the step. Fold r2's MINOR 1 fix (:func:`_register_running_pid`, a
+    spawned child durably rewriting `worker.window` with its own pid
+    before its coalesce sleep and before `worker.lock`) bounds how much
+    this can matter in practice: once a child has registered, THIS
+    function is never consulted for it again (the marker string is gone,
+    replaced by a real pid `_pid_alive` judges directly, clock-
+    independent) — the exposure a backwards step can extend is only the
+    child-startup window a crash-before-registration marker sits in, not
+    the whole `coalesce_secs(home)` life a pre-registration marker
+    could have."""
     try:
         age = time.time() - window.stat().st_mtime
     except OSError:
         return True
     return age >= coalesce_secs(home) + SPAWN_MARKER_DEADLINE_MARGIN_SECS
+
+
+def _register_running_pid() -> None:
+    """Fold r2 MINOR 1 (audit 2026-09-02 gate, unblocked by the
+    coordinator once `tests/test_lock_invariant.py`'s `NOT_REPO_TRUTH`
+    carried this function's own entry): called at the very start of
+    :func:`run`, before its coalesce sleep and before it takes
+    `worker.lock` — durably (:func:`_write_window_durable`) overwrites
+    `worker.window` with THIS process's own, now-real, pid, replacing
+    whatever was there (typically the parent's "spawning" marker,
+    written by `_open_window` just before `_spawn_window`'s `Popen`
+    launched this very process).
+
+    Bounds the marker's real remaining exposure to child STARTUP
+    (interpreter + import time — milliseconds), not the full
+    `coalesce_secs(home)` sleep that follows: a marker is otherwise only
+    judged by `_spawn_marker_stale`'s deadline heuristic, and a kick
+    landing after that deadline but before this registration point would
+    reclaim the window and spawn a SECOND worker while the first is
+    still alive and merely asleep (serialized by `worker.lock` once both
+    reach it, but still a second real process — C17's double-spawn in a
+    new shape). Once THIS write lands, a later kick sees a genuine,
+    `_pid_alive`-checkable pid instead — correct for the process's ENTIRE
+    remaining life, not just until a fixed deadline.
+
+    Cache-only (`worker.window`, XDG cache, never a repo path) — see the
+    `NOT_REPO_TRUTH` entry naming this function specifically (not the
+    path-parametric `_write_window_durable`, which would exempt any
+    future caller unscrutinized)."""
+    _write_window_durable(_p("worker.window"), str(os.getpid()))
 
 
 def _open_window(home: Path, *, no_push: bool = False) -> str:
@@ -3586,6 +3608,7 @@ def run(
     if no_push is None:
         no_push = no_push_requested()
     cache_dir().mkdir(parents=True, exist_ok=True)
+    _register_running_pid()  # fold r2 MINOR 1: bound the marker's life to child startup
     if coalesce:
         time.sleep(coalesce_secs(home))
 

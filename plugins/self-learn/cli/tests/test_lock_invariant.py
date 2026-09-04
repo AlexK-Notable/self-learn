@@ -118,6 +118,7 @@ NOT_REPO_TRUTH = {
     "worker.cache_dir": "XDG cache: the per-home cache namespace itself",
     "worker._migrate_cache": "XDG cache: the H-4 cache-path migration shim",
     "worker._open_window": "XDG cache: worker.window",
+    "worker._register_running_pid": "XDG cache: worker.window — the spawned child's own pid at startup, written before the coalesce sleep and before worker.lock; cache-only, not repo truth",
     "worker._truncate_oldest": "XDG cache: worker.log rotation",
     "worker._log_to": "XDG cache: worker.log",
     "worker.log": "XDG cache: worker.log",
