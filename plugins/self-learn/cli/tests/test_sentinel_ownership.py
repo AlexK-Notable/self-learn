@@ -90,15 +90,25 @@ released = None
 if cfg.get("attempt_release", True):
     released = held.release()
 
+# fold r1 (n2): exists()-then-read_text is two separate filesystem
+# calls, and the OTHER process's release() can delete the file in the
+# gap between them -- read_text would then raise FileNotFoundError and
+# crash this worker (a non-zero exit _run_pair asserts against), not
+# quietly report None. try/except collapses it back to one call.
+try:
+    disk_text_after = held.path.read_text(encoding="utf-8")
+    path_exists_after = True
+except FileNotFoundError:
+    disk_text_after = None
+    path_exists_after = False
+
 result = {
     "pid": os.getpid(),
     "owned": held.owned,
     "token": held.token,
     "released": released,
-    "path_exists_after": held.path.exists(),
-    "disk_text_after": (
-        held.path.read_text(encoding="utf-8") if held.path.exists() else None
-    ),
+    "path_exists_after": path_exists_after,
+    "disk_text_after": disk_text_after,
     "t_start": t_start,
     "t_ready": t_ready,
     "t_barrier": t_barrier,
@@ -265,7 +275,9 @@ class TestTTLTakeover:
         assert f"token={winner['token']}" in winner["disk_text_after"]
         assert stale_token not in winner["disk_text_after"]
 
-    def test_displaced_prior_owner_cannot_release_the_winner(self, tmp_path):
+    def test_displaced_prior_owner_cannot_release_the_winner(
+        self, tmp_path, monkeypatch
+    ):
         """C11's release half, in a genuinely cross-process scenario: the
         stale sentinel's ORIGINAL owner (long gone, never actually running
         here — we only need the token it would have held) attempts to
@@ -278,8 +290,22 @@ class TestTTLTakeover:
         plus whatever is on disk right now — never `sentinel_path()` or
         any other process-local state), but the race it exercises is the
         one two real subprocesses just closed above, not a same-process
-        fabrication."""
-        stale_token = "2222222222222222"
+        fabrication.
+
+        fold r1 (m3): the stale token is MINTED by a real `sentinel.hold()`
+        call (in its own throwaway XDG dir), not a hand-picked literal —
+        a hardcoded stale token can never prove `_new_token` actually
+        varies; see `TestTokenUniqueness` below for that, which a constant
+        `_new_token` would fail even though every other test in this file
+        (this one included, if the constant happened to differ from the
+        winner's) would still pass."""
+        mint_xdg = tmp_path / "xdg-mint"
+        monkeypatch.setenv("XDG_CACHE_HOME", str(mint_xdg))
+        minted = sentinel.hold()
+        assert minted.owned and minted.token is not None
+        stale_token = minted.token
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+
         seed = f"pid=1 host=gone started=2020-01-01T00:00:00Z\ntoken={stale_token}\n"
         a, b, final_path = _run_pair(
             tmp_path,
@@ -297,6 +323,28 @@ class TestTTLTakeover:
         assert displaced.release() is False
         assert final_path.exists()
         assert f"token={winner['token']}" in final_path.read_text(encoding="utf-8")
+
+
+class TestTokenUniqueness:
+    def test_tokens_are_not_constant_across_independent_holds(self, tmp_path):
+        """fold r1 (m3): a constant `_new_token()` would still pass every
+        other test in this file — `TestExactlyOneAcquires`/`TestTTLTakeover`
+        never compare a winner's token against anything but the (different)
+        stale/absent token of the loser or a prior holder, and a constant
+        would trivially differ from those literals too. Prove tokens
+        actually vary by comparing the winners of two INDEPENDENT
+        `_run_pair` calls (each its own fresh XDG dir, its own pair of real
+        subprocesses) against each other. Mutation: make `_new_token`
+        return a fixed constant -> both winners mint the identical
+        "random" token and this fails."""
+        a1, b1, _ = _run_pair(tmp_path, label="uniq-1")
+        winner_1 = a1 if a1["owned"] else b1
+        a2, b2, _ = _run_pair(tmp_path, label="uniq-2")
+        winner_2 = a2 if a2["owned"] else b2
+
+        assert winner_1["token"] is not None
+        assert winner_2["token"] is not None
+        assert winner_1["token"] != winner_2["token"]
 
 
 class TestOldFormatReadsUnowned:

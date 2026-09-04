@@ -44,6 +44,22 @@ Fixed two ways, both scoped to a per-file ``<sentinel>.lock`` taken with
   raises: on contention or timeout ``hold()`` degrades to the same safe
   answer as a live foreign sentinel (``owned=False``) rather than
   blocking a caller that has never had to catch a sentinel exception.
+  A cheap pre-lock check (fold r1) answers the overwhelmingly common
+  "someone else already holds this live" case — the vast majority of
+  ``hold()`` calls, since most mutating invocations run while some
+  verb's batch hold is already up — WITHOUT ever touching the lock file
+  at all: no lock contention for genuine joiners (fewer processes ever
+  queue behind a real owner's :meth:`release`, so fold r1 also narrows
+  the window in which a release could time out and strand a live
+  sentinel for the TTL), and no attempt to *create* ``<sentinel>.lock``
+  in a cache directory that is readable but not writable — reading the
+  existing live sentinel's mtime needs no write permission, but opening
+  a lock file to contend for it does, so skipping the lock entirely
+  when a plain read already answers the question keeps a non-writable
+  cache dir behaving exactly as it did pre-M-E (``owned=False``, no
+  exception) instead of raising ``PermissionError`` at 21 unguarded call
+  sites in ``verbs.py``. The lock re-checks liveness again once inside
+  (below) — the pre-lock check is an optimization, never the authority.
 - :meth:`SentinelHold.release` re-takes the same lock and re-reads the
   token CURRENTLY on disk before deleting anything, deleting only when
   it still matches the token this handle was given at creation. A
@@ -52,6 +68,26 @@ Fixed two ways, both scoped to a per-file ``<sentinel>.lock`` taken with
   moment of deletion, which closes the "boolean release" half of C11
   (a delayed or duplicated release can no longer remove a *different*,
   legitimate holder's sentinel).
+
+Lock-timeout diagnosability (fold r1): a genuine ``LOCK_EX`` timeout
+(real contention — never the pre-lock fast path above, which never
+touches the lock) prints one ``self-learn sentinel: …`` line to stderr
+before degrading to the safe answer, so it is distinguishable in logs
+from "a live foreign sentinel exists" even though both currently return
+``owned=False`` to the caller. It never falls back to an unlocked
+write — a timed-out ``hold()`` still only ever answers ``owned=False``.
+
+Lock-file lifecycle (fold r1): ``<sentinel>.lock`` is created once and
+never unlinked — intentionally persistent, matching
+:func:`gitops._flock_lock`'s own idiom. Deleting a lock file while
+another process might still hold an open file description on the same
+inode reintroduces the exact race ``flock`` exists to prevent: a
+process that unlinks the path and a process still holding the old
+(now-unlinked) inode's lock are no longer contending over the same
+file, so a THIRD process opening the path fresh would see it
+lock-free and race the still-live holder. A handful of empty sentinel
+directories accumulating one small lock file each is a cost worth
+paying to keep that guarantee real.
 
 Rollout: an old-format file — written by a pre-M-E process, a single
 ``pid=… host=… started=…`` line with no ``token=`` line — is read
@@ -74,6 +110,7 @@ import fcntl
 import os
 import secrets
 import socket
+import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -189,7 +226,9 @@ def _lock_section(path: Path, timeout: float = _LOCK_TIMEOUT_SECONDS) -> Iterato
     advisory (gitops.py's own words), and every existing call site
     treats :func:`hold`/:meth:`SentinelHold.release` as never-raising —
     degrading to the same safe answer as "someone else holds this live"
-    keeps that true."""
+    keeps that true. A genuine timeout (fold r1) prints one line to
+    stderr first, so it is distinguishable from that same safe answer —
+    never silent, and never a reason to fall back to an unlocked write."""
     lock_path = _lock_path(path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fh = open(lock_path, "a+", encoding="utf-8")
@@ -203,6 +242,12 @@ def _lock_section(path: Path, timeout: float = _LOCK_TIMEOUT_SECONDS) -> Iterato
                 break
             except BlockingIOError:
                 if time.monotonic() >= deadline:
+                    print(
+                        f"self-learn sentinel: lock timeout after "
+                        f"{timeout:g}s waiting for {lock_path} — treating "
+                        f"as contended, not adopting {path}",
+                        file=sys.stderr,
+                    )
                     break
                 time.sleep(0.01)
         try:
@@ -263,18 +308,39 @@ def hold() -> SentinelHold:
       identically: live, and never ours): leave it untouched →
       ``owned=False``. Callers still :func:`heartbeat` per mutating
       invocation.
+
+    Pre-lock fast path (fold r1): a plain :func:`is_live` read answers
+    the common "someone else already holds this live" case without ever
+    opening ``<sentinel>.lock`` — cheaper for the overwhelmingly common
+    joiner case, and safe against a cache directory that is readable but
+    not writable (opening the lock file to contend for it needs write
+    permission; reading an existing live sentinel's mtime does not).
+    This is an optimization only: the lock, once taken, re-checks
+    liveness itself before publishing anything, so a sentinel that goes
+    live in the gap between this read and the lock acquisition is still
+    caught — the locked decision stays authoritative.
     """
     path = sentinel_path()
+    if is_live(path):
+        return SentinelHold(path=path, owned=False)
     with _lock_section(path) as acquired:
         if not acquired or is_live(path):
             return SentinelHold(path=path, owned=False)
         token = _new_token()
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.parent / f".{path.name}.{os.getpid()}.{token}.tmp"
-        tmp.write_text(
-            sentinel_line() + f"{_TOKEN_PREFIX}{token}\n", encoding="utf-8"
-        )
-        os.replace(tmp, path)
+        try:
+            tmp.write_text(
+                sentinel_line() + f"{_TOKEN_PREFIX}{token}\n", encoding="utf-8"
+            )
+            os.replace(tmp, path)
+        except OSError:
+            # fold r1 (n1): never leave an orphaned temp file behind a
+            # failed publish (a full disk, a permission change mid-write,
+            # a cross-device rename) — best-effort cleanup, then let the
+            # caller see the real error rather than swallowing it.
+            tmp.unlink(missing_ok=True)
+            raise
         return SentinelHold(path=path, owned=True, token=token)
 
 

@@ -1,6 +1,7 @@
 """T7 sentinel: hold / heartbeat / release on the XDG-resolved pause file
 (08 §1 Sentinel + Sentinel-scoping pins; 02 §3 mtime-TTL contract)."""
 
+import fcntl
 import os
 import re
 import time
@@ -84,6 +85,35 @@ class TestHold:
         assert not hold.owned
         assert hold.token is None
         assert path.read_text(encoding="utf-8") == old_format  # untouched
+
+    def test_live_sentinel_in_unwritable_cache_dir_reads_unowned_without_raising(self):
+        """fold r1 (m1/m2): opening <sentinel>.lock for the first time
+        needs WRITE permission on its parent directory; reading an
+        already-live sentinel's mtime does not. Pre-M-E, hold() was
+        check-then-write and never touched anything but read the file
+        in this exact scenario (live foreign sentinel, non-writable
+        cache dir) -- it answered owned=False without raising. Without
+        a pre-lock fast path, this move's own hold() would instead try
+        to CREATE <sentinel>.lock (it doesn't exist yet -- no prior
+        hold() has run in this writable-then-locked-down directory) and
+        raise PermissionError, crashing 21 unguarded call sites in
+        verbs.py. Mutation: delete the `if is_live(path): return
+        SentinelHold(...)` fast-path line from hold() -> this test goes
+        red with an uncaught PermissionError."""
+        path = sentinel.sentinel_path()
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            sentinel.sentinel_line() + "token=deadbeefdeadbeef\n",
+            encoding="utf-8",
+        )
+        mode = path.parent.stat().st_mode
+        path.parent.chmod(0o555)  # r-xr-xr-x: readable, not writable
+        try:
+            result = sentinel.hold()
+            assert not result.owned
+            assert result.token is None
+        finally:
+            path.parent.chmod(mode)  # restore before tmp_path cleanup
 
     def test_stale_sentinel_is_overwritten_and_owned(self):
         first = sentinel.hold()
@@ -170,3 +200,52 @@ class TestRelease:
 
         assert not hold.release()
         assert hold.path.exists()  # never deletes someone else's file
+
+
+class TestLockDiagnostics:
+    def test_lock_timeout_logs_a_distinguishable_line(self, capsys):
+        """fold r1 (m1/m2): a genuine LOCK_EX timeout (real contention --
+        never the pre-lock fast path, which never touches the lock at
+        all) must not be silent: it has to read differently in logs than
+        "a live foreign sentinel exists", even though both currently
+        degrade to the same owned=False answer to the caller. Held
+        externally by a second, independent open file description on the
+        SAME lock path (flock is per-open-file-description, not per
+        process -- man 2 flock -- so this genuinely contends against
+        _lock_section's own open() below, exactly as a second real
+        process would)."""
+        path = sentinel.sentinel_path()
+        lock_path = sentinel._lock_path(path)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        holder = open(lock_path, "a+", encoding="utf-8")
+        try:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+            with sentinel._lock_section(path, timeout=0.05) as acquired:
+                assert not acquired
+        finally:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+            holder.close()
+        captured = capsys.readouterr()
+        assert "sentinel" in captured.err
+        assert "timeout" in captured.err
+
+
+class TestPublishFailureCleanup:
+    def test_publish_failure_cleans_up_the_temp_file(self, monkeypatch):
+        """fold r1 (n1): a failed publish (here: os.replace raising, the
+        realistic failure -- the temp file has already been WRITTEN by
+        this point, unlike a write_text failure which typically leaves
+        nothing to clean up) must not leave the temp file behind for a
+        later hold() in the same directory to trip over. Mutation:
+        remove the try/except around the publish in hold() -> this test
+        goes red (the .tmp file survives)."""
+
+        def failing_replace(*_a, **_kw):
+            raise OSError("simulated replace failure")
+
+        monkeypatch.setattr(os, "replace", failing_replace)
+        with pytest.raises(OSError):
+            sentinel.hold()
+        cache_root = sentinel.sentinel_path().parent
+        leftover = list(cache_root.glob("*.tmp")) if cache_root.exists() else []
+        assert leftover == []
