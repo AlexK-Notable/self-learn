@@ -1613,11 +1613,44 @@ def _surface_reach(home: Path, claude_dir: Path) -> dict:
 
     # §6 rule 2: nulling is PER FACET, never blanket, for THIS gate
     # (`claude_dir_usable`/`settings_usable`). `unparseable_records` and
-    # `rows` always render regardless of instrument state; `checked` and
-    # `unmeasurable` render here too — see the `instrument_state ==
-    # "settings-absent"` gate below, which nulls them (and every
-    # `by_destination` value) for that ONE state specifically.
+    # `rows` always render regardless of instrument state.
+    #
+    # Fold r1 / M-F3 m2 (orchestrator ruling — "null only what's
+    # unmeasured, keep what the instrument measured"): the original
+    # build added a THIRD gate here keyed on `instrument_state ==
+    # "settings-absent"` that blanket-nulled `checked`/`unmeasurable`
+    # and every `by_destination` value for that state. That gate's
+    # premise does not hold against the actual reachability predicates:
+    # `_rp_hook` has an explicit `instrument.state == "settings-absent"`
+    # branch returning a confident `unreachable/no-registrations`
+    # (reachability.py:562), and `_rp_skill` (shared by `skill-md` and
+    # `new-skill` via `_verdict_for`) has no settings-absent special
+    # case at all — it falls through on empty `enabled_plugins`/
+    # `skill_overrides` to a confident `unreachable/not-indexed` (or a
+    # real `reachable` via a personal skill symlink). Verified directly
+    # against the running predicates (source read of both functions,
+    # plus two throwaway probe scripts exercising `_rp_skill`/
+    # `reachability_rows` under a constructed settings-absent
+    # `Instrument`): every one of `_SETTINGS_DEPENDENT_KEYS`
+    # (`skill-md`, `new-skill`, `hook`) gets a genuine, non-null verdict
+    # when settings.json is merely absent — settings-absent measures
+    # everything, it just usually measures "unreachable" because
+    # nothing can register without settings.json content. Nulling those
+    # facets for that state was the exact "blanks facets that were
+    # measured" bug B-15 exists to fix, just for three keys instead of
+    # six. The settings-absent gate is removed; only the two REAL
+    # per-facet gates below (keyed on `claude_dir_usable`/
+    # `settings_usable`, which stay True for settings-absent by design
+    # per test_instrument_four_states) still null anything, and now
+    # `checked`/`unmeasurable` are wired into the first of those —
+    # they are corpus-wide aggregates over `_SETTINGS_DEPENDENT_KEYS`
+    # rows among others, so when that gate fires (settings-unparseable,
+    # or claude-dir-absent) the totals are a sum over partial facets
+    # and must be null too, not a concrete count that reads as
+    # "measured, and empty".
     if not claude_dir_usable or not settings_usable:
+        checked = None
+        unmeasurable_n = None
         for key in _SETTINGS_DEPENDENT_KEYS:
             by_destination[key] = {"reachable": None, "unreachable": None, "unmeasurable": None}
     if not claude_dir_usable:
@@ -1629,23 +1662,6 @@ def _surface_reach(home: Path, claude_dir: Path) -> dict:
     if not claude_dir_usable or not settings_usable:
         top_reachable = None
         top_unreachable = None
-
-    # B-15: `settings-absent` (no settings.json at all) is
-    # `claude_dir_usable=True, settings_usable=True` BY DESIGN (§5.5 —
-    # "absent" is not "broken"; test_instrument_four_states pins this and
-    # stays untouched), so the two per-facet gates above never fire for
-    # it. But every `by_destination` count and the top-level `checked`/
-    # `unmeasurable` totals are corpus-wide aggregates taken against a
-    # settings surface that plain doesn't exist yet — rendering them as
-    # concrete zeros/counts reads as "measured, and empty" when it is
-    # really "not measured at all" (the collapse this move closes).
-    # Keyed directly off `instrument_state`, never by flipping
-    # `settings_usable` — that flag stays pinned True for this state.
-    if instrument_state == "settings-absent":
-        checked = None
-        unmeasurable_n = None
-        for key in _SURFACE_REACH_KEYS:
-            by_destination[key] = {"reachable": None, "unreachable": None, "unmeasurable": None}
 
     try:
         skills_root = load_hosts(home).skills_root
@@ -2164,10 +2180,20 @@ def render_text(facts: dict) -> str:
     sr = facts.get("surface_reach")
     if sr is not None:
         lines.append("")
-        lines.append(
-            f"Surface reach ({sr['checked']} record(s) checked, instrument: "
-            f"{sr['instrument_state']}):"
+        # Fold r1 / M-F3 BLOCKER: `sr["checked"]`/`sr["unmeasurable"]` are
+        # `None` whenever the per-facet gate in `_surface_reach` fires
+        # (settings-unparseable, claude-dir-absent) — interpolating them
+        # raw used to print the literal string "None" into the
+        # human-facing report ("None record(s) checked"). Guard both.
+        checked_txt = (
+            "NOT MEASURED"
+            if sr["checked"] is None
+            else f"{sr['checked']} record(s) checked"
         )
+        unmeasurable_txt = (
+            "NOT MEASURED" if sr["unmeasurable"] is None else str(sr["unmeasurable"])
+        )
+        lines.append(f"Surface reach ({checked_txt}, instrument: {sr['instrument_state']}):")
         if sr["reachable"] is None or sr["unreachable"] is None:
             lines.append(
                 "  NOT MEASURED (top-level reachable/unreachable) — a depended-on "
@@ -2177,7 +2203,7 @@ def render_text(facts: dict) -> str:
         else:
             lines.append(
                 f"  {sr['reachable']} reachable, {sr['unreachable']} unreachable, "
-                f"{sr['unmeasurable']} unmeasurable"
+                f"{unmeasurable_txt} unmeasurable"
             )
         if sr["unparseable_records"]:
             lines.append(
