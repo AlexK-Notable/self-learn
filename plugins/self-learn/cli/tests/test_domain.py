@@ -30,13 +30,26 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import cli, domain
-from self_learn.ledger_ops import create_record, find_record_path
+from self_learn import cli, domain, report
+from self_learn.ledger import discover_buckets
+from self_learn.ledger_ops import create_record, find_record_path, is_unanalyzed, queue
 from self_learn.records import Record
-from support import days_ago, force_past_deferred, make_behavior, make_env
+from support import days_ago, force_past_deferred, iso, make_behavior, make_env, make_home
 
 CLI_SRC = Path(__file__).resolve().parent.parent / "src" / "self_learn"
 UI_SRC = Path(__file__).resolve().parent.parent.parent / "ui" / "src" / "self_learn_ui"
+
+
+def _all_source_files() -> list[Path]:
+    """M-B fold r1, MINOR-1: a full walk of both trees' SOURCE (not
+    test) directories, used by both the widened ``.days`` scan and the
+    new canon-live-shape scan below -- a file-list-scoped parametrize
+    (naming only the modules the brief already knew about) is exactly
+    the blind-spot class M-J fold r1's facade scan was already caught
+    making. Measured before adopting this (2026-09, this fold): zero
+    ``.days``-after-subtraction hits anywhere in either tree today, so
+    no allowlist is needed for that scan."""
+    return sorted(CLI_SRC.rglob("*.py")) + sorted(UI_SRC.rglob("*.py"))
 
 
 @pytest.fixture
@@ -151,6 +164,58 @@ class TestRecordAgeDays:
             record, now
         )
 
+    def test_full_timestamp_floor_disagrees_with_date_truncation(self):
+        """M-B fold r1, MAJOR-1: the age half had no regression test --
+        A1's exact truncation (worker.py's own pre-M-B comment:
+        ``str(created_at)[:10]``, parsing only the DATE portion before
+        computing age) is silently reintroducible in ``record_age_days``
+        with every other test staying green. A bare ``.days``-vs-
+        ``total_seconds()//86400`` swap on the SAME two full-precision
+        datetimes is mathematically inert for a non-negative delta
+        (``timedelta.days`` already floors exactly like
+        ``total_seconds()//86400`` when both operands carry full
+        precision -- verified, not assumed) and cannot redden anything;
+        this guard instead targets the REAL A1 shape, string-truncating
+        ``created_at`` to its date before parsing.
+
+        ``then`` carries a LATE time-of-day (23:00) so date-truncation
+        rounds it DOWN to midnight, adding apparent age. ``now`` is 40
+        days minus 10 seconds after ``then`` -- a few seconds shy of a
+        full 40th day. Full-timestamp floor: 39 (correct -- not yet a
+        full 40 days elapsed). Date-truncated: 40 (Jan 1 -> Feb 10 is 40
+        CALENDAR days regardless of time-of-day). These disagree -- see
+        the mutation-control test directly below, which reintroduces the
+        truncated shape and confirms it produces 40, not 39."""
+        then = datetime(2026, 1, 1, 23, 0, 0, tzinfo=timezone.utc)
+        now = then + timedelta(days=40) - timedelta(seconds=10)
+        record = make_behavior(record_id="lrn-cc000003", created_at=iso(then))
+        assert domain.record_age_days(record, now) == 39
+
+    def test_mutation_reintroducing_date_truncation_breaks_the_floor(
+        self, monkeypatch
+    ):
+        """Positive control for the guard above: patches
+        ``primitives.chrono.age_days`` to the A1-buggy date-truncated
+        shape (``(now.date() - then.date()).days``) and confirms
+        ``record_age_days`` now returns the WRONG answer (40, not 39)
+        for the exact boundary case above -- proving the guard is not
+        vacuous. ``domain.py`` calls ``chrono.age_days(...)`` via
+        module-attribute lookup, so patching the module's function
+        reaches ``record_age_days`` without touching ``domain.py``
+        itself."""
+        import self_learn.primitives.chrono as chrono_mod
+
+        def _buggy_age_days(then, now):
+            if then is None:
+                return 0
+            return max(0, (now.date() - then.date()).days)
+
+        monkeypatch.setattr(chrono_mod, "age_days", _buggy_age_days)
+        then = datetime(2026, 1, 1, 23, 0, 0, tzinfo=timezone.utc)
+        now = then + timedelta(days=40) - timedelta(seconds=10)
+        record = make_behavior(record_id="lrn-cc000004", created_at=iso(then))
+        assert domain.record_age_days(record, now) == 40  # the buggy answer
+
 
 # ------------------------------------------- cross-surface 40-day fixture
 
@@ -229,7 +294,22 @@ class TestCrossSurfaceExpiredDeferralFixture:
         report.py) — for this fixture (9 pending + 1 deferred, no other
         statuses), summing bucket "s"'s counts is report's own
         equivalent tally of the same 10 records every other surface
-        counts via ``domain.is_queued``."""
+        counts via ``domain.is_queued``.
+
+        M-B fold r1, NIT-4: the AGE was previously asserted separately
+        in three different tests above, never cross-checked against
+        each other in ONE test. Joined here: ``status --json``'s
+        bucket ``oldest_days``, ``list --json``'s per-record
+        ``age_days``, and ``status --fast``'s ``oldest_days`` — all
+        three are ``domain.record_age_days``-derived and must agree.
+        ``report --json`` has NO per-record age field for a deferred
+        entry (measured: its ``deferred`` list carries only
+        ``id``/``bucket``/``until``/``overdue_days`` — ``overdue_days``
+        is DEFERRAL-relative, i.e. days since ``deferred_until``
+        [2020-01-01 in this fixture], not CREATION-relative like the
+        other three's 40 — so it cannot join the same equality set
+        without fabricating a field report.py doesn't have. It stays a
+        separate ``> 0`` check below, honestly labeled."""
         import json
 
         assert cli.main(["status", "--json"]) == 0
@@ -260,6 +340,18 @@ class TestCrossSurfaceExpiredDeferralFixture:
         }
         assert len(set(counts.values())) == 1, counts
         assert counts["list.count"] == 10
+
+        status_bucket = next(
+            b for b in status_payload["buckets"] if b["bucket"] == "s"
+        )
+        list_expired = next(i for i in list_items if i["id"] == "lrn-bb000001")
+        ages = {
+            "status.bucket_oldest_days": status_bucket["oldest_days"],
+            "list.expired_age_days": list_expired["age_days"],
+            "status_fast.oldest_days": fast_payload["oldest_days"],
+        }
+        assert len(set(ages.values())) == 1, ages
+        assert ages["status.bucket_oldest_days"] == 40
         assert overdue > 0
 
 
@@ -274,6 +366,14 @@ _CONSUMERS = {
     "worker.py": CLI_SRC / "worker.py",
     "compilers.py": CLI_SRC / "compilers.py",
     "verbs.py": CLI_SRC / "verbs.py",
+    # M-B fold r1, NIT-1: two more real consumers found by grepping the
+    # canon-liveness SHAPE directly (`status == "routed"`/`!=` paired
+    # with `superseded_by is`/`is not None`) rather than trusting the
+    # brief's original consumer list -- both re-derived is_canon_live
+    # inline before this fold (reachability.py once, selfcheck.py three
+    # times: two `continue`-guards + one `live = ...` assignment).
+    "reachability.py": CLI_SRC / "reachability.py",
+    "selfcheck.py": CLI_SRC / "selfcheck.py",
     "ui/models.py": UI_SRC / "models.py",
 }
 
@@ -313,6 +413,113 @@ class TestConsumerDependency:
         assert _imports_domain(tree) is False
 
 
+# ------------------------------------------------- canon-live shape scan
+
+
+def _is_status_eq_routed(node: ast.AST):
+    if (
+        isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Attribute)
+        and node.left.attr == "status"
+        and len(node.ops) == 1
+        and isinstance(node.ops[0], (ast.Eq, ast.NotEq))
+        and len(node.comparators) == 1
+        and isinstance(node.comparators[0], ast.Constant)
+        and node.comparators[0].value == "routed"
+    ):
+        return type(node.ops[0])
+    return None
+
+
+def _is_superseded_by_is_none(node: ast.AST):
+    if (
+        isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Attribute)
+        and node.left.attr == "superseded_by"
+        and len(node.ops) == 1
+        and isinstance(node.ops[0], (ast.Is, ast.IsNot))
+        and len(node.comparators) == 1
+        and isinstance(node.comparators[0], ast.Constant)
+        and node.comparators[0].value is None
+    ):
+        return type(node.ops[0])
+    return None
+
+
+def _canon_live_shape_hits(tree: ast.Module) -> list[int]:
+    """``domain.is_canon_live``'s exact shape (M-B fold r1, NIT-1): a
+    BoolOp pairing ``status == "routed"``/``!= "routed"`` with
+    ``superseded_by is None``/``is not None`` — the inline
+    re-derivation found at 6 sites outside ``domain.py`` (the brief's
+    consumer list named none of them; found by grepping this shape
+    directly, not by reading the gate report). AST-based, not text
+    grep, so a comment/docstring MENTIONING the shape (this file's own
+    docstrings, e.g.) never false-positives — same discipline as
+    :func:`_bare_subtraction_days_hits` above."""
+    hits: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.BoolOp) or len(node.values) != 2:
+            continue
+        left, right = node.values
+        status_op = _is_status_eq_routed(left) or _is_status_eq_routed(right)
+        supers_op = _is_superseded_by_is_none(left) or _is_superseded_by_is_none(
+            right
+        )
+        if status_op is None or supers_op is None:
+            continue
+        if (
+            isinstance(node.op, ast.And)
+            and status_op is ast.Eq
+            and supers_op is ast.Is
+        ):
+            hits.append(node.lineno)
+        elif (
+            isinstance(node.op, ast.Or)
+            and status_op is ast.NotEq
+            and supers_op is ast.IsNot
+        ):
+            hits.append(node.lineno)
+    return hits
+
+
+class TestCanonLiveShapeScan:
+    """M-B fold r1, NIT-1 (root cause): the consumer-dependency scan
+    above only proves a file IMPORTS ``domain`` — it cannot catch a
+    file that imports domain for an unrelated reason while STILL
+    re-deriving ``is_canon_live`` inline nearby (the same blind-spot
+    class M-J fold r1's facade scan was caught making: list
+    membership, never shape, was checked). This scan inspects the
+    actual predicate SHAPE across every source file in both trees."""
+
+    def test_positive_control_the_pattern_is_detected(self):
+        """Reproduces ``selfcheck.py:889``'s EXACT pre-fold line,
+        byte-for-byte."""
+        tree = ast.parse(
+            'live = record.status == "routed" and record.superseded_by is None\n',
+            filename="<memory>",
+        )
+        assert _canon_live_shape_hits(tree) == [1]
+
+    def test_negated_form_is_also_detected(self):
+        """The ``continue``-guard form found at the other 5 sites
+        (reachability.py, selfcheck.py x2, report.py x2)."""
+        tree = ast.parse(
+            'if record.status != "routed" or record.superseded_by is not None:\n'
+            "    continue\n",
+            filename="<memory>",
+        )
+        assert _canon_live_shape_hits(tree) == [1]
+
+    @pytest.mark.parametrize(
+        "path",
+        [p for p in _all_source_files() if p.name != "domain.py"],
+        ids=str,
+    )
+    def test_tree_has_zero_hits_outside_domain_py(self, path):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        assert _canon_live_shape_hits(tree) == []
+
+
 # --------------------------------------------- .days-after-subtraction scan
 
 
@@ -339,27 +546,12 @@ class TestDaysAfterSubtractionScan:
         tree = ast.parse("age = (now - then).days\n", filename="<memory>")
         assert _bare_subtraction_days_hits(tree) == [1]
 
-    @pytest.mark.parametrize(
-        "relpath",
-        [
-            "domain.py",
-            "primitives/chrono.py",
-            "ledger_ops.py",
-            "report.py",
-            "worker.py",
-            "compilers.py",
-            "verbs.py",
-        ],
-    )
-    def test_cli_tree_has_zero_hits(self, relpath):
-        path = CLI_SRC / relpath
-        assert path.is_file(), f"expected {path}"
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        assert _bare_subtraction_days_hits(tree) == []
-
-    def test_ui_models_has_zero_hits(self):
-        path = UI_SRC / "models.py"
-        assert path.is_file(), f"expected {path}"
+    @pytest.mark.parametrize("path", _all_source_files(), ids=str)
+    def test_tree_has_zero_hits(self, path):
+        """M-B fold r1, MINOR-1: widened from a parametrized relpath
+        list (only the modules the brief already knew about) to a full
+        walk of both trees' source directories — see
+        :func:`_all_source_files`'s docstring for why."""
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         assert _bare_subtraction_days_hits(tree) == []
 
@@ -405,3 +597,153 @@ class TestImportCycleCheck:
         )
         assert proc.returncode == 0, proc.stderr
         assert proc.stdout.strip() == "", proc.stdout
+
+
+
+# ------------------------------------ queue()/is_unanalyzed() status gate
+
+
+class TestQueueStatusGateTightening:
+    """M-B fold r1, NIT-3: ``ledger_ops.queue``/``is_unanalyzed``
+    migrated from ``_deferred_hidden`` (deferral-only — ``_load_pending``
+    already scopes by FILE LOCATION, never by the frontmatter ``status``
+    field) to ``domain.is_queued``, which ALSO gates on ``status in
+    DRAFT_STATUSES`` — a status check the old code never had. Measured
+    via ``git diff`` against the pre-move commit: the old body was
+    exactly ``[e for e in entries if not _deferred_hidden(e.record,
+    now)]``; the new body is ``[e for e in entries if
+    domain.is_queued(e.record, now)]``. The commit body never called
+    this out. Intentional tightening, not a redesign: it is the SAME
+    defense-in-depth ``domain.is_canon_live`` already applies elsewhere,
+    and it is exactly what keeps ``queue()``/``is_unanalyzed()``
+    agreeing with every OTHER surface's ``domain.is_queued`` count — the
+    whole point of this move. Pinned here, not reverted."""
+
+    def test_queue_excludes_a_pending_file_whose_status_has_drifted(
+        self, tmp_path
+    ):
+        home = make_home(tmp_path)
+        path = create_record(home, make_behavior(record_id="lrn-aa000001"))
+        # Drift the status directly (never through a verb — resolve_record
+        # always relocates the file out of pending/ in the SAME call, so
+        # this exact state is unreachable via normal verbs; it models a
+        # corrupted/hand-edited frontmatter, the case domain.is_queued's
+        # status gate exists to fail closed against).
+        drifted = Record.from_path(path)
+        drifted.set_status("routed")
+        drifted.write(path)
+
+        (bucket,) = [b for b in discover_buckets(home) if b.name == "s"]
+        assert queue(bucket) == []
+
+    def test_is_unanalyzed_excludes_the_same_drifted_entry(self, tmp_path):
+        home = make_home(tmp_path)
+        path = create_record(home, make_behavior(record_id="lrn-aa000002"))
+        drifted = Record.from_path(path)
+        drifted.set_status("routed")
+        drifted.write(path)
+
+        (bucket,) = [b for b in discover_buckets(home) if b.name == "s"]
+        entries = queue(bucket, include_deferred=True)
+        assert [e.record.id for e in entries] == ["lrn-aa000002"]
+        assert is_unanalyzed(entries[0]) is False
+
+    def test_mutation_reverting_to_deferred_only_check_would_include_it(
+        self, tmp_path, monkeypatch
+    ):
+        """Positive control: patches ``domain.is_queued`` to the OLD
+        deferral-only shape (never checking ``status`` at all) and
+        confirms the drifted record WOULD have been included — proving
+        this guard is not vacuous."""
+        import self_learn.domain as domain_mod
+        from self_learn.primitives import chrono as chrono_helper
+
+        def _deferral_only(record, now):
+            until = chrono_helper.to_dt(record.deferred_until)
+            return until is None or until <= now
+
+        monkeypatch.setattr(domain_mod, "is_queued", _deferral_only)
+
+        home = make_home(tmp_path)
+        path = create_record(home, make_behavior(record_id="lrn-aa000003"))
+        drifted = Record.from_path(path)
+        drifted.set_status("routed")
+        drifted.write(path)
+
+        (bucket,) = [b for b in discover_buckets(home) if b.name == "s"]
+        assert [e.record.id for e in queue(bucket)] == ["lrn-aa000003"]
+
+
+# ------------------------------------------- report.gather canon-live gate
+
+
+class TestReportGatherCanonLiveGating:
+    """M-B fold r1, NIT-2: ``report.gather``'s ``destinations`` Counter
+    and ``routed_live`` list are built by ONE shared ``if`` gate.
+    Migrating that gate from ``record.status == "routed"`` to
+    ``domain.is_canon_live(record)`` (measured via ``git diff`` against
+    the pre-move commit) tightened BOTH outputs together: a record
+    whose ``status`` field somehow drifted to ``"routed"`` while
+    ``superseded_by`` is already set (unreachable via any live verb —
+    ``resolve_record``/``supersede_record`` always flip both fields in
+    the SAME call — but ``is_canon_live``'s own docstring calls this
+    "defence in depth against any record whose two fields ever drift")
+    is now EXCLUDED from both, where the old ``status == "routed"``
+    check alone would have included it. Pinned here (the tightening is
+    correct — the same defense-in-depth ``is_canon_live`` already
+    applies everywhere else, and it keeps ``destinations``/
+    ``routed_live`` agreeing with every other consumer's canon-liveness
+    accounting), not reverted."""
+
+    def test_a_drifted_routed_record_is_excluded_from_both_outputs(
+        self, tmp_path
+    ):
+        home = make_home(tmp_path)
+        path = create_record(home, make_behavior(record_id="lrn-aa000001"))
+        record = Record.from_path(path)
+        record.set_status("routed")
+        record.set_routing(
+            {
+                "routed_at": "2026-01-01T00:00:00Z",
+                "destination": "skill-md",
+                "by": "test",
+            }
+        )
+        record.set_superseded_by("lrn-bb000009")  # the drift NIT-2 targets
+        record.write(path)
+
+        facts = report.gather(home, claude_dir=tmp_path / "empty-claude")
+        assert facts["destinations"] == {}
+        assert facts["routed_live"] == []
+
+    def test_mutation_reverting_to_status_only_check_would_include_it(
+        self, tmp_path, monkeypatch
+    ):
+        """Positive control: patches ``domain.is_canon_live`` (as seen
+        by ``report.py``'s ``domain.is_canon_live(record)`` call) to
+        the OLD status-only gate and confirms the SAME drifted record
+        above WOULD have been counted — proving the pin is not
+        vacuous."""
+        import self_learn.domain as domain_mod
+
+        monkeypatch.setattr(
+            domain_mod, "is_canon_live", lambda record: record.status == "routed"
+        )
+
+        home = make_home(tmp_path)
+        path = create_record(home, make_behavior(record_id="lrn-aa000003"))
+        record = Record.from_path(path)
+        record.set_status("routed")
+        record.set_routing(
+            {
+                "routed_at": "2026-01-01T00:00:00Z",
+                "destination": "skill-md",
+                "by": "test",
+            }
+        )
+        record.set_superseded_by("lrn-bb000009")
+        record.write(path)
+
+        facts = report.gather(home, claude_dir=tmp_path / "empty-claude")
+        assert facts["destinations"] == {"skill-md": 1}
+        assert [r["id"] for r in facts["routed_live"]] == ["lrn-aa000003"]

@@ -385,7 +385,7 @@ def _reference_shelf(
                     record = Record.from_path(path)
                 except (RecordError, OSError, UnicodeDecodeError, YAMLError):
                     continue
-                if record.status != "routed" or record.superseded_by is not None:
+                if not domain.is_canon_live(record):
                     continue  # §6.2-4: LIVE reference-routed records only
                 routing = record.routing or {}
                 if routing.get("destination") != "reference":
@@ -1364,7 +1364,7 @@ def _growth_signal(home: Path, today: date, budget: dict, composition: dict) -> 
     desc_words_sum = 0
     any_skill_unreadable = False
     for record in _walk_records(home):
-        if record.status != "routed" or record.superseded_by is not None:
+        if not domain.is_canon_live(record):
             continue
         routing = record.routing or {}
         if routing.get("destination") != "new-skill":
