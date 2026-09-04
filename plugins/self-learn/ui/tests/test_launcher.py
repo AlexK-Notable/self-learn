@@ -25,6 +25,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "self-learn-ui-open"
 
 # Real coreutils the script's OWN plumbing depends on (sha256sum, jq,
@@ -1550,9 +1552,20 @@ def test_place_fresh_window_deadline_is_wall_clock_not_iteration_count(
     )
 
     start = time.monotonic()
-    result = subprocess.run(
-        [str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60
-    )
+    try:
+        result = subprocess.run(
+            [str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60
+        )
+    except subprocess.TimeoutExpired:
+        # Fold r3 / M-F2 nit: name the red. Without this, an
+        # iteration-count regression reddens via a bare
+        # subprocess.TimeoutExpired traceback rather than a message that
+        # says what went wrong and why the bound exists.
+        pytest.fail(
+            "placement poll exceeded the 60 s outer bound — an "
+            "iteration-count loop at ~4 s per hyprctl call is ~200 s; "
+            "only a wall-clock deadline bounds this"
+        )
     elapsed = time.monotonic() - start
 
     assert result.returncode == 0
@@ -1562,6 +1575,29 @@ def test_place_fresh_window_deadline_is_wall_clock_not_iteration_count(
         "deadline bounds _place_fresh_window's poll loop this tightly"
     )
     assert _wait_for_nonempty(chromium_log), "degrade never loses the launch"
+    # Fold r3 / M-F2 nit: prove the poll actually RAN, not just that the
+    # script finished quickly and launched the browser — deleting
+    # _place_fresh_window's poll outright would also satisfy every
+    # assertion above (two sibling tests catch a deleted poll instead;
+    # this test's job is the wall-clock-vs-iteration-count distinction,
+    # so it must also witness the poll it claims to be timing).
+    assert hyprctl_log.exists(), "hyprctl was never invoked — the placement poll never ran"
+    hyprctl_calls = hyprctl_log.read_text(encoding="utf-8").splitlines()
+    poll_calls = [call for call in hyprctl_calls if "clients -j" in call]
+    # >= 2, not >= 1: the top-level presence check (before _launch) always
+    # contributes exactly one "clients -j" line on its own, even with
+    # _place_fresh_window's poll disabled outright — measured empirically
+    # (fold r3 red/green cycle 2). Only a SECOND "clients -j" call proves
+    # the poll loop itself ran at least one iteration; HEAD produces 2 or
+    # 3 under this fixture's 4s sleepy hyprctl and 5s wall-clock deadline
+    # (1 presence + 1-2 poll iterations, depending on where the
+    # integer-granular `SECONDS` tick falls relative to the deadline when
+    # _place_fresh_window is entered — measured both 2 and 3 across runs).
+    assert len(poll_calls) >= 2, (
+        f"expected >=2 `clients -j` calls (1 presence check + >=1 poll "
+        f"iteration) — a disabled/skipped poll produces exactly 1 (the "
+        f"presence check alone); got: {hyprctl_calls!r}"
+    )
 
 
 def test_monitor_unset_never_dispatches_movewindow(tmp_path: Path) -> None:
