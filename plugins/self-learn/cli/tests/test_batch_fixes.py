@@ -20,6 +20,7 @@ under pytest tmpdirs, no mocks, and no contact with the real
 ~/.self-learn, ~/repos/claude-skills, or ~/.claude.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -174,7 +175,10 @@ class TestHookHomeWarning:
         assert "NOT an empty ledger" not in proc.stdout
 
     def test_hook_exits_zero_when_cli_is_absent(self, tmp_path):
-        """The pre-existing guard still holds (no self-learn on PATH).
+        """The pre-existing guard still holds (no self-learn on PATH) — and,
+        post M-F1 (B-6 (e)), it no longer degrades SILENTLY: a missing
+        dependency used to mean nothing printed at all, indistinguishable
+        from "0 pending, nothing to say" (the exact shape B-6 flags).
 
         NB: bash is invoked by ABSOLUTE path and PATH points at an empty
         dir — a PATH of "/nonexistent" hides `bash` itself, and the 127
@@ -191,7 +195,200 @@ class TestHookHomeWarning:
             timeout=60,
         )
         assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
-        assert proc.stdout.strip() == ""
+        assert "self-learn is not on PATH" in proc.stdout
+
+
+# ============================================== M-F1: hook dependency guards
+
+
+class TestHookDependencyDegradation:
+    """M-F1 (sprint-1 plan v2 §2, B-6 (d)/(e) + B-6's secondary `// 0`
+    collapse shape + B-7's consumer half): a fully hermetic PATH lets each
+    of the hook's THREE `command -v` guards (self-learn, jq, timeout) be
+    probed independently, and a controllable fake `self-learn` lets the
+    JSON shapes ``status --fast`` does not currently produce (a missing
+    ``total_pending``, a present ``total_unreadable``) be exercised too.
+
+    Modeled on ``tests/test_refread.py:202-227``'s ``_minimal_bin_dir`` —
+    duplicated here rather than imported: that harness lives in a
+    different (non-owned) test file, ``support.py`` is armor-pinned, and
+    no new non-``test_*.py`` module may appear under ``cli/tests/`` (sprint
+    contract §"Code and test rules" item 3).
+
+    ``worker.fast_status`` (worker.py:3224-3230) always emits
+    ``total_pending`` and NEVER emits ``total_unreadable`` at all — both
+    deliberate (comments at cli.py:1358-1360 / worker.py:3248-3251: the
+    ``--fast`` scan's omission of ``total_unreadable`` is honest-null, not
+    a bug). So the ``status_json=`` tests below are forward regression
+    guards against a future CLI JSON-shape change / the day B-7's producer
+    gains this field, not reproductions of a currently-live bug.
+    """
+
+    def _bin_dir(
+        self,
+        tmp_path: Path,
+        name: str,
+        *,
+        jq: bool = True,
+        self_learn: bool = True,
+        timeout: bool = True,
+        status_json: str | None = None,
+        home: Path | None = None,
+    ) -> Path:
+        bindir = tmp_path / f"bin-{name}"
+        bindir.mkdir()
+        # `git` is required by the real-CLI shim's `home_state()` (it
+        # shells out to `git -C <home> rev-parse --show-toplevel` via
+        # hosts.is_repo_root) — irrelevant to the `status_json=` tests,
+        # but the real CLI ones below would otherwise crash with
+        # FileNotFoundError before ever reaching the hook's own guards.
+        for tool in ("bash", "cat", "sleep", "git"):
+            real = shutil.which(tool)
+            assert real, f"{tool} not found on host PATH"
+            (bindir / tool).symlink_to(real)
+        if jq:
+            real = shutil.which("jq")
+            assert real, "jq not found on host PATH"
+            (bindir / "jq").symlink_to(real)
+        if timeout:
+            real = shutil.which("timeout")
+            assert real, "timeout not found on host PATH"
+            (bindir / "timeout").symlink_to(real)
+        if self_learn:
+            shim = bindir / "self-learn"
+            if status_json is not None:
+                # A literal, hand-authored JSON payload on stdout for
+                # `status --fast` — the only way to drive a JSON shape
+                # the real CLI does not currently produce.
+                shim.write_text(
+                    "#!/usr/bin/env bash\n"
+                    'if [ "$1" = status ] && [ "$2" = --fast ]; then\n'
+                    f"  cat <<'HOOKSHIM_JSON'\n{status_json}\nHOOKSHIM_JSON\n"
+                    "  exit 0\n"
+                    "fi\n"
+                    "exit 1\n",
+                    encoding="utf-8",
+                )
+            else:
+                # Same-interpreter shim dispatching to the REAL
+                # self_learn.cli.main, same idiom as TestHookHomeWarning
+                # ._shim above.
+                real_home = home if home is not None else tmp_path / "unused-home"
+                shim.write_text(
+                    textwrap.dedent(
+                        f"""\
+                        #!/usr/bin/env bash
+                        export PYTHONPATH="{CLI_SRC}"
+                        export SELF_LEARN_HOME="{real_home}"
+                        exec {sys.executable} -m self_learn.cli "$@"
+                        """
+                    ),
+                    encoding="utf-8",
+                )
+            shim.chmod(0o755)
+        return bindir
+
+    def _run(self, tmp_path: Path, bindir: Path):
+        return subprocess.run(
+            [str(HOOK)],
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": str(bindir),
+                "HOME": str(tmp_path),
+                "XDG_CACHE_HOME": str(tmp_path / "xdg-cache"),
+            },
+            timeout=60,
+        )
+
+    def test_jq_missing_prints_degraded_line(self, tmp_path):
+        """The self-learn guard passes (never actually invoked — `command
+        -v` never executes it) and the jq guard fires next."""
+        bindir = self._bin_dir(tmp_path, "jqmiss", jq=False)
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert "jq is not on PATH" in proc.stdout
+        assert "📥" not in proc.stdout
+
+    def test_timeout_missing_prints_degraded_line(self, tmp_path):
+        """Mutation target: dropping the new third `command -v timeout`
+        guard entirely still reaches `$(timeout 4 self-learn …)`, which
+        fails with "command not found" (rc 127) — `|| true` (line 41)
+        absorbs it into an EMPTY `$out`, and `[ -n "$out" ] || exit 0`
+        exits silently with NOTHING printed, the exact B-6 shape this
+        guard closes. This test only passes when the guard fires FIRST
+        and prints its own named message."""
+        bindir = self._bin_dir(tmp_path, "tomiss", timeout=False)
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert "timeout is not on PATH" in proc.stdout
+        assert "📥" not in proc.stdout
+
+    def test_self_learn_missing_prints_degraded_line(self, tmp_path):
+        """The "CLI-missing" leg — self-learn absent, jq and timeout both
+        present (so this exercises the FIRST guard specifically, distinct
+        from TestHookHomeWarning's fully-empty-PATH variant above)."""
+        bindir = self._bin_dir(tmp_path, "climiss", self_learn=False)
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert "self-learn is not on PATH" in proc.stdout
+
+    def test_total_pending_absent_prints_degraded_line(self, tmp_path):
+        """B-6 secondary shape: a `status --fast` JSON missing
+        `total_pending` entirely must not collapse to a silent,
+        healthy-looking "0 pending" (the pre-fix `// 0` behavior) —
+        `jq -e` (no fallback) now catches the absent key and reports it."""
+        bindir = self._bin_dir(
+            tmp_path, "nototal", status_json=json.dumps({"home_state": "ok"})
+        )
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert "no total_pending" in proc.stdout
+        assert "📥" not in proc.stdout
+
+    def test_unreadable_count_appended_when_present(self, tmp_path):
+        """B-7 consumer half: the hook now reads `total_unreadable` when
+        the JSON carries it and appends "(N unreadable)" to the pending
+        line — the exact literal format the brief pins."""
+        bindir = self._bin_dir(
+            tmp_path,
+            "unread",
+            status_json=json.dumps(
+                {
+                    "home_state": "ok",
+                    "total_pending": 5,
+                    "oldest_days": 3,
+                    "staleness_alarm": False,
+                    "escalate": False,
+                    "unanalyzed_total": 1,
+                    "miner_stale": False,
+                    "total_unreadable": 2,
+                }
+            ),
+        )
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert (
+            "📥 self-learn: 5 pending, oldest 3d — /self-learn:review (2 unreadable)"
+            in proc.stdout
+        )
+
+    def test_unreadable_count_absent_no_annotation(self, tmp_path):
+        """The honest-null default: today's REAL `--fast` path never emits
+        `total_unreadable` at all — the pending line must render exactly
+        as before, with no manufactured "(0 unreadable)". Mutation target:
+        an implementation that defaults the field to 0 with `// 0` instead
+        of gating on presence would still pass this one alone (0 is not
+        > 0), which is why it is paired with the present-and-nonzero test
+        above rather than relied on by itself."""
+        env = make_env(tmp_path / "ledger")
+        create_record(env.ledger, make_behavior(record_id="lrn-cccc1111"))
+        commit_all(env.ledger, "record")
+        bindir = self._bin_dir(tmp_path, "noann", home=env.ledger)
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert "📥 self-learn: 1 pending" in proc.stdout
+        assert "unreadable" not in proc.stdout
 
 
 # ================================================ BLOCKER 2: teach exit codes
