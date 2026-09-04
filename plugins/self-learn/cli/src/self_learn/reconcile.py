@@ -281,20 +281,28 @@ def _validate_compiled(path: Path) -> None:
     ``dict(5)`` raises ``TypeError``. Caught here, by name, and wrapped
     into the same :class:`compiled.CompiledRecordError` the unparseable
     case already raises — never a bare ``except Exception``, so an
-    actual bug still surfaces as a crash."""
-    if not path.is_file():
-        data: dict = {}
-    else:
-        try:
-            raw = compiled._yaml().load(path.read_text(encoding="utf-8"))  # noqa: SLF001
-        except (YAMLError, OSError, UnicodeDecodeError) as exc:
-            raise compiled.CompiledRecordError(f"unparseable {path}: {exc}") from exc
-        try:
-            data = dict(raw) if raw else {}
-        except (TypeError, ValueError) as exc:
-            raise compiled.CompiledRecordError(
-                f"{path.name} is not a YAML mapping (dict(): {exc})"
-            ) from exc
+    actual bug still surfaces as a crash.
+
+    No ``path.is_file()`` pre-check (fold NIT-3, r2): every caller only
+    ever hands this an orphan `find_orphans` just found ON DISK, so a
+    missing file here means the TOCTOU case — something removed it
+    between the scan and this validation — not the ordinary "no record
+    yet" case :func:`compiled.load_record` itself has to handle for its
+    OWN, unrelated callers. A pre-check that silently treated "vanished"
+    as ``{}`` reported that race as "missing required keys" — a false
+    diagnosis (it reads as an incomplete file, not an absent one). Now
+    ``path.read_text()`` raises the real ``FileNotFoundError`` (an
+    ``OSError``), caught below and reported honestly."""
+    try:
+        raw = compiled._yaml().load(path.read_text(encoding="utf-8"))  # noqa: SLF001
+    except (YAMLError, OSError, UnicodeDecodeError) as exc:
+        raise compiled.CompiledRecordError(f"unparseable {path}: {exc}") from exc
+    try:
+        data = dict(raw) if raw else {}
+    except (TypeError, ValueError) as exc:
+        raise compiled.CompiledRecordError(
+            f"{path.name} is not a YAML mapping (dict(): {exc})"
+        ) from exc
     missing = [key for key in ("host", "mode", "targets") if key not in data]
     if missing:
         raise compiled.CompiledRecordError(

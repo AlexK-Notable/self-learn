@@ -7333,7 +7333,7 @@ def recompile(
         # (managed, reference, pointer, hook re-apply, hook removal-
         # repair; `--adopt`'s own commit above is separate and already
         # landed). A no-op run (nothing drifted) commits nothing, same
-        # as always. `compiled/*.yaml` is inside `_RECONCILABLE` (RCN1),
+        # as always. `compiled/*.yaml` is inside `_RECONCILABLE_HOME` (RCN1),
         # so a failure between one entry's write and this final commit
         # leaves an uncommitted record file the reconcile mechanism
         # sweeps — never a lost write, same failure-mode reasoning the

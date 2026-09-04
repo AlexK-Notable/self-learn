@@ -311,7 +311,12 @@ def test_reconcile_refuses_a_proposal_with_an_invalid_destination(home):
     (`_validate_proposal`) is what this test protects — the gate found
     the branch itself could be DELETED with the whole suite still green.
     A proposal sibling with a `destination` outside
-    `ledger_ops.PROPOSAL_DESTINATIONS` must refuse, not commit."""
+    `ledger_ops.PROPOSAL_DESTINATIONS` must refuse, not commit — and
+    (NIT-1, fold r2) the assertion checks `validate_proposal`'s OWN
+    error text ("destination must be one of"), not merely the filename,
+    the same discipline the merge-sibling test below already uses, so
+    this cannot be satisfied by an unrelated failure that happens to
+    also name the file."""
     create_record(home, make_behavior(record_id="lrn-90000011"))
     commit_all(home, "seed record")  # only the proposal orphan is left
     bucket_dir = home / "skills" / "s"
@@ -329,6 +334,9 @@ def test_reconcile_refuses_a_proposal_with_an_invalid_destination(home):
     assert not result.healed
     assert result.refused
     assert any("lrn-90000011" in line for line in result.invalid), result.invalid
+    assert any(
+        "destination must be one of" in line for line in result.invalid
+    ), result.invalid
     assert git(home, "rev-parse", "HEAD").stdout == before
     assert "skills/s/proposals/lrn-90000011.yaml" not in head_files(home)
 
