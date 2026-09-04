@@ -36,10 +36,10 @@ import re
 import secrets
 from pathlib import Path
 
-from .primitives import chrono, text, yamlio
-
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
+
+from .primitives import chrono, text, yamlio
 
 __all__ = [
     "GENERALITIES",

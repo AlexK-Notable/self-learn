@@ -295,7 +295,7 @@ def _ts_str(value) -> str | None:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return value.astimezone(timezone.utc).strftime(chrono.ISO_FORMAT)
     if isinstance(value, date):
         return value.isoformat()
     return str(value)

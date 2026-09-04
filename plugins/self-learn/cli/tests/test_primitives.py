@@ -297,29 +297,38 @@ class TestTruncateOldest:
     def test_mutation_removing_the_size_guard_truncates_a_small_file(
         self, tmp_path, monkeypatch
     ):
-        """Positive control: without the ``st_size <= cap`` early return,
-        even an already-small file gets rewritten (and, for a big
-        enough gap between line sizes, can lose content it should have
-        kept) -- proving the guard is load-bearing, not decorative."""
+        """Positive control, rewritten (M-J fold r2, BLOCKER-1): the
+        original version monkeypatched ``truncate.truncate_oldest``
+        ITSELF to a hand-written reimplementation, then called that
+        reimplementation -- it never executed the REAL function, so it
+        proved nothing about whether the guard exists in production
+        code. This version calls the REAL ``truncate.truncate_oldest``
+        and spies on its one write-side collaborator, ``Path.write_text``
+        -- an under-cap file must produce ZERO writes (the guard's
+        early ``return``), proving the guard is load-bearing without
+        relying on mtime (unreliable at second-or-worse filesystem
+        resolution)."""
         p = tmp_path / "x.log"
         p.write_text("keep-me\n", encoding="utf-8")
-        original = p.stat().st_size
 
-        def _broken(path, cap):
-            lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-            keep: list[str] = []
-            size = 0
-            for line in reversed(lines):
-                size += len(line.encode("utf-8"))
-                if size > cap:
-                    break
-                keep.append(line)
-            path.write_text("".join(reversed(keep)), encoding="utf-8")
+        calls: list[Path] = []
+        real_write_text = Path.write_text
 
-        monkeypatch.setattr(truncate, "truncate_oldest", _broken)
+        def _spy(self, *args, **kwargs):
+            calls.append(self)
+            return real_write_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", _spy)
+
+        # Under cap: the guard's early return must fire -- zero writes.
+        truncate.truncate_oldest(p, cap=1_000_000)
+        assert calls == []
+        assert p.read_text(encoding="utf-8") == "keep-me\n"
+
+        # Over cap, same spy still active: proves the spy itself works
+        # (a real truncation DOES write) -- not just "nothing happened".
         truncate.truncate_oldest(p, cap=0)
-        assert p.stat().st_size != original
-        assert p.read_text(encoding="utf-8") == ""
+        assert calls == [p]
 
 
 # --------------------------------------------------- P1: the facade scan
@@ -386,6 +395,16 @@ def _source_of(path: Path, name: str) -> str:
     return ast.get_source_segment(path.read_text(encoding="utf-8"), node) or ""
 
 
+def _assert_now_iso_body_is_a_facade(label: str, src: str) -> None:
+    """The actual delegation check (M-J fold r2, NIT-1: pulled out of
+    the parametrized test so a positive control can exercise the exact
+    same assertions against a synthetic ``src``, matching the pattern
+    already used for ``_assert_heading_re_rhs_is_an_alias`` in M-J fold
+    r1)."""
+    assert "chrono.now_iso(" in src, f"{label} does not delegate to chrono.now_iso"
+    assert "datetime.now(" not in src, f"{label} still reimplements the clock"
+
+
 def _heading_re_assignment_rhs(source_text: str) -> str | None:
     """Parse arbitrary source text (a real file's contents, or a
     synthetic snippet for a positive control) and return the unparsed
@@ -413,6 +432,84 @@ def _assert_heading_re_rhs_is_an_alias(label: str, rhs: str | None) -> None:
     assert "HEADING_RE" in rhs  # text.HEADING_RE / sl_text.HEADING_RE
 
 
+class TestLedgerOpsWriterNullPolicy:
+    """M-J fold r2, MINOR-1: the yamlio pin's ``ledger_ops``-writer half
+    was never measured -- ``TestRtYamlNullPolicy``/
+    ``TestRtYamlPreservesPerCallerConfig`` exercise ``yamlio.rt_yaml()``
+    directly with synthetic data, never through ``ledger_ops``'s ACTUAL
+    writer call path (``write_proposal`` -> ``_dump_yaml`` -> ``_yaml()``
+    == ``yamlio.rt_yaml(preserve_quotes=True, width=4096,
+    sequence_indent=(2, 4, 2))``). ``ledger_ops.py``'s factory was the
+    ONE divergent copy missing a null representer before this move (the
+    A-class bug ``yamlio.rt_yaml()`` closes) -- so THIS writer's bytes
+    DID change: a ``None``-valued field that used to dump as a bare
+    empty scalar (``key:\n``) now dumps as explicit ``null``
+    (``key: null\n``). Measured here through the real production
+    call path, not synthesized."""
+
+    def test_ledger_ops_writer_re_emits_a_bare_empty_scalar_as_explicit_null(
+        self, tmp_path
+    ):
+        from support import make_behavior, make_home, proposal_dict
+
+        from self_learn.ledger_ops import create_record, write_proposal
+
+        home = make_home(tmp_path)
+        create_record(home, make_behavior(record_id="lrn-aa000001"))
+        data = proposal_dict()  # default destination=skill-md
+        # Sanity: a REAL None is present in this proposal shape before
+        # asserting anything about how it gets dumped (t1 is untouched
+        # by the skill-md trace's own overrides -- both answers stay
+        # None from `_base_gate_answers`'s default).
+        assert data["gates"]["t1"]["separable"]["answer"] is None
+        assert data["gates"]["t1"]["cost_bearing"]["answer"] is None
+
+        path = write_proposal(home, "lrn-aa000001", data)
+        raw = path.read_text(encoding="utf-8")
+        assert "answer: null" in raw, raw
+        # The A-class bug's bare-empty form -- must be gone everywhere
+        # this writer touches a None value, not just present somewhere.
+        assert not any(
+            line.rstrip("\n").endswith("answer:") for line in raw.splitlines()
+        ), raw
+
+    def test_mutation_reverting_ledger_ops_yaml_to_the_bare_factory_would_emit_empty(
+        self, tmp_path, monkeypatch
+    ):
+        """Positive control: patches ``ledger_ops._yaml`` back to a bare
+        ``YAML(typ="rt")`` (the pre-fix A-class shape, no null
+        representer) and confirms the SAME proposal dict above would
+        have dumped the bare-empty form instead -- proving the pin is
+        not vacuous."""
+        from ruamel.yaml import YAML
+
+        import self_learn.ledger_ops as ledger_ops_mod
+        from support import make_behavior, make_home, proposal_dict
+
+        from self_learn.ledger_ops import create_record, write_proposal
+
+        def _bare_yaml() -> YAML:
+            y = YAML(typ="rt")
+            y.preserve_quotes = True
+            y.width = 4096
+            y.indent(mapping=2, sequence=4, offset=2)
+            return y
+
+        monkeypatch.setattr(ledger_ops_mod, "_yaml", _bare_yaml)
+
+        home = make_home(tmp_path)
+        create_record(home, make_behavior(record_id="lrn-aa000002"))
+        data = proposal_dict()
+        assert data["gates"]["t1"]["separable"]["answer"] is None
+
+        path = write_proposal(home, "lrn-aa000002", data)
+        raw = path.read_text(encoding="utf-8")
+        assert "answer: null" not in raw, raw
+        assert any(
+            line.rstrip("\n").endswith("answer:") for line in raw.splitlines()
+        ), raw
+
+
 class TestP1FacadeScan:
     """P1 corrected: match the OWNER-QUALIFIED body, not the public
     name -- a rename or a private alias (``ledger_ops._yaml``,
@@ -424,8 +521,7 @@ class TestP1FacadeScan:
     @pytest.mark.parametrize("path", _NOW_ISO_FACADES, ids=lambda p: p.name)
     def test_now_iso_site_is_a_facade(self, path):
         src = _source_of(path, "_now_iso")
-        assert "chrono.now_iso(" in src, f"{path} does not delegate to chrono.now_iso"
-        assert "datetime.now(" not in src, f"{path} still reimplements the clock"
+        _assert_now_iso_body_is_a_facade(str(path), src)
 
     @pytest.mark.parametrize("path", _HEADING_RE_FACADES, ids=lambda p: p.name)
     def test_heading_re_site_is_an_alias(self, path):
@@ -463,15 +559,23 @@ class TestP1FacadeScan:
         assert "splitlines(keepends=True)" not in src, f"{path} still reimplements the algorithm"
 
     def test_the_scan_itself_is_not_vacuous(self):
-        """Positive control: a deliberately unmigrated body (the exact
-        shape every one of the 23 sites had before this move) must FAIL
-        the facade assertion the same way a real regression would."""
+        """Positive control, rewritten (M-J fold r2, NIT-1): the
+        original version checked a hand-written literal against
+        ITSELF (string-membership on ``old_body``, never calling the
+        real assertion logic) -- inert under any production mutation,
+        the exact same shape of bug as the ``truncate`` BLOCKER above.
+        This reproduces the EXACT pre-migration ``_now_iso`` body every
+        one of the 12 sites had, byte-for-byte, and proves the SAME
+        helper the parametrized test above uses raises AssertionError
+        on it."""
         old_body = (
             "def _now_iso() -> str:\n"
             '    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")\n'
         )
-        assert "chrono.now_iso(" not in old_body
-        assert "datetime.now(" in old_body
+        with pytest.raises(AssertionError, match="does not delegate to chrono"):
+            _assert_now_iso_body_is_a_facade(
+                "pre-migration (fold r2 control)", old_body
+            )
 
 
 class TestKnownDivergentSitesLeftAlone:
@@ -480,15 +584,23 @@ class TestKnownDivergentSitesLeftAlone:
     doesn't have to re-discover them, and so this move's own facade
     scan above doesn't silently widen to flag them. Each formats an
     ARBITRARY passed-in value, not "now", or lives in a file this
-    move's Files list never names:
+    move's Files list never names. M-J fold r2, NIT-3: the DUPLICATE
+    LITERAL STRING these sites each carried is gone -- all now
+    reference ``chrono.ISO_FORMAT`` instead of re-typing
+    ``"%Y-%m-%dT%H:%M:%SZ"`` -- but none were renamed into a
+    ``_now_iso`` facade or otherwise restructured; that would be a
+    scope-widening redesign, not what NIT-3 asked for.
 
     - ``analyst.py``'s ``proposal["analyzed_at"] = datetime.now(...)
-      .strftime(...)`` -- an inline literal, not a named ``_now_iso``
-      site; the brief's 12-site list does not include analyst.py.
-    - ``sentinel.py``'s ``now.strftime(...)`` -- formats a caller-given
-      clock reading, not ``datetime.now()`` itself.
-    - ``ledger_ops._ts_str`` / ``compilers``'s date formatter -- both
-      format an arbitrary VALUE argument, never "now".
+      .strftime(chrono.ISO_FORMAT)`` -- an inline call, not a named
+      ``_now_iso`` site; the brief's 12-site list does not include
+      analyst.py.
+    - ``sentinel.py``'s ``now.strftime(chrono.ISO_FORMAT)`` -- formats
+      a caller-given clock reading, not ``datetime.now()`` itself.
+    - ``ledger_ops._ts_str`` / ``compilers._iso`` / ``miner``'s two
+      mtime formatters / ``worker``'s mtime formatter -- all format an
+      arbitrary VALUE argument (a parsed timestamp or a file's mtime),
+      never "now" itself.
     - ``compilers.py:390``'s own inline ``YAML(typ="rt")`` -- not one
       of the 5 named YAML-factory sites (records/ledger_ops/hosts/
       config/compiled); left alone per scope.
@@ -501,9 +613,15 @@ class TestKnownDivergentSitesLeftAlone:
       byte-identical, otherwise leave and list it -- the brief's own
       "two regexes" pairs with the 4 ``_HEADING_RE`` sites, not these)."""
 
-    def test_analyst_py_inline_site_is_unchanged_and_out_of_scope(self):
+    def test_analyst_py_inline_site_uses_iso_format_and_stays_out_of_scope(self):
+        """M-J fold r2, NIT-3: the literal is gone (chrono.ISO_FORMAT
+        replaces it, closing the duplicate-string gap) but the SITE
+        itself is still an inline ``datetime.now()`` call, not renamed
+        into a ``_now_iso`` facade -- still out of the 12-site
+        migration (the brief never named analyst.py)."""
         src = (CLI_SRC / "analyst.py").read_text(encoding="utf-8")
-        assert 'datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")' in src
+        assert "datetime.now(timezone.utc).strftime(chrono.ISO_FORMAT)" in src
+        assert '"%Y-%m-%dT%H:%M:%SZ"' not in src
 
     def test_compilers_py_inline_yaml_factory_is_unchanged_and_out_of_scope(self):
         src = (CLI_SRC / "compilers.py").read_text(encoding="utf-8")
@@ -519,3 +637,23 @@ class TestKnownDivergentSitesLeftAlone:
         # subject line work at all.
         assert RECORD_ID_RE.match("see lrn-deadbeef here") is None
         assert _LRN_ID_RE.findall("see lrn-deadbeef here") == ["lrn-deadbeef"]
+
+    def test_residual_iso_format_literals_are_gone_everywhere_but_chronos_own_def(
+        self,
+    ):
+        """M-J fold r2, NIT-3 (the scan): every one of the 7 residual
+        duplicate-literal sites found (analyst.py, sentinel.py,
+        compilers.py, ledger_ops.py, miner.py x2, worker.py) now
+        references ``chrono.ISO_FORMAT`` instead. A plain text scan
+        (not AST -- this is a string literal, not a code shape) across
+        both source trees, excluding ``chrono.py``'s own definition
+        line, proves none were missed."""
+        import re as _re
+
+        pattern = _re.compile(r'"%Y-%m-%dT%H:%M:%SZ"')
+        for base in (CLI_SRC, UI_SRC):
+            for path in sorted(base.rglob("*.py")):
+                if path.name == "chrono.py":
+                    continue
+                src = path.read_text(encoding="utf-8")
+                assert not pattern.search(src), path

@@ -124,7 +124,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from . import domain
-from .primitives import text
+from .primitives import chrono, text
 from .records import Record
 
 __all__ = [
@@ -274,7 +274,7 @@ def entry_line(record: Record) -> str:
 
 def _iso(value: object) -> str:
     if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return value.strftime(chrono.ISO_FORMAT)
     return str(value)
 
 

@@ -3209,7 +3209,7 @@ def last_run_iso() -> str | None:
     except FileNotFoundError:
         return None
     return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
+        chrono.ISO_FORMAT
     )
 
 
