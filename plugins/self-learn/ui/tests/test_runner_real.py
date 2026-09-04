@@ -23,8 +23,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import stat
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -34,9 +36,12 @@ from self_learn_ui.app import create_app
 from self_learn_ui.env import load_env
 from self_learn_ui.routes import build_argv
 from self_learn_ui.runner import (
+    DEFAULT_MINE_RUN_TIMEOUT_SECS,
+    MINE_RUN_TIMEOUT_ENV,
     RealRunner,
     RunResult,
     SELF_LEARN_BIN_ENV,
+    communicate_bounded,
     extract_record_id,
     resolve_self_learn_argv_prefix,
 )
@@ -347,6 +352,397 @@ class TestRealRunnerSpawn:
                 "home": str(home),
             }
         ]
+
+
+# ------------------------------------------------------- M-H: bounded runner
+#
+# C05: `RealRunner.run` used to hold its server-wide lock across a bare
+# `await proc.communicate()` -- a hung verb blocked every later UI verb
+# forever, and a cancelled request left the child running. Below: the
+# pinned fixture itself (a REAL TERM-ignoring child, killable only by
+# SIGKILL) exercised directly against `communicate_bounded`, then through
+# the real `RealRunner.run()` to prove the lock/busy/interrupt-hook
+# contract holds end to end.
+
+
+async def _spawn_term_ignoring_child() -> asyncio.subprocess.Process:
+    """The pinned fixture (M-H task brief): a REAL OS process that
+    ignores SIGTERM outright -- a TERM signal is a no-op against it, only
+    a KILL signal (SIGKILL, which cannot be blocked or ignored) ends it.
+
+    `start_new_session=True` (fold m-3) is REQUIRED here, not optional:
+    `_terminate_then_kill` now signals via `os.killpg(os.getpgid(proc.pid),
+    ...)` -- without a new session this process shares OUR OWN process
+    group, and `killpg` would signal the test runner itself. Every real
+    subprocess in this file that gets passed to `communicate_bounded` (or
+    driven through a `RealRunner`, whose own `_spawn` sets this too) MUST
+    set it for exactly this reason."""
+    return await asyncio.create_subprocess_exec(
+        "bash",
+        "-c",
+        'trap "" TERM; sleep 60',
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+
+
+async def _spawn_term_ignoring_child_with_grandchild() -> asyncio.subprocess.Process:
+    """m-3 fold fixture: a TERM-ignoring child that itself forks a
+    background GRANDCHILD (`sleep 60 &`) and waits on it -- unlike the
+    plain fixture above, `bash` does NOT tail-call-exec here (there's a
+    second command after the backgrounded one), so this is genuinely TWO
+    processes. A per-pid kill (the defect this fold closes) would leave
+    the grandchild running after the direct child died."""
+    return await asyncio.create_subprocess_exec(
+        "bash",
+        "-c",
+        'trap "" TERM; sleep 60 & wait',
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+
+
+def _direct_children(pid: int) -> list[int]:
+    """Exact, non-pattern-matching child-pid lookup via ``/proc`` --
+    deliberately NOT ``pgrep -f``/``pkill -f`` (those match the whole
+    command line of every process on the HOST, a real hazard on a
+    multi-agent box running concurrent sprint lanes; this reads only the
+    kernel's own parent-child bookkeeping for one specific pid)."""
+    try:
+        text = Path(f"/proc/{pid}/task/{pid}/children").read_text()
+    except OSError:
+        return []
+    return [int(x) for x in text.split()]
+
+
+class TestCommunicateBoundedAgainstRealTermIgnoringChild:
+    """`test_runner.py`'s `_ScriptedProcess` proves the escalation logic
+    in isolation; this proves it against the real signal semantics a
+    scripted double can only simulate."""
+
+    async def test_bounded_and_actually_reaped_not_a_zombie(self) -> None:
+        proc = await _spawn_term_ignoring_child()
+        try:
+            start = time.monotonic()
+            stdout_b, stderr_b, code = await communicate_bounded(
+                proc, timeout=0.2, kill_grace=0.3
+            )
+            elapsed = time.monotonic() - start
+            # Bounded: the fixture sleeps 60s -- an unbounded wait would
+            # take at least that long. Generous slack over timeout +
+            # 2*kill_grace below, not a tight timing assertion.
+            assert elapsed < 5.0
+            assert code != 0
+            assert proc.returncode is not None  # reaped -- no zombie left
+            assert b"terminated" in stderr_b
+            # Independent of asyncio's own bookkeeping: the OS itself
+            # agrees the pid is gone (a still-alive pid would raise
+            # nothing here -- this must raise).
+            with pytest.raises(ProcessLookupError):
+                os.kill(proc.pid, 0)
+        finally:
+            if proc.returncode is None:  # pragma: no cover - safety net only
+                proc.kill()
+                await proc.wait()
+
+    async def test_task_cancellation_kills_and_reaps_the_real_child(self) -> None:
+        proc = await _spawn_term_ignoring_child()
+        try:
+            task = asyncio.ensure_future(communicate_bounded(proc, timeout=60, kill_grace=0.3))
+            await asyncio.sleep(0.1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5.0)
+            assert proc.returncode is not None
+            with pytest.raises(ProcessLookupError):
+                os.kill(proc.pid, 0)
+        finally:
+            if proc.returncode is None:  # pragma: no cover - safety net only
+                proc.kill()
+                await proc.wait()
+
+
+class TestProcessGroupKillsGrandchildren:
+    """Fold m-3 (behaviour, gate-flagged MINOR): the kill was per-pid, so
+    a verb child that spawned grandchildren (git, an editor hook) left
+    them running while the comment claimed the child was never left
+    running. `_terminate_then_kill` now signals the whole process GROUP
+    via `os.killpg` -- proven here against a REAL grandchild, not just
+    the direct child."""
+
+    async def test_grandchild_dies_with_the_process_group(self) -> None:
+        proc = await _spawn_term_ignoring_child_with_grandchild()
+        grandchild_pid: int | None = None
+        try:
+            # Give the backgrounded `sleep 60 &` a moment to actually
+            # fork before acting -- polled, not a fixed sleep, so this
+            # never races a slow host.
+            for _ in range(100):
+                kids = _direct_children(proc.pid)
+                if kids:
+                    grandchild_pid = kids[0]
+                    break
+                await asyncio.sleep(0.02)
+            assert grandchild_pid is not None, "grandchild sleep never forked"
+
+            stdout_b, stderr_b, code = await communicate_bounded(
+                proc, timeout=0.2, kill_grace=0.3
+            )
+            assert proc.returncode is not None  # direct child reaped
+            with pytest.raises(ProcessLookupError):
+                os.kill(proc.pid, 0)
+            # THE regression this fold closes: the grandchild must be
+            # gone too, not just the direct child.
+            with pytest.raises(ProcessLookupError):
+                os.kill(grandchild_pid, 0)
+        finally:
+            if proc.returncode is None:  # pragma: no cover - safety net only
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                await proc.wait()
+            if grandchild_pid is not None:  # pragma: no cover - safety net only
+                try:
+                    os.kill(grandchild_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+
+class TestSignalGroupRequiresGroupLeadership:
+    """Fold m-1 (gate-flagged MINOR): the fold m-3 change above made
+    `_signal_group` call `os.killpg(os.getpgid(proc.pid), sig)`
+    unconditionally. That is only safe when `proc.pid` LEADS its own
+    process group -- true for everything `RealRunner._spawn` starts
+    (`start_new_session=True`), but `communicate_bounded` is PUBLIC
+    (`__all__`), so a caller handing it a `Process` spawned WITHOUT
+    `start_new_session=True` shares THAT CALLER's own process group with
+    the child -- `killpg` would then signal the caller's whole group
+    (the UI server process, or -- proven here -- this very pytest
+    process), not just the child being bounded. `_signal_group` now
+    checks `os.getpgid(proc.pid) == proc.pid` first and only calls
+    `os.killpg` when that holds; otherwise it falls back to a per-pid
+    `os.kill`, which can only ever reach the one process asked for.
+
+    `os.killpg` is monkeypatched to RAISE (not merely record) if called
+    at all -- both the test's own assertion (a call blows up loudly
+    instead of silently passing) and a safety net: were the fix actually
+    broken here, a real `os.killpg` call against this shared group would
+    signal the pytest process running this very test."""
+
+    async def test_killpg_never_called_for_a_child_outside_its_own_group(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import self_learn_ui.runner as runner_module
+
+        killpg_calls: list[tuple[int, int]] = []
+
+        def _raising_killpg(pgid: int, sig: int) -> None:
+            killpg_calls.append((pgid, sig))
+            raise AssertionError(
+                "os.killpg must never be called for a process that does "
+                "not lead its own group -- fold m-1 regressed"
+            )
+
+        monkeypatch.setattr(runner_module.os, "killpg", _raising_killpg)
+
+        # Deliberately NOT start_new_session=True: this child shares OUR
+        # OWN process group -- exactly the caller shape fold m-1 guards
+        # against. A bare `sleep 60` (no TERM-ignoring trap) dies on the
+        # very first per-pid SIGTERM, so a correct fix never needs the
+        # SIGKILL escalation either.
+        proc = await asyncio.create_subprocess_exec(
+            "sleep",
+            "60",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout_b, stderr_b, code = await communicate_bounded(
+                proc, timeout=0.2, kill_grace=0.3
+            )
+            assert killpg_calls == []
+            assert proc.returncode is not None  # reaped via the per-pid path
+            assert code != 0
+        finally:
+            if proc.returncode is None:  # pragma: no cover - safety net only
+                try:
+                    os.kill(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                await proc.wait()
+
+
+class TestInterruptHookOwnTimeoutErrorNotSwallowed:
+    """Fold n-1 (gate-flagged NIT): a bare `except TimeoutError` around
+    the interrupt hook's bound cannot tell OUR bound firing from the
+    hook's OWN code raising an unrelated `TimeoutError` -- both looked
+    identical at that catch site. Only the former is ours to swallow."""
+
+    async def test_hook_raising_its_own_timeouterror_propagates(
+        self, tmp_path: Path
+    ) -> None:
+        """The verb never even spawns here (`argv_prefix` points nowhere
+        real) -- if this raises, it raised BEFORE `_spawn`, proving the
+        distinction is made at the hook-await site itself, not by
+        accident downstream."""
+
+        async def raises_its_own_timeout(record_id: str) -> None:
+            raise TimeoutError("hook's own unrelated timeout")
+
+        home = tmp_path / "ledger-home"
+        runner = RealRunner(
+            home=home,
+            argv_prefix=["/definitely/not/a/real/binary"],
+            interrupt_active_session=raises_its_own_timeout,
+            interrupt_timeout=5.0,  # generous -- proves this ISN'T the bound firing
+        )
+        with pytest.raises(TimeoutError, match="hook's own unrelated timeout"):
+            await runner.run(["route", "lrn-aa000001"])
+        assert runner.busy is False  # the lock still released
+
+
+class TestRealRunnerBoundedTimeoutAndLockRelease:
+    async def test_hung_verb_no_longer_blocks_a_later_verb_forever(
+        self, tmp_path: Path
+    ) -> None:
+        """The C05 regression itself, through the real `RealRunner.run`:
+        before M-H this would hang forever on the first call, so a
+        second call would never even start. Proven by actually running
+        the TERM-ignoring child through the runner, then a second verb
+        through the SAME instance right after."""
+        home = tmp_path / "ledger-home"
+        runner = RealRunner(
+            home=home, argv_prefix=["bash", "-c"], verb_timeout=0.2, kill_grace=0.3
+        )
+        start = time.monotonic()
+        first = await runner.run(['trap "" TERM; sleep 60'])
+        elapsed = time.monotonic() - start
+        assert elapsed < 5.0
+        assert first.ok is False
+        assert runner.busy is False
+
+        # The lock is genuinely free -- not just reporting False -- proven
+        # by a second call through the SAME runner actually completing.
+        second = await runner.run(["true"])
+        assert second.ok is True
+        assert runner.busy is False
+
+    async def test_cancelled_run_releases_the_lock_for_a_subsequent_call(
+        self, tmp_path: Path
+    ) -> None:
+        """m-1 fold (gate-flagged): renamed from
+        `..._and_kills_the_child` -- this test has no handle on the
+        subprocess `RealRunner` spawns internally, so it never actually
+        observed the child being killed; that half of the gate is
+        verified one layer down, directly against `communicate_bounded`,
+        by `TestCommunicateBoundedAgainstRealTermIgnoringChild::
+        test_task_cancellation_kills_and_reaps_the_real_child`. This test
+        observes exactly what its new name says: the lock releases, and
+        is genuinely available (not just reporting `busy=False`) for a
+        subsequent call."""
+        home = tmp_path / "ledger-home"
+        runner = RealRunner(
+            home=home, argv_prefix=["bash", "-c"], verb_timeout=60, kill_grace=0.3
+        )
+        task = asyncio.ensure_future(runner.run(['trap "" TERM; sleep 60']))
+        await asyncio.sleep(0.1)
+        assert runner.busy is True
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5.0)
+        assert runner.busy is False
+
+        second = await runner.run(["true"])
+        assert second.ok is True
+
+    async def test_interrupt_hook_bounded_verb_still_runs(self, tmp_path: Path) -> None:
+        """Task brief point 4: the injected interrupt hook is bounded
+        too -- a wedged pane engine must not hold the lock (and every
+        OTHER tab's dispatch behind it) forever. Proven against a REAL
+        fake-self-learn subprocess so the verb's actual execution is
+        also confirmed, not just that `run()` returns."""
+
+        async def hangs_forever(record_id: str) -> None:
+            await asyncio.Event().wait()
+
+        log = tmp_path / "calls.jsonl"
+        home = tmp_path / "ledger-home"
+        runner = RealRunner(
+            home=home,
+            argv_prefix=_direct_prefix(),
+            env={"FAKE_SELF_LEARN_LOG": str(log)},
+            interrupt_active_session=hangs_forever,
+            interrupt_timeout=0.05,
+        )
+        result = await asyncio.wait_for(runner.run(["route", "lrn-aa000001"]), timeout=5.0)
+        assert result.ok is True
+        entries = _read_log(log)
+        assert entries[0]["argv"] == ["route", "lrn-aa000001"]
+        assert runner.busy is False
+
+    async def test_fast_verb_unaffected_by_the_bounded_communicate_change(
+        self, tmp_path: Path
+    ) -> None:
+        """Positive control (task brief): the bounded wrapper must not
+        perturb an ordinary fast verb -- default timeouts, real
+        fake-self-learn subprocess, exact same shape as pre-M-H."""
+        home = tmp_path / "ledger-home"
+        runner = RealRunner(home=home, argv_prefix=_direct_prefix())
+        result = await runner.run(["push"])
+        assert result.ok is True
+        assert runner.busy is False
+
+
+class TestRealRunnerPerVerbTimeout:
+    """Fold m-4 (behaviour, gate-flagged MINOR): a flat 600s ceiling
+    could SIGKILL a legitimate `mine run`. `test_runner.py`'s
+    `TestVerbTimeoutFor` unit-tests `_verb_timeout_for` in isolation;
+    this proves the WIRING through the real `RealRunner`."""
+
+    async def test_mine_run_uses_the_env_configured_bound_not_the_flat_default(
+        self, tmp_path: Path
+    ) -> None:
+        """`argv_prefix` bakes the hanging TERM-ignoring script in
+        DIRECTLY (rather than deriving it from `argv`, the way
+        `TestRealRunnerBoundedTimeoutAndLockRelease` does) so the VERB
+        argv passed to `run()` can be the real `["mine", "run", ...]`
+        shape `_verb_timeout_for` keys off of, while what actually spawns
+        stays a controllable, boundable child regardless of the huge
+        `verb_timeout` default below."""
+        home = tmp_path / "ledger-home"
+        runner = RealRunner(
+            home=home,
+            argv_prefix=["bash", "-c", 'trap "" TERM; sleep 60'],
+            verb_timeout=600.0,  # the flat default -- proves it's NOT what bounds this call
+            kill_grace=0.3,
+            env={MINE_RUN_TIMEOUT_ENV: "0.2"},
+        )
+        start = time.monotonic()
+        result = await runner.run(["mine", "run", "--trigger", "manual"])
+        elapsed = time.monotonic() - start
+        # Bounded by the SHORT mine-specific override (0.2s), never the
+        # 600s flat default this test could not afford to wait out.
+        assert elapsed < 5.0
+        assert result.ok is False
+
+    async def test_short_verb_is_unaffected_by_the_mine_run_env_override(
+        self, tmp_path: Path
+    ) -> None:
+        """Sibling control: the SAME env override that shortens `mine
+        run`'s bound must not shorten anything else's -- an absurdly
+        tiny value would time out a normal fast verb if misapplied."""
+        log = tmp_path / "calls.jsonl"
+        home = tmp_path / "ledger-home"
+        runner = RealRunner(
+            home=home,
+            argv_prefix=_direct_prefix(),
+            env={"FAKE_SELF_LEARN_LOG": str(log), MINE_RUN_TIMEOUT_ENV: "0.0001"},
+        )
+        result = await runner.run(["push"])
+        assert result.ok is True
 
 
 # ------------------------------------------------- argv shapes (full matrix)

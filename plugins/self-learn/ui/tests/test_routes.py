@@ -1202,6 +1202,64 @@ class TestSurfaceFillWhyRegion:
         assert "reference files have no cap" not in r.text
         assert "UNKNOWN" in r.text
 
+    def test_why_region_shows_the_never_observed_read_rate_verdict(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cross-lane M-A fold (UI half): the CLI's OWN
+        `REFERENCE_READ_RATE_STATES` (report.py) changed —
+        `no-reads-observed` retired, `never-observed` added. That state
+        means the read hook IS registered (unlike `not-instrumented`) but
+        has never observed a read for this target yet — DISTINCT wording
+        is required; the shared "(not instrumented)" phrasing would be
+        FALSE for it. No real refread hook infrastructure exists in this
+        sandbox to reach this state naturally (CLI package internals,
+        out of this lane's scope) — monkeypatches `ledger.list_items`
+        directly (this repo's own FakeRunner-trap rule: a page READ,
+        controls nothing via the runner) to inject the state."""
+        from self_learn_ui import ledger as ledger_mod
+        from self_learn_ui.models import CliRead
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+
+        item = {
+            "id": rec.id,
+            "has_proposal": False,
+            "proposal_fresh": False,
+            "destination": None,
+            "already_canon": False,
+            "deferred_until": None,
+            "source": rec.source,
+            "bucket": "s",
+            "host_registered": True,
+            "title": "reference never-observed fixture",
+            "surface_fill": {
+                "reference": {
+                    "read_rate_state": "never-observed",
+                    "safe_overflow": None,
+                    "why": "x",
+                    "targets_zero_read": None,
+                    "targets_total": 3,
+                    "reads_30d_total": None,
+                },
+            },
+        }
+        monkeypatch.setattr(ledger_mod, "list_items", lambda *a, **kw: CliRead(data=[item]))
+        c, _runner = make_client(sb)
+
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        # Positive control: the fill fact rendered at all -- a blank/
+        # missing row would fail HERE first, before either phrasing
+        # assertion below is trusted.
+        assert "reference read rate is UNKNOWN" in r.text
+        # THE regression this fold closes: `never-observed` gets its OWN
+        # sentence, never the shared "(not instrumented)" one -- which
+        # would misdescribe a hook that IS registered and working.
+        assert "not instrumented" not in r.text
+        assert "registered but has never observed a read yet" in r.text
+
     def test_missing_skill_md_renders_nothing_for_that_destination(self, tmp_path: Path) -> None:
         # a registered skill dir with no SKILL.md file inside -> the CLI
         # omits the skill-md key (VerbError, F5) -> no row, no sentence.
@@ -4933,3 +4991,189 @@ class TestA18DeferredRecordApproveRefusesEndToEnd:
         # reference's structural refusal.
         assert runner.calls == [["route", rec.id, "--by", "analyst", "--json"]]
         assert "S-23" in r.text
+
+
+# ------------------------------------------------- M-F4: unrenderable proposal
+#
+# B-11/I: the detail page used to render the identical "no analysis yet"
+# message whether a proposal sibling was absent OR present-but-unparseable
+# -- routes.py's `_gather_detail_bundle` discarded `ledger.read_proposal_raw`'s
+# parse error entirely (the old `_err`). `_seed_unparseable_proposal` below
+# writes a proposal sibling that EXISTS but is not a YAML mapping (a bare
+# flow-sequence) -- never through `support.py`'s `seed_raw_proposal` (always
+# a valid mapping) or `write_proposal` (schema-valid); `support.py` is a
+# shared fixture module this lane does not own (BUILDER-CONTRACT.md rule 2),
+# so this stays local here rather than appending a new helper there.
+
+
+def _seed_unparseable_proposal(ledger: Path, record_id: str, *, body: str = "[1, 2, 3]\n") -> Path:
+    """A proposal sibling that EXISTS but fails to parse (a YAML value
+    that isn't a mapping -- `self_learn.ledger_ops._load_yaml_map`'s
+    "not a YAML mapping" `ProposalError` branch, the simplest
+    deterministic way to hit `ledger.read_proposal_raw`'s error leg
+    without relying on YAML syntax-error edge cases). Mirrors
+    `support.py`'s own `seed_raw_proposal` path derivation. ``body``
+    defaults to a bare flow-sequence; a caller can override it (n-2
+    fold's excerpt/escaping tests need control over the file's actual
+    bytes)."""
+    from self_learn.ledger_ops import find_record_path
+
+    record_path = find_record_path(ledger, record_id)
+    path = record_path.parent.parent / "proposals" / f"{record_id}.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+class TestDetailReadBundleProposalError:
+    """Bundle-shape tests (brief: "note :3956-3977 monkeypatches
+    routes_mod._gather_detail_bundle" -- that spy wraps the REAL
+    function, so adding `proposal_error` to `DetailReadBundle` cannot
+    break it; these test the new field directly)."""
+
+    def test_bundle_carries_the_parse_error_when_proposal_is_unparseable(
+        self, tmp_path: Path
+    ) -> None:
+        import self_learn_ui.routes as routes_mod
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        _seed_unparseable_proposal(sb.ledger, rec.id)
+
+        bundle = routes_mod._gather_detail_bundle(sb.ledger, rec.id)
+        assert bundle is not None
+        assert bundle.proposal is None
+        assert bundle.proposal_error is not None
+        assert "not a YAML mapping" in bundle.proposal_error
+
+    def test_bundle_proposal_error_is_none_when_no_proposal_sibling_exists(
+        self, tmp_path: Path
+    ) -> None:
+        import self_learn_ui.routes as routes_mod
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+
+        bundle = routes_mod._gather_detail_bundle(sb.ledger, rec.id)
+        assert bundle is not None
+        assert bundle.proposal is None
+        assert bundle.proposal_error is None
+
+    def test_bundle_proposal_error_is_none_when_proposal_parses_fine(
+        self, tmp_path: Path
+    ) -> None:
+        import self_learn_ui.routes as routes_mod
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id)
+
+        bundle = routes_mod._gather_detail_bundle(sb.ledger, rec.id)
+        assert bundle is not None
+        assert bundle.proposal is not None
+        assert bundle.proposal_error is None
+
+
+class TestDetailUnrenderableProposalEndToEnd:
+    def test_unrenderable_state_renders_distinctly_from_no_proposal(
+        self, tmp_path: Path
+    ) -> None:
+        from self_learn_ui.models import NO_ANALYSIS_MESSAGE
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        _seed_unparseable_proposal(sb.ledger, rec.id)
+        c, _runner = make_client(sb)
+
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        # Positive control FIRST (n-3 fold, gate-flagged NIT: the
+        # ORIGINAL control here, `'aria-label="change"' in r.text`, is an
+        # UNCONDITIONAL element -- the wrapping <section> renders that
+        # attribute regardless of which `model.change.kind` branch fires,
+        # so it would still pass even if the branch's own content were
+        # completely blank. The FakeRunner-trap rule -- "a blank page
+        # must fail the control" -- means the control has to be a string
+        # ONLY the unrenderable branch itself emits: the
+        # `banner banner-notice`/`role="alert"` markup detail.html's
+        # `unrenderable` elif renders (verified against
+        # partials/host_add_bar.html's OWN banner, which uses
+        # `banner-warning`, never `banner-notice` -- no collision within
+        # this page's render tree).
+        assert 'class="banner banner-notice" role="alert"' in r.text
+        assert "not a YAML mapping" in r.text  # the real parse error surfaced
+        # THE regression this move closes: must NOT silently collapse to
+        # the generic "no analysis yet" CTA.
+        assert NO_ANALYSIS_MESSAGE not in r.text
+
+    def test_unrenderable_message_includes_a_bounded_excerpt_of_the_raw_text(
+        self, tmp_path: Path
+    ) -> None:
+        """n-2 fold end-to-end proof: the raw sibling text was already
+        being read into the bundle (`proposal_raw_text` -- regardless of
+        parse success) and discarded at the message-building site; now a
+        bounded excerpt of its first line reaches the actual rendered
+        page, not just the model layer (already covered by
+        `test_models_detail.py::TestChangeRegionUnrenderableExcerpt`)."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        # A YAML LIST (not a syntax error -- a genuinely valid, PARSEABLE
+        # document that just isn't a mapping, `_load_yaml_map`'s clean
+        # "not a YAML mapping" branch): a two-line body where only the
+        # FIRST line should reach the excerpt. A flow-sequence followed
+        # by a second top-level line (tried first) is instead a YAML
+        # SYNTAX error whose own message embeds a source snippet
+        # (ruamel's line/column context) -- indistinguishable from this
+        # move's own excerpt without picking content the parser itself
+        # never echoes back.
+        _seed_unparseable_proposal(
+            sb.ledger, rec.id, body="- item one\n- second line never excerpted\n"
+        )
+        c, _runner = make_client(sb)
+
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert 'class="banner banner-notice" role="alert"' in r.text  # positive control
+        assert "starts with: - item one" in r.text
+        assert "second line never excerpted" not in r.text  # first line only
+
+    def test_unrenderable_excerpt_is_escaped_not_raw_html(self, tmp_path: Path) -> None:
+        """The raw sibling text is operator-authored-adjacent, not
+        trusted markup -- a first line containing HTML-special
+        characters must render escaped (the app's explicit
+        `autoescape=True`, app.py's AUTOESCAPE MARKER), never as live
+        HTML in the response."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        _seed_unparseable_proposal(
+            sb.ledger, rec.id, body="<script>alert(1)</script> not yaml\n"
+        )
+        c, _runner = make_client(sb)
+
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert 'class="banner banner-notice" role="alert"' in r.text  # positive control
+        assert "<script>alert(1)</script>" not in r.text  # never live/unescaped
+        assert "&lt;script&gt;" in r.text  # escaped, per the app's autoescape
+
+    def test_genuinely_no_proposal_is_unaffected_by_this_move(self, tmp_path: Path) -> None:
+        """Sibling control: the TRUE no-proposal-at-all state still
+        renders exactly as before -- this move only ADDS a new distinct
+        state, it never changes the existing one."""
+        from self_learn_ui.models import NO_ANALYSIS_MESSAGE
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert 'aria-label="change"' in r.text
+        assert NO_ANALYSIS_MESSAGE in r.text

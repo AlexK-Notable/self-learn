@@ -90,6 +90,12 @@
     <h2>Change</h2>
     {% if model.change.kind == "none" %}
     <p>{{ model.change.message }}</p>
+    {% elif model.change.kind == "unrenderable" %}
+    {# M-F4 (B-11, I): a proposal sibling EXISTS but failed to parse --
+       rendered distinctly from "none" (banner/alert, not a plain <p>) so
+       this never reads as "no analysis yet" about a record that HAS
+       one, just unreadable. #}
+    <p class="banner banner-notice" role="alert">{{ model.change.message }}</p>
     {% elif model.change.kind == "diff" %}
     <div class="diff-preview">{{ model.change.content | pygments_diff }}</div>
     <p class="preview-caption">{{ model.change.caption }}</p>

@@ -72,13 +72,28 @@ def _item(**overrides):
     return base
 
 
-def _build(item, proposal=None, diff_text=None, proposal_raw_text=None, record=None, **kw):
+def _build(
+    item,
+    proposal=None,
+    diff_text=None,
+    proposal_raw_text=None,
+    record=None,
+    proposal_error=None,
+    **kw,
+):
     kwargs: dict[str, Any] = dict(
         bucket="s", scope="skill", host_registered=True, host_add_command=None, now=NOW
     )
     kwargs.update(kw)
     return build_detail_model(
-        item, record or _record(), proposal, diff_text, proposal_raw_text, REGISTRY, **kwargs
+        item,
+        record or _record(),
+        proposal,
+        diff_text,
+        proposal_raw_text,
+        REGISTRY,
+        proposal_error=proposal_error,
+        **kwargs,
     )
 
 
@@ -149,6 +164,99 @@ class TestChangeRegionNoProposal:
         assert model.change.kind == "none"
         assert model.change.content is None
         assert model.change.message == NO_ANALYSIS_MESSAGE
+
+    def test_no_proposal_message_wording_is_pinned(self):
+        """n-1 fold (M-F4, gate-flagged NIT): every test above compares
+        `model.change.message` against the IMPORTED `NO_ANALYSIS_MESSAGE`
+        constant itself -- self-referential, so a wording change to the
+        constant would sail through unnoticed. This pins the literal
+        text so an accidental wording change is a visible diff here."""
+        assert NO_ANALYSIS_MESSAGE == "no analysis yet — `i` to analyze now"
+
+
+class TestChangeRegionUnrenderable:
+    """M-F4 (B-11, I): a proposal sibling that EXISTS but fails to parse
+    (`ledger.read_proposal_raw`'s second return value, threaded here as
+    `proposal_error`) must render DISTINCTLY from the true "no proposal
+    at all" state above — routes.py used to discard this parse error
+    entirely, so both states produced the identical NO_ANALYSIS_MESSAGE."""
+
+    def test_present_but_unparseable_proposal_is_a_distinct_kind(self):
+        model = _build(_item(), proposal=None, proposal_error="lrn-aa000001.yaml is not a YAML mapping")
+        assert model.change.kind == "unrenderable"
+        assert model.change.content is None
+        assert model.change.message == "lrn-aa000001.yaml is not a YAML mapping"
+        # THE regression this closes: the parse error must never be
+        # silently swapped for the generic "no analysis yet" CTA.
+        assert model.change.message != NO_ANALYSIS_MESSAGE
+
+    def test_unrenderable_and_no_proposal_are_different_kinds_for_the_same_absent_proposal(self):
+        """Both states share `proposal is None` -- `proposal_error` is
+        the ONLY thing distinguishing them. Proven side by side so a
+        regression that re-collapses them shows up as an equality, not
+        just a missing branch."""
+        no_proposal = _build(_item())
+        unreadable = _build(_item(), proposal_error="unparseable YAML at proposals/lrn-aa000001.yaml: x")
+        assert no_proposal.change.kind == "none"
+        assert unreadable.change.kind == "unrenderable"
+        assert no_proposal.change.kind != unreadable.change.kind
+        assert no_proposal.change.message != unreadable.change.message
+
+    def test_proposal_error_is_ignored_when_a_proposal_actually_parsed(self):
+        """`proposal_error` only matters when `proposal is None` -- a
+        stray non-None value alongside a successfully parsed proposal
+        (should never happen in practice; `ledger.read_proposal_raw`
+        never returns both) must not derail the ordinary render."""
+        proposal = {"destination": "skill-md", "rationale": "x"}
+        model = _build(
+            _item(has_proposal=True, destination="skill-md"),
+            proposal=proposal,
+            diff_text="--- a\n+++ b\n",
+            proposal_error="should be ignored",
+        )
+        assert model.change.kind == "diff"
+
+
+class TestChangeRegionUnrenderableExcerpt:
+    """n-2 fold (M-F4, gate-flagged NIT): the raw sibling text was
+    already available (`proposal_raw_text` — `ledger.read_proposal_text`
+    reads the file regardless of parse success) and discarded; the
+    unrenderable message now appends a bounded excerpt of its first line
+    so the operator sees what actually failed to parse, not just the
+    YAML library's own complaint."""
+
+    def test_excerpt_of_the_first_line_is_appended(self):
+        model = _build(
+            _item(),
+            proposal_error="lrn-aa000001.yaml is not a YAML mapping",
+            proposal_raw_text="[1, 2, 3]\nsecond line ignored\n",
+        )
+        assert model.change.message == (
+            "lrn-aa000001.yaml is not a YAML mapping — starts with: [1, 2, 3]"
+        )
+
+    def test_excerpt_is_bounded_to_120_chars_with_an_ellipsis(self):
+        long_first_line = "x" * 200
+        model = _build(
+            _item(),
+            proposal_error="unparseable",
+            proposal_raw_text=long_first_line + "\nrest ignored\n",
+        )
+        excerpt_part = model.change.message.split("starts with: ", 1)[1]
+        assert excerpt_part == ("x" * 120) + "…"
+
+    def test_no_raw_text_falls_back_to_the_bare_error(self):
+        """No sibling text at all (e.g. an OSError reading it,
+        `ledger.read_proposal_text`'s own `None` leg) -- the message is
+        exactly the parse error, no dangling "starts with:" for nothing."""
+        model = _build(_item(), proposal_error="unparseable", proposal_raw_text=None)
+        assert model.change.message == "unparseable"
+
+    def test_blank_raw_text_falls_back_to_the_bare_error(self):
+        """An empty or whitespace-only sibling file -- no non-empty
+        first line to excerpt."""
+        model = _build(_item(), proposal_error="unparseable", proposal_raw_text="")
+        assert model.change.message == "unparseable"
 
 
 class TestChangeRegionDiff:
@@ -407,15 +515,32 @@ class TestSurfaceBudgets:
         [
             ("not-instrumented", "UNKNOWN"),
             ("none-enumerable", "UNKNOWN"),
-            ("no-reads-observed", "never"),
+            # cross-lane M-A fold: `no-reads-observed` RETIRED from the
+            # CLI's own `REFERENCE_READ_RATE_STATES` (report.py),
+            # `never-observed` ADDED — a distinct state (see
+            # `TestNeverObservedReferenceRow` below for the wording
+            # itself; this table just checks EVERY state routes to a
+            # row that renders — the "row rendered" positive control IS
+            # the successful `by_dest["reference"]` lookup below: a
+            # state that fell through to no row at all would KeyError
+            # here, not silently pass). Fold n-4 (gate-flagged NIT):
+            # "UNKNOWN" alone is ALSO in the shared "(not instrumented)"
+            # fallback sentence, so it didn't guard this row actually
+            # took the dedicated `never-observed` branch rather than
+            # falling through to that shared one — a substring unique to
+            # this branch's own sentence catches disabling the branch.
+            ("never-observed", "registered but has never observed a read"),
             ("partly-cold", "never"),
+            ("ok", "read at least once"),
         ],
     )
     def test_reference_row_text_by_state(self, state, expect_word):
         fill = {
             "reference": {
                 "read_rate_state": state,
-                "safe_overflow": None if "instrument" in state or "enumerable" in state else False,
+                "safe_overflow": (
+                    None if state in ("not-instrumented", "none-enumerable", "never-observed") else True
+                ),
                 "why": "x", "targets_zero_read": 1, "targets_total": 2,
                 "reads_30d_total": 0,
             },
@@ -423,6 +548,53 @@ class TestSurfaceBudgets:
         model = _build(_item(surface_fill=fill), scope="skill")
         by_dest = {b.destination: b for b in model.why.budgets}
         assert expect_word in by_dest["reference"].text
+
+
+class TestNeverObservedReferenceRow:
+    """Cross-lane M-A fold (UI half): the CLI's OWN
+    `REFERENCE_READ_RATE_STATES` (report.py) changed —
+    `no-reads-observed` retired, `never-observed` added. `never-observed`
+    means the read hook IS registered (unlike `not-instrumented`/
+    `none-enumerable`) but has never observed a read for this target
+    yet — it needs its OWN sentence, distinct from the shared "(not
+    instrumented)" one those two share, which would be FALSE here."""
+
+    def test_never_observed_gets_its_own_distinct_sentence(self):
+        fill = {
+            "reference": {
+                "read_rate_state": "never-observed",
+                "safe_overflow": None,
+                "why": "x", "targets_zero_read": None, "targets_total": 3,
+                "reads_30d_total": None,
+            },
+        }
+        model = _build(_item(surface_fill=fill), scope="skill")
+        by_dest = {b.destination: b for b in model.why.budgets}
+        text = by_dest["reference"].text  # positive control: the row exists at all
+        assert "UNKNOWN" in text
+        assert "registered but has never observed a read yet" in text
+        # THE regression this fold guards: never the OTHER unknown
+        # states' shared wording, which claims no instrumentation exists.
+        assert "not instrumented" not in text
+
+    def test_never_observed_text_differs_from_not_instrumented_text(self):
+        """Side by side, so a regression that re-collapses the two
+        states onto the same sentence shows up as an equality, not just
+        a missing branch."""
+
+        def _text_for(state: str) -> str:
+            fill = {
+                "reference": {
+                    "read_rate_state": state,
+                    "safe_overflow": None,
+                    "why": "x", "targets_zero_read": None, "targets_total": 3,
+                    "reads_30d_total": None,
+                },
+            }
+            model = _build(_item(surface_fill=fill), scope="skill")
+            return {b.destination: b for b in model.why.budgets}["reference"].text
+
+        assert _text_for("never-observed") != _text_for("not-instrumented")
 
     def test_missing_key_renders_nothing_for_that_destination(self):
         # skill-md omitted (as a VerbError leg would leave it, F5) —
