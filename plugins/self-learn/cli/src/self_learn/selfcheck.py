@@ -990,8 +990,26 @@ def _check_hooks(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
 
     if failures:
         return Verdict.FAIL, "; ".join(failures)
-    if not hosts_known and checked == 0 and registrations == 0:
-        return Verdict.UNMEASURED, "hosts.yaml absent — hook scripts not checked"
+    if not hosts_known:
+        # fold r3 (2026-09-04), corrected pin — gate r1's ruling on the
+        # fold r2 edge: an absent/unreadable hosts.yaml means the LEDGER
+        # WALK NEVER RAN (every hook-routed record above hit `if not
+        # hosts_known: continue`), so `checked == 0` here does not mean
+        # "zero hook-routed records exist" the way it does below when
+        # the walk actually ran and found none -- it means the walk
+        # never looked. This must be UNMEASURED regardless of
+        # `registrations`: a settings.json with resolvable registrations
+        # does not tell you anything about records the walk never
+        # visited. (fold r2 conflated the two: its `checked == 0` PASS
+        # branch fired here too whenever `registrations > 0`, printing
+        # "0 hook-routed records" as though that were measured, when it
+        # was really "not measured, walk skipped" — the same
+        # never-print-reachable-for-what-you-didn't-see class this
+        # module's own docstring contract names, `lrn-ea833a5b`.)
+        return Verdict.UNMEASURED, (
+            "hosts.yaml absent — hook scripts not checked; "
+            f"{registrations} registration(s) resolvable"
+        )
     if checked == 0 and registrations == 0:
         return Verdict.PASS, "no hook-routed records and no self-learn registrations"
     if checked == 0:
@@ -1006,8 +1024,13 @@ def _check_hooks(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
         # the plugin's own self-learn-pending.sh / self-learn-refread.sh
         # registered per install.sh, no hook lesson routed yet — exit 9:
         # following the install instructions made the health check
-        # report WORSE than a less-complete install. UNMEASURED for
-        # hooks now comes ONLY from the hosts.yaml-absent skip above.)
+        # report WORSE than a less-complete install. This branch is now
+        # reached ONLY when the ledger walk actually ran (hosts_known,
+        # handled above) and genuinely found zero hook-routed records —
+        # fold r3 moved the absent-registry case out to its own
+        # UNMEASURED branch above so the two "checked == 0" reasons —
+        # "looked and found nothing" vs. "never looked" — can no longer
+        # collide.)
         return Verdict.PASS, (
             f"0 hook-routed records; {registrations} registration(s) "
             "resolvable"
