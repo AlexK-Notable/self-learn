@@ -90,7 +90,7 @@ def slug_for_session_key(session_key: str) -> str:
 
 
 def _now_iso() -> str:
-    """Adopts the shared ``%Y-%m-%dT%H:%M:%SZ`` format (M-J, plan v2
+    """Uses the shared ``%Y-%m-%dT%H:%M:%SZ`` format (M-J, plan v2
     SS2): this module's own copy previously called ``.isoformat()``
     (microseconds + a ``+00:00`` offset) -- a drift from every other
     ``_now_iso`` in the codebase, and the bug this migration closes, not
