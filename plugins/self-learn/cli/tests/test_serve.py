@@ -908,15 +908,24 @@ def _run_install_sh_with_logging_shim(
 # ever appear as the EXECUTED systemctl verb.
 _PORT2_ALLOWED_SYSTEMCTL_VERBS = {"daemon-reload", "is-enabled"}
 
+# M-U fold r2 (minor A): a logged call with no `--user` (or `--user` as
+# its last token) must not be silently skipped -- an unparseable call
+# would otherwise read exactly like a call that never happened. It emits
+# this sentinel instead, which can never be in
+# _PORT2_ALLOWED_SYSTEMCTL_VERBS, so it always lands in `disallowed`.
+_PORT2_NO_USER_FLAG_SENTINEL = "<missing --user>"
+
 
 def _port2_systemctl_verbs(calls: list[str]) -> list[str]:
     verbs = []
     for line in calls:
         tokens = line.split()
+        verb = None
         if "--user" in tokens:
             idx = tokens.index("--user")
             if idx + 1 < len(tokens):
-                verbs.append(tokens[idx + 1])
+                verb = tokens[idx + 1]
+        verbs.append(verb if verb is not None else _PORT2_NO_USER_FLAG_SENTINEL)
     return verbs
 
 

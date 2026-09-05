@@ -77,15 +77,29 @@ _DEFAULT_SYSTEMCTL_BODY = (
 ALLOWED_SYSTEMCTL_VERBS = {"daemon-reload", "is-enabled"}
 
 
+# M-U fold r2 (minor A): a logged call with NO `--user` at all (or with
+# `--user` as its last token, so there is nothing after it to read) must
+# not be silently skipped -- skipping it makes an unparseable call read
+# exactly like a call that never happened, which is the fail-open shape
+# a safety control must never have. Such a call emits this sentinel,
+# which can never be in ALLOWED_SYSTEMCTL_VERBS, so it always lands in
+# the caller's `disallowed` list instead of vanishing.
+_NO_USER_FLAG_SENTINEL = "<missing --user>"
+
+
 def _systemctl_verbs(calls: list[list[str]]) -> list[str]:
     """Extract the verb (the token immediately after `--user`) from each
-    already-tokenized systemctl invocation logged by the shim."""
+    already-tokenized systemctl invocation logged by the shim. A call
+    that cannot be parsed this way is NOT dropped -- see
+    `_NO_USER_FLAG_SENTINEL` above."""
     verbs = []
     for tokens in calls:
+        verb = None
         if "--user" in tokens:
             idx = tokens.index("--user")
             if idx + 1 < len(tokens):
-                verbs.append(tokens[idx + 1])
+                verb = tokens[idx + 1]
+        verbs.append(verb if verb is not None else _NO_USER_FLAG_SENTINEL)
     return verbs
 
 
@@ -186,8 +200,14 @@ def test_a_dry_run_leaves_a_nonempty_apostrophe_home_byte_identical(tmp_path):
     was hand-wrapped in single quotes (`'$dst'`) instead of shell-quoted
     via `printf %q`. The positive control (a real run afterward, same
     home) proves the comparison mechanism is not vacuously
-    always-equal."""
-    env, fake_home, _log = _install_env(tmp_path, home_name="ali's home")
+    always-equal.
+
+    M-U fold r2 (nit B): a filesystem-identity check alone cannot see the
+    read-only `is-enabled` probe (it touches no files either way), so it
+    is checked directly here -- previewed in stdout, and NO line landed
+    in the systemctl log at all. This is the pinned dry-run decision
+    ("touch NOTHING") in its strongest form."""
+    env, fake_home, log = _install_env(tmp_path, home_name="ali's home")
     (fake_home / ".claude" / "skills").mkdir(parents=True)
     (fake_home / ".claude" / "skills" / "self-learn").write_text("old stub\n")
     (fake_home / "unrelated.txt").write_text("leave me alone\n")
@@ -197,6 +217,11 @@ def test_a_dry_run_leaves_a_nonempty_apostrophe_home_byte_identical(tmp_path):
     assert result.returncode == 0, (result.stdout, result.stderr)
     after = _snapshot(fake_home)
     assert before == after, "--dry-run touched the filesystem"
+    assert (
+        "[dry] timeout 5 systemctl --user is-enabled self-learn-miner.timer"
+        in result.stdout
+    )
+    assert log.read_text() == "", "a dry run executed a real external command"
 
     result2 = _run([], env)
     assert result2.returncode == 0, (result2.stdout, result2.stderr)
@@ -489,3 +514,26 @@ def test_i_missing_timeout_on_path_refuses_to_start(tmp_path):
     assert result.returncode != 0, (result.stdout, result.stderr)
     assert "'timeout'" in result.stderr
     assert "not found on PATH" in result.stderr
+
+
+# --------------------------------------------------- (fold r1's nit 6, r2 nit C)
+
+
+def test_desktop_temp_is_cleaned_up_when_generation_fails(tmp_path):
+    """M-U fold r1 added `trap 'rm -f "$DESKTOP_TMP"' EXIT` so a failed
+    `.desktop` generation (a broken `sed`, here) never leaves its temp
+    file behind -- this is also why `rm` was added to `_REAL_BIN_NAMES`
+    above, a harness dependency the r1 fold left unguarded by any test
+    (M-U fold r2, nit C). `sed` shimmed to exit 3 simulates the failure;
+    the script must abort non-zero AND leave no stray
+    `.self-learn-ui.desktop.tmp.*` file in the applications dir."""
+    sed_body = 'echo "sed: simulated failure" >&2\nexit 3\n'
+    env, fake_home, _log = _install_env(tmp_path, shim_overrides={"sed": sed_body})
+
+    result = _run([], env)
+    assert result.returncode != 0, (result.stdout, result.stderr)
+    assert "simulated failure" in result.stderr
+
+    apps_dir = fake_home / ".local" / "share" / "applications"
+    stray = list(apps_dir.glob(".self-learn-ui.desktop.tmp.*"))
+    assert stray == [], f"the failed .desktop generation left a temp file behind: {stray}"
