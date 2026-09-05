@@ -28,8 +28,16 @@ install`):
 | `~/.claude/commands/self-learn` | `plugins/self-learn/commands/` | `/self-learn:teach`, `/self-learn:review` |
 | `~/bin/self-learn` | `plugins/self-learn/scripts/self-learn` | the CLI (uv wrapper over `cli/`) |
 
-`install.sh` also runs `uv sync` for `plugins/self-learn/cli/`. Verify the
-install with:
+`install.sh` also runs `uv sync` for `plugins/self-learn/cli/`. `--dry-run`
+prints every step (the first `mkdir -p` included) without touching the
+filesystem; `--legacy-miner` additionally links the legacy
+`self-learn-miner.{service,timer}` units (opt-in — see "Transcript miner"
+below); `--help` prints usage. Every external command `install.sh` runs is
+`timeout`-bounded, and it refuses to start if `timeout` itself is missing.
+A pre-existing real file or directory at a link target is backed up
+(collision-checked, never silently skipped) before the symlink is placed,
+and a failed link restores that backup rather than leaving things
+half-applied. Verify the install with:
 
 ```bash
 self-learn --selftest
@@ -146,20 +154,29 @@ write-restriction posture as the worker, pointed at a cache spool), and
 lands `source: session` records in `pending/` — capped, secret-scanned,
 never routed. Since U-engine (2026-08-27) the nightly run is scheduled by the resident
 host process, `self-learn-host.service` (`self-learn serve`; 03:30,
-mirroring the legacy timer). `install.sh` links that unit and the legacy
-`self-learn-miner.{service,timer}` into `~/.config/systemd/user/` (or
-`$XDG_CONFIG_HOME/systemd/user/` if that variable is set — U-servehermetic,
-2026-08-27); enabling is the one step it deliberately leaves to you:
+mirroring the legacy timer). `install.sh` always links that unit into
+`~/.config/systemd/user/` (or `$XDG_CONFIG_HOME/systemd/user/` if that
+variable is set — U-servehermetic, 2026-08-27); enabling is the one step
+it deliberately leaves to you:
 
 ```bash
 systemctl --user enable --now self-learn-host.service
 ```
 
-The timer is the no-host fallback (R1 layer 1; `Persistent=true` covers a
-machine asleep at 03:30). A timer left enabled alongside the host service
-is a supported belt-and-braces poke, and `self-learn doctor invocation`
-WARNs when both are enabled. Without systemd, run `self-learn serve` in
-the foreground.
+The legacy `self-learn-miner.{service,timer}` route is the no-host
+fallback (R1 layer 1; `Persistent=true` covers a machine asleep at
+03:30). Now that the host service schedules the same nightly run,
+`install.sh` links the timer only with `--legacy-miner` (M-U/D5;
+`./install.sh --legacy-miner`); a plain re-run without the flag leaves an
+already-linked timer alone rather than dropping it, and prints a note
+saying so. A timer left enabled alongside the host service is a supported
+belt-and-braces poke, and `self-learn doctor invocation` WARNs when both
+are enabled — after linking the host unit, `install.sh` itself checks
+(read-only, `timeout`-bounded `systemctl --user is-enabled`) whether the
+timer is currently enabled and, if so, prints the exact
+`systemctl --user disable --now self-learn-miner.timer` line for you; it
+never runs that command itself. Without systemd, run `self-learn serve`
+in the foreground.
 
 Layers 2–3 need no registration: any `self-learn` verb spawns a catch-up
 run when the last one is >24 h old, and the SessionStart hook prints a
