@@ -72,7 +72,7 @@ from pathlib import Path
 
 from . import config as policy_config
 from . import domain, gitops, ledger_ops, sentinel, telemetry
-from .primitives import chrono
+from .primitives import chrono, fsops
 from .hook_compiler import replay_examples, script_name, settings_snippet
 from .normalize import sha_anchor
 from .skill_scaffold import (
@@ -2334,7 +2334,12 @@ def _hook_scope_kind(record: Record) -> str:
 
 def _write_hook_script(target: Path, script: str) -> HookApplyResult:
     """Write the APPROVED bytes (verbatim — M3-2) + executable bit.
-    Idempotent: byte-identical executable content reports unchanged."""
+    Idempotent: byte-identical executable content reports unchanged.
+
+    Sprint 2 M-I (D6): the hook-script class — ``fsops.atomic_write``
+    with an explicit ``mode=0o755`` (every rwx bit set regardless of
+    umask or whatever the PREVIOUS script's mode was), atomic and
+    fsync'd, symlinks refused (the default)."""
     current = (
         target.read_text(encoding="utf-8") if target.is_file() else None
     )
@@ -2342,8 +2347,7 @@ def _write_hook_script(target: Path, script: str) -> HookApplyResult:
     if current == script and executable:
         return HookApplyResult(path=target, changed=False)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(script, encoding="utf-8")
-    target.chmod(target.stat().st_mode | 0o755)
+    fsops.atomic_write(target, script, mode=0o755)
     return HookApplyResult(path=target, changed=True)
 
 

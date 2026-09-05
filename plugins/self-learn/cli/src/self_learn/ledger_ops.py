@@ -41,7 +41,7 @@ from ruamel.yaml.error import YAMLError
 from . import hosts as hosts_mod
 from . import settings
 from . import domain
-from .primitives import chrono, text, yamlio
+from .primitives import chrono, fsops, text, yamlio
 from .compilers import BEGIN_MARKER, END_MARKER
 from .ledger import Bucket, discover_buckets, home_state, home_state_message, resolve_home
 from .normalize import sha_anchor
@@ -243,10 +243,33 @@ def _load_yaml_map(path: Path) -> dict:
     return data
 
 
-def _dump_yaml(data: dict, path: Path) -> None:
+def _dumps_yaml(data: dict) -> str:
+    """The serialization half of `_dump_yaml`, split out in fold r1
+    (Finding 10) so `worker._install_staged`'s merge branch can write
+    its OWN temp file (`.install-<rid>.tmp`) the same one-step way its
+    non-merge branch two lines below already does (`tmp.write_text`) --
+    instead of nesting a SECOND temp-file-plus-rename (`_dump_yaml`,
+    now `fsops.atomic_write`) inside the first. That nesting was
+    harmless on an ordinary exception (`atomic_write`'s own cleanup
+    runs) but left an orphaned INNER temp file un-sweepable by
+    `_clean_stale_install_temps`'s glob on a SIGKILL between the inner
+    write and its rename -- see `primitives/fsops.py`'s module
+    docstring for the full analysis. No other caller of `_dump_yaml`
+    needed this split; `worker.py`'s one OTHER `_dump_yaml` call site
+    (`_run_stage0`, writing a merge verdict straight to its own live
+    proposal path, not to a swept temp name) is unaffected and
+    unchanged."""
     buf = io.StringIO()
     _yaml().dump(data, buf)
-    path.write_text(buf.getvalue(), encoding="utf-8")
+    return buf.getvalue()
+
+
+def _dump_yaml(data: dict, path: Path) -> None:
+    """Sprint 2 M-I (D6): the ledger-content class (proposals, project
+    meta -- and, via `hosts._dump_meta`'s own delegation to this
+    function, host bucket meta too) -- atomic + fsync'd, symlinks
+    refused. Was a bare `Path.write_text`."""
+    fsops.atomic_write(path, _dumps_yaml(data), preserve_mode=True, fsync=True)
 
 
 # ---------------------------------------------------------------------- git

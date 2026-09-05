@@ -39,7 +39,7 @@ from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
-from .primitives import chrono, text, yamlio
+from .primitives import chrono, fsops, text, yamlio
 
 __all__ = [
     "GENERALITIES",
@@ -263,8 +263,13 @@ class Record:
         # entirely). A future caller that mutates type/kind without
         # `_reclassify_apply`'s discipline is now caught HERE, not left
         # to become a new instance of B-1's defect class.
+        #
+        # Sprint 2 M-I (D6): the ledger-record class -- atomic + fsync'd,
+        # symlinks refused (the default). Was a bare `Path.write_text`,
+        # not atomic at all: a reader racing a save (another process,
+        # `git status`, a crash mid-write) could see a truncated record.
         self.validate()
-        Path(path).write_text(self.to_text(), encoding="utf-8")
+        fsops.atomic_write(Path(path), self.to_text(), preserve_mode=True, fsync=True)
 
     # ------------------------------------------------------------ read view
 

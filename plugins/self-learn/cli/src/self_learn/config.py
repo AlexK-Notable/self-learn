@@ -50,7 +50,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 from ruamel.yaml.error import YAMLError
 
-from .primitives import yamlio
+from .primitives import fsops, yamlio
 
 __all__ = [
     "CONFIG_BASENAME",
@@ -495,11 +495,14 @@ def load_editable(home: Path | str) -> CommentedMap:
 def dump_editable(home: Path | str, data: CommentedMap) -> Path:
     """Serialize `data` back to `config.yaml`, round-trip (comments,
     key order, and every untouched key survive). Returns the path
-    written -- the caller's `gitops.stage`/`commit` pathspec."""
+    written -- the caller's `gitops.stage`/`commit` pathspec.
+
+    Sprint 2 M-I (D6): config.yaml is a config-file class -- people
+    symlink config files into dotfile repos, so follow_symlinks=True."""
     path = config_path(home)
     buf = io.StringIO()
     _rt_yaml().dump(data, buf)
-    path.write_text(buf.getvalue(), encoding="utf-8")
+    fsops.atomic_write(path, buf.getvalue(), preserve_mode=True, fsync=True, follow_symlinks=True)
     return path
 
 

@@ -27,6 +27,11 @@ memo. So nothing here is enumerated by hand:
   ``def``, every module, no list);
 - the mutating primitives are the leaves (``Path.write_text`` / ``.rename``
   / ``.unlink`` / ``shutil.move`` / ``os.replace`` / ``Record.write`` /
+  ``fsops.atomic_write`` / ``fsops.private_write`` (Sprint 2 M-I: the
+  ``Path.write_text`` + ``os.replace`` couplet's drop-in replacement,
+  recognized by the same fixed-name rule as ``os.replace`` itself — see
+  :func:`_primitive`'s own comment for why this could not instead be a
+  resolve-through-the-subpackage fix) /
   ``git mv|rm|add|commit`` / ``gitops.stage`` / ``gitops.commit`` / the
   "open(a+) append" leaf — P7 (M-M, plan v2 §5; widened fold r1 NIT n-2):
   ``.write``/``.writelines`` on the bound name, ``print(..., file=name)``,
@@ -257,6 +262,16 @@ def _primitive(call: ast.Call) -> str | None:
     """The mutating primitive this call IS, or None."""
     func = call.func
     if not isinstance(func, ast.Attribute):
+        # Fold r1, Finding 4 (nit, pre-existing shape -- not new with
+        # fsops): this whole function only ever recognizes the ATTRIBUTE
+        # call form (`fsops.atomic_write(...)`, `os.replace(...)`).
+        # A future site written `from .primitives.fsops import
+        # atomic_write` and called bare as `atomic_write(path, ...)` is
+        # an `ast.Name` here and would be invisible to this walker, same
+        # as a hypothetical bare `replace(...)` always would be -- keep
+        # importing fsops as `from .primitives import fsops` and calling
+        # `fsops.atomic_write`/`fsops.private_write` (the form every
+        # current call site uses), not the direct-name-import form.
         return None
     if func.attr in _FS_PRIMITIVES:
         return f"Path.{func.attr}"
@@ -266,6 +281,28 @@ def _primitive(call: ast.Call) -> str | None:
         if func.value.id == "os":
             return "os.replace"
         return None
+    # Sprint 2 M-I (fsops): `primitives/fsops.py` lives in a subpackage
+    # this walker's own `SRC.glob("*.py")` never parses (non-recursive,
+    # by design -- module resolution below is per-top-level-file), so a
+    # migrated call like `fsops.atomic_write(path, ...)` would otherwise
+    # be COMPLETELY INVISIBLE: `_resolve()` cannot follow it either (the
+    # `from .primitives import fsops` import is not in `MODULES`, same
+    # as every OTHER primitives.* submodule already in use). Measured
+    # before this line existed: a probe migrating `Record.write` onto a
+    # stub `fsops.atomic_write` made `test_the_analysis_actually_sees_
+    # the_code` fail outright ("records.Record.write is not seen as a
+    # repo mutation") -- silent loss of the very enforcement this file
+    # exists for, not a new NOT_REPO_TRUTH case (the write is still real
+    # repo truth; the walker just went blind to it). This is the same
+    # kind of fixed-name recognition `os.replace`/`shutil.move` above
+    # already get, extended to the two names that are now a drop-in
+    # replacement for the `Path.write_text` + `os.replace` couplet
+    # everywhere in this tree -- never a resolve-through-the-subpackage
+    # fix, since that would need `MODULES`/`_resolve` to understand
+    # dotted submodule imports generally, far more surface than this
+    # migration needs.
+    if func.attr in ("atomic_write", "private_write") and _dotted(func) == f"fsops.{func.attr}":
+        return f"fsops.{func.attr}"
     return None
 
 
