@@ -493,8 +493,17 @@ def recover(home: Path | str) -> RecoverResult:
         return result
     with gitops.commit_lock(home):
         for f in sorted(d.glob("*.json")):
+            # Gate r2 nit-1: split by PHASE, not folded into one message
+            # -- a genuinely corrupt file (can't even be read/parsed)
+            # names a different repair (fix/delete the file) than a
+            # real, half-written step the JSON itself parses fine but
+            # cannot resolve (inspect the path it names).
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                result.stopped.append(f"{f.name}: unreadable intent file ({exc})")
+                continue
+            try:
                 intent = _from_dict(home, data)
                 _recover_one(home, intent, result)
             except (OSError, ValueError, KeyError) as exc:

@@ -32,7 +32,7 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import gitops, intents, reconcile as reconcile_mod, worker
+from self_learn import gitops, intents, reconcile as reconcile_mod, verbs, worker
 from self_learn.hosts import host_add, host_rebind, load_hosts, slug_for
 from self_learn.ledger_ops import create_record
 from support import commit_all, git, init_repo, make_behavior, make_env, merge_proposal_text
@@ -119,16 +119,16 @@ def _remove(*a, **k):
     return r
 ledger_ops._remove_file = _remove
 
-# Gate r1 MAJOR-1: the two compile-record mutations between
+# Gate r1 MAJOR-1: the three compile-record mutations between
 # `remove_merge` and `complete` -- `_write_compile_record_entry`
-# (the survivor's own compile record) and `_resync_three_regions`
-# (a no-op for a plain `dest="skill-md"` collapse, but still a real
-# call boundary the fix must survive across, per the gate's own
-# `probe_collapse.py`). `_complete_old_retirement` is not hooked here:
-# for THIS fixture (no `old_id`) it returns `[]` immediately, so a kill
-# right after it would be indistinguishable from one right after
-# `compile_record` -- `TestCollapseWithOldIdCrashWindow` below is where
-# that function does real work.
+# (the survivor's own compile record), `_complete_old_retirement`
+# (a no-op unless `old_id` names an ALREADY-ROUTED record -- gate r2
+# minor-2's `TestCollapseWithOldIdCrashWindow` tests below are where
+# it does real work) and `_resync_three_regions` (a no-op for a plain
+# `dest="skill-md"` collapse, real only for `reference`/`hook` -- same
+# gate r2 minor-2 tests use `DEST=reference` to reach it), all real
+# call boundaries the fix must survive across, per the gate's own
+# `probe_collapse.py`.
 _orig_cre = verbs._write_compile_record_entry
 def _cre(*a, **k):
     r = _orig_cre(*a, **k)
@@ -136,6 +136,14 @@ def _cre(*a, **k):
         _die("compile_record")
     return r
 verbs._write_compile_record_entry = _cre
+
+_orig_cor = verbs._complete_old_retirement
+def _cor(*a, **k):
+    r = _orig_cor(*a, **k)
+    if KILL_AFTER == "old_retirement":
+        _die("old_retirement")
+    return r
+verbs._complete_old_retirement = _cor
 
 _orig_resync = verbs._resync_three_regions
 def _resync(*a, **k):
@@ -163,7 +171,7 @@ verbs._commit_ledger = _commit
 verbs.route(
     os.environ["SELF_LEARN_HOME"],
     os.environ["SURVIVOR_ID"],
-    dest="skill-md",
+    dest=os.environ.get("DEST", "skill-md"),
     collapse=os.environ["MERGE_ID"],
     no_push=True,
 )
@@ -458,6 +466,151 @@ class TestCollapseWithOldIdCrashWindow:
         assert merge_path.is_file()
         assert porcelain(env.ledger) == ""
         assert list(intents.intents_dir(env.ledger).glob("*.json")) == []
+
+    # -------------------------------------------- gate r2 minor-2
+
+    @pytest.fixture
+    def cluster_with_a_routed_old_id(self, tmp_path, monkeypatch):
+        """Gate r2 minor-2: `_complete_old_retirement`'s (verbs.py:4252)
+        and `_resync_three_regions`'s (verbs.py:4261) own `intent=`
+        threadings are unverified -- `cluster_with_old_id` above leaves
+        `old` PENDING, so `_retirement_preflight` returns immediately
+        and `_complete_old_retirement` never writes anything, and every
+        `TestCollapseCrashWindows` fixture collapses to plain
+        `dest="skill-md"`, which `_resync_three_regions` never resolves
+        (real only for `reference`/`hook`, per its own docstring).
+
+        This fixture ROUTES `old` to `skill-md` under the DEFAULT skill
+        host BEFORE the collapse, then puts the survivor+loser under a
+        SEPARATE, freshly `host_add`ed project host and collapses to
+        `dest="reference"` there -- empirically confirmed (probe, not
+        guessed) this makes BOTH functions do REAL work, each in its
+        OWN compile-record FILE (`compiled_record_path` keys purely by
+        HOST REPO PATH, one file per host -- a first probe using a
+        SECOND SKILL under the SAME host repo put both writes in the
+        SAME file, where retirement's own `add_step` call already
+        covered the whole file and silently absorbed resync's write
+        too, making the M-D3 mutation undetectable). Two hosts, two
+        files, two independently restorable steps."""
+        e = make_env(tmp_path, skills=("s",))
+        monkeypatch.setenv("SELF_LEARN_HOME", str(e.ledger))
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+
+        old = make_behavior(record_id="lrn-0000f000", scope="skill:s")
+        create_record(e.ledger, old)
+        commit_all(e.ledger, "seed old")
+        verbs.route(e.ledger, old.id, dest="skill-md", no_push=True)
+        compiled_dir = e.ledger / "compiled"
+        [old_compiled] = list(compiled_dir.glob("*.yaml"))
+        old_pre_bytes = old_compiled.read_bytes()
+
+        project_repo = tmp_path / "proj-repo"
+        init_repo(project_repo)
+        (project_repo / "README.md").write_text("proj\n", encoding="utf-8")
+        commit_all(project_repo, "proj seed")
+        host_add(e.ledger, project_repo, "project")
+
+        survivor = make_behavior(record_id="lrn-0000f001", scope="project")
+        survivor.set_supersedes(old.id)
+        create_record(e.ledger, survivor, project_path=project_repo)
+        loser = make_behavior(record_id="lrn-0000f002", scope="project")
+        create_record(e.ledger, loser, project_path=project_repo)
+        proposals_dir = e.ledger / "projects" / slug_for(project_repo) / "proposals"
+        proposals_dir.mkdir(parents=True, exist_ok=True)
+        merge_path = proposals_dir / "merge-0000f001.yaml"
+        merge_path.write_text(
+            merge_proposal_text("merge-0000f001", [survivor.id, loser.id], survivor.id),
+            encoding="utf-8",
+        )
+        commit_all(e.ledger, "seed cluster")
+        return e, survivor, old_compiled, old_pre_bytes
+
+    def _fire_routed_old_id(
+        self, cluster_with_a_routed_old_id, tmp_path, kill_after: str
+    ):
+        e, survivor, old_compiled, old_pre_bytes = cluster_with_a_routed_old_id
+        barrier = tmp_path / "barrier"
+        proc = _run_child(
+            _COLLAPSE_CHILD,
+            {
+                "SELF_LEARN_HOME": str(e.ledger),
+                "XDG_CACHE_HOME": str(tmp_path / "xdg-cache-child"),
+                "SURVIVOR_ID": survivor.id,
+                "MERGE_ID": "merge-0000f001",
+                "KILL_AFTER": kill_after,
+                "DEST": "reference",
+            },
+            barrier,
+        )
+        _assert_killed(proc, barrier, kill_after)
+        compiled_dir = e.ledger / "compiled"
+        proj_candidates = [p for p in compiled_dir.glob("*.yaml") if p != old_compiled]
+        proj_compiled = proj_candidates[0] if proj_candidates else None
+        return e, old_compiled, old_pre_bytes, proj_compiled
+
+    def test_kill_after_old_retirement_restores_the_old_records_compile_record(
+        self, cluster_with_a_routed_old_id, tmp_path
+    ):
+        """Mutation M-D2 (drop `intent=intent` from the
+        `_complete_old_retirement` call in `_execute_route`): this
+        kill lands right after `_complete_old_retirement`'s real
+        rewrite of old's OWN compile-record entry and before
+        `_resync_three_regions` even starts -- without the intent
+        covering that write, restore leaves the retirement's rewrite
+        in place instead of putting the entry back to its pre-collapse
+        bytes."""
+        e, old_compiled, old_pre_bytes, _proj_compiled = self._fire_routed_old_id(
+            cluster_with_a_routed_old_id, tmp_path, "old_retirement"
+        )
+        # Positive control: the retirement's real write landed before
+        # the kill (the child's hook calls through to the original
+        # first, then dies) -- a passing restore below proves reversal.
+        assert old_compiled.read_bytes() != old_pre_bytes
+
+        result = reconcile_mod.reconcile(e.ledger, no_push=True)
+        assert result.restored, result
+        assert not result.rolled_forward and not result.stopped
+
+        assert old_compiled.read_bytes() == old_pre_bytes
+        assert porcelain(e.ledger) == ""
+        assert list(intents.intents_dir(e.ledger).glob("*.json")) == []
+
+    def test_kill_after_resync_restores_the_survivors_reference_region(
+        self, cluster_with_a_routed_old_id, tmp_path
+    ):
+        """Mutation M-D3 (drop `intent=intent` from the
+        `_resync_three_regions` call in `_execute_route`): this kill
+        lands right after `_resync_three_regions` writes the survivor's
+        OWN reference-region compile-record entry, in the project
+        host's OWN compiled file -- a SEPARATE file from old's, so
+        (unlike a same-host fixture) old's own `_complete_old_retirement`
+        step can never absorb this write by accident. Without the
+        intent covering it, restore leaves the project host's compiled
+        file uncreated-but-uncleaned -- this fixture's `old_sha` for
+        that step is `null` (the file did not exist before), so a
+        correct restore DELETES it, not merely reverts its bytes.
+
+        The PHYSICAL host-repo files (`references/LEARNINGS.md`) are a
+        separate concern: `_host_phase` writes them AFTER the ledger
+        commit + `intents.finish`, wholly outside this kill point (same
+        as `_retirement_host_phase`'s script `git rm` above) -- a kill
+        this early never reaches it in either branch, so it is not this
+        test's job to assert on them."""
+        e, _old_compiled, _old_pre_bytes, proj_compiled = self._fire_routed_old_id(
+            cluster_with_a_routed_old_id, tmp_path, "resync"
+        )
+        # Positive control: the resync's real compile-record write
+        # landed before the kill (a brand-new file -- `old_sha` is
+        # `null`, this project host never had one before).
+        assert proj_compiled is not None and proj_compiled.is_file()
+
+        result = reconcile_mod.reconcile(e.ledger, no_push=True)
+        assert result.restored, result
+        assert not result.rolled_forward and not result.stopped
+
+        assert not proj_compiled.exists(), "a null old_sha step restores by deleting the path"
+        assert porcelain(e.ledger) == ""
+        assert list(intents.intents_dir(e.ledger).glob("*.json")) == []
 
 
 # ============================================================== rebind
@@ -815,13 +968,23 @@ class TestCoreMechanics:
         (64 KiB) gets no inline copy — recovery has no source at all for
         its pre-transaction bytes (not git, since it was never tracked;
         not the intent, since it is over the cap), so it must STOP,
-        never silently accept whatever happens to be on disk."""
+        never silently accept whatever happens to be on disk.
+
+        Gate r2 MAJOR-1: the fixture used to size itself from
+        `intents._INLINE_CAP + 1` -- derived from the very constant this
+        test exists to pin, so changing `_INLINE_CAP` to ANYTHING moved
+        the fixture right along with it and this test could never redden
+        on a cap change (measured: `_INLINE_CAP = 64 * 1024 * 1024` still
+        passed). A literal size PLUS a separate assertion pinning the
+        constant's own value closes that: raising the cap reddens the
+        second line below, shrinking it reddens the first."""
+        assert intents._INLINE_CAP == 64 * 1024, "the D7 pin itself"
         repo = tmp_path / "repo"
         init_repo(repo)
         (repo / "placeholder.txt").write_text("x", encoding="utf-8")
         commit_all(repo, "seed")
         f = repo / "big.bin"
-        f.write_bytes(b"A" * (intents._INLINE_CAP + 1))  # untracked, over the cap
+        f.write_bytes(b"A" * 65_537)  # a literal 64 KiB + 1, untracked, over the cap
 
         intent = intents.begin(repo, "test-op", [f], "self-learn: test op")
         raw = json.loads(intent.file_path.read_text(encoding="utf-8"))
@@ -888,3 +1051,57 @@ class TestCoreMechanics:
 
         with pytest.raises(gitops.GitOpsError, match="git show"):
             intents._head_show(repo, "a.txt")
+
+    def test_recover_reports_a_corrupt_intent_file_as_unreadable(self, tmp_path):
+        """Gate r2 nit-1: a genuinely corrupt (unparseable) intent file
+        must report "unreadable intent file" -- distinct from
+        "unresolvable intent", which names a real, half-written step the
+        JSON parses fine but cannot restore. Widening `recover()`'s `try`
+        to cover `_recover_one` too (gate r1 minor-2) folded BOTH failure
+        phases into the same message; splitting them back out means an
+        operator reads which repair applies (fix/delete the file, vs.
+        inspect the path the message names) directly off the line,
+        without opening the file first."""
+        repo = tmp_path / "repo"
+        init_repo(repo)
+        (repo / "placeholder.txt").write_text("x", encoding="utf-8")
+        commit_all(repo, "seed")
+        bad = intents.intents_dir(repo) / "deadbeef0000.json"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_text("{not valid json", encoding="utf-8")
+
+        result = intents.recover(repo)
+        assert result.stopped and "unreadable intent file" in result.stopped[0]
+        assert "unresolvable intent" not in result.stopped[0]
+        assert bad.is_file(), "a STOP must leave the intent file in place"
+
+    def test_recover_reports_a_malformed_intent_as_unresolvable(self, tmp_path):
+        """Gate r2 nit-1's other half: valid JSON that does not match the
+        intent schema (here, missing `steps` entirely) reaches
+        `_from_dict`, raises `KeyError`, and must report "unresolvable
+        intent" -- the file itself was perfectly readable, so the
+        "unreadable" wording would misdirect an operator toward fixing
+        JSON syntax that was never broken."""
+        repo = tmp_path / "repo"
+        init_repo(repo)
+        (repo / "placeholder.txt").write_text("x", encoding="utf-8")
+        commit_all(repo, "seed")
+        bad = intents.intents_dir(repo) / "deadbeef0001.json"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_text(
+            json.dumps(
+                {
+                    "op": "test-op",
+                    "id": "deadbeef0001",
+                    "started": "2026-09-05T00:00:00Z",
+                    # `steps` and `commit_subject` deliberately omitted --
+                    # `_from_dict` indexes both unconditionally.
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = intents.recover(repo)
+        assert result.stopped and "unresolvable intent" in result.stopped[0]
+        assert "unreadable intent file" not in result.stopped[0]
+        assert bad.is_file(), "a STOP must leave the intent file in place"
