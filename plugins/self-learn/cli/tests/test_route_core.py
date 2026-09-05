@@ -684,8 +684,9 @@ class TestAllowEmptyGlob:
         # exist on the signature the CLI layer's kwarg call targets.
         assert "allow_empty_glob" in inspect.signature(verbs.route_direct).parameters
 
+    @pytest.mark.parametrize("flag_value", [True, False])
     def test_route_direct_threads_allow_empty_glob_into_resolve_target(
-        self, env, monkeypatch
+        self, env, monkeypatch, flag_value
     ):
         # minor-2 (gate r1), reddening half: the file's OWN docstring
         # concedes the prior test "pins the STRUCTURAL claim" only --
@@ -694,6 +695,15 @@ class TestAllowEmptyGlob:
         # `route_direct` left every test in this class green. Spy on the
         # real `_resolve_target` (still calling it, so the route itself
         # still succeeds) and assert the kwarg actually arrives.
+        #
+        # nit-1 (gate delta r2): parametrized over True AND False -- the
+        # original single-value (`True`-only) version stayed green even
+        # after hardcoding `allow_empty_glob=True` at the
+        # `_resolve_target` call site inside `route_direct` (a stale
+        # spy result matching a stale hardcode). Asserting the SPY'S
+        # OWN observed value equals whatever was PASSED IN, for both
+        # values, is what actually pins the threading rather than one
+        # coincidentally-matching literal.
         calls: list[dict] = []
         original = verbs._resolve_target
 
@@ -704,16 +714,21 @@ class TestAllowEmptyGlob:
         monkeypatch.setattr(verbs, "_resolve_target", spy)
         record = make_behavior(record_id="lrn-00012002")
         verbs.route_direct(
-            env.home, record, dest="skill-md", allow_empty_glob=True, no_push=True
+            env.home, record, dest="skill-md", allow_empty_glob=flag_value, no_push=True
         )
-        assert calls and calls[-1].get("allow_empty_glob") is True
+        assert calls and calls[-1].get("allow_empty_glob") is flag_value
 
+    @pytest.mark.parametrize("flag_value", [True, False])
     def test_teach_route_threads_allow_empty_glob_into_resolve_target(
-        self, env, monkeypatch
+        self, env, monkeypatch, flag_value
     ):
-        # minor-2 (gate r1): the SAME reddening check, one layer further
-        # out -- `teach --route --allow-empty-glob` must reach the exact
-        # same `_resolve_target` kwarg through `route_direct`.
+        # minor-2 (gate r1) / nit-1 (gate delta r2): the SAME reddening
+        # check, one layer further out -- `teach --route
+        # [--allow-empty-glob]` must reach the exact same
+        # `_resolve_target` kwarg through `route_direct`, for BOTH the
+        # flag given and the flag absent (defaulting False) -- not just
+        # a hardcoded `True` a stale hardcode downstream could still
+        # satisfy.
         calls: list[dict] = []
         original = verbs._resolve_target
 
@@ -722,27 +737,27 @@ class TestAllowEmptyGlob:
             return original(*args, **kwargs)
 
         monkeypatch.setattr(verbs, "_resolve_target", spy)
-        rc = cli.main(
-            [
-                "teach",
-                "--skill",
-                "s",
-                "--type",
-                "behavior",
-                "--kind",
-                "anti-pattern",
-                "--trigger",
-                "About to edit .storage while HA is running.",
-                "--instruction",
-                "Stop the container first.",
-                "--route",
-                "--dest",
-                "skill-md",
-                "--allow-empty-glob",
-            ]
-        )
+        args = [
+            "teach",
+            "--skill",
+            "s",
+            "--type",
+            "behavior",
+            "--kind",
+            "anti-pattern",
+            "--trigger",
+            "About to edit .storage while HA is running.",
+            "--instruction",
+            "Stop the container first.",
+            "--route",
+            "--dest",
+            "skill-md",
+        ]
+        if flag_value:
+            args = args + ["--allow-empty-glob"]
+        rc = cli.main(args)
         assert rc == 0
-        assert calls and calls[-1].get("allow_empty_glob") is True
+        assert calls and calls[-1].get("allow_empty_glob") is flag_value
 
 
 # ------------------------------------------------------ teach --route flags
