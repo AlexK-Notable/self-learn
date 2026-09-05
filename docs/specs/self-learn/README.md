@@ -962,12 +962,12 @@ human routes it.
   and the gate's verification table:
   `drafts/u-docs-truth-sweep-spec.md`.
 - **2026-09-04 — S-58 amended: one mechanism, per-key direction (Sprint 2
-  plan v2 §2 M-S; decision D1); folded r1–r4 same day against four
+  plan v2 §2 M-S; decision D1); folded r1–r5 same day against five
   blind spec gates (r1: 2 Blockers, 6 Majors, 5 minors, 2 nits; r2: 1
   Blocker, 2 Majors, 3 minors, 3 nits; r3: 0 Blockers, 2 Majors, 1
-  minor, 1 nit; r4: 0 Blockers, 1 Major, 0 minors, 1 nit — see
-  `03-decisions.md`'s `S-58` row for the current folded text; not yet
-  gate-CLEAN).** The two
+  minor, 1 nit; r4: 0 Blockers, 1 Major, 0 minors, 1 nit; r5: 0
+  Blockers, 1 Major, 1 minor, 2 nits — see `03-decisions.md`'s `S-58`
+  row for the current folded text; not yet gate-CLEAN).** The two
   precedence DIRECTIONS `S-58` ruled on 2026-07-19/2026-09-01 are
   unchanged — the settings registry's operator-policy keys stay
   `override > config.yaml > env > default`; provider/model/backend
@@ -1007,12 +1007,23 @@ human routes it.
   all, so r3's "visible in existing warning text" was wrong): `Setting.
   validate` STAYS the read-path clamp, unchanged for all 21 shipped
   entries; a NEW, separate optional `Setting.accepts` predicate is the
-  write-path gate — `config_set` refuses when `accepts` returns
-  `False`, naming the allowed set (`PROVIDERS`/`KNOWN_BACKENDS`).
-  `provider.name` and the `invocation.backend` family carry BOTH. The
-  fold is surfaced as a NEW `setting_row` detail field (`note`), not
-  the `warn` field (which keeps its override-only meaning) and not
-  "warning text" — `doctor settings` prints the `note`. The backend
+  write-path gate. Refined by r5 M1/m1: `config_set`'s sequence is
+  parse -> `accepts` refusal -> `validate` clamp -> the existing
+  downstream steps — `accepts` judges the operator's PARSED input,
+  before `validate` can clamp an off-whitelist value into an accepted
+  one (the natural insertion point, after `validate`, would have
+  silently committed a laundered value); the refusal names the allowed
+  set from a new `accepts_hint` field, not `validate_hint` (reserved for
+  a rejecting `validate` by its own docstring). `provider.name` and the
+  `invocation.backend` family carry BOTH `validate` and `accepts`. The
+  fold is surfaced as a NEW `setting_row` detail field named `note`
+  outright — not the `warn` field (which keeps its override-only
+  meaning) — computed by `setting_row` AND `preflight` each
+  RE-DERIVING the fold rather than widening `resolve_setting`'s 2-tuple
+  return (measured: 20 call sites, 18 wanting only the 2-tuple, against
+  2 display sites that would use a 3rd element). The UI `/settings`
+  page is an accepted, ruled residual: it renders a folded value with
+  no `note` (minor-4's standing scope), not a defect. The backend
   chain's specific/general PAIR at each end (env, config) keeps its
   full preservation constraint — `Rs-a1`'s asymmetry (an EMPTY
   per-surface config value terminates at the default WITHOUT
