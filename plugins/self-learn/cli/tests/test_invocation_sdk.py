@@ -322,14 +322,23 @@ def test_pl2_no_forbidden_imports_and_worker_use_is_scoped():
     assert worker_attrs <= {"cache_dir", "_pid_alive"}, worker_attrs
 
 
-_FS_CALLS = {"open", "write_text", "mkdir", "unlink", "touch"}
-_PL3_ALLOWED = {
-    ("events.py", "write_text"), ("events.py", "unlink"), ("events.py", "mkdir"),
-    ("lifecycle.py", "write_text"), ("lifecycle.py", "unlink"),
-}
-
-
 def test_pl3_filesystem_writes_are_enumerated_with_an_exact_count():
+    """U-engine sdk-lifecycle move (M-V, 2026-09-04): `invocation_sdk`'s
+    own two direct-I/O carve-outs -- `lifecycle.py`'s sidecar functions
+    (`write_sidecar`/`clear_sidecar`) and `events.py`'s event-log
+    functions (`write_event_log`/`prune_event_logs`) -- now delegate to
+    `sdksession.children`/`sdksession.events`, which already implement
+    the same file I/O for the OTHER two consumers. The allowed set this
+    test used to check unexpected violations against (5 call sites:
+    `(events.py, write_text)`/`(events.py, unlink)`/`(events.py,
+    mkdir)`/`(lifecycle.py, write_text)`/`(lifecycle.py, unlink)`) is
+    gone along with those call sites -- the count this test asserts
+    moves from 5 to 0, and there is no longer an "allowed" set at all:
+    ANY filesystem-mutating call anywhere under this six-file package is
+    now a violation, full stop."""
+    fs_mutation_calls = {
+        "open", "write_text", "write_bytes", "mkdir", "unlink", "touch", "rename", "replace",
+    }
     pkg_dir = Path(backend_mod.__file__).resolve().parent
     violations = []
     for path in sorted(pkg_dir.glob("*.py")):
@@ -338,11 +347,24 @@ def test_pl3_filesystem_writes_are_enumerated_with_an_exact_count():
             if isinstance(node, ast.Call):
                 f = node.func
                 name = f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else None)
-                if name in _FS_CALLS:
+                if name in fs_mutation_calls:
                     violations.append((path.name, node.lineno, name))
-    unexpected = [v for v in violations if (v[0], v[2]) not in _PL3_ALLOWED]
-    assert unexpected == [], unexpected
-    assert len(violations) == 5, violations
+    assert violations == [], violations
+
+    # Positive control: the identical scanner, pointed at a synthetic
+    # module carrying one `write_text` call, must still catch it --
+    # proves the empty `violations` list above means "none found", not
+    # "the scanner stopped working".
+    synthetic_src = "from pathlib import Path\ndef f():\n    Path('x').write_text('y')\n"
+    synthetic_tree = ast.parse(synthetic_src, filename="<synthetic>")
+    synthetic_hits = []
+    for node in ast.walk(synthetic_tree):
+        if isinstance(node, ast.Call):
+            f = node.func
+            name = f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else None)
+            if name in fs_mutation_calls:
+                synthetic_hits.append(name)
+    assert synthetic_hits == ["write_text"]
 
 
 def test_pl4_every_written_path_resolves_under_cache_dir(tmp_path, sdk_cli_path, monkeypatch):

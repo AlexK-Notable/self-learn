@@ -24,19 +24,29 @@ single in-flight run id; a future multi-session caller tracks more).
 Every path-touching function takes `cache_dir: Path` AND `log_kind: str`
 as PARAMETERS -- never `worker.cache_dir()` (LIB1/section 4.3), and
 never the CLI's own event-log filename middle segment as a literal.
-The latter is a DELIBERATE, armor-driven choice, not a style
-preference: `test_worker_contract.py::
-test_ev4_tool_events_string_confined_to_events_module` (armor-pinned,
-whole-file sha-checked) recursively scans EVERY `.py` file under
-`src/self_learn/` and asserts that literal substring appears ONLY in
+The latter is a deliberate choice, not a style preference:
+`test_worker_contract.py::
+test_ev4_tool_events_string_confined_to_events_module` (an ORDINARY
+test, corrected 2026-09-04 -- `test_worker_contract.py` is NOT in
+`test_armor.py`'s `ARMOR` table; the eight whole-file/AST-pinned
+`Behaviour` entries there are `test_invocation.py`, `test_invocation_
+sdk.py`, `test_worker.py`, `test_repair.py`, `test_attrib.py`,
+`test_route_cli.py`, `test_composer.py`, and `test_u_fake.py`) still
+recursively scans EVERY `.py` file under `src/self_learn/` and asserts
+that literal substring appears ONLY in
 `invocation_sdk/events.py` (unrestricted) and exactly once in
 `worker.py` (the pinned FW-107 log line) -- this package is outside
 both exemptions, so its own source may never spell that literal out.
-`invocation_sdk/events.py` keeps its own, fully self-contained
-`write_event_log`/`prune_event_logs` for exactly this reason too (see
-that module's docstring); this module's generalised versions exist for
-the OTHER two consumers and for direct library-level testing
-(`MS2`/`MS4`), with the caller supplying its own filename convention.
+`invocation_sdk/events.py` keeps that literal itself confined to its
+own module for exactly this reason (see that module's docstring) -- as
+of Sprint 2 M-V (2026-09-04) its `write_event_log`/`prune_event_logs`
+are thin adapters over THIS module's functions, passing its own literal
+through as a caller-supplied `log_kind` argument rather than hardcoding
+it here (this module's own source must never spell that literal out
+either -- see the paragraph above). This module's functions exist for
+that consumer, for the OTHER two consumers, and for direct
+library-level testing (`MS2`/`MS4`), with each caller supplying its own
+filename convention.
 
 Import-bounded: stdlib only.
 """
