@@ -34,7 +34,7 @@ the delegate call entirely when there is nothing to prune -- kept
 deliberately so `test_ev4`'s `.glob(`-present assertion is satisfied by
 REAL code rather than by this docstring's own prose, which would
 satisfy it vacuously (gate M-V r1, minor 3: the prose alone already
-contains the literal `.glob(` four times over, so deleting the code
+contains the literal `.glob(` several times over, so deleting the code
 would NOT redden that check -- the short-circuit is kept for honesty,
 not because the assertion requires it). `_event_log_path` stays a pure path computation
 with no I/O of its own -- kept because `test_serve.py` still calls it
@@ -107,7 +107,7 @@ def prune_event_logs(surface: str) -> None:
     than by this docstring's own prose -- which, gate M-V r1's minor 3
     mutation (deleting this whole short-circuit) showed, would satisfy
     that check vacuously on its own, since the literal `.glob(` already
-    appears four times across this module's docstrings alone."""
+    appears several times across this module's docstrings alone."""
     cache = worker.cache_dir()
     keep, _source = settings.resolve_setting(resolve_home(), settings.by_name("sdk.event_logs"))
     keep = cast(int, keep)

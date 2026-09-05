@@ -20,11 +20,11 @@ only. That reason is gone: all three are now thin adapters over
 byte-identical to before -- `F-2`), and `test_pl3` is retargeted to
 assert ZERO filesystem-mutating calls anywhere in this six-file
 package. `_sidecar_path` stays a pure path computation with no I/O of
-its own -- kept because `test_invocation_sdk.py` and
-`test_reader_contract.py` still call it directly to locate the file the
-delegate wrote (gate M-V r1, minor 4: an earlier draft of this sentence
-named `test_serve.py`, which never calls it -- `grep -rn "_sidecar_path"
-tests/` names only these two files).
+its own -- kept because `test_invocation_sdk.py`,
+`test_reader_contract.py` and `test_sdk_lifecycle_delegation.py` call
+it directly today to locate the file the delegate wrote (gate M-V r1,
+minor 4: an earlier draft of this sentence named `test_serve.py`, which
+never calls it).
 
 `INTERRUPT_GRACE_SECS`/`KILL_SECS` are bound to the library's `ladder.py`
 objects BY IDENTITY (`LAD2`/`LAD3` carry the analogous UI-side proof).
