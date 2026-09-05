@@ -961,3 +961,33 @@ human routes it.
   implementation never adopted. Full inventory, per-site substitutions
   and the gate's verification table:
   `drafts/u-docs-truth-sweep-spec.md`.
+- **2026-09-04 — S-58 amended: one mechanism, per-key direction (Sprint 2
+  plan v2 §2 M-S; decision D1).** The two precedence DIRECTIONS `S-58`
+  ruled on 2026-07-19/2026-09-01 are unchanged — the settings registry's
+  operator-policy keys stay `override > config.yaml > env > default`;
+  provider/model/backend SELECTION keys stay `override > env >
+  config.yaml > default`, an emergency-rollback trade the registry's own
+  trade does not share. What changes is the MECHANISM count: `provider.py`'s
+  second, independent transcription of the backend-selection chain
+  (`resolve_backend_name`) and its own env/config lookups
+  (`_resolve_provider`, `_resolve_str_setting`, `model_for`), plus
+  `config.py`'s two loaders that exist only to feed them
+  (`invocation_backend`, `provider_setting`), retire in favour of ONE
+  registry-backed resolver. `settings.py`'s `Setting` gains a
+  `direction: Literal["config-first", "env-first"]` field (default
+  `"config-first"`, so no existing entry moves); every selection key
+  above joins the registry as `"env-first"`, keeping its existing env
+  name and validation. One behaviour addition, not a byproduct: the
+  override rung (`SELF_LEARN_OVERRIDE_<NAME>`) now reaches selection
+  keys too, and `SELF_LEARN_SDK_CLI_PATH` — env-only today, no
+  config.yaml rung — gains one, `sdk.cli_path`. The amendment also pins
+  a constraint the unifying mechanism must preserve: the backend chain
+  is five rungs at both the env and config ends (a per-surface specific
+  key, then a general one), three selectors serving four surfaces
+  (`worker`/`worker-repair` share `WORKER`), and `Rs-a1`'s asymmetry
+  (an empty per-surface config value terminates at the default; an
+  absent one falls through to the general key) is armor-pinned in
+  `test_invocation.py` and must not change. `03-decisions.md`'s `S-58`
+  row carries the full amendment; `01`–`17` are otherwise unchanged by
+  this entry. Code lands separately, in Sprint 2 lane L4, after a blind
+  spec gate on this amendment.
