@@ -57,8 +57,10 @@ def env(tmp_path, monkeypatch):
     return e
 
 
-def seed_pending(home, rid, **kwargs):
+def seed_pending(home, rid, *, supersedes=None, **kwargs):
     record = make_behavior(record_id=rid, **kwargs)
+    if supersedes is not None:
+        record.set_supersedes(supersedes)
     create_record(home, record)
     commit_all(home, "seed record")
     return record
@@ -324,6 +326,86 @@ class TestCollapseCrashWindows:
         assert result.rolled_forward, result
         assert head(env.ledger) == sha_before  # no duplicate commit
         self._assert_fully_rolled_forward(env, survivor, loser)
+
+
+class TestCollapseWithOldIdCrashWindow:
+    """`_execute_route`'s collapse intent-path construction has a
+    dedicated `if old_id is not None:` arm (verbs.py, right after
+    `intent_paths = [...]` is seeded) for `teach --supersedes` combined
+    with `--collapse` in the SAME route call — the survivor itself
+    supersedes a third record. `TestCollapseCrashWindows` above never
+    sets `supersedes` on its survivor, so that arm ran on every green
+    run without ever being exercised by a kill. This class closes that:
+    the old record is pending (never routed), so its own retirement
+    preflight is a no-op (`_retirement_preflight` returns immediately
+    when `record.status != "routed"`) and the ONLY thing riding on the
+    intent covering it is the plain pending→resolved supersede move —
+    the simplest real instance of the branch, and sufficient to prove
+    it is wired in at all."""
+
+    @pytest.fixture
+    def cluster_with_old_id(self, env, tmp_path):
+        old = seed_pending(env.ledger, "lrn-0000f000")
+        survivor = seed_pending(env.ledger, "lrn-0000f001", supersedes=old.id)
+        loser = seed_pending(env.ledger, "lrn-0000f002")
+        proposals_dir = env.ledger / "skills" / "s" / "proposals"
+        proposals_dir.mkdir(parents=True, exist_ok=True)
+        merge_path = proposals_dir / "merge-0000f001.yaml"
+        merge_path.write_text(
+            merge_proposal_text("merge-0000f001", [survivor.id, loser.id], survivor.id),
+            encoding="utf-8",
+        )
+        commit_all(env.ledger, "seed cluster")
+        return env, survivor, loser, old, merge_path
+
+    def test_kill_after_old_id_supersede_restores_everything(
+        self, cluster_with_old_id, tmp_path
+    ):
+        env, survivor, loser, old, merge_path = cluster_with_old_id
+        barrier = tmp_path / "barrier"
+        # `_execute_route` calls `supersede_record` for `old_id` BEFORE
+        # the losers loop, so `KILL_AFTER="supersede"` here fires right
+        # after the OLD record's own pending→resolved move — a step the
+        # `TestCollapseCrashWindows.cluster` fixture (no `old_id`) never
+        # reaches on this same hook.
+        proc = _run_child(
+            _COLLAPSE_CHILD,
+            {
+                "SELF_LEARN_HOME": str(env.ledger),
+                "XDG_CACHE_HOME": str(tmp_path / "xdg-cache-child"),
+                "SURVIVOR_ID": survivor.id,
+                "MERGE_ID": "merge-0000f001",
+                "KILL_AFTER": "supersede",
+            },
+            barrier,
+        )
+        _assert_killed(proc, barrier, "supersede")
+
+        old_pending = env.ledger / "skills" / "s" / "pending" / f"{old.id}.md"
+        old_resolved = env.ledger / "skills" / "s" / "resolved" / f"{old.id}.md"
+        survivor_pending = env.ledger / "skills" / "s" / "pending" / f"{survivor.id}.md"
+        survivor_resolved = env.ledger / "skills" / "s" / "resolved" / f"{survivor.id}.md"
+        loser_pending = env.ledger / "skills" / "s" / "pending" / f"{loser.id}.md"
+
+        # Positive control: the old record's real supersede-move landed
+        # (the child's hook calls through to the original before dying),
+        # so a passing restore below proves reversal, not mere absence.
+        assert old_resolved.is_file()
+        assert not old_pending.exists()
+
+        result = reconcile_mod.reconcile(env.ledger, no_push=True)
+        assert result.restored, result
+        assert not result.rolled_forward and not result.stopped
+
+        assert old_pending.is_file()
+        assert not old_resolved.exists()
+        assert survivor_pending.is_file()
+        assert "merged_from" not in survivor_pending.read_text(encoding="utf-8")
+        assert not survivor_resolved.exists()
+        assert loser_pending.is_file()
+        assert merge_path.is_file()
+        assert porcelain(env.ledger) == ""
+        assert list(intents.intents_dir(env.ledger).glob("*.json")) == []
 
 
 # ============================================================== rebind
