@@ -39,7 +39,7 @@
 #                   real command while `--dry-run` is in effect
 #   --legacy-miner  also link the legacy self-learn-miner.{service,timer}
 #                   units (see above)
-#   --help          print usage and exit 0
+#   --help, -h      print usage and exit 0
 #   anything else   print usage (to stderr) and exit 64
 #
 # Safety (M-U/D5): every external command this script runs is BOUNDED
@@ -70,7 +70,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: install.sh [--dry-run] [--legacy-miner] [--help]
+Usage: install.sh [--dry-run] [--legacy-miner] [--help|-h]
 
 Deploys the self-learn CLI, skill, commands, hooks, desktop launcher, and
 systemd --user units as live symlinks into this user's home. Never
@@ -82,7 +82,7 @@ always printed for the human to run by hand.
                   units (opt-in now that self-learn-host.service is the
                   scheduler; omit unless you specifically want the R1
                   timer fallback running alongside it)
-  --help          show this message and exit
+  --help, -h      show this message and exit
 USAGE
 }
 
@@ -158,13 +158,18 @@ link() { # $1=real src  $2=link path
     # through to the plain `ln -sfn` below, which safely re-points it,
     # and never risks `ln` nesting a new link INSIDE an existing
     # directory: the directory is always moved out of the way first).
-    local bak="$dst.bak.$(date +%s%N)"
+    local bak
+    bak="$dst.bak.$(date +%s%N)"
     if [ -e "$bak" ] || [ -L "$bak" ]; then
       echo "install.sh: refusing to overwrite an existing backup path: $bak" >&2
       exit 1
     fi
     say "  bak   ${dst/#$HOME/\~} -> ${bak##*/}"
     run "mv -n $(q "$dst") $(q "$bak")"
+    if [ "$DRY" != 1 ] && { [ -e "$dst" ] || [ -L "$dst" ]; }; then
+      echo "install.sh: backup move did not take effect for $dst -- refusing to continue (mv -n silently declined, likely a race on $bak)" >&2
+      exit 1
+    fi
     if ! run "ln -sfn $(q "$src") $(q "$dst")"; then
       say "  ERROR ln failed for ${dst/#$HOME/\~} -- restoring backup"
       run "mv $(q "$bak") $(q "$dst")"
@@ -206,6 +211,7 @@ run "mkdir -p $(q "$APPS_DIR") $(q "$ICON_DIR")"
 # .desktop file, and a dry run touches neither the temp file nor the
 # real one, since both steps are gated the same way `run()` gates them.
 DESKTOP_TMP="$APPS_DIR/.self-learn-ui.desktop.tmp.$$"
+trap 'rm -f "$DESKTOP_TMP"' EXIT
 run "sed $(q "s|@BIN@|$BIN_DIR|") $(q "$P/assets/self-learn-ui.desktop.in") > $(q "$DESKTOP_TMP")"
 run "mv $(q "$DESKTOP_TMP") $(q "$APPS_DIR/self-learn-ui.desktop")"
 say "  gen   ~/.local/share/applications/self-learn-ui.desktop"
@@ -258,15 +264,21 @@ say "  (no-systemd fallback: run 'self-learn serve' in the foreground — U-engi
 say "  NOTE: once self-learn-host.service is enabled, self-learn-miner.timer should"
 say "  not also stay enabled — 'self-learn doctor invocation' WARNs (never fails) if"
 say "  both are; a timer left enabled on purpose is a supported belt-and-braces poke."
-if [ -L "$MINER_TIMER_LINK" ] && command -v systemctl >/dev/null 2>&1; then
-  # Bounded, read-only (never a mutation): only checked when a
-  # self-learn-miner.timer symlink actually exists at $UNIT_DIR (freshly
-  # linked above via --legacy-miner, or left over from an earlier run) --
-  # nothing to report otherwise.
-  MINER_TIMER_STATE="$(timeout 5 systemctl --user is-enabled self-learn-miner.timer 2>/dev/null || true)"
-  if [ "$MINER_TIMER_STATE" = "enabled" ]; then
-    say "  self-learn-miner.timer is currently enabled — to disable:"
-    say "  systemctl --user disable --now self-learn-miner.timer"
+if command -v systemctl >/dev/null 2>&1; then
+  # Bounded, read-only (never a mutation): UNCONDITIONAL after linking the
+  # host unit (M-U/D5 fold r1, as pinned) -- a missing self-learn-miner.timer
+  # unit is not an error (systemctl reports it non-"enabled", swallowed by
+  # `|| true`); a missing `systemctl` itself is not an error either (this
+  # whole block is skipped). Previewed under --dry-run rather than silently
+  # both run for real AND omitted from the preview.
+  if [ "$DRY" = 1 ]; then
+    say "  [dry] timeout 5 systemctl --user is-enabled self-learn-miner.timer"
+  else
+    MINER_TIMER_STATE="$(timeout 5 systemctl --user is-enabled self-learn-miner.timer 2>/dev/null || true)"
+    if [ "$MINER_TIMER_STATE" = "enabled" ]; then
+      say "  self-learn-miner.timer is currently enabled — to disable:"
+      say "  systemctl --user disable --now self-learn-miner.timer"
+    fi
   fi
 fi
 

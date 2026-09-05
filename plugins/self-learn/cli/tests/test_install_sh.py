@@ -26,10 +26,13 @@ duplicated here)."""
 
 from __future__ import annotations
 
+import re
 import shlex
 import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 INSTALL_SH = REPO_ROOT / "install.sh"
@@ -45,6 +48,11 @@ _REAL_BIN_NAMES = (
     "sed",
     "timeout",
     "cat",
+    # M-U fold r1 (nit 6): install.sh now traps EXIT to `rm -f` the
+    # desktop-file temp path so a failed `sed`/`mv` never leaves it
+    # behind -- the harness's tool surface must carry every binary the
+    # script can invoke, `rm` included.
+    "rm",
 )
 
 _DEFAULT_SYSTEMCTL_BODY = (
@@ -60,6 +68,26 @@ _DEFAULT_SYSTEMCTL_BODY = (
     "done\n"
     "exit 0\n"
 )
+
+# M-U fold r1 (Major 2): the never-mutates-a-unit control is an ALLOWLIST of
+# EXECUTED systemctl verbs, not a two-token denylist of {"enable", "disable"}
+# -- a denylist lets a real `restart`/`start`/`stop`/`mask` straight through,
+# which is exactly the loudest safety claim install.sh makes (it never
+# enables, starts, stops, or restarts a unit) with no test behind half of it.
+ALLOWED_SYSTEMCTL_VERBS = {"daemon-reload", "is-enabled"}
+
+
+def _systemctl_verbs(calls: list[list[str]]) -> list[str]:
+    """Extract the verb (the token immediately after `--user`) from each
+    already-tokenized systemctl invocation logged by the shim."""
+    verbs = []
+    for tokens in calls:
+        if "--user" in tokens:
+            idx = tokens.index("--user")
+            if idx + 1 < len(tokens):
+                verbs.append(tokens[idx + 1])
+    return verbs
+
 
 
 def _real_bin_dir(tmp_path: Path) -> Path:
@@ -313,16 +341,19 @@ def test_e_legacy_miner_flag_links_units_and_its_absence_does_not(tmp_path):
 # ------------------------------------------------------------------- (f)
 
 
-def test_f_is_enabled_enabled_prints_disable_command_never_calls_enable_or_disable(
+def test_f_is_enabled_enabled_prints_disable_command_never_calls_a_disallowed_verb(
     tmp_path,
 ):
     """Once a self-learn-miner.timer symlink exists, install.sh queries
     `systemctl --user is-enabled` (bounded, read-only) and -- if it
     reports "enabled" -- prints the exact disable command for the human.
-    Token-exact check (not substring): "is-enabled" legitimately
-    contains "enable" as a substring, so the log is checked by SPLIT
-    WORDS, proving neither a real `enable` nor a real `disable` verb was
-    ever invoked."""
+
+    M-U fold r1 (Major 2): checked as an ALLOWLIST of executed systemctl
+    verbs (`daemon-reload`, `is-enabled`), not a two-token denylist of
+    {"enable", "disable"} -- a denylist would let a real
+    `restart`/`start`/`stop`/`mask` straight through unnoticed, which is
+    exactly install.sh's loudest safety claim (it never enables, starts,
+    stops, or restarts a unit)."""
     env, fake_home, log = _install_env(tmp_path)
     result1 = _run(["--legacy-miner"], env)
     assert result1.returncode == 0, (result1.stdout, result1.stderr)
@@ -336,18 +367,19 @@ def test_f_is_enabled_enabled_prints_disable_command_never_calls_enable_or_disab
 
     calls = [line.split() for line in log.read_text().splitlines() if line.strip()]
     assert calls, "systemctl was never invoked in the second run -- is-enabled should have fired"
-    for tokens in calls:
-        assert "enable" not in tokens, calls
-        assert "disable" not in tokens, calls
+    verbs = _systemctl_verbs(calls)
+    assert verbs, calls
+    disallowed = [v for v in verbs if v not in ALLOWED_SYSTEMCTL_VERBS]
+    assert not disallowed, f"install.sh invoked disallowed systemctl verb(s) {disallowed}: {calls}"
 
 
-def test_negative_control_a_real_enable_call_would_be_caught(tmp_path):
-    """Proves the exact-token check just above is not vacuous: mutate a
-    COPY of install.sh (same technique as test_serve.py's own PORT2
-    negative control) so it actually runs `systemctl --user enable
-    --now self-learn-host.service`, and confirm the token check would
-    flag it. This file's own copy of that control, as required --
-    PORT2's copy in test_serve.py is not duplicated here."""
+@pytest.mark.parametrize("verb", ["enable", "restart"])
+def test_negative_control_a_real_mutating_verb_would_be_caught(tmp_path, verb):
+    """Proves the allowlist above is not vacuous for TWO verbs: `enable`
+    (what the old two-token denylist also caught) and `restart` (what a
+    two-token denylist of {"enable", "disable"} would have let straight
+    through). Same technique as test_serve.py's own PORT2 negative
+    control, not duplicating it -- this file's own copy, as required."""
     env, fake_home, log = _install_env(tmp_path)
     text = INSTALL_SH.read_text(encoding="utf-8")
 
@@ -359,7 +391,7 @@ def test_negative_control_a_real_enable_call_would_be_caught(tmp_path):
     assert anchor in text, "install.sh's host-unit block shape changed -- update this mutation"
     text = text.replace(
         anchor,
-        anchor + "\nsystemctl --user enable --now self-learn-host.service",
+        anchor + f"\nsystemctl --user {verb} --now self-learn-host.service",
         1,
     )
     mutated = tmp_path / "install-mutated.sh"
@@ -370,10 +402,12 @@ def test_negative_control_a_real_enable_call_would_be_caught(tmp_path):
     )
     assert result.returncode == 0, (result.stdout, result.stderr)
     calls = [line.split() for line in log.read_text().splitlines() if line.strip()]
-    assert any("enable" in tokens for tokens in calls), (
-        "the mutated install.sh should have actually invoked `enable` -- "
-        "this negative control itself is broken if it did not"
+    verbs = _systemctl_verbs(calls)
+    assert verb in verbs, (
+        f"the mutated install.sh should have actually invoked `{verb}` -- "
+        f"this negative control itself is broken if it did not: {calls}"
     )
+    assert verb not in ALLOWED_SYSTEMCTL_VERBS
 
 
 # ------------------------------------------------------------------- (g)
@@ -383,14 +417,33 @@ def test_g_every_external_command_is_timeout_wrapped(tmp_path):
     """A `bash -x` trace names the literal command line as it was
     invoked -- checked here for every bound external command install.sh
     runs: `uv sync`, every `systemctl --user daemon-reload`,
-    `update-desktop-database`, and (with a linked miner timer, via
-    --legacy-miner) `systemctl --user is-enabled`."""
+    `update-desktop-database`, and (unconditionally, per M-U fold r1)
+    `systemctl --user is-enabled`.
+
+    M-U fold r1 (Major 1): `daemon-reload` has THREE call sites (miner
+    block, UI block, host block) and the string occurs three times in a
+    --legacy-miner run -- a bare substring-presence check leaves 2 of
+    the 3 sites undefended (any one of them could drop its `timeout`
+    wrapper and the substring would still match). Checked here by COUNT,
+    so dropping `timeout` from any single site reddens this test. The
+    other three commands each have exactly one call site, so presence
+    already proves that lone site is bounded."""
     env, fake_home, _log = _install_env(tmp_path)
     result = _run(["--legacy-miner"], env, trace=True)
     assert result.returncode == 0, (result.stdout, result.stderr)
     trace = result.stderr
     assert "timeout 60 uv sync" in trace, trace
-    assert "timeout 10 systemctl --user daemon-reload" in trace, trace
+    # `run()`'s `eval "$*"` puts THREE copies of each site's command line in
+    # a `bash -x` trace (the `run '...'` call, the `eval '...'` call, and
+    # the actual execution) -- a raw substring count would need `== 9`,
+    # which is really "3 real executions x 3 trace echoes" in disguise.
+    # Counting only the EXECUTION line (`++ <cmd>`, one `+` deeper than the
+    # `eval` that ran it) isolates the thing that actually matters: one
+    # real execution per site, three sites.
+    daemon_reload_execs = re.findall(
+        r"^\+\+ timeout 10 systemctl --user daemon-reload$", trace, re.MULTILINE
+    )
+    assert len(daemon_reload_execs) == 3, trace
     assert "timeout 10 update-desktop-database" in trace, trace
     assert "timeout 5 systemctl --user is-enabled self-learn-miner.timer" in trace, trace
 
@@ -407,10 +460,13 @@ def test_h_unknown_flag_is_rejected_with_usage_error(tmp_path):
 
 def test_help_flag_prints_usage_and_exits_zero(tmp_path):
     """Positive control for (h): --help is a KNOWN flag, must exit 0,
-    and must never require any of the shimmed tools (systemctl/uv) to
-    even be reachable -- proven by a bare env that intentionally leaves
-    both out, so this test would fail loudly if --help tried to run
-    anything beyond printing usage."""
+    without needing systemctl or uv to do anything. The env below omits
+    `uv` (genuinely absent from a bare PATH="/usr/bin:/bin" -- this repo's
+    `uv` lives outside it) but NOT necessarily `systemctl`, which a stock
+    `/usr/bin` commonly does carry; the property this proves is that the
+    arg loop exits on --help before either tool would ever be invoked, so
+    this test would fail loudly if --help tried to run anything beyond
+    printing usage, regardless of what happens to be on this env's PATH."""
     result = subprocess.run(
         ["bash", str(INSTALL_SH), "--help"],
         env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
