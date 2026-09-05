@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import config
+from self_learn import config, worker
 from self_learn.hosts import Hosts, load_hosts, save_hosts
 from self_learn.primitives import fsops
 
@@ -179,6 +179,34 @@ def test_e_explicit_mode_overrides_preserve_mode(tmp_path):
     fsops.atomic_write(target, "new", mode=0o755)
 
     assert stat.S_IMODE(target.stat().st_mode) == 0o755
+
+
+def test_e2_explicit_mode_lands_exactly_regardless_of_umask(tmp_path):
+    """Fold r2 (r2-2): Finding 6's fix created the temp via `os.open(...,
+    mode)`, whose `mode` argument the process umask masks -- so under
+    umask 0o077, `mode=0o755` landed as 0o700, silently narrower than
+    D6's pinned policy and the module docstring's own "regardless of
+    umask" claim. `os.fchmod` after the `os.open` (bypasses umask, same
+    as `os.chmod`) is the fix -- this pins it under a tighter-than-
+    ambient umask than `test_e`/the rest of the suite ever exercises.
+    Mutation this catches: deleting the `os.fchmod` call reintroduces
+    the umask-stripped 0o700/0o600-narrowed-further failure this test
+    would then see instead of 0o755/0o600."""
+    old_umask = os.umask(0o077)
+    try:
+        target = tmp_path / "f.txt"
+        fsops.atomic_write(target, "new", mode=0o755)
+        assert stat.S_IMODE(target.stat().st_mode) == 0o755
+
+        secret = tmp_path / "token"
+        fsops.private_write(secret, "s")
+        # private_write's 0o600 has no group/other bits for ANY umask to
+        # strip -- included as a companion assertion, not the load-
+        # bearing half of this test (0o755 is, since 0o077 has bits
+        # that overlap 0o755's group/other bits and 0o600 has none).
+        assert stat.S_IMODE(secret.stat().st_mode) == 0o600
+    finally:
+        os.umask(old_umask)
 
 
 # --------------------------------------------------------------- (f) fsync witness
@@ -364,3 +392,64 @@ def test_dump_editable_follows_a_symlinked_config_yaml(tmp_path):
     assert Path(os.readlink(link)) == real
     assert "new-value" in real.read_text(encoding="utf-8")
     assert "old-value" not in real.read_text(encoding="utf-8")
+
+
+# ============================================== fold r2, r2-1: a ratchet
+# against re-nesting `_dump_yaml` (now `fsops.atomic_write`) inside
+# `worker._install_staged`'s merge branch -- fold r1's Finding 10 closure
+# had only a one-time probe as evidence, not a standing test. This drives
+# the REAL `_install_staged` on a merge verdict with a `fsops._temp_path`
+# spy and asserts fsops is never called for the DEST's own
+# `.install-<rid>.tmp` write specifically (`_write_install_journal` --
+# unrelated, a DIFFERENT file -- legitimately calls `fsops.atomic_write`
+# too, and its own `.worker.install-journal.*.tmp` name is expected and
+# excluded below by construction: it never contains "install-merged").
+# Mutation this catches: reverting the merge branch to `_dump_yaml
+# (verdict.merge_data, tmp)` (the exact wave-2 shape fold r1 removed)
+# makes `_temp_path` fire an EXTRA time for a name containing
+# "install-merged" and starting with the double-dot `..install-` shape
+# -- caught by the assertion below, not by any existing test (r2's own
+# gate measured 159 passed across test_attrib.py/test_worker.py/
+# test_repair.py/test_raw_write_gate.py with the re-nesting
+# reintroduced).
+def test_install_staged_merge_branch_never_nests_an_inner_fsops_temp(tmp_path):
+    dest_dir = tmp_path / "proposals"
+    dest_dir.mkdir()
+    dest = dest_dir / "merged.yaml"
+
+    temp_names: list[str] = []
+    real_temp_path = fsops._temp_path
+
+    def spy_temp_path(target):
+        out = real_temp_path(target)
+        temp_names.append(out.name)
+        return out
+
+    verdict = worker._Verdict(
+        error=None,
+        phi=True,
+        record_sha_matches=True,
+        is_hook=False,
+        is_merge=True,
+        name="merged",
+        bucket=None,
+        dest=dest,
+        merge_data={"cluster_id": "c1", "record_shas": {}},
+    )
+
+    fsops._temp_path = spy_temp_path
+    try:
+        worker._install_staged(tmp_path, verdict, dest_dir / "unused.yaml", {})
+    finally:
+        fsops._temp_path = real_temp_path
+
+    inner = [n for n in temp_names if "install-merged" in n]
+    assert inner == [], (
+        "fsops._temp_path was called for the merge install's own temp -- "
+        f"the merge branch re-nested an atomic_write inside itself: {inner} "
+        f"(all fsops temps this call handed out: {temp_names})"
+    )
+    assert dest.is_file()
+    assert "c1" in dest.read_text(encoding="utf-8")
+    # the SWEEPABLE `.install-*` outer name never lingers after a clean run
+    assert list(dest_dir.glob(".install-*")) == []

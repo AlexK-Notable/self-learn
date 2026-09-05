@@ -268,6 +268,31 @@ def _write_and_replace(
             # so the general preserve_mode path keeps the create-then-
             # chmod shape.
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+            # Fold r2 (r2-2): `os.open`'s own `mode` argument is masked
+            # by the process umask (the SAME stripping the comment above
+            # already names as the reason `preserve_mode` keeps the
+            # create-then-`os.chmod` shape) -- so under umask 0o027 or
+            # 0o077, `mode=0o755` landed as 0o750 or 0o700, silently
+            # narrower than the pinned D6 policy promises, and the
+            # module docstring's "regardless of umask" claim was false
+            # for exactly this branch. `os.fchmod` (bypasses umask, same
+            # as `os.chmod`) sets the EXACT bits immediately after
+            # creation, before any content is written -- keeping
+            # Finding 6's no-window property (umask can only REMOVE
+            # bits, never add, so the instant between `os.open` and this
+            # `fchmod` is never WIDER than `mode`, only ever narrower or
+            # equal) while restoring exact-bits-at-any-umask.
+            os.fchmod(fd, mode)
+            # Fold r2 (r2-3, nit): this branch's `O_EXCL` makes a
+            # colliding temp name (same pid AND same `secrets.
+            # token_hex(4)` -- unreachable in practice) fail loudly with
+            # `FileExistsError`, caught below and re-raised naming
+            # `target`. The `else` branch's plain `open(tmp, "wb")`
+            # would instead silently TRUNCATE a colliding temp. Neither
+            # is wrong (both are equally unreachable), but this is the
+            # SAFER of the two -- refuse rather than clobber -- and it
+            # is deliberate, not a reason to drop `O_EXCL` from this
+            # branch or add it to the other.
             with os.fdopen(fd, "wb") as fh:
                 fh.write(payload)
                 if fsync:
@@ -297,8 +322,17 @@ def _write_and_replace(
         # write. Deliberately narrow: only when `.filename` IS the temp
         # path -- a manually-raised `OSError("msg")` in a test has
         # `.filename is None` and is left untouched (`str(exc)` stays
-        # exactly "msg"), and an `os.replace` failure's `.filename2`
-        # (already `target`) is not touched either.
+        # exactly "msg"). Fold r2 (r2-4): for an `os.replace(tmp,
+        # target)` failure specifically, `.filename` (src) IS the temp
+        # path and gets retargeted here same as any other case, while
+        # `.filename2` (dst) already read `target` before this handler
+        # ever ran -- so BOTH end up naming `target`, and `str(exc)`
+        # collapses to ``'<target>' -> '<target>'`` (measured, an
+        # `IsADirectoryError` from `os.replace`: `"[Errno 21] Is a
+        # directory: '<target>' -> '<target>'"`). Still net-correct (the
+        # vanished temp is gone from the message, which is what this
+        # finding asked for) -- just a doubled path a reader should not
+        # mistake for two different files.
         if exc.filename == str(tmp):
             exc.filename = str(target)
         raise
