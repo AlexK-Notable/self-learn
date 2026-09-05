@@ -373,9 +373,17 @@ def test_teach_route_analyst_failure_captures_to_pending(
 def test_teach_route_missing_doctrine_exits_2_pre_spawn(
     env, sdk_fake_analyst, capsys, monkeypatch, tmp_path
 ):
-    # doc 13 T-H3: the doctrine ships package-relative and is normally
-    # always present. Force the "not installed" branch by pointing the
-    # package-refs resolver at an empty dir — the shim must never spawn.
+    """Node name is historical (`_exits_2`) — armor treats a rename as a
+    delete plus an add (two doors instead of one), so the name is kept
+    even though the code changed. A22 (fold r1, 2026-09-04) unified
+    teach's usage-error exit with the CLI's own (`teach.EXIT_USAGE`
+    2 -> 64); this is that exit family, so the expected code below moved
+    from 2 to 64.
+
+    doc 13 T-H3: the doctrine ships package-relative and is normally
+    always present. Force the "not installed" branch by pointing the
+    package-refs resolver at an empty dir — the shim must never spawn.
+    """
     empty_refs = tmp_path / "empty-refs"
     empty_refs.mkdir()
     monkeypatch.setattr(
@@ -383,7 +391,7 @@ def test_teach_route_missing_doctrine_exits_2_pre_spawn(
     )
     rc = cli.main(TEACH_ARGS + ["--route"])
     err = capsys.readouterr().err
-    assert rc == 2
+    assert rc == 64
     assert "routing doctrine not installed — T10" in err
     assert not sdk_fake_analyst["log"].exists()  # pre-spawn
     assert env.pending_files() == [] and env.resolved_files() == []

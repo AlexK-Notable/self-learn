@@ -73,12 +73,18 @@ UNMEASURED; else 0:
         positively confirmed reachable);
     (f) sentinel writability — hold + release a probe at the real
         cache-path resolution; a pre-existing LIVE sentinel (another
-        flow's hold) is heartbeated, never deleted;
-    (g) worker check — stubbed M2-conditional: a real, COUNTED
-        UNMEASURED row (M-K) reading ``worker — M2 — not checked``; M2
-        has not landed, so this row can never be anything but
-        UNMEASURED yet, and its presence is why a fully healthy ledger
-        exits 9 today, not 0.
+        flow's hold) is heartbeated, never deleted.
+
+    There is no ``(g) worker`` row (fold r1, 2026-09-04 — M-K originally
+    shipped one as a real, COUNTED UNMEASURED entry reading
+    ``worker — M2 — not checked``). UNMEASURED means an instrument
+    EXISTS and could not look; M2 has no instrument at all — nothing was
+    ever built to check it — so reporting a verdict for it was
+    reporting a fact this code does not have, and its unconditional
+    presence made every home exit 9 forever, turning the exit code into
+    noise. The worker check (M2) is not yet implemented and is tracked
+    as a capability gap, not a selftest row: it will gain a row, a
+    verdict, and re-enter this list only once M2 exists to be checked.
 """
 
 from __future__ import annotations
@@ -1116,13 +1122,16 @@ def run_selftest(home: Path) -> int:
     time this function actually RUNS, :mod:`cli` has always finished
     loading) on any UNMEASURED with no FAIL; else 0.
 
-    The ``worker`` row (M2 — not yet implemented) is a real, COUNTED
-    UNMEASURED row, not the old uncounted print-and-forget line: it never
-    ran a check, so it must never render or exit as though it did. One
-    consequence, worth stating plainly rather than leaving implicit: with
-    ``worker`` always UNMEASURED, a fully healthy ledger — every other
-    check PASS — exits 9, never 0. ``--selftest`` cannot exit 0 today;
-    it will again once M2 gives the worker row something to measure."""
+    Nine checks, not ten (fold r1, 2026-09-04): there is no ``worker``
+    row. M-K originally shipped one as an unconditional, COUNTED
+    UNMEASURED entry, which made every home — healthy or not — exit 9
+    forever, since UNMEASURED means an instrument exists and could not
+    look, and no instrument for the worker (M2) has ever been built.
+    Reporting a verdict for a check that was never run turned the exit
+    code into noise. The worker check (M2) is not yet implemented; it is
+    tracked as a capability gap, not a row, and will earn a row only
+    once M2 gives it something to measure. A fully healthy, fully
+    configured home exits 0 again."""
     from .cli import EXIT_UNMEASURED
 
     if not home.is_dir():
@@ -1144,7 +1153,6 @@ def run_selftest(home: Path) -> int:
         ("surface", *_check_surface(home, claude_runtime_dir())),
         ("sentinel", *_check_sentinel()),
         ("invocation", *_check_invocation(home)),
-        ("worker", Verdict.UNMEASURED, "M2 — not checked"),
     ]
 
     passed = failed = unmeasured = 0

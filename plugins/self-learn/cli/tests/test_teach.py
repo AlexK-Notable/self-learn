@@ -204,7 +204,7 @@ def test_structured_flags_infer_type_with_echo(home, capsys):
 
 def test_inferred_behavior_without_trigger_is_usage_error(home, capsys):
     rc = run_cli(["teach", "never run sudo from the Bash tool", "--project"])
-    assert rc == 2
+    assert rc == 64
     captured = capsys.readouterr()
     assert "type: behavior (inferred" in captured.out  # echo still shown
     assert "--trigger" in captured.err
@@ -237,7 +237,7 @@ def test_evidence_session_alias(home):
 
 def test_quote_without_session_is_usage_error(home, capsys):
     rc = run_cli(DOD_ARGS + ["--quote", "some quote"])
-    assert rc == 2
+    assert rc == 64
     assert "--session" in capsys.readouterr().err
     assert all_pending(home) == []
 
@@ -341,7 +341,7 @@ def test_supersedes_recorded_old_record_untouched(home, capsys):
 @pytest.mark.parametrize("bad", ["aa000001", "lrn-XYZ", "lrn-aa00", "lrn-AA000001"])
 def test_supersedes_bad_id_format(home, capsys, bad):
     rc = run_cli(["teach", "some fact", "--project", "--supersedes", bad])
-    assert rc == 2
+    assert rc == 64
     assert bad in capsys.readouterr().err
     assert all_pending(home) == []
 
@@ -351,28 +351,28 @@ def test_supersedes_bad_id_format(home, capsys, bad):
 
 def test_type_behavior_without_trigger(home, capsys):
     rc = run_cli(["teach", "x", "--type", "behavior", "--instruction", "do it"])
-    assert rc == 2
+    assert rc == 64
     assert "--trigger" in capsys.readouterr().err
     assert all_pending(home) == []
 
 
 def test_behavior_without_instruction_or_lesson(home, capsys):
     rc = run_cli(["teach", "--type", "behavior", "--trigger", "About to X."])
-    assert rc == 2
+    assert rc == 64
     assert "instruction" in capsys.readouterr().err.lower()
     assert all_pending(home) == []
 
 
 def test_kind_on_knowledge_rejected(home, capsys):
     rc = run_cli(["teach", "a fact", "--type", "knowledge", "--kind", "anti-pattern"])
-    assert rc == 2
+    assert rc == 64
     assert "--kind" in capsys.readouterr().err
     assert all_pending(home) == []
 
 
 def test_trigger_on_knowledge_rejected(home, capsys):
     rc = run_cli(["teach", "a fact", "--type", "knowledge", "--trigger", "t"])
-    assert rc == 2
+    assert rc == 64
     assert "--trigger" in capsys.readouterr().err
     assert all_pending(home) == []
 
@@ -381,14 +381,14 @@ def test_fact_on_behavior_rejected(home, capsys):
     rc = run_cli(
         ["teach", "--type", "behavior", "--trigger", "t", "--instruction", "i", "--fact", "f"]
     )
-    assert rc == 2
+    assert rc == 64
     assert "--fact" in capsys.readouterr().err
     assert all_pending(home) == []
 
 
 def test_mixed_structured_families_rejected(home, capsys):
     rc = run_cli(["teach", "--trigger", "t", "--fact", "f"])
-    assert rc == 2
+    assert rc == 64
     assert all_pending(home) == []
 
 
@@ -396,20 +396,20 @@ def test_two_lesson_body_rejected(home, capsys):
     rc = run_cli(
         ["teach", "--project", "--type", "knowledge", "--fact", "first\n## Fact\nsecond"]
     )
-    assert rc == 2
+    assert rc == 64
     assert "duplicate" in capsys.readouterr().err.lower()
     assert all_pending(home) == []
 
 
 def test_nothing_to_capture(home, capsys):
     rc = run_cli(["teach"])
-    assert rc == 2
+    assert rc == 64
     assert all_pending(home) == []
 
 
 def test_unknown_skill_errors_and_writes_nothing(home, capsys):
     rc = run_cli(["teach", "a fact", "--skill", "nope", "--type", "knowledge"])
-    assert rc == 2
+    assert rc == 64
     assert "nope" in capsys.readouterr().err
     assert all_pending(home) == []
 
@@ -422,12 +422,23 @@ def test_unrecognized_flag_rejected(home, capsys):
 
 
 def test_conflicting_scope_flags_rejected(home, capsys):
+    # fold r1 correction, 2026-09-04: `--project`/`--user` are argparse's
+    # OWN mutually-exclusive group (add_mutually_exclusive_group) --
+    # argparse raises its own SystemExit(2) before teach's `_fail()` (and
+    # therefore teach.EXIT_USAGE) is ever reached. A22 unified teach's
+    # PRIVATE usage code with the CLI's 64; it never touched argparse's
+    # own, unrelated, hardcoded 2 (same class as test_status.py's
+    # "argparse choice error — argparse owns this exit").
     rc = run_cli(["teach", "a fact", "--project", "--user"])
     assert rc == 2
     assert all_pending(home) == []
 
 
 def test_bad_kind_value_rejected(home, capsys):
+    # fold r1 correction, 2026-09-04: `--kind` is declared with argparse
+    # `choices=`, so an out-of-choice value never reaches teach's own
+    # code at all -- argparse's own SystemExit(2), untouched by A22 (see
+    # test_conflicting_scope_flags_rejected above for the same class).
     rc = run_cli(DOD_ARGS + ["--kind", "bogus-kind"])
     assert rc == 2
     assert all_pending(home) == []
@@ -444,13 +455,13 @@ def test_bad_kind_value_rejected(home, capsys):
 )
 def test_route_family_flags_need_route(home, capsys, extra):
     rc = run_cli(DOD_ARGS + extra)
-    assert rc == 2
+    assert rc == 64
     assert "needs --route" in capsys.readouterr().err
     assert all_pending(home) == []
 
 
 def test_route_bad_dest_is_usage_error(home, capsys):
     rc = run_cli(DOD_ARGS + ["--route", "--dest", "bogus"])
-    assert rc == 2
+    assert rc == 64
     assert "--dest must be one of" in capsys.readouterr().err
     assert all_pending(home) == []

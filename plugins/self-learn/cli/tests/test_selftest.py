@@ -4,8 +4,10 @@ Checks (08 §3 T11 row; marker check per 02 §4; drift per doc 13 §4.2):
 (a) capture path via a scratch record, (b) compiler dry-run (in-memory,
 no writes), (c) marker check — only targets that SHOULD have a section
 (≥1 routed record) are flagged, (d) hosts-aware drift check, (e) sentinel
-writability (real cache path resolution, XDG-redirected here), (f) worker
-check stubbed M2-conditional.
+writability (real cache path resolution, XDG-redirected here). There is
+no worker row (fold r1, 2026-09-04 dropped M-K's unconditional M2
+placeholder — see :func:`self_learn.selfcheck.run_selftest`'s
+docstring): a fully healthy sandbox now exits 0, not 9.
 
 Targets resolve via hosts.yaml (doc 13): resolved records live in the
 LEDGER home, the compiled SKILL.md lives in the registered HOST repo.
@@ -96,17 +98,28 @@ def test_selftest_green_on_healthy_sandbox(env, capsys):
     rc = cli.main(["--selftest"])
 
     out = capsys.readouterr().out
+    # this fixture's `env` has no real ~/.claude, so `surface` is
+    # genuinely UNMEASURED (claude-dir-absent, not a free PASS) -- the
+    # only reason this run is 9, not 0; fold r1, 2026-09-04 removed the
+    # separate, unconditional worker placeholder row that used to make
+    # EVERY home exit 9 regardless of this one real UNMEASURED check.
     assert rc == 9
     assert "FAIL" not in out
     for check in ("capture", "compiler", "markers", "drift", "sentinel"):
         assert f"PASS {check}" in out
-    assert "UNMEASURED worker — M2 — not checked" in out
+    assert "worker" not in out
+    assert "UNMEASURED surface" in out
+    assert "8 passed, 1 unmeasured, 0 failed" in out
 
 
 def test_selftest_green_on_empty_home(env, capsys):
-    # No routed records: nothing should have a section yet.
+    # No routed records: nothing should have a section yet. Every real
+    # check trivially PASSes (nothing in any domain to fail or leave
+    # unmeasured), and fold r1, 2026-09-04 dropped the worker placeholder
+    # row that used to force exit 9 regardless -- a genuinely empty,
+    # healthy home exits 0.
     rc = cli.main(["--selftest"])
-    assert rc == 9
+    assert rc == 0
     assert "FAIL" not in capsys.readouterr().out
 
 
@@ -167,10 +180,12 @@ def test_target_file_missing_fails(env, capsys):
 def test_unrouted_targets_are_not_flagged(env, capsys):
     # A markerless host SKILL.md with NO routed records must not fail:
     # 02 §4's bootstrap rule covers first-route targets. (The seed
-    # SKILL.md in the host is already markerless.)
+    # SKILL.md in the host is already markerless.) Nothing routed means
+    # every real check trivially PASSes; fold r1, 2026-09-04 dropped the
+    # worker placeholder row, so this healthy home exits 0.
     (env.ledger / "skills" / "s" / "pending").mkdir(parents=True)
     rc = cli.main(["--selftest"])
-    assert rc == 9
+    assert rc == 0
     assert "FAIL" not in capsys.readouterr().out
 
 
@@ -183,14 +198,19 @@ def test_selftest_leaves_a_live_foreign_sentinel_in_place(env, capsys):
 
     rc = cli.main(["--selftest"])
 
-    assert rc == 9
+    # a live foreign sentinel is a PASS (heartbeat ok), not a FAIL or an
+    # UNMEASURED -- with nothing routed, every real check PASSes, so
+    # (fold r1, 2026-09-04, no worker placeholder row) this exits 0.
+    assert rc == 0
     assert sentinel.sentinel_path().exists()  # never deleted a live hold
     assert "PASS sentinel" in capsys.readouterr().out
 
 
 def test_selftest_probe_sentinel_is_released(env, capsys):
     assert not sentinel.sentinel_path().exists()
-    assert cli.main(["--selftest"]) == 9
+    # fold r1, 2026-09-04: no worker placeholder row -- nothing routed
+    # means every real check PASSes, so this exits 0.
+    assert cli.main(["--selftest"]) == 0
     assert not sentinel.sentinel_path().exists()
 
 
@@ -229,7 +249,9 @@ def test_reach_reachable_fixture_passes_criterion_1(env):
     assert ok is selfcheck.Verdict.PASS
     assert "1 reference-routed record(s) reachable" in reason
 
-    assert cli.main(["--selftest"]) == 9
+    # fold r1, 2026-09-04: no worker placeholder row -- this reference
+    # -only fixture (surface's own domain is empty) is genuinely all-PASS.
+    assert cli.main(["--selftest"]) == 0
 
 
 def test_reach_ancestor_only_pointer_makes_a_child_record_reachable_anc7(env, tmp_path):
@@ -286,7 +308,9 @@ def test_reach_ancestor_only_pointer_makes_a_child_record_reachable_anc7(env, tm
     assert ok is selfcheck.Verdict.PASS, reason
     assert "1 reference-routed record(s) reachable" in reason
 
-    assert cli.main(["--selftest"]) == 9
+    # fold r1, 2026-09-04: no worker placeholder row -- this reference
+    # -only fixture (surface's own domain is empty) is genuinely all-PASS.
+    assert cli.main(["--selftest"]) == 0
 
 
 def test_reach_un3_no_ancestor_reach_row_matches_the_pre_ancestry_shape(env):
@@ -712,9 +736,13 @@ def test_selftest_reports_seven_checks_criterion_12(env, capsys):
     seed_routed_skill_target(env)
     rc = cli.main(["--selftest"])
     out = capsys.readouterr().out
+    # this `env` fixture has no real ~/.claude, so `surface` is genuinely
+    # UNMEASURED (claude-dir-absent) -- the only reason this run is 9,
+    # not 0. fold r1, 2026-09-04 dropped the worker placeholder row, so
+    # the summary line has one fewer UNMEASURED than before (1, not 2).
     assert rc == 9
     assert "PASS reach" in out
-    assert "8 passed, 2 unmeasured, 0 failed" in out
+    assert "8 passed, 1 unmeasured, 0 failed" in out
 
 
 # --------------------------------------------------- FW-66: decode safety
@@ -798,8 +826,11 @@ def test_selftest_survives_corrupt_resolved_record_prints_all_seven_rows(env, ca
     rc = cli.main(["--selftest"])
 
     out = capsys.readouterr().out
-    assert rc == 9
-    assert "9 passed, 1 unmeasured, 0 failed" in out
+    # fold r1, 2026-09-04: no worker placeholder row, and nothing routed
+    # to skill-md/claude-md here means every real check PASSes (the
+    # corrupt resolved record is skipped, not counted) -- exit 0.
+    assert rc == 0
+    assert "9 passed, 0 unmeasured, 0 failed" in out
     for check in (
         "capture", "compiler", "markers", "drift", "reach", "hooks", "surface", "sentinel",
     ):

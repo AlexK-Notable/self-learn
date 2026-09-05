@@ -233,7 +233,9 @@ def test_selftest_drift_covers_new_skill(env, tmp_path, monkeypatch, capsys):
     (claude / "skills" / "mouse-firmware").symlink_to(
         env.host / "plugins" / "mouse-firmware" / "skills" / "mouse-firmware"
     )
-    assert cli.main(["--selftest"]) == 9
+    # fold r1, 2026-09-04: a fully healthy home (all 9 real checks PASS,
+    # no worker placeholder row) exits 0 again.
+    assert cli.main(["--selftest"]) == 0
     capsys.readouterr()
 
     # break the compiled canon: the marker must be reported as drift

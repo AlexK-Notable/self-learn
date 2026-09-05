@@ -203,7 +203,10 @@ def test_selftest_cli_includes_hooks_line(env, capsys):
     rc = cli.main(["--selftest"])
     out = capsys.readouterr().out
     assert "PASS hooks" in out
-    assert rc == 9
+    # fold r1, 2026-09-04: no worker placeholder row -- this env has a
+    # real claude_dir with a live registration, so every real check
+    # PASSes and the run exits 0.
+    assert rc == 0
 
 
 def test_selftest_cli_fails_on_missing_script(env, capsys):

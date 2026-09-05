@@ -81,19 +81,30 @@ def test_verdict_members_render_as_their_own_name():
 # ------------------------------------------------- run_selftest end to end
 
 
-def test_healthy_home_exits_9_not_0_because_worker_is_always_unmeasured(env, capsys):
-    """Class: healthy zeros (a home with nothing routed). Every real
-    check PASSes; only `worker` (M2, now counted) is UNMEASURED.
-    Mutation witness: change `cli.EXIT_UNMEASURED` from 9 to 0 (or
-    `run_selftest`'s `return EXIT_UNMEASURED` back to `return 0`) and
-    this reddens on the exit-code assertion alone."""
+def test_healthy_home_exits_0_no_worker_placeholder_row(env, capsys):
+    """PINS fold r1 (2026-09-04): a home with nothing routed has every
+    real check PASS, and there is no `worker` row at all any more (M-K
+    originally shipped one as an unconditional, COUNTED UNMEASURED
+    entry — reporting a verdict for a check that was never run, which
+    made every home exit 9 forever). Nine real checks, all PASS: exit 0.
+
+    Mutation witness the gate can use: re-adding the dropped
+    `("worker", Verdict.UNMEASURED, "M2 — not checked")` tuple to
+    `run_selftest`'s ``results`` list reddens this test on the exit-code
+    assertion alone (rc goes back to 9), and also on the summary-line
+    assertion (the count changes from 9 to 10 total, 1 unmeasured).
+    Separately, reverting `cli.EXIT_UNMEASURED` from 9 to 0 (or
+    `run_selftest`'s `return EXIT_UNMEASURED` back to `return 0`) would
+    make ANY future genuine UNMEASURED silently read as success — that
+    mutation is exercised by `test_hosts_yaml_absent_is_unmeasured_not_a_silent_pass`
+    below, not by this all-PASS fixture."""
     rc = cli.main(["--selftest"])
     out = capsys.readouterr().out
 
-    assert rc == 9
+    assert rc == 0
     assert "FAIL" not in out
-    assert "UNMEASURED worker — M2 — not checked" in out
-    assert "9 passed, 1 unmeasured, 0 failed" in out
+    assert "worker" not in out
+    assert "9 passed, 0 unmeasured, 0 failed" in out
 
 
 def test_hosts_yaml_absent_is_unmeasured_not_a_silent_pass(tmp_path, monkeypatch):

@@ -85,18 +85,36 @@ from .scan import format_refusal, redact, scan
 __all__ = ["add_teach_parser", "infer_type", "run_teach"]
 
 EXIT_OK = 0
-EXIT_USAGE = 2
+# A22 (fold r1, 2026-09-04): teach's own usage-error code is now the
+# SAME code every other CLI surface uses for "you typed the command
+# wrong" -- cli.EXIT_USAGE (64), not a private 2. Kept as a literal
+# rather than `from .cli import EXIT_USAGE` because that import would be
+# genuinely circular at module scope: cli.py's own `from .teach import
+# add_teach_parser, run_teach` (line 74) runs BEFORE cli.py defines its
+# own EXIT_USAGE (line 83), so teach.py's top level would be reading an
+# attribute that doesn't exist yet on the partially-initialized `cli`
+# module. Identical shape to `EXIT_UNMEASURED` in selfcheck.py/cli.py
+# (M-K, 2026-09-04): the deferred-import fix there works because
+# `run_selftest` calls it long after both modules finish loading; here
+# there is no single call site to defer from (`_fail` alone has over
+# twenty call sites), so the literal is kept in sync by hand instead —
+# change one, change the other.
+EXIT_USAGE = 64
 EXIT_SCAN = 3
 EXIT_ANALYST = 4  # analysis/route failed — record captured to pending/
 # 5, 6 and 7 are the SHARED codes, imported (not re-pinned) from the
 # modules that own the concepts — see their docstrings. teach used to
 # return its own EXIT_USAGE(2) for a bad home while all eight other
 # surfaces returned 5 (audit 2026-07-16 MINOR G); importing is what keeps
-# that unified. Round 7 BLOCKER 2: sharing the INTEGER was never enough —
-# teach documented 6 as "the record IS written", the verbs documented the
-# same 6 as "nothing was written", and both were right about themselves.
-# One code, one state fact, every surface: 6 = nothing written · 7 = the
-# write landed, its commit did not.
+# that unified. EXIT_USAGE itself joined that unification in spirit
+# (A22, above) without joining it mechanically -- the circular import
+# blocks a literal `from .cli import`, so it is a hand-kept literal, not
+# an imported one; the two are not the same Python object even though
+# they carry the same value. Round 7 BLOCKER 2: sharing the INTEGER was
+# never enough — teach documented 6 as "the record IS written", the
+# verbs documented the same 6 as "nothing was written", and both were
+# right about themselves. One code, one state fact, every surface:
+# 6 = nothing written · 7 = the write landed, its commit did not.
 EXIT_NO_HOME = _EXIT_NO_HOME              # bad ledger home — nothing written
 EXIT_GIT_FAILED = _EXIT_GIT_FAILED        # git failed BEFORE any write
 EXIT_HALF_WRITTEN = _EXIT_HALF_WRITTEN    # record WRITTEN but not committed
@@ -236,9 +254,10 @@ def _home_gate(home) -> int | None:
     """teach's WRITE-surface home gate — the same answer every other
     surface gives (:data:`EXIT_NO_HOME`), refused before anything is
     written. ledger_ops.require_writable_home also refuses, but as a
-    LedgerOpsError that teach mapped onto its own EXIT_USAGE(2) — a code
-    that means "you typed the command wrong", not "your ledger is
-    missing" (audit 2026-07-16 MINOR G)."""
+    LedgerOpsError that teach mapped onto its own EXIT_USAGE (64,
+    formerly 2 — A22, 2026-09-04) — a code that means "you typed the
+    command wrong", not "your ledger is missing" (audit 2026-07-16
+    MINOR G)."""
     state = home_state(home)
     if state in ("missing", "not-a-repo"):
         print(f"self-learn teach: {home_state_message(state, home)}", file=sys.stderr)

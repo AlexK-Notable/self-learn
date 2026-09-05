@@ -621,7 +621,9 @@ def test_dc11_selftest_row(monkeypatch, capsys, _home, tmp_path):
     monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
     rc = cli_mod.main(["--selftest"])
     out = capsys.readouterr().out
-    assert rc == 9
+    # fold r1, 2026-09-04: no worker placeholder row -- this fresh env's
+    # 9 real checks all PASS, so the run exits 0.
+    assert rc == 0
     assert "PASS invocation" in out
 
 

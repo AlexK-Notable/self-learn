@@ -692,8 +692,12 @@ class TestDriftAndRecompile:
         assert "hosts.yaml absent" in reason
 
     def test_selftest_green_on_fresh_env(self, env, monkeypatch, capsys):
+        # fold r1, 2026-09-04: no worker placeholder row -- a fresh,
+        # fully healthy env (all 9 real checks PASS) exits 0, matching
+        # the test's own name, which the pre-fold M-K exit-9 behavior
+        # never actually satisfied.
         monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
-        assert run_selftest(env.ledger) == 9
+        assert run_selftest(env.ledger) == 0
         out = capsys.readouterr().out
         assert "PASS drift" in out
 
