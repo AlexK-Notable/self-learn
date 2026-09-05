@@ -962,32 +962,62 @@ human routes it.
   and the gate's verification table:
   `drafts/u-docs-truth-sweep-spec.md`.
 - **2026-09-04 — S-58 amended: one mechanism, per-key direction (Sprint 2
-  plan v2 §2 M-S; decision D1).** The two precedence DIRECTIONS `S-58`
-  ruled on 2026-07-19/2026-09-01 are unchanged — the settings registry's
-  operator-policy keys stay `override > config.yaml > env > default`;
-  provider/model/backend SELECTION keys stay `override > env >
-  config.yaml > default`, an emergency-rollback trade the registry's own
-  trade does not share. What changes is the MECHANISM count: `provider.py`'s
-  second, independent transcription of the backend-selection chain
+  plan v2 §2 M-S; decision D1); folded r1 same day against a blind spec
+  gate (2 Blockers, 6 Majors, 5 minors, 2 nits — see `03-decisions.md`'s
+  `S-58` row for the folded text; not yet gate-CLEAN).** The two
+  precedence DIRECTIONS `S-58` ruled on 2026-07-19/2026-09-01 are
+  unchanged — the settings registry's operator-policy keys stay
+  `override > config.yaml > env > default`; provider/model/backend
+  SELECTION keys stay `override > env > config.yaml > default`, an
+  emergency-rollback trade the registry's own trade does not share.
+  What changes is the MECHANISM count: `provider.py`'s second,
+  independent transcription of the backend-selection chain
   (`resolve_backend_name`) and its own env/config lookups
   (`_resolve_provider`, `_resolve_str_setting`, `model_for`), plus
   `config.py`'s two loaders that exist only to feed them
   (`invocation_backend`, `provider_setting`), retire in favour of ONE
-  registry-backed resolver. `settings.py`'s `Setting` gains a
-  `direction: Literal["config-first", "env-first"]` field (default
-  `"config-first"`, so no existing entry moves); every selection key
-  above joins the registry as `"env-first"`, keeping its existing env
-  name and validation. One behaviour addition, not a byproduct: the
-  override rung (`SELF_LEARN_OVERRIDE_<NAME>`) now reaches selection
-  keys too, and `SELF_LEARN_SDK_CLI_PATH` — env-only today, no
-  config.yaml rung — gains one, `sdk.cli_path`. The amendment also pins
-  a constraint the unifying mechanism must preserve: the backend chain
-  is five rungs at both the env and config ends (a per-surface specific
-  key, then a general one), three selectors serving four surfaces
-  (`worker`/`worker-repair` share `WORKER`), and `Rs-a1`'s asymmetry
-  (an empty per-surface config value terminates at the default; an
-  absent one falls through to the general key) is armor-pinned in
-  `test_invocation.py` and must not change. `03-decisions.md`'s `S-58`
-  row carries the full amendment; `01`–`17` are otherwise unchanged by
-  this entry. Code lands separately, in Sprint 2 lane L4, after a blind
-  spec gate on this amendment.
+  registry-backed resolver. `settings.py`'s `Setting` gains
+  `direction: Literal["config-first", "env-first"]` (default
+  `"config-first"`, so no existing entry moves), `enabled_when` (a
+  provider-name predicate gating the bedrock leaf, r1 BLOCKER-2 — the
+  existing `if provider == "bedrock":` gate in `model_for`, now
+  registry-expressed instead of dropped), and an optional `env_var`
+  (some entries carry no env rung at all). Every selection key that
+  lived outside the registry joins as `"env-first"`, fully qualified
+  and section-exact (`provider.name`, `provider.bedrock.region`,
+  `provider.bedrock.profile`, `provider.bedrock.models.worker|miner|
+  analyst|small_fast`, `invocation.backend`/`invocation.backend_
+  <surface>`), keeping its existing env name and validation (a
+  CLAMPING `validate`, never falling through, so the byte-exact
+  `test_invocation.py` warnings stay unedited — r1 MAJOR-2). r1
+  BLOCKER-1, measured on this host: `models.{worker,miner,analyst}`
+  is NOT already covered the way the amendment first assumed —
+  `config get models.analyst` reports the key unknown while
+  `SELF_LEARN_ANALYST_MODEL` already governs `model_for` env-first, so
+  `settings-surface-spec.md` §1.2's config-first ruling for these three
+  keys never took effect in code. The amendment corrects §1.2's
+  direction for exactly these three keys to `env-first` and registers
+  them as a new top-level `models:` section, env vars unchanged
+  (`SELF_LEARN_{WORKER,MINER,ANALYST}_MODEL`), override vars
+  `SELF_LEARN_OVERRIDE_MODELS_{WORKER,MINER,ANALYST}`, default each
+  surface's own already-called function — this also adds a config.yaml
+  rung, `models.<surface>`, that has no precedent in code today. One
+  behaviour addition beyond that correction: the override rung
+  (`SELF_LEARN_OVERRIDE_<NAME>`) now reaches selection keys too, and
+  `SELF_LEARN_SDK_CLI_PATH` — env-only today, no config.yaml rung —
+  gains one, `sdk.cli_path`. The amendment pins a constraint the
+  unifying mechanism must preserve: the backend chain has a
+  specific/general PAIR at each of its two ends (env, config) — four
+  selector rungs plus the default, five total, not five at each end
+  (r1 nit-1) — with three selectors (`WORKER`/`MINER`/`ANALYST`)
+  serving four surfaces (`worker`/`worker-repair` share `WORKER`), and
+  `Rs-a1`'s asymmetry (an empty per-surface config value terminates at
+  the default; an absent one falls through to the general key) is
+  armor-pinned in `test_invocation.py` and must not change; the default
+  rung stays `S-47`'s per-surface table, not a flattened literal (r1
+  MAJOR-6). The resolver's exact module is left to the code build,
+  constrained only to sit below the seam `invocation/`'s own `I-b` rule
+  permits (r1 minor-5). `03-decisions.md`'s `S-58` row carries the full
+  folded amendment; `01`–`17` are otherwise unchanged by this entry.
+  Code lands separately, in Sprint 2 lane L4, after the blind spec gate
+  returns CLEAN.
