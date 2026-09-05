@@ -2220,17 +2220,25 @@ def _cmd_push() -> int:
         # what a human runs when something went wrong, so it heals first.
         # Cheap and idempotent on a clean ledger (one `git status`).
         healed = reconcile_mod.reconcile(home, no_push=True)
-        if healed.healed:
+        if healed.committed:
             print(
                 f"push: reconciled {len(healed.committed)} orphaned record(s) "
                 "first (a producer wrote them but could not commit them)"
             )
+        # M-W/D7: a collapse/host-rebind interrupted mid-transaction —
+        # `reconcile()` above already resolved it (roll forward or
+        # restore) before its own orphan scan ran; this just names what
+        # happened, the same way the orphan line above does.
+        for intent_id in healed.rolled_forward:
+            print(f"push: recovered {intent_id} (rolled forward: its commit landed)")
+        for intent_id in healed.restored:
+            print(f"push: recovered {intent_id} (restored: its mutation was undone)")
         # M-C: a refusal here is informational, never fatal to the push —
         # `push` republishes whatever IS already committed regardless.
         # But this is "the one moment the gap is most visible" (module
         # docstring), so name every offender instead of the silence a
         # refused-with-nothing-committed `reconcile()` used to pass through.
-        for line in (*healed.blocked, *healed.invalid):
+        for line in (*healed.blocked, *healed.invalid, *healed.stopped):
             print(f"push: NOT reconciled — {line}", file=sys.stderr)
         report = verbs.push_pending(home)
     except gitops.HalfWrittenError as exc:
@@ -2281,14 +2289,30 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
             "the file by hand, then re-run reconcile.",
             file=sys.stderr,
         )
+    for line in result.stopped:
+        print(
+            f"reconcile: NOT recovered — {line}\n"
+            "  a collapse/host-rebind transaction's intent could not be "
+            "resolved (neither its final state verified, nor its prior "
+            "content recoverable) — the intent file is left in place; "
+            "repair by hand, then re-run reconcile.",
+            file=sys.stderr,
+        )
+    for intent_id in result.rolled_forward:
+        print(f"reconcile: recovered {intent_id} (rolled forward: its commit landed)")
+    for intent_id in result.restored:
+        print(f"reconcile: recovered {intent_id} (restored: its mutation was undone)")
     if result.refused:
-        # M-C: an invalid member or a blocked rename refuses the WHOLE
-        # batch — nothing was staged, even for orphans that validated
-        # fine. That is exactly EXIT_GIT_FAILED's own promise ("6 means
-        # NOTHING WAS WRITTEN"), reused here rather than minting a ninth
-        # exit code for the identical guarantee.
+        # M-C (widened M-W/D7): an invalid member, a blocked rename, or an
+        # unresolved intent refuses the WHOLE batch — nothing was staged,
+        # even for orphans that validated fine. That is exactly
+        # EXIT_GIT_FAILED's own promise ("6 means NOTHING WAS WRITTEN"),
+        # reused here rather than minting a ninth exit code for the
+        # identical guarantee.
         return EXIT_GIT_FAILED
     if not result.committed:
+        if result.rolled_forward or result.restored:
+            return EXIT_OK
         print("reconcile: nothing uncommitted — the ledger is whole")
         return EXIT_OK
     # ReconcileResult.sha is str | None by field default, but every path

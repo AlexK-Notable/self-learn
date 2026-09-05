@@ -85,7 +85,7 @@ from pathlib import Path
 
 from ruamel.yaml.error import YAMLError
 
-from . import compiled, gitops, ledger_ops
+from . import compiled, config, gitops, hosts, intents, ledger_ops
 from .records import Record, RecordError
 
 __all__ = [
@@ -132,6 +132,8 @@ _ASSET_ERRORS = (
     RecordError,
     ledger_ops.LedgerOpsError,
     compiled.CompiledRecordError,
+    hosts.HostsError,
+    config.ConfigWriteError,
     YAMLError,
     UnicodeDecodeError,
     OSError,
@@ -152,11 +154,19 @@ _RECONCILABLE_KINDS: tuple[tuple[str, str], ...] = (
     ("meta.yaml", "meta"),
 )
 
-#: U-hostmode RCN1: the compile record is ledger truth too — one file per
-#: host, HOME-relative (never inside a bucket, so it needs its own check
-#: rather than a `_RECONCILABLE_KINDS` entry, which `_classify` matches
-#: bucket-relatively).
-_RECONCILABLE_HOME = ("compiled/*.yaml",)
+#: U-hostmode RCN1 (widened M-W/D7): HOME-relative ledger truth — never
+#: inside a bucket, so each needs its own check rather than a
+#: `_RECONCILABLE_KINDS` entry, which `_classify` matches bucket-
+#: relatively. `hosts.yaml`/`config.yaml` close the M-W gap: neither had
+#: ANY path-shape match here before (`hosts.save_hosts` writes
+#: `hosts.yaml`, `config.dump_editable` writes `config.yaml`, and a crash
+#: between either write and its commit was invisible to `find_orphans` —
+#: not even reported `blocked`, just silently never healed).
+_RECONCILABLE_HOME: tuple[tuple[str, str], ...] = (
+    ("compiled/*.yaml", "compiled"),
+    ("hosts.yaml", "hosts"),
+    ("config.yaml", "config"),
+)
 
 #: Porcelain XY codes that mean "this path has a staged deletion or
 #: rename" — the half-committed-``git mv`` shape reconcile must not touch.
@@ -170,26 +180,34 @@ class ReconcileResult:
     porcelain entries reconcile refused to guess at, verbatim, for a
     human (a half-committed ``git mv``). ``invalid`` (M-C) — orphans that
     parsed by path shape but failed their asset-kind content check, one
-    ``"<path>: <reason>"`` string each. ``push`` — None when nothing was
+    ``"<path>: <reason>"`` string each. ``stopped`` (M-W/D7) — intent ids
+    :func:`intents.recover` could not resolve (neither roll-forward nor
+    restore verified), one ``"<intent-id>: <reason>"`` string each; the
+    intent file is left in place for a human. ``rolled_forward`` /
+    ``restored`` (M-W/D7) — intent ids :func:`intents.recover` resolved,
+    by which of the two outcomes. ``push`` — None when nothing was
     committed or ``no_push``."""
 
     committed: list[Path] = field(default_factory=list)
     sha: str | None = None
     blocked: list[str] = field(default_factory=list)
     invalid: list[str] = field(default_factory=list)
+    stopped: list[str] = field(default_factory=list)
+    rolled_forward: list[str] = field(default_factory=list)
+    restored: list[str] = field(default_factory=list)
     push: gitops.PushResult | None = None
 
     @property
     def healed(self) -> bool:
-        return bool(self.committed)
+        return bool(self.committed or self.rolled_forward or self.restored)
 
     @property
     def refused(self) -> bool:
-        """M-C: true iff the batch was refused whole — an invalid member
-        or a blocked rename was present, so nothing was staged even
-        though ``find_orphans`` may have found other, individually valid
-        orphans alongside it."""
-        return bool(self.blocked or self.invalid)
+        """M-C (widened M-W/D7): true iff the batch was refused whole, OR
+        an intent recovery could not resolve — either way ``committed``
+        is not the full picture and a caller must surface the offenders
+        rather than treat this as a quiet no-op."""
+        return bool(self.blocked or self.invalid or self.stopped)
 
 
 def _porcelain(home: Path) -> list[tuple[str, Path]]:
@@ -220,9 +238,9 @@ def _classify(home: Path, path: Path) -> str | None:
     ``None`` when *path* is not one reconcile owns at all. Also the one
     place path-shape matching happens; `_is_reconcilable` is this
     compared to ``None``."""
-    for pattern in _RECONCILABLE_HOME:
+    for pattern, kind in _RECONCILABLE_HOME:
         if path.parent == (home / pattern).parent and path.match(pattern):
-            return "compiled"
+            return kind
     from .ledger import discover_buckets
 
     for bucket in discover_buckets(home):
@@ -350,6 +368,18 @@ def _validate_orphans(home: Path, orphans: list[Path]) -> list[str]:
                 _validate_meta(path)
             elif kind == "compiled":
                 _validate_compiled(path)
+            elif kind == "hosts":
+                # M-W/D7: the writer's own parser IS the schema check
+                # (`hosts.load_hosts` already raises `HostsError` on
+                # unparseable/malformed content) — no second, reconcile-
+                # owned validator to keep in sync with hosts.py's own.
+                hosts.load_hosts(home)
+            elif kind == "config":
+                # Same reasoning as `hosts` above: `config.load_editable`
+                # is config.py's own WRITE-time parser (raises
+                # `ConfigWriteError` on unparseable/non-mapping content),
+                # reused here rather than duplicated.
+                config.load_editable(home)
             # kind is never None here: every `path` came from
             # `find_orphans`, which already filtered by `_is_reconcilable`.
         except _ASSET_ERRORS as exc:
@@ -386,15 +416,36 @@ def reconcile(home: Path, *, no_push: bool = False) -> ReconcileResult:
     rename found alongside, refuses the WHOLE batch (``ReconcileResult.
     refused``) — see the module docstring for why a partial heal is not
     an option here. Callers that must never abort on a refusal (the
-    miner) read ``result.blocked`` / ``result.invalid`` and carry on."""
+    miner) read ``result.blocked`` / ``result.invalid`` and carry on.
+
+    M-W/D7: :func:`intents.recover` runs FIRST, inside the same lock —
+    an incomplete collapse/rebind leaves a staged rename, which
+    ``find_orphans`` would otherwise report ``blocked`` forever (never
+    reconcile's to complete one file at a time); recovering it first
+    means the orphan scan below only ever sees a clean-or-ordinary tree.
+    ``intents.recover`` takes the lock again itself (re-entrant, see
+    :data:`gitops._held_locks`) — the nesting is deliberate, not an
+    oversight."""
     home = Path(home)
+    recovered = intents.recover(home)
     with gitops.commit_lock(home):
         orphans, blocked = find_orphans(home)
         if not orphans:
-            return ReconcileResult(blocked=blocked)
+            return ReconcileResult(
+                blocked=blocked,
+                stopped=recovered.stopped,
+                rolled_forward=recovered.rolled_forward,
+                restored=recovered.restored,
+            )
         invalid = _validate_orphans(home, orphans)
         if blocked or invalid:
-            return ReconcileResult(blocked=blocked, invalid=invalid)
+            return ReconcileResult(
+                blocked=blocked,
+                invalid=invalid,
+                stopped=recovered.stopped,
+                rolled_forward=recovered.rolled_forward,
+                restored=recovered.restored,
+            )
         message = RECONCILE_SUBJECT.format(n=len(orphans))
         try:
             gitops.stage(home, orphans)
@@ -407,4 +458,12 @@ def reconcile(home: Path, *, no_push: bool = False) -> ReconcileResult:
     # The push is OUTSIDE the lock (it touches no index — see the gitops
     # module docstring for the re-scope).
     push = None if no_push else gitops.push_if_remote(home)
-    return ReconcileResult(committed=orphans, sha=sha, blocked=blocked, push=push)
+    return ReconcileResult(
+        committed=orphans,
+        sha=sha,
+        blocked=blocked,
+        stopped=recovered.stopped,
+        rolled_forward=recovered.rolled_forward,
+        restored=recovered.restored,
+        push=push,
+    )

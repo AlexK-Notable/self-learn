@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
-from . import domain, invocation, sentinel, settings, telemetry
+from . import domain, intents, invocation, sentinel, settings, telemetry
 from .primitives import chrono, fsops, truncate
 from .compilers import BEGIN_MARKER, END_MARKER
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
@@ -3719,6 +3719,22 @@ def run(
     ``resolve_home()`` and this call's ``home`` disagree (measured: 99.0
     vs. home-A's 11.0). One run must read one policy file."""
     home = Path(home)
+    # M-W (D7): recover any collapse/host-rebind transaction a previous
+    # run's SIGKILL left mid-flight, BEFORE this run's own enumeration
+    # reads the ledger — a staged rename left by one of those is
+    # invisible to `reconcile()`'s ordinary orphan scan (blocked
+    # forever), and the narrow `intents.recover` call, not a full
+    # `reconcile()`, is what runs here to minimize behavior change on
+    # this armor-pinned path (`reconcile()` itself is unchanged for the
+    # miner/push call sites, which already called it).
+    recovered = intents.recover(home)
+    if recovered.rolled_forward or recovered.restored or recovered.stopped:
+        log(
+            "run: recovered intent(s) from a prior interrupted run — "
+            f"rolled forward {recovered.rolled_forward}, "
+            f"restored {recovered.restored}, "
+            f"stopped {recovered.stopped}"
+        )
     if no_push is None:
         no_push = no_push_requested()
     cache_dir().mkdir(parents=True, exist_ok=True)

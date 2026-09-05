@@ -71,7 +71,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import config as policy_config
-from . import domain, gitops, ledger_ops, sentinel, telemetry
+from . import domain, gitops, intents, ledger_ops, sentinel, telemetry
 from .primitives import chrono, fsops
 from .hook_compiler import replay_examples, script_name, settings_snippet
 from .normalize import sha_anchor
@@ -4074,6 +4074,51 @@ def _execute_route(
         # THIS write is based on, never a later re-read (U-hostmode
         # §4.5b/REC12/REC13).
         observed_hash = _observe_region_hash(spec)
+
+        # M-W (D7): collapse folds several files (the survivor's merge
+        # write, its git-mv into resolved/, a supersede-git-mv per
+        # old_id/loser, the merge-proposal removal) into ONE commit — a
+        # SIGKILL between any two of them leaves a staged rename or a
+        # staged deletion, and `reconcile._BLOCKING_CODES` refuses to
+        # touch either shape forever (a half-committed `git mv`/`git rm`
+        # must never be completed one file at a time). The intent
+        # brackets exactly that span: opened here, before the first
+        # mutation, closed by `intents.finish` right after the ledger
+        # commit below. Deliberately NOT covering the compile-record
+        # writes further down (`_write_compile_record_entry`,
+        # `_complete_old_retirement`, `_resync_three_regions`): every one
+        # of those lands at `home/compiled/*.yaml`, which
+        # `reconcile._RECONCILABLE_HOME` already heals on its own (path-
+        # shape + M-C content validation) regardless of which operation
+        # orphaned it — duplicating that coverage here would buy nothing
+        # a plain `reconcile()` orphan-scan does not already give for
+        # free. A plain (non-collapse) route is out of D7's scope
+        # entirely: it mutates exactly one path before its commit, which
+        # is already the shape `reconcile()` heals today.
+        intent: intents.Intent | None = None
+        if collapse is not None:
+            intent_paths: list[Path] = [
+                collapse.pending_path,
+                bucket_dir / "resolved" / f"{record_id}.md",
+            ]
+            if old_id is not None:
+                assert old_path is not None  # see the narrowing note above
+                if old_path.parent.name == "pending":
+                    intent_paths += [
+                        old_path,
+                        old_path.parent.parent / "resolved" / f"{old_id}.md",
+                    ]
+                else:
+                    intent_paths.append(old_path)
+            for loser_id in losers:
+                intent_paths += [
+                    collapse.pending_path.parent / f"{loser_id}.md",
+                    bucket_dir / "resolved" / f"{loser_id}.md",
+                ]
+            if collapse.merge_path.exists():
+                intent_paths.append(collapse.merge_path)
+            intent = intents.begin(home, "collapse", intent_paths, message)
+
         if merged is not None:
             merged.write(collapse.pending_path)  # type: ignore[union-attr]
 
@@ -4161,6 +4206,14 @@ def _execute_route(
             verb_label=verb_label,
         )
 
+        if intent is not None:
+            # M-W (D7): every collapse mutation has now landed on disk —
+            # record each step's REAL final state in one pass. A crash
+            # before this line leaves every step's `new_sha` unrecorded
+            # (`recover()` restores); a crash after it (commit included)
+            # leaves every step verified (`recover()` rolls forward).
+            intents.complete(intent)
+
         if capture_diff:
             try:
                 staged = gitops.stage(home, touched)
@@ -4173,6 +4226,10 @@ def _execute_route(
         else:
             diff_text = None
             staged, sha = _commit_ledger(home, touched, message, note)
+
+        if intent is not None:
+            # The commit landed — this intent's job is done.
+            intents.finish(intent)
 
         # `route` telemetry (11 §4.3, U-reach §2.2): placed immediately
         # after the ledger commit closes — the ledger commit IS the
