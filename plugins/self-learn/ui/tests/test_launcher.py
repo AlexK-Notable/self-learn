@@ -68,15 +68,25 @@ def _write_fake(bindir: Path, name: str, body: str) -> Path:
     return path
 
 
-def _hermetic_bindir(tmp_path: Path, **fakes: str) -> Path:
+def _hermetic_bindir(
+    tmp_path: Path, *, omit: tuple[str, ...] = (), **fakes: str
+) -> Path:
     """A PATH with ONLY symlinks to the required real coreutils plus one
     fake script per keyword arg (``_``-separated arg name -> ``-``
     binary name, e.g. ``google_chrome_stable=`` -> ``google-chrome-stable``).
     Nothing else is reachable — a binary omitted here is genuinely
-    absent to the script under test."""
+    absent to the script under test.
+
+    ``omit`` (D8 gate r2 minor 2) additionally excludes named entries
+    from ``_REQUIRED_REAL_BINS`` itself — e.g. ``omit=("jq",)`` makes
+    ``jq`` genuinely absent, which was previously inexpressible (every
+    required bin was always linked in). Defaults to ``()`` so every
+    existing call site is unchanged."""
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     for name in _REQUIRED_REAL_BINS:
+        if name in omit:
+            continue
         real = shutil.which(name)
         assert real, f"host is missing {name}, required by the test harness itself"
         link = bindir / name
@@ -1685,6 +1695,14 @@ _SELF_LEARN_UI_SLEEP_TMPL = """
 exec sleep {sleep_s}
 """
 
+_SELF_LEARN_UI_LOGGING_JSON_TMPL = """
+echo invoked >> "{log}"
+if [[ "${{1:-}}" == "paths" ]]; then
+  echo '{json}'
+fi
+exit 0
+"""
+
 
 def _run_paths_verb(env: dict[str, str]) -> dict[str, str]:
     """Drive the real console-script binary this package's OWN venv
@@ -1964,3 +1982,57 @@ def test_opener_falls_back_with_stderr_when_shim_sleeps_past_timeout(
     assert "self-learn-ui-open:" in result.stderr
     assert "falling back" in result.stderr
     assert "token=mirrortok" in _wait_for_nonempty(chromium_log)
+
+
+def test_opener_falls_back_silently_and_never_invokes_shim_when_jq_absent(
+    tmp_path: Path,
+) -> None:
+    """D8 gate r2 minor 2: pins the r1 minor-3 `jq` guard in
+    `_try_verb_paths` (`command -v jq >/dev/null 2>&1 || return 1`,
+    self-learn-ui-open ~236). `jq` absence was previously inexpressible
+    in this harness — `_REQUIRED_REAL_BINS` always got linked in
+    unconditionally — hence the new `omit=` parameter on
+    `_hermetic_bindir`.
+
+    Two discriminators, matching the gate's own hand probe: zero stderr
+    (same silent posture as the shim-absent case, not the loud
+    present-but-failing one), AND the `self-learn-ui` shim is NEVER
+    INVOKED at all — a logging fake proves this directly, which is
+    stronger than only observing the fallback token in the URL (a `jq`
+    FAILURE, as opposed to `jq` ABSENCE, could also produce that same
+    observable URL while still having run the shim).
+
+    Mutation witness: deleting the `command -v jq ... || return 1` guard
+    reddens this test — with `jq` absent and no guard, `_try_verb_paths`
+    invokes the shim (the `invoked` log gets written), then both `jq -r`
+    calls fail (`|| true`-absorbed, so the script does not crash) leaving
+    both verb fields empty, tripping the "unparsable output" branch — so
+    without the guard the shim WOULD have run and this test's
+    `not invoked_log.exists()` assertion goes red, even though the
+    end-to-end fallback-to-mirror behaviour still happens to work.
+    """
+    invoked_log = tmp_path / "self-learn-ui-invoked.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        omit=("jq",),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+        self_learn_ui=_SELF_LEARN_UI_LOGGING_JSON_TMPL.format(
+            log=invoked_log, json='{"cache_dir": "/x", "token_path": "/y"}'
+        ),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    token_dir = runtime_dir / "self-learn"
+    token_dir.mkdir()
+    (token_dir / "ui-token").write_text("mirrortok", encoding="utf-8")
+    env = _env(tmp_path, bindir, XDG_RUNTIME_DIR=str(runtime_dir))
+
+    result = _run(env)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert "token=mirrortok" in _wait_for_nonempty(chromium_log)
+    assert not invoked_log.exists(), (
+        "the self-learn-ui shim must never run when jq is absent"
+    )
