@@ -216,10 +216,11 @@ def test_route_sites_are_derived_and_all_spool():
     """Criterion 20: ROUTE-SITES is derived by AST walk (a function
     containing `set_routing(` or a `resolve_record(..., "routed", ...)`
     call), not hand-listed — and the collector carries its OWN positive
-    control: non-empty, and containing at least `route`/`route_direct`.
-    "Every collected function spools" is vacuously true against an empty
-    set (F3 / M22 — hoisting the "routed" literal into a module constant
-    would silently empty the derived set while this guard stayed green)."""
+    control: non-empty, and containing at least `_execute_route`/
+    `route_direct`. "Every collected function spools" is vacuously true
+    against an empty set (F3 / M22 — hoisting the "routed" literal into a
+    module constant would silently empty the derived set while this
+    guard stayed green)."""
     # M-1 (U-verbs Phase 2 code gate r1): walk BOTH files -- `route`/
     # `route_direct` call `set_routing` directly inside verbs.py, but
     # `reroute` calls `ledger_ops.reroute_record`, whose OWN
@@ -230,7 +231,18 @@ def test_route_sites_are_derived_and_all_spool():
     # `reroute_record` in the floor control too: proves the ledger_ops.py
     # walk actually ran and found a real set_routing() site there, not
     # just an empty pass-through (M-1's own failure shape, one file over).
-    assert {"route", "route_direct", "reroute_record"} <= set(sites)
+    #
+    # M-R (2026-09-04): `route` itself dropped out of this floor control.
+    # Its own body no longer calls `set_routing`/`resolve_record` at all
+    # — that responsibility moved into the shared `_execute_route` core
+    # it now delegates to (route's own adapter body only builds a
+    # `TargetSpec` and hands off). `_execute_route` is the correct stand-
+    # in: it is independently found by the SAME walk below (it contains
+    # the `resolve_record(..., "routed", ...)` / `record.write` calls
+    # for both adapters) and spools its own `route` event. `route_direct`
+    # keeps its place unchanged — its adapter body still calls
+    # `record.set_routing(...)` directly, pre-delegation.
+    assert {"_execute_route", "route_direct", "reroute_record"} <= set(sites)
 
     for name, node in sites.items():
         assert _spools_route(node) or name in _CALLER_SPOOLS_EXEMPT, (
@@ -596,15 +608,28 @@ def _call_name(func: ast.expr) -> str | None:
 #: supersede, confirm_recurrence, ...), and calls `set_routing()`
 #: internally ONLY when `new_status == "routed"` -- it has always done
 #: this, the guard simply never saw it before this widening. Its real
-#: `new_status="routed"` callers (`route`, `route_direct`) are each
-#: ALREADY, independently, caught by this SAME criterion's OTHER
-#: detection leg -- a `resolve_record(..., "routed", ...)` call site
-#: inside `verbs.py` itself (see `route`'s own call, `verbs.py:3931`) --
-#: and are already required to spool via that leg. Exempting the shared
-#: helper here narrows nothing the criterion actually verifies; it only
-#: stops re-flagging the one function whose job is to be called for
-#: EVERY resolution status, "routed" among five others.
-_CALLER_SPOOLS_EXEMPT = {"reroute_record", "resolve_record"}
+#: `new_status="routed"` caller is `_execute_route` (M-R, 2026-09-04:
+#: previously `route`/`route_direct` each called it directly -- both
+#: now delegate through the shared core), ALREADY, independently,
+#: caught by this SAME criterion's OTHER detection leg -- a
+#: `resolve_record(..., "routed", ...)` call site inside `verbs.py`
+#: itself (see `_execute_route`'s own call, `verbs.py:4081`) -- and
+#: already required to spool via that leg. Exempting the shared helper
+#: here narrows nothing the criterion actually verifies; it only stops
+#: re-flagging the one function whose job is to be called for EVERY
+#: resolution status, "routed" among five others.
+#:
+#: `route_direct` (M-R, 2026-09-04) joins this set for the SAME reason
+#: `reroute_record` is in it, not `resolve_record`'s: its own adapter
+#: body still calls `record.set_routing(...)` directly (it stays a real
+#: SITE, found below), but the `spool_quiet("route", ...)` call that
+#: used to sit in its own body moved into `_execute_route`, which it
+#: now delegates to for the rest of the pinned sequence -- same
+#: placement pin, same commit, just one call frame further in. `route`
+#: itself needs no such entry: its body no longer calls `set_routing`/
+#: `resolve_record` at all, so it is not a site in the first place (see
+#: the floor-control assertion's own comment above).
+_CALLER_SPOOLS_EXEMPT = {"reroute_record", "resolve_record", "route_direct"}
 
 
 def _route_sites(
