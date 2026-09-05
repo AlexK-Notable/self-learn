@@ -41,7 +41,7 @@ from ruamel.yaml.error import YAMLError
 from . import hosts as hosts_mod
 from . import settings
 from . import domain
-from .primitives import chrono, text, yamlio
+from .primitives import chrono, fsops, text, yamlio
 from .compilers import BEGIN_MARKER, END_MARKER
 from .ledger import Bucket, discover_buckets, home_state, home_state_message, resolve_home
 from .normalize import sha_anchor
@@ -244,9 +244,13 @@ def _load_yaml_map(path: Path) -> dict:
 
 
 def _dump_yaml(data: dict, path: Path) -> None:
+    """Sprint 2 M-I (D6): the ledger-content class (proposals, project
+    meta -- and, via `hosts._dump_meta`'s own delegation to this
+    function, host bucket meta too) -- atomic + fsync'd, symlinks
+    refused. Was a bare `Path.write_text`."""
     buf = io.StringIO()
     _yaml().dump(data, buf)
-    path.write_text(buf.getvalue(), encoding="utf-8")
+    fsops.atomic_write(path, buf.getvalue(), preserve_mode=True, fsync=True)
 
 
 # ---------------------------------------------------------------------- git

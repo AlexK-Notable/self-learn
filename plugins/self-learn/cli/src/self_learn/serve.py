@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Callable, cast
 
 from . import miner, settings, worker
+from .primitives import fsops
 from .ledger import resolve_home
 
 __all__ = [
@@ -149,7 +150,18 @@ def write_heartbeat(cache_dir: Path, *, pid: int, next_job: str | None, tick_sec
     written via a tmp file + `os.replace` — atomic on the same
     filesystem, so a `doctor` read racing a write observes either the
     OLD complete body or the NEW one, never a truncated one that would
-    make a live, healthy daemon read as `FAIL`."""
+    make a live, healthy daemon read as `FAIL`.
+
+    Sprint 2 M-I: now `fsops.atomic_write` (same atomicity gate r1 N-2
+    already established, from the shared primitive instead of this
+    function's own copy). `fsync=False`: unchanged durability, this
+    write never fsync'd before this move either — a heartbeat is
+    superseded every tick, so surviving a kernel-level crash was never
+    this write's job (contrast `worker._write_window_durable`, fsync'd
+    because ITS whole job is to survive a crash). `preserve_mode=False`:
+    the ORIGINAL code always opened a brand-new temp file (no chmod), so
+    the mode already reset to the process umask default on every tick
+    regardless of the previous file's mode."""
     path = heartbeat_path(cache_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(
@@ -160,9 +172,7 @@ def write_heartbeat(cache_dir: Path, *, pid: int, next_job: str | None, tick_sec
             "tick_secs": tick_secs if tick_secs is not None else DEFAULT_TICK_SECS,
         }
     )
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(payload, encoding="utf-8")
-    os.replace(tmp, path)
+    fsops.atomic_write(path, payload, fsync=False, preserve_mode=False)
 
 
 def read_heartbeat(cache_dir: Path) -> dict[str, Any] | None:

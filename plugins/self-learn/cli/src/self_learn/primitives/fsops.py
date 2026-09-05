@@ -119,6 +119,37 @@ its own temp file (name UNCHANGED: `.install-<rid>.tmp`, still literal
 invariant.py`'s walker exactly as before) untouched by this move --
 documented here, and in `tests/test_raw_write_gate.py`'s allowlist,
 rather than silently left off both lists.
+
+**Second-order consequence of migrating `ledger_ops._dump_yaml`, found
+while writing the above paragraph, NOT covered by any test.** For a
+MERGE install, `_install_staged` writes its own `.install-<rid>.tmp`
+via `_dump_yaml(verdict.merge_data, tmp)` rather than `tmp.write_text`
+-- and `_dump_yaml` itself now calls `atomic_write` (wave 2, below).
+So writing `.install-<rid>.tmp` now itself goes through an INNER
+temp file (`_temp_path` on a target already named `.install-<rid>.tmp`
+produces `..install-<rid>.tmp.<pid>.<token>.tmp` -- two leading dots).
+Under ordinary Python exceptions this inner temp is unlinked by
+`atomic_write`'s own contract and `.install-<rid>.tmp` never appears
+half-written, which is STRICTLY SAFER than the old bare `write_text`
+(which could leave a truncated `.install-<rid>.tmp` on a mid-write
+crash). But under a SIGKILL landing between the inner temp's write and
+its `os.replace` into `.install-<rid>.tmp`, no exception handler runs,
+and the orphaned double-dot inner temp does NOT match `_clean_stale_
+install_temps`'s `.install-*.tmp` glob (a single leading dot followed
+immediately by `install-`; the inner temp's second character is `.`,
+not `i`) -- so it survives the next run's pass-1 sweep. This is a
+narrower race than before (it requires a signal an exception handler
+cannot catch, not just any crash), on a class of file
+(`_clean_stale_install_temps` already treats as disposable, non-git-
+tracked scratch), for the merge-install path only (IN8's own armor-
+pinned crash point is the outer `os.replace(tmp, dest)` in `_install_
+staged`, non-merge, and is unaffected -- confirmed by `test_attrib.py`
+staying 47/47). Left as a known, documented gap rather than a fix in
+this move: closing it would mean either giving `_dump_yaml` an
+`atomic_write` escape hatch for a caller-supplied temp name, or having
+`_install_staged` glob-sweep two patterns instead of one -- both are
+scope beyond "migrate the two waves without behaviour change beyond
+D6's policy."
 """
 
 from __future__ import annotations

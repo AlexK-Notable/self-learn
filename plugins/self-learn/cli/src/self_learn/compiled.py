@@ -55,7 +55,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from .compilers import BEGIN_MARKER, END_MARKER, POINTER_BEGIN_MARKER, POINTER_END_MARKER
-from .primitives import chrono, yamlio
+from .primitives import chrono, fsops, yamlio
 
 __all__ = [
     "REGION_KINDS",
@@ -290,7 +290,9 @@ def write_entry(
     }
     buf = io.StringIO()
     y.dump(data, buf)
-    path.write_text(buf.getvalue(), encoding="utf-8")
+    # Sprint 2 M-I (D6): the compiled-record class -- atomic + fsync'd,
+    # symlinks refused.
+    fsops.atomic_write(path, buf.getvalue(), preserve_mode=True, fsync=True)
     return path
 
 
@@ -321,7 +323,7 @@ def delete_entry(home: Path | str, slug: str, key: str) -> Path | None:
     del targets[key]
     buf = io.StringIO()
     y.dump(data, buf)
-    path.write_text(buf.getvalue(), encoding="utf-8")
+    fsops.atomic_write(path, buf.getvalue(), preserve_mode=True, fsync=True)
     return path
 
 

@@ -64,7 +64,7 @@ from ruamel.yaml.error import YAMLError
 
 from . import config as _config
 from . import gitops
-from .primitives import chrono, yamlio
+from .primitives import chrono, fsops, yamlio
 
 __all__ = [
     "HOST_KINDS",
@@ -322,7 +322,10 @@ def save_hosts(home: Path | str, hosts: Hosts) -> Path:
     data = {"skills_root": root_value, "projects": projects_value}
     buf = io.StringIO()
     _yaml().dump(data, buf)
-    path.write_text(buf.getvalue(), encoding="utf-8")
+    # Sprint 2 M-I (D6): hosts.yaml is a config-file class -- people
+    # symlink config files into dotfile repos, so follow_symlinks=True
+    # (writes through the link to its real target, never refuses it).
+    fsops.atomic_write(path, buf.getvalue(), preserve_mode=True, fsync=True, follow_symlinks=True)
     return path
 
 
