@@ -70,12 +70,10 @@ def _paths(*, json_output: bool) -> int:
     this verb never creates anything on disk. ``token_path`` goes through
     :func:`self_learn_ui.middleware.resolve_token_path` — the UI
     package's own single source of truth for that path, already used by
-    the server itself. NOTE (measured during D8's build): when
-    ``$XDG_RUNTIME_DIR`` is unset, ``resolve_token_path`` falls through to
-    :func:`self_learn.worker.cache_dir` (not the readonly variant) — pre-
-    existing behaviour in ``middleware.py``, out of this verb's surface —
-    so THIS ONE fallback path does mkdir the cache directory as a side
-    effect. See the D8 build report for the measured evidence."""
+    the server itself, and (D8 gate r1 finding 1) itself now goes through
+    ``cache_dir_readonly`` for its own ``$XDG_RUNTIME_DIR``-unset
+    fallback, so this verb never creates anything on disk in that case
+    either."""
     from self_learn.serve import cache_dir_readonly
 
     from .middleware import resolve_token_path

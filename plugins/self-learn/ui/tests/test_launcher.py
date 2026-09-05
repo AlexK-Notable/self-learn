@@ -1738,17 +1738,15 @@ def test_paths_verb_matches_bash_mirror_across_homes(tmp_path: Path) -> None:
     the same constant, e.g. an empty string): the three homes' cache_dir
     values are asserted pairwise DIFFERENT.
 
-    Named observation, NOT asserted as a bug (see the D8 build report):
-    the XDG_RUNTIME_DIR-unset leg's verb call mkdirs its own cache_dir
-    directory as a side effect — middleware.resolve_token_path()'s own
-    XDG_RUNTIME_DIR-unset fallback calls the MUTATING
-    self_learn.worker.cache_dir(), not the read-only variant this verb's
-    cache_dir field uses. Pre-existing, outside this change's surface.
-    The other two legs' cache_dir never gets created — the pinned "never
-    creates a directory" claim holds for those.
+    Pinned decision "never creates a directory or file" (D8 gate r1
+    finding 1/2): all three legs' cache_dir must stay absent after the
+    verb call, XDG_RUNTIME_DIR-unset included — resolve_token_path()'s
+    own fallback there now goes through cache_dir_readonly() too, not the
+    mutating self_learn.worker.cache_dir(), so the claim holds
+    unconditionally rather than only for the two legs where
+    XDG_RUNTIME_DIR happens to be set.
     """
     bindir = _hermetic_bindir(tmp_path)
-    real_path = os.environ.get("PATH", "/usr/bin:/bin")
 
     home1, cache1, runtime1 = (tmp_path / n for n in ("s1-home", "s1-cache", "s1-runtime"))
     for d in (home1, cache1, runtime1):
@@ -1790,8 +1788,16 @@ def test_paths_verb_matches_bash_mirror_across_homes(tmp_path: Path) -> None:
     cache_dirs: dict[str, str] = {}
 
     for name, shared in scenarios.items():
+        # D8 gate r1 finding 4: this file's own header states "NO
+        # fallback to the real system PATH" — the verb subprocess gets
+        # the SAME hermetic PATH the mirror subprocess does, not the real
+        # host PATH. Not needed for correctness (the console entry is
+        # invoked by absolute path with an absolute shebang, measured
+        # working under PATH=/nonexistent), but it keeps the file's
+        # stated invariant intact rather than carving out a quiet
+        # exception for the first subprocess that ever had one.
         verb_env = dict(shared)
-        verb_env["PATH"] = real_path
+        verb_env["PATH"] = str(bindir)
         mirror_env = dict(shared)
         mirror_env["PATH"] = str(bindir)
 
@@ -1806,7 +1812,7 @@ def test_paths_verb_matches_bash_mirror_across_homes(tmp_path: Path) -> None:
 
     assert not Path(cache_dirs["default-home"]).exists()
     assert not Path(cache_dirs["explicit-self-learn-home"]).exists()
-    assert Path(cache_dirs["xdg-runtime-dir-unset"]).is_dir()
+    assert not Path(cache_dirs["xdg-runtime-dir-unset"]).exists()
 
 
 def test_opener_falls_back_silently_when_shim_absent(tmp_path: Path) -> None:

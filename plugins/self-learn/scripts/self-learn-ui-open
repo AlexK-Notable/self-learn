@@ -4,7 +4,7 @@
 # WM/browser-aware file in the surface (10 §1) — everything else in the
 # surface is browser/WM-agnostic by design.
 #
-# Usage: self-learn-ui-open [--record <id>]
+# Usage: self-learn-ui-open [--record <id>] [--print-paths]
 #
 # Sequence (pinned; re-ordered 2026-07-18 — Y-14, 09 §3 "Deep-link +
 # launcher": token path now resolves FIRST because the service-up step
@@ -50,13 +50,13 @@
 #      byte-identical against hashlib.sha256(str(Path(home).expanduser())
 #      .encode()).hexdigest()[:8] during build; a real drift between this
 #      mirror and the CLI's derivation is a §4-class finding, not a
-#      silent guess. D8 build note: `self_learn_ui.middleware.
-#      resolve_token_path()`'s own XDG_RUNTIME_DIR-unset fallback calls
-#      the MUTATING self_learn.worker.cache_dir() (mkdir + migration),
-#      not the read-only variant the verb's cache_dir field uses — a
-#      pre-existing property of that function, outside this script's
-#      surface, so the verb path can create the cache directory in that
-#      one case where this bash mirror never would.
+#      silent guess. D8 gate r1 finding 1: `self_learn_ui.middleware.
+#      resolve_token_path()`'s own XDG_RUNTIME_DIR-unset fallback now
+#      goes through `self_learn.serve.cache_dir_readonly()` too (never
+#      the mutating `self_learn.worker.cache_dir()`), so the verb path
+#      never mkdirs the cache directory as a side effect — matching this
+#      bash mirror exactly, in every scenario, not just the two where
+#      XDG_RUNTIME_DIR happens to be set.
 #   3. Window-presence detection (X-3, empirically pinned 2026-07-13):
 #      query `hyprctl clients -j` for the class FIRST — NEVER branch on
 #      `hyprctl dispatch focuswindow`'s exit code (it prints "No such
@@ -219,15 +219,28 @@ fi
 # Absent-shim posture (deliberate — matches hyprctl/systemctl elsewhere
 # in this file): a `self-learn-ui` that simply is not on $PATH degrades
 # SILENTLY, zero stderr, same as "hyprctl absent entirely -> skip
-# detection" and "systemctl absent entirely -> never wait" above. Only a
-# shim that IS present but fails/times out/answers garbage prints the
-# one stderr line — an absent optional dependency is not a fallback
-# WORTH reporting, a present-but-broken one is.
+# detection" and "systemctl absent entirely -> never wait" above.
+#
+# D8 gate r1 nit 6: a shim that IS present but fails/times out/answers
+# garbage prints the one stderr line — but that loud half is NOT this
+# file's own convention (a present-but-wedged hyprctl is ALSO silent
+# here: every `"${_TO[@]}" hyprctl ...` call above falls through to
+# `|| return 0`/`|| true` with zero stderr). The loud half is mandated by
+# the D8 pinned decision that the opener must say so when it falls back
+# from a present-but-broken verb — do not "fix" this asymmetry by making
+# the hyprctl/systemctl sites loud too, or by making this one silent.
 _VERB_TOKEN_PATH=""
 
 _try_verb_paths() {
   local out
   command -v self-learn-ui >/dev/null 2>&1 || return 1
+  # D8 gate r1 finding 3: `jq` guarded the same way `_ui_window_address`
+  # and `_window_monitor_name` already guard it -- silent, matching the
+  # absent-dependency posture those two argue for -- so a `jq`-less host
+  # falls back BEFORE the shim ever runs, instead of running it, failing
+  # to parse its output, and printing a message that blames the shim for
+  # a missing parser.
+  command -v jq >/dev/null 2>&1 || return 1
   out="$("${_TO[@]}" self-learn-ui paths --json 2>/dev/null)" || {
     echo "self-learn-ui-open: 'self-learn-ui paths' failed or timed out -- falling back to the built-in path mirror" >&2
     return 1

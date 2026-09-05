@@ -58,23 +58,39 @@ def test_paths_json_flag_emits_json_object(capsys: pytest.CaptureFixture[str]) -
 
 def test_paths_never_creates_cache_directory() -> None:
     """Pinned contract: the verb never creates a directory or file (D8
-    build brief). Precondition, measured during the build: this only
-    holds when $XDG_RUNTIME_DIR is set (conftest's autouse
+    build brief), with $XDG_RUNTIME_DIR set — conftest's autouse
     ``_redirect_env_defaults`` sets it for every UI test, matching the
-    normal desktop case) — resolve_token_path()'s OWN
-    XDG_RUNTIME_DIR-unset fallback calls self_learn.worker.cache_dir()
-    (mkdir + migration side effects), not the read-only variant, which
-    is pre-existing behaviour in middleware.py outside this verb's
-    surface. See the D8 build report for the measured XDG_RUNTIME_DIR-
-    unset counter-case; this test intentionally exercises only the
-    scenario where the pinned "never creates" claim is actually true.
+    normal desktop case. See
+    ``test_paths_never_creates_cache_directory_when_xdg_runtime_dir_unset``
+    below for the other leg (D8 gate r1 finding 1/2: this claim used to
+    be false when $XDG_RUNTIME_DIR was unset — ``resolve_token_path()``'s
+    fallback there now goes through ``cache_dir_readonly`` too, so the
+    claim holds unconditionally; the precondition this test's docstring
+    used to carry is gone).
 
     Mutation check performed during the build (not automated here):
     swapping `cache_dir_readonly` for `self_learn.worker.cache_dir` in
     `cli.py`'s `_paths` turns this test red (the swapped call mkdirs the
     cache root); reverted after confirming.
     """
-    assert "XDG_RUNTIME_DIR" in os.environ
+    rc = cli.main(["paths", "--json"])
+
+    assert rc == 0
+    cache_home = Path(os.environ["XDG_CACHE_HOME"])
+    assert not (cache_home / "self-learn").exists()
+
+
+def test_paths_never_creates_cache_directory_when_xdg_runtime_dir_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D8 gate r1 finding 1/2: the scenario that USED to violate the
+    pinned "never creates a directory or file" claim (resolve_token_path's
+    XDG_RUNTIME_DIR-unset fallback used to call the mutating
+    self_learn.worker.cache_dir()) — now the one that actually exercises
+    the fix, per the gate's companion note on test_launcher.py's contract
+    test."""
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    assert "XDG_RUNTIME_DIR" not in os.environ
 
     rc = cli.main(["paths", "--json"])
 
