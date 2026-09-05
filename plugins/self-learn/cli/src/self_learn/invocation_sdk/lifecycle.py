@@ -5,18 +5,26 @@ pid sidecar (`K-4`) and the start-of-run orphan sweep (`K-5`).
 **U-engine (spec `u-engine-shared-sdk-core-spec.md` §4, Phase 1A):** the
 MECHANISM now lives in `self_learn.sdksession` -- `ladder.py`,
 `teardown.py`, `children.py` -- shared with the UI pane engine. This
-module is a THIN SURFACE over it, with two deliberate exceptions carved
-out by `test_invocation_sdk.py::test_pl3_filesystem_writes_are_
-enumerated_with_an_exact_count` (armor-pinned, unedited): that test
-counts the LITERAL `write_text`/`unlink` call sites across this whole
-six-file package and asserts an exact total of 5, naming
+module is a THIN SURFACE over it.
+
+**Sprint 2 M-V (2026-09-04, sdk-lifecycle):** `write_sidecar`/
+`read_sidecar`/`clear_sidecar` used to keep their OWN direct file I/O --
+a carve-out `test_invocation_sdk.py::test_pl3_filesystem_writes_are_
+enumerated_with_an_exact_count` pinned at an exact total of 5, naming
 `(lifecycle.py, write_text)`/`(lifecycle.py, unlink)` among the allowed
-set. `write_sidecar`/`read_sidecar`/`clear_sidecar`/`_sidecar_path`
-therefore keep their OWN direct file I/O, byte-identical to before this
-unit -- the library ships an equivalent, more general implementation
-(`children.sidecar_path`/`write_sidecar`/`read_sidecar`/`clear_sidecar`,
-session-keyed) for the OTHER two consumers and for direct testing
-(`MS3`/`MS5`), but this surface's own production path is unchanged.
+call sites, because at that point `sdksession.children` shipped an
+equivalent, more general implementation for the OTHER two consumers
+only. That reason is gone: all three are now thin adapters over
+`sdksession.children.write_sidecar`/`read_sidecar`/`clear_sidecar`
+(called with `session_key=None`, so the sidecar filename shape stays
+byte-identical to before -- `F-2`), and `test_pl3` is retargeted to
+assert ZERO filesystem-mutating calls anywhere in this six-file
+package. `_sidecar_path` stays a pure path computation with no I/O of
+its own -- kept because `test_invocation_sdk.py`,
+`test_reader_contract.py` and `test_sdk_lifecycle_delegation.py` call
+it directly today to locate the file the delegate wrote (gate M-V r1,
+minor 4: an earlier draft of this sentence named `test_serve.py`, which
+never calls it).
 
 `INTERRUPT_GRACE_SECS`/`KILL_SECS` are bound to the library's `ladder.py`
 objects BY IDENTITY (`LAD2`/`LAD3` carry the analogous UI-side proof).
@@ -34,9 +42,7 @@ Import-bounded to stdlib plus `.. import worker` (`worker.cache_dir()` /
 
 from __future__ import annotations
 
-import json
 import os  # noqa: F401 - kept so `lifecycle_mod.os` exists for `monkeypatch.setattr(lifecycle_mod.os, ...)` (test_kl5/test_to6); the real calls run inside `sdksession.teardown`, same global `os` module
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -112,29 +118,24 @@ def _sidecar_path(surface: str) -> Path:
 
 
 def write_sidecar(surface: str, pid: int, cli: str) -> None:
-    """`K-4` -- written as soon as the child pid is known. Own direct
-    I/O -- see the module docstring's `test_pl3` note."""
-    path = _sidecar_path(surface)
-    path.write_text(
-        json.dumps({"pid": pid, "started_at": time.time(), "cli": cli}),
-        encoding="utf-8",
-    )
+    """`K-4` -- written as soon as the child pid is known. Delegates to
+    `sdksession.children.write_sidecar` (see the module docstring's
+    Sprint 2 M-V note) -- `session_key=None` reproduces `_sidecar_path`'s
+    filename byte-for-byte."""
+    children.write_sidecar(worker.cache_dir(), surface, pid, cli, session_key=None)
 
 
 def read_sidecar(surface: str) -> dict[str, Any] | None:
-    path = _sidecar_path(surface)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+    """Delegates to `sdksession.children.read_sidecar` -- see the module
+    docstring's Sprint 2 M-V note."""
+    return children.read_sidecar(worker.cache_dir(), surface, session_key=None)
 
 
 def clear_sidecar(surface: str) -> None:
     """`K-4`/`K-5` -- unlinked whether the session succeeded, failed, or
-    timed out. Own direct I/O -- see the module docstring's `test_pl3`
-    note."""
-    _sidecar_path(surface).unlink(missing_ok=True)
+    timed out. Delegates to `sdksession.children.clear_sidecar` -- see
+    the module docstring's Sprint 2 M-V note."""
+    children.clear_sidecar(worker.cache_dir(), surface, session_key=None)
 
 
 def kill_child(pid: int | None, log: Callable[[str], None]) -> None:

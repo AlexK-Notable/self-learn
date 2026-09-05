@@ -218,8 +218,15 @@ def rotted(
 # `compiled.write_entry`/`delete_entry`, `config.dump_editable`,
 # `worker._write_install_journal`, `worker._write_window_durable`,
 # `sentinel.hold`, `serve.write_heartbeat`,
-# `store.PaneTranscriptStore._write_meta`); 45 remain, below (41 from
-# the original build + the 4 now-visible `ui/store.py` sites).
+# `store.PaneTranscriptStore._write_meta`); 45 remained after fold r1
+# (41 from the original build + the 4 now-visible `ui/store.py` sites).
+# Merging `sprint-2` (integration) into this lane then dropped 2 MORE:
+# lane L3 (M-V, sdk-lifecycle) refactored `invocation_sdk/events.py::
+# write_event_log` and `invocation_sdk/lifecycle.py::write_sidecar`
+# into thin delegates to the `sdksession/*.py` functions of the same
+# name (already allowlisted below) -- the raw write moved location, so
+# their own two entries would have been ROTTED and were removed instead
+# of left stale. 43 remain, below.
 # ======================================================================
 
 RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
@@ -292,16 +299,16 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
     # worker.run's path runs the armor-pinned end-to-end files before
     # merging"; these sit adjacent to that seam and are left alone this
     # sprint on purpose.
-    ("cli", "invocation_sdk/events.py", "write_event_log"): (
-        "invocation-seam tool-event log, XDG-cache-only bookkeeping; deferred "
-        "behind the armor-pinned invocation end-to-end tests",
-        5,
-    ),
-    ("cli", "invocation_sdk/lifecycle.py", "write_sidecar"): (
-        "invocation-seam child-pid sidecar (K-4), XDG-cache-only; deferred "
-        "behind the armor-pinned invocation end-to-end tests",
-        5,
-    ),
+    #
+    # sprint-2 merge note: `invocation_sdk/events.py::write_event_log`
+    # and `invocation_sdk/lifecycle.py::write_sidecar` used to hold
+    # these two raw writes directly; lane L3 (M-V, sdk-lifecycle)
+    # refactored both into thin delegates to `sdksession.events.
+    # write_event_log`/`sdksession.children.write_sidecar` below, so the
+    # raw write itself moved -- their own two entries would be ROTTED
+    # (no matching violation any more) and were removed rather than left
+    # stale; the two `sdksession/*.py` entries below already cover the
+    # write's new location, same function names, different file.
     ("cli", "sdksession/children.py", "write_sidecar"): (
         "sdk-session child-pid sidecar (K-4), XDG-cache-only; deferred behind "
         "the armor-pinned invocation_sdk end-to-end tests",

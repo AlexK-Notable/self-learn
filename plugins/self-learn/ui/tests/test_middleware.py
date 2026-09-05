@@ -254,6 +254,35 @@ class TestTokenFile:
         path = write_token_file(mint_token())
         assert path.parent.is_dir()
 
+    def test_write_token_file_creates_parent_dirs_when_runtime_dir_unset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """D8 gate r2 minor 1: after 62c781c, resolve_token_path()'s
+        XDG_RUNTIME_DIR-unset branch no longer mkdirs anything itself
+        (it goes through the read-only cache_dir_readonly()) — the ONLY
+        thing that creates the cache directory on this branch's
+        token-write path is write_token_file's own
+        path.parent.mkdir(...). The sibling test above only exercises
+        the runtime-dir branch, whose parent-creation behaviour did not
+        change by the fold; this one exercises the branch that did."""
+        cache_home = tmp_path / "cache"
+        ledger_home = tmp_path / "ledger-home"
+        cache_home.mkdir()
+        ledger_home.mkdir()
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
+        monkeypatch.setenv("SELF_LEARN_HOME", str(ledger_home))
+
+        expected_path = resolve_token_path()
+        assert not expected_path.parent.exists()
+
+        path = write_token_file(mint_token())
+
+        assert path == expected_path
+        assert path.parent.is_dir()
+        mode = stat.S_IMODE(path.stat().st_mode)
+        assert mode == 0o600
+
 
 # ------------------------------------------------- Y-14: activity tracking
 

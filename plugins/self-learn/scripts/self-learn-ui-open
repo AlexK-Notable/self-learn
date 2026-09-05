@@ -4,7 +4,7 @@
 # WM/browser-aware file in the surface (10 §1) — everything else in the
 # surface is browser/WM-agnostic by design.
 #
-# Usage: self-learn-ui-open [--record <id>]
+# Usage: self-learn-ui-open [--record <id>] [--print-paths]
 #
 # Sequence (pinned; re-ordered 2026-07-18 — Y-14, 09 §3 "Deep-link +
 # launcher": token path now resolves FIRST because the service-up step
@@ -30,20 +30,33 @@
 #      an unset-runtime-dir launcher opens an un-tokened URL and
 #      403-loops).
 #
-#      This mirrors self_learn.worker.cache_dir() / self_learn.ledger.
-#      resolve_home() (doc 13 §6/H-4, 09 §11 Y-3) IN BASH rather than
-#      shelling out to `uv run python -c ...`: the U1 wrapper test suite
-#      (ui/tests/test_wrapper.py) deliberately keeps real `uv run`
-#      invocation OUT of its tests ("this suite never depends on network
-#      access for uv run's own resolution") — shelling to Python here
-#      would reintroduce exactly that dependency for every test touching
-#      the X-8 fallback. The formula is small and doc-13-pinned, so
-#      mirroring it is the P2-4 "one-computation rule" applied to the one
-#      piece of it that is cheap and stable to duplicate; a real drift
-#      between this and the CLI's derivation is a §4-class finding, not a
-#      silent guess (verified byte-identical against
-#      hashlib.sha256(str(Path(home).expanduser())
-#      .encode()).hexdigest()[:8] during build).
+#      D8 (10 §1, decision D8): the token path (and the cache dir it can
+#      fall back through) is Python-owned truth — self_learn.serve.
+#      cache_dir_readonly() / self_learn_ui.middleware.resolve_token_path()
+#      — so this script now ASKS for both first, via `timeout 4
+#      self-learn-ui paths --json` (the `self-learn-ui` shim resolved off
+#      $PATH, exactly like `chromium`/`hyprctl` below — see the NOTE a few
+#      lines down). Only when that shim is absent, fails, times out, or
+#      answers with unparsable JSON does `_resolve_token_path` below (the
+#      bash MIRROR of the same two derivations) run at all — it is the
+#      FALLBACK now, not the primary. It stays in the file, byte-for-byte
+#      the same formula, because ui/tests/test_wrapper.py's rule ("this
+#      suite never depends on network access for uv run's own
+#      resolution") still has to hold for THIS script's own tests
+#      (ui/tests/test_launcher.py): they PATH-shim `self-learn-ui` as a
+#      fake, so a real `uv run` never fires from inside a launcher test
+#      either way, and the fallback branch needs real bash logic to fall
+#      back TO whenever the fake shim is made to fail. Verified
+#      byte-identical against hashlib.sha256(str(Path(home).expanduser())
+#      .encode()).hexdigest()[:8] during build; a real drift between this
+#      mirror and the CLI's derivation is a §4-class finding, not a
+#      silent guess. D8 gate r1 finding 1: `self_learn_ui.middleware.
+#      resolve_token_path()`'s own XDG_RUNTIME_DIR-unset fallback now
+#      goes through `self_learn.serve.cache_dir_readonly()` too (never
+#      the mutating `self_learn.worker.cache_dir()`), so the verb path
+#      never mkdirs the cache directory as a side effect — matching this
+#      bash mirror exactly, in every scenario, not just the two where
+#      XDG_RUNTIME_DIR happens to be set.
 #   3. Window-presence detection (X-3, empirically pinned 2026-07-13):
 #      query `hyprctl clients -j` for the class FIRST — NEVER branch on
 #      `hyprctl dispatch focuswindow`'s exit code (it prints "No such
@@ -74,11 +87,15 @@
 #      dispatches; hyprctl absent or the window never appearing ->
 #      degrade silently, never an error.
 #
-# NOTE: unlike scripts/self-learn, scripts/self-learn-ui, and this
-# file's own sibling scripts/self-learn-notify, this script has no
-# sibling-project dependency to resolve — it never reads $0 — so the
-# P3-1 readlink -f pattern does not apply here; nothing in it depends on
-# where the ~/bin symlink (vs. the repo) lives.
+# NOTE: as of D8 this script DOES have a sibling-project dependency —
+# `self-learn-ui` (the `paths` verb, above) — but unlike scripts/
+# self-learn, scripts/self-learn-ui, and this file's own sibling
+# scripts/self-learn-notify, it resolves that dependency the SAME way it
+# already resolves chromium/hyprctl/systemctl: `command -v self-learn-ui`
+# against $PATH, never a $0-relative sibling path. So the P3-1 readlink
+# -f pattern still does not apply here; nothing in this file depends on
+# where the ~/bin symlink (vs. the repo) lives — only on `self-learn-ui`
+# (itself a ~/bin symlink in production) being reachable on $PATH.
 #
 # C22 (sprint-1 M-F2, fold r1 m2): every `systemctl`/`hyprctl` call this
 # script makes is wrapped in `"${_TO[@]}"` (== `timeout 4`, defined right
@@ -103,6 +120,7 @@ command -v timeout >/dev/null 2>&1 && _TO=(timeout 4)
 
 WINDOW_CLASS="self-learn-ui"
 RECORD_ID=""
+PRINT_PATHS=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -113,6 +131,14 @@ while [[ $# -gt 0 ]]; do
       fi
       RECORD_ID="$2"
       shift 2
+      ;;
+    --print-paths)
+      # D8 test hook: print the BASH MIRROR's own cache_dir/token_path
+      # (never the self-learn-ui verb's) and exit — a contract test
+      # needs the mirror's values in isolation to compare against the
+      # verb's, and this script had no other debug/print mode to reuse.
+      PRINT_PATHS=1
+      shift
       ;;
     *)
       echo "self-learn-ui-open: unknown argument: $1" >&2
@@ -177,7 +203,64 @@ _resolve_token_path() {
   fi
 }
 
-TOKEN_PATH="$(_resolve_token_path)"
+if [[ "$PRINT_PATHS" == 1 ]]; then
+  printf 'cache_dir=%s\n' "$(_slug_cache_dir)"
+  printf 'token_path=%s\n' "$(_resolve_token_path)"
+  exit 0
+fi
+
+# D8: ask the Python-owned verb first; `_resolve_token_path` above is now
+# only the FALLBACK (see the step-2 header comment). `_VERB_TOKEN_PATH`
+# is left empty (and this returns 1) on every failure mode named in that
+# comment — shim absent, non-zero exit, `timeout 4` firing, or JSON that
+# doesn't decode to two non-empty fields — so the caller always has a
+# real value to fall through to.
+#
+# Absent-shim posture (deliberate — matches hyprctl/systemctl elsewhere
+# in this file): a `self-learn-ui` that simply is not on $PATH degrades
+# SILENTLY, zero stderr, same as "hyprctl absent entirely -> skip
+# detection" and "systemctl absent entirely -> never wait" above.
+#
+# D8 gate r1 nit 6: a shim that IS present but fails/times out/answers
+# garbage prints the one stderr line — but that loud half is NOT this
+# file's own convention (a present-but-wedged hyprctl is ALSO silent
+# here: every `"${_TO[@]}" hyprctl ...` call above falls through to
+# `|| return 0`/`|| true` with zero stderr). The loud half is mandated by
+# the D8 pinned decision that the opener must say so when it falls back
+# from a present-but-broken verb — do not "fix" this asymmetry by making
+# the hyprctl/systemctl sites loud too, or by making this one silent.
+_VERB_TOKEN_PATH=""
+
+_try_verb_paths() {
+  local out
+  command -v self-learn-ui >/dev/null 2>&1 || return 1
+  # D8 gate r1 finding 3: `jq` guarded the same way `_ui_window_address`
+  # and `_window_monitor_name` already guard it -- silent, matching the
+  # absent-dependency posture those two argue for -- so a `jq`-less host
+  # falls back BEFORE the shim ever runs, instead of running it, failing
+  # to parse its output, and printing a message that blames the shim for
+  # a missing parser.
+  command -v jq >/dev/null 2>&1 || return 1
+  out="$("${_TO[@]}" self-learn-ui paths --json 2>/dev/null)" || {
+    echo "self-learn-ui-open: 'self-learn-ui paths' failed or timed out -- falling back to the built-in path mirror" >&2
+    return 1
+  }
+  local verb_cache_dir verb_token_path
+  verb_cache_dir="$(jq -r '.cache_dir // empty' 2>/dev/null <<<"$out")" || true
+  verb_token_path="$(jq -r '.token_path // empty' 2>/dev/null <<<"$out")" || true
+  if [[ -z "$verb_cache_dir" || -z "$verb_token_path" ]]; then
+    echo "self-learn-ui-open: 'self-learn-ui paths' returned unparsable output -- falling back to the built-in path mirror" >&2
+    return 1
+  fi
+  _VERB_TOKEN_PATH="$verb_token_path"
+  return 0
+}
+
+if _try_verb_paths; then
+  TOKEN_PATH="$_VERB_TOKEN_PATH"
+else
+  TOKEN_PATH="$(_resolve_token_path)"
+fi
 PORT="${SELF_LEARN_UI_PORT:-7357}"
 
 # --- 1. ensure the service is up + Y-14 readiness wait (09 §3) -----------
