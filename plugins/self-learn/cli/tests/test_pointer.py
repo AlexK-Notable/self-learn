@@ -360,7 +360,7 @@ class TestManagedSectionNonInterference:
         assert text.count(POINTER_BEGIN_MARKER) == 1
         assert text.count(POINTER_END_MARKER) == 1
         ok, _msg = selfcheck._check_markers({surface: [rec]})
-        assert ok is True
+        assert ok is selfcheck.Verdict.PASS
         assert BEGIN_MARKER not in POINTER_BEGIN_MARKER
         assert END_MARKER not in POINTER_END_MARKER
 
@@ -379,14 +379,14 @@ class TestManagedSectionNonInterference:
         create_record(env.ledger, rec1, project_path=env.host)
         verbs.route(env.ledger, rec1.id, dest="reference", no_push=True)
         ok1, msg1 = selfcheck._check_reach(env.ledger)
-        assert ok1 is True, msg1
+        assert ok1 is selfcheck.Verdict.PASS, msg1
 
         rec2 = make_knowledge(scope="project", fact="A second, unrelated project fact.")
         create_record(env.ledger, rec2, project_path=env.host)
         verbs.route(env.ledger, rec2.id, dest="claude-md", no_push=True)
 
         ok2, msg2 = selfcheck._check_reach(env.ledger)
-        assert ok2 is True, msg2
+        assert ok2 is selfcheck.Verdict.PASS, msg2
 
     def test_b5_mandatory_section_less_surface_re_run(self, env):
         """§5's closing paragraph (mandatory, not a suggestion): re-run the
@@ -398,7 +398,7 @@ class TestManagedSectionNonInterference:
         create_record(env.ledger, rec1)
         verbs.route(env.ledger, rec1.id, dest="reference", no_push=True)
         ok1, msg1 = selfcheck._check_reach(env.ledger)
-        assert ok1 is True, msg1
+        assert ok1 is selfcheck.Verdict.PASS, msg1
         assert env.skill_md.read_text(encoding="utf-8").count(BEGIN_MARKER) == 0
 
         rec2 = make_behavior(scope="skill:s", record_id="lrn-00000002")
@@ -406,7 +406,7 @@ class TestManagedSectionNonInterference:
         verbs.route(env.ledger, rec2.id, dest="skill-md", no_push=True)
 
         ok2, msg2 = selfcheck._check_reach(env.ledger)
-        assert ok2 is True, msg2
+        assert ok2 is selfcheck.Verdict.PASS, msg2
         text = env.skill_md.read_text(encoding="utf-8")
         assert text.count(BEGIN_MARKER) == 1  # the skill-md route DID bootstrap one
         assert text.count(POINTER_BEGIN_MARKER) == 1
@@ -443,7 +443,7 @@ class TestThreadingRoutePath:
         verbs.route(env.ledger, rec.id, dest="reference", no_push=True)
 
         ok, msg = selfcheck._check_reach(env.ledger)
-        assert ok is True
+        assert ok is selfcheck.Verdict.PASS
         assert "1 reference-routed record(s) reachable" in msg
 
         # Mandatory positive control, same test: same ledger state, the
@@ -452,7 +452,7 @@ class TestThreadingRoutePath:
             "# s skill\n\nAuthored prose stays put.\n", encoding="utf-8"
         )
         ok2, _msg2 = selfcheck._check_reach(env.ledger)
-        assert ok2 is False
+        assert ok2 is selfcheck.Verdict.FAIL
 
     def test_c3_pointer_staged_and_committed_with_route(self, env):
         rec = make_knowledge(scope="skill:s")
@@ -652,12 +652,12 @@ class TestRecompileBackfill:
     def test_e1_r14_shape_reproduced_and_repaired(self, env):
         _seed_skill_reference_record(env, entry_present=True, pointer_present=False)
         ok_before, _msg = selfcheck._check_reach(env.ledger)
-        assert ok_before is False  # positive control -- must be asserted, not assumed
+        assert ok_before is selfcheck.Verdict.FAIL  # positive control -- must be asserted, not assumed
 
         verbs.recompile(env.ledger, no_push=True)
 
         ok_after, msg_after = selfcheck._check_reach(env.ledger)
-        assert ok_after is True, msg_after
+        assert ok_after is selfcheck.Verdict.PASS, msg_after
 
     def test_e2_old_continue_is_dead(self, env):
         _seed_skill_reference_record(env, entry_present=True, pointer_present=False)
@@ -833,7 +833,7 @@ class TestScopeInvariants:
         assert POINTER_BEGIN_MARKER in target.read_text(encoding="utf-8")
         assert "CLAUDE.md" in verb_files(env.host)
         ok, msg = selfcheck._check_reach(env.ledger)
-        assert ok is True, msg
+        assert ok is selfcheck.Verdict.PASS, msg
 
     def test_f4_l4_dirty_surface_refuses_before_ledger_commit(self, env):
         env.skill_md.write_text(

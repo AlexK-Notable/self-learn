@@ -390,7 +390,7 @@ class TestObligation10SelfcheckGlobDrift:
         (src / "foo.ts").unlink()  # the file moved — the glob is now stale
 
         ok, reason = selfcheck._check_drift(env.home)
-        assert ok is False
+        assert ok is selfcheck.Verdict.FAIL
         assert "src/foo.ts" in reason
         assert "stale" in reason
 
@@ -437,12 +437,12 @@ class TestObligation10SelfcheckGlobDrift:
         )
         # drift is clean while the file still exists
         ok, reason = selfcheck._check_drift(env.home)
-        assert ok is True
+        assert ok is selfcheck.Verdict.PASS
 
         # the file moved out from under the pattern — now stale
         (fixture_dir / "x.txt").unlink()
         ok2, reason2 = selfcheck._check_drift(env.home)
-        assert ok2 is False
+        assert ok2 is selfcheck.Verdict.FAIL
         assert "u-glob-fixture-case2/*.txt" in reason2
         assert "stale" in reason2
 
@@ -473,13 +473,13 @@ class TestObligation10SelfcheckGlobDrift:
             env.home, OLD, user_claude_md=target,
         )
         ok, reason = selfcheck._check_drift(env.home)
-        assert ok is True
+        assert ok is selfcheck.Verdict.PASS
 
         # presence-in-file IS still checked: strip the entry and re-check.
         rules_target = target.parent / "rules" / "ts-rules.md"
         rules_target.write_text("no marker here\n", encoding="utf-8")
         ok2, reason2 = selfcheck._check_drift(env.home)
-        assert ok2 is False
+        assert ok2 is selfcheck.Verdict.FAIL
         assert OLD in reason2
 
 

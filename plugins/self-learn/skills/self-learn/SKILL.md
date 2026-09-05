@@ -104,7 +104,18 @@ section; design is `docs/specs/self-learn/09-surface-spec.md` +
   landed) — the review skill invokes `batch` as its one apply path,
   never a hand-written sequence of verb calls.
   `proposal validate`: **0 valid+stamped · 1 schema-invalid (file intact) ·
-  2 scan hit (wins)**. `--selftest`: 0 all green · 1 any FAIL.
+  2 scan hit (wins)**. `teach`'s own usage errors (bad/missing/conflicting
+  flags, caught before anything is written) are **64** too (A22, fold r1,
+  2026-09-04 — unified with the verbs' own 64 above; a bad *home* is
+  still 5, unchanged). `--selftest` (M-K, tri-state PASS/FAIL/UNMEASURED
+  per check, nine checks): 0 all measured and green · 1 any FAIL (wins) ·
+  9 no FAIL but at least one row UNMEASURED (a check that could not
+  measure anything, e.g. a missing prerequisite it cannot itself supply
+  — never read as a silent PASS). The `worker` check (M2) is not yet
+  implemented and has no row at all — a capability gap, not a verdict —
+  so a fully healthy, fully configured home now exits 0 again (fold r1,
+  2026-09-04: an unconditional UNMEASURED placeholder row would have
+  made every home exit 9 forever, turning the exit code into noise).
 
 Install, the S-15 offer-line setup, and troubleshooting live in the plugin
 README (`plugins/self-learn/README.md`).

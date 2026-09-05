@@ -22,8 +22,12 @@ and scan):
     0 = valid + scan-clean (stamped) · 1 = schema-invalid · 2 = scan hit
     (2 wins when both apply).
 
-``--selftest`` (04 exit (c); 08 §3 T11 row): loud PASS/FAIL per check,
-non-zero exit on any FAIL:
+``--selftest`` (04 exit (c); 08 §3 T11 row): loud, tri-state PASS/FAIL/
+UNMEASURED per check (M-K) — a check that could not measure anything
+(a missing prerequisite it cannot itself supply) is neither a PASS nor
+a FAIL, and is never rendered or exited as though it were one. Exit 1
+on any FAIL (unchanged); else exit 9 (``cli.EXIT_UNMEASURED``) on any
+UNMEASURED; else 0:
     (a) capture path — create + parse + delete a scratch record in a temp
         bucket under SELF_LEARN_HOME (clean refusal when the home is
         missing);
@@ -62,23 +66,37 @@ non-zero exit on any FAIL:
         drift nor (d2)'s reach check asks for these four destinations
         (``reference`` stays wholly owned by (d2)). A `settings.json` that
         will not parse FAILs the row through the settings-dependent
-        records only, never blanket; an absent ``~/.claude`` PASSes with
-        an UNMEASURABLE count and a note line, never a silent skip;
+        records only, never blanket; an absent ``~/.claude`` renders with
+        an UNMEASURABLE count and a note line, never a silent skip — and
+        (M-K) the row's own VERDICT is UNMEASURED, not PASS, whenever
+        every record in its domain came back unmeasurable (nothing was
+        positively confirmed reachable);
     (f) sentinel writability — hold + release a probe at the real
         cache-path resolution; a pre-existing LIVE sentinel (another
-        flow's hold) is heartbeated, never deleted;
-    (g) worker check — stubbed M2-conditional: prints
-        ``worker: M2 — not checked``.
+        flow's hold) is heartbeated, never deleted.
+
+    There is no ``(g) worker`` row (fold r1, 2026-09-04 — M-K originally
+    shipped one as a real, COUNTED UNMEASURED entry reading
+    ``worker — M2 — not checked``). UNMEASURED means an instrument
+    EXISTS and could not look; M2 has no instrument at all — nothing was
+    ever built to check it — so reporting a verdict for it was
+    reporting a fact this code does not have, and its unconditional
+    presence made every home exit 9 forever, turning the exit code into
+    noise. The worker check (M2) is not yet implemented and is tracked
+    as a capability gap, not a selftest row: it will gain a row, a
+    verdict, and re-enter this list only once M2 exists to be checked.
 """
 
 from __future__ import annotations
 
+import enum
 import json
 import os
 import re
 import sys
 import tempfile
 from pathlib import Path
+from typing import NoReturn
 
 from . import compiled
 from . import domain
@@ -109,11 +127,36 @@ from .reachability import reachability_rows
 from .records import Record, RecordError
 from .verbs import DEFAULT_USER_CLAUDE_MD, _user_reachability_roots, managed_target_for
 
-__all__ = ["proposal_validate", "run_selftest"]
+__all__ = ["proposal_validate", "run_selftest", "Verdict"]
 
 EXIT_VALID = 0
 EXIT_SCHEMA_INVALID = 1
 EXIT_SCAN_HIT = 2
+
+
+class Verdict(enum.Enum):
+    """M-K: every `--selftest` check row is one of three states, never a
+    plain bool. `PASS` and `FAIL` mean what they always meant; `UNMEASURED`
+    is the new, first-class third state for a check that could not
+    exercise anything (a missing prerequisite the check cannot supply,
+    e.g. `hosts.yaml` absent) — it must never render, count, or exit as
+    though the thing it didn't check came back clean.
+
+    `__bool__` intentionally raises: a bare `if verdict:` / `assert
+    verdict` compiles and silently reads `FAIL` and `UNMEASURED` alike as
+    truthy (a plain object with no `__bool__` override IS truthy), which
+    is exactly the fail-open shape this type exists to close off. Every
+    caller must compare explicitly — `verdict is Verdict.PASS`, etc."""
+
+    PASS = "PASS"
+    FAIL = "FAIL"
+    UNMEASURED = "UNMEASURED"
+
+    def __bool__(self) -> NoReturn:
+        raise TypeError(
+            f"{self!r} has no truth value — compare explicitly against "
+            "Verdict.PASS / .FAIL / .UNMEASURED"
+        )
 
 
 # ------------------------------------------------------- proposal validate
@@ -351,7 +394,7 @@ def _loaded_surface(home: Path, bucket: Bucket, record: Record) -> list[Path]:
     return []
 
 
-def _check_reach(home: Path) -> tuple[bool, str]:
+def _check_reach(home: Path) -> tuple[Verdict, str]:
     """U-reach §2.1: every LIVE reference-routed record must be reachable
     from its scope's loaded surface — mirrors :func:`_check_drift`'s
     posture exactly, so the two checks read the same, but stays an
@@ -389,9 +432,9 @@ def _check_reach(home: Path) -> tuple[bool, str]:
     SKILL.md / CLAUDE.md / the user CLAUDE.md)."""
     state = home_state(home)
     if state in ("missing", "not-a-repo"):
-        return False, home_state_message(state, home)
+        return Verdict.FAIL, home_state_message(state, home)
     if not hosts_path(home).is_file():
-        return True, "hosts.yaml absent — reachability not checked"
+        return Verdict.UNMEASURED, "hosts.yaml absent — reachability not checked"
     failures: list[str] = []
     checked = 0
     for bucket in discover_buckets(home):
@@ -446,13 +489,13 @@ def _check_reach(home: Path) -> tuple[bool, str]:
                 f"({named}) — write a resolving pointer to {target}"
             )
     if failures:
-        return False, (
+        return Verdict.FAIL, (
             f"{len(failures)} of {checked} reference-routed record(s) "
             "unreachable: " + "; ".join(failures)
         )
     if not checked:
-        return True, "no reference-routed records — nothing to reach"
-    return True, (
+        return Verdict.PASS, "no reference-routed records — nothing to reach"
+    return Verdict.PASS, (
         f"{checked} reference-routed record(s) reachable from their "
         "scope's loaded surface"
     )
@@ -482,7 +525,7 @@ def _section_targets(home: Path) -> dict[Path, list[Record]]:
 
 def _check_drift(
     home: Path, *, user_claude_md: Path | str | None = None
-) -> tuple[bool, str]:
+) -> tuple[Verdict, str]:
     """Doc 13 §4.2 drift check: every ROUTED record must be PRESENT in the
     canon it was routed into — a managed destination's ``(lrn-…)`` entry
     marker inside its target's managed section, and a ``reference``
@@ -517,9 +560,9 @@ def _check_drift(
     operator's real ``~/.claude/CLAUDE.md``."""
     state = home_state(home)
     if state in ("missing", "not-a-repo"):
-        return False, home_state_message(state, home)
+        return Verdict.FAIL, home_state_message(state, home)
     if not hosts_path(home).is_file():
-        return True, "hosts.yaml absent — drift not checked"
+        return Verdict.UNMEASURED, "hosts.yaml absent — drift not checked"
     failures: list[str] = []
     checked = 0
     # U-hostmode PLAIN8: non-failing region-verdict notes (unknown/stale/
@@ -717,9 +760,9 @@ def _check_drift(
                                 "pattern"
                             )
     if failures:
-        return False, "; ".join(failures)
+        return Verdict.FAIL, "; ".join(failures)
     if not checked:
-        return True, "no routed managed-destination records — no drift possible"
+        return Verdict.PASS, "no routed managed-destination records — no drift possible"
     ok_message = f"{checked} routed record(s) present in their compiled targets"
     if unknown_provenance_count:
         n = unknown_provenance_count
@@ -729,10 +772,10 @@ def _check_drift(
         )
     if plain_notes:
         ok_message = ok_message + " — " + "; ".join(plain_notes)
-    return True, ok_message
+    return Verdict.PASS, ok_message
 
 
-def _check_capture(home: Path) -> tuple[bool, str]:
+def _check_capture(home: Path) -> tuple[Verdict, str]:
     """(a) Round-trip a scratch record in a temp bucket under the home."""
     try:
         with tempfile.TemporaryDirectory(dir=home, prefix=".selftest-") as scratch:
@@ -749,13 +792,13 @@ def _check_capture(home: Path) -> tuple[bool, str]:
             Record.from_path(path).validate()
             path.unlink()
     except OSError as exc:
-        return False, f"cannot write under {home}: {exc}"
+        return Verdict.FAIL, f"cannot write under {home}: {exc}"
     except RecordError as exc:
-        return False, f"scratch record failed round-trip: {exc}"
-    return True, f"scratch record round-tripped under {home}"
+        return Verdict.FAIL, f"scratch record failed round-trip: {exc}"
+    return Verdict.PASS, f"scratch record round-tripped under {home}"
 
 
-def _check_compiler(targets: dict[Path, list[Record]]) -> tuple[bool, str]:
+def _check_compiler(targets: dict[Path, list[Record]]) -> tuple[Verdict, str]:
     """(b) In-memory regeneration for every routed-to target; no writes.
 
     FW-66: the same class of gap as reach/drift — a target that exists
@@ -763,21 +806,21 @@ def _check_compiler(targets: dict[Path, list[Record]]) -> tuple[bool, str]:
     file, never traceback (this check runs FIRST among the seven, so an
     unguarded read here crashed `--selftest` before any row printed)."""
     if not targets:
-        return True, "no routed records — nothing to compile"
+        return Verdict.PASS, "no routed records — nothing to compile"
     for target, records in targets.items():
         try:
             text = target.read_text(encoding="utf-8") if target.is_file() else ""
         except UnicodeDecodeError as exc:
-            return False, f"{target}: not readable as UTF-8 ({exc})"
+            return Verdict.FAIL, f"{target}: not readable as UTF-8 ({exc})"
         try:
             compile_managed_text(text, records)
         except CompileError as exc:
-            return False, f"{target}: {exc}"
+            return Verdict.FAIL, f"{target}: {exc}"
     n = len(targets)
-    return True, f"regenerated {n} managed section{'s' if n != 1 else ''} in-memory"
+    return Verdict.PASS, f"regenerated {n} managed section{'s' if n != 1 else ''} in-memory"
 
 
-def _check_markers(targets: dict[Path, list[Record]]) -> tuple[bool, str]:
+def _check_markers(targets: dict[Path, list[Record]]) -> tuple[Verdict, str]:
     """(c) 02 §4: flag ONLY targets that should have a section but have a
     missing/broken marker pair.
 
@@ -805,10 +848,10 @@ def _check_markers(targets: dict[Path, list[Record]]) -> tuple[bool, str]:
         elif text.index(END_MARKER) < text.index(BEGIN_MARKER):
             failures.append(f"{target} ({why}): end marker precedes begin marker")
     if failures:
-        return False, "; ".join(failures)
+        return Verdict.FAIL, "; ".join(failures)
     if not targets:
-        return True, "no routed records — no section owed anywhere"
-    return True, f"marker pairs intact on {len(targets)} target(s)"
+        return Verdict.PASS, "no routed records — no section owed anywhere"
+    return Verdict.PASS, f"marker pairs intact on {len(targets)} target(s)"
 
 
 def claude_runtime_dir() -> Path:
@@ -846,7 +889,7 @@ def _registered_hook_commands(settings_path: Path) -> tuple[list[str], str | Non
     return commands, None
 
 
-def _check_hooks(home: Path, claude_dir: Path) -> tuple[bool, str]:
+def _check_hooks(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
     """M3 selftest extension (08 §8.1 Hook-selftest pin), read-only:
 
     - every CURRENTLY-ROUTED hook record's script exists, is executable,
@@ -946,18 +989,68 @@ def _check_hooks(home: Path, claude_dir: Path) -> tuple[bool, str]:
             )
 
     if failures:
-        return False, "; ".join(failures)
-    if not hosts_known and checked == 0 and registrations == 0:
-        return True, "hosts.yaml absent — hook scripts not checked"
+        return Verdict.FAIL, "; ".join(failures)
+    if not hosts_known:
+        # fold r3 (2026-09-04), corrected pin — gate r1's ruling on the
+        # fold r2 edge: an absent hosts.yaml means the LEDGER WALK NEVER
+        # RAN (every hook-routed record above hit `if not hosts_known:
+        # continue`), so `checked == 0` here does not mean "zero
+        # hook-routed records exist" the way it does below when the
+        # walk actually ran and found none -- it means the walk never
+        # looked. This must be UNMEASURED regardless of `registrations`:
+        # a settings.json with resolvable registrations does not tell
+        # you anything about records the walk never visited. (fold r2
+        # conflated the two: its `checked == 0` PASS branch fired here
+        # too whenever `registrations > 0`, printing "0 hook-routed
+        # records" as though that were measured, when it was really
+        # "not measured, walk skipped" — the same
+        # never-print-reachable-for-what-you-didn't-see class this
+        # module's own docstring contract names, `lrn-ea833a5b`.)
+        # NOT the same case as an UNREADABLE-but-present hosts.yaml (a
+        # few lines above, `except HostsError`): that one already FAILs
+        # via `if failures:`, above, because the walk DOES run with
+        # `root is None` and either the except block or a live
+        # unresolvable record appends a failure. Do not fold these two
+        # guards into one `if not hosts_known or root is None:` — that
+        # would turn a broken registry from FAIL into UNMEASURED,
+        # fail-open in the exact class `lrn-ea833a5b` exists to catch
+        # (gate r2, 2026-09-04, nit 1).
+        return Verdict.UNMEASURED, (
+            "hosts.yaml absent — hook scripts not checked; "
+            f"{registrations} registration(s) resolvable"
+        )
     if checked == 0 and registrations == 0:
-        return True, "no hook-routed records and no self-learn registrations"
-    return True, (
+        return Verdict.PASS, "no hook-routed records and no self-learn registrations"
+    if checked == 0:
+        # fold r2 (2026-09-04), corrected pin — gate r1 Blocker 1: a
+        # resolved registration set IS a completed measurement (each
+        # symlink was checked above; a dangling one would already have
+        # FAILed), even with zero hook-routed records to verify
+        # bytes/executability for — a healthy zero, exactly like the
+        # other six checks' own "nothing to check" PASS rows, never an
+        # UNMEASURED. (fold r1 shipped a `checked == 0 -> UNMEASURED`
+        # branch here instead, which made a correctly installed home —
+        # the plugin's own self-learn-pending.sh / self-learn-refread.sh
+        # registered per install.sh, no hook lesson routed yet — exit 9:
+        # following the install instructions made the health check
+        # report WORSE than a less-complete install. This branch is now
+        # reached ONLY when the ledger walk actually ran (hosts_known,
+        # handled above) and genuinely found zero hook-routed records —
+        # fold r3 moved the absent-registry case out to its own
+        # UNMEASURED branch above so the two "checked == 0" reasons —
+        # "looked and found nothing" vs. "never looked" — can no longer
+        # collide.)
+        return Verdict.PASS, (
+            f"0 hook-routed records; {registrations} registration(s) "
+            "resolvable"
+        )
+    return Verdict.PASS, (
         f"{checked} live hook script(s) intact; {registrations} "
         "registration(s) resolvable"
     )
 
 
-def _check_surface(home: Path, claude_dir: Path) -> tuple[bool, str]:
+def _check_surface(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
     """U-pointer §4/§5: the reachability-emitter row. Read-only render of
     :func:`reachability.reachability_rows` — every per-record verdict is
     computed there; this function only counts and formats (§4.3's "one
@@ -977,14 +1070,14 @@ def _check_surface(home: Path, claude_dir: Path) -> tuple[bool, str]:
     is among them (never unconditionally, r2 MAJOR 2)."""
     state = home_state(home)
     if state in ("missing", "not-a-repo"):
-        return False, home_state_message(state, home)
+        return Verdict.FAIL, home_state_message(state, home)
     if not hosts_path(home).is_file():
-        return True, "hosts.yaml absent — reachability not checked"
+        return Verdict.UNMEASURED, "hosts.yaml absent — reachability not checked"
 
     rows = reachability_rows(home, claude_dir)
     total = len(rows)
     if not total:
-        return True, "no records in the reachability domain"
+        return Verdict.PASS, "no records in the reachability domain"
 
     reachable = [r for r in rows if r.state == "reachable"]
     unreachable = [r for r in rows if r.state == "unreachable"]
@@ -995,7 +1088,6 @@ def _check_surface(home: Path, claude_dir: Path) -> tuple[bool, str]:
     # else `unmeasurable` merely counts (the instrument is absent, not
     # the canon broken).
     fails_on_settings = any(r.reason == "settings-unparseable" for r in unmeasurable)
-    ok = not unreachable and not fails_on_settings
 
     msg = f"{len(reachable)} of {total} verified reachable"
     if unmeasurable:
@@ -1008,10 +1100,21 @@ def _check_surface(home: Path, claude_dir: Path) -> tuple[bool, str]:
         if "claude-dir-absent" in reasons or "settings-unparseable" in reasons:
             note += f" — {claude_dir}"
         msg += f" (unmeasurable: {note})"
-    return ok, msg
+
+    # M-K: FAIL wins outright (unreachable rows, or the settings-broken
+    # override); otherwise PASS requires at least one row to have been
+    # POSITIVELY measured reachable — a row set that is every bit as
+    # `unmeasurable` (total > 0, reachable == 0, unreachable == 0) is a
+    # row that never certified anything, so it is UNMEASURED, never a
+    # free PASS by virtue of "nothing failed".
+    if unreachable or fails_on_settings:
+        return Verdict.FAIL, msg
+    if not reachable:
+        return Verdict.UNMEASURED, msg
+    return Verdict.PASS, msg
 
 
-def _check_sentinel() -> tuple[bool, str]:
+def _check_sentinel() -> tuple[Verdict, str]:
     """(d) Hold + release a probe at the real cache-path resolution. A
     pre-existing LIVE sentinel belongs to another flow: heartbeat it as
     proof of writability, never delete it."""
@@ -1020,29 +1123,57 @@ def _check_sentinel() -> tuple[bool, str]:
         hold = sentinel.hold()
         if hold.owned:
             hold.release()
-            return True, f"probe held and released at {path}"
+            return Verdict.PASS, f"probe held and released at {path}"
         if sentinel.heartbeat():
-            return True, f"live sentinel at {path} (another flow) — heartbeat ok"
-        return False, f"live sentinel at {path} vanished mid-probe"
+            return Verdict.PASS, f"live sentinel at {path} (another flow) — heartbeat ok"
+        return Verdict.FAIL, f"live sentinel at {path} vanished mid-probe"
     except OSError as exc:
-        return False, f"cannot write sentinel at {path}: {exc}"
+        return Verdict.FAIL, f"cannot write sentinel at {path}: {exc}"
 
 
-def _check_invocation(home: Path) -> tuple[bool, str]:
+def _check_invocation(home: Path) -> tuple[Verdict, str]:
     """`Doc-0`/`DC11` -- computed PROGRAMMATICALLY from
     :func:`provider.preflight`, never by parsing `doctor invocation`'s
-    printed text. `ok` is `False` iff the doctor produced at least one
-    FAIL row."""
+    printed text. FAIL iff the doctor produced at least one FAIL row
+    (unchanged). M-K: absent a FAIL, PASS requires the doctor to have
+    positively measured at least one PASS row — a preflight whose rows
+    are all WARN/SKIP/INFO decided nothing, and UNMEASURED says so,
+    rather than reading a silent, uninformative sweep as certification."""
     rows = provider.preflight(home)
-    ok = not any(row.verdict == "FAIL" for row in rows)
-    if ok:
-        return True, "run `self-learn doctor invocation` for details"
-    failing = ", ".join(sorted({row.name for row in rows if row.verdict == "FAIL"}))
-    return False, f"FAIL row(s): {failing} — run `self-learn doctor invocation` for details"
+    if any(row.verdict == "FAIL" for row in rows):
+        failing = ", ".join(sorted({row.name for row in rows if row.verdict == "FAIL"}))
+        return Verdict.FAIL, f"FAIL row(s): {failing} — run `self-learn doctor invocation` for details"
+    if not any(row.verdict == "PASS" for row in rows):
+        return Verdict.UNMEASURED, (
+            "no PASS/FAIL preflight row — run `self-learn doctor invocation` "
+            "for details"
+        )
+    return Verdict.PASS, "run `self-learn doctor invocation` for details"
 
 
 def run_selftest(home: Path) -> int:
-    """All checks, each loud; non-zero on any FAIL."""
+    """All checks, each loud, tri-state (M-K): PASS, FAIL, or UNMEASURED
+    — a check that could not measure anything must never render or exit
+    as though it passed. Exit 1 on any FAIL (unchanged); else
+    ``EXIT_UNMEASURED`` (9, defined in :mod:`cli` beside its other exit
+    constants — imported here, not at module scope, because :mod:`cli`
+    imports THIS module while building its own namespace, so a top-level
+    ``from .cli import ...`` here would be a real circular import; by the
+    time this function actually RUNS, :mod:`cli` has always finished
+    loading) on any UNMEASURED with no FAIL; else 0.
+
+    Nine checks, not ten (fold r1, 2026-09-04): there is no ``worker``
+    row. M-K originally shipped one as an unconditional, COUNTED
+    UNMEASURED entry, which made every home — healthy or not — exit 9
+    forever, since UNMEASURED means an instrument exists and could not
+    look, and no instrument for the worker (M2) has ever been built.
+    Reporting a verdict for a check that was never run turned the exit
+    code into noise. The worker check (M2) is not yet implemented; it is
+    tracked as a capability gap, not a row, and will earn a row only
+    once M2 gives it something to measure. A fully healthy, fully
+    configured home exits 0 again."""
+    from .cli import EXIT_UNMEASURED
+
     if not home.is_dir():
         print(
             f"selftest: SELF_LEARN_HOME {home} does not exist — nothing to "
@@ -1052,7 +1183,7 @@ def run_selftest(home: Path) -> int:
         return 1
 
     targets = _section_targets(home)
-    results = [
+    results: list[tuple[str, Verdict, str]] = [
         ("capture", *_check_capture(home)),
         ("compiler", *_check_compiler(targets)),
         ("markers", *_check_markers(targets)),
@@ -1064,15 +1195,20 @@ def run_selftest(home: Path) -> int:
         ("invocation", *_check_invocation(home)),
     ]
 
-    failed = 0
-    for name, ok, reason in results:
-        verdict = "PASS" if ok else "FAIL"
-        failed += 0 if ok else 1
-        print(f"selftest: {verdict} {name} — {reason}")
-    print("selftest: worker: M2 — not checked")
+    passed = failed = unmeasured = 0
+    for name, verdict, reason in results:
+        print(f"selftest: {verdict.value} {name} — {reason}")
+        if verdict is Verdict.PASS:
+            passed += 1
+        elif verdict is Verdict.FAIL:
+            failed += 1
+        else:
+            unmeasured += 1
+    print(f"selftest: {passed} passed, {unmeasured} unmeasured, {failed} failed")
 
     if failed:
         print(f"selftest: {failed} of {len(results)} checks FAILED", file=sys.stderr)
         return 1
-    print(f"selftest: all {len(results)} checks green")
+    if unmeasured:
+        return EXIT_UNMEASURED
     return 0

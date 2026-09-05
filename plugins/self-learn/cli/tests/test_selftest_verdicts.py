@@ -1,0 +1,193 @@
+"""M-K: tri-state `--selftest` verdicts (PASS/FAIL/UNMEASURED) and the
+exit-9 namespace they earn (Sprint 2, lane L2). New file, armor
+untouched: asserts the ``Verdict`` enum's own contract plus the verdict
+class each pinned site family renders, and the fold into
+``cli.EXIT_UNMEASURED`` (9) that ``run_selftest`` performs.
+
+Post-fold state (fold r1, 2026-09-04, then gate r1 minor 2, 2026-09-04):
+there is no ``worker`` row at all any more. M-K originally shipped one as
+an unconditional, COUNTED ``UNMEASURED`` entry — reporting a verdict for
+a check that had never run, which made ``--selftest`` exit 9 on every
+home, healthy or not, forever (since exiting 0 requires zero FAILs AND
+zero UNMEASUREDs). Fold r1 dropped that row as a capability gap instead
+(M2 is not yet implemented; it earns a row only once it exists). A truly
+healthy home — every real check PASSing, nothing genuinely unmeasurable
+in its fixture — now asserts exit 0 below, same as any other tri-state
+check; the fixtures that still assert exit 9 do so because they contain
+a genuine UNMEASURED (an absent ``~/.claude``, a missing ``hosts.yaml``),
+never because of the old placeholder.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from self_learn import cli, provider, selfcheck
+from self_learn.compilers import END_MARKER, compile_managed_file
+from self_learn.selfcheck import Verdict
+
+from support import init_repo, make_behavior, make_env
+
+
+@pytest.fixture(autouse=True)
+def cache_dir(tmp_path, monkeypatch):
+    """Sentinel probes go to a per-test XDG cache, never the real ~/.cache."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    e = make_env(tmp_path)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(e.ledger))
+    return e
+
+
+def _seed_routed_skill_target(env):
+    """A resolved, live skill-md-routed record + its compiled SKILL.md
+    (markers present) — the minimal fixture that puts exactly one row in
+    every reachability-domain check (surface) while leaving drift/reach/
+    hooks/markers/compiler each with their own single measured row."""
+    resolved = env.ledger / "skills" / "s" / "resolved"
+    resolved.mkdir(parents=True)
+    record = make_behavior(scope="skill:s", record_id="lrn-0a1b2c3d")
+    record.set_routing(
+        {"routed_at": "2026-07-13T18:02:00Z", "destination": "skill-md", "by": "human"}
+    )
+    record.set_status("routed")
+    record.write(resolved / f"{record.id}.md")
+    compile_managed_file(env.skill_md, [record])
+    return env.skill_md
+
+
+# ------------------------------------------------------- the type itself
+
+
+def test_verdict_has_no_truth_value():
+    """The `__bool__` guard: pinned text is silent on it, but a plain
+    object with no override IS truthy, so a leftover `if verdict:` /
+    `assert verdict` would silently read FAIL and UNMEASURED alike as
+    PASS — exactly the fail-open shape M-K exists to close. Every caller
+    must compare explicitly."""
+    with pytest.raises(TypeError):
+        bool(Verdict.PASS)
+    with pytest.raises(TypeError):
+        bool(Verdict.FAIL)
+    with pytest.raises(TypeError):
+        bool(Verdict.UNMEASURED)
+
+
+def test_verdict_members_render_as_their_own_name():
+    assert Verdict.PASS.value == "PASS"
+    assert Verdict.FAIL.value == "FAIL"
+    assert Verdict.UNMEASURED.value == "UNMEASURED"
+
+
+# ------------------------------------------------- run_selftest end to end
+
+
+def test_healthy_home_exits_0_no_worker_placeholder_row(env, capsys):
+    """PINS fold r1 (2026-09-04): a home with nothing routed has every
+    real check PASS, and there is no `worker` row at all any more (M-K
+    originally shipped one as an unconditional, COUNTED UNMEASURED
+    entry — reporting a verdict for a check that was never run, which
+    made every home exit 9 forever). Nine real checks, all PASS: exit 0.
+
+    Mutation witness the gate can use: re-adding the dropped
+    `("worker", Verdict.UNMEASURED, "M2 — not checked")` tuple to
+    `run_selftest`'s ``results`` list reddens this test on the exit-code
+    assertion alone (rc goes back to 9), and also on the summary-line
+    assertion (the count changes from 9 to 10 total, 1 unmeasured).
+    Separately, reverting `cli.EXIT_UNMEASURED` from 9 to 0 (or
+    `run_selftest`'s `return EXIT_UNMEASURED` back to `return 0`) would
+    make ANY future genuine UNMEASURED silently read as success — that
+    mutation is exercised by `test_hosts_yaml_absent_is_unmeasured_not_a_silent_pass`
+    below, not by this all-PASS fixture."""
+    rc = cli.main(["--selftest"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "FAIL" not in out
+    assert "worker" not in out
+    assert "9 passed, 0 unmeasured, 0 failed" in out
+
+
+def test_hosts_yaml_absent_is_unmeasured_not_a_silent_pass(tmp_path, monkeypatch):
+    """Class: the four explicit skips on a missing prerequisite the check
+    cannot itself supply (drift/reach/surface/hooks, each pinned to
+    UNMEASURED). A bare repo with no hosts.yaml can measure NOTHING about
+    any of the four. Mutation witness: flip any one of the four sites
+    back to `Verdict.PASS` (the old bare `True`) and its own assertion
+    below reddens."""
+    bare = tmp_path / "bare-ledger"
+    init_repo(bare)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(bare))
+
+    claude_dir = selfcheck.claude_runtime_dir()
+    assert selfcheck._check_drift(bare)[0] is Verdict.UNMEASURED
+    assert selfcheck._check_reach(bare)[0] is Verdict.UNMEASURED
+    assert selfcheck._check_surface(bare, claude_dir)[0] is Verdict.UNMEASURED
+    assert selfcheck._check_hooks(bare, claude_dir)[0] is Verdict.UNMEASURED
+
+    rc = cli.main(["--selftest"])
+    assert rc == 9
+
+
+def test_all_unmeasurable_surface_is_unmeasured_not_a_free_pass(env, capsys):
+    """Class: the 1011 conditional — every row in the surface check's
+    domain is `unmeasurable` (here: one skill-md-routed record, no real
+    claude_dir at all, so its row reads `claude-dir-absent`). Must be
+    UNMEASURED, never PASS-by-virtue-of-nothing-failing. Mutation
+    witness: revert `_check_surface`'s tail to the pre-M-K expression
+    `ok = not unreachable and not fails_on_settings` — that expression is
+    `True` here (unreachable == 0), so this test's own assertion reddens
+    directly, and the exit-code assertion reddens too (9 -> 0)."""
+    _seed_routed_skill_target(env)
+
+    ok, msg = selfcheck._check_surface(env.ledger, selfcheck.claude_runtime_dir())
+    assert ok is Verdict.UNMEASURED
+    assert "0 of 1 verified reachable" in msg
+    assert "UNMEASURABLE" in msg
+
+    rc = cli.main(["--selftest"])
+    out = capsys.readouterr().out
+    assert rc == 9
+    assert "UNMEASURED surface" in out
+
+
+def test_all_skip_preflight_is_unmeasured_not_a_free_pass(env, monkeypatch):
+    """Class: the 1039 conditional — a preflight sweep whose rows are all
+    WARN/SKIP/INFO (no PASS, no FAIL) decided nothing about invocation
+    health. Mutation witness: revert `_check_invocation` to the pre-M-K
+    `ok = not any(row.verdict == "FAIL" for row in rows)` — that
+    expression is `True` on an all-SKIP sweep, so this test's own
+    assertion reddens directly."""
+
+    def all_skip(home):
+        return [provider.Row(name="sdk", verdict="SKIP", detail="stubbed for this test")]
+
+    # selfcheck.py does `from . import provider` — patching the shared
+    # module object's attribute is visible through selfcheck's own
+    # `provider` name too (same singleton module, not a copied binding).
+    monkeypatch.setattr(provider, "preflight", all_skip)
+
+    ok, reason = selfcheck._check_invocation(env.ledger)
+
+    assert ok is Verdict.UNMEASURED
+    assert "no PASS/FAIL preflight row" in reason
+
+
+def test_fail_beside_unmeasured_exits_1_never_9(env, capsys):
+    """Class: FAIL wins over UNMEASURED in the exit code even when
+    UNMEASURED rows are ALSO present in the same run (surface is
+    UNMEASURED here too, via the same absent-claude_dir shape as the
+    test above, while markers is a real, sabotaged-marker FAIL)."""
+    skill_md = _seed_routed_skill_target(env)
+    text = skill_md.read_text(encoding="utf-8")
+    skill_md.write_text(text.replace(END_MARKER + "\n", ""), encoding="utf-8")
+
+    rc = cli.main(["--selftest"])
+    out = capsys.readouterr().out
+
+    assert rc == 1
+    assert "FAIL markers" in out
+    assert "UNMEASURED surface" in out

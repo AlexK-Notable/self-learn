@@ -343,7 +343,7 @@ def test_row_blind(env, tmp_path, monkeypatch):
     claude_dir = missing_claude_dir(tmp_path, monkeypatch)
 
     ok, msg = selfcheck._check_surface(env.ledger, claude_dir)
-    assert ok
+    assert ok is selfcheck.Verdict.UNMEASURED
     assert "0 of 4 verified reachable" in msg
     assert "4 UNMEASURABLE" in msg
     assert "claude-dir-absent" in msg
@@ -365,7 +365,7 @@ def test_row_mixed(env, tmp_path, monkeypatch):
     route_skill_md(env, name="missing2", record_id="lrn-d0000004")
 
     ok, msg = selfcheck._check_surface(env.ledger, claude_dir)
-    assert ok
+    assert ok is selfcheck.Verdict.PASS
     assert "2 of 4 verified reachable" in msg
     assert "2 UNMEASURABLE" in msg
     assert "target-missing" in msg
@@ -781,7 +781,7 @@ def test_hook_unreg_two_sided(env, tmp_path, monkeypatch):
     assert row.state == "unreachable"
     assert row.reason == "not-registered"
     ok, _reason = selfcheck._check_hooks(env.ledger, claude_dir)
-    assert ok is True
+    assert ok is selfcheck.Verdict.PASS
 
 
 def test_hook_2_wrong_event(env, tmp_path, monkeypatch):
@@ -830,7 +830,7 @@ def test_hook_broken_settings_fails_row(env, tmp_path, monkeypatch):
     assert row.state == "unmeasurable"
     assert row.reason == "settings-unparseable"
     ok, _msg = selfcheck._check_surface(env.ledger, claude_dir)
-    assert ok is False
+    assert ok is selfcheck.Verdict.FAIL
 
 
 def test_hook_6_no_registrations(env, tmp_path, monkeypatch):
@@ -1114,26 +1114,26 @@ def test_refuse_missing_and_not_a_repo_and_hosts_absent(tmp_path, monkeypatch):
 
     missing_home = tmp_path / "no-such-home"
     ok, msg = selfcheck._check_surface(missing_home, claude_dir)
-    assert ok is False
+    assert ok is selfcheck.Verdict.FAIL
     assert msg == selfcheck.home_state_message("missing", missing_home)
 
     not_repo_home = tmp_path / "not-a-repo-home"
     not_repo_home.mkdir()
     ok, msg = selfcheck._check_surface(not_repo_home, claude_dir)
-    assert ok is False
+    assert ok is selfcheck.Verdict.FAIL
     assert msg == selfcheck.home_state_message("not-a-repo", not_repo_home)
 
     bare_home = tmp_path / "bare-repo-home"
     init_repo(bare_home)
     ok, msg = selfcheck._check_surface(bare_home, claude_dir)
-    assert ok is True
+    assert ok is selfcheck.Verdict.UNMEASURED
     assert msg == "hosts.yaml absent — reachability not checked"
 
 
 def test_empty_domain(env, tmp_path, monkeypatch):
     claude_dir = make_claude_dir(tmp_path, monkeypatch, settings={})
     ok, msg = selfcheck._check_surface(env.ledger, claude_dir)
-    assert ok is True
+    assert ok is selfcheck.Verdict.PASS
     assert "no records in the reachability domain" in msg
 
 
@@ -1162,7 +1162,7 @@ def test_one_predicate_stub_controls_both_renderers(env, tmp_path, monkeypatch):
     ok, msg = selfcheck._check_surface(env.ledger, claude_dir)
     assert calls["n"] >= 1, "the stub was never called — the test controls nothing"
     assert "1 of 2 verified reachable" in msg
-    assert ok is False
+    assert ok is selfcheck.Verdict.FAIL
 
     calls_before_report = calls["n"]
     facts = report._surface_reach(env.ledger, claude_dir)

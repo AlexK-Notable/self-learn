@@ -89,6 +89,23 @@ EXIT_USAGE = 64
 #: scan-hit code, pinned un-aliasable at :71 below).
 EXIT_BATCH_PARTIAL = 8
 
+#: M-K: `self-learn --selftest`'s tri-state verdict namespace (`self_learn
+#: .selfcheck.Verdict`) needs its own exit distinct from every code above
+#: — a check that could not MEASURE anything (a missing prerequisite the
+#: check itself cannot supply, e.g. `hosts.yaml` absent) is neither the
+#: FAIL this module's `1` already owns nor the `0` a real, positive PASS
+#: earns; collapsing it onto either would let "nothing was checked" read
+#: as either a failure that didn't happen or a success that didn't
+#: happen. `9` is the next free integer: 0-8 and 64 are taken (see the
+#: constants above and `EXIT_USAGE`'s comment). `selfcheck.run_selftest`
+#: imports this INSIDE the function, never at module scope — this module
+#: imports `selfcheck` while still building its own namespace (see the
+#: `from . import ... selfcheck ...` above), so a top-level import back
+#: from `selfcheck` would be a real circular import; teach.py's deferred
+#: `from .cli import push_note` (inside `_route_now`) is the identical,
+#: already-shipped precedent for this exact direction of dependency.
+EXIT_UNMEASURED = 9
+
 #: Re-exported (defined in :mod:`self_learn.ledger` / :mod:`self_learn.
 #: gitops`, beside the concepts they name) so every surface — including
 #: `teach`, which used to pin its own — returns the SAME integer.

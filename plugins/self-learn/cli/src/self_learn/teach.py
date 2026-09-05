@@ -85,18 +85,38 @@ from .scan import format_refusal, redact, scan
 __all__ = ["add_teach_parser", "infer_type", "run_teach"]
 
 EXIT_OK = 0
-EXIT_USAGE = 2
+# A22 (fold r1, 2026-09-04; corrected fold r2, 2026-09-04 -- gate r1
+# minor 1): teach's own usage-error code is the SAME code every other
+# CLI surface uses for "you typed the command wrong" -- cli.EXIT_USAGE
+# (64), not a private 2. There is no module-level `EXIT_USAGE` binding
+# here any more: `_fail()`, below, is the ONLY place in this file that
+# reads it (its own `return EXIT_USAGE`, the sole executable reference),
+# so it is imported there with a deferred `from .cli import EXIT_USAGE`
+# -- exactly the shape `selfcheck.run_selftest` uses for
+# `cli.EXIT_UNMEASURED`, and exactly the shape this file already uses
+# for `push_note` inside `_route_now`, further down. A module-scope
+# `from .cli import EXIT_USAGE` here WOULD be a genuine circular import
+# (`cli.py`'s own `from .teach import add_teach_parser, run_teach`, line
+# 74, runs before `cli.py` defines its own `EXIT_USAGE`, line 83) -- the
+# deferred import inside `_fail()` sidesteps that because `cli` has
+# always finished loading by the time `_fail()` actually runs. (fold r1
+# shipped a hand-kept `EXIT_USAGE = 64` literal here instead, reasoning
+# that "`_fail` alone has over twenty call sites" -- that conflated
+# `_fail`'s ~24 CALLERS with the ONE place that reads `EXIT_USAGE` by
+# name; the deferred import above is the fix that actually ships.)
 EXIT_SCAN = 3
 EXIT_ANALYST = 4  # analysis/route failed — record captured to pending/
 # 5, 6 and 7 are the SHARED codes, imported (not re-pinned) from the
 # modules that own the concepts — see their docstrings. teach used to
 # return its own EXIT_USAGE(2) for a bad home while all eight other
 # surfaces returned 5 (audit 2026-07-16 MINOR G); importing is what keeps
-# that unified. Round 7 BLOCKER 2: sharing the INTEGER was never enough —
-# teach documented 6 as "the record IS written", the verbs documented the
-# same 6 as "nothing was written", and both were right about themselves.
-# One code, one state fact, every surface: 6 = nothing written · 7 = the
-# write landed, its commit did not.
+# that unified, and EXIT_USAGE (above) now joins them the same way — a
+# real deferred import, not a hand-synced value. Round 7 BLOCKER 2:
+# sharing the INTEGER was never enough — teach documented 6 as "the
+# record IS written", the verbs documented the same 6 as "nothing was
+# written", and both were right about themselves. One code, one state
+# fact, every surface: 6 = nothing written · 7 = the write landed, its
+# commit did not.
 EXIT_NO_HOME = _EXIT_NO_HOME              # bad ledger home — nothing written
 EXIT_GIT_FAILED = _EXIT_GIT_FAILED        # git failed BEFORE any write
 EXIT_HALF_WRITTEN = _EXIT_HALF_WRITTEN    # record WRITTEN but not committed
@@ -236,9 +256,11 @@ def _home_gate(home) -> int | None:
     """teach's WRITE-surface home gate — the same answer every other
     surface gives (:data:`EXIT_NO_HOME`), refused before anything is
     written. ledger_ops.require_writable_home also refuses, but as a
-    LedgerOpsError that teach mapped onto its own EXIT_USAGE(2) — a code
-    that means "you typed the command wrong", not "your ledger is
-    missing" (audit 2026-07-16 MINOR G)."""
+    LedgerOpsError that teach mapped onto EXIT_USAGE (64, formerly a
+    private 2 — A22, 2026-09-04; now `cli.EXIT_USAGE` itself, imported
+    inside `_fail` — fold r2, 2026-09-04) — a code that means "you
+    typed the command wrong", not "your ledger is missing" (audit
+    2026-07-16 MINOR G)."""
     state = home_state(home)
     if state in ("missing", "not-a-repo"):
         print(f"self-learn teach: {home_state_message(state, home)}", file=sys.stderr)
@@ -247,6 +269,10 @@ def _home_gate(home) -> int | None:
 
 
 def _fail(msg: str) -> int:
+    # deferred: see EXIT_USAGE's comment above -- mirrors `push_note`'s
+    # own deferred `from .cli import` in `_route_now`, below.
+    from .cli import EXIT_USAGE
+
     print(f"self-learn teach: {msg}", file=sys.stderr)
     return EXIT_USAGE
 

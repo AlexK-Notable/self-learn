@@ -565,7 +565,7 @@ class TestT10SelfcheckUserScopeGlobDrift:
             allow_empty_glob=True,
         )
         ok, _reason = selfcheck._check_drift(env.home)
-        assert ok is True
+        assert ok is selfcheck.Verdict.PASS
 
     def test_legacy_record_with_no_reason_key_is_not_reported(self, tmp_path, env, monkeypatch):
         target = self._route_pathed(
@@ -584,7 +584,7 @@ class TestT10SelfcheckUserScopeGlobDrift:
         # the glob is now dead
         (tmp_path / "u-glob-t10-fixture" / "x.md").unlink()
         ok, _reason = selfcheck._check_drift(env.home)
-        assert ok is True
+        assert ok is selfcheck.Verdict.PASS
 
     def test_budget_bypass_is_reported_when_probe_now_returns_none(
         self, tmp_path, env, monkeypatch
@@ -602,7 +602,7 @@ class TestT10SelfcheckUserScopeGlobDrift:
         # "budget"), which is what T10's assertion needs.
         monkeypatch.setenv("SELF_LEARN_GLOB_PROBE_BUDGET_S", "30")
         ok, reason = selfcheck._check_drift(env.home)
-        assert ok is False
+        assert ok is selfcheck.Verdict.FAIL
         assert "u-glob-t10-fixture/*.md" in reason
 
     def test_live_budget_verdict_during_audit_not_reported(self, tmp_path, env, monkeypatch):
@@ -615,7 +615,7 @@ class TestT10SelfcheckUserScopeGlobDrift:
         # now force the AUDIT's own probe to hit budget (not zero-match)
         monkeypatch.setenv("SELF_LEARN_GLOB_PROBE_BUDGET_S", "0")
         ok, _reason = selfcheck._check_drift(env.home)
-        assert ok is True
+        assert ok is selfcheck.Verdict.PASS
 
 
 # =========================================================================

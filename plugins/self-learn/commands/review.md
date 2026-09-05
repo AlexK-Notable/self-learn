@@ -277,7 +277,10 @@ which:
   printed command.
 - **64** — usage error (bad flag/id); for `batch`, also a whole-sheet
   validation failure (unknown verb, unknown item key, malformed id,
-  `version != 1`) — nothing in the sheet ran.
+  `version != 1`) — nothing in the sheet ran. `self-learn teach` (the
+  Revise action above, and one-motion `teach --route`) shares this same
+  64 for its own usage errors (A22, fold r1, 2026-09-04 — was a private
+  2; a bad *home* is still 5, unchanged).
 - **8** — `batch` only (`EXIT_BATCH_PARTIAL`): the run completed with
   **some items applied and at least one refused** — the ledger DID
   change. Read the `--json` envelope's per-item `rc`/`state` to see which

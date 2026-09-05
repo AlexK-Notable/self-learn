@@ -8,7 +8,12 @@ owned, never touched here).
 never print "reachable" (`lrn-ea833a5b`, `lrn-6d21607e`). Every predicate
 below terminates in exactly one of three states — ``reachable`` /
 ``unreachable`` / ``unmeasurable`` — and ``unmeasurable`` is a first-class
-value, never collapsed into either determined state (see :class:`Verdict`).
+value, never collapsed into either determined state (see this module's
+own :class:`Verdict`, the per-record dataclass below — distinct from
+``selfcheck.Verdict``, a separate PASS/FAIL/UNMEASURED enum; fold r2,
+2026-09-04, gate r1 nit 1: two exported types share the name `Verdict`
+in this package, and this cross-reference used to be ambiguous about
+which one it meant).
 
 **One predicate, two renderers (spec §4.3, NORMATIVE).** This module
 exposes exactly one entry point, :func:`reachability_rows`. Both

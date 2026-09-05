@@ -321,7 +321,7 @@ def test_teach_verified_how_needs_verified(env, capsys):
         ["teach", "--skill", "s", "--type", "knowledge", "--fact", "A fact.",
          "--verified-how", "orphan"]
     )
-    assert rc == 2
+    assert rc == 64
     assert "--verified" in capsys.readouterr().err
 
 
@@ -330,7 +330,7 @@ def test_teach_env_needs_key_value(env, capsys):
         ["teach", "--skill", "s", "--type", "knowledge", "--fact", "A fact.",
          "--env", "swaync"]
     )
-    assert rc == 2
+    assert rc == 64
     assert "COMPONENT=VERSION" in capsys.readouterr().err
 
 
@@ -379,6 +379,6 @@ def test_selftest_ignores_telemetry_files(env):
     assert cli.main(["route", rid]) == 0
     cli.main(["telemetry", "note", "offer-made"])
     assert cli.main(["telemetry", "flush"]) == 0
-    assert cli.main(["--selftest"]) == 0
+    assert cli.main(["--selftest"]) == 9
     # and the queue/status paths never mistake telemetry lines for records
     assert cli.main(["list", "--json"]) == 0
