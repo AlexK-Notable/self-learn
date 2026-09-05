@@ -36,6 +36,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
+from self_learn.primitives import fsops
 from self_learn.worker import cache_dir
 
 __all__ = [
@@ -99,11 +100,15 @@ def resolve_token_path() -> Path:
 
 def write_token_file(token: str) -> Path:
     """Write *token* 0600 to :func:`resolve_token_path`'s location,
-    creating parent dirs as needed. Returns the path written."""
+    creating parent dirs as needed. Returns the path written.
+
+    Sprint 2 M-I (D6): the bearer token is the secret-file class --
+    :func:`self_learn.primitives.fsops.private_write` (0600 always,
+    symlinks refused, fsync'd), not the general :func:`fsops.
+    atomic_write` every ledger content write below uses."""
     path = resolve_token_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(token, encoding="utf-8")
-    path.chmod(0o600)
+    fsops.private_write(path, token)
     return path
 
 
