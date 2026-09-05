@@ -1105,3 +1105,44 @@ class TestCoreMechanics:
         assert result.stopped and "unresolvable intent" in result.stopped[0]
         assert "unreadable intent file" not in result.stopped[0]
         assert bad.is_file(), "a STOP must leave the intent file in place"
+
+    def test_recover_reports_a_non_utf8_intent_file_as_unreadable(self, tmp_path):
+        """Gate r3: the r2 fold's read-leg guard was `(OSError,
+        json.JSONDecodeError)` -- too narrow. `f.read_text(encoding=
+        "utf-8")` on a non-UTF-8 file raises `UnicodeDecodeError` BEFORE
+        `json.loads` is even reached, and that exception is a
+        `ValueError` subclass too, but NOT a `JSONDecodeError` — it
+        escaped uncaught out of `recover()`, and past every caller:
+        `reconcile()` (so `push` and the miner, whose `except gitops.
+        GitOpsError` does not catch a bare `ValueError`), and `worker.
+        run`'s unguarded call. The guard is now `(OSError, ValueError)`
+        -- both `UnicodeDecodeError` and `json.JSONDecodeError` are
+        `ValueError` subclasses, so this still reports "unreadable
+        intent file", never "unresolvable intent" (this file never gets
+        far enough to reach that phase)."""
+        repo = tmp_path / "repo"
+        init_repo(repo)
+        (repo / "placeholder.txt").write_text("x", encoding="utf-8")
+        commit_all(repo, "seed")
+        bad = intents.intents_dir(repo) / "deadbeef0002.json"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_bytes(b"\xff\xfe" + b"A" * 93)  # 95 bytes, not valid UTF-8
+
+        result = intents.recover(repo)
+        assert result.stopped and "unreadable intent file" in result.stopped[0]
+        assert "unresolvable intent" not in result.stopped[0]
+        assert bad.is_file(), "a STOP must leave the intent file in place"
+
+        # `reconcile()` calls `intents.recover` BEFORE its own orphan
+        # scan -- it must forward the same stopped entry, never raise.
+        reconcile_result = reconcile_mod.reconcile(repo, no_push=True)
+        assert (
+            reconcile_result.stopped
+            and "unreadable intent file" in reconcile_result.stopped[0]
+        )
+
+        # `worker.run` calls `intents.recover` at START, UNGUARDED (no
+        # `except` around it at all) -- it must reach `idle`, not crash
+        # on the same `UnicodeDecodeError`.
+        worker_result = worker.run(repo, no_push=True)
+        assert worker_result.status == "idle"

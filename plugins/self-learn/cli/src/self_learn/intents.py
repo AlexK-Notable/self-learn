@@ -498,9 +498,20 @@ def recover(home: Path | str) -> RecoverResult:
             # names a different repair (fix/delete the file) than a
             # real, half-written step the JSON itself parses fine but
             # cannot resolve (inspect the path it names).
+            #
+            # Gate r3: the guard is `ValueError`, not the narrower
+            # `json.JSONDecodeError` -- `f.read_text(encoding="utf-8")`
+            # on a non-UTF-8 file raises `UnicodeDecodeError`, ALSO a
+            # `ValueError` subclass, before `json.loads` is even
+            # reached. The narrower guard let that escape uncaught out
+            # of `recover()`, `reconcile()` (so `push` and the miner,
+            # whose `except gitops.GitOpsError` does not catch a bare
+            # `ValueError`), and `worker.run`'s unguarded call -- both
+            # phrases below stay exact, since `JSONDecodeError` is
+            # itself a `ValueError` subclass too.
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
+            except (OSError, ValueError) as exc:
                 result.stopped.append(f"{f.name}: unreadable intent file ({exc})")
                 continue
             try:
