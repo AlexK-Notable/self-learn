@@ -995,13 +995,21 @@ def _check_hooks(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
     if checked == 0 and registrations == 0:
         return Verdict.PASS, "no hook-routed records and no self-learn registrations"
     if checked == 0:
-        # M-K: registrations alone are not a measurement of the hook
-        # SCRIPTS themselves (`checked` counts live hook-routed records
-        # whose script/executability/bytes were actually verified above)
-        # — a settings.json registration with zero routed records to
-        # check is an unmeasured row, never a free PASS.
-        return Verdict.UNMEASURED, (
-            f"no hook script measured; {registrations} registration(s) "
+        # fold r2 (2026-09-04), corrected pin — gate r1 Blocker 1: a
+        # resolved registration set IS a completed measurement (each
+        # symlink was checked above; a dangling one would already have
+        # FAILed), even with zero hook-routed records to verify
+        # bytes/executability for — a healthy zero, exactly like the
+        # other six checks' own "nothing to check" PASS rows, never an
+        # UNMEASURED. (fold r1 shipped a `checked == 0 -> UNMEASURED`
+        # branch here instead, which made a correctly installed home —
+        # the plugin's own self-learn-pending.sh / self-learn-refread.sh
+        # registered per install.sh, no hook lesson routed yet — exit 9:
+        # following the install instructions made the health check
+        # report WORSE than a less-complete install. UNMEASURED for
+        # hooks now comes ONLY from the hosts.yaml-absent skip above.)
+        return Verdict.PASS, (
+            f"0 hook-routed records; {registrations} registration(s) "
             "resolvable"
         )
     return Verdict.PASS, (

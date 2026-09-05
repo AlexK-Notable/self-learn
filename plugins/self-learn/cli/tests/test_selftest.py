@@ -91,7 +91,7 @@ def seed_reference_record(env, record_id="lrn-0a1b2c3d", reference_file=None, bu
 # ----------------------------------------------------------------- healthy
 
 
-def test_selftest_green_on_healthy_sandbox(env, capsys):
+def test_selftest_exits_9_on_healthy_sandbox_no_real_claude_dir(env, capsys):
     skill_md = seed_routed_skill_target(env)
     assert BEGIN_MARKER in skill_md.read_text(encoding="utf-8")
 
@@ -712,7 +712,7 @@ def test_reach_zero_reference_records_passes_criterion_10(env):
     assert "no reference-routed records" in reason
 
 
-def test_reach_hosts_yaml_absent_passes_not_checked_criterion_11(tmp_path):
+def test_reach_hosts_yaml_absent_is_unmeasured_not_checked_criterion_11(tmp_path):
     bare = tmp_path / "bare-ledger"
     init_repo(bare)
     ok, reason = selfcheck._check_reach(bare)
@@ -732,7 +732,7 @@ def test_reach_not_a_repo_home_fails_criterion_11(tmp_path):
     assert ok is selfcheck.Verdict.FAIL
 
 
-def test_selftest_reports_seven_checks_criterion_12(env, capsys):
+def test_selftest_reports_nine_checks_criterion_12(env, capsys):
     seed_routed_skill_target(env)
     rc = cli.main(["--selftest"])
     out = capsys.readouterr().out
@@ -812,7 +812,7 @@ def test_reach_undecodable_resolved_record_skipped_not_crashed(env):
     assert "1 reference-routed record(s) reachable" in reason
 
 
-def test_selftest_survives_corrupt_resolved_record_prints_all_seven_rows(env, capsys):
+def test_selftest_survives_corrupt_resolved_record_prints_all_nine_rows(env, capsys):
     """The end-to-end proof: `_section_targets` (feeding checks (b)/(c),
     called BEFORE the seven-check loop even runs) shares the identical
     from_path/RecordError gap — left unfixed, a corrupt resolved record

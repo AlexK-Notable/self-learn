@@ -215,3 +215,63 @@ def test_selftest_cli_fails_on_missing_script(env, capsys):
     out = capsys.readouterr().out
     assert "FAIL hooks" in out
     assert rc == 1
+
+
+def test_default_install_no_hook_lessons_yet_selftest_exits_0(env, capsys):
+    """PINS gate r1 Blocker 1 / fold r2 (2026-09-04): the DEFAULT
+    documented install -- install.sh's own two product hooks,
+    self-learn-pending.sh and self-learn-refread.sh, registered in
+    settings.json and live-symlinked into ~/.claude/hooks -- with no
+    hook LESSON ever routed yet (a brand-new install, exactly the state
+    every new user is in). `_check_hooks` must read this as a healthy
+    zero (PASS), not UNMEASURED: every registration resolved (a
+    dangling one would already have FAILed above), so something WAS
+    measured -- there just happened to be zero hook-routed records to
+    check bytes/executability for. fold r1 shipped a `checked == 0 ->
+    UNMEASURED` branch that made this exact, correctly-installed shape
+    exit 9: following the install instructions made the health report
+    WORSE than a less-complete install.
+
+    Mutation witness: reinstating that branch (`Verdict.UNMEASURED`
+    instead of `Verdict.PASS` when `checked == 0 and registrations >
+    0`) reddens both assertions below -- `ok is Verdict.PASS` and
+    `rc == 0`."""
+    backing = env.claude / "product-hooks"
+    backing.mkdir()
+    for name in ("self-learn-pending.sh", "self-learn-refread.sh"):
+        script = backing / name
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        script.chmod(0o755)
+        (env.claude / "hooks" / name).symlink_to(script)
+    (env.claude / "settings.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "$HOME/.claude/hooks/self-learn-pending.sh",
+                                },
+                                {
+                                    "type": "command",
+                                    "command": "$HOME/.claude/hooks/self-learn-refread.sh",
+                                },
+                            ]
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    ok, reason = check(env)
+    assert ok is Verdict.PASS, reason
+    assert "0 hook-routed records; 2 registration(s) resolvable" in reason
+
+    rc = cli.main(["--selftest"])
+    out = capsys.readouterr().out
+    assert "PASS hooks" in out
+    assert rc == 0

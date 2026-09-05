@@ -4,14 +4,18 @@ untouched: asserts the ``Verdict`` enum's own contract plus the verdict
 class each pinned site family renders, and the fold into
 ``cli.EXIT_UNMEASURED`` (9) that ``run_selftest`` performs.
 
-Load-bearing finding, stated here (and in the sprint report) rather than
-buried in a comment nobody reads: the ``worker`` row (M2 — not yet
-implemented) is now a REAL, COUNTED, UNCONDITIONAL ``UNMEASURED`` row —
-it never ran a check, so it can never be anything else. Combined with
-"any UNMEASURED with no FAIL exits 9", this means ``--selftest`` cannot
-exit 0 on ANY home today, healthy or not; every "healthy" scenario below
-asserts exit 9, never 0, for exactly this reason. Exit 0 becomes
-reachable again only once M2 gives the worker row something to measure.
+Post-fold state (fold r1, 2026-09-04, then gate r1 minor 2, 2026-09-04):
+there is no ``worker`` row at all any more. M-K originally shipped one as
+an unconditional, COUNTED ``UNMEASURED`` entry — reporting a verdict for
+a check that had never run, which made ``--selftest`` exit 9 on every
+home, healthy or not, forever (since exiting 0 requires zero FAILs AND
+zero UNMEASUREDs). Fold r1 dropped that row as a capability gap instead
+(M2 is not yet implemented; it earns a row only once it exists). A truly
+healthy home — every real check PASSing, nothing genuinely unmeasurable
+in its fixture — now asserts exit 0 below, same as any other tri-state
+check; the fixtures that still assert exit 9 do so because they contain
+a genuine UNMEASURED (an absent ``~/.claude``, a missing ``hosts.yaml``),
+never because of the old placeholder.
 """
 
 from __future__ import annotations
