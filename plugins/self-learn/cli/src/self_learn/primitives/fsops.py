@@ -250,56 +250,58 @@ def _write_and_replace(
         except FileNotFoundError:
             resolved_mode = None
     tmp = _temp_path(target)
+    # Fold r3, nit 2: tracks whether THIS call actually created `tmp` --
+    # set True the instant either branch's create call succeeds, checked
+    # by the exception handler below before unlinking. `os.open`'s
+    # `O_EXCL` (explicit-mode branch) can fail with `FileExistsError`
+    # naming a FOREIGN file this call did not create (a collision --
+    # unreachable in practice, see the branch's own comment below); such
+    # a call must never unlink a file it didn't make.
+    tmp_created = False
     try:
         if mode is not None:
             # Fold r1, Finding 6: an explicit `mode` (`private_write`'s
             # fixed 0o600, or a caller's own `mode=0o755`) is created on
             # the temp file DIRECTLY, via `os.open`'s own mode argument
             # -- no window where the temp exists at the process umask
-            # default before a later `os.chmod` narrows it (measured:
-            # `private_write`'s temp was 0o644 before this fix, for the
-            # random-named temp file only -- the renamed TARGET was
-            # already never observable at anything but 0o600, since the
-            # chmod always preceded `os.replace`). This branch is NOT
-            # used for a `preserve_mode`-derived `resolved_mode`: that
-            # value can carry bits (e.g. group-write) the umask would
-            # silently strip at `os.open`-time, which the `os.chmod`
-            # below (run after creation, bypassing umask) does not --
-            # so the general preserve_mode path keeps the create-then-
-            # chmod shape.
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-            # Fold r2 (r2-2): `os.open`'s own `mode` argument is masked
-            # by the process umask (the SAME stripping the comment above
-            # already names as the reason `preserve_mode` keeps the
-            # create-then-`os.chmod` shape) -- so under umask 0o027 or
-            # 0o077, `mode=0o755` landed as 0o750 or 0o700, silently
-            # narrower than the pinned D6 policy promises, and the
-            # module docstring's "regardless of umask" claim was false
-            # for exactly this branch. `os.fchmod` (bypasses umask, same
-            # as `os.chmod`) sets the EXACT bits immediately after
-            # creation, before any content is written -- keeping
-            # Finding 6's no-window property (umask can only REMOVE
-            # bits, never add, so the instant between `os.open` and this
-            # `fchmod` is never WIDER than `mode`, only ever narrower or
-            # equal) while restoring exact-bits-at-any-umask.
-            os.fchmod(fd, mode)
-            # Fold r2 (r2-3, nit): this branch's `O_EXCL` makes a
-            # colliding temp name (same pid AND same `secrets.
+            # default before a later `os.chmod` narrows it. This branch
+            # is NOT used for a `preserve_mode`-derived `resolved_mode`:
+            # that value can carry bits (e.g. group-write) the umask
+            # would silently strip at `os.open`-time, which the
+            # `os.chmod` below (run after creation, bypassing umask)
+            # does not -- so the general preserve_mode path keeps the
+            # create-then-chmod shape. Fold r2 (r2-3, nit): `O_EXCL`
+            # makes a colliding temp name (same pid AND same `secrets.
             # token_hex(4)` -- unreachable in practice) fail loudly with
-            # `FileExistsError`, caught below and re-raised naming
-            # `target`. The `else` branch's plain `open(tmp, "wb")`
-            # would instead silently TRUNCATE a colliding temp. Neither
-            # is wrong (both are equally unreachable), but this is the
-            # SAFER of the two -- refuse rather than clobber -- and it
-            # is deliberate, not a reason to drop `O_EXCL` from this
-            # branch or add it to the other.
+            # `FileExistsError` instead of the `else` branch's plain
+            # `open(tmp, "wb")`, which would silently TRUNCATE a
+            # colliding temp. Neither is wrong (both are unreachable),
+            # but `O_EXCL` is the deliberate, safer choice here -- not a
+            # reason to drop it or add it to the other branch.
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+            tmp_created = True
             with os.fdopen(fd, "wb") as fh:
+                # Fold r3, nit 1: `os.fchmod` moved INSIDE the `with` --
+                # fold r2's version ran it on the bare `fd` before
+                # `os.fdopen` took ownership, so a raising `fchmod`
+                # (unlikely, but possible) would leak the fd with no
+                # `with`/`finally` to close it. `fh.fileno()` is the
+                # SAME fd; wrapping it first means the `with` block's
+                # own cleanup closes it on ANY exception, `fchmod`
+                # included. Restores exact bits regardless of umask
+                # (fold r2, r2-2): umask can only REMOVE bits at
+                # `os.open`-time, never add, so the instant before this
+                # `fchmod` runs is never WIDER than `mode`, only
+                # narrower or equal -- Finding 6's no-window property
+                # stays intact.
+                os.fchmod(fh.fileno(), mode)
                 fh.write(payload)
                 if fsync:
                     fh.flush()
                     os.fsync(fh.fileno())
         else:
             with open(tmp, "wb") as fh:
+                tmp_created = True
                 fh.write(payload)
                 if fsync:
                     fh.flush()
@@ -308,14 +310,18 @@ def _write_and_replace(
                 os.chmod(tmp, resolved_mode)
         os.replace(tmp, target)  # same filesystem -- atomic
     except OSError as exc:
-        tmp.unlink(missing_ok=True)
+        if tmp_created:
+            tmp.unlink(missing_ok=True)
         # Fold r1, Finding 9: an `OSError` raised anywhere in the block
         # above (a permission error opening the temp file, a missing
         # parent directory) carries `.filename == str(tmp)` -- and by
         # the time the caller's `except OSError` handler reads `{exc}`,
-        # `tmp` has already been unlinked two lines up, so the message
-        # names a path that never existed as far as any caller could
-        # observe and cannot `ls`. Retarget `.filename` to `target`
+        # `tmp` has usually already been unlinked two lines up (the
+        # `FileExistsError`-collision case above is the one exception --
+        # `tmp_created` is False there, so nothing is unlinked, but
+        # `tmp` was never THIS call's file to begin with), so the
+        # message names a path that never existed as far as any caller
+        # could observe and cannot `ls`. Retarget `.filename` to `target`
         # (mutating the SAME exception object -- same type, same
         # errno/strerror, same traceback, `raise` bare re-raises it) so
         # the message names the file the caller actually asked to
@@ -337,7 +343,8 @@ def _write_and_replace(
             exc.filename = str(target)
         raise
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        if tmp_created:
+            tmp.unlink(missing_ok=True)
         raise
     if fsync:
         dir_fd = os.open(target.parent, os.O_RDONLY)
