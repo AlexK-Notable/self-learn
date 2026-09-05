@@ -1965,6 +1965,11 @@ def _run_locked(
         # fatal. A miner that cannot heal must still mine.
         for line in healed.invalid:
             log(f"run {run_id}: reconcile left an invalid orphan uncommitted: {line}")
+        # M-W/D7: an intent recovery that verified neither roll-forward
+        # nor restore refuses the same way — logged the same way, never
+        # fatal. The intent file itself is left in place for a human.
+        for line in healed.stopped:
+            log(f"run {run_id}: reconcile could not resolve an intent, left for a human: {line}")
     except gitops.GitOpsError as exc:
         log(f"run {run_id}: reconcile step skipped ({exc})")
 
