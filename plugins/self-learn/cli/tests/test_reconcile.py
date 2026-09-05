@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import cli, compiled, gitops, ledger_ops, miner, reconcile as reconcile_mod
+from self_learn import cli, compiled, gitops, intents, ledger_ops, miner, reconcile as reconcile_mod
 from self_learn.ledger_ops import create_record
 from support import (
     commit_all,
@@ -449,4 +449,134 @@ def test_cli_push_prints_the_offender_and_never_commits_it(home, capsys):
     assert "compiled/host.yaml" not in head_files(home), (
         "the invalid orphan must never be committed — push must not "
         "proceed with publishing it"
+    )
+
+
+# ============================== M-W/D7 gate r1 fold: STOP refuses everything
+
+
+def test_cli_reconcile_refuses_the_whole_batch_when_an_intent_is_stopped(home, capsys):
+    """Gate r1 BLOCKER-1 / MAJOR-3(c): a STOPped intent must refuse
+    `reconcile`'s WHOLE orphan batch, not just report itself uncommitted
+    — the bug this pins let the SAME call stage and commit a perfectly
+    ordinary orphan sitting alongside the stuck intent (live, this was
+    the aborted transaction's own half-written files) while returning
+    `EXIT_GIT_FAILED`, an exit code documented elsewhere as "nothing was
+    written". Drives the real CLI entrypoint, not `reconcile()`
+    directly, so a regression in `_cmd_reconcile`'s own wiring to
+    `reconcile.py`'s `if blocked or invalid or recovered.stopped:`
+    cannot hide behind a green suite again."""
+    f = home / "a.txt"
+    f.write_text("old", encoding="utf-8")
+    commit_all(home, "seed")
+    intent = intents.begin(home, "test-op", [f], "self-learn: test op")
+    f.write_text("mutated", encoding="utf-8")
+    git(home, "add", "-A")
+    git(home, "commit", "-q", "-m", "an unrelated commit moves HEAD past old_sha")
+    f.write_text("further mutated, still uncompleted", encoding="utf-8")
+
+    # A genuinely committable orphan sits ALONGSIDE the stuck intent —
+    # the exact shape the gate measured live.
+    orphan = home / "skills" / "s" / "pending" / "lrn-90000099.md"
+    create_record(home, make_behavior(record_id="lrn-90000099"))
+    assert orphan.is_file()
+
+    sha_before = git(home, "rev-parse", "HEAD").stdout.strip()
+    code = cli.main(["reconcile", "--no-push"])
+    captured = capsys.readouterr()
+
+    assert code == gitops.EXIT_GIT_FAILED
+    assert intent.id in captured.err
+    assert "delete" in captured.err and str(intents.intents_dir(home)) in captured.err, (
+        "the STOP operator text must name what 'by hand' means (gate r1 "
+        "BLOCKER-1): delete the intent file, then re-run reconcile"
+    )
+    assert git(home, "rev-parse", "HEAD").stdout.strip() == sha_before, (
+        "a STOPped intent must refuse the WHOLE batch — the orphan "
+        "above must stay uncommitted too, not just the stuck intent"
+    )
+    assert "skills/s/pending/lrn-90000099.md" not in head_files(home)
+    assert intent.file_path.exists()
+
+
+def test_cli_push_recovers_and_names_a_restorable_intent(home, capsys):
+    """Gate r1 MAJOR-3(e): `push` must recover a RESTORABLE (not stuck)
+    intent before publishing, and say so — mirrors the existing
+    `test_cli_push_prints_the_offender_and_never_commits_it` above for
+    the "everything resolved fine" half of the same surface, which had
+    no CLI-layer coverage at all before this fold (the gate's own
+    finding: `grep -rn "NOT recovered\\|rolled forward" tests/` returned
+    nothing)."""
+    f = home / "a.txt"
+    f.write_text("old", encoding="utf-8")
+    commit_all(home, "seed")
+    intent = intents.begin(home, "test-op", [f], "self-learn: test op")
+    f.write_text("mutated, crash before complete()", encoding="utf-8")  # never completed
+
+    cli.main(["push"])
+    captured = capsys.readouterr()
+
+    assert f"push: recovered {intent.id} (restored: its mutation was undone)" in captured.out
+    assert f.read_text(encoding="utf-8") == "old"
+    assert not intent.file_path.exists()
+
+
+def test_status_reports_an_intent_in_flight(home, capsys):
+    """Gate r1 BLOCKER-1's visibility requirement: `status` names every
+    `.intents/*.json` left behind, on stderr, both in full text mode and
+    the SessionStart hook's `--fast` JSON mode (whose stdout must stay
+    valid JSON — the warning goes to stderr precisely so it never shares
+    that stream). Positive control paired in the same test: an
+    intent-free home prints nothing here at all."""
+    code = cli.main(["status"])
+    assert code == cli.EXIT_OK
+    assert capsys.readouterr().err == ""  # positive control: nothing in flight yet
+
+    f = home / "a.txt"
+    f.write_text("old", encoding="utf-8")
+    commit_all(home, "seed")
+    intent = intents.begin(home, "test-op", [f], "self-learn: test op")
+
+    cli.main(["status"])
+    captured = capsys.readouterr()
+    assert intent.id in captured.err
+    assert "self-learn reconcile" in captured.err
+
+    cli.main(["status", "--fast"])
+    captured = capsys.readouterr()
+    assert intent.id in captured.err
+    import json as _json
+
+    _json.loads(captured.out)  # --fast's stdout stays valid JSON regardless
+
+
+def test_cli_reconcile_names_the_host_phase_gap_only_after_a_roll_forward(home, capsys):
+    """Gate r1 MAJOR-2: a roll-forward's recovery line must name that
+    the host phase did NOT run and the repair (`self-learn recompile`)
+    — silence here left a routed record's host target uncompiled with
+    nothing anywhere saying so. A restore carries no such line at all —
+    nothing was routed, so there is no host phase to have skipped."""
+    f = home / "a.txt"
+    f.write_text("old", encoding="utf-8")
+    commit_all(home, "seed")
+    intent = intents.begin(home, "test-op", [f], "self-learn: test op")
+    f.write_text("new", encoding="utf-8")
+    intents.complete(intent)  # crash after complete(), before the real commit
+
+    cli.main(["reconcile", "--no-push"])
+    captured = capsys.readouterr()
+    assert "the host phase did not run" in captured.out
+    assert "self-learn recompile" in captured.out
+
+    f2 = home / "b.txt"
+    f2.write_text("old2", encoding="utf-8")
+    commit_all(home, "seed2")
+    intents.begin(home, "test-op-2", [f2], "self-learn: test op 2")
+    f2.write_text("mutated, crash before complete()", encoding="utf-8")
+
+    cli.main(["reconcile", "--no-push"])
+    captured = capsys.readouterr()
+    assert "the host phase did not run" not in captured.out, (
+        "a RESTORE never routed anything -- there is no host phase gap "
+        "to name"
     )

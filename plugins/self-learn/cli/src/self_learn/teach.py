@@ -249,6 +249,36 @@ def add_teach_parser(sub) -> argparse.ArgumentParser:
         "deny_message}, examples: {allow, deny}}; the CLI generates the "
         "script, validates, scans, replays, and prints the applied bytes",
     )
+    # M-R (Sprint 2 lane L7): the SAME two `route` CLI flags (`cli.py`'s
+    # `route` subcommand) — reused verbatim, not reinvented, so
+    # `_route_now`'s dict-building matches `cli.py`'s own read of them
+    # byte-for-byte (single source of the follow_up dict shape).
+    p.add_argument(
+        "--allow-empty-glob",
+        dest="allow_empty_glob",
+        action="store_true",
+        help="with --route: the sanctioned escape past a rules route's "
+        "zero-match/budget-exhausted glob refusal (A2 §5.1 / U-glob)",
+    )
+    p.add_argument(
+        "--follow-up",
+        dest="follow_up",
+        metavar="ACTION",
+        help="with --route: known-partial coverage (11 §2.1) — the "
+        "planned upgrade, on the routing block",
+    )
+    p.add_argument(
+        "--unblocks-on",
+        dest="unblocks_on",
+        metavar="GATE",
+        help="with --route --follow-up: human-readable gate label (e.g. M3)",
+    )
+    p.add_argument(
+        "--follow-up-note",
+        dest="follow_up_note",
+        metavar="TEXT",
+        help="with --route --follow-up: why the strong form matters",
+    )
     return p
 
 
@@ -748,6 +778,21 @@ def _route_now(
             # back to pending — never lost).
             hook_input = proposal
 
+    # M-R: the SAME follow_up dict shape `cli.py`'s `route` subcommand
+    # builds from its own `--follow-up`/`--unblocks-on`/`--follow-up-note`
+    # trio — reused here, not reinvented, so a follow-up opened via
+    # `teach --route` and one opened via `route --follow-up` persist
+    # byte-identically.
+    follow_up = None
+    if args.follow_up is not None:
+        follow_up = {"action": args.follow_up}
+        if args.unblocks_on is not None:
+            follow_up["unblocks_on"] = args.unblocks_on
+        if args.follow_up_note is not None:
+            follow_up["note"] = args.follow_up_note
+    elif args.unblocks_on is not None or args.follow_up_note is not None:
+        return _fail("--unblocks-on/--follow-up-note need --follow-up")
+
     snapshot = record.to_text()  # pristine copy for the never-lost fallback
     try:
         result = verbs.route_direct(
@@ -759,6 +804,8 @@ def _route_now(
             no_push=args.no_push,
             project_path=project_path,
             hook_input=hook_input,
+            follow_up=follow_up,
+            allow_empty_glob=args.allow_empty_glob,
         )
     except verbs.SecretRefusal as exc:
         print(str(exc), file=sys.stderr)
