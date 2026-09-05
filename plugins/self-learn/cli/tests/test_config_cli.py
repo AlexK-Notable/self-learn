@@ -210,6 +210,48 @@ class TestConfigSet:
         value, source = settings.resolve_setting(home, settings.by_name("provider.name"))
         assert (value, source) == ("anthropic", "default")
 
+    def test_setting_a_masked_paired_key_names_both_written_and_committed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """M-S delta gate r2, nit-1: `config set` on a paired entry
+        (`invocation.backend_worker`) whose GENERAL env var
+        (`SELF_LEARN_BACKEND`) is active writes the value AND commits
+        it, but the printed row shows `source = env:SELF_LEARN_BACKEND`
+        -- not this key's own `config:invocation.backend_worker` rung
+        -- with no confirmation the write landed. nit-3's original fix
+        only caught the "inactive" flavor of this same underlying fact
+        (the shown source isn't the key's own config rung); this is the
+        SAME masked-write line, reached via the source-agnostic
+        comparison rather than a literal `startswith("inactive")`."""
+        home = make_home(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
+        rc = cli_mod.main(["config", "set", "invocation.backend_worker", "sdk"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "env:SELF_LEARN_BACKEND" in out
+        assert "written and committed" in out
+        assert "config set invocation.backend_worker=" in _log_subjects(home)[0]
+        monkeypatch.delenv("SELF_LEARN_BACKEND", raising=False)
+        value, source = settings.resolve_setting(home, settings.by_name("invocation.backend_worker"))
+        assert (value, source) == ("sdk", "config:invocation.backend_worker")
+
+    def test_setting_an_unmasked_key_prints_no_masked_write_line(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Positive control for the two tests above: an ORDINARY
+        `config set` whose own config rung is what actually answers
+        (nothing overrides, no env var, no general sibling, not
+        inactive) must print NO "written and committed" line -- that
+        line exists only to name a mask, and this write has none."""
+        home = make_home(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        rc = cli_mod.main(["config", "set", "worker.autokick", "0"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "config:worker.autokick" in out
+        assert "written and committed" not in out
+
     def test_refuses_malformed_value_with_registry_message(
         self, tmp_path, monkeypatch, capsys
     ):

@@ -1068,4 +1068,14 @@ human routes it.
   unchanged by this entry. Code landed separately, in Sprint 2 lane L4,
   one commit (`M-S: provider/backend keys resolved by the settings
   registry with per-key direction`) implementing the row exactly as it
-  reads after the spec gate returned CLEAN at r6.
+  reads after the spec gate returned CLEAN at r6. **Code-gate fold r1
+  consequence, swept into the runbook 2026-09-04 (delta gate r2
+  minor-1):** unifying the runtime and registry faces onto ONE shared
+  cascade (`config.paired_cascade`/`paired_leaf`, MAJOR-1's fix)
+  required their CONFIG source-label vocabularies to match, moving the
+  runtime face's bare `config:backend[_<surface>]` to the registry
+  face's own `config:invocation.backend[_<surface>]` — the string an
+  operator sees on `doctor invocation`'s `switches` row changed as a
+  necessary side effect; `17-invocation-runbook.md`'s two mentions of
+  the old spelling were swept to match (the dated measurement record in
+  `drafts/u-docs-truth-sweep-spec.md` was deliberately left alone).

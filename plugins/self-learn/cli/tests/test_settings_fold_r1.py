@@ -364,6 +364,38 @@ def test_gap5_every_paired_entry_is_env_first_with_a_real_general_sibling():
         )
 
 
+def test_delta_r2_major1_preflight_warn_names_the_general_override_var(tmp_path, monkeypatch):
+    """M-S delta gate r2, MAJOR-1: `_answering_setting` (settings.py:613)
+    has no witness at either call site. This is the `preflight` call
+    site (:1512): when the GENERAL override (`SELF_LEARN_OVERRIDE_
+    INVOCATION_BACKEND`) is the one that actually answered for a
+    per-surface row (`invocation.backend_worker`), the WARN detail's
+    "Unset <VAR> to stop overriding" text must name the GENERAL var --
+    the one the operator actually exported -- not the per-surface var,
+    which was never set and whose unsetting would change nothing."""
+    monkeypatch.setenv("SELF_LEARN_OVERRIDE_INVOCATION_BACKEND", "sdk")
+    home = tmp_path / "home"
+    rows = {row.name: row.detail for row in settings.preflight(home)}
+    detail = rows["invocation.backend_worker"]
+    assert "Unset SELF_LEARN_OVERRIDE_INVOCATION_BACKEND to stop overriding." in detail
+    assert "SELF_LEARN_OVERRIDE_INVOCATION_BACKEND_WORKER" not in detail
+
+
+def test_delta_r2_major1_fold_note_reports_the_general_config_key_fold(tmp_path):
+    """M-S delta gate r2, MAJOR-1: the `_fold_note` call site (:1435).
+    When the GENERAL config key (`invocation.backend`) holds a
+    malformed value and no per-surface key is present, the per-surface
+    row's `note` must report THAT fold -- re-reading through the
+    general entry's own config key, not the per-surface key that was
+    never present."""
+    home = tmp_path / "home"
+    _write_config(home, "invocation", "backend", "not-a-real-backend")
+    row = settings.setting_row(home, settings.by_name("invocation.backend_worker"))
+    assert row["value"] == "sdk"
+    assert row["source"] == "config:invocation.backend"
+    assert row["note"] == "'not-a-real-backend' folded to 'sdk'"
+
+
 # ===================================================================== #
 # MAJOR-2 / MAJOR-3 — literal, hand-typed name sets, never derived from
 # `settings.REGISTRY` itself (a derived list makes a mutation to
