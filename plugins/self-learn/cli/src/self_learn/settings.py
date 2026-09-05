@@ -292,6 +292,22 @@ class Setting:
     #: pin) — a future registry entry is tier A unless a reviewer
     #: deliberately marks it otherwise.
     tier: Literal["A", "C"] = "A"
+    #: M-S (S-58 MAJOR-1, code-gate fold r1): the dotted name of this
+    #: entry's GENERAL sibling in a specific/general config.yaml pair
+    #: (currently only the `invocation.backend_<surface>` entries,
+    #: pointing at `"invocation.backend"`) -- `None` (every entry
+    #: above this comment) means this entry resolves through the
+    #: ordinary single-key sequence above. When set, `resolve_setting`
+    #: consults `config.paired_cascade` instead: the specific entry's
+    #: own override/env/config rungs, THEN the general sibling's same
+    #: three rungs, before falling to this entry's own default --
+    #: fixing the gate's MAJOR-1 (the registry face used to report
+    #: `"default"` even when the general sibling actually answered,
+    #: because this single-key sequence never looked at it at all).
+    #: The general entry's OWN resolution (`by_name("invocation.
+    #: backend")`) is unaffected -- it has no `general_name` of its
+    #: own, so it always resolves through the ordinary sequence.
+    general_name: str | None = None
 
 
 def _default_value(setting: Setting) -> SettingValue:
@@ -357,31 +373,33 @@ def _override_env_var(name: str) -> str:
     return config.override_env_var(name)
 
 
-#: A reserved marker distinguishing "the override IS the value `None`"
-#: from "no override is set" (env-var absence, tested `is not None`
-#: below) and from every ordinary encoded value (`_encode_override_
-#: value`'s other branches never produce this exact string -- no `str`-
-#: kind setting's `str(value)` can equal it either, short of an
-#: operator deliberately typing this literal token). Needed because
-#: `None` is semantically overloaded THROUGHOUT this module: it is
-#: `sdk.max_budget_usd`'s own default (meaning "unlimited"), and it is
-#: also every parse function's "this value did not parse" signal --
-#: two different meanings that must never be confused on the wire
-#: (MINOR-4, review r2 2026-09-01).
-_OVERRIDE_NONE_MARKER = "\x01SELF_LEARN_OVERRIDE_NONE\x01"
+#: M-S (S-58 BLOCKER-1, code-gate fold r1): relocated to `config.py` --
+#: both markers now live there (`config.OVERRIDE_NONE_MARKER`,
+#: `config.OVERRIDE_EMPTY_MARKER`) so `provider.py`'s runtime override
+#: rung and `invocation/registry.py`'s can decode the SAME escape
+#: hatches through `config.read_override` without importing this
+#: module (a cycle). Aliased here, unchanged name, so every existing
+#: reference in this file needs no further edit.
+_OVERRIDE_NONE_MARKER = config.OVERRIDE_NONE_MARKER
 
 
 def _encode_override_value(value: SettingValue, kind: Kind) -> str:
     """:func:`override`'s WRITER side -- the exact string spellings
     `_parse_env_value` reads back (`1`/`0` for bool; `str()` for
-    numeric/str; `_OVERRIDE_NONE_MARKER` for `None`), so a round trip
-    through the override channel can never drift from the ambient-env
-    rung's own parsing vocabulary (and never collide with it either,
-    for `None`)."""
+    numeric/str; `_OVERRIDE_NONE_MARKER` for `None`; M-S BLOCKER-1 fold:
+    `config.OVERRIDE_EMPTY_MARKER` for a DELIBERATE empty string, so
+    `config.read_override` can tell it apart from an ambient blank var
+    -- `test_override_round_trips_str_including_empty`'s
+    `override(name, "")` must keep reading back as `""`, not as "no
+    answer"), so a round trip through the override channel can never
+    drift from the ambient-env rung's own parsing vocabulary (and never
+    collide with it either, for `None` or `""`)."""
     if value is None:
         return _OVERRIDE_NONE_MARKER
     if kind == "bool":
         return "1" if value else "0"
+    if value == "":
+        return config.OVERRIDE_EMPTY_MARKER
     return str(value)
 
 
@@ -405,25 +423,27 @@ def _apply_validate(
 def _try_override(home: Path | str, setting: Setting) -> tuple[SettingValue, str] | None:
     """The override rung, factored out of `resolve_setting` unchanged
     (M-S, S-58) so both `direction`s share ONE copy -- this rung's
-    position (always first, before `enabled_when` even runs it) and its
-    OWN semantics (presence, not truthiness -- MINOR-4) are direction-
-    independent."""
+    position (always first, before `enabled_when` even runs it) is
+    direction-independent.
+
+    M-S BLOCKER-1 (code-gate fold r1): reads through `config.
+    read_override` -- the SAME reader `provider._resolve_provider`'s
+    own override rung now uses -- rather than a private `os.environ.
+    get` + presence check. This closes the gate's two-link bug: an
+    AMBIENT empty `SELF_LEARN_OVERRIDE_<NAME>` now reads as "no
+    answer" on BOTH faces (matching `_try_env`'s own `if not raw`),
+    while a DELIBERATE `override(name, "")` still round-trips as the
+    real empty string (`config.OVERRIDE_EMPTY_MARKER`, decoded by the
+    shared reader) -- `test_override_round_trips_str_including_empty`
+    is the witness this preserves. `is_none=True` still bypasses
+    parse/validate entirely, exactly as the old `_OVERRIDE_NONE_MARKER`
+    branch did."""
     override_var = _override_env_var(setting.name)
-    override_raw = os.environ.get(override_var)
-    # MINOR-4 (review r2 2026-09-01): presence is `is not None`, NOT
-    # truthiness -- `override("miner.transcripts_dir", "")` writes the
-    # literal empty string, and a truthy check would read that as
-    # "nothing set" and silently fall through to config/env/default,
-    # losing the override the caller explicitly asked for. This is a
-    # DIFFERENT rule from the config/env rungs below, on purpose: an
-    # empty CONFIG.YAML string or empty ENV VAR is ambient and
-    # ambiguous ("did the operator mean this, or leave it blank by
-    # accident?" -- M-4's own call was "no answer"); a programmatic
-    # `override(name, "")` is neither ambient nor accidental -- the
-    # caller named the exact value.
-    if override_raw is None:
+    result = config.read_override(setting.name)
+    if result is None:
         return None
-    if override_raw == _OVERRIDE_NONE_MARKER:
+    override_raw, is_none = result
+    if is_none:
         # The override IS `None` -- bypasses parse/validate entirely
         # (both are for TYPED values; `None` here is `override()`'s
         # own refusal-guarded escape hatch, not a `kind`-shaped
@@ -520,6 +540,92 @@ def _try_env(setting: Setting, *, next_rung: str | None) -> tuple[SettingValue, 
     return None
 
 
+def _try_paired(home: Path | str | None, setting: Setting, general: Setting) -> tuple[SettingValue, str]:
+    """M-S (MAJOR-1/MAJOR-4, code-gate fold r1): resolves a specific/
+    general pair (`setting.general_name is not None`) through the ONE
+    shared pure cascade, `config.paired_cascade` -- called here AND by
+    `invocation.registry.resolve_backend_raw`, fixing MAJOR-1 (the
+    registry face used to report `"default"` even when the general
+    sibling actually answered, because the ordinary single-key
+    sequence in `resolve_setting` below never looked at the sibling at
+    all).
+
+    `paired_cascade` itself is kind-agnostic; this function re-applies
+    THIS module's own kind-aware parse + validate + warn machinery to
+    whichever raw value won, and builds the source label in this
+    module's established vocabulary (`override:<name>`, `env:
+    <env_var>`, `config:<section>.<key>`) naming whichever entry --
+    `setting` or `general` -- actually answered.
+
+    Simplification, stated as a decision (every current pair is
+    `kind="str"` with a CLAMPING `validate`, per `Setting.validate`'s
+    own docstring): a clamping validate never rejects (`_apply_
+    validate` never returns `(None, True)`) and `str`-kind parsing
+    never fails, so no CURRENT pair can hit the "malformed/rejected at
+    the winning rung" branches below -- they exist defensively (warn +
+    default, NOT a resumed walk past the winning rung to the next one)
+    for a FUTURE non-str or rejecting paired entry, and are untested
+    against today's registry for exactly that reason."""
+    found = config.paired_cascade(
+        home,
+        specific_name=setting.name,
+        general_name=general.name,
+        specific_env_var=setting.env_var,
+        general_env_var=general.env_var,
+        section=cast(str, setting.config_section),
+        specific_config_key=cast(str, setting.config_key),
+        general_config_key=cast(str, general.config_key),
+        label=setting.description,
+    )
+    if found is None:
+        return _default_value(setting), "default"
+    raw, rung, matched = found
+    answering = setting if rung.endswith("-specific") else general
+    if rung.startswith("config"):
+        parsed = _parse_config_value(raw, answering.kind)
+    else:
+        parsed = _parse_env_value(raw, answering.kind)
+    if parsed is None:
+        _warn(
+            f"{matched}={raw!r} is not a valid {answering.kind} for "
+            f"{answering.name} — using the default"
+        )
+        return _default_value(setting), "default"
+    final, rejected = _apply_validate(parsed, answering.validate)
+    if final is not None:
+        if rung.startswith("override"):
+            return final, f"override:{matched}"
+        if rung.startswith("env"):
+            return final, f"env:{matched}"
+        return final, f"config:{matched}"
+    if rejected:
+        _warn(f"{matched}={raw!r} is out of range for {answering.name} — using the default")
+    return _default_value(setting), "default"
+
+
+def _answering_setting(setting: Setting, source: str) -> Setting:
+    """M-S (code-gate fold r1): for a paired entry, `source` may name
+    the GENERAL sibling's OWN rung instead of `setting`'s own (MAJOR-1)
+    -- every consumer that re-derives a raw value FROM `source`
+    (`_fold_note`, `preflight`'s override-warn text) must re-read using
+    whichever entry the label actually identifies, not always `setting`
+    itself, or it re-reads the wrong (possibly-absent) var/key. Returns
+    `setting` unchanged for every non-paired entry, and for a paired
+    entry whose OWN rung (not the general's) answered."""
+    if setting.general_name is None:
+        return setting
+    general = by_name(setting.general_name)
+    if source.startswith("override:"):
+        return general if source == f"override:{general.name}" else setting
+    if source.startswith("config:") and general.config_section is not None:
+        if source == f"config:{general.config_section}.{general.config_key}":
+            return general
+        return setting
+    if source.startswith("env:") and general.env_var is not None:
+        return general if source == f"env:{general.env_var}" else setting
+    return setting
+
+
 def resolve_setting(home: Path | str, setting: Setting) -> tuple[SettingValue, str]:
     """The registry's ONE resolution function (U-settings Phase 1 §2;
     flipped 2026-09-01, S-58; override channel added same day, a
@@ -563,6 +669,14 @@ def resolve_setting(home: Path | str, setting: Setting) -> tuple[SettingValue, s
         provider_value, _ = resolve_setting(home, by_name("provider.name"))
         if not setting.enabled_when(cast(str, provider_value)):
             return _default_value(setting), f"inactive (provider={provider_value})"
+
+    if setting.general_name is not None:
+        # M-S (MAJOR-1, code-gate fold r1): a paired entry resolves
+        # through the shared six-rung cascade instead of the ordinary
+        # single-key sequence below -- `_try_paired` already covers
+        # this entry's own override/env/config rungs AND its general
+        # sibling's, in the correct specific-before-general order.
+        return _try_paired(home, setting, by_name(setting.general_name))
 
     hit = _try_override(home, setting)
     if hit is not None:
@@ -899,6 +1013,11 @@ REGISTRY: tuple[Setting, ...] = (
         validate=lambda v: cast(str, v) if cast(str, v) in _PROVIDERS else _DEFAULT_PROVIDER,
         accepts=lambda v: cast(str, v) in _PROVIDERS,
         accepts_hint=f"must be one of {', '.join(_PROVIDERS)}",
+        # nit-4 (code-gate fold r1, orchestrator ruling): an emergency-
+        # rollback lever, same character as `worker.autokick`/`miner.
+        # autokick`'s tier "C" -- a boundary the page renders read-only
+        # with a pointer to the CLI verb, not a preference.
+        tier="C",
     ),
     Setting(
         name="provider.bedrock.region",
@@ -973,11 +1092,13 @@ REGISTRY: tuple[Setting, ...] = (
     # ----------------------------------------------------- invocation
     # M-S: `invocation.backend` + one `invocation.backend_<surface>`
     # per surface `backend_for` serves -- the registry's reporting/
-    # write face for the backend-selection family; the composed
-    # specific/general CASCADE these keys individually participate in
-    # at runtime lives entirely in `invocation.registry.
-    # resolve_backend_raw`, not here (r3-M1/r3-M2: the two are
-    # different surfaces needing different mechanisms). Each carries
+    # write face for the backend-selection family. Code-gate fold r1
+    # (MAJOR-1) corrects r3-M1/r3-M2's original claim: the specific/
+    # general CASCADE these keys participate in is now ONE shared pure
+    # function, `config.paired_cascade`, called by BOTH this module's
+    # `resolve_setting` (via each per-surface entry's `general_name`)
+    # AND `invocation.registry.resolve_backend_raw` -- not two
+    # independent transcriptions of the same six rungs. Each carries
     # BOTH `validate` (folds an off-whitelist value in place on read,
     # same as any other clamping entry) and `accepts` (refuses an
     # off-whitelist `config set` outright, MAJOR-3).
@@ -993,6 +1114,12 @@ REGISTRY: tuple[Setting, ...] = (
         validate=lambda v: cast(str, v) if cast(str, v) in KNOWN_BACKENDS else "sdk",
         accepts=lambda v: cast(str, v) in KNOWN_BACKENDS,
         accepts_hint=f"must be one of {', '.join(KNOWN_BACKENDS)}",
+        # nit-4: the whole `invocation.backend` family is one emergency-
+        # rollback lever -- tier "C" for the general key too, matching
+        # each per-surface sibling (splitting the general key's tier
+        # from its own per-surface siblings would make no sense: it is
+        # the SAME lever, just aimed at every surface at once).
+        tier="C",
     ),
     *(
         Setting(
@@ -1007,6 +1134,8 @@ REGISTRY: tuple[Setting, ...] = (
             validate=lambda v: cast(str, v) if cast(str, v) in KNOWN_BACKENDS else "sdk",
             accepts=lambda v: cast(str, v) in KNOWN_BACKENDS,
             accepts_hint=f"must be one of {', '.join(KNOWN_BACKENDS)}",
+            general_name="invocation.backend",
+            tier="C",
         )
         for _surface in SURFACES
     ),
@@ -1285,36 +1414,49 @@ def _fold_note(home: Path | str, setting: Setting, source: str) -> str | None:
     every source this can't (or need not) re-derive: no `validate` at
     all, an override written as the `_OVERRIDE_NONE_MARKER` escape
     hatch, `"default"`, and `f"inactive (provider=...)"` (`enabled_when`
-    gating never reaches a rung to re-read)."""
-    if setting.validate is None:
+    gating never reaches a rung to re-read).
+
+    M-S (code-gate fold r1): for a PAIRED entry (`setting.general_name
+    is not None`), `source` may name the GENERAL sibling's own rung
+    instead of `setting`'s -- re-derives via `_answering_setting`
+    first, so this never re-reads the wrong (possibly-absent) var/key
+    (the same bug MAJOR-1 named on the resolve path, found here too on
+    the display path). Also reads the override rung through `config.
+    read_override` (not a raw `os.environ.get`), so a deliberate
+    `override(name, "")` (`config.OVERRIDE_EMPTY_MARKER`) is decoded
+    correctly instead of re-parsed as the literal marker text."""
+    entry = _answering_setting(setting, source)
+    if entry.validate is None:
         return None
     if source.startswith("override:"):
-        override_var = _override_env_var(setting.name)
-        raw = os.environ.get(override_var)
-        if raw is None or raw == _OVERRIDE_NONE_MARKER:
+        result = config.read_override(entry.name)
+        if result is None:
             return None
-        parsed = _parse_env_value(raw, setting.kind)
+        raw, is_none = result
+        if is_none:
+            return None
+        parsed = _parse_env_value(raw, entry.kind)
     elif source.startswith("config:"):
-        if setting.config_section is None:
+        if entry.config_section is None:
             return None
-        assert setting.config_key is not None
-        found = config.settings_leaf(home, setting.config_section, setting.config_key)
+        assert entry.config_key is not None
+        found = config.settings_leaf(home, entry.config_section, entry.config_key)
         if found is None:
             return None
-        parsed = _parse_config_value(found[1], setting.kind)
+        parsed = _parse_config_value(found[1], entry.kind)
     elif source.startswith("env:"):
-        if setting.env_var is None:
+        if entry.env_var is None:
             return None
-        raw = os.environ.get(setting.env_var)
+        raw = os.environ.get(entry.env_var)
         if not raw:
             return None
-        parsed = _parse_env_value(raw, setting.kind)
+        parsed = _parse_env_value(raw, entry.kind)
     else:
         # "default" or "inactive (provider=...)" -- nothing to re-read.
         return None
     if parsed is None:
         return None
-    final, rejected = _apply_validate(parsed, setting.validate)
+    final, rejected = _apply_validate(parsed, entry.validate)
     if rejected or final is None or final == parsed:
         return None
     return f"{parsed!r} folded to {final!r}"
@@ -1350,13 +1492,17 @@ def preflight(home: Path | str) -> list[SettingRow]:
         note = _fold_note(home, setting, source)
         note_suffix = f" [{note}]" if note else ""
         if source.startswith("override:"):
+            # M-S (code-gate fold r1): a PAIRED entry's `source` may
+            # name the GENERAL sibling's own override var -- the "Unset
+            # <VAR>" text must name THAT var, not `setting`'s own
+            # (which the operator never exported).
             rows.append(
                 SettingRow(
                     name=setting.name,
                     verdict="WARN",
                     detail=(
                         f"{setting.name} = {value!r} ({source}){note_suffix} -- "
-                        f"{_override_warn_text(setting)}"
+                        f"{_override_warn_text(_answering_setting(setting, source))}"
                     ),
                 )
             )

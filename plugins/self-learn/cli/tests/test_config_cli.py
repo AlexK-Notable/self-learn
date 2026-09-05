@@ -133,7 +133,22 @@ class TestConfigGet:
         assert rc == 0
         c_names = {r["name"] for r in rows if r["tier"] == "C"}
         a_names = {r["name"] for r in rows if r["tier"] == "A"}
-        assert c_names == {"worker.autokick", "miner.autokick"}
+        # M-S (S-58 code-gate fold r1, nit-4): `provider.name` and the
+        # whole `invocation.backend` family (the general key AND all
+        # four per-surface siblings — splitting the general key's tier
+        # from its own siblings would make no sense, it is the SAME
+        # emergency-rollback lever) join the two pre-existing
+        # spawn-containment switches as tier "C".
+        assert c_names == {
+            "worker.autokick",
+            "miner.autokick",
+            "provider.name",
+            "invocation.backend",
+            "invocation.backend_worker",
+            "invocation.backend_worker-repair",
+            "invocation.backend_miner-reader",
+            "invocation.backend_analyst",
+        }
         assert a_names == {s.name for s in settings.REGISTRY} - c_names
 
 
@@ -170,6 +185,30 @@ class TestConfigSet:
         doctor_out = capsys.readouterr().out
         assert rc2 == 0
         assert f"{name} = {expect_value!r} (config:{name})" in doctor_out
+
+    def test_setting_an_inactive_key_names_both_written_and_committed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """M-S (S-58 code-gate fold r1, nit-3): `config set` on an
+        INACTIVE key (here, a bedrock-only key under the default
+        `provider=anthropic`) already writes AND commits the value --
+        `row["source"]` just reports `"inactive (provider=...)"` with
+        the entry's own DEFAULT as `value`, which alone reads as "the
+        write didn't take". A second, explicit line must name both
+        facts the plain row masks."""
+        home = make_home(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        rc = cli_mod.main(["config", "set", "provider.bedrock.region", "us-west-2"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "inactive (provider=anthropic)" in out
+        assert "written and committed" in out
+        # the write DID land on disk, git-committed -- a fresh registry
+        # read under provider=bedrock proves it, and the log has a
+        # commit for it.
+        assert "config set provider.bedrock.region=" in _log_subjects(home)[0]
+        value, source = settings.resolve_setting(home, settings.by_name("provider.name"))
+        assert (value, source) == ("anthropic", "default")
 
     def test_refuses_malformed_value_with_registry_message(
         self, tmp_path, monkeypatch, capsys

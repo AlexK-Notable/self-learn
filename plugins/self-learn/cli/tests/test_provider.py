@@ -163,6 +163,13 @@ def test_pr1_config_module_exports(tmp_path):
     assert not hasattr(config, "provider_setting")
     assert config.__all__ == [
         "CONFIG_BASENAME",
+        # M-S (S-58 code-gate fold r1, BLOCKER-1): the override
+        # channel's two escape-hatch markers, relocated here from
+        # `settings.py` so `provider.py`/`invocation/registry.py` can
+        # decode them (via `read_override` below) without importing
+        # `settings.py` at all (a cycle).
+        "OVERRIDE_EMPTY_MARKER",
+        "OVERRIDE_NONE_MARKER",
         "PROVIDER_KEYS",
         # U-settings Phase 2: the settings PAGE's write path -- round-trip
         # load/dump + the two generic, section-agnostic mutators (`set_leaf`/
@@ -187,6 +194,15 @@ def test_pr1_config_module_exports(tmp_path):
         # counterpart always compute the identical env-var name
         # without `invocation/registry.py` importing `settings.py`.
         "override_env_var",
+        # M-S (S-58 code-gate fold r1, MAJOR-1): the shared specific/
+        # general six-rung cascade both `settings.resolve_setting` (for
+        # a registry entry declaring a `general_name` sibling) and
+        # `invocation.registry.resolve_backend_raw` call, plus the
+        # generalized specific/general config.yaml walk it uses
+        # internally (`invocation_backend` is now a thin wrapper over
+        # this).
+        "paired_cascade",
+        "paired_leaf",
         # MINOR-2 (code-gate review r1 2026-09-01): a validated,
         # NON-mutating "is section.key set" read against the SAME
         # round-trip write-path load `set_leaf`/`unset_leaf` use --
@@ -198,6 +214,13 @@ def test_pr1_config_module_exports(tmp_path):
         # against a file `set` would refuse outright.
         "present",
         "provider_unknown_keys",
+        # M-S (S-58 code-gate fold r1, BLOCKER-1): the override
+        # channel's ONE reader -- both `settings._try_override` and
+        # `provider._resolve_provider`'s override rung decode an
+        # ambient `SELF_LEARN_OVERRIDE_<NAME>` through this SAME
+        # function now, so the two faces cannot independently disagree
+        # on what an ambient empty value means again.
+        "read_override",
         "set_leaf",
         # U-settings Phase 1: the settings registry's two generic,
         # section-agnostic primitives (generalizing `provider_setting`/
@@ -291,6 +314,25 @@ def test_pr4_unknown_provider_warns_and_stops_at_anthropic(tmp_path, monkeypatch
     assert calls, "the config-flavored spelling must be emitted through config._warn"
     assert "provider.name must be one of anthropic, bedrock" in calls[0]
     assert "'bogus'" in calls[0]
+
+
+def test_pr4b_unknown_provider_override_warns_the_third_way(tmp_path, monkeypatch, capsys):
+    """M-S (S-58 code-gate fold r1, minor-3): the OVERRIDE rung is a
+    THIRD emitter, pinned the same way the env (`test_pr4_...` above)
+    and config (`config._warn`, same test) rungs already are -- one
+    `print` per rung, not two. Also proves the override rung STOPS at
+    `"anthropic"` rather than falling through to a present, valid
+    config value (same "does NOT fall through" shape `test_pr4_...`
+    already pins for the env rung)."""
+    monkeypatch.setenv("SELF_LEARN_OVERRIDE_PROVIDER_NAME", "bogus")
+    _write_provider_yaml(tmp_path, name="bedrock")
+    res = provider.resolve(tmp_path, "worker")
+    assert res.provider == "anthropic"  # does NOT fall through to config
+    err = capsys.readouterr().err
+    assert err == (
+        'self-learn: unknown provider \'bogus\' in SELF_LEARN_OVERRIDE_PROVIDER_NAME'
+        ' — using "anthropic"\n'
+    )
 
 
 def test_pr5_source_fields_name_the_answering_rung(tmp_path, monkeypatch):
@@ -485,7 +527,9 @@ def test_bk1b_rs_a1_discriminates_by_the_full_tuple_not_just_name(tmp_path):
       never even read, let alone refused).
     - ABSENT per-surface key + present general "cli" -> falls through
       and consults the general key, which IS "cli": `source` is
-      `"config:backend"`, `refused` names the retirement message --
+      `"config:invocation.backend"` (M-S fold r1: MAJOR-1's vocabulary
+      unification -- was the bare `"config:backend"` before this fold),
+      `refused` names the retirement message --
       the positive control proving the chain CAN reach and refuse the
       general key when the per-surface key is genuinely absent (not
       just empty), so the case above is a real termination, not an
@@ -502,7 +546,7 @@ def test_bk1b_rs_a1_discriminates_by_the_full_tuple_not_just_name(tmp_path):
     (leaked_home / "config.yaml").write_text("invocation:\n  backend: cli\n", encoding="utf-8")
     name, source, refused = provider.resolve_backend_name(leaked_home, "worker")
     assert name == "sdk"  # folded, same as the terminated case -- NOT the discriminator
-    assert source == "config:backend"
+    assert source == "config:invocation.backend"  # M-S fold r1: MAJOR-1 vocabulary unification
     assert refused is not None and "cli" in refused
 
 
@@ -563,7 +607,7 @@ def test_bk4_source_names_exact_config_key(tmp_path):
     )
     name, source, refused = provider.resolve_backend_name(tmp_path, "worker")
     assert name == "sdk"
-    assert source == "config:backend_worker"
+    assert source == "config:invocation.backend_worker"  # M-S fold r1: MAJOR-1 vocabulary unification
     assert refused is None
 
     home2 = tmp_path / "bk4-general"
@@ -571,7 +615,7 @@ def test_bk4_source_names_exact_config_key(tmp_path):
     (home2 / "config.yaml").write_text("invocation:\n  backend: sdk\n", encoding="utf-8")
     name2, source2, refused2 = provider.resolve_backend_name(home2, "worker")
     assert name2 == "sdk"
-    assert source2 == "config:backend"
+    assert source2 == "config:invocation.backend"  # M-S fold r1: MAJOR-1 vocabulary unification
     assert refused2 is None
 
 

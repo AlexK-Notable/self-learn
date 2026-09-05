@@ -9,7 +9,6 @@ package, and only for the ledger-config rungs of the precedence chain.
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -83,59 +82,58 @@ def resolve_backend_raw(home: Path | str | None, surface: str) -> tuple[str, str
     `03-decisions.md` row S-58, r3-M1/r3-M2) — a PURE resolver: emits
     NOTHING (no print, no warn, no fold, no raise), just the raw
     winning value and a PREFIXED source label (`env:…` / `config:…` /
-    `override:…` / the bare word `default`). The two-rung override
-    prefix ahead of today's five-rung chain, both specific-before-
-    general (MAJOR-5): override(specific) -> override(general) ->
-    env(specific) -> env(general) -> config (first-present-key,
-    `Rs-a1`'s termination, unchanged) -> default. `home=None` skips the
-    config rung entirely (matches `backend_for`'s own pre-existing
-    optionality).
+    `override:…` / the bare word `default`). Six rungs, override
+    (specific then general) before env (specific then general) before
+    config (`Rs-a1`'s termination, unchanged) before default.
+    `home=None` skips the config rung entirely (matches `backend_for`'s
+    own pre-existing optionality).
 
-    `Rs-a1` (unchanged, now inherited by construction): an EMPTY
-    per-surface config value terminates the chain at the default
-    WITHOUT ever consulting the general config key -- delegated
-    verbatim to :func:`config.invocation_backend`, which already
-    returns the FIRST PRESENT key regardless of its value; an ABSENT
-    per-surface key falls through to the general key.
+    Code-gate fold r1 (MAJOR-1/MAJOR-4): now calls the SAME pure
+    cascade `settings.resolve_setting` calls for a paired entry,
+    `config.paired_cascade` -- previously this function hand-rolled
+    all six rungs independently, and `resolve_setting`'s single-key
+    sequence never looked at the general sibling at all (MAJOR-1: the
+    registry face reported `"default"` even when the general key
+    answered). The config rung still delegates verbatim to
+    :func:`config.invocation_backend` (minor-2: that function SURVIVES,
+    unchanged, as the Rs-a1 termination delegate this cascade uses
+    internally via `paired_leaf`), so `Rs-a1` (an EMPTY per-surface
+    config value terminates at the default WITHOUT consulting the
+    general config key; an ABSENT per-surface key falls through to the
+    general key) is unchanged.
 
-    The override rungs use TRUTHINESS, matching every other rung in
-    this cascade (`R-a`: an empty value is "no answer") -- NOT
-    `resolve_setting`'s `is not None` presence rule, which exists there
-    only to let a *registry* caller write a deliberate empty string via
-    :func:`settings.override`; nothing here calls that API, so there is
-    no programmatic empty-string case to preserve, and treating an
-    empty `SELF_LEARN_OVERRIDE_INVOCATION_BACKEND[_<surface>]` as "no
-    answer" keeps this cascade's own empty-is-absent rule uniform end
-    to end."""
+    The source label's CONFIG half now matches the registry face's own
+    vocabulary (`config:invocation.backend_<surface>` / `config:
+    invocation.backend`, not the old bare `config:backend_<surface>` /
+    `config:backend`) -- MAJOR-1's witness requires the two faces to
+    report an IDENTICAL `(value, source)`, which a bare-vs-dotted label
+    mismatch would otherwise still fail on the config rungs even after
+    the cascade itself was shared. `backend_for` below strips the
+    section prefix before handing the bare key to `_resolve`'s existing
+    (pinned) warn text, so that text is unaffected."""
     selector = SELECTOR_FOR_SURFACE.get(surface, surface)
     selector_var = f"SELF_LEARN_BACKEND_{selector}"
+    specific_name = f"invocation.backend_{surface}"
 
-    override_specific = config.override_env_var(f"invocation.backend_{surface}")
-    value = os.environ.get(override_specific)
-    if value:
-        return value, f"override:invocation.backend_{surface}"
-
-    override_general = config.override_env_var("invocation.backend")
-    value = os.environ.get(override_general)
-    if value:
-        return value, "override:invocation.backend"
-
-    value = os.environ.get(selector_var)
-    if value:
-        return value, f"env:{selector_var}"
-
-    value = os.environ.get("SELF_LEARN_BACKEND")
-    if value:
-        return value, "env:SELF_LEARN_BACKEND"
-
-    if home is not None:
-        result = config.invocation_backend(home, surface)
-        if result is not None:
-            key, cfg_value = result
-            if cfg_value:
-                return cfg_value, f"config:{key}"
-
-    return DEFAULT_BACKEND_FOR_SURFACE.get(surface, "sdk"), "default"
+    found = config.paired_cascade(
+        home,
+        specific_name=specific_name,
+        general_name="invocation.backend",
+        specific_env_var=selector_var,
+        general_env_var="SELF_LEARN_BACKEND",
+        section="invocation",
+        specific_config_key=f"backend_{surface}",
+        general_config_key="backend",
+        label="invocation backend selection",
+    )
+    if found is None:
+        return DEFAULT_BACKEND_FOR_SURFACE.get(surface, "sdk"), "default"
+    value, rung, matched = found
+    if rung.startswith("override"):
+        return value, f"override:{matched}"
+    if rung.startswith("env"):
+        return value, f"env:{matched}"
+    return value, f"config:{matched}"
 
 
 def backend_for(surface: str, *, home: Path | str | None = None) -> Backend:
@@ -155,12 +153,20 @@ def backend_for(surface: str, *, home: Path | str | None = None) -> Backend:
     (this module's EXISTING emitter, unchanged, called exactly as
     before) wants the BARE name the pinned literals print with no
     prefix -- so the prefix is stripped here and `is_config` derived
-    from it before calling `_resolve`."""
+    from it before calling `_resolve`. Code-gate fold r1 (MAJOR-1): the
+    config label is now `config:invocation.<key>` (matching the
+    registry face's own `config:<section>.<key>` vocabulary, not the
+    old bare `config:<key>`), so the STRIPPED prefix here is
+    `"config:invocation."` (not just `"config:"`) -- `_resolve`'s own
+    pinned message still builds `f'invocation.{source} must be one of
+    sdk...'` from the bare key, unaffected by this label's own vocabulary
+    change."""
     raw_value, source = resolve_backend_raw(home, surface)
     if source == "default":
         return _resolve(surface, raw_value, source="the built-in default", is_config=False)
     if source.startswith("config:"):
-        return _resolve(surface, raw_value, source=source[len("config:") :], is_config=True)
+        bare_key = source[len("config:invocation.") :]
+        return _resolve(surface, raw_value, source=bare_key, is_config=True)
     if source.startswith("env:"):
         return _resolve(surface, raw_value, source=source[len("env:") :], is_config=False)
     assert source.startswith("override:"), f"unreachable resolve_backend_raw source: {source!r}"

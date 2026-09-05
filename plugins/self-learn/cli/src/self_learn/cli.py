@@ -43,6 +43,7 @@ import os
 import sys
 from datetime import date, datetime
 from pathlib import Path
+from typing import cast
 
 from . import report as report_mod
 from . import hosts as hosts_mod
@@ -1247,6 +1248,20 @@ def _cmd_config_set(args: argparse.Namespace, home: Path) -> int:
         print(json.dumps(row))
         return EXIT_OK
     _print_setting_row(row, prefix="config set: ")
+    if cast(str, row["source"]).startswith("inactive"):
+        # M-S (S-58 code-gate fold r1, nit-3): `config_set` already
+        # wrote AND committed this value -- the row above just prints
+        # `source = "inactive (provider=...)"` with the entry's own
+        # DEFAULT as `value` (that IS what `resolve_setting` returns
+        # for an inactive key), which on its own reads as "the write
+        # didn't take". Both facts (written; committed) were previously
+        # masked entirely -- there was no `<note>` text for this source
+        # at all (`_fold_note` returns `None` for "inactive (...)"),
+        # so nothing told the operator the write actually landed.
+        print(
+            f"config set: {setting.name} — written and committed to "
+            f"config.yaml ({row['source']}, so not currently in effect)"
+        )
     return EXIT_OK
 
 

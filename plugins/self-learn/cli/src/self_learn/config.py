@@ -43,6 +43,7 @@ policy decision).
 from __future__ import annotations
 
 import io
+import os
 import sys
 from pathlib import Path
 
@@ -54,6 +55,8 @@ from .primitives import yamlio
 
 __all__ = [
     "CONFIG_BASENAME",
+    "OVERRIDE_EMPTY_MARKER",
+    "OVERRIDE_NONE_MARKER",
     "PROVIDER_KEYS",
     "ConfigWriteError",
     "config_path",
@@ -63,8 +66,11 @@ __all__ = [
     "load_editable",
     "one_motion_enabled",
     "override_env_var",
+    "paired_cascade",
+    "paired_leaf",
     "present",
     "provider_unknown_keys",
+    "read_override",
     "set_leaf",
     "settings_leaf",
     "settings_unknown_keys",
@@ -123,52 +129,222 @@ def invocation_backend(home: Path | str, surface: str) -> tuple[str, str] | None
     an empty string is a valid match -- "no answer", not an unknown
     value -- the caller decides whether to fall through). ``None`` only
     when neither key is present, or upstream discipline already fired.
-    Follows :func:`one_motion_enabled`'s discipline case for case:
-    missing file -> ``None`` silent; empty file (YAML loads to ``None``)
-    -> ``None`` silent; unparseable -> ``_warn`` + ``None``; non-mapping
-    top level -> ``_warn`` + ``None``; ``invocation`` section absent ->
-    ``None`` silent; ``invocation`` section present but not a mapping ->
-    ``_warn`` + ``None``; value present but not a ``str`` -> ``_warn`` +
-    ``None``. Does NOT validate the value against the known backend
-    names — that judgement, and its warning, belong to the registry
-    (`R-c`), so there is one place where "unknown means cli" is
-    decided."""
+
+    A thin wrapper over :func:`paired_leaf` (M-S, S-58 code-gate fold
+    r1, minor-2): this function's own name and signature SURVIVE --
+    only ``provider_setting`` retired at the top of this amendment; the
+    walk itself is now shared with the registry face's paired-entry
+    cascade (:func:`paired_cascade`) so the two can never independently
+    reimplement — and silently diverge on — the same Rs-a1 termination
+    rule."""
+    return paired_leaf(
+        home,
+        _INVOCATION_SECTION,
+        f"backend_{surface}",
+        "backend",
+        label="invocation backend selection",
+    )
+
+
+def paired_leaf(
+    home: Path | str, section: str, specific_key: str, general_key: str, *, label: str
+) -> tuple[str, str] | None:
+    """M-S (S-58 code-gate fold r1, MAJOR-1): the GENERAL shape of
+    :func:`invocation_backend`'s walk -- the first-present-key-wins
+    read of a specific/general config.yaml pair, generalized over
+    `section`/`specific_key`/`general_key` so a FUTURE paired entry
+    reuses this walk instead of hand-rolling it again. `label` is the
+    exact phrase each of `invocation_backend`'s three warn messages
+    ends with ("... ignored") -- kept a parameter, not hardcoded, so
+    `invocation_backend`'s own byte-exact warn text survives this
+    refactor untouched.
+
+    Returns ``(key, value)`` for the FIRST present key among
+    `specific_key` and `general_key` -- ``value`` may be ``""`` (an
+    empty string is a valid match, not an unknown one; the CALLER
+    decides whether an empty value at the SPECIFIC key terminates the
+    cascade or falls through, per its own Rs-a1 policy). ``None`` when
+    neither key is present, the section/file is absent, or upstream
+    discipline already fired via `_warn`. Same fail-closed discipline
+    as :func:`settings_leaf`: missing file -> ``None`` silent; empty
+    file -> ``None`` silent; unparseable -> `_warn` + ``None``;
+    non-mapping top level -> `_warn` + ``None``; `section` absent ->
+    ``None`` silent; `section` present but not a mapping -> `_warn` +
+    ``None``; a matched value present but not a ``str`` -> `_warn` +
+    ``None``."""
     path = config_path(home)
     if not path.is_file():
         return None
     try:
         data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
     except (YAMLError, OSError, UnicodeDecodeError) as exc:
-        _warn(f"unparseable ({exc}); invocation backend selection ignored")
+        _warn(f"unparseable ({exc}); {label} ignored")
         return None
     if data is None:
         return None
     if not isinstance(data, dict):
         _warn(
             f"top level must be a mapping, got {type(data).__name__}; "
-            "invocation backend selection ignored"
+            f"{label} ignored"
         )
         return None
-    section = data.get(_INVOCATION_SECTION)
-    if section is None:
+    node = data.get(section)
+    if node is None:
         return None
-    if not isinstance(section, dict):
-        _warn(
-            f"{_INVOCATION_SECTION} must be a mapping, got {section!r}; "
-            "invocation backend selection ignored"
-        )
+    if not isinstance(node, dict):
+        _warn(f"{section} must be a mapping, got {node!r}; {label} ignored")
         return None
-    for key in (f"backend_{surface}", "backend"):
-        if key not in section:
+    for key in (specific_key, general_key):
+        if key not in node:
             continue
-        value = section[key]
+        value = node[key]
         if not isinstance(value, str):
-            _warn(
-                f"{_INVOCATION_SECTION}.{key} must be a string, got {value!r}; "
-                "invocation backend selection ignored"
-            )
+            _warn(f"{section}.{key} must be a string, got {value!r}; {label} ignored")
             return None
         return (key, value)
+    return None
+
+
+#: M-S (S-58 BLOCKER-1, code-gate fold r1): the override channel's two
+#: escape-hatch markers -- moved here from `settings.py` so both faces
+#: of a selection key (`settings._try_override`, the registry reader,
+#: and `provider._resolve_provider`'s hand-written runtime rung) decode
+#: an ambient override var through the SAME reader (:func:`read_override`
+#: below) without `invocation/registry.py` or `provider.py` importing
+#: `settings.py` (a cycle: `settings.py` already imports `.invocation.
+#: registry`). `OVERRIDE_NONE_MARKER` distinguishes a deliberate
+#: `override(name, None)` from an unset var; `OVERRIDE_EMPTY_MARKER`
+#: distinguishes a deliberate `override(name, "")` from an AMBIENT
+#: empty var (BLOCKER-1's actual bug: `SELF_LEARN_OVERRIDE_PROVIDER_
+#: NAME=""` used to parse as a valid empty `str`, then get silently
+#: clamped by `provider.name`'s own `validate` to `"anthropic"` --
+#: bricking a valid bedrock ledger on the registry face while the
+#: runtime face's truthiness check treated the same var as absent, two
+#: faces disagreeing on the SAME ambient state). Neither string can
+#: collide with an operator-typed value short of deliberately typing
+#: this exact control-character token.
+OVERRIDE_NONE_MARKER = "\x01SELF_LEARN_OVERRIDE_NONE\x01"
+OVERRIDE_EMPTY_MARKER = "\x01SELF_LEARN_OVERRIDE_EMPTY\x01"
+
+
+def read_override(name: str) -> tuple[str, bool] | None:
+    """M-S (S-58 BLOCKER-1, code-gate fold r1): the override channel's
+    ONE reader, shared by `settings._try_override` (the registry face)
+    and `provider._resolve_provider`'s override rung (the runtime
+    face) -- the fix for the gate's BLOCKER-1: the two faces used to
+    decode the SAME ambient env var by two different rules (presence
+    vs truthiness) and, worse, only the registry face's `validate`
+    silently clamped an unknown/empty value, so aligning the rules
+    alone (without this shared reader) would have made BOTH faces
+    agree on the WRONG answer (bedrock silently becomes anthropic)
+    instead of the right one.
+
+    Returns ``None`` for "no answer": the var is unset, OR it holds
+    the AMBIENT empty string ``""`` -- matching `_try_env`'s own
+    `if not raw` convention (an operator's shell leaving a var blank
+    is indistinguishable from never exporting it at all; neither is a
+    deliberate answer).
+
+    Returns ``(value, is_none)`` otherwise: `is_none=True` when the var
+    holds `OVERRIDE_NONE_MARKER` (a caller's own `override(name,
+    None)`, e.g. `sdk.max_budget_usd`'s "unlimited"); `is_none=False`
+    carries the raw string, INCLUDING `""` when it arrived via
+    `OVERRIDE_EMPTY_MARKER` (a caller's own `override(name, "")`,
+    preserved deliberately -- never confused with the ambient-empty
+    case above, which this function has already returned `None` for)."""
+    raw = os.environ.get(override_env_var(name))
+    if not raw:
+        return None
+    if raw == OVERRIDE_NONE_MARKER:
+        # The placeholder "" carries no meaning here -- every caller
+        # checks `is_none` before ever reading this element (`Setting
+        # Value`'s real `None` never round-trips through a `str`-typed
+        # slot; that's the whole reason `is_none` is a SEPARATE flag).
+        return "", True
+    if raw == OVERRIDE_EMPTY_MARKER:
+        return "", False
+    return raw, False
+
+
+def paired_cascade(
+    home: Path | str | None,
+    *,
+    specific_name: str,
+    general_name: str,
+    specific_env_var: str | None,
+    general_env_var: str | None,
+    section: str,
+    specific_config_key: str,
+    general_config_key: str,
+    label: str,
+) -> tuple[str, str, str] | None:
+    """M-S (S-58 MAJOR-1/MAJOR-4, code-gate fold r1): the ONE pure
+    specific/general cascade both `settings.resolve_setting` (for a
+    registry entry declaring a `general_name` sibling) and `invocation.
+    registry.resolve_backend_raw` call -- lives here, not in
+    `settings.py`, because `invocation/registry.py` cannot import
+    `settings.py` (a real cycle: `settings.py` already imports
+    `.invocation.registry`), and not in a `Setting`-typed helper for
+    the same reason. Takes only primitives (raw names/vars/keys) and
+    returns a GENERIC `(raw_value, rung, matched)` triple that EACH
+    CALLER translates into its OWN established source-label vocabulary
+    -- `resolve_setting`'s `f"override:{name}"` / `f"config:{section}.
+    {key}"` / `f"env:{env_var}"`, or `resolve_backend_raw`'s own
+    (identical, post-fold) vocabulary. `rung` is one of
+    `"override-specific"`, `"override-general"`, `"env-specific"`,
+    `"env-general"`, `"config-specific"`, `"config-general"`; `matched`
+    is the override NAME (override rungs), the ENV VAR (env rungs), or
+    the DOTTED `section.key` (config rungs) the caller embeds in its
+    label. Returns ``None`` when nothing answers -- the caller applies
+    its own default.
+
+    Six rungs, override-specific before override-general before
+    env-specific before env-general before config (Rs-a1's termination,
+    delegated verbatim to :func:`paired_leaf`) before nothing (default,
+    left to the caller). `Rs-a1` (unchanged, gate mutations (a1)/(a2)):
+    an EMPTY per-surface config value terminates the config rung at
+    "no answer" WITHOUT consulting the general config key at all -- an
+    ABSENT per-surface key falls through to the general key normally.
+    `home=None` skips the config rung entirely (`resolve_backend_raw`'s
+    pre-existing optionality, preserved).
+
+    Every current pair is `kind="str"` (the only shape either caller
+    has needed so far), so this cascade needs no `kind`-aware parsing
+    of its own -- each caller re-parses the raw string it gets back
+    through its OWN `kind`-aware machinery, same as every other rung."""
+    override_result = read_override(specific_name)
+    if override_result is not None:
+        raw, is_none = override_result
+        if not is_none:
+            return raw, "override-specific", specific_name
+    override_result = read_override(general_name)
+    if override_result is not None:
+        raw, is_none = override_result
+        if not is_none:
+            return raw, "override-general", general_name
+
+    if specific_env_var is not None:
+        raw = os.environ.get(specific_env_var)
+        if raw:
+            return raw, "env-specific", specific_env_var
+    if general_env_var is not None:
+        raw = os.environ.get(general_env_var)
+        if raw:
+            return raw, "env-general", general_env_var
+
+    if home is not None:
+        found = paired_leaf(home, section, specific_config_key, general_config_key, label=label)
+        if found is not None:
+            key, value = found
+            if not value:
+                # Rs-a1: an EMPTY value at the SPECIFIC key terminates
+                # the whole config rung at "no answer" -- it does not
+                # fall through to the general key, and a general value
+                # that also happens to be empty is likewise no answer.
+                return None
+            rung = "config-specific" if key == specific_config_key else "config-general"
+            return value, rung, f"{section}.{key}"
+
     return None
 
 

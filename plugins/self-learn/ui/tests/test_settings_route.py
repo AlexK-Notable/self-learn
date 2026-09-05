@@ -151,6 +151,27 @@ class TestSettingsPageRender:
         assert 'hx-post="/settings/set"' in row_html
         assert 'name="name" value="worker.no_notify"' in row_html
 
+    def test_m_s_fold_r1_provider_name_is_tier_c_with_no_editor(self, tmp_path: Path) -> None:
+        """M-S (S-58 code-gate fold r1, nit-4): `provider.name` (and the
+        whole `invocation.backend` family) moved to tier "C" -- an
+        emergency-rollback lever, same character as the two
+        spawn-containment switches `test_tier_c_rows_have_no_editor`
+        already covers. `worker.no_notify` (asserted above) is the
+        positive control this negative depends on: it proves the
+        template CAN render an inline editor at all, so `provider.
+        name`'s absence of one is a real tier gate, not a template that
+        renders no editor for anything."""
+        sb = make_env(tmp_path)
+        c, _runner = make_client(sb)
+        r = c.get("/settings")
+        text = r.text
+        assert 'hx-post="/settings/set"' in text  # the positive control fired somewhere on the page
+        start = text.index('id="setting-row-provider-name"')
+        end = text.index("</tr>", start)
+        row_html = text[start:end]
+        assert 'hx-post="/settings/set"' not in row_html
+        assert "read-only" in row_html
+
     def test_degrades_to_an_error_strip_never_a_500_on_a_cli_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

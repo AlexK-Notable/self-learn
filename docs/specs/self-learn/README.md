@@ -976,9 +976,18 @@ human routes it.
   changes is the MECHANISM count: `provider.py`'s second, independent
   transcription of the backend-selection chain (`resolve_backend_name`)
   and its own env/config lookups (`_resolve_provider`,
-  `_resolve_str_setting`, `model_for`), plus `config.py`'s two loaders
-  that exist only to feed them, retire in favour of ONE registry-backed
-  resolver. `settings.py`'s `Setting` gains `direction` (per-key rung
+  `_resolve_str_setting`, `model_for`) retire in favour of ONE
+  registry-backed resolver. Of `config.py`'s two loaders that fed
+  those hand-rolled cascades, only `provider_setting` retires with
+  them; `config.invocation_backend` SURVIVES, unchanged in name and
+  signature, as the Rs-a1 termination delegate the shared specific/
+  general cascade (`config.paired_cascade`, code-gate fold r1, MAJOR-1)
+  now calls via `config.paired_leaf` — `resolve_backend_raw` and
+  `settings.resolve_setting`'s paired-entry branch both reach it
+  through that ONE shared walk, never two independent re-derivations
+  of the same Rs-a1 rule (r1 minor-2's correction of this same
+  paragraph's original over-claim). `settings.py`'s `Setting` gains
+  `direction` (per-key rung
   order), `enabled_when` (a `provider.name` predicate gating exactly the
   SIX bedrock-scoped entries — `region`, `profile`, and the four
   `bedrock.models.*` — never `provider.name` itself, r2 fixed this

@@ -89,18 +89,44 @@ def _resolve_provider(home: Path | str) -> tuple[str, str]:
     provider_setting` at the config rung -- a direct, behavior-
     preserving substitution (`provider_setting`'s own `PROVIDER_KEYS`
     membership check was never load-bearing for `key="name"`, which is
-    always a member)."""
+    always a member).
+
+    Code-gate fold r1 (BLOCKER-1): the override rung now reads through
+    `config.read_override` -- the SAME reader `settings._try_override`
+    uses -- instead of a private `os.environ.get` + truthiness check.
+    The two faces used to decide "is there an ambient answer?" by two
+    DIFFERENT rules (this one truthiness, the registry's presence),
+    and only the registry's `validate` silently clamped an unknown/
+    empty value -- so an ambient EMPTY `SELF_LEARN_OVERRIDE_PROVIDER_
+    NAME` used to brick a valid bedrock ledger to `"anthropic"` on the
+    registry face while this face correctly fell through, two faces
+    disagreeing on the same ambient state. Both faces now agree: an
+    AMBIENT empty override reads as "no answer" (falls through,
+    exactly as before this fold on THIS face); a DELIBERATE
+    `settings.override("provider.name", "")` still round-trips (this
+    function is never called with one active in practice, since
+    nothing writes a deliberate `""` provider override, but the shared
+    reader makes the two channels' behavior identical by construction
+    rather than by two separate implementations staying in sync by
+    coincidence). The two `print` literals below are UNCHANGED."""
     override_var = config.override_env_var("provider.name")
-    override_value = os.environ.get(override_var)
-    if override_value:  # truthy, matching every rung below -- R-a's "empty is no answer"
-        if override_value not in PROVIDERS:
-            print(
-                f"self-learn: unknown provider {override_value!r} in {override_var}"
-                ' — using "anthropic"',
-                file=sys.stderr,
-            )
-            return DEFAULT_PROVIDER, "override:provider.name"
-        return override_value, "override:provider.name"
+    override_result = config.read_override("provider.name")
+    if override_result is not None:
+        override_value, is_none = override_result
+        if not is_none:
+            if override_value not in PROVIDERS:
+                print(
+                    f"self-learn: unknown provider {override_value!r} in {override_var}"
+                    ' — using "anthropic"',
+                    file=sys.stderr,
+                )
+                return DEFAULT_PROVIDER, "override:provider.name"
+            return override_value, "override:provider.name"
+        # is_none: `override("provider.name", None)` -- provider.name's
+        # own default is `DEFAULT_PROVIDER`, not `None`, so `settings.
+        # override` itself refuses to ever write this marker for this
+        # key (ValueError at write time); reachable here only if some
+        # future caller bypassed that guard -- treat as no answer.
 
     value = os.environ.get("SELF_LEARN_PROVIDER")
     if value:
