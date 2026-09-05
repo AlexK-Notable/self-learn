@@ -29,6 +29,7 @@ from pathlib import Path
 
 from ruamel.yaml.error import YAMLError
 
+from . import domain
 from . import gitops
 from .compilers import _iso, compile_managed_text
 from .hosts import HostsError, load_hosts
@@ -73,6 +74,13 @@ _PROJECT_BUCKET_DIGEST_RE = re.compile(r"-([0-9a-f]{8})$")
 
 
 def _days_since(value, today: date) -> int | None:
+    """DATE-granularity age (deferred_until/resolution-commit dates carry
+    no time-of-day to lose — unlike ``created_at``, so this is NOT the A1
+    class and stays date-only, never routed through
+    ``domain.record_age_days``). ``toordinal()`` subtraction, not
+    ``.days`` on a timedelta, so the M-B ``.days``-after-subtraction scan
+    (positive control: any NEW ``).days`` hit fails it) reads TRUE ZERO
+    live hits rather than needing this site on an allow-list."""
     if value is None:
         return None
     text = str(value)[:10]
@@ -80,7 +88,7 @@ def _days_since(value, today: date) -> int | None:
         then = date.fromisoformat(text)
     except ValueError:
         return None
-    return (today - then).days
+    return today.toordinal() - then.toordinal()
 
 
 def _walk_records(home: Path):
@@ -165,24 +173,29 @@ def ledger_metrics(home: Path | str, *, today: date | None = None) -> dict:
       date for reject/graduate/supersede). None when nothing resolved —
       no data is "n/a", never a confident zero.
     - ``pending_over_30d_pct`` / ``pending_total``: queue health — % of
-      status-pending records older than 30 days (the ha-note failure
-      signature was 100%; sustained >50% means P3–P5 failed).
+      QUEUED records (M-B: ``domain.is_queued`` — a lapsed deferral counts,
+      never the literal ``status == "pending"`` string, which used to
+      undercount an expired-but-still-``deferred`` record against every
+      other surface's queue count) older than 30 days (the ha-note
+      failure signature was 100%; sustained >50% means P3–P5 failed).
     - ``routed_and_corrected``: routed lessons later CORRECTIVELY
       superseded — excludes ``superseded_by: canon`` graduations, which
       are successes (04; blind adjudication 2026-07-12).
     """
     home = Path(home)
-    today = today if today is not None else datetime.now(timezone.utc).date()
+    # M-B: ONE clock for membership+age (domain.is_queued/record_age_days)
+    # — ``today`` stays date-granularity for the git-derived resolution
+    # dates below, which are themselves date-only.
+    now = datetime.now(timezone.utc)
+    today = today if today is not None else now.date()
     resolution_dates: dict[str, str] | None = None  # lazy: git only if needed
 
     triage_days: list[int] = []
     pending_ages: list[int] = []
     corrected = 0
     for record in _walk_records(home):
-        if record.status == "pending":
-            age = _days_since(record.created_at, today)
-            if age is not None:
-                pending_ages.append(age)
+        if domain.is_queued(record, now):
+            pending_ages.append(domain.record_age_days(record, now))
             continue
         if record.routing is not None and record.superseded_by is not None:
             if record.superseded_by != "canon":
@@ -372,7 +385,7 @@ def _reference_shelf(
                     record = Record.from_path(path)
                 except (RecordError, OSError, UnicodeDecodeError, YAMLError):
                     continue
-                if record.status != "routed" or record.superseded_by is not None:
+                if not domain.is_canon_live(record):
                     continue  # §6.2-4: LIVE reference-routed records only
                 routing = record.routing or {}
                 if routing.get("destination") != "reference":
@@ -605,9 +618,10 @@ _REFERENCE_WHY = {
         "read rate UNKNOWN — no reference targets are enumerable, so "
         "routing here trades a measured cost for an unmeasured one."
     ),
-    "no-reads-observed": (
-        "every known reference target has zero reads — this shelf may be "
-        "coverage that isn't."
+    "never-observed": (
+        "read rate UNKNOWN — no reference-read event has ever been "
+        "observed, so routing here trades a measured cost for an "
+        "unmeasured one."
     ),
     "partly-cold": (
         "some reference targets have zero reads — part of this shelf may "
@@ -1351,7 +1365,7 @@ def _growth_signal(home: Path, today: date, budget: dict, composition: dict) -> 
     desc_words_sum = 0
     any_skill_unreadable = False
     for record in _walk_records(home):
-        if record.status != "routed" or record.superseded_by is not None:
+        if not domain.is_canon_live(record):
             continue
         routing = record.routing or {}
         if routing.get("destination") != "new-skill":
@@ -1423,8 +1437,24 @@ def reference_read_verdict(
         state, safe = "not-instrumented", None
     elif shelf["enumeration_state"] == "none-enumerable":
         state, safe = "none-enumerable", None
-    elif shelf["targets_zero_read"] == shelf["targets_total"]:
-        state, safe = "no-reads-observed", False
+    elif shelf["observation_start"] is None:
+        # U-cap plan v2 §2 (M-A) / code-gate r1 fold MINOR m1: no
+        # `reference-read` event has ever been recorded anywhere in the
+        # tracked plane. Within this `instrumented`/enumerable region,
+        # "every target zero-read" (`targets_zero_read == targets_total`)
+        # can ONLY hold when `observation_start is None`: any event with a
+        # valid timestamp anywhere in the ledger makes `observation_start`
+        # non-None, and that event's own target always lands in `rows`
+        # with `reads_all_time >= 1` (every `events_by_target` key is
+        # folded into `rows`, merged or newly created, above). So this
+        # branch subsumes what used to be a separate `no-reads-observed`
+        # state (removed: it could never be reached once this branch
+        # ran first) — the JSON contract now emits `never-observed`
+        # where it once emitted `no-reads-observed`. Distinct meaning
+        # from a genuine "observed and came back cold": observation
+        # never started at all. `safe_overflow: None` (unknown, not
+        # "unsafe").
+        state, safe = "never-observed", None
     elif shelf["targets_zero_read"]:
         state, safe = "partly-cold", False
     else:
@@ -1599,10 +1629,10 @@ def _surface_reach(home: Path, claude_dir: Path) -> dict:
     instrument_state = getattr(rows, "instrument_state", "ok")
     unparseable_records = getattr(rows, "unparseable_records", 0)
 
-    checked = len(rows)
+    checked: int | None = len(rows)
     reachable_n = sum(1 for r in rows if r.state == "reachable")
     unreachable_n = sum(1 for r in rows if r.state == "unreachable")
-    unmeasurable_n = sum(1 for r in rows if r.state == "unmeasurable")
+    unmeasurable_n: int | None = sum(1 for r in rows if r.state == "unmeasurable")
 
     by_destination: dict[str, dict] = {
         key: {"reachable": 0, "unreachable": 0, "unmeasurable": 0}
@@ -1611,11 +1641,53 @@ def _surface_reach(home: Path, claude_dir: Path) -> dict:
     for r in rows:
         by_destination[_surface_variant_key(r)][r.state] += 1
 
-    # §6 rule 2: nulling is PER FACET, never blanket. `checked`,
-    # `unmeasurable`, `unparseable_records` and `rows` always render.
+    # §6 rule 2: nulling is PER FACET, never blanket, for THIS gate
+    # (`claude_dir_usable`/`settings_usable`). `unparseable_records` and
+    # `rows` always render regardless of instrument state.
+    #
+    # Fold r1 / M-F3 m2 (orchestrator ruling — "null only what's
+    # unmeasured, keep what the instrument measured"): the original
+    # build added a THIRD gate here keyed on `instrument_state ==
+    # "settings-absent"` that blanket-nulled `checked`/`unmeasurable`
+    # and every `by_destination` value for that state. That gate's
+    # premise does not hold against the actual reachability predicates:
+    # `_rp_hook` has an explicit `instrument.state == "settings-absent"`
+    # branch returning a confident `unreachable/no-registrations`
+    # (reachability.py:562), and `_rp_skill` (shared by `skill-md` and
+    # `new-skill` via `_verdict_for`) has no settings-absent special
+    # case at all — it falls through on empty `enabled_plugins`/
+    # `skill_overrides` to a confident `unreachable/not-indexed` (or a
+    # real `reachable` via a personal skill symlink). Verified directly
+    # against the running predicates (source read of both functions,
+    # plus two throwaway probe scripts exercising `_rp_skill`/
+    # `reachability_rows` under a constructed settings-absent
+    # `Instrument`): every one of `_SETTINGS_DEPENDENT_KEYS`
+    # (`skill-md`, `new-skill`, `hook`) gets a genuine, non-null verdict
+    # when settings.json is merely absent — settings-absent measures
+    # everything, it just usually measures "unreachable" because
+    # nothing can register without settings.json content. Nulling those
+    # facets for that state was the exact "blanks facets that were
+    # measured" bug B-15 exists to fix, just for three keys instead of
+    # six. The settings-absent gate is removed; only the two REAL
+    # per-facet gates below (keyed on `claude_dir_usable`/
+    # `settings_usable`, which stay True for settings-absent by design
+    # per test_instrument_four_states) still null anything, and now
+    # `checked`/`unmeasurable` are wired into the first of those —
+    # they are corpus-wide aggregates over `_SETTINGS_DEPENDENT_KEYS`
+    # rows among others, so when that gate fires (settings-unparseable,
+    # or claude-dir-absent) the totals are a sum over partial facets
+    # and must be null too, not a concrete count that reads as
+    # "measured, and empty".
     if not claude_dir_usable or not settings_usable:
+        checked = None
+        unmeasurable_n = None
         for key in _SETTINGS_DEPENDENT_KEYS:
             by_destination[key] = {"reachable": None, "unreachable": None, "unmeasurable": None}
+    # Fold r2 / M-F3 MINOR 1 (orchestrator ruling): a facet is nulled here
+    # when ANY row aggregated into it is unmeasurable, because a partial
+    # total lies — the same rule the fold above applies to the top-level
+    # counts. The measured project-scope claude-md rows stay visible per
+    # record in `rows`, not in this facet total.
     if not claude_dir_usable:
         for key in ("claude-md", "claude-md:local", "claude-md:rules"):
             by_destination[key] = {"reachable": None, "unreachable": None, "unmeasurable": None}
@@ -1758,7 +1830,7 @@ def gather(
                         mined[record.status] += 1
                 if record.routing is not None:
                     routed_ever += 1
-                if record.status == "routed":
+                if domain.is_canon_live(record):
                     destinations[(record.routing or {}).get("destination")] += 1
                     routed_live.append(
                         {
@@ -2143,10 +2215,25 @@ def render_text(facts: dict) -> str:
     sr = facts.get("surface_reach")
     if sr is not None:
         lines.append("")
-        lines.append(
-            f"Surface reach ({sr['checked']} record(s) checked, instrument: "
-            f"{sr['instrument_state']}):"
+        # Fold r1 / M-F3 BLOCKER: `sr["checked"]`/`sr["unmeasurable"]` are
+        # `None` whenever the per-facet gate in `_surface_reach` fires
+        # (settings-unparseable, claude-dir-absent) — interpolating them
+        # raw used to print the literal string "None" into the
+        # human-facing report ("None record(s) checked"). Guard both.
+        checked_txt = (
+            "NOT MEASURED"
+            if sr["checked"] is None
+            else f"{sr['checked']} record(s) checked"
         )
+        # Fold r2 / M-F3 NIT 1: `unmeasurable_txt`'s "NOT MEASURED" arm is
+        # unreachable today (checked/unmeasurable are nulled together with
+        # reachable/unreachable, so the branch below always takes the
+        # top-level NOT MEASURED path first) — kept as defence in depth
+        # against a future change decoupling the two.
+        unmeasurable_txt = (
+            "NOT MEASURED" if sr["unmeasurable"] is None else str(sr["unmeasurable"])
+        )
+        lines.append(f"Surface reach ({checked_txt}, instrument: {sr['instrument_state']}):")
         if sr["reachable"] is None or sr["unreachable"] is None:
             lines.append(
                 "  NOT MEASURED (top-level reachable/unreachable) — a depended-on "
@@ -2156,7 +2243,7 @@ def render_text(facts: dict) -> str:
         else:
             lines.append(
                 f"  {sr['reachable']} reachable, {sr['unreachable']} unreachable, "
-                f"{sr['unmeasurable']} unmeasurable"
+                f"{unmeasurable_txt} unmeasurable"
             )
         if sr["unparseable_records"]:
             lines.append(

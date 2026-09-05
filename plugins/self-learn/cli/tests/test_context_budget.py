@@ -1350,7 +1350,21 @@ class TestT8ReferenceVerdict:
         assert v2["safe_overflow"] is not True
         assert v2["safe_overflow"] is not False
 
-    def test_t8_4_all_zero_read(self, env, tmp_path, monkeypatch):
+    def test_t8_4_never_observed_when_no_reads_ever_recorded(
+        self, env, tmp_path, monkeypatch
+    ):
+        """M-A / plan v2 §2: a live reference-routed target with ZERO
+        `reference-read` events anywhere in the tracked plane (never
+        `write_tracked_event`-ed) means `_reference_shelf`'s
+        `observation_start` is `None` — the read-rate OBSERVATION WINDOW
+        never opened, which is a different fact from "opened and came
+        back cold". Before M-A this scenario was misreported as
+        `no-reads-observed`/`safe_overflow: False` (a confident "unsafe"
+        verdict from a mechanism that was never running); the mutation
+        this proves is the `elif shelf["observation_start"] is None`
+        branch in `reference_read_verdict` — delete it and this test
+        reverts to asserting the old (wrong) `no-reads-observed`/`False`
+        pair and fails."""
         claude_dir = tmp_path / "t8-4-claude"
         monkeypatch.setenv("SELF_LEARN_CLAUDE_DIR", str(claude_dir))
         _instrument(claude_dir)
@@ -1360,8 +1374,8 @@ class TestT8ReferenceVerdict:
         )
         v = report.reference_read_verdict(env.ledger, TODAY)
         assert v["targets_total"] >= 1
-        assert v["read_rate_state"] == "no-reads-observed"
-        assert v["safe_overflow"] is False
+        assert v["read_rate_state"] == "never-observed"
+        assert v["safe_overflow"] is None
 
     def test_t8_5_partly_cold(self, env, tmp_path, monkeypatch):
         claude_dir = tmp_path / "t8-5-claude"
@@ -1400,13 +1414,122 @@ class TestT8ReferenceVerdict:
         assert v_bad["counts_are_lower_bound"] is True
         assert v_bad["read_rate_state"] == v_ok["read_rate_state"]
 
-    def test_t8_7_why_mapping_covers_every_state(self):
-        assert set(report.REFERENCE_READ_RATE_STATES) == {
-            "not-instrumented", "none-enumerable", "no-reads-observed",
-            "partly-cold", "ok",
+    def test_t8_7_verdict_coverage_across_every_state(self, tmp_path, monkeypatch):
+        """M-A code-gate r1 fold, MINOR m1: rebuilt as a REAL coverage
+        test. The prior version only iterated `_REFERENCE_WHY`'s keys —
+        it could not see that `no-reads-observed` had gone unreachable
+        (the branch logic can no longer produce it; iterating the
+        MAPPING alone is blind to that). This version drives an actual
+        `reference_read_verdict` call against a purpose-built fixture
+        for every remaining state and asserts each lands where expected,
+        so a state's dict entry existing is never mistaken for that
+        state being reachable. Keeps the original structural checks too:
+        every state has a non-empty `_REFERENCE_WHY` sentence, and no two
+        states share one."""
+
+        def _fresh(subdir: str):
+            return make_env(tmp_path / subdir, skills=("s",))
+
+        seen: dict[str, str] = {}
+
+        # not-instrumented: no _instrument() call -- no refread hook
+        # script at this claude_dir.
+        e = _fresh("t8-7-a")
+        monkeypatch.setenv("SELF_LEARN_CLAUDE_DIR", str(tmp_path / "t8-7-a-claude"))
+        seen["not-instrumented"] = report.reference_read_verdict(e.ledger, TODAY)[
+            "read_rate_state"
+        ]
+
+        # none-enumerable: instrumented, zero live reference-routed
+        # records anywhere.
+        e = _fresh("t8-7-b")
+        claude_dir = tmp_path / "t8-7-b-claude"
+        monkeypatch.setenv("SELF_LEARN_CLAUDE_DIR", str(claude_dir))
+        _instrument(claude_dir)
+        seen["none-enumerable"] = report.reference_read_verdict(e.ledger, TODAY)[
+            "read_rate_state"
+        ]
+
+        # never-observed: instrumented, one live target, zero
+        # reference-read events ever recorded.
+        e = _fresh("t8-7-c")
+        claude_dir = tmp_path / "t8-7-c-claude"
+        monkeypatch.setenv("SELF_LEARN_CLAUDE_DIR", str(claude_dir))
+        _instrument(claude_dir)
+        _write_routed(
+            e, scope="skill:s", record_id="lrn-1c000001", destination="reference",
+            routed_at=days_ago_ts(10), fact="cold ref",
+        )
+        seen["never-observed"] = report.reference_read_verdict(e.ledger, TODAY)[
+            "read_rate_state"
+        ]
+
+        # partly-cold: instrumented, two targets, one read, one not.
+        e = _fresh("t8-7-d")
+        claude_dir = tmp_path / "t8-7-d-claude"
+        monkeypatch.setenv("SELF_LEARN_CLAUDE_DIR", str(claude_dir))
+        _instrument(claude_dir)
+        r1 = _write_routed(
+            e, scope="skill:s", record_id="lrn-1d000001", destination="reference",
+            routed_at=days_ago_ts(10), fact="read ref",
+        )
+        r1.set_routing({**r1.routing, "reference_file": "README.md"})
+        bucket_dir = bucket_dir_for_scope(e.ledger, "skill:s")
+        r1.write(bucket_dir / "resolved" / f"{r1.id}.md")
+        refs_dir = e.host / "plugins" / "s-plugin" / "skills" / "s" / "references"
+        refs_dir.mkdir(parents=True, exist_ok=True)
+        (refs_dir / "README.md").write_text("x", encoding="utf-8")
+        _write_routed(
+            e, scope="skill:s", record_id="lrn-1d000002", destination="reference",
+            routed_at=days_ago_ts(10), fact="unread ref",
+        )
+        write_tracked_event(
+            e.ledger, ts=days_ago_ts(1), ref_target="skill:s/references/README.md",
+            scope="skill", bucket="s", subagent=False, session="sess-1",
+        )
+        seen["partly-cold"] = report.reference_read_verdict(e.ledger, TODAY)[
+            "read_rate_state"
+        ]
+
+        # ok: instrumented, the one known target has been read.
+        e = _fresh("t8-7-e")
+        claude_dir = tmp_path / "t8-7-e-claude"
+        monkeypatch.setenv("SELF_LEARN_CLAUDE_DIR", str(claude_dir))
+        _instrument(claude_dir)
+        r1 = _write_routed(
+            e, scope="skill:s", record_id="lrn-1e000001", destination="reference",
+            routed_at=days_ago_ts(10), fact="read ref",
+        )
+        r1.set_routing({**r1.routing, "reference_file": "README.md"})
+        bucket_dir = bucket_dir_for_scope(e.ledger, "skill:s")
+        r1.write(bucket_dir / "resolved" / f"{r1.id}.md")
+        refs_dir = e.host / "plugins" / "s-plugin" / "skills" / "s" / "references"
+        refs_dir.mkdir(parents=True, exist_ok=True)
+        (refs_dir / "README.md").write_text("x", encoding="utf-8")
+        write_tracked_event(
+            e.ledger, ts=days_ago_ts(1), ref_target="skill:s/references/README.md",
+            scope="skill", bucket="s", subagent=False, session="sess-1",
+        )
+        seen["ok"] = report.reference_read_verdict(e.ledger, TODAY)["read_rate_state"]
+
+        # Every fixture landed on the state it targeted, AND together
+        # they are the WHOLE of REFERENCE_READ_RATE_STATES -- no state
+        # left unreached, no state reached that isn't declared.
+        assert seen == {
+            "not-instrumented": "not-instrumented",
+            "none-enumerable": "none-enumerable",
+            "never-observed": "never-observed",
+            "partly-cold": "partly-cold",
+            "ok": "ok",
         }
+        assert set(report.REFERENCE_READ_RATE_STATES) == set(seen)
+
+        seen_sentences: set[str] = set()
         for state in report.REFERENCE_READ_RATE_STATES:
-            assert report._REFERENCE_WHY[state]
+            sentence = report._REFERENCE_WHY[state]
+            assert sentence
+            assert sentence not in seen_sentences
+            seen_sentences.add(sentence)
 
 
 # ===================================================================== #

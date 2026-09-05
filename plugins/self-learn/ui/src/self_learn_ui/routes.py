@@ -415,6 +415,12 @@ class DetailReadBundle:
     record: Record
     item: dict
     proposal: dict | None
+    #: M-F4 (B-11, I): the parse error `ledger.read_proposal_raw` returns
+    #: when a proposal sibling EXISTS but fails to parse — carried
+    #: through so Detail can render that state distinctly from "no
+    #: proposal at all" (`proposal is None and proposal_error is None`).
+    #: This used to be discarded at the read site (the old `_err`).
+    proposal_error: str | None
     diff_text: str | None
     proposal_raw_text: str | None
     registry: list[dict]
@@ -468,7 +474,7 @@ def _gather_detail_bundle(home: Path, record_id: str) -> DetailReadBundle | None
             "host_registered": True,
             "title": ledger.record_title(record),
         }
-    proposal, _err = ledger.read_proposal_raw(location.bucket_dir, record_id)
+    proposal, proposal_error = ledger.read_proposal_raw(location.bucket_dir, record_id)
     diff_text = ledger.read_diff(location.bucket_dir, record_id)
     proposal_raw_text = ledger.read_proposal_text(location.bucket_dir, record_id)
     registry = ledger.read_registry()
@@ -481,6 +487,7 @@ def _gather_detail_bundle(home: Path, record_id: str) -> DetailReadBundle | None
         record=record,
         item=item,
         proposal=proposal,
+        proposal_error=proposal_error,
         diff_text=diff_text,
         proposal_raw_text=proposal_raw_text,
         registry=registry,
@@ -901,6 +908,7 @@ def detail_page(
         bundle.diff_text,
         bundle.proposal_raw_text,
         bundle.registry,
+        proposal_error=bundle.proposal_error,
         bucket=location.bucket_name,
         scope=location.scope,
         host_registered=bundle.host_registered,

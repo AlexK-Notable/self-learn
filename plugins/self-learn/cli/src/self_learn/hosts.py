@@ -57,7 +57,6 @@ import io
 import os
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 
 from ruamel.yaml import YAML
@@ -65,6 +64,7 @@ from ruamel.yaml.error import YAMLError
 
 from . import config as _config
 from . import gitops
+from .primitives import chrono, yamlio
 
 __all__ = [
     "HOST_KINDS",
@@ -202,9 +202,7 @@ def host_marker_path(path: Path | str) -> Path:
 
 
 def _yaml() -> YAML:
-    y = YAML(typ="rt")
-    y.default_flow_style = False
-    return y
+    return yamlio.rt_yaml(default_flow_style=False)
 
 
 def _parse_mode(path: Path, where: str, raw: object) -> str:
@@ -461,16 +459,32 @@ def _init_for_registration(path: Path | str) -> None:
             f"{what}; create the project directory first, then re-run"
         )
     target = target.resolve()
-    init = subprocess.run(
-        ["git", "init", str(target)], capture_output=True, text=True
-    )
+    # M-G: LOCAL git calls (init/commit --allow-empty) — same bound as
+    # every other local git call in this module (:func:`_is_git_repo`,
+    # :func:`is_repo_root`), now routed through the bounded primitive
+    # instead of a bare, unbounded `subprocess.run`.
+    from .primitives import procs
+
+    try:
+        init = procs.run_bounded(
+            ["git", "init", str(target)], timeout=gitops.GIT_LOCAL_TIMEOUT
+        )
+    except procs.BoundedTimeout as exc:
+        raise HostsError(f"git init {target} did not finish: {exc}") from exc
     if init.returncode != 0:
         raise HostsError(f"git init {target} failed: {init.stderr.strip()}")
-    commit = subprocess.run(
-        ["git", "-C", str(target), "commit", "--allow-empty", "-m", INIT_COMMIT_SUBJECT],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        commit = procs.run_bounded(
+            ["git", "-C", str(target), "commit", "--allow-empty", "-m", INIT_COMMIT_SUBJECT],
+            timeout=gitops.GIT_LOCAL_TIMEOUT,
+        )
+    except procs.BoundedTimeout as exc:
+        raise HostsError(
+            f"{target} was initialized (git init) but the empty root "
+            f"commit did not finish: {exc} — nothing was registered; the "
+            "path stays a zero-commit repo and a retry skips the init "
+            "step (inspect the repo by hand, then re-run)"
+        ) from exc
     if commit.returncode != 0:
         raise HostsError(
             f"{target} was initialized (git init) but the empty root "
@@ -574,7 +588,7 @@ def validate_host_path(
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return chrono.now_iso()
 
 
 def _write_host_marker(home: Path, target: Path) -> Path:
@@ -753,7 +767,11 @@ def host_add(
 def _commit_or_half_written(
     home: Path, touched: list[Path], message: str
 ) -> None:
-    """stage → pinned commit, with the state fact attached to the failure.
+    """stage → pinned commit, with the state fact attached to the
+    failure — now the thin `hosts` face of :func:`gitops.stage_and_commit`
+    (audit 2026-09-02 sprint-1 M-O): the try/except this docstring used to
+    describe moved there verbatim, so every one of `hosts`'s three call
+    sites keeps behaving exactly as before.
 
     **Callers must already hold** ``gitops.commit_lock(home)``: everything
     here is post-mutation by construction, so a :class:`gitops.GitOpsError`
@@ -762,13 +780,7 @@ def _commit_or_half_written(
     carries the repair (audit 2026-07-16 round 7 BLOCKER 2: the ``host``
     verbs raised the bare class, which dispatch would have rendered as
     "nothing was written")."""
-    try:
-        gitops.stage(home, touched)
-        gitops.commit(home, message, paths=touched)
-    except gitops.HalfWrittenError:
-        raise
-    except gitops.GitOpsError as exc:
-        raise gitops.HalfWrittenError.for_commit(home, message, touched, exc) from exc
+    gitops.stage_and_commit(home, touched, message)
 
 
 def _project_bucket_for(home: Path, ref: str) -> Path | None:

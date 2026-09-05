@@ -43,6 +43,8 @@ from typing import Any
 from claude_agent_sdk import SessionStore
 from claude_agent_sdk.types import SessionKey, SessionStoreEntry
 
+import self_learn.primitives.chrono as chrono
+
 from . import uilog
 
 __all__ = [
@@ -87,7 +89,14 @@ def slug_for_session_key(session_key: str) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    """Adopts the shared ``%Y-%m-%dT%H:%M:%SZ`` format (M-J, plan v2
+    SS2): this module's own copy previously called ``.isoformat()``
+    (microseconds + a ``+00:00`` offset) -- a drift from every other
+    ``_now_iso`` in the codebase, and the bug this migration closes, not
+    a behavior this call site's readers depend on (``StoredBlock``'s
+    ``created_at``/``updated_at`` are opaque display strings here, never
+    re-parsed by this module; no test byte-pins the old shape)."""
+    return chrono.now_iso()
 
 
 @dataclass(frozen=True)

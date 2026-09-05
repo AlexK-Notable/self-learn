@@ -723,7 +723,14 @@ def test_in8_interrupted_install_is_recovered_not_stalled_forever(env, sdk_fake_
     real_replace = os.replace
 
     def _boom_replace(src, dst):
-        raise OSError("simulated os.replace crash")
+        # Scoped to the install copy (2026-09-04, Sprint 1 integration):
+        # the earlier global fake also tripped the worker's OTHER atomic
+        # writes ahead of the install step (M-T's pid window, M-E's
+        # sentinel publish), so `run()` never reached the copy this part
+        # simulates crashing. Everything else renames for real.
+        if Path(dst).parent == env.proposals:
+            raise OSError("simulated os.replace crash")
+        return real_replace(src, dst)
 
     monkeypatch.setattr(os, "replace", _boom_replace)
     _next_run_scripts(sdk_fake_worker, monkeypatch, shim_writes(env, rid_e))

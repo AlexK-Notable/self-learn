@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import cast
 
 from . import gitops, invocation, sentinel, settings, telemetry, worker
+from .primitives import chrono
 from . import reconcile as reconcile_mod
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
 from .hosts import load_hosts
@@ -153,7 +154,7 @@ def journal_path() -> Path:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return chrono.now_iso()
 
 
 def log(message: str) -> None:
@@ -202,13 +203,22 @@ def reader_timeout_secs() -> float:
     return worker._timeout_secs("SELF_LEARN_READER_TIMEOUT_SECS", INVOKE_TIMEOUT_SECS)
 
 
-def transcripts_root() -> Path:
+def transcripts_root(home: Path | str | None = None) -> Path:
     """U-settings Phase 1: resolves through the registry's `miner.
     transcripts_dir` entry (config.yaml `miner.transcripts_dir` > env >
-    `"~/.claude/projects"` -- U-flip 2026-09-01, S-58: config wins); neither caller (:func:`initialize_cursors`,
-    :func:`walk`) threads a `home`, so this falls back to
-    :func:`resolve_home` the same way :func:`telemetry.actor` does."""
-    raw, _source = settings.resolve_setting(resolve_home(), settings.by_name("miner.transcripts_dir"))
+    `"~/.claude/projects"` -- U-flip 2026-09-01, S-58: config wins).
+    Neither existing caller (:func:`initialize_cursors`, :func:`walk`)
+    threads a `home`, so this still falls back to :func:`resolve_home`
+    when `home` is omitted, the same way :func:`telemetry.actor` does
+    (M-P, sprint 1 audit A14/A13 -- the optional `home` closes the gap
+    for a future caller that DOES hold one).
+
+    M-P fold r1 (F3): an explicit `home` is `.expanduser()`'d before use,
+    matching :func:`resolve_home`'s own normalization -- `config_path`
+    never expands `~` on its own, so an unexpanded `home` would silently
+    miss `config.yaml` entirely."""
+    resolved_home = Path(home).expanduser() if home is not None else resolve_home()
+    raw, _source = settings.resolve_setting(resolved_home, settings.by_name("miner.transcripts_dir"))
     return Path(cast(str, raw)).expanduser()
 
 
@@ -218,7 +228,7 @@ def last_run_iso() -> str | None:
     except FileNotFoundError:
         return None
     return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
+        chrono.ISO_FORMAT
     )
 
 
@@ -235,7 +245,7 @@ def last_attempt_iso() -> str | None:
     except FileNotFoundError:
         return None
     return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
+        chrono.ISO_FORMAT
     )
 
 
@@ -246,19 +256,34 @@ def _last_run_age_secs() -> float:
         return float("inf")
 
 
+def miner_enabled(home: Path | str | None = None) -> bool:
+    """U-settings Phase 1: resolves through the registry's `miner.
+    enabled` entry (config.yaml `miner.enabled` > env `SELF_LEARN_MINER`
+    > `True` -- U-flip 2026-09-01, S-58: config wins). Extracted from
+    :func:`stale` (M-P, sprint 1 audit A14/A13 -- the inline check there
+    had no standalone name, so nothing could ever thread an explicit
+    `home` through it); `home` defaults to :func:`resolve_home` when
+    omitted, so :func:`stale`'s existing bare call is unchanged.
+
+    M-P fold r1 (F3): an explicit `home` is `.expanduser()`'d before use,
+    matching :func:`resolve_home`'s own normalization -- `config_path`
+    never expands `~` on its own, so an unexpanded `home` would silently
+    miss `config.yaml` entirely."""
+    resolved_home = Path(home).expanduser() if home is not None else resolve_home()
+    enabled, _source = settings.resolve_setting(resolved_home, settings.by_name("miner.enabled"))
+    return bool(enabled)
+
+
 def stale() -> bool:
     """SessionStart alarm predicate (R1 layer 3): no completed run in 36 h.
     A missing marker counts as infinitely old — self-healing, because the
     verb watchdog spawns a run on the next CLI use, which touches the
     marker even when idle. A deliberately disabled miner never alarms.
 
-    U-settings Phase 1: resolves through the registry's `miner.enabled`
-    entry (config.yaml `miner.enabled` > env `SELF_LEARN_MINER` >
-    `True` -- U-flip 2026-09-01, S-58: config wins); no `home` is
-    threaded here, so this falls back to
-    :func:`resolve_home` the same way :func:`telemetry.actor` does."""
-    enabled, _source = settings.resolve_setting(resolve_home(), settings.by_name("miner.enabled"))
-    if not enabled:
+    Delegates the enabled check to :func:`miner_enabled` (M-P, sprint 1
+    audit A14/A13); called bare here, unchanged from before the
+    extraction -- no `home` is threaded at this call site."""
+    if not miner_enabled():
         return False
     return _last_run_age_secs() > STALE_AFTER_SECS
 
@@ -1818,8 +1843,8 @@ def maybe_kick(home: Path | str, *, no_push: bool = False) -> str:
             # before.
             from . import serve as serve_mod
 
-            if serve_mod.heartbeat_is_fresh(worker.cache_dir()):
-                serve_mod.request_poke(worker.cache_dir())
+            if serve_mod.heartbeat_is_fresh(worker.cache_dir(home)):
+                serve_mod.request_poke(worker.cache_dir(home))
                 return "poked"
             pid = _spawn_run(Path(home), no_push=no_push)
             log(f"watchdog: last run >24h — spawned run (pid {pid})")
@@ -1935,6 +1960,11 @@ def _run_locked(
             )
         for line in healed.blocked:
             log(f"run {run_id}: reconcile left a half-committed change: {line}")
+        # M-C: an invalid orphan refuses the whole reconcile batch the
+        # same as a blocked rename does — logged the same way, never
+        # fatal. A miner that cannot heal must still mine.
+        for line in healed.invalid:
+            log(f"run {run_id}: reconcile left an invalid orphan uncommitted: {line}")
     except gitops.GitOpsError as exc:
         log(f"run {run_id}: reconcile step skipped ({exc})")
 

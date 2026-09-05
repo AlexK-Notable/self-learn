@@ -2208,6 +2208,13 @@ def _cmd_push() -> int:
                 f"push: reconciled {len(healed.committed)} orphaned record(s) "
                 "first (a producer wrote them but could not commit them)"
             )
+        # M-C: a refusal here is informational, never fatal to the push —
+        # `push` republishes whatever IS already committed regardless.
+        # But this is "the one moment the gap is most visible" (module
+        # docstring), so name every offender instead of the silence a
+        # refused-with-nothing-committed `reconcile()` used to pass through.
+        for line in (*healed.blocked, *healed.invalid):
+            print(f"push: NOT reconciled — {line}", file=sys.stderr)
         report = verbs.push_pending(home)
     except gitops.HalfWrittenError as exc:
         return _report_half_written("push", exc)
@@ -2248,6 +2255,22 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
             "the verb printed.",
             file=sys.stderr,
         )
+    for line in result.invalid:
+        print(
+            f"reconcile: NOT touched — {line}\n"
+            "  this orphan failed its asset-kind content check (M-C) — "
+            "path shape alone is not enough (that is how C09's unparseable "
+            "compiled/host.yaml healed as a clean commit). Repair or remove "
+            "the file by hand, then re-run reconcile.",
+            file=sys.stderr,
+        )
+    if result.refused:
+        # M-C: an invalid member or a blocked rename refuses the WHOLE
+        # batch — nothing was staged, even for orphans that validated
+        # fine. That is exactly EXIT_GIT_FAILED's own promise ("6 means
+        # NOTHING WAS WRITTEN"), reused here rather than minting a ninth
+        # exit code for the identical guarantee.
+        return EXIT_GIT_FAILED
     if not result.committed:
         print("reconcile: nothing uncommitted — the ledger is whole")
         return EXIT_OK
@@ -2274,8 +2297,14 @@ def _cmd_sentinel(action: str) -> int:
         hold = sentinel.hold()
         if hold.owned:
             print(f"sentinel held: {path}")
-        else:
+        elif sentinel.is_live(path):
             print(f"sentinel already held (live) — left in place: {path}")
+        else:
+            # fold r1 (m1): owned=False here is NOT proof of a live
+            # foreign holder — a lock timeout degrades to the same
+            # answer (sentinel.py's _lock_section never raises), and
+            # claiming "already held (live)" in that case is false.
+            print(f"sentinel: lock contended, not held — left untouched: {path}")
         return EXIT_OK
     if action == "heartbeat":
         if sentinel.heartbeat():
@@ -2414,6 +2443,14 @@ def _cmd_telemetry(args: argparse.Namespace) -> int:
             print(f"self-learn telemetry flush: {exc}", file=sys.stderr)
             return exc.exit_code
         print(flush_report.summary())
+        # Fold r1 MAJOR M-1: `summary()` now says "deferred" honestly on
+        # stdout when the lock could not be taken (was "spool empty"
+        # before the fold) — the CLI's exit namespace has no existing
+        # non-error, non-OK code for "deferred" (EXIT_BATCH_PARTIAL is
+        # `batch`'s own multi-item semantics; every other non-OK code
+        # names an actual failure), so this stays EXIT_OK: a deferred
+        # flush is not an error, it retries on its own next time, and the
+        # text is now honest either way.
         return EXIT_OK
     if args.telemetry_command == "read-observed":
         return _cmd_telemetry_read_observed(args)
@@ -2475,11 +2512,13 @@ def _flush_spool_best_effort(home=None, *, no_push: bool = False) -> str:
     MAJOR 3) but must not PUSH, or it would publish the very commit the
     verb was told to keep local.
 
-    Returns the outcome — ``"ok"`` | ``"refused"`` | ``"failed"`` (U-readref
-    §6.7/§10.2) — the three cases this function already distinguishes
+    Returns the outcome — ``"ok"`` | ``"refused"`` | ``"failed"`` |
+    ``"deferred"`` (U-readref §6.7/§10.2; ``"deferred"`` added M-M fold r1
+    MAJOR M-1) — the four cases this function now distinguishes
     internally. `_cmd_report` is the one caller that consumes it (passed to
-    `report.gather` as `flush_state`); every other caller may still ignore
-    it, unchanged."""
+    `report.gather` as `flush_state`, which gates
+    ``counts_are_lower_bound`` on anything other than ``"ok"``); every
+    other caller may still ignore it, unchanged."""
     try:
         flush_report = telemetry.flush(
             home if home is not None else resolve_home(), push=not no_push
@@ -2491,6 +2530,15 @@ def _flush_spool_best_effort(home=None, *, no_push: bool = False) -> str:
         print(f"self-learn: telemetry flush failed: {exc}", file=sys.stderr)
         return "failed"
     else:
+        if flush_report.deferred_reason is not None:
+            # Fold r1 MAJOR M-1: a deferred flush is NOT "ok" — the
+            # spool still holds events `read_events` never sees, so the
+            # one caller that consumes this outcome (`_cmd_report`, via
+            # `report.gather`'s `flush_state`) must see something other
+            # than "ok" or its `counts_are_lower_bound` reads False while
+            # counts silently under-report.
+            print(flush_report.summary(), file=sys.stderr)
+            return "deferred"
         if flush_report.events:
             print(flush_report.summary(), file=sys.stderr)
         return "ok"

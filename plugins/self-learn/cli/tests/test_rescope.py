@@ -635,14 +635,19 @@ class TestRescopeMvFirstOrdering:
         rec = env.seed_user_record()
         order: list[str] = []
 
-        orig_git_ok = ledger_ops._git_ok
+        # M-G (sprint 1 lane L1 ledger-git): `_git_ok` is deleted --
+        # `move_record`'s `git mv` now runs through `ledger_ops._git_mv`
+        # (bounded via `primitives.procs.run_bounded`), its one and only
+        # remaining private git seam. Retargeted the spy there; the
+        # property this test asserts (mv strictly before the record
+        # rewrite) is unchanged.
+        orig_git_mv = ledger_ops._git_mv
 
-        def spy_git_ok(home, *args):
-            if args and args[0] == "mv":
-                order.append("mv")
-            return orig_git_ok(home, *args)
+        def spy_git_mv(home, src, dest):
+            order.append("mv")
+            return orig_git_mv(home, src, dest)
 
-        monkeypatch.setattr(ledger_ops, "_git_ok", spy_git_ok)
+        monkeypatch.setattr(ledger_ops, "_git_mv", spy_git_mv)
 
         orig_write = Record.write
 

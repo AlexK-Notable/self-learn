@@ -25,6 +25,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "self-learn-ui-open"
 
 # Real coreutils the script's OWN plumbing depends on (sha256sum, jq,
@@ -43,6 +45,12 @@ _REQUIRED_REAL_BINS = (
     "dirname",
     "readlink",
     "sleep",
+    # M-F2 (C22): the script now wraps every systemctl/hyprctl call in
+    # `timeout 4` — a fully hermetic PATH (no fallback to the real
+    # system PATH, per this file's own header) must supply it too, or
+    # every one of those calls "command not found"s instead of
+    # exercising the fake systemctl/hyprctl this suite installs.
+    "timeout",
 )
 
 _EXEC_MODE = (
@@ -123,6 +131,19 @@ echo "$*" >> "{log}"
 if [[ "$1" == "clients" ]]; then
   echo '{clients_json}'
 fi
+exit 0
+"""
+
+# M-F2 (C22): a `hyprctl` that never returns on its own — logs its args
+# immediately (so the call DID happen), then blocks well past the
+# script's own `timeout 4` bound before ever printing anything. Proves
+# the launcher's hyprctl calls are actually BOUNDED, not merely
+# preceded by a `command -v hyprctl` presence check (presence says
+# nothing about a wedged compositor that hangs mid-call).
+_SLEEPY_HYPRCTL_TMPL = """
+echo "$*" >> "{log}"
+sleep {sleep_s}
+echo '[]'
 exit 0
 """
 
@@ -246,6 +267,468 @@ def test_hyprctl_absent_skips_detection_and_launches(tmp_path: Path) -> None:
     assert result.returncode == 0
     content = _wait_for_nonempty(chromium_log)
     assert "--class=self-learn-ui" in content
+
+
+def test_hyprctl_call_is_bounded_by_timeout(tmp_path: Path) -> None:
+    """M-F2 (C22): every hyprctl call this script makes is wrapped in
+    `timeout 4` — a wedged compositor must not hang the launcher forever.
+    This node covers ONE of the nine wrapped call sites (`clients -j`
+    inside `_ui_window_address`); the sibling tests further down this
+    file (systemctl, the three `_ensure_on_monitor` dispatch calls, the
+    three remaining read calls) cover the rest.
+
+    Mutation target: strip any `timeout N ` prefix from a hyprctl
+    invocation (starting with the `clients -j` read inside
+    `_ui_window_address`, the very first hyprctl call on this code path)
+    and this fake, which sleeps well past that bound before ever
+    printing, makes the whole script run long past it too — this test's
+    own generous ceiling (well under the fake's sleep duration) then
+    fails instead of the ~4s a correctly-bounded call takes.
+    """
+    hyprctl_log = tmp_path / "hyprctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_SLEEPY_HYPRCTL_TMPL.format(log=hyprctl_log, sleep_s=12),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(tmp_path, bindir, XDG_RUNTIME_DIR=str(runtime_dir))
+
+    start = time.monotonic()
+    result = subprocess.run(
+        [str(SCRIPT)], env=env, capture_output=True, text=True, timeout=20
+    )
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed < 8.0, (
+        f"hyprctl call took {elapsed:.1f}s (fake sleeps 12s) — the "
+        "`timeout 4` wrap around the launcher's hyprctl calls appears to "
+        "be missing"
+    )
+    # The wrap bounds the CALL only; the launcher still degrades exactly
+    # as it does for an absent window (a timed-out `clients -j` reads as
+    # empty via the existing `|| return 0`) and launches normally.
+    content = _wait_for_nonempty(chromium_log)
+    assert "--class=self-learn-ui" in content
+    hyprctl_content = hyprctl_log.read_text(encoding="utf-8")
+    assert "clients -j" in hyprctl_content
+
+
+# M-F2 gate follow-up (fold r0): the mutation-test coverage above only
+# reached ONE of the script's nine `timeout`-wrapped external calls
+# (`clients -j` inside `_ui_window_address`). The tests below close the
+# rest of the gap: a sleepy `systemctl` (the is-active/start pair near
+# the top of the script), a sleepy `hyprctl dispatch` (the
+# focuswindow/movewindow pair inside `_ensure_on_monitor`, which a first
+# pass of this move left UNWRAPPED — nine call sites exist, not seven;
+# see the build report), and — fold r1 MAJOR 1 — a sleepy set of
+# READ-style hyprctl calls (`clients -j`/`monitors -j` inside
+# `_window_monitor_name`, `activewindow -j` inside `_ensure_on_monitor`)
+# that the dispatch test below answers INSTANTLY and so never actually
+# proves are bounded. Together with the presence-check test above, all
+# nine sites now each have a node that would redden if their `timeout 4`
+# wrap were removed.
+
+_SLEEPY_SYSTEMCTL_TMPL = """
+echo "$*" >> "{log}"
+sleep {sleep_s}
+if [[ "$2" == "is-active" ]]; then
+  echo "{state}"
+fi
+exit 0
+"""
+
+
+def test_systemctl_calls_are_bounded_by_timeout(tmp_path: Path) -> None:
+    """M-F2 (C22): both `systemctl --user is-active` and `systemctl
+    --user start` are wrapped in `timeout 4`.
+
+    `state="active"` skips the Y-14 readiness-wait loop entirely (its
+    guard is `_PRE_STATE != "active"`), isolating this test to just the
+    two systemctl calls themselves — no confound from the poll loop's
+    own up-to-10s budget. hyprctl is left absent (irrelevant to this
+    call pair) so the script falls straight through to `_launch`.
+
+    Mutation target: strip `timeout 4` from EITHER the `is-active` or
+    the `start` invocation. This fake sleeps unconditionally on every
+    call, so a stripped wrap lets that one call run the full 12s
+    instead of being cut to ~4s — pushing total elapsed past this
+    test's ceiling.
+    """
+    systemctl_log = tmp_path / "systemctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        systemctl=_SLEEPY_SYSTEMCTL_TMPL.format(
+            log=systemctl_log, sleep_s=12, state="active"
+        ),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(tmp_path, bindir, XDG_RUNTIME_DIR=str(runtime_dir))
+
+    start = time.monotonic()
+    result = subprocess.run(
+        [str(SCRIPT)], env=env, capture_output=True, text=True, timeout=40
+    )
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    # fold r1 m1: tightened from 15.0 -- the wrapped run measures ~8s
+    # (4s + 4s), a single stripped wrap measures ~24s (12s + 4s); 12.0
+    # sits with real margin on both sides instead of close to either.
+    assert elapsed < 12.0, (
+        f"systemctl calls took {elapsed:.1f}s (fake sleeps 12s per call) — "
+        "a `timeout 4` wrap around is-active or start appears to be missing"
+    )
+    log = systemctl_log.read_text(encoding="utf-8")
+    assert "is-active" in log
+    assert "start" in log
+    assert _wait_for_nonempty(chromium_log), "the launch must still happen"
+
+
+_SLEEPY_DISPATCH_HYPRCTL_TMPL = """
+echo "$*" >> "{log}"
+if [[ "$1" == "clients" ]]; then
+  echo '{clients_json}'
+elif [[ "$1" == "monitors" ]]; then
+  echo '{monitors_json}'
+elif [[ "$1" == "activewindow" ]]; then
+  echo '{active_json}'
+elif [[ "$1" == "dispatch" ]]; then
+  sleep {sleep_s}
+fi
+exit 0
+"""
+
+
+def test_ensure_on_monitor_dispatch_calls_are_bounded_by_timeout(
+    tmp_path: Path,
+) -> None:
+    """M-F2 (C22): the focuswindow/movewindow dispatches INSIDE
+    `_ensure_on_monitor` are wrapped in `timeout 4` — this node covers
+    the THREE dispatch-verb call sites specifically; the three
+    read-verb sites on the same code path (clients/monitors/
+    activewindow) answer instantly here on purpose and are covered
+    separately by test_hyprctl_read_calls_are_bounded_by_timeout below.
+
+    `clients`/`monitors`/`activewindow` all answer instantly here; only
+    `dispatch` sleeps. `monitors_json="[]"` (unknown current placement)
+    forces the unconditional-move path, and `active_json` echoes OUR
+    address so the F2 stale-address gate passes — walking through all
+    THREE dispatch calls the script makes on this code path: the
+    top-level focus-on-presence-check dispatch (already wrapped before
+    this move), then `_ensure_on_monitor`'s own focuswindow and
+    movewindow dispatches (the two this follow-up wraps).
+
+    Mutation target: strip `timeout 4` from either dispatch inside
+    `_ensure_on_monitor`. Each unwrapped dispatch then runs the fake's
+    full 12s sleep instead of being cut to ~4s, and this test's ceiling
+    (well under two full unbounded sleeps) catches it.
+    """
+    hyprctl_log = tmp_path / "hyprctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_SLEEPY_DISPATCH_HYPRCTL_TMPL.format(
+            log=hyprctl_log,
+            clients_json='[{"class":"self-learn-ui","address":"0xAAA","title":"self-learn — Front","monitor":0}]',
+            monitors_json="[]",
+            active_json='{"address":"0xAAA"}',
+            sleep_s=12,
+        ),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(
+        tmp_path,
+        bindir,
+        XDG_RUNTIME_DIR=str(runtime_dir),
+        SELF_LEARN_UI_MONITOR="DP-9",
+    )
+
+    start = time.monotonic()
+    result = subprocess.run(
+        [str(SCRIPT)], env=env, capture_output=True, text=True, timeout=40
+    )
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    # fold r1 m1: tightened from 20.0 -- the wrapped run measures ~12s
+    # (4s x 3 dispatches), a single stripped wrap measures ~28s (4s+4s+
+    # 12s); 16.0 sits with real margin on both sides instead of close
+    # to either.
+    assert elapsed < 16.0, (
+        f"dispatch calls took {elapsed:.1f}s (fake sleeps 12s per dispatch) "
+        "— a `timeout 4` wrap around one of _ensure_on_monitor's two "
+        "dispatch calls appears to be missing"
+    )
+    log = hyprctl_log.read_text(encoding="utf-8")
+    assert log.count("dispatch") == 3, (
+        "expected the top-level focus dispatch plus _ensure_on_monitor's "
+        f"focuswindow and movewindow dispatches (3 total); log was: {log!r}"
+    )
+
+
+_DELAYED_NTH_CALL_HYPRCTL_TMPL = """
+count_file="{count_file}"
+n=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$count_file"
+echo "$*" >> "{log}"
+if [[ "$n" == "{slow_n}" ]]; then
+  sleep {sleep_s}
+fi
+case "$1" in
+  clients) echo '{clients_json}' ;;
+  monitors) echo '{monitors_json}' ;;
+  activewindow) echo '{active_json}' ;;
+esac
+exit 0
+"""
+# MAJOR 1 (fold r1): a NUMBERED-call fake, not a per-verb one. `clients
+# -j` is the SAME literal invocation whether it comes from the
+# presence-check `_ui_window_address` (already covered by
+# test_hyprctl_call_is_bounded_by_timeout above) or from
+# `_window_monitor_name`'s own read — an earlier draft that made ALL
+# reads sleep discovered empirically that this doesn't work anyway: a
+# read call that genuinely runs past the `timeout 4` bound makes
+# `timeout` itself exit 124 regardless of what JSON the fake already
+# printed, and every read site here is guarded by `|| return 0` — so
+# the CALLER bails immediately on ANY killed read, never reaching the
+# next one. There is no scenario where two DIFFERENT reads can both be
+# slow in the same run and still walk the intended path. So exactly
+# ONE call — identified by its 1-based position in the whole hyprctl
+# call sequence, tracked via `{count_file}` — sleeps past the bound;
+# every other call (including any OTHER `clients -j`) answers
+# instantly and correctly, so the script walks deterministically up to
+# the targeted call before that one, alone, gets bounded.
+#
+# The full call sequence for "window present, monitor set, no match"
+# (used by every test below) is: 1=clients (presence check), 2=dispatch
+# focuswindow (presence-check branch), 3=clients (_window_monitor_name),
+# 4=monitors (_window_monitor_name), 5=dispatch focuswindow
+# (_ensure_on_monitor), 6=activewindow (_ensure_on_monitor), 7=dispatch
+# movewindow (_ensure_on_monitor).
+
+
+def test_window_monitor_name_clients_read_is_bounded_by_timeout(
+    tmp_path: Path,
+) -> None:
+    """MAJOR 1 (fold r1): `_window_monitor_name`'s OWN `clients -j` read
+    (call #3 in the sequence — distinct from the presence check's
+    `clients -j`, call #1, already covered above) is `timeout 4`-wrapped.
+
+    Mutation target: strip `timeout 4` from THIS specific `clients -j`
+    site and call #3 runs the fake's full 12s instead of being cut to
+    ~4s, pushing elapsed past this test's ceiling — while call #1 (the
+    presence check, still correctly wrapped or not, doesn't matter
+    here) stays fast either way.
+    """
+    hyprctl_log = tmp_path / "hyprctl.log"
+    count_file = tmp_path / "call-count"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_DELAYED_NTH_CALL_HYPRCTL_TMPL.format(
+            log=hyprctl_log,
+            count_file=count_file,
+            slow_n=3,
+            sleep_s=12,
+            clients_json='[{"class":"self-learn-ui","address":"0xAAA","title":"self-learn — Front","monitor":0}]',
+            monitors_json="[]",
+            active_json='{"address":"0xAAA"}',
+        ),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(
+        tmp_path,
+        bindir,
+        XDG_RUNTIME_DIR=str(runtime_dir),
+        SELF_LEARN_UI_MONITOR="DP-9",
+    )
+
+    start = time.monotonic()
+    result = subprocess.run(
+        [str(SCRIPT)], env=env, capture_output=True, text=True, timeout=20
+    )
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed < 8.0, (
+        f"took {elapsed:.1f}s — the `timeout 4` wrap around "
+        "_window_monitor_name's clients -j read appears to be missing"
+    )
+    log = hyprctl_log.read_text(encoding="utf-8")
+    assert log.count("clients -j") == 2, log
+
+
+def test_window_monitor_name_monitors_read_is_bounded_by_timeout(
+    tmp_path: Path,
+) -> None:
+    """MAJOR 1 (fold r1): `_window_monitor_name`'s `monitors -j` read
+    (call #4) is `timeout 4`-wrapped — reached only once its own
+    `clients -j` read (call #3) resolves a numeric monitor id, which it
+    does here since that call answers instantly.
+
+    Mutation target: strip `timeout 4` from the `monitors -j` site and
+    call #4 runs the full 12s instead of ~4s.
+    """
+    hyprctl_log = tmp_path / "hyprctl.log"
+    count_file = tmp_path / "call-count"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_DELAYED_NTH_CALL_HYPRCTL_TMPL.format(
+            log=hyprctl_log,
+            count_file=count_file,
+            slow_n=4,
+            sleep_s=12,
+            clients_json='[{"class":"self-learn-ui","address":"0xAAA","title":"self-learn — Front","monitor":0}]',
+            monitors_json="[]",
+            active_json='{"address":"0xAAA"}',
+        ),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(
+        tmp_path,
+        bindir,
+        XDG_RUNTIME_DIR=str(runtime_dir),
+        SELF_LEARN_UI_MONITOR="DP-9",
+    )
+
+    start = time.monotonic()
+    result = subprocess.run(
+        [str(SCRIPT)], env=env, capture_output=True, text=True, timeout=20
+    )
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed < 8.0, (
+        f"took {elapsed:.1f}s — the `timeout 4` wrap around "
+        "_window_monitor_name's monitors -j read appears to be missing"
+    )
+    log = hyprctl_log.read_text(encoding="utf-8")
+    assert "monitors -j" in log
+
+
+def test_ensure_on_monitor_activewindow_read_is_bounded_by_timeout(
+    tmp_path: Path,
+) -> None:
+    """MAJOR 1 (fold r1): `_ensure_on_monitor`'s `activewindow -j` read
+    (call #6, the F2 stale-address gate) is `timeout 4`-wrapped —
+    reached only once the focuswindow dispatch at call #5 has fired,
+    which it does here since every call before #6 answers instantly.
+
+    Mutation target: strip `timeout 4` from the `activewindow -j` site
+    and call #6 runs the full 12s instead of ~4s.
+    """
+    hyprctl_log = tmp_path / "hyprctl.log"
+    count_file = tmp_path / "call-count"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_DELAYED_NTH_CALL_HYPRCTL_TMPL.format(
+            log=hyprctl_log,
+            count_file=count_file,
+            slow_n=6,
+            sleep_s=12,
+            clients_json='[{"class":"self-learn-ui","address":"0xAAA","title":"self-learn — Front","monitor":0}]',
+            monitors_json="[]",
+            active_json='{"address":"0xAAA"}',
+        ),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(
+        tmp_path,
+        bindir,
+        XDG_RUNTIME_DIR=str(runtime_dir),
+        SELF_LEARN_UI_MONITOR="DP-9",
+    )
+
+    start = time.monotonic()
+    result = subprocess.run(
+        [str(SCRIPT)], env=env, capture_output=True, text=True, timeout=20
+    )
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed < 8.0, (
+        f"took {elapsed:.1f}s — the `timeout 4` wrap around "
+        "_ensure_on_monitor's activewindow -j read appears to be missing"
+    )
+    log = hyprctl_log.read_text(encoding="utf-8")
+    assert "activewindow -j" in log
+
+
+
+def test_opener_still_works_without_timeout_on_path(tmp_path: Path) -> None:
+    """m2 (fold r1): `timeout` itself can be legitimately absent from a
+    host's PATH — it was never a dependency before C22 introduced it.
+    `_TO` must degrade to an empty array so `systemctl`/`hyprctl` still
+    run DIRECTLY, unbounded, rather than never executing at all: a bare
+    `timeout 4 systemctl …` prefix means that when `timeout` 404s,
+    `systemctl` never even execs (this was the false half of the
+    header's old "identical tolerance" claim, worst for `systemctl
+    start`'s real side effect).
+
+    Builds its own bindir (rather than `_hermetic_bindir`, which always
+    symlinks every `_REQUIRED_REAL_BINS` name including `timeout`) with
+    everything else present but `timeout` deliberately excluded, and
+    proves systemctl AND hyprctl are still actually invoked (their fake
+    logs receive the real arg lines) and the launch still happens.
+    """
+    bindir = tmp_path / "bin-no-timeout"
+    bindir.mkdir()
+    for name in _REQUIRED_REAL_BINS:
+        if name == "timeout":
+            continue
+        real = shutil.which(name)
+        assert real, f"host is missing {name}, required by the test harness itself"
+        (bindir / name).symlink_to(real)
+    systemctl_log = tmp_path / "systemctl.log"
+    hyprctl_log = tmp_path / "hyprctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    _write_fake(
+        bindir,
+        "systemctl",
+        _SYSTEMCTL_TMPL.format(log=systemctl_log, state="active"),
+    )
+    _write_fake(
+        bindir,
+        "hyprctl",
+        _HYPRCTL_BODY_TMPL.format(log=hyprctl_log, clients_json="[]"),
+    )
+    _write_fake(bindir, "chromium", _LOGGING_LAUNCH_TMPL.format(log=chromium_log))
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(tmp_path, bindir, XDG_RUNTIME_DIR=str(runtime_dir))
+
+    result = _run(env)
+
+    assert result.returncode == 0
+    assert "timeout" not in {p.name for p in bindir.iterdir()}
+    # Fold r2 / M-F2 NIT 1: name the failure — without this, a broken
+    # `_TO` degrade (systemctl never invoked) reddens this test via a
+    # bare FileNotFoundError from read_text() on a log that was never
+    # written, not a message that says what actually went wrong.
+    assert systemctl_log.exists(), "systemctl was never invoked — _TO did not degrade"
+    systemctl_content = systemctl_log.read_text(encoding="utf-8")
+    assert "is-active" in systemctl_content
+    assert "start" in systemctl_content
+    hyprctl_content = hyprctl_log.read_text(encoding="utf-8")
+    assert "clients -j" in hyprctl_content
+    assert _wait_for_nonempty(chromium_log), "the launch must still happen"
 
 
 def test_window_present_by_title_focuses_when_class_is_url_derived(
@@ -1036,6 +1519,85 @@ def test_monitor_set_window_never_appears_degrades_silently(
     assert elapsed >= 4.0, "the placement budget must actually be spent"
     assert _wait_for_nonempty(chromium_log), "degrade never loses the launch"
     assert "movewindow" not in hyprctl_log.read_text(encoding="utf-8")
+
+
+def test_place_fresh_window_deadline_is_wall_clock_not_iteration_count(
+    tmp_path: Path,
+) -> None:
+    # Fold r2 / M-F2 MAJOR 1 (r2 gate): fold r1 replaced
+    # _place_fresh_window's 50-ITERATION poll count with a `SECONDS`-based
+    # wall-clock deadline (self-learn-ui-open ~:355-365), because each
+    # iteration now costs up to `timeout 4` under C22 — 50 iterations at
+    # ~4s each is ~205s, not the documented ~5s. The sibling test above
+    # (test_monitor_set_window_never_appears_degrades_silently) cannot
+    # tell the two designs apart: its hyprctl is INSTANT, so 50 iterations
+    # x 0.1s sleep costs ~5s under EITHER design. This test makes every
+    # iteration expensive with the SLEEPY hyprctl (each `clients -j` call
+    # costs ~4s under the timeout wrap) and a window that never appears,
+    # so the two designs diverge sharply.
+    hyprctl_log = tmp_path / "hyprctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_SLEEPY_HYPRCTL_TMPL.format(log=hyprctl_log, sleep_s=4),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(
+        tmp_path,
+        bindir,
+        XDG_RUNTIME_DIR=str(runtime_dir),
+        SELF_LEARN_UI_MONITOR="DP-2",
+    )
+
+    start = time.monotonic()
+    try:
+        result = subprocess.run(
+            [str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60
+        )
+    except subprocess.TimeoutExpired:
+        # Fold r3 / M-F2 nit: name the red. Without this, an
+        # iteration-count regression reddens via a bare
+        # subprocess.TimeoutExpired traceback rather than a message that
+        # says what went wrong and why the bound exists.
+        pytest.fail(
+            "placement poll exceeded the 60 s outer bound — an "
+            "iteration-count loop at ~4 s per hyprctl call is ~200 s; "
+            "only a wall-clock deadline bounds this"
+        )
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed < 25.0, (
+        f"took {elapsed:.1f}s — an iteration count at ~4s per (sleepy, "
+        "timeout-wrapped) hyprctl call is ~205s; only a wall-clock "
+        "deadline bounds _place_fresh_window's poll loop this tightly"
+    )
+    assert _wait_for_nonempty(chromium_log), "degrade never loses the launch"
+    # Fold r3 / M-F2 nit: prove the poll actually RAN, not just that the
+    # script finished quickly and launched the browser — deleting
+    # _place_fresh_window's poll outright would also satisfy every
+    # assertion above (two sibling tests catch a deleted poll instead;
+    # this test's job is the wall-clock-vs-iteration-count distinction,
+    # so it must also witness the poll it claims to be timing).
+    assert hyprctl_log.exists(), "hyprctl was never invoked — the placement poll never ran"
+    hyprctl_calls = hyprctl_log.read_text(encoding="utf-8").splitlines()
+    poll_calls = [call for call in hyprctl_calls if "clients -j" in call]
+    # >= 2, not >= 1: the top-level presence check (before _launch) always
+    # contributes exactly one "clients -j" line on its own, even with
+    # _place_fresh_window's poll disabled outright — measured empirically
+    # (fold r3 red/green cycle 2). Only a SECOND "clients -j" call proves
+    # the poll loop itself ran at least one iteration; HEAD produces 2 or
+    # 3 under this fixture's 4s sleepy hyprctl and 5s wall-clock deadline
+    # (1 presence + 1-2 poll iterations, depending on where the
+    # integer-granular `SECONDS` tick falls relative to the deadline when
+    # _place_fresh_window is entered — measured both 2 and 3 across runs).
+    assert len(poll_calls) >= 2, (
+        f"expected >=2 `clients -j` calls (1 presence check + >=1 poll "
+        f"iteration) — a disabled/skipped poll produces exactly 1 (the "
+        f"presence check alone); got: {hyprctl_calls!r}"
+    )
 
 
 def test_monitor_unset_never_dispatches_movewindow(tmp_path: Path) -> None:

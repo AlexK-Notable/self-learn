@@ -57,11 +57,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 
 from . import gitops
 from . import scan as scan_mod
+from .primitives import chrono
 from .import_common import ImporterError, ImportReport, commit_import, existing_origins
 from .ledger_ops import (
     ROSTER_UNAVAILABLE,
@@ -186,7 +186,7 @@ def _compose_record(entry: JournalEntry, scope: str) -> Record:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return chrono.now_iso()
 
 
 #: Every record this importer creates is freshly minted (`Record.create`,

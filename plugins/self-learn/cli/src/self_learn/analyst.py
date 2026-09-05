@@ -56,6 +56,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from . import invocation, settings
+from .primitives import chrono
 from .ledger_ops import (
     ROSTER_UNAVAILABLE,
     LedgerOpsError,
@@ -303,7 +304,7 @@ def analyze(
     # overwriting whatever the model emitted (Register R). Kept literal
     # rather than setdefault, which would silently invert this row.
     proposal["model"] = model
-    proposal["analyzed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    proposal["analyzed_at"] = datetime.now(timezone.utc).strftime(chrono.ISO_FORMAT)
     # CLI-stamped — never the model's (shared normalization fn, 08 §7.1).
     proposal["record_sha"] = sha_anchor(record.body)
 

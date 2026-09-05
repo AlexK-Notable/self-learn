@@ -31,11 +31,12 @@ place this is decided.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import self_learn.domain as sl_domain
+import self_learn.primitives.text as sl_text
 from self_learn import sentinel as sl_sentinel
 from self_learn import worker as sl_worker
 from self_learn.records import Record
@@ -617,9 +618,15 @@ def _bare_scope(scope: object) -> str:
 def _is_deferred(deferred_until: str | None, now: datetime) -> bool:
     """Deferred membership per 02 §2: ``deferred_until`` is in the FUTURE
     relative to ``now`` (a past date means deferral has lapsed — the
-    record resurfaces, and ``deferred_until`` may still be populated)."""
-    dt = _parse_dt(deferred_until)
-    return dt is not None and dt > now
+    record resurfaces, and ``deferred_until`` may still be populated).
+
+    M-B: delegates to ``self_learn.domain.is_queued`` (the CLI's single
+    queue-membership predicate) instead of re-deriving the comparison —
+    a status of ``"pending"`` is a safe stand-in here (any DRAFT status
+    clears ``is_queued``'s status gate identically; this call site only
+    ever cares about the deferral half). Signature unchanged so every
+    caller (and ``test_models_bucket``/``test_models_front``) stays put."""
+    return not sl_domain.is_queued({"status": "pending", "deferred_until": deferred_until}, now)
 
 
 def host_add_command(scope: str, project_path: str | None) -> str | None:
@@ -1510,11 +1517,14 @@ class FindingRegion:
 @dataclass(frozen=True)
 class ChangeRegion:
     """09 §2.3 region 2 / Y-7. ``kind`` selects what U3 renders:
-    ``none`` (no proposal — ``message`` carries the CTA), ``diff``
-    (Pygments DiffLexer), ``proposal-yaml`` (Pygments YAML lexer, the
-    proposal's raw sibling text), ``hook`` (the FULL stored script + its
-    replay examples, M3 verbatim-apply caption), ``new-skill`` (scaffold
-    preview)."""
+    ``none`` (no proposal — ``message`` carries the CTA), ``unrenderable``
+    (M-F4: a proposal sibling EXISTS but failed to parse — ``message``
+    carries the actual parse error, never the ``none`` CTA; distinct so
+    the human isn't told "no analysis yet" about a record that HAS one,
+    just unreadable), ``diff`` (Pygments DiffLexer), ``proposal-yaml``
+    (Pygments YAML lexer, the proposal's raw sibling text), ``hook`` (the
+    FULL stored script + its replay examples, M3 verbatim-apply caption),
+    ``new-skill`` (scaffold preview)."""
 
     kind: str
     content: str | None
@@ -1595,10 +1605,10 @@ class DetailModel:
     host_add_command: str | None
 
 
-#: Local heading matcher — mirrors records.py's private ``_HEADING_RE``
-#: (not exported; the model builder owns section EXTRACTION the same way
-#: compilers.py's ``_body_sections`` does for the CLI package, 02 §1).
-_HEADING_RE = re.compile(r"^## +(.+?)\s*$", re.MULTILINE)
+#: The one heading matcher (M-J, plan v2 §2) -- was a local mirror of
+#: records.py's private ``_HEADING_RE``; now the same compiled pattern
+#: both packages share (``self_learn.primitives.text.HEADING_RE``).
+_HEADING_RE = sl_text.HEADING_RE
 
 
 def _split_episode_brief(body: str) -> tuple[str, str | None]:
@@ -1649,10 +1659,57 @@ def _build_finding(record: Record, title: str) -> FindingRegion:
     )
 
 
+#: n-2 fold (M-F4, gate-flagged NIT): the raw sibling text's first line,
+#: truncated — long enough to be recognizable, short enough to never turn
+#: the Change region into a second raw-text viewer (that's the
+#: `proposal-yaml` kind's job, only reachable once a proposal DOES parse).
+_UNRENDERABLE_EXCERPT_CHARS = 120
+
+
+def _unrenderable_message(error: str, proposal_raw_text: str | None) -> str:
+    """The parse error alone (`ledger.read_proposal_raw`'s error string —
+    the file path + the YAML library's own complaint) never shows the
+    operator WHAT actually failed to parse. The raw sibling text is
+    already available regardless of parse success
+    (`ledger.read_proposal_text` reads the file directly, no YAML
+    involved) and was being discarded here — appends a bounded excerpt
+    of its FIRST LINE. Plain text, never HTML-escaped here: `detail.html`
+    renders `model.change.message` through a bare `{{ }}` under the
+    app's explicit `autoescape=True` (`app.py`'s AUTOESCAPE MARKER, "never
+    `{% autoescape false %}` anywhere") — escaping it a second time here
+    would double-escape."""
+    first_line = proposal_raw_text.splitlines()[0] if proposal_raw_text else ""
+    if not first_line:
+        return error
+    excerpt = first_line[:_UNRENDERABLE_EXCERPT_CHARS]
+    if len(first_line) > _UNRENDERABLE_EXCERPT_CHARS:
+        excerpt += "…"
+    return f"{error} — starts with: {excerpt}"
+
+
 def _build_change(
-    proposal: dict | None, diff_text: str | None, proposal_raw_text: str | None
+    proposal: dict | None,
+    diff_text: str | None,
+    proposal_raw_text: str | None,
+    proposal_error: str | None = None,
 ) -> ChangeRegion:
     if proposal is None:
+        # M-F4 (B-11, I): a proposal sibling that EXISTS but fails to
+        # parse (`ledger.read_proposal_raw`'s second return value) is a
+        # DIFFERENT state from no proposal at all — this used to render
+        # the identical NO_ANALYSIS_MESSAGE either way (the parse error
+        # was discarded at the read site, routes.py's old `_err`).
+        # `kind="unrenderable"` carries the actual error text (plus a
+        # bounded excerpt of the raw sibling text, fold n-2) so
+        # detail.html can render it distinctly (never silently as "no
+        # analysis yet").
+        if proposal_error is not None:
+            return ChangeRegion(
+                kind="unrenderable",
+                content=None,
+                caption="",
+                message=_unrenderable_message(proposal_error, proposal_raw_text),
+            )
         return ChangeRegion(
             kind="none", content=None, caption="", message=NO_ANALYSIS_MESSAGE
         )
@@ -1686,16 +1743,39 @@ def _build_change(
     return ChangeRegion(kind="none", content=None, caption="", message=NO_ANALYSIS_MESSAGE)
 
 
-#: U-cap §6.6: the three interesting `reference` read-rate states, and the
-#: line rendered for each — verbatim from the spec. Any `read_rate_state`
-#: not covered here (there are none — the ladder is closed, §4.5) would be
-#: a builder error, not a silent fallback.
-_REFERENCE_UNKNOWN_STATES = frozenset({"not-instrumented", "none-enumerable"})
-_REFERENCE_COLD_STATES = frozenset({"no-reads-observed", "partly-cold"})
+#: U-cap §6.6: the `reference` read-rate states, and the line rendered for
+#: each — verbatim from the spec. NOT a closed ladder (cross-lane M-A
+#: fold, 2026-09-03: the CLI's OWN `REFERENCE_READ_RATE_STATES`
+#: (report.py) just changed — `no-reads-observed` retired,
+#: `never-observed` added — proving a prior version of this comment's
+#: claim that "there are none [uncovered states] — the ladder is closed"
+#: false the moment it needed to change). A `read_rate_state` not covered
+#: by either set below falls through SILENTLY to the final "ok" branch —
+#: there is no explicit builder-error raise here; a genuinely new state
+#: would misrender as "read", not fail loudly.
+_REFERENCE_UNKNOWN_STATES = frozenset({"not-instrumented", "none-enumerable", "never-observed"})
+_REFERENCE_COLD_STATES = frozenset({"partly-cold"})
 
 
 def _reference_row_text(fill: dict) -> str:
     state = fill.get("read_rate_state")
+    if state == "never-observed":
+        # Cross-lane M-A fold: THIS branch decides for `never-observed`,
+        # not its membership in `_REFERENCE_UNKNOWN_STATES` above — the
+        # check below never gets a chance to look at this state because
+        # this branch already returns first. (It stays IN that set
+        # anyway, harmlessly: epistemically it agrees with the other
+        # UNKNOWN states, and dropping it would silently fall through to
+        # the wrong sentence below if this dedicated branch were ever
+        # removed.) The read hook IS registered here (instrumentation
+        # exists and is working), it has simply never observed a read
+        # for this target yet. The shared "(not instrumented)" wording
+        # below would be FALSE for this state.
+        return (
+            "reference read rate is UNKNOWN (the read hook is "
+            "registered but has never observed a read yet) — routing "
+            "here trades a measured cost for an unmeasured one."
+        )
     if state in _REFERENCE_UNKNOWN_STATES or fill.get("safe_overflow") is None:
         return (
             "reference read rate is UNKNOWN (not instrumented) — routing "
@@ -1819,6 +1899,7 @@ def build_detail_model(
     proposal_raw_text: str | None,
     registry: list[dict],
     *,
+    proposal_error: str | None = None,
     bucket: str,
     scope: str,
     host_registered: bool,
@@ -1845,7 +1926,7 @@ def build_detail_model(
         status=record.status,
         cards=build_card_sections((proposal or {}).get("card"), registry),
         finding=_build_finding(record, title),
-        change=_build_change(proposal, diff_text, proposal_raw_text),
+        change=_build_change(proposal, diff_text, proposal_raw_text, proposal_error),
         why=_build_why(item, proposal, scope),
         contradicts=contradicts,
         # U-demand-user §3.3(f): per-record now, not the scope-level

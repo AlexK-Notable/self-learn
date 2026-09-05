@@ -81,6 +81,7 @@ import tempfile
 from pathlib import Path
 
 from . import compiled
+from . import domain
 from . import gitops
 from . import provider
 from . import scan as scan_mod
@@ -402,7 +403,7 @@ def _check_reach(home: Path) -> tuple[bool, str]:
                 record = Record.from_path(path)
             except (RecordError, UnicodeDecodeError):
                 continue
-            if record.status != "routed" or record.superseded_by is not None:
+            if not domain.is_canon_live(record):
                 continue
             if (record.routing or {}).get("destination") != "reference":
                 continue
@@ -542,7 +543,7 @@ def _check_drift(
                 record = Record.from_path(path)
             except (RecordError, UnicodeDecodeError):
                 continue
-            if record.status != "routed" or record.superseded_by is not None:
+            if not domain.is_canon_live(record):
                 continue
             destination = (record.routing or {}).get("destination")
             if destination not in (
@@ -886,7 +887,7 @@ def _check_hooks(home: Path, claude_dir: Path) -> tuple[bool, str]:
                 continue
             meta = routing.get("hook") or {}
             rel = meta.get("script_path")
-            live = record.status == "routed" and record.superseded_by is None
+            live = domain.is_canon_live(record)
             if not hosts_known:
                 continue  # skip cleanly — mirrored on the summary below
             if rel is None or root is None:

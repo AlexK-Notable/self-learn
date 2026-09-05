@@ -58,7 +58,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
-from . import invocation, sentinel, settings, telemetry
+from . import domain, invocation, sentinel, settings, telemetry
+from .primitives import chrono, truncate
 from .compilers import BEGIN_MARKER, END_MARKER
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
 from .hosts import Hosts, HostsError, ancestors_of, load_hosts, skill_dir_for, unregistered_ancestor_dirs
@@ -667,18 +668,60 @@ def compose_record_block(
     )
 
 
-def cache_dir() -> Path:
+def cache_dir(home: Path | str | None = None) -> Path:
     """Per-ledger-home cache namespace (doc 13 §6, H-4):
     ``${XDG_CACHE_HOME:-~/.cache}/self-learn/home-<sha256(home)[:8]>/`` —
-    a future second home (06's team ledger) is a config away. Resolves
-    the home itself via :func:`ledger.resolve_home` (cheap env read).
+    a future second home (06's team ledger) is a config away. ``home``
+    defaults to :func:`ledger.resolve_home` (cheap env read) when
+    omitted, so every existing bare call is unchanged (M-P, sprint 1
+    audit A14/A13: a caller that already holds an explicit ``home`` can
+    now pass it through instead of this namespace silently tracking the
+    ambient ``SELF_LEARN_HOME`` even when it differs from that home).
 
     Migration shim from the OLD un-namespaced path
     (``…/claude-skills/self-learn`` — the name embeds the host the cache
-    no longer belongs to): see :func:`_migrate_cache`."""
+    no longer belongs to): see :func:`_migrate_cache`.
+
+    M-P fold r1 (F3): an explicit ``home`` is ``.expanduser()``'d before
+    hashing, the same normalization :func:`ledger.resolve_home` already
+    applies to the ambient path -- otherwise ``cache_dir(Path("~/x"))``
+    and ``cache_dir(Path.home() / "x")`` (the SAME directory) hashed to
+    two different namespaces.
+
+    M-P fold r1 (F2), restated in fold r2 (M1: names/call-shapes, not
+    line numbers, which rot; N2: the actual rule, not the old
+    approximation of it) -- six call sites stay DELIBERATELY bare (call
+    this with no ``home``): :func:`kick`'s and :func:`run`'s own
+    ``cache_dir().mkdir(parents=True, exist_ok=True)`` prologues, and
+    four operator-facing message strings shaped
+    ``f"... see the event log in {cache_dir()}"`` (two inside
+    :func:`kick`/:func:`run` in this module, two inside
+    :mod:`miner`'s ``_invoke_reader``).
+
+    The rule is NOT "an intra-function split is worse than
+    consistent-bare" -- fold r1's F1 fix deliberately makes exactly that
+    split inside :func:`miner.maybe_kick` (its heartbeat check now
+    threads `home` while the SAME function's ``miner_dir()``-backed
+    staleness/lock checks stay bare), and that fix is correct. The real
+    rule: pair each READ with its WRITER -- thread `home` wherever the
+    writer that produced the file already did, and leave a function
+    uniformly bare only when its OWN file namespace is itself bare by
+    design. Applied here: :func:`_p` is itself confirmed bare (no
+    ``home`` parameter at all) and is the writer for every
+    lock/log/stage/window file `kick`/`run` touch -- threading
+    ``cache_dir`` alone at the prologue would pair that ONE read with a
+    DIFFERENT (home-namespaced) writer than every ``_p(...)`` call
+    beside it, which already agrees with ITS bare writer. The four
+    message strings must name the directory :mod:`invocation_sdk.events`
+    actually wrote its event log to, and that module's own event-log
+    path helpers are themselves confirmed bare, by design (see their
+    docstrings) -- so threading `home` into just the STRING would point
+    the operator at a directory the event log was never actually written
+    under: the same pair-with-the-writer rule, applied the other way."""
     cache = os.environ.get("XDG_CACHE_HOME")
     base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
-    digest = hashlib.sha256(str(resolve_home()).encode("utf-8")).hexdigest()[:8]
+    resolved_home = Path(home).expanduser() if home is not None else resolve_home()
+    digest = hashlib.sha256(str(resolved_home).encode("utf-8")).hexdigest()[:8]
     new = base / "self-learn" / f"home-{digest}"
     new.mkdir(parents=True, exist_ok=True)
     _migrate_cache(base / "claude-skills" / "self-learn", new)
@@ -759,7 +802,7 @@ def _p(name: str) -> Path:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return chrono.now_iso()
 
 
 def _log_to(path: Path, message: str) -> None:
@@ -781,20 +824,11 @@ def log(message: str) -> None:
 
 
 def _truncate_oldest(path: Path, cap: int) -> None:
-    try:
-        if path.stat().st_size <= cap:
-            return
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-        keep: list[str] = []
-        size = 0
-        for line in reversed(lines):
-            size += len(line.encode("utf-8"))
-            if size > cap:
-                break
-            keep.append(line)
-        path.write_text("".join(reversed(keep)), encoding="utf-8")
-    except OSError:
-        pass
+    """Facade over :func:`self_learn.primitives.truncate.truncate_oldest`
+    -- kept as its own name/def (never inlined or renamed):
+    ``tests/test_lock_invariant.py`` enumerates ``worker._truncate_oldest``
+    by name in its ``NOT_REPO_TRUTH`` exemption table (M-J, plan v2 SS2)."""
+    truncate.truncate_oldest(path, cap)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -1098,11 +1132,49 @@ FOLLOWON_DEPTH_CEILING = 8
 FOLLOWON_DEPTH_ENV = "SELF_LEARN_FOLLOWON_DEPTH"
 
 
+def _followon_depth() -> int:
+    """THIS process's own follow-on chain depth (0 if absent — an
+    explicit `kick()` from a fresh human/teach/import/miner shell never
+    carries the var). Split out (fold NIT 2) so :func:`_ceiling_refused`
+    reads the exact same value :func:`_open_window`'s pre-spawn peek and
+    :func:`_spawn_window`'s own internal check both need."""
+    try:
+        return int(os.environ.get(FOLLOWON_DEPTH_ENV, "0"))
+    except ValueError:
+        return 0
+
+
+def _ceiling_refused() -> bool:
+    """D3's belt-and-braces chain-depth ceiling (:data:`FOLLOWON_DEPTH_
+    CEILING`), split out of `_spawn_window` (fold NIT 2, audit
+    2026-09-02) so `_open_window` can check it BEFORE ever writing the
+    "spawning" marker: writing the marker ahead of a refusal that was
+    already certain served no purpose and opened a needless gap — a
+    SIGKILL landing between that write and `_spawn_window`'s own
+    (redundant) ceiling check would otherwise strand an un-clearable
+    marker with no child anywhere, reclaimed only after
+    :data:`SPAWN_MARKER_DEADLINE_SECS`.
+    `_spawn_window` still calls this itself too (below), so a call
+    straight to `_spawn_window` — armor-pinned
+    `test_d3_depth_ceiling_refuses_a_real_spawn` calls it directly, in
+    isolation, unedited — keeps refusing before `Popen`, logged, exactly
+    as before this split."""
+    depth = _followon_depth()
+    if depth >= FOLLOWON_DEPTH_CEILING:
+        log(
+            f"run: follow-on chain-depth ceiling reached ({depth} >= "
+            f"{FOLLOWON_DEPTH_CEILING}) — refusing to spawn a successor; "
+            "`self-learn worker kick` retries"
+        )
+        return True
+    return False
+
+
 def _spawn_window(home: Path, *, no_push: bool = False) -> int:
     """setsid-spawn a coalescing run; returns the child pid, or the
     negative sentinel ``-1`` iff D3's chain-depth ceiling refuses to
-    spawn (see :data:`FOLLOWON_DEPTH_CEILING`). Split out so tests can
-    monkeypatch spawning without faking flocks.
+    spawn (see :data:`FOLLOWON_DEPTH_CEILING`, :func:`_ceiling_refused`).
+    Split out so tests can monkeypatch spawning without faking flocks.
 
     ``no_push`` rides the child's ENV (BLOCKER 3): the spawn is detached
     (``start_new_session=True``), so the parent's flag reaches it only as
@@ -1117,16 +1189,8 @@ def _spawn_window(home: Path, *, no_push: bool = False) -> int:
     ceiling can act on, while an explicit `kick()` (never carrying the
     var in a fresh human/teach/import/miner shell) always starts a new
     chain at depth 1."""
-    try:
-        depth = int(os.environ.get(FOLLOWON_DEPTH_ENV, "0"))
-    except ValueError:
-        depth = 0
-    if depth >= FOLLOWON_DEPTH_CEILING:
-        log(
-            f"run: follow-on chain-depth ceiling reached ({depth} >= "
-            f"{FOLLOWON_DEPTH_CEILING}) — refusing to spawn a successor; "
-            "`self-learn worker kick` retries"
-        )
+    depth = _followon_depth()
+    if _ceiling_refused():
         return -1
     log_path = _p("worker.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1146,6 +1210,170 @@ def _spawn_window(home: Path, *, no_push: bool = False) -> int:
     return proc.pid
 
 
+#: C17 (audit 2026-09-02): `_open_window` used to spawn the child (below)
+#: and write its pid to `worker.window` only afterwards — a crash (or the
+#: whole process getting SIGKILLed) in that gap left no window on disk at
+#: all, so a later kick saw nothing live and spawned a SECOND worker
+#: alongside the detached first one. This sentinel is written into
+#: `worker.window` durably, BEFORE the spawn, so a crash in the gap still
+#: leaves proof on disk that an attempt was underway; a later kick reads
+#: a fresh one as "absorbed-race" rather than "nothing is running".
+_SPAWN_MARKER = "spawning"
+
+#: How long a "spawning" marker may sit before :func:`_spawn_marker_
+#: stale` reclaims it. Fold r3 (audit 2026-09-02 gate r2 MINOR 1):
+#: earlier revisions of this comment said the child clears
+#: `worker.window` only after ITS OWN `coalesce_secs(home)` sleep ends
+#: and it takes `worker.lock` — true before fold r2, false since:
+#: `run()` now calls `_register_running_pid()` (proven ordered ahead of
+#: both by `test_run_registers_the_pid_before_the_coalesce_sleep_and_
+#: the_lock`) as one of its first acts, durably rewriting `worker.window`
+#: with the child's own real pid BEFORE either the sleep or the lock —
+#: so a live, coalescing child no longer holds a bare marker for the
+#: length of its own sleep; it holds one, at most, for the time between
+#: `Popen` returning (parent side) and this registration write landing
+#: (child side).
+#:
+#: What this deadline actually bounds now: a crash strictly between
+#: `Popen` returning and the child's registration write — interpreter
+#: start, importing `self_learn.cli` (the whole CLI surface), and one
+#: `_write_window_durable` call. That is normally well under a second;
+#: 30s is a deliberately generous multiple of it (a cold page cache, a
+#: loaded/throttled host, a slow disk under `_write_window_durable`'s
+#: fsync calls) while staying startup-scale, not the ~600s-plus a
+#: `coalesce_secs(home)`-derived deadline (the pre-fold-r3 formula) would
+#: have allowed for the same crash window. `coalesce_secs(home)` is
+#: dropped from the formula entirely: the child can no longer
+#: legitimately hold a bare marker for anything coalesce-scale, so
+#: adding it back would only widen the double-spawn window this deadline
+#: exists to close, for no live case it protects.
+SPAWN_MARKER_DEADLINE_SECS = 30.0
+
+
+def _write_window_durable(window: Path, text: str) -> None:
+    """Temp + rename + fsync (C17). `Path.write_text` alone is neither
+    atomic (a reader mid-write could see a partial file) nor durable (the
+    bytes can still be sitting in the page cache, not on disk, when a
+    crash hits) — exactly the two properties the spawn marker needs,
+    since its whole job is to survive the crash a plain write would not.
+    `os.replace` gives the atomicity; the two `fsync` calls (the temp
+    file's data, then the directory entry the rename produced) give the
+    durability.
+
+    Fold NIT 1: any failure between creating the temp file and the
+    rename (disk full mid-write, a permission error) unlinks the temp
+    file before re-raising — a failed write must not leave
+    ``.worker.window.<pid>.tmp`` litter behind for a later run to trip
+    over."""
+    window.parent.mkdir(parents=True, exist_ok=True)
+    tmp = window.parent / f".{window.name}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, window)  # same filesystem — atomic
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    dir_fd = os.open(window.parent, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)  # the rename itself, durable too
+    finally:
+        os.close(dir_fd)
+
+
+def _spawn_marker_stale(window: Path) -> bool:
+    """A marker older than :data:`SPAWN_MARKER_DEADLINE_SECS` is an
+    abandoned attempt, not a live one — reclaimable by the next kick.
+    Missing entirely (raced away, or never existed) counts as stale too:
+    there is nothing left to absorb against.
+
+    Fold r3: no longer takes `home` — the deadline used to be
+    `coalesce_secs(home) + margin` (see :data:`SPAWN_MARKER_DEADLINE_
+    SECS`'s comment for why that formula is gone, not just shrunk), so
+    `home` was the only reason this function needed it.
+
+    Fold NIT 3 (residual, disclosed): age is `mtime`-based, so a
+    backwards wall-clock step makes a marker un-stale-able for the size
+    of the step. Fold r2's MINOR 1 fix (:func:`_register_running_pid`, a
+    spawned child durably rewriting `worker.window` with its own pid
+    before its coalesce sleep and before `worker.lock`) bounds how much
+    this can matter in practice: once a child has registered, THIS
+    function is never consulted for it again (the marker string is gone,
+    replaced by a real pid `_pid_alive` judges directly, clock-
+    independent) — the exposure a backwards step can extend is only the
+    child-startup window a crash-before-registration marker sits in."""
+    try:
+        age = time.time() - window.stat().st_mtime
+    except OSError:
+        return True
+    return age >= SPAWN_MARKER_DEADLINE_SECS
+
+
+def _register_running_pid() -> None:
+    """Fold r2 MINOR 1 (audit 2026-09-02 gate, unblocked by the
+    coordinator once `tests/test_lock_invariant.py`'s `NOT_REPO_TRUTH`
+    carried this function's own entry): called from :func:`run`,
+    preceded only by argument normalization (`home = Path(home)`,
+    resolving `no_push`) and `cache_dir().mkdir(...)` — which this
+    function's own write depends on, `worker.window` living inside that
+    directory — and BEFORE anything else: the coalesce sleep and
+    `worker.lock` both come strictly after (proven ordered by
+    `test_run_registers_the_pid_before_the_coalesce_sleep_and_the_lock`
+    in `tests/test_worker_spawn_handshake.py`, fold r3). Durably
+    (:func:`_write_window_durable`) overwrites
+    `worker.window` with THIS process's own, now-real, pid, replacing
+    whatever was there (typically the parent's "spawning" marker,
+    written by `_open_window` just before `_spawn_window`'s `Popen`
+    launched this very process).
+
+    Bounds the marker's real remaining exposure to child STARTUP
+    (interpreter + import time — milliseconds), not the full
+    `coalesce_secs(home)` sleep that follows: a marker is otherwise only
+    judged by `_spawn_marker_stale`'s deadline heuristic, and a kick
+    landing after that deadline but before this registration point would
+    reclaim the window and spawn a SECOND worker while the first is
+    still alive and merely asleep (serialized by `worker.lock` once both
+    reach it, but still a second real process — C17's double-spawn in a
+    new shape). Once THIS write lands, a later kick sees a genuine,
+    `_pid_alive`-checkable pid instead — correct for the process's ENTIRE
+    remaining life, not just until a fixed deadline.
+
+    Cache-only (`worker.window`, XDG cache, never a repo path) — see the
+    `NOT_REPO_TRUTH` entry naming this function specifically (not the
+    path-parametric `_write_window_durable`, which would exempt any
+    future caller unscrutinized).
+
+    Fold r4 (integration find, gate on the merged tree): registration is
+    BEST-EFFORT — an `OSError` out of `_write_window_durable` (disk
+    full, a permission error, or — measured live — the armor-pinned
+    `test_attrib.py::test_in8_interrupted_install_is_recovered_not_
+    stalled_forever` part (e) monkeypatching `os.replace` — globally at
+    the time, scoped to the install copy on 2026-09-04 — to simulate a
+    crash mid-install-copy, which this function's own write shared) must
+    NEVER abort the whole
+    `run()`. If the child never registers, the window keeps whatever the
+    parent wrote, exactly as before fold r2 (`fb34978`): in the common
+    case the parent has already rewritten the marker with the child's
+    real pid microseconds after `Popen`, so a later kick reads a live
+    pid and reports `absorbed-window` — no deadline exposure at all;
+    only if the parent died between its marker write and that rewrite
+    does the "spawning" marker stand (fresh → `absorbed-race`, older
+    than `SPAWN_MARKER_DEADLINE_SECS` → reclaimed); and once this child
+    reaches `worker.lock` it clears the window itself. A crash mid-write
+    leaves no temp-file litter (`_write_window_durable`'s own
+    `except BaseException: tmp.unlink(...); raise`). Not a new failure
+    mode. Logged, not silent, so the skip is visible in `worker.log`."""
+    try:
+        _write_window_durable(_p("worker.window"), str(os.getpid()))
+    except OSError as exc:
+        log(
+            f"pid registration skipped: {exc}; the window keeps what the parent "
+            "wrote (a real pid, or a marker the deadline reclaims)"
+        )
+
+
 def _open_window(home: Path, *, no_push: bool = False) -> str:
     """Lock-guarded window opener, shared by :func:`kick` and the
     run-end follow-on (audit 2026-07-15: the follow-on previously
@@ -1154,6 +1382,22 @@ def _open_window(home: Path, *, no_push: bool = False) -> str:
     | ``depth-limited`` (D3, 2026-08-09: `_spawn_window` refused under
     the chain-depth ceiling — nothing was actually spawned, so no pid is
     recorded to `worker.window`).
+
+    C17: before ever calling :func:`_spawn_window`, `worker.window` is
+    durably (:func:`_write_window_durable`) set to :data:`_SPAWN_MARKER`
+    — after EVERY refusal check this function makes (the live-window
+    absorption check just above, AND — fold NIT 2 — the D3 chain-depth
+    ceiling via :func:`_ceiling_refused`, checked here too so a certain
+    refusal never gets a marker written ahead of it), and before the
+    spawn. A non-spawn outcome (depth-limited, or fold MAJOR 1: any
+    exception out of `_spawn_window` itself — a failed `Popen`, ENOSPC on
+    its log open, a missing interpreter) removes the marker again and
+    (for the exception case) re-raises; a real spawn rewrites it with the
+    pid, same as before. A later kick that finds a fresh marker (no
+    crash, or a crash too recent to trust) reports ``absorbed-race`` —
+    the same vocabulary as a held flock, since both mean "someone else's
+    spawn already covers this kick" — and reclaims a stale one
+    (:func:`_spawn_marker_stale`) instead.
 
     ``no_push`` propagates to a spawned child (BLOCKER 3). An ABSORBED kick
     inherits the already-running window's policy — correct: absorption
@@ -1167,16 +1411,40 @@ def _open_window(home: Path, *, no_push: bool = False) -> str:
         try:
             window = _p("worker.window")
             if window.is_file():
-                try:
-                    pid = int(window.read_text(encoding="utf-8").strip())
-                except ValueError:
-                    pid = -1
-                if pid > 0 and _pid_alive(pid):
-                    return "absorbed-window"
-            pid = _spawn_window(home, no_push=no_push)
+                raw = window.read_text(encoding="utf-8").strip()
+                if raw == _SPAWN_MARKER:
+                    if not _spawn_marker_stale(window):
+                        return "absorbed-race"  # a spawn is (or just was) in flight
+                    # else: stale — an abandoned attempt; reclaim below.
+                else:
+                    try:
+                        pid = int(raw)
+                    except ValueError:
+                        pid = -1
+                    if pid > 0 and _pid_alive(pid):
+                        return "absorbed-window"
+            if _ceiling_refused():
+                # fold NIT 2: certain refusal, already logged above — the
+                # marker must never be written ahead of a refusal we
+                # already know is coming.
+                return "depth-limited"
+            _write_window_durable(window, _SPAWN_MARKER)  # C17: before the spawn
+            try:
+                pid = _spawn_window(home, no_push=no_push)
+            except BaseException:
+                # fold MAJOR 1: an exception out of _spawn_window (a
+                # failed Popen, ENOSPC on its log open, a missing
+                # interpreter) is a non-spawn outcome exactly like a
+                # ceiling refusal — nothing was actually spawned, so the
+                # marker must not survive it either, or every later kick
+                # absorbs (SPAWN_MARKER_DEADLINE_SECS) against a child
+                # that never existed.
+                window.unlink(missing_ok=True)
+                raise
             if pid <= 0:
-                return "depth-limited"  # already logged by _spawn_window
-            window.write_text(str(pid), encoding="utf-8")
+                window.unlink(missing_ok=True)  # non-spawn outcome — no marker left
+                return "depth-limited"  # already logged by _spawn_window's own (redundant) check
+            _write_window_durable(window, str(pid))
             log(f"window opened (pid {pid})")
             return "spawned"
         finally:
@@ -1282,21 +1550,32 @@ def _digest(home: Path, limit: int = 20) -> str:
     DATE, newest first (audit 2026-07-15: topo order diverges from
     author-date order under rebase-based autosync, so the rows are
     sorted explicitly; the grep is line-anchored so a Revert subject
-    quoting the message does not re-list an undone rejection)."""
-    proc = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(home),
-            "log",
-            "--grep",
-            "^self-learn: reject ",
-            "--format=%ad%x09%s",
-            "--date=iso-strict",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    quoting the message does not re-list an undone rejection).
+
+    M-G: a LOCAL, read-only git call — bounded like every other one
+    (``gitops.GIT_LOCAL_TIMEOUT``) via the shared primitive instead of a
+    bare, unbounded ``subprocess.run``. A wedged git degrades this digest
+    the same way a real failure already does (``returncode != 0``): the
+    reader gets no negative exemplars this run, not a hung worker."""
+    from . import gitops
+    from .primitives import procs
+
+    try:
+        proc = procs.run_bounded(
+            [
+                "git",
+                "-C",
+                str(home),
+                "log",
+                "--grep",
+                "^self-learn: reject ",
+                "--format=%ad%x09%s",
+                "--date=iso-strict",
+            ],
+            timeout=gitops.GIT_LOCAL_TIMEOUT,
+        )
+    except procs.BoundedTimeout:
+        return "(no rejected-proposal history available)"
     if proc.returncode != 0:
         return "(no rejected-proposal history available)"
     rows = sorted(
@@ -3059,7 +3338,7 @@ def render_notification(n: int, buckets: list[str], total: int, scopes: int) -> 
     )
 
 
-def _notifications_suppressed() -> bool:
+def _notifications_suppressed(home: Path | str | None = None) -> bool:
     """True iff ``SELF_LEARN_NO_NOTIFY=1`` — the EXPLICIT kill switch for
     BOTH notify transports (:func:`_notify`, :func:`_notify_with_ids`).
 
@@ -3086,10 +3365,19 @@ def _notifications_suppressed() -> bool:
     U-settings Phase 1: resolves through the registry's ``worker.
     no_notify`` entry (config.yaml `worker.no_notify` > env > `False` --
     U-flip 2026-09-01, S-58: config wins) rather than reading the env
-    var directly — the two callers below (neither of which threads a
-    `home`) keep working unchanged since neither writes a config.yaml;
-    :func:`resolve_home` supplies the home for the config.yaml rung."""
-    value, _source = settings.resolve_setting(resolve_home(), settings.by_name("worker.no_notify"))
+    var directly. ``home`` defaults to :func:`resolve_home` when omitted
+    (M-P, sprint 1 audit A14/A13) — the two callers below still call
+    this bare (neither threads a `home`; neither writes a config.yaml),
+    so their behaviour is unchanged; a future caller that DOES hold an
+    explicit `home` can now pass it through instead of racing the
+    ambient `SELF_LEARN_HOME`.
+
+    M-P fold r1 (F3): an explicit `home` is `.expanduser()`'d before use,
+    matching :func:`resolve_home`'s own normalization -- `config_path`
+    never expands `~` on its own, so an unexpanded `home` would silently
+    miss `config.yaml` entirely."""
+    resolved_home = Path(home).expanduser() if home is not None else resolve_home()
+    value, _source = settings.resolve_setting(resolved_home, settings.by_name("worker.no_notify"))
     return bool(value)
 
 
@@ -3165,16 +3453,16 @@ def _notify_with_ids(message: str, ids: list[str]) -> None:
 
 
 def _oldest_pending_days(home: Path) -> int:
+    # M-B: full-timestamp floor via domain.record_age_days — the old
+    # ``str(created_at)[:10]`` truncation dropped the record's real
+    # time-of-day before subtracting, which is exactly the A1 divergence
+    # from ``list --json``/``status --json``'s ages (both already used the
+    # full timestamp).
     oldest = 0
     now = datetime.now(timezone.utc)
     for bucket in discover_buckets(home):
         for entry in queue(bucket):
-            created = str(entry.record.created_at)[:10]
-            try:
-                then = datetime.fromisoformat(created).replace(tzinfo=timezone.utc)
-            except ValueError:
-                continue
-            oldest = max(oldest, (now - then).days)
+            oldest = max(oldest, domain.record_age_days(entry.record, now))
     return oldest
 
 
@@ -3217,7 +3505,7 @@ def last_run_iso() -> str | None:
     except FileNotFoundError:
         return None
     return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
+        chrono.ISO_FORMAT
     )
 
 
@@ -3260,26 +3548,18 @@ def fast_status(home: Path | str) -> dict:
                 continue
             if not isinstance(fm, dict):
                 continue
-            until = fm.get("deferred_until")
-            if until is not None:
-                try:
-                    until_d = datetime.fromisoformat(str(until)[:10]).replace(
-                        tzinfo=timezone.utc
-                    )
-                    if until_d > now:
-                        continue  # hidden — same rule as the queue
-                except ValueError:
-                    pass
+            # M-B: domain.is_queued is THE membership rule (mapping form —
+            # this scan never loads a full Record) — a lapsed deferral
+            # (``deferred_until`` in the past) is queued, same as
+            # ``list``/``status`` already compute via ``ledger_ops.queue``.
+            if not domain.is_queued(fm, now):
+                continue  # hidden or non-draft — same rule as the queue
             pending += 1
-            created = str(fm.get("created_at", ""))[:10]
-            try:
-                age = (
-                    now
-                    - datetime.fromisoformat(created).replace(tzinfo=timezone.utc)
-                ).days
-                oldest = age if oldest is None else max(oldest, age)
-            except ValueError:
-                age = None
+            # Full-timestamp floor (domain.record_age_days) — the old
+            # ``str(created_at)[:10]`` truncation here was the A1
+            # divergence from ``list --json``/``status --json``'s ages.
+            age = domain.record_age_days(fm, now)
+            oldest = age if oldest is None else max(oldest, age)
             body = "\n".join(lines[close + 1 :])
             ppath = bucket.path / "proposals" / f"{fm.get('id')}.yaml"
             fresh = False
@@ -3420,6 +3700,7 @@ def run(
     if no_push is None:
         no_push = no_push_requested()
     cache_dir().mkdir(parents=True, exist_ok=True)
+    _register_running_pid()  # fold r2 MINOR 1: bound the marker's life to child startup
     if coalesce:
         time.sleep(coalesce_secs(home))
 

@@ -64,7 +64,6 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field, replace
@@ -72,7 +71,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import config as policy_config
-from . import gitops, ledger_ops, sentinel, telemetry
+from . import domain, gitops, ledger_ops, sentinel, telemetry
+from .primitives import chrono
 from .hook_compiler import replay_examples, script_name, settings_snippet
 from .normalize import sha_anchor
 from .skill_scaffold import (
@@ -450,7 +450,7 @@ class VerbResult:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return chrono.now_iso()
 
 
 def _date_str(value) -> str:
@@ -982,26 +982,51 @@ def _stage_and_commit(
 def _commit_ledger(
     home: Path, touched: list[Path], message: str, note: str | None = None
 ) -> tuple[list[Path], str]:
-    """Stage → pinned commit, INSIDE the caller's :func:`_ledger_write`,
-    with the state fact attached to any failure.
+    """Stage → pinned commit, INSIDE the caller's :func:`_ledger_write` —
+    now the thin `verbs` face of :func:`gitops.stage_and_commit` (audit
+    2026-09-02 sprint-1 M-O). The try/except this docstring used to
+    describe moved there verbatim; what stays HERE is `_commit_ledger`'s
+    own contract — the ``(staged, sha)`` tuple every one of its call
+    sites unpacks, which :func:`gitops.stage_and_commit` (pinned to
+    return only ``str | None``) does not itself carry.
 
     Everything this function does is post-mutation by construction — the
     caller has already run ``resolve_record`` (a ``git mv`` + a record
-    rewrite) — and ``ledger_ops`` raises ``LedgerOpsError``, never
-    ``GitOpsError``. So a ``GitOpsError`` reaching HERE can only come from
-    ``stage``/``commit``, which means: the ledger is mutated and the commit
-    did not land. That is :class:`gitops.HalfWrittenError`, and it is
-    raised HERE — in the verb layer — precisely because ``gitops`` cannot
-    know it (audit 2026-07-16 round 7 BLOCKER 2; the gitops docstring
-    already said "that is the verb's fact to state, not this module's",
-    and the verb was stating the opposite fact unconditionally)."""
-    try:
-        staged = gitops.stage(home, touched)
-        sha = gitops.commit(home, message, body=note, paths=touched)
-    except gitops.HalfWrittenError:
-        raise
-    except gitops.GitOpsError as exc:
-        raise gitops.HalfWrittenError.for_commit(home, message, touched, exc) from exc
+    rewrite) — and by the time control reaches HERE, any earlier
+    ``GitOpsError`` from a ledger_ops mutation (e.g. ``_remove_file``) has
+    already been caught and converted by THAT call's own caller (see
+    ``_remove_file``'s docstring). So a ``GitOpsError`` from
+    ``stage``/``commit`` means the ledger is mutated and the commit did
+    not land — that is :class:`gitops.HalfWrittenError`, which
+    :func:`gitops.stage_and_commit` now raises directly (audit
+    2026-07-16 round 7 BLOCKER 2; the gitops docstring already said
+    "that is the verb's fact to state, not this module's", and the verb
+    used to state the opposite fact unconditionally — the seam function
+    inherits that same posture, not a new one).
+
+    Fold r1 MINOR 1: ``staged`` is the same existence-filter
+    :func:`gitops.stage` itself applies (``[p for p in touched if
+    p.exists()]``) — computed here directly rather than by calling
+    ``gitops.stage`` a second time, since :func:`gitops.stage_and_commit`
+    below already stages every one of ``touched`` for real. Two ``git
+    add`` calls for the same paths were harmless (idempotent) but
+    redundant."""
+    staged = [p for p in touched if p.exists()]
+    sha = gitops.stage_and_commit(home, touched, message, note)
+    if sha is None:
+        # D-3 (code-gate r2 fold on this lane): an `assert` here is
+        # STRIPPED under `python -O` (D-3's own finding, applied
+        # verbatim to this guard's Fold r1 version, matching the same
+        # fix at verbs.py's own ~:4026 and settings.py's
+        # NoConfigRungError) -- an explicit raise stays load-bearing
+        # regardless of interpreter flags. Provably unreachable in
+        # practice: `allow_empty` defaults False, and `_commit_ledger`
+        # never passes `allow_empty=True`, so `gitops.stage_and_commit`
+        # cannot return `None` here unless that changes.
+        raise VerbError(
+            "internal invariant violated: stage_and_commit returned "
+            f"None without allow_empty=True (commit {message!r})"
+        )
     return staged, sha
 
 
@@ -3640,15 +3665,25 @@ def _show_canon_info(home: Path, bucket, record: Record) -> dict:
 
 def _show_lifecycle(home: Path, record_id: str) -> list[dict]:
     """The record's commit history — ``git -C <home> log --grep=<id>
-    --oneline``, newest-first as git itself orders it."""
-    proc = subprocess.run(
-        [
-            "git", "-C", str(home), "log",
-            f"--grep={record_id}", "--fixed-strings",
-            "--pretty=format:%H%x09%ad%x09%s", "--date=short",
-        ],
-        capture_output=True, text=True, check=False,
-    )
+    --oneline``, newest-first as git itself orders it. M-G: a LOCAL,
+    read-only git call — bounded the same as every other one
+    (``gitops.GIT_LOCAL_TIMEOUT``) via the shared primitive rather than a
+    bare, unbounded ``subprocess.run``. A wedged git here is a detail-view
+    surface, not a mutation: it degrades to an empty history rather than
+    raising and taking the whole ``show`` verb down with it."""
+    from .primitives import procs
+
+    try:
+        proc = procs.run_bounded(
+            [
+                "git", "-C", str(home), "log",
+                f"--grep={record_id}", "--fixed-strings",
+                "--pretty=format:%H%x09%ad%x09%s", "--date=short",
+            ],
+            timeout=gitops.GIT_LOCAL_TIMEOUT,
+        )
+    except procs.BoundedTimeout:
+        return []
     out: list[dict] = []
     for line in proc.stdout.splitlines():
         parts = line.split("\t", 2)
@@ -3971,8 +4006,18 @@ def route(
                 # the survivor; an inconsistent leftover is removed here.
                 from .ledger_ops import _remove_file
 
-                if _remove_file(home, merge_path):
-                    touched = touched + [merge_path]
+                try:
+                    if _remove_file(home, merge_path):
+                        touched = touched + [merge_path]
+                except gitops.GitOpsError as exc:
+                    # M-D fold r3 (MINOR): `touched` already holds this
+                    # record's own git-mv and any supersede_record
+                    # mutations from earlier in this same route — built
+                    # HERE so the repair names all of it, not just this
+                    # cleanup's own path (see `_remove_file`'s docstring).
+                    raise gitops.HalfWrittenError.for_commit(
+                        home, message, [*touched, merge_path], exc
+                    ) from exc
             # U-hostmode REC1/REC9: the compile record's EXPECTATION can
             # only be computed now — `_compile_set` reads `resolved/`,
             # and `resolve_record` (above) just moved this record there.
@@ -6645,9 +6690,11 @@ def recompile(
                 "skill-md", "claude-md", "reference", "hook", "new-skill"
             ):
                 continue
-            retired = (
-                record.status != "routed" or record.superseded_by is not None
-            )
+            # M-B: retired is the negation of domain.is_canon_live — the
+            # SAME routed-and-not-superseded predicate compilers._eligible
+            # and report's routed_live accumulation use, never a third
+            # inline definition of "is this routing still live".
+            retired = not domain.is_canon_live(record)
             if destination == "hook":
                 meta = (record.routing or {}).get("hook") or {}
                 if retired:
@@ -7333,7 +7380,7 @@ def recompile(
         # (managed, reference, pointer, hook re-apply, hook removal-
         # repair; `--adopt`'s own commit above is separate and already
         # landed). A no-op run (nothing drifted) commits nothing, same
-        # as always. `compiled/*.yaml` is inside `_RECONCILABLE` (RCN1),
+        # as always. `compiled/*.yaml` is inside `_RECONCILABLE_HOME` (RCN1),
         # so a failure between one entry's write and this final commit
         # leaves an uncommitted record file the reconcile mechanism
         # sweeps — never a lost write, same failure-mode reasoning the
@@ -7425,8 +7472,20 @@ def bucket_prune(
             touched: list[Path] = []
             for b in candidates:
                 meta = b.path / "meta.yaml"
-                if _remove_file(home, meta):
-                    touched.append(meta)
+                try:
+                    if _remove_file(home, meta):
+                        touched.append(meta)
+                except gitops.GitOpsError as exc:
+                    # M-D fold r3 (MINOR): built HERE, not inside
+                    # `_remove_file` — this loop is the only place that
+                    # holds `touched`, the earlier buckets' removals
+                    # already staged in this same sequence. Naming only
+                    # `meta` (the FAILING path) would leave an operator
+                    # who runs the repair literally with those earlier
+                    # deletions still sitting uncommitted.
+                    raise gitops.HalfWrittenError.for_commit(
+                        home, message, [*touched, meta], exc
+                    ) from exc
             staged, sha = _commit_ledger(home, touched, message, None)
             for b in candidates:
                 if b.path.is_dir():

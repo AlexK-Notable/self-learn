@@ -268,14 +268,19 @@ def unit_dir() -> Path:
     return Path.home() / ".config" / "systemd" / "user"
 
 
-def is_configured() -> bool:
-    """`SUP2`'s "configured" bit: has this machine opted into `serve` by
-    linking the reference unit? A machine running `serve` ad hoc from a
-    terminal (no unit ever linked) reads as unconfigured — correct,
-    because nothing here claims a persistent intent to keep it running,
-    so a doctor check catching it momentarily down is a `SKIP`, not an
-    alarm."""
-    return (unit_dir() / "self-learn-host.service").is_file()
+def is_configured(unit_name: str = "self-learn-host.service") -> bool:
+    """`SUP2`'s "configured" bit: has this machine opted into `unit_name`
+    by linking the reference unit? A machine running the unit's command
+    ad hoc from a terminal (no unit ever linked) reads as unconfigured —
+    correct, because nothing here claims a persistent intent to keep it
+    running, so a doctor check catching it momentarily down is a
+    `SKIP`, not an alarm.
+
+    M-N: generalized to take a unit name (was hardcoded to the host
+    unit) so the `ui` doctor row can ask the same question about
+    `self-learn-ui.service`; the default preserves every existing
+    caller's behaviour unchanged."""
+    return (unit_dir() / unit_name).is_file()
 
 
 def is_enabled(unit_name: str, wanted_by: str) -> bool:
@@ -569,9 +574,44 @@ def run_forever(
     seam's own `run_sync`/`asyncio.run` (one level below, inside
     `invocation_sdk/backend.py`) sees no ambient loop here to nest
     inside, so `run_sync`'s thread-blocking branch (§4.6 R-2's actual
-    hazard) never triggers."""
+    hazard) never triggers.
+
+    M-P (sprint 1 audit A14/A13): the `cache_dir=None` fallback now
+    resolves `worker.cache_dir(home)` -- namespaced to THIS call's own
+    `home` -- instead of the bare, ambient `worker.cache_dir()`; this
+    daemon's own housekeeping files (`serve.heartbeat`/`serve.poke`/
+    `serve.schedule`) must land under the home it is actually serving,
+    not whatever `SELF_LEARN_HOME` happens to be set to in this
+    process's environment when the two disagree.
+
+    M-P fold r1: `miner.maybe_kick`'s two heartbeat reads
+    (`heartbeat_is_fresh`/`request_poke`) were the same defect on the
+    READ side and now thread THEIR OWN `home` too (`maybe_kick` already
+    holds one).
+
+    M-P fold r2 (M2): two ambient readers remain, both deliberately,
+    neither touched by this move:
+    (1) `provider.preflight`'s `serve` doctor row (`_serve_row`) calls
+    `cache_dir_readonly()` bare -- `_serve_row` takes no `home` param,
+    and adding one would change `preflight`'s signature in
+    `provider.py`, another lane's file.
+    (2) THIS function's own daemon tick jobs -- `_run_mine_job(home)` ->
+    `miner.run(home, ...)` and `_run_worker_job(home)` -> `worker.run(
+    home, ...)` -- DO thread `home` into `miner.run`/`worker.run`
+    themselves, but those two functions' OWN internal housekeeping
+    (`miner.miner_dir()`, `worker._p()`) stays bare by the SAME rule
+    `worker.cache_dir`'s docstring states: `miner_dir`/`_p` are
+    themselves confirmed bare writers, so reads paired to them stay
+    bare too, not threaded.
+    So a `run_forever(A)`/`maybe_kick(A)` pair with `SELF_LEARN_HOME=B`
+    writes and reads its OWN `serve.heartbeat`/`serve.poke` consistently
+    under A, but `self-learn doctor`'s serve row still reads B's
+    `cache_dir_readonly()`/`read_heartbeat()`, and this same daemon's own
+    tick-driven `miner.run`/`worker.run` calls still lock/log under B's
+    `miner_dir()`/`_p()` -- two documented, accepted residuals, not
+    regressions."""
     home = Path(home)
-    cd = cache_dir if cache_dir is not None else worker.cache_dir()
+    cd = cache_dir if cache_dir is not None else worker.cache_dir(home)
     secs = tick_secs if tick_secs is not None else tick_secs_from_env(home=home)
     pid = os.getpid()
     stop = threading.Event()

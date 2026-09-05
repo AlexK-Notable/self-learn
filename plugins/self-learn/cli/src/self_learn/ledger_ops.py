@@ -28,7 +28,6 @@ import glob as glob_mod
 import io
 import os
 import re
-import subprocess
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -41,9 +40,12 @@ from ruamel.yaml.error import YAMLError
 
 from . import hosts as hosts_mod
 from . import settings
+from . import domain
+from .primitives import chrono, text, yamlio
 from .compilers import BEGIN_MARKER, END_MARKER
 from .ledger import Bucket, discover_buckets, home_state, home_state_message, resolve_home
 from .normalize import sha_anchor
+from .primitives import procs
 from .records import RECORD_ID_RE, Record, RecordError
 from .skill_scaffold import SkillScaffoldError, validate_skill_name
 
@@ -212,9 +214,8 @@ ROSTER_UNAVAILABLE = "unavailable"
 #: builder decision 14).
 TRACE_REQUIRED = True
 
-_SECONDS_PER_DAY = 86400
 _TITLE_SECTION = {"behavior": "Trigger", "knowledge": "Fact"}
-_HEADING_RE = re.compile(r"^## +(.+?)\s*$")
+_HEADING_RE = text.HEADING_RE
 
 
 class LedgerOpsError(Exception):
@@ -229,11 +230,7 @@ class ProposalError(LedgerOpsError):
 
 
 def _yaml() -> YAML:
-    y = YAML(typ="rt")
-    y.preserve_quotes = True
-    y.width = 4096
-    y.indent(mapping=2, sequence=4, offset=2)
-    return y
+    return yamlio.rt_yaml(preserve_quotes=True, width=4096, sequence_indent=(2, 4, 2))
 
 
 def _load_yaml_map(path: Path) -> dict:
@@ -255,28 +252,70 @@ def _dump_yaml(data: dict, path: Path) -> None:
 # ---------------------------------------------------------------------- git
 
 
-def _git(home: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", str(home), *args], capture_output=True, text=True
-    )
-
-
-def _git_ok(home: Path, *args: str) -> None:
-    proc = _git(home, *args)
-    if proc.returncode != 0:
-        raise LedgerOpsError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
-
-
 def _is_tracked(home: Path, path: Path) -> bool:
-    return _git(home, "ls-files", "--error-unmatch", "--", str(path)).returncode == 0
+    """M-D: routes through the bounded seam (:func:`gitops.is_tracked`)
+    instead of shelling ``git`` out directly (closes A8/C12a)."""
+    from . import gitops
+
+    return gitops.is_tracked(home, path)
+
+
+def _git_mv(home: Path, src: Path, dest: Path) -> None:
+    """``git mv`` *src* -> *dest*, bounded. M-G: this module's own
+    ``_git``/``_git_ok`` (a bare, unbounded ``subprocess.run`` — the same
+    "blocking with a sane timeout was fiction" defect ``gitops.py``'s
+    docstring names for ITS pre-fix ``_git``) are retired once this, the
+    last direct caller of either, is migrated onto the shared bounded
+    primitive instead. Raises :class:`LedgerOpsError` on a non-zero exit
+    OR a timeout — same failure surface callers already handle, one more
+    way to reach it. M-G fold r1 MINOR 1: ``procs`` is a module-level
+    import (the pinned slot after ``from .normalize import sha_anchor``)
+    — no cycle (``primitives`` is a leaf); local import dropped."""
+    from . import gitops
+
+    try:
+        proc = procs.run_bounded(
+            ["git", "-C", str(home), "mv", str(src), str(dest)],
+            timeout=gitops.GIT_LOCAL_TIMEOUT,
+        )
+    except procs.BoundedTimeout as exc:
+        raise LedgerOpsError(f"git mv {src} {dest} did not finish: {exc}") from exc
+    if proc.returncode != 0:
+        raise LedgerOpsError(f"git mv {src} {dest} failed: {proc.stderr.strip()}")
 
 
 def _remove_file(home: Path, path: Path) -> bool:
-    """``git rm --ignore-unmatch`` + fs remove (the file may be untracked
-    mid-review — 08 §1 Proposal-lifecycle pin). True iff the file existed."""
+    """``git rm --quiet`` (only when tracked — :func:`gitops.remove` has
+    no ``--ignore-unmatch``, unlike this function's pre-M-D direct ``_git``
+    call) + fs remove (the file may be untracked mid-review — 08 §1
+    Proposal-lifecycle pin). True iff the file existed.
+
+    M-D: routes through :func:`gitops.is_tracked` / :func:`gitops.remove`
+    instead of this module's own ``_git`` (closes A8/C12a).
+
+    Raises :class:`gitops.GitOpsError` on a failed ``git rm`` — NOT
+    :class:`gitops.HalfWrittenError`. M-D fold r2 (BLOCKER) had this
+    function catch and convert itself, naming only the ONE path it was
+    working on; M-D fold r3 (MINOR) undid that, because every one of
+    this function's four callers (``remove_proposal_siblings``'s two
+    call sites; ``verbs.route``'s belt-and-braces merge-path cleanup;
+    ``verbs.bucket_prune``'s per-bucket ``meta.yaml`` loop) calls this
+    AFTER an earlier mutation in the same sequence — a ``git mv``, an
+    earlier ``supersede_record``, or an earlier loop iteration's own
+    successful removal — and only the CALLER holds that accumulated
+    ``touched`` list. A bare :class:`gitops.GitOpsError` reaching
+    ``cli.py``'s dispatch (~:1899-1906) is fine ONLY when nothing was
+    mutated yet; every caller here is past that point, so every caller
+    converts to :class:`gitops.HalfWrittenError` via ``.for_commit(...)``
+    built with its own enclosing ``touched`` — see
+    :func:`remove_proposal_siblings`, :func:`verbs.bucket_prune`,
+    :func:`verbs.route`."""
+    from . import gitops
+
     if not path.exists():
         return False
-    _git(home, "rm", "-f", "-q", "--ignore-unmatch", "--", str(path))
+    if gitops.is_tracked(home, path):
+        gitops.remove(home, path)
     if path.exists():  # untracked (or no git repo): git rm left it in place
         path.unlink()
     return True
@@ -290,29 +329,7 @@ def _now(now: datetime | None) -> datetime:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _to_dt(value) -> datetime | None:
-    """Lenient timestamp coercion: ruamel hands back datetime/date for plain
-    ISO scalars, str otherwise. None / unparseable → None."""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        dt = value
-    elif isinstance(value, date):
-        dt = datetime(value.year, value.month, value.day)
-    else:
-        s = str(value).strip()
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        try:
-            dt = datetime.fromisoformat(s)
-        except ValueError:
-            return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+    return chrono.now_iso()
 
 
 def _ts_str(value) -> str | None:
@@ -320,24 +337,16 @@ def _ts_str(value) -> str | None:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return value.astimezone(timezone.utc).strftime(chrono.ISO_FORMAT)
     if isinstance(value, date):
         return value.isoformat()
     return str(value)
 
 
 def _age_days(created_at, now: datetime) -> int:
-    dt = _to_dt(created_at)
-    if dt is None:
-        return 0
-    return max(0, int((now - dt).total_seconds() // _SECONDS_PER_DAY))
-
-
-def _deferred_hidden(record: Record, now: datetime) -> bool:
-    """THE membership rule's deferral half: hidden iff ``deferred_until`` is
-    in the future (status may still say deferred — computed, 02 §2)."""
-    until = _to_dt(record.deferred_until)
-    return until is not None and until > now
+    # M-B: ``_to_dt`` moved to ``primitives.chrono`` (domain.py's clock) —
+    # this call site is repointed, not a new domain consumer.
+    return chrono.age_days(chrono.to_dt(created_at), now)
 
 
 # ---------------------------------------------------------- bucket routing
@@ -2243,15 +2252,42 @@ def _generate_hook_script(record: Record, data: dict) -> str:
         raise ProposalError(str(exc)) from exc
 
 
-def remove_proposal_siblings(home: Path, bucket_dir: Path, record_id: str) -> list[Path]:
+def remove_proposal_siblings(
+    home: Path, bucket_dir: Path, record_id: str, *, touched: list[Path] | None = None
+) -> list[Path]:
     """08 §1 Proposal-lifecycle pin: at resolution, remove the record's own
     ``lrn-<id>.{yaml,diff}`` AND every ``merge-*.yaml`` whose ``records``
-    list names it (a partial cluster is invalid). Returns removed paths."""
+    list names it (a partial cluster is invalid). Returns removed paths.
+
+    ``touched``: paths the CALLER has already staged before this sweep
+    (e.g. the record's own ``git mv``, an ``ensure_project_meta`` write).
+    M-D fold r3 (MINOR): a failed removal here is converted to
+    :class:`gitops.HalfWrittenError` naming ``touched`` + this sweep's
+    own progress + the failing path, per :func:`_remove_file`'s docstring
+    — the caller's mutations are just as half-written as this sweep's."""
+    from . import gitops
+
     pdir = bucket_dir / "proposals"
     removed: list[Path] = []
+    already = list(touched) if touched else []
+    message = f"self-learn: remove proposal siblings of {record_id}"
+
+    # M-D fold r3 (MINOR): a local closure here (rather than these two
+    # inline try/excepts, duplicated) tripped test_lock_invariant.py's
+    # walker — it qualifies a nested function as its OWN reachable node
+    # (`remove_proposal_siblings._remove`) rather than inheriting the
+    # enclosing function's already-verified lock reachability. Direct
+    # calls, matching every other converted call site in this fold
+    # (`bucket_prune`, `route`), keep the walker's call graph the shape
+    # it already verifies.
     for path in (pdir / f"{record_id}.yaml", pdir / f"{record_id}.diff"):
-        if _remove_file(home, path):
-            removed.append(path)
+        try:
+            if _remove_file(home, path):
+                removed.append(path)
+        except gitops.GitOpsError as exc:
+            raise gitops.HalfWrittenError.for_commit(
+                home, message, [*already, *removed, path], exc
+            ) from exc
     if pdir.is_dir():
         for path in sorted(pdir.glob("merge-*.yaml")):
             try:
@@ -2260,8 +2296,13 @@ def remove_proposal_siblings(home: Path, bucket_dir: Path, record_id: str) -> li
                 continue  # unparseable → cannot name the id; worker policy owns it
             records = data.get("records")
             if isinstance(records, list) and record_id in records:
-                if _remove_file(home, path):
-                    removed.append(path)
+                try:
+                    if _remove_file(home, path):
+                        removed.append(path)
+                except gitops.GitOpsError as exc:
+                    raise gitops.HalfWrittenError.for_commit(
+                        home, message, [*already, *removed, path], exc
+                    ) from exc
     return removed
 
 
@@ -2393,7 +2434,7 @@ def resolve_record(
         resolved_dir.mkdir(parents=True, exist_ok=True)
         dest_path = resolved_dir / path.name
         if _is_tracked(home, path):
-            _git_ok(home, "mv", str(path), str(dest_path))
+            _git_mv(home, path, dest_path)
         else:
             path.rename(dest_path)
         touched.append(path)
@@ -2401,7 +2442,7 @@ def resolve_record(
         dest_path = path
     record.write(dest_path)
     touched.append(dest_path)
-    touched.extend(remove_proposal_siblings(home, bucket_dir, record_id))
+    touched.extend(remove_proposal_siblings(home, bucket_dir, record_id, touched=touched))
     return touched
 
 
@@ -2464,14 +2505,14 @@ def move_record(
     record.set_scope(target_scope)  # written unconditionally (§3.2a step 5)
     dest_path = target_bucket / "pending" / path.name
     if _is_tracked(home, path):
-        _git_ok(home, "mv", str(path), str(dest_path))
+        _git_mv(home, path, dest_path)
     else:
         path.rename(dest_path)
     record.write(dest_path)  # rewrite AT THE DESTINATION — mv-first (§6.4)
-    swept = remove_proposal_siblings(home, source_bucket, record_id)
     touched: list[Path] = [path, dest_path]
     if meta_path is not None:
         touched.append(meta_path)
+    swept = remove_proposal_siblings(home, source_bucket, record_id, touched=touched)
     touched.extend(swept)
     return touched, swept
 
@@ -2501,12 +2542,13 @@ def reopen_record(home: Path, record_id: str) -> tuple[list[Path], list[Path]]:
     pending_dir.mkdir(parents=True, exist_ok=True)
     dest_path = pending_dir / path.name
     if _is_tracked(home, path):
-        _git_ok(home, "mv", str(path), str(dest_path))
+        _git_mv(home, path, dest_path)
     else:
         path.rename(dest_path)
     record.write(dest_path)  # rewrite AT THE DESTINATION — mv-first (§6.4)
-    swept = remove_proposal_siblings(home, bucket_dir, record_id)
-    touched: list[Path] = [path, dest_path, *swept]
+    touched_so_far: list[Path] = [path, dest_path]
+    swept = remove_proposal_siblings(home, bucket_dir, record_id, touched=touched_so_far)
+    touched: list[Path] = [*touched_so_far, *swept]
     return touched, swept
 
 
@@ -2756,7 +2798,7 @@ def queue(
     entries, _bad = _load_pending(bucket)
     if include_deferred:
         return entries
-    return [e for e in entries if not _deferred_hidden(e.record, now)]
+    return [e for e in entries if domain.is_queued(e.record, now)]
 
 
 def unparseable_pending(bucket: Bucket) -> list[Path]:
@@ -2813,7 +2855,7 @@ def is_unanalyzed(entry: QueueEntry, *, now: datetime | None = None) -> bool:
     pending, non-deferred, AND (no proposal file, or schema-invalid /
     unparseable proposal, or ``record_sha`` ≠ current normalized-body hash).
     ``list``/``status``/the worker all call this — never a second definition."""
-    if _deferred_hidden(entry.record, _now(now)):
+    if not domain.is_queued(entry.record, _now(now)):
         return False
     return not proposal_info(entry)["proposal_fresh"]
 
@@ -2836,7 +2878,7 @@ def record_title(record: Record) -> str:
 
 
 def _sort_key(entry: QueueEntry):
-    dt = _to_dt(entry.record.created_at)
+    dt = chrono.to_dt(entry.record.created_at)
     return (dt or datetime.fromtimestamp(0, tz=timezone.utc), entry.record.id)
 
 
