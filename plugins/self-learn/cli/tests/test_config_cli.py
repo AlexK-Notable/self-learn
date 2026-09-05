@@ -67,7 +67,9 @@ class TestConfigGet:
         # key that genuinely still resolves to `default` under it.
         row = next(r for r in rows if r["name"] == "sdk.event_logs")
         assert set(row) == {
-            "name", "value", "source", "kind", "default", "description", "tier", "warn",
+            # M-S (S-58, r5-m1(c)): `note` -- the fold detail, `None`
+            # here since nothing folded anything for this entry.
+            "name", "value", "source", "kind", "default", "description", "tier", "warn", "note",
         }
         assert row == {
             "name": "sdk.event_logs",
@@ -78,6 +80,7 @@ class TestConfigGet:
             "description": row["description"],
             "tier": "A",
             "warn": None,
+            "note": None,
         }
 
     def test_json_default_for_a_none_default_setting_is_json_null(
@@ -98,6 +101,7 @@ class TestConfigGet:
                 "description": rows[0]["description"],
                 "tier": "A",
                 "warn": None,
+                "note": None,
             }
         ]
 

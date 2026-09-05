@@ -205,14 +205,14 @@ def test_dc4_sdk_row_injected_importer(monkeypatch):
     def _match_importer():
         return fake
 
-    def _operative_match():
+    def _operative_match(home=None):
         return "2.1.999", ""
 
     monkeypatch.setattr(provider, "_operative_cli_version", _operative_match)
     row = provider._sdk_row(importer=_match_importer)
     assert row.verdict == "PASS"
 
-    def _operative_differ():
+    def _operative_differ(home=None):
         return "2.1.212", ""
 
     monkeypatch.setattr(provider, "_operative_cli_version", _operative_differ)

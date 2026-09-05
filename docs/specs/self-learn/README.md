@@ -962,12 +962,13 @@ human routes it.
   and the gate's verification table:
   `drafts/u-docs-truth-sweep-spec.md`.
 - **2026-09-04 — S-58 amended: one mechanism, per-key direction (Sprint 2
-  plan v2 §2 M-S; decision D1); folded r1–r5 same day against five
+  plan v2 §2 M-S; decision D1); folded r1–r5 same day against six
   blind spec gates (r1: 2 Blockers, 6 Majors, 5 minors, 2 nits; r2: 1
   Blocker, 2 Majors, 3 minors, 3 nits; r3: 0 Blockers, 2 Majors, 1
   minor, 1 nit; r4: 0 Blockers, 1 Major, 0 minors, 1 nit; r5: 0
-  Blockers, 1 Major, 1 minor, 2 nits — see `03-decisions.md`'s `S-58`
-  row for the current folded text; not yet gate-CLEAN).** The two
+  Blockers, 1 Major, 1 minor, 2 nits; r6 on `8603e1d`: 0 Blockers, 0
+  Majors, 1 minor, 1 nit — CLEAN — see `03-decisions.md`'s `S-58`
+  row for the current folded text).** The two
   precedence DIRECTIONS `S-58` ruled on 2026-07-19/2026-09-01 are
   unchanged — the settings registry's operator-policy keys stay
   `override > config.yaml > env > default`; provider/model/backend
@@ -1055,5 +1056,7 @@ human routes it.
   table actually names a fourth key, `models.pane` — UI-scope, correctly
   left out of this amendment's three (r2 n2). `03-decisions.md`'s `S-58`
   row carries the full folded amendment; `01`–`17` are otherwise
-  unchanged by this entry. Code lands separately, in Sprint 2 lane L4,
-  after the blind spec gate returns CLEAN.
+  unchanged by this entry. Code landed separately, in Sprint 2 lane L4,
+  one commit (`M-S: provider/backend keys resolved by the settings
+  registry with per-key direction`) implementing the row exactly as it
+  reads after the spec gate returned CLEAN at r6.

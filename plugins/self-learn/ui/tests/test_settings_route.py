@@ -66,7 +66,7 @@ def _write_config(home: Path, section: str, dotted_key: str, value: object) -> N
 
 
 class TestSettingsPageRender:
-    def test_renders_all_21_rows_with_the_four_source_badges(
+    def test_renders_every_registry_row_with_the_four_source_badges(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The positive control (dispatch pin): a config.yaml key, an
@@ -86,7 +86,10 @@ class TestSettingsPageRender:
         # AUTOKICK=0 fixture) can never leak into the "default"/"env"
         # rows this test asserts on.
         for s in settings_mod.REGISTRY:
-            monkeypatch.delenv(s.env_var, raising=False)
+            # M-S (S-58): `env_var` is `str | None` now (the four
+            # `provider.bedrock.models.*` entries with no env rung).
+            if s.env_var is not None:
+                monkeypatch.delenv(s.env_var, raising=False)
             monkeypatch.delenv(settings_mod._override_env_var(s.name), raising=False)  # noqa: SLF001
         # ENV source
         monkeypatch.setenv("SELF_LEARN_MINE_PENDING_GATE", "50")

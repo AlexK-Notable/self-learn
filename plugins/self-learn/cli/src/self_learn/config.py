@@ -62,8 +62,8 @@ __all__ = [
     "invocation_backend",
     "load_editable",
     "one_motion_enabled",
+    "override_env_var",
     "present",
-    "provider_setting",
     "provider_unknown_keys",
     "set_leaf",
     "settings_leaf",
@@ -172,60 +172,26 @@ def invocation_backend(home: Path | str, surface: str) -> tuple[str, str] | None
     return None
 
 
-def provider_setting(home: Path | str, key: str) -> tuple[str, str] | None:
-    """U-bedrock `Key-1`/`K-b` -- one reader over the `provider:` section,
-    walking the dotted path of a `PROVIDER_KEYS` member. `key` outside
-    `PROVIDER_KEYS` is a PROGRAMMING error and raises `ValueError` (never
-    operator input). Follows :func:`invocation_backend`'s discipline case
-    for case; the returned first element is `key` itself, verbatim, so a
-    caller can build its own `"config:provider.{key}"` source string.
-    Does NOT validate the value against `PROVIDERS` or any model-id shape
-    -- those judgements belong to `provider.py` and the doctor."""
-    if key not in PROVIDER_KEYS:
-        raise ValueError(f"provider_setting: {key!r} is not in PROVIDER_KEYS")
-    path = config_path(home)
-    if not path.is_file():
-        return None
-    try:
-        data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
-    except (YAMLError, OSError, UnicodeDecodeError) as exc:
-        _warn(f"unparseable ({exc}); provider.{key} ignored")
-        return None
-    if data is None:
-        return None
-    if not isinstance(data, dict):
-        _warn(
-            f"top level must be a mapping, got {type(data).__name__}; "
-            f"provider.{key} ignored"
-        )
-        return None
-    section = data.get(_PROVIDER_SECTION)
-    if section is None:
-        return None
+def override_env_var(name: str) -> str:
+    """M-S (U-settings' provider/backend-selection amendment, S-58) --
+    the override channel's env-var name for a dotted registry key
+    `name`: `SELF_LEARN_OVERRIDE_<NAME>`, uppercased, with BOTH `.` and
+    `-` folded to `_` (minor-1, code-gate review 2026-09-04): a bare
+    `.`-only substitution would produce
+    `SELF_LEARN_OVERRIDE_INVOCATION_BACKEND_WORKER-REPAIR`, which is not
+    a valid POSIX environment-variable name (a hyphen is not a legal
+    identifier character) -- `invocation.backend_worker-repair`'s own
+    name embeds the surface `worker-repair` verbatim, so this is not a
+    hypothetical.
 
-    segments = key.split(".")
-    node: object = section
-    path_so_far = _PROVIDER_SECTION
-    for segment in segments[:-1]:
-        if not isinstance(node, dict):
-            _warn(f"{path_so_far} must be a mapping, got {node!r}; provider.{key} ignored")
-            return None
-        path_so_far = f"{path_so_far}.{segment}"
-        if segment not in node:
-            return None
-        node = node[segment]
-
-    if not isinstance(node, dict):
-        _warn(f"{path_so_far} must be a mapping, got {node!r}; provider.{key} ignored")
-        return None
-    leaf = segments[-1]
-    if leaf not in node:
-        return None
-    value = node[leaf]
-    if not isinstance(value, str):
-        _warn(f"provider.{key} must be a string, got {value!r}; ignored")
-        return None
-    return (key, value)
+    Lives here, not in `settings.py`, so `invocation/registry.py` can
+    compute the SAME override-var name for its own runtime-dispatch
+    override rungs (`resolve_backend_raw`) without importing
+    `settings.py` at all (`I-b`'s one-permitted-upward-import rule
+    would otherwise be violated) -- `settings.py`'s own `_override_env_
+    var` is now a thin call-through to this function, so the two
+    channels can never drift apart under one operator-visible name."""
+    return "SELF_LEARN_OVERRIDE_" + name.upper().replace(".", "_").replace("-", "_")
 
 
 def _collect_leaf_paths(node: object, prefix: str, out: set) -> None:
