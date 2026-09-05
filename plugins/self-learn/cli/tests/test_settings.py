@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 from ruamel.yaml import YAML
 
-from self_learn import analyst, miner, serve, settings, telemetry, worker
+from self_learn import analyst, miner, provider, serve, settings, telemetry, worker
 from self_learn import cli as cli_mod
 from self_learn import ledger_ops as ledger_ops_mod
 from self_learn import verbs as verbs_mod
@@ -94,6 +94,31 @@ _NUMERIC_OR_BOOL_NAMES = [s.name for s in settings.REGISTRY if s.kind != "str"]
 _STR_NAMES = [s.name for s in settings.REGISTRY if s.kind == "str"]
 _ALL_NAMES = [s.name for s in settings.REGISTRY]
 
+# M-S (S-58): three registry mechanics the generic precedence tests
+# below were never written against, each exercised by its OWN
+# dedicated test instead (further down this file) rather than forcing
+# a placeholder value/provider through them:
+#   - `enabled_when` (the six `provider.bedrock.*` entries): under
+#     `provider=anthropic` (every generic test's ambient default) they
+#     resolve to `f"inactive (provider=anthropic)"`, never "default"
+#     nor a config/env value, no matter what config.yaml/env holds.
+#   - `accepts` (`provider.name`, `invocation.backend` + its four
+#     per-surface siblings): `_valid_override`'s generic placeholder
+#     string is never a member of the whitelist, so `validate` clamps
+#     it back to the in-place default instead of "winning".
+#   - `direction="env-first"` (every M-S entry): env outranks config,
+#     the opposite of every pre-amendment entry's `config-first`.
+_ENABLED_WHEN_NAMES = [s.name for s in settings.REGISTRY if s.enabled_when is not None]
+_ACCEPTS_NAMES = [s.name for s in settings.REGISTRY if s.accepts is not None]
+_ENV_FIRST_NAMES = [s.name for s in settings.REGISTRY if s.direction == "env-first"]
+
+_GENERIC_DEFAULT_NAMES = [n for n in _ALL_NAMES if n not in _ENABLED_WHEN_NAMES]
+_GENERIC_CONFIG_BEATS_DEFAULT_NAMES = [
+    n for n in _ALL_NAMES if n not in _ENABLED_WHEN_NAMES and n not in _ACCEPTS_NAMES
+]
+_GENERIC_CONFIG_BEATS_ENV_NAMES = [n for n in _ALL_NAMES if n not in _ENV_FIRST_NAMES]
+_GENERIC_STR_NAMES = [n for n in _STR_NAMES if n not in _ENABLED_WHEN_NAMES]
+
 
 @pytest.fixture(autouse=True)
 def _clear_registry_env(monkeypatch):
@@ -106,7 +131,11 @@ def _clear_registry_env(monkeypatch):
     every "default" / "config beats default" assertion below false on
     THIS machine's env alone."""
     for setting in settings.REGISTRY:
-        monkeypatch.delenv(setting.env_var, raising=False)
+        # M-S (S-58): `env_var` is `str | None` now (the four
+        # `provider.bedrock.models.*` entries with no env rung at all)
+        # -- nothing to clear for those.
+        if setting.env_var is not None:
+            monkeypatch.delenv(setting.env_var, raising=False)
 
 
 # ===================================================================== #
@@ -145,6 +174,35 @@ def test_registry_defaults_match_their_source_constants():
     assert by_name["sdk.max_turns.analyst"].default == backend_mod._DEFAULT_MAX_TURNS["ANALYST"]
     assert by_name["serve.tick_secs"].default == serve.DEFAULT_TICK_SECS
     assert by_name["ledger.glob_probe_budget_s"].default == ledger_ops_mod.DEFAULT_GLOB_PROBE_BUDGET_S
+    # M-S (S-58, BLOCKER-1): `settings._PROVIDERS`/`_DEFAULT_PROVIDER`
+    # are duplicated from `provider.PROVIDERS`/`provider.DEFAULT_
+    # PROVIDER` for the same reason every literal above is duplicated
+    # (`settings.py` cannot import `provider.py` -- `provider.py` now
+    # imports `settings.py`, so the reverse edge would close a cycle).
+    assert settings._PROVIDERS == provider.PROVIDERS
+    assert settings._DEFAULT_PROVIDER == provider.DEFAULT_PROVIDER
+    assert by_name["provider.name"].default == provider.DEFAULT_PROVIDER
+
+
+def test_models_star_defaults_are_the_called_shipped_functions_never_copied():
+    """`models.worker`/`.miner`/`.analyst`'s `default` is a CALLABLE
+    (unlike every literal pinned above) -- each entry's own module
+    docstring precedent (`P-b`: "the surface's shipped default
+    function, CALLED, never copied") means there is no static literal
+    to pin here; instead this proves the wrapper CALLS the real
+    function rather than caching or reimplementing it, by making the
+    real function's answer change and observing the registry default
+    change with it."""
+    by_name = {s.name: s for s in settings.REGISTRY}
+    assert by_name["models.worker"].default() == worker.worker_model()
+    assert by_name["models.miner"].default() == miner.miner_model()
+    assert by_name["models.analyst"].default() == analyst._model()
+
+    os.environ["SELF_LEARN_WORKER_MODEL"] = "mutation-witness-model"
+    try:
+        assert by_name["models.worker"].default() == "mutation-witness-model"
+    finally:
+        del os.environ["SELF_LEARN_WORKER_MODEL"]
 
 
 def test_by_name_raises_for_an_unknown_key():
@@ -157,7 +215,7 @@ def test_by_name_raises_for_an_unknown_key():
 # ===================================================================== #
 
 
-@pytest.mark.parametrize("name", _ALL_NAMES)
+@pytest.mark.parametrize("name", _GENERIC_DEFAULT_NAMES)
 def test_default_when_nothing_set(name, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
@@ -167,7 +225,7 @@ def test_default_when_nothing_set(name, tmp_path):
     assert source == "default"
 
 
-@pytest.mark.parametrize("name", _ALL_NAMES)
+@pytest.mark.parametrize("name", _GENERIC_CONFIG_BEATS_DEFAULT_NAMES)
 def test_config_beats_default(name, tmp_path):
     home = tmp_path / "home"
     setting = settings.by_name(name)
@@ -178,7 +236,7 @@ def test_config_beats_default(name, tmp_path):
     assert source == f"config:{setting.config_section}.{setting.config_key}"
 
 
-@pytest.mark.parametrize("name", _ALL_NAMES)
+@pytest.mark.parametrize("name", _GENERIC_CONFIG_BEATS_ENV_NAMES)
 def test_config_beats_env(name, tmp_path, monkeypatch):
     """U-flip (2026-09-01, S-58): config.yaml now outranks an explicit
     env var for every registry entry — the opposite of `provider.py`'s
@@ -284,8 +342,11 @@ def test_malformed_config_and_malformed_env_both_warn_then_default(name, tmp_pat
 
 def test_empty_env_value_falls_through_not_treated_as_present(tmp_path):
     """An empty string env var is "no answer", not a malformed value —
-    matches `provider.py`'s `_resolve_str_setting` precedent (`if
-    value:`, not `if value is not None:`)."""
+    matches every env-first entry's OWN `if value:` truthiness rule
+    (not `if value is not None:`; `_resolve_registry_str`'s callers
+    inherit this from `resolve_setting`/`_try_env` directly now, the
+    same behavior `provider.py`'s retired `_resolve_str_setting` used
+    to hand-roll)."""
     home = tmp_path / "home"
     home.mkdir()
     setting = settings.by_name("worker.coalesce_secs")
@@ -298,7 +359,7 @@ def test_empty_env_value_falls_through_not_treated_as_present(tmp_path):
     assert value == _default_value(setting)
 
 
-@pytest.mark.parametrize("name", _STR_NAMES)
+@pytest.mark.parametrize("name", _GENERIC_STR_NAMES)
 def test_empty_config_str_value_falls_through_silently(name, tmp_path, capsys):
     """M-4 (review 2026-09-01): the config.yaml mirror of the test
     above — before this fix, `transcripts_dir: ""` was accepted as a
@@ -316,7 +377,7 @@ def test_empty_config_str_value_falls_through_silently(name, tmp_path, capsys):
     assert capsys.readouterr().err == ""  # silent -- NOT the "not a valid str" warn path
 
 
-@pytest.mark.parametrize("name", _STR_NAMES)
+@pytest.mark.parametrize("name", _GENERIC_STR_NAMES)
 def test_malformed_config_str_value_warns_and_falls_back(name, tmp_path, capsys):
     """M-4's other half: `str` was the one kind excluded from every
     malformed-value test above (any actual string always "parses" as a
@@ -333,6 +394,154 @@ def test_malformed_config_str_value_warns_and_falls_back(name, tmp_path, capsys)
     err = capsys.readouterr().err
     assert setting.config_section in err
     assert setting.name in err
+
+
+# ===================================================================== #
+# M-S (S-58): direction, enabled_when, accepts -- the three mechanics
+# the generic precedence tests above deliberately exclude by name.
+# ===================================================================== #
+
+
+@pytest.mark.parametrize("name", _ENV_FIRST_NAMES)
+def test_env_first_env_beats_config(name, tmp_path, monkeypatch):
+    """The mirror of `test_config_beats_env` for the OTHER direction:
+    every `direction="env-first"` entry resolves env OVER config -- the
+    opposite of every pre-amendment entry (proven above). Entries with
+    no `env_var` at all (the four gated `provider.bedrock.models.*`)
+    are excluded here for the obvious reason (nothing to set); entries
+    with `accepts` use a value from their own whitelist so this test
+    exercises precedence, not the separate `accepts`/`validate` fold
+    already covered below."""
+    setting = settings.by_name(name)
+    if setting.env_var is None:
+        pytest.skip(f"{name}: no env rung to race against config")
+    home = tmp_path / "home"
+    if name in _ACCEPTS_NAMES:
+        env_value, config_value = "sdk", "sdk"  # only member of KNOWN_BACKENDS today
+        if name == "provider.name":
+            env_value, config_value = "bedrock", "anthropic"
+    else:
+        env_value, config_value = "env-wins", "config-loses"
+    if setting.enabled_when is not None:
+        monkeypatch.setenv("SELF_LEARN_PROVIDER", "bedrock")
+    _write_config(home, setting.config_section, setting.config_key, config_value)
+    monkeypatch.setenv(setting.env_var, env_value)
+    value, source = settings.resolve_setting(home, setting)
+    assert value == env_value
+    assert source == f"env:{setting.env_var}"
+
+
+@pytest.mark.parametrize("name", _ENABLED_WHEN_NAMES)
+def test_enabled_when_gates_every_rung_including_override(name, tmp_path, monkeypatch):
+    """`enabled_when` is evaluated BEFORE even the override rung
+    (03-decisions.md row S-58) -- under `provider=anthropic` (never set
+    here, so the ambient default), NOTHING at ANY rung reaches this
+    entry: not an active override, not env, not config. Every rung is
+    armed simultaneously so a build that only gated, say, the config
+    rung would still fail this."""
+    setting = settings.by_name(name)
+    home = tmp_path / "home"
+    if setting.env_var is not None:
+        monkeypatch.setenv(setting.env_var, "armed-env-value")
+    _write_config(home, setting.config_section, setting.config_key, "armed-config-value")
+    with settings.override(name, "armed-override-value"):
+        value, source = settings.resolve_setting(home, setting)
+    assert value == _default_value(setting)
+    assert source == "inactive (provider=anthropic)"
+
+
+@pytest.mark.parametrize("name", _ENABLED_WHEN_NAMES)
+def test_enabled_when_true_reaches_every_rung_normally(name, tmp_path, monkeypatch):
+    """The positive control for the test above: under `provider=
+    bedrock`, these SAME six entries resolve exactly like an ordinary
+    env-first entry -- config beats nothing else set, matching
+    `test_config_beats_default`'s own assertion shape for every OTHER
+    entry (proving `enabled_when=True` is not itself silently
+    inert)."""
+    setting = settings.by_name(name)
+    home = tmp_path / "home"
+    monkeypatch.setenv("SELF_LEARN_PROVIDER", "bedrock")
+    override = _valid_override(setting)
+    _write_config(home, setting.config_section, setting.config_key, override)
+    value, source = settings.resolve_setting(home, setting)
+    assert value == override
+    assert source == f"config:{setting.config_section}.{setting.config_key}"
+
+
+@pytest.mark.parametrize("name", _ACCEPTS_NAMES)
+def test_accepts_entries_clamp_on_read_exactly_like_any_other_validate(name, tmp_path, monkeypatch):
+    """`validate` (the READ-path clamp) is UNCHANGED for `provider.name`/
+    `invocation.backend*` -- an off-whitelist config.yaml value folds
+    in place to the entry's own default, same mechanism every other
+    clamping entry in this registry already uses, `accepts` notwith-
+    standing (that field governs `config_set`, not `resolve_setting`,
+    proven separately below)."""
+    setting = settings.by_name(name)
+    home = tmp_path / "home"
+    if setting.enabled_when is not None:
+        monkeypatch.setenv("SELF_LEARN_PROVIDER", "bedrock")
+    _write_config(home, setting.config_section, setting.config_key, "off-whitelist-value")
+    value, source = settings.resolve_setting(home, setting)
+    assert value == _default_value(setting)
+    assert source == f"config:{setting.config_section}.{setting.config_key}"
+
+
+@pytest.mark.parametrize("name", _ACCEPTS_NAMES)
+def test_accepts_refuses_the_write_and_leaves_config_yaml_untouched(name, tmp_path):
+    """The laundering-prevention gate (MAJOR-3/r4-M1/r5-M1, dispatch
+    requirement 3): `config set` on an off-whitelist value is REFUSED
+    outright -- and, the mutation this test actually exists to catch,
+    the refusal happens BEFORE any write, not after a clamping
+    `validate` quietly launders it into the in-place default. Moving
+    the `accepts` check to AFTER `_apply_validate` in `config_set`
+    (the bug this guards against) would make this test's `pytest.raises`
+    fail to fire AND commit `anthropic`/`sdk` to config.yaml instead of
+    refusing -- both assertions below are load-bearing, not redundant."""
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=home, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.invalid"], cwd=home, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=home, check=True)
+    config_path = home / "config.yaml"
+    config_path.write_text("", encoding="utf-8")
+    subprocess.run(["git", "add", "config.yaml"], cwd=home, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=home, check=True)
+
+    before = config_path.read_bytes()
+    with pytest.raises(settings.InvalidSettingValueError, match="not accepted"):
+        settings.config_set(home, name, "off-whitelist-value")
+    after = config_path.read_bytes()
+    assert after == before  # the file was never touched, not even a half-write
+
+
+def test_note_field_names_the_fold_when_provider_name_config_value_is_off_whitelist(tmp_path):
+    """`setting_row`'s `note` field (r5-m1(c)/r6-m1(a)): `None` on an
+    ordinary resolution, populated with the raw-vs-folded pair whenever
+    the answering rung's raw value was actually folded by `validate`."""
+    home = tmp_path / "home"
+    row_clean = settings.setting_row(home, settings.by_name("provider.name"))
+    assert row_clean["note"] is None  # nothing set at all -- no fold to report
+
+    _write_config(home, "provider", "name", "off-whitelist-value")
+    row_folded = settings.setting_row(home, settings.by_name("provider.name"))
+    assert row_folded["value"] == "anthropic"
+    assert row_folded["note"] == "'off-whitelist-value' folded to 'anthropic'"
+
+
+def test_preflight_detail_carries_note_in_both_info_and_warn_branches(tmp_path, monkeypatch):
+    """r6-m1(b) (dispatch requirement 4): BOTH of `preflight`'s two
+    branches -- the ordinary INFO row AND the WARN/override row -- must
+    carry `note` when the answering rung's raw value was folded, not
+    just one of the two."""
+    home = tmp_path / "home"
+    _write_config(home, "provider", "name", "off-whitelist-value")
+    rows = {r.name: r for r in settings.preflight(home)}
+    assert "folded to 'anthropic'" in rows["provider.name"].detail  # INFO branch
+
+    monkeypatch.setenv("SELF_LEARN_OVERRIDE_PROVIDER_NAME", "another-off-whitelist-value")
+    rows2 = {r.name: r for r in settings.preflight(home)}
+    assert rows2["provider.name"].verdict == "WARN"
+    assert "folded to 'anthropic'" in rows2["provider.name"].detail  # WARN branch
 
 
 # ===================================================================== #

@@ -35,9 +35,10 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from . import config
+from . import config, settings
+from .invocation import registry
 from .invocation.contract import DEFAULT_BACKEND_FOR_SURFACE, SELECTOR_FOR_SURFACE, SURFACES
 from .invocation.registry import KNOWN_BACKENDS, _CLI_RETIRED_MESSAGE
 
@@ -49,6 +50,7 @@ __all__ = [
     "Row",
     "resolve",
     "resolve_backend_name",
+    "resolve_backend",
     "model_for",
     "MODEL_KEY_FOR_SURFACE",
     "session_env",
@@ -69,9 +71,63 @@ DEFAULT_PROVIDER = "anthropic"
 
 
 def _resolve_provider(home: Path | str) -> tuple[str, str]:
-    """`Prov-1`/`Pv-a`/`Pv-b`. Three rungs, first hit wins. An empty value
-    falls through silently. An unknown value warns once and resolves to
-    `DEFAULT_PROVIDER`, WITHOUT falling through to the next rung."""
+    """`Prov-1`/`Pv-a`/`Pv-b`, plus M-S's new override rung (S-58): FOUR
+    rungs, first hit wins. An empty value falls through silently. An
+    unknown value warns once and resolves to `DEFAULT_PROVIDER`,
+    WITHOUT falling through to the next rung.
+
+    `provider.name`'s own runtime resolution stays a SEPARATE,
+    hand-written cascade from `settings.REGISTRY`'s `provider.name`
+    entry (03-decisions.md row S-58, MAJOR-2's text: "`provider.name`'s
+    own runtime resolution follows the same split" the backend family
+    uses) -- this function's two `print`/`config._warn` calls stay the
+    ONLY emitter for a live, unknown provider value, exactly as today;
+    the registry entry's OWN `validate` clamps the SAME kind of value
+    silently, for `doctor settings`/`config get`, via the `note` field
+    instead. `config.settings_leaf` (the generic dotted-key reader
+    `resolve_setting` itself uses) replaces the deleted `config.
+    provider_setting` at the config rung -- a direct, behavior-
+    preserving substitution (`provider_setting`'s own `PROVIDER_KEYS`
+    membership check was never load-bearing for `key="name"`, which is
+    always a member).
+
+    Code-gate fold r1 (BLOCKER-1): the override rung now reads through
+    `config.read_override` -- the SAME reader `settings._try_override`
+    uses -- instead of a private `os.environ.get` + truthiness check.
+    The two faces used to decide "is there an ambient answer?" by two
+    DIFFERENT rules (this one truthiness, the registry's presence),
+    and only the registry's `validate` silently clamped an unknown/
+    empty value -- so an ambient EMPTY `SELF_LEARN_OVERRIDE_PROVIDER_
+    NAME` used to brick a valid bedrock ledger to `"anthropic"` on the
+    registry face while this face correctly fell through, two faces
+    disagreeing on the same ambient state. Both faces now agree: an
+    AMBIENT empty override reads as "no answer" (falls through,
+    exactly as before this fold on THIS face); a DELIBERATE
+    `settings.override("provider.name", "")` still round-trips (this
+    function is never called with one active in practice, since
+    nothing writes a deliberate `""` provider override, but the shared
+    reader makes the two channels' behavior identical by construction
+    rather than by two separate implementations staying in sync by
+    coincidence). The two `print` literals below are UNCHANGED."""
+    override_var = config.override_env_var("provider.name")
+    override_result = config.read_override("provider.name")
+    if override_result is not None:
+        override_value, is_none = override_result
+        if not is_none:
+            if override_value not in PROVIDERS:
+                print(
+                    f"self-learn: unknown provider {override_value!r} in {override_var}"
+                    ' — using "anthropic"',
+                    file=sys.stderr,
+                )
+                return DEFAULT_PROVIDER, "override:provider.name"
+            return override_value, "override:provider.name"
+        # is_none: `override("provider.name", None)` -- provider.name's
+        # own default is `DEFAULT_PROVIDER`, not `None`, so `settings.
+        # override` itself refuses to ever write this marker for this
+        # key (ValueError at write time); reachable here only if some
+        # future caller bypassed that guard -- treat as no answer.
+
     value = os.environ.get("SELF_LEARN_PROVIDER")
     if value:
         if value not in PROVIDERS:
@@ -83,10 +139,10 @@ def _resolve_provider(home: Path | str) -> tuple[str, str]:
             return DEFAULT_PROVIDER, "env:SELF_LEARN_PROVIDER"
         return value, "env:SELF_LEARN_PROVIDER"
 
-    setting = config.provider_setting(home, "name")
+    setting = config.settings_leaf(home, "provider", "name")
     if setting is not None:
         key, cfg_value = setting
-        if cfg_value:
+        if isinstance(cfg_value, str) and cfg_value:
             if cfg_value not in PROVIDERS:
                 config._warn(
                     "provider.name must be one of anthropic, bedrock; "
@@ -104,55 +160,43 @@ def _resolve_provider(home: Path | str) -> tuple[str, str]:
 
 
 def resolve_backend_name(home: Path | str, surface: str) -> tuple[str, str, str | None]:
-    """`Rs-a` -- a SECOND, INDEPENDENT transcription of U-seam's five-rung
-    backend precedence chain (env selector, env general, config per-
-    surface, config general, default `"sdk"`). Re-derived rather than
-    read from `registry.backend_for` because that function returns a
+    """`Rs-a` -- a SECOND, INDEPENDENT transcription of U-seam's backend
+    precedence chain, now delegated to :func:`invocation.registry.
+    resolve_backend_raw` (M-S, S-58, r3-M1) for the cascade itself
+    (override x2, env x2, config, default) so the RUNGS are no longer
+    duplicated here -- only the fold/refuse judgement is. Not read from
+    `registry.backend_for` directly because that function returns a
     `Backend` OBJECT and RAISES `BackendUnavailable` for both the
     not-yet-built-`sdk` case and the retired-`cli` case (`B-3`) -- it
-    cannot report a name -- and `registry.py` is outside this unit's file
-    surface.
+    cannot report a name.
 
-    `Rs-b` -- SILENT: never prints, for any input. `registry.py` already
-    warns on the same inputs at the same moment; a second copy would
-    double-print on every invocation.
+    `Rs-b` -- SILENT: never prints, for any input. `resolve_backend_raw`
+    itself emits nothing (pure); `registry.backend_for` already warns on
+    the same inputs at the same moment through its own, unchanged
+    `_resolve` call -- a second copy here would double-print on every
+    invocation.
 
-    `Rs-a1` -- the empty-value rule is ASYMMETRIC by design: the env
-    rungs fall through on an empty value (read directly, tested for
-    truthiness below); the config rungs do NOT, because
-    `config.invocation_backend` returns the FIRST PRESENT key regardless
-    of its value -- an empty `backend_<surface>` terminates the chain
-    before the coarser `backend` key is ever consulted. This function
-    inherits that asymmetry by construction, by calling
-    `config.invocation_backend` exactly once and trusting its answer.
+    `Rs-a1` -- the empty-value rule is ASYMMETRIC by design, preserved
+    by construction inside `resolve_backend_raw` (see its own
+    docstring): the env/override rungs fall through on an empty value;
+    the config rung does NOT, because `config.invocation_backend`
+    returns the FIRST PRESENT key regardless of its value.
 
     U-cleanup `MAJOR-5` -- the THIRD return element is `None`, or the
     retirement message when the raw value AT THE RUNG THAT ANSWERED was
-    literally `"cli"`. Without this, `registry._resolve` refuses a `cli`
-    selection while this independent transcription folded it into an
-    accepted `"sdk"` -- a retired selection reported as honoured, which is
-    exactly the defect `SEL6`/`SEL7` exist to catch. A source string is
-    for provenance and is not overloaded to carry this (ruled, §8.2): the
-    refusal gets its own element so `SEL6`'s doctor row and `SEL7`'s
-    registry/provider agreement can both read it directly."""
-    selector = SELECTOR_FOR_SURFACE.get(surface, surface)
+    literally `"cli"`, computed here from ONE call to `resolve_backend_
+    raw`: `refused = _refused_backend(raw_value)`, `name = _fold_
+    backend(raw_value)` -- no second read, no re-entry into `registry.
+    _resolve` (that stays on `registry.backend_for`'s path only)."""
+    raw_value, source = registry.resolve_backend_raw(home, surface)
+    return _fold_backend(raw_value), source, _refused_backend(raw_value)
 
-    selector_var = f"SELF_LEARN_BACKEND_{selector}"
-    value = os.environ.get(selector_var)
-    if value:
-        return _fold_backend(value), f"env:{selector_var}", _refused_backend(value)
 
-    value = os.environ.get("SELF_LEARN_BACKEND")
-    if value:
-        return _fold_backend(value), "env:SELF_LEARN_BACKEND", _refused_backend(value)
-
-    result = config.invocation_backend(home, surface)
-    if result is not None:
-        key, cfg_value = result
-        if cfg_value:
-            return _fold_backend(cfg_value), f"config:{key}", _refused_backend(cfg_value)
-
-    return DEFAULT_BACKEND_FOR_SURFACE.get(surface, "sdk"), "default", None
+#: The row's own illustrative name for this function (03-decisions.md
+#: S-58); `resolve_backend_name` is the name the pinned witness
+#: `test_bk3_resolve_backend_name_never_warns` requires and stays the
+#: canonical definition -- this is a plain alias, not a second body.
+resolve_backend = resolve_backend_name
 
 
 def _fold_backend(value: str) -> str:
@@ -183,23 +227,18 @@ class ProviderResolution:
     refusal: str | None  # non-None => every consumer must refuse
 
 
-def _resolve_str_setting(
-    home: Path | str, env_var: str, config_key: str | None
-) -> tuple[str | None, str]:
-    """Two rungs, matching `Prov-1`'s discipline: env, then (optionally) a
-    `PROVIDER_KEYS` config leaf, then the built-in default `None`. An
-    empty value at either rung is "no answer" and falls through, same as
-    `Pv-a`."""
-    value = os.environ.get(env_var)
-    if value:
-        return value, f"env:{env_var}"
-    if config_key is not None:
-        setting = config.provider_setting(home, config_key)
-        if setting is not None:
-            key, cfg_value = setting
-            if cfg_value:
-                return cfg_value, f"config:provider.{key}"
-    return None, "default"
+def _resolve_registry_str(home: Path | str, setting_name: str) -> tuple[str | None, str]:
+    """M-S (S-58): a thin, `cast`-only call-through to `settings.
+    resolve_setting`, replacing the retired `_resolve_str_setting`
+    (which hand-rolled the same env-then-config-then-default cascade
+    `provider.bedrock.region`/`.profile`/`sdk.cli_path` now resolve
+    through the registry instead, gaining an override rung and, for the
+    two bedrock-scoped entries, `enabled_when` gating for free). Callers
+    keep receiving `str | None` -- every entry this is used for has
+    `kind="str"` and a `default=None`, so `resolve_setting`'s
+    `SettingValue` is always one of those two types here."""
+    value, source = settings.resolve_setting(home, settings.by_name(setting_name))
+    return cast(str | None, value), source
 
 
 _DOCTOR_POINTER = "then run `self-learn doctor invocation`"
@@ -251,11 +290,9 @@ def resolve(home: Path | str, surface: str) -> ProviderResolution:
     -- the wrong cause reported for the right (refused) row."""
     provider, provider_source = _resolve_provider(home)
     backend, backend_source, backend_refused = resolve_backend_name(home, surface)
-    region, region_source = _resolve_str_setting(home, "SELF_LEARN_BEDROCK_REGION", "bedrock.region")
-    profile, profile_source = _resolve_str_setting(
-        home, "SELF_LEARN_BEDROCK_PROFILE", "bedrock.profile"
-    )
-    cli_path, cli_path_source = _resolve_str_setting(home, "SELF_LEARN_SDK_CLI_PATH", None)
+    region, region_source = _resolve_registry_str(home, "provider.bedrock.region")
+    profile, profile_source = _resolve_registry_str(home, "provider.bedrock.profile")
+    cli_path, cli_path_source = _resolve_registry_str(home, "sdk.cli_path")
 
     refusal: str | None = None
     if provider == "bedrock" and backend == "sdk" and backend_refused is None:
@@ -293,58 +330,59 @@ MODEL_KEY_FOR_SURFACE = {
 }
 
 
+def _models_setting_name(surface: str) -> str:
+    key = MODEL_KEY_FOR_SURFACE[surface]
+    return f"models.{key}"
+
+
+def _bedrock_models_setting_name(surface: str) -> str:
+    key = MODEL_KEY_FOR_SURFACE[surface]
+    return f"provider.bedrock.models.{key}"
+
+
 def model_for(surface: str, *, home: Path | str) -> str:
-    """`Mod-1`/`Mod-2`/`Mod-3`. Three rungs, first hit wins: the per-
-    surface env var (verbatim, under either provider); the bedrock-only
-    config leaf; the surface's shipped default function, CALLED (never
-    copied) so CLI-path identity holds by construction under
-    `provider=anthropic`."""
-    selector = SELECTOR_FOR_SURFACE[surface]
-    env_var = f"SELF_LEARN_{selector}_MODEL"
-    value = os.environ.get(env_var)
-    if value:
-        return value
+    """`Mod-1`/`Mod-2`/`Mod-3`, corrected by BLOCKER-1/BLOCKER-2 (S-58):
+    `models.<surface>` (env-first, override -> env -> its OWN config
+    leaf -> the surface's shipped default function, CALLED, never
+    copied, so CLI-path identity holds by construction under
+    `provider=anthropic`) resolves FIRST; if its own source starts with
+    `override:` or `env:`, that value is FINAL -- the bedrock leg below
+    is never consulted. Otherwise `provider.bedrock.models.<surface>`
+    (active only under `provider=bedrock`, via `enabled_when`) is
+    checked: if IT resolves to a real config value (its own source
+    starts with `config:`, which can only happen when active and set),
+    that value wins, preserving today's exact bedrock behaviour;
+    otherwise the `models.<surface>` result already in hand is used.
+    Not a flat five-rung sequence -- a two-call, source-label-
+    discriminated composition (r2-m3's correction of a naive reading)."""
+    value, source = settings.resolve_setting(home, settings.by_name(_models_setting_name(surface)))
+    if source.startswith("override:") or source.startswith("env:"):
+        return cast(str, value)
 
-    provider, _ = _resolve_provider(home)
-    if provider == "bedrock":
-        key = MODEL_KEY_FOR_SURFACE[surface]
-        setting = config.provider_setting(home, f"bedrock.models.{key}")
-        if setting is not None:
-            _, cfg_value = setting
-            if cfg_value:
-                return cfg_value
+    bedrock_value, bedrock_source = settings.resolve_setting(
+        home, settings.by_name(_bedrock_models_setting_name(surface))
+    )
+    if bedrock_source.startswith("config:"):
+        return cast(str, bedrock_value)
 
-    # `P-b` -- deferred: importing `worker`/`miner`/`analyst` at module
-    # scope would close a cycle (`B-1`). This import lives HERE, inside
-    # this function's body, and nowhere else in this module.
-    from . import analyst, miner, worker
-
-    if surface in ("worker", "worker-repair"):
-        return worker.worker_model()
-    if surface == "miner-reader":
-        return miner.miner_model()
-    if surface == "analyst":
-        return analyst._model()
-    raise ValueError(f"model_for: unknown surface {surface!r}")
+    return cast(str, value)
 
 
 def _model_source(surface: str, home: Path | str) -> str:
     """Reporting-only mirror of `model_for`'s rung logic — `model_for`'s
     signature returns just the id, so the doctor's `models` row needs a
     second, read-only function to name the rung that answered."""
-    selector = SELECTOR_FOR_SURFACE[surface]
-    env_var = f"SELF_LEARN_{selector}_MODEL"
-    if os.environ.get(env_var):
-        return f"env:{env_var}"
-    provider, _ = _resolve_provider(home)
-    if provider == "bedrock":
-        key = MODEL_KEY_FOR_SURFACE[surface]
-        setting = config.provider_setting(home, f"bedrock.models.{key}")
-        if setting is not None:
-            cfg_key, cfg_value = setting
-            if cfg_value:
-                return f"config:provider.{cfg_key}"
-    return "default"
+    _, source = settings.resolve_setting(home, settings.by_name(_models_setting_name(surface)))
+    if source.startswith("override:") or source.startswith("env:"):
+        return source
+
+    _, bedrock_source = settings.resolve_setting(
+        home, settings.by_name(_bedrock_models_setting_name(surface))
+    )
+    if bedrock_source.startswith("config:"):
+        return bedrock_source
+
+    return source
 
 
 # ===================================================================== #
@@ -400,11 +438,9 @@ def session_env(resolution: ProviderResolution, *, home: Path | str) -> dict[str
     if resolution.profile is not None:
         env["AWS_PROFILE"] = resolution.profile
 
-    small_fast = config.provider_setting(home, "bedrock.models.small_fast")
-    if small_fast is not None:
-        _, value = small_fast
-        if value:
-            env[SMALL_FAST_ENV_VAR] = value
+    small_fast, _ = settings.resolve_setting(home, settings.by_name("provider.bedrock.models.small_fast"))
+    if small_fast:
+        env[SMALL_FAST_ENV_VAR] = cast(str, small_fast)
     return env
 
 
@@ -584,22 +620,35 @@ def _resolve_sdk_cli_path() -> tuple[str | None, str]:
         return None, f"sdk could not resolve a cli path ({exc})"
 
 
-def _operative_cli_version() -> tuple[str | None, str]:
+def _operative_cli_version(home: Path | str | None = None) -> tuple[str | None, str]:
     """`Doc-a`'s ONE permitted subprocess: `[<operative claude>,
     "--version"]`, argv byte-pinned to two elements, `timeout=10`, every
     failure leg -> SKIP (never FAIL, never a traceback).
 
-    `B-5`: the OPERATIVE cli path is `SELF_LEARN_SDK_CLI_PATH` if set
-    (mirrors `ClaudeAgentOptions.cli_path`, which makes the SDK skip its
-    own `_find_cli` entirely and use the configured path as-is), else
-    whatever `_find_cli` itself would resolve (`_resolve_sdk_cli_path`)
-    -- NOT whatever `claude` happens to be on PATH. That PATH lookup is
-    a different, unrelated tool most of the time (this SDK ships its
-    own bundled binary, found first by `_find_cli`), so comparing IT
-    against the declared bundled-cli requirement produced false WARNs;
-    see `_host_cli_context` below for where that PATH lookup now lives
-    (context only, never compared)."""
-    override = os.environ.get("SELF_LEARN_SDK_CLI_PATH")
+    `B-5`: the OPERATIVE cli path is `sdk.cli_path` (the registry entry
+    `SELF_LEARN_SDK_CLI_PATH` now resolves through, M-S minor-2: this
+    used to read the env var directly, a SECOND, independent reader of
+    the same var the registry ALSO governs -- `doctor invocation`'s own
+    probe would otherwise report a version for a different binary than
+    `ProviderResolution.cli_path` actually uses) if set, else whatever
+    `_find_cli` itself would resolve (`_resolve_sdk_cli_path`) -- NOT
+    whatever `claude` happens to be on PATH. That PATH lookup is a
+    different, unrelated tool most of the time (this SDK ships its own
+    bundled binary, found first by `_find_cli`), so comparing IT against
+    the declared bundled-cli requirement produced false WARNs; see
+    `_host_cli_context` below for where that PATH lookup now lives
+    (context only, never compared).
+
+    `home=None` (this function's own tests, and any caller with no
+    ledger home in hand) falls back to a bare env-var read, matching
+    this function's behaviour before the registry existed -- the
+    registry's config rung has nothing to add without a real ledger
+    home to read `config.yaml` from, and `settings.resolve_setting`
+    itself is not `None`-home-safe."""
+    if home is not None:
+        override, _ = _resolve_registry_str(home, "sdk.cli_path")
+    else:
+        override = os.environ.get("SELF_LEARN_SDK_CLI_PATH")
     if override:
         cli_path: str | None = override
         skip_reason = ""
@@ -631,7 +680,9 @@ def _host_cli_context() -> str:
     return shutil.which("claude") or "not found on PATH"
 
 
-def _sdk_row(*, importer: Callable[[], Any] = _default_sdk_importer) -> Row:
+def _sdk_row(
+    home: Path | str | None = None, *, importer: Callable[[], Any] = _default_sdk_importer
+) -> Row:
     try:
         sdk_module = importer()
     except ImportError:
@@ -639,7 +690,7 @@ def _sdk_row(*, importer: Callable[[], Any] = _default_sdk_importer) -> Row:
 
     sdk_version = str(getattr(sdk_module, "__version__", "?"))
     bundled = _bundled_cli_version(sdk_module)
-    resolved, skip_reason = _operative_cli_version()
+    resolved, skip_reason = _operative_cli_version(home)
     # Gate r1 NIT: this field carries a PATH now (`_host_cli_context`
     # returns `shutil.which("claude")` or a not-found label), not a
     # version string the way the old `host-cli=` name implied. Renamed
@@ -862,7 +913,7 @@ def preflight(home: Path | str) -> list[Row]:
         rows.append(Row(name="config", verdict="PASS", detail="no unknown provider config keys"))
 
     # sdk
-    sdk_row = _sdk_row()
+    sdk_row = _sdk_row(home)
     rows.append(sdk_row)
 
     # rollout
@@ -1087,8 +1138,8 @@ def _models_rows(resolutions: dict[str, ProviderResolution], home: Path | str) -
 def _small_fast_row(home: Path | str, provider: str) -> Row:
     if provider != "bedrock":
         return Row(name="models", verdict="SKIP", detail="small_fast: provider=anthropic — not applicable")
-    setting = config.provider_setting(home, "bedrock.models.small_fast")
-    if setting is None or not setting[1]:
+    value, source = settings.resolve_setting(home, settings.by_name("provider.bedrock.models.small_fast"))
+    if not value:
         return Row(
             name="models",
             verdict="WARN",
@@ -1097,10 +1148,9 @@ def _small_fast_row(home: Path | str, provider: str) -> Row:
                 "the default Sonnet model on Bedrock, not fatal — R-3)"
             ),
         )
-    key, value = setting
-    verdict, note = _id_verdict(value)
+    verdict, note = _id_verdict(cast(str, value))
     return Row(
-        name="models", verdict=verdict, detail=f"small_fast: {value} (config:provider.{key}) — {note}"
+        name="models", verdict=verdict, detail=f"small_fast: {value} ({source}) — {note}"
     )
 
 
@@ -1211,8 +1261,10 @@ def _handoff_fields(home: Path | str, rows: list[Row]) -> list[tuple[str, str]]:
 
     for s in SURFACES:
         fields.append((f"model.{s}", model_for(s, home=home)))
-    small_fast_setting = config.provider_setting(home, "bedrock.models.small_fast")
-    fields.append(("model.small_fast", small_fast_setting[1] if small_fast_setting else "(unset)"))
+    small_fast_value, _ = settings.resolve_setting(
+        home, settings.by_name("provider.bedrock.models.small_fast")
+    )
+    fields.append(("model.small_fast", cast(str, small_fast_value) if small_fast_value else "(unset)"))
 
     env_by_surface = {r.surface: r.detail for r in rows if r.name == "env" and r.surface is not None}
     for s in SURFACES:

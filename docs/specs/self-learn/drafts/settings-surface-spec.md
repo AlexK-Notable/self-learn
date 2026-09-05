@@ -152,6 +152,23 @@ override a saved policy. The trade accepted with eyes open: a synced
 config.yaml overrides a machine-local env pin; a machine that needs a
 local exception must express it in config or unset the key.)*
 
+**Correction, 2026-09-04 (`03-decisions.md` `S-58`, Sprint 2 plan v2 §2
+M-S; spec gate r1 BLOCKER-1, r2 m2):** the config-first precedence above
+was ratified but never implemented in code for `models.worker`,
+`models.miner`, `models.analyst` — measured, `config get models.analyst`
+reported the key unknown while `SELF_LEARN_ANALYST_MODEL` already
+governed `provider.model_for` **env-first**, so the registry never held
+these three keys at all. `S-58`'s amendment CORRECTS this section's
+direction for exactly these three keys to **env-first**
+(`override > env > config.yaml > default`) to match the behaviour that
+was actually shipped, rather than flipping the shipped behaviour to
+match this section. `models.pane` is unaffected — it is UI-scope
+(`self_learn_ui.env.load_env().pane_model`) and stays outside the
+CLI-side settings registry `S-58` governs; this section's config-first
+ruling for `models.pane` stands as originally written. See `S-58`'s row
+for the full correction, including the new `models.*` registry keys and
+their env-first rung order.
+
 Boundary and safety pins that survive the flip:
 
 - **Bootstrap keys are env-only and OUTSIDE this precedence** —

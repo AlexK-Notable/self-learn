@@ -11,29 +11,57 @@ This module generalizes the ONE pattern that already works --
 ``A-0``) -- rather than inventing a second mechanism.
 :func:`resolve_setting` reuses ``provider.py``'s exact source
 vocabulary verbatim: ``"env:NAME"`` / ``"config:section.key"`` /
-``"default"`` -- plus one new label this module adds,
-``"override:NAME"`` (below).
+``"default"`` -- plus the ``"override:NAME"`` label (below) and, for a
+gated entry, ``"inactive (provider=<name>)"``.
 
-**Two precedence directions, on purpose (ruling: user, 2026-09-01,
-confirming their own 2026-07-19 ruling recorded in
-``docs/specs/self-learn/drafts/settings-surface-spec.md`` §1.2; see
-``docs/specs/self-learn/03-decisions.md`` S-58).** This registry's 20
-settings resolve **``config.yaml > explicit env var > code
-default``**: the committed config is the single source of truth, and
-an env var only fills a gap config.yaml leaves silent -- it never
-overrides a saved policy. This is the OPPOSITE direction from
-``provider.py``'s ``model_for()``/``_resolve_provider()`` and
-``invocation/registry.py``'s backend-selection chain, which stay
-**``env > config.yaml > default``** and are explicitly OUT OF SCOPE
-for this flip -- untouched, not an oversight. That second mechanism
-governs provider/model/backend selection: those are emergency rollback
-switches, and an operator must be able to override one from a live
-shell without waiting on a commit+sync round-trip. This registry's 20
-settings are ordinary operating policy, where the opposite trade holds:
-a synced ``config.yaml`` should beat a machine-local env pin, and a
-machine that needs a local exception expresses it in config or unsets
-the key. The two directions coexist on purpose -- do not "fix" the
-discrepancy by unifying them.
+**Two precedence DIRECTIONS, ONE mechanism (M-S, ``docs/specs/
+self-learn/03-decisions.md`` S-58's amendment, superseding this
+docstring's own earlier "two directions, two mechanisms" framing).**
+:class:`Setting` carries a ``direction``: ``"config-first"`` (every
+entry that predates this amendment) resolves **override > config.yaml
+> env > default** -- the committed config is the single source of
+truth, and an env var only fills a gap config.yaml leaves silent.
+``"env-first"`` (the provider/backend-selection entries below --
+``provider.name``, ``provider.bedrock.*``, ``invocation.backend``
+and its per-surface siblings, ``sdk.cli_path``, ``models.*``)
+resolves **override > env > config.yaml > default** -- these are
+emergency-rollback switches, and an operator must be able to override
+one from a live shell without waiting on a commit+sync round-trip. The
+two DIRECTIONS still coexist on purpose, matching each key's own
+operational trade -- but where this module used to say a SECOND,
+independent mechanism governed the env-first keys (``provider.py``'s
+own hand-rolled resolvers, ``invocation/registry.py``'s own backend
+cascade), that second mechanism is now RETIRED: every one of those
+keys resolves through THIS registry's ONE :func:`resolve_setting`,
+with its own ``direction`` field choosing the rung order. The one
+exception, by design, is the runtime DISPATCH path for backend
+selection (:func:`invocation.registry.resolve_backend_raw`,
+:func:`provider.resolve_backend_name`) and for ``provider.name``
+(:func:`provider._resolve_provider`) -- both keep their own
+hand-written cascades because they must keep emitting the SAME
+existing, unpinned stderr warnings on an unknown live value that this
+registry's silent ``validate`` clamp does not reproduce (the fold is
+visible there only via this registry's ``note`` field, below); see
+each function's own docstring for why (03-decisions.md row S-58's
+MAJOR-2 text: "the same split" the backend family already used).
+
+**``enabled_when`` (M-S).** An optional predicate over the resolved
+``provider.name``, evaluated BEFORE even the override rung: ``False``
+skips every rung and resolves straight to the entry's own default,
+source label ``f"inactive (provider={value})"`` -- the six
+``provider.bedrock.*`` entries use this to stay silently inert under
+``provider=anthropic``, expressed in the registry instead of a raw
+``if provider == "bedrock":`` gate. Never set on ``provider.name``
+itself (self-referential).
+
+**``accepts``/``accepts_hint`` (M-S).** A separate WRITE-path refusal
+gate, checked by :func:`config_set` on the PARSED value, BEFORE
+``validate`` runs -- ``validate`` stays the READ-path clamp it always
+was (folds an already-committed off-whitelist value in place, exactly
+like every other clamping entry); ``accepts`` refuses the write
+outright, so a clamping ``validate`` can never launder a refused write
+into an accepted, silently different one. Only ``provider.name`` and
+the ``invocation.backend`` family use this.
 
 **A third rung, above both (Blocker fix, review 2026-09-01): process
 overrides via** :func:`override`. **The flip conflated two different
@@ -106,6 +134,8 @@ from pathlib import Path
 from typing import Literal, cast
 
 from . import config, gitops
+from .invocation.contract import DEFAULT_BACKEND_FOR_SURFACE, SELECTOR_FOR_SURFACE, SURFACES
+from .invocation.registry import KNOWN_BACKENDS
 
 __all__ = [
     "Kind",
@@ -159,7 +189,16 @@ class Setting:
     #: ``section.key`` suffix (identical to ``config_section``.
     #: ``config_key`` by construction, checked at import time below).
     name: str
-    env_var: str
+    #: ``None`` => no env rung at all (M-S, S-58: `provider.bedrock.
+    #: models.*`'s four entries -- `worker`/`miner`/`analyst` because
+    #: their env var moved to a different, always-active `models.*`
+    #: entry; `small_fast` because it never had one -- its value feeds
+    #: the CHILD session's own `ANTHROPIC_DEFAULT_HAIKU_MODEL`, so a
+    #: same-shaped env INPUT would read the child's own output back).
+    #: Every reader of this field -- `resolve_setting`, `unknown_
+    #: override_vars`, `doctor settings` -- is audited for the `None`
+    #: case; widened from mandatory `str` for exactly these four.
+    env_var: str | None
     #: ``None`` => a bootstrap var with no config.yaml rung at all
     #: (mirrors ``provider._resolve_str_setting``'s ``config_key=None``
     #: shape). NO current registry entry uses this -- every var this
@@ -203,6 +242,42 @@ class Setting:
     #: missing hint degrades to the old, less-specific message, never a
     #: crash.
     validate_hint: str | None = None
+    #: M-S (U-settings Phase 2's provider/backend-selection amendment,
+    #: S-58): which rung order `resolve_setting` uses. `"config-first"`
+    #: (the default -- every entry above this comment is unchanged) is
+    #: **override > config.yaml > env > default**; `"env-first"` is
+    #: **override > env > config.yaml > default** -- the direction
+    #: `provider.py`/`invocation/registry.py`'s selection keys always
+    #: used, now expressed as a registry field instead of a second,
+    #: hand-rolled mechanism.
+    direction: Literal["config-first", "env-first"] = "config-first"
+    #: M-S: a predicate over the resolved `provider.name`, evaluated
+    #: BEFORE even the override rung -- `None` means always active.
+    #: `False` skips every rung and resolves straight to this entry's
+    #: OWN default, with source label `f"inactive (provider={value})"`
+    #: (S-36's "silently inert by design" shape, now expressed in the
+    #: registry instead of a raw `if provider == "bedrock":` gate).
+    #: NEVER set on `provider.name` itself -- gating a predicate on its
+    #: own resolved value would be self-referential.
+    enabled_when: Callable[[str], bool] | None = None
+    #: M-S: the WRITE-path refusal gate, checked in `config_set` against
+    #: the PARSED value, BEFORE `validate` -- a separate concern from
+    #: `validate` (the READ-path clamp): `validate` folds an
+    #: already-committed value in place at resolve time; `accepts`
+    #: refuses a `config set` outright, before anything is ever written,
+    #: so an off-whitelist write can never launder itself into an
+    #: accepted, silently different one via a clamping `validate`. Only
+    #: `provider.name` and the `invocation.backend` family use this
+    #: (both also carry a `validate` that clamps on read, unchanged
+    #: behaviour for a hand-edited config.yaml) -- every other entry
+    #: leaves this `None`.
+    accepts: Callable[[SettingValue], bool] | None = None
+    #: The allowed-set text `config_set` names when `accepts` refuses --
+    #: this registry's write-refusal counterpart to `validate_hint`
+    #: (which is reserved for a REJECTING `validate` and stays `None` on
+    #: every CLAMPING entry, `accepts` included, by that field's own
+    #: docstring). `None` whenever `accepts` is `None`.
+    accepts_hint: str | None = None
     #: U-settings Phase 2 (the settings page) — the exposure tier the
     #: page's editor honors (dispatch's ruling, carrying the ratified
     #: `settings-surface-spec.md` §3 table's CATEGORIES onto THIS
@@ -217,6 +292,22 @@ class Setting:
     #: pin) — a future registry entry is tier A unless a reviewer
     #: deliberately marks it otherwise.
     tier: Literal["A", "C"] = "A"
+    #: M-S (S-58 MAJOR-1, code-gate fold r1): the dotted name of this
+    #: entry's GENERAL sibling in a specific/general config.yaml pair
+    #: (currently only the `invocation.backend_<surface>` entries,
+    #: pointing at `"invocation.backend"`) -- `None` (every entry
+    #: above this comment) means this entry resolves through the
+    #: ordinary single-key sequence above. When set, `resolve_setting`
+    #: consults `config.paired_cascade` instead: the specific entry's
+    #: own override/env/config rungs, THEN the general sibling's same
+    #: three rungs, before falling to this entry's own default --
+    #: fixing the gate's MAJOR-1 (the registry face used to report
+    #: `"default"` even when the general sibling actually answered,
+    #: because this single-key sequence never looked at it at all).
+    #: The general entry's OWN resolution (`by_name("invocation.
+    #: backend")`) is unaffected -- it has no `general_name` of its
+    #: own, so it always resolves through the ordinary sequence.
+    general_name: str | None = None
 
 
 def _default_value(setting: Setting) -> SettingValue:
@@ -270,39 +361,45 @@ def _parse_config_value(value: object, kind: Kind) -> SettingValue:
 
 def _override_env_var(name: str) -> str:
     """The override channel's env-var name for registry entry `name`:
-    `SELF_LEARN_OVERRIDE_<NAME>`, dots to underscores, uppercased --
-    e.g. `worker.autokick` -> `SELF_LEARN_OVERRIDE_WORKER_AUTOKICK`.
-    Namespaced (not the setting's own `env_var`) so an operator's
-    ordinary env pin can never collide with a process's override of
-    itself -- the two channels stay distinguishable on sight."""
-    return "SELF_LEARN_OVERRIDE_" + name.upper().replace(".", "_")
+    `SELF_LEARN_OVERRIDE_<NAME>`, dots AND hyphens to underscores,
+    uppercased -- e.g. `worker.autokick` -> `SELF_LEARN_OVERRIDE_
+    WORKER_AUTOKICK`. Namespaced (not the setting's own `env_var`) so
+    an operator's ordinary env pin can never collide with a process's
+    override of itself -- the two channels stay distinguishable on
+    sight. A thin call-through to `config.override_env_var` (M-S,
+    S-58, minor-1's hyphen fix) -- moved there so `invocation/
+    registry.py`'s own runtime-dispatch override rungs compute the
+    IDENTICAL var name without importing this module at all."""
+    return config.override_env_var(name)
 
 
-#: A reserved marker distinguishing "the override IS the value `None`"
-#: from "no override is set" (env-var absence, tested `is not None`
-#: below) and from every ordinary encoded value (`_encode_override_
-#: value`'s other branches never produce this exact string -- no `str`-
-#: kind setting's `str(value)` can equal it either, short of an
-#: operator deliberately typing this literal token). Needed because
-#: `None` is semantically overloaded THROUGHOUT this module: it is
-#: `sdk.max_budget_usd`'s own default (meaning "unlimited"), and it is
-#: also every parse function's "this value did not parse" signal --
-#: two different meanings that must never be confused on the wire
-#: (MINOR-4, review r2 2026-09-01).
-_OVERRIDE_NONE_MARKER = "\x01SELF_LEARN_OVERRIDE_NONE\x01"
+#: M-S (S-58 BLOCKER-1, code-gate fold r1): relocated to `config.py` --
+#: both markers now live there (`config.OVERRIDE_NONE_MARKER`,
+#: `config.OVERRIDE_EMPTY_MARKER`) so `provider.py`'s runtime override
+#: rung and `invocation/registry.py`'s can decode the SAME escape
+#: hatches through `config.read_override` without importing this
+#: module (a cycle). Aliased here, unchanged name, so every existing
+#: reference in this file needs no further edit.
+_OVERRIDE_NONE_MARKER = config.OVERRIDE_NONE_MARKER
 
 
 def _encode_override_value(value: SettingValue, kind: Kind) -> str:
     """:func:`override`'s WRITER side -- the exact string spellings
     `_parse_env_value` reads back (`1`/`0` for bool; `str()` for
-    numeric/str; `_OVERRIDE_NONE_MARKER` for `None`), so a round trip
-    through the override channel can never drift from the ambient-env
-    rung's own parsing vocabulary (and never collide with it either,
-    for `None`)."""
+    numeric/str; `_OVERRIDE_NONE_MARKER` for `None`; M-S BLOCKER-1 fold:
+    `config.OVERRIDE_EMPTY_MARKER` for a DELIBERATE empty string, so
+    `config.read_override` can tell it apart from an ambient blank var
+    -- `test_override_round_trips_str_including_empty`'s
+    `override(name, "")` must keep reading back as `""`, not as "no
+    answer"), so a round trip through the override channel can never
+    drift from the ambient-env rung's own parsing vocabulary (and never
+    collide with it either, for `None` or `""`)."""
     if value is None:
         return _OVERRIDE_NONE_MARKER
     if kind == "bool":
         return "1" if value else "0"
+    if value == "":
+        return config.OVERRIDE_EMPTY_MARKER
     return str(value)
 
 
@@ -323,14 +420,241 @@ def _apply_validate(
     return result, result is None
 
 
+def _try_override(home: Path | str, setting: Setting) -> tuple[SettingValue, str] | None:
+    """The override rung, factored out of `resolve_setting` unchanged
+    (M-S, S-58) so both `direction`s share ONE copy -- this rung's
+    position (always first, before `enabled_when` even runs it) is
+    direction-independent.
+
+    M-S BLOCKER-1 (code-gate fold r1): reads through `config.
+    read_override` -- the SAME reader `provider._resolve_provider`'s
+    own override rung now uses -- rather than a private `os.environ.
+    get` + presence check. This closes the gate's two-link bug: an
+    AMBIENT empty `SELF_LEARN_OVERRIDE_<NAME>` now reads as "no
+    answer" on BOTH faces (matching `_try_env`'s own `if not raw`),
+    while a DELIBERATE `override(name, "")` still round-trips as the
+    real empty string (`config.OVERRIDE_EMPTY_MARKER`, decoded by the
+    shared reader) -- `test_override_round_trips_str_including_empty`
+    is the witness this preserves. `is_none=True` still bypasses
+    parse/validate entirely, exactly as the old `_OVERRIDE_NONE_MARKER`
+    branch did."""
+    override_var = _override_env_var(setting.name)
+    result = config.read_override(setting.name)
+    if result is None:
+        return None
+    override_raw, is_none = result
+    if is_none:
+        # The override IS `None` -- bypasses parse/validate entirely
+        # (both are for TYPED values; `None` here is `override()`'s
+        # own refusal-guarded escape hatch, not a `kind`-shaped
+        # answer to range-check).
+        return None, f"override:{setting.name}"
+    parsed = _parse_env_value(override_raw, setting.kind)
+    if parsed is None:
+        _warn(
+            f"{override_var}={override_raw!r} is not a valid {setting.kind} for "
+            f"{setting.name} — falling through to config/env/default"
+        )
+        return None
+    final, rejected = _apply_validate(parsed, setting.validate)
+    if final is not None:
+        return final, f"override:{setting.name}"
+    if rejected:
+        _warn(
+            f"{override_var}={override_raw!r} is out of range for "
+            f"{setting.name} — falling through to config/env/default"
+        )
+    # `rejected` is only ever True here (validate ran on a value that
+    # already parsed) -- the `if final is not None` above already
+    # returned on any other outcome.
+    return None
+
+
+def _try_config(
+    home: Path | str, setting: Setting, *, fallthrough_rung: str
+) -> tuple[SettingValue, str] | None:
+    """The config.yaml rung, factored out unchanged. `fallthrough_rung`
+    only names which rung the warn text says a malformed value falls
+    through TO -- `"env-first"` still falls through to env exactly as
+    `"config-first"` does; only the WORDING of an already-existing warn
+    message needs to name the right next rung for each direction."""
+    if setting.config_section is None:
+        return None
+    assert setting.config_key is not None  # invariant: paired at registration
+    found = config.settings_leaf(home, setting.config_section, setting.config_key)
+    if found is not None and setting.kind == "str" and found[1] == "":
+        # M-4 fold (review 2026-09-01): an empty config.yaml string is
+        # "no answer", exactly like the env rung's own `if raw:` — not
+        # a malformed value (no warn), just silently not-present here.
+        found = None
+    if found is None:
+        return None
+    key, value = found
+    parsed = _parse_config_value(value, setting.kind)
+    if parsed is None:
+        _warn(
+            f"config.yaml {setting.config_section}.{key}={value!r} is not a "
+            f"valid {setting.kind} for {setting.name} — falling through to {fallthrough_rung}"
+        )
+        # NOT a return: the caller falls through to the next live rung,
+        # per the spec's §1.2 boundary pin -- a malformed config value
+        # must not dead-end a role another rung (or the default) would
+        # serve.
+        return None
+    final, rejected = _apply_validate(parsed, setting.validate)
+    if final is not None:
+        return final, f"config:{setting.config_section}.{key}"
+    if rejected:
+        _warn(
+            f"config.yaml {setting.config_section}.{key}={value!r} is out "
+            f"of range for {setting.name} — falling through to {fallthrough_rung}"
+        )
+    return None
+
+
+def _try_env(setting: Setting, *, next_rung: str | None) -> tuple[SettingValue, str] | None:
+    """The env rung, factored out unchanged. `env_var=None` (M-S: the
+    four `provider.bedrock.models.*` entries) means no env rung at all
+    -- skipped, exactly like `config_section=None` skips the config
+    rung above. `next_rung=None` means env is the LAST live rung
+    (`"config-first"`, unchanged from before this amendment) -- warn
+    text says "using the default", byte-identical to before; a real
+    `next_rung` (`"config-first"`'s config, for `"env-first"` entries)
+    says "falling through to {next_rung}" instead, since the default is
+    no longer the very next thing tried."""
+    if setting.env_var is None:
+        return None
+    raw = os.environ.get(setting.env_var)
+    if not raw:
+        return None
+    tail = "using the default" if next_rung is None else f"falling through to {next_rung}"
+    parsed = _parse_env_value(raw, setting.kind)
+    if parsed is None:
+        _warn(f"{setting.env_var}={raw!r} is not a valid {setting.kind} for {setting.name} — {tail}")
+        return None
+    final, rejected = _apply_validate(parsed, setting.validate)
+    if final is not None:
+        return final, f"env:{setting.env_var}"
+    if rejected:
+        _warn(f"{setting.env_var}={raw!r} is out of range for {setting.name} — {tail}")
+    return None
+
+
+def _try_paired(home: Path | str | None, setting: Setting, general: Setting) -> tuple[SettingValue, str]:
+    """M-S (MAJOR-1/MAJOR-4, code-gate fold r1): resolves a specific/
+    general pair (`setting.general_name is not None`) through the ONE
+    shared pure cascade, `config.paired_cascade` -- called here AND by
+    `invocation.registry.resolve_backend_raw`, fixing MAJOR-1 (the
+    registry face used to report `"default"` even when the general
+    sibling actually answered, because the ordinary single-key
+    sequence in `resolve_setting` below never looked at the sibling at
+    all).
+
+    `paired_cascade` itself is kind-agnostic; this function re-applies
+    THIS module's own kind-aware parse + validate + warn machinery to
+    whichever raw value won, and builds the source label in this
+    module's established vocabulary (`override:<name>`, `env:
+    <env_var>`, `config:<section>.<key>`) naming whichever entry --
+    `setting` or `general` -- actually answered.
+
+    Simplification, stated as a decision (every current pair is
+    `kind="str"` with a CLAMPING `validate`, per `Setting.validate`'s
+    own docstring): a clamping validate never rejects (`_apply_
+    validate` never returns `(None, True)`) and `str`-kind parsing
+    never fails, so no CURRENT pair can hit the "malformed/rejected at
+    the winning rung" branches below -- they exist defensively (warn +
+    default, NOT a resumed walk past the winning rung to the next one)
+    for a FUTURE non-str or rejecting paired entry, and are untested
+    against today's registry for exactly that reason."""
+    found = config.paired_cascade(
+        home,
+        specific_name=setting.name,
+        general_name=general.name,
+        specific_env_var=setting.env_var,
+        general_env_var=general.env_var,
+        section=cast(str, setting.config_section),
+        specific_config_key=cast(str, setting.config_key),
+        general_config_key=cast(str, general.config_key),
+        # Fold r2 (gap-4): was `setting.description` (a per-surface
+        # phrase), which produced a DIFFERENT warn sentence than
+        # `invocation.registry.resolve_backend_raw`'s hardcoded literal
+        # for the exact same malformed-value walk. Both now pass the
+        # ONE shared constant `config.INVOCATION_BACKEND_LABEL` — see
+        # its own docstring for why it lives in `config.py` and why
+        # it's backend-specific rather than generic.
+        label=config.INVOCATION_BACKEND_LABEL,
+    )
+    if found is None:
+        return _default_value(setting), "default"
+    raw, rung, matched = found
+    answering = setting if rung.endswith("-specific") else general
+    if rung.startswith("config"):
+        parsed = _parse_config_value(raw, answering.kind)
+    else:
+        parsed = _parse_env_value(raw, answering.kind)
+    if parsed is None:
+        _warn(
+            f"{matched}={raw!r} is not a valid {answering.kind} for "
+            f"{answering.name} — using the default"
+        )
+        return _default_value(setting), "default"
+    final, rejected = _apply_validate(parsed, answering.validate)
+    if final is not None:
+        if rung.startswith("override"):
+            return final, f"override:{matched}"
+        if rung.startswith("env"):
+            return final, f"env:{matched}"
+        return final, f"config:{matched}"
+    if rejected:
+        _warn(f"{matched}={raw!r} is out of range for {answering.name} — using the default")
+    return _default_value(setting), "default"
+
+
+def _answering_setting(setting: Setting, source: str) -> Setting:
+    """M-S (code-gate fold r1): for a paired entry, `source` may name
+    the GENERAL sibling's OWN rung instead of `setting`'s own (MAJOR-1)
+    -- every consumer that re-derives a raw value FROM `source`
+    (`_fold_note`, `preflight`'s override-warn text) must re-read using
+    whichever entry the label actually identifies, not always `setting`
+    itself, or it re-reads the wrong (possibly-absent) var/key. Returns
+    `setting` unchanged for every non-paired entry, and for a paired
+    entry whose OWN rung (not the general's) answered."""
+    if setting.general_name is None:
+        return setting
+    general = by_name(setting.general_name)
+    if source.startswith("override:"):
+        return general if source == f"override:{general.name}" else setting
+    if source.startswith("config:") and general.config_section is not None:
+        if source == f"config:{general.config_section}.{general.config_key}":
+            return general
+        return setting
+    if source.startswith("env:") and general.env_var is not None:
+        return general if source == f"env:{general.env_var}" else setting
+    return setting
+
+
 def resolve_setting(home: Path | str, setting: Setting) -> tuple[SettingValue, str]:
     """The registry's ONE resolution function (U-settings Phase 1 §2;
     flipped 2026-09-01, S-58; override channel added same day, a
-    Blocker fix -- module docstring's "Three rungs, on purpose"):
-    **override channel, then config.yaml, then env, then the built-in
-    default** -- ``provider.py``'s exact source-string vocabulary
-    (plus the new `"override:<name>"` label), a different rung ORDER
-    from that mechanism, and now a rung ABOVE both.
+    Blocker fix -- module docstring's "Three rungs, on purpose"; M-S,
+    S-58's amendment, adds `direction` and `enabled_when`):
+
+    `enabled_when`, when present, is evaluated FIRST -- before even the
+    override rung (03-decisions.md row S-58): a `False` result resolves
+    straight to this entry's own default with source label
+    `f"inactive (provider={value})"`, consulting `provider.name`'s OWN
+    resolution (which never itself carries an `enabled_when`, so this
+    recursion is exactly one level deep, never circular).
+
+    Then, by `direction`: **`"config-first"`** (every entry that
+    existed before this amendment, unchanged) is **override channel,
+    then config.yaml, then env, then the built-in default** --
+    ``provider.py``'s exact source-string vocabulary (plus the
+    `"override:<name>"` label). **`"env-first"`** (the amendment's new
+    provider/backend-selection-style entries) is **override, then env,
+    then config.yaml, then default** -- the SAME three helpers, config
+    and env rungs simply swapped, so a future direction bug cannot
+    silently diverge the two orderings' shared logic.
 
     Fail-closed PER RUNG, not per resolution (the spec's §1.2 boundary
     pin, carried through the flip and the override addition): a value
@@ -340,102 +664,45 @@ def resolve_setting(home: Path | str, setting: Setting) -> tuple[SettingValue, s
     not dead-end at the default. A typo in config.yaml must never
     brick a role the env var (or the default) would have served; a
     malformed env value still falls through to the default, same as
-    before the flip since env is the last LIVE rung.
+    before the flip since env is the last LIVE rung in either
+    direction.
 
     No caching of config.yaml/env: every call re-reads ``os.environ``
     and ``config.yaml`` fresh (module docstring) -- necessary but, per
     the Blocker review, NOT by itself sufficient to keep
     :func:`serve._worker_autokick_disabled`'s mechanism working under
     config-wins; see :func:`override` for why a THIRD rung was needed."""
-    override_var = _override_env_var(setting.name)
-    override_raw = os.environ.get(override_var)
-    # MINOR-4 (review r2 2026-09-01): presence is `is not None`, NOT
-    # truthiness -- `override("miner.transcripts_dir", "")` writes the
-    # literal empty string, and a truthy check would read that as
-    # "nothing set" and silently fall through to config/env/default,
-    # losing the override the caller explicitly asked for. This is a
-    # DIFFERENT rule from the config/env rungs below, on purpose: an
-    # empty CONFIG.YAML string or empty ENV VAR is ambient and
-    # ambiguous ("did the operator mean this, or leave it blank by
-    # accident?" -- M-4's own call was "no answer"); a programmatic
-    # `override(name, "")` is neither ambient nor accidental -- the
-    # caller named the exact value.
-    if override_raw is not None:
-        if override_raw == _OVERRIDE_NONE_MARKER:
-            # The override IS `None` -- bypasses parse/validate entirely
-            # (both are for TYPED values; `None` here is `override()`'s
-            # own refusal-guarded escape hatch, not a `kind`-shaped
-            # answer to range-check).
-            return None, f"override:{setting.name}"
-        parsed = _parse_env_value(override_raw, setting.kind)
-        if parsed is None:
-            _warn(
-                f"{override_var}={override_raw!r} is not a valid {setting.kind} for "
-                f"{setting.name} — falling through to config/env/default"
-            )
-        else:
-            final, rejected = _apply_validate(parsed, setting.validate)
-            if final is not None:
-                return final, f"override:{setting.name}"
-            if rejected:
-                _warn(
-                    f"{override_var}={override_raw!r} is out of range for "
-                    f"{setting.name} — falling through to config/env/default"
-                )
-            # `rejected` is only ever True here (validate ran on a value
-            # that already parsed) -- the `if final is not None` above
-            # already returned on any other outcome.
+    if setting.enabled_when is not None:
+        provider_value, _ = resolve_setting(home, by_name("provider.name"))
+        if not setting.enabled_when(cast(str, provider_value)):
+            return _default_value(setting), f"inactive (provider={provider_value})"
 
-    if setting.config_section is not None:
-        assert setting.config_key is not None  # invariant: paired at registration
-        found = config.settings_leaf(home, setting.config_section, setting.config_key)
-        if found is not None and setting.kind == "str" and found[1] == "":
-            # M-4 fold (review 2026-09-01): an empty config.yaml string is
-            # "no answer", exactly like the env rung's own `if raw:` — not
-            # a malformed value (no warn), just silently not-present here.
-            # Before this, `transcripts_dir: ""` parsed as a VALID empty
-            # string and resolved to `Path('.')`, while the identically
-            # empty env var fell through silently -- asymmetric.
-            found = None
-        if found is not None:
-            key, value = found
-            parsed = _parse_config_value(value, setting.kind)
-            if parsed is None:
-                _warn(
-                    f"config.yaml {setting.config_section}.{key}={value!r} is not a "
-                    f"valid {setting.kind} for {setting.name} — falling through to env/default"
-                )
-                # NOT a return: falls through to the env rung below, per
-                # the spec's §1.2 boundary pin -- a malformed config
-                # value must not dead-end a role the env var (or
-                # default) would serve.
-            else:
-                final, rejected = _apply_validate(parsed, setting.validate)
-                if final is not None:
-                    return final, f"config:{setting.config_section}.{key}"
-                if rejected:
-                    _warn(
-                        f"config.yaml {setting.config_section}.{key}={value!r} is out "
-                        f"of range for {setting.name} — falling through to env/default"
-                    )
+    if setting.general_name is not None:
+        # M-S (MAJOR-1, code-gate fold r1): a paired entry resolves
+        # through the shared six-rung cascade instead of the ordinary
+        # single-key sequence below -- `_try_paired` already covers
+        # this entry's own override/env/config rungs AND its general
+        # sibling's, in the correct specific-before-general order.
+        return _try_paired(home, setting, by_name(setting.general_name))
 
-    raw = os.environ.get(setting.env_var)
-    if raw:
-        parsed = _parse_env_value(raw, setting.kind)
-        if parsed is None:
-            _warn(
-                f"{setting.env_var}={raw!r} is not a valid {setting.kind} for "
-                f"{setting.name} — using the default"
-            )
-        else:
-            final, rejected = _apply_validate(parsed, setting.validate)
-            if final is not None:
-                return final, f"env:{setting.env_var}"
-            if rejected:
-                _warn(
-                    f"{setting.env_var}={raw!r} is out of range for "
-                    f"{setting.name} — using the default"
-                )
+    hit = _try_override(home, setting)
+    if hit is not None:
+        return hit
+
+    if setting.direction == "env-first":
+        hit = _try_env(setting, next_rung="config/default")
+        if hit is not None:
+            return hit
+        hit = _try_config(home, setting, fallthrough_rung="default")
+        if hit is not None:
+            return hit
+    else:
+        hit = _try_config(home, setting, fallthrough_rung="env/default")
+        if hit is not None:
+            return hit
+        hit = _try_env(setting, next_rung=None)
+        if hit is not None:
+            return hit
 
     return _default_value(setting), "default"
 
@@ -451,6 +718,39 @@ def resolve_setting(home: Path | str, setting: Setting) -> tuple[SettingValue, s
 # pins every duplicate against its source so the two cannot silently
 # drift apart.
 # ===================================================================== #
+
+#: M-S (S-58, BLOCKER-1): duplicated from `provider.PROVIDERS`/
+#: `provider.DEFAULT_PROVIDER` rather than imported -- `provider.py`
+#: now imports THIS module (for `model_for`'s registry-backed rungs,
+#: among others), so a `settings.py -> provider.py` edge would close a
+#: real cycle. `test_registry_defaults_match_their_source_constants`
+#: pins both against their source, same discipline as every other
+#: duplicated default literal in this file.
+_PROVIDERS = ("anthropic", "bedrock")
+_DEFAULT_PROVIDER = "anthropic"
+
+
+def _default_worker_model() -> str:
+    from . import worker
+
+    return worker.worker_model()
+
+
+def _default_miner_model() -> str:
+    from . import miner
+
+    return miner.miner_model()
+
+
+def _default_analyst_model() -> str:
+    from . import analyst
+
+    return analyst._model()
+
+
+def _bedrock_active(provider_value: str) -> bool:
+    return provider_value == "bedrock"
+
 
 REGISTRY: tuple[Setting, ...] = (
     # ------------------------------------------------------- worker
@@ -698,6 +998,200 @@ REGISTRY: tuple[Setting, ...] = (
         # discovery, review 2026-09-01 -- caught by the pre-existing suite,
         # not guessed).
     ),
+    # ------------------------------------------------------- provider
+    # M-S (S-58): provider/backend-selection keys, folded into this ONE
+    # mechanism with `direction="env-first"` -- the emergency-rollback
+    # trade `provider.py`/`invocation/registry.py` always implemented
+    # by hand, now expressed as registry fields instead of a second,
+    # independent transcription. `provider.name`'s own RUNTIME
+    # resolution (`provider._resolve_provider`) stays a separate,
+    # hand-written cascade that still emits its own warnings -- this
+    # entry is the read-only reporting/write face `doctor settings`/
+    # `config get|set` use (03-decisions.md row S-58's MAJOR-2 text).
+    Setting(
+        name="provider.name",
+        env_var="SELF_LEARN_PROVIDER",
+        config_section="provider",
+        config_key="name",
+        kind="str",
+        default=_DEFAULT_PROVIDER,
+        description="which model provider backs the SDK session (anthropic or bedrock)",
+        direction="env-first",
+        validate=lambda v: cast(str, v) if cast(str, v) in _PROVIDERS else _DEFAULT_PROVIDER,
+        accepts=lambda v: cast(str, v) in _PROVIDERS,
+        accepts_hint=f"must be one of {', '.join(_PROVIDERS)}",
+        # nit-4 (code-gate fold r1, orchestrator ruling): an emergency-
+        # rollback lever, same character as `worker.autokick`/`miner.
+        # autokick`'s tier "C" -- a boundary the page renders read-only
+        # with a pointer to the CLI verb, not a preference.
+        tier="C",
+    ),
+    Setting(
+        name="provider.bedrock.region",
+        env_var="SELF_LEARN_BEDROCK_REGION",
+        config_section="provider",
+        config_key="bedrock.region",
+        kind="str",
+        default=None,
+        description="AWS region for a Bedrock-backed session",
+        direction="env-first",
+        enabled_when=_bedrock_active,
+    ),
+    Setting(
+        name="provider.bedrock.profile",
+        env_var="SELF_LEARN_BEDROCK_PROFILE",
+        config_section="provider",
+        config_key="bedrock.profile",
+        kind="str",
+        default=None,
+        description="AWS credential profile for a Bedrock-backed session",
+        direction="env-first",
+        enabled_when=_bedrock_active,
+    ),
+    Setting(
+        name="provider.bedrock.models.worker",
+        env_var=None,  # MAJOR-4: moved to the always-active `models.worker` below
+        config_section="provider",
+        config_key="bedrock.models.worker",
+        kind="str",
+        default=None,
+        description="Bedrock model id for the worker surface (overrides models.worker)",
+        direction="env-first",
+        enabled_when=_bedrock_active,
+    ),
+    Setting(
+        name="provider.bedrock.models.miner",
+        env_var=None,
+        config_section="provider",
+        config_key="bedrock.models.miner",
+        kind="str",
+        default=None,
+        description="Bedrock model id for the miner-reader surface (overrides models.miner)",
+        direction="env-first",
+        enabled_when=_bedrock_active,
+    ),
+    Setting(
+        name="provider.bedrock.models.analyst",
+        env_var=None,
+        config_section="provider",
+        config_key="bedrock.models.analyst",
+        kind="str",
+        default=None,
+        description="Bedrock model id for the analyst surface (overrides models.analyst)",
+        direction="env-first",
+        enabled_when=_bedrock_active,
+    ),
+    Setting(
+        name="provider.bedrock.models.small_fast",
+        # MAJOR-4: never had an env var -- its value feeds the CHILD
+        # session's own ANTHROPIC_DEFAULT_HAIKU_MODEL (`session_env`),
+        # so a same-shaped env INPUT would read the child's own output
+        # back.
+        env_var=None,
+        config_section="provider",
+        config_key="bedrock.models.small_fast",
+        kind="str",
+        default=None,
+        description="Bedrock model id for the SDK's small/fast (haiku-class) child model",
+        direction="env-first",
+        enabled_when=_bedrock_active,
+    ),
+    # ----------------------------------------------------- invocation
+    # M-S: `invocation.backend` + one `invocation.backend_<surface>`
+    # per surface `backend_for` serves -- the registry's reporting/
+    # write face for the backend-selection family. Code-gate fold r1
+    # (MAJOR-1) corrects r3-M1/r3-M2's original claim: the specific/
+    # general CASCADE these keys participate in is now ONE shared pure
+    # function, `config.paired_cascade`, called by BOTH this module's
+    # `resolve_setting` (via each per-surface entry's `general_name`)
+    # AND `invocation.registry.resolve_backend_raw` -- not two
+    # independent transcriptions of the same six rungs. Each carries
+    # BOTH `validate` (folds an off-whitelist value in place on read,
+    # same as any other clamping entry) and `accepts` (refuses an
+    # off-whitelist `config set` outright, MAJOR-3).
+    Setting(
+        name="invocation.backend",
+        env_var="SELF_LEARN_BACKEND",
+        config_section="invocation",
+        config_key="backend",
+        kind="str",
+        default="sdk",
+        description="the general invocation backend selection (per-surface keys take precedence)",
+        direction="env-first",
+        validate=lambda v: cast(str, v) if cast(str, v) in KNOWN_BACKENDS else "sdk",
+        accepts=lambda v: cast(str, v) in KNOWN_BACKENDS,
+        accepts_hint=f"must be one of {', '.join(KNOWN_BACKENDS)}",
+        # nit-4: the whole `invocation.backend` family is one emergency-
+        # rollback lever -- tier "C" for the general key too, matching
+        # each per-surface sibling (splitting the general key's tier
+        # from its own per-surface siblings would make no sense: it is
+        # the SAME lever, just aimed at every surface at once).
+        tier="C",
+    ),
+    *(
+        Setting(
+            name=f"invocation.backend_{_surface}",
+            env_var=f"SELF_LEARN_BACKEND_{SELECTOR_FOR_SURFACE.get(_surface, _surface)}",
+            config_section="invocation",
+            config_key=f"backend_{_surface}",
+            kind="str",
+            default=DEFAULT_BACKEND_FOR_SURFACE.get(_surface, "sdk"),
+            description=f"the invocation backend selection for the {_surface!r} surface",
+            direction="env-first",
+            validate=lambda v: cast(str, v) if cast(str, v) in KNOWN_BACKENDS else "sdk",
+            accepts=lambda v: cast(str, v) in KNOWN_BACKENDS,
+            accepts_hint=f"must be one of {', '.join(KNOWN_BACKENDS)}",
+            general_name="invocation.backend",
+            tier="C",
+        )
+        for _surface in SURFACES
+    ),
+    # ----------------------------------------------------------- sdk
+    Setting(
+        name="sdk.cli_path",
+        env_var="SELF_LEARN_SDK_CLI_PATH",
+        config_section="sdk",
+        config_key="cli_path",
+        kind="str",
+        default=None,
+        description="the CLI path `SELF_LEARN_SDK_CLI_PATH` used to set directly, bypassing config",
+        direction="env-first",
+    ),
+    # -------------------------------------------------------- models
+    # M-S (BLOCKER-1): corrects `settings-surface-spec.md` §1.2's
+    # config-first ruling for exactly these three keys, which never
+    # took effect in code -- `models.pane` (UI-scope) is unaffected and
+    # stays out of this registry entirely.
+    Setting(
+        name="models.worker",
+        env_var="SELF_LEARN_WORKER_MODEL",
+        config_section="models",
+        config_key="worker",
+        kind="str",
+        default=_default_worker_model,
+        description="model id for the worker surface, under either provider",
+        direction="env-first",
+    ),
+    Setting(
+        name="models.miner",
+        env_var="SELF_LEARN_MINER_MODEL",
+        config_section="models",
+        config_key="miner",
+        kind="str",
+        default=_default_miner_model,
+        description="model id for the miner-reader surface, under either provider",
+        direction="env-first",
+    ),
+    Setting(
+        name="models.analyst",
+        env_var="SELF_LEARN_ANALYST_MODEL",
+        config_section="models",
+        config_key="analyst",
+        kind="str",
+        default=_default_analyst_model,
+        description="model id for the analyst surface, under either provider",
+        direction="env-first",
+    ),
 )
 
 #: Registration-time invariant: `name` is always `f"{config_section}.
@@ -726,11 +1220,16 @@ for _setting in REGISTRY:
             "has no config.yaml rung to edit -- it must be tier C"
         )
     # NIT-3 (review r2 2026-09-01): `_override_env_var` is NOT injective
-    # (`.` and `_` both fold to `_` -- `a.b_c` and `a_b.c` collide). 21
-    # entries give 21 distinct vars today; this catches the day a 22nd
-    # entry's name silently steals another entry's override channel,
-    # the same invariant-at-registration-time discipline as the
-    # `name == section.key` assert above.
+    # (`.` and `-` and `_` all fold to `_` -- `a.b_c` and `a_b.c`
+    # collide, and M-S's amendment adds the same risk for hyphenated
+    # surface names). 37 entries give 37 distinct vars today (21
+    # original + 16 from M-S/S-58: provider.name, provider.bedrock.
+    # region/profile/models.worker|miner|analyst|small_fast,
+    # invocation.backend + one invocation.backend_<surface> per
+    # surface, sdk.cli_path, models.worker|miner|analyst); this catches
+    # the day a 38th entry's name silently steals another entry's
+    # override channel, the same invariant-at-registration-time
+    # discipline as the `name == section.key` assert above.
     _override_var = _override_env_var(_setting.name)
     assert _override_var not in _override_vars_seen, (
         f"override env var collision: {_override_var!r} (from {_setting.name!r})"
@@ -911,6 +1410,65 @@ class SettingRow:
     detail: str
 
 
+def _fold_note(home: Path | str, setting: Setting, source: str) -> str | None:
+    """M-S (S-58, r5-m1(b)/r6-m1(b)): RE-DERIVES whether the raw value
+    AT THE RUNG NAMED BY `source` was folded by `setting.validate`, for
+    `setting_row`/`preflight`'s `note` field -- a second, redundant call
+    given `resolve_setting`'s own 2-tuple stays a thin wrapper rather
+    than widening (measured: `resolve_setting(` has 20 call sites, 18 of
+    them unpacking a plain 2-tuple wanting nothing else, against exactly
+    2 display call sites that would use a 3rd element). `None` for
+    every source this can't (or need not) re-derive: no `validate` at
+    all, an override written as the `_OVERRIDE_NONE_MARKER` escape
+    hatch, `"default"`, and `f"inactive (provider=...)"` (`enabled_when`
+    gating never reaches a rung to re-read).
+
+    M-S (code-gate fold r1): for a PAIRED entry (`setting.general_name
+    is not None`), `source` may name the GENERAL sibling's own rung
+    instead of `setting`'s -- re-derives via `_answering_setting`
+    first, so this never re-reads the wrong (possibly-absent) var/key
+    (the same bug MAJOR-1 named on the resolve path, found here too on
+    the display path). Also reads the override rung through `config.
+    read_override` (not a raw `os.environ.get`), so a deliberate
+    `override(name, "")` (`config.OVERRIDE_EMPTY_MARKER`) is decoded
+    correctly instead of re-parsed as the literal marker text."""
+    entry = _answering_setting(setting, source)
+    if entry.validate is None:
+        return None
+    if source.startswith("override:"):
+        result = config.read_override(entry.name)
+        if result is None:
+            return None
+        raw, is_none = result
+        if is_none:
+            return None
+        parsed = _parse_env_value(raw, entry.kind)
+    elif source.startswith("config:"):
+        if entry.config_section is None:
+            return None
+        assert entry.config_key is not None
+        found = config.settings_leaf(home, entry.config_section, entry.config_key)
+        if found is None:
+            return None
+        parsed = _parse_config_value(found[1], entry.kind)
+    elif source.startswith("env:"):
+        if entry.env_var is None:
+            return None
+        raw = os.environ.get(entry.env_var)
+        if not raw:
+            return None
+        parsed = _parse_env_value(raw, entry.kind)
+    else:
+        # "default" or "inactive (provider=...)" -- nothing to re-read.
+        return None
+    if parsed is None:
+        return None
+    final, rejected = _apply_validate(parsed, entry.validate)
+    if rejected or final is None or final == parsed:
+        return None
+    return f"{parsed!r} folded to {final!r}"
+
+
 def preflight(home: Path | str) -> list[SettingRow]:
     """`doctor settings`'s single source of truth (mirrors `provider.
     preflight`'s `Doc-0`: computes every row, prints nothing).
@@ -938,17 +1496,30 @@ def preflight(home: Path | str) -> list[SettingRow]:
     rows: list[SettingRow] = []
     for setting in REGISTRY:
         value, source = resolve_setting(home, setting)
+        note = _fold_note(home, setting, source)
+        note_suffix = f" [{note}]" if note else ""
         if source.startswith("override:"):
+            # M-S (code-gate fold r1): a PAIRED entry's `source` may
+            # name the GENERAL sibling's own override var -- the "Unset
+            # <VAR>" text must name THAT var, not `setting`'s own
+            # (which the operator never exported).
             rows.append(
                 SettingRow(
                     name=setting.name,
                     verdict="WARN",
-                    detail=f"{setting.name} = {value!r} ({source}) -- {_override_warn_text(setting)}",
+                    detail=(
+                        f"{setting.name} = {value!r} ({source}){note_suffix} -- "
+                        f"{_override_warn_text(_answering_setting(setting, source))}"
+                    ),
                 )
             )
         else:
             rows.append(
-                SettingRow(name=setting.name, verdict="INFO", detail=f"{setting.name} = {value!r} ({source})")
+                SettingRow(
+                    name=setting.name,
+                    verdict="INFO",
+                    detail=f"{setting.name} = {value!r} ({source}){note_suffix}",
+                )
             )
     for key in unknown_keys(home):
         rows.append(
@@ -1047,6 +1618,10 @@ def setting_row(home: Path | str, setting: Setting) -> dict[str, object]:
         "description": setting.description,
         "tier": setting.tier,
         "warn": _override_warn_text(setting) if source.startswith("override:") else None,
+        # M-S (S-58, r5-m1(c)): the fold detail, named `note` outright
+        # (not hedged as "e.g.") -- `None` unless the answering rung's
+        # raw value was actually folded by `validate`.
+        "note": _fold_note(home, setting, source),
     }
 
 
@@ -1208,6 +1783,17 @@ def config_set(
         # kind. Only a `bool` setting takes that literal-1-or-0 shape.
         hint = " (bool settings take 1 or 0)" if setting.kind == "bool" else ""
         raise InvalidSettingValueError(f"{name}={raw_value!r} is not a valid {setting.kind}{hint}")
+
+    # M-S (S-58, MAJOR-3/r4-M1/r5-M1): `accepts` runs on the PARSED
+    # value, BEFORE `validate` -- placed after `validate` it would see
+    # `validate`'s own CLAMPED output (an off-whitelist write already
+    # folded to the in-place default) and let a clamping `validate`
+    # launder every refused write into an accepted, silently different
+    # one, the exact inverse of "REJECTED outright ... never committed".
+    if setting.accepts is not None and not setting.accepts(parsed):
+        hint = f" ({setting.accepts_hint})" if setting.accepts_hint else ""
+        raise InvalidSettingValueError(f"{name}={raw_value!r} is not accepted{hint}")
+
     final, rejected = _apply_validate(parsed, setting.validate)
     if final is None:
         assert rejected  # _apply_validate only returns None via a validate rejection here

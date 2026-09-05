@@ -252,13 +252,22 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
         "mcp_servers": {},
         "include_partial_messages": False,
         "env": policy.env(),  # `PS-a` -- called exactly once, no merge
-        # `O-4`/`IN3` -- unchanged since before `U-bedrock`: this already
-        # equals `provider.resolve(home, surface).cli_path` bit-for-bit
-        # (`_resolve_str_setting` resolves the same env var the same way,
-        # `None` on absence), so `IN3`'s cli_path leg holds by
-        # construction and this line does not need a second `resolve()`
-        # call to satisfy it.
-        "cli_path": os.environ.get("SELF_LEARN_SDK_CLI_PATH") or None,
+        # `O-4`/`IN3` (M-S, S-58, minor-2): reads THROUGH the `sdk.
+        # cli_path` registry entry now, the same one `provider.resolve(
+        # home, surface).cli_path` uses -- a bare `os.environ.get(
+        # "SELF_LEARN_SDK_CLI_PATH")` here was a SECOND, independent
+        # reader of the same var the registry now governs; once `sdk.
+        # cli_path` gained a config.yaml/override rung, that second
+        # reader would silently disagree with `IN3`'s cli_path leg the
+        # moment an operator set the key anywhere but the bare env var
+        # (the live SDK session would use one binary while `doctor
+        # invocation`'s own report named another). `IN3`'s "holds by
+        # construction" claim now depends on THIS call, not env-var
+        # coincidence.
+        "cli_path": cast(
+            "str | None", settings.resolve_setting(spec.cwd, settings.by_name("sdk.cli_path"))[0]
+        )
+        or None,
         # `POL3` -- the three keys measured identical in §2.3
         # (`allowed_tools`, `setting_sources`, `strict_mcp_config`), a
         # FRESH dict every call, from the ONE shared definition both

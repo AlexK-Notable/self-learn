@@ -43,6 +43,7 @@ policy decision).
 from __future__ import annotations
 
 import io
+import os
 import sys
 from pathlib import Path
 
@@ -54,6 +55,9 @@ from .primitives import fsops, yamlio
 
 __all__ = [
     "CONFIG_BASENAME",
+    "INVOCATION_BACKEND_LABEL",
+    "OVERRIDE_EMPTY_MARKER",
+    "OVERRIDE_NONE_MARKER",
     "PROVIDER_KEYS",
     "ConfigWriteError",
     "config_path",
@@ -62,9 +66,12 @@ __all__ = [
     "invocation_backend",
     "load_editable",
     "one_motion_enabled",
+    "override_env_var",
+    "paired_cascade",
+    "paired_leaf",
     "present",
-    "provider_setting",
     "provider_unknown_keys",
+    "read_override",
     "set_leaf",
     "settings_leaf",
     "settings_unknown_keys",
@@ -110,6 +117,23 @@ def _warn(message: str) -> None:
 #: chain, keyed by surface (finer) then by the flat general key.
 _INVOCATION_SECTION = "invocation"
 
+#: M-S (S-58 code-gate fold r2, gap-4): the ONE `label` every caller of
+#: `paired_leaf`/`paired_cascade` for the invocation-backend pair
+#: passes, so a malformed `invocation.backend[_<surface>]` config value
+#: warns with the byte-identical sentence regardless of which face
+#: resolved it. Before this fold, `settings._try_paired` passed
+#: `setting.description` (a per-surface phrase, e.g. "the invocation
+#: backend selection for the 'worker' surface") while `invocation.
+#: registry.resolve_backend_raw` passed this same literal directly —
+#: same walk, two different warn sentences, unpinned by any test. Kept
+#: here (not in `settings.py` or `registry.py`) for the same reason the
+#: cascade itself lives here: neither of those modules can import the
+#: other's `Setting`/registry types without a cycle, and this constant
+#: is invocation-backend-specific, not a general "paired entry" label —
+#: a future non-backend paired setting of a different shape would need
+#: its own label, not this one.
+INVOCATION_BACKEND_LABEL = "invocation backend selection"
+
 
 def invocation_backend(home: Path | str, surface: str) -> tuple[str, str] | None:
     """U-seam §3.7.3 — the registry's rung-3/rung-4 config reader.
@@ -123,109 +147,245 @@ def invocation_backend(home: Path | str, surface: str) -> tuple[str, str] | None
     an empty string is a valid match -- "no answer", not an unknown
     value -- the caller decides whether to fall through). ``None`` only
     when neither key is present, or upstream discipline already fired.
-    Follows :func:`one_motion_enabled`'s discipline case for case:
-    missing file -> ``None`` silent; empty file (YAML loads to ``None``)
-    -> ``None`` silent; unparseable -> ``_warn`` + ``None``; non-mapping
-    top level -> ``_warn`` + ``None``; ``invocation`` section absent ->
-    ``None`` silent; ``invocation`` section present but not a mapping ->
-    ``_warn`` + ``None``; value present but not a ``str`` -> ``_warn`` +
-    ``None``. Does NOT validate the value against the known backend
-    names — that judgement, and its warning, belong to the registry
-    (`R-c`), so there is one place where "unknown means cli" is
-    decided."""
+
+    A thin wrapper over :func:`paired_leaf` (M-S, S-58 code-gate fold
+    r1, minor-2): this function's own name and signature SURVIVE --
+    only ``provider_setting`` retired at the top of this amendment; the
+    walk itself is now shared with the registry face's paired-entry
+    cascade (:func:`paired_cascade`) so the two can never independently
+    reimplement — and silently diverge on — the same Rs-a1 termination
+    rule."""
+    return paired_leaf(
+        home,
+        _INVOCATION_SECTION,
+        f"backend_{surface}",
+        "backend",
+        label=INVOCATION_BACKEND_LABEL,
+    )
+
+
+def paired_leaf(
+    home: Path | str, section: str, specific_key: str, general_key: str, *, label: str
+) -> tuple[str, str] | None:
+    """M-S (S-58 code-gate fold r1, MAJOR-1): the GENERAL shape of
+    :func:`invocation_backend`'s walk -- the first-present-key-wins
+    read of a specific/general config.yaml pair, generalized over
+    `section`/`specific_key`/`general_key` so a FUTURE paired entry
+    reuses this walk instead of hand-rolling it again. `label` is the
+    exact phrase each of `invocation_backend`'s three warn messages
+    ends with ("... ignored") -- kept a parameter, not hardcoded, so
+    `invocation_backend`'s own byte-exact warn text survives this
+    refactor untouched.
+
+    Returns ``(key, value)`` for the FIRST present key among
+    `specific_key` and `general_key` -- ``value`` may be ``""`` (an
+    empty string is a valid match, not an unknown one; the CALLER
+    decides whether an empty value at the SPECIFIC key terminates the
+    cascade or falls through, per its own Rs-a1 policy). ``None`` when
+    neither key is present, the section/file is absent, or upstream
+    discipline already fired via `_warn`. Same fail-closed discipline
+    as :func:`settings_leaf`: missing file -> ``None`` silent; empty
+    file -> ``None`` silent; unparseable -> `_warn` + ``None``;
+    non-mapping top level -> `_warn` + ``None``; `section` absent ->
+    ``None`` silent; `section` present but not a mapping -> `_warn` +
+    ``None``; a matched value present but not a ``str`` -> `_warn` +
+    ``None``."""
     path = config_path(home)
     if not path.is_file():
         return None
     try:
         data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
     except (YAMLError, OSError, UnicodeDecodeError) as exc:
-        _warn(f"unparseable ({exc}); invocation backend selection ignored")
+        _warn(f"unparseable ({exc}); {label} ignored")
         return None
     if data is None:
         return None
     if not isinstance(data, dict):
         _warn(
             f"top level must be a mapping, got {type(data).__name__}; "
-            "invocation backend selection ignored"
+            f"{label} ignored"
         )
         return None
-    section = data.get(_INVOCATION_SECTION)
-    if section is None:
+    node = data.get(section)
+    if node is None:
         return None
-    if not isinstance(section, dict):
-        _warn(
-            f"{_INVOCATION_SECTION} must be a mapping, got {section!r}; "
-            "invocation backend selection ignored"
-        )
+    if not isinstance(node, dict):
+        _warn(f"{section} must be a mapping, got {node!r}; {label} ignored")
         return None
-    for key in (f"backend_{surface}", "backend"):
-        if key not in section:
+    for key in (specific_key, general_key):
+        if key not in node:
             continue
-        value = section[key]
+        value = node[key]
         if not isinstance(value, str):
-            _warn(
-                f"{_INVOCATION_SECTION}.{key} must be a string, got {value!r}; "
-                "invocation backend selection ignored"
-            )
+            _warn(f"{section}.{key} must be a string, got {value!r}; {label} ignored")
             return None
         return (key, value)
     return None
 
 
-def provider_setting(home: Path | str, key: str) -> tuple[str, str] | None:
-    """U-bedrock `Key-1`/`K-b` -- one reader over the `provider:` section,
-    walking the dotted path of a `PROVIDER_KEYS` member. `key` outside
-    `PROVIDER_KEYS` is a PROGRAMMING error and raises `ValueError` (never
-    operator input). Follows :func:`invocation_backend`'s discipline case
-    for case; the returned first element is `key` itself, verbatim, so a
-    caller can build its own `"config:provider.{key}"` source string.
-    Does NOT validate the value against `PROVIDERS` or any model-id shape
-    -- those judgements belong to `provider.py` and the doctor."""
-    if key not in PROVIDER_KEYS:
-        raise ValueError(f"provider_setting: {key!r} is not in PROVIDER_KEYS")
-    path = config_path(home)
-    if not path.is_file():
-        return None
-    try:
-        data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
-    except (YAMLError, OSError, UnicodeDecodeError) as exc:
-        _warn(f"unparseable ({exc}); provider.{key} ignored")
-        return None
-    if data is None:
-        return None
-    if not isinstance(data, dict):
-        _warn(
-            f"top level must be a mapping, got {type(data).__name__}; "
-            f"provider.{key} ignored"
-        )
-        return None
-    section = data.get(_PROVIDER_SECTION)
-    if section is None:
-        return None
+#: M-S (S-58 BLOCKER-1, code-gate fold r1): the override channel's two
+#: escape-hatch markers -- moved here from `settings.py` so both faces
+#: of a selection key (`settings._try_override`, the registry reader,
+#: and `provider._resolve_provider`'s hand-written runtime rung) decode
+#: an ambient override var through the SAME reader (:func:`read_override`
+#: below) without `invocation/registry.py` or `provider.py` importing
+#: `settings.py` (a cycle: `settings.py` already imports `.invocation.
+#: registry`). `OVERRIDE_NONE_MARKER` distinguishes a deliberate
+#: `override(name, None)` from an unset var; `OVERRIDE_EMPTY_MARKER`
+#: distinguishes a deliberate `override(name, "")` from an AMBIENT
+#: empty var (BLOCKER-1's actual bug: `SELF_LEARN_OVERRIDE_PROVIDER_
+#: NAME=""` used to parse as a valid empty `str`, then get silently
+#: clamped by `provider.name`'s own `validate` to `"anthropic"` --
+#: bricking a valid bedrock ledger on the registry face while the
+#: runtime face's truthiness check treated the same var as absent, two
+#: faces disagreeing on the SAME ambient state). Neither string can
+#: collide with an operator-typed value short of deliberately typing
+#: this exact control-character token.
+OVERRIDE_NONE_MARKER = "\x01SELF_LEARN_OVERRIDE_NONE\x01"
+OVERRIDE_EMPTY_MARKER = "\x01SELF_LEARN_OVERRIDE_EMPTY\x01"
 
-    segments = key.split(".")
-    node: object = section
-    path_so_far = _PROVIDER_SECTION
-    for segment in segments[:-1]:
-        if not isinstance(node, dict):
-            _warn(f"{path_so_far} must be a mapping, got {node!r}; provider.{key} ignored")
-            return None
-        path_so_far = f"{path_so_far}.{segment}"
-        if segment not in node:
-            return None
-        node = node[segment]
 
-    if not isinstance(node, dict):
-        _warn(f"{path_so_far} must be a mapping, got {node!r}; provider.{key} ignored")
+def read_override(name: str) -> tuple[str, bool] | None:
+    """M-S (S-58 BLOCKER-1, code-gate fold r1): the override channel's
+    ONE reader, shared by `settings._try_override` (the registry face)
+    and `provider._resolve_provider`'s override rung (the runtime
+    face) -- the fix for the gate's BLOCKER-1: the two faces used to
+    decode the SAME ambient env var by two different rules (presence
+    vs truthiness) and, worse, only the registry face's `validate`
+    silently clamped an unknown/empty value, so aligning the rules
+    alone (without this shared reader) would have made BOTH faces
+    agree on the WRONG answer (bedrock silently becomes anthropic)
+    instead of the right one.
+
+    Returns ``None`` for "no answer": the var is unset, OR it holds
+    the AMBIENT empty string ``""`` -- matching `_try_env`'s own
+    `if not raw` convention (an operator's shell leaving a var blank
+    is indistinguishable from never exporting it at all; neither is a
+    deliberate answer).
+
+    Returns ``(value, is_none)`` otherwise: `is_none=True` when the var
+    holds `OVERRIDE_NONE_MARKER` (a caller's own `override(name,
+    None)`, e.g. `sdk.max_budget_usd`'s "unlimited"); `is_none=False`
+    carries the raw string, INCLUDING `""` when it arrived via
+    `OVERRIDE_EMPTY_MARKER` (a caller's own `override(name, "")`,
+    preserved deliberately -- never confused with the ambient-empty
+    case above, which this function has already returned `None` for)."""
+    raw = os.environ.get(override_env_var(name))
+    if not raw:
         return None
-    leaf = segments[-1]
-    if leaf not in node:
-        return None
-    value = node[leaf]
-    if not isinstance(value, str):
-        _warn(f"provider.{key} must be a string, got {value!r}; ignored")
-        return None
-    return (key, value)
+    if raw == OVERRIDE_NONE_MARKER:
+        # The placeholder "" carries no meaning here -- every caller
+        # checks `is_none` before ever reading this element (`Setting
+        # Value`'s real `None` never round-trips through a `str`-typed
+        # slot; that's the whole reason `is_none` is a SEPARATE flag).
+        return "", True
+    if raw == OVERRIDE_EMPTY_MARKER:
+        return "", False
+    return raw, False
+
+
+def paired_cascade(
+    home: Path | str | None,
+    *,
+    specific_name: str,
+    general_name: str,
+    specific_env_var: str | None,
+    general_env_var: str | None,
+    section: str,
+    specific_config_key: str,
+    general_config_key: str,
+    label: str,
+) -> tuple[str, str, str] | None:
+    """M-S (S-58 MAJOR-1/MAJOR-4, code-gate fold r1): the ONE pure
+    specific/general cascade both `settings.resolve_setting` (for a
+    registry entry declaring a `general_name` sibling) and `invocation.
+    registry.resolve_backend_raw` call -- lives here, not in
+    `settings.py`, because `invocation/registry.py` cannot import
+    `settings.py` (a real cycle: `settings.py` already imports
+    `.invocation.registry`), and not in a `Setting`-typed helper for
+    the same reason. Takes only primitives (raw names/vars/keys) and
+    returns a GENERIC `(raw_value, rung, matched)` triple that EACH
+    CALLER translates into its OWN established source-label vocabulary
+    -- `resolve_setting`'s `f"override:{name}"` / `f"config:{section}.
+    {key}"` / `f"env:{env_var}"`, or `resolve_backend_raw`'s own
+    (identical, post-fold) vocabulary. `rung` is one of
+    `"override-specific"`, `"override-general"`, `"env-specific"`,
+    `"env-general"`, `"config-specific"`, `"config-general"`; `matched`
+    is the override NAME (override rungs), the ENV VAR (env rungs), or
+    the DOTTED `section.key` (config rungs) the caller embeds in its
+    label. Returns ``None`` when nothing answers -- the caller applies
+    its own default.
+
+    Six rungs, override-specific before override-general before
+    env-specific before env-general before config (Rs-a1's termination,
+    delegated verbatim to :func:`paired_leaf`) before nothing (default,
+    left to the caller). `Rs-a1` (unchanged, gate mutations (a1)/(a2)):
+    an EMPTY per-surface config value terminates the config rung at
+    "no answer" WITHOUT consulting the general config key at all -- an
+    ABSENT per-surface key falls through to the general key normally.
+    `home=None` skips the config rung entirely (`resolve_backend_raw`'s
+    pre-existing optionality, preserved).
+
+    Every current pair is `kind="str"` (the only shape either caller
+    has needed so far), so this cascade needs no `kind`-aware parsing
+    of its own -- each caller re-parses the raw string it gets back
+    through its OWN `kind`-aware machinery, same as every other rung."""
+    override_result = read_override(specific_name)
+    if override_result is not None:
+        raw, is_none = override_result
+        if not is_none:
+            return raw, "override-specific", specific_name
+    override_result = read_override(general_name)
+    if override_result is not None:
+        raw, is_none = override_result
+        if not is_none:
+            return raw, "override-general", general_name
+
+    if specific_env_var is not None:
+        raw = os.environ.get(specific_env_var)
+        if raw:
+            return raw, "env-specific", specific_env_var
+    if general_env_var is not None:
+        raw = os.environ.get(general_env_var)
+        if raw:
+            return raw, "env-general", general_env_var
+
+    if home is not None:
+        found = paired_leaf(home, section, specific_config_key, general_config_key, label=label)
+        if found is not None:
+            key, value = found
+            if not value:
+                # Rs-a1: an EMPTY value at the SPECIFIC key terminates
+                # the whole config rung at "no answer" -- it does not
+                # fall through to the general key, and a general value
+                # that also happens to be empty is likewise no answer.
+                return None
+            rung = "config-specific" if key == specific_config_key else "config-general"
+            return value, rung, f"{section}.{key}"
+
+    return None
+
+
+def override_env_var(name: str) -> str:
+    """M-S (U-settings' provider/backend-selection amendment, S-58) --
+    the override channel's env-var name for a dotted registry key
+    `name`: `SELF_LEARN_OVERRIDE_<NAME>`, uppercased, with BOTH `.` and
+    `-` folded to `_` (minor-1, code-gate review 2026-09-04): a bare
+    `.`-only substitution would produce
+    `SELF_LEARN_OVERRIDE_INVOCATION_BACKEND_WORKER-REPAIR`, which is not
+    a valid POSIX environment-variable name (a hyphen is not a legal
+    identifier character) -- `invocation.backend_worker-repair`'s own
+    name embeds the surface `worker-repair` verbatim, so this is not a
+    hypothetical.
+
+    Lives here, not in `settings.py`, so `invocation/registry.py` can
+    compute the SAME override-var name for its own runtime-dispatch
+    override rungs (`resolve_backend_raw`) without importing
+    `settings.py` at all (`I-b`'s one-permitted-upward-import rule
+    would otherwise be violated) -- `settings.py`'s own `_override_env_
+    var` is now a thin call-through to this function, so the two
+    channels can never drift apart under one operator-visible name."""
+    return "SELF_LEARN_OVERRIDE_" + name.upper().replace(".", "_").replace("-", "_")
 
 
 def _collect_leaf_paths(node: object, prefix: str, out: set) -> None:

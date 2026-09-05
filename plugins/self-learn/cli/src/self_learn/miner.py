@@ -51,7 +51,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
-from . import gitops, invocation, sentinel, settings, telemetry, worker
+from . import gitops, invocation, provider, sentinel, settings, telemetry, worker
 from .primitives import chrono
 from . import reconcile as reconcile_mod
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
@@ -1899,7 +1899,22 @@ def run(
             "run_id": run_id,
             "trigger": trigger,
             "rubric_version": _rubric()[1],
-            "model": miner_model(),
+            # M-S (S-58 code-gate fold r1, minor-1): the STAMP records
+            # the model that would actually run the "miner-reader"
+            # surface -- `provider.model_for`'s full registry-backed
+            # answer (`models.miner` / `provider.bedrock.models.miner`
+            # under this run's OWN `home`), not `miner_model()`'s bare
+            # env-or-default rung, which is invisible to a `models.
+            # miner: X` config.yaml value entirely. `miner_model()`
+            # itself is UNCHANGED (it stays a registry default rung --
+            # `_default_miner_model` in settings.py calls it -- calling
+            # `model_for` FROM it would recurse). Measured: `model_for`
+            # never raises (no `model_for`/`resolve_setting` call site
+            # in its graph raises; refusal is a separate mechanism in
+            # `session_env`/`resolve()` this pure-heuristic `run()`
+            # never touches), so this stamp adds no new raise where
+            # today there is only a write.
+            "model": provider.model_for("miner-reader", home=home),
         }
 
         # BLOCKER 11 (audit 2026-07-16): the nightly miner resolves the

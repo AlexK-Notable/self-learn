@@ -55,7 +55,7 @@ from typing import Any, cast
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from . import invocation, settings
+from . import invocation, provider, settings
 from .primitives import chrono
 from .ledger_ops import (
     ROSTER_UNAVAILABLE,
@@ -205,7 +205,27 @@ def analyze(
             f"analyst home is not a directory this process can enter ({home})"
         )
     doctrine_text = doctrine.read_text(encoding="utf-8")
-    model = _model()
+    # M-S (S-58 code-gate fold r1, minor-1): STAMPED for the proposal
+    # BEFORE the session build below, but computed via `provider.
+    # model_for` (this run's OWN `home`, matching `spec.cwd` the
+    # `SessionSpec` built a few lines down carries) rather than `_model
+    # ()`'s bare env-or-default rung -- the SPEC never passes a `model`
+    # field itself, so the session's ACTUAL model is resolved
+    # INDEPENDENTLY, later, inside `invocation_sdk/backend.py`'s
+    # `options_kwargs` via this SAME `provider.model_for(spec.surface,
+    # home=spec.cwd)` call. Calling it here too, with identical
+    # arguments, makes the stamp AGREE with what the session actually
+    # used (both calls are pure and deterministic against the same
+    # `home`/env/config.yaml, within one synchronous function
+    # execution) rather than threading the session's internal choice
+    # back out, which `write_session`/`text_session`'s `Outcome` has no
+    # field for. `_model()` itself is UNCHANGED (a registry default rung
+    # -- `_default_analyst_model` in settings.py calls it; calling
+    # `model_for` FROM it would recurse). Measured: `model_for` never
+    # raises (refusal lives in a separate `session_env`/`resolve()`
+    # mechanism this call never touches), so this adds no new raise
+    # where today there is only a write.
+    model = provider.model_for("analyst", home=home)
     # U-composer §3.5: the analyst's prompt is composed by the SAME
     # function the worker uses for its per-record block (A11). The
     # QueueEntry's path is derived via find_record_path when the record

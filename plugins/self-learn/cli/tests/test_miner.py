@@ -2784,3 +2784,20 @@ def test_mine_status_reports_corrupt_records_in_human_output(
     assert rc == cli.EXIT_OK
     out = capsys.readouterr().out
     assert "1 ledger file(s) not UTF-8, skipped" in out
+
+
+def test_M_S_fold_r1_mine_record_model_field_reads_models_miner_config(
+    home, transcripts, monkeypatch
+):
+    """M-S (S-58 code-gate fold r1, minor-1): the mine record's `model`
+    field must reflect `models.miner: X` in config.yaml even with no env
+    var set -- `miner_model()`'s old bare env-or-default stamp was
+    invisible to this config.yaml rung entirely; `provider.model_for`
+    (the actual stamp now used) resolves it correctly."""
+    monkeypatch.delenv("SELF_LEARN_MINER_MODEL", raising=False)
+    (home / "config.yaml").write_text("models:\n  miner: CONFIG-MINER-MODEL-ID\n", encoding="utf-8")
+    write_transcript(transcripts, "sess-model-stamp", [u("some work")])
+    shim_reader(monkeypatch, {"candidates": [], "fires": []})
+    result = miner.run(home)
+    assert result.status == "ok"
+    assert miner.read_journal()[-1]["model"] == "CONFIG-MINER-MODEL-ID"
