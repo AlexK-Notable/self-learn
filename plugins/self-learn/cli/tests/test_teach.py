@@ -425,10 +425,11 @@ def test_conflicting_scope_flags_rejected(home, capsys):
     # fold r1 correction, 2026-09-04: `--project`/`--user` are argparse's
     # OWN mutually-exclusive group (add_mutually_exclusive_group) --
     # argparse raises its own SystemExit(2) before teach's `_fail()` (and
-    # therefore teach.EXIT_USAGE) is ever reached. A22 unified teach's
-    # PRIVATE usage code with the CLI's 64; it never touched argparse's
-    # own, unrelated, hardcoded 2 (same class as test_status.py's
-    # "argparse choice error — argparse owns this exit").
+    # therefore the deferred `cli.EXIT_USAGE` it imports -- fold r2) is
+    # ever reached. A22 unified teach's PRIVATE usage code with the
+    # CLI's 64; it never touched argparse's own, unrelated, hardcoded 2
+    # (same class as test_status.py's "argparse choice error — argparse
+    # owns this exit").
     rc = run_cli(["teach", "a fact", "--project", "--user"])
     assert rc == 2
     assert all_pending(home) == []

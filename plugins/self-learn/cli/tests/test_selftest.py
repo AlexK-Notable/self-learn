@@ -752,7 +752,7 @@ def test_selftest_reports_nine_checks_criterion_12(env, capsys):
 # corrupt loaded surface or resolved record file killed `_check_reach`
 # outright with a raw `UnicodeDecodeError`, and a corrupt resolved record
 # file killed `run_selftest` even earlier (`_section_targets`, called
-# before any of the seven checks run), before a single PASS/FAIL row
+# before any of the nine checks run), before a single PASS/FAIL row
 # printed.
 
 
@@ -814,7 +814,7 @@ def test_reach_undecodable_resolved_record_skipped_not_crashed(env):
 
 def test_selftest_survives_corrupt_resolved_record_prints_all_nine_rows(env, capsys):
     """The end-to-end proof: `_section_targets` (feeding checks (b)/(c),
-    called BEFORE the seven-check loop even runs) shares the identical
+    called BEFORE the nine-check loop even runs) shares the identical
     from_path/RecordError gap — left unfixed, a corrupt resolved record
     file killed `--selftest` before it printed a single row, not just the
     reach/drift ones. Exercised through the full `cli.main(["--selftest"])`

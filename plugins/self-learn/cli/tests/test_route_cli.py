@@ -375,10 +375,11 @@ def test_teach_route_missing_doctrine_exits_2_pre_spawn(
 ):
     """Node name is historical (`_exits_2`) — armor treats a rename as a
     delete plus an add (two doors instead of one), so the name is kept
-    even though the code changed. A22 (fold r1, 2026-09-04) unified
-    teach's usage-error exit with the CLI's own (`teach.EXIT_USAGE`
-    2 -> 64); this is that exit family, so the expected code below moved
-    from 2 to 64.
+    even though the code changed. A22 (fold r1, 2026-09-04; corrected
+    fold r2) unified teach's private usage-error code (2) with the
+    CLI's own shared `EXIT_USAGE` (64, imported inside `_fail()` —
+    there is no module-level `teach.EXIT_USAGE` any more); this is that
+    exit family, so the expected code below moved from 2 to 64.
 
     doc 13 T-H3: the doctrine ships package-relative and is normally
     always present. Force the "not installed" branch by pointing the

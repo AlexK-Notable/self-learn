@@ -279,9 +279,12 @@ def test_default_install_no_hook_lessons_yet_selftest_exits_0(env, capsys):
 
 def test_hosts_yaml_absent_with_registrations_is_unmeasured_exit_9(tmp_path, monkeypatch, capsys):
     """PINS gate r1's ruling on the fold r2 edge / fold r3 (2026-09-04):
-    an absent (or unreadable) `hosts.yaml` means the ledger walk that
-    counts hook-routed records never ran at all -- `checked == 0` here
-    means "never looked", not "looked and found zero". This must be
+    an absent `hosts.yaml` means the ledger walk that counts
+    hook-routed records never ran at all -- `checked == 0` here means
+    "never looked", not "looked and found zero" (an UNREADABLE-but-
+    present hosts.yaml is a different case, already handled above this
+    branch: it FAILs, it does not reach UNMEASURED -- gate r2, nit 1).
+    This must be
     UNMEASURED regardless of how many settings.json registrations
     resolve; a resolvable registration set does not tell you anything
     about hook-routed records the walk never visited. The companion

@@ -992,20 +992,29 @@ def _check_hooks(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
         return Verdict.FAIL, "; ".join(failures)
     if not hosts_known:
         # fold r3 (2026-09-04), corrected pin — gate r1's ruling on the
-        # fold r2 edge: an absent/unreadable hosts.yaml means the LEDGER
-        # WALK NEVER RAN (every hook-routed record above hit `if not
-        # hosts_known: continue`), so `checked == 0` here does not mean
-        # "zero hook-routed records exist" the way it does below when
-        # the walk actually ran and found none -- it means the walk
-        # never looked. This must be UNMEASURED regardless of
-        # `registrations`: a settings.json with resolvable registrations
-        # does not tell you anything about records the walk never
-        # visited. (fold r2 conflated the two: its `checked == 0` PASS
-        # branch fired here too whenever `registrations > 0`, printing
-        # "0 hook-routed records" as though that were measured, when it
-        # was really "not measured, walk skipped" — the same
+        # fold r2 edge: an absent hosts.yaml means the LEDGER WALK NEVER
+        # RAN (every hook-routed record above hit `if not hosts_known:
+        # continue`), so `checked == 0` here does not mean "zero
+        # hook-routed records exist" the way it does below when the
+        # walk actually ran and found none -- it means the walk never
+        # looked. This must be UNMEASURED regardless of `registrations`:
+        # a settings.json with resolvable registrations does not tell
+        # you anything about records the walk never visited. (fold r2
+        # conflated the two: its `checked == 0` PASS branch fired here
+        # too whenever `registrations > 0`, printing "0 hook-routed
+        # records" as though that were measured, when it was really
+        # "not measured, walk skipped" — the same
         # never-print-reachable-for-what-you-didn't-see class this
         # module's own docstring contract names, `lrn-ea833a5b`.)
+        # NOT the same case as an UNREADABLE-but-present hosts.yaml (a
+        # few lines above, `except HostsError`): that one already FAILs
+        # via `if failures:`, above, because the walk DOES run with
+        # `root is None` and either the except block or a live
+        # unresolvable record appends a failure. Do not fold these two
+        # guards into one `if not hosts_known or root is None:` — that
+        # would turn a broken registry from FAIL into UNMEASURED,
+        # fail-open in the exact class `lrn-ea833a5b` exists to catch
+        # (gate r2, 2026-09-04, nit 1).
         return Verdict.UNMEASURED, (
             "hosts.yaml absent — hook scripts not checked; "
             f"{registrations} registration(s) resolvable"
