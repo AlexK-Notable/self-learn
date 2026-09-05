@@ -1705,6 +1705,29 @@ class TestD3RegionResyncCoverageWalker:
             "such function(s) -- _MERGE_FOR is stale against the shipped "
             "source"
         )
+        # Positive control (measured gap, code gate self-review before
+        # this commit): merging a helper's body in BY NAME alone proves
+        # nothing about whether it is still reached -- severing the
+        # `_resync_three_regions(...)` CALL inside `_execute_route`
+        # while leaving the helper defined keeps every test below GREEN
+        # regardless, because its `region_kind` literals are still
+        # concatenated into the merged body. That is exactly the
+        # "FUTURE regression that deletes a resync call" this class's
+        # own docstring exists to catch. Checked link-by-link: each
+        # `extra`, in `_MERGE_FOR` order, must be CALLED somewhere in
+        # the chain already confirmed reachable (`found[name]` itself,
+        # or an earlier `extra`) before its body is merged in.
+        reachable = [found[name]]
+        for extra in extra_names:
+            if not any(cls._calls_named(caller, (extra,)) for caller in reachable):
+                raise AssertionError(
+                    f"{name}'s merge set names {extra!r}, but nothing "
+                    f"already in the chain ({name!r} plus any prior "
+                    "extras) calls it -- merging its body in regardless "
+                    "would make this walker blind to a regression that "
+                    "severs the call while leaving the callee defined"
+                )
+            reachable.append(found[extra])
         # shallow copy: only `.body` is replaced (the concatenation), so
         # `ast.walk` sees every original node -- name/args/decorators/
         # line numbers all ride along from the real `name` FunctionDef.
@@ -4401,6 +4424,20 @@ class TestRec12HostLockDiscipline:
             "such function(s) -- _MERGE_FOR is stale against the shipped "
             "source"
         )
+        # Positive control (same measured gap as
+        # `TestD3RegionResyncCoverageWalker._find_func`, one hop here):
+        # `found[name]` must actually CALL `extra` before its body is
+        # merged in, or a regression that severs `route`'s/
+        # `route_direct`'s own call into `_execute_route` would leave
+        # every leg below silently checking a body no longer reachable
+        # at runtime.
+        for extra in extra_names:
+            assert cls._calls_named(found[name], (extra,)), (
+                f"{name}'s merge set names {extra!r}, but {name}'s own "
+                f"body never calls it -- merging its body in regardless "
+                "would make this walker blind to a regression that "
+                "severs the call while leaving the callee defined"
+            )
         # shallow copy: only `.body` is replaced (the concatenation), so
         # `ast.walk` sees every original node, and every node's own
         # `lineno` rides along unchanged from the real source -- leg (c)'s
