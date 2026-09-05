@@ -18,10 +18,13 @@ process's os.environ instead).
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import shutil
 import socket
 import stat
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -1652,3 +1655,306 @@ def test_hyprctl_absent_with_monitor_set_still_launches(tmp_path: Path) -> None:
     assert result.stderr == ""
     assert elapsed < 3.0, "no hyprctl -> no placement poll either"
     assert "--class=self-learn-ui" in _wait_for_nonempty(chromium_log)
+
+
+# --- D8: cache_dir/token_path verb (self-learn-ui paths) -----------------
+#
+# Python owns both derivations (self_learn.serve.cache_dir_readonly /
+# self_learn_ui.middleware.resolve_token_path); this script's own
+# _slug_cache_dir/_resolve_token_path above are now the FALLBACK, used
+# only when `timeout 4 self-learn-ui paths --json` is unavailable, fails,
+# times out, or answers with unparsable JSON. The contract test below
+# proves the two derivations agree; the fallback tests below THAT prove
+# each failure mode actually degrades to the bash mirror.
+
+_UI_CONSOLE_ENTRY = Path(sys.executable).parent / "self-learn-ui"
+
+_SELF_LEARN_UI_JSON_TMPL = """
+if [[ "${{1:-}}" == "paths" ]]; then
+  echo '{json}'
+fi
+exit 0
+"""
+
+_SELF_LEARN_UI_FAIL_TMPL = """
+echo "{stderr_msg}" >&2
+exit {rc}
+"""
+
+_SELF_LEARN_UI_SLEEP_TMPL = """
+exec sleep {sleep_s}
+"""
+
+
+def _run_paths_verb(env: dict[str, str]) -> dict[str, str]:
+    """Drive the real console-script binary this package's OWN venv
+    installs (same shape as conftest.py's _VENV_SELF_LEARN_BIN for the
+    CLI package) — never `uv run`, so there is no --project path to
+    hardcode and no dependency on a real `uv` on $PATH for this
+    comparison. This is the "Hermeticity" bullet's sanctioned exception:
+    the VERB side of the contract is allowed a real subprocess; only the
+    OPENER side (exercised via SCRIPT elsewhere in this file) must never
+    trigger one."""
+    result = subprocess.run(
+        [str(_UI_CONSOLE_ENTRY), "paths", "--json"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def _run_mirror_paths(env: dict[str, str]) -> dict[str, str]:
+    result = subprocess.run(
+        [str(SCRIPT), "--print-paths"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    parsed: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition("=")
+        parsed[key] = value
+    return parsed
+
+
+def test_paths_verb_matches_bash_mirror_across_homes(tmp_path: Path) -> None:
+    """D8 contract: `self-learn-ui paths --json` and the opener's own
+    bash mirror (`--print-paths`) must derive the identical
+    cache_dir/token_path for the same env, across the three homes the D8
+    build brief pins — the default home, an explicit SELF_LEARN_HOME,
+    and XDG_RUNTIME_DIR unset. SELF_LEARN_HOME is popped from both
+    subprocess envs for the "default home" leg (this suite's own
+    autouse conftest fixture puts it in THIS process's os.environ, but
+    that never leaks into a subprocess.run(env=...) call built from a
+    fresh dict, as here — the pop is belt-and-braces against a future
+    change to how these envs get built).
+
+    Positive control against a vacuous pass (both sides always emitting
+    the same constant, e.g. an empty string): the three homes' cache_dir
+    values are asserted pairwise DIFFERENT.
+
+    Named observation, NOT asserted as a bug (see the D8 build report):
+    the XDG_RUNTIME_DIR-unset leg's verb call mkdirs its own cache_dir
+    directory as a side effect — middleware.resolve_token_path()'s own
+    XDG_RUNTIME_DIR-unset fallback calls the MUTATING
+    self_learn.worker.cache_dir(), not the read-only variant this verb's
+    cache_dir field uses. Pre-existing, outside this change's surface.
+    The other two legs' cache_dir never gets created — the pinned "never
+    creates a directory" claim holds for those.
+    """
+    bindir = _hermetic_bindir(tmp_path)
+    real_path = os.environ.get("PATH", "/usr/bin:/bin")
+
+    home1, cache1, runtime1 = (tmp_path / n for n in ("s1-home", "s1-cache", "s1-runtime"))
+    for d in (home1, cache1, runtime1):
+        d.mkdir()
+    shared1 = {
+        "HOME": str(home1),
+        "XDG_CACHE_HOME": str(cache1),
+        "XDG_RUNTIME_DIR": str(runtime1),
+    }
+    assert "SELF_LEARN_HOME" not in shared1
+
+    home2, cache2, runtime2, ledger2 = (
+        tmp_path / n for n in ("s2-home", "s2-cache", "s2-runtime", "s2-ledger")
+    )
+    for d in (home2, cache2, runtime2, ledger2):
+        d.mkdir()
+    shared2 = {
+        "HOME": str(home2),
+        "XDG_CACHE_HOME": str(cache2),
+        "XDG_RUNTIME_DIR": str(runtime2),
+        "SELF_LEARN_HOME": str(ledger2),
+    }
+
+    home3, cache3, ledger3 = (tmp_path / n for n in ("s3-home", "s3-cache", "s3-ledger"))
+    for d in (home3, cache3, ledger3):
+        d.mkdir()
+    shared3 = {
+        "HOME": str(home3),
+        "XDG_CACHE_HOME": str(cache3),
+        "SELF_LEARN_HOME": str(ledger3),
+    }
+    assert "XDG_RUNTIME_DIR" not in shared3  # genuinely unset, not empty
+
+    scenarios = {
+        "default-home": shared1,
+        "explicit-self-learn-home": shared2,
+        "xdg-runtime-dir-unset": shared3,
+    }
+    cache_dirs: dict[str, str] = {}
+
+    for name, shared in scenarios.items():
+        verb_env = dict(shared)
+        verb_env["PATH"] = real_path
+        mirror_env = dict(shared)
+        mirror_env["PATH"] = str(bindir)
+
+        verb_out = _run_paths_verb(verb_env)
+        mirror_out = _run_mirror_paths(mirror_env)
+
+        assert verb_out["cache_dir"] == mirror_out["cache_dir"], name
+        assert verb_out["token_path"] == mirror_out["token_path"], name
+        cache_dirs[name] = verb_out["cache_dir"]
+
+    assert len(set(cache_dirs.values())) == 3, cache_dirs
+
+    assert not Path(cache_dirs["default-home"]).exists()
+    assert not Path(cache_dirs["explicit-self-learn-home"]).exists()
+    assert Path(cache_dirs["xdg-runtime-dir-unset"]).is_dir()
+
+
+def test_opener_falls_back_silently_when_shim_absent(tmp_path: Path) -> None:
+    """Deliberate design choice (D8 build report): a `self-learn-ui`
+    that is simply not on $PATH degrades SILENTLY — zero stderr —
+    matching this script's own hyprctl/systemctl absence posture
+    elsewhere (test_systemctl_absent_is_skipped_silently,
+    test_hyprctl_absent_with_monitor_set_still_launches above). This is
+    also forced by every OTHER test in this file: none of them fake
+    self-learn-ui, and several assert result.stderr == "" — a "print
+    stderr on absence too" design would have turned this file red across
+    the board, not just failed a new test."""
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path, chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log)
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    token_dir = runtime_dir / "self-learn"
+    token_dir.mkdir()
+    (token_dir / "ui-token").write_text("mirrortok", encoding="utf-8")
+    env = _env(tmp_path, bindir, XDG_RUNTIME_DIR=str(runtime_dir))
+
+    result = _run(env)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert "token=mirrortok" in _wait_for_nonempty(chromium_log)
+
+
+def test_opener_uses_verb_values_when_shim_present_and_valid(tmp_path: Path) -> None:
+    """The opener's own launch effect (the token embedded in the URL it
+    hands to the browser) proves it used the SHIM's token_path, not its
+    bash mirror's: the distinctive token file lives at a path the bash
+    mirror would never derive from this env, so a wrongly-taken fallback
+    would surface a DIFFERENT token (or none) in the URL instead."""
+    chromium_log = tmp_path / "chromium.log"
+    distinctive_dir = tmp_path / "distinctive"
+    distinctive_dir.mkdir()
+    distinctive_token = distinctive_dir / "ui-token"
+    distinctive_token.write_text("verbtok", encoding="utf-8")
+    distinctive_json = (
+        '{"cache_dir": "' + str(distinctive_dir / "cache") + '", '
+        '"token_path": "' + str(distinctive_token) + '"}'
+    )
+    bindir = _hermetic_bindir(
+        tmp_path,
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+        self_learn_ui=_SELF_LEARN_UI_JSON_TMPL.format(json=distinctive_json),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    token_dir = runtime_dir / "self-learn"
+    token_dir.mkdir()
+    # The primary (mirror) path's token is deliberately DIFFERENT, so a
+    # wrongly-taken fallback is observably distinguishable.
+    (token_dir / "ui-token").write_text("mirrortok", encoding="utf-8")
+    env = _env(tmp_path, bindir, XDG_RUNTIME_DIR=str(runtime_dir))
+
+    result = _run(env)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    content = _wait_for_nonempty(chromium_log)
+    assert "token=verbtok" in content
+    assert "mirrortok" not in content
+
+
+def test_opener_falls_back_with_stderr_when_shim_exits_nonzero(tmp_path: Path) -> None:
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+        self_learn_ui=_SELF_LEARN_UI_FAIL_TMPL.format(stderr_msg="boom", rc=1),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    token_dir = runtime_dir / "self-learn"
+    token_dir.mkdir()
+    (token_dir / "ui-token").write_text("mirrortok", encoding="utf-8")
+    env = _env(tmp_path, bindir, XDG_RUNTIME_DIR=str(runtime_dir))
+
+    result = _run(env)
+
+    assert result.returncode == 0
+    assert "self-learn-ui-open:" in result.stderr
+    assert "falling back" in result.stderr
+    assert "token=mirrortok" in _wait_for_nonempty(chromium_log)
+
+
+def test_opener_falls_back_with_stderr_when_shim_output_unparsable(
+    tmp_path: Path,
+) -> None:
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+        self_learn_ui=_SELF_LEARN_UI_JSON_TMPL.format(json="not json at all"),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    token_dir = runtime_dir / "self-learn"
+    token_dir.mkdir()
+    (token_dir / "ui-token").write_text("mirrortok", encoding="utf-8")
+    env = _env(tmp_path, bindir, XDG_RUNTIME_DIR=str(runtime_dir))
+
+    result = _run(env)
+
+    assert result.returncode == 0
+    assert "self-learn-ui-open:" in result.stderr
+    assert "falling back" in result.stderr
+    assert "token=mirrortok" in _wait_for_nonempty(chromium_log)
+
+
+def test_opener_falls_back_with_stderr_when_shim_sleeps_past_timeout(
+    tmp_path: Path,
+) -> None:
+    """Proves the `timeout 4` wrap around the verb call is real, not
+    merely a `command -v self-learn-ui` presence check (which says
+    nothing about a shim that hangs mid-call): the fake execs `sleep 30`
+    directly (not `bash -c 'sleep 30'`) so `timeout`'s direct child IS
+    the sleeper — a shell-wrapped sleep can leave the pipe held open past
+    the kill and defeat this timing assertion."""
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+        self_learn_ui=_SELF_LEARN_UI_SLEEP_TMPL.format(sleep_s=30),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    token_dir = runtime_dir / "self-learn"
+    token_dir.mkdir()
+    (token_dir / "ui-token").write_text("mirrortok", encoding="utf-8")
+    env = _env(tmp_path, bindir, XDG_RUNTIME_DIR=str(runtime_dir))
+
+    start = time.monotonic()
+    result = subprocess.run(
+        [str(SCRIPT)], env=env, capture_output=True, text=True, timeout=15
+    )
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed >= 4.0, "the timeout-4 budget on the verb call must actually be spent"
+    assert elapsed < 10.0, (
+        f"took {elapsed:.1f}s — the `timeout 4` wrap around the "
+        "self-learn-ui paths call appears to be missing"
+    )
+    assert "self-learn-ui-open:" in result.stderr
+    assert "falling back" in result.stderr
+    assert "token=mirrortok" in _wait_for_nonempty(chromium_log)

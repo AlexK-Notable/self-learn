@@ -43,7 +43,53 @@ def build_parser() -> argparse.ArgumentParser:
         "serve",
         help="Run the adjudication server in the foreground (what systemd runs).",
     )
+    paths_parser = subparsers.add_parser(
+        "paths",
+        help=(
+            "Print the cache-directory and bearer-token-file paths "
+            "(D8: the read verb scripts/self-learn-ui-open prefers over "
+            "its own bash mirror of the same two derivations)."
+        ),
+    )
+    paths_parser.add_argument(
+        "--json",
+        action="store_true",
+        help='Emit {"cache_dir": "...", "token_path": "..."} instead of key=value lines.',
+    )
     return parser
+
+
+def _paths(*, json_output: bool) -> int:
+    """D8: side-effect-free read verb for the two paths
+    ``scripts/self-learn-ui-open`` otherwise has to re-derive in bash
+    (its own ``_slug_cache_dir``/``_resolve_token_path``, kept as its
+    fallback — see that script's header). ``cache_dir`` goes through
+    :func:`self_learn.serve.cache_dir_readonly` specifically (never
+    :func:`self_learn.worker.cache_dir`, which ``mkdir``s and runs the
+    old-cache migration as a side effect of merely being asked a path) so
+    this verb never creates anything on disk. ``token_path`` goes through
+    :func:`self_learn_ui.middleware.resolve_token_path` — the UI
+    package's own single source of truth for that path, already used by
+    the server itself. NOTE (measured during D8's build): when
+    ``$XDG_RUNTIME_DIR`` is unset, ``resolve_token_path`` falls through to
+    :func:`self_learn.worker.cache_dir` (not the readonly variant) — pre-
+    existing behaviour in ``middleware.py``, out of this verb's surface —
+    so THIS ONE fallback path does mkdir the cache directory as a side
+    effect. See the D8 build report for the measured evidence."""
+    from self_learn.serve import cache_dir_readonly
+
+    from .middleware import resolve_token_path
+
+    cache_dir = cache_dir_readonly()
+    token_path = resolve_token_path()
+    if json_output:
+        import json
+
+        print(json.dumps({"cache_dir": str(cache_dir), "token_path": str(token_path)}))
+    else:
+        print(f"cache_dir={cache_dir}")
+        print(f"token_path={token_path}")
+    return 0
 
 
 def _build_server_app(env: EnvConfig) -> tuple["FastAPI", str]:
@@ -137,6 +183,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "serve":
         return _serve()
+    if args.command == "paths":
+        return _paths(json_output=args.json)
     parser.print_help()
     return 0
 
