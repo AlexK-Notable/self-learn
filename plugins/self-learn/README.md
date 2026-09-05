@@ -58,7 +58,12 @@ When I correct a mistake you made, or state a rule/preference that should change
 `hooks/self-learn-pending.sh` prints the pending line, the worker
 staleness alarm, and the escalation line into session context. It only
 formats `self-learn status --fast` output (queue semantics live in the
-CLI, never in bash) and never calls notify-send.
+CLI, never in bash) and never calls notify-send. The status call is
+bounded (`timeout 4`); when `self-learn`, `jq`, or `timeout` is missing,
+or the call times out, the hook prints one visible
+`⚠️  self-learn: pending-count check skipped — <reason>` line instead of
+silently printing nothing, and a nonzero unreadable-record count is
+reported next to the pending count rather than folded into it.
 
 install.sh symlinks the script into `~/.claude/hooks/`; registration in
 `~/.claude/settings.json` is **manual** (settings.json is load-bearing —
@@ -173,8 +178,14 @@ skipped, folded, and clipped — the same data the future web UI reads).
   locally; run `self-learn push` (rebase-retry built in). A rebase
   conflict (exit 4) stops loudly — resolve by hand, never auto-resolved.
 - **Stale sentinel** (`~/.cache/self-learn/autosync-pause` older than
-  2 h): ignorable — semantics ride the file's mtime, both sides ignore a
-  stale one and either may delete it.
+  2 h): ignorable. Liveness rides the file's mtime, so observers ignore a
+  stale one. Taking the sentinel is one decision under
+  `autosync-pause.lock`: a holder publishes the file atomically with an
+  ownership token, a stale file is taken over by the next holder, and
+  `release` removes the file only when the token still matches (so a
+  later holder's sentinel is never deleted by an earlier one). Deleting
+  a stale file by hand stays harmless; a pre-token file reads as live but
+  unowned until it expires.
 - **`--selftest` FAIL markers** naming a file: that target has ≥1 routed
   record but a missing/broken managed-section marker pair — restore the
   pair (or re-run `route` for a fresh target; the compiler bootstraps
