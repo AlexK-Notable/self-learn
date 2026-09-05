@@ -77,10 +77,50 @@ so the temp file keeps whatever the platform's normal ``open(path,
 every migrated call site already did via bare ``Path.write_text``, so a
 brand-new record/proposal/meta file's permissions do not change. An
 explicit ``mode=`` always wins over ``preserve_mode`` (it is checked
-first) and is applied the same way, via ``os.chmod`` on the temp file
-before the rename -- so ``mode=0o755`` (the hook script's class, D6)
-lands with exactly those bits regardless of umask or of whatever the
-PREVIOUS script on disk was mode-bearing.
+first) -- so ``mode=0o755`` (the hook script's class, D6) and
+``private_write``'s fixed ``mode=0o600`` land with exactly those bits
+regardless of umask or of whatever the PREVIOUS file on disk was
+mode-bearing. Fold r1, Finding 6: an explicit ``mode=`` is applied by
+CREATING the temp file directly at that mode (``os.open``'s own mode
+argument), not by ``os.chmod``-ing it afterward -- so there is no
+window where the temp file is briefly readable at the umask default
+before narrowing (measured: ``private_write``'s temp file was 0o644,
+briefly, under its unpredictable random name, before this fix; the
+RENAMED target was never observable at anything but 0o600 either way,
+since the mode was always applied before ``os.replace``). A
+``preserve_mode``-derived mode keeps the original create-then-``chmod``
+shape instead, because that value can carry bits (e.g. group-write) the
+umask would silently strip at creation time, which ``chmod`` (run
+after creation, bypassing umask) does not.
+
+**A new precondition this move adds (fold r1, Finding 8).** Every
+migrated write now needs write permission on the parent DIRECTORY, not
+just the file -- inherent to any temp-file-plus-rename design (the temp
+file is a new directory entry), and NOT true of the bare
+``Path.write_text`` every ledger content writer used before this move
+(which only needs write permission on an EXISTING file, and can
+succeed with a read-only-by-owner-write parent directory, ``0o500``,
+because it never creates a new directory entry). A hardened
+``$SELF_LEARN_HOME`` or host layout that relied on that -- a writable
+file inside a non-writable directory -- worked at ``3fd2279`` and fails
+after this landing, with ``PermissionError`` on the temp file's own
+path (see Finding 9 just above for what that message now names).
+
+**Hard links (fold r1, Finding 11).** ``os.replace`` retargets the
+directory entry to a NEW inode; it does not update any OTHER hard link
+to the file being replaced. Every migrated site therefore loses inode
+identity across a write, where the old bare ``Path.write_text`` (same-
+inode overwrite) preserved it, and a pre-existing hard link to a
+migrated file keeps pointing at the OLD content forever after the next
+write. D6's ``config.yaml``/``hosts.yaml`` row is justified by "people
+symlink config files into dotfile repos" -- the same practice done with
+a hard link instead of a symlink is silently broken by this move and is
+not a case ``follow_symlinks`` (which is specifically about symlinks)
+does anything for. No code change follows from this: preserving inode
+identity and being atomic are mutually exclusive by construction, and
+`SymlinkRefused`'s whole purpose is to make the symlink case loud, not
+silent -- this paragraph exists so the hardlink case is not confused
+for being covered by the same guard.
 
 **D6 -- the per-class write policy** (pinned; every call site's choice
 below, not a per-caller judgment call):
@@ -121,35 +161,36 @@ documented here, and in `tests/test_raw_write_gate.py`'s allowlist,
 rather than silently left off both lists.
 
 **Second-order consequence of migrating `ledger_ops._dump_yaml`, found
-while writing the above paragraph, NOT covered by any test.** For a
-MERGE install, `_install_staged` writes its own `.install-<rid>.tmp`
-via `_dump_yaml(verdict.merge_data, tmp)` rather than `tmp.write_text`
--- and `_dump_yaml` itself now calls `atomic_write` (wave 2, below).
-So writing `.install-<rid>.tmp` now itself goes through an INNER
-temp file (`_temp_path` on a target already named `.install-<rid>.tmp`
-produces `..install-<rid>.tmp.<pid>.<token>.tmp` -- two leading dots).
-Under ordinary Python exceptions this inner temp is unlinked by
-`atomic_write`'s own contract and `.install-<rid>.tmp` never appears
-half-written, which is STRICTLY SAFER than the old bare `write_text`
-(which could leave a truncated `.install-<rid>.tmp` on a mid-write
-crash). But under a SIGKILL landing between the inner temp's write and
-its `os.replace` into `.install-<rid>.tmp`, no exception handler runs,
-and the orphaned double-dot inner temp does NOT match `_clean_stale_
-install_temps`'s `.install-*.tmp` glob (a single leading dot followed
-immediately by `install-`; the inner temp's second character is `.`,
-not `i`) -- so it survives the next run's pass-1 sweep. This is a
-narrower race than before (it requires a signal an exception handler
-cannot catch, not just any crash), on a class of file
-(`_clean_stale_install_temps` already treats as disposable, non-git-
-tracked scratch), for the merge-install path only (IN8's own armor-
-pinned crash point is the outer `os.replace(tmp, dest)` in `_install_
-staged`, non-merge, and is unaffected -- confirmed by `test_attrib.py`
-staying 47/47). Left as a known, documented gap rather than a fix in
-this move: closing it would mean either giving `_dump_yaml` an
-`atomic_write` escape hatch for a caller-supplied temp name, or having
-`_install_staged` glob-sweep two patterns instead of one -- both are
-scope beyond "migrate the two waves without behaviour change beyond
-D6's policy."
+during wave 2 and CLOSED in fold r1 (Finding 10).** For a MERGE
+install, `_install_staged` writes its own `.install-<rid>.tmp`. Wave 2
+briefly did this via `_dump_yaml(verdict.merge_data, tmp)` -- and
+`_dump_yaml` itself now calls `atomic_write`. So writing
+`.install-<rid>.tmp` itself went through an INNER temp file
+(`_temp_path` on a target already named `.install-<rid>.tmp` produces
+`..install-<rid>.tmp.<pid>.<token>.tmp` -- two leading dots). Under an
+ordinary Python exception that inner temp is unlinked by
+`atomic_write`'s own contract, which was STRICTLY SAFER than the old
+bare `write_text` (no window where `.install-<rid>.tmp` itself could
+appear half-written). But under a SIGKILL landing between the inner
+temp's write and its `os.replace` into `.install-<rid>.tmp`, no
+exception handler runs, and the orphaned double-dot inner temp did NOT
+match `_clean_stale_install_temps`'s `.install-*.tmp` glob (a single
+leading dot followed immediately by `install-`; the inner temp's second
+character is `.`, not `i`) -- so it would have survived the next run's
+pass-1 sweep, a narrower race than before (an uncatchable signal, not
+just any crash) but a real regression on the merge-install path (IN8's
+own armor-pinned crash point is the outer `os.replace(tmp, dest)` in
+`_install_staged`, non-merge, and was never affected).
+
+Fixed, not merely documented: `worker._install_staged`'s merge branch
+now serializes via `ledger_ops._dumps_yaml` (the pure-string half of
+`_dump_yaml`, split out for exactly this) and writes it with
+`tmp.write_text`, the same ONE-STEP shape its non-merge branch two
+lines below already uses -- no inner temp file, no second glob pattern
+to sweep, no escape hatch added to this primitive's shared contract.
+`_dump_yaml` itself (and its one other caller, `worker._run_stage0`,
+which writes a merge verdict straight to its own live proposal path,
+never to a swept temp name) is unchanged.
 """
 
 from __future__ import annotations
@@ -210,14 +251,57 @@ def _write_and_replace(
             resolved_mode = None
     tmp = _temp_path(target)
     try:
-        with open(tmp, "wb") as fh:
-            fh.write(payload)
-            if fsync:
-                fh.flush()
-                os.fsync(fh.fileno())
-        if resolved_mode is not None:
-            os.chmod(tmp, resolved_mode)
+        if mode is not None:
+            # Fold r1, Finding 6: an explicit `mode` (`private_write`'s
+            # fixed 0o600, or a caller's own `mode=0o755`) is created on
+            # the temp file DIRECTLY, via `os.open`'s own mode argument
+            # -- no window where the temp exists at the process umask
+            # default before a later `os.chmod` narrows it (measured:
+            # `private_write`'s temp was 0o644 before this fix, for the
+            # random-named temp file only -- the renamed TARGET was
+            # already never observable at anything but 0o600, since the
+            # chmod always preceded `os.replace`). This branch is NOT
+            # used for a `preserve_mode`-derived `resolved_mode`: that
+            # value can carry bits (e.g. group-write) the umask would
+            # silently strip at `os.open`-time, which the `os.chmod`
+            # below (run after creation, bypassing umask) does not --
+            # so the general preserve_mode path keeps the create-then-
+            # chmod shape.
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(payload)
+                if fsync:
+                    fh.flush()
+                    os.fsync(fh.fileno())
+        else:
+            with open(tmp, "wb") as fh:
+                fh.write(payload)
+                if fsync:
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            if resolved_mode is not None:
+                os.chmod(tmp, resolved_mode)
         os.replace(tmp, target)  # same filesystem -- atomic
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        # Fold r1, Finding 9: an `OSError` raised anywhere in the block
+        # above (a permission error opening the temp file, a missing
+        # parent directory) carries `.filename == str(tmp)` -- and by
+        # the time the caller's `except OSError` handler reads `{exc}`,
+        # `tmp` has already been unlinked two lines up, so the message
+        # names a path that never existed as far as any caller could
+        # observe and cannot `ls`. Retarget `.filename` to `target`
+        # (mutating the SAME exception object -- same type, same
+        # errno/strerror, same traceback, `raise` bare re-raises it) so
+        # the message names the file the caller actually asked to
+        # write. Deliberately narrow: only when `.filename` IS the temp
+        # path -- a manually-raised `OSError("msg")` in a test has
+        # `.filename is None` and is left untouched (`str(exc)` stays
+        # exactly "msg"), and an `os.replace` failure's `.filename2`
+        # (already `target`) is not touched either.
+        if exc.filename == str(tmp):
+            exc.filename = str(target)
+        raise
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
@@ -230,7 +314,7 @@ def _write_and_replace(
 
 
 def atomic_write(
-    path: Path,
+    path: Path | str,
     data: bytes | str,
     *,
     mode: int | None = None,
@@ -246,7 +330,10 @@ def atomic_write(
     never calls ``mkdir`` (every migrated call site already did its own
     ``parent.mkdir(parents=True, exist_ok=True)``, and a silent mkdir
     here would be one more divergence from what those call sites
-    already prove correct)."""
+    already prove correct). *path* accepts ``str`` too (fold r1, Finding
+    5) -- both bodies already do ``Path(path)`` first, and sibling APIs
+    in this tree (``compiled.write_entry``, ``config.dump_editable``)
+    already type their path parameter ``Path | str``."""
     target = _resolve_target(Path(path), follow_symlinks=follow_symlinks)
     _write_and_replace(
         target,
@@ -258,7 +345,7 @@ def atomic_write(
     )
 
 
-def private_write(path: Path, data: bytes | str) -> None:
+def private_write(path: Path | str, data: bytes | str) -> None:
     """``atomic_write`` fixed to the secret-file shape: mode ``0o600``
     always (never preserved from an existing file -- a secret's mode
     must never accidentally widen because the file already existed

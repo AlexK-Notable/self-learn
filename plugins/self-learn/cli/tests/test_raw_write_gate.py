@@ -9,19 +9,29 @@ violation", escaping requires a human-written, checkable claim).
 `ui/src/self_learn_ui/`, recursively (subpackages included --
 ``invocation/``, ``sdksession/``, ``primitives/``, all of them), for
 three call shapes: ``<expr>.write_text(``, ``<expr>.write_bytes(``, and
-``open(...)``/``<expr>.open(...)`` whose mode argument (positional
-``args[1]`` or the ``mode=`` keyword) is a string constant containing
-``"w"`` or ``"a"`` -- a write or an append, either one bypasses this
-primitive's atomicity/durability guarantees. `primitives/fsops.py`
-itself is exempt by construction (it IS the primitive; a raw write
-inside its own implementation is not a violation of a rule it defines).
+``open(...)``/``<expr>.open(...)`` whose mode argument (positional --
+``args[1]`` for the bare-name builtin form ``open(p, "w")``, ``args[0]``
+for the method form ``p.open("w")``, since the method form has no
+separate path argument to occupy index 0 -- or the ``mode=`` keyword,
+either form) is a string constant containing ``"w"`` or ``"a"`` -- a
+write or an append, either one bypasses this primitive's atomicity/
+durability guarantees. `primitives/fsops.py` itself is exempt by
+construction (it IS the primitive; a raw write inside its own
+implementation is not a violation of a rule it defines).
 
 **Why every hit needs a name, not just the migrated sites.** M-I's own
-census (this file) found 54 distinct (file, enclosing-function) raw
-write sites across both trees before this move; M-I migrates 13 of them
-onto `atomic_write`/`private_write` (waves 1 and 2, the two ledger
-migration commits) and leaves 41 as `RAW_WRITE_ALLOWLIST` entries, each
-with a one-line reason it is not (yet, or ever) migrated and a `wave` in
+census (this file) found 58 distinct (file, enclosing-function) raw
+write sites across both trees before this move (corrected in fold r1's
+Finding 1 fix: the original count of 54 undercounted by exactly 4 --
+the pre-fold scanner read only ``args[1]`` for EVERY open-shaped call,
+which is right for the builtin form but wrong for the method form, so
+`path.open("w", ...)`/`path.open("a", ...)` calls with a POSITIONAL
+mode were invisible; ``path.open(mode="a")`` was already visible via
+the keyword branch and is not part of the correction). M-I migrates 13
+of them onto `atomic_write`/`private_write` (waves 1 and 2, the two
+ledger migration commits) and leaves 45 as `RAW_WRITE_ALLOWLIST`
+entries, each with a one-line reason it is not (yet, or ever) migrated
+and a `wave` in
 `{3, 4, 5, "keep"}` -- `"keep"` for a site that structurally does not
 fit the atomic-replace shape (a flock lock file that never carries
 content, an append-only cache spool, a subprocess stdout redirect, a
@@ -92,8 +102,22 @@ def _qualname_map(tree: ast.Module) -> dict[int, str]:
 
 
 def _mode_arg(call: ast.Call) -> ast.expr | None:
-    if len(call.args) >= 2:
-        return call.args[1]
+    """The mode argument's AST node, whichever *shape* of `open` call
+    this is. Fold r1, Finding 1 (Major): the two call shapes put the
+    positional mode at a DIFFERENT index -- the bare-name builtin form
+    `open(p, "w")` at `args[1]` (arg 0 is the path), the method form
+    `p.open("w")` at `args[0]` (there is no separate path argument, `p`
+    is the receiver, not a call arg). Reading `args[1]` unconditionally
+    (the pre-fold code) silently missed every method-form write with a
+    POSITIONAL mode -- `path.open("w", encoding=...)`,
+    `path.open("a", encoding=...)` -- while the method form's KEYWORD
+    mode (`p.open(mode="a")`) already fell through to the keyword loop
+    below and was never blind. Four live sites in `ui/store.py` were
+    invisible this way before this fix."""
+    is_method_form = isinstance(call.func, ast.Attribute) and call.func.attr == "open"
+    positional_index = 0 if is_method_form else 1
+    if len(call.args) > positional_index:
+        return call.args[positional_index]
     for kw in call.keywords:
         if kw.arg == "mode":
             return kw.value
@@ -183,15 +207,19 @@ def rotted(
 # ======================================================================
 # THE ALLOWLIST -- every raw write site left after M-I's waves 1 and 2,
 # each with a one-line reason and a wave. Filled from this file's own
-# scan (measured at the tip of M-I's work, all three commits' worth of
-# migrations already applied): 54 distinct (tree, path, function) sites
-# before M-I; 13 migrated onto `atomic_write`/`private_write` (wave 1:
+# scan (re-measured in fold r1, after Finding 1's `_mode_arg` fix, all
+# three build commits' + the fold's worth of code already applied): 58
+# distinct (tree, path, function) sites before M-I (54 was the pre-fold
+# undercount -- see Finding 1: 4 `ui/store.py` method-form-with-
+# positional-mode sites were invisible to the original scanner); 13
+# migrated onto `atomic_write`/`private_write` (wave 1:
 # `ui/middleware.write_token_file`, `verbs._write_hook_script`; wave 2:
 # `records.Record.write`, `ledger_ops._dump_yaml`, `hosts.save_hosts`,
 # `compiled.write_entry`/`delete_entry`, `config.dump_editable`,
 # `worker._write_install_journal`, `worker._write_window_durable`,
 # `sentinel.hold`, `serve.write_heartbeat`,
-# `store.PaneTranscriptStore._write_meta`); 41 remain, below.
+# `store.PaneTranscriptStore._write_meta`); 45 remain, below (41 from
+# the original build + the 4 now-visible `ui/store.py` sites).
 # ======================================================================
 
 RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
@@ -282,6 +310,37 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
     ("cli", "sdksession/events.py", "write_event_log"): (
         "sdk-session tool-event log, XDG-cache-only bookkeeping; deferred "
         "behind the armor-pinned invocation_sdk end-to-end tests",
+        5,
+    ),
+    # Fold r1, Finding 1: four `ui/store.py` sites the pre-fold `_mode_
+    # arg` could not see at all (method-form `path.open(<mode>)` with a
+    # POSITIONAL mode arg -- see `_mode_arg`'s docstring). Same UI-side
+    # session/transcript CACHE class as the invocation-seam sites just
+    # above: `PaneTranscriptStore`'s directory is `self_learn.worker.
+    # cache_dir() / "panes"` and `CacheSdkSessionStore`'s root is the
+    # same cache-rooted `_sdk_session_store_root` (`engine/sdk.py`) --
+    # XDG cache, not primary ledger truth, deferred for the same reason.
+    ("ui", "store.py", "PaneTranscriptStore.start_new"): (
+        "pane-transcript cache file (fresh header on session start), "
+        "XDG-cache-rooted (self_learn.worker.cache_dir()/panes); deferred "
+        "cache class, same as the invocation-seam sites above",
+        5,
+    ),
+    ("ui", "store.py", "PaneTranscriptStore._append_line"): (
+        "pane-transcript cache append (render events); XDG-cache-rooted; "
+        "deferred cache class, same as the invocation-seam sites above",
+        5,
+    ),
+    ("ui", "store.py", "PaneTranscriptStore._write_truncated_marker"): (
+        "pane-transcript cache append (size-cap truncation marker); "
+        "XDG-cache-rooted; deferred cache class, same as the invocation-seam "
+        "sites above",
+        5,
+    ),
+    ("ui", "store.py", "CacheSdkSessionStore.append"): (
+        "sdk-session-resume cache append (mirrors CLI transcript entries for "
+        "a later resume=<id>); XDG-cache-rooted; deferred cache class, same "
+        "as the invocation-seam sites above",
         5,
     ),
     # ------------------------------------------------------- "keep":
@@ -466,14 +525,41 @@ def test_positive_control_synthetic_open_append_and_write_are_both_caught(tmp_pa
         "    with open(p, mode='w', encoding='utf-8') as fh:\n"
         "        fh.write('x')\n"
         "\n"
+        "def method_writer(p):\n"
+        "    with p.open('w', encoding='utf-8') as fh:\n"
+        "        fh.write('x')\n"
+        "\n"
+        "def method_appender(p):\n"
+        "    with p.open(mode='a', encoding='utf-8') as fh:\n"
+        "        fh.write('x')\n"
+        "\n"
+        "def byte_writer(p):\n"
+        "    p.write_bytes(b'x')\n"
+        "\n"
         "def reader(p):\n"
         "    with open(p, 'r', encoding='utf-8') as fh:\n"
+        "        return fh.read()\n"
+        "\n"
+        "def method_reader(p):\n"
+        "    with p.open('r', encoding='utf-8') as fh:\n"
         "        return fh.read()\n",
         encoding="utf-8",
     )
+    # Fold r1: `method_writer` is Finding 1's exact repro (method-form
+    # `open` with a POSITIONAL mode arg -- invisible before the
+    # `_mode_arg` fix); `method_appender` proves the keyword-mode method
+    # form (already visible pre-fold) still works; `byte_writer` is
+    # Finding 2's repro (the `write_bytes` arm was correct in code but
+    # had never had a positive control at all).
     found = scan(tmp_path, "synthetic2")
     funcs = {v.func for v in found}
-    assert funcs == {"appender", "writer"}, found
+    assert funcs == {
+        "appender",
+        "writer",
+        "method_writer",
+        "method_appender",
+        "byte_writer",
+    }, found
 
 
 def test_fail_closed_empty_walk_fails_not_passes_vacuously(tmp_path):

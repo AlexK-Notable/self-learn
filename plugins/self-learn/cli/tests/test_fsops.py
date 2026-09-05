@@ -10,11 +10,19 @@ Each letter below is the fault-matrix item named in the build brief, one
 test each, plus a handful of bonus tests (temp-name shape, a plain
 success round trip, a crash during the file's own fsync rather than at
 ``os.replace``) that pin details the matrix implies but does not spell
-out letter-by-letter. Every negative test that injects a failure is
-SCOPED to the one target path under test (never a global monkeypatch of
-``os.replace``/``os.fsync`` for the whole process) -- the sprint-1
-lesson this move was explicitly warned to not repeat: a global fake
-breaks every OTHER atomic write in the same test process.
+out letter-by-letter. Every negative test that injects a failure on a
+call taking a PATH argument is scoped to the one target path under test
+(never a global monkeypatch of ``os.replace`` for the whole process) --
+the sprint-1 lesson this move was explicitly warned to not repeat: a
+global fake breaks every OTHER atomic write in the same test process.
+
+Fold r1, Finding 3 (corrected claim): the one exception is ``test_a2``,
+which monkeypatches the GLOBAL ``os.fsync`` -- unavoidable, since
+``fsync`` takes a file descriptor, not a path, so there is no per-path
+scoping available to it the way there is for ``os.replace``/``open``.
+Harmless in this suite (one write per test, undone by ``monkeypatch``'s
+own teardown before the next test runs), but do not extend the "always
+scoped" claim above to that one test when adding a fifth fault case.
 """
 
 from __future__ import annotations
@@ -26,6 +34,8 @@ from pathlib import Path
 
 import pytest
 
+from self_learn import config
+from self_learn.hosts import Hosts, load_hosts, save_hosts
 from self_learn.primitives import fsops
 
 
@@ -290,3 +300,67 @@ def test_temp_file_name_matches_dot_name_pid_token_tmp_shape(tmp_path, monkeypat
     assert re.fullmatch(
         rf"\.f\.txt\.{os.getpid()}\.[0-9a-f]{{8}}\.tmp", captured["tmp_name"]
     ), captured["tmp_name"]
+
+
+# ============================================== fold r1, Finding 7: D6's
+# `follow_symlinks=True` call sites (hosts.yaml / config.yaml) had ZERO
+# test coverage -- the one deliberate inversion of this primitive's safe
+# default. Mutation witness for both: dropping `follow_symlinks=True`
+# from the migrated call turns this into `SymlinkRefused`, reddening.
+
+
+def test_save_hosts_follows_a_symlinked_hosts_yaml(tmp_path):
+    """D6: hosts.yaml is a config-file class (people symlink config
+    files into dotfile repos) -- `save_hosts` must FOLLOW the link, not
+    refuse it. Mutation this catches: dropping `follow_symlinks=True`
+    from `save_hosts`'s `fsops.atomic_write` call raises
+    `fsops.SymlinkRefused` here instead of returning."""
+    home = tmp_path / "ledger"
+    home.mkdir()
+    real_dir = tmp_path / "dotfiles"
+    real_dir.mkdir()
+    real = real_dir / "hosts.yaml"
+    real.write_text("skills_root: null\nprojects: []\n", encoding="utf-8")
+    link = home / "hosts.yaml"
+    link.symlink_to(real)
+
+    marker_root = tmp_path / "skills-root-marker"
+    save_hosts(home, Hosts(skills_root=marker_root, projects=[]))
+
+    # the link survives, unretargeted...
+    assert link.is_symlink()
+    assert Path(os.readlink(link)) == real
+    # ...and the REAL file was rewritten (not the link replaced with a
+    # plain file, and not a no-op against stale content).
+    assert load_hosts(home).skills_root == marker_root
+    assert "skills-root-marker" in real.read_text(encoding="utf-8")
+    # the write's temp file landed beside the REAL target's directory,
+    # per `fsops._resolve_target`'s `follow_symlinks=True` contract --
+    # never beside the link.
+    assert list(home.glob(".hosts.yaml.*.tmp")) == []
+    assert list(real_dir.glob(".hosts.yaml.*.tmp")) == []  # already replaced
+
+
+def test_dump_editable_follows_a_symlinked_config_yaml(tmp_path):
+    """D6: config.yaml is the same config-file class as hosts.yaml --
+    `dump_editable` must FOLLOW the link. Mutation this catches:
+    dropping `follow_symlinks=True` from `dump_editable`'s
+    `fsops.atomic_write` call raises `fsops.SymlinkRefused` here instead
+    of returning."""
+    home = tmp_path / "ledger"
+    home.mkdir()
+    real_dir = tmp_path / "dotfiles"
+    real_dir.mkdir()
+    real = real_dir / "config.yaml"
+    real.write_text("some_key: old-value\n", encoding="utf-8")
+    link = home / "config.yaml"
+    link.symlink_to(real)
+
+    data = config.load_editable(home)  # reads THROUGH the link
+    data["some_key"] = "new-value"
+    config.dump_editable(home, data)
+
+    assert link.is_symlink()
+    assert Path(os.readlink(link)) == real
+    assert "new-value" in real.read_text(encoding="utf-8")
+    assert "old-value" not in real.read_text(encoding="utf-8")

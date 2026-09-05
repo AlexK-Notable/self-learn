@@ -71,6 +71,7 @@ from .ledger_ops import (
     TRACE_FS_VERDICTS,
     ProposalError,
     _dump_yaml,
+    _dumps_yaml,
     find_record_path,
     is_unanalyzed,
     queue,
@@ -2984,13 +2985,18 @@ def _install_staged(
     tmp = dest.parent / f".install-{verdict.name}.tmp"
     if verdict.is_merge:
         assert verdict.merge_data is not None
-        # Sprint 2 M-I wave 2: `_dump_yaml` now writes via `fsops.
-        # atomic_write`, so writing THIS temp (`.install-<rid>.tmp`)
-        # goes through its own inner temp+replace. See `primitives/
-        # fsops.py`'s "second-order consequence" note for the narrow
-        # SIGKILL-only gap this opens against `_clean_stale_install_
-        # temps`'s glob -- documented there, not fixed here.
-        _dump_yaml(verdict.merge_data, tmp)  # same writer U-repair already uses
+        # Fold r1 (Finding 10): serialize to a string and write THIS
+        # temp (`.install-<rid>.tmp`) the same one-step way the
+        # non-merge branch two lines below already does, instead of
+        # nesting `_dump_yaml` (now `fsops.atomic_write`, wave 2)
+        # inside it. Wave 2 briefly had this nested -- harmless on an
+        # ordinary exception, but a SIGKILL between the INNER write and
+        # its rename left an orphaned inner temp file
+        # (`..install-<rid>.tmp.<pid>.<token>.tmp`) that `_clean_stale_
+        # install_temps`'s `.install-*.tmp` glob cannot match (second
+        # character `.`, not `i`). `_dumps_yaml` (`ledger_ops.py`) is
+        # the serialize-only half of `_dump_yaml`, split out for this.
+        tmp.write_text(_dumps_yaml(verdict.merge_data), encoding="utf-8")
     else:
         tmp.write_text(staged_path.read_text(encoding="utf-8"), encoding="utf-8")
     digest = sha_anchor(tmp.read_text(encoding="utf-8"))

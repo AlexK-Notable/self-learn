@@ -262,6 +262,16 @@ def _primitive(call: ast.Call) -> str | None:
     """The mutating primitive this call IS, or None."""
     func = call.func
     if not isinstance(func, ast.Attribute):
+        # Fold r1, Finding 4 (nit, pre-existing shape -- not new with
+        # fsops): this whole function only ever recognizes the ATTRIBUTE
+        # call form (`fsops.atomic_write(...)`, `os.replace(...)`).
+        # A future site written `from .primitives.fsops import
+        # atomic_write` and called bare as `atomic_write(path, ...)` is
+        # an `ast.Name` here and would be invisible to this walker, same
+        # as a hypothetical bare `replace(...)` always would be -- keep
+        # importing fsops as `from .primitives import fsops` and calling
+        # `fsops.atomic_write`/`fsops.private_write` (the form every
+        # current call site uses), not the direct-name-import form.
         return None
     if func.attr in _FS_PRIMITIVES:
         return f"Path.{func.attr}"
