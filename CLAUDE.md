@@ -41,7 +41,11 @@ ledger on a given host) belong in `CLAUDE.local.md`, which is git-ignored.
   (`uv run --project plugins/self-learn/ui pytest` from the repo root collects the
   CLI tree instead: `--project` sets the venv, not the collection root.) The browser
   tests need Playwright's Chromium and fail loudly without it;
-  `SELF_LEARN_UI_NO_BROWSER=1` is the explicit opt-out. One known pre-existing
+  `SELF_LEARN_UI_NO_BROWSER=1` is the explicit opt-out. The UI venv carries no
+  pytest-xdist (no `-n`), and Playwright resolves its browsers through
+  `XDG_CACHE_HOME`, so a run that points that variable at a scratch directory must
+  also set `PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright` or every browser test
+  fails loudly. One known pre-existing
   failure, `test_service_unit.py::test_both_units_document_manual_registration_via_symlink`,
   does not block; any new failure does.
 - Type check per package: `uv run --no-sync --project <pkg> pyright src`. The error

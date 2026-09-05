@@ -67,7 +67,9 @@ class TestConfigGet:
         # key that genuinely still resolves to `default` under it.
         row = next(r for r in rows if r["name"] == "sdk.event_logs")
         assert set(row) == {
-            "name", "value", "source", "kind", "default", "description", "tier", "warn",
+            # M-S (S-58, r5-m1(c)): `note` -- the fold detail, `None`
+            # here since nothing folded anything for this entry.
+            "name", "value", "source", "kind", "default", "description", "tier", "warn", "note",
         }
         assert row == {
             "name": "sdk.event_logs",
@@ -78,6 +80,7 @@ class TestConfigGet:
             "description": row["description"],
             "tier": "A",
             "warn": None,
+            "note": None,
         }
 
     def test_json_default_for_a_none_default_setting_is_json_null(
@@ -98,6 +101,7 @@ class TestConfigGet:
                 "description": rows[0]["description"],
                 "tier": "A",
                 "warn": None,
+                "note": None,
             }
         ]
 
@@ -129,7 +133,22 @@ class TestConfigGet:
         assert rc == 0
         c_names = {r["name"] for r in rows if r["tier"] == "C"}
         a_names = {r["name"] for r in rows if r["tier"] == "A"}
-        assert c_names == {"worker.autokick", "miner.autokick"}
+        # M-S (S-58 code-gate fold r1, nit-4): `provider.name` and the
+        # whole `invocation.backend` family (the general key AND all
+        # four per-surface siblings — splitting the general key's tier
+        # from its own siblings would make no sense, it is the SAME
+        # emergency-rollback lever) join the two pre-existing
+        # spawn-containment switches as tier "C".
+        assert c_names == {
+            "worker.autokick",
+            "miner.autokick",
+            "provider.name",
+            "invocation.backend",
+            "invocation.backend_worker",
+            "invocation.backend_worker-repair",
+            "invocation.backend_miner-reader",
+            "invocation.backend_analyst",
+        }
         assert a_names == {s.name for s in settings.REGISTRY} - c_names
 
 
@@ -166,6 +185,72 @@ class TestConfigSet:
         doctor_out = capsys.readouterr().out
         assert rc2 == 0
         assert f"{name} = {expect_value!r} (config:{name})" in doctor_out
+
+    def test_setting_an_inactive_key_names_both_written_and_committed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """M-S (S-58 code-gate fold r1, nit-3): `config set` on an
+        INACTIVE key (here, a bedrock-only key under the default
+        `provider=anthropic`) already writes AND commits the value --
+        `row["source"]` just reports `"inactive (provider=...)"` with
+        the entry's own DEFAULT as `value`, which alone reads as "the
+        write didn't take". A second, explicit line must name both
+        facts the plain row masks."""
+        home = make_home(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        rc = cli_mod.main(["config", "set", "provider.bedrock.region", "us-west-2"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "inactive (provider=anthropic)" in out
+        assert "written and committed" in out
+        # the write DID land on disk, git-committed -- a fresh registry
+        # read under provider=bedrock proves it, and the log has a
+        # commit for it.
+        assert "config set provider.bedrock.region=" in _log_subjects(home)[0]
+        value, source = settings.resolve_setting(home, settings.by_name("provider.name"))
+        assert (value, source) == ("anthropic", "default")
+
+    def test_setting_a_masked_paired_key_names_both_written_and_committed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """M-S delta gate r2, nit-1: `config set` on a paired entry
+        (`invocation.backend_worker`) whose GENERAL env var
+        (`SELF_LEARN_BACKEND`) is active writes the value AND commits
+        it, but the printed row shows `source = env:SELF_LEARN_BACKEND`
+        -- not this key's own `config:invocation.backend_worker` rung
+        -- with no confirmation the write landed. nit-3's original fix
+        only caught the "inactive" flavor of this same underlying fact
+        (the shown source isn't the key's own config rung); this is the
+        SAME masked-write line, reached via the source-agnostic
+        comparison rather than a literal `startswith("inactive")`."""
+        home = make_home(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
+        rc = cli_mod.main(["config", "set", "invocation.backend_worker", "sdk"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "env:SELF_LEARN_BACKEND" in out
+        assert "written and committed" in out
+        assert "config set invocation.backend_worker=" in _log_subjects(home)[0]
+        monkeypatch.delenv("SELF_LEARN_BACKEND", raising=False)
+        value, source = settings.resolve_setting(home, settings.by_name("invocation.backend_worker"))
+        assert (value, source) == ("sdk", "config:invocation.backend_worker")
+
+    def test_setting_an_unmasked_key_prints_no_masked_write_line(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Positive control for the two tests above: an ORDINARY
+        `config set` whose own config rung is what actually answers
+        (nothing overrides, no env var, no general sibling, not
+        inactive) must print NO "written and committed" line -- that
+        line exists only to name a mask, and this write has none."""
+        home = make_home(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        rc = cli_mod.main(["config", "set", "worker.autokick", "0"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "config:worker.autokick" in out
+        assert "written and committed" not in out
 
     def test_refuses_malformed_value_with_registry_message(
         self, tmp_path, monkeypatch, capsys

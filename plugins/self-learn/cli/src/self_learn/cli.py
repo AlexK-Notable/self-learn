@@ -43,11 +43,27 @@ import os
 import sys
 from datetime import date, datetime
 from pathlib import Path
+from typing import cast
 
 from . import report as report_mod
 from . import hosts as hosts_mod
 from . import reconcile as reconcile_mod
-from . import batch, config, gitops, miner, provider, refread, selfcheck, sentinel, serve, settings, telemetry, verbs, worker
+from . import (
+    batch,
+    config,
+    gitops,
+    intents,
+    miner,
+    provider,
+    refread,
+    selfcheck,
+    sentinel,
+    serve,
+    settings,
+    telemetry,
+    verbs,
+    worker,
+)
 from .compilers import CompileError, ReferenceResult
 from .import_backlog import import_backlog
 from .import_common import ImporterError
@@ -88,6 +104,23 @@ EXIT_USAGE = 64
 #: free integer (0-7 and 64 are taken; 2 is proposal-validate's own
 #: scan-hit code, pinned un-aliasable at :71 below).
 EXIT_BATCH_PARTIAL = 8
+
+#: M-K: `self-learn --selftest`'s tri-state verdict namespace (`self_learn
+#: .selfcheck.Verdict`) needs its own exit distinct from every code above
+#: — a check that could not MEASURE anything (a missing prerequisite the
+#: check itself cannot supply, e.g. `hosts.yaml` absent) is neither the
+#: FAIL this module's `1` already owns nor the `0` a real, positive PASS
+#: earns; collapsing it onto either would let "nothing was checked" read
+#: as either a failure that didn't happen or a success that didn't
+#: happen. `9` is the next free integer: 0-8 and 64 are taken (see the
+#: constants above and `EXIT_USAGE`'s comment). `selfcheck.run_selftest`
+#: imports this INSIDE the function, never at module scope — this module
+#: imports `selfcheck` while still building its own namespace (see the
+#: `from . import ... selfcheck ...` above), so a top-level import back
+#: from `selfcheck` would be a real circular import; teach.py's deferred
+#: `from .cli import push_note` (inside `_route_now`) is the identical,
+#: already-shipped precedent for this exact direction of dependency.
+EXIT_UNMEASURED = 9
 
 #: Re-exported (defined in :mod:`self_learn.ledger` / :mod:`self_learn.
 #: gitops`, beside the concepts they name) so every surface — including
@@ -932,6 +965,28 @@ def _warn_unparseable(home) -> None:
             )
 
 
+def _warn_intents_in_flight(home) -> None:
+    """Gate r1 BLOCKER-1's visibility requirement: once a STOP freezes
+    ``reconcile``'s orphan healing under this home (see
+    :func:`reconcile.reconcile`'s own docstring), ``status`` is the one
+    place a human — or the SessionStart hook, via ``--fast`` — can
+    notice without running ``reconcile`` first and getting refused.
+    Always stderr, even from the ``--fast``/``--json`` paths: their
+    stdout is a pinned, machine-parsed contract (08 §7.1) this must
+    never share a stream with. One line total, naming every intent id
+    found; nothing printed when there are none (the positive control:
+    an intent-free home prints nothing here)."""
+    ids = sorted(p.stem for p in intents.intents_dir(home).glob("*.json"))
+    if not ids:
+        return
+    plural = "s" if len(ids) != 1 else ""
+    print(
+        f"self-learn: {len(ids)} transaction intent{plural} in flight "
+        f"({', '.join(ids)}) — run 'self-learn reconcile'",
+        file=sys.stderr,
+    )
+
+
 def _cmd_status_fast() -> int:
     """08 §7.1 SessionStart pin: guaranteed-cheap, pending/-only. The bash
     hook consumes this — queue semantics live HERE, never in bash. Doc 12
@@ -969,6 +1024,7 @@ def _cmd_status_fast() -> int:
     data["miner_last_run"] = miner.last_run_iso()
     data["miner_stale"] = miner.stale()
     print(json.dumps(data))
+    _warn_intents_in_flight(home)
     return EXIT_OK
 
 
@@ -1247,6 +1303,30 @@ def _cmd_config_set(args: argparse.Namespace, home: Path) -> int:
         print(json.dumps(row))
         return EXIT_OK
     _print_setting_row(row, prefix="config set: ")
+    # M-S (S-58 code-gate fold r1 nit-3, widened by delta gate r2
+    # nit-1): `config_set` already wrote AND committed this value --
+    # but the row above prints whatever ANSWERS the cascade, which is
+    # the just-written config rung ONLY when nothing else masks it.
+    # nit-3's original fix covered exactly one masking source
+    # ("inactive (provider=...)", value silently reads as the entry's
+    # own default). nit-1 (delta gate r2) named a SECOND, structurally
+    # identical case the fold r1 code introduced: a paired entry
+    # (`invocation.backend_worker`) whose active override, env var, or
+    # GENERAL sibling's own rung outranks the key just written --
+    # `SELF_LEARN_BACKEND=sdk config set invocation.backend_worker sdk`
+    # writes the value, but the printed row shows `env:SELF_LEARN_
+    # BACKEND`, not `config:invocation.backend_worker`, with no
+    # confirmation the write landed at all. Both are one fact --
+    # "the source shown is not this key's own config rung" -- so the
+    # gate is that comparison, source-agnostic, rather than a literal
+    # `startswith("inactive")` check that only ever caught the first
+    # instance of it.
+    own_rung_source = f"config:{setting.config_section}.{setting.config_key}"
+    if cast(str, row["source"]) != own_rung_source:
+        print(
+            f"config set: {setting.name} — written and committed to "
+            f"config.yaml ({row['source']}, so not currently in effect)"
+        )
     return EXIT_OK
 
 
@@ -1344,6 +1424,7 @@ def _cmd_status(as_json: bool) -> int:
     if (code := _home_gate(home)) is not None:
         return code
     _warn_unparseable(home)
+    _warn_intents_in_flight(home)
     infos = status_infos(home)
     total_pending = sum(i["pending"] for i in infos)
     # 11 §2.1: one line on the FULL status paths only — the future
@@ -2203,17 +2284,32 @@ def _cmd_push() -> int:
         # what a human runs when something went wrong, so it heals first.
         # Cheap and idempotent on a clean ledger (one `git status`).
         healed = reconcile_mod.reconcile(home, no_push=True)
-        if healed.healed:
+        if healed.committed:
             print(
                 f"push: reconciled {len(healed.committed)} orphaned record(s) "
                 "first (a producer wrote them but could not commit them)"
             )
+        # M-W/D7: a collapse/host-rebind interrupted mid-transaction —
+        # `reconcile()` above already resolved it (roll forward or
+        # restore) before its own orphan scan ran; this just names what
+        # happened, the same way the orphan line above does.
+        for intent_id in healed.rolled_forward:
+            # Gate r1 MAJOR-2: roll-forward replays only the LEDGER's own
+            # commit — the host phase lived inside the interrupted
+            # `_execute_route` call, which is gone, so it never runs.
+            # Name the repair; `status`/`doctor` say nothing about this.
+            print(
+                f"push: recovered {intent_id} (rolled forward: its commit "
+                "landed — the host phase did not run; run 'self-learn recompile')"
+            )
+        for intent_id in healed.restored:
+            print(f"push: recovered {intent_id} (restored: its mutation was undone)")
         # M-C: a refusal here is informational, never fatal to the push —
         # `push` republishes whatever IS already committed regardless.
         # But this is "the one moment the gap is most visible" (module
         # docstring), so name every offender instead of the silence a
         # refused-with-nothing-committed `reconcile()` used to pass through.
-        for line in (*healed.blocked, *healed.invalid):
+        for line in (*healed.blocked, *healed.invalid, *healed.stopped):
             print(f"push: NOT reconciled — {line}", file=sys.stderr)
         report = verbs.push_pending(home)
     except gitops.HalfWrittenError as exc:
@@ -2264,14 +2360,42 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
             "the file by hand, then re-run reconcile.",
             file=sys.stderr,
         )
+    for line in result.stopped:
+        print(
+            f"reconcile: NOT recovered — {line}\n"
+            "  a collapse/host-rebind transaction's intent could not be "
+            "resolved (neither its final state verified, nor its prior "
+            "content recoverable) — the intent file is left in place, and "
+            "gate r1 BLOCKER-1: THIS RUN COMMITTED NOTHING, from this "
+            "offender or any other orphan alongside it. Repair by hand: "
+            "inspect this offender's current on-disk content, decide "
+            "whether it is acceptable, then delete "
+            f"{intents.intents_dir(home)}/<id>.json and re-run reconcile — "
+            "until then, every ordinary orphan under this home stays "
+            "uncommitted too, not just this one.",
+            file=sys.stderr,
+        )
+    for intent_id in result.rolled_forward:
+        # Gate r1 MAJOR-2: roll-forward replays only the LEDGER's own
+        # commit — the host phase lived inside the interrupted
+        # `_execute_route` call, which is gone, so it never runs.
+        print(
+            f"reconcile: recovered {intent_id} (rolled forward: its commit "
+            "landed — the host phase did not run; run 'self-learn recompile')"
+        )
+    for intent_id in result.restored:
+        print(f"reconcile: recovered {intent_id} (restored: its mutation was undone)")
     if result.refused:
-        # M-C: an invalid member or a blocked rename refuses the WHOLE
-        # batch — nothing was staged, even for orphans that validated
-        # fine. That is exactly EXIT_GIT_FAILED's own promise ("6 means
-        # NOTHING WAS WRITTEN"), reused here rather than minting a ninth
-        # exit code for the identical guarantee.
+        # M-C (widened M-W/D7): an invalid member, a blocked rename, or an
+        # unresolved intent refuses the WHOLE batch — nothing was staged,
+        # even for orphans that validated fine. That is exactly
+        # EXIT_GIT_FAILED's own promise ("6 means NOTHING WAS WRITTEN"),
+        # reused here rather than minting a ninth exit code for the
+        # identical guarantee.
         return EXIT_GIT_FAILED
     if not result.committed:
+        if result.acted:
+            return EXIT_OK
         print("reconcile: nothing uncommitted — the ledger is whole")
         return EXIT_OK
     # ReconcileResult.sha is str | None by field default, but every path

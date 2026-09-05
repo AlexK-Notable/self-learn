@@ -58,8 +58,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
-from . import domain, invocation, sentinel, settings, telemetry
-from .primitives import chrono, truncate
+from . import domain, intents, invocation, sentinel, settings, telemetry
+from .primitives import chrono, fsops, truncate
 from .compilers import BEGIN_MARKER, END_MARKER
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
 from .hosts import Hosts, HostsError, ancestors_of, load_hosts, skill_dir_for, unregistered_ancestor_dirs
@@ -71,6 +71,7 @@ from .ledger_ops import (
     TRACE_FS_VERDICTS,
     ProposalError,
     _dump_yaml,
+    _dumps_yaml,
     find_record_path,
     is_unanalyzed,
     queue,
@@ -1260,27 +1261,23 @@ def _write_window_durable(window: Path, text: str) -> None:
     file's data, then the directory entry the rename produced) give the
     durability.
 
-    Fold NIT 1: any failure between creating the temp file and the
-    rename (disk full mid-write, a permission error) unlinks the temp
-    file before re-raising — a failed write must not leave
-    ``.worker.window.<pid>.tmp`` litter behind for a later run to trip
-    over."""
+    Sprint 2 M-I: this function's own hand-rolled temp+rename+fsync (the
+    fold-NIT-1 cleanup-on-exception included) is now `fsops.atomic_write`
+    verbatim — `fsync=True` keeps both fsync calls; the temp name grows a
+    random token (`.worker.window.<pid>.<token>.tmp`, still matching
+    every existing `.{window.name}.*.tmp` glob this module's own tests
+    use, since none of them pin the token literally, only the prefix/
+    suffix shape) but the cleanup-on-exception guarantee the fold-NIT-1
+    comment above describes is unchanged, now enforced by the shared
+    primitive instead of a second hand-written copy of it.
+    `preserve_mode=False`: the ORIGINAL code always opened a brand-new
+    temp file (no chmod) before every rename, so the marker's mode
+    already reset to the process umask default on every write regardless
+    of the previous file's mode -- `preserve_mode=True` (the general
+    default) would be a new, unrequested behaviour this move does not
+    ask for."""
     window.parent.mkdir(parents=True, exist_ok=True)
-    tmp = window.parent / f".{window.name}.{os.getpid()}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(text)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, window)  # same filesystem — atomic
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-    dir_fd = os.open(window.parent, os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)  # the rename itself, durable too
-    finally:
-        os.close(dir_fd)
+    fsops.atomic_write(window, text, fsync=True, preserve_mode=False)
 
 
 def _spawn_marker_stale(window: Path) -> bool:
@@ -2912,7 +2909,21 @@ def _write_install_journal(entries: dict[Path, str]) -> None:
     individual add/remove inside pass 1 (never batched, never truncated
     in bulk — r2's MAJOR 1, folded): the file on disk is always the
     caller's current in-memory state, so a kill between two per-file
-    steps leaves exactly the entries that were true at that instant."""
+    steps leaves exactly the entries that were true at that instant.
+
+    Sprint 2 M-I: was a bare ``Path.write_text`` -- non-atomic, unlike
+    the install copy this journal exists to make recoverable (`_install_
+    staged`'s own `os.replace`). `fsync=False` (a decision, the pinned
+    text was silent on this specific function's durability): the fix
+    this move targets is the TORN-WRITE risk (a reader mid-write seeing
+    a half-written journal), which atomicity alone closes; `_install_
+    staged` already writes this journal BEFORE its own copy and re-reads
+    it fresh every run via `_read_install_journal`, so the existing
+    recovery path never depended on this specific write surviving a
+    kernel-level crash (unlike `_write_window_durable`, fsync'd from the
+    start for exactly that reason) -- adding fsync here would be an
+    unrequested durability upgrade, not the atomicity fix this entry
+    names."""
     path = _install_journal_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
@@ -2922,7 +2933,7 @@ def _write_install_journal(entries: dict[Path, str]) -> None:
     text = "\n".join(lines)
     if text:
         text += "\n"
-    path.write_text(text, encoding="utf-8")
+    fsops.atomic_write(path, text, fsync=False)
 
 
 def _dest_state(dest: Path) -> tuple[str | None, bool]:
@@ -2974,7 +2985,18 @@ def _install_staged(
     tmp = dest.parent / f".install-{verdict.name}.tmp"
     if verdict.is_merge:
         assert verdict.merge_data is not None
-        _dump_yaml(verdict.merge_data, tmp)  # same writer U-repair already uses
+        # Fold r1 (Finding 10): serialize to a string and write THIS
+        # temp (`.install-<rid>.tmp`) the same one-step way the
+        # non-merge branch two lines below already does, instead of
+        # nesting `_dump_yaml` (now `fsops.atomic_write`, wave 2)
+        # inside it. Wave 2 briefly had this nested -- harmless on an
+        # ordinary exception, but a SIGKILL between the INNER write and
+        # its rename left an orphaned inner temp file
+        # (`..install-<rid>.tmp.<pid>.<token>.tmp`) that `_clean_stale_
+        # install_temps`'s `.install-*.tmp` glob cannot match (second
+        # character `.`, not `i`). `_dumps_yaml` (`ledger_ops.py`) is
+        # the serialize-only half of `_dump_yaml`, split out for this.
+        tmp.write_text(_dumps_yaml(verdict.merge_data), encoding="utf-8")
     else:
         tmp.write_text(staged_path.read_text(encoding="utf-8"), encoding="utf-8")
     digest = sha_anchor(tmp.read_text(encoding="utf-8"))
@@ -3697,6 +3719,33 @@ def run(
     ``resolve_home()`` and this call's ``home`` disagree (measured: 99.0
     vs. home-A's 11.0). One run must read one policy file."""
     home = Path(home)
+    # M-W (D7): recover any collapse/host-rebind transaction a previous
+    # run's SIGKILL left mid-flight, BEFORE this run's own enumeration
+    # reads the ledger — a staged rename left by one of those is
+    # invisible to `reconcile()`'s ordinary orphan scan (blocked
+    # forever), and the narrow `intents.recover` call, not a full
+    # `reconcile()`, is what runs here to minimize behavior change on
+    # this armor-pinned path (`reconcile()` itself is unchanged for the
+    # miner/push call sites, which already called it).
+    recovered = intents.recover(home)
+    if recovered.acted or recovered.stopped:
+        log("run: recovered intent(s) from a prior interrupted run")
+    # Gate r1 BLOCKER-2: each on its OWN line (the same combined-line
+    # shape miner.py had was the bug that crashed there) — never one
+    # line naming all three lists at once.
+    for intent_id in recovered.rolled_forward:
+        # Gate r1 MAJOR-2: roll-forward only ever replays the ledger's
+        # own commit — the host phase (`_host_phase`) lived inside the
+        # interrupted `_execute_route` call, which is gone, so it never
+        # runs. Name the repair here too, mirroring the miner and CLI.
+        log(
+            f"run: recovered {intent_id} (rolled forward: its commit "
+            "landed — the host phase did not run; run 'self-learn recompile')"
+        )
+    for intent_id in recovered.restored:
+        log(f"run: recovered {intent_id} (restored: its mutation was undone)")
+    for line in recovered.stopped:
+        log(f"run: could not resolve an intent, left for a human: {line}")
     if no_push is None:
         no_push = no_push_requested()
     cache_dir().mkdir(parents=True, exist_ok=True)

@@ -31,7 +31,7 @@ from self_learn.ledger_ops import (
     ensure_project_meta,
 )
 from self_learn.records import Record
-from self_learn.selfcheck import _check_drift
+from self_learn.selfcheck import Verdict, _check_drift
 from support import (
     commit_all,
     git,
@@ -217,7 +217,7 @@ class TestReferenceRecompile:
         (refs / "CUSTOM.md").write_text("# Custom\n", encoding="utf-8")
         commit_all(env.host, "entry lost")
         ok, reason = _check_drift(env.ledger)
-        assert not ok
+        assert ok is Verdict.FAIL
         assert "CUSTOM.md" in reason
 
 
@@ -229,7 +229,7 @@ class TestReferenceDrift:
 
         ok, reason = _check_drift(env.ledger)
 
-        assert not ok  # was: "no routed managed-destination records"
+        assert ok is Verdict.FAIL  # was: "no routed managed-destination records"
         assert record.id in reason
         assert "self-learn recompile" in reason
 
@@ -242,7 +242,7 @@ class TestReferenceDrift:
         commit_all(env.host, "hand-deleted entry")
 
         ok, reason = _check_drift(env.ledger)
-        assert not ok
+        assert ok is Verdict.FAIL
         assert "entry missing" in reason
 
     def test_drift_green_path_has_routed_records(self, env):
@@ -263,7 +263,7 @@ class TestReferenceDrift:
 
         ok, reason = _check_drift(env.ledger)
 
-        assert ok
+        assert ok is Verdict.PASS
         assert "2 routed record(s) present" in reason  # both, actually checked
 
 

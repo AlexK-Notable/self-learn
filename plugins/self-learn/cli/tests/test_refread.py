@@ -32,7 +32,7 @@ import pytest
 from self_learn import cli, refread, report, telemetry
 from self_learn.hosts import load_hosts
 from self_learn.ledger_ops import bucket_dir_for_scope, ensure_project_meta
-from self_learn.selfcheck import _check_hooks, claude_runtime_dir
+from self_learn.selfcheck import Verdict, _check_hooks, claude_runtime_dir
 from support import init_repo, make_env, make_knowledge
 
 #: tests/ -> cli/ -> self-learn/ -> plugins/ (same convention as
@@ -1010,7 +1010,7 @@ class TestT7InstallAndSelfcheck:
             encoding="utf-8",
         )
         ok, reason = _check_hooks(env.ledger, claude_runtime_dir())
-        assert not ok
+        assert ok is Verdict.FAIL
         assert "self-learn-refread.sh" in reason
         assert "missing" in reason or "dangling" in reason
 

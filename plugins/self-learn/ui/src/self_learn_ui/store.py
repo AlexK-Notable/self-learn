@@ -44,6 +44,7 @@ from claude_agent_sdk import SessionStore
 from claude_agent_sdk.types import SessionKey, SessionStoreEntry
 
 import self_learn.primitives.chrono as chrono
+import self_learn.primitives.fsops as fsops
 
 from . import uilog
 
@@ -89,7 +90,7 @@ def slug_for_session_key(session_key: str) -> str:
 
 
 def _now_iso() -> str:
-    """Adopts the shared ``%Y-%m-%dT%H:%M:%SZ`` format (M-J, plan v2
+    """Uses the shared ``%Y-%m-%dT%H:%M:%SZ`` format (M-J, plan v2
     SS2): this module's own copy previously called ``.isoformat()``
     (microseconds + a ``+00:00`` offset) -- a drift from every other
     ``_now_iso`` in the codebase, and the bug this migration closes, not
@@ -462,11 +463,22 @@ class PaneTranscriptStore:
             return None
 
     def _write_meta(self, session_key: str, meta: dict[str, Any]) -> None:
+        # Sprint 2 M-I: was this method's own temp + write_text + replace
+        # -- `fsops.atomic_write` now does the same dance (plus the
+        # cleanup-on-exception this method never had; harmless here since
+        # the whole call is inside the try/except below anyway).
+        # `fsync=False`: unchanged durability, never fsync'd before this
+        # move. `preserve_mode=False`: the ORIGINAL code always opened a
+        # brand-new temp file (no chmod), so the mode already reset to
+        # the process umask default on every write regardless of the
+        # previous file's mode. The try/except OSError swallow-and-log
+        # (never raise -- a meta write failure must not break the pane)
+        # is UNCHANGED; `SymlinkRefused` is a subclass of `OSError`, so a
+        # symlinked meta path degrades to the same logged-and-swallowed
+        # outcome it always would have.
         path = self._meta_path(session_key)
-        tmp = Path(str(path) + ".tmp")
         try:
-            tmp.write_text(json.dumps(meta), encoding="utf-8")
-            tmp.replace(path)
+            fsops.atomic_write(path, json.dumps(meta), fsync=False, preserve_mode=False)
         except OSError as exc:
             uilog.log(f"pane transcript store: meta write failed for {session_key!r}: {exc}")
 

@@ -33,8 +33,8 @@ plugins/self-learn/
 docs/specs/self-learn/  the ratified spec corpus (00–13 + fixtures + reviews)
 systemd/                self-learn-host.service (resident host process: nightly mine at 03:30 + worker)
                         self-learn-ui.service (G-3 surface, resident web server)
-                        self-learn-miner.{service,timer} (legacy timer route; superseded by the host service)
-install.sh              idempotent live-symlink deploy (shims, hooks, skill, commands, units)
+                        self-learn-miner.{service,timer} (legacy timer route, opt-in via --legacy-miner; superseded by the host service)
+install.sh              idempotent live-symlink deploy (shims, hooks, skill, commands, units); --dry-run, --legacy-miner, --help
 ```
 
 ## Install
@@ -56,8 +56,9 @@ the parts that live outside a plugin's boundary:
 - the `~/bin` shims — `self-learn`, `self-learn-ui`, `self-learn-ui-open`,
   `self-learn-notify`
 - the `systemd --user` units: `self-learn-host.service` (the resident host
-  process that schedules the nightly mine and the worker), `self-learn-ui.service`
-  (the G-3 surface), and the legacy `self-learn-miner.{service,timer}`
+  process that schedules the nightly mine and the worker) and
+  `self-learn-ui.service` (the G-3 surface) — the legacy
+  `self-learn-miner.{service,timer}` route is opt-in, see below
 - the desktop launcher + icon
 - the two hook symlinks into `~/.claude/hooks/` — the SessionStart
   pending-count hook and the PostToolUse reference-read hook (registration
@@ -74,11 +75,27 @@ systemctl --user enable --now self-learn-host.service  # nightly mine + worker
 systemctl --user enable --now self-learn-ui.service    # G-3 surface, see below
 ```
 
+`--dry-run` prints every step `install.sh` would take — including the
+first `mkdir -p` — without touching the filesystem at all; `--help` prints
+usage. Run either before trusting the real thing on a machine you care
+about.
+
+`install.sh` never enables, starts, stops, or restarts a systemd unit
+itself, and it makes every external command it runs (`uv sync`,
+`systemctl`, `update-desktop-database`) bounded with `timeout` — it
+refuses to start at all if `timeout` is missing. A symlink target that
+already holds a real file or directory is backed up first, with a
+collision-checked name; a failed link restores that backup rather than
+leaving a half-applied state behind.
+
 `self-learn-host.service` is the U-engine host process (`self-learn serve`;
-run it in the foreground where there is no systemd). It supersedes the older
-`self-learn-miner.timer` route: a timer left enabled alongside it is a
-supported belt-and-braces poke, and `self-learn doctor invocation` WARNs
-(never fails) when both are enabled.
+run it in the foreground where there is no systemd). It supersedes the
+older `self-learn-miner.timer` route, which `install.sh` now links only
+with `--legacy-miner` (`./install.sh --legacy-miner`) — omit the flag
+unless you specifically want the timer running as a belt-and-braces
+fallback alongside the host service; `self-learn doctor invocation` WARNs
+(never fails) when both are enabled, and a plain re-run without the flag
+leaves an already-linked timer alone rather than dropping it.
 
 `install.sh` is a **live-symlink** deploy: the repo working tree *is* the
 installed copy, so edits are live next session. The two routes are

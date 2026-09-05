@@ -961,3 +961,121 @@ human routes it.
   implementation never adopted. Full inventory, per-site substitutions
   and the gate's verification table:
   `drafts/u-docs-truth-sweep-spec.md`.
+- **2026-09-04 — S-58 amended: one mechanism, per-key direction (Sprint 2
+  plan v2 §2 M-S; decision D1); folded r1–r5 same day against six
+  blind spec gates (r1: 2 Blockers, 6 Majors, 5 minors, 2 nits; r2: 1
+  Blocker, 2 Majors, 3 minors, 3 nits; r3: 0 Blockers, 2 Majors, 1
+  minor, 1 nit; r4: 0 Blockers, 1 Major, 0 minors, 1 nit; r5: 0
+  Blockers, 1 Major, 1 minor, 2 nits; r6 on `8603e1d`: 0 Blockers, 0
+  Majors, 1 minor, 1 nit — CLEAN — see `03-decisions.md`'s `S-58`
+  row for the current folded text).** The two
+  precedence DIRECTIONS `S-58` ruled on 2026-07-19/2026-09-01 are
+  unchanged — the settings registry's operator-policy keys stay
+  `override > config.yaml > env > default`; provider/model/backend
+  SELECTION keys stay `override > env > config.yaml > default`. What
+  changes is the MECHANISM count: `provider.py`'s second, independent
+  transcription of the backend-selection chain (`resolve_backend_name`)
+  and its own env/config lookups (`_resolve_provider`,
+  `_resolve_str_setting`, `model_for`) retire in favour of ONE
+  registry-backed resolver. Of `config.py`'s two loaders that fed
+  those hand-rolled cascades, only `provider_setting` retires with
+  them; `config.invocation_backend` SURVIVES, unchanged in name and
+  signature, as the Rs-a1 termination delegate the shared specific/
+  general cascade (`config.paired_cascade`, code-gate fold r1, MAJOR-1)
+  now calls via `config.paired_leaf` — `resolve_backend_raw` and
+  `settings.resolve_setting`'s paired-entry branch both reach it
+  through that ONE shared walk, never two independent re-derivations
+  of the same Rs-a1 rule (r1 minor-2's correction of this same
+  paragraph's original over-claim). `settings.py`'s `Setting` gains
+  `direction` (per-key rung
+  order), `enabled_when` (a `provider.name` predicate gating exactly the
+  SIX bedrock-scoped entries — `region`, `profile`, and the four
+  `bedrock.models.*` — never `provider.name` itself, r2 fixed this
+  count from a wrong "all five"), and an optional `env_var`. `models.
+  {worker,miner,analyst}` join as a NEW top-level `models:` section
+  (r1 BLOCKER-1: `settings-surface-spec.md` §1.2 already pinned these
+  three config-first, but the binding never took effect in code — this
+  amendment corrects §1.2's direction for exactly these three keys to
+  `env-first` instead of disposing the reopened trigger silently);
+  `model_for`'s wrapper discriminates by the returned SOURCE LABEL
+  (override/env answer immediately; config/default defer to the active
+  bedrock leaf first) rather than running a flat rung list (r2 m3).
+  runtime dispatch and the registry's own reporting/write surfaces are
+  now two deliberately separate mechanisms (r3 M1/M2, correcting r2 M1's
+  conflation of the two): a PURE `resolve_backend_raw(home, surface) ->
+  (raw_value, source)` emits nothing, so `backend_for` keeps its
+  existing emitter `registry._resolve` on ITS path only (today's four
+  pinned literals, unedited) while `provider.resolve_backend` folds the
+  same raw value SILENTLY with `provider.py`'s own pure halves — no
+  warn ever on the provider side, preserving `Rs-b` and its witness
+  `test_bk3_resolve_backend_name_never_warns` (r4 n1: `backend_for`
+  strips `resolve_backend_raw`'s prefixed label to the bare `source`
+  `_resolve` expects, deriving `is_config` from the prefix, since the
+  two functions' vocabularies differ). Separately, corrected again by
+  r4 M1 (one `validate` cannot both refuse-on-write and clamp-on-read
+  for the same input, and a clamping `validate` emits no warning at
+  all, so r3's "visible in existing warning text" was wrong): `Setting.
+  validate` STAYS the read-path clamp, unchanged for all 21 shipped
+  entries; a NEW, separate optional `Setting.accepts` predicate is the
+  write-path gate. Refined by r5 M1/m1: `config_set`'s sequence is
+  parse -> `accepts` refusal -> `validate` clamp -> the existing
+  downstream steps — `accepts` judges the operator's PARSED input,
+  before `validate` can clamp an off-whitelist value into an accepted
+  one (the natural insertion point, after `validate`, would have
+  silently committed a laundered value); the refusal names the allowed
+  set from a new `accepts_hint` field, not `validate_hint` (reserved for
+  a rejecting `validate` by its own docstring). `provider.name` and the
+  `invocation.backend` family carry BOTH `validate` and `accepts`. The
+  fold is surfaced as a NEW `setting_row` detail field named `note`
+  outright — not the `warn` field (which keeps its override-only
+  meaning) — computed by `setting_row` AND `preflight` each
+  RE-DERIVING the fold rather than widening `resolve_setting`'s 2-tuple
+  return (measured: 20 call sites, 18 wanting only the 2-tuple, against
+  2 display sites that would use a 3rd element). The UI `/settings`
+  page is an accepted, ruled residual: it renders a folded value with
+  no `note` (minor-4's standing scope), not a defect. The backend
+  chain's specific/general PAIR at each end (env, config) keeps its
+  full preservation constraint — `Rs-a1`'s asymmetry (an EMPTY
+  per-surface config value terminates at the default WITHOUT
+  consulting the general key; an ABSENT one falls through and does
+  consult it), byte-for-byte rung/source-label preservation, and the
+  "one entry per surface silently drops the general fallback" warning
+  — restored in full after the r1 fold accidentally deleted it (r2
+  B1), with the order string itself now qualified at the
+  config-specific → config-general arrow so the empty-value
+  termination is visible there too, not only in prose. **Correction to
+  r1's own claim:** `Rs-a1`'s discriminating witness
+  (`test_provider.py:477-483`, an empty per-surface key beside a
+  present general one) is NOT armor-pinned — `test_provider.py` is not
+  in `test_armor.py` at all; the AST-pinned `test_invocation.py`'s
+  `test_rg6`/`test_rg7` do not discriminate this case. Because the
+  witness is unpinned, the code step must keep it and add a second
+  discriminating case beside it. One override slot per LOGICAL key
+  (`invocation.backend` and `invocation.backend_<surface>` are two
+  logical keys, each keeping its own override var, preserving both the
+  blanket and per-surface reach today's env vars have — r2 m1), the
+  specific outranking the general, mirroring the env pair (r3 m1); the
+  default rung stays `S-47`'s per-surface table, never flattened to one
+  literal (MAJOR-6); `models.*`'s own default rung is each surface's
+  already-called function (`worker_model()`/`miner_model()`/the
+  analyst's `_model()`), the same STYLE `S-47` used for backend
+  defaults, not a reuse of `S-47`'s own table — confirmed explicitly.
+  `settings-surface-spec.md` §1.2 itself gets a pointer annotation to
+  this correction (r2 m2), separate from this entry. §1.2's `models:`
+  table actually names a fourth key, `models.pane` — UI-scope, correctly
+  left out of this amendment's three (r2 n2). `03-decisions.md`'s `S-58`
+  row carries the full folded amendment; `01`–`17` are otherwise
+  unchanged by this entry. Code landed separately, in Sprint 2 lane L4,
+  one commit (`M-S: provider/backend keys resolved by the settings
+  registry with per-key direction`) implementing the row exactly as it
+  reads after the spec gate returned CLEAN at r6. **Code-gate fold r1
+  consequence, swept into the runbook 2026-09-04 (delta gate r2
+  minor-1):** unifying the runtime and registry faces onto ONE shared
+  cascade (`config.paired_cascade`/`paired_leaf`, MAJOR-1's fix)
+  required their CONFIG source-label vocabularies to match, moving the
+  runtime face's bare `config:backend[_<surface>]` to the registry
+  face's own `config:invocation.backend[_<surface>]` — the string an
+  operator sees on `doctor invocation`'s `switches` row changed as a
+  necessary side effect; `17-invocation-runbook.md`'s two mentions of
+  the old spelling were swept to match (the dated measurement record in
+  `drafts/u-docs-truth-sweep-spec.md` was deliberately left alone).

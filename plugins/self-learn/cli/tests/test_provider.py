@@ -152,22 +152,30 @@ def test_su3_cmd_doctor_registered_in_the_held_lock_census():
 # ===================================================================== #
 
 
-def test_pr1_provider_setting_and_all(tmp_path):
-    _write_provider_yaml(
-        tmp_path,
-        name="bedrock",
-        bedrock={"region": "us-east-1", "models": {"worker": BEDROCK_ID}},
-    )
-    assert config.provider_setting(tmp_path, "name") == ("name", "bedrock")
-    assert config.provider_setting(tmp_path, "bedrock.region") == ("bedrock.region", "us-east-1")
-    assert config.provider_setting(tmp_path, "bedrock.models.worker") == (
-        "bedrock.models.worker",
-        BEDROCK_ID,
-    )
-    with pytest.raises(ValueError):
-        config.provider_setting(tmp_path, "not-a-real-key")
+def test_pr1_config_module_exports(tmp_path):
+    """M-S (S-58, requirement 7): `config.provider_setting` is DELETED
+    (every former call site now resolves through `settings.
+    resolve_setting`/`config.settings_leaf` directly) -- its malformed-
+    value coverage is superseded by `settings_leaf`'s own generic tests
+    in `test_settings.py` (`test_malformed_config_*`), so nothing here
+    re-derives it. `config.override_env_var` (M-S, minor-1's shared
+    hyphen-aware helper) is the one new export."""
+    assert not hasattr(config, "provider_setting")
     assert config.__all__ == [
         "CONFIG_BASENAME",
+        # M-S (S-58 code-gate fold r2, gap-4): the ONE label constant
+        # both `settings._try_paired` and `invocation.registry.
+        # resolve_backend_raw` pass to `paired_leaf`/`paired_cascade`
+        # for the invocation-backend pair, so a malformed config value
+        # warns identically regardless of which face resolved it.
+        "INVOCATION_BACKEND_LABEL",
+        # M-S (S-58 code-gate fold r1, BLOCKER-1): the override
+        # channel's two escape-hatch markers, relocated here from
+        # `settings.py` so `provider.py`/`invocation/registry.py` can
+        # decode them (via `read_override` below) without importing
+        # `settings.py` at all (a cycle).
+        "OVERRIDE_EMPTY_MARKER",
+        "OVERRIDE_NONE_MARKER",
         "PROVIDER_KEYS",
         # U-settings Phase 2: the settings PAGE's write path -- round-trip
         # load/dump + the two generic, section-agnostic mutators (`set_leaf`/
@@ -186,6 +194,21 @@ def test_pr1_provider_setting_and_all(tmp_path):
         "invocation_backend",
         "load_editable",
         "one_motion_enabled",
+        # M-S (S-58): the shared override-var-name helper both
+        # `settings.py` and `invocation/registry.py` call, so a
+        # runtime-dispatch override and its registry-reporting
+        # counterpart always compute the identical env-var name
+        # without `invocation/registry.py` importing `settings.py`.
+        "override_env_var",
+        # M-S (S-58 code-gate fold r1, MAJOR-1): the shared specific/
+        # general six-rung cascade both `settings.resolve_setting` (for
+        # a registry entry declaring a `general_name` sibling) and
+        # `invocation.registry.resolve_backend_raw` call, plus the
+        # generalized specific/general config.yaml walk it uses
+        # internally (`invocation_backend` is now a thin wrapper over
+        # this).
+        "paired_cascade",
+        "paired_leaf",
         # MINOR-2 (code-gate review r1 2026-09-01): a validated,
         # NON-mutating "is section.key set" read against the SAME
         # round-trip write-path load `set_leaf`/`unset_leaf` use --
@@ -196,8 +219,14 @@ def test_pr1_provider_setting_and_all(tmp_path):
         # own write attempt rather than reporting "already unset"
         # against a file `set` would refuse outright.
         "present",
-        "provider_setting",
         "provider_unknown_keys",
+        # M-S (S-58 code-gate fold r1, BLOCKER-1): the override
+        # channel's ONE reader -- both `settings._try_override` and
+        # `provider._resolve_provider`'s override rung decode an
+        # ambient `SELF_LEARN_OVERRIDE_<NAME>` through this SAME
+        # function now, so the two faces cannot independently disagree
+        # on what an ambient empty value means again.
+        "read_override",
         "set_leaf",
         # U-settings Phase 1: the settings registry's two generic,
         # section-agnostic primitives (generalizing `provider_setting`/
@@ -209,45 +238,17 @@ def test_pr1_provider_setting_and_all(tmp_path):
     ]
 
 
-def test_pr1_provider_setting_full_table(tmp_path, capsys):
-    # missing file -> None, silent
-    assert config.provider_setting(tmp_path, "name") is None
-    assert capsys.readouterr().err == ""
-
-    # empty file -> None, silent
-    _write_yaml(tmp_path, "")
-    assert config.provider_setting(tmp_path, "name") is None
-    assert capsys.readouterr().err == ""
-
-    # unparseable -> warn + None
-    _write_yaml(tmp_path, ":::not yaml {{{\n")
-    assert config.provider_setting(tmp_path, "name") is None
-    assert "config.yaml ignored" in capsys.readouterr().err
-
-    # top level not a mapping -> warn + None
-    _write_yaml(tmp_path, "- just\n- a\n- list\n")
-    assert config.provider_setting(tmp_path, "name") is None
-    assert "config.yaml ignored" in capsys.readouterr().err
-
-    # provider section absent -> None, silent
-    _write_yaml(tmp_path, "one_motion_route:\n  hook: true\n")
-    assert config.provider_setting(tmp_path, "name") is None
-    assert capsys.readouterr().err == ""
-
-    # a dotted-path segment present but not a mapping -> warn + None
-    _write_yaml(tmp_path, "provider:\n  bedrock: not-a-mapping\n")
-    assert config.provider_setting(tmp_path, "bedrock.region") is None
-    assert "config.yaml ignored" in capsys.readouterr().err
-
-    # leaf absent -> None, silent
-    _write_yaml(tmp_path, "provider:\n  name: bedrock\n")
-    assert config.provider_setting(tmp_path, "bedrock.region") is None
-    assert capsys.readouterr().err == ""
-
-    # leaf present but not a str -> warn + None
-    _write_yaml(tmp_path, "provider:\n  name: 42\n")
-    assert config.provider_setting(tmp_path, "name") is None
-    assert "config.yaml ignored" in capsys.readouterr().err
+def test_pr1b_override_env_var_folds_dots_and_hyphens(tmp_path):
+    """minor-1 (code-gate review 2026-09-04): a bare `.`-only
+    substitution would produce
+    `SELF_LEARN_OVERRIDE_INVOCATION_BACKEND_WORKER-REPAIR`, not a legal
+    POSIX env-var name -- `invocation.backend_worker-repair` embeds a
+    hyphen verbatim, so this is not a hypothetical."""
+    assert config.override_env_var("worker.autokick") == "SELF_LEARN_OVERRIDE_WORKER_AUTOKICK"
+    assert (
+        config.override_env_var("invocation.backend_worker-repair")
+        == "SELF_LEARN_OVERRIDE_INVOCATION_BACKEND_WORKER_REPAIR"
+    )
 
 
 def test_pr2_provider_unknown_keys(tmp_path):
@@ -321,6 +322,25 @@ def test_pr4_unknown_provider_warns_and_stops_at_anthropic(tmp_path, monkeypatch
     assert "'bogus'" in calls[0]
 
 
+def test_pr4b_unknown_provider_override_warns_the_third_way(tmp_path, monkeypatch, capsys):
+    """M-S (S-58 code-gate fold r1, minor-3): the OVERRIDE rung is a
+    THIRD emitter, pinned the same way the env (`test_pr4_...` above)
+    and config (`config._warn`, same test) rungs already are -- one
+    `print` per rung, not two. Also proves the override rung STOPS at
+    `"anthropic"` rather than falling through to a present, valid
+    config value (same "does NOT fall through" shape `test_pr4_...`
+    already pins for the env rung)."""
+    monkeypatch.setenv("SELF_LEARN_OVERRIDE_PROVIDER_NAME", "bogus")
+    _write_provider_yaml(tmp_path, name="bedrock")
+    res = provider.resolve(tmp_path, "worker")
+    assert res.provider == "anthropic"  # does NOT fall through to config
+    err = capsys.readouterr().err
+    assert err == (
+        'self-learn: unknown provider \'bogus\' in SELF_LEARN_OVERRIDE_PROVIDER_NAME'
+        ' — using "anthropic"\n'
+    )
+
+
 def test_pr5_source_fields_name_the_answering_rung(tmp_path, monkeypatch):
     _write_provider_yaml(
         tmp_path,
@@ -353,8 +373,13 @@ def test_pr5_source_fields_name_the_answering_rung(tmp_path, monkeypatch):
     monkeypatch.delenv("SELF_LEARN_BEDROCK_PROFILE")
     monkeypatch.delenv("SELF_LEARN_SDK_CLI_PATH")
     res3 = provider.resolve(tmp_path / "nowhere-else", "worker")
-    assert res3.region_source == "default"
-    assert res3.profile_source == "default"
+    # M-S (S-58): `provider.bedrock.region`/`.profile` are `enabled_when`
+    # gated on `provider=="bedrock"` now -- under `provider=anthropic`
+    # (the default, restored above), they resolve to their OWN default
+    # with the `inactive` source label, never "default" (which would
+    # mean "active, but nothing set at any rung").
+    assert res3.region_source == "inactive (provider=anthropic)"
+    assert res3.profile_source == "inactive (provider=anthropic)"
 
 
 def test_pr6_bedrock_env_overrides_and_cli_path_not_in_session_env(tmp_path, monkeypatch):
@@ -491,6 +516,46 @@ def test_bk1_agrees_with_registry_over_matrix(tmp_path, monkeypatch):
     assert _backend_for_expectation("worker", positive_control_home) == "sdk"
 
 
+def test_bk1b_rs_a1_discriminates_by_the_full_tuple_not_just_name(tmp_path):
+    """M-S (S-58, dispatch requirement 1): `test_bk1_agrees_with_
+    registry_over_matrix`'s `cfg_shadow_home` cell above asserts only
+    `[0] == "sdk"` -- and since U-cleanup folded `KNOWN_BACKENDS` down
+    to one member, `_fold_backend("cli")` ALSO equals `"sdk"`, so that
+    assertion alone can no longer tell "terminated at the default"
+    apart from "leaked through to the coarser key and got folded" --
+    both produce `name == "sdk"`. This test asserts the FULL 3-tuple
+    for both of Rs-a1's cells, which DOES still discriminate them via
+    `source`/`refused`:
+
+    - empty per-surface key + present general "cli" -> terminates at
+      the default WITHOUT ever consulting the general key: `source`
+      is `"default"`, `refused` is `None` (the general "cli" value was
+      never even read, let alone refused).
+    - ABSENT per-surface key + present general "cli" -> falls through
+      and consults the general key, which IS "cli": `source` is
+      `"config:invocation.backend"` (M-S fold r1: MAJOR-1's vocabulary
+      unification -- was the bare `"config:backend"` before this fold),
+      `refused` names the retirement message --
+      the positive control proving the chain CAN reach and refuse the
+      general key when the per-surface key is genuinely absent (not
+      just empty), so the case above is a real termination, not an
+      accidental non-discovery."""
+    terminated_home = tmp_path / "bk-rs-a1-terminated"
+    terminated_home.mkdir()
+    (terminated_home / "config.yaml").write_text(
+        'invocation:\n  backend_worker: ""\n  backend: cli\n', encoding="utf-8"
+    )
+    assert provider.resolve_backend_name(terminated_home, "worker") == ("sdk", "default", None)
+
+    leaked_home = tmp_path / "bk-rs-a1-leaked"
+    leaked_home.mkdir()
+    (leaked_home / "config.yaml").write_text("invocation:\n  backend: cli\n", encoding="utf-8")
+    name, source, refused = provider.resolve_backend_name(leaked_home, "worker")
+    assert name == "sdk"  # folded, same as the terminated case -- NOT the discriminator
+    assert source == "config:invocation.backend"  # M-S fold r1: MAJOR-1 vocabulary unification
+    assert refused is not None and "cli" in refused
+
+
 def test_bk2_selector_mapping_holds(tmp_path, monkeypatch):
     # U-cleanup-B (CL8, M-15 grep widening): `KNOWN_BACKENDS = ("sdk",)`
     # makes `_fold_backend` return `"sdk"` for EVERY input (§8.1) -- a
@@ -548,7 +613,7 @@ def test_bk4_source_names_exact_config_key(tmp_path):
     )
     name, source, refused = provider.resolve_backend_name(tmp_path, "worker")
     assert name == "sdk"
-    assert source == "config:backend_worker"
+    assert source == "config:invocation.backend_worker"  # M-S fold r1: MAJOR-1 vocabulary unification
     assert refused is None
 
     home2 = tmp_path / "bk4-general"
@@ -556,7 +621,7 @@ def test_bk4_source_names_exact_config_key(tmp_path):
     (home2 / "config.yaml").write_text("invocation:\n  backend: sdk\n", encoding="utf-8")
     name2, source2, refused2 = provider.resolve_backend_name(home2, "worker")
     assert name2 == "sdk"
-    assert source2 == "config:backend"
+    assert source2 == "config:invocation.backend"  # M-S fold r1: MAJOR-1 vocabulary unification
     assert refused2 is None
 
 
@@ -1280,16 +1345,26 @@ def test_hy1_deferred_delegation_imports():
             names = {a.name.split(".")[0] for a in node.names}
             assert not (names & {"worker", "miner", "analyst"})
 
-    model_for_node = next(
-        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "model_for"
-    )
-    found = False
-    for node in ast.walk(model_for_node):
-        if isinstance(node, ast.ImportFrom):
-            names = {a.name for a in node.names}
-            if names & {"worker", "miner", "analyst"}:
-                found = True
-    assert found, "model_for's body must import worker/miner/analyst"
+    # M-S (S-58): `model_for` no longer imports worker/miner/analyst at
+    # all -- it delegates entirely to `settings.resolve_setting` for
+    # `models.<surface>`, whose own `default` is a deferred-import
+    # WRAPPER (`settings._default_worker_model` et al.) that carries
+    # `P-b`'s "deferred, never module-scope" discipline now. The AST
+    # leg above (no module-scope import in THIS module) still holds;
+    # this checks the discipline moved, not that it vanished.
+    settings_src = (Path(provider.__file__).parent / "settings.py").read_text(encoding="utf-8")
+    settings_tree = ast.parse(settings_src)
+    for wrapper_name in ("_default_worker_model", "_default_miner_model", "_default_analyst_model"):
+        wrapper_node = next(
+            n for n in ast.walk(settings_tree) if isinstance(n, ast.FunctionDef) and n.name == wrapper_name
+        )
+        found = False
+        for node in ast.walk(wrapper_node):
+            if isinstance(node, ast.ImportFrom):
+                names = {a.name for a in node.names}
+                if names & {"worker", "miner", "analyst"}:
+                    found = True
+        assert found, f"settings.{wrapper_name} must import worker/miner/analyst, deferred"
 
     # live leg: three fresh-interpreter entry points
     import subprocess

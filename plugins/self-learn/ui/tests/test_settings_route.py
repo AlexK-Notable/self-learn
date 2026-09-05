@@ -66,7 +66,7 @@ def _write_config(home: Path, section: str, dotted_key: str, value: object) -> N
 
 
 class TestSettingsPageRender:
-    def test_renders_all_21_rows_with_the_four_source_badges(
+    def test_renders_every_registry_row_with_the_four_source_badges(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The positive control (dispatch pin): a config.yaml key, an
@@ -86,7 +86,10 @@ class TestSettingsPageRender:
         # AUTOKICK=0 fixture) can never leak into the "default"/"env"
         # rows this test asserts on.
         for s in settings_mod.REGISTRY:
-            monkeypatch.delenv(s.env_var, raising=False)
+            # M-S (S-58): `env_var` is `str | None` now (the four
+            # `provider.bedrock.models.*` entries with no env rung).
+            if s.env_var is not None:
+                monkeypatch.delenv(s.env_var, raising=False)
             monkeypatch.delenv(settings_mod._override_env_var(s.name), raising=False)  # noqa: SLF001
         # ENV source
         monkeypatch.setenv("SELF_LEARN_MINE_PENDING_GATE", "50")
@@ -147,6 +150,27 @@ class TestSettingsPageRender:
         row_html = text[start:end]
         assert 'hx-post="/settings/set"' in row_html
         assert 'name="name" value="worker.no_notify"' in row_html
+
+    def test_m_s_fold_r1_provider_name_is_tier_c_with_no_editor(self, tmp_path: Path) -> None:
+        """M-S (S-58 code-gate fold r1, nit-4): `provider.name` (and the
+        whole `invocation.backend` family) moved to tier "C" -- an
+        emergency-rollback lever, same character as the two
+        spawn-containment switches `test_tier_c_rows_have_no_editor`
+        already covers. `worker.no_notify` (asserted above) is the
+        positive control this negative depends on: it proves the
+        template CAN render an inline editor at all, so `provider.
+        name`'s absence of one is a real tier gate, not a template that
+        renders no editor for anything."""
+        sb = make_env(tmp_path)
+        c, _runner = make_client(sb)
+        r = c.get("/settings")
+        text = r.text
+        assert 'hx-post="/settings/set"' in text  # the positive control fired somewhere on the page
+        start = text.index('id="setting-row-provider-name"')
+        end = text.index("</tr>", start)
+        row_html = text[start:end]
+        assert 'hx-post="/settings/set"' not in row_html
+        assert "read-only" in row_html
 
     def test_degrades_to_an_error_strip_never_a_500_on_a_cli_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

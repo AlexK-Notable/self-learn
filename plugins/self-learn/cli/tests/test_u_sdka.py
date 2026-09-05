@@ -418,40 +418,56 @@ def test_fl3_fail_closed_survives_the_table(tmp_path, monkeypatch, capsys):
 
 
 def test_fl4_the_flip_is_data_not_a_branch():
+    """FL4: "sdk" is a DATA VALUE reached through the shared cascade,
+    never a surface-keyed branch. Fold r1 (MAJOR-1/MAJOR-4) MOVED the
+    default-rung table lookup out of `backend_for` into
+    `resolve_backend_raw`'s own default rung -- `backend_for` now ends
+    `return _resolve(...)`, fed by that function's result. The pin
+    follows the seam: it now checks both functions."""
     src = inspect.getsource(registry_mod)
     tree = ast.parse(src)
-    backend_for_node = next(
-        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "backend_for"
-    )
-    literals = {
-        n.value
-        for n in ast.walk(backend_for_node)
-        if isinstance(n, ast.Constant) and isinstance(n.value, str)
-    }
-    assert "analyst" not in literals
 
+    def get_fn(name):
+        return next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+
+    backend_for_node = get_fn("backend_for")
+    raw_node = get_fn("resolve_backend_raw")
+
+    def str_literals(node):
+        return {n.value for n in ast.walk(node) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+
+    # (a) `backend_for`: no surface-name literal, no "sdk" literal
+    # anywhere -- it now branches on SOURCE LABEL only, never on VALUE.
+    bf_literals = str_literals(backend_for_node)
+    assert not (bf_literals & set(SURFACES))
+    assert "sdk" not in bf_literals
+
+    # (c) its FINAL statement calls `_resolve`, fed by `resolve_backend_
+    # raw`'s own `(raw_value, source)` result -- the data reaches it
+    # through the cascade, never a branch computing a fresh value.
     final = backend_for_node.body[-1]
-    assert isinstance(final, ast.Return)
-    dumped = ast.dump(final)
-    assert "DEFAULT_BACKEND_FOR_SURFACE" in dumped
+    assert isinstance(final, ast.Return) and isinstance(final.value, ast.Call)
+    assert isinstance(final.value.func, ast.Name) and final.value.func.id == "_resolve"
+    assert {a.id for a in final.value.args if isinstance(a, ast.Name)} == {"surface", "raw_value"}
 
-    # U-cleanup: `KNOWN_BACKENDS` has one member now, so the literal
-    # "sdk" is unavoidable -- it is the two-arg fallback default of
-    # `DEFAULT_BACKEND_FOR_SURFACE.get(surface, "sdk")` in the trailing
-    # return, not evidence of a surface-keyed branch. `FL4`'s real
-    # property survives as: "sdk" appears NOWHERE ELSE in the function
-    # body (no `if surface == ...: return "sdk"`-shaped special case).
-    non_final_literals = {
+    # (b) `resolve_backend_raw`: the table lookup is the FIRST of three
+    # returns (nested in `if found is None:`), not the function's last
+    # statement -- located structurally, by its own AST dump naming
+    # `DEFAULT_BACKEND_FOR_SURFACE`, rather than by position. "sdk" (the
+    # table's fallback default) lives ONLY there; no other literal in
+    # the function is "sdk" or a surface name.
+    default_returns = [
+        n for n in ast.walk(raw_node) if isinstance(n, ast.Return) and "DEFAULT_BACKEND_FOR_SURFACE" in ast.dump(n)
+    ]
+    assert len(default_returns) == 1
+    inside_ids = {id(n) for n in ast.walk(default_returns[0])}
+    outside_literals = {
         n.value
-        for node in backend_for_node.body[:-1]
-        for n in ast.walk(node)
-        if isinstance(n, ast.Constant) and isinstance(n.value, str)
+        for n in ast.walk(raw_node)
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in inside_ids
     }
-    assert "sdk" not in non_final_literals
-    final_literals = {
-        n.value for n in ast.walk(final) if isinstance(n, ast.Constant) and isinstance(n.value, str)
-    }
-    assert "sdk" in final_literals
+    assert "sdk" not in outside_literals
+    assert not (outside_literals & set(SURFACES))
 
 
 def test_fl5_the_two_transcriptions_agree_over_the_full_matrix(tmp_path, monkeypatch, sdk_absent):
@@ -1335,7 +1351,11 @@ def test_ar5_pin1_class_is_closed_by_census():
     `delenv("SELF_LEARN_BACKEND_WORKER")` for the same reason `test_rs2`
     itself was."""
     tests_dir = Path(__file__).parent
-    immune_modules = {"test_doctor_invocation.py", "test_provider.py"}  # autouse _clear_provider_env
+    immune_modules = {
+        "test_doctor_invocation.py",  # autouse _clear_provider_env
+        "test_provider.py",  # autouse _clear_provider_env
+        "test_settings_fold_r1.py",  # autouse _clear_registry_env
+    }
     casualties: set[str] = set()
 
     for path in sorted(tests_dir.glob("test_*.py")):

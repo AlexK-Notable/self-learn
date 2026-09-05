@@ -63,8 +63,8 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from . import config as _config
-from . import gitops
-from .primitives import chrono, yamlio
+from . import gitops, intents
+from .primitives import chrono, fsops, yamlio
 
 __all__ = [
     "HOST_KINDS",
@@ -322,7 +322,10 @@ def save_hosts(home: Path | str, hosts: Hosts) -> Path:
     data = {"skills_root": root_value, "projects": projects_value}
     buf = io.StringIO()
     _yaml().dump(data, buf)
-    path.write_text(buf.getvalue(), encoding="utf-8")
+    # Sprint 2 M-I (D6): hosts.yaml is a config-file class -- people
+    # symlink config files into dotfile repos, so follow_symlinks=True
+    # (writes through the link to its real target, never refuses it).
+    fsops.atomic_write(path, buf.getvalue(), preserve_mode=True, fsync=True, follow_symlinks=True)
     return path
 
 
@@ -758,9 +761,20 @@ def host_add(
     message = f"self-learn: host add {kind} {target}"
     # BLOCKER 4: scoped like every producer. Round 7 BLOCKER 1: and the
     # lock now opens before the FIRST mutation (save_hosts), not at stage.
+    # M-W (D7): hosts.yaml's write has NO path-shape match in
+    # `reconcile._RECONCILABLE_HOME` at all (closed by this same move —
+    # see reconcile.py) but the intent still brackets it: a crash here
+    # can catch hosts.yaml mid-write (fsops.atomic_write is itself
+    # atomic, so that specific window is already safe) OR, more to the
+    # point, between the write landing and the commit — exactly the
+    # ordinary orphan shape, just with a recorded subject that survives
+    # the round-trip instead of reconcile's generic one.
     with gitops.commit_lock(home):
+        intent = intents.begin(home, "host_add", [hosts_path(home)], message)
         yaml_path = save_hosts(home, hosts)
+        intents.complete(intent)
         _commit_or_half_written(home, [yaml_path], message)
+        intents.finish(intent)
     return HostAddResult(hosts=hosts, marker_restored=False)
 
 
@@ -867,6 +881,31 @@ def host_rebind(home: Path | str, ref: str, new_path: Path | str) -> Path:
             )
     message = f"self-learn: host rebind {old_path or ref} → {target}"
     with gitops.commit_lock(home):  # BLOCKER 4 + round 7 BLOCKER 1
+        # M-W (D7): this verb `git mv`s an ENTIRE project bucket, rewrites
+        # its meta.yaml, and rewrites hosts.yaml — a SIGKILL between any
+        # two of those leaves a staged rename `reconcile._BLOCKING_CODES`
+        # refuses to touch, exactly like collapse's rename (see
+        # `_execute_route`'s own comment). Per-FILE steps, not one
+        # directory-level step: `git mv <dir> <newdir>` is not guaranteed
+        # to be a single atomic filesystem rename for every git version/
+        # filesystem pairing, and a per-file `{path, old_sha, new_sha}`
+        # check is correct regardless of how git happened to shape the
+        # partial state a crash left behind. An UNTRACKED bucket (the
+        # `bucket.rename` fallback below) has its per-file old bytes
+        # captured inline by `intents.begin` itself (untracked content is
+        # not in git's object store for `recover()` to fall back to).
+        intent_paths: list[Path] = [hosts_path(home)]
+        if bucket is not None:
+            assert new_bucket is not None
+            if new_bucket != bucket:
+                bucket_files = [p for p in bucket.rglob("*") if p.is_file()]
+                intent_paths += bucket_files
+                intent_paths += [new_bucket / p.relative_to(bucket) for p in bucket_files]
+            intent_paths.append(new_bucket / "meta.yaml")
+        seen: set[str] = set()
+        intent_paths = [p for p in intent_paths if not (str(p) in seen or seen.add(str(p)))]
+        intent = intents.begin(home, "host_rebind", intent_paths, message)
+
         touched: list[Path] = []
         if bucket is not None:
             # `new_bucket` was reassigned to a real `Path` above, under
@@ -923,7 +962,9 @@ def host_rebind(home: Path | str, ref: str, new_path: Path | str) -> Path:
                 ),
             )
         )
+        intents.complete(intent)
         _commit_or_half_written(home, touched, message)
+        intents.finish(intent)
     return new_bucket if new_bucket is not None else target
 
 
@@ -1046,8 +1087,11 @@ def host_remove(
     )
     message = f"self-learn: host remove {target}"
     with gitops.commit_lock(home):  # BLOCKER 4 + round 7 BLOCKER 1
+        intent = intents.begin(home, "host_remove", [hosts_path(home)], message)
         yaml_path = save_hosts(home, hosts)
+        intents.complete(intent)
         _commit_or_half_written(home, [yaml_path], message)
+        intents.finish(intent)
     return hosts
 
 

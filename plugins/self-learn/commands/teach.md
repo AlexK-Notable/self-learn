@@ -111,8 +111,9 @@ that matters in all of them: *was the record written, and is it safe?*
 
 - **0** — created (or routed) **and committed**. Report the record id line
   the CLI printed. This is the only code that means "safe".
-- **2** — usage/validation error; nothing was written. Fix the flags and
-  retry.
+- **64** — usage/validation error; nothing was written. Fix the flags
+  and retry. (A22, fold r1, 2026-09-04 — was a private 2; unified with
+  the rest of the CLI's own usage-error code.)
 - **3** — the secret scan refused: something in the composed text (usually
   the quote) looks like a credential. Tell the user which span tripped it
   (the CLI printed span + rule), then either **shorten/rephrase the quote**

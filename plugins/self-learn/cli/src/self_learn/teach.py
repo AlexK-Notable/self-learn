@@ -85,18 +85,38 @@ from .scan import format_refusal, redact, scan
 __all__ = ["add_teach_parser", "infer_type", "run_teach"]
 
 EXIT_OK = 0
-EXIT_USAGE = 2
+# A22 (fold r1, 2026-09-04; corrected fold r2, 2026-09-04 -- gate r1
+# minor 1): teach's own usage-error code is the SAME code every other
+# CLI surface uses for "you typed the command wrong" -- cli.EXIT_USAGE
+# (64), not a private 2. There is no module-level `EXIT_USAGE` binding
+# here any more: `_fail()`, below, is the ONLY place in this file that
+# reads it (its own `return EXIT_USAGE`, the sole executable reference),
+# so it is imported there with a deferred `from .cli import EXIT_USAGE`
+# -- exactly the shape `selfcheck.run_selftest` uses for
+# `cli.EXIT_UNMEASURED`, and exactly the shape this file already uses
+# for `push_note` inside `_route_now`, further down. A module-scope
+# `from .cli import EXIT_USAGE` here WOULD be a genuine circular import
+# (`cli.py`'s own `from .teach import add_teach_parser, run_teach`, line
+# 74, runs before `cli.py` defines its own `EXIT_USAGE`, line 83) -- the
+# deferred import inside `_fail()` sidesteps that because `cli` has
+# always finished loading by the time `_fail()` actually runs. (fold r1
+# shipped a hand-kept `EXIT_USAGE = 64` literal here instead, reasoning
+# that "`_fail` alone has over twenty call sites" -- that conflated
+# `_fail`'s ~24 CALLERS with the ONE place that reads `EXIT_USAGE` by
+# name; the deferred import above is the fix that actually ships.)
 EXIT_SCAN = 3
 EXIT_ANALYST = 4  # analysis/route failed — record captured to pending/
 # 5, 6 and 7 are the SHARED codes, imported (not re-pinned) from the
 # modules that own the concepts — see their docstrings. teach used to
 # return its own EXIT_USAGE(2) for a bad home while all eight other
 # surfaces returned 5 (audit 2026-07-16 MINOR G); importing is what keeps
-# that unified. Round 7 BLOCKER 2: sharing the INTEGER was never enough —
-# teach documented 6 as "the record IS written", the verbs documented the
-# same 6 as "nothing was written", and both were right about themselves.
-# One code, one state fact, every surface: 6 = nothing written · 7 = the
-# write landed, its commit did not.
+# that unified, and EXIT_USAGE (above) now joins them the same way — a
+# real deferred import, not a hand-synced value. Round 7 BLOCKER 2:
+# sharing the INTEGER was never enough — teach documented 6 as "the
+# record IS written", the verbs documented the same 6 as "nothing was
+# written", and both were right about themselves. One code, one state
+# fact, every surface: 6 = nothing written · 7 = the write landed, its
+# commit did not.
 EXIT_NO_HOME = _EXIT_NO_HOME              # bad ledger home — nothing written
 EXIT_GIT_FAILED = _EXIT_GIT_FAILED        # git failed BEFORE any write
 EXIT_HALF_WRITTEN = _EXIT_HALF_WRITTEN    # record WRITTEN but not committed
@@ -229,6 +249,36 @@ def add_teach_parser(sub) -> argparse.ArgumentParser:
         "deny_message}, examples: {allow, deny}}; the CLI generates the "
         "script, validates, scans, replays, and prints the applied bytes",
     )
+    # M-R (Sprint 2 lane L7): the SAME two `route` CLI flags (`cli.py`'s
+    # `route` subcommand) — reused verbatim, not reinvented, so
+    # `_route_now`'s dict-building matches `cli.py`'s own read of them
+    # byte-for-byte (single source of the follow_up dict shape).
+    p.add_argument(
+        "--allow-empty-glob",
+        dest="allow_empty_glob",
+        action="store_true",
+        help="with --route: the sanctioned escape past a rules route's "
+        "zero-match/budget-exhausted glob refusal (A2 §5.1 / U-glob)",
+    )
+    p.add_argument(
+        "--follow-up",
+        dest="follow_up",
+        metavar="ACTION",
+        help="with --route: known-partial coverage (11 §2.1) — the "
+        "planned upgrade, on the routing block",
+    )
+    p.add_argument(
+        "--unblocks-on",
+        dest="unblocks_on",
+        metavar="GATE",
+        help="with --route --follow-up: human-readable gate label (e.g. M3)",
+    )
+    p.add_argument(
+        "--follow-up-note",
+        dest="follow_up_note",
+        metavar="TEXT",
+        help="with --route --follow-up: why the strong form matters",
+    )
     return p
 
 
@@ -236,9 +286,11 @@ def _home_gate(home) -> int | None:
     """teach's WRITE-surface home gate — the same answer every other
     surface gives (:data:`EXIT_NO_HOME`), refused before anything is
     written. ledger_ops.require_writable_home also refuses, but as a
-    LedgerOpsError that teach mapped onto its own EXIT_USAGE(2) — a code
-    that means "you typed the command wrong", not "your ledger is
-    missing" (audit 2026-07-16 MINOR G)."""
+    LedgerOpsError that teach mapped onto EXIT_USAGE (64, formerly a
+    private 2 — A22, 2026-09-04; now `cli.EXIT_USAGE` itself, imported
+    inside `_fail` — fold r2, 2026-09-04) — a code that means "you
+    typed the command wrong", not "your ledger is missing" (audit
+    2026-07-16 MINOR G)."""
     state = home_state(home)
     if state in ("missing", "not-a-repo"):
         print(f"self-learn teach: {home_state_message(state, home)}", file=sys.stderr)
@@ -247,6 +299,10 @@ def _home_gate(home) -> int | None:
 
 
 def _fail(msg: str) -> int:
+    # deferred: see EXIT_USAGE's comment above -- mirrors `push_note`'s
+    # own deferred `from .cli import` in `_route_now`, below.
+    from .cli import EXIT_USAGE
+
     print(f"self-learn teach: {msg}", file=sys.stderr)
     return EXIT_USAGE
 
@@ -722,6 +778,21 @@ def _route_now(
             # back to pending — never lost).
             hook_input = proposal
 
+    # M-R: the SAME follow_up dict shape `cli.py`'s `route` subcommand
+    # builds from its own `--follow-up`/`--unblocks-on`/`--follow-up-note`
+    # trio — reused here, not reinvented, so a follow-up opened via
+    # `teach --route` and one opened via `route --follow-up` persist
+    # byte-identically.
+    follow_up = None
+    if args.follow_up is not None:
+        follow_up = {"action": args.follow_up}
+        if args.unblocks_on is not None:
+            follow_up["unblocks_on"] = args.unblocks_on
+        if args.follow_up_note is not None:
+            follow_up["note"] = args.follow_up_note
+    elif args.unblocks_on is not None or args.follow_up_note is not None:
+        return _fail("--unblocks-on/--follow-up-note need --follow-up")
+
     snapshot = record.to_text()  # pristine copy for the never-lost fallback
     try:
         result = verbs.route_direct(
@@ -733,6 +804,8 @@ def _route_now(
             no_push=args.no_push,
             project_path=project_path,
             hook_input=hook_input,
+            follow_up=follow_up,
+            allow_empty_glob=args.allow_empty_glob,
         )
     except verbs.SecretRefusal as exc:
         print(str(exc), file=sys.stderr)

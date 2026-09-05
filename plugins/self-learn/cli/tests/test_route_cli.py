@@ -373,9 +373,18 @@ def test_teach_route_analyst_failure_captures_to_pending(
 def test_teach_route_missing_doctrine_exits_2_pre_spawn(
     env, sdk_fake_analyst, capsys, monkeypatch, tmp_path
 ):
-    # doc 13 T-H3: the doctrine ships package-relative and is normally
-    # always present. Force the "not installed" branch by pointing the
-    # package-refs resolver at an empty dir — the shim must never spawn.
+    """Node name is historical (`_exits_2`) — armor treats a rename as a
+    delete plus an add (two doors instead of one), so the name is kept
+    even though the code changed. A22 (fold r1, 2026-09-04; corrected
+    fold r2) unified teach's private usage-error code (2) with the
+    CLI's own shared `EXIT_USAGE` (64, imported inside `_fail()` —
+    there is no module-level `teach.EXIT_USAGE` any more); this is that
+    exit family, so the expected code below moved from 2 to 64.
+
+    doc 13 T-H3: the doctrine ships package-relative and is normally
+    always present. Force the "not installed" branch by pointing the
+    package-refs resolver at an empty dir — the shim must never spawn.
+    """
     empty_refs = tmp_path / "empty-refs"
     empty_refs.mkdir()
     monkeypatch.setattr(
@@ -383,7 +392,7 @@ def test_teach_route_missing_doctrine_exits_2_pre_spawn(
     )
     rc = cli.main(TEACH_ARGS + ["--route"])
     err = capsys.readouterr().err
-    assert rc == 2
+    assert rc == 64
     assert "routing doctrine not installed — T10" in err
     assert not sdk_fake_analyst["log"].exists()  # pre-spawn
     assert env.pending_files() == [] and env.resolved_files() == []
@@ -664,6 +673,39 @@ def test_analyst_analyze_cli_owned_fields_win(env, sdk_fake_analyst):
     assert proposal["model"] == DEFAULT_ANALYST_MODEL
     assert proposal["record_sha"] == sha_anchor(record.body)
     assert proposal["analyzed_at"] != "1999-01-01T00:00:00Z"
+
+
+def test_M_S_fold_r2_analyst_analyze_model_field_reads_models_analyst_config(
+    env, sdk_fake_analyst, monkeypatch
+):
+    """M-S (S-58 code-gate fold r2, gap-1): the analyst proposal's `model`
+    field must reflect `models.analyst: X` in config.yaml even with no env
+    var set. `test_analyst_analyze_cli_owned_fields_win` above pins
+    `proposal["model"] == DEFAULT_ANALYST_MODEL`, but leaves config.yaml
+    unset — reverting `analyze()`'s stamp
+    (`model = provider.model_for("analyst", home=home)`) back to the old
+    `model = _model()` (bare env-or-default, blind to config.yaml) would
+    still pass that test, since DEFAULT_ANALYST_MODEL is what both
+    functions return absent config/env. This test sets a config.yaml value
+    that neither `_model()` nor DEFAULT_ANALYST_MODEL would ever produce,
+    closing the gap: the miner side of this same fold-r1 fix already has
+    an analogous witness
+    (`test_miner.py::test_M_S_fold_r1_mine_record_model_field_reads_models_miner_config`)
+    — this is the analyst side, completing coverage of both former
+    `_model()`-style stamp sites."""
+    monkeypatch.delenv("SELF_LEARN_ANALYST_MODEL", raising=False)
+    (env.home / "config.yaml").write_text(
+        "models:\n  analyst: CONFIG-ANALYST-MODEL-ID\n", encoding="utf-8"
+    )
+    sdk_fake_analyst["out"].write_text(
+        "destination: skill-md\n"
+        "alternates: [claude-md]\n"
+        "rationale: deterministic guard beats advisory text\n"
+        + _skill_gates_yaml(env),
+        encoding="utf-8",
+    )
+    proposal = analyst.analyze(env.home, make_behavior())
+    assert proposal["model"] == "CONFIG-ANALYST-MODEL-ID"
 
 
 def _script_probe_body(env, destination: str) -> str:

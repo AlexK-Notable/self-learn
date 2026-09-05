@@ -22,6 +22,7 @@ in CI).
 from __future__ import annotations
 
 import ast
+import copy
 import dataclasses
 import importlib
 import inspect
@@ -857,7 +858,7 @@ class TestPlain8SelftestDriftFourVerdicts:
         record_path.unlink()  # entry absent, region still present on disk
 
         ok, message = selfcheck._check_drift(env.ledger)
-        assert ok is True  # never gates the boolean
+        assert ok is selfcheck.Verdict.PASS  # never gates the boolean
         assert "no compile record yet" in message
         assert "unknown provenance" in message
 
@@ -866,7 +867,7 @@ class TestPlain8SelftestDriftFourVerdicts:
 
         env, plain_host = self._routed(tmp_path, "lrn-00000013")
         ok, message = selfcheck._check_drift(env.ledger)
-        assert ok is True
+        assert ok is selfcheck.Verdict.PASS
         assert "matches its compile record (clean)" in message
 
     def test_stale_renders_matches_the_priors_observation(self, tmp_path):
@@ -904,7 +905,7 @@ class TestPlain8SelftestDriftFourVerdicts:
         )
 
         ok, message = selfcheck._check_drift(env.ledger)
-        assert ok is True  # no OTHER check fires — isolated
+        assert ok is selfcheck.Verdict.PASS  # no OTHER check fires — isolated
         assert "matches the compile record's prior observation (stale)" in message
         assert "lrn-00000014" in message
 
@@ -922,7 +923,7 @@ class TestPlain8SelftestDriftFourVerdicts:
         )
 
         ok, message = selfcheck._check_drift(env.ledger)
-        assert ok is False  # THE one verdict that gates the boolean
+        assert ok is selfcheck.Verdict.FAIL  # THE one verdict that gates the boolean
         assert "hand-edited outside self-learn (edited)" in message
 
     def test_all_four_strings_are_pairwise_distinct(self, tmp_path):
@@ -1662,6 +1663,22 @@ class TestD3RegionResyncCoverageWalker:
     proof of anything.
     """
 
+    #: M-R (2026-09-04): `route`/`route_direct` no longer hold the write-
+    #: delegating calls or the resync calls this class checks for
+    #: directly -- they moved into the shared `_execute_route` core both
+    #: adapters now call, with the reference/pointer/script resyncs
+    #: further extracted into `_resync_three_regions` and the retirement
+    #: compile-record + script-delete resync into
+    #: `_complete_old_retirement` (both called FROM `_execute_route`).
+    #: `_find_func` below merges all three bodies into a synthetic node
+    #: for `route`/`route_direct` ONLY -- every other verb this class
+    #: parametrizes over (`supersede`, `graduate`, `recompile`) still
+    #: carries its own calls directly, unaffected by this move.
+    _MERGE_FOR = {
+        "route": ("_execute_route", "_resync_three_regions", "_complete_old_retirement"),
+        "route_direct": ("_execute_route", "_resync_three_regions", "_complete_old_retirement"),
+    }
+
     @staticmethod
     def _verbs_tree() -> ast.Module:
         src = (
@@ -1670,12 +1687,55 @@ class TestD3RegionResyncCoverageWalker:
         ).read_text(encoding="utf-8")
         return ast.parse(src)
 
-    @staticmethod
-    def _find_func(tree: ast.Module, name: str) -> ast.FunctionDef:
+    @classmethod
+    def _find_func(cls, tree: ast.Module, name: str) -> ast.FunctionDef:
+        found: dict[str, ast.FunctionDef] = {}
+        wanted = {name, *cls._MERGE_FOR.get(name, ())}
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == name:
-                return node
-        raise AssertionError(f"verbs.py defines no function {name!r}")
+            if isinstance(node, ast.FunctionDef) and node.name in wanted:
+                found[node.name] = node
+        if name not in found:
+            raise AssertionError(f"verbs.py defines no function {name!r}")
+        extra_names = cls._MERGE_FOR.get(name, ())
+        if not extra_names:
+            return found[name]
+        missing = [n for n in extra_names if n not in found]
+        assert not missing, (
+            f"{name}'s merge set names {missing} but verbs.py defines no "
+            "such function(s) -- _MERGE_FOR is stale against the shipped "
+            "source"
+        )
+        # Positive control (measured gap, code gate self-review before
+        # this commit): merging a helper's body in BY NAME alone proves
+        # nothing about whether it is still reached -- severing the
+        # `_resync_three_regions(...)` CALL inside `_execute_route`
+        # while leaving the helper defined keeps every test below GREEN
+        # regardless, because its `region_kind` literals are still
+        # concatenated into the merged body. That is exactly the
+        # "FUTURE regression that deletes a resync call" this class's
+        # own docstring exists to catch. Checked link-by-link: each
+        # `extra`, in `_MERGE_FOR` order, must be CALLED somewhere in
+        # the chain already confirmed reachable (`found[name]` itself,
+        # or an earlier `extra`) before its body is merged in.
+        reachable = [found[name]]
+        for extra in extra_names:
+            if not any(cls._calls_named(caller, (extra,)) for caller in reachable):
+                raise AssertionError(
+                    f"{name}'s merge set names {extra!r}, but nothing "
+                    f"already in the chain ({name!r} plus any prior "
+                    "extras) calls it -- merging its body in regardless "
+                    "would make this walker blind to a regression that "
+                    "severs the call while leaving the callee defined"
+                )
+            reachable.append(found[extra])
+        # shallow copy: only `.body` is replaced (the concatenation), so
+        # `ast.walk` sees every original node -- name/args/decorators/
+        # line numbers all ride along from the real `name` FunctionDef.
+        merged = copy.copy(found[name])
+        merged.body = list(found[name].body) + [
+            stmt for extra in extra_names for stmt in found[extra].body
+        ]
+        return merged
 
     @staticmethod
     def _callee_name(call: ast.Call) -> str | None:
@@ -2370,7 +2430,7 @@ class TestN8SelfcheckHonoursUserClaudeMdOverride:
 
         monkeypatch.setattr(selfcheck, "_managed_host_for", spy)
         ok, reason = selfcheck._check_drift(env.ledger, user_claude_md=override)
-        assert ok, reason
+        assert ok is selfcheck.Verdict.PASS, reason
         assert captured, "the drift loop never reached _managed_host_for at all"
         assert all(c == override for c in captured), (
             f"_check_drift did not thread its own user_claude_md kwarg "
@@ -4270,7 +4330,7 @@ class TestM3Rec5RowSevenSelfAdopt:
         shutil.rmtree(env.ledger / "compiled")
 
         ok, reason = selfcheck._check_drift(env.ledger)
-        assert ok is True
+        assert ok is selfcheck.Verdict.PASS
         assert (
             "1 target(s) carry self-learn markers with no compile record"
             in reason
@@ -4322,6 +4382,22 @@ class TestRec12HostLockDiscipline:
         proof that this no longer happens.
     """
 
+    #: M-R (2026-09-04): `route`/`route_direct` no longer open the host
+    #: lock (or the `_ledger_write` it pairs with, or the sensitive
+    #: reads/writes legs (c)/(d)/(e) check) in their OWN bodies — that
+    #: whole `with _ledger_write(home), gitops.host_lock(...):` block
+    #: lives in the shared `_execute_route` core both adapters now call.
+    #: ONE hop only: unlike `TestD3RegionResyncCoverageWalker` above,
+    #: this class's leg (c) uses source LINE NUMBERS for containment
+    #: (`_inside_any`) — `_resync_three_regions`/`_complete_old_
+    #: retirement` are defined well ABOVE `_execute_route`'s own `with`
+    #: span, so merging them in would place their (correctly-locked-at-
+    #: runtime) calls at line numbers that read as OUTSIDE the `with` by
+    #: this walker's line-range test, producing a false leg-(c) failure.
+    #: `_execute_route` alone is where the `with` itself lives, so one
+    #: hop is exactly what every leg here needs.
+    _MERGE_FOR = {"route": ("_execute_route",), "route_direct": ("_execute_route",)}
+
     @staticmethod
     def _verbs_tree() -> ast.Module:
         src = (
@@ -4330,12 +4406,47 @@ class TestRec12HostLockDiscipline:
         ).read_text(encoding="utf-8")
         return ast.parse(src)
 
-    @staticmethod
-    def _find_func(tree: ast.Module, name: str) -> ast.FunctionDef:
+    @classmethod
+    def _find_func(cls, tree: ast.Module, name: str) -> ast.FunctionDef:
+        found: dict[str, ast.FunctionDef] = {}
+        wanted = {name, *cls._MERGE_FOR.get(name, ())}
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == name:
-                return node
-        raise AssertionError(f"verbs.py defines no function {name!r}")
+            if isinstance(node, ast.FunctionDef) and node.name in wanted:
+                found[node.name] = node
+        if name not in found:
+            raise AssertionError(f"verbs.py defines no function {name!r}")
+        extra_names = cls._MERGE_FOR.get(name, ())
+        if not extra_names:
+            return found[name]
+        missing = [n for n in extra_names if n not in found]
+        assert not missing, (
+            f"{name}'s merge set names {missing} but verbs.py defines no "
+            "such function(s) -- _MERGE_FOR is stale against the shipped "
+            "source"
+        )
+        # Positive control (same measured gap as
+        # `TestD3RegionResyncCoverageWalker._find_func`, one hop here):
+        # `found[name]` must actually CALL `extra` before its body is
+        # merged in, or a regression that severs `route`'s/
+        # `route_direct`'s own call into `_execute_route` would leave
+        # every leg below silently checking a body no longer reachable
+        # at runtime.
+        for extra in extra_names:
+            assert cls._calls_named(found[name], (extra,)), (
+                f"{name}'s merge set names {extra!r}, but {name}'s own "
+                f"body never calls it -- merging its body in regardless "
+                "would make this walker blind to a regression that "
+                "severs the call while leaving the callee defined"
+            )
+        # shallow copy: only `.body` is replaced (the concatenation), so
+        # `ast.walk` sees every original node, and every node's own
+        # `lineno` rides along unchanged from the real source -- leg (c)'s
+        # line-range containment check depends on that.
+        merged = copy.copy(found[name])
+        merged.body = list(found[name].body) + [
+            stmt for extra in extra_names for stmt in found[extra].body
+        ]
+        return merged
 
     @staticmethod
     def _is_host_lock_call(expr: ast.AST) -> bool:

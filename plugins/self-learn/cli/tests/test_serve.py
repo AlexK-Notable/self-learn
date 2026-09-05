@@ -897,6 +897,38 @@ def _run_install_sh_with_logging_shim(
     return result, fake_home, systemctl_log
 
 
+# M-U fold r1 (Major 2, orchestrator-authorized edit to this one test node):
+# a substring check for "enable" also matches "is-enabled" -- once
+# install.sh's read-only is-enabled probe became unconditional, that
+# substring collision would make PORT2's own positive control trip on a
+# call that never touched enable/disable, AND make its negative control
+# pass vacuously (the log always contains "enable" via "is-enabled" now,
+# whether or not the injected real `enable` call is present). Checked by
+# exact verb token instead: only "daemon-reload" and "is-enabled" may
+# ever appear as the EXECUTED systemctl verb.
+_PORT2_ALLOWED_SYSTEMCTL_VERBS = {"daemon-reload", "is-enabled"}
+
+# M-U fold r2 (minor A): a logged call with no `--user` (or `--user` as
+# its last token) must not be silently skipped -- an unparseable call
+# would otherwise read exactly like a call that never happened. It emits
+# this sentinel instead, which can never be in
+# _PORT2_ALLOWED_SYSTEMCTL_VERBS, so it always lands in `disallowed`.
+_PORT2_NO_USER_FLAG_SENTINEL = "<missing --user>"
+
+
+def _port2_systemctl_verbs(calls: list[str]) -> list[str]:
+    verbs = []
+    for line in calls:
+        tokens = line.split()
+        verb = None
+        if "--user" in tokens:
+            idx = tokens.index("--user")
+            if idx + 1 < len(tokens):
+                verb = tokens[idx + 1]
+        verbs.append(verb if verb is not None else _PORT2_NO_USER_FLAG_SENTINEL)
+    return verbs
+
+
 def test_port2_install_sh_links_the_host_unit_without_enabling_it(tmp_path):
     """`PORT2`."""
     repo_root = Path(__file__).resolve().parents[4]
@@ -917,9 +949,15 @@ def test_port2_install_sh_links_the_host_unit_without_enabling_it(tmp_path):
     # script makes for the host unit.
     calls = systemctl_log.read_text().splitlines() if systemctl_log.is_file() else []
     assert calls, "the systemctl shim was never invoked at all -- daemon-reload should have called it"
-    assert not any("enable" in line for line in calls), (
-        f"install.sh invoked `systemctl ... enable` for real: {calls}"
-    )
+    verbs = _port2_systemctl_verbs(calls)
+    assert verbs, calls
+    disallowed = [v for v in verbs if v not in _PORT2_ALLOWED_SYSTEMCTL_VERBS]
+    assert not disallowed, f"install.sh invoked disallowed systemctl verb(s) {disallowed}: {calls}"
+    # M-U fold r1 (the probe is now UNCONDITIONAL, as pinned): this run
+    # never passed --legacy-miner and never pre-seeded a miner-timer
+    # symlink, so a stray is-enabled call here proves the probe fires
+    # regardless -- not merely when a miner unit happens to be linked.
+    assert "is-enabled" in verbs, calls
 
 
 def test_port2_positive_control_xdg_config_home_governs_the_link_target(tmp_path):
@@ -992,10 +1030,12 @@ def test_port2_negative_control_enabling_the_unit_is_caught(tmp_path):
     assert result.returncode == 0, (result.stdout, result.stderr)
 
     calls = systemctl_log.read_text().splitlines() if systemctl_log.is_file() else []
-    assert any("enable" in line for line in calls), (
-        "the mutated install.sh should have actually invoked `enable` -- "
-        "this positive control itself is broken if it did not"
+    verbs = _port2_systemctl_verbs(calls)
+    assert "enable" in verbs, (
+        f"the mutated install.sh should have actually invoked `enable` -- "
+        f"this negative control itself is broken if it did not: {calls}"
     )
+    assert "enable" not in _PORT2_ALLOWED_SYSTEMCTL_VERBS
 
 
 # ===================================================================== #

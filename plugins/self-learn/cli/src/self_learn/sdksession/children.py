@@ -10,8 +10,8 @@ takes `pid_alive` and `messages` as parameters too, for the same reason
 `session_key` -- when `session_key` is `None` the filename SHAPE is
 byte-identical to the pre-`U-engine` single-sidecar-per-surface layout,
 which is what keeps `invocation_sdk/lifecycle.py`'s thin wrappers
-(called with no `session_key`, matching the armor-pinned tests'
-existing 1/3-arg call shapes) behaviourally unchanged. A caller that
+(called with an explicit `session_key=None`, matching the armor-pinned
+tests' existing 1/3-arg call shapes) behaviourally unchanged. A caller that
 DOES pass distinct `session_key`s per session (a future multi-session
 consumer) gets `MS3`'s proven property: two live sessions on one
 surface produce two distinct sidecar files, and `sweep_orphans` globs

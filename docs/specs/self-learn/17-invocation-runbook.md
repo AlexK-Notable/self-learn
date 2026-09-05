@@ -142,7 +142,7 @@ large gap is worth investigating on its own terms now.
 surface prints `backend=<value> (<source>)`, where `<value>` is `sdk` or
 `REFUSED (cli retired)` — nothing else is possible post-U-cleanup. The
 source is the rung that answered: `env:SELF_LEARN_BACKEND_ANALYST`,
-`config:backend_worker`, `default`, and so on.
+`config:invocation.backend_worker`, `default`, and so on.
 
 > **The tell for a rejected UNKNOWN value: a source that names an env
 > var or a config key, next to a value of `sdk` you did not ask for.**
@@ -628,8 +628,8 @@ dropped: a trap that stops mattering is still worth one line saying so).*
    anything dangerous. Given `backend_analyst: ""` alongside `backend:
    sdk`, the analyst resolves to `sdk` via its own per-surface default
    (source `default`), same value as the other three surfaces (source
-   `config:backend`) — a provenance difference in the doctor's `source`
-   column, not a behavior difference. Still delete keys you do not want
+   `config:invocation.backend`) — a provenance difference in the doctor's
+   `source` column, not a behavior difference. Still delete keys you do not want
    rather than blank them; the doctor cannot tell you which one you did.
 5. **RETIRED — see §4.** A `provider.bedrock.models.*` entry used to be
    inert on a surface still resolved to `cli`; there is no such surface

@@ -36,7 +36,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
-from self_learn.worker import cache_dir
+from self_learn.primitives import fsops
 
 __all__ = [
     "CSP_HEADER_VALUE",
@@ -77,9 +77,13 @@ def mint_token() -> str:
 def resolve_token_path() -> Path:
     """The token file's resolved path — primary
     ``$XDG_RUNTIME_DIR/self-learn/ui-token``; X-8/X-12 fallback to
-    ``<cache>/ui-token`` (imported :func:`self_learn.worker.cache_dir` —
-    the SAME derivation :mod:`self_learn_ui.uilog` uses, never
-    reimplemented) when ``XDG_RUNTIME_DIR`` is unset.
+    ``<cache>/ui-token`` (:func:`self_learn.serve.cache_dir_readonly` —
+    the SAME path formula :func:`self_learn.worker.cache_dir` and
+    :mod:`self_learn_ui.uilog` use, never reimplemented, but WITHOUT
+    their ``mkdir``/migration side effects: D8 gate r1 finding 1 — this
+    is a path *read*, and mkdir-as-a-side-effect-of-reading is exactly
+    what the D8 ``paths`` verb (:mod:`self_learn_ui.cli`) pins as never
+    happening) when ``XDG_RUNTIME_DIR`` is unset.
 
     Reads real process env, like :func:`self_learn_ui.uilog.ui_log_path`
     and :func:`self_learn.worker.cache_dir` itself both do — the
@@ -88,22 +92,33 @@ def resolve_token_path() -> Path:
     :mod:`self_learn_ui.ledger`'s ``_invoke_json``, which DOES spawn a
     subprocess and therefore DOES take an explicit env). Tests redirect
     via ``monkeypatch.setenv`` (10 §0 rules 7/8; the same pattern
-    ``tests/conftest.py``'s ``redirected_xdg`` fixture already uses)."""
+    ``tests/conftest.py``'s ``redirected_xdg`` fixture already uses).
+
+    ``cache_dir_readonly`` is imported function-local (the shape
+    :func:`self_learn_ui.cli._paths` already uses), not at module level,
+    so this ~50-line security surface does not import the systemd-host
+    module (:mod:`self_learn.serve`) at import time."""
     import os
+
+    from self_learn.serve import cache_dir_readonly
 
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
     if runtime_dir:
         return Path(runtime_dir) / "self-learn" / TOKEN_FILE_NAME
-    return cache_dir() / TOKEN_FILE_NAME
+    return cache_dir_readonly() / TOKEN_FILE_NAME
 
 
 def write_token_file(token: str) -> Path:
     """Write *token* 0600 to :func:`resolve_token_path`'s location,
-    creating parent dirs as needed. Returns the path written."""
+    creating parent dirs as needed. Returns the path written.
+
+    Sprint 2 M-I (D6): the bearer token is the secret-file class --
+    :func:`self_learn.primitives.fsops.private_write` (0600 always,
+    symlinks refused, fsync'd), not the general :func:`fsops.
+    atomic_write` every ledger content write below uses."""
     path = resolve_token_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(token, encoding="utf-8")
-    path.chmod(0o600)
+    fsops.private_write(path, token)
     return path
 
 

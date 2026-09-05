@@ -35,7 +35,7 @@ from self_learn.ledger_ops import (
     create_record,
     status_infos,
 )
-from self_learn.selfcheck import _check_drift, run_selftest
+from self_learn.selfcheck import Verdict, _check_drift, run_selftest
 from support import (
     SKILL_MD_SEED,
     commit_all,
@@ -658,7 +658,7 @@ class TestDriftAndRecompile:
 
         # drift check FAILS, naming the repair
         ok, reason = _check_drift(env.ledger)
-        assert not ok
+        assert ok is Verdict.FAIL
         assert "self-learn recompile" in reason
 
         # repair the target, then recompile closes the drift
@@ -671,7 +671,7 @@ class TestDriftAndRecompile:
         )
         assert f"({record.id})" in env.skill_md.read_text(encoding="utf-8")
         ok, _reason = _check_drift(env.ledger)
-        assert ok
+        assert ok is Verdict.PASS
 
     def test_recompile_is_idempotent(self, env):
         record = make_behavior(scope="skill:s")
@@ -688,10 +688,14 @@ class TestDriftAndRecompile:
         bare = tmp_path / "bare-ledger"
         init_repo(bare)
         ok, reason = _check_drift(bare)
-        assert ok
+        assert ok is Verdict.UNMEASURED
         assert "hosts.yaml absent" in reason
 
     def test_selftest_green_on_fresh_env(self, env, monkeypatch, capsys):
+        # fold r1, 2026-09-04: no worker placeholder row -- a fresh,
+        # fully healthy env (all 9 real checks PASS) exits 0, matching
+        # the test's own name, which the pre-fold M-K exit-9 behavior
+        # never actually satisfied.
         monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
         assert run_selftest(env.ledger) == 0
         out = capsys.readouterr().out

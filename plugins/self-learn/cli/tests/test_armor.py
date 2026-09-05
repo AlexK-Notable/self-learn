@@ -116,7 +116,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "271250f"
+ANCHOR = "3fd2279"
 
 
 # ===================================================================== #
@@ -284,7 +284,32 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # VACUOUS by this landing's refusal -- U-xdist landed, so the widened
     # lockfile bound IS the anchor content and nothing is owed.
     "test_invocation_sdk.py": Behaviour(
-        nodes=139, dump_sha="220caae2560deffa78287813a855ca32d13ff069652a23afb7c5d937ae69e608"
+        nodes=139, dump_sha="220caae2560deffa78287813a855ca32d13ff069652a23afb7c5d937ae69e608",
+        edited={
+            "func:test_pl3_filesystem_writes_are_enumerated_with_an_exact_count": (
+                "2026-09-04 Sprint 2 M-V (PLAN-remediation v2 §2, decision D3; "
+                "u-engine-shared-sdk-core-spec §4.2 / §4.6 F-1/F-2), commit 1737499: "
+                "invocation_sdk now delegates sidecar and event-log I/O to sdksession, "
+                "so the test is retargeted from 'exactly 5 direct write calls' to "
+                "'zero direct I/O anywhere under invocation_sdk/', with a fail-closed "
+                "scan count and a synthetic positive control. Node name kept for "
+                "armor's sake (a rename is two doors). Gate M-V r1/r2 CLEAN."
+            ),
+        },
+        missing={
+            "assign:_FS_CALLS": (
+                "2026-09-04 Sprint 2 M-V (PLAN-remediation v2 §2, D3), commit 1737499: "
+                "the scanner's call-name set moved into the retargeted test body "
+                "(it also gained write_bytes/rename/replace); the module-level "
+                "constant had no other reader. Gate M-V r1 ruled the deletion "
+                "justified (three doors either way)."
+            ),
+            "assign:_PL3_ALLOWED": (
+                "2026-09-04 Sprint 2 M-V (PLAN-remediation v2 §2, D3), commit 1737499: "
+                "the allowlist of five permitted write sites is dead once the target "
+                "is zero direct I/O; deleted rather than kept as an unused literal."
+            ),
+        },
     ),
     "test_worker.py": Behaviour(
         nodes=80, dump_sha="16e45a867ecebd6471586640f1f52417427c235d04777e74ec4f34c14506627c"
@@ -293,25 +318,20 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         nodes=85, dump_sha="6bd9c4787b4d5a2f2887548228694edf88d76f82596ce4f4c2ed9d2598e1730d"
     ),
     "test_attrib.py": Behaviour(
-        nodes=68, dump_sha="124dcc0dd69f9868195289eed661c5ad3d7d6569dc0fe41558d5fd54e8825c0d",
-        edited={
-            "func:test_in8_interrupted_install_is_recovered_not_stalled_forever": (
-                "2026-09-04 Sprint 1 integration, PLAN-remediation v2 §2 (M-E, M-T), "
-                "commit 9e51b83: part (e)'s `os.replace` fake is scoped to the "
-                "install copy (destination under the proposals dir) instead of "
-                "every rename in the process. The global fake was surgical only "
-                "while the install copy was the sole rename on worker.run's path; "
-                "the sprint's two new atomic writes (M-T's pid window, M-E's "
-                "sentinel publish) tripped it first and run() never reached the "
-                "copy the part simulates crashing. The behaviour under test -- "
-                "temp written, destination untouched, next run sweeps and "
-                "installs -- is unchanged; controls: unscoped fake fails via "
-                "sentinel.py, fake removed fails the pre-install asserts."
-            ),
-        },
+        nodes=68, dump_sha="9ebb1c1e42628b325b968bc8df082891f3d79946dd8a115b5b28e8f6898831c7",
     ),
     "test_route_cli.py": Behaviour(
-        nodes=58, dump_sha="5bb83e2da3fe5e85d8e1c261e316c20f7116de4530d34d993a86902caba21f48"
+        nodes=58, dump_sha="5bb83e2da3fe5e85d8e1c261e316c20f7116de4530d34d993a86902caba21f48",
+        edited={
+            "func:test_teach_route_missing_doctrine_exits_2_pre_spawn": (
+                "2026-09-04 Sprint 2 M-K / disposition A22 (PLAN-remediation v2 §2, "
+                "decision D2), commit 2a02431: teach's usage exit is 64 like the "
+                "rest of the CLI (it was 2, colliding with proposal validate's "
+                "scan-hit code); the assertion moves 2 -> 64. The historical node "
+                "name is kept on purpose (a rename is two doors). Gate M-K r1/r2 "
+                "census: this node only, 58 -> 58."
+            ),
+        },
     ),
     "test_composer.py": Behaviour(
         nodes=58, dump_sha="3c920c0066c5f9db54b2a243a4714d331822cba6e82c6e029d8add6c6f4c7a5f"
@@ -787,16 +807,16 @@ MEASURED: dict[str, Measured] = {
     "BEH7.dump_prefixes": Measured(
         value=(
             "eb90005324f7", "220caae2560d", "16e45a867ece", "6bd9c4787b4d",
-            "124dcc0dd69f", "5bb83e2da3fe", "3c920c0066c5", "4fbcee5f5481",
+            "9ebb1c1e4262", "5bb83e2da3fe", "3c920c0066c5", "4fbcee5f5481",
         ),
         scope=_SCOPE_ANCHOR,
         reason=(
-            "2026-09-01 §4.5/§2.10, transcribed at ANCHOR 2d7db74 from this "
-            "module's own STALE refusal (U-browserfail landing): the first 12 "
+            "2026-09-05 §4.5/§2.10, transcribed at ANCHOR 3fd2279 from this "
+            "module's own STALE refusal (Sprint 2 landing): the first 12 "
             "characters of each file's normalized-dump sha256, in "
-            "BEHAVIOUR_KEYS order. test_repair.py's prefix moved because "
-            "U-settings (0aadcd1) edited two of its pins and is now at or "
-            "behind the anchor; previously transcribed at a768696."
+            "BEHAVIOUR_KEYS order. test_attrib.py's prefix moved because "
+            "Sprint 1's IN8 edit (9e51b83) is now at or behind the anchor; "
+            "previously transcribed at 2d7db74."
         ),
         measure=_measure_dump_prefixes,
     ),
@@ -837,55 +857,53 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_export_total,
     ),
     "EXM3.census_missing": Measured(
-        value=0,
+        value=2,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-08-30 §4.7 row 12, transcribed at ANCHOR a768696 from this "
-            "module's own STALE refusal: anchor nodes absent at HEAD, "
-            "summed over every Behaviour file. 14 -> 0 because u-armor's "
-            "DS1 retirement is now at or behind the anchor: those nodes no "
-            "longer exist anchor-side, so nothing is absent at HEAD and the "
-            "14 `missing` doors became VACUOUS and were dropped with it."
+            "2026-09-04, transcribed at ANCHOR 271250f from this module's own "
+            "STALE refusal (Sprint 2 integration, commits 1737499 + 2a02431): 0 -> 2. "
+            "test_invocation_sdk.py's `assign:_FS_CALLS` and `assign:_PL3_ALLOWED` "
+            "are genuinely absent at HEAD (M-V, PLAN-remediation v2 §2, D3) and carry "
+            "their dated `missing` doors in ARMOR above. Previous value 0 "
+            "(2026-08-30, the fourteen DS1-era doors having gone VACUOUS)."
         ),
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=1,
+        value=2,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-09-04, transcribed at ANCHOR 1f8d485 from this module's own "
-            "STALE refusal (Sprint 1 integration, commit 9e51b83): 0 -> 1. "
-            "test_attrib.py's `func:test_in8_...` is genuinely edited relative "
-            "to the anchor (part (e)'s rename fake scoped to the install copy, "
-            "PLAN-remediation v2 §2 M-E/M-T) and carries its dated `edited` "
-            "door in ARMOR above. Previous value 0 (2026-09-01, U-browserfail "
-            "landing at ANCHOR 2d7db74: the two test_repair.py doors had gone "
-            "VACUOUS)."
+            "2026-09-05, transcribed at ANCHOR 3fd2279 from this module's own "
+            "STALE refusal (Sprint 2 landing): 3 -> 2. test_attrib.py's IN8 door "
+            "(Sprint 1, 9e51b83) is vacuous at this anchor and dropped; two nodes "
+            "remain edited relative to the anchor: test_invocation_sdk.py `func:test_pl3_...` "
+            "(M-V, 1737499) and test_route_cli.py `func:test_teach_route_missing_"
+            "doctrine_exits_2_pre_spawn` (M-K/A22, 2a02431), PLAN-remediation v2 §2; "
+            "each carries its dated `edited` door in ARMOR above."
         ),
         measure=_measure_census_edited,
     ),
     "BEH1.control_missing": Measured(
-        value=66,
+        value=68,
         scope=_SCOPE_HEAD,
         reason=(
-            "2026-08-28 §4.7 row 12, measured by hand against the RETIRED "
-            "anchor c3b48e7 (never advanced): the not-vacuous control for "
-            "BEH1 and EXM3. Re-measured from the spec-gate-era 56 by "
-            "u-armor's own test_u_fake.py deletions."
+            "2026-09-04 Sprint 2 integration, per §5.1's STALE remediation: 66 -> 68 "
+            "against the RETIRED control anchor c3b48e7 (HEAD-scoped; moves whenever "
+            "HEAD does): the two test_invocation_sdk.py constants M-V deleted "
+            "(1737499) are absent at HEAD and present at c3b48e7. Previously 66 "
+            "(2026-08-28 §4.7 row 12, u-armor's own test_u_fake.py deletions)."
         ),
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=185,
+        value=186,
         scope=_SCOPE_HEAD,
         reason=(
-            "2026-08-30 U-xdist re-gated merge-up fold, per §5.1's STALE "
-            "remediation: 184 -> 185 at ANCHOR cf1e32d (HEAD-scoped, "
-            "against the fixed retired anchor c3b48e7 -- moves whenever "
-            "HEAD does, independent of the live ANCHOR), printed by this "
-            "module's own --remeasure refusal. Same cause as "
-            "EXM3.census_edited above: RS8's node, genuinely edited "
-            "relative to c3b48e7, exempted the same way."
+            "2026-09-04 Sprint 2 integration, per §5.1's STALE remediation: 185 -> 186 "
+            "against the RETIRED control anchor c3b48e7 (HEAD-scoped): the M-K/A22 "
+            "teach node (2a02431) is edited relative to c3b48e7; the M-V test_pl3 node "
+            "already differed from c3b48e7 and moves nothing. Previously 185 "
+            "(2026-08-30 U-xdist fold at ANCHOR cf1e32d)."
         ),
         measure=_measure_control_edited,
     ),

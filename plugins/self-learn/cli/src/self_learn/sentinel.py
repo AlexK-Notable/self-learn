@@ -118,7 +118,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from .primitives import chrono
+from .primitives import chrono, fsops
 
 __all__ = [
     "SENTINEL_TTL_SECONDS",
@@ -335,19 +335,25 @@ def hold() -> SentinelHold:
             return SentinelHold(path=path, owned=False)
         token = _new_token()
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.parent / f".{path.name}.{os.getpid()}.{token}.tmp"
-        try:
-            tmp.write_text(
-                sentinel_line() + f"{_TOKEN_PREFIX}{token}\n", encoding="utf-8"
-            )
-            os.replace(tmp, path)
-        except OSError:
-            # fold r1 (n1): never leave an orphaned temp file behind a
-            # failed publish (a full disk, a permission change mid-write,
-            # a cross-device rename) — best-effort cleanup, then let the
-            # caller see the real error rather than swallowing it.
-            tmp.unlink(missing_ok=True)
-            raise
+        # Sprint 2 M-I: was this function's own hand-rolled temp + write
+        # + replace + cleanup-on-exception -- `fsops.atomic_write`'s
+        # default contract (unlink the temp on ANY exception, then
+        # re-raise) is exactly the fold-r1 (n1) guarantee the comment it
+        # replaces used to describe by hand. `fsync=False`: unchanged
+        # durability, this publish never fsync'd before this move either.
+        # `preserve_mode=False`: the OLD code always wrote a brand-new
+        # temp file with no explicit chmod, so every republish already
+        # got a fresh umask-derived mode regardless of what the PREVIOUS
+        # sentinel file's mode was -- `preserve_mode=True` (the general
+        # default) would be a new, unrequested behaviour (silently
+        # carrying forward a hand-chmod'd sentinel's mode across a TTL
+        # takeover) that D6 does not ask for here.
+        fsops.atomic_write(
+            path,
+            sentinel_line() + f"{_TOKEN_PREFIX}{token}\n",
+            fsync=False,
+            preserve_mode=False,
+        )
         return SentinelHold(path=path, owned=True, token=token)
 
 

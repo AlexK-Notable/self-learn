@@ -205,14 +205,14 @@ def test_dc4_sdk_row_injected_importer(monkeypatch):
     def _match_importer():
         return fake
 
-    def _operative_match():
+    def _operative_match(home=None):
         return "2.1.999", ""
 
     monkeypatch.setattr(provider, "_operative_cli_version", _operative_match)
     row = provider._sdk_row(importer=_match_importer)
     assert row.verdict == "PASS"
 
-    def _operative_differ():
+    def _operative_differ(home=None):
         return "2.1.212", ""
 
     monkeypatch.setattr(provider, "_operative_cli_version", _operative_differ)
@@ -585,12 +585,12 @@ def test_dc11_selftest_row(monkeypatch, capsys, _home, tmp_path):
     rows = provider.preflight(_home)
     assert not any(r.verdict == "FAIL" for r in rows)
     ok, reason = selfcheck._check_invocation(_home)
-    assert ok is True
+    assert ok is selfcheck.Verdict.PASS
     assert "self-learn doctor invocation" in reason
 
     _write_provider_yaml(_home, name="bedrock")
     ok2, reason2 = selfcheck._check_invocation(_home)
-    assert ok2 is False
+    assert ok2 is selfcheck.Verdict.FAIL
     assert "self-learn doctor invocation" in reason2
 
     # `M27`'s target: a healthy MID-ROLLOUT install (one surface flipped
@@ -608,7 +608,7 @@ def test_dc11_selftest_row(monkeypatch, capsys, _home, tmp_path):
     monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
     monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
     ok3, reason3 = selfcheck._check_invocation(_home)
-    assert ok3 is True, reason3
+    assert ok3 is selfcheck.Verdict.PASS, reason3
     monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER")
     monkeypatch.delenv("SELF_LEARN_BACKEND_MINER")
     monkeypatch.delenv("SELF_LEARN_BACKEND_ANALYST")
@@ -621,6 +621,8 @@ def test_dc11_selftest_row(monkeypatch, capsys, _home, tmp_path):
     monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
     rc = cli_mod.main(["--selftest"])
     out = capsys.readouterr().out
+    # fold r1, 2026-09-04: no worker placeholder row -- this fresh env's
+    # 9 real checks all PASS, so the run exits 0.
     assert rc == 0
     assert "PASS invocation" in out
 
