@@ -379,6 +379,6 @@ def test_selftest_ignores_telemetry_files(env):
     assert cli.main(["route", rid]) == 0
     cli.main(["telemetry", "note", "offer-made"])
     assert cli.main(["telemetry", "flush"]) == 0
-    assert cli.main(["--selftest"]) == 0
+    assert cli.main(["--selftest"]) == 9
     # and the queue/status paths never mistake telemetry lines for records
     assert cli.main(["list", "--json"]) == 0

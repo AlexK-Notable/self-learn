@@ -822,10 +822,10 @@ class TestT13bSelfcheckResolvedParity:
             "an UNresolved (symlink-bearing) path leaked into the target "
             "set — §3.2.1's single normalization point was bypassed"
         )
-        assert selfcheck._check_compiler(targets)[0] is True
-        assert selfcheck._check_markers(targets)[0] is True
+        assert selfcheck._check_compiler(targets)[0] is selfcheck.Verdict.PASS
+        assert selfcheck._check_markers(targets)[0] is selfcheck.Verdict.PASS
         ok, reason = selfcheck._check_drift(env.home)
-        assert ok is True, reason
+        assert ok is selfcheck.Verdict.PASS, reason
 
 
 # ================================================== §7.5 apply-path parity

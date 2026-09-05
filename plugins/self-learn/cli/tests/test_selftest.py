@@ -96,23 +96,23 @@ def test_selftest_green_on_healthy_sandbox(env, capsys):
     rc = cli.main(["--selftest"])
 
     out = capsys.readouterr().out
-    assert rc == 0
+    assert rc == 9
     assert "FAIL" not in out
     for check in ("capture", "compiler", "markers", "drift", "sentinel"):
         assert f"PASS {check}" in out
-    assert "worker: M2 — not checked" in out
+    assert "UNMEASURED worker — M2 — not checked" in out
 
 
 def test_selftest_green_on_empty_home(env, capsys):
     # No routed records: nothing should have a section yet.
     rc = cli.main(["--selftest"])
-    assert rc == 0
+    assert rc == 9
     assert "FAIL" not in capsys.readouterr().out
 
 
 def test_selftest_leaves_no_scratch_litter(env, capsys):
     seed_routed_skill_target(env)
-    assert cli.main(["--selftest"]) == 0
+    assert cli.main(["--selftest"]) == 9
     leftovers = [
         p for p in env.ledger.rglob("*") if "selftest" in p.name.lower()
     ]
@@ -122,7 +122,7 @@ def test_selftest_leaves_no_scratch_litter(env, capsys):
 def test_selftest_compiler_dry_run_writes_nothing(env, capsys):
     skill_md = seed_routed_skill_target(env)
     before = skill_md.read_bytes()
-    assert cli.main(["--selftest"]) == 0
+    assert cli.main(["--selftest"]) == 9
     assert skill_md.read_bytes() == before
 
 
@@ -170,7 +170,7 @@ def test_unrouted_targets_are_not_flagged(env, capsys):
     # SKILL.md in the host is already markerless.)
     (env.ledger / "skills" / "s" / "pending").mkdir(parents=True)
     rc = cli.main(["--selftest"])
-    assert rc == 0
+    assert rc == 9
     assert "FAIL" not in capsys.readouterr().out
 
 
@@ -183,14 +183,14 @@ def test_selftest_leaves_a_live_foreign_sentinel_in_place(env, capsys):
 
     rc = cli.main(["--selftest"])
 
-    assert rc == 0
+    assert rc == 9
     assert sentinel.sentinel_path().exists()  # never deleted a live hold
     assert "PASS sentinel" in capsys.readouterr().out
 
 
 def test_selftest_probe_sentinel_is_released(env, capsys):
     assert not sentinel.sentinel_path().exists()
-    assert cli.main(["--selftest"]) == 0
+    assert cli.main(["--selftest"]) == 9
     assert not sentinel.sentinel_path().exists()
 
 
@@ -226,10 +226,10 @@ def test_reach_reachable_fixture_passes_criterion_1(env):
     )
 
     ok, reason = selfcheck._check_reach(env.ledger)
-    assert ok
+    assert ok is selfcheck.Verdict.PASS
     assert "1 reference-routed record(s) reachable" in reason
 
-    assert cli.main(["--selftest"]) == 0
+    assert cli.main(["--selftest"]) == 9
 
 
 def test_reach_ancestor_only_pointer_makes_a_child_record_reachable_anc7(env, tmp_path):
@@ -283,10 +283,10 @@ def test_reach_ancestor_only_pointer_makes_a_child_record_reachable_anc7(env, tm
     )
 
     ok, reason = selfcheck._check_reach(env.ledger)
-    assert ok, reason
+    assert ok is selfcheck.Verdict.PASS, reason
     assert "1 reference-routed record(s) reachable" in reason
 
-    assert cli.main(["--selftest"]) == 0
+    assert cli.main(["--selftest"]) == 9
 
 
 def test_reach_un3_no_ancestor_reach_row_matches_the_pre_ancestry_shape(env):
@@ -354,7 +354,7 @@ def test_reach_un3_no_ancestor_reach_row_matches_the_pre_ancestry_shape(env):
     assert user_surfaces == [DEFAULT_USER_CLAUDE_MD.expanduser()]
 
     ok, reason = selfcheck._check_reach(env.ledger)
-    assert ok
+    assert ok is selfcheck.Verdict.PASS
     assert reason == "1 reference-routed record(s) reachable from their scope's loaded surface"
 
 
@@ -368,7 +368,7 @@ def test_reach_unreachable_fixture_fails_criterion_2(env, capsys):
     # env.skill_md stays the bare seed — no pointer anywhere in it.
 
     ok, reason = selfcheck._check_reach(env.ledger)
-    assert not ok
+    assert ok is selfcheck.Verdict.FAIL
     assert record.id in reason
     assert str(env.skill_md) in reason
 
@@ -388,7 +388,7 @@ def test_reach_count_leads_the_message(env):
         ids.append(record.id)
 
     ok, reason = selfcheck._check_reach(env.ledger)
-    assert not ok
+    assert ok is selfcheck.Verdict.FAIL
     assert reason.startswith("3 of 3")
     for rid in ids:
         assert rid in reason
@@ -400,7 +400,7 @@ def test_reach_count_leads_the_message(env):
     env.skill_md.write_text(SKILL_MD + "\nsee references/notes-a.md\n", encoding="utf-8")
 
     ok, reason = selfcheck._check_reach(env.ledger)
-    assert not ok
+    assert ok is selfcheck.Verdict.FAIL
     assert reason.startswith("2 of 3")
 
 
@@ -478,7 +478,7 @@ def test_reach_same_basename_wrong_directory_fails_criterion_4_e2e(env):
     env.skill_md.write_text(SKILL_MD + "\nsee ../other/LEARNINGS.md\n", encoding="utf-8")
 
     ok, reason = selfcheck._check_reach(env.ledger)
-    assert not ok
+    assert ok is selfcheck.Verdict.FAIL
     assert record.id in reason
 
 
@@ -491,7 +491,7 @@ def test_reach_different_file_same_directory_fails_criterion_5_e2e(env):
     env.skill_md.write_text(SKILL_MD + "\nsee references/GOTCHAS.md\n", encoding="utf-8")
 
     ok, reason = selfcheck._check_reach(env.ledger)
-    assert not ok
+    assert ok is selfcheck.Verdict.FAIL
     assert record.id in reason
 
 
@@ -505,23 +505,23 @@ def test_reach_token_must_resolve_not_merely_appear_criterion_6_e2e(env):
         SKILL_MD + "\nread LEARNINGS.md for prior lessons\n", encoding="utf-8"
     )
     ok, _reason = selfcheck._check_reach(env.ledger)
-    assert not ok
+    assert ok is selfcheck.Verdict.FAIL
 
     env.skill_md.write_text(
         SKILL_MD + "\nread references/LEARNINGS.md\n", encoding="utf-8"
     )
     ok, _reason = selfcheck._check_reach(env.ledger)
-    assert ok
+    assert ok is selfcheck.Verdict.PASS
 
     env.skill_md.write_text(
         SKILL_MD + "\nsee references/LEARNINGS.md.\n", encoding="utf-8"
     )
     ok, _reason = selfcheck._check_reach(env.ledger)
-    assert ok
+    assert ok is selfcheck.Verdict.PASS
 
     env.skill_md.write_text(SKILL_MD + f"\nsee {target}\n", encoding="utf-8")
     ok, _reason = selfcheck._check_reach(env.ledger)
-    assert ok
+    assert ok is selfcheck.Verdict.PASS
 
 
 def test_reach_unresolvable_target_fails_naming_the_record_criterion_7(env):
@@ -538,7 +538,7 @@ def test_reach_unresolvable_target_fails_naming_the_record_criterion_7(env):
     record.write(resolved / f"{record.id}.md")
 
     ok, reason = selfcheck._check_reach(env.ledger)
-    assert not ok
+    assert ok is selfcheck.Verdict.FAIL
     assert record.id in reason
 
 
@@ -565,7 +565,7 @@ def test_reach_empty_ls_fails_never_skips_criterion_8(env, monkeypatch):
     )
 
     ok, reason = selfcheck._check_reach(env.ledger)
-    assert not ok
+    assert ok is selfcheck.Verdict.FAIL
     assert record.id in reason
 
 
@@ -581,7 +581,7 @@ def test_reach_present_but_missing_surface_fails_criterion_8a(env):
     env.skill_md.unlink()  # the skill DIRECTORY still resolves; the file doesn't
 
     ok, reason = selfcheck._check_reach(env.ledger)
-    assert not ok
+    assert ok is selfcheck.Verdict.FAIL
     assert record.id in reason
 
 
@@ -605,7 +605,7 @@ def test_reach_target_resolve_is_load_bearing_through_symlink_criterion_8b(env, 
     )
 
     ok, reason = selfcheck._check_reach(env.ledger)
-    assert ok, reason
+    assert ok is selfcheck.Verdict.PASS, reason
     assert "1 reference-routed record(s) reachable" in reason
 
 
@@ -627,7 +627,7 @@ def test_reach_only_live_records_count_criterion_9(env):
     pending.write(resolved / f"{pending.id}.md")  # fresh Record.create: status pending
 
     ok, reason = selfcheck._check_reach(env.ledger)
-    assert ok
+    assert ok is selfcheck.Verdict.PASS
     assert "no reference-routed records" in reason
 
 
@@ -677,14 +677,14 @@ def test_reach_domain_walks_the_user_bucket_criterion_9a(env):
 
     ok, reason = selfcheck._check_reach(env.ledger)
 
-    assert not ok
+    assert ok is selfcheck.Verdict.FAIL
     assert reason.startswith("1 of 1")
     assert record.id in reason
 
 
 def test_reach_zero_reference_records_passes_criterion_10(env):
     ok, reason = selfcheck._check_reach(env.ledger)
-    assert ok
+    assert ok is selfcheck.Verdict.PASS
     assert "no reference-routed records" in reason
 
 
@@ -692,29 +692,29 @@ def test_reach_hosts_yaml_absent_passes_not_checked_criterion_11(tmp_path):
     bare = tmp_path / "bare-ledger"
     init_repo(bare)
     ok, reason = selfcheck._check_reach(bare)
-    assert ok
+    assert ok is selfcheck.Verdict.UNMEASURED
     assert "not checked" in reason
 
 
 def test_reach_missing_home_fails_criterion_11(tmp_path):
     ok, reason = selfcheck._check_reach(tmp_path / "nowhere")
-    assert not ok
+    assert ok is selfcheck.Verdict.FAIL
 
 
 def test_reach_not_a_repo_home_fails_criterion_11(tmp_path):
     not_repo = tmp_path / "plain-dir"
     not_repo.mkdir()
     ok, reason = selfcheck._check_reach(not_repo)
-    assert not ok
+    assert ok is selfcheck.Verdict.FAIL
 
 
 def test_selftest_reports_seven_checks_criterion_12(env, capsys):
     seed_routed_skill_target(env)
     rc = cli.main(["--selftest"])
     out = capsys.readouterr().out
-    assert rc == 0
+    assert rc == 9
     assert "PASS reach" in out
-    assert "all 9 checks green" in out
+    assert "8 passed, 2 unmeasured, 0 failed" in out
 
 
 # --------------------------------------------------- FW-66: decode safety
@@ -751,7 +751,7 @@ def test_reach_undecodable_surface_fails_naming_the_record(env, capsys):
 
     ok, reason = selfcheck._check_reach(env.ledger)
 
-    assert not ok
+    assert ok is selfcheck.Verdict.FAIL
     assert record.id in reason
     assert "not readable as UTF-8" in reason
     assert "not named by its loaded surface" not in reason
@@ -780,7 +780,7 @@ def test_reach_undecodable_resolved_record_skipped_not_crashed(env):
 
     ok, reason = selfcheck._check_reach(env.ledger)
 
-    assert ok  # the corrupt file never counted; the good one is reachable
+    assert ok is selfcheck.Verdict.PASS  # the corrupt file never counted; the good one is reachable
     assert "1 reference-routed record(s) reachable" in reason
 
 
@@ -798,8 +798,8 @@ def test_selftest_survives_corrupt_resolved_record_prints_all_seven_rows(env, ca
     rc = cli.main(["--selftest"])
 
     out = capsys.readouterr().out
-    assert rc == 0
-    assert "all 9 checks green" in out
+    assert rc == 9
+    assert "9 passed, 1 unmeasured, 0 failed" in out
     for check in (
         "capture", "compiler", "markers", "drift", "reach", "hooks", "surface", "sentinel",
     ):
@@ -816,7 +816,7 @@ def test_drift_undecodable_target_fails_naming_the_file(env, capsys):
 
     ok, reason = selfcheck._check_drift(env.ledger)
 
-    assert not ok
+    assert ok is selfcheck.Verdict.FAIL
     assert "not readable as UTF-8" in reason
     assert str(skill_md) in reason
 
@@ -836,7 +836,7 @@ def test_drift_undecodable_references_file_fails_naming_the_record(env):
 
     ok, reason = selfcheck._check_drift(env.ledger)
 
-    assert not ok
+    assert ok is selfcheck.Verdict.FAIL
     assert record.id in reason
     assert "not readable as UTF-8" in reason
     assert "entry missing" not in reason

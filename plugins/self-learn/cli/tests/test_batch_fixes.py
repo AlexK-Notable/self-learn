@@ -1161,14 +1161,14 @@ class TestRepairCommandsHomeGate:
         """A bad home has no hosts.yaml either, so the drift check answered
         "hosts.yaml absent — drift not checked" and PASSED: the silent
         all-clear wearing a green tick."""
-        from self_learn.selfcheck import _check_drift
+        from self_learn.selfcheck import Verdict, _check_drift
 
         ok, reason = _check_drift(tmp_path / "missing")
-        assert ok is False
+        assert ok is Verdict.FAIL
         assert "does not exist" in reason
 
         not_repo = tmp_path / "not-a-repo"
         not_repo.mkdir()
         ok, reason = _check_drift(not_repo)
-        assert ok is False
+        assert ok is Verdict.FAIL
         assert "not a git repo" in reason

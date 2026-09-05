@@ -857,7 +857,7 @@ class TestPlain8SelftestDriftFourVerdicts:
         record_path.unlink()  # entry absent, region still present on disk
 
         ok, message = selfcheck._check_drift(env.ledger)
-        assert ok is True  # never gates the boolean
+        assert ok is selfcheck.Verdict.PASS  # never gates the boolean
         assert "no compile record yet" in message
         assert "unknown provenance" in message
 
@@ -866,7 +866,7 @@ class TestPlain8SelftestDriftFourVerdicts:
 
         env, plain_host = self._routed(tmp_path, "lrn-00000013")
         ok, message = selfcheck._check_drift(env.ledger)
-        assert ok is True
+        assert ok is selfcheck.Verdict.PASS
         assert "matches its compile record (clean)" in message
 
     def test_stale_renders_matches_the_priors_observation(self, tmp_path):
@@ -904,7 +904,7 @@ class TestPlain8SelftestDriftFourVerdicts:
         )
 
         ok, message = selfcheck._check_drift(env.ledger)
-        assert ok is True  # no OTHER check fires — isolated
+        assert ok is selfcheck.Verdict.PASS  # no OTHER check fires — isolated
         assert "matches the compile record's prior observation (stale)" in message
         assert "lrn-00000014" in message
 
@@ -922,7 +922,7 @@ class TestPlain8SelftestDriftFourVerdicts:
         )
 
         ok, message = selfcheck._check_drift(env.ledger)
-        assert ok is False  # THE one verdict that gates the boolean
+        assert ok is selfcheck.Verdict.FAIL  # THE one verdict that gates the boolean
         assert "hand-edited outside self-learn (edited)" in message
 
     def test_all_four_strings_are_pairwise_distinct(self, tmp_path):
@@ -2370,7 +2370,7 @@ class TestN8SelfcheckHonoursUserClaudeMdOverride:
 
         monkeypatch.setattr(selfcheck, "_managed_host_for", spy)
         ok, reason = selfcheck._check_drift(env.ledger, user_claude_md=override)
-        assert ok, reason
+        assert ok is selfcheck.Verdict.PASS, reason
         assert captured, "the drift loop never reached _managed_host_for at all"
         assert all(c == override for c in captured), (
             f"_check_drift did not thread its own user_claude_md kwarg "
@@ -4270,7 +4270,7 @@ class TestM3Rec5RowSevenSelfAdopt:
         shutil.rmtree(env.ledger / "compiled")
 
         ok, reason = selfcheck._check_drift(env.ledger)
-        assert ok is True
+        assert ok is selfcheck.Verdict.PASS
         assert (
             "1 target(s) carry self-learn markers with no compile record"
             in reason

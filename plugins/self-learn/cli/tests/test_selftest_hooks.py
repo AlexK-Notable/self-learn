@@ -13,7 +13,7 @@ import pytest
 
 from self_learn import cli
 from self_learn.hook_compiler import generate_script, script_name
-from self_learn.selfcheck import _check_hooks, claude_runtime_dir
+from self_learn.selfcheck import Verdict, _check_hooks, claude_runtime_dir
 from support import make_behavior, make_env
 
 RID = "lrn-0a1b2c3d"
@@ -83,20 +83,20 @@ class TestLedgerSide:
     def test_intact_script_passes(self, env):
         seed_hook_routed(env)
         ok, reason = check(env)
-        assert ok, reason
+        assert ok is Verdict.PASS, reason
         assert "1 live hook script(s) intact" in reason
 
     def test_missing_script_fails_naming_recompile(self, env):
         seed_hook_routed(env, write_script=False)
         ok, reason = check(env)
-        assert not ok
+        assert ok is Verdict.FAIL
         assert "missing" in reason and "recompile" in reason
 
     def test_non_executable_script_fails(self, env):
         script = seed_hook_routed(env)
         script.chmod(0o644)
         ok, reason = check(env)
-        assert not ok
+        assert ok is Verdict.FAIL
         assert "not executable" in reason
 
     def test_hand_edited_script_fails_as_drift(self, env):
@@ -104,7 +104,7 @@ class TestLedgerSide:
         script.write_text(SCRIPT + "\n# hand edit\n", encoding="utf-8")
         script.chmod(0o755)
         ok, reason = check(env)
-        assert not ok
+        assert ok is Verdict.FAIL
         assert "drifted" in reason
 
     def test_superseded_record_with_surviving_script_flagged(self, env):
@@ -112,7 +112,7 @@ class TestLedgerSide:
         # = incomplete supersession.
         seed_hook_routed(env, status="superseded", superseded_by="canon")
         ok, reason = check(env)
-        assert not ok
+        assert ok is Verdict.FAIL
         assert "INCOMPLETE SUPERSESSION" in reason
 
     def test_superseded_record_with_removed_script_clean(self, env):
@@ -120,11 +120,11 @@ class TestLedgerSide:
             env, status="superseded", superseded_by="canon", write_script=False
         )
         ok, reason = check(env)
-        assert ok, reason
+        assert ok is Verdict.PASS, reason
 
     def test_no_hook_records_is_quietly_green(self, env):
         ok, reason = check(env)
-        assert ok
+        assert ok is Verdict.PASS
         assert "no hook-routed records" in reason
 
 
@@ -151,7 +151,7 @@ class TestSettingsSide:
         self.write_settings(env, f"$HOME/.claude/hooks/{NAME}")
         # no symlink in the sandbox claude dir → dangling registration
         ok, reason = check(env)
-        assert not ok
+        assert ok is Verdict.FAIL
         assert "install.sh" in reason
 
     def test_registration_with_live_symlink_passes(self, env):
@@ -159,18 +159,18 @@ class TestSettingsSide:
         self.write_settings(env, f"$HOME/.claude/hooks/{NAME}")
         (env.claude / "hooks" / NAME).symlink_to(script)
         ok, reason = check(env)
-        assert ok, reason
+        assert ok is Verdict.PASS, reason
         assert "1 registration(s) resolvable" in reason
 
     def test_foreign_hook_registrations_ignored(self, env):
         self.write_settings(env, "$HOME/.claude/hooks/organizer-guard.sh")
         ok, reason = check(env)
-        assert ok, reason
+        assert ok is Verdict.PASS, reason
 
     def test_unparseable_settings_fails_loud(self, env):
         (env.claude / "settings.json").write_text("{not json", encoding="utf-8")
         ok, reason = check(env)
-        assert not ok
+        assert ok is Verdict.FAIL
         assert "unparseable" in reason
 
 
@@ -203,7 +203,7 @@ def test_selftest_cli_includes_hooks_line(env, capsys):
     rc = cli.main(["--selftest"])
     out = capsys.readouterr().out
     assert "PASS hooks" in out
-    assert rc == 0
+    assert rc == 9
 
 
 def test_selftest_cli_fails_on_missing_script(env, capsys):

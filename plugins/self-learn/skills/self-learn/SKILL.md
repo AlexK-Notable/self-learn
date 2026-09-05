@@ -104,7 +104,11 @@ section; design is `docs/specs/self-learn/09-surface-spec.md` +
   landed) — the review skill invokes `batch` as its one apply path,
   never a hand-written sequence of verb calls.
   `proposal validate`: **0 valid+stamped · 1 schema-invalid (file intact) ·
-  2 scan hit (wins)**. `--selftest`: 0 all green · 1 any FAIL.
+  2 scan hit (wins)**. `--selftest` (M-K, tri-state PASS/FAIL/UNMEASURED
+  per check): 0 all measured and green · 1 any FAIL (wins) · 9 no FAIL
+  but at least one row UNMEASURED (a check that could not measure
+  anything, e.g. a missing prerequisite it cannot itself supply — never
+  read as a silent PASS).
 
 Install, the S-15 offer-line setup, and troubleshooting live in the plugin
 README (`plugins/self-learn/README.md`).
