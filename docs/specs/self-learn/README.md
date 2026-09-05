@@ -962,11 +962,12 @@ human routes it.
   and the gate's verification table:
   `drafts/u-docs-truth-sweep-spec.md`.
 - **2026-09-04 — S-58 amended: one mechanism, per-key direction (Sprint 2
-  plan v2 §2 M-S; decision D1); folded r1, r2, and r3 same day against
-  three blind spec gates (r1: 2 Blockers, 6 Majors, 5 minors, 2 nits;
-  r2: 1 Blocker, 2 Majors, 3 minors, 3 nits; r3: 0 Blockers, 2 Majors, 1
-  minor, 1 nit — see `03-decisions.md`'s `S-58` row for the current
-  folded text; not yet gate-CLEAN).** The two
+  plan v2 §2 M-S; decision D1); folded r1–r4 same day against four
+  blind spec gates (r1: 2 Blockers, 6 Majors, 5 minors, 2 nits; r2: 1
+  Blocker, 2 Majors, 3 minors, 3 nits; r3: 0 Blockers, 2 Majors, 1
+  minor, 1 nit; r4: 0 Blockers, 1 Major, 0 minors, 1 nit — see
+  `03-decisions.md`'s `S-58` row for the current folded text; not yet
+  gate-CLEAN).** The two
   precedence DIRECTIONS `S-58` ruled on 2026-07-19/2026-09-01 are
   unchanged — the settings registry's operator-policy keys stay
   `override > config.yaml > env > default`; provider/model/backend
@@ -997,14 +998,21 @@ human routes it.
   pinned literals, unedited) while `provider.resolve_backend` folds the
   same raw value SILENTLY with `provider.py`'s own pure halves — no
   warn ever on the provider side, preserving `Rs-b` and its witness
-  `test_bk3_resolve_backend_name_never_warns`. Separately, `provider.name`
-  and the `invocation.backend` family KEEP `Setting.validate` for
-  `doctor settings`/`config get|set|unset`/`preflight` only: `config
-  set` refuses an off-whitelist value outright (naming `PROVIDERS`/
-  `KNOWN_BACKENDS`), and the read side reports the effective, already-
-  folded value under its existing source label, via `resolve_setting`'s
-  own generic (not byte-pinned) warning — a different vocabulary from
-  `registry._resolve`'s, so the two never collide. The backend
+  `test_bk3_resolve_backend_name_never_warns` (r4 n1: `backend_for`
+  strips `resolve_backend_raw`'s prefixed label to the bare `source`
+  `_resolve` expects, deriving `is_config` from the prefix, since the
+  two functions' vocabularies differ). Separately, corrected again by
+  r4 M1 (one `validate` cannot both refuse-on-write and clamp-on-read
+  for the same input, and a clamping `validate` emits no warning at
+  all, so r3's "visible in existing warning text" was wrong): `Setting.
+  validate` STAYS the read-path clamp, unchanged for all 21 shipped
+  entries; a NEW, separate optional `Setting.accepts` predicate is the
+  write-path gate — `config_set` refuses when `accepts` returns
+  `False`, naming the allowed set (`PROVIDERS`/`KNOWN_BACKENDS`).
+  `provider.name` and the `invocation.backend` family carry BOTH. The
+  fold is surfaced as a NEW `setting_row` detail field (`note`), not
+  the `warn` field (which keeps its override-only meaning) and not
+  "warning text" — `doctor settings` prints the `note`. The backend
   chain's specific/general PAIR at each end (env, config) keeps its
   full preservation constraint — `Rs-a1`'s asymmetry (an EMPTY
   per-surface config value terminates at the default WITHOUT
