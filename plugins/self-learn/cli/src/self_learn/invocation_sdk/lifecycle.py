@@ -20,8 +20,11 @@ only. That reason is gone: all three are now thin adapters over
 byte-identical to before -- `F-2`), and `test_pl3` is retargeted to
 assert ZERO filesystem-mutating calls anywhere in this six-file
 package. `_sidecar_path` stays a pure path computation with no I/O of
-its own -- kept because `test_invocation_sdk.py` and `test_serve.py`
-still call it directly to locate the file the delegate wrote.
+its own -- kept because `test_invocation_sdk.py` and
+`test_reader_contract.py` still call it directly to locate the file the
+delegate wrote (gate M-V r1, minor 4: an earlier draft of this sentence
+named `test_serve.py`, which never calls it -- `grep -rn "_sidecar_path"
+tests/` names only these two files).
 
 `INTERRUPT_GRACE_SECS`/`KILL_SECS` are bound to the library's `ladder.py`
 objects BY IDENTITY (`LAD2`/`LAD3` carry the analogous UI-side proof).
@@ -119,20 +122,20 @@ def write_sidecar(surface: str, pid: int, cli: str) -> None:
     `sdksession.children.write_sidecar` (see the module docstring's
     Sprint 2 M-V note) -- `session_key=None` reproduces `_sidecar_path`'s
     filename byte-for-byte."""
-    children.write_sidecar(worker.cache_dir(), surface, pid, cli)
+    children.write_sidecar(worker.cache_dir(), surface, pid, cli, session_key=None)
 
 
 def read_sidecar(surface: str) -> dict[str, Any] | None:
     """Delegates to `sdksession.children.read_sidecar` -- see the module
     docstring's Sprint 2 M-V note."""
-    return children.read_sidecar(worker.cache_dir(), surface)
+    return children.read_sidecar(worker.cache_dir(), surface, session_key=None)
 
 
 def clear_sidecar(surface: str) -> None:
     """`K-4`/`K-5` -- unlinked whether the session succeeded, failed, or
     timed out. Delegates to `sdksession.children.clear_sidecar` -- see
     the module docstring's Sprint 2 M-V note."""
-    children.clear_sidecar(worker.cache_dir(), surface)
+    children.clear_sidecar(worker.cache_dir(), surface, session_key=None)
 
 
 def kill_child(pid: int | None, log: Callable[[str], None]) -> None:

@@ -30,9 +30,13 @@ own: `write_event_log` and `prune_event_logs` are now thin adapters over
 `test_pl3` is retargeted to assert ZERO filesystem-mutating calls
 anywhere in this six-file package. `prune_event_logs` keeps ONE local
 `cache.glob(...)` read (no mutation) as a cheap short-circuit -- skip
-the delegate call entirely when there is nothing to prune -- which is
-also what keeps `test_ev4`'s OWN pinned literal-`.glob(`-present check
-on this module true. `_event_log_path` stays a pure path computation
+the delegate call entirely when there is nothing to prune -- kept
+deliberately so `test_ev4`'s `.glob(`-present assertion is satisfied by
+REAL code rather than by this docstring's own prose, which would
+satisfy it vacuously (gate M-V r1, minor 3: the prose alone already
+contains the literal `.glob(` four times over, so deleting the code
+would NOT redden that check -- the short-circuit is kept for honesty,
+not because the assertion requires it). `_event_log_path` stays a pure path computation
 with no I/O of its own -- kept because `test_serve.py` still calls it
 directly to locate the file the delegate wrote.
 """
@@ -96,12 +100,14 @@ def prune_event_logs(surface: str) -> None:
     therefore the exact same matches, order, and count. The one local
     `cache.glob(pattern)` read below is a short-circuit only (no
     mutation): when there is nothing past `keep` there is nothing to
-    unlink, so the delegate call -- and the fresh directory scan it
-    would otherwise repeat -- is skipped entirely; behaviourally a
-    no-op either way, but it is also what keeps this module's own
-    pinned `.glob(` literal (`test_ev4_nothing_in_the_package_reads_a_
-    tool_events_file`, `test_invocation_sdk.py`) true without this
-    module doing the unlinking itself."""
+    unlink, so the delegate call is skipped entirely; behaviourally a
+    no-op either way, kept deliberately so `test_ev4_nothing_in_the_
+    package_reads_a_tool_events_file` (`test_invocation_sdk.py`)'s
+    pinned `.glob(`-present check is satisfied by REAL code here rather
+    than by this docstring's own prose -- which, gate M-V r1's minor 3
+    mutation (deleting this whole short-circuit) showed, would satisfy
+    that check vacuously on its own, since the literal `.glob(` already
+    appears four times across this module's docstrings alone."""
     cache = worker.cache_dir()
     keep, _source = settings.resolve_setting(resolve_home(), settings.by_name("sdk.event_logs"))
     keep = cast(int, keep)

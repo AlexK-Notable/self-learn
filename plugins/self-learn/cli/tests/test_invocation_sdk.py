@@ -335,13 +335,20 @@ def test_pl3_filesystem_writes_are_enumerated_with_an_exact_count():
     gone along with those call sites -- the count this test asserts
     moves from 5 to 0, and there is no longer an "allowed" set at all:
     ANY filesystem-mutating call anywhere under this six-file package is
-    now a violation, full stop."""
+    now a violation, full stop. The node's NAME is kept even though it
+    no longer describes "an exact count" (it asserts an empty list) --
+    renaming a pinned `Behaviour` node opens a second armor door
+    (`Behaviour.edited`/`.missing` keys by name) beyond the one this
+    move already owes for the body edit, so the historical name stays
+    for armor's sake, not because it still fits."""
     fs_mutation_calls = {
         "open", "write_text", "write_bytes", "mkdir", "unlink", "touch", "rename", "replace",
     }
     pkg_dir = Path(backend_mod.__file__).resolve().parent
     violations = []
-    for path in sorted(pkg_dir.glob("*.py")):
+    scanned = sorted(pkg_dir.glob("*.py"))
+    assert len(scanned) >= 6, scanned  # the package really was enumerated
+    for path in scanned:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):

@@ -184,3 +184,30 @@ def test_prune_event_logs_adapter_short_circuits_when_nothing_is_due(tmp_path, m
 
     remaining = sorted(p.name for p in cache.glob("surf-a.tool-events.*.jsonl"))
     assert remaining == ["surf-a.tool-events.run-0.jsonl", "surf-a.tool-events.run-1.jsonl"]
+
+
+def test_prune_event_logs_adapter_does_not_short_circuit_at_keep_plus_one(tmp_path, monkeypatch):
+    """Gate M-V r1, minor 2: the short-circuit is `len(matches) <= keep:
+    return` -- the one input it can get wrong is exactly `keep + 1`
+    files, the smallest count for which pruning is still due. None of
+    the other prune tests in this file sit at that boundary (4/keep-2,
+    2/keep-5, 2/keep-5), so a mutant widening the comparison to
+    `<= keep + 1` passed every one of them. Seed exactly `keep + 1` (3)
+    files with `SELF_LEARN_SDK_EVENT_LOGS=2`: the correct `<= keep`
+    comparison finds `3 <= 2` False and delegates, pruning to 2; the
+    mutant `<= keep + 1` finds `3 <= 3` True and returns before
+    delegating, leaving all 3 -- the two forms diverge here and nowhere
+    else this suite already checks."""
+    _make_home(tmp_path, monkeypatch, "prune-boundary")
+    cache = worker.cache_dir()
+    monkeypatch.setenv("SELF_LEARN_SDK_EVENT_LOGS", "2")
+
+    for i in range(3):
+        p = cache / f"surf-a.tool-events.run-{i}.jsonl"
+        p.write_text("{}", encoding="utf-8")
+        os.utime(p, (i, i))
+
+    events_mod.prune_event_logs("surf-a")
+
+    remaining = sorted(p.name for p in cache.glob("surf-a.tool-events.*.jsonl"))
+    assert remaining == ["surf-a.tool-events.run-1.jsonl", "surf-a.tool-events.run-2.jsonl"]
