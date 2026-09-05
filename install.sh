@@ -211,7 +211,12 @@ run "mkdir -p $(q "$APPS_DIR") $(q "$ICON_DIR")"
 # .desktop file, and a dry run touches neither the temp file nor the
 # real one, since both steps are gated the same way `run()` gates them.
 DESKTOP_TMP="$APPS_DIR/.self-learn-ui.desktop.tmp.$$"
-trap 'rm -f "$DESKTOP_TMP"' EXIT
+# M-U fold r3: --dry-run must EXECUTE nothing, not merely leave the
+# filesystem unchanged -- a bare EXIT trap fires even under --dry-run
+# (DESKTOP_TMP was never created, so `rm -f` is a harmless no-op, but it
+# is still a real, executed external command). Installing the trap only
+# on the real path keeps real-run cleanup exactly as it was.
+[ "$DRY" = 1 ] || trap 'rm -f "$DESKTOP_TMP"' EXIT
 run "sed $(q "s|@BIN@|$BIN_DIR|") $(q "$P/assets/self-learn-ui.desktop.in") > $(q "$DESKTOP_TMP")"
 run "mv $(q "$DESKTOP_TMP") $(q "$APPS_DIR/self-learn-ui.desktop")"
 say "  gen   ~/.local/share/applications/self-learn-ui.desktop"

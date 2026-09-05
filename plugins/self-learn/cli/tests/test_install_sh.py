@@ -519,6 +519,25 @@ def test_i_missing_timeout_on_path_refuses_to_start(tmp_path):
 # --------------------------------------------------- (fold r1's nit 6, r2 nit C)
 
 
+def test_dry_run_never_executes_the_cleanup_trap(tmp_path):
+    """M-U fold r3: --dry-run's promise is EXECUTE nothing, not merely
+    "leave the filesystem unchanged" -- a bare, unconditional EXIT trap
+    still fires under --dry-run (DESKTOP_TMP was never created, so
+    `rm -f` is a harmless no-op, but it is still a real, executed
+    external command). Checked via a `bash -x` trace: neither the trap
+    being SET nor it FIRING may ever appear.
+
+    Mutation witness: restoring the bare `trap 'rm -f "$DESKTOP_TMP"'
+    EXIT` (dropping the `[ "$DRY" = 1 ] ||` guard) must redden this --
+    both the trap-install line and its EXIT-time firing then show up in
+    the trace."""
+    env, fake_home, _log = _install_env(tmp_path)
+    result = _run(["--dry-run"], env, trace=True)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    trace = result.stderr
+    assert "rm -f" not in trace, trace
+
+
 def test_desktop_temp_is_cleaned_up_when_generation_fails(tmp_path):
     """M-U fold r1 added `trap 'rm -f "$DESKTOP_TMP"' EXIT` so a failed
     `.desktop` generation (a broken `sed`, here) never leaves its temp
