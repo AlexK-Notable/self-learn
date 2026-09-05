@@ -666,6 +666,39 @@ def test_analyst_analyze_cli_owned_fields_win(env, sdk_fake_analyst):
     assert proposal["analyzed_at"] != "1999-01-01T00:00:00Z"
 
 
+def test_M_S_fold_r2_analyst_analyze_model_field_reads_models_analyst_config(
+    env, sdk_fake_analyst, monkeypatch
+):
+    """M-S (S-58 code-gate fold r2, gap-1): the analyst proposal's `model`
+    field must reflect `models.analyst: X` in config.yaml even with no env
+    var set. `test_analyst_analyze_cli_owned_fields_win` above pins
+    `proposal["model"] == DEFAULT_ANALYST_MODEL`, but leaves config.yaml
+    unset — reverting `analyze()`'s stamp
+    (`model = provider.model_for("analyst", home=home)`) back to the old
+    `model = _model()` (bare env-or-default, blind to config.yaml) would
+    still pass that test, since DEFAULT_ANALYST_MODEL is what both
+    functions return absent config/env. This test sets a config.yaml value
+    that neither `_model()` nor DEFAULT_ANALYST_MODEL would ever produce,
+    closing the gap: the miner side of this same fold-r1 fix already has
+    an analogous witness
+    (`test_miner.py::test_M_S_fold_r1_mine_record_model_field_reads_models_miner_config`)
+    — this is the analyst side, completing coverage of both former
+    `_model()`-style stamp sites."""
+    monkeypatch.delenv("SELF_LEARN_ANALYST_MODEL", raising=False)
+    (env.home / "config.yaml").write_text(
+        "models:\n  analyst: CONFIG-ANALYST-MODEL-ID\n", encoding="utf-8"
+    )
+    sdk_fake_analyst["out"].write_text(
+        "destination: skill-md\n"
+        "alternates: [claude-md]\n"
+        "rationale: deterministic guard beats advisory text\n"
+        + _skill_gates_yaml(env),
+        encoding="utf-8",
+    )
+    proposal = analyst.analyze(env.home, make_behavior())
+    assert proposal["model"] == "CONFIG-ANALYST-MODEL-ID"
+
+
 def _script_probe_body(env, destination: str) -> str:
     """A4 shim body: an otherwise-valid `destination` proposal that also
     carries a forbidden `script` and a `probe_key`."""

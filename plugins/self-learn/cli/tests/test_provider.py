@@ -163,6 +163,12 @@ def test_pr1_config_module_exports(tmp_path):
     assert not hasattr(config, "provider_setting")
     assert config.__all__ == [
         "CONFIG_BASENAME",
+        # M-S (S-58 code-gate fold r2, gap-4): the ONE label constant
+        # both `settings._try_paired` and `invocation.registry.
+        # resolve_backend_raw` pass to `paired_leaf`/`paired_cascade`
+        # for the invocation-backend pair, so a malformed config value
+        # warns identically regardless of which face resolved it.
+        "INVOCATION_BACKEND_LABEL",
         # M-S (S-58 code-gate fold r1, BLOCKER-1): the override
         # channel's two escape-hatch markers, relocated here from
         # `settings.py` so `provider.py`/`invocation/registry.py` can

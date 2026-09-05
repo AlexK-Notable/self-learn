@@ -124,7 +124,7 @@ def resolve_backend_raw(home: Path | str | None, surface: str) -> tuple[str, str
         section="invocation",
         specific_config_key=f"backend_{surface}",
         general_config_key="backend",
-        label="invocation backend selection",
+        label=config.INVOCATION_BACKEND_LABEL,
     )
     if found is None:
         return DEFAULT_BACKEND_FOR_SURFACE.get(surface, "sdk"), "default"

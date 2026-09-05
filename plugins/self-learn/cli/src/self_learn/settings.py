@@ -575,7 +575,14 @@ def _try_paired(home: Path | str | None, setting: Setting, general: Setting) -> 
         section=cast(str, setting.config_section),
         specific_config_key=cast(str, setting.config_key),
         general_config_key=cast(str, general.config_key),
-        label=setting.description,
+        # Fold r2 (gap-4): was `setting.description` (a per-surface
+        # phrase), which produced a DIFFERENT warn sentence than
+        # `invocation.registry.resolve_backend_raw`'s hardcoded literal
+        # for the exact same malformed-value walk. Both now pass the
+        # ONE shared constant `config.INVOCATION_BACKEND_LABEL` — see
+        # its own docstring for why it lives in `config.py` and why
+        # it's backend-specific rather than generic.
+        label=config.INVOCATION_BACKEND_LABEL,
     )
     if found is None:
         return _default_value(setting), "default"

@@ -91,8 +91,32 @@ def test_blocker1_provider_name_four_states_agree_across_both_faces(tmp_path, mo
 
 @pytest.mark.parametrize("state", ["absent", "empty", "unknown", "valid"])
 def test_blocker1_invocation_backend_worker_four_states_agree_across_both_faces(
-    tmp_path, monkeypatch, state
+    tmp_path, monkeypatch, capsys, state
 ):
+    """Fold r2 (gap-2): made precise instead of asserting "differ" for
+    `unknown`. SOURCE agreement (which rung answered) holds across ALL
+    FOUR states, including `unknown` -- both faces are fed the same raw
+    string by the same override var and always agree on where it came
+    from. VALUE agreement holds for absent/empty/valid, where there is
+    nothing to clamp. For `unknown` specifically the two resolvers have a
+    DELIBERATE VALUE split, verified as exactly three things:
+
+    (a) `resolve_backend_raw` is pure by spec-gate ruling r3 -- it never
+    clamps, warns, or prints; it returns the unknown string UNCHANGED.
+    (b) `settings.resolve_setting`'s `validate` DOES clamp inline (this
+    is the registry/display face), and the clamp is never silent from
+    that face alone: `setting_row`'s `note` names exactly what was
+    folded to what (`_fold_note`, S-58 r5-m1(b)).
+    (c) `registry.backend_for` -- the actual invocation-time resolver
+    `worker.run`/`doctor invocation` call -- is a WARN-and-clamp
+    channel, not a raise-based refusal: verified live (see this
+    module's probe history) that only the retired `"cli"` value raises
+    `BackendUnavailable` in `_resolve`; an ordinary unknown string
+    prints `self-learn: unknown invocation backend <value!r> in
+    <source> — using "sdk"` to stderr and returns a working
+    `SdkBackend`. Asserted here by name (naming the raw value in the
+    printed text) rather than by exception, matching what the code
+    actually does rather than assuming a raise."""
     home = tmp_path / "home"
     _write_config(home, "invocation", "backend_worker", "sdk")
     var = "SELF_LEARN_OVERRIDE_INVOCATION_BACKEND_WORKER"
@@ -108,18 +132,24 @@ def test_blocker1_invocation_backend_worker_four_states_agree_across_both_faces(
     runtime = registry.resolve_backend_raw(home, "worker")
     reg = settings.resolve_setting(home, settings.by_name("invocation.backend_worker"))
 
+    assert runtime[1] == reg[1], (
+        f"state={state}: source disagreement — runtime={runtime[1]!r} "
+        f"registry={reg[1]!r}"
+    )
+
     if state == "unknown":
-        # `resolve_backend_raw` is deliberately PURE -- it never clamps
-        # an unknown value itself (that judgement, and its warning,
-        # belong to `_resolve`/`backend_for`, downstream of this raw
-        # tuple); `resolve_setting`'s `validate` DOES clamp inline. Both
-        # faces still agree on WHICH RUNG answered and the raw string it
-        # was given -- only the (deliberately later) clamp differs.
         assert runtime == ("not-a-real-backend", "override:invocation.backend_worker")
         assert reg == ("sdk", "override:invocation.backend_worker")
+        row = settings.setting_row(home, settings.by_name("invocation.backend_worker"))
+        assert row["note"] == "'not-a-real-backend' folded to 'sdk'"
+
         from self_learn.invocation_sdk.backend import SdkBackend
 
-        assert isinstance(registry.backend_for("worker", home=home), SdkBackend)
+        backend = registry.backend_for("worker", home=home)
+        assert isinstance(backend, SdkBackend)
+        err = capsys.readouterr().err
+        assert "not-a-real-backend" in err
+        assert 'using "sdk"' in err
         return
 
     assert runtime == reg, f"state={state}: runtime={runtime!r} registry={reg!r}"
@@ -272,6 +302,68 @@ def test_doctor_settings_backend_worker_row_under_general_env_var(tmp_path, monk
     assert "invocation.backend_worker = 'sdk' (env:SELF_LEARN_BACKEND)" in rows["invocation.backend_worker"]
 
 
+def test_gap4_malformed_backend_worker_config_value_warns_identically_on_both_faces(
+    tmp_path, capsys
+):
+    """Fold r2 (gap-4): `invocation.registry.resolve_backend_raw` (the
+    runtime face) and `settings.resolve_setting` (the registry/display
+    face, via `_try_paired`) both walk the SAME specific/general config
+    pair through `config.paired_leaf` for a malformed value -- before
+    this fold they passed DIFFERENT `label` strings to that shared
+    walk (`_try_paired` used `setting.description`, a per-surface
+    phrase; `resolve_backend_raw` hardcoded a different literal), so a
+    non-string `invocation.backend_worker` value warned with two
+    different sentences depending on which face triggered it, unpinned
+    by any test. Both now pass `config.INVOCATION_BACKEND_LABEL`, the
+    ONE shared constant -- pinned here as the literal, identical stderr
+    line from both call sites."""
+    home = tmp_path / "home"
+    _write_config(home, "invocation", "backend_worker", 123)
+
+    capsys.readouterr()  # drop anything printed by fixture setup
+    registry.resolve_backend_raw(home, "worker")
+    runtime_err = capsys.readouterr().err.strip()
+
+    settings.resolve_setting(home, settings.by_name("invocation.backend_worker"))
+    registry_err = capsys.readouterr().err.strip()
+
+    expected = (
+        "self-learn: config.yaml ignored — invocation.backend_worker "
+        "must be a string, got 123; invocation backend selection ignored"
+    )
+    assert runtime_err == expected, f"runtime face: {runtime_err!r}"
+    assert registry_err == expected, f"registry face: {registry_err!r}"
+    assert runtime_err == registry_err
+
+
+def test_gap5_every_paired_entry_is_env_first_with_a_real_general_sibling():
+    """Fold r2 (gap-5): registration-time guard, test only -- no
+    registry-builder change. `_try_paired` (this module) hardcodes the
+    rung order override -> env -> config regardless of `setting.
+    direction`; every CURRENT `general_name`-bearing entry happens to be
+    `env-first`, so the walk is correct today, but nothing stops a
+    future config-first paired entry from being silently miswalked by
+    the same hardcoded order. This test is that guard, made a test
+    instead of an `assert` at REGISTRY construction time (asked for
+    explicitly): a future paired entry that is `config-first`, or whose
+    `general_name` doesn't name a REAL registry entry (`by_name` would
+    raise `UnknownSettingError`), fails here rather than silently
+    misresolving or blowing up somewhere downstream."""
+    paired = [s for s in settings.REGISTRY if s.general_name is not None]
+    assert paired, "no paired entries -- this guard would vacuously pass"
+    for setting in paired:
+        assert setting.direction == "env-first", (
+            f"{setting.name}: paired entries must be env-first -- "
+            f"_try_paired hardcodes override -> env -> config and does "
+            f"not consult `direction` at all"
+        )
+        general = settings.by_name(setting.general_name)  # raises if not a real entry
+        assert general.general_name is None, (
+            f"{setting.name}'s general sibling {general.name!r} is ITSELF "
+            f"paired -- _try_paired does not support a chain"
+        )
+
+
 # ===================================================================== #
 # MAJOR-2 / MAJOR-3 — literal, hand-typed name sets, never derived from
 # `settings.REGISTRY` itself (a derived list makes a mutation to
@@ -371,13 +463,24 @@ def test_major2_behavioral_env_beats_config_for_every_literal_env_first_name(tmp
     (not `settings.REGISTRY`'s own `direction` field), so a mutation
     that silently flips one entry's `direction` to `"config-first"`
     makes IT, specifically, fail here -- not just vanish from a
-    derived census."""
+    derived census.
+
+    Fold r2 (gap-3): no `enabled_when` skip. `provider.bedrock.region`
+    and `provider.bedrock.profile` are the only two `enabled_when`
+    members of this literal set that also carry a real `env_var` (the
+    four `provider.bedrock.models.*` entries all have `env_var=None` --
+    MAJOR-4's move to the always-active `models.<surface>` siblings --
+    so they still legitimately hit the "no env rung" skip below,
+    unaffected by this fix). For those two, `provider.name: bedrock` is
+    written to config FIRST so the gate is genuinely active before the
+    env-vs-config race runs -- a `direction` mutation on either now
+    fails here instead of hiding behind an unconditional skip."""
     setting = settings.by_name(name)
-    if setting.enabled_when is not None:
-        pytest.skip(f"{name} is gated by enabled_when -- covered by the enabled_when tests instead")
     if setting.env_var is None:
         pytest.skip(f"{name} has no env rung (env_var=None) -- config-vs-env has no meaning here")
     home = tmp_path / "home"
+    if setting.enabled_when is not None:
+        _write_config(home, "provider", "name", "bedrock")
     if setting.config_section is not None:
         assert setting.config_key is not None
         _write_config(home, setting.config_section, setting.config_key, "config-value")

@@ -55,6 +55,7 @@ from .primitives import yamlio
 
 __all__ = [
     "CONFIG_BASENAME",
+    "INVOCATION_BACKEND_LABEL",
     "OVERRIDE_EMPTY_MARKER",
     "OVERRIDE_NONE_MARKER",
     "PROVIDER_KEYS",
@@ -116,6 +117,23 @@ def _warn(message: str) -> None:
 #: chain, keyed by surface (finer) then by the flat general key.
 _INVOCATION_SECTION = "invocation"
 
+#: M-S (S-58 code-gate fold r2, gap-4): the ONE `label` every caller of
+#: `paired_leaf`/`paired_cascade` for the invocation-backend pair
+#: passes, so a malformed `invocation.backend[_<surface>]` config value
+#: warns with the byte-identical sentence regardless of which face
+#: resolved it. Before this fold, `settings._try_paired` passed
+#: `setting.description` (a per-surface phrase, e.g. "the invocation
+#: backend selection for the 'worker' surface") while `invocation.
+#: registry.resolve_backend_raw` passed this same literal directly —
+#: same walk, two different warn sentences, unpinned by any test. Kept
+#: here (not in `settings.py` or `registry.py`) for the same reason the
+#: cascade itself lives here: neither of those modules can import the
+#: other's `Setting`/registry types without a cycle, and this constant
+#: is invocation-backend-specific, not a general "paired entry" label —
+#: a future non-backend paired setting of a different shape would need
+#: its own label, not this one.
+INVOCATION_BACKEND_LABEL = "invocation backend selection"
+
 
 def invocation_backend(home: Path | str, surface: str) -> tuple[str, str] | None:
     """U-seam §3.7.3 — the registry's rung-3/rung-4 config reader.
@@ -142,7 +160,7 @@ def invocation_backend(home: Path | str, surface: str) -> tuple[str, str] | None
         _INVOCATION_SECTION,
         f"backend_{surface}",
         "backend",
-        label="invocation backend selection",
+        label=INVOCATION_BACKEND_LABEL,
     )
 
 
