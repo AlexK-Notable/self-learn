@@ -245,6 +245,17 @@ def test_route_sites_are_derived_and_all_spool():
     assert {"_execute_route", "route_direct", "reroute_record"} <= set(sites)
 
     for name, node in sites.items():
+        if name in _CALLEE_SPOOLS_EXEMPT:
+            # minor-5 (gate r1): a bare-name exemption proves nothing on
+            # its own -- check the call chain it claims, the same way
+            # `f1abafb`'s test_hostmode.py `_MERGE_FOR` fix does.
+            assert _calls_a_spooling_site(node, sites), (
+                f"{name} is in _CALLEE_SPOOLS_EXEMPT (exempt because it "
+                "calls a spooling callee), but its own body no longer "
+                "calls anything collected as a spooling site -- this "
+                "exemption would otherwise hide a genuine regression"
+            )
+            continue
         assert _spools_route(node) or name in _CALLER_SPOOLS_EXEMPT, (
             f"{name} routes without spooling a `route` event"
         )
@@ -619,17 +630,30 @@ def _call_name(func: ast.expr) -> str | None:
 #: re-flagging the one function whose job is to be called for EVERY
 #: resolution status, "routed" among five others.
 #:
-#: `route_direct` (M-R, 2026-09-04) joins this set for the SAME reason
-#: `reroute_record` is in it, not `resolve_record`'s: its own adapter
-#: body still calls `record.set_routing(...)` directly (it stays a real
-#: SITE, found below), but the `spool_quiet("route", ...)` call that
-#: used to sit in its own body moved into `_execute_route`, which it
-#: now delegates to for the rest of the pinned sequence -- same
+#: `route_direct` is a DIFFERENT exemption SHAPE from the two above, not
+#: a third instance of the same one (minor-5, gate r1): `reroute_record`/
+#: `resolve_record` are exempt because their CALLER spools -- nothing in
+#: their own body reaches a spooling callee, so that direction can only
+#: ever be checked from the OUTSIDE (by testing `reroute`/the managed-
+#: write verbs directly, which the rest of this suite already does).
+#: `route_direct` is exempt because IT calls a callee that spools: its
+#: own adapter body still calls `record.set_routing(...)` directly (it
+#: stays a real SITE, found below), but the `spool_quiet("route", ...)`
+#: call that used to sit in its own body moved into `_execute_route`,
+#: which it now delegates to for the rest of the pinned sequence -- same
 #: placement pin, same commit, just one call frame further in. `route`
-#: itself needs no such entry: its body no longer calls `set_routing`/
-#: `resolve_record` at all, so it is not a site in the first place (see
-#: the floor-control assertion's own comment above).
-_CALLER_SPOOLS_EXEMPT = {"reroute_record", "resolve_record", "route_direct"}
+#: itself needs no entry in EITHER set: its body no longer calls
+#: `set_routing`/`resolve_record` at all, so it is not a site in the
+#: first place (see the floor-control assertion's own comment above).
+#: Kept in a SEPARATE set (`_CALLEE_SPOOLS_EXEMPT`) rather than folded
+#: into `_CALLER_SPOOLS_EXEMPT` because only THIS shape can be checked
+#: from the inside: the exempt function's own body must call a name
+#: that is itself a collected site and itself spools (same call-chain-
+#: guard shape as `f1abafb`'s test_hostmode.py `_MERGE_FOR` fix) --
+#: applying that same check to `reroute_record`/`resolve_record` would
+#: be checking the wrong direction and would always fail.
+_CALLER_SPOOLS_EXEMPT = {"reroute_record", "resolve_record"}
+_CALLEE_SPOOLS_EXEMPT = {"route_direct"}
 
 
 def _route_sites(
@@ -695,4 +719,24 @@ def _spools_route(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
                 and inner.args[0].value == "route"
             ):
                 return True
+    return False
+
+
+def _calls_a_spooling_site(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    sites: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+) -> bool:
+    """minor-5 (gate r1): the call-chain guard `_CALLEE_SPOOLS_EXEMPT`
+    needs -- True when `node`'s own body calls (by bare name) some
+    OTHER function that is itself a collected `sites` entry and itself
+    spools. Without this, an exemption in `_CALLEE_SPOOLS_EXEMPT` is a
+    bare name nobody re-checks: severing the exempt function's own call
+    into its spooling callee would leave it silently unrouted-to-
+    telemetry and this criterion still green."""
+    for inner in ast.walk(node):
+        if not isinstance(inner, ast.Call):
+            continue
+        name = _call_name(inner.func)
+        if name and name != node.name and name in sites and _spools_route(sites[name]):
+            return True
     return False

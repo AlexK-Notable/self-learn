@@ -4645,6 +4645,12 @@ def route_direct(
         if note is not None:
             record.set_resolution_note(note)
 
+        # nit-3 (gate r1): no `follow_up=` below, deliberately -- the
+        # "direct" branch above already owns and sets its own routing
+        # block (`record.set_routing(routing)`, `follow_up` included
+        # when given), so the core's own `follow_up` parameter (which
+        # `route` relies on to reach `resolve_record`) would be
+        # redundant here, not omitted by oversight.
         return _execute_route(
             home,
             record,
