@@ -962,10 +962,11 @@ human routes it.
   and the gate's verification table:
   `drafts/u-docs-truth-sweep-spec.md`.
 - **2026-09-04 — S-58 amended: one mechanism, per-key direction (Sprint 2
-  plan v2 §2 M-S; decision D1); folded r1 and r2 same day against two
-  blind spec gates (r1: 2 Blockers, 6 Majors, 5 minors, 2 nits; r2: 1
-  Blocker, 2 Majors, 3 minors, 3 nits — see `03-decisions.md`'s `S-58`
-  row for the current folded text; not yet gate-CLEAN).** The two
+  plan v2 §2 M-S; decision D1); folded r1, r2, and r3 same day against
+  three blind spec gates (r1: 2 Blockers, 6 Majors, 5 minors, 2 nits;
+  r2: 1 Blocker, 2 Majors, 3 minors, 3 nits; r3: 0 Blockers, 2 Majors, 1
+  minor, 1 nit — see `03-decisions.md`'s `S-58` row for the current
+  folded text; not yet gate-CLEAN).** The two
   precedence DIRECTIONS `S-58` ruled on 2026-07-19/2026-09-01 are
   unchanged — the settings registry's operator-policy keys stay
   `override > config.yaml > env > default`; provider/model/backend
@@ -988,15 +989,22 @@ human routes it.
   `model_for`'s wrapper discriminates by the returned SOURCE LABEL
   (override/env answer immediately; config/default defer to the active
   bedrock leaf first) rather than running a flat rung list (r2 m3).
-  `provider.name` and the `invocation.backend` family carry
-  `validate=None` — their per-rung warning literals differ by rung, so
-  a one-argument `Setting.validate` cannot select the right one; an
-  external emitter that already knows the rung (`_resolve_provider`'s
-  own branches; `registry._resolve` for the backend family, fed the RAW
-  unclamped value) prints today's exact literals and, for the backend
-  family, still RAISES `BackendUnavailable` on `"cli"` rather than
-  folding it (r2 M1 — the r1 fold's "validate clamps and prints" shape
-  could not work: `validate` never receives the rung). The backend
+  runtime dispatch and the registry's own reporting/write surfaces are
+  now two deliberately separate mechanisms (r3 M1/M2, correcting r2 M1's
+  conflation of the two): a PURE `resolve_backend_raw(home, surface) ->
+  (raw_value, source)` emits nothing, so `backend_for` keeps its
+  existing emitter `registry._resolve` on ITS path only (today's four
+  pinned literals, unedited) while `provider.resolve_backend` folds the
+  same raw value SILENTLY with `provider.py`'s own pure halves — no
+  warn ever on the provider side, preserving `Rs-b` and its witness
+  `test_bk3_resolve_backend_name_never_warns`. Separately, `provider.name`
+  and the `invocation.backend` family KEEP `Setting.validate` for
+  `doctor settings`/`config get|set|unset`/`preflight` only: `config
+  set` refuses an off-whitelist value outright (naming `PROVIDERS`/
+  `KNOWN_BACKENDS`), and the read side reports the effective, already-
+  folded value under its existing source label, via `resolve_setting`'s
+  own generic (not byte-pinned) warning — a different vocabulary from
+  `registry._resolve`'s, so the two never collide. The backend
   chain's specific/general PAIR at each end (env, config) keeps its
   full preservation constraint — `Rs-a1`'s asymmetry (an EMPTY
   per-surface config value terminates at the default WITHOUT
@@ -1016,7 +1024,8 @@ human routes it.
   discriminating case beside it. One override slot per LOGICAL key
   (`invocation.backend` and `invocation.backend_<surface>` are two
   logical keys, each keeping its own override var, preserving both the
-  blanket and per-surface reach today's env vars have — r2 m1); the
+  blanket and per-surface reach today's env vars have — r2 m1), the
+  specific outranking the general, mirroring the env pair (r3 m1); the
   default rung stays `S-47`'s per-surface table, never flattened to one
   literal (MAJOR-6); `models.*`'s own default rung is each surface's
   already-called function (`worker_model()`/`miner_model()`/the
