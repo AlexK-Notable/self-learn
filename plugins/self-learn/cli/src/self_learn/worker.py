@@ -3728,13 +3728,24 @@ def run(
     # this armor-pinned path (`reconcile()` itself is unchanged for the
     # miner/push call sites, which already called it).
     recovered = intents.recover(home)
-    if recovered.rolled_forward or recovered.restored or recovered.stopped:
+    if recovered.acted or recovered.stopped:
+        log("run: recovered intent(s) from a prior interrupted run")
+    # Gate r1 BLOCKER-2: each on its OWN line (the same combined-line
+    # shape miner.py had was the bug that crashed there) — never one
+    # line naming all three lists at once.
+    for intent_id in recovered.rolled_forward:
+        # Gate r1 MAJOR-2: roll-forward only ever replays the ledger's
+        # own commit — the host phase (`_host_phase`) lived inside the
+        # interrupted `_execute_route` call, which is gone, so it never
+        # runs. Name the repair here too, mirroring the miner and CLI.
         log(
-            "run: recovered intent(s) from a prior interrupted run — "
-            f"rolled forward {recovered.rolled_forward}, "
-            f"restored {recovered.restored}, "
-            f"stopped {recovered.stopped}"
+            f"run: recovered {intent_id} (rolled forward: its commit "
+            "landed — the host phase did not run; run 'self-learn recompile')"
         )
+    for intent_id in recovered.restored:
+        log(f"run: recovered {intent_id} (restored: its mutation was undone)")
+    for line in recovered.stopped:
+        log(f"run: could not resolve an intent, left for a human: {line}")
     if no_push is None:
         no_push = no_push_requested()
     cache_dir().mkdir(parents=True, exist_ok=True)

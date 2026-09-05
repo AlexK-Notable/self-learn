@@ -47,7 +47,22 @@ from pathlib import Path
 from . import report as report_mod
 from . import hosts as hosts_mod
 from . import reconcile as reconcile_mod
-from . import batch, config, gitops, miner, provider, refread, selfcheck, sentinel, serve, settings, telemetry, verbs, worker
+from . import (
+    batch,
+    config,
+    gitops,
+    intents,
+    miner,
+    provider,
+    refread,
+    selfcheck,
+    sentinel,
+    serve,
+    settings,
+    telemetry,
+    verbs,
+    worker,
+)
 from .compilers import CompileError, ReferenceResult
 from .import_backlog import import_backlog
 from .import_common import ImporterError
@@ -949,6 +964,28 @@ def _warn_unparseable(home) -> None:
             )
 
 
+def _warn_intents_in_flight(home) -> None:
+    """Gate r1 BLOCKER-1's visibility requirement: once a STOP freezes
+    ``reconcile``'s orphan healing under this home (see
+    :func:`reconcile.reconcile`'s own docstring), ``status`` is the one
+    place a human — or the SessionStart hook, via ``--fast`` — can
+    notice without running ``reconcile`` first and getting refused.
+    Always stderr, even from the ``--fast``/``--json`` paths: their
+    stdout is a pinned, machine-parsed contract (08 §7.1) this must
+    never share a stream with. One line total, naming every intent id
+    found; nothing printed when there are none (the positive control:
+    an intent-free home prints nothing here)."""
+    ids = sorted(p.stem for p in intents.intents_dir(home).glob("*.json"))
+    if not ids:
+        return
+    plural = "s" if len(ids) != 1 else ""
+    print(
+        f"self-learn: {len(ids)} transaction intent{plural} in flight "
+        f"({', '.join(ids)}) — run 'self-learn reconcile'",
+        file=sys.stderr,
+    )
+
+
 def _cmd_status_fast() -> int:
     """08 §7.1 SessionStart pin: guaranteed-cheap, pending/-only. The bash
     hook consumes this — queue semantics live HERE, never in bash. Doc 12
@@ -986,6 +1023,7 @@ def _cmd_status_fast() -> int:
     data["miner_last_run"] = miner.last_run_iso()
     data["miner_stale"] = miner.stale()
     print(json.dumps(data))
+    _warn_intents_in_flight(home)
     return EXIT_OK
 
 
@@ -1361,6 +1399,7 @@ def _cmd_status(as_json: bool) -> int:
     if (code := _home_gate(home)) is not None:
         return code
     _warn_unparseable(home)
+    _warn_intents_in_flight(home)
     infos = status_infos(home)
     total_pending = sum(i["pending"] for i in infos)
     # 11 §2.1: one line on the FULL status paths only — the future
@@ -2230,7 +2269,14 @@ def _cmd_push() -> int:
         # restore) before its own orphan scan ran; this just names what
         # happened, the same way the orphan line above does.
         for intent_id in healed.rolled_forward:
-            print(f"push: recovered {intent_id} (rolled forward: its commit landed)")
+            # Gate r1 MAJOR-2: roll-forward replays only the LEDGER's own
+            # commit — the host phase lived inside the interrupted
+            # `_execute_route` call, which is gone, so it never runs.
+            # Name the repair; `status`/`doctor` say nothing about this.
+            print(
+                f"push: recovered {intent_id} (rolled forward: its commit "
+                "landed — the host phase did not run; run 'self-learn recompile')"
+            )
         for intent_id in healed.restored:
             print(f"push: recovered {intent_id} (restored: its mutation was undone)")
         # M-C: a refusal here is informational, never fatal to the push —
@@ -2294,12 +2340,24 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
             f"reconcile: NOT recovered — {line}\n"
             "  a collapse/host-rebind transaction's intent could not be "
             "resolved (neither its final state verified, nor its prior "
-            "content recoverable) — the intent file is left in place; "
-            "repair by hand, then re-run reconcile.",
+            "content recoverable) — the intent file is left in place, and "
+            "gate r1 BLOCKER-1: THIS RUN COMMITTED NOTHING, from this "
+            "offender or any other orphan alongside it. Repair by hand: "
+            "inspect this offender's current on-disk content, decide "
+            "whether it is acceptable, then delete "
+            f"{intents.intents_dir(home)}/<id>.json and re-run reconcile — "
+            "until then, every ordinary orphan under this home stays "
+            "uncommitted too, not just this one.",
             file=sys.stderr,
         )
     for intent_id in result.rolled_forward:
-        print(f"reconcile: recovered {intent_id} (rolled forward: its commit landed)")
+        # Gate r1 MAJOR-2: roll-forward replays only the LEDGER's own
+        # commit — the host phase lived inside the interrupted
+        # `_execute_route` call, which is gone, so it never runs.
+        print(
+            f"reconcile: recovered {intent_id} (rolled forward: its commit "
+            "landed — the host phase did not run; run 'self-learn recompile')"
+        )
     for intent_id in result.restored:
         print(f"reconcile: recovered {intent_id} (restored: its mutation was undone)")
     if result.refused:
@@ -2311,7 +2369,7 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
         # identical guarantee.
         return EXIT_GIT_FAILED
     if not result.committed:
-        if result.rolled_forward or result.restored:
+        if result.acted:
             return EXIT_OK
         print("reconcile: nothing uncommitted — the ledger is whole")
         return EXIT_OK

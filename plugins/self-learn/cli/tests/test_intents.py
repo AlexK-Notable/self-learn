@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -117,6 +118,32 @@ def _remove(*a, **k):
         _die("remove_merge")
     return r
 ledger_ops._remove_file = _remove
+
+# Gate r1 MAJOR-1: the two compile-record mutations between
+# `remove_merge` and `complete` -- `_write_compile_record_entry`
+# (the survivor's own compile record) and `_resync_three_regions`
+# (a no-op for a plain `dest="skill-md"` collapse, but still a real
+# call boundary the fix must survive across, per the gate's own
+# `probe_collapse.py`). `_complete_old_retirement` is not hooked here:
+# for THIS fixture (no `old_id`) it returns `[]` immediately, so a kill
+# right after it would be indistinguishable from one right after
+# `compile_record` -- `TestCollapseWithOldIdCrashWindow` below is where
+# that function does real work.
+_orig_cre = verbs._write_compile_record_entry
+def _cre(*a, **k):
+    r = _orig_cre(*a, **k)
+    if KILL_AFTER == "compile_record":
+        _die("compile_record")
+    return r
+verbs._write_compile_record_entry = _cre
+
+_orig_resync = verbs._resync_three_regions
+def _resync(*a, **k):
+    r = _orig_resync(*a, **k)
+    if KILL_AFTER == "resync":
+        _die("resync")
+    return r
+verbs._resync_three_regions = _resync
 
 _orig_complete = intents.complete
 def _complete(intent):
@@ -252,6 +279,7 @@ class TestCollapseCrashWindows:
 
     def _fire(self, cluster, tmp_path, kill_after: str):
         env, survivor, loser, merge_path = cluster
+        sha_before_crash = head(env.ledger)
         barrier = tmp_path / "barrier"
         proc = _run_child(
             _COLLAPSE_CHILD,
@@ -265,7 +293,7 @@ class TestCollapseCrashWindows:
             barrier,
         )
         _assert_killed(proc, barrier, kill_after)
-        return env, survivor, loser, merge_path
+        return env, survivor, loser, merge_path, sha_before_crash
 
     def _assert_fully_restored(self, env, survivor, loser, merge_path) -> None:
         pending = env.ledger / "skills" / "s" / "pending" / f"{survivor.id}.md"
@@ -278,8 +306,15 @@ class TestCollapseCrashWindows:
         assert merge_path.is_file()
         assert porcelain(env.ledger) == ""
         assert list(intents.intents_dir(env.ledger).glob("*.json")) == []
+        # Gate r1 MAJOR-1: the compile-record write (`compiled/<slug>
+        # .yaml`) is now inside the intent's own protected span too --
+        # this fixture's survivor never routed before, so that path's
+        # `old_sha` is `null` (it did not exist pre-transaction), and a
+        # full restore means it is GONE again, not merely unchanged.
+        compiled_dir = env.ledger / "compiled"
+        assert (not compiled_dir.is_dir()) or list(compiled_dir.glob("*.yaml")) == []
 
-    def _assert_fully_rolled_forward(self, env, survivor, loser) -> None:
+    def _assert_fully_rolled_forward(self, env, survivor, loser, sha_before_crash: str) -> None:
         pending = env.ledger / "skills" / "s" / "pending" / f"{survivor.id}.md"
         resolved = env.ledger / "skills" / "s" / "resolved" / f"{survivor.id}.md"
         loser_resolved = env.ledger / "skills" / "s" / "resolved" / f"{loser.id}.md"
@@ -287,45 +322,62 @@ class TestCollapseCrashWindows:
         assert resolved.is_file()
         assert loser_resolved.is_file()
         assert "superseded" in loser_resolved.read_text(encoding="utf-8")
-        # The intent's own commit carries the ORIGINAL subject regardless
-        # of whether reconcile's ordinary orphan scan (compile-record
-        # entries this intent deliberately does not cover — see
-        # `_execute_route`'s own comment) lands a SEPARATE, later commit
-        # in the same `reconcile()` call — hence membership, not `[0]`.
-        assert (
+        route_subject = (
             f"self-learn: route {survivor.id} → skill-md "
             f"(collapse merge-0000f001, supersedes {loser.id})"
-        ) in subjects(env.ledger)
+        )
+        assert route_subject in subjects(env.ledger)
+        # Gate r1 MAJOR-1's expected consequence: the compile-record
+        # writes are now inside the intent's own protected span, so
+        # roll-forward's one commit covers them too -- the two-commit
+        # split the ORIGINAL M-W design accepted (a SEPARATE
+        # `reconcile()` orphan-scan commit for the leftover
+        # `compiled/*.yaml` this intent used to leave uncovered) no
+        # longer happens: exactly one new commit lands relative to
+        # right before the crash, and it is this one.
+        new_subjects = git(
+            env.ledger, "log", "--format=%s", f"{sha_before_crash}..HEAD"
+        ).stdout.strip().splitlines()
+        assert new_subjects == [route_subject], new_subjects
         assert list(intents.intents_dir(env.ledger).glob("*.json")) == []
 
-    @pytest.mark.parametrize("kill_after", ["write", "resolve", "supersede", "remove_merge"])
+    @pytest.mark.parametrize(
+        "kill_after",
+        ["write", "resolve", "supersede", "remove_merge", "compile_record", "resync"],
+    )
     def test_kill_before_complete_restores_pre_transaction_state(
         self, cluster, tmp_path, kill_after
     ):
-        env, survivor, loser, merge_path = self._fire(cluster, tmp_path, kill_after)
+        env, survivor, loser, merge_path, _sha_before_crash = self._fire(
+            cluster, tmp_path, kill_after
+        )
         result = reconcile_mod.reconcile(env.ledger, no_push=True)
         assert result.restored, result
         assert not result.rolled_forward and not result.stopped
         self._assert_fully_restored(env, survivor, loser, merge_path)
 
     def test_kill_after_complete_rolls_forward(self, cluster, tmp_path):
-        env, survivor, loser, merge_path = self._fire(cluster, tmp_path, "complete")
+        env, survivor, loser, merge_path, sha_before_crash = self._fire(
+            cluster, tmp_path, "complete"
+        )
         result = reconcile_mod.reconcile(env.ledger, no_push=True)
         assert result.rolled_forward, result
         assert not result.restored and not result.stopped
-        self._assert_fully_rolled_forward(env, survivor, loser)
+        self._assert_fully_rolled_forward(env, survivor, loser, sha_before_crash)
 
     def test_kill_after_commit_is_idempotent(self, cluster, tmp_path):
         """Advisor's item E: the commit landed for real before the
         SIGKILL — only `intents.finish` never ran. Recovery must not
         raise `HalfWrittenError` on a batch with nothing left to stage,
         and must not create a second commit."""
-        env, survivor, loser, merge_path = self._fire(cluster, tmp_path, "commit")
-        sha_before = head(env.ledger)
+        env, survivor, loser, merge_path, sha_before_crash = self._fire(
+            cluster, tmp_path, "commit"
+        )
+        sha_before_reconcile = head(env.ledger)
         result = reconcile_mod.reconcile(env.ledger, no_push=True)
         assert result.rolled_forward, result
-        assert head(env.ledger) == sha_before  # no duplicate commit
-        self._assert_fully_rolled_forward(env, survivor, loser)
+        assert head(env.ledger) == sha_before_reconcile  # no duplicate commit
+        self._assert_fully_rolled_forward(env, survivor, loser, sha_before_crash)
 
 
 class TestCollapseWithOldIdCrashWindow:
@@ -412,8 +464,20 @@ class TestCollapseWithOldIdCrashWindow:
 
 
 class TestRebindCrashWindows:
-    @pytest.fixture
-    def rebind_setup(self, env, tmp_path):
+    #: Gate r1 minor-1: the original fixture never committed the ledger
+    #: bucket `create_record` writes, so it was UNTRACKED at rebind time
+    #: — `git mv` on an untracked path stages nothing (`hosts.py`'s own
+    #: `bucket.rename` fallback runs instead), so the `R`/`RM` staged-
+    #: rename shape `_prune_empty_dirs`/the intent's `git reset -q --`
+    #: exist to handle was never actually produced. Proof it mattered:
+    #: mutation 3c (removing the index reset) reddened four COLLAPSE
+    #: tests and ZERO rebind tests. Parametrized both ways: "tracked"
+    #: covers the realistic case (a project bucket almost always has
+    #: prior history by the time a rebind happens) and is what makes the
+    #: staged-rename shape real; "untracked" keeps the ORIGINAL fixture's
+    #: coverage of `hosts.py`'s plain-rename fallback path.
+    @pytest.fixture(params=["tracked", "untracked"])
+    def rebind_setup(self, env, tmp_path, request):
         project_repo = tmp_path / "proj-repo"
         init_repo(project_repo)
         (project_repo / "README.md").write_text("proj\n", encoding="utf-8")
@@ -421,6 +485,8 @@ class TestRebindCrashWindows:
         host_add(env.ledger, project_repo, "project")
         record = make_behavior(scope="project", record_id="lrn-0000e001")
         create_record(env.ledger, record, project_path=project_repo)
+        if request.param == "tracked":
+            commit_all(env.ledger, "commit the bucket")
         moved = tmp_path / "proj-moved"
         project_repo.rename(moved)
         return env, project_repo, moved
@@ -719,6 +785,10 @@ class TestCoreMechanics:
         assert not result.rolled_forward and not result.restored
         assert intent.file_path.exists(), "a STOP must leave the intent in place"
         assert f.read_text(encoding="utf-8") == "further mutated, still uncompleted"
+        # Gate r1 MAJOR-3(b): a STOP must not stage anything either --
+        # "nothing is touched" (the module docstring's own promise)
+        # means the INDEX too, not just the worktree bytes.
+        assert git(repo, "diff", "--cached").stdout == ""
 
     def test_untracked_file_restores_from_the_inline_copy(self, tmp_path):
         """The pin-implied `old_inline` key: an UNTRACKED file's bytes
@@ -739,3 +809,82 @@ class TestCoreMechanics:
         result = intents.recover(repo)
         assert result.restored == [intent.id]
         assert f.read_text(encoding="utf-8") == "untracked original"
+
+    def test_oversize_untracked_step_stops_without_touching_bytes(self, tmp_path):
+        """Gate r1 MAJOR-3(a): an untracked file BIGGER than `_INLINE_CAP`
+        (64 KiB) gets no inline copy — recovery has no source at all for
+        its pre-transaction bytes (not git, since it was never tracked;
+        not the intent, since it is over the cap), so it must STOP,
+        never silently accept whatever happens to be on disk."""
+        repo = tmp_path / "repo"
+        init_repo(repo)
+        (repo / "placeholder.txt").write_text("x", encoding="utf-8")
+        commit_all(repo, "seed")
+        f = repo / "big.bin"
+        f.write_bytes(b"A" * (intents._INLINE_CAP + 1))  # untracked, over the cap
+
+        intent = intents.begin(repo, "test-op", [f], "self-learn: test op")
+        raw = json.loads(intent.file_path.read_text(encoding="utf-8"))
+        assert "old_inline" not in raw["steps"][0], (
+            "over the cap must NOT carry an inline copy — that is the "
+            "whole point of the cap"
+        )
+
+        f.write_bytes(b"B" * 10)  # crash before complete(): mutated, uncompleted
+
+        result = intents.recover(repo)
+        assert result.stopped and intent.id in result.stopped[0]
+        assert not result.rolled_forward and not result.restored
+        assert intent.file_path.exists(), "a STOP must leave the intent in place"
+        assert f.read_bytes() == b"B" * 10, "STOP must not touch the step's bytes"
+        assert git(repo, "diff", "--cached").stdout == ""
+
+    def test_recover_survives_a_ledger_moved_to_a_new_location(self, tmp_path):
+        """Gate r1 minor-2: an intent opened against ``home`` must recover
+        cleanly when ``home`` itself has moved (a restore from backup, or
+        a relocated checkout) between the crash and the recovery call —
+        storing ``step['path']`` HOME-RELATIVE (this fold) is what makes
+        this possible: the ABSOLUTE path this fixture used to store would
+        fall outside the new location's subtree and raise ``ValueError``
+        out of every caller (`reconcile()`, `push`, the miner's own
+        `except gitops.GitOpsError` — which does not catch it — and
+        `worker.run`'s unguarded call)."""
+        old_home = tmp_path / "old-location"
+        init_repo(old_home)
+        f = old_home / "a.txt"
+        f.write_text("old", encoding="utf-8")
+        commit_all(old_home, "seed")
+
+        intent = intents.begin(old_home, "test-op", [f], "self-learn: test op")
+        f.write_text("mutated, crash before complete()", encoding="utf-8")
+
+        new_home = tmp_path / "new-location"
+        shutil.move(str(old_home), str(new_home))
+
+        result = intents.recover(new_home)
+        assert result.restored == [intent.id]
+        assert not result.stopped
+        assert (new_home / "a.txt").read_text(encoding="utf-8") == "old"
+        assert not (new_home / ".intents" / f"{intent.id}.json").exists()
+
+    def test_head_show_converts_a_timeout_to_giterror(self, tmp_path, monkeypatch):
+        """Gate r1 minor-3: `_head_show`'s bespoke `subprocess.run` (kept
+        bespoke because it is the one byte-exact call in this module —
+        `gitops._git`/`procs.run_bounded` both force `text=True`) must
+        still convert a `TimeoutExpired` to `gitops.GitOpsError`, the way
+        every OTHER child process in this codebase does, instead of
+        letting the raw stdlib exception escape past `_capture_old_state`
+        (called from `begin`, uncaught anywhere above it)."""
+        repo = tmp_path / "repo"
+        init_repo(repo)
+        f = repo / "a.txt"
+        f.write_text("old", encoding="utf-8")
+        commit_all(repo, "seed")
+
+        def _wedged(*a, **k):
+            raise subprocess.TimeoutExpired(cmd="git show", timeout=30.0)
+
+        monkeypatch.setattr(intents.subprocess, "run", _wedged)
+
+        with pytest.raises(gitops.GitOpsError, match="git show"):
+            intents._head_show(repo, "a.txt")

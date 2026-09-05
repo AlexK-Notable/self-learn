@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import cli, miner, telemetry
+from self_learn import cli, intents, miner, telemetry
 from self_learn.ledger_ops import create_record
 from self_learn.records import Record
 from support import commit_all, make_behavior, make_home
@@ -2784,3 +2784,35 @@ def test_mine_status_reports_corrupt_records_in_human_output(
     assert rc == cli.EXIT_OK
     out = capsys.readouterr().out
     assert "1 ledger file(s) not UTF-8, skipped" in out
+
+
+# ============================== M-W/D7 gate r1 fold: BLOCKER-2/MAJOR-3(d)
+
+
+def test_mine_recovers_a_restorable_intent_and_logs_it(home):
+    """Gate r1 BLOCKER-2 / MAJOR-3(d): a mine START must recover a
+    RESTORABLE intent left by a previous run's crash, complete
+    normally, and LOG the recovery — pins the fix at `_run_locked`'s own
+    self-heal block. Before the fix, `if healed.healed:` was true here
+    with `healed.committed` empty (nothing to reconcile, only an intent
+    to recover), and `healed.sha[:7]` crashed the WHOLE mine run with an
+    uncaught `TypeError` — this is the identical shape, minus the
+    SIGKILL: a real intent planted directly, recovery running for real
+    inside a real `miner.run(home)` call. No cursors are initialized, so
+    this reaches `status == "initialized"` (the first-activation path)
+    right after recovery, without ever touching the reader/SDK — the
+    self-heal step runs BEFORE that check, so it is exercised either
+    way."""
+    f = home / "a.txt"
+    f.write_text("old", encoding="utf-8")
+    commit_all(home, "seed")
+    intent = intents.begin(home, "test-op", [f], "self-learn: test op")
+    f.write_text("mutated, crash before complete()", encoding="utf-8")  # never completed
+
+    result = miner.run(home)
+
+    assert result.status == "initialized"  # the mine run itself completes, no crash
+    assert f.read_text(encoding="utf-8") == "old"
+    assert not intent.file_path.exists()
+    log_text = (miner.miner_dir() / "miner.log").read_text(encoding="utf-8")
+    assert f"recovered {intent.id} (restored: its mutation was undone)" in log_text

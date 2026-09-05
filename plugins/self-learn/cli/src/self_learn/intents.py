@@ -22,23 +22,34 @@ the caller's own lock BEFORE its first mutation and removed after its
 commit:
 
     {"op": "...", "id": "...", "started": "<iso>",
-     "steps": [{"path": "<abs>", "old_sha": "<hex>"|null,
+     "steps": [{"path": "<home-relative>", "old_sha": "<hex>"|null,
                 "new_sha": "<hex>"|"-"|null}, ...],
      "commit_subject": "..."}
 
 One step per PATH the transaction touches (not per mutation of that
 path -- a path rewritten twice, or renamed then rewritten, is still one
 step: only its state at the two endpoints matters for recovery).
-``old_sha`` is the path's sha256 before the transaction began, or
-``null`` when it did not exist yet. ``new_sha`` starts ``null``
-(unrecorded); :func:`complete` fills in every step's ACTUAL final state
-in one pass, right after the last mutation lands and before the
-commit -- a real sha256 if the path exists, the sentinel ``"-"`` if it
-does not (the vanished half of a rename). A step whose ``new_sha`` is
-still ``null`` at recovery time is proof the crash landed before
-:func:`complete` ran, i.e. mid-mutation -- unambiguous, unlike a
+``path`` is stored HOME-RELATIVE (gate r1 minor-2), not absolute: an
+intent is read back against whatever ``home`` the CALLER passes to
+:func:`recover`, which is not always the same absolute path that wrote
+it (a ledger restored from backup, or moved) -- resolving relative to
+the CURRENT ``home`` at every read means a moved ledger recovers
+exactly like one that never moved, with no path-membership check able
+to fail along the way. ``old_sha`` is the path's sha256 before the
+transaction began, or ``null`` when it did not exist yet. ``new_sha``
+starts ``null`` (unrecorded); :func:`complete` fills in every step's
+ACTUAL final state in one pass, right after the last mutation lands and
+before the commit -- a real sha256 if the path exists, the sentinel
+``"-"`` if it does not (the vanished half of a rename). A step whose
+``new_sha`` is still ``null`` at recovery time is proof the crash landed
+before :func:`complete` ran, i.e. mid-mutation -- unambiguous, unlike a
 pre-guessed "expected absent" written at :func:`begin` time would have
 been (that would collide with "unrecorded" on the same ``null``).
+:func:`add_step` registers one more step on an ALREADY-OPEN intent, for
+a path not knowable until :func:`begin` time has passed (gate r1
+MAJOR-1: a collapse's compile-record writes resolve their target's host
+slug mid-transaction) -- same before-the-mutation discipline, same
+schema, appended in place.
 
 **Pin-implied key.** The schema above adds one key beyond
 ``{path, old_sha, new_sha}``: ``old_inline`` (base64, omitted unless
@@ -47,9 +58,15 @@ path's pre-transaction content cannot be recovered from git (untracked,
 or a symlink) and is small enough (<= 64 KiB) to carry inline. Recovery
 needs SOME source for "the bytes this path held before" that survives a
 crash; git's own object store is that source for a TRACKED path
-(``git show HEAD:<relpath>`` -- HEAD has not moved, since the crash is
-mid-transaction, before this transaction's own commit), and this key is
-the fallback for everything git cannot answer.
+(``git show HEAD:<relpath>``) -- but HEAD may well have moved by the
+time recovery runs (gate r1 BLOCKER-1: an ordinary verb against a
+DIFFERENT record can land a real commit while this intent sits
+unresolved), so this is never a "HEAD is still where it was" assumption.
+What decides recoverability is CONTENT, checked by hash: current on-disk
+bytes against ``old_sha`` first, then ``HEAD``'s blob at this path
+against that same ``old_sha`` (whichever commit HEAD now names), then
+the inline copy. Only when none of the three matches does this key
+become the fallback restore has no other source for.
 
 **Recovery** (:func:`recover`, called from :func:`reconcile.reconcile`
 before its own orphan scan, and from :func:`worker.run` at start) reads
@@ -68,7 +85,16 @@ step path so the index matches the restored worktree, then remove the
 intent. If restore cannot resolve even one step's prior content (the
 untracked-and-too-big case, or a repo whose HEAD no longer holds the
 blob), NOTHING is touched for that intent, it is left in place, and the
-offending path is reported -- a human decides from there.
+offending path is reported -- a human decides from there. Gate r1
+BLOCKER-1: a STOPped intent used to still let :func:`reconcile.reconcile`
+stage and commit its OWN ordinary orphan scan below it -- which can
+include the very files the stuck transaction half-wrote -- while
+reporting "nothing was written". ``reconcile()`` now refuses that whole
+batch too whenever recovery leaves anything ``stopped``, the same
+all-or-nothing contract a blocked rename or an invalid orphan already
+carry; see its own docstring for the operator-facing consequence (a
+single stuck intent freezes ALL orphan healing, including the miner's
+own carry-over, until a human clears it).
 
 **Location: `<home>/.intents/`, not the XDG cache dir.** The choice is
 pinned open in the brief; this module answers it in favor of the ledger
@@ -102,7 +128,16 @@ from . import gitops
 from .compiled import sha256_hex
 from .primitives import chrono, fsops
 
-__all__ = ["Intent", "RecoverResult", "begin", "complete", "finish", "recover", "intents_dir"]
+__all__ = [
+    "Intent",
+    "RecoverResult",
+    "add_step",
+    "begin",
+    "complete",
+    "finish",
+    "recover",
+    "intents_dir",
+]
 
 #: 64 KiB (D7 pin): the largest untracked file this module will carry
 #: inline in the intent JSON itself. Bigger, and recovery's restore leg
@@ -135,12 +170,23 @@ def _head_show(home: Path, relpath: str) -> bytes | None:
     is not in ``HEAD`` at all. A bespoke call (not :func:`gitops._git`,
     which decodes with ``text=True``) -- a byte-exact compare against a
     recorded sha256 must never go through a text codec that can silently
-    change bytes."""
-    proc = subprocess.run(
-        ["git", "-C", str(home), "show", f"HEAD:{relpath}"],
-        capture_output=True,
-        timeout=gitops.GIT_LOCAL_TIMEOUT,
-    )
+    change bytes. `procs.run_bounded` is the same story (also forces text
+    mode) -- a follow-up seam, not this fold: gate r1 minor-3 asked only
+    that a timeout convert to :class:`gitops.GitOpsError`, mirroring
+    :func:`gitops._git`, which this now does; it still lacks that
+    primitive's process-group kill on timeout."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(home), "show", f"HEAD:{relpath}"],
+            capture_output=True,
+            timeout=gitops.GIT_LOCAL_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise gitops.GitOpsError(
+            f"git show HEAD:{relpath} in {home} exceeded "
+            f"{gitops.GIT_LOCAL_TIMEOUT:g}s and was killed"
+            f"{gitops._index_lock_note(home)}; nothing further was attempted"  # noqa: SLF001
+        ) from exc
     if proc.returncode != 0:
         return None
     return proc.stdout
@@ -228,14 +274,20 @@ def begin(home: Path | str, op: str, paths: list[Path], commit_subject: str) -> 
     write the intent file. Call this BEFORE the first mutation, inside
     the same ``commit_lock``/``host_lock`` the transaction itself runs
     under (the docstring's "under the lock" pin) -- :func:`_write_intent`
-    takes no lock of its own."""
+    takes no lock of its own. *paths* are absolute (every existing caller
+    already has them that way); stored HOME-RELATIVE (gate r1 minor-2)."""
     home = Path(home)
     steps = []
     for p in paths:
         p = Path(p)
         old_sha, old_inline = _capture_old_state(home, p)
         steps.append(
-            {"path": str(p), "old_sha": old_sha, "old_inline": old_inline, "new_sha": None}
+            {
+                "path": _relpath(home, p),
+                "old_sha": old_sha,
+                "old_inline": old_inline,
+                "new_sha": None,
+            }
         )
     intent = Intent(
         home=home,
@@ -249,6 +301,33 @@ def begin(home: Path | str, op: str, paths: list[Path], commit_subject: str) -> 
     return intent
 
 
+def add_step(intent: Intent | None, path: Path | str) -> None:
+    """Register one more step on an ALREADY-OPEN *intent*, for a path not
+    knowable at :func:`begin` time (gate r1 MAJOR-1: a collapse's
+    compile-record writes resolve their target's host slug mid-
+    transaction, not before it). A no-op when *intent* is ``None`` -- a
+    plain, non-collapse route never opens one -- so every call site can
+    pass *intent* unconditionally rather than guarding at each one.
+    Captures ``old_sha``/``old_inline`` for *path* AS OF THIS CALL, same
+    before-the-mutation discipline :func:`begin` itself documents:
+    callers must call this immediately before *path*'s own first
+    mutation of this transaction. A *path* already present as a step (by
+    exact match, once both are home-relative) is a no-op, so a caller
+    that resolves the same path twice within one transaction attempt (a
+    retry) never duplicates it."""
+    if intent is None:
+        return
+    p = Path(path)
+    relpath = _relpath(intent.home, p)
+    if any(s["path"] == relpath for s in intent.steps):
+        return
+    old_sha, old_inline = _capture_old_state(intent.home, p)
+    intent.steps.append(
+        {"path": relpath, "old_sha": old_sha, "old_inline": old_inline, "new_sha": None}
+    )
+    _write_intent(intent)
+
+
 def complete(intent: Intent) -> None:
     """Record every step's ACTUAL current state as its final one -- call
     this once, right after the transaction's last mutation lands and
@@ -257,7 +336,7 @@ def complete(intent: Intent) -> None:
     ``new_sha`` present (-> roll forward, even if the commit itself never
     ran)."""
     for step in intent.steps:
-        p = Path(step["path"])
+        p = Path(intent.home) / step["path"]
         step["new_sha"] = sha256_hex(p.read_bytes()) if p.is_file() else ABSENT
     _write_intent(intent)
 
@@ -267,11 +346,11 @@ def finish(intent: Intent) -> None:
     intent.file_path.unlink(missing_ok=True)
 
 
-def _step_verifies_final(step: dict) -> bool:
+def _step_verifies_final(home: Path, step: dict) -> bool:
     new_sha = step.get("new_sha")
     if new_sha is None:
         return False
-    path = Path(step["path"])
+    path = Path(home) / step["path"]
     if new_sha == ABSENT:
         return not path.exists()
     return path.is_file() and sha256_hex(path.read_bytes()) == new_sha
@@ -284,12 +363,18 @@ def _resolvable_old_bytes(home: Path, step: dict) -> tuple[bool, bytes | None]:
     intent's own inline copy (untracked, <= 64 KiB). ``old_sha is None``
     always resolves (restore = "this path must not exist")."""
     old_sha = step.get("old_sha")
-    path = Path(step["path"])
+    path = Path(home) / step["path"]
     if old_sha is None:
         return True, None
     if path.is_file() and sha256_hex(path.read_bytes()) == old_sha:
         return True, path.read_bytes()
-    head_bytes = _head_show(home, _relpath(home, path))
+    # `step["path"]` is already home-relative (gate r1 minor-2) -- no
+    # `_relpath` round-trip needed here, which is exactly what removes
+    # the read-side crash a moved `home` used to cause (a stored
+    # ABSOLUTE path could fall outside the NEW home's subtree and raise
+    # `ValueError`; a relative one resolves against whatever `home` is
+    # passed to `recover` unconditionally).
+    head_bytes = _head_show(home, step["path"])
     if head_bytes is not None and sha256_hex(head_bytes) == old_sha:
         return True, head_bytes
     inline = step.get("old_inline")
@@ -339,8 +424,8 @@ class RecoverResult:
 
 
 def _recover_one(home: Path, intent: Intent, result: RecoverResult) -> None:
-    if all(_step_verifies_final(s) for s in intent.steps):
-        paths = [Path(s["path"]) for s in intent.steps]
+    if all(_step_verifies_final(home, s) for s in intent.steps):
+        paths = [Path(home) / s["path"] for s in intent.steps]
         try:
             gitops.stage_and_commit(home, paths, intent.commit_subject, allow_empty=True)
         except gitops.HalfWrittenError as exc:
@@ -359,7 +444,7 @@ def _recover_one(home: Path, intent: Intent, result: RecoverResult) -> None:
                 "(no matching content in the worktree, HEAD, or the intent's own copy)"
             )
             return
-        plan.append((Path(step["path"]), content))
+        plan.append((Path(home) / step["path"], content))
     try:
         for path, content in plan:
             if content is None:
@@ -387,7 +472,20 @@ def recover(home: Path | str) -> RecoverResult:
     incomplete collapse/rebind leaves a staged rename reconcile's scan
     would otherwise report ``blocked`` forever) and from
     :func:`worker.run` at start. Idempotent and cheap when nothing is
-    there (one directory listing under the lock)."""
+    there (one directory listing under the lock).
+
+    Gate r1 minor-2: :func:`_recover_one` runs INSIDE the same
+    ``try``/``except`` that guards reading the intent file, with
+    ``ValueError`` in the caught set — not just around the JSON decode.
+    Storing ``step["path"]`` home-relative (this same fold) already
+    removes the one call (``_relpath`` at read time) that used to raise
+    it when a step's absolute path fell outside a MOVED ``home``'s
+    subtree; this is defense in depth for anything else inside
+    :func:`_recover_one` that could still raise it, converting an
+    unresolvable step into a ``stopped`` entry that names it rather than
+    propagating past every caller — `reconcile()`, `push`, the miner's
+    own ``except gitops.GitOpsError`` (which does not catch
+    ``ValueError``), and ``worker.run``'s unguarded call."""
     home = Path(home)
     result = RecoverResult()
     d = intents_dir(home)
@@ -398,8 +496,7 @@ def recover(home: Path | str) -> RecoverResult:
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
                 intent = _from_dict(home, data)
+                _recover_one(home, intent, result)
             except (OSError, ValueError, KeyError) as exc:
-                result.stopped.append(f"{f.name}: unreadable intent file ({exc})")
-                continue
-            _recover_one(home, intent, result)
+                result.stopped.append(f"{f.name}: unresolvable intent ({exc})")
     return result

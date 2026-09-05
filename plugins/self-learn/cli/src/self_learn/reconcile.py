@@ -202,6 +202,17 @@ class ReconcileResult:
         return bool(self.committed or self.rolled_forward or self.restored)
 
     @property
+    def acted(self) -> bool:
+        """True iff an intent recovery COMPLETED (rolled forward or
+        restored) — the :func:`intents.RecoverResult.acted` mirror for
+        this dataclass (gate r1 nit-2), so callers stop re-spelling
+        ``rolled_forward or restored`` by hand. Deliberately excludes
+        ``committed`` (that is ``healed``'s own job) and ``stopped``
+        (nothing acted there — it is the one outcome that touches
+        nothing, by design)."""
+        return bool(self.rolled_forward or self.restored)
+
+    @property
     def refused(self) -> bool:
         """M-C (widened M-W/D7): true iff the batch was refused whole, OR
         an intent recovery could not resolve — either way ``committed``
@@ -418,14 +429,36 @@ def reconcile(home: Path, *, no_push: bool = False) -> ReconcileResult:
     an option here. Callers that must never abort on a refusal (the
     miner) read ``result.blocked`` / ``result.invalid`` and carry on.
 
-    M-W/D7: :func:`intents.recover` runs FIRST, inside the same lock —
-    an incomplete collapse/rebind leaves a staged rename, which
-    ``find_orphans`` would otherwise report ``blocked`` forever (never
-    reconcile's to complete one file at a time); recovering it first
-    means the orphan scan below only ever sees a clean-or-ordinary tree.
-    ``intents.recover`` takes the lock again itself (re-entrant, see
-    :data:`gitops._held_locks`) — the nesting is deliberate, not an
-    oversight."""
+    M-W/D7: :func:`intents.recover` runs FIRST, BEFORE the
+    ``with gitops.commit_lock(home):`` block below — not nested inside
+    it (gate r1 nit-1 correction: an earlier revision of this docstring
+    claimed nesting; there is none). ``intents.recover`` takes the lock
+    itself, does its work, and releases it; THIS function then takes the
+    lock again, separately, for its own orphan scan. There is a real gap
+    between the two acquisitions in which another process could — in
+    principle — take the lock; nothing here corrupts state if it does,
+    because a lock is exactly what serializes the two producers against
+    each other. The gap DEFERS this call's own orphan scan to the next
+    ``reconcile()``, it never LOSES anything. Running recovery first (in
+    either lock or not) is still what matters: an incomplete collapse/
+    rebind leaves a staged rename, which ``find_orphans`` would otherwise
+    report ``blocked`` forever (never reconcile's to complete one file at
+    a time); recovering it first means the orphan scan below only ever
+    sees a clean-or-ordinary tree.
+
+    Gate r1 BLOCKER-1: a STOPped recovery — :func:`intents.recover`
+    could resolve neither roll-forward nor restore for some intent —
+    now refuses this call's WHOLE orphan batch too, the same
+    all-or-nothing contract ``blocked``/``invalid`` already carry (see
+    the guard just above the orphan commit below). Consequence: once
+    anything has moved HEAD past a stuck intent's recorded ``old_sha``
+    for any of its steps, that STOP is permanent by construction — it
+    freezes ALL orphan healing under this ``home``, including the
+    miner's own carried-over ``landed-uncommitted`` records from an
+    unrelated earlier run, until a human clears it. Clearing it means:
+    read the offender named in ``result.stopped``, decide by hand
+    whether its current on-disk state is acceptable, then delete
+    ``<home>/.intents/<id>.json`` and re-run ``reconcile``."""
     home = Path(home)
     recovered = intents.recover(home)
     with gitops.commit_lock(home):
@@ -438,7 +471,16 @@ def reconcile(home: Path, *, no_push: bool = False) -> ReconcileResult:
                 restored=recovered.restored,
             )
         invalid = _validate_orphans(home, orphans)
-        if blocked or invalid:
+        # Gate r1 BLOCKER-1: a STOPped intent must refuse this batch too,
+        # not just `blocked`/`invalid` — the orphan scan above runs AFTER
+        # `intents.recover()` and can see, and stage, the very files a
+        # stuck transaction half-wrote (a merged survivor's `pending/`
+        # copy, `hosts.yaml`'s half-written bytes once M-W/D7 widened
+        # `_RECONCILABLE_HOME` to reach it). Committing those while
+        # reporting `recovered.stopped` — an exit code documented
+        # elsewhere as "nothing was written" — would corrupt the ledger
+        # UNDER the exact promise meant to prevent that.
+        if blocked or invalid or recovered.stopped:
             return ReconcileResult(
                 blocked=blocked,
                 invalid=invalid,

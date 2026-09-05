@@ -1953,11 +1953,36 @@ def _run_locked(
     # cannot heal must still mine.
     try:
         healed = reconcile_mod.reconcile(home, no_push=no_push)
-        if healed.healed:
+        # Gate r1 BLOCKER-2: `healed.healed` is true whenever ANYTHING
+        # happened (an ordinary commit, OR an intent recovery with
+        # nothing committed at all), but `healed.sha` is set ONLY by the
+        # ordinary orphan-commit path below — `if healed.healed:` here
+        # crashed on `healed.sha[:7]` the first time a mine start
+        # recovered an intent with no orphans alongside it. Guarded on
+        # `healed.committed` instead, mirroring `cli.py`'s own
+        # `_cmd_push` fix for the identical field.
+        if healed.committed:
             log(
                 f"run {run_id}: reconciled {len(healed.committed)} orphaned "
                 f"path(s) from an earlier run @ {healed.sha[:7]}"
             )
+        # M-W/D7, each on its OWN line (gate r1 BLOCKER-2), mirroring
+        # `cli.py:2232-2235`'s per-intent-id loops — never folded into
+        # one combined line naming all three lists at once.
+        for intent_id in healed.rolled_forward:
+            # Gate r1 MAJOR-2: roll-forward only ever replays the
+            # LEDGER's own commit — it never re-runs `_host_phase` (that
+            # step lives inside the interrupted `_execute_route` call,
+            # which is gone). Silence here is the bug MAJOR-2 found: the
+            # host target is left uncompiled and nothing said so. Name
+            # the repair on every surface that reports a roll-forward.
+            log(
+                f"run {run_id}: recovered {intent_id} (rolled forward: its "
+                "commit landed — the host phase did not run; run "
+                "'self-learn recompile')"
+            )
+        for intent_id in healed.restored:
+            log(f"run {run_id}: recovered {intent_id} (restored: its mutation was undone)")
         for line in healed.blocked:
             log(f"run {run_id}: reconcile left a half-committed change: {line}")
         # M-C: an invalid orphan refuses the whole reconcile batch the

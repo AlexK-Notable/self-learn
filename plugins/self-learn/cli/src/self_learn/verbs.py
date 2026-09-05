@@ -693,6 +693,7 @@ def _write_compile_record_entry(
     observed_hash: str | None,
     *,
     by: str,
+    intent: "intents.Intent | None" = None,
 ) -> Path | None:
     """U-hostmode REC1/REC9: write (but do not commit) the compile-record
     entry for ``spec``'s primary target, if it is a region kind this
@@ -704,7 +705,17 @@ def _write_compile_record_entry(
     Returns ``None`` (writing nothing) when the destination is untracked
     (``_region_kind_for`` — new-skill) or the target could not be
     resolved into region bytes (defensive: a compile-record failure must
-    never break the resolution it is meant to make safer)."""
+    never break the resolution it is meant to make safer).
+
+    *intent* (gate r1 MAJOR-1, ``None`` for every caller outside a
+    collapse route): registered via :func:`intents.add_step` right
+    before the write below, at the ONE place this function's compile-
+    record path (``home/compiled/<slug>.yaml``) becomes known — a
+    collapse's intent cannot cover this path at :func:`intents.begin`
+    time, since the slug depends on ``spec``, which is not resolved
+    until deep inside ``_execute_route``. A no-op for every other
+    caller, since :func:`intents.add_step` itself no-ops on
+    ``intent=None``."""
     region_kind = _region_kind_for(spec)
     if region_kind is None or spec.target is None:
         return None
@@ -718,6 +729,7 @@ def _write_compile_record_entry(
         key = compiled.region_key(spec.host_path, spec.target)
         slug = host_slug(home, spec.host_path, scope_kind=spec.scope_kind)
         host_label = "(user scope — ~/.claude)" if spec.scope_kind == "user" else str(spec.host_path)
+        intents.add_step(intent, compiled.compiled_record_path(home, slug))
         return compiled.write_entry(
             home,
             slug,
@@ -779,6 +791,7 @@ def _resync_region_entry(
     observed_hash: str | None,
     by: str,
     delete: bool = False,
+    intent: "intents.Intent | None" = None,
 ) -> Path | None:
     """THE single place, for every verb and every region kind, that
     writes (or clears) a compile-record entry after a region write —
@@ -812,14 +825,23 @@ def _resync_region_entry(
     /:func:`_expected_pointer_region` returning ``None`` for a NAMED
     reference file that does not exist YET — a first route to it). The
     latter must leave any existing entry untouched, not erase it: D-2's
-    own finding was that this path was reachable and untested."""
+    own finding was that this path was reachable and untested.
+
+    *intent* (gate r1 MAJOR-1): same shape as
+    :func:`_write_compile_record_entry`'s own — registered via
+    :func:`intents.add_step` right before whichever real mutation below
+    is about to run, never for the two no-op returns above (nothing
+    mutates there)."""
     try:
         key = compiled.region_key(host_path, target)
         slug = host_slug(home, host_path, scope_kind=scope_kind)
+        step_path = compiled.compiled_record_path(home, slug)
         if delete:
+            intents.add_step(intent, step_path)
             return compiled.delete_entry(home, slug, key)
         if expected is None:
             return None
+        intents.add_step(intent, step_path)
         host_label = "(user scope — ~/.claude)" if scope_kind == "user" else str(host_path)
         return compiled.write_entry(
             home,
@@ -908,6 +930,7 @@ def _write_retirement_compile_record(
     *,
     by: str,
     skip_target: Path | None = None,
+    intent: "intents.Intent | None" = None,
 ) -> Path | None:
     """The retirement-side twin of :func:`_write_compile_record_entry`.
 
@@ -927,7 +950,9 @@ def _write_retirement_compile_record(
         return None
     if skip_target is not None and retire.spec.target == skip_target:
         return None
-    return _write_compile_record_entry(home, retire.spec, observed_hash, by=by)
+    return _write_compile_record_entry(
+        home, retire.spec, observed_hash, by=by, intent=intent
+    )
 
 
 def _ledger_write(home: Path):
@@ -3783,6 +3808,7 @@ def _complete_old_retirement(
     *,
     verb_label: str,
     record_id: str,
+    intent: "intents.Intent | None" = None,
 ) -> list[Path]:
     """D-3 completion (code gate r1 fold, coordinator ruling 2026-08-28):
     a `teach --supersedes` completion's host-side cleanup is functionally
@@ -3806,6 +3832,7 @@ def _complete_old_retirement(
         old_observed_hash,
         by=f"{verb_label} {record_id} (supersedes {old_id})",
         skip_target=spec.target,
+        intent=intent,
     )
     if old_record_path is not None:
         touched.append(old_record_path)
@@ -3836,6 +3863,7 @@ def _complete_old_retirement(
             observed_hash=None,
             delete=True,
             by=f"{verb_label} {record_id} (supersedes {old_id})",
+            intent=intent,
         )
         if old_removal_record_path is not None:
             touched.append(old_removal_record_path)
@@ -3850,6 +3878,7 @@ def _resync_three_regions(
     hook_route: "_HookRoute | None",
     routed_record: Record,
     verb_label: str,
+    intent: "intents.Intent | None" = None,
 ) -> list[Path]:
     """REC7: the compile record covers the two region kinds
     ``_write_compile_record_entry`` never resolves — ``reference`` (which
@@ -3884,6 +3913,7 @@ def _resync_three_regions(
                 expected=ref_expected,
                 observed_hash=ref_observed,
                 by=f"{verb_label} {record_id}",
+                intent=intent,
             )
             if ref_record_path is not None:
                 touched.append(ref_record_path)
@@ -3900,6 +3930,7 @@ def _resync_three_regions(
                     expected=ptr_expected,
                     observed_hash=ptr_observed,
                     by=f"{verb_label} {record_id}",
+                    intent=intent,
                 )
                 if ptr_record_path is not None:
                     touched.append(ptr_record_path)
@@ -3920,6 +3951,7 @@ def _resync_three_regions(
             expected=script_expected,
             observed_hash=script_observed,
             by=f"{verb_label} {record_id}",
+            intent=intent,
         )
         if script_record_path is not None:
             touched.append(script_record_path)
@@ -4084,17 +4116,31 @@ def _execute_route(
         # must never be completed one file at a time). The intent
         # brackets exactly that span: opened here, before the first
         # mutation, closed by `intents.finish` right after the ledger
-        # commit below. Deliberately NOT covering the compile-record
+        # commit below.
+        #
+        # Gate r1 MAJOR-1 (supersedes the original M-W design, which left
+        # this section covering only the paths above): the compile-record
         # writes further down (`_write_compile_record_entry`,
-        # `_complete_old_retirement`, `_resync_three_regions`): every one
-        # of those lands at `home/compiled/*.yaml`, which
-        # `reconcile._RECONCILABLE_HOME` already heals on its own (path-
-        # shape + M-C content validation) regardless of which operation
-        # orphaned it — duplicating that coverage here would buy nothing
-        # a plain `reconcile()` orphan-scan does not already give for
-        # free. A plain (non-collapse) route is out of D7's scope
-        # entirely: it mutates exactly one path before its commit, which
-        # is already the shape `reconcile()` heals today.
+        # `_complete_old_retirement`, `_resync_three_regions`) are now
+        # covered TOO — not by listing them here (their host/slug is not
+        # resolved yet at this point), but via `intents.add_step`, called
+        # from inside each of those three right before its own write, at
+        # the moment its target path (`home/compiled/<slug>.yaml`)
+        # becomes known. `reconcile._RECONCILABLE_HOME` still heals a
+        # LEFTOVER compile-record orphan on its own (path-shape + M-C
+        # content validation) regardless of which operation orphaned it —
+        # that redundancy is fine — but relying on it ALONE let a kill in
+        # this specific window commit a compile record for a route the
+        # SAME `reconcile()` call had just rolled back (gate r1 measured
+        # this live: `compiled/<host>.yaml` ended up naming a route that
+        # no longer existed). Every step this intent now covers lands in
+        # ONE commit on roll-forward — the two-commit split the original
+        # design accepted (a separate `reconcile()` orphan-scan commit
+        # for the leftover compile records) no longer happens, because
+        # there is nothing left uncovered for that scan to pick up. A
+        # plain (non-collapse) route is out of D7's scope entirely:
+        # `intent` stays `None` throughout, so every `add_step` call
+        # above no-ops, exactly the pre-existing behavior.
         intent: intents.Intent | None = None
         if collapse is not None:
             intent_paths: list[Path] = [
@@ -4181,8 +4227,15 @@ def _execute_route(
 
         # U-hostmode REC1/REC9: the compile record's EXPECTATION can only
         # be computed now — the record file rides THIS SAME ledger commit.
+        # Gate r1 MAJOR-1: `intent=intent` threads through to every
+        # compile-record write below (this call, `_complete_old_
+        # retirement`, `_resync_three_regions`) so each one registers
+        # its own path via `intents.add_step` right before its write —
+        # closing the gap where a kill between any of these three and
+        # `intents.complete` used to land a compile record for a route
+        # that intent recovery then rolled BACK, and vice versa.
         record_path = _write_compile_record_entry(
-            home, spec, observed_hash, by=f"{verb_label} {record_id}"
+            home, spec, observed_hash, by=f"{verb_label} {record_id}", intent=intent
         )
         if record_path is not None:
             touched = touched + [record_path]
@@ -4196,6 +4249,7 @@ def _execute_route(
             old_observed_hash,
             verb_label=verb_label,
             record_id=record_id,
+            intent=intent,
         )
         touched = touched + _resync_three_regions(
             home,
@@ -4204,6 +4258,7 @@ def _execute_route(
             hook_route=hook_route,
             routed_record=routed_record,
             verb_label=verb_label,
+            intent=intent,
         )
 
         if intent is not None:
