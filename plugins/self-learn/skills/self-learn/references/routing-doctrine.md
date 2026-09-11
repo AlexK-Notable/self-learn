@@ -12,6 +12,27 @@ must never fork it. If routing judgment needs to change, change this file.
 
 ## 1. The shelves
 
+**Placement policy (added 2026-09-11 — the placement-and-promotion
+amendment; `03-decisions.md` SA-1…SA-6 carries the dated rulings).**
+Applicability and timing are decided BEFORE a surface is chosen, not
+after. §2's gate procedure already works this way — T2's timing
+sharpening, the T3a/T4 depth-behind-rule question — this paragraph only
+names the principle so a reader does not mistake tier selection for the
+first question. An **active-demand placement** (`reference`, tier
+`DEMAND`) is a sound placement only behind a maintained, recognizable
+task cue: a shelf entry nobody could be pointed to from an
+already-delivered entry point is staging, not a served lesson — say so
+in the card (§8) rather than letting the write pass as delivery. **For
+the trial, *promotion* — moving an already-placed lesson to a stronger
+surface — targets PATHED rules and skill entries only; promoting a
+placed lesson to an ALWAYS line or a hook is out of scope until the
+day-30 review** (Q1 HELD — `03-decisions.md` SA-1). This does not touch
+§2: the gate procedure still derives `ALWAYS` at T4 and `HOOK` at T1 for
+a lesson being placed for the first time, exactly as written there. **An
+unavailable or unregistered host is an explicit unresolved placement,
+never a silent fallback to a broader surface** — what "explicit" means
+today, and what is changing, is in §3.
+
 Exactly five, the `destination` enum — unchanged by anything below:
 
 | Destination | What it is |
@@ -312,8 +333,24 @@ let the human type it.) and **name the
 evidence: which trigger elements live outside the record's own repo**
 — a re-home proposal without that evidence is a hunch. Never leap to
 user scope just because a trigger spans two repos; check for the
-ancestor project first. An unregistered ancestor is a fact you tell the
-human, never something you register yourself.
+ancestor project first. **The analyst still never registers anything
+itself — that does not change below.** An unregistered ancestor is
+always a fact you report, never an action you take.
+
+**What changes (2026-09-11 ruling, Q2) is what the human's — or an
+authorized automated reviewer's — approval now does, once the route
+verb supports it.** This is forward work, not built this sprint (see
+`14-forward-work-map.md`): an authorized placement into a resolvable,
+non-denylisted root will **register that root as a consequence of the
+placement**, rather than needing a separate `self-learn host add` step
+first — by the human's own routing tap or an authorized automated
+reviewer's, subject to the never-register blocklist in `hosts.yaml`
+(seeded with this repository). Registration is never inferred from a
+path alone and never performed by a proposal; it follows an approved
+placement, nothing else. **Today, the route verb still refuses an
+unregistered host exactly as it always has** — say so plainly in the
+card, with a registration-needed reason, and do not imply that
+approving the placement alone resolves it.
 
 **Re-home and inheritance are different questions; do not answer one with
 the other.** A re-home says *the record belongs to the umbrella* — its
@@ -324,7 +361,10 @@ has it. Inheritance is a **G0.canon** answer, not a re-home; a lesson that is
 already inherited needs no move at all. And an ancestor host is only an
 ancestor when it is **registered**: an unregistered directory on the path is
 reported to you by path alone, never by content, and stays a fact you tell the
-human.
+human. **This probe stays content-free (ANC5) regardless of the
+auto-registration model above** — whether or how that ancestor later
+gets registered is the human's, the reviewer's, or the route verb's
+call, never something your probe answers.
 
 **Escalation is a guard, not more prose or more prominence.** When a
 lesson already at the `ALWAYS` tier keeps recurring, more prominent text
@@ -365,7 +405,14 @@ you, re-answering T1 with better evidence, not the table.
   on first route). You may name another *existing* references file
   when the lesson clearly belongs there — but **never
   `GOTCHAS.journal.md`**, which is ha-note's accumulation surface, not
-  a self-learn target.
+  a self-learn target. *(2026-09-11 — Q5, trial; **forward work**, not
+  built — `14-forward-work-map.md` FW-153.)* Once built, writes into an
+  explicitly named **existing curated** file will land inside one owned
+  managed region per section rather than being appended freely.
+  **Today they are plain-appended** (`compile_reference`), so name an
+  existing curated file only when appending to it is acceptable. The
+  default target (`LEARNINGS.md`, created fresh on first route) is
+  unaffected either way.
 - Diffs are previews only: compilers regenerate managed sections from
   records at apply time. Never treat a stale preview as a problem you
   must fix.
@@ -811,6 +858,18 @@ a human returning cold, possibly a week or more after the episode that
 birthed the lesson; every card must equip that reader, not the analyst
 who wrote it. The human-facing content lives in the proposal's `card:`
 map, and its sections are defined in one place:
+
+**Placement review folds into this same review session (2026-09-11 —
+Q3, trial).** Deciding whether an already-routed lesson's delivery
+still holds, or should move, is not a second queue: it shares the
+session's card slots, under a cap — **three cards or ten minutes,
+whichever comes first** — replacing ordinary capture cards for that
+slot, never added on top. The stated end state is zero human placement
+time; this cap is the interim step while that trust is still being
+built, not a permanent quota. The fuller evidence this eventually needs
+(opportunity/delivery/outcome distinctions, decision-ready reasons) is
+forward work (`14-forward-work-map.md`), not something this doctrine
+claims exists yet.
 
 **`card-sections.yaml` (beside this file) is the section registry** —
 key, display label, order, required-ness, and the per-section writing

@@ -300,6 +300,23 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
 > this set has ever touched — the schema addition is **absent**, not an
 > empty list.
 
+- **What a placement must eventually persist, named here descriptively
+  — no field below exists yet, and this amendment adds none**
+  *(2026-09-11 — the placement amendment; forward work, not this
+  sprint — `14-forward-work-map.md`)*: *applicability*, distinct from
+  provenance (trigger-shape tags; bounded artifact/task/tool
+  qualifiers; candidate project root; latest-useful-event; an optional
+  validity condition); *approved activation* (a versioned snapshot of
+  native mechanism, entry surface/task cue, target host, and payload
+  reference — reusing `routing`'s existing `rules_paths`/`rules_topic`/
+  `reference_file` rather than duplicating them); *review obligation*
+  (a review-after date or a named event, a reason, and the latest human
+  disposition); *evidence linkage* (existing session/origin plus
+  confirmed-recurrence/held evidence, tied to a routing revision). A
+  placement revision, once it exists, starts a new exposure window but
+  must not erase prior sightings, validity limits, or review history —
+  the same append-only discipline `evidence` already has below, applied
+  to a field that does not exist yet.
 - **Substance freezes at routing** *(S-8/S-12 — settled 2026-07-12,
   blind-adjudicated ADOPT)*: while
   `pending`, the body and filing may be edited freely — a typo in your own
