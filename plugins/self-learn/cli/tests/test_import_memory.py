@@ -8,17 +8,20 @@ beacon-host.md (no frontmatter → scope project).
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import stat
 from pathlib import Path
 
 import pytest
 
 from self_learn.import_common import ImporterError
-from self_learn.import_memory import import_memory, prune_memory
+from self_learn.import_memory import _drop_index_line, import_memory, prune_memory
 from self_learn.ledger import discover_buckets
 from self_learn.ledger_ops import queue, resolve_record
 from self_learn.normalize import sha_anchor
+from self_learn.primitives import fsops
 from self_learn.records import Record
 
 from support import init_repo, make_env
@@ -307,3 +310,111 @@ def test_prune_drops_index_line_before_unlink(tmp_path, monkeypatch):
     index = (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
     assert "research-archive.md" not in index  # dropped before the raise
     assert (memory_dir / "research-archive.md").exists()  # unlink never ran
+
+
+# --------------------- Sprint 3 M-I wave 4: `_drop_index_line` on `fsops`
+
+
+def test_drop_index_line_crash_after_temp_write_leaves_index_intact_no_orphan_temp(
+    tmp_path, monkeypatch
+):
+    """Sprint 3 M-I wave 4: `_drop_index_line` now writes MEMORY.md
+    through `fsops.atomic_write`. A failing `os.replace`, scoped to
+    MEMORY.md's own target only, must leave the OLD index content
+    untouched and no orphan temp file behind -- same fault-matrix item
+    (a) as `test_fsops.py`'s crash tests, proven here against the real
+    call site rather than the primitive in isolation. Mutation this
+    catches: reverting to the bare `index.write_text(...)` this replaced
+    -- that call has no temp file at all, so a crash mid-write would
+    leave MEMORY.md truncated instead of untouched."""
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    index = memory_dir / "MEMORY.md"
+    old_text = "- [A](a.md) — hook\n- [B](b.md) — hook\n"
+    index.write_text(old_text, encoding="utf-8")
+
+    real_replace = os.replace
+
+    def scoped_boom(src, dst):
+        if Path(dst) == index:
+            raise OSError("simulated crash mid-replace")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", scoped_boom)
+    with pytest.raises(OSError, match="simulated crash mid-replace"):
+        _drop_index_line(memory_dir, "a.md")
+
+    assert index.read_text(encoding="utf-8") == old_text
+    assert list(memory_dir.glob(".MEMORY.md.*.tmp")) == []
+
+
+def test_drop_index_line_symlink_at_index_is_refused_and_untouched(tmp_path):
+    """D6 (Sprint 3 wave 4): the auto-memory index is an external tool's
+    file, not this ledger's truth -- a symlink at MEMORY.md is REFUSED,
+    not followed, per the ruling that the file is not ours to write
+    through a link. Mutation this catches: calling `fsops.atomic_write`
+    with `follow_symlinks=True` here -- the write would then silently
+    retarget the REAL file's inode and this test's `real_index.
+    read_text()` assertion would see the new content instead of the
+    old."""
+    real_dir = tmp_path / "elsewhere"
+    real_dir.mkdir()
+    real_index = real_dir / "MEMORY.md"
+    real_index.write_text("- [a](a.md) — hook\n", encoding="utf-8")
+
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    link = memory_dir / "MEMORY.md"
+    link.symlink_to(real_index)
+
+    with pytest.raises(fsops.SymlinkRefused):
+        _drop_index_line(memory_dir, "a.md")
+
+    assert link.is_symlink()
+    assert link.resolve() == real_index
+    assert real_index.read_text(encoding="utf-8") == "- [a](a.md) — hook\n"
+
+
+def test_drop_index_line_preserves_mode_under_restrictive_umask(tmp_path):
+    """`preserve_mode=True`: MEMORY.md's existing permission bits survive
+    the rewrite bit-for-bit regardless of the process umask. Mutation
+    this catches: dropping `preserve_mode=True` (or passing an explicit
+    `mode=`) -- the rewritten file would then land at the umask-masked
+    default (0o600 under this test's `os.umask(0o077)`) instead of the
+    original 0o640."""
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    index = memory_dir / "MEMORY.md"
+    index.write_text("- [a](a.md) — hook\n- [b](b.md) — hook\n", encoding="utf-8")
+    index.chmod(0o640)
+
+    old_umask = os.umask(0o077)
+    try:
+        changed = _drop_index_line(memory_dir, "a.md")
+    finally:
+        os.umask(old_umask)
+
+    assert changed is True
+    assert stat.S_IMODE(index.stat().st_mode) == 0o640
+    assert "a.md" not in index.read_text(encoding="utf-8")
+    assert "b.md" in index.read_text(encoding="utf-8")
+
+
+def test_drop_index_line_returns_true_false_exactly_as_before(tmp_path):
+    """Acceptance item 5: the return-value contract is unchanged by the
+    fsops migration -- True iff the index text actually changed, False
+    when the filename has no matching line, and False when there is no
+    index file at all."""
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    index = memory_dir / "MEMORY.md"
+    index.write_text("- [a](a.md) — hook\n", encoding="utf-8")
+
+    assert _drop_index_line(memory_dir, "nonexistent.md") is False
+    assert index.read_text(encoding="utf-8") == "- [a](a.md) — hook\n"
+    assert _drop_index_line(memory_dir, "a.md") is True
+    assert "a.md" not in index.read_text(encoding="utf-8")
+
+    no_index_dir = tmp_path / "no-index"
+    no_index_dir.mkdir()
+    assert _drop_index_line(no_index_dir, "a.md") is False

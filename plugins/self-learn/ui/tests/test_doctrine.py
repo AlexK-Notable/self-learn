@@ -8,9 +8,13 @@ references dir (proving the real ``routing-doctrine.md`` +
 from __future__ import annotations
 
 import os
+import stat
 import time
 from pathlib import Path
 
+import pytest
+
+from self_learn.primitives import fsops
 from self_learn_ui.doctrine import (
     compile_doctrine,
     pane_charter_path,
@@ -165,3 +169,95 @@ def test_compile_doctrine_against_the_real_tracked_sources(tmp_path: Path) -> No
     assert "routing analyst" in text.lower()  # from routing-doctrine.md §-lead
     assert "surface model" in text.lower()  # from pane-surface-model.md's title
     assert "pane charter" in text.lower()  # from pane-charter.md's own title
+
+
+# --------------------- Sprint 3 M-I wave 4: `compile_doctrine` on `fsops`
+
+
+def test_compile_doctrine_crash_after_temp_write_leaves_old_bytes_no_orphan_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`compile_doctrine` now writes the compiled artifact through
+    `fsops.atomic_write`. A failing `os.replace`, scoped to the compiled
+    path only, must leave the OLD compiled bytes untouched and no orphan
+    temp file behind -- same fault-matrix item (a) as `test_fsops.py`'s
+    crash tests, proven here against the real call site. Mutation this
+    catches: reverting to the bare `compiled_path.write_text(...)` this
+    replaced -- that call has no temp file at all, so a crash mid-write
+    would leave the compiled cache truncated instead of untouched."""
+    paths = _sources(tmp_path)
+    compiled_path = paths["compiled_path"]
+    first = compile_doctrine(**paths)
+    old_bytes = first.read_bytes()
+
+    # Force a recompile: advance a source's mtime past the compiled file's.
+    time.sleep(0.01)
+    os.utime(paths["routing_path"], None)
+
+    real_replace = os.replace
+
+    def scoped_boom(src, dst):
+        if Path(dst) == compiled_path:
+            raise OSError("simulated crash mid-replace")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", scoped_boom)
+    with pytest.raises(OSError, match="simulated crash mid-replace"):
+        compile_doctrine(**paths)
+
+    assert compiled_path.read_bytes() == old_bytes
+    assert list(compiled_path.parent.glob(".pane-doctrine.md.*.tmp")) == []
+
+
+def test_compile_doctrine_symlink_at_compiled_path_is_refused_and_untouched(
+    tmp_path: Path,
+) -> None:
+    """D6 (Sprint 3 wave 4): the compiled doctrine cache is regenerable
+    content -- `atomic_write`'s plain defaults, symlinks refused (not
+    followed). Mutation this catches: passing `follow_symlinks=True` in
+    `compile_doctrine` -- the write would then silently retarget the
+    REAL file's inode and this test's `real_target.read_text()`
+    assertion would see the new content instead of the old."""
+    paths = _sources(tmp_path)
+    real_target = tmp_path / "real-compiled.md"
+    real_target.write_text("STALE COMPILED\n", encoding="utf-8")
+    link_path = paths["compiled_path"]
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+    link_path.symlink_to(real_target)
+
+    # force `needs_compile` True: the symlinked compiled path's mtime
+    # (== real_target's, just written) must read OLDER than the sources'.
+    time.sleep(0.01)
+    os.utime(paths["routing_path"], None)
+
+    with pytest.raises(fsops.SymlinkRefused):
+        compile_doctrine(**paths)
+
+    assert link_path.is_symlink()
+    assert link_path.resolve() == real_target
+    assert real_target.read_text(encoding="utf-8") == "STALE COMPILED\n"
+
+
+def test_compile_doctrine_preserves_mode_under_restrictive_umask(
+    tmp_path: Path,
+) -> None:
+    """`preserve_mode=True` (the default): a pre-existing compiled file's
+    permission bits survive a recompile bit-for-bit regardless of the
+    process umask. Mutation this catches: passing an explicit `mode=` or
+    `preserve_mode=False` in `compile_doctrine` -- the rewritten file
+    would then land at the umask-masked default (0o600 under this
+    test's `os.umask(0o077)`) instead of the original 0o640."""
+    paths = _sources(tmp_path)
+    first = compile_doctrine(**paths)
+    first.chmod(0o640)
+
+    time.sleep(0.01)
+    os.utime(paths["routing_path"], None)  # force a real recompile
+
+    old_umask = os.umask(0o077)
+    try:
+        compile_doctrine(**paths)
+    finally:
+        os.umask(old_umask)
+
+    assert stat.S_IMODE(first.stat().st_mode) == 0o640

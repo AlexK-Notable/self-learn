@@ -226,7 +226,11 @@ def rotted(
 # into thin delegates to the `sdksession/*.py` functions of the same
 # name (already allowlisted below) -- the raw write moved location, so
 # their own two entries would have been ROTTED and were removed instead
-# of left stale. 43 remain, below.
+# of left stale. 43 remained entering Sprint 3.
+#
+# Sprint 3 M-I wave 4 migrated 2 more (`import_memory._drop_index_line`,
+# `doctrine.compile_doctrine`) onto `fsops.atomic_write` -- their entries
+# are removed here rather than left ROTTED. 41 remain, below.
 # ======================================================================
 
 RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
@@ -280,18 +284,11 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
     ),
     # -------------------------------------------------------- wave 4:
     # legitimate atomic-write candidates outside the ledger tree itself
-    # (an external tool's file, a UI-side derived/regenerable cache).
-    ("cli", "import_memory.py", "_drop_index_line"): (
-        "rewrites ~/.claude auto-memory (Claude Code's own file, not this "
-        "ledger's truth -- already NOT_REPO_TRUTH in test_lock_invariant.py); "
-        "external integration point, deferred",
-        4,
-    ),
-    ("ui", "doctrine.py", "compile_doctrine"): (
-        "UI-side compiled-doctrine cache, regenerated from source mtimes -- "
-        "derived/reproducible content, not primary ledger truth; deferred",
-        4,
-    ),
+    # (an external tool's file, a UI-side derived/regenerable cache) --
+    # BOTH migrated onto `fsops.atomic_write` (Sprint 3 M-I wave 4, D6:
+    # `import_memory._drop_index_line` refuses a symlink, `doctrine.
+    # compile_doctrine` takes the plain defaults); their entries are
+    # removed here rather than left ROTTED.
     # -------------------------------------------------------- wave 5:
     # invocation-seam cache bookkeeping, deferred behind the armor-pinned
     # end-to-end tests' (test_invocation.py, test_invocation_sdk.py)
