@@ -241,8 +241,8 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
     # replace):
     ("cli", "telemetry.py", "flush"): (
         "tracked-plane append-with-torn-line-heal under gitops.commit_lock; "
-        "append semantics; needs a future atomic-APPEND primitive, filed "
-        "separately (FW row pending) -- not this atomic-REPLACE one",
+        "append semantics; needs a future atomic-APPEND primitive "
+        "(FW-159, atomic-append primitive) -- not this atomic-REPLACE one",
         "keep",
     ),
     # -------------------------------------------------------- wave 4:
