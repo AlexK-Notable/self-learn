@@ -552,15 +552,16 @@ decisions and their rationale and point here. Code of record: `intents.py`,
 
 An intent is ONE JSON file at `<home>/.intents/<id>.json`, `id` twelve
 hex characters, written under the ledger `commit_lock` before the
-transaction's first mutation and removed after its commit. It lives in
+transaction's first mutation, rewritten by recovery when an attempt
+fails (§7.2a.3), and removed after its commit. It lives in
 the ledger home, not the XDG cache: the cache is not guaranteed to
 survive a reboot and is namespaced by a hash of the home, while an
 intent's only durability requirement is "outlives the crash it
 recovers from", which the ledger's own directory satisfies by
 construction. No `.gitignore` entry: an untracked `.intents/*.json`
 matches no reconcilable path shape, so nothing in the tree ever stages
-it, and a stray directory after a crash is a visible diagnostic. As
-persisted at `a41ddb3`:
+it, and a stray directory after a crash is a visible diagnostic. The
+`a41ddb3` schema plus the `S-62` extension (`stopped`):
 
 ```
 {"op": "collapse" | "host_add" | "host_rebind" | "host_remove",
@@ -595,8 +596,8 @@ persisted at `a41ddb3`:
   recovery time is proof the crash landed before `complete`, i.e.
   mid-mutation; it is never confused with "expected absent".
 - **`stopped`** is absent until a recovery attempt fails; recovery
-  itself writes it (§7.2a.3) so a read-only reader can tell an
-  operational STOP from an intent nobody has attempted. Not persisted
+  itself writes it (§7.2a.3) so a read-only reader can tell a recorded
+  failed attempt from an intent with no such record. Not persisted
   at `a41ddb3`; the field is `S-62`'s, built with the guard lane.
 - **Durability class:** the file has ONE writer (`intents._write_intent`)
   and it is `fsops.atomic_write(…, fsync=True)` — the records class of
@@ -658,24 +659,38 @@ lock and resolves each intent to exactly one of:
   one step's prior bytes resolve from none of the three sources; the
   roll-forward commit failed; a restore failed partway. For a STOP
   detected BEFORE anything was applied (an unreadable file, an
-  unresolvable pre-image) nothing is touched for that intent; for an
-  operational STOP (a commit or a restore write failed) what recovery
-  had already written stays on disk and the STOP line says so, naming
-  the path it failed at. Either way the file stays in place, the
-  offender is named, and recovery PERSISTS the outcome: it rewrites the
-  intent (same single writer, same durability class) with a `stopped`
-  field carrying the reason and a timestamp (§7.2a.1), so a read-only
-  view (§7.2a.7) can tell an operational STOP from an intent nobody
-  has attempted. An unreadable file cannot carry the field;
-  unreadability is itself the STOP any reader can see. A later
-  recovery run re-attempts a persisted STOP (a transient fault may
-  have cleared) and rewrites the field on failure: the field records
-  the last attempt, never a decision to stop trying. A STOP is
-  permanent by construction once `HEAD` has moved past a step's
-  `old_sha` with no inline copy: only clearing (§7.2a.4) ends it.
-  Recovery processes every leftover intent in order, so one run can
-  roll forward or restore some and STOP on another; the completed
-  outcomes are reported beside the STOP, never hidden by it.
+  unresolvable pre-image) no step path is changed — only the outcome
+  metadata below is written; for an operational STOP (a commit or a
+  restore write failed) what recovery had already written stays on
+  disk and the STOP line says so, naming the path it failed at. Either
+  way the file stays in place, the offender is named, and recovery
+  PERSISTS the outcome: it rewrites the intent (same single writer,
+  same durability class) with a `stopped` field carrying the reason
+  and a timestamp (§7.2a.1), so a read-only view (§7.2a.7) can tell a
+  recorded failed attempt from an intent with no such record. An
+  unreadable file cannot carry the field; unreadability is itself the
+  STOP any reader can see. **Marker publication can itself fail** — a
+  crash between the failed attempt and the rewrite, or the rewrite
+  refused (`ENOSPC` creating the replacement file): the original
+  intent then stays on disk, readable and unmarked. So an unmarked
+  file means "no durable record of a failed attempt", never "never
+  attempted". On that path recovery retains the intent, the caller
+  refuses its requested work exactly as for a marked STOP, and the
+  report carries BOTH facts — the recovery failure and that its
+  outcome could not be durably recorded. Within one protected span a
+  demonstrated failure is never discarded because its marker cannot
+  be written: the wrapper and the clear leg (§7.2a.4) act on the
+  attempt they just made, not only on the marker. A later recovery
+  run re-attempts a persisted STOP (a transient fault may have
+  cleared) and rewrites the field on failure: the field records the
+  last attempt, never a decision to stop trying; the attempts are
+  idempotent (a restore rewrites the same pre-images) and no
+  suppression cache is added. A STOP is permanent by construction once
+  `HEAD` has moved past a step's `old_sha` with no inline copy: only
+  clearing (§7.2a.4) ends it. Recovery processes every leftover intent
+  in order, so one run can roll forward or restore some and STOP on
+  another; the completed outcomes are reported beside the STOP, never
+  hidden by it.
 
 **What recovery never does — M-W gate r1 MAJOR-2, preserved verbatim:**
 *"recovery NAMES the host repair (`self-learn recompile`) on all three surfaces; it does NOT run the host phase (unattended host-repo writes from the miner's/worker's start would be a new mutation surface; the ledger→host two-phase seam predates M-W and has `recompile` as its documented repair)."*
@@ -691,13 +706,17 @@ ARE ON DISK, and removed `<home>/.intents/<id>.json` under the ledger
 lock. The half-written files then re-enter the ordinary contract — the
 next `reconcile` commits them as orphans if they validate, or reports
 them `blocked`/`invalid`. Only an intent that classifies STOPPED may be
-cleared — its file is unreadable, or it carries the `stopped` field a
-failed recovery attempt persisted (§7.2a.3) — and the classification
-that authorises the deletion is made under the lock, in the same
-protected span as the deletion, from the file's bytes at that moment;
-a `status` snapshot taken earlier authorises nothing. A leftover with
-no marker is never cleared (it has not been attempted; the next ledger
-write attempts it), nor is one whose writer is live. By hand, the
+cleared — its file is unreadable, it carries the `stopped` field a
+failed recovery attempt persisted (§7.2a.3), or the clear leg's own
+recovery attempt, made in this span on an unmarked file, has just
+failed on it (a marker that could not be written does not
+un-demonstrate the failure) — and the classification that authorises
+the deletion is made under the lock, in the same protected span as the
+deletion, from the file's bytes and the attempt made at that moment;
+a `status` snapshot taken earlier authorises nothing. An unmarked
+leftover is attempted first, as every recovery does: one that recovers
+is recovered and reported, not cleared; one whose writer is live is
+never touched. By hand, the
 contract is unchanged from M-W: read the offender named in the STOP
 line, decide, delete the file, re-run `reconcile`.
 
@@ -729,17 +748,21 @@ sites** (each a named entry of H-8's census, each with its reason):
 becomes a pass-through when reached through the wrapper;
 `intents.clear_stopped` — the §7.2a.6 clear leg, exempt for the same
 reason (it is part of recovery, and it must run before the check would
-refuse on the very intent it removes); `ledger.init_home`'s FRESH-REPO
-takes only (its steps 3 and 5, which `git init` a directory self-learn
-just created) — no `.intents/` can exist there, and each site is pinned
-to a literal `with gitops.commit_lock(…)` form the walker can see
-(`ledger.py`, the manual-`__enter__` note). `init_home`'s step-6 take is
-NOT exempt: that step tops up an EXISTING home and commits whatever is
-staged with `--allow-empty`, which under a STOP could be the stuck
-intent's own staged rename — so that one take converts to the wrapper
-(re-read against `ledger.py` 2026-09-11; the readiness review's blanket
-reason, "a fresh ledger has no `.intents/`", is true of steps 3 and 5
-and false of step 6). **Not exempt:** `gitops.push_with_retry`'s
+refuse on the very intent it removes); `ledger.init_home`'s fresh/empty
+non-repo initialisation takes only (its steps 3 and 5: a directory
+self-learn just created, or an existing EMPTY non-repo directory) — no
+intent can exist there, and each site is pinned to a literal `with
+gitops.commit_lock(…)` form the walker can see (`ledger.py`, the
+manual-`__enter__` note). `init_home`'s step-6 take is NOT exempt: that
+step mutates an EXISTING home — layout top-up, and an initial
+`--allow-empty` commit of whatever is staged when `HEAD` is absent,
+which under a STOP could be the stuck intent's own staged rename — so
+that one take converts to the wrapper, keeping its guard widened to the
+refusal type so `init` still refuses cleanly instead of leaking a
+traceback (the site's own comment names that signature) (re-read
+against `ledger.py` 2026-09-11; the readiness review's blanket reason,
+"a fresh ledger has no `.intents/`", is true of steps 3 and 5 and false
+of step 6). **Not exempt:** `gitops.push_with_retry`'s
 rebase leg, when the repo being pushed is the LEDGER, converts: it
 checks at its own acquisition and refuses the rebase on a STOP (the
 refusal is printed; the push surface's exit stays 0, §7.2a.5(5)). No
@@ -766,8 +789,9 @@ acquisitions are named in the census and are outside this contract.
 and the transaction's own intent is exempt BY ORDERING.** The check
 runs exactly once per lock span: on the OUTERMOST acquisition of the
 ledger lock in this process, AFTER the lock is held, BEFORE any
-mutation of the requested verb's own (recovery's writes are the
-check's, §7.2a.5(4)), and BEFORE the verb's own `intents.begin`. Because the
+requested mutation IN THAT LOCK SPAN (recovery's writes are the
+check's, and an earlier span's commits are that span's, §7.2a.5(4)),
+and BEFORE the verb's own `intents.begin`. Because the
 verb's intent does not yet exist when the check runs, it is exempt by
 construction; a builder MUST NOT thread an intent id through call
 chains or keep a lock-holder registry to identify "own" — there is
@@ -826,7 +850,9 @@ stuck intent file freezes `teach`, the 03:30 nightly mine, the worker,
 `telemetry.flush`, `config set`/`unset`, every import, every
 resolution verb and every batch, until recovery clears it** — and
 under `serve` the mine and worker jobs fail every tick, recorded in the
-job record, with no other alarm unless §7.2a.7 is built. The user
+job record, with no other alarm unless §7.2a.7 is built. Each refused
+write re-attempts the STOP first; the attempts are idempotent and the
+field records only the last one (§7.2a.3). The user
 chose this outage over the alternatives with the cost in front of them
 (14:31). Rejected: overlap-only refusal checked at commit time
 (unsound — by then the verb has `git mv`'d and staged, so the refusal
@@ -836,35 +862,49 @@ paths=…)` is deferred, not rejected (readiness review §B(iii), Option
 2). `reconcile` keeps its whole-batch refusal on STOP unchanged.
 
 **What a STOP promises — three separate facts, never one.** (a) The
-requested verb's OWN mutations: none. The check refused before its
-first write, and that is the whole content of exit 6. (b) Recovery
-actions that completed in the same check before the STOP (other
-intents rolled forward or restored — a commit landed, bytes restored):
-reported, never hidden behind the refusal. (c) A recovery attempt that
-partially mutated (a restore write or a roll-forward commit failed
-midway, §7.2a.3): reported as such, naming the path it failed at, the
-intent left in place with its `stopped` field. A verb with several
-outer lock spans (`recompile --adopt` commits under one span and takes
-another later) is refused at the span where the STOP appears; the
-commits of its earlier spans stand and are reported as landed — a
-later STOP does not un-write them.
+requested verb's OWN mutations IN THE REFUSED LOCK SPAN: none. The
+check refused before that span's first requested write, and that is
+the whole content of exit 6. (b) Recovery actions that completed in the
+same check before the STOP (other intents rolled forward or restored —
+a commit landed, bytes restored): reported, never hidden behind the
+refusal. (c) A recovery attempt that partially mutated (a restore write
+or a roll-forward commit failed midway, §7.2a.3), or whose failure
+could not be durably recorded: reported as such, naming the path it
+failed at, the intent left in place. **Multi-span verbs, stated
+explicitly.** A verb with several outer lock spans (`recompile --adopt`
+commits under one span and takes another later) is refused at the span
+where the STOP appears. The commits of its earlier spans are the verb's
+own work: they stand — a later STOP does not un-write them — and the
+refusal carries them beside the recovery outcomes, printed as `no
+further requested writes; earlier commits: <subjects>`. The process
+code for that case: **6** only when no span of the invocation
+committed; when an earlier span committed, **8** (`EXIT_BATCH_PARTIAL`,
+whose ratified meaning is "some of the requested work landed and the
+rest was refused; read the output" — `batch` in §5 is the model), with
+the earlier commits named — never a code that claims the invocation
+wrote nothing.
 
 **(5) Exit codes and the refusal message.** A STOP refusal is a
 DISTINCT exception type (a `GitOpsError` subclass; the name is the
-builder's, the distinction is not) raised before the requested verb's
-first mutation, carrying the recovery outcome — the three id lists
-with each STOP's offending path and reason, plus any completed or
-partial recovery action of §7.2a.5(4)(b)/(c) — whose message names the
-intent id, the offending path and reason, what recovery did, that THIS
-VERB wrote nothing, and the clearing verb — e.g. `self-learn:
+builder's, the distinction is not) raised before the refused span's
+first requested mutation, carrying the recovery outcome — the three id
+lists with each STOP's offending path and reason, any completed or
+partial recovery action of §7.2a.5(4)(b)/(c), and the verb's own
+earlier-span commits, if any — whose message names the intent id, the
+offending path and reason, what recovery did, what this verb wrote
+before the refused span (nothing, or the earlier commits), and the
+clearing verb — e.g., for a first-span refusal: `self-learn:
 transaction intent <id> is STOPPED (cannot restore <path>: <reason>);
 this verb wrote nothing — every ledger write refuses until it is
 cleared. Inspect the path, then run 'self-learn reconcile
 --clear-intent <id>' to accept its current on-disk state, or delete
-<home>/.intents/<id>.json by hand.` The process exit is **6**
-(`EXIT_GIT_FAILED`, whose "nothing was written" is fact (a) of
-§7.2a.5(4) — the requested verb's own writes — and says nothing about
-recovery's, which the message reports separately), on every surface,
+<home>/.intents/<id>.json by hand.` After an earlier span committed
+the second clause reads `no further requested writes; earlier commits:
+<subjects>` and the exit is 8 (§7.2a.5(4)). For a first-span refusal
+the process exit is **6** (`EXIT_GIT_FAILED`, whose "nothing was
+written" is fact (a) of §7.2a.5(4) — the requested verb's own writes in
+the refused span — and says nothing about recovery's, which the
+message reports separately), on every surface,
 including the 22 `_cmd_*` handlers and `teach` that reach `main()`'s
 generic `GitOpsError` catch: that catch gains one dedicated arm for
 this type that prints the message above and NOT the generic hedge
@@ -899,10 +939,13 @@ offending path and reason), the orphan-scan lists (`committed`,
 exact field spelling is the build's, the content is not. It gains
 **`--clear-intent <id>`**: under the ledger lock, remove
 `<home>/.intents/<id>.json` ONLY if that intent classifies STOPPED
-under §7.2a.4's rule — unreadable, or carrying the persisted `stopped`
-field — decided in the same protected span as the deletion from the
-file's bytes at that moment (refuse with a named reason otherwise; a
-`status` snapshot is not authorisation), record the clearing in the
+under §7.2a.4's rule — unreadable, carrying the persisted `stopped`
+field, or failing the clear leg's own recovery attempt made in this
+span on an unmarked file — decided in the same protected span as the
+deletion from the file's bytes and that attempt (an unmarked intent
+that recovers is recovered and reported, not cleared; a live writer's
+intent is refused with a named reason; a `status` snapshot is not
+authorisation), record the clearing in the
 envelope, then proceed with the ordinary scan (§7.2a.4). The clear leg belongs to the recovery module —
 `intents.clear_stopped(home, id)`, a named entry of §7.2a.5(1)'s exempt
 list and of H-8's census: it takes the lock the way `intents.recover`
@@ -925,20 +968,35 @@ flight, and (b) the SessionStart hook (`hooks/self-learn-pending.sh`)
 runs `status --fast 2>/dev/null`, discarding the stderr line the
 function's own docstring calls the human's one notice. Requirements:
 **`status`** (full and `--fast`) classifies every intent READ-ONLY —
-no recovery, no mutation — and prints a distinct line per class:
-*stopped* (the file is unreadable or carries the persisted `stopped`
-field, §7.2a.3: an outage — "every ledger write refuses until …",
-naming the clearing verb); *busy* (the ledger lock is held by a live
-process — a transaction in flight or a recovery running — so the
-intents on disk are somebody's; `status` says so without calling any
-one of them harmless or leftover); *pending* (lock free, no marker: a
-leftover nobody has attempted, which the next ledger write attempts —
-`status` does not promise that attempt will succeed, because matching
-hashes cannot promise I/O). The lock probe is a non-blocking take of
-the ledger commit lock (`LOCK_EX|LOCK_NB`) released at once, the only
-lock interaction `status` performs; the pid the lock file carries is
-a diagnostic, not the classifier. This is a status classification,
-not a fourth D7 outcome.
+no recovery, no ledger mutation — from ONE coherent snapshot: it probes
+the ledger commit lock non-blockingly and, on success, lists and reads
+every intent file WHILE holding the probe, then releases it; on
+contention it reads no file as current state. The probe is a SEPARATE
+read-only primitive, not `gitops._flock_lock` — that helper opens the
+lock file for writing (truncating the holder's pid), writes its own
+pid, and retries; it is the mutating house pattern. The probe opens
+the lock file `O_RDONLY|O_CREAT` (an empty lock file created when
+absent is the only byte it can cause and is not a ledger write; it
+never truncates, so a live holder's pid survives being probed) and
+takes `LOCK_EX|LOCK_NB` exactly once; that is the only lock interaction
+`status` performs. Classes, in this precedence: *busy* (the probe
+found the lock held: a transaction in flight or a recovery running;
+the intents on disk are somebody's, `status` says so without calling
+any one of them harmless or leftover, and any marker it can see is
+labelled a historical failed attempt, not current state); *stopped*
+(lock free, and the file read under the probe is unreadable or carries
+the persisted `stopped` field, §7.2a.3: an outage — "every ledger
+write refuses until …", naming the clearing verb); *pending* (lock
+free, no marker: a leftover with no durable record of a failed
+attempt, which the next ledger write attempts — `status` does not
+promise that attempt will succeed, because matching hashes cannot
+promise I/O). A file that vanishes between listing and reading under
+the probe is reported as nothing (a holder finished or cleared it
+before the probe). A probe that fails for any reason other than
+contention (`EACCES`, an unreadable lock directory) is reported as
+*unknown — could not probe the ledger lock: <reason>*, never as free;
+the pid the lock file carries is a diagnostic, not the classifier.
+This is a status classification, not a fourth D7 outcome.
 **`status --fast`'s JSON payload** (08 §7.1's pinned, machine-parsed
 contract) gains ADDITIVE fields carrying the stopped ids and the
 counts, so the fact survives `2>/dev/null` by the route the hook
@@ -948,7 +1006,8 @@ it must not discard the warning, by whichever route. **`serve`'s
 tick** must surface a refusal: a job refused by the guard logs the
 refusal on its own line naming the intent id (REQUIRED), and
 **`doctor`** carries a row that reads the ledger's `.intents/` and
-reports "N stopped intent(s) — ledger writes frozen since <at>; run …"
+reports "N stopped intent(s) — last recovery failure at <at, or
+'unknown' for an unreadable file>; ledger writes refuse; run …"
 (REQUIRED). Recording the last failed job and its reason in the
 heartbeat is RECOMMENDED — `serve.write_heartbeat` carries only
 `next_job` today, so that is a new field on its contract, not a
@@ -987,14 +1046,28 @@ section.
 - Mutation verification, per `CLAUDE.md`: delete the check → red;
   invert the `stopped` branch → red; move the check outside the `with`
   → red. **Mandatory, named here because it is the only proof of
-  §7.2a.5(2):** remove the wrapper's `_held_locks` pre-check so the
-  guard fires on a nested acquire, and confirm `test_intents.py`'s
+  §7.2a.5(2):** disable the outermost-acquisition check so recovery
+  runs on a nested acquire, and confirm `test_intents.py`'s
   `TestCollapseCrashWindows` and `TestCollapseWithOldIdCrashWindow`
   redden — a guard that restores the live transaction's own intent
   mid-flight would otherwise ship green.
 - Every "nothing was written" absence assertion has its positive
   control first: the same verb succeeds and commits with no intent
   planted.
+- Marker-publication failure (§7.2a.3): a recovery attempt that fails
+  and then crashes before the rewrite, and one whose rewrite is
+  refused (the intent writer raising `OSError`), each leave the intent
+  readable and unmarked; the next ledger write still refuses and its
+  report carries both facts; `--clear-intent` on that unmarked file
+  attempts recovery in its span and clears after the demonstrated
+  failure, and refuses (recovering instead) when the fault has
+  cleared.
+- Status interleaving witness (§7.2a.7): a second process holding the
+  ledger lock with an unmarked intent on disk → `status` reports
+  *busy*, never *pending*; the same with a marked intent → *busy* with
+  the marker labelled historical; after the probe the holder's pid is
+  intact in the lock file; a probe error other than contention →
+  *unknown*.
 - The change touches `worker.run`'s path, so the armor-pinned
   end-to-end files (`test_attrib.py`, `test_worker.py`,
   `test_repair.py`, `test_invocation*.py`) run before merge. The
@@ -1058,19 +1131,29 @@ facts a builder needs, fixed here; the build itself is deferred
   phase leaves an intent whose ledger steps all verify (the roll-forward
   leg, no second commit, §7.2a.3) and whose `host_steps` say what was
   pending. Pushes are not steps (idempotent, outside every lock).
-- **Recovery reads host steps only to speak.** For each host step it
-  reads the target's current managed region, read-only, and reports
-  the observation actually made, in this precedence: *matches
-  expected* (`sha256`) → `host <host> target <target> for <record>:
-  region matches the expected content; its host commit is not verified
-  from here — run 'self-learn recompile' to confirm`; *matches prior*
+- **Recovery reads host steps only to speak — on the roll-forward leg
+  only.** A restored intent's host steps describe work that never
+  became truth and are not reported. For each host step it reads the
+  target's current managed region, read-only, and reports the
+  observation actually made, in this precedence: *unavailable* (the
+  file cannot be read, or its managed markers are malformed —
+  `compiled.region_bytes` raises on a broken pair) → `host <host>
+  target <target> for <record>: could not read the managed region
+  (<path>: <read/parse reason>); run 'self-learn recompile'` — a host
+  observation that fails NEVER becomes a ledger-recovery failure: the
+  ledger outcome was decided before any host step was read, and this
+  line is diagnostic only; *matches expected* (`sha256`) → `… region
+  matches the expected content; its host commit is not verified from
+  here — run 'self-learn recompile' to confirm`; *matches prior*
   (`based_on_sha256`; or the region is absent and `based_on_sha256` is
-  `null`) → `… is STALE for <record>: the ledger committed, the host
-  phase did not run; run 'self-learn recompile'`; *missing* (the file
-  or its managed region is absent and a prior region was recorded) →
-  `… is MISSING for <record>: the file or its region is gone; run
-  'self-learn recompile'`; *differs* (none of the above) → `… DIFFERS
-  from both recorded states for <record>; 'self-learn recompile' will
+  `null`) → `… matches the prior state for <record>: the ledger
+  committed; the host phase still needs checking — run 'self-learn
+  recompile'` (an observation of current bytes, not a claim that the
+  phase never ran); *missing* (the file or its managed region is absent
+  and a prior region was recorded) → `… is MISSING for <record>: the
+  file or its region is gone; run 'self-learn recompile'`; *differs* (a
+  successfully read region matching neither hash) → `… DIFFERS from
+  both recorded states for <record>; 'self-learn recompile' will
   refuse it as a hand edit (REC5) — inspect it`. A worktree hash never
   proves a commit landed (`_host_phase` writes the bytes and only then
   commits), so no line claims completion. A host phase that
@@ -1218,8 +1301,8 @@ rollback is purely a code-repo affair.
   RECORDS the host-phase steps it was about to apply, so that recovery
   after a crash between the two phases NAMES the interruption precisely
   — which host, which target, which record, and whether the region
-  matches the prior state, matches the expected state, is missing, or
-  differs — and names `self-learn recompile` as the
+  matches the prior state, matches the expected state, is missing,
+  differs, or could not be read — and names `self-learn recompile` as the
   repair. The record adds no second repair and no second writer:
   `recompile` remains the only thing that repairs a two-phase
   interruption, no unattended caller ever applies a host step from an
