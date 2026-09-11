@@ -652,7 +652,12 @@ rollback is purely a code-repo affair.
   `plain` opt-in). H-3 itself is unchanged — compile targets still come
   from hosts.yaml only, and a plain host is gated by a
   `.self-learn-host` marker the registering verb writes, never by being
-  writable.
+  writable. *2026-09-11 (Q-A1, forward work — FW-152):* registration may
+  follow from an authorized placement, including an authorized
+  automated reviewer's, subject to the `hosts.yaml` never-register
+  blocklist. H-3 itself is unchanged — nothing is ever written to a
+  repo that is not registered at the moment of the write, and no target
+  is ever guessed.
 - **H-4** · Cache state is namespaced by ledger home.
 - **H-5** · No watcher on the ledger repo — producers commit their own
   writes with pinned subjects. Corollary: a write its producer could not

@@ -42,10 +42,14 @@ Claude Code's own memory files (`~/.claude/projects/<proj>/memory/`)
 are **natively consumed** by the harness — index at session start,
 topic bodies on demand — independent of anything self-learn compiles.
 self-learn's relationship to that surface is **lightweight observation,
-not ownership**: it tracks what is in those memory directories and
-mines them for candidate lessons (§3.2's importer), but a
-memory-sourced record may legitimately resolve to *stay in memory,
-tracked* rather than being imported and then pruned out of it.
+not ownership**: it tracks what is in those memory directories, and
+mining it is **surface-aware** — some entries are left where they are,
+and some graduate to a hook, a skill entry, or a pathed rule when
+judged from the whole-surface view the memory writer lacks (§3.2's
+importer does the candidate-lesson extraction; the graduation call
+belongs to routing, not the importer). A memory-sourced record may
+legitimately resolve to *stay in memory, tracked* rather than being
+imported and then pruned out of it.
 **Import-then-prune, as §3.2 currently describes it, is not the model**
 — that description predates this reframing and is reopened
 (`03-decisions.md`, S-13/S-14). The replacement lifecycle — what state
@@ -117,7 +121,9 @@ znote-compatible for a future backend (v2 gate G-5).
   capture-time secret scan before writing (autosync publishes records within
   seconds — `02-schema.md` §2) and echoes malformed input back for
   confirmation.
-- **Auto-memory importer** — `self-learn import --auto-memory` copies new
+- **Auto-memory importer** *(superseded 2026-09-11 — see §1 and
+  `03-decisions.md` S-13's reopen; import-then-prune is no longer the
+  model)* — `self-learn import --auto-memory` copies new
   entries from the native memory directory (`~/.claude/projects/<proj>/memory/`)
   into the project bucket as pending learnings (origin preserved). Rationale:
   the platform already captures project-scoped lessons discretionarily

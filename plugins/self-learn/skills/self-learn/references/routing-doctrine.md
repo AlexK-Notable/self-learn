@@ -13,7 +13,7 @@ must never fork it. If routing judgment needs to change, change this file.
 ## 1. The shelves
 
 **Placement policy (added 2026-09-11 — the placement-and-promotion
-amendment, `misc/audit-2026-09-02/d4-general-policy-codex.md`).**
+amendment; `03-decisions.md` SA-1…SA-6 carries the dated rulings).**
 Applicability and timing are decided BEFORE a surface is chosen, not
 after. §2's gate procedure already works this way — T2's timing
 sharpening, the T3a/T4 depth-behind-rule question — this paragraph only
@@ -22,7 +22,11 @@ first question. An **active-demand placement** (`reference`, tier
 `DEMAND`) is a sound placement only behind a maintained, recognizable
 task cue: a shelf entry nobody could be pointed to from an
 already-delivered entry point is staging, not a served lesson — say so
-in the card (§8) rather than letting the write pass as delivery. **An
+in the card (§8) rather than letting the write pass as delivery. **For
+the trial, promotion targets PATHED rules and skill entries only;
+promotion to an ALWAYS line or a hook is out of scope until the day-30
+review** (Q1 HELD — `03-decisions.md` SA-1). The existing §2 gate
+procedure itself is unchanged. **An
 unavailable or unregistered host is an explicit unresolved placement,
 never a silent fallback to a broader surface** — what "explicit" means
 today, and what is changing, is in §3.
@@ -399,13 +403,14 @@ you, re-answering T1 with better evidence, not the table.
   on first route). You may name another *existing* references file
   when the lesson clearly belongs there — but **never
   `GOTCHAS.journal.md`**, which is ha-note's accumulation surface, not
-  a self-learn target. *(2026-09-11 — Q5, trial.)* When the named
-  target is an explicitly named **existing curated** file, self-learn's
-  writes land inside one owned managed region per section, not
-  appended freely — the same discipline `claude-md`/`SKILL.md` managed
-  sections already use. The **default** target (`LEARNINGS.md`,
-  created fresh on first route) is unaffected: it has no hand-authored
-  material around it to protect.
+  a self-learn target. *(2026-09-11 — Q5, trial; **forward work**, not
+  built — `14-forward-work-map.md` FW-153.)* Once built, writes into an
+  explicitly named **existing curated** file will land inside one owned
+  managed region per section rather than being appended freely.
+  **Today they are plain-appended** (`compile_reference`), so name an
+  existing curated file only when appending to it is acceptable. The
+  default target (`LEARNINGS.md`, created fresh on first route) is
+  unaffected either way.
 - Diffs are previews only: compilers regenerate managed sections from
   records at apply time. Never treat a stale preview as a problem you
   must fix.

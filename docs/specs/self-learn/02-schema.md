@@ -310,7 +310,7 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   native mechanism, entry surface/task cue, target host, and payload
   reference — reusing `routing`'s existing `rules_paths`/`rules_topic`/
   `reference_file` rather than duplicating them); *review obligation*
-  (`review_after` or a named event, a reason, and the latest human
+  (a review-after date or a named event, a reason, and the latest human
   disposition); *evidence linkage* (existing session/origin plus
   confirmed-recurrence/held evidence, tied to a routing revision). A
   placement revision, once it exists, starts a new exposure window but

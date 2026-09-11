@@ -2272,18 +2272,20 @@ wider posture; the narrow one is the conservative default).
   surface" — and a budget that only lit the suggested destination would
   go dark exactly when the human weighs an alternative, so the Why
   region lists every candidate. **`skill-md` and `claude-md`** get their
-  fill from `surface_fill`; **`reference` is EXCLUDED from the field and
-  gets a template-static line** — *(reworded 2026-09-11, the placement
-  amendment, reconciling A12b against policy §5: reference is an
-  active-demand placement tier with its own entry-point discipline, not
-  an automatic dumping ground for anything a cap would have blocked —
-  the mechanical cap this line describes was itself retired by `U-cap`,
-  2026-08-23, so there is no cap event left to "graduate" from, and the
-  old overflow-sink framing is now simply wrong, not just imprecise)* —
-  "reference files have no cap — route here only when the lesson has a
-  maintained task cue, not as overflow" (`target=None`,
-  `compile_reference` is cap-free — no fill to probe; no builder may
-  invent one). Cost: ≤2 capped targets per record, memoized per
+  fill from `surface_fill`; *(corrected 2026-09-11, the placement
+  amendment, reconciling A12b against policy §5 — fold r1: the sentence
+  this row used to prescribe re-asserted a line `U-cap` §6.6 had already
+  deleted from the shipped UI, `plugins/self-learn/ui/tests/
+  test_routes.py:1202` and `test_models_detail.py:451` both assert it is
+  gone.)* **`reference` is EXCLUDED from the field**, and the
+  template-static line this row used to specify was **deleted by
+  `U-cap` §6.6** (shipped 2026-08-24) — `reference` now carries the
+  read-rate verdict, not a static sentence (`REFERENCE_NO_CAP_LINE` no
+  longer exists). The routing rule the old line gestured at — reference
+  is an active-demand tier, never an overflow sink — is stated in
+  routing-doctrine §1 and 09 §2.3 above, not rendered here.
+  (`target=None`, `compile_reference` is cap-free — no fill to probe; no
+  builder may invent one). Cost: ≤2 capped targets per record, memoized per
   target-path per invocation (08 §1), no model tokens. Keys mirror the
   §2.3 scope filter, narrowed to the two capped destinations. **(3) Freshness — render-time, coordinated with U16, gated by
   a flag.** Fill is time-varying (it moves when *other* records route),
