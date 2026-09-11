@@ -1145,3 +1145,39 @@ human routes it.
   derives `ALWAYS`/`HOOK` for first placements — and fixed two stale
   cross-references in the reworded Y-20 passage. Full report:
   `misc/audit-2026-09-02/sprint-3/spec-A-placement-report.md`.
+||||||| a41ddb3
+- **2026-09-11 — the intent transaction written into the corpus, the
+  recover-or-refuse contract for every lock-holding ledger commit path,
+  and the host-phase record design (Sprint 3 spec lane B; text only,
+  no code).** Sprint 2's D7 transaction — the `<home>/.intents/<id>.json`
+  file that brackets the four multi-file ledger writes so a crash rolls
+  forward, restores, or stops — shipped 2026-09-05 with no spec sentence
+  anywhere. `13-hosting-and-separation.md` gains **§7.2a** as the
+  normative home: the file and schema (§7.2a.1, now with the `stopped`
+  field recovery persists), the bracket (§7.2a.2), the three outcomes
+  with M-W gate r1 MAJOR-2 quoted verbatim (§7.2a.3), clearing a STOP
+  (§7.2a.4), the five answers of the user's 14:31 rulings stated once
+  (§7.2a.5: the seam, the ordering, finish-and-tell, STOP scope option 1
+  with its outage cost and its three-fact promise, the exit codes), the
+  agent-callable recovery verb (§7.2a.6), visibility (§7.2a.7), the test
+  plan (§7.2a.8) and the option-B host-phase record (§7.2a.9). **H-7**
+  gains the intent bracket as a second clause scoped to the four D7
+  operations, **H-8** the fail-closed lock census as a second check,
+  **§5** the recovery-first / STOP-refuses-the-batch / batch-checks-once
+  / 8-not-6 paragraph, **H-2** the option-B amendment (`recompile`
+  remains the only repair; no caller applies a host step from an
+  intent). `03-decisions.md` gains **`S-61`**, **`S-62`**, **`S-63`**
+  (decision, rationale, links — the mechanisms live in 13 only);
+  `14-forward-work-map.md` gains **`FW-157`** (host-phase BUILD, deferred
+  behind M-I wave 3 and four pre-build decisions) and **`FW-158`** (the
+  recovery verb, built with the live-intent guard lane); `u-verbs`
+  §3.3a rule 3 carries a dated note (a mid-sheet 6 after a landed commit
+  reports 8). Gate r1 (Opus + Codex Astra) folded 2026-09-11: STOP's
+  promise split into the verb's own writes / completed recovery /
+  partial recovery; the ledger rebase leg converts; recovery persists a
+  STOP so a read-only classifier can see it; H-7 scoped to the four
+  operations; the host-phase design restated as an observation set and
+  two invariants with the lifetime a pre-build decision. Fences kept:
+  13 §3–§4 and the routing doctrine untouched (spec lane A's), no code,
+  no test edits, no new proposal field. `09-surface-spec.md` unchanged:
+  it is the review-UI surface, and the adjudicator is a CLI caller.
