@@ -606,9 +606,14 @@ def _write_host_marker(home: Path, target: Path) -> Path:
     and a fresh registration is no exception)."""
     marker = host_marker_path(target)
     with gitops.host_lock(target, "plain"):
-        marker.write_text(
+        # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True,
+        # same reasoning as compilers.py's host-canon writes.
+        fsops.atomic_write(
+            marker,
             f"home={Path(home).expanduser().resolve()} at={_now_iso()}\n",
-            encoding="utf-8",
+            preserve_mode=True,
+            fsync=True,
+            follow_symlinks=True,
         )
     return marker
 

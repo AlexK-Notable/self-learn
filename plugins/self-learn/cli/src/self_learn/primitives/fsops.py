@@ -131,6 +131,7 @@ below, not a per-caller judgment call):
     | ledger records / proposals / meta / compiled | ``atomic_write(preserve_mode=True, fsync=True)``, symlinks refused |
     | ``config.yaml`` / ``hosts.yaml``           | ``atomic_write(..., follow_symlinks=True)`` -- people symlink config files into dotfile repos |
     | hook script                                | ``atomic_write(..., mode=0o755)``             |
+    | host canon (Sprint 3 M-I wave 3: CLAUDE.md paths-block/pointer-line/managed-section/reference-block writes, the plain-host marker, and the new-skill scaffold's plugin.json/SKILL.md/marketplace.json) | ``atomic_write(..., follow_symlinks=True)`` -- the read side already resolves symlinks (`compilers.surface_names_target` compares `resolve()` to `resolve()`) and `install.sh` itself symlinks skills into `~/.claude/skills`; a writer that refused what the reader accepts would break real hosts |
 
     uid/gid are never touched by this module (POSIX rename preserves
     the destination directory's ownership semantics on its own; this
