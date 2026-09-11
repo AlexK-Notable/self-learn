@@ -1083,62 +1083,34 @@ human routes it.
   recover-or-refuse contract for every lock-holding ledger commit path,
   and the host-phase record design (Sprint 3 spec lane B; text only,
   no code).** Sprint 2's D7 transaction — the `<home>/.intents/<id>.json`
-  file that brackets a multi-file ledger write so a crash rolls forward,
-  restores, or stops — shipped 2026-09-05 with no spec sentence anywhere;
-  `13-hosting-and-separation.md` gains a new **§7.2a** as the normative
-  home: the file and its schema as persisted at `a41ddb3`, the bracket
-  discipline (`begin` before the first mutation → `add_step` →
-  `complete` after the last mutation and before the commit → `finish`
-  after it), the three outcomes and what makes a STOP permanent, the
-  clear-a-STOP contract, M-W gate r1 MAJOR-2 quoted verbatim (recovery
-  names `self-learn recompile`, never runs the host phase). Then the
-  generalisation, the user's rulings of 14:31 encoded once each in
-  §7.2a.5: the seam is a shared ledger-write wrapper and MUST NOT be
-  `gitops.commit_lock` (host repos; recursion through `intents.recover`),
-  with a named exempt list (`intents.recover`, the clear leg,
-  `init_home`'s fresh-repo takes, the push rebase leg — `init_home`'s
-  existing-home take is NOT exempt) and a census that covers the bare
-  `commit_lock(` spelling inside `gitops.py`;
-  the check runs on the outermost acquisition, inside the lock, before
-  any mutation and before the verb's own `begin`, so the transaction's
-  own intent is exempt BY ORDERING (MUST NOT thread an id or keep a
-  registry; the wrapper tests `_held_locks` before acquiring);
-  FINISH AND TELL — a recoverable intent is finished at the check and
-  the outcome is handed back and printed before the surface's own
-  output, unattended callers recover the ledger half and never touch a
-  host step; STOP scope is OPTION 1 — every ledger write refuses at lock
-  acquisition, exit 6, nothing written (the two unattended runs refuse
-  at run start, before any model session), with the outage stated plainly
-  (one stuck file freezes teach, the nightly mine, the worker, every
-  write verb and batch until cleared); exit codes 6 / batch 8-not-6
-  after a landed commit (amending `u-verbs` §3.3a rule 3, recorded in
-  13 §5) / push 0. The user's rider makes recovery an agent-callable
-  verb — `reconcile --json` and `--clear-intent <id>` — listed as a
-  candidate auto-action under `S-29`, not auto-applied by default
-  (§7.2a.6, `FW-152`); visibility requirements close the two measured
-  silences (`status` classifies in-flight / recoverable / stopped
-  read-only, `status --fast`'s JSON carries it additively, the pending
-  hook prints it, `serve`'s tick reaches log + heartbeat + a `doctor`
-  row) (§7.2a.7); the test plan names the walker's `_LOCKS` consequence,
-  the separate fail-closed census, the non-pinned plant helper and the
-  mandatory nested-acquire mutation (§7.2a.8). **H-7** gains the intent
-  bracket as a second clause, **H-8** the census as a second check,
+  file that brackets the four multi-file ledger writes so a crash rolls
+  forward, restores, or stops — shipped 2026-09-05 with no spec sentence
+  anywhere. `13-hosting-and-separation.md` gains **§7.2a** as the
+  normative home: the file and schema (§7.2a.1, now with the `stopped`
+  field recovery persists), the bracket (§7.2a.2), the three outcomes
+  with M-W gate r1 MAJOR-2 quoted verbatim (§7.2a.3), clearing a STOP
+  (§7.2a.4), the five answers of the user's 14:31 rulings stated once
+  (§7.2a.5: the seam, the ordering, finish-and-tell, STOP scope option 1
+  with its outage cost and its three-fact promise, the exit codes), the
+  agent-callable recovery verb (§7.2a.6), visibility (§7.2a.7), the test
+  plan (§7.2a.8) and the option-B host-phase record (§7.2a.9). **H-7**
+  gains the intent bracket as a second clause scoped to the four D7
+  operations, **H-8** the fail-closed lock census as a second check,
   **§5** the recovery-first / STOP-refuses-the-batch / batch-checks-once
-  paragraph, **H-2** the option-B amendment: the intent RECORDS the
-  host-phase steps (their own `host_steps` key, the compile record's
-  two region hashes) so recovery names the interruption precisely, and
-  `recompile` remains the only repair — no unattended caller ever
-  applies a host step, the attended completion IS `recompile`
-  (§7.2a.9). `03-decisions.md` gains **`S-61`** (the transaction),
-  **`S-62`** (the contract), **`S-63`** (the host-phase design) under
-  their own subheading; `14-forward-work-map.md` gains **`FW-151`** (the
-  host-phase BUILD, deferred behind M-I wave 3 and three named
-  decisions) and **`FW-152`** (the recovery verb's agent-callable form,
-  built with the guard lane). Two readings this lane made are flagged in
-  the rows and in its report (`misc/audit-2026-09-02/sprint-3/spec-B-intents-report.md`):
-  "unattended callers always refuse" is encoded as "refuse to complete a
-  host step", and "roll-forward completes the host phase only when an
-  attended verb invokes it" as "that verb is `recompile`". Fences kept:
+  / 8-not-6 paragraph, **H-2** the option-B amendment (`recompile`
+  remains the only repair; no caller applies a host step from an
+  intent). `03-decisions.md` gains **`S-61`**, **`S-62`**, **`S-63`**
+  (decision, rationale, links — the mechanisms live in 13 only);
+  `14-forward-work-map.md` gains **`FW-157`** (host-phase BUILD, deferred
+  behind M-I wave 3 and four pre-build decisions) and **`FW-158`** (the
+  recovery verb, built with the live-intent guard lane); `u-verbs`
+  §3.3a rule 3 carries a dated note (a mid-sheet 6 after a landed commit
+  reports 8). Gate r1 (Opus + Codex Astra) folded 2026-09-11: STOP's
+  promise split into the verb's own writes / completed recovery /
+  partial recovery; the ledger rebase leg converts; recovery persists a
+  STOP so a read-only classifier can see it; H-7 scoped to the four
+  operations; the host-phase design restated as an observation set and
+  two invariants with the lifetime a pre-build decision. Fences kept:
   13 §3–§4 and the routing doctrine untouched (spec lane A's), no code,
   no test edits, no new proposal field. `09-surface-spec.md` unchanged:
   it is the review-UI surface, and the adjudicator is a CLI caller.
