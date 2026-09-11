@@ -49,6 +49,29 @@ def test_positive_control_binary_false_default_returns_str_stdout_with_no_input(
     assert isinstance(result.stdout, str)
 
 
+def test_binary_true_with_str_input_raises_valueerror_naming_binary():
+    """Fold r1 MINOR-1: `binary=True` forces bytes I/O — a `str` `input`
+    under it used to reach `Popen`/`communicate` and blow up on a raw
+    stdlib `TypeError` out of `memoryview` (text can't be written to a
+    binary-mode stdin pipe). Failing loudly, and by name, at the top of
+    `run_bounded` beats that. Positive control in the same test: the
+    guard is scoped to `str` specifically, not to `input` being
+    non-`None` in general — the same call with `bytes` `input` still
+    works."""
+    with pytest.raises(ValueError, match="binary"):
+        procs.run_bounded(
+            [sys.executable, "-c", "pass"], timeout=10, binary=True, input="a str"
+        )
+
+    result = procs.run_bounded(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"],
+        timeout=10,
+        binary=True,
+        input=b"x",
+    )
+    assert result.stdout == b"x"
+
+
 def test_byte_exact_git_show_of_a_non_utf8_blob(tmp_path):
     """The acceptance criterion this move exists for: a committed blob
     whose bytes are not valid UTF-8 (a plausible real git object —
