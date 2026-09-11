@@ -1105,29 +1105,43 @@ human routes it.
   **`09-surface-spec.md`** §2.3 states what a *complete* placement card
   means (the policy's six-question delivery contract, no new card key);
   Y-4 folds Q3's review cap in; Y-20's stale "overflow surface" line
-  (`:2255`–`:2258`) is reworded now that the mechanical cap it presumed
-  is retired. **`02-schema.md`** (~`:303`) names, descriptively only,
-  the facts a placement will eventually persist — no field is added.
-  **`03-decisions.md`** gains a new `SA-`-prefixed subsection (Sprint 3
-  lane A, avoiding a numbering collision with lane B's parallel edits to
-  this same file) carrying the Q1–Q5 trial rulings and the Q2
-  auto-registration decision, plus dated reopen notes on `S-13`/`S-14`
-  (Q6: import-then-prune is no longer the model, reason "the model
-  changed") and a reconciling note on `S-51` flagging a genuine tension
-  the Sprint 3 readiness review missed: S-51 refused deriving host mode
-  from `.git` presence for the *existing* `host add` verb, while this
-  amendment authorizes exactly that detection for the *new*
-  auto-registration call site only. `S-23` and `O-10` explicitly
-  preserved, untouched. **`14-forward-work-map.md`** gains FW-151…FW-156,
-  one per piece of code this text implies and this sprint does not
-  build (persisted placement facts, movable/retireable placements
-  including auto-registration, compiled entry cues and the managed
-  region, delivery instrumentation, review consuming the evidence, and
-  Q6's replacement lifecycle) — each row names the spec sentence it
-  implements. **Fences held:** no edit to routing-doctrine §5, the
-  proposal output contract, or the decision trace; no new proposal or
-  schema field; O-10 not re-asked. **Landing note:** the doctrine is
-  loaded live by three consumers and an installed checkout's working
-  tree is production (repo `CLAUDE.md`) — this merge changes what the
-  nightly worker routes on its next run. Full report:
+  (`:2255`–`:2258`) is recorded as **deleted** (`U-cap` §6.6, shipped
+  2026-08-24) rather than reworded, with the routing rule it gestured at
+  restated in routing-doctrine §1. **`02-schema.md`** (~`:303`) names,
+  descriptively only, the facts a placement will eventually persist — no
+  field is added. **`03-decisions.md`** gains a new `SA-`-prefixed
+  subsection (Sprint 3 lane A, avoiding a numbering collision with lane
+  B's parallel edits to this same file) carrying the Q1–Q5 trial rulings
+  and the Q2 auto-registration decision, plus dated reopen notes on
+  `S-13`/`S-14` (Q6: import-then-prune is no longer the model, reason
+  "the model changed") and a reconciling note on `S-51` flagging a
+  genuine tension the Sprint 3 readiness review missed: S-51 refused
+  deriving host mode from `.git` presence for the *existing* `host add`
+  verb, while an orchestrator default for the *new* auto-registration
+  call site (`GO-NO-GO-2026-09-11.md:51`) assumes exactly that
+  detection. **The narrowing is recorded UNRESOLVED, pending the user's
+  git-vs-plain answer; this amendment does not settle it.** `S-23` and
+  `O-10` explicitly preserved, untouched. **`14-forward-work-map.md`**
+  gains FW-151…FW-156, one per piece of code this text implies and this
+  sprint does not build (persisted placement facts, movable/retireable
+  placements including auto-registration, compiled entry cues and the
+  managed region, delivery instrumentation, review consuming the
+  evidence, and Q6's replacement lifecycle) — each row names the spec
+  sentence it implements. **Fences held:** no edit to routing-doctrine
+  §5, the proposal output contract, or the decision trace; no new
+  proposal or schema field; O-10 not re-asked. **Landing note:** the
+  doctrine is loaded live by three consumers and an installed checkout's
+  working tree is production (repo `CLAUDE.md`) — this merge changes
+  what the nightly worker routes on its next run. **Fold r1** (blind
+  gate round 1, `ae9eaac`) closed 1 BLOCKER (§4's managed-region sentence
+  had escaped the forward-work discipline), 5 MAJOR (the Q1-HELD
+  movement constraint added to doctrine §1; the Y-20 rewording corrected
+  against shipped `U-cap`; the S-51 mode-detection argument withdrawn and
+  the tension re-labelled an unresolved orchestrator default; H-3's own
+  invariant text annotated; "authorized automated reviewer" tied to
+  S-29) and 6 MINOR/1 NIT of cross-reference and wording fixes. **Fold
+  r2** (blind gate round 2, current commit) scoped the doctrine's
+  promotion sentence to mean moving an already-placed lesson — §2 still
+  derives `ALWAYS`/`HOOK` for first placements — and fixed two stale
+  cross-references in the reworded Y-20 passage. Full report:
   `misc/audit-2026-09-02/sprint-3/spec-A-placement-report.md`.

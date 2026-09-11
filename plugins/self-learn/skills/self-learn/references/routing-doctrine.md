@@ -23,10 +23,12 @@ first question. An **active-demand placement** (`reference`, tier
 task cue: a shelf entry nobody could be pointed to from an
 already-delivered entry point is staging, not a served lesson — say so
 in the card (§8) rather than letting the write pass as delivery. **For
-the trial, promotion targets PATHED rules and skill entries only;
-promotion to an ALWAYS line or a hook is out of scope until the day-30
-review** (Q1 HELD — `03-decisions.md` SA-1). The existing §2 gate
-procedure itself is unchanged. **An
+the trial, *promotion* — moving an already-placed lesson to a stronger
+surface — targets PATHED rules and skill entries only; promoting a
+placed lesson to an ALWAYS line or a hook is out of scope until the
+day-30 review** (Q1 HELD — `03-decisions.md` SA-1). This does not touch
+§2: the gate procedure still derives `ALWAYS` at T4 and `HOOK` at T1 for
+a lesson being placed for the first time, exactly as written there. **An
 unavailable or unregistered host is an explicit unresolved placement,
 never a silent fallback to a broader surface** — what "explicit" means
 today, and what is changing, is in §3.

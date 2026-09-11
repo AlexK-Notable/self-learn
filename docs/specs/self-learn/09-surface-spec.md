@@ -2277,15 +2277,15 @@ wider posture; the narrow one is the conservative default).
   this row used to prescribe re-asserted a line `U-cap` §6.6 had already
   deleted from the shipped UI, `plugins/self-learn/ui/tests/
   test_routes.py:1202` and `test_models_detail.py:451` both assert it is
-  gone.)* **`reference` is EXCLUDED from the field**, and the
-  template-static line this row used to specify was **deleted by
-  `U-cap` §6.6** (shipped 2026-08-24) — `reference` now carries the
-  read-rate verdict, not a static sentence (`REFERENCE_NO_CAP_LINE` no
-  longer exists). The routing rule the old line gestured at — reference
-  is an active-demand tier, never an overflow sink — is stated in
-  routing-doctrine §1 and 09 §2.3 above, not rendered here.
+  gone.)* **`reference` is EXCLUDED from the field**
   (`target=None`, `compile_reference` is cap-free — no fill to probe; no
-  builder may invent one). Cost: ≤2 capped targets per record, memoized per
+  builder may invent one), and the template-static line this row used to
+  specify was **deleted by `U-cap` §6.6** (shipped 2026-08-24) —
+  `reference` now carries the read-rate verdict, not a static sentence
+  (`REFERENCE_NO_CAP_LINE` no longer exists). The routing rule the old
+  line gestured at — reference is an active-demand tier, never an
+  overflow sink — is stated in routing-doctrine §1 above, not rendered
+  here. Cost: ≤2 capped targets per record, memoized per
   target-path per invocation (08 §1), no model tokens. Keys mirror the
   §2.3 scope filter, narrowed to the two capped destinations. **(3) Freshness — render-time, coordinated with U16, gated by
   a flag.** Fill is time-varying (it moves when *other* records route),
