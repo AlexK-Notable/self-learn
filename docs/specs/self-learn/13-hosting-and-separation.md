@@ -489,8 +489,11 @@ rounds. The durable outcomes:
   *reported* sites simply relocated the bug to the file nobody listed.
   **Second check (added 2026-09-11, Sprint 3 spec lane B, `S-62`):** the
   recover-or-refuse contract of §7.2a is pinned by a SEPARATE
-  fail-closed census test, not by bending the walker: every
-  `gitops.commit_lock(` call site under `src/self_learn/` is one of (a)
+  fail-closed census test, not by bending the walker: every call to
+  `commit_lock` under `src/self_learn/` — the attribute form
+  `gitops.commit_lock(` in other modules AND the bare `commit_lock(`
+  inside `gitops.py` itself (`push_with_retry`'s take is bare; the
+  census matches the resolved name, not one spelling) — is one of (a)
   the ledger-write wrapper itself, (b) a ledger site on §7.2a's exempt
   list, named by qualified function name, or (c) a host-repo
   acquisition, likewise named — and an unlisted site turns the test
@@ -696,10 +699,19 @@ repository; (b) it recurses — `intents.recover` itself takes
 sites** (each a named entry of H-8's census, each with its reason):
 `intents.recover` — it IS the recovery, and its own `commit_lock(home)`
 becomes a pass-through when reached through the wrapper;
-`ledger.init_home` — a fresh ledger has no `.intents/` (the guard would
-be a no-op) and the site is pinned to a literal `with
-gitops.commit_lock(…)` form the walker can see (`ledger.py`, the
-manual-`__enter__` note); `gitops.push_with_retry`'s rebase leg — it
+`intents.clear_stopped` — the §7.2a.6 clear leg, exempt for the same
+reason (it is part of recovery, and it must run before the check would
+refuse on the very intent it removes); `ledger.init_home`'s FRESH-REPO
+takes only (its steps 3 and 5, which `git init` a directory self-learn
+just created) — no `.intents/` can exist there, and each site is pinned
+to a literal `with gitops.commit_lock(…)` form the walker can see
+(`ledger.py`, the manual-`__enter__` note). `init_home`'s step-6 take is
+NOT exempt: that step tops up an EXISTING home and commits whatever is
+staged with `--allow-empty`, which under a STOP could be the stuck
+intent's own staged rename — so that one take converts to the wrapper
+(re-read against `ledger.py` 2026-09-11; the readiness review's blanket
+reason, "a fresh ledger has no `.intents/`", is true of steps 3 and 5
+and false of step 6); `gitops.push_with_retry`'s rebase leg — it
 holds the lock for `pull --rebase --autostash` on whichever repo is
 being pushed, commits nothing of its own, and every push surface has
 already run recovery through `reconcile` before reaching it (the
@@ -709,7 +721,9 @@ which also closes the two-acquisition gap its docstring records
 (recovery used to run under its own lock, then the orphan scan under a
 second); `verbs._stage_and_commit`'s nested take converts;
 `worker.run`'s start-of-run `intents.recover` call is not a lock site
-and stays exactly as it is (it sits on an armor-pinned path). Host-repo
+and stays where it is (it sits on an armor-pinned path); the only
+change there is what the run does with a `stopped` outcome, §7.2a.5(4).
+Host-repo
 acquisitions are named in the census and are outside this contract.
 
 **(2) Ordering: outermost acquisition, inside the lock, pre-mutation —
@@ -752,7 +766,12 @@ intent; the 14:31 answer's phrase "unattended callers always refuse"
 is read here as "always refuse to complete a host step", consistent
 with the miner's and worker's shipped run-start recovery. If the user
 meant that an unattended caller refuses even a recoverable intent,
-this sentence changes and nothing else does.)* The hand-edit refusal
+more than this sentence changes: the wrapper is attendance-blind, so it
+would have to learn who is calling — a parameter, or a non-recovering
+variant taken at the miner's and worker's sites — and the worker's
+shipped start-of-run recovery on its armor-pinned path would become a
+refusal, moving `test_worker.py` and `TestWorkerRunFindsAnIntent` with
+it.)* The hand-edit refusal
 does not trip after a roll-forward: the compile record's `sha256` is
 the predicted post-write region and its `based_on_sha256` the region
 observed before the write, so a host file the interrupted verb never
@@ -764,7 +783,18 @@ against `compiled.py`).
 **(4) STOP scope — OPTION 1, refuse everything.** When the check finds
 an intent it cannot finish (a `stopped` outcome), EVERY ledger-write
 verb refuses at lock acquisition, exit 6, nothing written — one generic
-seam, no per-verb path prediction. The cost, stated plainly: **one
+seam, no per-verb path prediction. For the two unattended runs the
+refusal point is the RUN START, not the landing lock: the miner's
+run-start `reconcile` and the worker's run-start `intents.recover`
+already report a `stopped` outcome, and a run that sees one ends
+there — exit 6, or the job record under `serve` — before enumeration
+and before any model session is spent. Today both log the STOP and
+proceed (readiness review A-1), and the miner's "never fatal" healing
+wrapper is what carries it on; that wrapper gets this one exception,
+because a run that cannot land has nothing to mine for. The landing
+lock's check (the miner's landing commit, the worker's commit and
+harvest locks) is the backstop for a STOP that appears mid-run, not
+the first line. The cost, stated plainly: **one
 stuck intent file freezes `teach`, the 03:30 nightly mine, the worker,
 `telemetry.flush`, `config set`/`unset`, every import, every
 resolution verb and every batch, until recovery clears it** — and
@@ -833,9 +863,11 @@ exact field spelling is the build's, the content is not. It gains
 (refuse with a named reason for a recoverable or in-flight one, using
 the same read-only classification `status` uses, §7.2a.7), record the
 clearing in the envelope, then proceed with the ordinary scan
-(§7.2a.4). The clear leg belongs to the recovery module — it takes the
-lock the way `intents.recover` does and is exempt from the wrapper's
-check for the same reason — and it runs BEFORE that check would refuse
+(§7.2a.4). The clear leg belongs to the recovery module —
+`intents.clear_stopped(home, id)`, a named entry of §7.2a.5(1)'s exempt
+list and of H-8's census: it takes the lock the way `intents.recover`
+does and is exempt from the wrapper's check for the same reason — and
+it runs BEFORE that check would refuse
 on the very intent being cleared; a clear placed after the wrapper's
 check can never run, since the STOP it exists to remove refuses it
 first. Under the S-29 autonomy policy this verb is listed as a
@@ -906,9 +938,15 @@ section.
   planted.
 - The change touches `worker.run`'s path, so the armor-pinned
   end-to-end files (`test_attrib.py`, `test_worker.py`,
-  `test_repair.py`, `test_invocation*.py`) run before merge; leaving
-  `worker.run`'s start-of-run recovery untouched keeps `test_worker.py`
-  free of a dated exemption.
+  `test_repair.py`, `test_invocation*.py`) run before merge. The
+  start-of-run recovery call is unmoved (no dated armor exemption);
+  the new "a `stopped` outcome ends the run" branch (§7.2a.5(4)) gets
+  its own test in each of the miner and the worker — plant a STOPPED
+  intent, run, assert exit 6 (or the job record under `serve`) with
+  no model session started — with the positive control first: a
+  RECOVERABLE intent is finished and the run proceeds
+  (`TestWorkerRunFindsAnIntent` already is that control for the
+  worker).
 
 ### 7.2a.9 The host-phase record (option B) — what the intent says about the host, and what it never does
 

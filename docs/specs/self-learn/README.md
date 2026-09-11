@@ -1094,7 +1094,11 @@ human routes it.
   names `self-learn recompile`, never runs the host phase). Then the
   generalisation, the user's rulings of 14:31 encoded once each in
   §7.2a.5: the seam is a shared ledger-write wrapper and MUST NOT be
-  `gitops.commit_lock` (host repos; recursion through `intents.recover`);
+  `gitops.commit_lock` (host repos; recursion through `intents.recover`),
+  with a named exempt list (`intents.recover`, the clear leg,
+  `init_home`'s fresh-repo takes, the push rebase leg — `init_home`'s
+  existing-home take is NOT exempt) and a census that covers the bare
+  `commit_lock(` spelling inside `gitops.py`;
   the check runs on the outermost acquisition, inside the lock, before
   any mutation and before the verb's own `begin`, so the transaction's
   own intent is exempt BY ORDERING (MUST NOT thread an id or keep a
@@ -1103,7 +1107,8 @@ human routes it.
   the outcome is handed back and printed before the surface's own
   output, unattended callers recover the ledger half and never touch a
   host step; STOP scope is OPTION 1 — every ledger write refuses at lock
-  acquisition, exit 6, nothing written, with the outage stated plainly
+  acquisition, exit 6, nothing written (the two unattended runs refuse
+  at run start, before any model session), with the outage stated plainly
   (one stuck file freezes teach, the nightly mine, the worker, every
   write verb and batch until cleared); exit codes 6 / batch 8-not-6
   after a landed commit (amending `u-verbs` §3.3a rule 3, recorded in
