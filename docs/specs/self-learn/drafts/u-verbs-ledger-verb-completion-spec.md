@@ -978,6 +978,17 @@ emitted after a write**, which is the whole point. `0` means everything
 applied; `8` means read the envelope; `3`/`4`/`7` mean a git step failed
 after the ledger changed; `6`/`1`/`5`/`64` mean it did not.
 
+*Amended 2026-09-11 (Sprint 3 spec lane B, `S-62`; normative text in
+`13-hosting-and-separation.md` §5 and §7.2a.5(5)): rule 3 as written let
+a mid-sheet **6** promote to the sheet's exit code over commits that had
+already landed — measured reachable at `a41ddb3` (an item-level
+`GitOpsError` after earlier items committed), and made common by the
+live-intent guard. **A 6 promotes to the sheet's code only when no
+commit landed before it; after a landed commit it reports 8.** 7 and
+the push codes 3/4 are unchanged. The batch verb also runs the
+live-intent check once, before item 1, so a pre-existing STOP refuses
+the sheet with an honest 6.*
+
 **Where this row is owed is a MEASURED list, and it lives in §8** —
 three surfaces render this contract and all three take the `8` row;
 `11-telemetry-and-lifecycle.md` is **not** one of them, and neither is
