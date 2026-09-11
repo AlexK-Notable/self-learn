@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from self_learn.primitives import fsops
 from self_learn.worker import cache_dir
 
 __all__ = [
@@ -121,7 +122,10 @@ def compile_doctrine(
             parts.append(text)
         compiled_text = "\n".join(parts)
         compiled_path.parent.mkdir(parents=True, exist_ok=True)
-        compiled_path.write_text(compiled_text, encoding="utf-8")
+        # D6 (Sprint 3 M-I wave 4): UI derived cache -- regenerable content,
+        # so the general-purpose defaults (symlinks refused, mode
+        # preserved, fsync'd).
+        fsops.atomic_write(compiled_path, compiled_text)
 
     return compiled_path
 
