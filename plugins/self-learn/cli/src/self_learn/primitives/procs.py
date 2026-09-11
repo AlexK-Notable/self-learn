@@ -47,6 +47,7 @@ def run_bounded(
     env: Mapping[str, str] | None = None,
     input: str | bytes | None = None,
     check: bool = False,
+    binary: bool = False,
 ) -> subprocess.CompletedProcess:
     """``subprocess.run(argv, ...)``, bounded. ``timeout`` is keyword-only
     and has no default — a caller must choose one, the whole point of
@@ -62,9 +63,22 @@ def run_bounded(
     ``input``/``check`` mirror :func:`subprocess.run`'s own — ``check``
     raises :class:`subprocess.CalledProcessError` on a non-zero exit,
     same as there; a non-zero exit that is NOT ``check``ed is returned,
-    not raised, same as there too."""
+    not raised, same as there too.
+
+    ``binary``: when true, ``stdout``/``stderr`` come back as ``bytes`` even
+    when ``input`` is ``None`` — the default infers text-vs-bytes from
+    ``input`` alone, which can never produce bytes output for a caller
+    that passes no stdin. A byte-exact caller (e.g. ``intents._head_show``,
+    comparing output against a recorded sha256) sets this instead of
+    relying on that inference. ``input`` must then be ``bytes`` or
+    ``None`` — a ``str`` under ``binary=True`` raises :class:`ValueError`
+    (mixing a text ``input`` with a forced-bytes child is not a shape any
+    caller wants; failing loudly beats a raw stdlib ``TypeError`` out of
+    ``Popen``)."""
+    if binary and isinstance(input, str):
+        raise ValueError("run_bounded: binary=True requires input to be bytes or None, not str")
     argv = list(argv)
-    text_mode = not isinstance(input, (bytes, bytearray))
+    text_mode = not binary and not isinstance(input, (bytes, bytearray))
     proc = subprocess.Popen(
         argv,
         cwd=cwd,

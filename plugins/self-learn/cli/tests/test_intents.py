@@ -35,6 +35,7 @@ import pytest
 from self_learn import gitops, intents, reconcile as reconcile_mod, verbs, worker
 from self_learn.hosts import host_add, host_rebind, load_hosts, slug_for
 from self_learn.ledger_ops import create_record
+from self_learn.primitives import procs
 from support import commit_all, git, init_repo, make_behavior, make_env, merge_proposal_text
 
 
@@ -1031,23 +1032,56 @@ class TestCoreMechanics:
         assert not (new_home / ".intents" / f"{intent.id}.json").exists()
 
     def test_head_show_converts_a_timeout_to_giterror(self, tmp_path, monkeypatch):
-        """Gate r1 minor-3: `_head_show`'s bespoke `subprocess.run` (kept
-        bespoke because it is the one byte-exact call in this module —
-        `gitops._git`/`procs.run_bounded` both force `text=True`) must
-        still convert a `TimeoutExpired` to `gitops.GitOpsError`, the way
-        every OTHER child process in this codebase does, instead of
-        letting the raw stdlib exception escape past `_capture_old_state`
-        (called from `begin`, uncaught anywhere above it)."""
+        """Gate r1 minor-3, then S3 ITEM 2: `_head_show` now calls
+        `procs.run_bounded(..., binary=True)` instead of a bespoke
+        `subprocess.run` — so the seam this test must wedge moved from
+        `intents.subprocess.run` (which the migration leaves unreachable
+        from this function: `intents.py` no longer calls `subprocess.run`
+        at all) to `procs.subprocess.Popen`, the one `run_bounded` itself
+        calls. `_FakePopen` mimics a real hang for the ONE argv this test
+        cares about -- `.communicate()` raises `TimeoutExpired` on the
+        first call (the wait), then returns clean output on the second
+        (the post-killpg drain `run_bounded` always attempts) -- so
+        `run_bounded` reaches its own `raise BoundedTimeout(...) from
+        None`, which must still convert to `gitops.GitOpsError` here
+        (`BoundedTimeout` subclasses `subprocess.TimeoutExpired`, so the
+        existing `except subprocess.TimeoutExpired:` below keeps catching
+        without any change to that line). `procs.subprocess` IS the
+        stdlib `subprocess` module (not a copy), so patching its `Popen`
+        attribute is process-global -- every OTHER matching argv (here,
+        `gitops._index_lock_note`'s own real `git rev-parse --git-dir`,
+        called while building the error message this test asserts on)
+        must fall through to the REAL `Popen`, or it wedges too."""
         repo = tmp_path / "repo"
         init_repo(repo)
         f = repo / "a.txt"
         f.write_text("old", encoding="utf-8")
         commit_all(repo, "seed")
 
-        def _wedged(*a, **k):
-            raise subprocess.TimeoutExpired(cmd="git show", timeout=30.0)
+        real_popen = procs.subprocess.Popen
+        target_argv = ["git", "-C", str(repo), "show", "HEAD:a.txt"]
 
-        monkeypatch.setattr(intents.subprocess, "run", _wedged)
+        class _FakePopen:
+            def __new__(cls, argv, **kwargs):
+                if list(argv) != target_argv:
+                    return real_popen(argv, **kwargs)
+                return object.__new__(cls)
+
+            def __init__(self, argv, **kwargs):
+                self.argv = argv
+                self.pid = 2**30  # never a real pid; getpgid must miss
+                self.returncode = 0
+                self._calls = 0
+
+            def communicate(self, input=None, timeout: float | None = None):
+                self._calls += 1
+                if self._calls == 1:
+                    raise subprocess.TimeoutExpired(
+                        cmd=self.argv, timeout=timeout if timeout is not None else 0.0
+                    )
+                return b"", b""
+
+        monkeypatch.setattr(procs.subprocess, "Popen", _FakePopen)
 
         with pytest.raises(gitops.GitOpsError, match="git show"):
             intents._head_show(repo, "a.txt")

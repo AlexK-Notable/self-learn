@@ -257,20 +257,24 @@ def census(root: Path) -> list[Site]:
 #: forms) is `str(path.relative_to(root))`, native-separated. The
 #: comparison below normalizes a backslash-separated hit back to POSIX
 #: first, so this frozenset never needs a second, Windows-only literal.
-#: M-W (Sprint 2 lane L7, D7) re-measure: `intents.py` (new module) adds
-#: one `subprocess.run(..., timeout=...)` call — `_head_show`'s bespoke
-#: byte-exact `git show HEAD:<relpath>`, deliberately NOT routed through
-#: `gitops._git` (which is `text=True` and would corrupt binary/non-UTF8
-#: content) or `primitives.procs.run_bounded` (same reason). It carries
-#: `timeout=`, so it adds zero P3 violations (`test_p3_gate_src_has_no_
-#: unallowed_bounded_children_violations` stays green) — this is purely
-#: the "did the census move at all" pin catching a legitimate new site,
-#: exactly the shape its own docstring says it exists to catch.
+#: M-W (Sprint 2 lane L7, D7) re-measure, then S3 ITEM 2 re-measure:
+#: `intents.py`'s `_head_show` originally carried a bespoke
+#: `subprocess.run(..., timeout=...)` call (its own byte-exact
+#: `git show HEAD:<relpath>`, kept off `gitops._git` because that forces
+#: `text=True`). `primitives.procs.run_bounded` gained a `binary=` seam
+#: expressly so this call could move onto it without losing byte
+#: exactness, and it now does — `intents.py` drops out of this census
+#: entirely (its only site was this one `subprocess.run`, and the module
+#: calls no other `run`/`Popen`/`.communicate()`), while
+#: `primitives/procs.py`'s own count is unchanged (it already called
+#: `subprocess.Popen`/`.communicate()` for every caller, `_head_show`
+#: included). Net: one fewer site, one fewer module — exactly the "a
+#: removed site is a visible diff here too" case this pin's own
+#: docstring names, not just a growth case.
 MEASURED_CENSUS_MODULES = frozenset(
     {
         "gitops.py",
         "hosts.py",
-        "intents.py",
         "ledger.py",
         "miner.py",
         "primitives/procs.py",
@@ -278,7 +282,7 @@ MEASURED_CENSUS_MODULES = frozenset(
         "worker.py",
     }
 )
-MEASURED_CENSUS_SITE_COUNT = 16
+MEASURED_CENSUS_SITE_COUNT = 15
 
 
 def test_p3_gate_census_matches_the_measured_count():

@@ -167,19 +167,20 @@ def _relpath(home: Path, path: Path) -> str:
 
 def _head_show(home: Path, relpath: str) -> bytes | None:
     """The exact bytes ``HEAD:<relpath>`` holds, or ``None`` when *relpath*
-    is not in ``HEAD`` at all. A bespoke call (not :func:`gitops._git`,
-    which decodes with ``text=True``) -- a byte-exact compare against a
-    recorded sha256 must never go through a text codec that can silently
-    change bytes. `procs.run_bounded` is the same story (also forces text
-    mode) -- a follow-up seam, not this fold: gate r1 minor-3 asked only
-    that a timeout convert to :class:`gitops.GitOpsError`, mirroring
-    :func:`gitops._git`, which this now does; it still lacks that
-    primitive's process-group kill on timeout."""
+    is not in ``HEAD`` at all. Not :func:`gitops._git` (which decodes with
+    ``text=True``) -- a byte-exact compare against a recorded sha256 must
+    never go through a text codec that can silently change bytes. Routed
+    through ``procs.run_bounded(..., binary=True)`` (gate r1 minor-3
+    follow-up): gets the same process-group kill on timeout every other
+    bounded child call site has, while still forcing bytes output
+    regardless of ``input`` (there is none here)."""
+    from .primitives import procs
+
     try:
-        proc = subprocess.run(
+        proc = procs.run_bounded(
             ["git", "-C", str(home), "show", f"HEAD:{relpath}"],
-            capture_output=True,
             timeout=gitops.GIT_LOCAL_TIMEOUT,
+            binary=True,
         )
     except subprocess.TimeoutExpired as exc:
         raise gitops.GitOpsError(
