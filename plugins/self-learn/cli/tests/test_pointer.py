@@ -267,14 +267,19 @@ class TestPointerContract:
         write -- fail."""
         surface, target = _skill_fixture(tmp_path)
         original_text = surface.read_text(encoding="utf-8")
-        real_write_text = Path.write_text
+        real_atomic_write = compilers_mod.fsops.atomic_write
 
-        def flaky_write_text(self, data, *args, **kwargs):
-            if self == surface and data == original_text:
+        def flaky_atomic_write(path, data, *args, **kwargs):
+            # Sprint 3 M-I wave 3 re-pin: apply_pointer's writes (create,
+            # main, revert) all go through fsops.atomic_write now, not
+            # Path.write_text -- scope the failure to the REVERT call
+            # specifically (path == surface, data == original_text),
+            # same discrimination the pre-migration test used.
+            if Path(path) == surface and data == original_text:
                 raise OSError("ENOSPC (simulated): restore write failed")
-            return real_write_text(self, data, *args, **kwargs)
+            return real_atomic_write(path, data, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "write_text", flaky_write_text)
+        monkeypatch.setattr(compilers_mod.fsops, "atomic_write", flaky_atomic_write)
 
         with mock.patch.object(compilers_mod, "pointer_token", return_value="nope/NOWHERE.md"):
             with pytest.raises(CompileError) as exc:

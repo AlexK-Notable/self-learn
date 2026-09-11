@@ -124,7 +124,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from . import domain
-from .primitives import chrono, text
+from .primitives import chrono, fsops, text
 from .records import Record
 
 __all__ = [
@@ -361,7 +361,12 @@ def compile_managed_file(
         records,
     )
     if result.changed:
-        path.write_text(result.text, encoding="utf-8")
+        # Sprint 3 M-I wave 3 (D6): host canon (this managed-section
+        # target lives in a user's own repo/host, e.g. CLAUDE.md/SKILL.md)
+        # -- follow_symlinks=True, matching the read side's own tolerance
+        # (surface_names_target compares resolve() to resolve()) and
+        # install.sh's own practice of symlinking skills into place.
+        fsops.atomic_write(path, result.text, preserve_mode=True, fsync=True, follow_symlinks=True)
     return result
 
 
@@ -807,7 +812,9 @@ def apply_paths_frontmatter(path: Path | str, records: Sequence[Record]) -> Path
     new_text = _rewrite_paths_block(text, existing_block, u)
     changed = new_text != text
     if changed:
-        path.write_text(new_text, encoding="utf-8")
+        # Sprint 3 M-I wave 3 (D6): host canon, same reasoning as
+        # compile_managed_file above -- follow_symlinks=True.
+        fsops.atomic_write(path, new_text, preserve_mode=True, fsync=True, follow_symlinks=True)
     return PathsResult(
         path=path, paths=u, changed=changed, unpathed_by=unpathed,
         widened=wide, drift=drift, notes=tuple(notes),
@@ -1045,7 +1052,8 @@ def apply_pointer(
                 "block to an existing one"
             )
         surface.parent.mkdir(parents=True, exist_ok=True)
-        surface.write_text("", encoding="utf-8")
+        # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True.
+        fsops.atomic_write(surface, "", preserve_mode=True, fsync=True, follow_symlinks=True)
         created = True
 
     if surface_names_target(surface, target):
@@ -1062,7 +1070,11 @@ def apply_pointer(
     line = pointer_line(token, label)
     original_text = surface.read_text(encoding="utf-8")
     new_text, bootstrapped = compile_pointer_text(original_text, line, names_base=names_base)
-    surface.write_text(new_text, encoding="utf-8")
+    # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True. Each
+    # of this function's writes (this one, and the create-empty and
+    # revert legs) is its own atomic replace: a crash between any two of
+    # them leaves the surface at whichever one completed, never torn.
+    fsops.atomic_write(surface, new_text, preserve_mode=True, fsync=True, follow_symlinks=True)
 
     if not surface_names_target(surface, target):
         # r3 (NOTE 4): restore before raising -- the raise is still loud,
@@ -1081,7 +1093,9 @@ def apply_pointer(
         # actually still dirty sends a human/repair straight past it.
         restored = True
         try:
-            surface.write_text(original_text, encoding="utf-8")
+            fsops.atomic_write(
+                surface, original_text, preserve_mode=True, fsync=True, follow_symlinks=True
+            )
         except Exception:
             restored = False  # the CompileError below must still surface, not this
         outcome = (
@@ -1187,12 +1201,13 @@ def compile_reference(
     if record.id in text:
         # Idempotency scan: this record is already in the file.
         if created:  # never happens with a fresh header, but stay honest
-            path.write_text(text, encoding="utf-8")
+            # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True.
+            fsops.atomic_write(path, text, preserve_mode=True, fsync=True, follow_symlinks=True)
         return ReferenceResult(path=path, applied=False, created=created, entry=None)
 
     block = _reference_block(record, on=on)
     new_text = text.rstrip("\n") + "\n\n" + block + "\n"
-    path.write_text(new_text, encoding="utf-8")
+    fsops.atomic_write(path, new_text, preserve_mode=True, fsync=True, follow_symlinks=True)
     return ReferenceResult(path=path, applied=True, created=created, entry=block)
 
 
@@ -1269,5 +1284,6 @@ def retire_reference(
     new_text, removed = _retire_reference_text(text, record_id)
     if removed is None:
         return ReferenceResult(path=path, applied=False, created=False, entry=None)
-    path.write_text(new_text, encoding="utf-8")
+    # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True.
+    fsops.atomic_write(path, new_text, preserve_mode=True, fsync=True, follow_symlinks=True)
     return ReferenceResult(path=path, applied=True, created=False, entry=removed)

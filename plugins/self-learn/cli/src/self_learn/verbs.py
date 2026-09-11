@@ -3138,7 +3138,8 @@ def _apply_target(
             # with no CLAUDE.md creates it empty and lets the managed-
             # section bootstrap (08 §1 pin) append the marker pair.
             # skill-md never reaches here — preflight refuses.
-            spec.target.write_text("", encoding="utf-8")
+            # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True.
+            fsops.atomic_write(spec.target, "", preserve_mode=True, fsync=True, follow_symlinks=True)
         records = _compile_set(home, spec)
         paths_changed = False
         if spec.variant == "rules":
@@ -3230,13 +3231,24 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
     scaffolded = False
     if not manifest.is_file():
         manifest.parent.mkdir(parents=True, exist_ok=True)
-        manifest.write_text(
-            plugin_manifest_text(name, description), encoding="utf-8"
+        # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True.
+        fsops.atomic_write(
+            manifest,
+            plugin_manifest_text(name, description),
+            preserve_mode=True,
+            fsync=True,
+            follow_symlinks=True,
         )
         changed = scaffolded = True
     if not target.is_file():
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(skill_md_seed(name, description), encoding="utf-8")
+        fsops.atomic_write(
+            target,
+            skill_md_seed(name, description),
+            preserve_mode=True,
+            fsync=True,
+            follow_symlinks=True,
+        )
         changed = scaffolded = True
     section = compile_managed_file(target, records)
     changed = changed or section.changed
@@ -3248,7 +3260,10 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
     except SkillScaffoldError as exc:
         raise VerbError(str(exc)) from exc
     if market_changed:
-        marketplace.write_text(market_text, encoding="utf-8")
+        # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True.
+        fsops.atomic_write(
+            marketplace, market_text, preserve_mode=True, fsync=True, follow_symlinks=True
+        )
         changed = True
 
     result = NewSkillApplyResult(
