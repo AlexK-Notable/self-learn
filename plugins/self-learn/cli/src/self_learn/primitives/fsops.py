@@ -131,7 +131,7 @@ below, not a per-caller judgment call):
     | ledger records / proposals / meta / compiled | ``atomic_write(preserve_mode=True, fsync=True)``, symlinks refused |
     | ``config.yaml`` / ``hosts.yaml``           | ``atomic_write(..., follow_symlinks=True)`` -- people symlink config files into dotfile repos |
     | hook script                                | ``atomic_write(..., mode=0o755)``             |
-    | external tool's file (Claude Code's own auto-memory index) | ``atomic_write(..., follow_symlinks=False, preserve_mode=True, fsync=True)`` -- REFUSE a symlink loudly; the file is not ours to write through a link |
+    | external tool's file (Claude Code's own auto-memory index) | ``atomic_write(..., follow_symlinks=False, preserve_mode=True, fsync=True)`` -- REFUSE a symlink loudly; the file is not ours to write through a link (a DANGLING symlink there is skipped by the caller's own pre-existing ``is_file()`` guard before this call is ever reached -- ``SymlinkRefused`` fires only for a symlink to an EXISTING file) |
     | UI derived/regenerable cache (compiled doctrine) | ``atomic_write(path, data)`` -- defaults; regenerable content, no special case |
 
     uid/gid are never touched by this module (POSIX rename preserves

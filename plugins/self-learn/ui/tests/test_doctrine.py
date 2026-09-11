@@ -246,10 +246,18 @@ def test_compile_doctrine_preserves_mode_under_restrictive_umask(
     process umask. Mutation this catches: passing an explicit `mode=` or
     `preserve_mode=False` in `compile_doctrine` -- the rewritten file
     would then land at the umask-masked default (0o600 under this
-    test's `os.umask(0o077)`) instead of the original 0o640."""
+    test's `os.umask(0o077)`) instead of the original 0o640.
+
+    Fold r1, MINOR-1: "mode unchanged" is also what you observe when the
+    recompile never happens at all -- `needs_compile` deciding False and
+    skipping the write entirely would leave the ORIGINAL 0o640 file
+    untouched, passing this test for the wrong reason. The mtime check
+    below is the positive control that the second write actually landed,
+    checked BEFORE the mode assertion is allowed to mean anything."""
     paths = _sources(tmp_path)
     first = compile_doctrine(**paths)
     first.chmod(0o640)
+    pre_recompile_mtime_ns = first.stat().st_mtime_ns
 
     time.sleep(0.01)
     os.utime(paths["routing_path"], None)  # force a real recompile
@@ -260,4 +268,7 @@ def test_compile_doctrine_preserves_mode_under_restrictive_umask(
     finally:
         os.umask(old_umask)
 
+    # positive control (fold r1, MINOR-1): the recompile actually wrote --
+    # a skipped recompile would leave the ORIGINAL file, same mtime.
+    assert first.stat().st_mtime_ns > pre_recompile_mtime_ns
     assert stat.S_IMODE(first.stat().st_mode) == 0o640
