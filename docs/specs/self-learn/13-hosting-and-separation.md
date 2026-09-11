@@ -669,15 +669,23 @@ lock and resolves each intent to exactly one of:
   and a timestamp (§7.2a.1), so a read-only view (§7.2a.7) can tell a
   recorded failed attempt from an intent with no such record. An
   unreadable file cannot carry the field; unreadability is itself the
-  STOP any reader can see. **Marker publication can itself fail** — a
-  crash between the failed attempt and the rewrite, or the rewrite
-  refused (`ENOSPC` creating the replacement file): the original
-  intent then stays on disk, readable and unmarked. So an unmarked
-  file means "no durable record of a failed attempt", never "never
-  attempted". On that path recovery retains the intent, the caller
-  refuses its requested work exactly as for a marked STOP, and the
-  report carries BOTH facts — the recovery failure and that its
-  outcome could not be durably recorded. Within one protected span a
+  STOP any reader can see. **Marker publication can itself fail**, and
+  two cases are distinct. *Caught failure, the caller survives:* the
+  rewrite raises (`ENOSPC` creating the replacement file; or the
+  directory fsync AFTER `os.replace`, at which point the new marker is
+  already visible — atomic replacement guarantees complete bytes, old
+  or new, not which). The caller knows both failures and reports both:
+  its demonstrated recovery failure, plus "failure outcome could not
+  be durably confirmed"; it retains the intent, refuses its requested
+  work exactly as for a marked STOP, and assumes NOTHING about which
+  bytes are on disk — the file may be unmarked, carry the new marker,
+  or carry an earlier retry's. *Process death before the rewrite:* no
+  process survives to know the reason, and the file carries whatever
+  was last durably written. A later process reports only what it can
+  read and the outcome of its OWN retry, which may succeed if the
+  fault was transient; it never asserts an earlier, unrecorded
+  failure. So an unmarked file means "no durable record of a failed
+  attempt", never "never attempted". Within one protected span a
   demonstrated failure is never discarded because its marker cannot
   be written: the wrapper and the clear leg (§7.2a.4) act on the
   attempt they just made, not only on the marker. A later recovery
@@ -991,8 +999,8 @@ free, no marker: a leftover with no durable record of a failed
 attempt, which the next ledger write attempts — `status` does not
 promise that attempt will succeed, because matching hashes cannot
 promise I/O). A file that vanishes between listing and reading under
-the probe is reported as nothing (a holder finished or cleared it
-before the probe). A probe that fails for any reason other than
+the probe is reported as absent — an observed absence, classified as
+neither pending nor stopped. A probe that fails for any reason other than
 contention (`EACCES`, an unreadable lock directory) is reported as
 *unknown — could not probe the ledger lock: <reason>*, never as free;
 the pid the lock file carries is a diagnostic, not the classifier.
@@ -1036,8 +1044,12 @@ section.
   own intent) — plus regressions for `reconcile` (6, HEAD unchanged,
   intent left on disk, `stopped` field written), `push` (0, line
   printed; the ledger rebase leg refuses under a planted STOP and the
-  host rebase leg does not check), `--clear-intent` (clears only a
-  marked or unreadable intent; refuses a pending one), and `status`
+  host rebase leg does not check), `--clear-intent` (per §7.2a.4's
+  rule, three outcomes exercised: already stopped or unreadable →
+  cleared; unmarked and failing the clear leg's own attempt in this
+  span → cleared after that demonstrated failure; unmarked and
+  recovering → recovered and reported, NOT cleared; and a live
+  writer's intent → deletion refused), and `status`
   (stopped / busy / pending read-only). The plant helper
   goes in a NEW, non-pinned module; `support.py` is byte-pinned and
   must not change. Planting replaces re-driving a `SIGKILL` per path;
@@ -1054,14 +1066,25 @@ section.
 - Every "nothing was written" absence assertion has its positive
   control first: the same verb succeeds and commits with no intent
   planted.
-- Marker-publication failure (§7.2a.3): a recovery attempt that fails
-  and then crashes before the rewrite, and one whose rewrite is
-  refused (the intent writer raising `OSError`), each leave the intent
-  readable and unmarked; the next ledger write still refuses and its
-  report carries both facts; `--clear-intent` on that unmarked file
-  attempts recovery in its span and clears after the demonstrated
-  failure, and refuses (recovering instead) when the fault has
-  cleared.
+- Marker-publication failure (§7.2a.3), three cases, each stating
+  its injection boundary and the marker state before the attempt.
+  (i) Caught failure BEFORE replacement (the intent writer raising
+  `OSError` ahead of `os.replace`), starting unmarked and again
+  starting with an earlier retry's marker: the surviving caller's
+  report carries both facts (its recovery failure; "could not be
+  durably confirmed"), the intent is retained, the requested work
+  refused; the file's bytes are whatever they were before (the test
+  asserts the pre-attempt bytes for THIS boundary only). (ii) Caught
+  failure AFTER replacement (the directory fsync raising): same
+  two-fact report and refusal; the file now carries the new marker,
+  and the test asserts that, not old bytes. (iii) Process death after
+  a failed attempt and before the rewrite (the `SIGKILL` harness):
+  the file is readable and unmarked; the NEXT ledger write reports
+  only what it reads plus its own retry's outcome — with the fault
+  still active it refuses and marks; with the fault cleared it
+  finishes the intent and proceeds. The two-fact report is required
+  from the surviving caller in (i)/(ii), never from the next process
+  in (iii).
 - Status interleaving witness (§7.2a.7): a second process holding the
   ledger lock with an unmarked intent on disk → `status` reports
   *busy*, never *pending*; the same with a marked intent → *busy* with
@@ -1135,9 +1158,11 @@ facts a builder needs, fixed here; the build itself is deferred
   only.** A restored intent's host steps describe work that never
   became truth and are not reported. For each host step it reads the
   target's current managed region, read-only, and reports the
-  observation actually made, in this precedence: *unavailable* (the
-  file cannot be read, or its managed markers are malformed —
-  `compiled.region_bytes` raises on a broken pair) → `host <host>
+  observation actually made, in this precedence: *unavailable* (a
+  read or parse failure OTHER than confirmed absence of the file or
+  region — an unreadable file, or malformed managed markers, on which
+  `compiled.region_bytes` raises; confirmed absence is evaluated under
+  the prior/missing rules below) → `host <host>
   target <target> for <record>: could not read the managed region
   (<path>: <read/parse reason>); run 'self-learn recompile'` — a host
   observation that fails NEVER becomes a ledger-recovery failure: the
