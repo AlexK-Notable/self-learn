@@ -41,6 +41,19 @@ an accident.
   project's CLAUDE.md requires that host to be registered in
   `hosts.yaml` at route time — the CLI refuses otherwise and the card
   says why. No compile target is ever guessed (invariant H-3).
+  *(2026-09-11 — Sprint 3 lane A, the placement amendment, Q2/Q-A1
+  rulings; forward work, not built this sprint — see
+  `14-forward-work-map.md`.)* The **target model**, once built: an
+  authorized placement into a resolvable, non-denylisted root
+  **registers that root as a consequence of routing** — by the human's
+  own tap or an authorized automated reviewer's — rather than needing a
+  separate `host add` step first. H-3's core promise is unchanged (no
+  compile target is ever guessed, and none is ever written before
+  registration); what changes is that registration becomes a **step of
+  the placement action** instead of a human-only standalone
+  prerequisite. **Today** the CLI still refuses an unregistered host
+  exactly as this paragraph describes above; nothing in this note is
+  live until the forward-work rows land.
 - **Q3 · Migration preserves history** via `git-filter-repo` extraction
   — load-bearing, not cosmetic: the M2 analyst's rejected-proposal
   digest greps resolution COMMIT MESSAGES, which must survive the move.
@@ -94,6 +107,29 @@ HOSTS     repos holding COMPILED canon: claude-skills (SKILL.md managed
   unchanged — `~/.claude/CLAUDE.md`, written as a first-class PLAIN host
   since U-hostmode Phase 1/2 (landed 2026-08-28; UNTIL then, chezmoi
   flow — history, see §4 item 5).
+- **Persisted placement intent and the never-register blocklist**
+  *(2026-09-11 — Q2; forward work, not built this sprint)*. A lesson
+  whose destination root does not yet resolve to a registered host
+  will, once built, keep its intended host recorded against the
+  pending proposal rather than discarding it — so that when the root
+  becomes registered (by the auto-registration mechanism above or by
+  hand), the proposal regenerates automatically instead of the human
+  re-discovering and re-typing the scope (policy
+  `d4-general-policy-codex.md` §3, step 4). The **never-register
+  blocklist** lives as a new `hosts.yaml` key, seeded with this
+  repository (this repo's own `CLAUDE.md` already forbids registering
+  it as a canon host) — **user-populated, agent-maintained**: an agent
+  may propose adding an entry, never remove one, and never registers a
+  denylisted root under any circumstance, human-tapped or
+  automated-reviewer-tapped alike. A **worktree or nested scratch
+  directory resolves to its enclosing main checkout** before any of
+  this runs — the registered host is always the checkout, never a
+  throwaway `.claude/worktrees/*` path. A **personal-literal scan**
+  (extending `plugins/self-learn/cli/tests/test_personal_literals.py`'s
+  existing check over the tracked product tree to run against any body
+  about to be written into a *git-mode* host) runs before any such
+  write, refusing or redacting exactly as the existing secret scan does
+  today (`02-schema.md`, evidence-quote rule).
 - `hosts.yaml` is data, tracked in the ledger repo — one file to read
   to know where canon may land. Registration is a CLI verb
   (`self-learn host add <path>`), never a hand edit the compilers

@@ -36,6 +36,22 @@ Claude because SKILL.md, CLAUDE.md, references, and hooks are loaded by
 Claude Code's native machinery (P2). self-learn's runtime footprint is
 capture, analysis, and triage — all outside the session's hot path.
 
+**Auto-memory is a related but separate native surface, not a
+self-learn destination** *(2026-09-11 — Q6, the placement amendment)*.
+Claude Code's own memory files (`~/.claude/projects/<proj>/memory/`)
+are **natively consumed** by the harness — index at session start,
+topic bodies on demand — independent of anything self-learn compiles.
+self-learn's relationship to that surface is **lightweight observation,
+not ownership**: it tracks what is in those memory directories and
+mines them for candidate lessons (§3.2's importer), but a
+memory-sourced record may legitimately resolve to *stay in memory,
+tracked* rather than being imported and then pruned out of it.
+**Import-then-prune, as §3.2 currently describes it, is not the model**
+— that description predates this reframing and is reopened
+(`03-decisions.md`, S-13/S-14). The replacement lifecycle — what state
+expresses "tracked, not imported" — is its own future spec
+(`14-forward-work-map.md`), not designed here.
+
 ## 2. Scopes
 
 | Scope | Bucket | Typical destinations |
@@ -311,7 +327,7 @@ only their managed region:
 | Target | Mechanism | Notes |
 |---|---|---|
 | SKILL.md | `<!-- self-learn:begin/end -->` managed section | behavioral rules + skill-scoped knowledge; loads natively at activation. Compiler keeps it tight; weaving learned text into the authored prose is a human editorial act, done whenever the user likes (that *is* gen-1's "Level C", demoted from milestone to habit) |
-| CLAUDE.md (repo or `~/.claude/`) | same managed-section pattern | project/user conduct + knowledge. **`~/.claude/CLAUDE.md` is chezmoi-managed (E-17): the compiler must `chezmoi re-add` after writing *and* commit+push the dotfiles repo — `re-add` alone is same-machine-only, and the next `chezmoi apply` elsewhere clobbers the section** |
+| CLAUDE.md (repo or `~/.claude/`) | same managed-section pattern | project/user conduct + knowledge. **`~/.claude/CLAUDE.md` is a first-class PLAIN host** (`U-hostmode` Phase 1/2, landed 2026-08-28 — `13-hosting-and-separation.md` §2/§4 item 5): no repository, so the compiler writes canon and commits nothing there; a ledger-side compile record is the integrity instrument instead. The chezmoi description this row used to carry is superseded |
 | `references/<file>` | plain append (ha-note-style) | bulk knowledge; progressive disclosure. Default target: the skill's `references/LEARNINGS.md`, created if absent; another **existing** references file may be named by the proposal/`--dest` — never `GOTCHAS.journal.md`, which is ha-note's surface (O-7 parks ha-note as independent; gate-check F4) |
 | new skill | deterministic CLI-owned template scaffold (plugin.json + SKILL.md with a managed section + marketplace entry) — *amended 2026-07-12 (M3 review): plugin-dev delegation demoted to optional post-hoc enrichment; the substrate must not depend on another plugin's agents (`08-build-plan.md` §8.1)* | when triage decides a lesson cluster wants to be a skill |
 | hook | scaffolds script + prints the `settings.json` snippet | **never auto-registers** (repo doctrine: settings.json is manual) and **always explicit-diff-approved** (P9). For `kind: anti-pattern` lessons where advisory text is the weakest enforcement and a PreToolUse guard is the strongest |
