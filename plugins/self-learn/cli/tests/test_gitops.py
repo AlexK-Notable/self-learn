@@ -59,6 +59,25 @@ class TestStage:
         assert gitops.stage(repo, [repo / "ghost.md"]) == []
 
 
+class TestCommitLockPath:
+    def test_a_relative_and_an_absolute_spelling_key_identically(self, repo, monkeypatch):
+        """Gate r1 NIT-1: `already_held`/`_held_locks` key off
+        `str(commit_lock_path(repo))`, and `git rev-parse
+        --git-common-dir` returns a path RELATIVE TO CWD (bare `.git`
+        for an ordinary repo, confirmed empirically), so the unresolved
+        function joined that onto whatever spelling of `repo` the
+        caller passed -- a relative spelling and an absolute spelling
+        of the SAME directory produced two different `Path` objects
+        (one relative, one absolute), never caught by equality. Two
+        differently-spelled *repo* arguments in one nesting chain must
+        key identically, or an inner acquire reads as outermost."""
+        monkeypatch.chdir(repo.parent)
+        relative = gitops.commit_lock_path(Path(repo.name))
+        absolute = gitops.commit_lock_path(repo)
+        assert relative == absolute
+        assert relative.is_absolute()
+
+
 class TestCommit:
     def test_message_and_note_body(self, repo):
         (repo / "a.md").write_text("a\n", encoding="utf-8")

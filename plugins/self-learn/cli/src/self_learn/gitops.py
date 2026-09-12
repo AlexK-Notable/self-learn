@@ -393,7 +393,15 @@ def commit_lock_path(repo: Path) -> Path:
     gitdir = Path(proc.stdout.strip())
     if not gitdir.is_absolute():
         gitdir = Path(repo) / gitdir
-    return gitdir / "self-learn.commit.lock"
+    # Gate r1 NIT-1: `.resolve()` HERE, not at each caller -- both
+    # `_flock_lock`'s own `_held_locks` bookkeeping and
+    # `intents.ledger_write`'s `already_held` re-entrancy check key off
+    # this return value by `str(path)`. Two differently-spelled *repo*
+    # arguments in one nesting chain (a trailing slash, a relative vs.
+    # absolute spelling, a symlinked worktree) used to key differently,
+    # so an inner acquire could read as outermost. Resolving once here
+    # keeps every caller's key identical for the same real file.
+    return (gitdir / "self-learn.commit.lock").resolve()
 
 
 @contextlib.contextmanager
