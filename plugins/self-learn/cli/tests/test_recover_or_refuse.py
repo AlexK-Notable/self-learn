@@ -22,8 +22,10 @@ import pytest
 
 from self_learn import batch, cli, gitops, hosts, intents, settings, telemetry, verbs
 from self_learn.ledger_ops import create_record
+from self_learn.primitives import fsops
 
 from support import commit_all, git, make_behavior, make_env
+from test_intents import _assert_killed, _run_child  # noqa: F401 -- gate r1 MAJOR-4
 
 
 def _probe_file(home: Path, name: str = "probe.txt") -> Path:
@@ -590,14 +592,46 @@ class TestClassifyStatus:
 # =========================================== marker-publication failure
 
 
+#: Gate r1 MAJOR-4, case (iii): a real child process that hooks
+#: `intents._write_intent` to write a barrier and self-SIGKILL the
+#: MOMENT `_mark_stopped` reaches for it -- before any byte of the
+#: marker rewrite lands, matching `test_intents.py`'s own
+#: barrier-then-kill discipline (`_COLLAPSE_CHILD`/`_REBIND_CHILD`).
+_MARKER_KILL_CHILD = r"""
+import os, signal
+from self_learn import intents
+
+BARRIER = os.environ["BARRIER"]
+
+def _die(intent):
+    with open(BARRIER, "w", encoding="utf-8") as fh:
+        fh.write("write-marker")
+    os.kill(os.getpid(), signal.SIGKILL)
+
+intents._write_intent = _die
+intents.recover(os.environ["SELF_LEARN_HOME"])
+"""
+
+
 class TestMarkerPublicationFailure:
-    """§7.2a.3/§7.2a.8, case (i) only ("caught failure BEFORE
-    replacement"): `_mark_stopped`'s own rewrite fails durably, but the
-    STOP itself is still real -- both facts must reach the caller
-    (`marker_uncertain`, the wording), and the intent file on disk must
-    be untouched (the write never landed). Cases (ii) (post-replace
-    fsync) and (iii) (SIGKILL between attempt and rewrite) are residual
-    -- see the report."""
+    """§7.2a.3/§7.2a.8, all three marker-publication cases. (i) Caught
+    failure BEFORE replacement: `_mark_stopped`'s own rewrite fails
+    durably, but the STOP itself is still real -- both facts must reach
+    the caller (`marker_uncertain`, the wording), and the intent file on
+    disk must be untouched (the write never landed) -- exercised both
+    starting unmarked (gate r1's own test) and starting with an earlier
+    retry's OWN marker already on it (MINOR-3: the second write attempt
+    must overwrite that stale marker with THIS attempt's own facts, not
+    leave the earlier one standing). (ii) Caught failure AFTER
+    replacement (the directory fsync raising): same two-fact report, but
+    `os.replace` already landed -- the file carries the NEW marker, not
+    the pre-attempt bytes. (iii) Process death (a real SIGKILL, not a
+    caught exception) before the marker rewrite starts at all: the file
+    is readable and unmarked, and there is no surviving caller to report
+    anything -- the NEXT ledger write (a fresh, independent attempt)
+    decides purely from what it reads, whether that means marking it
+    stopped again (the fault is still there) or finishing it cleanly
+    (something repaired the underlying content in between)."""
 
     def test_a_write_failure_before_replace_is_reported_uncertain_not_silent(
         self, env, monkeypatch
@@ -622,3 +656,117 @@ class TestMarkerPublicationFailure:
         # The write never landed -- the file is exactly what `_plant_stop`
         # left it (never rewritten with a `stopped` field at all).
         assert stop.file_path.read_bytes() == before_bytes
+
+    def test_a_write_failure_before_replace_starting_from_an_earlier_markers_own_bytes(
+        self, env, monkeypatch
+    ):
+        """MINOR-3: case (i)'s second sub-case -- this is not the
+        intent's FIRST failed attempt. A prior attempt already
+        durably wrote a `stopped` marker (a real, successful
+        `_mark_stopped` call); THIS attempt's own rewrite then fails
+        before replacement. The file must be untouched by the failed
+        attempt -- i.e. it still carries the EARLIER marker's bytes,
+        not the pre-transaction bytes and not any hint of this
+        attempt -- and the caller still gets both facts."""
+        home = env.ledger
+        stop = _plant_stop(home, _probe_file(home))
+        first = intents.recover(home)  # a real, successful mark -- no fault yet
+        assert [d.id for d in first.stopped_detail] == [stop.id]
+        assert not first.stopped_detail[0].marker_uncertain
+        earlier_marker_bytes = stop.file_path.read_bytes()
+        assert b'"stopped"' in earlier_marker_bytes
+
+        def raiser(intent):
+            raise OSError("disk full before the atomic replace, on retry")
+
+        monkeypatch.setattr(intents, "_write_intent", raiser)
+
+        with pytest.raises(intents.LedgerStoppedError) as excinfo:
+            with intents.ledger_write(home):
+                pass
+
+        detail = excinfo.value.result.stopped_detail
+        assert [d.id for d in detail] == [stop.id]
+        assert detail[0].marker_uncertain
+        assert "could not be durably confirmed" in str(excinfo.value)
+        # This retry's own rewrite never landed -- the earlier marker
+        # (not the pre-transaction bytes) is exactly what survives.
+        assert stop.file_path.read_bytes() == earlier_marker_bytes
+
+    def test_a_post_replace_directory_fsync_failure_still_reports_two_facts_but_the_new_bytes_land(
+        self, env, monkeypatch
+    ):
+        home = env.ledger
+        stop = _plant_stop(home, _probe_file(home))
+
+        real_fsync = os.fsync
+        calls = {"n": 0}
+
+        def raiser(fd):
+            calls["n"] += 1
+            if calls["n"] == 2:  # 1st = the temp file's own fsync; 2nd = the directory's
+                raise OSError("directory fsync failed for this test")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(fsops.os, "fsync", raiser)
+
+        with pytest.raises(intents.LedgerStoppedError) as excinfo:
+            with intents.ledger_write(home):
+                pass
+
+        detail = excinfo.value.result.stopped_detail
+        assert [d.id for d in detail] == [stop.id]
+        assert detail[0].marker_uncertain
+        assert "could not be durably confirmed" in str(excinfo.value)
+        # Unlike case (i): `os.replace` already landed before the
+        # directory fsync raised -- the file carries the NEW marker.
+        data = json.loads(stop.file_path.read_text(encoding="utf-8"))
+        assert data["stopped"]["reason"]
+
+    def test_process_death_before_the_marker_write_starts_leaves_the_file_unmarked(
+        self, env, tmp_path
+    ):
+        home = env.ledger
+        stop = _plant_stop(home, _probe_file(home))
+        before_bytes = stop.file_path.read_bytes()
+        assert b'"stopped"' not in before_bytes  # sanity: genuinely unmarked
+
+        barrier = tmp_path / "barrier"
+        proc = _run_child(_MARKER_KILL_CHILD, {"SELF_LEARN_HOME": str(home)}, barrier)
+        _assert_killed(proc, barrier, "write-marker")
+
+        # No bytes of the rewrite landed at all -- exactly what
+        # `_plant_stop` left, and no surviving caller to report anything.
+        assert stop.file_path.read_bytes() == before_bytes
+
+        # "the fault is still active": the underlying content is still
+        # unresolvable -- the NEXT, independent ledger write marks it
+        # stopped on its own, unmonkeypatched attempt.
+        result = intents.recover(home)
+        assert [d.id for d in result.stopped_detail] == [stop.id]
+        assert not result.stopped_detail[0].marker_uncertain
+        data = json.loads(stop.file_path.read_text(encoding="utf-8"))
+        assert data["stopped"]["reason"]
+
+    def test_process_death_before_the_marker_write_starts_then_a_repaired_target_finishes_on_retry(
+        self, env, tmp_path
+    ):
+        home = env.ledger
+        target = _probe_file(home)
+        original = target.read_text(encoding="utf-8")
+        stop = _plant_stop(home, target)
+
+        barrier = tmp_path / "barrier"
+        proc = _run_child(_MARKER_KILL_CHILD, {"SELF_LEARN_HOME": str(home)}, barrier)
+        _assert_killed(proc, barrier, "write-marker")
+
+        # "the fault is cleared": something repairs the target back to
+        # its pre-transaction bytes between the crash and the retry --
+        # `_resolvable_old_bytes`'s "already-correct on disk" leg.
+        target.write_text(original, encoding="utf-8")
+
+        result = intents.recover(home)
+        assert result.stopped_detail == []
+        assert result.restored == [stop.id]
+        assert not stop.file_path.exists()  # `finish()` removed the marker
+        assert target.read_text(encoding="utf-8") == original
