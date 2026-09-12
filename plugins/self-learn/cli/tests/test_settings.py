@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 from ruamel.yaml import YAML
 
-from self_learn import analyst, miner, provider, serve, settings, telemetry, worker
+from self_learn import analyst, gitops, intents, miner, provider, serve, settings, telemetry, worker
 from self_learn import cli as cli_mod
 from self_learn import ledger_ops as ledger_ops_mod
 from self_learn import verbs as verbs_mod
@@ -33,6 +33,7 @@ from self_learn.invocation_sdk import events as events_mod
 from test_worker import env, sdk_fake_worker, seed_pending  # noqa: F401 -- fixtures resolved by name
 from test_repair import _defect_script, _t4_missing_target  # noqa: F401
 from test_miner import a as miner_a, candidate as miner_candidate, shim_reader, u as miner_u, write_transcript
+from test_recover_or_refuse import _plant_stop, _probe_file  # noqa: F401 -- gate r1 MAJOR-3
 from support import make_home
 
 
@@ -832,6 +833,64 @@ def test_cli_doctor_invocation_output_unaffected_by_the_settings_verb(tmp_path, 
 def test_cli_doctor_unknown_verb_still_rejected(monkeypatch):
     rc = cli_mod.main(["doctor", "bogus"])
     assert rc == 2
+
+
+class TestIntentsPreflightRow:
+    """Gate r1 MAJOR-3 (§7.2a.7, REQUIRED): `doctor` carries a `.intents`
+    row naming the stopped count and the `--clear-intent` command; and
+    the regression this fold caught while building it -- a pristine or
+    non-repo home (`doctor`'s own `Doc-c` contract) must never trip a
+    probe at all, let alone render a spurious WARN row."""
+
+    def test_silent_on_a_pristine_non_repo_home(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        rows = settings.preflight(home)
+        assert not [r for r in rows if r.name == ".intents"]
+
+    def test_silent_when_the_ledger_is_ok_and_nothing_is_stopped(self, env):
+        rows = settings.preflight(env.home)
+        assert not [r for r in rows if r.name == ".intents"]
+
+    def test_warns_with_the_count_and_a_working_clear_intent_command(self, env):
+        home = env.home
+        stop = _plant_stop(home, _probe_file(home))
+        intents.recover(home)  # runs `_mark_stopped` -- the marker this reads
+        rows = settings.preflight(home)
+        matches = [r for r in rows if r.name == ".intents"]
+        assert len(matches) == 1
+        row = matches[0]
+        assert row.verdict == "WARN"
+        assert "1 stopped intent(s)" in row.detail
+        assert f"--clear-intent {stop.id}" in row.detail
+
+    def test_cli_doctor_settings_prints_the_intents_row(self, env, monkeypatch, capsys):
+        home = env.home
+        stop = _plant_stop(home, _probe_file(home))
+        intents.recover(home)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        rc = cli_mod.main(["doctor", "settings"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert f"doctor: WARN .intents — 1 stopped intent(s)" in out
+        assert stop.id in out
+
+    def test_warns_on_a_non_contention_probe_failure(self, env, monkeypatch):
+        home = env.home
+        lock_path = gitops.commit_lock_path(home)
+        real_open = os.open
+
+        def raiser(path, *args, **kwargs):
+            if str(path) == str(lock_path):
+                raise PermissionError("probe denied for this test")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(intents.os, "open", raiser)
+        rows = settings.preflight(home)
+        matches = [r for r in rows if r.name == ".intents"]
+        assert len(matches) == 1
+        assert matches[0].verdict == "WARN"
+        assert "could not probe the ledger lock" in matches[0].detail
 
 
 # ===================================================================== #

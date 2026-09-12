@@ -133,7 +133,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from . import config, gitops, intents
+from . import config, gitops, intents, ledger
 from .invocation.contract import DEFAULT_BACKEND_FOR_SURFACE, SELECTOR_FOR_SURFACE, SURFACES
 from .invocation.registry import KNOWN_BACKENDS
 
@@ -1533,7 +1533,60 @@ def preflight(home: Path | str) -> list[SettingRow]:
                 detail=f"unrecognized override env var (typo or wrong case?): {var}",
             )
         )
+    rows.extend(_intents_preflight_rows(home))
     return rows
+
+
+def _intents_preflight_rows(home: Path | str) -> list[SettingRow]:
+    """Gate r1 MAJOR-3 (§7.2a.7, REQUIRED): "`doctor` carries a row
+    that reads the ledger's `.intents/` and reports 'N stopped
+    intent(s) — last recovery failure at <at, or "unknown" for an
+    unreadable file>; ledger writes refuse; run …'." The machinery
+    already exists (:func:`intents.classify_status`) -- this is a
+    printer, not a design. Silent on `"ok"` with nothing stopped
+    (the ordinary case) and on `"busy"` (transient contention, not an
+    outage this interactive, on-demand surface need alarm about) --
+    but NEVER silent on a probe failure, matching the pending hook's
+    own "never as free" discipline for the identical fact.
+
+    Gated on :func:`ledger.home_state` == ``"ok"`` first: `doctor` must
+    work on a pristine home with no config.yaml at all (Doc-c), and a
+    home that is missing, not a repo, or never bootstrapped has no
+    `.intents/` to probe -- calling `classify_status` there would just
+    surface `gitops`'s "not a git repository" as a spurious probe-error
+    WARN on the ordinary, silent, no-ledger-yet state."""
+    if ledger.home_state(home) != "ok":
+        return []
+    status = intents.classify_status(home)
+    if status.probe == "error":
+        return [
+            SettingRow(
+                name=".intents",
+                verdict="WARN",
+                detail=(
+                    f"could not probe the ledger lock ({status.error}) -- a "
+                    "STOPPED intent may be hidden; run `self-learn status` "
+                    "and re-run doctor"
+                ),
+            )
+        ]
+    if status.busy or not status.stopped:
+        return []
+    ats = [s.at for s in status.stopped if s.at]
+    last_at = max(ats) if ats else "unknown"
+    n = len(status.stopped)
+    return [
+        SettingRow(
+            name=".intents",
+            verdict="WARN",
+            detail=(
+                f"{n} stopped intent(s) -- last recovery failure at {last_at}; "
+                "ledger writes refuse; run `self-learn reconcile "
+                f"--clear-intent {status.stopped[0].id}` after inspecting the "
+                "offender" + (" (each in turn)" if n > 1 else "")
+            ),
+        )
+    ]
 
 
 # ===================================================================== #
