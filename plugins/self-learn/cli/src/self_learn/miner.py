@@ -51,7 +51,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
-from . import gitops, invocation, provider, sentinel, settings, telemetry, worker
+from . import gitops, intents, invocation, provider, sentinel, settings, telemetry, worker
 from .primitives import chrono
 from . import reconcile as reconcile_mod
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
@@ -880,7 +880,9 @@ def _invoke_reader(home: Path, prompt: str) -> Path | None:
 class MineResult:
     #: ok | idle | held-gate | failed | disabled | busy |
     #: landed-uncommitted (BLOCKER B (c): candidates written, commit
-    #: failed, cursors advanced anyway — never re-mined, never published)
+    #: failed, cursors advanced anyway — never re-mined, never published) |
+    #: stopped (S-62 §7.2a.5(4): a live intent STOP froze this run at
+    #: START, before enumeration or any model session)
     status: str
     run_id: str = ""
     sessions_scanned: int = 0
@@ -904,6 +906,12 @@ class MineResult:
     #: were not halted. Never serialised itself — the journal writes only
     #: its length, under `cursors_held` (BD3).
     held_sessions: set[str] = field(default_factory=set)
+    #: S-62 (§7.2a.5(4)): populated only when `status == "stopped"` — the
+    #: run-start reconcile found a live intent it could neither roll
+    #: forward nor restore, and this run ended THERE, before enumeration
+    #: and before any model session was spent. One `"{id}: {reason}"`
+    #: string per offender, mirroring `ReconcileResult.stopped`.
+    stopped: list[str] = field(default_factory=list)
 
 
 def _outcome(result: MineResult, origin: str, outcome: str, **extra) -> None:
@@ -2010,6 +2018,16 @@ def _run_locked(
         # fatal. The intent file itself is left in place for a human.
         for line in healed.stopped:
             log(f"run {run_id}: reconcile could not resolve an intent, left for a human: {line}")
+        # S-62 (§7.2a.5(4)): unlike every OTHER line above, a STOP here
+        # is the one exception to "never fatal — a miner that cannot
+        # heal must still mine". A run that cannot land has nothing to
+        # mine FOR, so it ends HERE — before `initialized()`/`walk()`
+        # and before any model session is spent — rather than logging
+        # and proceeding as it did before this sprint.
+        if healed.stopped:
+            _journal({**base, "status": "stopped", "reason": "; ".join(healed.stopped)[:300],
+                      "duration_secs": round(time.time() - t0, 1)})
+            return MineResult(status="stopped", run_id=run_id, stopped=healed.stopped)
     except gitops.GitOpsError as exc:
         log(f"run {run_id}: reconcile step skipped ({exc})")
 
@@ -2124,7 +2142,20 @@ def _run_locked(
         # into a conflict. Landing a NEW record is the benign half
         # (untracked files survive an autostash); folding is not, and both
         # live in the same call.
-        with gitops.commit_lock(home):
+        with intents.ledger_write(home) as recovered:  # S-62: the landing lock's own backstop check
+            # §7.2a.5(3): UNATTENDED — log each recovered id on its own
+            # line, the same shape the run-start reconcile healing above
+            # uses, never a bare stderr print (this lock is not the run's
+            # first, so a STOP found HERE cannot be reported until after
+            # this `with` raises; a clean recovery here is logged now).
+            for intent_id in recovered.rolled_forward:
+                log(
+                    f"run {run_id}: recovered {intent_id} (rolled forward: its "
+                    "commit landed — the host phase did not run; run "
+                    "'self-learn recompile')"
+                )
+            for intent_id in recovered.restored:
+                log(f"run {run_id}: recovered {intent_id} (restored: its mutation was undone)")
             _reconcile_and_land(home, parsed, result, cap, cwds, digested)
             _commit_landing(home, result, run_id, no_push=no_push)
     except gitops.GitOpsError as exc:
@@ -2211,9 +2242,19 @@ def _run_locked(
     # plane for nothing (audit m8).
     if result.landed or result.folded or result.recurrences or result.fires:
         try:
-            telemetry.flush(home)
+            flush_report = telemetry.flush(home)
         except telemetry.TelemetryError as exc:
             log(f"run {run_id}: telemetry flush refused ({exc})")
+        else:
+            # §7.2a.5(3): unattended — log, never print.
+            for intent_id in flush_report.recovered_rolled_forward:
+                log(
+                    f"run {run_id}: recovered {intent_id} (rolled forward: its "
+                    "commit landed — the host phase did not run; run "
+                    "'self-learn recompile')"
+                )
+            for intent_id in flush_report.recovered_restored:
+                log(f"run {run_id}: recovered {intent_id} (restored: its mutation was undone)")
 
     if result.landed:
         worker.kick(home)  # analyzed before any human sees the card
@@ -2267,6 +2308,6 @@ def _commit_landing(
         log(f"run {run_id}: push skipped — --no-push in effect")
         return
     try:
-        gitops.push_if_remote(home)
+        gitops.push_pending(home)
     except gitops.GitOpsError as exc:
         log(f"run {run_id}: push errored ({exc}) — commit kept")
