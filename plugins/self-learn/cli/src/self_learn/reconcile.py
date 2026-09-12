@@ -429,77 +429,65 @@ def reconcile(home: Path, *, no_push: bool = False) -> ReconcileResult:
     an option here. Callers that must never abort on a refusal (the
     miner) read ``result.blocked`` / ``result.invalid`` and carry on.
 
-    M-W/D7: :func:`intents.recover` runs FIRST, BEFORE the
-    ``with gitops.commit_lock(home):`` block below — not nested inside
-    it (gate r1 nit-1 correction: an earlier revision of this docstring
-    claimed nesting; there is none). ``intents.recover`` takes the lock
-    itself, does its work, and releases it; THIS function then takes the
-    lock again, separately, for its own orphan scan. There is a real gap
-    between the two acquisitions in which another process could — in
-    principle — take the lock; nothing here corrupts state if it does,
-    because a lock is exactly what serializes the two producers against
-    each other. The gap DEFERS this call's own orphan scan to the next
-    ``reconcile()``, it never LOSES anything. Running recovery first (in
-    either lock or not) is still what matters: an incomplete collapse/
-    rebind leaves a staged rename, which ``find_orphans`` would otherwise
-    report ``blocked`` forever (never reconcile's to complete one file at
-    a time); recovering it first means the orphan scan below only ever
-    sees a clean-or-ordinary tree.
+    S-62 (§7.2a.5(1)): converted onto :func:`intents.ledger_write`, which
+    closes the two-acquisition gap this docstring used to describe
+    (recovery under its own lock, then the orphan scan under a second,
+    separately-acquired one) — now ONE acquisition, recovery running
+    inside it before the orphan scan sees anything. An incomplete
+    collapse/rebind still leaves a staged rename, which ``find_orphans``
+    would otherwise report ``blocked`` forever (never reconcile's to
+    complete one file at a time); recovery running first, inside the
+    same span, means the orphan scan below only ever sees a
+    clean-or-ordinary tree.
 
-    Gate r1 BLOCKER-1: a STOPped recovery — :func:`intents.recover`
-    could resolve neither roll-forward nor restore for some intent —
-    now refuses this call's WHOLE orphan batch too, the same
-    all-or-nothing contract ``blocked``/``invalid`` already carry (see
-    the guard just above the orphan commit below). Consequence: once
-    anything has moved HEAD past a stuck intent's recorded ``old_sha``
-    for any of its steps, that STOP is permanent by construction — it
-    freezes ALL orphan healing under this ``home``, including the
-    miner's own carried-over ``landed-uncommitted`` records from an
-    unrelated earlier run, until a human clears it. Clearing it means:
-    read the offender named in ``result.stopped``, decide by hand
-    whether its current on-disk state is acceptable, then delete
-    ``<home>/.intents/<id>.json`` and re-run ``reconcile``."""
+    Gate r1 BLOCKER-1 / S-62: a STOPped recovery refuses this call's
+    WHOLE batch — orphans included — the same all-or-nothing contract
+    ``blocked``/``invalid`` already carry: :func:`intents.ledger_write`
+    raises :class:`intents.LedgerStoppedError` before ever reaching the
+    orphan scan, and THIS function is the one surface that catches it
+    and renders the carried outcome as its own refused ``ReconcileResult``
+    (§7.2a.5(5): so ``push`` sees a result, not an exception). Consequence
+    unchanged: once anything has moved HEAD past a stuck intent's
+    recorded ``old_sha`` for any of its steps, that STOP is permanent by
+    construction — it freezes ALL orphan healing under this ``home``,
+    including the miner's own carried-over ``landed-uncommitted``
+    records from an unrelated earlier run, until a human clears it
+    (``self-learn reconcile --clear-intent <id>``, §7.2a.6)."""
     home = Path(home)
-    recovered = intents.recover(home)
-    with gitops.commit_lock(home):
-        orphans, blocked = find_orphans(home)
-        if not orphans:
-            return ReconcileResult(
-                blocked=blocked,
-                stopped=recovered.stopped,
-                rolled_forward=recovered.rolled_forward,
-                restored=recovered.restored,
-            )
-        invalid = _validate_orphans(home, orphans)
-        # Gate r1 BLOCKER-1: a STOPped intent must refuse this batch too,
-        # not just `blocked`/`invalid` — the orphan scan above runs AFTER
-        # `intents.recover()` and can see, and stage, the very files a
-        # stuck transaction half-wrote (a merged survivor's `pending/`
-        # copy, `hosts.yaml`'s half-written bytes once M-W/D7 widened
-        # `_RECONCILABLE_HOME` to reach it). Committing those while
-        # reporting `recovered.stopped` — an exit code documented
-        # elsewhere as "nothing was written" — would corrupt the ledger
-        # UNDER the exact promise meant to prevent that.
-        if blocked or invalid or recovered.stopped:
-            return ReconcileResult(
-                blocked=blocked,
-                invalid=invalid,
-                stopped=recovered.stopped,
-                rolled_forward=recovered.rolled_forward,
-                restored=recovered.restored,
-            )
-        message = RECONCILE_SUBJECT.format(n=len(orphans))
-        try:
-            gitops.stage(home, orphans)
-            sha = gitops.commit(home, message, paths=orphans)
-        except gitops.GitOpsError as exc:
-            # Post-mutation by construction (the paths are staged now).
-            raise gitops.HalfWrittenError.for_commit(
-                home, message, orphans, exc
-            ) from exc
+    try:
+        with intents.ledger_write(home) as recovered:
+            orphans, blocked = find_orphans(home)
+            if not orphans:
+                return ReconcileResult(
+                    blocked=blocked,
+                    stopped=recovered.stopped,
+                    rolled_forward=recovered.rolled_forward,
+                    restored=recovered.restored,
+                )
+            invalid = _validate_orphans(home, orphans)
+            if blocked or invalid:
+                return ReconcileResult(
+                    blocked=blocked,
+                    invalid=invalid,
+                    stopped=recovered.stopped,
+                    rolled_forward=recovered.rolled_forward,
+                    restored=recovered.restored,
+                )
+            message = RECONCILE_SUBJECT.format(n=len(orphans))
+            try:
+                gitops.stage(home, orphans)
+                sha = gitops.commit(home, message, paths=orphans)
+            except gitops.GitOpsError as exc:
+                # Post-mutation by construction (the paths are staged now).
+                raise gitops.HalfWrittenError.for_commit(
+                    home, message, orphans, exc
+                ) from exc
+    except intents.LedgerStoppedError as exc:
+        return ReconcileResult(stopped=exc.result.stopped, rolled_forward=exc.result.rolled_forward,
+                                restored=exc.result.restored)
     # The push is OUTSIDE the lock (it touches no index — see the gitops
     # module docstring for the re-scope).
-    push = None if no_push else gitops.push_if_remote(home)
+    push = None if no_push else gitops.push_pending(home)
     return ReconcileResult(
         committed=orphans,
         sha=sha,
