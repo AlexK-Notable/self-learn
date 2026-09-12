@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import cli, gitops, verbs, worker
+from self_learn import cli, gitops, intents, verbs, worker
 from self_learn.ledger_ops import create_record
 from support import commit_all, git, init_repo, make_behavior, make_env
 
@@ -173,6 +173,29 @@ class TestHookHomeWarning:
         assert "/self-learn:review" in proc.stdout
         # …and the home warning must NOT fire for a good home.
         assert "NOT an empty ledger" not in proc.stdout
+
+    def test_a_stopped_intent_names_its_own_id_not_a_literal_placeholder(self, tmp_path):
+        """Gate r1 MINOR-2: this line used to read `--clear-intent <id>`
+        literally even though the real id sits right there in the same
+        message's own `(...)` list — every other STOP surface names the
+        real id instead."""
+        env = make_env(tmp_path)
+        home = env.ledger
+        target = home / "probe.txt"
+        target.write_text("seed\n", encoding="utf-8")
+        commit_all(home, "add probe.txt")
+        intent = intents.begin(home, "probe", [target], "self-learn: probe")
+        target.write_text("seed\nmutated once\n", encoding="utf-8")
+        git(home, "add", "--", str(target))
+        git(home, "commit", "-q", "-m", "an unrelated commit moves HEAD past old_sha")
+        target.write_text("seed\nmutated once\nmutated twice, still uncompleted\n", encoding="utf-8")
+        intents.recover(home)  # writes the durable `stopped` marker `classify_status` reads
+
+        proc = self._run(tmp_path, home)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert "STOPPED transaction intent" in proc.stdout
+        assert f"--clear-intent {intent.id}" in proc.stdout
+        assert "--clear-intent <id>" not in proc.stdout
 
     def test_hook_exits_zero_when_cli_is_absent(self, tmp_path):
         """The pre-existing guard still holds (no self-learn on PATH) — and,
@@ -505,7 +528,7 @@ class TestHookDependencyDegradation:
             "🛑 self-learn: 2 STOPPED transaction intents "
             "(lrn-aaaaaaaa, lrn-bbbbbbbb) — every ledger write refuses "
             "until cleared. Run `self-learn reconcile --clear-intent "
-            "<id>` after inspecting the offender."
+            "lrn-aaaaaaaa` after inspecting the offender."
         ) in proc.stdout
 
     def test_one_stopped_intent_is_not_pluralised(self, tmp_path):

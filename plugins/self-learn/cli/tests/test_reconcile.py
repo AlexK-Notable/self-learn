@@ -491,6 +491,11 @@ def test_cli_reconcile_refuses_the_whole_batch_when_an_intent_is_stopped(home, c
         "the STOP operator text must name what 'by hand' means (gate r1 "
         "BLOCKER-1): delete the intent file, then re-run reconcile"
     )
+    assert f"--clear-intent {intent.id}" in captured.err, (
+        "gate r1 MINOR-1: reconcile's own refusal must lead with the "
+        "same `--clear-intent <id>` command every other STOP surface "
+        "names, not hand-deletion alone"
+    )
     assert git(home, "rev-parse", "HEAD").stdout.strip() == sha_before, (
         "a STOPped intent must refuse the WHOLE batch — the orphan "
         "above must stay uncommitted too, not just the stuck intent"

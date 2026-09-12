@@ -1019,11 +1019,14 @@ def _warn_intents_in_flight_report(status: intents.StatusClass) -> None:
     if stopped:
         ids = [i.id for i in stopped]
         plural = "s" if len(ids) != 1 else ""
+        # Gate r1 MINOR-2: the real id, not a literal `<id>` placeholder
+        # -- every ids[0] already sits right there in the same message.
+        each = " (each in turn)" if len(ids) != 1 else ""
         print(
             f"self-learn: {len(ids)} STOPPED transaction intent{plural} "
             f"({', '.join(ids)}) — every ledger write refuses until "
             "cleared. Inspect the offender, then run 'self-learn "
-            "reconcile --clear-intent <id>'.",
+            f"reconcile --clear-intent {ids[0]}'{each}.",
             file=sys.stderr,
         )
         return
@@ -2522,18 +2525,24 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     for line in result.stopped:
+        # Gate r1 MINOR-1: reconcile's own refusal used to direct ONLY
+        # to hand-deletion — every other surface's own STOP wording
+        # (`LedgerStoppedError`, `serve`'s tick line, the new `.intents`
+        # doctor row) leads with `--clear-intent <id>` instead. `line`
+        # is `RecoverResult.stopped`'s own "{id}: {reason}" shape.
+        intent_id = line.split(":", 1)[0]
         print(
             f"reconcile: NOT recovered — {line}\n"
             "  a collapse/host-rebind transaction's intent could not be "
             "resolved (neither its final state verified, nor its prior "
             "content recoverable) — the intent file is left in place, and "
             "gate r1 BLOCKER-1: THIS RUN COMMITTED NOTHING, from this "
-            "offender or any other orphan alongside it. Repair by hand: "
-            "inspect this offender's current on-disk content, decide "
-            "whether it is acceptable, then delete "
-            f"{intents.intents_dir(home)}/<id>.json and re-run reconcile — "
-            "until then, every ordinary orphan under this home stays "
-            "uncommitted too, not just this one.",
+            "offender or any other orphan alongside it. Inspect this "
+            "offender's current on-disk content, then run `self-learn "
+            f"reconcile --clear-intent {intent_id}` to accept it, or delete "
+            f"{intents.intents_dir(home)}/{intent_id}.json by hand, then "
+            "re-run reconcile — until then, every ordinary orphan under "
+            "this home stays uncommitted too, not just this one.",
             file=sys.stderr,
         )
     for intent_id in result.rolled_forward:

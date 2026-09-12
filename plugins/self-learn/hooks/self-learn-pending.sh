@@ -81,9 +81,12 @@ fi
 if intents_stopped_count="$(jq -e -r '.intents_stopped_count' <<<"$out" 2>/dev/null)"; then
   if [ "$intents_stopped_count" -gt 0 ] 2>/dev/null; then
     intents_stopped_ids="$(jq -r '(.intents_stopped // []) | join(", ")' <<<"$out" 2>/dev/null)" || intents_stopped_ids="?"
+    # Gate r1 MINOR-2: the real, first id -- `intents_stopped` is the
+    # same array `intents_stopped_ids` above already joins.
+    first_stopped_id="$(jq -r '(.intents_stopped // [])[0] // "?"' <<<"$out" 2>/dev/null)" || first_stopped_id="?"
     plural=""
     if [ "$intents_stopped_count" -ne 1 ]; then plural="s"; fi
-    echo "🛑 self-learn: ${intents_stopped_count} STOPPED transaction intent${plural} (${intents_stopped_ids}) — every ledger write refuses until cleared. Run \`self-learn reconcile --clear-intent <id>\` after inspecting the offender."
+    echo "🛑 self-learn: ${intents_stopped_count} STOPPED transaction intent${plural} (${intents_stopped_ids}) — every ledger write refuses until cleared. Run \`self-learn reconcile --clear-intent ${first_stopped_id}\` after inspecting the offender."
   fi
 fi
 

@@ -311,6 +311,23 @@ class TestStopMessageCompleteness:
         assert payload["ok"] is False
         assert any(stop.id in entry for entry in payload["stopped"])
 
+    def test_status_names_the_real_id_not_a_literal_placeholder(self, env, capsys):
+        """Gate r1 MINOR-2: `status`'s own STOPPED-intent line used to
+        read `--clear-intent <id>` literally, even though the real id
+        already sits right there in the same message's own `(...)`
+        list."""
+        home = env.ledger
+        stop = _plant_stop(home, _probe_file(home))
+        intents.recover(home)  # writes the durable marker `classify_status` reads
+
+        rc = run_cli(["status"])
+
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "STOPPED transaction intent" in err
+        assert f"--clear-intent {stop.id}" in err
+        assert "--clear-intent <id>" not in err
+
 
 # =================================================== multi-span refusal
 
