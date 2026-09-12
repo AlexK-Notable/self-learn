@@ -35,6 +35,7 @@ import json
 import os
 import random
 import signal
+import sys
 import threading
 import time
 from dataclasses import dataclass, replace as _dataclass_replace
@@ -514,6 +515,27 @@ def _run_worker_job(home: Path) -> "worker.RunResult":
     return worker.run(home, coalesce=True, no_push=False)
 
 
+def _log_stopped_refusal(job_name: str, stopped: list[str]) -> None:
+    """§7.2a.7 (REQUIRED): "a job refused by the guard logs the refusal
+    on its own line naming the intent id ... a refusal that reaches
+    only the job record and the journal does not satisfy this
+    section." `miner.run`/`worker.run` already log a STOP to their OWN
+    per-surface log file internally (`miner.log`/`worker.log`) -- gate
+    r1 ruled that insufficient on its own, since nothing tails those
+    files live. This is `serve`'s OWN line, on `run_forever`'s own
+    stderr (the daemon's foreground output stream), naming the real id
+    -- MINOR-2's own id-interpolation fix applies here too, since
+    every entry in `stopped` is already `"<id>: <reason>"`."""
+    for line in stopped:
+        intent_id = line.split(":", 1)[0]
+        print(
+            f"serve: {job_name} job refused — {line}; every ledger write "
+            "refuses until it is cleared. Run 'self-learn reconcile "
+            f"--clear-intent {intent_id}' after inspecting the offender.",
+            file=sys.stderr,
+        )
+
+
 def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: float) -> list[JobRecord]:
     """One scheduler tick: at most ONE mine pass, immediately followed
     in-process by the worker follow-on iff it landed candidates
@@ -543,13 +565,14 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
                 cache_dir, Job("mine", "miner-reader", lambda: _run_mine_job(home)), pid=pid, tick_secs=tick_secs
             )
             ran.append(mine_record)
+            _log_stopped_refusal("mine", getattr(mine_record.result, "stopped", None) or [])
             landed = getattr(mine_record.result, "landed", None)
             if landed:
-                ran.append(
-                    run_one_job(
-                        cache_dir, Job("worker", "worker", lambda: _run_worker_job(home)), pid=pid, tick_secs=tick_secs
-                    )
+                worker_record = run_one_job(
+                    cache_dir, Job("worker", "worker", lambda: _run_worker_job(home)), pid=pid, tick_secs=tick_secs
                 )
+                ran.append(worker_record)
+                _log_stopped_refusal("worker", getattr(worker_record.result, "stopped", None) or [])
     # Gate r1 N-1: `run_one_job`'s own heartbeat write (inside the `with`
     # block above, when a job ran) records the job it just RAN as
     # `next_job` -- correct the instant that job finishes, but stale
