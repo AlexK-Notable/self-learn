@@ -1119,8 +1119,7 @@ human routes it.
   deriving host mode from `.git` presence for the *existing* `host add`
   verb, while an orchestrator default for the *new* auto-registration
   call site (`GO-NO-GO-2026-09-11.md:51`) assumes exactly that
-  detection. **The narrowing is recorded UNRESOLVED, pending the user's
-  git-vs-plain answer; this amendment does not settle it.** `S-23` and
+  detection. **Resolved by the user 2026-09-11 20:31: an auto-registered host is registered in `plain` mode; S-51's refusal of git-checkout detection stands for both call sites (S-51 note, SA-2).** `S-23` and
   `O-10` explicitly preserved, untouched. **`14-forward-work-map.md`**
   gains FW-151…FW-156, one per piece of code this text implies and this
   sprint does not build (persisted placement facts, movable/retireable
