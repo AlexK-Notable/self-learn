@@ -15,10 +15,11 @@ must never fork it. If routing judgment needs to change, change this file.
 **Placement policy (added 2026-09-11 — the placement-and-promotion
 amendment; `03-decisions.md` SA-1…SA-6 carries the dated rulings).**
 Applicability and timing are decided BEFORE a surface is chosen, not
-after. §2's gate procedure already works this way — T2's timing
-sharpening, the T3a/T4 depth-behind-rule question — this paragraph only
-names the principle so a reader does not mistake tier selection for the
-first question. An **active-demand placement** (`reference`, tier
+after. §2's gate procedure already works this way — its own timing
+sharpening and its depth-behind-rule question both ask this before
+choosing a tier — this paragraph only names the principle so a reader
+does not mistake tier selection for the first question. An
+**active-demand placement** (`reference`, tier
 `DEMAND`) is a sound placement only behind a maintained, recognizable
 task cue: a shelf entry nobody could be pointed to from an
 already-delivered entry point is staging, not a served lesson — say so
@@ -27,9 +28,9 @@ the trial, *promotion* — moving an already-placed lesson to a stronger
 surface — targets PATHED rules and skill entries only; promoting a
 placed lesson to an ALWAYS line or a hook is out of scope until the
 day-30 review** (Q1 HELD — `03-decisions.md` SA-1). This does not touch
-§2: the gate procedure still derives `ALWAYS` at T4 and `HOOK` at T1 for
-a lesson being placed for the first time, exactly as written there. **An
-unavailable or unregistered host is an explicit unresolved placement,
+§2: the §2 gate procedure still derives `ALWAYS` and `HOOK` for a lesson
+placed for the first time, exactly as written there. **An unregistered
+host is an explicit unresolved placement,
 never a silent fallback to a broader surface** — what "explicit" means
 today, and what is changing, is in §3.
 
