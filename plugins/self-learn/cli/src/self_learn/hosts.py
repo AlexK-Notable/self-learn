@@ -606,9 +606,14 @@ def _write_host_marker(home: Path, target: Path) -> Path:
     and a fresh registration is no exception)."""
     marker = host_marker_path(target)
     with gitops.host_lock(target, "plain"):
-        marker.write_text(
+        # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True,
+        # same reasoning as compilers.py's host-canon writes.
+        fsops.atomic_write(
+            marker,
             f"home={Path(home).expanduser().resolve()} at={_now_iso()}\n",
-            encoding="utf-8",
+            preserve_mode=True,
+            fsync=True,
+            follow_symlinks=True,
         )
     return marker
 
@@ -769,7 +774,8 @@ def host_add(
     # point, between the write landing and the commit — exactly the
     # ordinary orphan shape, just with a recorded subject that survives
     # the round-trip instead of reconcile's generic one.
-    with gitops.commit_lock(home):
+    with intents.ledger_write(home) as recovered:  # S-62: checks for a pre-existing STOP before opening its own
+        intents.announce_recovered(recovered)
         intent = intents.begin(home, "host_add", [hosts_path(home)], message)
         yaml_path = save_hosts(home, hosts)
         intents.complete(intent)
@@ -880,7 +886,8 @@ def host_rebind(home: Path | str, ref: str, new_path: Path | str) -> Path:
                 "merge it by hand; rebind never fuses two histories"
             )
     message = f"self-learn: host rebind {old_path or ref} → {target}"
-    with gitops.commit_lock(home):  # BLOCKER 4 + round 7 BLOCKER 1
+    with intents.ledger_write(home) as recovered:  # BLOCKER 4 + round 7 BLOCKER 1; S-62 checks for a pre-existing STOP first
+        intents.announce_recovered(recovered)
         # M-W (D7): this verb `git mv`s an ENTIRE project bucket, rewrites
         # its meta.yaml, and rewrites hosts.yaml — a SIGKILL between any
         # two of those leaves a staged rename `reconcile._BLOCKING_CODES`
@@ -1086,7 +1093,8 @@ def host_remove(
         project_modes=new_modes,
     )
     message = f"self-learn: host remove {target}"
-    with gitops.commit_lock(home):  # BLOCKER 4 + round 7 BLOCKER 1
+    with intents.ledger_write(home) as recovered:  # BLOCKER 4 + round 7 BLOCKER 1; S-62 checks for a pre-existing STOP first
+        intents.announce_recovered(recovered)
         intent = intents.begin(home, "host_remove", [hosts_path(home)], message)
         yaml_path = save_hosts(home, hosts)
         intents.complete(intent)

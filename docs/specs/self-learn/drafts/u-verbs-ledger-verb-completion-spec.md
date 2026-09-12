@@ -967,7 +967,8 @@ $ grep -n 'EXIT_' plugins/self-learn/cli/src/self_learn/gitops.py | grep '='
 2. Home gate fails → **5**, nothing runs.
 3. A **ledger-level** failure occurred (an item returned 3, 4, 6 or 7) →
    the **worst of those four** under `7 > 4 > 3 > 6`, and the envelope
-   names every item that landed before it.
+   names every item that landed before it. *(For 6 only, amended
+   2026-09-11 — see the note after rule 6.)*
 4. Else every item `applied` or `already-applied` → **0**.
 5. Else ≥1 refusal **and ≥1 commit landed** → **8**.
 6. Else (≥1 refusal, **zero** commits) → **1** — which keeps `1`'s
@@ -977,6 +978,17 @@ Steps 5 and 6 are separated by *"did anything land"*, so **`1` is never
 emitted after a write**, which is the whole point. `0` means everything
 applied; `8` means read the envelope; `3`/`4`/`7` mean a git step failed
 after the ledger changed; `6`/`1`/`5`/`64` mean it did not.
+
+*Amended 2026-09-11 (Sprint 3 spec lane B, `S-62`; normative text in
+`13-hosting-and-separation.md` §5): rule 3 as written let
+a mid-sheet **6** promote to the sheet's exit code over commits that had
+already landed — measured reachable at `a41ddb3` (an item-level
+`GitOpsError` after earlier items committed), and made common by the
+live-intent guard. **A 6 promotes to the sheet's code only when no
+commit landed before it; after a landed commit it reports 8.** 7 and
+the push codes 3/4 are unchanged. The batch verb also runs the
+live-intent check once, before item 1, so a pre-existing STOP refuses
+the sheet with an honest 6.*
 
 **Where this row is owed is a MEASURED list, and it lives in §8** —
 three surfaces render this contract and all three take the `8` row;

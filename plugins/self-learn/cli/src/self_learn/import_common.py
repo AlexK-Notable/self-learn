@@ -22,7 +22,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import gitops
+from . import gitops, intents
 from .ledger import discover_buckets
 from .records import Record, RecordError
 
@@ -110,7 +110,8 @@ def commit_import(home: Path, report: ImportReport) -> bool:
         return True
     n = len(report.created)
     try:
-        with gitops.commit_lock(home):
+        with intents.ledger_write(home) as recovered:  # S-62: checks for a pre-existing STOP first
+            intents.announce_recovered(recovered)
             gitops.stage(home, report.touched)
             gitops.commit(
                 home,
@@ -129,7 +130,7 @@ def commit_import(home: Path, report: ImportReport) -> bool:
         )
         return False
     try:
-        gitops.push_if_remote(home)
+        gitops.push_pending(home)
     except gitops.GitOpsError as exc:
         print(
             f"self-learn: import committed but NOT pushed ({exc}) — run "

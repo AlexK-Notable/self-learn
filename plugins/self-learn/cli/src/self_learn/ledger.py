@@ -22,7 +22,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import gitops
+from . import gitops, intents
 from .hosts import is_repo_root
 
 DEFAULT_HOME = "~/.self-learn"
@@ -399,7 +399,8 @@ def init_home(path: Path | str) -> InitResult:
     # not an OSError, so the body's own guarded raises pass through.
     made_head = False
     try:
-        with gitops.commit_lock(resolved):
+        with intents.ledger_write(resolved) as recovered:  # S-62: this take mutates an EXISTING home; converts
+            intents.announce_recovered(recovered)
             for name in missing_before:
                 try:
                     (resolved / name).mkdir()

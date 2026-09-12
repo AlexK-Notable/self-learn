@@ -1201,6 +1201,11 @@ class TestBatch:
 
         legs = [
             ([3, 6], 3), ([4, 6], 4), ([6, 1], 6), ([0, 1, 3], 3), ([0, 7, 1], 7),
+            # S-62 (13 §5, amending this row's own rule 3, 2026-09-11):
+            # a mid-sheet 6 AFTER a landed commit is 8, never 6 — the
+            # OLD rule (worst of {3,4,6,7}) returned 6 here, claiming
+            # "nothing was written" over a sheet that plainly wrote one.
+            ([0, 6], 8),
         ]
         for rcs, expected in legs:
             results = [fake(rc, state="applied" if rc == 0 else "refused") for rc in rcs]
@@ -1209,6 +1214,9 @@ class TestBatch:
         # the two discriminating legs: raw max() gives the WRONG answer
         assert max(3, 6) != 3
         assert max(4, 6) != 4
+        # S-62's own discriminating leg: raw max() over {0, 6} is 6, the
+        # OLD (wrong, pre-S-62) answer this fix replaces with 8.
+        assert max(0, 6) != 8
 
     def test_bat3_stops_on_567_continues_past_1(self, env2, monkeypatch):
         good1 = env2.seed(scope="skill:a")
@@ -1829,7 +1837,11 @@ class TestUnaffected:
         sys.path.insert(0, str(Path(__file__).parent))
         from test_lock_invariant import _ARGV_FOR, _cmd_functions, _LOCKS
 
-        assert _LOCKS == ("commit_lock", "_ledger_write", "host_lock")
+        # S-62: `ledger_write` (the shared wrapper `_ledger_write` now
+        # delegates to) joined `_LOCKS` alongside it -- a callee's lock
+        # never discharges a caller's obligation, so both names stay
+        # recognised by the walker.
+        assert _LOCKS == ("commit_lock", "_ledger_write", "ledger_write", "host_lock")
         assert "_cmd_batch" in _ARGV_FOR
         assert "_cmd_show" in _ARGV_FOR
         assert set(_cmd_functions()) - set(_ARGV_FOR) == set()

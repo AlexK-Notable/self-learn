@@ -52,11 +52,13 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from . import gitops
+from . import intents
 from . import scan as scan_mod
 from .import_common import ImporterError, ImportReport, commit_import, existing_origins
 from .ledger import discover_buckets
 from .ledger_ops import create_record
 from .normalize import sha_anchor
+from .primitives import fsops
 from .records import Record, RecordError
 
 __all__ = ["PruneReport", "import_memory", "prune_memory"]
@@ -129,7 +131,8 @@ def import_memory(
     # the invariant). `commit_import` takes it again re-entrantly and
     # pushes outside it. Refusing here costs nothing: the import is
     # idempotent by origin and re-runs.
-    with gitops.commit_lock(home):
+    with intents.ledger_write(home) as recovered:  # S-62: checks for a pre-existing STOP first
+        intents.announce_recovered(recovered)
         _import_topics(home, memory_dir, project_path, known, report)
         report.committed = commit_import(home, report)  # H-5: one commit/run
     return report
@@ -245,7 +248,18 @@ def _drop_index_line(memory_dir: Path, filename: str) -> bool:
     kept = [line for line in lines if not link.search(line)]
     if kept == lines:
         return False
-    index.write_text("\n".join(kept), encoding="utf-8")
+    # D6 (Sprint 3 M-I wave 4): external tool's file (Claude Code's own
+    # auto-memory index, not this ledger's truth -- NOT_REPO_TRUTH in
+    # test_lock_invariant.py) -- symlinks refused, not followed; the file
+    # is not ours to write through a link. Fold r1, MINOR-2: a DANGLING
+    # symlink at MEMORY.md never reaches this call at all -- the
+    # `index.is_file()` guard above (pre-existing, unchanged by this
+    # move) is False for a link whose target is missing, so this function
+    # already returned False before `fsops.atomic_write` is ever called;
+    # `SymlinkRefused` only fires for a symlink to an EXISTING file.
+    fsops.atomic_write(
+        index, "\n".join(kept), follow_symlinks=False, preserve_mode=True, fsync=True
+    )
     return True
 
 

@@ -226,72 +226,36 @@ def rotted(
 # into thin delegates to the `sdksession/*.py` functions of the same
 # name (already allowlisted below) -- the raw write moved location, so
 # their own two entries would have been ROTTED and were removed instead
-# of left stale. 43 remain, below.
+# of left stale. 43 remained entering Sprint 3.
+#
+# Sprint 3 M-I wave 4 migrated 2 more (`import_memory._drop_index_line`,
+# `doctrine.compile_doctrine`) onto `fsops.atomic_write` -- their entries
+# are removed here rather than left ROTTED. 41 remain, below.
 # ======================================================================
 
 RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
-    # ---------------------------------------------------- wave 3: same
-    # shape atomic_write serves (ledger/host content replace), not
-    # touched this sprint -- M-I's pinned scope is records / proposals /
-    # meta / compiled / hosts.yaml / config.yaml / the hook script /
-    # the five temp+rename helpers, nothing else.
-    ("cli", "compilers.py", "apply_paths_frontmatter"): (
-        "host CLAUDE.md paths-block rewrite (same content-replace shape as "
-        "compiled.py's bookkeeping); out of M-I's pinned scope",
-        3,
-    ),
-    ("cli", "compilers.py", "apply_pointer"): (
-        "host surface pointer-line rewrite (skill/project surfaces); out of "
-        "M-I's pinned scope, same future primitive as the other compilers.py sites",
-        3,
-    ),
-    ("cli", "compilers.py", "compile_managed_file"): (
-        "host managed-section content rewrite; out of M-I's pinned scope",
-        3,
-    ),
-    ("cli", "compilers.py", "compile_reference"): (
-        "host reference-block append-or-create rewrite; out of M-I's pinned scope",
-        3,
-    ),
-    ("cli", "compilers.py", "retire_reference"): (
-        "host reference-block removal rewrite; out of M-I's pinned scope",
-        3,
-    ),
-    ("cli", "hosts.py", "_write_host_marker"): (
-        "plain-host registration marker, content write under gitops.host_lock; "
-        "same shape as records/proposals, not named in M-I's pinned target list",
-        3,
-    ),
-    ("cli", "verbs.py", "_apply_new_skill"): (
-        "first-time skill scaffold (manifest.yaml + SKILL.md seed); host content "
-        "write, out of M-I's pinned scope",
-        3,
-    ),
-    ("cli", "verbs.py", "_apply_target"): (
-        "first-time empty CLAUDE.md bootstrap; host content write, out of M-I's "
-        "pinned scope",
-        3,
-    ),
+    # Sprint 3 M-I wave 3 migrated the eight host-canon replace sites that
+    # used to sit here (compilers.py's apply_paths_frontmatter/apply_pointer/
+    # compile_managed_file/compile_reference/retire_reference, hosts.py's
+    # _write_host_marker, verbs.py's _apply_new_skill/_apply_target) onto
+    # fsops.atomic_write(..., follow_symlinks=True) -- see fsops.py's D6
+    # table. Their entries are gone; the rot test is what proves it.
+    #
+    # telemetry.flush stays "keep" (not a wave -- append semantics, not a
+    # replace):
     ("cli", "telemetry.py", "flush"): (
         "tracked-plane append-with-torn-line-heal under gitops.commit_lock; "
-        "append semantics, not a replace -- needs a future atomic-APPEND "
-        "primitive, not this atomic-REPLACE one",
-        3,
+        "append semantics; needs a future atomic-APPEND primitive "
+        "(FW-159, atomic-append primitive) -- not this atomic-REPLACE one",
+        "keep",
     ),
     # -------------------------------------------------------- wave 4:
     # legitimate atomic-write candidates outside the ledger tree itself
-    # (an external tool's file, a UI-side derived/regenerable cache).
-    ("cli", "import_memory.py", "_drop_index_line"): (
-        "rewrites ~/.claude auto-memory (Claude Code's own file, not this "
-        "ledger's truth -- already NOT_REPO_TRUTH in test_lock_invariant.py); "
-        "external integration point, deferred",
-        4,
-    ),
-    ("ui", "doctrine.py", "compile_doctrine"): (
-        "UI-side compiled-doctrine cache, regenerated from source mtimes -- "
-        "derived/reproducible content, not primary ledger truth; deferred",
-        4,
-    ),
+    # (an external tool's file, a UI-side derived/regenerable cache) --
+    # BOTH migrated onto `fsops.atomic_write` (Sprint 3 M-I wave 4, D6:
+    # `import_memory._drop_index_line` refuses a symlink, `doctrine.
+    # compile_doctrine` takes the plain defaults); their entries are
+    # removed here rather than left ROTTED.
     # -------------------------------------------------------- wave 5:
     # invocation-seam cache bookkeeping, deferred behind the armor-pinned
     # end-to-end tests' (test_invocation.py, test_invocation_sdk.py)

@@ -35,6 +35,7 @@ import pytest
 from self_learn import gitops, intents, reconcile as reconcile_mod, verbs, worker
 from self_learn.hosts import host_add, host_rebind, load_hosts, slug_for
 from self_learn.ledger_ops import create_record
+from self_learn.primitives import procs
 from support import commit_all, git, init_repo, make_behavior, make_env, merge_proposal_text
 
 
@@ -742,6 +743,33 @@ class TestWorkerRunFindsAnIntent:
         log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
         assert "recovered intent" in log_text
 
+    def test_worker_run_ends_at_start_on_a_live_stop(self, env, tmp_path):
+        """§7.2a.5(4)/§7.2a.8: "a run that sees a `stopped` outcome ends
+        there... before enumeration and before any model session is
+        spent." Same unresolvable-anywhere plant as
+        `TestCoreMechanics.test_stop_when_prior_content_is_unresolvable_
+        anywhere`, against `worker.run`'s own start-of-run
+        `intents.recover` call rather than a bare `intents.recover()`."""
+        yaml_path = env.ledger / "hosts.yaml"
+        old_bytes = yaml_path.read_bytes()
+        intent = intents.begin(
+            env.ledger, "host_add", [yaml_path], "self-learn: host add project /tmp/x"
+        )
+        yaml_path.write_bytes(old_bytes + b"  # mutated once\n")
+        git(env.ledger, "add", "-A")
+        git(env.ledger, "commit", "-q", "-m", "an unrelated commit moves HEAD past old_sha")
+        yaml_path.write_bytes(old_bytes + b"  # mutated once\n  # mutated twice, still uncompleted\n")
+
+        result = worker.run(env.ledger, no_push=True)
+
+        assert result.status == "stopped"
+        assert result.stopped and intent.id in result.stopped[0]
+        # Never enumerated, never handed to a model -- left exactly
+        # where the STOP found it, for a human.
+        assert intent.file_path.exists()
+        log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
+        assert "could not resolve an intent" in log_text
+
 
 # ============================================ reconcile._RECONCILABLE_HOME gain
 
@@ -1031,23 +1059,56 @@ class TestCoreMechanics:
         assert not (new_home / ".intents" / f"{intent.id}.json").exists()
 
     def test_head_show_converts_a_timeout_to_giterror(self, tmp_path, monkeypatch):
-        """Gate r1 minor-3: `_head_show`'s bespoke `subprocess.run` (kept
-        bespoke because it is the one byte-exact call in this module —
-        `gitops._git`/`procs.run_bounded` both force `text=True`) must
-        still convert a `TimeoutExpired` to `gitops.GitOpsError`, the way
-        every OTHER child process in this codebase does, instead of
-        letting the raw stdlib exception escape past `_capture_old_state`
-        (called from `begin`, uncaught anywhere above it)."""
+        """Gate r1 minor-3, then S3 ITEM 2: `_head_show` now calls
+        `procs.run_bounded(..., binary=True)` instead of a bespoke
+        `subprocess.run` — so the seam this test must wedge moved from
+        `intents.subprocess.run` (which the migration leaves unreachable
+        from this function: `intents.py` no longer calls `subprocess.run`
+        at all) to `procs.subprocess.Popen`, the one `run_bounded` itself
+        calls. `_FakePopen` mimics a real hang for the ONE argv this test
+        cares about -- `.communicate()` raises `TimeoutExpired` on the
+        first call (the wait), then returns clean output on the second
+        (the post-killpg drain `run_bounded` always attempts) -- so
+        `run_bounded` reaches its own `raise BoundedTimeout(...) from
+        None`, which must still convert to `gitops.GitOpsError` here
+        (`BoundedTimeout` subclasses `subprocess.TimeoutExpired`, so the
+        existing `except subprocess.TimeoutExpired:` below keeps catching
+        without any change to that line). `procs.subprocess` IS the
+        stdlib `subprocess` module (not a copy), so patching its `Popen`
+        attribute is process-global -- every OTHER matching argv (here,
+        `gitops._index_lock_note`'s own real `git rev-parse --git-dir`,
+        called while building the error message this test asserts on)
+        must fall through to the REAL `Popen`, or it wedges too."""
         repo = tmp_path / "repo"
         init_repo(repo)
         f = repo / "a.txt"
         f.write_text("old", encoding="utf-8")
         commit_all(repo, "seed")
 
-        def _wedged(*a, **k):
-            raise subprocess.TimeoutExpired(cmd="git show", timeout=30.0)
+        real_popen = procs.subprocess.Popen
+        target_argv = ["git", "-C", str(repo), "show", "HEAD:a.txt"]
 
-        monkeypatch.setattr(intents.subprocess, "run", _wedged)
+        class _FakePopen:
+            def __new__(cls, argv, **kwargs):
+                if list(argv) != target_argv:
+                    return real_popen(argv, **kwargs)
+                return object.__new__(cls)
+
+            def __init__(self, argv, **kwargs):
+                self.argv = argv
+                self.pid = 2**30  # never a real pid; getpgid must miss
+                self.returncode = 0
+                self._calls = 0
+
+            def communicate(self, input=None, timeout: float | None = None):
+                self._calls += 1
+                if self._calls == 1:
+                    raise subprocess.TimeoutExpired(
+                        cmd=self.argv, timeout=timeout if timeout is not None else 0.0
+                    )
+                return b"", b""
+
+        monkeypatch.setattr(procs.subprocess, "Popen", _FakePopen)
 
         with pytest.raises(gitops.GitOpsError, match="git show"):
             intents._head_show(repo, "a.txt")
@@ -1142,7 +1203,60 @@ class TestCoreMechanics:
         )
 
         # `worker.run` calls `intents.recover` at START, UNGUARDED (no
-        # `except` around it at all) -- it must reach `idle`, not crash
-        # on the same `UnicodeDecodeError`.
+        # `except` around it at all) -- it must not crash on the same
+        # `UnicodeDecodeError`. (2026-09-11, S-62 §7.2a.5(4): a STOP
+        # found here now ENDS the run rather than logging and reaching
+        # `idle` -- the pre-S-62 assertion here was exactly the
+        # "log it and proceed" behavior this sprint replaces.)
         worker_result = worker.run(repo, no_push=True)
-        assert worker_result.status == "idle"
+        assert worker_result.status == "stopped"
+        assert worker_result.stopped and "unreadable intent file" in worker_result.stopped[0]
+
+
+class TestLedgerWriteNestedAcquire:
+    """S-62 (§7.2a.5(2)): the mandatory mutation :func:`intents.
+    ledger_write`'s own docstring names as the single sharpest edge in
+    this design. Re-running recovery on a NESTED acquire -- after the
+    caller's own ``intents.begin``/``complete`` -- would find the live
+    transaction's OWN intent with every step's ``new_sha`` already
+    verifying against disk (``complete()`` runs before the caller's
+    commit, same as every real ``_stage_and_commit`` call site), read
+    that as roll-forward-able, and finish it out from under the
+    still-running transaction before its own commit ever lands. This
+    is the ONE test the ``already_held`` pre-check exists for; every
+    other lock-holding call site this sprint converts rests on it
+    holding."""
+
+    def test_nested_acquire_does_not_touch_a_completed_but_unfinished_intent(
+        self, tmp_path
+    ):
+        repo = tmp_path / "repo"
+        init_repo(repo)
+        target = repo / "a.md"
+        target.write_text("before\n", encoding="utf-8")
+        commit_all(repo, "seed")
+
+        with intents.ledger_write(repo):
+            intent = intents.begin(repo, "test", [target], "self-learn: test nested")
+            target.write_text("after\n", encoding="utf-8")
+            intents.complete(intent)  # every new_sha now verifies against disk
+
+            marker = intent.file_path
+            before_bytes = marker.read_bytes()
+
+            with intents.ledger_write(repo) as nested:
+                assert nested.rolled_forward == []
+                assert nested.restored == []
+                assert nested.stopped == []
+
+            # The nested acquire must not have touched the live intent
+            # at all -- not finished it, not rewritten it, and not
+            # committed on the outer transaction's behalf.
+            assert marker.is_file(), "a nested acquire must not finish the live intent"
+            assert marker.read_bytes() == before_bytes
+            assert git(repo, "status", "--porcelain").stdout.strip() != ""
+
+            intents.finish(intent)
+        gitops.stage_and_commit(repo, [target], "self-learn: test nested")
+        assert not marker.exists()
+        assert git(repo, "status", "--porcelain").stdout.strip() == ""

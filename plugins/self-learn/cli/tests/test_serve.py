@@ -676,6 +676,86 @@ def test_sup1_idle_tick_heartbeat_lands_in_cache_dir_never_the_ledger_home(monke
     )
 
 
+def test_a_stopped_mine_job_prints_the_refusal_on_its_own_line(
+    monkeypatch, tmp_path, capsys
+):
+    """Gate r1 MAJOR-2 (§7.2a.7, REQUIRED): `run_forever` discarded
+    `_run_tick`'s own return value, so a STOP froze the mine job every
+    tick with no line naming the intent anywhere `serve` itself
+    controls -- `miner.log()`'s own internal write is exactly what the
+    gate ruled insufficient ("a refusal that reaches only the job
+    record and the journal does not satisfy this section")."""
+    monkeypatch.setattr(
+        miner, "run",
+        lambda home, **kw: miner.MineResult(
+            status="stopped", stopped=["a755c088bcb4: cannot restore probe.txt"]
+        ),
+    )
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    serve.request_poke(cache_dir)
+
+    records = serve._run_tick(
+        Path("/irrelevant-home"), cache_dir, now=time.time(), pid=os.getpid(), tick_secs=60.0
+    )
+
+    assert [r.name for r in records] == ["mine"]  # never reaches the worker job
+    err = capsys.readouterr().err
+    assert (
+        "serve: mine job refused — a755c088bcb4: cannot restore probe.txt; "
+        "every ledger write refuses until it is cleared. Run 'self-learn "
+        "reconcile --clear-intent a755c088bcb4' after inspecting the "
+        "offender." in err
+    )
+
+
+def test_a_stopped_worker_job_prints_its_own_refusal_line_too(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        miner, "run", lambda home, **kw: miner.MineResult(status="ok", landed=["cand-1"])
+    )
+    monkeypatch.setattr(
+        worker, "run",
+        lambda home, **kw: worker.RunResult(
+            status="stopped", stopped=["b866d199cdec: cannot restore other.md"]
+        ),
+    )
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    serve.request_poke(cache_dir)
+
+    records = serve._run_tick(
+        Path("/irrelevant-home"), cache_dir, now=time.time(), pid=os.getpid(), tick_secs=60.0
+    )
+
+    assert [r.name for r in records] == ["mine", "worker"]
+    err = capsys.readouterr().err
+    assert "serve: mine job refused" not in err  # the mine job itself landed fine
+    assert (
+        "serve: worker job refused — b866d199cdec: cannot restore other.md; "
+        "every ledger write refuses until it is cleared. Run 'self-learn "
+        "reconcile --clear-intent b866d199cdec' after inspecting the "
+        "offender." in err
+    )
+
+
+def test_a_healthy_tick_prints_no_refusal_line(monkeypatch, tmp_path, capsys):
+    """Positive control for the two assertions above: an ORDINARY
+    landed tick (mine ok, worker ok) prints neither line."""
+    monkeypatch.setattr(
+        miner, "run", lambda home, **kw: miner.MineResult(status="ok", landed=["cand-1"])
+    )
+    monkeypatch.setattr(worker, "run", lambda home, **kw: worker.RunResult(status="ok"))
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    serve.request_poke(cache_dir)
+
+    serve._run_tick(
+        Path("/irrelevant-home"), cache_dir, now=time.time(), pid=os.getpid(), tick_secs=60.0
+    )
+
+    assert "refused" not in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     "setup, expected_verdict",
     [

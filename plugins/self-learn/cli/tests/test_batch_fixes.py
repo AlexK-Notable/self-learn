@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import cli, gitops, verbs, worker
+from self_learn import cli, gitops, intents, verbs, worker
 from self_learn.ledger_ops import create_record
 from support import commit_all, git, init_repo, make_behavior, make_env
 
@@ -173,6 +173,29 @@ class TestHookHomeWarning:
         assert "/self-learn:review" in proc.stdout
         # …and the home warning must NOT fire for a good home.
         assert "NOT an empty ledger" not in proc.stdout
+
+    def test_a_stopped_intent_names_its_own_id_not_a_literal_placeholder(self, tmp_path):
+        """Gate r1 MINOR-2: this line used to read `--clear-intent <id>`
+        literally even though the real id sits right there in the same
+        message's own `(...)` list — every other STOP surface names the
+        real id instead."""
+        env = make_env(tmp_path)
+        home = env.ledger
+        target = home / "probe.txt"
+        target.write_text("seed\n", encoding="utf-8")
+        commit_all(home, "add probe.txt")
+        intent = intents.begin(home, "probe", [target], "self-learn: probe")
+        target.write_text("seed\nmutated once\n", encoding="utf-8")
+        git(home, "add", "--", str(target))
+        git(home, "commit", "-q", "-m", "an unrelated commit moves HEAD past old_sha")
+        target.write_text("seed\nmutated once\nmutated twice, still uncompleted\n", encoding="utf-8")
+        intents.recover(home)  # writes the durable `stopped` marker `classify_status` reads
+
+        proc = self._run(tmp_path, home)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert "STOPPED transaction intent" in proc.stdout
+        assert f"--clear-intent {intent.id}" in proc.stdout
+        assert "--clear-intent <id>" not in proc.stdout
 
     def test_hook_exits_zero_when_cli_is_absent(self, tmp_path):
         """The pre-existing guard still holds (no self-learn on PATH) — and,
@@ -471,6 +494,149 @@ class TestHookDependencyDegradation:
             "📥 self-learn: 0 pending, oldest 0d — /self-learn:review (3 unreadable)"
             in proc.stdout
         )
+
+    def test_stopped_intent_prints_the_stop_warning(self, tmp_path):
+        """S-62 (§7.2a.7): the named pre-existing defect — this hook ran
+        `status --fast 2>/dev/null`, discarding the stderr line
+        `_warn_intents_in_flight_report`'s docstring calls "the human's
+        one notice" for a live STOP, the one state where every ledger
+        write refuses. `intents_stopped_count`/`intents_stopped` ride
+        the SAME stdout JSON every other field here already reads, so
+        they survive that discard once the hook reads them — this is
+        the positive control, checked before the absence tests below."""
+        bindir = self._bin_dir(
+            tmp_path,
+            "stopped",
+            status_json=json.dumps(
+                {
+                    "home_state": "ok",
+                    "total_pending": 0,
+                    "oldest_days": 0,
+                    "staleness_alarm": False,
+                    "escalate": False,
+                    "unanalyzed_total": 0,
+                    "miner_stale": False,
+                    "intents_probe": "ok",
+                    "intents_stopped": ["lrn-aaaaaaaa", "lrn-bbbbbbbb"],
+                    "intents_stopped_count": 2,
+                }
+            ),
+        )
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert (
+            "🛑 self-learn: 2 STOPPED transaction intents "
+            "(lrn-aaaaaaaa, lrn-bbbbbbbb) — every ledger write refuses "
+            "until cleared. Run `self-learn reconcile --clear-intent "
+            "lrn-aaaaaaaa` after inspecting the offender."
+        ) in proc.stdout
+
+    def test_one_stopped_intent_is_not_pluralised(self, tmp_path):
+        bindir = self._bin_dir(
+            tmp_path,
+            "stopped1",
+            status_json=json.dumps(
+                {
+                    "home_state": "ok",
+                    "total_pending": 0,
+                    "oldest_days": 0,
+                    "staleness_alarm": False,
+                    "escalate": False,
+                    "unanalyzed_total": 0,
+                    "miner_stale": False,
+                    "intents_stopped": ["lrn-aaaaaaaa"],
+                    "intents_stopped_count": 1,
+                }
+            ),
+        )
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert "🛑 self-learn: 1 STOPPED transaction intent (lrn-aaaaaaaa)" in proc.stdout
+
+    def test_zero_stopped_intents_prints_no_stop_warning(self, tmp_path):
+        """The positive control above proves the line CAN render; this
+        proves the ordinary healthy case (the real CLI's own shape)
+        never manufactures one."""
+        bindir = self._bin_dir(
+            tmp_path,
+            "stopped0",
+            status_json=json.dumps(
+                {
+                    "home_state": "ok",
+                    "total_pending": 0,
+                    "oldest_days": 0,
+                    "staleness_alarm": False,
+                    "escalate": False,
+                    "unanalyzed_total": 0,
+                    "miner_stale": False,
+                    "intents_probe": "ok",
+                    "intents_stopped": [],
+                    "intents_stopped_count": 0,
+                }
+            ),
+        )
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert "🛑" not in proc.stdout
+
+    def test_stopped_intent_count_absent_prints_no_stop_warning(self, tmp_path):
+        """Backward compatibility with a pre-S-62 `self-learn` binary
+        whose `--fast` JSON has no `intents_stopped_count` key at all:
+        `jq -e` without a `// 0` fallback fails on the absent key, so the
+        whole `if` body is skipped silently — no crash, no spurious
+        warning, and (unlike `total_pending`'s own absence) no degraded
+        line either, since an older CLI simply predates this field
+        rather than having a broken JSON shape."""
+        bindir = self._bin_dir(
+            tmp_path,
+            "stoppedabsent",
+            status_json=json.dumps(
+                {
+                    "home_state": "ok",
+                    "total_pending": 3,
+                    "oldest_days": 1,
+                    "staleness_alarm": False,
+                    "escalate": False,
+                    "unanalyzed_total": 0,
+                    "miner_stale": False,
+                }
+            ),
+        )
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert "🛑" not in proc.stdout
+        assert "📥 self-learn: 3 pending" in proc.stdout
+
+    def test_intents_probe_error_prints_a_hidden_stop_warning(self, tmp_path):
+        """§7.2a.7: "never as free" -- when the probe itself failed,
+        `intents_stopped_count` reads 0 (or is absent), which without
+        this line is indistinguishable from a genuinely healthy ledger.
+        This is the fail-open gap: a busy/errored probe must never look
+        like proof of nothing STOPPED."""
+        bindir = self._bin_dir(
+            tmp_path,
+            "probeerror",
+            status_json=json.dumps(
+                {
+                    "home_state": "ok",
+                    "total_pending": 0,
+                    "oldest_days": 0,
+                    "staleness_alarm": False,
+                    "escalate": False,
+                    "unanalyzed_total": 0,
+                    "miner_stale": False,
+                    "intents_probe": "error",
+                    "intents_stopped_count": 0,
+                }
+            ),
+        )
+        proc = self._run(tmp_path, bindir)
+        assert proc.returncode == 0, f"rc={proc.returncode}\n{proc.stderr}"
+        assert (
+            "⚠️ self-learn: could not probe the ledger lock — a STOPPED "
+            "intent may be hidden; run `self-learn status`"
+        ) in proc.stdout
+        assert "🛑" not in proc.stdout
 
     def test_status_call_is_bounded_by_timeout(self, tmp_path):
         """MAJOR 1 (fold r1): the `timeout 4` wrap around `self-learn

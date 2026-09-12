@@ -268,6 +268,18 @@ ignoring costs nothing. This section pins the mechanics.
 
 ### 2.3 Detail page — one decision, fully explained
 
+*(2026-09-11 — the placement amendment.)* A **complete** placement card
+states the full delivery contract, not just a destination: the
+situation that makes the lesson relevant, the latest moment it can
+still help, the audience, the entry point that will introduce it, where
+the payload lives, and what would reverse the decision (policy
+`d4-general-policy-codex.md` §3's six-question contract). Routing-doctrine
+§8's card-sections registry is where that writing instruction already
+lives (`card-sections.yaml`); this amendment adds no card key — filling
+those sections in more completely is a prompt/registry change, not a
+schema one, and stays forward work (`14-forward-work-map.md`), not
+something this sprint builds.
+
 *Amended 2026-07-14 (decision-support contract — routing-doctrine §8,
 02 §1 `card:`):* the page **opens with the proposal's `card:` sections,
 rendered data-driven** from the skill's `card-sections.yaml` registry —
@@ -1511,6 +1523,15 @@ removed the last competing workstream — the build gate is open.*
   session work — they are *captures* (`teach --supersedes`), and §8's
   no-in-surface-capture stands; the row says so in plain words and
   shows the command. One suspect card per record, newest nonce.
+  *(2026-09-11 — Q3, trial.)* Placement review — deciding whether an
+  already-routed lesson's delivery still holds, or should move — folds
+  into this same section under the standing review cap
+  (routing-doctrine §8): **three cards or ten minutes, whichever
+  first**, replacing ordinary capture cards for that slot rather than
+  adding to it. The fuller evidence this needs (opportunity/delivery/
+  outcome distinctions, decision-ready reasons) is forward work
+  (`14-forward-work-map.md`), not built this sprint — today's row
+  states only recurrence.
 - **Y-5 · Miner section (12 R3/A1, binding).** The Front page gains a
   miner block: last-run age + staleness on the status strip (§2.1),
   and an expandable run list (per-run: outcome, trigger, scanned,
@@ -2251,12 +2272,20 @@ wider posture; the narrow one is the conservative default).
   surface" — and a budget that only lit the suggested destination would
   go dark exactly when the human weighs an alternative, so the Why
   region lists every candidate. **`skill-md` and `claude-md`** get their
-  fill from `surface_fill`; **`reference` is EXCLUDED from the field and
-  gets a template-static line** — "reference files have no cap — this is
-  the overflow surface entries graduate into" (blind-review F1: reference
-  has `target=None`, `compile_reference` is cap-free, and it IS the
-  overflow sink the cap graduates into — no fill to probe; no builder may
-  invent one). Cost: ≤2 capped targets per record, memoized per
+  fill from `surface_fill`; *(corrected 2026-09-11, the placement
+  amendment, reconciling A12b against policy §5 — fold r1: the sentence
+  this row used to prescribe re-asserted a line `U-cap` §6.6 had already
+  deleted from the shipped UI, `plugins/self-learn/ui/tests/
+  test_routes.py:1202` and `test_models_detail.py:451` both assert it is
+  gone.)* **`reference` is EXCLUDED from the field**
+  (`target=None`, `compile_reference` is cap-free — no fill to probe; no
+  builder may invent one), and the template-static line this row used to
+  specify was **deleted by `U-cap` §6.6** (shipped 2026-08-24) —
+  `reference` now carries the read-rate verdict, not a static sentence
+  (`REFERENCE_NO_CAP_LINE` no longer exists). The routing rule the old
+  line gestured at — reference is an active-demand tier, never an
+  overflow sink — is stated in routing-doctrine §1 above, not rendered
+  here. Cost: ≤2 capped targets per record, memoized per
   target-path per invocation (08 §1), no model tokens. Keys mirror the
   §2.3 scope filter, narrowed to the two capped destinations. **(3) Freshness — render-time, coordinated with U16, gated by
   a flag.** Fill is time-varying (it moves when *other* records route),

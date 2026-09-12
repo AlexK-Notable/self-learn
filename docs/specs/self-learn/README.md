@@ -1079,3 +1079,103 @@ human routes it.
   necessary side effect; `17-invocation-runbook.md`'s two mentions of
   the old spelling were swept to match (the dated measurement record in
   `drafts/u-docs-truth-sweep-spec.md` was deliberately left alone).
+- **2026-09-11 — Sprint 3 lane A: the placement-and-promotion amendment
+  (text only).** Carries the six 2026-09-05 values-call rulings and
+  their 2026-09-11 addenda (`misc/audit-2026-09-02/d4-values-calls-
+  DECISIONS.md`) and the 2026-09-11 GO-NO-GO binding answers
+  (`misc/audit-2026-09-02/sprint-3/GO-NO-GO-2026-09-11.md`) into the
+  corpus, per the adopted `d4-general-policy-codex.md`. **Routing
+  doctrine** §1/§3/§4/§8: applicability/timing-before-surface-selection
+  and the active-demand task-cue requirement stated explicitly; the two
+  ancestor-registration sentences at `:315`–`:317` and `:324`–`:327`
+  rewritten to state the Q2 auto-registration target model (human tap
+  or authorized automated reviewer, subject to a never-register
+  blocklist) **as forward work, not built this sprint** — the route verb
+  still refuses an unregistered host today, and the doctrine says so;
+  Q5's managed region gets one sentence at §4; Q3's review cap ("three
+  cards or ten minutes, whichever first," replacing not adding) is
+  written into §8. **`01-architecture.md`** §1 gains a paragraph
+  reframing native auto-memory as a tracked, uncontrolled knowledge
+  surface (Q6) rather than an inbox to drain; §3.5's stale chezmoi
+  description (`~/.claude/CLAUDE.md` predating `U-hostmode`) is
+  corrected to the shipped PLAIN-host model. **`13-hosting-and-
+  separation.md`** §1/§3 gain the Q2 target model and the persisted-
+  placement-intent/blocklist/worktree-resolution/personal-literal-scan
+  notes, all marked forward work; §5 and §7.2 untouched (spec lane B's).
+  **`09-surface-spec.md`** §2.3 states what a *complete* placement card
+  means (the policy's six-question delivery contract, no new card key);
+  Y-4 folds Q3's review cap in; Y-20's stale "overflow surface" line
+  (`:2255`–`:2258`) is recorded as **deleted** (`U-cap` §6.6, shipped
+  2026-08-24) rather than reworded, with the routing rule it gestured at
+  restated in routing-doctrine §1. **`02-schema.md`** (~`:303`) names,
+  descriptively only, the facts a placement will eventually persist — no
+  field is added. **`03-decisions.md`** gains a new `SA-`-prefixed
+  subsection (Sprint 3 lane A, avoiding a numbering collision with lane
+  B's parallel edits to this same file) carrying the Q1–Q5 trial rulings
+  and the Q2 auto-registration decision, plus dated reopen notes on
+  `S-13`/`S-14` (Q6: import-then-prune is no longer the model, reason
+  "the model changed") and a reconciling note on `S-51` flagging a
+  genuine tension the Sprint 3 readiness review missed: S-51 refused
+  deriving host mode from `.git` presence for the *existing* `host add`
+  verb, while an orchestrator default for the *new* auto-registration
+  call site (`GO-NO-GO-2026-09-11.md:51`) assumes exactly that
+  detection. **Resolved by the user 2026-09-11 20:31: an auto-registered host is registered in `plain` mode; S-51's refusal of git-checkout detection stands for both call sites (S-51 note, SA-2).** `S-23` and
+  `O-10` explicitly preserved, untouched. **`14-forward-work-map.md`**
+  gains FW-151…FW-156, one per piece of code this text implies and this
+  sprint does not build (persisted placement facts, movable/retireable
+  placements including auto-registration, compiled entry cues and the
+  managed region, delivery instrumentation, review consuming the
+  evidence, and Q6's replacement lifecycle) — each row names the spec
+  sentence it implements. **Fences held:** no edit to routing-doctrine
+  §5, the proposal output contract, or the decision trace; no new
+  proposal or schema field; O-10 not re-asked. **Landing note:** the
+  doctrine is loaded live by three consumers and an installed checkout's
+  working tree is production (repo `CLAUDE.md`) — this merge changes
+  what the nightly worker routes on its next run. **Fold r1** (blind
+  gate round 1, `ae9eaac`) closed 1 BLOCKER (§4's managed-region sentence
+  had escaped the forward-work discipline), 5 MAJOR (the Q1-HELD
+  movement constraint added to doctrine §1; the Y-20 rewording corrected
+  against shipped `U-cap`; the S-51 mode-detection argument withdrawn and
+  the tension re-labelled an unresolved orchestrator default; H-3's own
+  invariant text annotated; "authorized automated reviewer" tied to
+  S-29) and 6 MINOR/1 NIT of cross-reference and wording fixes. **Fold
+  r2** (blind gate round 2, current commit) scoped the doctrine's
+  promotion sentence to mean moving an already-placed lesson — §2 still
+  derives `ALWAYS`/`HOOK` for first placements — and fixed two stale
+  cross-references in the reworded Y-20 passage. Full report:
+  `misc/audit-2026-09-02/sprint-3/spec-A-placement-report.md`.
+- **2026-09-11 — the intent transaction written into the corpus, the
+  recover-or-refuse contract for every lock-holding ledger commit path,
+  and the host-phase record design (Sprint 3 spec lane B; text only,
+  no code).** Sprint 2's D7 transaction — the `<home>/.intents/<id>.json`
+  file that brackets the four multi-file ledger writes so a crash rolls
+  forward, restores, or stops — shipped 2026-09-05 with no spec sentence
+  anywhere. `13-hosting-and-separation.md` gains **§7.2a** as the
+  normative home: the file and schema (§7.2a.1, now with the `stopped`
+  field recovery persists), the bracket (§7.2a.2), the three outcomes
+  with M-W gate r1 MAJOR-2 quoted verbatim (§7.2a.3), clearing a STOP
+  (§7.2a.4), the five answers of the user's 14:31 rulings stated once
+  (§7.2a.5: the seam, the ordering, finish-and-tell, STOP scope option 1
+  with its outage cost and its three-fact promise, the exit codes), the
+  agent-callable recovery verb (§7.2a.6), visibility (§7.2a.7), the test
+  plan (§7.2a.8) and the option-B host-phase record (§7.2a.9). **H-7**
+  gains the intent bracket as a second clause scoped to the four D7
+  operations, **H-8** the fail-closed lock census as a second check,
+  **§5** the recovery-first / STOP-refuses-the-batch / batch-checks-once
+  / 8-not-6 paragraph, **H-2** the option-B amendment (`recompile`
+  remains the only repair; no caller applies a host step from an
+  intent). `03-decisions.md` gains **`S-61`**, **`S-62`**, **`S-63`**
+  (decision, rationale, links — the mechanisms live in 13 only);
+  `14-forward-work-map.md` gains **`FW-157`** (host-phase BUILD, deferred
+  behind M-I wave 3 and four pre-build decisions) and **`FW-158`** (the
+  recovery verb, built with the live-intent guard lane); `u-verbs`
+  §3.3a rule 3 carries a dated note (a mid-sheet 6 after a landed commit
+  reports 8). Gate r1 (Opus + Codex Astra) folded 2026-09-11: STOP's
+  promise split into the verb's own writes / completed recovery /
+  partial recovery; the ledger rebase leg converts; recovery persists a
+  STOP so a read-only classifier can see it; H-7 scoped to the four
+  operations; the host-phase design restated as an observation set and
+  two invariants with the lifetime a pre-build decision. Fences kept:
+  13 §3–§4 and the routing doctrine untouched (spec lane A's), no code,
+  no test edits, no new proposal field. `09-surface-spec.md` unchanged:
+  it is the review-UI surface, and the adjudicator is a CLI caller.

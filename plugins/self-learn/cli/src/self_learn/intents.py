@@ -118,9 +118,14 @@ diagnostic, not litter that need hiding.
 from __future__ import annotations
 
 import base64
+import contextlib
+import fcntl
 import json
+import os
 import subprocess
+import sys
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -131,11 +136,20 @@ from .primitives import chrono, fsops
 __all__ = [
     "Intent",
     "RecoverResult",
+    "StopDetail",
+    "LedgerStoppedError",
     "add_step",
     "begin",
     "complete",
     "finish",
     "recover",
+    "recover_or_raise",
+    "ledger_write",
+    "announce_recovered",
+    "clear_stopped",
+    "classify_status",
+    "StatusClass",
+    "IntentStatus",
     "intents_dir",
 ]
 
@@ -167,19 +181,20 @@ def _relpath(home: Path, path: Path) -> str:
 
 def _head_show(home: Path, relpath: str) -> bytes | None:
     """The exact bytes ``HEAD:<relpath>`` holds, or ``None`` when *relpath*
-    is not in ``HEAD`` at all. A bespoke call (not :func:`gitops._git`,
-    which decodes with ``text=True``) -- a byte-exact compare against a
-    recorded sha256 must never go through a text codec that can silently
-    change bytes. `procs.run_bounded` is the same story (also forces text
-    mode) -- a follow-up seam, not this fold: gate r1 minor-3 asked only
-    that a timeout convert to :class:`gitops.GitOpsError`, mirroring
-    :func:`gitops._git`, which this now does; it still lacks that
-    primitive's process-group kill on timeout."""
+    is not in ``HEAD`` at all. Not :func:`gitops._git` (which decodes with
+    ``text=True``) -- a byte-exact compare against a recorded sha256 must
+    never go through a text codec that can silently change bytes. Routed
+    through ``procs.run_bounded(..., binary=True)`` (gate r1 minor-3
+    follow-up): gets the same process-group kill on timeout every other
+    bounded child call site has, while still forcing bytes output
+    regardless of ``input`` (there is none here)."""
+    from .primitives import procs
+
     try:
-        proc = subprocess.run(
+        proc = procs.run_bounded(
             ["git", "-C", str(home), "show", f"HEAD:{relpath}"],
-            capture_output=True,
             timeout=gitops.GIT_LOCAL_TIMEOUT,
+            binary=True,
         )
     except subprocess.TimeoutExpired as exc:
         raise gitops.GitOpsError(
@@ -215,7 +230,13 @@ class Intent:
     """One in-flight (or just-recovered) transaction. ``steps`` are plain
     dicts, not a nested dataclass -- they round-trip through JSON
     unchanged (:meth:`to_dict` / :func:`_from_dict`), which a nested
-    dataclass would need its own codec for anyway."""
+    dataclass would need its own codec for anyway.
+
+    ``stopped`` (S-62, §7.2a.1) is ``None`` until a recovery attempt on
+    this intent fails; from then on it carries ``{"reason": ..., "at":
+    ...}``, rewritten by :func:`_mark_stopped` on every subsequent failed
+    attempt -- the field records the LAST attempt, never a decision to
+    stop trying."""
 
     home: Path
     op: str
@@ -223,6 +244,7 @@ class Intent:
     started: str
     steps: list[dict]
     commit_subject: str
+    stopped: dict | None = None
 
     @property
     def file_path(self) -> Path:
@@ -235,13 +257,16 @@ class Intent:
             if s.get("old_inline"):
                 step["old_inline"] = s["old_inline"]
             steps.append(step)
-        return {
+        out = {
             "op": self.op,
             "id": self.id,
             "started": self.started,
             "steps": steps,
             "commit_subject": self.commit_subject,
         }
+        if self.stopped is not None:
+            out["stopped"] = self.stopped
+        return out
 
 
 def _from_dict(home: Path, data: dict) -> Intent:
@@ -252,6 +277,7 @@ def _from_dict(home: Path, data: dict) -> Intent:
         started=data["started"],
         steps=[dict(s) for s in data["steps"]],
         commit_subject=data["commit_subject"],
+        stopped=data.get("stopped"),
     )
 
 
@@ -346,6 +372,30 @@ def finish(intent: Intent) -> None:
     intent.file_path.unlink(missing_ok=True)
 
 
+def _mark_stopped(intent: Intent, reason: str) -> bool:
+    """Persist a STOP on *intent* (S-62, §7.2a.1/§7.2a.3): the SAME
+    single writer (:func:`_write_intent`) rewrites the file with
+    ``stopped`` set/refreshed. Called on every failed recovery attempt,
+    including a RETRY of an already-stopped intent -- the field records
+    the LAST attempt, never a decision to stop trying, so it is
+    unconditionally overwritten rather than checked-then-set.
+
+    Returns True iff the rewrite is confirmed durable. False is the
+    marker-publication-failure case (§7.2a.3): the STOP itself is still
+    real -- this attempt's OWN recovery genuinely failed, which is a
+    fact about the attempt, not about whether the marker landed -- but
+    the caller must report BOTH facts (the demonstrated failure, and
+    "could not be durably confirmed") and must assume NOTHING about
+    which bytes are now on disk (unmarked, the new marker, or an
+    earlier retry's)."""
+    intent.stopped = {"reason": reason, "at": _now_iso()}
+    try:
+        _write_intent(intent)
+    except OSError:
+        return False
+    return True
+
+
 def _step_verifies_final(home: Path, step: dict) -> bool:
     new_sha = step.get("new_sha")
     if new_sha is None:
@@ -408,15 +458,38 @@ def _prune_empty_dirs(home: Path, start: Path) -> None:
 
 
 @dataclass
+class StopDetail:
+    """One STOP, structured (S-62) so the exception message, the
+    ``--json`` envelope and the persisted ``Intent.stopped`` field all
+    build from the SAME facts rather than three independent renderings
+    that can drift. ``id`` is the intent id, or (the unreadable-file
+    case) the ``.json`` file's stem -- there is no parsed intent to name
+    an id from. ``marker_uncertain`` is true only for the two-fact report
+    of §7.2a.3's marker-publication-failure cases: the STOP is real, but
+    :func:`_mark_stopped`'s own rewrite could not be confirmed durable."""
+
+    id: str
+    reason: str
+    marker_uncertain: bool = False
+
+
+@dataclass
 class RecoverResult:
     """One entry per intent :func:`recover` found. ``stopped`` entries
     leave their intent file in place (a human repairs it by hand or by
     naming what to do next; nothing here silently discards a recovery it
-    could not complete)."""
+    could not complete). ``stopped`` (list[str]) is kept for existing
+    callers/tests -- ``"{id}: {reason}"`` -- built FROM ``stopped_detail``,
+    never the other way, so the two never disagree."""
 
     rolled_forward: list[str] = field(default_factory=list)
     restored: list[str] = field(default_factory=list)
     stopped: list[str] = field(default_factory=list)
+    stopped_detail: list[StopDetail] = field(default_factory=list)
+
+    def _stop(self, id_: str, reason: str, *, marker_uncertain: bool = False) -> None:
+        self.stopped_detail.append(StopDetail(id_, reason, marker_uncertain))
+        self.stopped.append(f"{id_}: {reason}")
 
     @property
     def acted(self) -> bool:
@@ -429,7 +502,9 @@ def _recover_one(home: Path, intent: Intent, result: RecoverResult) -> None:
         try:
             gitops.stage_and_commit(home, paths, intent.commit_subject, allow_empty=True)
         except gitops.HalfWrittenError as exc:
-            result.stopped.append(f"{intent.id}: roll-forward commit failed: {exc}")
+            reason = f"roll-forward commit failed: {exc}"
+            marked = _mark_stopped(intent, reason)
+            result._stop(intent.id, reason, marker_uncertain=not marked)
             return
         finish(intent)
         result.rolled_forward.append(intent.id)
@@ -439,10 +514,12 @@ def _recover_one(home: Path, intent: Intent, result: RecoverResult) -> None:
     for step in intent.steps:
         ok, content = _resolvable_old_bytes(home, step)
         if not ok:
-            result.stopped.append(
-                f"{intent.id}: cannot restore {step['path']} "
+            reason = (
+                f"cannot restore {step['path']} "
                 "(no matching content in the worktree, HEAD, or the intent's own copy)"
             )
+            marked = _mark_stopped(intent, reason)
+            result._stop(intent.id, reason, marker_uncertain=not marked)
             return
         plan.append((Path(home) / step["path"], content))
     try:
@@ -460,7 +537,9 @@ def _recover_one(home: Path, intent: Intent, result: RecoverResult) -> None:
         touched = [str(p) for p, _ in plan]
         gitops._git(home, "reset", "-q", "--", *touched)  # noqa: SLF001 -- same module family
     except OSError as exc:
-        result.stopped.append(f"{intent.id}: restore failed partway ({exc}) -- repair by hand")
+        reason = f"restore failed partway ({exc}) -- repair by hand"
+        marked = _mark_stopped(intent, reason)
+        result._stop(intent.id, reason, marker_uncertain=not marked)
         return
     finish(intent)
     result.restored.append(intent.id)
@@ -509,14 +588,356 @@ def recover(home: Path | str) -> RecoverResult:
             # `ValueError`), and `worker.run`'s unguarded call -- both
             # phrases below stay exact, since `JSONDecodeError` is
             # itself a `ValueError` subclass too.
+            #
+            # S-62: an unreadable file cannot carry the persisted
+            # `stopped` field -- unreadability is itself the STOP any
+            # reader can see (§7.2a.3) -- so this leg never calls
+            # `_mark_stopped`, and the reported "id" is the file's own
+            # stem (there is no parsed intent to name one from).
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
             except (OSError, ValueError) as exc:
-                result.stopped.append(f"{f.name}: unreadable intent file ({exc})")
+                result._stop(f.stem, f"unreadable intent file ({exc})")
                 continue
             try:
                 intent = _from_dict(home, data)
+            except (ValueError, KeyError) as exc:
+                result._stop(f.stem, f"unresolvable intent ({exc})")
+                continue
+            try:
                 _recover_one(home, intent, result)
-            except (OSError, ValueError, KeyError) as exc:
-                result.stopped.append(f"{f.name}: unresolvable intent ({exc})")
+            except (OSError, ValueError, KeyError, gitops.GitOpsError) as exc:
+                # Unlike the two legs above, an `Intent` DID parse here
+                # -- `_recover_one` itself raised, past its own two
+                # `_stop` call sites -- so the marker CAN be persisted,
+                # naming this bug-shaped failure the same way an
+                # ordinary STOP is named. `GitOpsError` is in this set
+                # too: the restore leg's own `git reset` (not behind
+                # `stage_and_commit`'s HalfWrittenError conversion) can
+                # raise one on a wedged subprocess -- WE hold
+                # `commit_lock` for this whole call, so that is never
+                # "a live writer", and letting it escape unmarked here
+                # would (via `clear_stopped`'s identically-widened catch,
+                # below) mislabel a failed recovery attempt as a lock
+                # refusal instead of the STOP it demonstrably is.
+                reason = f"unresolvable intent ({exc})"
+                marked = _mark_stopped(intent, reason)
+                result._stop(intent.id, reason, marker_uncertain=not marked)
     return result
+
+
+def recover_or_raise(
+    home: Path | str, *, earlier_commits: list[str] | None = None
+) -> RecoverResult:
+    """:func:`recover`, then raise :class:`LedgerStoppedError` if
+    anything is left ``stopped`` -- the shape :func:`ledger_write` (and
+    any other caller that wants "recover, or refuse") needs.
+    ``earlier_commits`` (§7.2a.5(4), multi-span) is threaded straight
+    through to the exception: this function has no notion of "spans"
+    itself, only the caller (a multi-span verb's own accumulator) does."""
+    result = recover(home)
+    if result.stopped_detail:
+        raise LedgerStoppedError(result, earlier_commits=earlier_commits)
+    return result
+
+
+class LedgerStoppedError(gitops.GitOpsError):
+    """S-62's refusal type (§7.2a.5(5)): raised by :func:`ledger_write`
+    (and, at the ledger rebase leg, by :func:`gitops.push_with_retry`)
+    when recovery leaves an intent STOPPED. ``result`` carries the full
+    outcome -- every STOP's id/path/reason, plus whatever
+    :attr:`RecoverResult.rolled_forward` / ``.restored`` this SAME
+    recovery attempt already completed (§7.2a.5(4)(b): reported, never
+    hidden behind the refusal).
+
+    The message is deliberately the FULL text §7.2a.5(5) mandates: every
+    existing ``except gitops.GitOpsError as exc: print(f"...: {exc}")``
+    site in this tree already renders it correctly (str(exc) IS the
+    message), so no per-surface edit was needed at any of them -- only
+    `main()`'s own net catch, which prints a DIFFERENT, false hedge for
+    a plain `GitOpsError` ("this surface did not say whether anything
+    was written"), needed a dedicated arm ahead of it."""
+
+    def __init__(
+        self, result: RecoverResult, *, earlier_commits: list[str] | None = None
+    ) -> None:
+        self.result = result
+        #: §7.2a.5(4), the multi-span case: subjects of commits THIS SAME
+        #: invocation already landed, in an earlier outer lock span,
+        #: before the span where this STOP was found. Empty for every
+        #: single-span verb (the overwhelming majority) -- non-empty only
+        #: when a caller like `verbs.recompile` (several sequential
+        #: outermost ledger spans in one call) threads its own
+        #: accumulator through. Non-empty is what tells a catch arm the
+        #: invocation is NOT "wrote nothing": exit 8, never 6.
+        self.earlier_commits = list(earlier_commits or [])
+        lines = []
+        for intent_id in result.rolled_forward:
+            lines.append(
+                f"self-learn: recovered {intent_id} (rolled forward: its commit "
+                "landed — the host phase did not run; run 'self-learn recompile')"
+            )
+        for intent_id in result.restored:
+            lines.append(f"self-learn: recovered {intent_id} (restored: its mutation was undone)")
+        if self.earlier_commits:
+            subjects = "; ".join(self.earlier_commits)
+            wrote_clause = f"no further requested writes; earlier commits: {subjects}"
+        else:
+            wrote_clause = "this verb wrote nothing"
+        for d in result.stopped_detail:
+            note = " (its stopped-state marker could not be durably confirmed)" if d.marker_uncertain else ""
+            lines.append(
+                f"self-learn: transaction intent {d.id} is STOPPED ({d.reason}){note}; "
+                f"{wrote_clause} — every ledger write refuses until it is "
+                "cleared. Inspect the offender, then run 'self-learn reconcile "
+                f"--clear-intent {d.id}' to accept its current on-disk state, or "
+                f"delete <home>/.intents/{d.id}.json by hand."
+            )
+        super().__init__("\n".join(lines))
+
+
+@contextlib.contextmanager
+def ledger_write(
+    home: Path | str, *, earlier_commits: list[str] | None = None
+) -> Iterator[RecoverResult]:
+    """THE ledger-write wrapper (S-62, §7.2a.5(1)) -- every lock-holding
+    ledger commit path takes this instead of a bare
+    ``gitops.commit_lock(home)``. ``verbs._ledger_write`` is a thin
+    delegate to it (one edit converts every one of that name's ~25 call
+    sites); every direct ``gitops.commit_lock(<ledger home>)`` site
+    outside the exempt list (§7.2a.5(1): this function itself,
+    :func:`recover`, :func:`clear_stopped`, ``ledger.init_home``'s
+    fresh/empty takes) converts to a literal ``with intents.
+    ledger_write(home):`` too.
+
+    **Ordering (§7.2a.5(2)).** The check runs exactly once per process,
+    on the OUTERMOST acquisition of the ledger lock -- tested by asking
+    whether ``home``'s lock path is already in :data:`gitops._held_locks`
+    BEFORE acquiring, the same re-entrancy test :func:`gitops.
+    commit_lock` itself uses -- and strictly BEFORE the caller's own
+    ``intents.begin``. A nested acquire (this process already holds the
+    lock) is a pure pass-through: recovery does NOT re-run, which is
+    what makes the in-flight transaction's OWN intent exempt BY
+    ORDERING -- it does not exist yet when the outermost check ran, so
+    there is nothing to identify and no id to thread. (Re-running the
+    check on a nested acquire, after the caller's own ``intents.begin``,
+    would see that intent with every ``new_sha`` still null, classify it
+    restorable, and undo the live transaction's own writes mid-flight —
+    the single sharpest edge in this whole design, and the mandatory
+    mutation §7.2a.8 names.)
+
+    Raises :class:`LedgerStoppedError` before yielding when recovery
+    leaves anything STOPPED, so a caller's own first mutation never
+    runs. On success yields the :class:`RecoverResult` (empty on a
+    nested acquire, since recovery only ever runs on the outermost
+    one) — callers that want to announce a roll-forward/restore
+    ("finish and tell", §7.2a.5(3)) read it from there.
+
+    ``earlier_commits`` (§7.2a.5(4), multi-span verbs only): subjects of
+    commits THIS SAME invocation already landed in an earlier outer
+    lock span of its own, before this acquisition. A single-span verb
+    (nearly every call site) never passes it. A multi-span verb
+    (``verbs.recompile``'s ``--adopt`` commit, then a later per-target
+    span) threads its own accumulator through so a STOP found at a
+    LATER span reports "no further requested writes" truthfully,
+    rather than the single-span "this verb wrote nothing" -- the
+    earlier commits are the verb's own completed work, and hiding them
+    behind the refusal's exit code would be the exact under-reporting
+    §7.2a.5(4)(b) forbids for a single acquisition's own recoveries."""
+    home = Path(home)
+    key = str(gitops.commit_lock_path(home))
+    already_held = key in gitops._held_locks  # noqa: SLF001 -- same re-entrancy test commit_lock uses
+    with gitops.commit_lock(home):
+        if already_held:
+            yield RecoverResult()
+            return
+        yield recover_or_raise(home, earlier_commits=earlier_commits)
+
+
+def announce_recovered(result: RecoverResult) -> None:
+    """§7.2a.5(3), the ATTENDED half of "finish and tell": prints, to
+    stderr, the same wording :func:`reconcile.reconcile`'s own CLI
+    surface (``cli._cmd_reconcile``) uses for a roll-forward/restore,
+    for every attended ledger-write call site (every direct caller of
+    :func:`ledger_write` outside the unattended list §7.2a.5(3) names
+    by name -- the miner's landing commit, the worker's commit and
+    harvest locks, and ``telemetry.flush`` when the miner or worker
+    calls it, which log each id on their own line instead). A no-op on
+    a nested acquire or a clean outermost one (both yield an empty
+    :class:`RecoverResult`), so calling this unconditionally at every
+    attended site is safe -- only the genuinely populated outermost
+    result ever prints anything."""
+    for intent_id in result.rolled_forward:
+        print(
+            f"self-learn: recovered {intent_id} (rolled forward: its commit "
+            "landed — the host phase did not run; run 'self-learn recompile')",
+            file=sys.stderr,
+        )
+    for intent_id in result.restored:
+        print(
+            f"self-learn: recovered {intent_id} (restored: its mutation was undone)",
+            file=sys.stderr,
+        )
+
+
+#: `clear_stopped`'s own lock acquisition: bounded short, never the
+#: 150s producer default -- a live writer means "wait a moment and
+#: retry", not "hang the CLI".
+_CLEAR_INTENT_TIMEOUT = 5.0
+
+
+def clear_stopped(home: Path | str, intent_id: str) -> str:
+    """§7.2a.6's clear leg — ``self-learn reconcile --clear-intent
+    <id>``. Removes ``<home>/.intents/<id>.json`` ONLY if *intent_id*
+    classifies STOPPED under §7.2a.4's rule, decided in the SAME
+    protected span as the deletion: unreadable; already carrying the
+    persisted ``stopped`` field; or — for an unmarked file — THIS
+    call's own recovery attempt on it, made in this span, has just
+    failed. An unmarked intent that RECOVERS (finishes) is recovered and
+    reported, not cleared — a ``status`` snapshot taken earlier
+    authorises nothing; only the attempt made right here does.
+
+    Exempt from :func:`ledger_write`'s own check (§7.2a.5(1)), for the
+    same reason :func:`recover` is: it must run BEFORE that check would
+    refuse on the very intent being cleared, or the clear could never
+    run at all.
+
+    Returns one of ``"cleared"`` / ``"recovered"`` (not cleared) /
+    ``"not-found"`` / ``"refused"`` (a live writer holds the lock)."""
+    home = Path(home)
+    path = intents_dir(home) / f"{intent_id}.json"
+    try:
+        with gitops.commit_lock(home, timeout=_CLEAR_INTENT_TIMEOUT):
+            if not path.is_file():
+                return "not-found"
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                path.unlink(missing_ok=True)
+                return "cleared"
+            try:
+                intent = _from_dict(home, data)
+            except (ValueError, KeyError):
+                path.unlink(missing_ok=True)
+                return "cleared"
+            if intent.stopped is not None:
+                path.unlink(missing_ok=True)
+                return "cleared"
+            # Unmarked: attempt the exact recovery an ordinary run would,
+            # in THIS span. Recovers -> report it, never clear. Fails ->
+            # `_recover_one` has already persisted the `stopped` field
+            # (the demonstrated failure IS the authorisation) and this
+            # call now deletes the file that failure was written to.
+            # `GitOpsError` is caught here too, same reason as `recover`'s
+            # own call site: a wedged `git reset` inside THIS span is a
+            # failed attempt, not the OUTER `except gitops.GitOpsError:
+            # return "refused"` below's case (this call already holds
+            # the lock throughout, so nothing here is ever "a live
+            # writer") -- left uncaught, it would escape to that outer
+            # handler and mislabel the failure instead of clearing it.
+            probe = RecoverResult()
+            try:
+                _recover_one(home, intent, probe)
+            except (OSError, ValueError, KeyError, gitops.GitOpsError):
+                pass
+            if probe.acted:
+                return "recovered"
+            path.unlink(missing_ok=True)
+            return "cleared"
+    except gitops.GitOpsError:
+        return "refused"
+
+
+@dataclass(frozen=True)
+class IntentStatus:
+    """One intent's read-only classification (§7.2a.7). ``cls`` is
+    ``"busy"`` (the probe found the lock held — this intent is
+    somebody's, not classified further), ``"stopped"``, or
+    ``"pending"``. ``reason``/``at`` are set only for ``"stopped"``."""
+
+    id: str
+    cls: str
+    reason: str | None = None
+    at: str | None = None
+
+
+@dataclass(frozen=True)
+class StatusClass:
+    """§7.2a.7's whole-home snapshot. ``probe`` is ``"ok"`` (the lock
+    was free; ``intents`` reflects what was read while holding the
+    probe), ``"busy"`` (contention: a transaction or a recovery is in
+    flight right now), or ``"error"`` (the probe itself failed for a
+    reason other than contention — never rendered as "free")."""
+
+    probe: str
+    intents: list[IntentStatus] = field(default_factory=list)
+    error: str | None = None
+
+    @property
+    def stopped(self) -> list[IntentStatus]:
+        return [i for i in self.intents if i.cls == "stopped"]
+
+    @property
+    def busy(self) -> bool:
+        return self.probe == "busy"
+
+
+def classify_status(home: Path | str) -> StatusClass:
+    """§7.2a.7: read-only, non-blocking, ONE coherent snapshot — never
+    :func:`gitops._flock_lock`/`commit_lock` (that helper truncates the
+    holder's pid on open and is the MUTATING house pattern). Opens the
+    lock file ``O_RDONLY|O_CREAT`` (an empty file created when absent is
+    the only byte this can cause, and it is not a ledger write; it never
+    truncates, so a live holder's pid survives being probed) and takes
+    ``LOCK_EX|LOCK_NB`` exactly once — the only lock interaction this
+    function performs. On contention every intent on disk is
+    ``"busy"``, precedence over any marker it might carry (a marker
+    under a live holder is a HISTORICAL failed attempt, not current
+    state). Never mutates, never runs recovery."""
+    home = Path(home)
+    d = intents_dir(home)
+    try:
+        lock_path = gitops.commit_lock_path(home)
+    except gitops.GitOpsError as exc:
+        return StatusClass(probe="error", error=str(exc))
+    try:
+        fh = os.open(str(lock_path), os.O_RDONLY | os.O_CREAT)
+    except OSError as exc:
+        return StatusClass(probe="error", error=str(exc))
+    try:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            names = [f.stem for f in sorted(d.glob("*.json"))] if d.is_dir() else []
+            return StatusClass(probe="busy", intents=[IntentStatus(id=n, cls="busy") for n in names])
+        except OSError as exc:
+            return StatusClass(probe="error", error=str(exc))
+        try:
+            out: list[IntentStatus] = []
+            if d.is_dir():
+                for f in sorted(d.glob("*.json")):
+                    try:
+                        data = json.loads(f.read_text(encoding="utf-8"))
+                    except FileNotFoundError:
+                        # Vanished between listing and reading, under
+                        # the probe: an observed absence, classified as
+                        # neither pending nor stopped (§7.2a.7).
+                        continue
+                    except (OSError, ValueError):
+                        out.append(IntentStatus(id=f.stem, cls="stopped", reason="unreadable intent file"))
+                        continue
+                    stopped = data.get("stopped")
+                    if stopped:
+                        out.append(
+                            IntentStatus(
+                                id=data.get("id", f.stem), cls="stopped",
+                                reason=stopped.get("reason"), at=stopped.get("at"),
+                            )
+                        )
+                    else:
+                        out.append(IntentStatus(id=data.get("id", f.stem), cls="pending"))
+            return StatusClass(probe="ok", intents=out)
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+    finally:
+        os.close(fh)

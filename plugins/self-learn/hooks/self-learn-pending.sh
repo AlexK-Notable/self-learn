@@ -61,6 +61,35 @@ if [ "$home_state" != "ok" ]; then
   exit 0
 fi
 
+# S-62 (§7.2a.7): the `2>/dev/null` on the `status --fast` call above used
+# to be the ONLY route a live STOP had to reach this hook — discarding the
+# stderr line `_warn_intents_in_flight_report`'s own docstring calls "the
+# human's one notice" (cli.py). `intents_stopped_count` rides the SAME
+# stdout JSON every other field here reads, so it survives that discard;
+# `jq -e` (no `// 0` fallback) so a CLI whose JSON shape regresses reports
+# absence rather than a silent, healthy-looking "0 stopped" (same B-6
+# secondary-shape discipline as `total_pending` above).
+# §7.2a.7 ("never as free"): a probe error means STOPPED intents are
+# genuinely unknown, not zero -- `intents_stopped_count` reads 0/absent
+# in that case (§7.2a.7's own classification never inspects individual
+# intents when the probe itself failed), so without this the STOPPED
+# warning above would silently look identical to a healthy ledger.
+if intents_probe="$(jq -e -r '.intents_probe' <<<"$out" 2>/dev/null)" && [ "$intents_probe" = "error" ]; then
+  echo "⚠️ self-learn: could not probe the ledger lock — a STOPPED intent may be hidden; run \`self-learn status\`"
+fi
+
+if intents_stopped_count="$(jq -e -r '.intents_stopped_count' <<<"$out" 2>/dev/null)"; then
+  if [ "$intents_stopped_count" -gt 0 ] 2>/dev/null; then
+    intents_stopped_ids="$(jq -r '(.intents_stopped // []) | join(", ")' <<<"$out" 2>/dev/null)" || intents_stopped_ids="?"
+    # Gate r1 MINOR-2: the real, first id -- `intents_stopped` is the
+    # same array `intents_stopped_ids` above already joins.
+    first_stopped_id="$(jq -r '(.intents_stopped // [])[0] // "?"' <<<"$out" 2>/dev/null)" || first_stopped_id="?"
+    plural=""
+    if [ "$intents_stopped_count" -ne 1 ]; then plural="s"; fi
+    echo "🛑 self-learn: ${intents_stopped_count} STOPPED transaction intent${plural} (${intents_stopped_ids}) — every ledger write refuses until cleared. Run \`self-learn reconcile --clear-intent ${first_stopped_id}\` after inspecting the offender."
+  fi
+fi
+
 # B-6 secondary shape (R): `jq -r '.total_pending // 0'` cannot tell "the
 # key is absent" from "the key is a genuine 0" — a CLI whose JSON shape
 # regresses would degrade to a silent, healthy-looking session (total

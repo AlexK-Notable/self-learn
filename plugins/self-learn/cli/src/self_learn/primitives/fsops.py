@@ -131,6 +131,9 @@ below, not a per-caller judgment call):
     | ledger records / proposals / meta / compiled | ``atomic_write(preserve_mode=True, fsync=True)``, symlinks refused |
     | ``config.yaml`` / ``hosts.yaml``           | ``atomic_write(..., follow_symlinks=True)`` -- people symlink config files into dotfile repos |
     | hook script                                | ``atomic_write(..., mode=0o755)``             |
+    | host canon (Sprint 3 M-I wave 3: CLAUDE.md paths-block/pointer-line/managed-section/reference-block writes, the plain-host marker, and the new-skill scaffold's plugin.json/SKILL.md/marketplace.json) | ``atomic_write(..., follow_symlinks=True)`` -- the read side already resolves symlinks (`compilers.surface_names_target` compares `resolve()` to `resolve()`) and `install.sh` itself symlinks skills into `~/.claude/skills`; a writer that refused what the reader accepts would break real hosts. Subject to the parent-directory-write precondition above (fold r1, Finding 8) same as every other class: a host repo with a writable file inside a non-writable directory could rely on the old bare ``write_text`` and will now fail with ``PermissionError`` |
+    | external tool's file (Claude Code's own auto-memory index) | ``atomic_write(..., follow_symlinks=False, preserve_mode=True, fsync=True)`` -- REFUSE a symlink loudly; the file is not ours to write through a link (a DANGLING symlink there is skipped by the caller's own pre-existing ``is_file()`` guard before this call is ever reached -- ``SymlinkRefused`` fires only for a symlink to an EXISTING file) |
+    | UI derived/regenerable cache (compiled doctrine) | ``atomic_write(path, data)`` -- defaults; regenerable content, no special case |
 
     uid/gid are never touched by this module (POSIX rename preserves
     the destination directory's ownership semantics on its own; this

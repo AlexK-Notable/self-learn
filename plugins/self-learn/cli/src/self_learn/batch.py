@@ -25,7 +25,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
-from . import gitops, sentinel, verbs
+from . import gitops, intents, sentinel, verbs
 from .compilers import CompileError
 from .ledger_ops import (
     DEFERRED_ONLY,
@@ -150,6 +150,18 @@ class BatchResult:
     flush_sha: str | None = None
     pushed: bool = False
     process_code: int = 0
+    #: S-62 (§7.2a.5(3)): the sheet-level preflight's own recovery
+    #: outcome — "a batch item's outcome rides the --json envelope"
+    #: means the WHOLE run's, here, since this recovery runs before
+    #: any item, not per-item.
+    recovered_rolled_forward: list[str] = field(default_factory=list)
+    recovered_restored: list[str] = field(default_factory=list)
+    #: §7.2a.5(5): the STOP refusal's own message, when the sheet-level
+    #: preflight refuses the whole sheet before any item runs — a batch
+    #: that returns 6 must still say WHICH intent and why, the same as
+    #: every other surface's refusal; `process_code == 6` with this
+    #: `None` never happens together.
+    stop_message: str | None = None
 
     @property
     def summary(self) -> dict:
@@ -176,6 +188,9 @@ class BatchResult:
             "stopped_at": self.stopped_at,
             "pushed": self.pushed,
             "process_code": self.process_code,
+            "recovered_rolled_forward": self.recovered_rolled_forward,
+            "recovered_restored": self.recovered_restored,
+            "stop_message": self.stop_message,
         }
 
 
@@ -472,18 +487,28 @@ _STOP_CODES = frozenset({5, 6, 7})
 def decision_code(results: list[ItemResult]) -> int:
     """§3.3a's decision procedure — a PROCEDURE, never a raw ``max()``.
 
-    1. a ledger-level failure occurred (an item returned 3, 4, 6 or 7) →
-       the WORST of those four, under ``7 > 4 > 3 > 6``;
-    2. every item applied or already-applied → 0;
-    3. ≥1 refusal AND ≥1 commit landed → 8 (EXIT_BATCH_PARTIAL);
-    4. ≥1 refusal, ZERO commits → 1 — `1`'s ratified meaning (refused,
+    1. a ledger-level failure occurred (an item returned 3, 4 or 7) →
+       the WORST of those three, under ``7 > 4 > 3`` — UNCHANGED by
+       S-62;
+    2. an item returned 6 →  6 if NOTHING in the sheet committed, else
+       8 — the S-62 amendment (13 §5, amending this row's own rule 3):
+       a mid-sheet 6 (a live intent STOP, checked at each item's own
+       lock) must not override commits that already landed the same
+       way 7/3/4 legitimately do, or the sheet's own exit code would
+       claim "nothing was written" (6's ratified meaning) over a sheet
+       that plainly wrote something;
+    3. every item applied or already-applied → 0;
+    4. ≥1 refusal AND ≥1 commit landed → 8 (EXIT_BATCH_PARTIAL);
+    5. ≥1 refusal, ZERO commits → 1 — `1`'s ratified meaning (refused,
        nothing written) is never emitted after a write."""
-    ledger_level = [r.rc for r in results if r.rc in (3, 4, 6, 7)]
-    if ledger_level:
-        for code in (7, 4, 3, 6):
-            if code in ledger_level:
-                return code
     landed = any(r.state == "applied" for r in results)
+    ledger_level_high = [r.rc for r in results if r.rc in (3, 4, 7)]
+    if ledger_level_high:
+        for code in (7, 4, 3):
+            if code in ledger_level_high:
+                return code
+    if any(r.rc == 6 for r in results):
+        return 8 if landed else 6
     refused = any(r.state == "refused" for r in results)
     if not refused:
         return 0
@@ -631,7 +656,33 @@ def run(
     from . import cli as cli_mod
 
     home = Path(home)
-    result = BatchResult()
+    # S-62 (13 §5): the sheet-level check, once, before item 1 — a
+    # pre-existing STOP refuses the WHOLE sheet before anything lands,
+    # the same way a sheet-invalid (64) or home-gate (5) refusal does.
+    # `with intents.ledger_write(home): pass` runs recovery (if this is
+    # the outermost acquisition in-process) and raises before yielding
+    # on a STOP; a clean pass silently heals whatever it could and
+    # changes nothing else about the run below. Each item's own verb
+    # still runs its own check at its own lock — this is the backstop
+    # for a STOP that appears MID-sheet (§7.2a.5(4)), not a replacement
+    # for it.
+    try:
+        with intents.ledger_write(home) as recovered:
+            pass
+    except intents.LedgerStoppedError as exc:
+        # §7.2a.5(5): the message names the offending intent — a 6 with
+        # no message would say "refused" without saying WHICH intent or
+        # why, unlike every other surface's refusal.
+        return BatchResult(
+            process_code=gitops.EXIT_GIT_FAILED,
+            recovered_rolled_forward=list(exc.result.rolled_forward),
+            recovered_restored=list(exc.result.restored),
+            stop_message=str(exc),
+        )
+    result = BatchResult(
+        recovered_rolled_forward=list(recovered.rolled_forward),
+        recovered_restored=list(recovered.restored),
+    )
     push_exit: int | None = None
     hold = sentinel.hold()
     sentinel.heartbeat()

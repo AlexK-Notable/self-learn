@@ -59,7 +59,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import gitops
+from . import intents
 from . import scan as scan_mod
 from .primitives import chrono
 from .import_common import ImporterError, ImportReport, commit_import, existing_origins
@@ -294,7 +294,8 @@ def import_backlog(
     # is `commit_import`, which takes the lock again re-entrantly; the
     # push it does sits outside. Refusing here (a busy neighbour) costs
     # nothing: the import is idempotent by origin and simply re-runs.
-    with gitops.commit_lock(home):
+    with intents.ledger_write(home) as recovered:  # S-62: checks for a pre-existing STOP first
+        intents.announce_recovered(recovered)
         _import_entries(home, entries, origins, known, scope, canon_norm, report)
         report.committed = commit_import(home, report)  # H-5: one commit/run
     return report

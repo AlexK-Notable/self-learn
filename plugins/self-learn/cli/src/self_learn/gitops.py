@@ -393,7 +393,15 @@ def commit_lock_path(repo: Path) -> Path:
     gitdir = Path(proc.stdout.strip())
     if not gitdir.is_absolute():
         gitdir = Path(repo) / gitdir
-    return gitdir / "self-learn.commit.lock"
+    # Gate r1 NIT-1: `.resolve()` HERE, not at each caller -- both
+    # `_flock_lock`'s own `_held_locks` bookkeeping and
+    # `intents.ledger_write`'s `already_held` re-entrancy check key off
+    # this return value by `str(path)`. Two differently-spelled *repo*
+    # arguments in one nesting chain (a trailing slash, a relative vs.
+    # absolute spelling, a symlinked worktree) used to key differently,
+    # so an inner acquire could read as outermost. Resolving once here
+    # keeps every caller's key identical for the same real file.
+    return (gitdir / "self-learn.commit.lock").resolve()
 
 
 @contextlib.contextmanager
@@ -747,10 +755,18 @@ class PushResult:
     rebase_conflict: bool = False
     detail: str = ""
     skipped: bool = False
+    #: S-62 (§7.2a.5(5)): true iff the LEDGER's rebase leg met a live
+    #: intent STOP — a DISTINCT shape from an ordinary push failure.
+    #: ``ok`` stays False (nothing was published), but ``exit_code``
+    #: stays 0 (the deliberate asymmetry with the verbs, ruled at the
+    #: 02:45 addendum: a refused reconcile is informational on push —
+    #: what IS committed republishes, and the stderr line names the
+    #: intent).
+    intent_stopped: bool = False
 
     @property
     def exit_code(self) -> int:
-        if self.ok:
+        if self.ok or self.intent_stopped:
             return 0
         return EXIT_REBASE_CONFLICT if self.rebase_conflict else EXIT_PUSH_FAILED
 
@@ -762,7 +778,7 @@ def _rebase_in_progress(repo: Path) -> bool:
     return (gitdir / "rebase-merge").exists() or (gitdir / "rebase-apply").exists()
 
 
-def push_with_retry(repo: Path) -> PushResult:
+def push_with_retry(repo: Path, *, is_ledger: bool = False) -> PushResult:
     """The pinned per-verb push. Never raises for push FAILURES — the
     commit is kept and the result says loudly what happened. A push
     TIMEOUT does raise :class:`GitOpsError` (a hang is not a result).
@@ -778,7 +794,24 @@ def push_with_retry(repo: Path) -> PushResult:
       ``git mv`` rename in half (module docstring). Taking the lock HERE
       rather than at the call sites is what finally covers HOST pushes:
       every host rebase used to run with no host lock at all, which is the
-      exact hazard the lock was justified by."""
+      exact hazard the lock was justified by.
+
+    ``is_ledger`` (S-62, §7.2a.5(1)): true iff *repo* IS the ledger home
+    -- the one fact that decides which lock the rebase leg takes. A
+    ledger rebase converts to :func:`intents.ledger_write` (imported
+    locally: :mod:`intents` already imports this module, so a
+    module-level import here would cycle) and, on a live intent STOP,
+    prints the refusal and returns ``intent_stopped=True`` rather than
+    raising — no prior recovery covers THIS acquisition (`teach` pushes
+    via `push_if_remote` with no `reconcile` on its path; `batch` pushes
+    at sheet end likewise; even `push`'s own `reconcile()` ran under an
+    earlier, released span), and the push surface's own contract keeps
+    exit 0 on a STOP regardless (§7.2a.5(5), the 02:45 addendum). A HOST
+    rebase (``is_ledger=False``) is unaffected — its bare
+    ``commit_lock(repo)`` stays exactly as it was, outside this
+    contract."""
+    from . import intents  # local: dodges the intents<->gitops cycle
+
     first = _git(repo, "push", "-q", timeout=GIT_NETWORK_TIMEOUT)
     if first.returncode == 0:
         return PushResult(ok=True)
@@ -786,39 +819,60 @@ def push_with_retry(repo: Path) -> PushResult:
     # Non-FF (or any push failure): pull --rebase --autostash, retry ONCE.
     # Re-entrant if the caller already holds it (e.g. `self-learn push`
     # taking it for a repo it is also committing to).
-    with commit_lock(repo):
-        pull = _git(
-            repo, "pull", "--rebase", "--autostash", "-q",
-            timeout=GIT_NETWORK_TIMEOUT,
-        )
-        if pull.returncode != 0:
-            if _rebase_in_progress(repo):
+    #
+    # `lock` is a NAME bound to whichever lock `is_ledger` selects --
+    # test_lock_invariant.py's own recognized idiom (`_is_lock`'s
+    # docstring: "lock = commit_lock(r) if r else nullcontext()" is
+    # `verbs._host_phase`'s real shape) -- the walker resolves a guarded
+    # span through this assignment, so the pull itself stays inlined
+    # under ONE `with lock:` rather than split into a closure the walker
+    # cannot see is called from inside either branch's lock.
+    lock = intents.ledger_write(repo) if is_ledger else commit_lock(repo)
+    try:
+        with lock:
+            pull = _git(
+                repo, "pull", "--rebase", "--autostash", "-q",
+                timeout=GIT_NETWORK_TIMEOUT,
+            )
+            if pull.returncode == 0:
+                pulled_ok, rebase_conflict, detail = True, False, ""
+            elif _rebase_in_progress(repo):
                 _git(repo, "rebase", "--abort")
+                pulled_ok, rebase_conflict, detail = (
+                    False, True, (pull.stderr or pull.stdout).strip(),
+                )
+            else:
+                pulled_ok, rebase_conflict, detail = (
+                    False, False, (pull.stderr or first.stderr).strip(),
+                )
+            # H-7 clause 2: the re-push is part of THIS span too --
+            # `pull --rebase --autostash + re-push`, together, in the repo
+            # being rebased, is what the module docstring and
+            # `COMMIT_LOCK_TIMEOUT`'s own 2x sizing rationale both name.
+            # Returning here (not after the `with`) keeps every exit of a
+            # successful pull under the same acquisition the pull itself
+            # ran under.
+            if not pulled_ok:
+                if rebase_conflict:
+                    print(
+                        "self-learn: PUSH BLOCKED — rebase conflict while syncing "
+                        "with the remote. The rebase was aborted and your commit is "
+                        "KEPT locally. Resolve the divergence manually (git pull "
+                        "--rebase), then run `self-learn push`.",
+                        file=sys.stderr,
+                    )
+                    return PushResult(ok=False, retried=True, rebase_conflict=True, detail=detail)
                 print(
-                    "self-learn: PUSH BLOCKED — rebase conflict while syncing "
-                    "with the remote. The rebase was aborted and your commit is "
-                    "KEPT locally. Resolve the divergence manually (git pull "
-                    "--rebase), then run `self-learn push`.",
+                    "self-learn: PUSH FAILED — could not reach/sync the remote. Your "
+                    "commit is KEPT locally; run `self-learn push` to retry.",
                     file=sys.stderr,
                 )
-                return PushResult(
-                    ok=False,
-                    retried=True,
-                    rebase_conflict=True,
-                    detail=(pull.stderr or pull.stdout).strip(),
-                )
-            print(
-                "self-learn: PUSH FAILED — could not reach/sync the remote. Your "
-                "commit is KEPT locally; run `self-learn push` to retry.",
-                file=sys.stderr,
-            )
-            return PushResult(
-                ok=False,
-                retried=True,
-                detail=(pull.stderr or first.stderr).strip(),
-            )
+                return PushResult(ok=False, retried=True, detail=detail)
+            second = _git(repo, "push", "-q", timeout=GIT_NETWORK_TIMEOUT)
+    except intents.LedgerStoppedError as exc:
+        print(str(exc), file=sys.stderr)
+        return PushResult(ok=False, retried=True, intent_stopped=True, detail=str(exc))
 
-        second = _git(repo, "push", "-q", timeout=GIT_NETWORK_TIMEOUT)
     if second.returncode == 0:
         return PushResult(ok=True, retried=True)
     print(
@@ -829,7 +883,7 @@ def push_with_retry(repo: Path) -> PushResult:
     return PushResult(ok=False, retried=True, detail=second.stderr.strip())
 
 
-def push_if_remote(repo: Path) -> PushResult:
+def push_if_remote(repo: Path, *, is_ledger: bool = False) -> PushResult:
     """:func:`push_with_retry` behind the :func:`has_remote` guard — the
     policy every producer uses (audit 2026-07-16 MINOR 7: route /
     route_direct / supersede pushed unguarded, so on a remote-less ledger
@@ -837,7 +891,7 @@ def push_if_remote(repo: Path) -> PushResult:
     commits)."""
     if not has_remote(repo):
         return PushResult(ok=True, skipped=True, detail="no remote configured")
-    return push_with_retry(repo)
+    return push_with_retry(repo, is_ledger=is_ledger)
 
 
 def unpushed_commits(repo: Path) -> int | None:
@@ -861,5 +915,15 @@ def push_pending(repo: Path) -> PushResult:
     guard as every producer (audit 2026-07-16 MAJOR E's class: on the
     remote-less ledger doc 13 §7.1 step 5 creates on purpose, this
     reported a loud "PUSH FAILED" for the entirely normal state of having
-    nowhere to publish to yet)."""
-    return push_if_remote(repo)
+    nowhere to publish to yet).
+
+    ``verbs.push_pending``'s only call site for this function passes the
+    LEDGER home (`verbs.py`'s own ``entries: [(home, gitops.push_pending
+    (home))]``, ahead of every host entry, which reaches
+    :func:`push_if_remote` unmodified) — so this always means
+    ``is_ledger=True`` (S-62, §7.2a.5(1)); every OTHER ledger-push call
+    site in this tree (``teach``, ``reconcile``, ``telemetry``,
+    ``miner``, ``worker``, ``verbs._push_ledger``, ``verbs.route``/
+    ``supersede``'s own ledger leg) calls THIS function too, rather than
+    ``push_if_remote`` directly, for the same reason."""
+    return push_if_remote(repo, is_ledger=True)

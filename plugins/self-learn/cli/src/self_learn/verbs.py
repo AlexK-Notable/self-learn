@@ -955,7 +955,7 @@ def _write_retirement_compile_record(
     )
 
 
-def _ledger_write(home: Path):
+def _ledger_write(home: Path, *, earlier_commits: list[str] | None = None):
     """THE ledger critical section: hold :func:`gitops.commit_lock` from a
     verb's first ledger mutation through its commit (audit 2026-07-16
     round 3; see the ``gitops`` module docstring for the probe that fixed
@@ -981,8 +981,23 @@ def _ledger_write(home: Path):
     other producer) does not apply to the compile/host-write span, which
     is local file I/O plus one local ``git commit``, no network.
 
-    Re-entrant, so a verb may hold it across helpers that take it again."""
-    return gitops.commit_lock(home)
+    Re-entrant, so a verb may hold it across helpers that take it again.
+
+    S-62 (§7.2a.5(1)): promoted to a thin delegate onto the shared
+    ledger-write wrapper, :func:`intents.ledger_write` — every one of
+    this name's ~25 call sites across this module converts with this
+    ONE edit, and the wrapper's own recover-or-refuse check runs on
+    whichever of them is the OUTERMOST acquisition (§7.2a.5(2)). The
+    name stays (both here and in ``tests/test_lock_invariant.py``'s
+    ``_LOCKS``) — a callee's lock never discharges a caller's
+    obligation, and every existing ``with _ledger_write(home):`` site
+    is a bare ``Name`` the walker must keep recognising.
+
+    ``earlier_commits`` (§7.2a.5(4), MAJOR-1): threaded straight through
+    to :func:`intents.ledger_write` -- see its own docstring. Only
+    ``recompile``'s multi-span loop passes it; every other call site
+    keeps the default."""
+    return intents.ledger_write(home, earlier_commits=earlier_commits)
 
 
 def _stage_and_commit(
@@ -999,8 +1014,15 @@ def _stage_and_commit(
     only paths that still EXIST, but a resolution's touched list also names
     the ``git mv``-ed old path, which must ride the pathspec or the commit
     splits the rename in half (see :func:`gitops.known_paths`, which
-    filters the list git cannot match)."""
-    with gitops.commit_lock(home):
+    filters the list git cannot match).
+
+    S-62: this nested take converts too (§7.2a.5(1) names it
+    explicitly) — on the common path it is a pass-through (the caller
+    already holds the lock), so this changes nothing observable; it
+    matters only for a caller that forgot :func:`_ledger_write`, which
+    now gets the SAME recover-or-refuse check rather than a bare lock."""
+    with intents.ledger_write(home) as recovered:
+        intents.announce_recovered(recovered)
         return _commit_ledger(home, touched, message, note)
 
 
@@ -1061,7 +1083,7 @@ def _push_ledger(home: Path, no_push: bool) -> gitops.PushResult | None:
     still called ``push_with_retry`` unguarded, so on a remote-less ledger
     — the state doc 13 §7.1 step 5 creates on purpose — every one of them
     exited 3 with a false "PUSH FAILED" over a perfect commit)."""
-    return None if no_push else gitops.push_if_remote(home)
+    return None if no_push else gitops.push_pending(home)
 
 
 def _parse_dest(dest: str) -> tuple[str, str | None]:
@@ -3138,7 +3160,8 @@ def _apply_target(
             # with no CLAUDE.md creates it empty and lets the managed-
             # section bootstrap (08 §1 pin) append the marker pair.
             # skill-md never reaches here — preflight refuses.
-            spec.target.write_text("", encoding="utf-8")
+            # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True.
+            fsops.atomic_write(spec.target, "", preserve_mode=True, fsync=True, follow_symlinks=True)
         records = _compile_set(home, spec)
         paths_changed = False
         if spec.variant == "rules":
@@ -3230,13 +3253,24 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
     scaffolded = False
     if not manifest.is_file():
         manifest.parent.mkdir(parents=True, exist_ok=True)
-        manifest.write_text(
-            plugin_manifest_text(name, description), encoding="utf-8"
+        # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True.
+        fsops.atomic_write(
+            manifest,
+            plugin_manifest_text(name, description),
+            preserve_mode=True,
+            fsync=True,
+            follow_symlinks=True,
         )
         changed = scaffolded = True
     if not target.is_file():
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(skill_md_seed(name, description), encoding="utf-8")
+        fsops.atomic_write(
+            target,
+            skill_md_seed(name, description),
+            preserve_mode=True,
+            fsync=True,
+            follow_symlinks=True,
+        )
         changed = scaffolded = True
     section = compile_managed_file(target, records)
     changed = changed or section.changed
@@ -3248,7 +3282,10 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
     except SkillScaffoldError as exc:
         raise VerbError(str(exc)) from exc
     if market_changed:
-        marketplace.write_text(market_text, encoding="utf-8")
+        # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True.
+        fsops.atomic_write(
+            marketplace, market_text, preserve_mode=True, fsync=True, follow_symlinks=True
+        )
         changed = True
 
     result = NewSkillApplyResult(
@@ -4100,7 +4137,8 @@ def _execute_route(
             total_sightings += lr.sightings
         merged.set_sightings(total_sightings)
 
-    with _ledger_write(home), gitops.host_lock(spec.host_path, spec.mode):
+    with _ledger_write(home) as recovered, gitops.host_lock(spec.host_path, spec.mode):
+        intents.announce_recovered(recovered)
         # Observe the region NOW — before anything below mutates the
         # ledger — so the compile record's `based_on_sha256` is the state
         # THIS write is based on, never a later re-read (U-hostmode
@@ -4365,7 +4403,7 @@ def _execute_route(
     ) + retire_notes
 
     # (f) push ledger, then push host (pinned retry, has_remote-guarded).
-    push = None if no_push else gitops.push_if_remote(home)
+    push = None if no_push else gitops.push_pending(home)
     host_push = None
     if not no_push and host_sha is not None and spec.mode == "git":
         host_push = gitops.push_if_remote(spec.host_path)
@@ -5014,7 +5052,8 @@ def reject(
     sentinel.heartbeat()
     try:
         message = f"self-learn: reject {record_id}"
-        with _ledger_write(home):
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
             touched = resolve_record(home, record_id, "rejected", note=note, verb="reject")
             staged, sha = _stage_and_commit(home, touched, message, note)
         push = _push_ledger(home, no_push)
@@ -5058,7 +5097,8 @@ def defer(
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
-        with _ledger_write(home):
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
             try:
                 touched = defer_record(home, record_id, until)
             except LedgerOpsError as exc:
@@ -5269,7 +5309,8 @@ def _move(
     sentinel.heartbeat()
     try:
         message = f"self-learn: {verb} {record_id} → {dest_label}"
-        with _ledger_write(home):
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
             touched, swept = move_record(
                 home,
                 record_id,
@@ -5381,7 +5422,8 @@ def undefer(
     sentinel.heartbeat()
     try:
         message = f"self-learn: undefer {record_id}"
-        with _ledger_write(home):
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
             record = Record.from_path(path)
             record.set_status("pending")
             record.set_deferred_until(None)
@@ -5434,7 +5476,8 @@ def reopen(
     sentinel.heartbeat()
     try:
         message = f"self-learn: reopen {record_id}"
-        with _ledger_write(home):
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
             touched, swept = reopen_record(home, record_id)
             relswept = [
                 p.relative_to(home) if p.is_relative_to(home) else p for p in swept
@@ -5500,7 +5543,8 @@ def note(
     sentinel.heartbeat()
     try:
         message = f"self-learn: note {record_id}"
-        with _ledger_write(home):
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
             record = Record.from_path(path)
             record.append_note(append, key=key)
             record.write(path)
@@ -5656,7 +5700,8 @@ def reroute(
         message = f"self-learn: reroute {record_id} → {message_target}"
         routed_at = _now_iso()
 
-        with _ledger_write(home), gitops.host_lock(spec.host_path, spec.mode):
+        with _ledger_write(home) as recovered, gitops.host_lock(spec.host_path, spec.mode):
+            intents.announce_recovered(recovered)
             observed_hash = _observe_region_hash(spec)
             old_observed_hash = _observe_retirement_region(old_retire)
 
@@ -5884,7 +5929,8 @@ def graduate(
         else:
             _graduate_host_lock = contextlib.nullcontext()
 
-        with _ledger_write(home), _graduate_host_lock:
+        with _ledger_write(home) as recovered, _graduate_host_lock:
+            intents.announce_recovered(recovered)
             observed_hash = _observe_retirement_region(retire)
 
             message = f"self-learn: graduate {record_id}"
@@ -6098,7 +6144,8 @@ def supersede(
         else:
             _supersede_host_lock = contextlib.nullcontext()
 
-        with _ledger_write(home), _supersede_host_lock:
+        with _ledger_write(home) as recovered, _supersede_host_lock:
+            intents.announce_recovered(recovered)
             observed_hash = _observe_region_hash(spec) if spec is not None else None
 
             # (d) LEDGER phase (locked from the first mutation through the
@@ -6195,7 +6242,7 @@ def supersede(
                 )
 
         # (f) push ledger, then host (both has_remote-guarded).
-        push = None if no_push else gitops.push_if_remote(home)
+        push = None if no_push else gitops.push_pending(home)
         host_push = None
         host_repo = (
             spec.host_path if spec is not None
@@ -6266,7 +6313,8 @@ def followup_done(
         except RecordError as exc:
             raise VerbError(str(exc)) from exc
         message = f"self-learn: follow-up done on {record_id}"
-        with _ledger_write(home):
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
             record.write(path)
             staged, sha = _stage_and_commit(home, [path], message, note)
         push = _push_ledger(home, no_push)
@@ -6358,7 +6406,8 @@ def confirm_recurrence(
         except RecordError as exc:
             raise VerbError(str(exc)) from exc
         message = f"self-learn: recurrence confirmed on {record_id}"
-        with _ledger_write(home):
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
             record.write(path)
             staged, sha = _stage_and_commit(home, [path], message, note)
         push = _push_ledger(home, no_push)
@@ -6404,7 +6453,8 @@ def confirm_held(
     try:
         record.set_last_confirmed(_now_iso()[:10])
         message = f"self-learn: confirmed holding {record_id}"
-        with _ledger_write(home):
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
             record.write(path)
             staged, sha = _stage_and_commit(home, [path], message, note)
         push = _push_ledger(home, no_push)
@@ -6518,7 +6568,8 @@ def dismiss_suspect(
         except RecordError as exc:
             raise VerbError(str(exc)) from exc
         message = f"self-learn: suspect dismissed on {record_id}"
-        with _ledger_write(home):
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
             record.write(path)
             staged, sha = _stage_and_commit(home, [path], message, note)
         push = _push_ledger(home, no_push)
@@ -6567,7 +6618,8 @@ def link_contradicts(
         except RecordError as exc:
             raise VerbError(str(exc)) from exc
         message = f"self-learn: link {record_id} contradicts {target}"
-        with _ledger_write(home):
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
             record.write(path)
             staged, sha = _stage_and_commit(home, [path], message, note)
         push = _push_ledger(home, no_push)
@@ -6727,6 +6779,17 @@ def recompile(
     skipped LOUDLY, never guessed at (H-3)."""
     home = Path(home)
     result = RecompileResult()
+    # Gate r1 MAJOR-1 (§7.2a.5(4), multi-span): `recompile` takes several
+    # sequential OUTERMOST ledger spans in one invocation (the `--adopt`
+    # commit below, then a later per-target span, then the final resync
+    # batch) -- a concurrent producer crashing between two of THIS run's
+    # own spans must not be reported as "this verb wrote nothing" when an
+    # earlier span of the SAME invocation plainly did. Appended once,
+    # right after `_commit_ledger` lands, at every span that actually
+    # commits (the ones that only stage a record entry for the later
+    # batched resync commit below never append here -- nothing has
+    # landed yet from them).
+    span_commits: list[str] = []
 
     # Enumerate targets off ALL resolved records that ever landed in canon
     # (the ledger is the source of truth — targets are derived, never
@@ -6895,7 +6958,8 @@ def recompile(
                         else str(spec.host_path)
                     )
                     key = compiled.region_key(spec.host_path, target)
-                    with _ledger_write(home):
+                    with _ledger_write(home, earlier_commits=span_commits) as recovered:
+                        intents.announce_recovered(recovered)
                         record_path = compiled.adopt_entry(
                             home,
                             slug,
@@ -6906,11 +6970,9 @@ def recompile(
                             host=host_label,
                             mode=spec.mode,
                         )
-                        _commit_ledger(
-                            home,
-                            [record_path],
-                            f"self-learn: recompile --adopt {key}",
-                        )
+                        adopt_subject = f"self-learn: recompile --adopt {key}"
+                        _commit_ledger(home, [record_path], adopt_subject)
+                    span_commits.append(adopt_subject)
                     # target is non-None here: adopt_matched only sets
                     # when region_kind is not None, which _region_kind_for
                     # only returns for a spec carrying a real target.
@@ -7009,7 +7071,8 @@ def recompile(
                     # truthful, and writing a no-op ledger commit would
                     # be its own unwanted divergence from REC9's "the
                     # record rides its OWN resolution's commit" shape.
-                    with _ledger_write(home):
+                    with _ledger_write(home, earlier_commits=span_commits) as recovered:
+                        intents.announce_recovered(recovered)
                         record_path = _write_compile_record_entry(
                             home, spec, observed_hash, by=f"recompile {target}"
                         )
@@ -7082,7 +7145,8 @@ def recompile(
             # own commit just made — that landed in a DIFFERENT repo),
             # same subject shape M-10 established for the plain leg.
             if region_kind is not None:
-                with _ledger_write(home):
+                with _ledger_write(home, earlier_commits=span_commits) as recovered:
+                    intents.announce_recovered(recovered)
                     record_path = _write_compile_record_entry(
                         home, spec, observed_hash, by=f"recompile {target}"
                     )
@@ -7265,7 +7329,8 @@ def recompile(
                 except (OSError, UnicodeDecodeError, compiled.CompiledRecordError):
                     ref_expected = None
                 if ref_expected is not None:
-                    with _ledger_write(home):
+                    with _ledger_write(home, earlier_commits=span_commits) as recovered:
+                        intents.announce_recovered(recovered)
                         ref_record_path = _resync_region_entry(
                             home,
                             host_path=spec.host_path,
@@ -7291,7 +7356,8 @@ def recompile(
                 except (OSError, UnicodeDecodeError, compiled.CompiledRecordError):
                     ptr_expected = None
                 if ptr_expected is not None:
-                    with _ledger_write(home):
+                    with _ledger_write(home, earlier_commits=span_commits) as recovered:
+                        intents.announce_recovered(recovered)
                         ptr_record_path = _resync_region_entry(
                             home,
                             host_path=spec.host_path,
@@ -7359,7 +7425,8 @@ def recompile(
             # riding the host's own commit just made above (a DIFFERENT
             # repo).
             script_expected = (record.routing or {})["hook"]["script"].encode("utf-8")
-            with _ledger_write(home):
+            with _ledger_write(home, earlier_commits=span_commits) as recovered:
+                intents.announce_recovered(recovered)
                 script_record_path = _resync_region_entry(
                     home,
                     host_path=host_repo,
@@ -7413,7 +7480,8 @@ def recompile(
             # place (that would wrongly hide a still-present script
             # behind a deleted entry).
             if not script_abs.is_file():
-                with _ledger_write(home):
+                with _ledger_write(home, earlier_commits=span_commits) as recovered:
+                    intents.announce_recovered(recovered)
                     removal_record_path = _resync_region_entry(
                         home,
                         host_path=host_repo,
@@ -7449,7 +7517,8 @@ def recompile(
         # sweeps — never a lost write, same failure-mode reasoning the
         # per-target commits already relied on.
         if resync_touched:
-            with _ledger_write(home):
+            with _ledger_write(home, earlier_commits=span_commits) as recovered:
+                intents.announce_recovered(recovered)
                 _commit_ledger(
                     home,
                     resync_touched,
@@ -7531,7 +7600,8 @@ def bucket_prune(
     sentinel.heartbeat()
     try:
         message = f"self-learn: bucket prune {len(candidates)} empty bucket(s)"
-        with _ledger_write(home):
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
             touched: list[Path] = []
             for b in candidates:
                 meta = b.path / "meta.yaml"
@@ -7617,7 +7687,8 @@ def followup_add(
     sentinel.heartbeat()
     try:
         message = f"self-learn: follow-up add {record_id}"
-        with _ledger_write(home):
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
             record = Record.from_path(path)  # fresh read under the lock
             try:
                 record.set_follow_up(action, unblocks_on=unblocks_on, note=note)
@@ -7800,7 +7871,8 @@ def reclassify(
     sentinel.heartbeat()
     try:
         message = f"self-learn: reclassify {record_id}"
-        with _ledger_write(home):
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
             record = Record.from_path(path)  # fresh read under the lock
             # gate r3 Minor 3: a --type change that lands outside
             # `behavior` silently clears `kind` (`_reclassify_apply`'s own
