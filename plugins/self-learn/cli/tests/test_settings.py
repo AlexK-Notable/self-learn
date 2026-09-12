@@ -864,6 +864,23 @@ class TestIntentsPreflightRow:
         assert "1 stopped intent(s)" in row.detail
         assert f"--clear-intent {stop.id}" in row.detail
 
+    def test_warns_with_unknown_last_recovery_failure_for_an_unreadable_marker(self, env):
+        """Gate r2 MINOR-A: a non-JSON `.intents/*.json` file classifies
+        `"stopped"` with no `at` (`classify_status`'s own "unreadable
+        intent file" leg never parses one) -- the row's own fallback
+        (`last_at = max(ats) if ats else "unknown"`) must actually read
+        `unknown`, not silently omit the clause or crash on an empty
+        `max()`."""
+        home = env.home
+        garbage = intents.intents_dir(home) / "not-json.json"
+        garbage.parent.mkdir(parents=True, exist_ok=True)
+        garbage.write_text("not json at all", encoding="utf-8")
+        rows = settings.preflight(home)
+        matches = [r for r in rows if r.name == ".intents"]
+        assert len(matches) == 1
+        assert matches[0].verdict == "WARN"
+        assert "last recovery failure at unknown" in matches[0].detail
+
     def test_cli_doctor_settings_prints_the_intents_row(self, env, monkeypatch, capsys):
         home = env.home
         stop = _plant_stop(home, _probe_file(home))
