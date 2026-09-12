@@ -626,13 +626,18 @@ def recover(home: Path | str) -> RecoverResult:
     return result
 
 
-def recover_or_raise(home: Path | str) -> RecoverResult:
+def recover_or_raise(
+    home: Path | str, *, earlier_commits: list[str] | None = None
+) -> RecoverResult:
     """:func:`recover`, then raise :class:`LedgerStoppedError` if
     anything is left ``stopped`` -- the shape :func:`ledger_write` (and
-    any other caller that wants "recover, or refuse") needs."""
+    any other caller that wants "recover, or refuse") needs.
+    ``earlier_commits`` (§7.2a.5(4), multi-span) is threaded straight
+    through to the exception: this function has no notion of "spans"
+    itself, only the caller (a multi-span verb's own accumulator) does."""
     result = recover(home)
     if result.stopped_detail:
-        raise LedgerStoppedError(result)
+        raise LedgerStoppedError(result, earlier_commits=earlier_commits)
     return result
 
 
@@ -653,8 +658,19 @@ class LedgerStoppedError(gitops.GitOpsError):
     a plain `GitOpsError` ("this surface did not say whether anything
     was written"), needed a dedicated arm ahead of it."""
 
-    def __init__(self, result: RecoverResult) -> None:
+    def __init__(
+        self, result: RecoverResult, *, earlier_commits: list[str] | None = None
+    ) -> None:
         self.result = result
+        #: §7.2a.5(4), the multi-span case: subjects of commits THIS SAME
+        #: invocation already landed, in an earlier outer lock span,
+        #: before the span where this STOP was found. Empty for every
+        #: single-span verb (the overwhelming majority) -- non-empty only
+        #: when a caller like `verbs.recompile` (several sequential
+        #: outermost ledger spans in one call) threads its own
+        #: accumulator through. Non-empty is what tells a catch arm the
+        #: invocation is NOT "wrote nothing": exit 8, never 6.
+        self.earlier_commits = list(earlier_commits or [])
         lines = []
         for intent_id in result.rolled_forward:
             lines.append(
@@ -663,11 +679,16 @@ class LedgerStoppedError(gitops.GitOpsError):
             )
         for intent_id in result.restored:
             lines.append(f"self-learn: recovered {intent_id} (restored: its mutation was undone)")
+        if self.earlier_commits:
+            subjects = "; ".join(self.earlier_commits)
+            wrote_clause = f"no further requested writes; earlier commits: {subjects}"
+        else:
+            wrote_clause = "this verb wrote nothing"
         for d in result.stopped_detail:
             note = " (its stopped-state marker could not be durably confirmed)" if d.marker_uncertain else ""
             lines.append(
                 f"self-learn: transaction intent {d.id} is STOPPED ({d.reason}){note}; "
-                "this verb wrote nothing — every ledger write refuses until it is "
+                f"{wrote_clause} — every ledger write refuses until it is "
                 "cleared. Inspect the offender, then run 'self-learn reconcile "
                 f"--clear-intent {d.id}' to accept its current on-disk state, or "
                 f"delete <home>/.intents/{d.id}.json by hand."
@@ -676,7 +697,9 @@ class LedgerStoppedError(gitops.GitOpsError):
 
 
 @contextlib.contextmanager
-def ledger_write(home: Path | str) -> Iterator[RecoverResult]:
+def ledger_write(
+    home: Path | str, *, earlier_commits: list[str] | None = None
+) -> Iterator[RecoverResult]:
     """THE ledger-write wrapper (S-62, §7.2a.5(1)) -- every lock-holding
     ledger commit path takes this instead of a bare
     ``gitops.commit_lock(home)``. ``verbs._ledger_write`` is a thin
@@ -708,7 +731,19 @@ def ledger_write(home: Path | str) -> Iterator[RecoverResult]:
     runs. On success yields the :class:`RecoverResult` (empty on a
     nested acquire, since recovery only ever runs on the outermost
     one) — callers that want to announce a roll-forward/restore
-    ("finish and tell", §7.2a.5(3)) read it from there."""
+    ("finish and tell", §7.2a.5(3)) read it from there.
+
+    ``earlier_commits`` (§7.2a.5(4), multi-span verbs only): subjects of
+    commits THIS SAME invocation already landed in an earlier outer
+    lock span of its own, before this acquisition. A single-span verb
+    (nearly every call site) never passes it. A multi-span verb
+    (``verbs.recompile``'s ``--adopt`` commit, then a later per-target
+    span) threads its own accumulator through so a STOP found at a
+    LATER span reports "no further requested writes" truthfully,
+    rather than the single-span "this verb wrote nothing" -- the
+    earlier commits are the verb's own completed work, and hiding them
+    behind the refusal's exit code would be the exact under-reporting
+    §7.2a.5(4)(b) forbids for a single acquisition's own recoveries."""
     home = Path(home)
     key = str(gitops.commit_lock_path(home))
     already_held = key in gitops._held_locks  # noqa: SLF001 -- same re-entrancy test commit_lock uses
@@ -716,7 +751,7 @@ def ledger_write(home: Path | str) -> Iterator[RecoverResult]:
         if already_held:
             yield RecoverResult()
             return
-        yield recover_or_raise(home)
+        yield recover_or_raise(home, earlier_commits=earlier_commits)
 
 
 def announce_recovered(result: RecoverResult) -> None:

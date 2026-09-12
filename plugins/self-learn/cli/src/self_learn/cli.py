@@ -1485,7 +1485,13 @@ def _cmd_config(args: argparse.Namespace) -> int:
         # S-62 (§7.2a.5(5)): ahead of the generic GitOpsError arm below —
         # `str(exc)` is already complete and already prefixed.
         print(str(exc), file=sys.stderr)
-        return EXIT_GIT_FAILED
+        # Gate r1 MAJOR-1 (§7.2a.5(4), multi-span): a non-empty
+        # `earlier_commits` means an EARLIER outer lock span of THIS
+        # invocation already landed a commit — 6 (its ratified meaning
+        # is "nothing was written") would be a false claim; 8 is the
+        # existing "partial, read what landed" code, reused here rather
+        # than minting a tenth.
+        return EXIT_BATCH_PARTIAL if exc.earlier_commits else EXIT_GIT_FAILED
     except gitops.GitOpsError as exc:  # lock timeout / wedged git: nothing written
         print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED
@@ -2076,7 +2082,9 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         # that also completed OTHER intents in the same pass, would
         # bury those "recovered ..." lines inside the wrong sentence).
         print(str(exc), file=sys.stderr)
-        return EXIT_GIT_FAILED
+        # Gate r1 MAJOR-1: see the identical comment on the dedicated
+        # arm above.
+        return EXIT_BATCH_PARTIAL if exc.earlier_commits else EXIT_GIT_FAILED
     except gitops.GitOpsError as exc:
         # A lock timeout / wedged git / unwritable repo, raised BEFORE the
         # first mutation. Probed 2026-07-16 (BLOCKER B): a second process
@@ -2111,7 +2119,8 @@ def _cmd_host(args: argparse.Namespace) -> int:
         # same reason as `_cmd_verb`'s own dedicated arm — `str(exc)` is
         # already complete and already prefixed.
         print(str(exc), file=sys.stderr)
-        return EXIT_GIT_FAILED
+        # Gate r1 MAJOR-1: see the identical comment above.
+        return EXIT_BATCH_PARTIAL if exc.earlier_commits else EXIT_GIT_FAILED
     except gitops.GitOpsError as exc:  # lock timeout / wedged git: nothing written
         print(f"self-learn host {args.host_command}: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED
@@ -2350,6 +2359,16 @@ def _cmd_recompile(args: argparse.Namespace) -> int:
             no_push=args.no_push,
             adopt=Path(args.adopt) if args.adopt else None,
         )
+    except intents.LedgerStoppedError as exc:
+        # Gate r1 MAJOR-1 (§7.2a.5(4)/(5)): `recompile` is THE named
+        # multi-span example -- missing here entirely would have been
+        # worse than a wrong exit code: the generic `GitOpsError` arm
+        # below prepends its own "self-learn recompile:" prefix, which
+        # would double the one `str(exc)` already carries. `earlier_
+        # commits` non-empty means an earlier span of THIS SAME call
+        # already committed -- 8, never 6's "wrote nothing".
+        print(str(exc), file=sys.stderr)
+        return EXIT_BATCH_PARTIAL if exc.earlier_commits else EXIT_GIT_FAILED
     except gitops.GitOpsError as exc:  # BLOCKER B: never a traceback
         print(f"self-learn recompile: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED
@@ -2681,7 +2700,13 @@ def _cmd_followup(args: argparse.Namespace) -> int:
         # S-62 (§7.2a.5(5)): ahead of the generic GitOpsError arm below —
         # `str(exc)` is already complete and already prefixed.
         print(str(exc), file=sys.stderr)
-        return EXIT_GIT_FAILED
+        # Gate r1 MAJOR-1 (§7.2a.5(4), multi-span): a non-empty
+        # `earlier_commits` means an EARLIER outer lock span of THIS
+        # invocation already landed a commit — 6 (its ratified meaning
+        # is "nothing was written") would be a false claim; 8 is the
+        # existing "partial, read what landed" code, reused here rather
+        # than minting a tenth.
+        return EXIT_BATCH_PARTIAL if exc.earlier_commits else EXIT_GIT_FAILED
     except gitops.GitOpsError as exc:  # BLOCKER B: never a traceback
         print(f"self-learn {surface}: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED
@@ -3079,7 +3104,9 @@ def main(argv: list[str] | None = None) -> int:
         # that already catches `gitops.GitOpsError` itself renders this
         # message correctly with NO edit, since `str(exc)` IS it.
         print(str(exc), file=sys.stderr)
-        return EXIT_GIT_FAILED
+        # Gate r1 MAJOR-1: see the identical comment on the first
+        # dedicated arm above.
+        return EXIT_BATCH_PARTIAL if exc.earlier_commits else EXIT_GIT_FAILED
     except gitops.GitOpsError as exc:  # pragma: no cover - net
         print(
             f"self-learn: git operation failed: {exc}\n"

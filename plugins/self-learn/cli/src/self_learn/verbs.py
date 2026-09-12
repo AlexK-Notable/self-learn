@@ -955,7 +955,7 @@ def _write_retirement_compile_record(
     )
 
 
-def _ledger_write(home: Path):
+def _ledger_write(home: Path, *, earlier_commits: list[str] | None = None):
     """THE ledger critical section: hold :func:`gitops.commit_lock` from a
     verb's first ledger mutation through its commit (audit 2026-07-16
     round 3; see the ``gitops`` module docstring for the probe that fixed
@@ -991,8 +991,13 @@ def _ledger_write(home: Path):
     name stays (both here and in ``tests/test_lock_invariant.py``'s
     ``_LOCKS``) — a callee's lock never discharges a caller's
     obligation, and every existing ``with _ledger_write(home):`` site
-    is a bare ``Name`` the walker must keep recognising."""
-    return intents.ledger_write(home)
+    is a bare ``Name`` the walker must keep recognising.
+
+    ``earlier_commits`` (§7.2a.5(4), MAJOR-1): threaded straight through
+    to :func:`intents.ledger_write` -- see its own docstring. Only
+    ``recompile``'s multi-span loop passes it; every other call site
+    keeps the default."""
+    return intents.ledger_write(home, earlier_commits=earlier_commits)
 
 
 def _stage_and_commit(
@@ -6774,6 +6779,17 @@ def recompile(
     skipped LOUDLY, never guessed at (H-3)."""
     home = Path(home)
     result = RecompileResult()
+    # Gate r1 MAJOR-1 (§7.2a.5(4), multi-span): `recompile` takes several
+    # sequential OUTERMOST ledger spans in one invocation (the `--adopt`
+    # commit below, then a later per-target span, then the final resync
+    # batch) -- a concurrent producer crashing between two of THIS run's
+    # own spans must not be reported as "this verb wrote nothing" when an
+    # earlier span of the SAME invocation plainly did. Appended once,
+    # right after `_commit_ledger` lands, at every span that actually
+    # commits (the ones that only stage a record entry for the later
+    # batched resync commit below never append here -- nothing has
+    # landed yet from them).
+    span_commits: list[str] = []
 
     # Enumerate targets off ALL resolved records that ever landed in canon
     # (the ledger is the source of truth — targets are derived, never
@@ -6942,7 +6958,7 @@ def recompile(
                         else str(spec.host_path)
                     )
                     key = compiled.region_key(spec.host_path, target)
-                    with _ledger_write(home) as recovered:
+                    with _ledger_write(home, earlier_commits=span_commits) as recovered:
                         intents.announce_recovered(recovered)
                         record_path = compiled.adopt_entry(
                             home,
@@ -6954,11 +6970,9 @@ def recompile(
                             host=host_label,
                             mode=spec.mode,
                         )
-                        _commit_ledger(
-                            home,
-                            [record_path],
-                            f"self-learn: recompile --adopt {key}",
-                        )
+                        adopt_subject = f"self-learn: recompile --adopt {key}"
+                        _commit_ledger(home, [record_path], adopt_subject)
+                    span_commits.append(adopt_subject)
                     # target is non-None here: adopt_matched only sets
                     # when region_kind is not None, which _region_kind_for
                     # only returns for a spec carrying a real target.
@@ -7057,7 +7071,7 @@ def recompile(
                     # truthful, and writing a no-op ledger commit would
                     # be its own unwanted divergence from REC9's "the
                     # record rides its OWN resolution's commit" shape.
-                    with _ledger_write(home) as recovered:
+                    with _ledger_write(home, earlier_commits=span_commits) as recovered:
                         intents.announce_recovered(recovered)
                         record_path = _write_compile_record_entry(
                             home, spec, observed_hash, by=f"recompile {target}"
@@ -7131,7 +7145,7 @@ def recompile(
             # own commit just made — that landed in a DIFFERENT repo),
             # same subject shape M-10 established for the plain leg.
             if region_kind is not None:
-                with _ledger_write(home) as recovered:
+                with _ledger_write(home, earlier_commits=span_commits) as recovered:
                     intents.announce_recovered(recovered)
                     record_path = _write_compile_record_entry(
                         home, spec, observed_hash, by=f"recompile {target}"
@@ -7315,7 +7329,7 @@ def recompile(
                 except (OSError, UnicodeDecodeError, compiled.CompiledRecordError):
                     ref_expected = None
                 if ref_expected is not None:
-                    with _ledger_write(home) as recovered:
+                    with _ledger_write(home, earlier_commits=span_commits) as recovered:
                         intents.announce_recovered(recovered)
                         ref_record_path = _resync_region_entry(
                             home,
@@ -7342,7 +7356,7 @@ def recompile(
                 except (OSError, UnicodeDecodeError, compiled.CompiledRecordError):
                     ptr_expected = None
                 if ptr_expected is not None:
-                    with _ledger_write(home) as recovered:
+                    with _ledger_write(home, earlier_commits=span_commits) as recovered:
                         intents.announce_recovered(recovered)
                         ptr_record_path = _resync_region_entry(
                             home,
@@ -7411,7 +7425,7 @@ def recompile(
             # riding the host's own commit just made above (a DIFFERENT
             # repo).
             script_expected = (record.routing or {})["hook"]["script"].encode("utf-8")
-            with _ledger_write(home) as recovered:
+            with _ledger_write(home, earlier_commits=span_commits) as recovered:
                 intents.announce_recovered(recovered)
                 script_record_path = _resync_region_entry(
                     home,
@@ -7466,7 +7480,7 @@ def recompile(
             # place (that would wrongly hide a still-present script
             # behind a deleted entry).
             if not script_abs.is_file():
-                with _ledger_write(home) as recovered:
+                with _ledger_write(home, earlier_commits=span_commits) as recovered:
                     intents.announce_recovered(recovered)
                     removal_record_path = _resync_region_entry(
                         home,
@@ -7503,7 +7517,7 @@ def recompile(
         # sweeps — never a lost write, same failure-mode reasoning the
         # per-target commits already relied on.
         if resync_touched:
-            with _ledger_write(home) as recovered:
+            with _ledger_write(home, earlier_commits=span_commits) as recovered:
                 intents.announce_recovered(recovered)
                 _commit_ledger(
                     home,
