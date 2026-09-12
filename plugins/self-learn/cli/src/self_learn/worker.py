@@ -1475,7 +1475,7 @@ def kick(home: Path | str, *, no_push: bool = False) -> str:
 
 @dataclass
 class RunResult:
-    status: str  # "ok" | "idle" | "failed"
+    status: str  # "ok" | "idle" | "failed" | "stopped" (S-62 §7.2a.5(4))
     proposed: list[str] = field(default_factory=list)
     merge_proposed: list[str] = field(default_factory=list)
     invalid_deleted: list[str] = field(default_factory=list)
@@ -1515,6 +1515,11 @@ class RunResult:
     #: `proposed`/`valid_landed`/`touched`.
     not_installed: list[str] = field(default_factory=list)
     foreign_seen: int = 0  # size of S7's `foreign` set
+    #: S-62 (§7.2a.5(4)): populated only when `status == "stopped"` — the
+    #: run-start `intents.recover` call found a live intent it could
+    #: neither roll forward nor restore, and this run ended THERE,
+    #: before enumeration. One `"{id}: {reason}"` string per offender.
+    stopped: list[str] = field(default_factory=list)
 
 
 def _enumerate(home: Path) -> tuple[list, int, int, list[dict]]:
@@ -2444,7 +2449,16 @@ def _commit_locked(home: Path, result: RunResult) -> bool:
     # "another producer is committing right now" — that is not even an
     # error. Proposals are regenerable; the next run redoes this.
     try:
-        with gitops.commit_lock(home):
+        with intents.ledger_write(home) as recovered:  # S-62: checks for a pre-existing STOP first
+            # §7.2a.5(3): UNATTENDED — log each recovered id on its own
+            # line, matching `run()`'s own start-of-run recovery report.
+            for intent_id in recovered.rolled_forward:
+                log(
+                    f"run: recovered {intent_id} (rolled forward: its commit "
+                    "landed — the host phase did not run; run 'self-learn recompile')"
+                )
+            for intent_id in recovered.restored:
+                log(f"run: recovered {intent_id} (restored: its mutation was undone)")
             proc = gitops._git(home, "add", "--", *stage)  # noqa: SLF001
             if proc.returncode != 0:
                 log(f"run: staging failed ({(proc.stderr or proc.stdout).strip()})")
@@ -2480,7 +2494,7 @@ def _push_run(home: Path, *, no_push: bool) -> None:
         log("run: push skipped — --no-push in effect")
         return
     try:
-        push = gitops.push_if_remote(home)
+        push = gitops.push_pending(home)
     except gitops.GitOpsError as exc:
         # BLOCKER B: this is a DETACHED process. A traceback here goes to
         # worker.log and kills the run; the proposals are committed and a
@@ -2579,7 +2593,14 @@ def _harvest(
     from . import gitops
 
     try:
-        with gitops.commit_lock(home):
+        with intents.ledger_write(home) as recovered:  # S-62: checks for a pre-existing STOP first
+            for intent_id in recovered.rolled_forward:
+                log(
+                    f"run: recovered {intent_id} (rolled forward: its commit "
+                    "landed — the host phase did not run; run 'self-learn recompile')"
+                )
+            for intent_id in recovered.restored:
+                log(f"run: recovered {intent_id} (restored: its mutation was undone)")
             if stage_on:
                 result = _validate_written(
                     home,
@@ -3746,6 +3767,12 @@ def run(
         log(f"run: recovered {intent_id} (restored: its mutation was undone)")
     for line in recovered.stopped:
         log(f"run: could not resolve an intent, left for a human: {line}")
+    # S-62 (§7.2a.5(4)): unlike every OTHER outcome above, a STOP is the
+    # one exception to "log it and proceed" — a run that cannot land its
+    # own writes has nothing safe to enumerate, batch, or stage into, so
+    # it ends HERE, before any of that, never completing a host step.
+    if recovered.stopped:
+        return RunResult(status="stopped", stopped=recovered.stopped)
     if no_push is None:
         no_push = no_push_requested()
     cache_dir().mkdir(parents=True, exist_ok=True)
@@ -4167,9 +4194,18 @@ def run(
             # the whole branch here — including the record the user asked to
             # keep local. The flush still COMMITS (H-5); only the push waits.
             try:
-                telemetry.flush(home, push=not no_push)
+                flush_report = telemetry.flush(home, push=not no_push)
             except telemetry.TelemetryError as exc:
                 log(f"run: telemetry flush refused ({exc})")
+            else:
+                # §7.2a.5(3): unattended — log, never print.
+                for intent_id in flush_report.recovered_rolled_forward:
+                    log(
+                        f"run: recovered {intent_id} (rolled forward: its commit "
+                        "landed — the host phase did not run; run 'self-learn recompile')"
+                    )
+                for intent_id in flush_report.recovered_restored:
+                    log(f"run: recovered {intent_id} (restored: its mutation was undone)")
         finally:
             hold.release()
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)

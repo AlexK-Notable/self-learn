@@ -241,6 +241,16 @@ class FlushReport:
     files: list[Path] = field(default_factory=list)
     deferred_reason: str | None = None
     deferred_events: int = 0
+    #: S-62 (§7.2a.5(3)): the ledger-write wrapper's own outcome at this
+    #: flush's acquisition, handed back rather than printed here --
+    #: `flush` is called both attended (`self-learn telemetry flush`)
+    #: and unattended (the miner/worker's own flush call), which report
+    #: it differently (print vs. log), so the caller decides. Plain
+    #: `str` id lists, not `intents.RecoverResult` itself, so this
+    #: dataclass needs no module-level import of `intents` (deferred
+    #: everywhere else in this file for the same reason `gitops` is).
+    recovered_rolled_forward: list[str] = field(default_factory=list)
+    recovered_restored: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         if self.deferred_reason is not None:
@@ -367,6 +377,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
         # empty in that case, which is exactly how the `except` below
         # tells "never appended" apart from "appended, commit failed").
         from . import gitops  # deferred: gitops is imported by every verb path
+        from . import intents  # deferred, same reason (S-62: the ledger-write wrapper)
 
         # Fold r2 MINOR m-1: nothing to flush (every spool file was
         # empty) is NOT a deferral, even if commit_lock happens to be
@@ -378,7 +389,12 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
             return report
 
         try:
-            with gitops.commit_lock(home):
+            with intents.ledger_write(home) as recovered:  # S-62: checks for a pre-existing STOP first
+                # §7.2a.5(3): handed back on the report, never printed
+                # or logged HERE -- `flush` is called both attended
+                # and unattended, and only the caller knows which.
+                report.recovered_rolled_forward = list(recovered.rolled_forward)
+                report.recovered_restored = list(recovered.restored)
                 for spool_path, fh, lines in opened:
                     if not lines:
                         continue
@@ -467,7 +483,7 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
 
     if report.files and push:
         try:
-            gitops.push_if_remote(home)
+            gitops.push_pending(home)
         except gitops.GitOpsError as exc:
             print(
                 f"self-learn: telemetry flush committed but not pushed ({exc})",

@@ -133,7 +133,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from . import config, gitops
+from . import config, gitops, intents
 from .invocation.contract import DEFAULT_BACKEND_FOR_SURFACE, SELECTOR_FOR_SURFACE, SURFACES
 from .invocation.registry import KNOWN_BACKENDS
 
@@ -1861,7 +1861,8 @@ def config_set(
         return setting
 
     message = f"self-learn: config set {name}={final!r}"
-    with gitops.commit_lock(home):
+    with intents.ledger_write(home) as recovered:  # S-62: checks for a pre-existing STOP first
+        intents.announce_recovered(recovered)
         path = config.set_leaf(home, setting.config_section, setting.config_key, final)
         _commit_or_half_written(home, [path], message, note)
     return setting
@@ -1911,7 +1912,8 @@ def config_unset(home: Path | str, name: str, *, note: str | None = None) -> tup
         return setting, False  # nothing to remove -- no lock, no commit
 
     message = f"self-learn: config unset {name}"
-    with gitops.commit_lock(home):
+    with intents.ledger_write(home) as recovered:  # S-62: checks for a pre-existing STOP first
+        intents.announce_recovered(recovered)
         removed = config.unset_leaf(home, setting.config_section, setting.config_key)
         if not removed:
             # Raced away between the pre-flight read and the lock (another

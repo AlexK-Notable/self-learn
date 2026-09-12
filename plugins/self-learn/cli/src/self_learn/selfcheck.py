@@ -101,6 +101,7 @@ from typing import NoReturn
 from . import compiled
 from . import domain
 from . import gitops
+from . import intents
 from . import provider
 from . import scan as scan_mod
 from . import sentinel
@@ -248,7 +249,8 @@ def proposal_validate(home: Path, record_id: str) -> int:
     # local and measured in milliseconds. Its absence would have been a
     # judgement nobody made.
     try:
-        with gitops.commit_lock(home):
+        with intents.ledger_write(home) as recovered:  # S-62: checks for a pre-existing STOP first
+            intents.announce_recovered(recovered)
             stamp_proposal(home, record_id)
     except gitops.GitOpsError as exc:
         print(

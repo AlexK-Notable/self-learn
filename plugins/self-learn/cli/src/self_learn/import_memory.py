@@ -52,6 +52,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from . import gitops
+from . import intents
 from . import scan as scan_mod
 from .import_common import ImporterError, ImportReport, commit_import, existing_origins
 from .ledger import discover_buckets
@@ -129,7 +130,8 @@ def import_memory(
     # the invariant). `commit_import` takes it again re-entrantly and
     # pushes outside it. Refusing here costs nothing: the import is
     # idempotent by origin and re-runs.
-    with gitops.commit_lock(home):
+    with intents.ledger_write(home) as recovered:  # S-62: checks for a pre-existing STOP first
+        intents.announce_recovered(recovered)
         _import_topics(home, memory_dir, project_path, known, report)
         report.committed = commit_import(home, report)  # H-5: one commit/run
     return report

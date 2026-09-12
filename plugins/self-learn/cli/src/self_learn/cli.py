@@ -749,6 +749,15 @@ def _build_parser() -> argparse.ArgumentParser:
     rec.add_argument(
         "--no-push", action="store_true", help="commit only; do not publish"
     )
+    rec.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="machine-readable outcome envelope (S-62, §7.2a.6)",
+    )
+    rec.add_argument(
+        "--clear-intent", metavar="ID", default=None,
+        help="clear a STOPPED intent (S-62, §7.2a.4/§7.2a.6): accept its "
+        "current on-disk state and delete <home>/.intents/<ID>.json",
+    )
 
     host_p = sub.add_parser(
         "host",
@@ -965,26 +974,67 @@ def _warn_unparseable(home) -> None:
             )
 
 
-def _warn_intents_in_flight(home) -> None:
-    """Gate r1 BLOCKER-1's visibility requirement: once a STOP freezes
-    ``reconcile``'s orphan healing under this home (see
-    :func:`reconcile.reconcile`'s own docstring), ``status`` is the one
-    place a human — or the SessionStart hook, via ``--fast`` — can
-    notice without running ``reconcile`` first and getting refused.
-    Always stderr, even from the ``--fast``/``--json`` paths: their
-    stdout is a pinned, machine-parsed contract (08 §7.1) this must
-    never share a stream with. One line total, naming every intent id
-    found; nothing printed when there are none (the positive control:
-    an intent-free home prints nothing here)."""
-    ids = sorted(p.stem for p in intents.intents_dir(home).glob("*.json"))
-    if not ids:
+def _warn_intents_in_flight(home) -> intents.StatusClass:
+    """:func:`intents.classify_status` + :func:`_warn_intents_in_flight_report`,
+    for a caller that has no reason to compute the classification
+    itself first (``status`` full — the JSON payload there does not
+    carry the additive fields ``--fast`` does, §7.2a.7 requires them
+    only for the pinned ``--fast`` contract)."""
+    status = intents.classify_status(home)
+    _warn_intents_in_flight_report(status)
+    return status
+
+
+def _warn_intents_in_flight_report(status: intents.StatusClass) -> None:
+    """Gate r1 BLOCKER-1's visibility requirement, widened by S-62
+    (§7.2a.7): once a STOP freezes ``reconcile``'s orphan healing under
+    this home (see :func:`reconcile.reconcile`'s own docstring),
+    ``status`` is the one place a human — or the SessionStart hook, via
+    ``--fast`` — can notice without running ``reconcile`` first and
+    getting refused. Prints exactly ONE line from an ALREADY-COMPUTED
+    classification, in precedence order (busy > stopped > pending >
+    unknown) — the same ONE-line shape the pre-S-62 version had, now
+    distinguishing "a transaction is in flight right now" (harmless)
+    from "a STOP is freezing your writes" (the outage this section
+    exists to surface). Always stderr, even from the ``--fast``/
+    ``--json`` paths: their stdout is a pinned, machine-parsed contract
+    (08 §7.1) this must never share a stream with. Nothing printed when
+    there is nothing to report (the positive control: an intent-free
+    home prints nothing here)."""
+    if status.probe == "error":
+        print(f"self-learn: could not probe the ledger lock: {status.error}", file=sys.stderr)
         return
-    plural = "s" if len(ids) != 1 else ""
-    print(
-        f"self-learn: {len(ids)} transaction intent{plural} in flight "
-        f"({', '.join(ids)}) — run 'self-learn reconcile'",
-        file=sys.stderr,
-    )
+    if status.busy:
+        ids = [i.id for i in status.intents]
+        if ids:
+            plural = "s" if len(ids) != 1 else ""
+            print(
+                f"self-learn: {len(ids)} transaction intent{plural} in "
+                f"flight right now ({', '.join(ids)}) — a producer is "
+                "committing; this is not an outage",
+                file=sys.stderr,
+            )
+        return
+    stopped = status.stopped
+    if stopped:
+        ids = [i.id for i in stopped]
+        plural = "s" if len(ids) != 1 else ""
+        print(
+            f"self-learn: {len(ids)} STOPPED transaction intent{plural} "
+            f"({', '.join(ids)}) — every ledger write refuses until "
+            "cleared. Inspect the offender, then run 'self-learn "
+            "reconcile --clear-intent <id>'.",
+            file=sys.stderr,
+        )
+        return
+    pending = [i.id for i in status.intents if i.cls == "pending"]
+    if pending:
+        plural = "s" if len(pending) != 1 else ""
+        print(
+            f"self-learn: {len(pending)} transaction intent{plural} in "
+            f"flight ({', '.join(pending)}) — run 'self-learn reconcile'",
+            file=sys.stderr,
+        )
 
 
 def _cmd_status_fast() -> int:
@@ -1023,8 +1073,18 @@ def _cmd_status_fast() -> int:
     data["home_state"] = state
     data["miner_last_run"] = miner.last_run_iso()
     data["miner_stale"] = miner.stale()
+    # S-62 (§7.2a.7): additive fields only, so the fact survives
+    # `2>/dev/null` by the route the hook already reads on stdout —
+    # this is what closes the gap the pending hook's own discard used
+    # to leave open. Computed BEFORE the print (stdout stays first,
+    # matching the pre-S-62 ordering) but the warning line itself still
+    # prints AFTER, unchanged.
+    intent_status = intents.classify_status(home)
+    data["intents_probe"] = intent_status.probe
+    data["intents_stopped"] = [i.id for i in intent_status.stopped]
+    data["intents_stopped_count"] = len(intent_status.stopped)
     print(json.dumps(data))
-    _warn_intents_in_flight(home)
+    _warn_intents_in_flight_report(intent_status)
     return EXIT_OK
 
 
@@ -1060,7 +1120,7 @@ def _cmd_mine(args: argparse.Namespace) -> int:
                     {
                         "command": "mine run",
                         "outcome": result.status,
-                        "ok": result.status not in ("failed", "landed-uncommitted"),
+                        "ok": result.status not in ("failed", "landed-uncommitted", "stopped"),
                         "landed": len(result.landed),
                         "folded": len(result.folded),
                         "recurrences": len(result.recurrences),
@@ -1086,6 +1146,20 @@ def _cmd_mine(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return gitops.EXIT_HALF_WRITTEN
+        if result.status == "stopped":
+            # S-62 (§7.2a.5(4)): the run-start check found a live
+            # intent it could neither roll forward nor restore, and
+            # ended the run there — exit 6, "nothing was written" by
+            # THIS run (recovery's own actions, if any, are in
+            # `result.stopped`/the miner log already).
+            print(
+                "self-learn mine: refused — a live intent STOP froze this "
+                "run before it did anything. Run `self-learn reconcile "
+                "--clear-intent <id>` after inspecting it, or `self-learn "
+                "status` to see it.",
+                file=sys.stderr,
+            )
+            return gitops.EXIT_GIT_FAILED
         return EXIT_OK if result.status != "failed" else 1
     if args.mine_command == "status":
         entries = miner.read_journal()
@@ -1207,6 +1281,19 @@ def _cmd_worker(args: argparse.Namespace) -> int:
                 f"{len(result.merge_proposed)} merge, {result.eligible} eligible,"
                 f" {result.suspects} recurrence suspect(s)"
             )
+        if result.status == "stopped":
+            # S-62 (§7.2a.5(4)): the run-start recovery found a live
+            # intent it could neither roll forward nor restore, and
+            # ended the run there — exit 6, "nothing was written" by
+            # THIS run.
+            print(
+                "self-learn worker: refused — a live intent STOP froze this "
+                "run before it did anything. Run `self-learn reconcile "
+                "--clear-intent <id>` after inspecting it, or `self-learn "
+                "status` to see it.",
+                file=sys.stderr,
+            )
+            return gitops.EXIT_GIT_FAILED
         return EXIT_OK if ok else 1
     print("usage: self-learn worker kick | worker run [--coalesce]", file=sys.stderr)
     return EXIT_USAGE
@@ -1394,6 +1481,11 @@ def _cmd_config(args: argparse.Namespace) -> int:
         return exc.exit_code
     except gitops.HalfWrittenError as exc:
         return _report_half_written(f"config {args.config_command}", exc)
+    except intents.LedgerStoppedError as exc:
+        # S-62 (§7.2a.5(5)): ahead of the generic GitOpsError arm below —
+        # `str(exc)` is already complete and already prefixed.
+        print(str(exc), file=sys.stderr)
+        return EXIT_GIT_FAILED
     except gitops.GitOpsError as exc:  # lock timeout / wedged git: nothing written
         print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED
@@ -1976,6 +2068,15 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         # moved pending→resolved; the documented retry then failed 64
         # "record not found". Same exception, same code, opposite state.
         return _report_half_written(args.command, exc)
+    except intents.LedgerStoppedError as exc:
+        # S-62 (§7.2a.5(5)): a DEDICATED arm, ahead of the generic
+        # GitOpsError arm below — that arm prepends its own
+        # "self-learn <verb>:" wording, which would double the prefix
+        # `str(exc)` already carries (and, for a STOP recovery attempt
+        # that also completed OTHER intents in the same pass, would
+        # bury those "recovered ..." lines inside the wrong sentence).
+        print(str(exc), file=sys.stderr)
+        return EXIT_GIT_FAILED
     except gitops.GitOpsError as exc:
         # A lock timeout / wedged git / unwritable repo, raised BEFORE the
         # first mutation. Probed 2026-07-16 (BLOCKER B): a second process
@@ -2005,6 +2106,12 @@ def _cmd_host(args: argparse.Namespace) -> int:
         return _cmd_host_inner(args, home)
     except gitops.HalfWrittenError as exc:
         return _report_half_written(f"host {args.host_command}", exc)
+    except intents.LedgerStoppedError as exc:
+        # S-62 (§7.2a.5(5)): ahead of the generic GitOpsError arm below,
+        # same reason as `_cmd_verb`'s own dedicated arm — `str(exc)` is
+        # already complete and already prefixed.
+        print(str(exc), file=sys.stderr)
+        return EXIT_GIT_FAILED
     except gitops.GitOpsError as exc:  # lock timeout / wedged git: nothing written
         print(f"self-learn host {args.host_command}: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED
@@ -2331,10 +2438,23 @@ def _cmd_push() -> int:
 def _cmd_reconcile(args: argparse.Namespace) -> int:
     """``self-learn reconcile`` (round 7 MAJOR 4): commit what a producer
     wrote and could not commit. See :mod:`self_learn.reconcile` for why
-    "reported honestly" was not the same as "recovered"."""
+    "reported honestly" was not the same as "recovered".
+
+    S-62 (§7.2a.6): THE recovery verb. ``--clear-intent <id>`` clears a
+    STOPPED intent first (:func:`intents.clear_stopped`, its own
+    protected span, BEFORE this call's ordinary scan below — the clear
+    leg is exempt from :func:`intents.ledger_write`'s own check for the
+    same reason :func:`intents.recover` is), then falls through to the
+    ordinary scan regardless of the outcome. ``--json`` renders one
+    machine-readable envelope carrying both."""
     home = resolve_home()
     if (code := _home_gate(home)) is not None:
         return code
+    clear_outcome: str | None = None
+    if args.clear_intent is not None:
+        clear_outcome = intents.clear_stopped(home, args.clear_intent)
+        if not args.as_json:
+            print(f"reconcile: --clear-intent {args.clear_intent} — {clear_outcome}")
     try:
         result = reconcile_mod.reconcile(home, no_push=args.no_push)
     except gitops.HalfWrittenError as exc:
@@ -2342,6 +2462,28 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
     except gitops.GitOpsError as exc:
         print(f"self-learn reconcile: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED
+    if args.as_json:
+        payload = {
+            "command": "reconcile",
+            "cleared": args.clear_intent,
+            "clear_outcome": clear_outcome,
+            "rolled_forward": result.rolled_forward,
+            "restored": result.restored,
+            "stopped": result.stopped,
+            "blocked": result.blocked,
+            "invalid": result.invalid,
+            "committed": [str(p) for p in result.committed],
+            "sha": result.sha,
+            "pushed": result.push is not None and result.push.ok,
+            "refused": result.refused,
+            "ok": not result.refused,
+        }
+        print(json.dumps(payload))
+        if result.refused:
+            return EXIT_GIT_FAILED
+        if result.push is not None and not result.push.ok:
+            return result.push.exit_code
+        return EXIT_OK
     for line in result.blocked:
         print(
             f"reconcile: NOT touched — {line}\n"
@@ -2535,6 +2677,11 @@ def _cmd_followup(args: argparse.Namespace) -> int:
     except LedgerOpsError as exc:
         print(f"self-learn {surface}: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    except intents.LedgerStoppedError as exc:
+        # S-62 (§7.2a.5(5)): ahead of the generic GitOpsError arm below —
+        # `str(exc)` is already complete and already prefixed.
+        print(str(exc), file=sys.stderr)
+        return EXIT_GIT_FAILED
     except gitops.GitOpsError as exc:  # BLOCKER B: never a traceback
         print(f"self-learn {surface}: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED
@@ -2566,6 +2713,13 @@ def _cmd_telemetry(args: argparse.Namespace) -> int:
         except telemetry.ScanRefusal as exc:
             print(f"self-learn telemetry flush: {exc}", file=sys.stderr)
             return exc.exit_code
+        # §7.2a.5(3): attended — report BEFORE this verb's own output.
+        intents.announce_recovered(
+            intents.RecoverResult(
+                rolled_forward=flush_report.recovered_rolled_forward,
+                restored=flush_report.recovered_restored,
+            )
+        )
         print(flush_report.summary())
         # Fold r1 MAJOR M-1: `summary()` now says "deferred" honestly on
         # stdout when the lock could not be taken (was "spool empty"
@@ -2654,6 +2808,15 @@ def _flush_spool_best_effort(home=None, *, no_push: bool = False) -> str:
         print(f"self-learn: telemetry flush failed: {exc}", file=sys.stderr)
         return "failed"
     else:
+        # §7.2a.5(3): attended (every caller of this helper is an
+        # attended verb finishing its own work) — report BEFORE this
+        # helper's own output.
+        intents.announce_recovered(
+            intents.RecoverResult(
+                rolled_forward=flush_report.recovered_rolled_forward,
+                restored=flush_report.recovered_restored,
+            )
+        )
         if flush_report.deferred_reason is not None:
             # Fold r1 MAJOR M-1: a deferred flush is NOT "ok" — the
             # spool still holds events `read_events` never sees, so the
@@ -2789,6 +2952,20 @@ def _cmd_batch(args: argparse.Namespace) -> int:
     if args.as_json:
         print(json.dumps(result.to_json()))
     else:
+        # §7.2a.5(3): attended, text mode — the --json envelope above
+        # already carries the same two lists for that mode.
+        intents.announce_recovered(
+            intents.RecoverResult(
+                rolled_forward=result.recovered_rolled_forward,
+                restored=result.recovered_restored,
+            )
+        )
+        if result.stop_message is not None:
+            # §7.2a.5(5): the sheet-level preflight refused the WHOLE
+            # sheet before any item ran — say which intent and why,
+            # same as every other surface's refusal, before the (empty)
+            # item lines and summary below.
+            print(result.stop_message, file=sys.stderr)
         for it in result.items:
             line = f"  [{it.n}] {it.id} {it.verb}: {it.state}"
             if it.detail:
@@ -2890,6 +3067,19 @@ def main(argv: list[str] | None = None) -> int:
         return _main(argv)
     except gitops.HalfWrittenError as exc:  # pragma: no cover - net
         return _report_half_written("(unrouted)", exc)
+    except intents.LedgerStoppedError as exc:  # pragma: no cover - net
+        # S-62 (§7.2a.5(5)): a DEDICATED arm, ahead of the generic
+        # GitOpsError net below — that net's own hedge ("this surface
+        # did not say whether anything was written") is FALSE for a
+        # STOP refusal raised at lock acquisition, before any requested
+        # mutation: the fact IS known (nothing was written by this
+        # invocation), and `exc`'s own message already states it. This
+        # is the ONE new arm the 22 `_cmd_*` handlers that reach this
+        # net (and `teach`, dispatched inline) needed — every surface
+        # that already catches `gitops.GitOpsError` itself renders this
+        # message correctly with NO edit, since `str(exc)` IS it.
+        print(str(exc), file=sys.stderr)
+        return EXIT_GIT_FAILED
     except gitops.GitOpsError as exc:  # pragma: no cover - net
         print(
             f"self-learn: git operation failed: {exc}\n"

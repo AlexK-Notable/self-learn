@@ -71,7 +71,7 @@ from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from . import analyst, gitops, telemetry, verbs
+from . import analyst, gitops, intents, telemetry, verbs
 from .primitives import chrono
 from .compilers import CompileError
 from .gitops import EXIT_GIT_FAILED as _EXIT_GIT_FAILED
@@ -366,7 +366,8 @@ def _capture_txn(
     ``teach --no-push`` on the capture path: the flag used to bind only
     ``--route``, so a plain ``teach --no-push`` pushed here regardless."""
     message = f"self-learn: capture {record.id} ({record.scope})"
-    with gitops.commit_lock(home):  # BEFORE the first mutation
+    with intents.ledger_write(home) as recovered:  # BEFORE the first mutation; S-62 checks for a STOP first
+        intents.announce_recovered(recovered)
         path = create_record(home, record, project_path=project_path)
         touched = [path]
         meta = path.parent.parent / "meta.yaml"
@@ -390,7 +391,7 @@ def _capture_txn(
             return path, False
     if not no_push:
         try:
-            gitops.push_if_remote(home)
+            gitops.push_pending(home)
         except gitops.GitOpsError as exc:
             # The commit is safe; only publication failed. Loud, not fatal —
             # `self-learn push` republishes it (unlike an uncommitted record,
@@ -619,6 +620,13 @@ def run_teach(args: argparse.Namespace) -> int:
         )
     except LedgerOpsError as exc:
         return _fail(str(exc))
+    except intents.LedgerStoppedError as exc:
+        # S-62 (§7.2a.5(5)): exc's own message is already complete and
+        # already carries the `self-learn:` prefix — printing it bare
+        # avoids doubling that prefix, unlike the generic GitOpsError arm
+        # below (which prepends its own "teach:"-scoped wording).
+        print(str(exc), file=sys.stderr)
+        return EXIT_GIT_FAILED
     except gitops.GitOpsError as exc:
         # The lock is taken BEFORE the write (round 7), so this is the one
         # git failure teach can honestly call clean: nothing was written.
