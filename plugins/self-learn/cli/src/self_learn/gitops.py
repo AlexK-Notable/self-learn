@@ -837,28 +837,34 @@ def push_with_retry(repo: Path, *, is_ledger: bool = False) -> PushResult:
                 pulled_ok, rebase_conflict, detail = (
                     False, False, (pull.stderr or first.stderr).strip(),
                 )
+            # H-7 clause 2: the re-push is part of THIS span too --
+            # `pull --rebase --autostash + re-push`, together, in the repo
+            # being rebased, is what the module docstring and
+            # `COMMIT_LOCK_TIMEOUT`'s own 2x sizing rationale both name.
+            # Returning here (not after the `with`) keeps every exit of a
+            # successful pull under the same acquisition the pull itself
+            # ran under.
+            if not pulled_ok:
+                if rebase_conflict:
+                    print(
+                        "self-learn: PUSH BLOCKED — rebase conflict while syncing "
+                        "with the remote. The rebase was aborted and your commit is "
+                        "KEPT locally. Resolve the divergence manually (git pull "
+                        "--rebase), then run `self-learn push`.",
+                        file=sys.stderr,
+                    )
+                    return PushResult(ok=False, retried=True, rebase_conflict=True, detail=detail)
+                print(
+                    "self-learn: PUSH FAILED — could not reach/sync the remote. Your "
+                    "commit is KEPT locally; run `self-learn push` to retry.",
+                    file=sys.stderr,
+                )
+                return PushResult(ok=False, retried=True, detail=detail)
+            second = _git(repo, "push", "-q", timeout=GIT_NETWORK_TIMEOUT)
     except intents.LedgerStoppedError as exc:
         print(str(exc), file=sys.stderr)
         return PushResult(ok=False, retried=True, intent_stopped=True, detail=str(exc))
 
-    if not pulled_ok:
-        if rebase_conflict:
-            print(
-                "self-learn: PUSH BLOCKED — rebase conflict while syncing "
-                "with the remote. The rebase was aborted and your commit is "
-                "KEPT locally. Resolve the divergence manually (git pull "
-                "--rebase), then run `self-learn push`.",
-                file=sys.stderr,
-            )
-            return PushResult(ok=False, retried=True, rebase_conflict=True, detail=detail)
-        print(
-            "self-learn: PUSH FAILED — could not reach/sync the remote. Your "
-            "commit is KEPT locally; run `self-learn push` to retry.",
-            file=sys.stderr,
-        )
-        return PushResult(ok=False, retried=True, detail=detail)
-
-    second = _git(repo, "push", "-q", timeout=GIT_NETWORK_TIMEOUT)
     if second.returncode == 0:
         return PushResult(ok=True, retried=True)
     print(

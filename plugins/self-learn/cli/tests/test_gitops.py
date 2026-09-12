@@ -118,6 +118,34 @@ class TestPush:
         subjects = git(remote, "log", "--format=%s").stdout.split("\n")
         assert "local work" in subjects and "remote work" in subjects
 
+    def test_retry_push_runs_inside_the_lock(self, tmp_path, repo, remote, monkeypatch):
+        """H-7 clause 2: "pull --rebase --autostash + re-push" is ONE
+        span, in the repo being rebased -- gate MAJOR-6. Spies on every
+        `_git` call and asserts the lock is held (`_held_locks`) at the
+        moment the SECOND `push` call (the retry) runs, not just the
+        pull."""
+        other = clone(tmp_path, remote)
+        commit_change(other, "other.md", "o\n", "remote work")
+        git(other, "push", "-q")
+        commit_change(repo, "a.md", "a\n", "local work")
+
+        lock_path = str(gitops.commit_lock_path(repo))
+        push_calls = []
+        real_git = gitops._git
+
+        def spy(r, *args, **kwargs):
+            if args and args[0] == "push":
+                push_calls.append(lock_path in gitops._held_locks)
+            return real_git(r, *args, **kwargs)
+
+        monkeypatch.setattr(gitops, "_git", spy)
+        result = gitops.push_with_retry(repo)
+
+        assert result.ok and result.retried
+        # push_calls[0] is the FIRST push (unlocked, before the retry
+        # branch even runs) -- push_calls[1] is the retry.
+        assert push_calls == [False, True]
+
     def test_rebase_conflict_aborts_loud_and_keeps_commit(
         self, tmp_path, repo, remote, capsys
     ):
