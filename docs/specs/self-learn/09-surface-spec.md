@@ -2420,7 +2420,6 @@ wider posture; the narrow one is the conservative default).
   per the Y-20 F5 posture: an unresolvable/bootstrap excerpt omits both
   `contradicts` and the `conflict` card entirely, never a guess.
 
-||||||| 1e830b5
 - **Y-24 · Miner near-miss visibility + canary recall checks** *(added
   2026-07-19 — FW-34, `drafts/miner-visibility-spec.md`, gated SOUND;
   build-grade; mirrors the Y-21 episode-brief entry's shape)*. Extends
