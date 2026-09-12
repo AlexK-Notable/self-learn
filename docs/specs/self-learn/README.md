@@ -82,6 +82,7 @@ human routes it.
 
 ## Revision log
 
+- **2026-09-12 — FW-163: a host can declare `CLAUDE.local.md` as its always-loaded surface, honoured by the analyst and the route verb (closes the S-64 residual).** Text only.
 - **2026-09-12 — FW-161 (hook destination widening, user ruling 2026-09-11) and FW-162 (worktree captures resolve to the parent host) added to `14-forward-work-map.md`, both sequenced after the steward agent build.** Text only.
 - **2026-09-12 — S-64: the product repo may be a plain-mode canon host.** `03-decisions.md` gains S-64; root `CLAUDE.md`, `README.md`, `CONTRIBUTING.md` drop the "never register this repo" rule in favour of "plain mode only, compiled files git-ignored, `claude-md:local` for the always-loaded surface"; `.gitignore` ignores `/.self-learn-host`, `/references/`, `/.claude/rules/`. Text and ignore rules only; no code change.
 - **2026-07-11 — refinement pass (draft, unratified).** Spec-bug fixes
