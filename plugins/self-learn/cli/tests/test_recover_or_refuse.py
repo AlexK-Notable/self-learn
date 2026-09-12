@@ -50,6 +50,23 @@ def _plant_restorable(home: Path, target: Path, op: str = "probe") -> intents.In
     return intent
 
 
+def _plant_roll_forward(home: Path, target: Path, op: str = "probe") -> intents.Intent:
+    """begin -> mutate -> complete() (no commit): recovery finds every
+    step's CURRENT bytes already match `complete`'s own recorded
+    `new_sha` (the mutation genuinely landed, only the commit never
+    ran) and rolls it forward via its OWN `gitops.stage_and_commit`
+    call, reporting it via `RecoverResult.rolled_forward` -- the ONLY
+    announcement route whose wording names `self-learn recompile`
+    (gate r1 MAJOR-5: no attended surface planted this shape before
+    this fold; every existing `_plant_restorable` use only ever
+    reaches `.restored`)."""
+    intent = intents.begin(home, op, [target], f"self-learn: {op}")
+    original = target.read_text(encoding="utf-8")
+    target.write_text(original + "mutated, then complete() before the commit\n", encoding="utf-8")
+    intents.complete(intent)
+    return intent
+
+
 def _plant_stop(home: Path, target: Path, op: str = "probe") -> intents.Intent:
     """begin -> mutate -> commit (moves HEAD past old_sha) -> mutate
     again, uncompleted: no source resolves the pre-transaction bytes
@@ -165,6 +182,43 @@ class TestFinishAndTellAcrossPathFamilies:
         sheet = [batch.SheetItem(n=1, id=record.id, verb="reject", fields={})]
         result = batch.run(home, sheet, no_push=True)
         assert result.recovered_restored == [intent.id]
+        assert result.process_code == 0
+
+    def test_teach_announces_a_roll_forward_naming_recompile(self, env, capsys):
+        """MAJOR-5: the roll-forward announcement (the line naming
+        `self-learn recompile`) had zero attended-surface coverage --
+        deleting `announce_recovered`'s `rolled_forward` loop left every
+        existing test green. Plants the genuinely roll-forward-able
+        shape (`begin` -> mutate -> `complete()`, no commit) instead of
+        `_plant_restorable`'s shape."""
+        home = env.ledger
+        intent = _plant_roll_forward(home, _probe_file(home))
+        rc = run_cli(
+            [
+                "teach", "never live-edit HA storage", "--skill", "s",
+                "--type", "behavior", "--trigger", "t", "--instruction", "i",
+            ]
+        )
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert f"recovered {intent.id}" in err
+        assert "rolled forward" in err
+        assert "run 'self-learn recompile'" in err
+        assert not intent.file_path.exists()
+
+    def test_batch_announces_a_roll_forward_in_its_recovered_rolled_forward_field(self, env):
+        """MAJOR-5's second half: `batch`'s own JSON envelope carries a
+        SEPARATE field for this shape (`recovered_rolled_forward`,
+        distinct from `recovered_restored` above) -- the gate noted the
+        sibling test above only ever plants a restorable intent, never
+        exercising this field for real."""
+        home = env.ledger
+        record = _seed_pending(home, "lrn-aaaaaaaa")
+        intent = _plant_roll_forward(home, _probe_file(home))
+        sheet = [batch.SheetItem(n=1, id=record.id, verb="reject", fields={})]
+        result = batch.run(home, sheet, no_push=True)
+        assert result.recovered_rolled_forward == [intent.id]
+        assert result.recovered_restored == []
         assert result.process_code == 0
 
 
