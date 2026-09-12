@@ -82,6 +82,7 @@ human routes it.
 
 ## Revision log
 
+- **2026-09-12 — S-64: the product repo may be a plain-mode canon host.** `03-decisions.md` gains S-64; root `CLAUDE.md`, `README.md`, `CONTRIBUTING.md` drop the "never register this repo" rule in favour of "plain mode only, compiled files git-ignored, `claude-md:local` for the always-loaded surface"; `.gitignore` ignores `/.self-learn-host`, `/references/`, `/.claude/rules/`. Text and ignore rules only; no code change.
 - **2026-07-11 — refinement pass (draft, unratified).** Spec-bug fixes
   (evidence mutability contradiction, AskUserQuestion option limit, defer
   semantics, diff-as-preview ambiguity, `routed/`→`resolved/`),

@@ -50,13 +50,19 @@ maintainer will not merge without both:
    relicensing grant in `CLA.md`, which is a stronger commitment than a
    DCO's certification of origin.
 
-## Do not register this repo as a self-learn canon host
+## Registering this repo as a self-learn host: plain mode only
 
 This repo is the **product** — the CLI, the plugin, and this spec corpus.
 Compiled lesson output (skills, CLAUDE.md sections, references, hooks)
-belongs in *your own* registered host repos, never in the product repo
-(doc 13 §7.3 D1). Concretely: **do not run `self-learn host add
-<this-repo-path> --skills-root`** against a checkout of this repository.
+belongs in *your own* registered host repos (doc 13 §7.3 D1). Working on
+this repo does generate project-level lessons worth keeping, so a checkout
+may be registered — **in plain mode only** (`self-learn host add
+<this-repo-path> --mode plain`; decision S-64, 2026-09-12). Plain mode
+means self-learn never commits or pushes here; every file it writes is
+git-ignored (`CLAUDE.local.md`, `references/`, `.claude/rules/`, the
+`.self-learn-host` marker), and project lessons route to `claude-md:local`.
+**Never run `self-learn host add <this-repo-path> --skills-root`** and never
+register it in `git` mode: compiled output must not enter the public tree.
 
 ## Before you open a PR
 

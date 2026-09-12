@@ -9,8 +9,12 @@ ledger on a given host) belong in `CLAUDE.local.md`, which is git-ignored.
 - The PRODUCT: the `self-learn` CLI, the G-3 web UI, the plugin (skill, commands,
   hooks), the systemd units, and the spec corpus. Lessons live in the user's ledger
   (`$SELF_LEARN_HOME`, default `~/.self-learn`), never here.
-- Never register this repo as a self-learn canon host (`self-learn host add …`):
-  the compiler would write into the product. See README.md and CONTRIBUTING.md.
+- This repo IS a registered self-learn host on the maintainer's machine, in **plain**
+  mode only (`self-learn host add <path> --mode plain`, user ruling 2026-09-12, S-64):
+  self-learn never commits or pushes here, and everything it writes is git-ignored
+  (`CLAUDE.local.md`, `references/`, `.claude/rules/`, `.self-learn-host`). Project
+  lessons for this repo route to `claude-md:local`, never to the committed `CLAUDE.md`.
+  Never register it in `git` mode and never with `--skills-root`. See README.md.
 - `docs/specs/self-learn/` is the design authority; code follows it. A substantive
   change lands with a revision-log entry in that directory's README.
 - This is a PUBLIC repository. Nothing committed may contain ledger content,

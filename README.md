@@ -11,10 +11,14 @@ files, deterministic PreToolUse guard scripts, and new-skill scaffolds.
 spec corpus, and the nightly transcript-miner units. It is a tool unto
 itself: nothing is committed here except work specific to its own
 development. Your lessons live in your ledger; compiled output lands in
-your own registered host repos (doc 13 §7.3 D1). Concretely: do not
-register this repo with `self-learn host add … --skills-root` — that
-would make the compiler write into the product repo, which is exactly
-what D1 forbids.
+your own registered host repos (doc 13 §7.3 D1). A checkout of this repo
+MAY itself be a host — but only in **plain** mode (`self-learn host add
+<path> --mode plain`; decision S-64, 2026-09-12), so self-learn never
+commits or pushes here, with every compiled file git-ignored
+(`CLAUDE.local.md`, `references/`, `.claude/rules/`, the `.self-learn-host`
+marker) and project lessons routed to `claude-md:local`. Never register
+it in `git` mode, and never with `--skills-root` — that would make the
+compiler write skills into the product, which is what D1 forbids.
 
 ## Layout
 
