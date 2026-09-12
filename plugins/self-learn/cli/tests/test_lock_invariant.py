@@ -108,7 +108,12 @@ _GIT_MUTATING = ("mv", "rm", "add", "commit", "apply", "checkout", "reset", "pul
 #: is a DETECTOR CONSTANT, not a NOT_REPO_TRUTH exemption — it tells the
 #: walker how to recognise gitops.host_lock(path, mode) as a guard (real
 #: in both modes, §4.3), it does not excuse a write from needing one.
-_LOCKS = ("commit_lock", "_ledger_write", "host_lock")
+#: S-62: "ledger_write" is `intents.ledger_write` — the promoted ledger-
+#: write wrapper `verbs._ledger_write` now delegates to (still in the
+#: tuple too: a callee's lock never discharges a caller's obligation,
+#: and every existing `with _ledger_write(home):` call site stays a
+#: bare `Name` the walker must still recognise).
+_LOCKS = ("commit_lock", "_ledger_write", "ledger_write", "host_lock")
 
 #: Receivers whose ``.write()`` is a byte stream, not ``Record.write``.
 _STREAMS = ("buf", "fh", "f", "sys", "stderr", "stdout", "out", "handle", "proc")

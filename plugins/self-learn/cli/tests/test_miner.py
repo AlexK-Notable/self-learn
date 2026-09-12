@@ -19,7 +19,7 @@ import pytest
 from self_learn import cli, intents, miner, telemetry
 from self_learn.ledger_ops import create_record
 from self_learn.records import Record
-from support import commit_all, make_behavior, make_home
+from support import commit_all, git, make_behavior, make_home
 
 
 @pytest.fixture(autouse=True)
@@ -288,6 +288,34 @@ def test_run_idle_journals_and_touches(home, transcripts):
     entries = miner.read_journal()
     assert entries and entries[-1]["status"] == "idle"
     assert entries[-1]["trigger"] == "manual"
+
+
+def test_run_ends_at_start_on_a_live_stop(home):
+    """§7.2a.5(4)/§7.2a.8: "a run that sees a `stopped` outcome ends
+    there... before enumeration and before any model session is spent."
+    No `transcripts` fixture -- this must never reach transcript-walking
+    at all. Same plant recipe as `test_intents.py`'s own
+    `test_stop_when_prior_content_is_unresolvable_anywhere`: an
+    unrelated commit moves HEAD past the intent's `old_sha`, so no
+    source (worktree/HEAD/inline) can resolve it."""
+    f = home / "a.txt"
+    f.write_text("old", encoding="utf-8")
+    commit_all(home, "seed")
+    intent = intents.begin(home, "test-op", [f], "self-learn: test op")
+    f.write_text("mutated", encoding="utf-8")
+    git(home, "add", "-A")
+    git(home, "commit", "-q", "-m", "an unrelated commit moves HEAD past old_sha")
+    f.write_text("further mutated, still uncompleted", encoding="utf-8")
+
+    result = miner.run(home)
+
+    assert result.status == "stopped"
+    assert result.stopped and intent.id in result.stopped[0]
+    entries = miner.read_journal()
+    assert entries and entries[-1]["status"] == "stopped"
+    # Never enumerated, never mined for -- the intent is left exactly
+    # where the STOP found it, for a human.
+    assert intent.file_path.exists()
 
 
 def test_run_held_gate_keeps_cursors(home, transcripts, monkeypatch):

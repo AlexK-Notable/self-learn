@@ -161,3 +161,86 @@ class TestPush:
         result = gitops.push_pending(repo)
         assert result.ok
         assert git(remote, "log", "-1", "--format=%s").stdout.strip() == "stranded work"
+
+
+def _plant_unresolvable_stop(repo: Path, subject: str = "self-learn: test stop") -> str:
+    """S-62: begin() over an UNTRACKED file too large for the inline
+    cap, then mutate it -- ``_resolvable_old_bytes`` can then find no
+    matching content anywhere (not on disk, not in HEAD, no inline
+    copy), which guarantees a STOP on the next recovery attempt."""
+    from self_learn import intents
+
+    big = repo / "_stop_target.bin"
+    big.write_bytes(b"x" * (intents._INLINE_CAP + 1))  # noqa: SLF001
+    intent = intents.begin(repo, "test", [big], subject)
+    big.write_bytes(b"y" * (intents._INLINE_CAP + 1))
+    return intent.id
+
+
+class TestPushLedgerStop:
+    """S-62 (§7.2a.5(1)/(5)): the LEDGER rebase leg is the one push-path
+    acquisition no prior recovery covers, so it checks for a live intent
+    STOP itself — and, unlike every verb, stays exit 0 (the deliberate
+    push/verb asymmetry, ruled at the 02:45 addendum: nothing corrupt
+    can publish, what IS committed republishes)."""
+
+    def test_non_ledger_rebase_is_unaffected_by_is_ledger_false(self, tmp_path, repo, remote):
+        # Positive control, `is_ledger`'s OWN default: a HOST push (the
+        # existing `test_non_ff_rebase_retry_succeeds` shape) behaves
+        # identically whether or not the parameter is even passed.
+        other = clone(tmp_path, remote)
+        commit_change(other, "other.md", "o\n", "remote work")
+        git(other, "push", "-q")
+        commit_change(repo, "a.md", "a\n", "local work")
+
+        result = gitops.push_with_retry(repo, is_ledger=False)
+        assert result.ok and result.retried and not result.intent_stopped
+
+    def test_ledger_rebase_succeeds_normally_with_is_ledger_true(self, tmp_path, repo, remote):
+        # Positive control for the LEDGER leg itself, no intent planted:
+        # `is_ledger=True` changes nothing about the ordinary path.
+        other = clone(tmp_path, remote)
+        commit_change(other, "other.md", "o\n", "remote work")
+        git(other, "push", "-q")
+        commit_change(repo, "a.md", "a\n", "local work")
+
+        result = gitops.push_with_retry(repo, is_ledger=True)
+        assert result.ok and result.retried and not result.intent_stopped
+
+    def test_ledger_rebase_refuses_informationally_on_a_stop(
+        self, tmp_path, repo, remote, capsys
+    ):
+        from self_learn import intents
+
+        other = clone(tmp_path, remote)
+        commit_change(other, "other.md", "o\n", "remote work")
+        git(other, "push", "-q")
+        commit_change(repo, "a.md", "a\n", "local work")
+        intent_id = _plant_unresolvable_stop(repo)
+
+        result = gitops.push_with_retry(repo, is_ledger=True)
+
+        assert not result.ok
+        assert result.intent_stopped
+        assert result.exit_code == 0  # the deliberate push/verb asymmetry
+        assert intent_id in capsys.readouterr().err
+        # The rebase never ran: the local commit is exactly what it was,
+        # and the remote never saw it (nothing corrupt published, but
+        # nothing new did either).
+        assert local_subject(repo) == "local work"
+        assert (intents.intents_dir(repo) / f"{intent_id}.json").is_file()
+
+    def test_push_if_remote_threads_is_ledger(self, tmp_path, repo, remote, capsys):
+        # `gitops.push_pending` (the ledger-only alias) is what every
+        # ledger-push call site in the tree now calls, so its own
+        # `is_ledger=True` must reach the rebase leg too.
+        other = clone(tmp_path, remote)
+        commit_change(other, "other.md", "o\n", "remote work")
+        git(other, "push", "-q")
+        commit_change(repo, "a.md", "a\n", "local work")
+        intent_id = _plant_unresolvable_stop(repo)
+
+        result = gitops.push_pending(repo)
+
+        assert result.intent_stopped and result.exit_code == 0
+        assert intent_id in capsys.readouterr().err

@@ -1,0 +1,523 @@
+"""S-62 / §7.2a.5(3)/(4)/(5): "finish and tell" across path families, and
+the STOP refusal's own message completeness.
+
+Deliberately NOT `support.py` (armor-pinned) — this module owns its own
+plant helpers, `_plant_restorable`/`_plant_stop`, built on the SAME two
+recipes `test_intents.py` already proves against `intents.recover`
+directly (a restore that never completes; an unresolvable-anywhere STOP).
+Here they are reused to prove the OUTER guarantee: every attended,
+lock-holding surface that calls `intents.ledger_write` announces a
+recovered intent BEFORE its own output, and a live STOP's message names
+every intent involved — completed ones included, never just the STOP.
+"""
+
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from self_learn import batch, cli, gitops, hosts, intents, settings, telemetry, verbs
+from self_learn.ledger_ops import create_record
+
+from support import commit_all, git, make_behavior, make_env
+
+
+def _probe_file(home: Path, name: str = "probe.txt") -> Path:
+    """A plain, tracked, ordinary text file -- never a file any verb under
+    test reads for its OWN business logic (`hosts.yaml`/`config.yaml`
+    would be parsed as YAML by the very surface being exercised, so a
+    plant against either one is confounded by the verb's own precondition
+    reads, not the guard being tested here)."""
+    path = home / name
+    path.write_text("seed\n", encoding="utf-8")
+    commit_all(home, f"add {name}")
+    return path
+
+
+def _plant_restorable(home: Path, target: Path, op: str = "probe") -> intents.Intent:
+    """begin -> mutate -> never complete()/finish(): recovery restores it
+    and reports it via `RecoverResult.restored` -- the positive case
+    every attended ledger-write call site must announce."""
+    intent = intents.begin(home, op, [target], f"self-learn: {op}")
+    original = target.read_text(encoding="utf-8")
+    target.write_text(original + "crash before complete()\n", encoding="utf-8")
+    return intent
+
+
+def _plant_stop(home: Path, target: Path, op: str = "probe") -> intents.Intent:
+    """begin -> mutate -> commit (moves HEAD past old_sha) -> mutate
+    again, uncompleted: no source resolves the pre-transaction bytes
+    anywhere (worktree / HEAD / inline) -- recovery cannot help this one
+    and marks it STOPPED. Same recipe as test_intents.py's own
+    `test_stop_when_prior_content_is_unresolvable_anywhere`. Stages ONLY
+    *target* (never `-A`) -- another intent's own planted-but-uncommitted
+    mutation elsewhere in the worktree must not get swept into this
+    commit, which would silently turn IT unresolvable too."""
+    intent = intents.begin(home, op, [target], f"self-learn: {op}")
+    original = target.read_text(encoding="utf-8")
+    target.write_text(original + "mutated once\n", encoding="utf-8")
+    git(home, "add", "--", str(target))
+    git(home, "commit", "-q", "-m", "an unrelated commit moves HEAD past old_sha")
+    target.write_text(
+        original + "mutated once\nmutated twice, still uncompleted\n", encoding="utf-8"
+    )
+    return intent
+
+
+def run_cli(argv):
+    try:
+        return cli.main(argv)
+    except SystemExit as exc:
+        return exc.code
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    e = make_env(tmp_path)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(e.ledger))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    return e
+
+
+def _seed_pending(home, rid):
+    record = make_behavior(record_id=rid, scope="skill:s")
+    create_record(home, record)
+    commit_all(home, "seed record")
+    return record
+
+
+# =========================================================== positive cases
+
+
+class TestFinishAndTellAcrossPathFamilies:
+    """One test per path family named in §7.2a.5(3)'s "attended" list —
+    each plants a genuinely restorable intent, runs the surface, and
+    asserts its own output carries "recovered <id>" (the exact wording
+    `intents.announce_recovered`/`LedgerStoppedError` both use)."""
+
+    def test_teach_announces_a_recovered_intent_before_its_own_output(self, env, capsys):
+        home = env.ledger
+        intent = _plant_restorable(home, _probe_file(home))
+        rc = run_cli(
+            [
+                "teach", "never live-edit HA storage", "--skill", "s",
+                "--type", "behavior", "--trigger", "t", "--instruction", "i",
+            ]
+        )
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert f"recovered {intent.id}" in err
+        assert not intent.file_path.exists()
+
+    def test_teach_prints_nothing_recovered_with_no_planted_intent(self, env, capsys):
+        """Positive control for the assertion above: the SAME command,
+        with nothing planted, prints no "recovered" line at all."""
+        rc = run_cli(
+            [
+                "teach", "never live-edit HA storage", "--skill", "s",
+                "--type", "behavior", "--trigger", "t", "--instruction", "i",
+            ]
+        )
+        assert rc == 0
+        assert "recovered" not in capsys.readouterr().err
+
+    def test_config_set_announces_a_recovered_intent(self, env, capsys):
+        home = env.ledger
+        intent = _plant_restorable(home, _probe_file(home))
+        settings.config_set(home, "worker.coalesce_secs", "5")
+        assert f"recovered {intent.id}" in capsys.readouterr().err
+
+    def test_config_set_prints_nothing_recovered_with_no_planted_intent(self, env, capsys):
+        home = env.ledger
+        settings.config_set(home, "worker.coalesce_secs", "5")
+        assert "recovered" not in capsys.readouterr().err
+
+    def test_host_remove_announces_a_recovered_intent(self, env, capsys):
+        home = env.ledger
+        intent = _plant_restorable(home, _probe_file(home))
+        hosts.host_remove(home, env.host, gate_only=True)
+        assert f"recovered {intent.id}" in capsys.readouterr().err
+
+    def test_reject_announces_a_recovered_intent(self, env, capsys):
+        home = env.ledger
+        record = _seed_pending(home, "lrn-aaaaaaaa")
+        intent = _plant_restorable(home, _probe_file(home))
+        verbs.reject(home, record.id, no_push=True)
+        assert f"recovered {intent.id}" in capsys.readouterr().err
+
+    def test_telemetry_flush_attended_announces_a_recovered_intent(self, env, capsys):
+        home = env.ledger
+        telemetry.spool_event("capture", source="test", scope="skill:s", record="lrn-aaaaaaaa")
+        intent = _plant_restorable(home, _probe_file(home))
+        run_cli(["telemetry", "flush"])
+        assert f"recovered {intent.id}" in capsys.readouterr().err
+
+    def test_batch_announces_a_recovered_intent_in_its_json_envelope(self, env):
+        home = env.ledger
+        record = _seed_pending(home, "lrn-aaaaaaaa")
+        intent = _plant_restorable(home, _probe_file(home))
+        sheet = [batch.SheetItem(n=1, id=record.id, verb="reject", fields={})]
+        result = batch.run(home, sheet, no_push=True)
+        assert result.recovered_restored == [intent.id]
+        assert result.process_code == 0
+
+
+# ============================================================ STOP message
+
+
+class TestStopMessageCompleteness:
+    """§7.2a.5(4)(b): a STOP's message must report every recovery this SAME
+    attempt already completed -- rolled-forward/restored ids are never
+    hidden behind the refusal, on any surface."""
+
+    def test_ledger_stopped_error_message_names_a_completed_recovery_too(self, env):
+        home = env.ledger
+        # Both probes committed BEFORE either intent is planted: `_probe_
+        # file`'s own `commit_all` is a blanket `git add -A` (support.py)
+        # -- committing probe-b AFTER probe-a's mutation would sweep that
+        # uncommitted mutation in too, moving HEAD past probe-a's own
+        # old_sha and turning IT unresolvable as well.
+        probe_a = _probe_file(home, "probe-a.txt")
+        probe_b = _probe_file(home, "probe-b.txt")
+        restorable = _plant_restorable(home, probe_a)
+        stop = _plant_stop(home, probe_b)
+
+        with pytest.raises(intents.LedgerStoppedError) as excinfo:
+            with intents.ledger_write(home):
+                pass
+        message = str(excinfo.value)
+        assert f"recovered {restorable.id}" in message
+        assert stop.id in message
+
+    def test_batch_reports_a_stop_message_naming_the_offending_intent(self, env):
+        home = env.ledger
+        stop = _plant_stop(home, _probe_file(home))
+        sheet = [batch.SheetItem(n=1, id="lrn-aaaaaaaa", verb="reject", fields={})]
+        result = batch.run(home, sheet, no_push=True)
+        assert result.process_code == gitops.EXIT_GIT_FAILED
+        assert result.stop_message is not None
+        assert stop.id in result.stop_message
+        assert result.items == []  # the whole sheet refused before item 1
+
+    def test_reject_stop_message_is_not_double_prefixed(self, env, capsys):
+        home = env.ledger
+        record = _seed_pending(home, "lrn-aaaaaaaa")
+        stop = _plant_stop(home, _probe_file(home))
+        rc = run_cli(["reject", record.id])
+        assert rc == gitops.EXIT_GIT_FAILED
+        err = capsys.readouterr().err
+        assert stop.id in err
+        # The generic `except gitops.GitOpsError` arm wraps `str(exc)` in
+        # its OWN "self-learn <verb>: ..." prefix -- doubling the one
+        # `LedgerStoppedError`'s own message already carries. The
+        # dedicated `except intents.LedgerStoppedError` arm (ahead of
+        # that generic one) must intercept first and print `str(exc)`
+        # bare, so this exact wrapped shape must never appear.
+        assert "reject: self-learn: transaction intent" not in err
+
+    def test_reconcile_refuses_on_a_live_stop(self, env):
+        """§7.2a.8: the recovery verb itself, unclear-intent'd, must
+        refuse rather than paper over its own STOP -- rc 6, HEAD
+        unchanged (nothing partially committed), the intent file still
+        on disk (not silently swallowed), and its persisted `stopped`
+        field durable (`_mark_stopped` ran and confirmed the rewrite)."""
+        home = env.ledger
+        stop = _plant_stop(home, _probe_file(home))
+        sha_before = git(home, "rev-parse", "HEAD").stdout.strip()
+
+        rc = run_cli(["reconcile"])
+
+        assert rc == gitops.EXIT_GIT_FAILED
+        assert git(home, "rev-parse", "HEAD").stdout.strip() == sha_before
+        assert stop.file_path.exists()
+        persisted = json.loads(stop.file_path.read_text(encoding="utf-8"))
+        assert persisted.get("stopped") is not None
+        assert persisted["stopped"].get("reason")
+
+    def test_reconcile_json_carries_the_stop_too(self, env, capsys):
+        """Positive control for the assertion above, at the `--json`
+        envelope `_cmd_reconcile` renders instead of the plain-text
+        path: `refused` and `ok` must reflect the STOP, and `stopped`
+        must name the offending id -- the same fields a healthy run
+        would report as empty/true."""
+        home = env.ledger
+        stop = _plant_stop(home, _probe_file(home))
+
+        rc = run_cli(["reconcile", "--json"])
+
+        assert rc == gitops.EXIT_GIT_FAILED
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["refused"] is True
+        assert payload["ok"] is False
+        assert any(stop.id in entry for entry in payload["stopped"])
+
+
+# ======================================================== clear_stopped
+
+
+class TestClearStopped:
+    """S-62 / §7.2a.4, §7.2a.6: `intents.clear_stopped` — THE required
+    recovery verb's clear leg — has FOUR distinct return values, one
+    more than fffee09's fold message names ("three outcomes": cleared /
+    recovered / refused-for-a-live-writer). `"not-found"` is the extra:
+    neither §7.2a.4 nor §7.2a.6 speaks to an id naming no file at all,
+    since both sections classify an intent that EXISTS. Not a spec
+    violation -- but untested until this class (zero prior coverage of
+    this function anywhere in the suite, despite being the one recovery
+    verb the sprint assignment requires)."""
+
+    def test_cleared_when_the_persisted_stopped_field_is_already_set(self, env):
+        home = env.ledger
+        stop = _plant_stop(home, _probe_file(home))
+        # `recover()` runs the failing attempt once and persists `stopped`
+        # on the intent's own JSON -- the FIRST of §7.2a.4's three ways to
+        # classify STOPPED (the other two are covered by the next two
+        # tests below).
+        intents.recover(home)
+        outcome = intents.clear_stopped(home, stop.id)
+        assert outcome == "cleared"
+        assert not stop.file_path.exists()
+
+    def test_cleared_when_the_intent_file_is_unreadable(self, env):
+        home = env.ledger
+        restorable = _plant_restorable(home, _probe_file(home))
+        restorable.file_path.write_text("{not json", encoding="utf-8")
+        outcome = intents.clear_stopped(home, restorable.id)
+        assert outcome == "cleared"
+        assert not restorable.file_path.exists()
+
+    def test_cleared_when_unmarked_and_this_spans_own_attempt_fails(self, env):
+        home = env.ledger
+        stop = _plant_stop(home, _probe_file(home))
+        outcome = intents.clear_stopped(home, stop.id)
+        assert outcome == "cleared"
+        assert not stop.file_path.exists()
+
+    def test_recovered_not_cleared_when_unmarked_and_this_spans_own_attempt_succeeds(
+        self, env
+    ):
+        home = env.ledger
+        restorable = _plant_restorable(home, _probe_file(home))
+        outcome = intents.clear_stopped(home, restorable.id)
+        assert outcome == "recovered"
+        assert not restorable.file_path.exists()
+
+    def test_not_found_for_an_id_naming_no_intent_file(self, env):
+        home = env.ledger
+        outcome = intents.clear_stopped(home, "lrn-doesnotexist")
+        assert outcome == "not-found"
+
+    def test_refused_when_another_holder_has_the_ledger_lock(self, env, monkeypatch):
+        home = env.ledger
+        stop = _plant_stop(home, _probe_file(home))
+        # A short timeout so the refusal path doesn't sit for the real
+        # 5s default -- `_CLEAR_INTENT_TIMEOUT` is read at CALL time
+        # inside `clear_stopped`, same reason `commit_lock`'s own
+        # `timeout=None` reads `COMMIT_LOCK_TIMEOUT` at call time.
+        monkeypatch.setattr(intents, "_CLEAR_INTENT_TIMEOUT", 0.05)
+        lock_path = gitops.commit_lock_path(home)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(lock_path, "w", encoding="utf-8")
+        # A SEPARATE `open()` from this same process, not routed through
+        # `gitops._flock_lock` -- `flock` conflicts across independent
+        # open-file-descriptions even within one process, so this holds
+        # against `clear_stopped`'s own `commit_lock` acquisition exactly
+        # like a genuinely different process would, without needing one.
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            outcome = intents.clear_stopped(home, stop.id)
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            fh.close()
+        assert outcome == "refused"
+        assert stop.file_path.exists()  # untouched -- refusal never reaches the file
+
+    def test_a_wedged_git_reset_during_its_own_attempt_is_a_failed_recovery_not_a_refusal(
+        self, env, monkeypatch
+    ):
+        """The bug this test guards: `_recover_one`'s restore leg calls
+        `gitops._git(home, "reset", ...)` directly -- not through
+        `stage_and_commit`'s `HalfWrittenError` conversion -- so a wedged
+        subprocess there raises a plain `gitops.GitOpsError`. Before this
+        turn's fix, `clear_stopped`'s inner catch around `_recover_one`
+        didn't include `GitOpsError`, so it escaped to the OUTER `except
+        gitops.GitOpsError: return "refused"` -- mislabeling a failed
+        recovery ATTEMPT (this call holds the lock throughout; nothing
+        here is ever "a live writer") as a lock refusal, and leaving the
+        intent's file untouched instead of clearing it.
+
+        Needs a RESTORABLE plant, not a STOP one: `_recover_one`'s restore
+        leg only reaches its `git reset` call after every step's old bytes
+        resolve -- a `_plant_stop` intent fails at that resolution check
+        and returns before ever reaching the line this test wedges."""
+        home = env.ledger
+        restorable = _plant_restorable(home, _probe_file(home))
+        real_git = gitops._git
+
+        def wedged(repo, *args, **kwargs):
+            if args and args[0] == "reset":
+                raise gitops.GitOpsError("git reset in <repo> exceeded 30s and was killed")
+            return real_git(repo, *args, **kwargs)
+
+        monkeypatch.setattr(gitops, "_git", wedged)
+        outcome = intents.clear_stopped(home, restorable.id)
+        assert outcome == "cleared"
+        assert not restorable.file_path.exists()
+
+    def test_recover_also_marks_stopped_on_a_wedged_git_reset_not_just_clear_stopped(
+        self, env, monkeypatch
+    ):
+        """The identical gap existed at `recover()`'s own call site
+        (§7.2a.4's ordinary recovery path, not just the clear leg) --
+        this proves the SAME fix there: a wedged `git reset` is reported
+        as a proper STOP, not an uncaught exception past every caller."""
+        home = env.ledger
+        restorable = _plant_restorable(home, _probe_file(home))
+        real_git = gitops._git
+
+        def wedged(repo, *args, **kwargs):
+            if args and args[0] == "reset":
+                raise gitops.GitOpsError("git reset in <repo> exceeded 30s and was killed")
+            return real_git(repo, *args, **kwargs)
+
+        monkeypatch.setattr(gitops, "_git", wedged)
+        result = intents.recover(home)  # must not raise
+        assert [d.id for d in result.stopped_detail] == [restorable.id]
+        assert "git reset" in result.stopped_detail[0].reason
+
+    def test_clear_intent_cli_json_envelope_carries_the_outcome(self, env, capsys):
+        home = env.ledger
+        restorable = _plant_restorable(home, _probe_file(home))
+        rc = run_cli(["reconcile", "--clear-intent", restorable.id, "--json"])
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["cleared"] == restorable.id
+        assert payload["clear_outcome"] == "recovered"
+
+
+# ==================================================== classify_status
+
+
+class TestClassifyStatus:
+    """§7.2a.7: zero prior coverage of `intents.classify_status` /
+    `IntentStatus` / `StatusClass` anywhere in the suite -- `cli.py`'s
+    own `status --fast` JSON fields (`intents_probe`, `intents_stopped`,
+    `intents_stopped_count`) ride on this function untested. One test
+    per `probe` value, plus the interleaving witness `probe == "busy"`
+    exists to prove: a marker on disk is HISTORICAL under contention,
+    never current state."""
+
+    def test_a_restorable_intent_classifies_as_pending(self, env):
+        home = env.ledger
+        restorable = _plant_restorable(home, _probe_file(home))
+        status = intents.classify_status(home)
+        assert status.probe == "ok"
+        assert not status.busy
+        assert [i.cls for i in status.intents] == ["pending"]
+        assert status.intents[0].id == restorable.id
+
+    def test_a_recovered_stop_classifies_as_stopped_with_reason_and_at(self, env):
+        home = env.ledger
+        stop = _plant_stop(home, _probe_file(home))
+        intents.recover(home)  # runs `_mark_stopped` -- the marker this reads
+        status = intents.classify_status(home)
+        assert status.probe == "ok"
+        assert [i.id for i in status.stopped] == [stop.id]
+        stopped = status.stopped[0]
+        assert stopped.reason
+        assert stopped.at
+
+    def test_lock_contention_reports_busy_for_every_intent_marker_included(
+        self, env
+    ):
+        """The interleaving witness: a STOPPED marker under a live
+        holder is HISTORICAL, not current -- `classify_status` must
+        report `"busy"` for it too, never `"stopped"`. The probe's own
+        `O_RDONLY|O_CREAT` open (never truncating) must leave the
+        holder's pid bytes exactly as they were."""
+        home = env.ledger
+        stop = _plant_stop(home, _probe_file(home))
+        intents.recover(home)  # marks it stopped, then releases the lock
+
+        lock_path = gitops.commit_lock_path(home)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(lock_path, "w", encoding="utf-8")
+        # Same SEPARATE-open-file-description technique as
+        # `test_refused_when_another_holder_has_the_ledger_lock` above:
+        # a genuinely conflicting flock from this same process, standing
+        # in for a second process holding the lock.
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fh.write("999999\n")
+        fh.flush()
+        try:
+            before = lock_path.read_bytes()
+            status = intents.classify_status(home)
+            after = lock_path.read_bytes()
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            fh.close()
+
+        assert status.probe == "busy"
+        assert status.busy
+        assert status.intents  # the STOPPED marker is still enumerated
+        assert all(i.cls == "busy" for i in status.intents)
+        assert status.stopped == []  # never classified "stopped" under contention
+        assert after == before  # the probe never touched the holder's pid
+
+    def test_a_non_contention_probe_failure_classifies_as_error(self, env, monkeypatch):
+        home = env.ledger
+        lock_path = gitops.commit_lock_path(home)
+        real_open = os.open
+
+        def raiser(path, *args, **kwargs):
+            if str(path) == str(lock_path):
+                raise PermissionError("probe denied for this test")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(intents.os, "open", raiser)
+        status = intents.classify_status(home)
+        assert status.probe == "error"
+        assert not status.busy
+        assert status.error
+        assert status.intents == []
+
+
+# =========================================== marker-publication failure
+
+
+class TestMarkerPublicationFailure:
+    """§7.2a.3/§7.2a.8, case (i) only ("caught failure BEFORE
+    replacement"): `_mark_stopped`'s own rewrite fails durably, but the
+    STOP itself is still real -- both facts must reach the caller
+    (`marker_uncertain`, the wording), and the intent file on disk must
+    be untouched (the write never landed). Cases (ii) (post-replace
+    fsync) and (iii) (SIGKILL between attempt and rewrite) are residual
+    -- see the report."""
+
+    def test_a_write_failure_before_replace_is_reported_uncertain_not_silent(
+        self, env, monkeypatch
+    ):
+        home = env.ledger
+        stop = _plant_stop(home, _probe_file(home))
+        before_bytes = stop.file_path.read_bytes()
+
+        def raiser(intent):
+            raise OSError("disk full before the atomic replace")
+
+        monkeypatch.setattr(intents, "_write_intent", raiser)
+
+        with pytest.raises(intents.LedgerStoppedError) as excinfo:
+            with intents.ledger_write(home):
+                pass
+
+        detail = excinfo.value.result.stopped_detail
+        assert [d.id for d in detail] == [stop.id]
+        assert detail[0].marker_uncertain
+        assert "could not be durably confirmed" in str(excinfo.value)
+        # The write never landed -- the file is exactly what `_plant_stop`
+        # left it (never rewritten with a `stopped` field at all).
+        assert stop.file_path.read_bytes() == before_bytes
