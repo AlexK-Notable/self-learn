@@ -304,13 +304,22 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
 > empty list.
 
 - **`history`'s closed set widens to five kinds** *(2026-09-13 — the
-  overseer build, O-0)*: `{"resolution", "routing", "hook-activated",
+  overseer build, O-0; note text amended 2026-09-14 — O-2a fold r2,
+  ruling 5)*: `{"resolution", "routing", "hook-activated",
   "hook-deactivated", "reconsidered"}`, superseding the 2026-08-28
   amendment's two-kind set above without rewriting it. `hook-activated`/
   `hook-deactivated` record `13-hosting-and-separation.md` §7.4's verb
   applying or reversing a hook route, for either caller — the human's
-  `hook activate` or the overseer's own runner call — each entry's `note`
-  carrying the settings-file backup path. `reconsidered` is the
+  `hook activate`/`hook deactivate` or the overseer's own runner call.
+  Deactivation is surgical (it removes exactly one registration, never a
+  whole-file restore) and so never has a backup of its own to name: a
+  `hook-activated` entry's `note` carries the settings-file backup path,
+  or a truthful no-backup string when this call wrote none (already
+  registered; or settings.json was freshly created, with nothing prior
+  to back up); a `hook-deactivated` entry's `note` instead names the
+  removed registration (its matcher and command) and the symlink path,
+  or the same truthful "already absent"/"left untouched" string when
+  nothing changed. `reconsidered` is the
   successor-case pointer a dependency-moved observation queues
   (`02-schema.md` §3a.2) — a decision, made once, here.
 - **`<ledger>/overseer/` is not a bucket** *(2026-09-13 — the overseer

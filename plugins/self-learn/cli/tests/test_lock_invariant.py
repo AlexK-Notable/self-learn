@@ -227,18 +227,16 @@ NOT_REPO_TRUTH = {
     "serve.request_poke": "XDG cache: cache_dir()/serve.poke (Sec 5.3's verb-to-daemon poke request)",
     "serve._consume_poke": "XDG cache: cache_dir()/serve.poke, unlinked once the tick has read it",
     "serve._today_mine_target": "XDG cache: cache_dir()/serve.schedule (the day's jittered mine-pass target, Sec 5.2/5.8.1 Persistent=true parity)",
-    # S-66 / 13 §7.4 (the overseer build, O-2a): the ONE function in
-    # `hook_activation.py` whose body performs a raw filesystem mutation
-    # -- placing/removing the `<claude_dir>/hooks/<name>` symlink and
-    # rewriting `<claude_dir>/settings.json` (with its timestamped
-    # backup). `claude_dir` resolves through `selfcheck.
-    # claude_runtime_dir()` (SELF_LEARN_CLAUDE_DIR first, tests never
-    # touch the real ~/.claude) and is never a repo -- this write is
-    # never ledger truth. The verb's own `hook-activated`/
-    # `hook-deactivated` history entry and commit are written
-    # separately, inside `verbs._ledger_write`, by the caller
-    # (`verbs.hook_activate`/`hook_deactivate`) -- this exemption covers
-    # exactly the runtime-dir write, nothing else in that call chain.
+    # S-66 / 13 §7.4 (O-2a): `hook_activation._write_claude_runtime` had
+    # an entry here through the build and fold r1 (its raw writes sat
+    # OUTSIDE `verbs.hook_activate`/`hook_deactivate`'s ledger lock).
+    # Fold r1, D-b moved both callers' writes INSIDE `_ledger_write`, and
+    # this file's own walker (below) independently confirmed the
+    # function is now lock-REACHABLE from both entrypoints (fold r2
+    # gate's own dump: `verbs.hook_activate @L… -> hook_activation.
+    # activate -> hook_activation._write_claude_runtime -> Path.unlink`)
+    # -- so the entry was removed rather than left stale, and no
+    # replacement is needed (N5, fold r2 nit).
 }
 
 

@@ -28,12 +28,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 from pathlib import Path
 
 import pytest
 
-from self_learn import cli, config, hook_activation, intents, verbs
-from self_learn.hook_compiler import command_root, script_name, settings_snippet
+from self_learn import cli, config, hook_activation, intents, selfcheck, verbs
+from self_learn.hook_compiler import command_for, command_root, script_name, settings_snippet
 from self_learn.records import Record
 from support import git, hook_proposal_fields, make_behavior
 from test_recover_or_refuse import _plant_stop, _probe_file
@@ -301,11 +302,15 @@ class TestIdempotentRegistration:
 
 class TestBackupPrunedToFive:
     def test_backup_written_and_pruned_to_five(self, env):
-        # Mutation witness (test 5): passing `backup_path=None` instead
-        # of the allocated backup path to `_write_claude_runtime` inside
-        # `activate()`'s registration branch (simulating "skip backup")
-        # reddens the very first iteration's `result.backup_path.is_file()`
-        # assertion below — verified, reverted, confirmed GREEN.
+        # Fold r2, item A: pruning moved OUT of `hook_activation.activate`
+        # entirely -- it now runs in the VERB, `verbs._prune_hook_backups`,
+        # only after `_commit_ledger` has succeeded. This test now drives
+        # the CLI end to end (was: calling `hook_activation.activate`
+        # directly, which no longer prunes at all). Mutation witness:
+        # commenting out the `hook_activation._write_claude_runtime(
+        # prune_backups=stale)` call in `verbs._prune_hook_backups`
+        # reddens the `len(backups) == ...` assertion below (leaves all
+        # 7 backups instead of 5) -- verified, reverted, confirmed GREEN.
         claude = env.claude
         (claude / "settings.json").write_text("{}", encoding="utf-8")
         n_records = hook_activation._BACKUP_KEEP + 2  # forces pruning
@@ -313,17 +318,37 @@ class TestBackupPrunedToFive:
         for i in range(1, n_records + 1):
             rid = f"lrn-0000ee{i:02d}"
             route_hook(env, rid)
+            rc = cli.main(["hook", "activate", rid, "--no-push"])
+            assert rc == 0
+            backups_now = sorted(claude.glob("settings.json.self-learn-bak.*"))
+            if i == 1:
+                first_backup = backups_now[0] if backups_now else None
+
+        backups = sorted(claude.glob("settings.json.self-learn-bak.*"))
+        assert len(backups) == hook_activation._BACKUP_KEEP
+        assert first_backup is not None and not first_backup.exists()  # pruned, oldest first
+
+    def test_activate_alone_never_prunes(self, env):
+        # Positive control for the move itself: calling
+        # `hook_activation.activate` DIRECTLY -- never through the verb
+        # -- must NOT prune, however many backups already exist. Proves
+        # the test above is not vacuous (it would still pass if pruning
+        # had simply moved to run unconditionally somewhere else that
+        # this direct call also reaches).
+        claude = env.claude
+        (claude / "settings.json").write_text("{}", encoding="utf-8")
+        n_records = hook_activation._BACKUP_KEEP + 2
+        for i in range(1, n_records + 1):
+            rid = f"lrn-0000ef{i:02d}"
+            route_hook(env, rid)
             result = hook_activation.activate(
                 env.home, rid, claude_dir=claude, register=True
             )
             assert result.backup_path is not None
             assert result.backup_path.is_file()
-            if i == 1:
-                first_backup = result.backup_path
 
         backups = sorted(claude.glob("settings.json.self-learn-bak.*"))
-        assert len(backups) == hook_activation._BACKUP_KEEP
-        assert first_backup is not None and not first_backup.exists()  # pruned, oldest first
+        assert len(backups) == n_records  # nothing pruned -- the verb never ran
 
 
 # ---------------------------------------------------------------- test 6
@@ -402,9 +427,14 @@ class TestReplayAbortsBeforeRegistering:
             env.home, RID, claude_dir=env.claude, register=True
         )
 
-        checked = next(s for s in result.steps if s.step == "activation-checked")
+        # Fold r2, item G (Astra 8): the STEP LABEL itself, not only the
+        # detail text, must say a replay never ran -- "activation-checked"
+        # is reserved for a record that actually HAD examples to replay.
+        assert "activation-checked" not in {s.step for s in result.steps}
+        checked = next(s for s in result.steps if s.step == "doctor-checked")
         assert "no examples recorded on this record" in checked.detail
-        assert "replay clean" not in checked.detail
+        assert "replayed clean" not in checked.detail
+        assert result.replay == "skipped-no-examples"
 
     def test_activation_checked_receipt_does_not_overclaim_doctor_verification(
         self, env
@@ -1087,3 +1117,800 @@ class TestStopMessageNotDoublePrefixed:
         err = capsys.readouterr().err
         assert stop.id in err
         assert "hook activate: self-learn: transaction intent" not in err
+
+
+# ================================================== fold r2 (2026-09-14)
+# Prepare-first activation with independent cleanups and residual
+# receipts; deactivate symmetric; matcher conflicts before idempotence;
+# quoted absolute override command; replay status in the envelope.
+
+
+# ---------------------------------------------------------- item A (Opus
+# S1-S3, Astra 5/11/12: prepare-first, independent cleanups, residuals)
+
+
+class TestPrepareFirstIndependentCleanups:
+    def test_settings_write_lands_then_raises_undoes_everything(self, env, monkeypatch):
+        # Gate round-2 probe PB, remapped (the brief's own instruction:
+        # "prune raising is now impossible inside activate -- instead
+        # inject a raise from the directory fsync after the replace").
+        # Pruning moved entirely out of `activate` (TestBackupPrunedToFive
+        # above), so the live equivalent raise site is `fsops.atomic_write`
+        # itself failing AFTER its OWN internal `os.replace` has already
+        # landed the new bytes. Reproduced by letting the REAL
+        # `atomic_write` run first (so the content genuinely lands, same
+        # as a directory-fsync failure after a successful rename) and
+        # THEN raising, for the settings.json target only. Mutation
+        # witness: this test's own existence is the mutation witness for
+        # "mark progress BEFORE the call, not after it returns" -- if
+        # `activate()` set `settings_written` only AFTER
+        # `_write_claude_runtime` returns (the pre-fold-r2 bug,
+        # SHOULD-FIX 3), this test goes red (settings NOT restored).
+        name, rel = route_hook(env, RID)
+        pre_existing = {
+            "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": "$HOME/.claude/hooks/unrelated.sh"}]}
+                ]
+            }
+        }
+        settings = env.claude / "settings.json"
+        settings.write_text(json.dumps(pre_existing, indent=2) + "\n", encoding="utf-8")
+        original_bytes = settings.read_bytes()
+
+        real_atomic_write = hook_activation.fsops.atomic_write
+
+        def fake_atomic_write(path, data, **kwargs):
+            real_atomic_write(path, data, **kwargs)
+            if Path(path) == settings:
+                raise OSError("simulated directory-fsync failure after the replace landed")
+
+        monkeypatch.setattr(hook_activation.fsops, "atomic_write", fake_atomic_write)
+
+        with pytest.raises(OSError, match="simulated"):
+            hook_activation.activate(env.home, RID, claude_dir=env.claude, register=True)
+
+        assert settings.read_bytes() == original_bytes  # restored, even though the write LANDED
+        assert not link_path(env, name).exists()  # the symlink this call placed is gone
+        assert sorted(env.claude.glob("settings.json.self-learn-bak.*")) == []  # the fresh backup is gone
+
+    def test_undo_settings_restore_failure_still_removes_link_and_backup(
+        self, env, monkeypatch
+    ):
+        # Item A: "each cleanup attempted independently in its own try" —
+        # a raise from WITHIN the undo's own settings-restore write must
+        # not skip the OTHER cleanups, and the ORIGINAL exception (here,
+        # the doctor-verdict abort) stays primary — never replaced by the
+        # restore's own OSError. Mutation witness: wrapping all three
+        # cleanups in ONE shared `try` (instead of three independent
+        # ones) reddens the `not link_path` / backup-removed assertions
+        # below — verified by hand, reverted.
+        name, rel = route_hook(env, RID)
+        settings = env.claude / "settings.json"
+        unrelated_command = "$HOME/.claude/hooks/self-learn-deadbeef-unrelated.sh"
+        settings.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Bash",
+                                "hooks": [{"type": "command", "command": unrelated_command}],
+                            }
+                        ]
+                    }
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        before_bytes = settings.read_bytes()
+
+        real_write = hook_activation._write_claude_runtime
+        calls = {"settings_writes": 0}
+
+        def spy(**kwargs):
+            if kwargs.get("settings_bytes") is not None:
+                calls["settings_writes"] += 1
+                if calls["settings_writes"] == 2:
+                    # The FIRST settings-bytes write is activate()'s own
+                    # registration; the SECOND is the undo's own restore
+                    # attempt -- fail exactly that one.
+                    raise OSError("simulated restore failure")
+            return real_write(**kwargs)
+
+        monkeypatch.setattr(hook_activation, "_write_claude_runtime", spy)
+
+        with pytest.raises(
+            hook_activation.HookActivationError, match="did not verify as live"
+        ) as exc_info:
+            hook_activation.activate(env.home, RID, claude_dir=env.claude, register=True)
+
+        # the ORIGINAL error (the doctor verdict) is what's raised, not
+        # the restore's OSError -- with the residual attached as a note.
+        notes = list(getattr(exc_info.value, "__notes__", []))
+        assert any("settings.json restore failed" in n for n in notes)
+        assert settings.read_bytes() != before_bytes  # restore genuinely failed -- not silently OK
+        # the OTHER two cleanups still ran despite the restore failing:
+        assert not link_path(env, name).exists()
+        assert sorted(env.claude.glob("settings.json.self-learn-bak.*")) == []
+
+    def test_os_replace_failure_leaves_no_temp_symlink(self, env, monkeypatch):
+        # Opus N10 (ii): if `os.replace(tmp, link)` raises, the temp
+        # symlink must not litter `hooks/`. Mutation witness: removing
+        # the `except OSError: tmp.unlink(missing_ok=True); raise` wrap
+        # around `os.replace` in `_write_claude_runtime` reddens the
+        # `leftovers == []` assertion below -- verified by hand, reverted.
+        name, rel = route_hook(env, RID)
+        real_replace = hook_activation.os.replace
+        target = link_path(env, name)
+
+        def fake_replace(src, dst):
+            if Path(dst) == target:
+                raise OSError("simulated os.replace failure")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(hook_activation.os, "replace", fake_replace)
+
+        with pytest.raises(OSError, match="simulated"):
+            hook_activation.activate(env.home, RID, claude_dir=env.claude, register=False)
+
+        leftovers = sorted((env.claude / "hooks").glob(".*"))
+        assert leftovers == []
+
+
+class TestBackupInventoryUnchangedOnAbort:
+    def test_doctor_abort_leaves_backup_inventory_unchanged(self, env):
+        # Astra 12: a failed activation must not shrink the pre-existing
+        # backup set -- the fresh backup THIS call wrote is itself part
+        # of what gets undone. Mutation witness: dropping the backup
+        # removal from `_undo` (the third independent cleanup) reddens
+        # the `after_backups == existing_backups` assertion below --
+        # verified by hand, reverted.
+        claude = env.claude
+        (claude / "settings.json").write_text(json.dumps({"hooks": {}}) + "\n", encoding="utf-8")
+        for i in range(1, 4):
+            rid = f"lrn-0000fe{i:02d}"
+            route_hook(env, rid)
+            hook_activation.activate(env.home, rid, claude_dir=claude, register=True)
+        existing_backups = sorted(claude.glob("settings.json.self-learn-bak.*"))
+        assert len(existing_backups) == 3
+
+        settings = claude / "settings.json"
+        data = json.loads(settings.read_text(encoding="utf-8"))
+        data.setdefault("hooks", {}).setdefault("PreToolUse", []).append(
+            {
+                "matcher": "Bash",
+                "hooks": [
+                    {"type": "command", "command": "$HOME/.claude/hooks/self-learn-deadbeef-x.sh"}
+                ],
+            }
+        )
+        settings.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+        rid_bad = "lrn-0000fe99"
+        route_hook(env, rid_bad)
+        with pytest.raises(hook_activation.HookActivationError, match="did not verify as live"):
+            hook_activation.activate(env.home, rid_bad, claude_dir=claude, register=True)
+
+        after_backups = sorted(claude.glob("settings.json.self-learn-bak.*"))
+        assert after_backups == existing_backups
+
+
+# ---------------------------------------------------------- item B (the
+# runtime-to-ledger handoff is inside the failure model)
+
+
+class TestRuntimeLedgerHandoffFailureModel:
+    def test_record_write_failure_undoes_runtime_no_commit(self, env, monkeypatch):
+        # A raise in `Record.write` (between the runtime activation
+        # landing and the ledger commit) must undo the runtime change and
+        # commit nothing. Mutation witness: removing the `head_after !=
+        # head_before` branch's fallthrough to `_undo` in
+        # `verbs._hook_commit_or_undo` reddens the `not link_path`
+        # assertion below -- verified by hand, reverted.
+        name, rel = route_hook(env, RID)
+        sha_before = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        def fail_write(self, *a, **kw):
+            raise OSError("simulated record.write failure")
+
+        monkeypatch.setattr(Record, "write", fail_write)
+
+        with pytest.raises(OSError, match="simulated record.write failure"):
+            verbs.hook_activate(env.home, RID, no_push=True)
+
+        assert not link_path(env, name).exists()
+        assert not (env.claude / "settings.json").exists()
+        sha_after = git(env.home, "rev-parse", "HEAD").stdout.strip()
+        assert sha_after == sha_before
+
+    def test_failure_after_commit_landed_keeps_runtime_reports_uncertain(
+        self, env, monkeypatch
+    ):
+        # The commit itself LANDS (HEAD genuinely advances) but something
+        # after it raises anyway -- the runtime activation must be KEPT,
+        # never undone, and the caller must be told the outcome is
+        # uncertain rather than silently either "succeeded" or "failed".
+        # Mutation witness: dropping the `head_after != head_before`
+        # check entirely (always undoing) reddens the `link.is_symlink()`
+        # assertion below -- verified by hand, reverted.
+        name, rel = route_hook(env, RID)
+        sha_before = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        real_commit = verbs._commit_ledger
+
+        def fake_commit(home, touched, message, note=None):
+            result = real_commit(home, touched, message, note)
+            raise OSError("simulated post-commit bookkeeping failure")
+
+        monkeypatch.setattr(verbs, "_commit_ledger", fake_commit)
+
+        with pytest.raises(verbs.VerbError, match="ledger commit landed"):
+            verbs.hook_activate(env.home, RID, no_push=True)
+
+        assert link_path(env, name).is_symlink()
+        assert (env.claude / "settings.json").exists()
+        sha_after = git(env.home, "rev-parse", "HEAD").stdout.strip()
+        assert sha_after != sha_before  # a REAL commit landed
+        record = resolved_record(env)
+        kinds = [h.get("event") for h in record.history]
+        assert "hook-activated" in kinds
+
+
+# ---------------------------------------------------------- item C
+# (deactivate gets the same structure, reversed write order)
+
+
+class TestDeactivateUndoOnFailure:
+    def test_settings_replaced_before_unlink_so_a_crash_leaves_the_safer_half_state(
+        self, env, monkeypatch
+    ):
+        # Item C's reversed order (settings replace THEN unlink) matters
+        # precisely when NO undo ever runs at all -- a hard crash between
+        # the two writes, not a caught Python exception. Simulated here
+        # by making `_undo` itself a no-op (nothing cleans up) and
+        # failing exactly the SECOND write: with settings-then-unlink,
+        # that second write is the (by-then harmless) unlink, so a crash
+        # there leaves the registration GONE and the symlink -- orphaned,
+        # unreferenced by anything -- still present; never the reverse
+        # (a LIVE registration in settings.json pointing at a symlink
+        # that no longer exists, which is what Claude Code would then
+        # try, and fail, to invoke). Mutation witness: restoring the OLD
+        # unlink-then-settings order reddens the `command not in
+        # settings...` assertion below (the registration would still be
+        # live while the guard is already gone) -- verified by hand,
+        # reverted.
+        name, rel = route_hook(env, RID)
+        hook_activation.activate(env.home, RID, claude_dir=env.claude, register=True)
+        settings = env.claude / "settings.json"
+        link = link_path(env, name)
+        command = hook_activation._command_for(name, env.claude)
+
+        monkeypatch.setattr(hook_activation, "_undo", lambda progress: [])  # no cleanup ever runs
+
+        real_write = hook_activation._write_claude_runtime
+
+        def spy(**kwargs):
+            if kwargs.get("link") is not None and kwargs.get("unlink"):
+                raise OSError("simulated crash during unlink")
+            return real_write(**kwargs)
+
+        monkeypatch.setattr(hook_activation, "_write_claude_runtime", spy)
+
+        with pytest.raises(OSError, match="simulated crash"):
+            hook_activation.deactivate(env.home, RID, claude_dir=env.claude)
+
+        # the settings replace landed FIRST -- the registration really is
+        # gone, regardless of whether the unlink after it ever finishes.
+        assert command not in settings.read_text(encoding="utf-8")
+        # ... and the symlink itself -- now orphaned, referenced by
+        # nothing -- is what's left, never a dangling registration.
+        assert link.is_symlink()
+
+    def test_settings_write_failure_leaves_link_untouched(self, env, monkeypatch):
+        # A settings-write failure (the FIRST write in the new order)
+        # happens before the link is ever touched, and -- with the
+        # normal undo path enabled this time -- the whole call reverts
+        # to exactly its starting state.
+        name, rel = route_hook(env, RID)
+        hook_activation.activate(env.home, RID, claude_dir=env.claude, register=True)
+        settings = env.claude / "settings.json"
+        link = link_path(env, name)
+        assert link.is_symlink()
+        before_bytes = settings.read_bytes()
+
+        real_write = hook_activation._write_claude_runtime
+
+        def spy(**kwargs):
+            if kwargs.get("settings_bytes") is not None:
+                raise OSError("simulated deactivate settings-write failure")
+            return real_write(**kwargs)
+
+        monkeypatch.setattr(hook_activation, "_write_claude_runtime", spy)
+
+        with pytest.raises(OSError, match="simulated deactivate"):
+            hook_activation.deactivate(env.home, RID, claude_dir=env.claude)
+
+        assert link.is_symlink()
+        assert settings.read_bytes() == before_bytes
+
+    def test_unlink_failure_after_settings_removed_restores_registration(
+        self, env, monkeypatch
+    ):
+        # The LAST write (the symlink removal) fails after the settings
+        # replace already landed -- the registration this call removed
+        # must be put BACK, so no half-state (settings gone, link gone
+        # too but unconfirmed) is ever observable. Mutation witness: the
+        # existence of this test IS the witness for D-b's undo extending
+        # to deactivate at all (fold r1 shipped `deactivate` with NO undo
+        # wrap whatsoever -- gate round-2 SHOULD-FIX 1); removing the
+        # `except BaseException` wrap around deactivate's Phase 2 reddens
+        # the `settings.read_bytes() == before_bytes` assertion below --
+        # verified by hand, reverted.
+        name, rel = route_hook(env, RID)
+        hook_activation.activate(env.home, RID, claude_dir=env.claude, register=True)
+        settings = env.claude / "settings.json"
+        link = link_path(env, name)
+        before_bytes = settings.read_bytes()
+        command = hook_activation._command_for(name, env.claude)
+        assert command in before_bytes.decode("utf-8")
+
+        real_write = hook_activation._write_claude_runtime
+
+        def spy(**kwargs):
+            if kwargs.get("link") is not None and kwargs.get("unlink"):
+                raise OSError("simulated unlink failure")
+            return real_write(**kwargs)
+
+        monkeypatch.setattr(hook_activation, "_write_claude_runtime", spy)
+
+        with pytest.raises(OSError, match="simulated unlink"):
+            hook_activation.deactivate(env.home, RID, claude_dir=env.claude)
+
+        assert settings.read_bytes() == before_bytes
+        assert command in settings.read_text(encoding="utf-8")
+        assert link.is_symlink()  # the unlink genuinely never landed
+
+    def test_deactivate_stop_and_undo_via_verb(self, env, monkeypatch):
+        # Item C's own "same handoff wrap in the verb" half: a failure
+        # AFTER `hook_activation.deactivate` returns (inside the ledger
+        # write) must undo the removal via `verbs._hook_commit_or_undo`,
+        # same as activate's own item-B test above.
+        name, rel = route_hook(env, RID)
+        hook_activation.activate(env.home, RID, claude_dir=env.claude, register=True)
+        settings = env.claude / "settings.json"
+        link = link_path(env, name)
+        before_bytes = settings.read_bytes()
+        sha_before = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        def fail_write(self, *a, **kw):
+            raise OSError("simulated record.write failure")
+
+        monkeypatch.setattr(Record, "write", fail_write)
+
+        with pytest.raises(OSError, match="simulated record.write failure"):
+            verbs.hook_deactivate(env.home, RID, no_push=True)
+
+        assert link.is_symlink()  # put back
+        assert settings.read_bytes() == before_bytes  # registration put back
+        sha_after = git(env.home, "rev-parse", "HEAD").stdout.strip()
+        assert sha_after == sha_before
+
+
+# ---------------------------------------------------------- item D
+# (matcher conflicts before idempotence; removal-side ownership)
+
+
+class TestMatcherConflictPrecedence:
+    def test_mixed_item_same_command_both_matchers_refuses_regardless_of_order(self, env):
+        # Astra 6's first hole: a command registered under BOTH the
+        # right matcher and a wrong one must refuse -- never read as
+        # "already registered" just because a same-matcher hit also
+        # exists. Checked in both array orders. Mutation witness:
+        # checking `same_matcher_hit` before `conflict_desc` in
+        # `_merge_snippet` (the pre-fold-r2 order) reddens the
+        # `pytest.raises` block below for the [Read, Edit|Write] order --
+        # verified by hand, reverted.
+        name, rel = route_hook(env, RID)
+        command = hook_activation._command_for(name, env.claude)
+        settings = env.claude / "settings.json"
+
+        for order in (["Read", "Edit|Write"], ["Edit|Write", "Read"]):
+            settings.write_text(
+                json.dumps(
+                    {
+                        "hooks": {
+                            "PreToolUse": [
+                                {
+                                    "matcher": m,
+                                    "hooks": [{"type": "command", "command": command}],
+                                }
+                                for m in order
+                            ]
+                        }
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with pytest.raises(hook_activation.HookActivationError) as exc_info:
+                hook_activation.activate(env.home, RID, claude_dir=env.claude, register=True)
+            assert "'Read'" in str(exc_info.value)
+            assert not link_path(env, name).exists()
+
+    def test_missing_matcher_key_is_a_conflict_not_no_conflict(self, env):
+        # Astra 6's second hole: a `None` collapse must not equate "found
+        # with no matcher" with "not found anywhere". Mutation witness:
+        # `other_matcher = item_matcher` (the pre-fold-r2 line, which
+        # silently sets the tracking variable back to `None` when
+        # `item_matcher` IS `None`) reddens the `pytest.raises` block
+        # below -- verified by hand, reverted.
+        name, rel = route_hook(env, RID)
+        command = hook_activation._command_for(name, env.claude)
+        settings = env.claude / "settings.json"
+        settings.write_text(
+            json.dumps(
+                {"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": command}]}]}},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(hook_activation.HookActivationError, match="no matcher"):
+            hook_activation.activate(env.home, RID, claude_dir=env.claude, register=True)
+        assert not link_path(env, name).exists()
+
+    def test_null_matcher_value_is_also_a_conflict(self, env):
+        name, rel = route_hook(env, RID)
+        command = hook_activation._command_for(name, env.claude)
+        settings = env.claude / "settings.json"
+        settings.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {"matcher": None, "hooks": [{"type": "command", "command": command}]}
+                        ]
+                    }
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(hook_activation.HookActivationError, match="no matcher"):
+            hook_activation.activate(env.home, RID, claude_dir=env.claude, register=True)
+
+
+class TestRemovalSideOwnership:
+    def test_deactivate_never_removes_a_command_under_a_different_matcher(self, env):
+        # Reproduces gate round-2's G16 mutation (the gate found NO test
+        # protected this) as a real regression test: deactivate must
+        # refuse, naming the matcher found, rather than silently
+        # reporting "already absent" while the registration (under a
+        # DIFFERENT matcher) survives untouched. Mutation witness:
+        # `if not isinstance(item, dict):` in place of the matcher
+        # condition inside `_remove_command`'s loop (G16's own edit)
+        # reddens the `settings.read_bytes() == before` assertion below
+        # -- verified by hand (the exact G16 edit), reverted.
+        name, rel = route_hook(env, RID)
+        command = hook_activation._command_for(name, env.claude)
+        settings = env.claude / "settings.json"
+        settings.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {"matcher": "Read", "hooks": [{"type": "command", "command": command}]}
+                        ]
+                    }
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        before = settings.read_bytes()
+
+        with pytest.raises(hook_activation.HookActivationError) as exc_info:
+            hook_activation.deactivate(env.home, RID, claude_dir=env.claude)
+
+        assert "'Read'" in str(exc_info.value)
+        assert "'Edit|Write'" in str(exc_info.value)
+        assert settings.read_bytes() == before
+
+
+# ---------------------------------------------------------- item E
+# (command string: quoted absolute override)
+
+
+class TestOverrideCommandQuoting:
+    def test_override_directory_with_a_space_is_one_shell_argument(self, tmp_path):
+        override = tmp_path / "Claude Runtime"
+        command = command_for("self-learn-x.sh", override)
+        assert command == shlex.quote(f"{override}/hooks/self-learn-x.sh")
+        assert shlex.split(command) == [f"{override}/hooks/self-learn-x.sh"]
+
+    def test_relative_override_is_resolved_to_absolute(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        relative = Path("relative-claude")
+        command = command_for("self-learn-x.sh", relative)
+        assert command == str(tmp_path / "relative-claude" / "hooks" / "self-learn-x.sh")
+        assert Path(command).is_absolute()
+
+    def test_default_command_root_never_quoted(self):
+        # $HOME must still expand as a shell variable -- shlex-quoting it
+        # would break that expansion outright.
+        assert command_for("self-learn-x.sh", None) == "$HOME/.claude/hooks/self-learn-x.sh"
+
+    def test_route_time_snippet_byte_identical_for_default(self, env):
+        # D-d's own criterion, re-verified after item E's quoting change.
+        seed_hook(env, rid=RID)
+        result = verbs.route(env.home, RID)
+        assert any('"command": "$HOME/.claude/hooks/' in note for note in result.post_notes)
+
+    def test_activation_with_spaced_override_directory_passes_doctor(self, env, tmp_path):
+        # End to end: the doctor's own basename extraction
+        # (`selfcheck._registered_hook_commands`, fold r2's shlex fix)
+        # must recover the right name from a QUOTED command -- otherwise
+        # every activation under a spaced directory would register
+        # successfully but then FAIL step 4 regardless of the guard
+        # actually being live. Mutation witness: reverting
+        # `selfcheck._check_hooks`'s `name = Path(token).name` (shlex-
+        # parsed) to the old `name = Path(cmd).name` reddens this whole
+        # test (the call raises `HookActivationError` at step 4) --
+        # verified by hand, reverted.
+        spaced = tmp_path / "Claude Runtime"
+        (spaced / "hooks").mkdir(parents=True)
+        name, rel = route_hook(env, RID)
+
+        result = hook_activation.activate(env.home, RID, claude_dir=spaced, register=True)
+
+        assert result.hook_registered_entry is not None
+        entry = json.loads(result.hook_registered_entry)
+        assert entry["hooks"][0]["command"] == shlex.quote(f"{spaced}/hooks/{name}")
+        verdict, message = selfcheck._check_hooks(env.home, spaced)
+        assert verdict is selfcheck.Verdict.PASS, message
+
+
+# ---------------------------------------------------------- item F
+# (receipt accuracy: the actual registered entry, not the proposed one)
+
+
+class TestIdempotentReceiptShowsActualEntry:
+    def test_idempotent_receipt_shows_grouped_entry_with_timeout_and_sibling(self, env):
+        # Astra 9's second half: on an idempotent match, the receipt must
+        # show the ACTUAL registered item -- siblings, a hand-added
+        # `timeout` key, whatever is really there -- never the freshly
+        # rendered snippet this call would have proposed had nothing
+        # already existed. Mutation witness: using `entry_json` (the
+        # proposed snippet) unconditionally instead of looking up
+        # `_registered_item` in the idempotent branch reddens the
+        # `entry["timeout"] == 60` assertion below -- verified by hand,
+        # reverted.
+        name, rel = route_hook(env, RID)
+        command = hook_activation._command_for(name, env.claude)
+        settings = env.claude / "settings.json"
+        grouped_item = {
+            "matcher": "Edit|Write",
+            "timeout": 60,
+            "hooks": [
+                {"type": "command", "command": "$HOME/.claude/hooks/sibling.sh"},
+                {"type": "command", "command": command},
+            ],
+        }
+        settings.write_text(
+            json.dumps({"hooks": {"PreToolUse": [grouped_item]}}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        result = hook_activation.activate(env.home, RID, claude_dir=env.claude, register=True)
+
+        assert result.hook_registered_entry is not None
+        entry = json.loads(result.hook_registered_entry)
+        assert entry["timeout"] == 60
+        assert entry["hooks"] == grouped_item["hooks"]
+        registered_step = next(s for s in result.steps if s.step == "registered")
+        assert "timeout" in registered_step.detail
+        assert "sibling.sh" in registered_step.detail
+
+
+# ---------------------------------------------------------- item G
+# (replay status in the result and the --json envelope)
+
+
+class TestReplayStatusEnvelope:
+    def test_result_replay_ran_with_examples(self, env):
+        route_hook(env, RID)
+        result = hook_activation.activate(env.home, RID, claude_dir=env.claude, register=True)
+        assert result.replay == "ran"
+        assert result.reload_caveat is not None
+        assert "FW-154" in result.reload_caveat
+
+    def test_result_replay_skipped_without_examples(self, env):
+        route_hook(env, RID)
+        path = env.bucket / "resolved" / f"{RID}.md"
+        record = Record.from_path(path)
+        routing = dict(record.routing)
+        hook_meta = dict(routing["hook"])
+        del hook_meta["examples"]
+        routing["hook"] = hook_meta
+        record.set_routing(routing)
+        record.write(path)
+
+        result = hook_activation.activate(env.home, RID, claude_dir=env.claude, register=True)
+        assert result.replay == "skipped-no-examples"
+
+    def test_delegated_activation_carries_no_replay_status(self, env):
+        route_hook(env, RID)
+        result = hook_activation.activate(env.home, RID, claude_dir=env.claude, register=False)
+        assert result.replay is None
+        assert result.reload_caveat is None
+
+    def test_json_envelope_carries_steps_replay_and_caveat_with_examples(self, env, capsys):
+        # Mutation witness: dropping the `hook_steps`/`hook_replay`/
+        # `hook_reload_caveat` keys from `cli._verb_envelope` reddens the
+        # `envelope["hook_replay"]` lookup below with a KeyError --
+        # verified by hand, reverted.
+        route_hook(env, RID)
+        rc = cli.main(["hook", "activate", RID, "--json", "--no-push"])
+        assert rc == 0
+        envelope = json.loads(capsys.readouterr().out)
+        assert envelope["hook_replay"] == "ran"
+        assert envelope["hook_reload_caveat"] is not None
+        assert any("activation-checked" in s for s in envelope["hook_steps"])
+        assert any("replayed clean" in s for s in envelope["hook_steps"])
+
+    def test_json_envelope_carries_skipped_replay_status_without_examples(self, env, capsys):
+        route_hook(env, RID)
+        path = env.bucket / "resolved" / f"{RID}.md"
+        record = Record.from_path(path)
+        routing = dict(record.routing)
+        hook_meta = dict(routing["hook"])
+        del hook_meta["examples"]
+        routing["hook"] = hook_meta
+        record.set_routing(routing)
+        record.write(path)
+
+        rc = cli.main(["hook", "activate", RID, "--json", "--no-push"])
+        assert rc == 0
+        envelope = json.loads(capsys.readouterr().out)
+        assert envelope["hook_replay"] == "skipped-no-examples"
+        assert any("doctor-checked" in s for s in envelope["hook_steps"])
+        assert not any("activation-checked" in s for s in envelope["hook_steps"])
+
+    def test_never_fails_assertion_uses_the_string_the_code_can_emit(self, env):
+        # NIT 7 (round 2, re-flagged as item G's own "fix the assertion
+        # that can never fail"): the code's clean branch emits "replayed
+        # clean", never "replay clean" -- assert on the string the code
+        # can actually produce.
+        route_hook(env, RID)
+        result = hook_activation.activate(env.home, RID, claude_dir=env.claude, register=True)
+        checked = next(s for s in result.steps if s.step == "activation-checked")
+        assert "replayed clean" in checked.detail
+
+
+# ---------------------------------------------------------- item H
+# (deactivate validates routing.hook.tools like activate)
+
+
+class TestDeactivateValidatesRoutingComplete:
+    def test_deactivate_refuses_when_tools_missing(self, env):
+        # Mutation witness: removing the `not tools` half of deactivate's
+        # completeness check reddens the `pytest.raises` block below --
+        # verified by hand, reverted.
+        route_hook(env, RID)
+        path = env.bucket / "resolved" / f"{RID}.md"
+        record = Record.from_path(path)
+        routing = dict(record.routing)
+        hook_meta = dict(routing["hook"])
+        del hook_meta["tools"]
+        routing["hook"] = hook_meta
+        record.set_routing(routing)
+        record.write(path)
+
+        with pytest.raises(hook_activation.HookActivationError, match="incomplete"):
+            hook_activation.deactivate(env.home, RID, claude_dir=env.claude)
+
+
+# ---------------------------------------------------------- item I (the
+# deactivated note names the removed registration + symlink path)
+
+
+class TestDeactivateNoteNamesRegistrationAndSymlink:
+    def test_backup_note_names_matcher_command_and_symlink(self, env):
+        name, rel = route_hook(env, RID)
+        hook_activation.activate(env.home, RID, claude_dir=env.claude, register=True)
+
+        result = hook_activation.deactivate(env.home, RID, claude_dir=env.claude)
+
+        assert "Edit|Write" in result.backup_note
+        command = hook_activation._command_for(name, env.claude)
+        assert command in result.backup_note
+        assert str(link_path(env, name)) in result.backup_note
+
+
+# ---------------------------------------------------------- item J (nits)
+
+
+class TestStep3AbortPinsOrderingAndHistoryViaVerb:
+    def test_doctor_abort_via_verb_writes_no_history_and_settings_write_precedes_abort(
+        self, env, monkeypatch
+    ):
+        # NIT 8: drive the abort through the REAL verb (not
+        # `hook_activation.activate` directly) so the no-history half is
+        # actually exercised, and spy on the settings write to pin that
+        # registration genuinely happened BEFORE the doctor's raise --
+        # distinguishing "registered, then undone" from "never
+        # registered" (the pre-fold-r2 test could not tell these apart:
+        # both leave the file byte-identical to before).
+        name, rel = route_hook(env, RID)
+        settings = env.claude / "settings.json"
+        unrelated_command = "$HOME/.claude/hooks/self-learn-deadbeef-unrelated.sh"
+        settings.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Bash",
+                                "hooks": [{"type": "command", "command": unrelated_command}],
+                            }
+                        ]
+                    }
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        before_bytes = settings.read_bytes()
+        sha_before = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        seen = {"settings_write_happened": False}
+        real_write = hook_activation._write_claude_runtime
+
+        def spy(**kwargs):
+            if kwargs.get("settings_bytes") is not None:
+                seen["settings_write_happened"] = True
+            return real_write(**kwargs)
+
+        monkeypatch.setattr(hook_activation, "_write_claude_runtime", spy)
+
+        with pytest.raises(verbs.VerbError, match="did not verify as live"):
+            verbs.hook_activate(env.home, RID, no_push=True)
+
+        assert seen["settings_write_happened"] is True  # it WAS registered, then undone
+        assert settings.read_bytes() == before_bytes  # ... and undone back to exactly before
+        assert not link_path(env, name).exists()
+        sha_after = git(env.home, "rev-parse", "HEAD").stdout.strip()
+        assert sha_after == sha_before
+        record = resolved_record(env)
+        kinds = [h.get("event") for h in record.history]
+        assert "hook-activated" not in kinds
+
+
+class TestDeactivateChecksRoutingHookToolsSameAsActivate:
+    def test_nit9_deactivate_empty_tools_no_longer_reads_as_absent(self, env):
+        # NIT 9 (Opus): with an EMPTY tools list the old code produced an
+        # empty matcher, `_remove_command` matched nothing, and the run
+        # took the "already absent (idempotent)" path even though the
+        # record's OWN registration (if any) was never found under that
+        # empty matcher. Item H's fix refuses outright instead.
+        route_hook(env, RID)
+        path = env.bucket / "resolved" / f"{RID}.md"
+        record = Record.from_path(path)
+        routing = dict(record.routing)
+        hook_meta = dict(routing["hook"])
+        hook_meta["tools"] = []
+        routing["hook"] = hook_meta
+        record.set_routing(routing)
+        record.write(path)
+
+        with pytest.raises(hook_activation.HookActivationError, match="incomplete"):
+            hook_activation.deactivate(env.home, RID, claude_dir=env.claude)

@@ -461,6 +461,15 @@ class VerbResult:
     hook_registered_entry: str | None = None
     hook_script_path: str | None = None
     hook_script_sha256: str | None = None
+    # Fold r2, item G (Astra 8): the STRUCTURED replay status and the
+    # FW-154 reload caveat, carried separately from `post_notes`'
+    # prose so a `--json` consumer can read them without parsing a
+    # receipt string. `hook-activate`-only; `None` for a delegated
+    # activation (never reached here — this is the human verb) and for
+    # every other verb, `hook-deactivate` included (no replay step
+    # exists there).
+    hook_replay: str | None = None
+    hook_reload_caveat: str | None = None
 
 
 # ------------------------------------------------------------------ helpers
@@ -2455,6 +2464,77 @@ def _hook_script_location(
     return root, root / rel, rel, host_mode(home, root)
 
 
+def _hook_commit_or_undo(
+    home: Path,
+    record_id: str,
+    result: "hook_activation.ActivationResult",
+    event: str,
+    message: str,
+) -> tuple[list[Path], str]:
+    """Fold r2, item B: wraps the ledger-side write
+    (``Record.write``/:func:`_commit_ledger`) around a runtime
+    activation/deactivation that has ALREADY landed. A raise here calls
+    :func:`hook_activation._undo` against ``result.progress`` — exactly
+    what THIS call did — and re-raises the ORIGINAL exception (with any
+    residual-effect notes attached), UNLESS the ledger's own ``HEAD``
+    advanced despite the raise (read via :func:`gitops.head_sha`, once
+    right before the commit attempt and again inside the ``except``):
+    when it did, the commit may have actually landed (e.g. ``git
+    commit`` created the object and moved ``HEAD`` before something in
+    the calling process's OWN bookkeeping raised), so the runtime change
+    is KEPT — an activated hook a ledger record fails to fully describe
+    is a smaller problem than silently deactivating a guard the record
+    says is live — and the uncertain outcome is raised as its own
+    :class:`VerbError` instead of being undone."""
+    commit_body = "\n".join(result.receipts)
+    path = ledger_ops.find_record_path(home, record_id)
+    record = Record.from_path(path)
+    record.append_history(event, {"note": result.backup_note})
+    head_before = gitops.head_sha(home)
+    try:
+        record.write(path)
+        return _commit_ledger(home, [path], message, commit_body)
+    except BaseException as exc:
+        head_after = gitops.head_sha(home)
+        if head_after != head_before:
+            raise VerbError(
+                f"{message}: the ledger commit landed ({head_before[:7]} -> "
+                f"{head_after[:7]}) but a later step failed — KEEPING the "
+                f"runtime change (uncertain receipt, verify by hand): {exc}"
+            ) from exc
+        assert result.progress is not None
+        residual = hook_activation._undo(result.progress)  # noqa: SLF001
+        for line in residual:
+            exc.add_note(line)
+        raise
+
+
+def _prune_hook_backups(
+    claude_dir: Path, result: "hook_activation.ActivationResult"
+) -> str | None:
+    """Fold r2, item A: backup pruning moves OUT of
+    :func:`hook_activation.activate` entirely — run here, in the verb,
+    only AFTER :func:`_commit_ledger` has succeeded (still inside the
+    SAME ``_ledger_write`` span, so ``tests/test_lock_invariant.py``'s
+    walker still sees the removal as lock-reachable, through the one raw
+    writer). A pruning failure is its OWN receipt line, never an
+    activation failure — the activation already committed successfully
+    by the time this runs, and disk cleanup afterward failing must never
+    read as though the activation itself had."""
+    if result.backup_path is None:
+        return None
+    try:
+        existing = sorted(claude_dir.glob("settings.json.self-learn-bak.*"))
+        keep = hook_activation._BACKUP_KEEP  # noqa: SLF001
+        stale = tuple(existing[: max(0, len(existing) - keep)])
+        if not stale:
+            return None
+        hook_activation._write_claude_runtime(prune_backups=stale)  # noqa: SLF001
+        return f"pruned {len(stale)} old settings.json backup(s)"
+    except OSError as exc:
+        return f"backup pruning failed (not an activation failure): {exc}"
+
+
 def hook_activate(
     home: Path | str,
     record_id: str,
@@ -2472,10 +2552,13 @@ def hook_activate(
     refuses BEFORE this call ever runs, never after it has already
     mutated the user's Claude runtime directory. A concurrent editor
     that is not self-learn (a human hand-editing settings.json in an
-    editor at the same moment) cannot be serialised by this lock — the
-    read-once-then-atomic-replace discipline inside
-    :func:`hook_activation.activate` is the bound on that case, not
-    this lock."""
+    editor at the same moment) cannot be serialised by this lock —
+    ``hook_activation``'s own module docstring states that bound
+    plainly. Fold r2: the ledger write itself is now wrapped by
+    :func:`_hook_commit_or_undo` (item B — a later failure undoes the
+    runtime change, unless the commit landed anyway) and backup
+    pruning runs AFTER the commit via :func:`_prune_hook_backups`
+    (item A)."""
     home = Path(home)
     from . import selfcheck  # deferred: selfcheck imports verbs at its own top
 
@@ -2491,14 +2574,15 @@ def hook_activate(
                 )
             except hook_activation.HookActivationError as exc:
                 raise VerbError(str(exc)) from exc
-            commit_body = "\n".join(result.receipts)
             message = f"self-learn: hook activate {record_id}"
-            path = ledger_ops.find_record_path(home, record_id)
-            record = Record.from_path(path)
-            record.append_history("hook-activated", {"note": result.backup_note})
-            record.write(path)
-            staged, sha = _commit_ledger(home, [path], message, commit_body)
+            staged, sha = _hook_commit_or_undo(
+                home, record_id, result, "hook-activated", message
+            )
+            prune_note = _prune_hook_backups(claude_dir, result)
         push = _push_ledger(home, no_push)
+        receipts = list(result.receipts)
+        if prune_note is not None:
+            receipts.append(f"pruned: {prune_note}")
         return VerbResult(
             action="hook-activate",
             record_id=record_id,
@@ -2507,10 +2591,12 @@ def hook_activate(
             staged=staged,
             push=push,
             sentinel_owned=hold.owned,
-            post_notes=list(result.receipts),
+            post_notes=receipts,
             hook_registered_entry=result.hook_registered_entry,
             hook_script_path=result.hook_script_path,
             hook_script_sha256=result.hook_script_sha256,
+            hook_replay=result.replay,
+            hook_reload_caveat=result.reload_caveat,
         )
     finally:
         hold.release()
@@ -2533,7 +2619,8 @@ def hook_deactivate(
     INSIDE the ledger lock span, right after
     :func:`intents.announce_recovered` — exactly like
     :func:`hook_activate` above — so a live STOP refuses before this
-    call ever runs."""
+    call ever runs. Fold r2: the same :func:`_hook_commit_or_undo` wrap
+    as ``hook_activate`` (item B/C)."""
     home = Path(home)
     from . import selfcheck  # deferred: selfcheck imports verbs at its own top
 
@@ -2549,13 +2636,10 @@ def hook_deactivate(
                 )
             except hook_activation.HookActivationError as exc:
                 raise VerbError(str(exc)) from exc
-            commit_body = "\n".join(result.receipts)
             message = f"self-learn: hook deactivate {record_id}"
-            path = ledger_ops.find_record_path(home, record_id)
-            record = Record.from_path(path)
-            record.append_history("hook-deactivated", {"note": result.backup_note})
-            record.write(path)
-            staged, sha = _commit_ledger(home, [path], message, commit_body)
+            staged, sha = _hook_commit_or_undo(
+                home, record_id, result, "hook-deactivated", message
+            )
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="hook-deactivate",

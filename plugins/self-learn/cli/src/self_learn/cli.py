@@ -517,8 +517,10 @@ def _build_parser() -> argparse.ArgumentParser:
     hact.add_argument(
         "--json", action="store_true", dest="as_json",
         help="machine-readable outcome envelope, including the exact "
-        "registered PreToolUse entry + script path + sha256 (§4 pin: "
-        "no other stdout text under --json)",
+        "registered PreToolUse entry + script path + sha256, the three "
+        "step receipts, the replay status (ran/skipped-no-examples), "
+        "and the reload-not-observed caveat (§4 pin: no other stdout "
+        "text under --json)",
     )
     hact.add_argument(
         "--no-push", action="store_true", dest="no_push",
@@ -1969,6 +1971,20 @@ def _verb_envelope(result: verbs.VerbResult) -> dict:
         "hook_registered_entry": result.hook_registered_entry,
         "hook_script_path": result.hook_script_path,
         "hook_script_sha256": result.hook_script_sha256,
+        # Fold r2, item G (Astra 8): `--json` used to discard every step
+        # receipt (`post_notes` is deliberately prose-only, printed to
+        # stdout ONLY in the non-JSON branch below — see `_finish_verb`),
+        # so a `--json` caller had no way to tell a real replay apart
+        # from a skipped one. `hook_steps` carries the SAME receipt
+        # strings `post_notes` prints in the human form; `hook_replay`/
+        # `hook_reload_caveat` are their structured counterparts
+        # (`verbs.VerbResult.hook_replay`/`.hook_reload_caveat`) — all
+        # three `None`/empty for every verb but `hook-activate`, and
+        # `hook_replay`/`hook_reload_caveat` stay `None` for a delegated
+        # activation too (no replay/doctor step ever ran).
+        "hook_steps": list(result.post_notes) if result.action == "hook-activate" else [],
+        "hook_replay": result.hook_replay,
+        "hook_reload_caveat": result.hook_reload_caveat,
     }
 
 
@@ -1983,9 +1999,15 @@ def _finish_verb(result: verbs.VerbResult, target: str, *, as_json: bool = False
     ``as_json``, where §4 pins stdout as "the envelope and NOTHING else":
     `diff` and `post_notes` are both stdout-bound prose (a hook's entire
     generated script; multi-line manual-step text) that would otherwise
-    turn stdout into "JSON-then-prose". Exit status and stderr (warnings,
-    the budget note, the push-failure code) are UNCHANGED either way —
-    `--json` never moves the outcome, only how it is printed."""
+    turn stdout into "JSON-then-prose". `post_notes` ITSELF still never
+    prints under `--json` — but for `hook-activate`, `_verb_envelope`
+    (fold r2, item G / Astra 8) now carries the SAME receipt strings
+    structurally, as `hook_steps`, plus `hook_replay`/
+    `hook_reload_caveat` — so a `--json` caller is no longer blind to
+    whether the replay step actually ran. Exit status and stderr
+    (warnings, the budget note, the push-failure code) are UNCHANGED
+    either way — `--json` never moves the outcome, only how it is
+    printed."""
     if as_json:
         print(json.dumps(_verb_envelope(result)))
     else:

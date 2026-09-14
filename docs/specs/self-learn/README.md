@@ -85,6 +85,7 @@ passes the same compile+commit path this sentence's own paragraph names.
 
 ## Revision log
 
+- **2026-09-14 — O-2a fold r2, ruling 5: the `hook-activated`/`hook-deactivated` history note text amended — deactivation never has a backup of its own to name, so its note instead names the removed registration and the symlink path.** `02-schema.md` §2's five-kind `history` bullet amended.
 - **2026-09-13 — U0 fold r1: FW-134 gains a dated clause closing it for the run-command contract — FW-85's disposition (same date) supersedes its PROD3 negative criterion for `mine run`/`worker run`/`worker kick` only; S-54's batch exit space is untouched.** `14-forward-work-map.md` FW-134 amended and closed (trigger fired: the steward/overseer runners cannot read stdout).
 - **2026-09-13 — U9 (steward plan)/O-0 (overseer plan): the README's own reading-order table gains the overseer's `overseer/` subtree and the corrected count of `01-architecture.md`'s components.** `README.md:42` "six components" → "seven"; `README.md:54`'s `13-hosting-and-separation.md` row gains the `overseer/` subtree.
 - **2026-09-13 — U13 (steward plan): the rename's mapping sentence, in each spec file it falls to but does not otherwise touch.** `04-roadmap.md`, `06-horizon.md`, `08-build-plan.md`, `10-surface-build-plan.md` each gain one sentence mapping `graduate`/`superseded_by: canon` to `retire`/`covered_by:<kind>:<name>`; `09-surface-spec.md` gains the bulk-collapse mapping sentence.

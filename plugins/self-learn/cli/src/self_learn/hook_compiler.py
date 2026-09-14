@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from pathlib import Path
 
 from .primitives import procs
@@ -51,6 +52,7 @@ __all__ = [
     "GUARDABLE_TOOLS",
     "TOOL_FIELDS",
     "HookCompileError",
+    "command_for",
     "command_root",
     "generate_script",
     "replay_examples",
@@ -120,17 +122,57 @@ def command_root(claude_dir: Path | None) -> str:
     return str(claude_dir)
 
 
+def _absolute(p: Path) -> Path:
+    """*p*, anchored to an absolute path WITHOUT resolving symlinks
+    (fold r2, item E / Astra 13's relative-override half): a plain
+    ``Path.cwd() / p`` join for a relative path, never
+    ``Path.resolve()`` — resolving would chase a symlink component and
+    could name a REAL path different from the one
+    :func:`hook_activation.activate`/``.deactivate`` actually placed
+    the guard symlink under (those functions anchor ``claude_dir`` the
+    SAME way, once, at their own entry point — see their docstrings),
+    which would make the registered command point somewhere the
+    symlink itself does not live."""
+    p = p.expanduser()
+    return p if p.is_absolute() else Path.cwd() / p
+
+
+def command_for(name: str, claude_dir: Path | None) -> str:
+    """The exact command string a registration for hook ``name`` under
+    ``claude_dir`` names — :func:`command_root`'s D-d root selection,
+    plus fold r2, item E (Astra 13): the portable default
+    (``$HOME/.claude/...``) is NEVER shell-quoted — a shell must still
+    expand ``$HOME``; single-quoting it would break that expansion
+    outright — emitted byte-identical to before this fold. An OVERRIDE
+    directory is anchored to an absolute path (:func:`_absolute` — a
+    relative ``SELF_LEARN_CLAUDE_DIR`` must still name where the
+    symlink really is, regardless of the current process's cwd at
+    doctor-check time) and the WHOLE command (root + ``/hooks/`` +
+    name) is emitted as ONE shell argument via ``shlex.quote`` — a
+    directory containing a space or any other shell metacharacter
+    still names exactly the placed symlink when Claude Code's own
+    shell invokes it. ``shlex.quote`` is a no-op (returns the string
+    unchanged, no quotes added) for any path built only from the
+    "safe" charset (letters, digits, ``@%+=:,./-``), so every existing
+    override path used in this tree's own tests is unaffected."""
+    root = command_root(claude_dir)
+    if claude_dir is None or root == "$HOME/.claude":
+        return f"{root}/hooks/{name}"
+    resolved_root = str(_absolute(Path(claude_dir)))
+    return shlex.quote(f"{resolved_root}/hooks/{name}")
+
+
 def settings_snippet(tools: list[str], name: str, claude_dir: Path | None = None) -> str:
     """The M3-1 literal registration snippet. The matcher is the tool-name
     set ONLY (M3-14) — ``hook.tools`` joined with ``|``; the path regex
     lives exclusively in-script. ``claude_dir`` (D-d, default ``None``)
-    selects the command's root via :func:`command_root` — every route-
+    selects the command's root via :func:`command_for` — every route-
     time caller leaves it ``None`` (the printed two-step snippet stays
     the portable ``$HOME`` form, unchanged from before this amendment);
     only :mod:`hook_activation` ever passes a resolved directory, at
     the moment it actually writes the command into ``settings.json``."""
     matcher = "|".join(tools)
-    command = f"{command_root(claude_dir)}/hooks/{name}"
+    command = command_for(name, claude_dir)
     hooks = json.dumps([{"type": "command", "command": command}])
     return f'"PreToolUse": [{{"matcher": {json.dumps(matcher)}, "hooks": {hooks}}}]'
 
