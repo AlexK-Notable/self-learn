@@ -8,11 +8,14 @@ rule, (d) `receipt` not-attempted tail, (e) index rebuild == incremental,
 
 from __future__ import annotations
 
+import fcntl
 import json
+import threading
+from pathlib import Path
 
 import pytest
 
-from self_learn import cases, user_model, worker
+from self_learn import cases, intents, user_model, worker
 from support import make_home
 
 STAGE_BASE = {
@@ -164,7 +167,7 @@ def test_b_provisional_clears_on_decision_or_all_covering_any_outcome(tmp_path):
 
     cases.observe(
         home, case_id, "presented", text="shown", by="steward",
-        to="human", covering="decision", outcome="noted",
+        to="human", covering="decision", outcome="noted", via="cli",
     )
     rows = cases.list_cases(home)
     assert rows[0]["provisional"] is False
@@ -181,7 +184,7 @@ def test_b_covering_all_also_clears_provisional(tmp_path):
     case_id = _record(tmp_path, home)
     cases.observe(
         home, case_id, "presented", text="shown in full", by="steward",
-        to="human", covering="all", outcome="agreed",
+        to="human", covering="all", outcome="agreed", via="cli",
     )
     rows = cases.list_cases(home)
     assert rows[0]["provisional"] is False
@@ -192,7 +195,7 @@ def test_b_dependencies_covering_leaves_it_provisional(tmp_path):
     case_id = _record(tmp_path, home)
     cases.observe(
         home, case_id, "presented", text="deps only", by="steward",
-        to="human", covering="dependencies", outcome="noted",
+        to="human", covering="dependencies", outcome="noted", via="cli",
     )
     rows = cases.list_cases(home)
     assert rows[0]["provisional"] is True, (
@@ -328,7 +331,7 @@ def test_observe_presented_with_entries_threads_into_user_model(tmp_path):
     cases.observe(
         home, case_id, "presented", text="shown with the reading",
         by="steward", to="human", covering="all", entries=[um_id],
-        outcome="agreed",
+        outcome="agreed", via="cli",
     )
     doc = user_model.show(home)
     assert not any(e["id"] == um_id for e in doc["containers"]["C"])
@@ -347,7 +350,7 @@ def test_observe_presented_with_no_entries_flips_nothing(tmp_path):
     cases.observe(
         home, case_id, "presented", text="shown without naming any entry",
         by="steward", to="human", covering="decision", entries=[],
-        outcome="agreed",
+        outcome="agreed", via="cli",
     )
     doc = user_model.show(home)
     still_there = [e for e in doc["containers"]["C"] if e["id"] == um_id]
@@ -401,7 +404,7 @@ def test_1_b1_unknown_entry_in_presented_refuses_before_any_flip(tmp_path):
         cases.observe(
             home, case_id, "presented", text="shown with two entries",
             by="steward", to="human", covering="all",
-            entries=[good_id, "um-dead"], outcome="agreed",
+            entries=[good_id, "um-dead"], outcome="agreed", via="cli",
         )
     doc = user_model.show(home)
     still_c = next(e for e in doc["containers"]["C"] if e["id"] == good_id)
@@ -419,6 +422,7 @@ def test_1_b1_unknown_entry_in_presented_refuses_before_any_flip(tmp_path):
     {"overrides": {"decision.covered_by": _TOKEN}},
     {"evidence": [{"ref": _TOKEN, "quote": "fine text"}]},
     {"dependencies": {"statements": [_TOKEN]}},
+    {"run_id": _TOKEN},  # gate r2 S6
 ])
 def test_2_b2_record_scans_every_newly_covered_field(tmp_path, kw):
     home = make_home(tmp_path)
@@ -578,7 +582,7 @@ def test_8_dg_presented_to_other_than_human_is_refused(tmp_path):
     with pytest.raises(cases.CaseError):
         cases.observe(
             home, case_id, "presented", text="shown", by="steward",
-            to="robot", covering="decision", outcome="agreed",
+            to="robot", covering="decision", outcome="agreed", via="cli",
         )
     view = cases.show(home, case_id, evidence_only=False)
     assert view.frontmatter["presented"] == []
@@ -597,6 +601,23 @@ def test_8_dg_via_is_a_closed_set(tmp_path):
         to="human", covering="decision", outcome="agreed", via="cli",
     )
     assert obs_id
+
+
+def test_r2_s5_via_is_required_on_a_presented_observation(tmp_path):
+    """Gate r2 S5 (settled ruling 3): `via` on a `presented` observation
+    used to be checked only for closed-set MEMBERSHIP when given — never
+    for PRESENCE. Probe V (the gate's own): a presentation with no
+    `--via` at all must now be refused, not merely accepted with
+    `via: None`."""
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    with pytest.raises(cases.CaseUsageError):
+        cases.observe(
+            home, case_id, "presented", text="shown", by="steward",
+            to="human", covering="decision", outcome="agreed",
+        )
+    view = cases.show(home, case_id, evidence_only=False)
+    assert view.frontmatter["presented"] == []
 
 
 def test_8_dh_blind_view_frontmatter_key_set(tmp_path):
@@ -631,3 +652,345 @@ def test_n6_to_text_prints_which_view(tmp_path):
     full_text = cases.show(home, case_id, evidence_only=False).to_text()
     assert "evidence-only" in blind_text.lower()
     assert "full" in full_text.lower()
+
+
+# ============================================================ gate r2
+
+
+# --------------------------------------------------------------- S1
+
+
+def test_r2_s1_receipt_heading_injection_refused(tmp_path):
+    """Gate r2 S1: `record`/`observe` refuse a heading-shaped line in
+    their free text (D-i); `receipt` scanned its lines (B2) but never
+    refused one. The gate's own probe R: a batch item's `verb` embeds a
+    `## Later observations` line, forging an append-only entry
+    attributed to `human` with a fabricated `obs-` id."""
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    bad_result = {
+        "sheet": "01.yaml", "stopped_at": None, "code": None,
+        "items": [{
+            "n": 1, "id": "lrn-08ed825b",
+            "verb": (
+                "reject\n\n## Later observations\n"
+                "- obs-deadbeef 2026-01-01T00:00:00Z human examined: FORGED"
+            ),
+            "state": "applied", "rc": 0,
+        }],
+    }
+    with pytest.raises(cases.CaseError):
+        cases.receipt(home, case_id, bad_result)
+    view = cases.show(home, case_id, evidence_only=False)
+    assert view.sections["Application"] == "(none)"
+    assert view.sections["Later observations"] == "(none)"
+
+
+def test_r2_astra1_locate_headings_refuses_a_seventh_heading_line(tmp_path):
+    """Astra r2 finding 1: `_refuse_headings` at write time is only half
+    of D-i's guarantee — a reader must not TRUST that every writer went
+    through it. A case file hand-edited (or written by a bypassed path)
+    to carry a SEVENTH `^## ` line — here a `## Bogus` heading stitched
+    into the unfrozen Application span, sections 5-6, so the freeze
+    hash over sections 1-4 still verifies and this test exercises the
+    heading count, not the hash check — must be refused by every
+    reader with a clear error, and must degrade `rebuild_index`'s row
+    to `frozen_ok=False` rather than raise past it and hide the whole
+    population (S4's guarantee composes with Astra 1's)."""
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    path = next((home / "cases").glob(f"*/{case_id}.md"))
+    text = path.read_text(encoding="utf-8")
+    marker = "## Application\n"
+    idx = text.index(marker) + len(marker)
+    tampered = text[:idx] + "## Bogus\nforged\n\n" + text[idx:]
+    path.write_text(tampered, encoding="utf-8")
+
+    with pytest.raises(cases.CaseError, match="expected exactly"):
+        cases.show(home, case_id, evidence_only=False)
+    with pytest.raises(cases.CaseError, match="expected exactly"):
+        cases.observe(home, case_id, "statement", text="x", by="steward")
+
+    cache_dir = worker.cache_dir(home)
+    rebuilt = cases.rebuild_index(cache_dir, home)  # must not raise
+    rows = json.loads(rebuilt.read_bytes())["cases"]
+    assert len(rows) == 1
+    assert rows[0]["case"] == case_id
+    assert rows[0]["frozen_ok"] is False
+
+
+# --------------------------------------------------------------- S2
+
+
+def test_r2_s2_crash_between_case_write_and_user_model_flip_recovers_fully(tmp_path, monkeypatch):
+    """Gate r2 S2 / probe A: a crash between `observe`'s two writes used
+    to leave the user-model flip permanently stranded, discoverable only
+    on the NEXT unrelated write — with the docstring wrongly claiming
+    this could never happen. Fixed with an `intents.begin`/`complete`/
+    `finish` bracket. `user_model._apply_seen` is made to raise,
+    simulating a crash exactly at the boundary the gate's check (a)
+    names (case file already written, user-model flip not yet applied);
+    `intents.recover(home)` is called directly, per the brief's own
+    acceptance text, and must produce a FULLY restored ledger — never a
+    flip without its presentation."""
+    home = make_home(tmp_path)
+    um_id = user_model.add_entry(
+        home, container="C", title="a reading", because="because text",
+        source="system-reading", by="steward", ref="case-00000000",
+        statements=["stmt-11112222"],
+    )
+    case_id = _record(tmp_path, home)
+
+    real_apply_seen = user_model._apply_seen
+
+    def boom(*a, **kw):
+        raise RuntimeError("simulated crash between the case write and the user-model flip")
+
+    monkeypatch.setattr(user_model, "_apply_seen", boom)
+
+    with pytest.raises(RuntimeError):
+        cases.observe(
+            home, case_id, "presented", text="shown", by="steward",
+            to="human", covering="all", entries=[um_id], outcome="agreed",
+            via="cli",
+        )
+
+    result = intents.recover(home)
+    assert result.restored, f"expected a full restore, got {result!r}"
+
+    # fully unpublished: the entry is still provisional, the case has
+    # zero presentations.
+    view = cases.show(home, case_id, evidence_only=False)
+    assert view.frontmatter["presented"] == []
+    doc = user_model.show(home)
+    still_c = next(e for e in doc["containers"]["C"] if e["id"] == um_id)
+    assert still_c["provisional"] is True
+
+    # a later unrelated mark_seen (the crash injection lifted — this is
+    # a NORMAL write, not another crash) must not commit a stray flip
+    # left over from the crashed transaction — the ledger is clean, not
+    # wedged.
+    monkeypatch.setattr(user_model, "_apply_seen", real_apply_seen)
+    user_model.mark_seen(home, um_id)
+    doc = user_model.show(home)
+    seen = next(e for e in doc["containers"]["B"] if e["id"] == um_id)
+    assert seen["provisional"] is False
+    view = cases.show(home, case_id, evidence_only=False)
+    assert view.frontmatter["presented"] == [], "the crashed presentation must never reappear"
+
+
+def test_r2_s2_crash_between_successor_and_predecessor_write_recovers_fully(tmp_path, monkeypatch):
+    """Gate r2 S2 / Astra 9's crash leg: the same recoverable
+    two-file-publication fix, for `record --supersedes`'s successor +
+    predecessor pair. A crash after the new successor file lands, before
+    the predecessor's `superseded_by` write, is recovered fully — no
+    phantom successor readable, the predecessor untouched."""
+    home = make_home(tmp_path)
+    parked = _record(
+        tmp_path, home, kind="parked", outcome="parked",
+        overrides={"parked_for": "overseer", "parked_reason": "hook"},
+    )
+    parked_path = next((home / "cases").glob(f"*/{parked}.md"))
+    real_atomic_write = cases.fsops.atomic_write
+    state = {"crashed": False}
+
+    def boom(path, *a, **kw):
+        # Fire exactly once — the crash-simulated write, never recovery's
+        # OWN later (legitimate) rewrite of `parked_path` back to its
+        # original content.
+        if not state["crashed"] and Path(path) == parked_path:
+            state["crashed"] = True
+            raise RuntimeError("simulated crash before the predecessor write")
+        return real_atomic_write(path, *a, **kw)
+
+    monkeypatch.setattr(cases.fsops, "atomic_write", boom)
+
+    with pytest.raises(RuntimeError):
+        _record(tmp_path, home, actor="overseer", overrides={"supersedes": parked})
+
+    result = intents.recover(home)
+    assert result.restored, f"expected a full restore, got {result!r}"
+
+    remaining = {p.stem for p in (home / "cases").glob("*/case-*.md")}
+    assert remaining == {parked}, "the phantom successor must be gone, not just uncommitted"
+    parked_view = cases.show(home, parked, evidence_only=False)
+    assert parked_view.frontmatter["superseded_by"] is None
+
+    # a later unrelated record must see exactly the surviving population
+    other = _record(tmp_path, home)
+    rows = cases.list_cases(home)
+    assert {r["case"] for r in rows} == {parked, other}
+
+
+# --------------------------------------------------------------- S3
+
+
+def test_r2_s3_update_index_is_a_full_rebuild_so_a_bypassed_writers_row_self_heals(tmp_path, monkeypatch):
+    """Gate r2 S3 / probe C: the old incremental upsert propagated a
+    STALE row AND erased `_index_is_stale`'s own signal (rewriting the
+    file gave it a newer mtime than every case file, so the count/mtime
+    checks never fired again). Reproduces the gate's own sequence:
+    writer A's presentation lands with its OWN index update bypassed
+    (simulating any writer whose upsert never ran); writer B then writes
+    NORMALLY. `_update_index` now always delegates to a full
+    `rebuild_index`, so B's own (unbypassed) call picks up A's real
+    on-disk state too."""
+    home = make_home(tmp_path)
+    c1 = _record(tmp_path, home)
+    real_update_index = cases._update_index
+    monkeypatch.setattr(cases, "_update_index", lambda home, case_id: None)
+    cases.observe(
+        home, c1, "presented", text="shown", by="steward",
+        to="human", covering="decision", outcome="agreed", via="cli",
+    )
+    monkeypatch.setattr(cases, "_update_index", real_update_index)
+
+    c2 = _record(tmp_path, home)
+
+    rows = cases.list_cases(home)
+    row_c1 = next(r for r in rows if r["case"] == c1)
+    assert row_c1["provisional"] is False, "A's real presentation must be reflected, not a stale row"
+    assert {r["case"] for r in rows} == {c1, c2}
+
+
+# --------------------------------------------------------------- S4
+
+
+def test_r2_s4_one_bad_case_never_hides_the_population(tmp_path):
+    """Gate r2 S4 / Astra 11: `_index_row` caught only `CaseError` — a
+    case whose YAML itself will not parse raised a bare `ruamel.yaml`
+    error PAST it, killing the whole rebuild. The gate's own probe X.
+    Reproduced with a valid case, a missing-frontmatter case (already
+    caught: `CaseError`), and a malformed-YAML case (the new fix, a
+    `YAMLError` subclass) — three rows, two flagged, no exception."""
+    home = make_home(tmp_path)
+    good = _record(tmp_path, home)
+    good_path = next((home / "cases").glob(f"*/{good}.md"))
+    cases_dir = good_path.parent
+
+    no_fm_path = cases_dir / "case-00000001.md"
+    no_fm_path.write_text("not frontmatter at all\n", encoding="utf-8")
+
+    bad_yaml_path = cases_dir / "case-00000002.md"
+    bad_yaml_path.write_text("---\ncase: [unclosed\n---\nbody\n", encoding="utf-8")
+
+    cache_dir = worker.cache_dir(home)
+    rebuilt = cases.rebuild_index(cache_dir, home)  # must not raise
+    rows = json.loads(rebuilt.read_bytes())["cases"]
+    assert len(rows) == 3
+    flagged = [r for r in rows if r["frozen_ok"] is False]
+    assert len(flagged) == 2
+    ok_rows = [r for r in rows if r["frozen_ok"] is True]
+    assert len(ok_rows) == 1 and ok_rows[0]["case"] == good
+    assert {r["case"] for r in flagged} == {"case-00000001", "case-00000002"}
+
+    listed = cases.list_cases(home, only_ok=False)  # must not raise either
+    assert len(listed) == 3
+
+
+def test_r2_s4_non_utf8_case_file_also_degrades_instead_of_raising(tmp_path):
+    """S4's fix widened `_index_row`'s catch to `YAMLError`, but
+    `path.read_text(encoding="utf-8")` itself was still called BEFORE
+    that `try` block — a case file that is not valid UTF-8 (or a lost
+    file mid-rebuild) would raise `UnicodeDecodeError`/`OSError` past
+    `_index_row` exactly like the pre-fix YAML bug did. The read is now
+    inside the `try`, caught alongside `CaseError`/`YAMLError`."""
+    home = make_home(tmp_path)
+    good = _record(tmp_path, home)
+    good_path = next((home / "cases").glob(f"*/{good}.md"))
+    cases_dir = good_path.parent
+
+    bad_bytes_path = cases_dir / "case-00000004.md"
+    bad_bytes_path.write_bytes(b"\xff\xfe not valid utf-8 \x00\x01")
+
+    cache_dir = worker.cache_dir(home)
+    rebuilt = cases.rebuild_index(cache_dir, home)  # must not raise
+    rows = json.loads(rebuilt.read_bytes())["cases"]
+    assert len(rows) == 2
+    flagged = [r for r in rows if r["frozen_ok"] is False]
+    assert len(flagged) == 1 and flagged[0]["case"] == "case-00000004"
+    ok_rows = [r for r in rows if r["frozen_ok"] is True]
+    assert len(ok_rows) == 1 and ok_rows[0]["case"] == good
+
+
+# --------------------------------------------------------------- Astra 5
+
+
+def test_r2_astra5_case_list_text_output_marks_a_tampered_row(monkeypatch, tmp_path):
+    """Astra r2 finding 5 / gate r2 decision 6: `_index_row` (S4) always
+    carries `frozen_ok` and the JSON view of `case list` already shows
+    it — but the TEXT view (what a human actually reads at a terminal)
+    silently dropped the flag. One good case and one hand-tampered case
+    (frontmatter that will not parse at all, forcing `frozen_ok: false`
+    the same way `test_r2_s4_...` does), driven through `cli.main`
+    end-to-end: the tampered row's printed line must carry a visible
+    `TAMPERED` marker and the good row's must not (positive control
+    checked first, so an always-on marker can't pass silently)."""
+    from self_learn import cli
+
+    home = make_home(tmp_path)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+    good = _record(tmp_path, home)
+    good_path = next((home / "cases").glob(f"*/{good}.md"))
+    cases_dir = good_path.parent
+
+    bad_path = cases_dir / "case-00000003.md"
+    bad_path.write_text("not frontmatter at all\n", encoding="utf-8")
+
+    import io
+    import contextlib
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = cli.main(["case", "list"])
+    assert rc == 0
+    out = buf.getvalue()
+    lines = {ln.split("  ")[0]: ln for ln in out.splitlines() if ln.strip()}
+
+    assert good in lines
+    assert "TAMPERED" not in lines[good]  # positive control first
+    assert "case-00000003" in lines
+    assert "TAMPERED" in lines["case-00000003"]
+
+
+# --------------------------------------------------------------- N5
+
+
+def test_r2_n5_index_lock_is_mutually_exclusive_across_two_writers(tmp_path):
+    """Gate r2 N5: `_index_lock` had no test of its own — the raw-write
+    gate only pins that the `open()` call exists and is accounted for;
+    nothing exercised two concurrent index writers. Proven the same way
+    `test_recover_or_refuse.py` proves `commit_lock` mutual exclusion: a
+    SEPARATE file descriptor holds the lock exclusively; a second
+    acquisition (here, `cases._index_lock` on a background thread, since
+    its own `flock` call blocks rather than raising) must stay blocked
+    until the outside holder releases — never interleave."""
+    home = make_home(tmp_path)
+    cache_dir = worker.cache_dir(home)
+    lock_path = cases._index_path(cache_dir).parent / "index.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    outside_fh = open(lock_path, "w", encoding="utf-8")
+    fcntl.flock(outside_fh.fileno(), fcntl.LOCK_EX)
+
+    acquired = threading.Event()
+    events: list[str] = []
+
+    def writer():
+        with cases._index_lock(cache_dir):
+            events.append("acquired")
+        acquired.set()
+
+    t = threading.Thread(target=writer)
+    t.start()
+    try:
+        t.join(timeout=0.3)
+        assert not acquired.is_set(), "the second writer must still be blocked"
+        assert events == []
+    finally:
+        fcntl.flock(outside_fh.fileno(), fcntl.LOCK_UN)
+        outside_fh.close()
+
+    t.join(timeout=5)
+    assert acquired.is_set(), "the second writer must acquire once released"
+    assert events == ["acquired"]

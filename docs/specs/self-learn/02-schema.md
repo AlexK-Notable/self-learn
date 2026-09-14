@@ -897,10 +897,12 @@ nightly run (a `kind: reconsider, trigger: reconsider` case, run through
 
 **Two views.** `case show --evidence-only` is **blind by default** (no
 separate `--blind` flag): frontmatter reduced to exactly `case`, `opened_at`,
-`actor`, `kind`, `records`, `scope`, and `supersedes` (an allowlist, so
+`actor`, `kind`, `records`, and `supersedes` (an allowlist, so
 `presented`, `outcome`, `superseded_by`, `parked_for`, `parked_reason`, and any
 key added later stay out unless named here — amended 2026-09-14 after a
-denylist let `presented` through); sections 1, 2, and 4 only — neither the
+denylist let `presented` through; `scope` is section 1's own body text, never
+a frontmatter key, and stays visible there in this same blind view); sections
+1, 2, and 4 only — neither the
 reasoning, the verb, nor the receipts (which name the verb) reach the
 reader. `case show` (no flag) is the full view, everything. The overseer
 reads the evidence-only view first, by tool, so "evidence before rationale"

@@ -402,9 +402,12 @@ what an unattended run decided, and how you correct it:
 
 - `self-learn case show <id> [--evidence-only] [--json]` — the frozen
   decided account. `--evidence-only` is BLIND by default (no separate
-  `--blind` flag): it withholds the frontmatter's `outcome`,
-  `superseded_by`, `parked_for`, and `parked_reason`, plus the Decision,
-  Application, and Later-observations sections — so it hides the verb,
+  `--blind` flag): it is an ALLOWLIST, keeping only the frontmatter's
+  `case`, `opened_at`, `actor`, `kind`, `records`, and `supersedes` —
+  `outcome`, `superseded_by`, `parked_for`, `parked_reason`, `presented`,
+  and any key added later stay out unless named here — plus the Identity
+  and scope, Evidence, and Dependencies sections; never the Decision,
+  Application, or Later-observations sections — so it hides the verb,
   the reasoning, and the receipts, not only the reasoning. Read it first
   if you are re-examining a decision before reading the full view, the
   same discipline the overseer follows.
@@ -429,7 +432,7 @@ what an unattended run decided, and how you correct it:
   with what it answers and its stated scope. `conversation:<obs-id>` is
   the reference to use for words typed into the overseer's own
   conversation, where no transcript line exists.
-- `self-learn user-model add --provisional --statements stmt-…[,stmt-…]
+- `self-learn user-model add --statements stmt-…[,stmt-…]
   [--basis um-…@r…,…] …` / `user-model lapse um-…
   --changed-condition <key>|--contrary <ref>|--consolidated-into um-…
   --at <date>` — the human path into the model of the user. A system

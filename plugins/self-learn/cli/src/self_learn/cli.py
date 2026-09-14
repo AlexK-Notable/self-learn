@@ -287,12 +287,13 @@ def _add_user_model_parser(sub) -> None:
     uadd.add_argument("--basis", metavar="um-...@r...[,um-...@r...]")
     # D-f: `--no-provisional` is GONE — the flag that let a caller create
     # an already-seen (`provisional: false`) system-reading entry at
-    # creation time. `--provisional` stays (inert: `add_entry` no longer
-    # takes a `provisional` parameter at all — a system-reading entry is
-    # always created `true`) because `commands/review.md` documents an
-    # example invocation using it; this parses without erroring but no
-    # longer changes anything.
-    uadd.add_argument("--provisional", dest="provisional", action="store_true", default=None)
+    # creation time. Gate r2 N2: `--provisional` is GONE TOO — round 1
+    # kept it as an inert flag (`add_entry` never took a `provisional`
+    # parameter; a system-reading entry is always created `true`)
+    # because `commands/review.md` documented an example invocation
+    # using it; round 2 settles this the other way — drop the flag,
+    # fix the one doc line instead of carrying a parse-but-do-nothing
+    # flag forward.
     uadd.add_argument("--json", action="store_true", dest="as_json")
 
     ulapse = um_sub.add_parser("lapse", help="mark one entry LAPSED")
@@ -3144,7 +3145,14 @@ def _cmd_case(args: argparse.Namespace) -> int:
                 print(json.dumps(rows))
             else:
                 for row in rows:
-                    print(f"{row['case']}  {row['actor']}  {row['kind']}  {row['outcome']}  provisional={row['provisional']}")
+                    # Astra r2 finding 5 / gate r2 decision 6: the JSON
+                    # view always carries `frozen_ok`, but the text view
+                    # silently dropped it — a human running `case list`
+                    # at a terminal never saw that a row's freeze hash
+                    # failed re-verification. A visible marker, not a
+                    # silent flag only the JSON consumer sees.
+                    tampered = "  TAMPERED" if row.get("frozen_ok") is False else ""
+                    print(f"{row['case']}  {row['actor']}  {row['kind']}  {row['outcome']}  provisional={row['provisional']}{tampered}")
             return EXIT_OK
         if args.case_command == "observe":
             obs_id = cases.observe(

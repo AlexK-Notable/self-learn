@@ -109,6 +109,35 @@ UM_ID_RE = re.compile(r"^um-[0-9a-f]{4}$")
 #: D2: never used, anywhere, for a user-model entry.
 _FORBIDDEN_RE = re.compile(r"\b(ratified|ruled|stated|contradicted)\b", re.IGNORECASE)
 
+#: Gate r2 B1 / Astra 12: `title`, `because`, the lapse cause/contrary
+#: text, and `ref` are interpolated straight into this module's
+#: line-structured document (`_render_entry`) and reparsed by two bare
+#: regexes (`_CONTAINER_HEADING_RE`, `_ENTRY_HEADING_RE`) plus a
+#: `- key: value` line scanner (`_parse_entry_fields`) that has no
+#: notion of "this line belongs to a different field" — an EMBEDDED
+#: NEWLINE in any of these fields therefore becomes structure on the
+#: next read (a forged container/entry heading, or a `- key: value`
+#: line that silently overwrites a real field on re-parse). D-i's own
+#: fix on the CASE side used `^## ` (exactly two hashes) because case
+#: headings are always spelled that way; this module's own headings are
+#: NOT uniform (`## A.`/`## B.` for containers, `### um-… — …` for
+#: entries), so `^## ` alone would miss a forged THREE-hash entry
+#: heading — the gate's own probe forged one. Refused here the same
+#: secret-scan-style way `cases._refuse_headings` refuses a case's free
+#: text: never escaped, never silently accepted.
+_STRUCTURAL_RE = re.compile(r"\n|^#+", re.MULTILINE)
+
+
+def _refuse_structural(*texts: str | None) -> None:
+    for text in texts:
+        if text and _STRUCTURAL_RE.search(text):
+            raise UserModelError(
+                "user-model: a free-text field contains an embedded newline "
+                "or a leading '#' heading-shaped line — refused (structural "
+                "refusal, gate r2 B1)"
+            )
+
+
 _DELIM = "---"
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
 _CONTAINER_HEADING_RE = re.compile(r"^## ([A-E])\.[^\n]*$", re.MULTILINE)
@@ -356,6 +385,10 @@ def add_entry(
     hits = secret_scan(title) + secret_scan(because)
     if hits:
         raise UserModelError(format_refusal(hits))
+    # Gate r2 B1 / Astra 12: refuse before any write, same as the secret
+    # scan just above — `ref` is included because it too is rendered as
+    # a raw line (`_render_entry`'s `- ref: …`).
+    _refuse_structural(title, because, ref)
 
     statements = list(statements or [])
     if source == "system-reading":
@@ -456,6 +489,10 @@ def lapse_entry(
     hits = secret_scan(changed_text)
     if hits:
         raise UserModelError(format_refusal(hits))
+    # Gate r2 B1 / Astra 12: same structural refusal as `add_entry` — the
+    # lapse cause is rendered as `- changed_condition: …`, one more line
+    # a newline could turn into forged structure.
+    _refuse_structural(changed_text)
 
     # Astra 4/10 (item 6): `_load`/`_find` (and the checks that depend on
     # what they find — permission-by-container, already-LAPSED) are
@@ -500,21 +537,47 @@ def lapse_entry(
 # ------------------------------------------------------------- mark_seen
 
 
-def _mark_seen_locked(home: Path | str, entry_ids: list[str]) -> Path:
-    """Flip every id in *entry_ids* STORED `provisional` field `true` ->
-    `false`, in one write — but does NOT commit. The CALLER must already
-    hold the ledger lock (its own outermost acquisition, or a nested
-    pass-through) and is responsible for the commit; this split is what
-    lets `cases.observe(kind="presented")` land the case file's own
-    write and every named entry's flip in ONE commit (fold-u2-r1 item 1
-    / B1).
+def _validate_seen(
+    home: Path | str, entry_ids: list[str]
+) -> tuple[dict, dict[str, list[dict]], dict[str, tuple[str, dict]]]:
+    """Load (under the caller's already-open lock) and validate every id
+    in *entry_ids* — well-formed, known, `source == system-reading` (has
+    a `provisional` field) — performing NO writes. Raises on the FIRST
+    invalid id. Split out of the old single `_mark_seen_locked` (gate r2
+    S2) so a caller with its OWN file to write first (`cases.observe`)
+    can validate here — before ANYTHING is written anywhere (B1) — then
+    write its own file, then call :func:`_apply_seen` for the flip,
+    bracketing the two writes with an intent for crash recovery. Returns
+    `(fm, containers_map, targets)` — `targets` maps each entry id to its
+    `(container_letter, entry_dict)`, ready for :func:`_apply_seen`."""
+    home = Path(home)
+    fm, containers_map = _load(home)
+    targets: dict[str, tuple[str, dict]] = {}
+    for entry_id in entry_ids:
+        if UM_ID_RE.match(entry_id) is None:
+            raise UserModelUsageError(f"user-model: malformed entry id {entry_id!r}")
+        letter, found = _find(containers_map, entry_id)
+        if found is None or letter is None:
+            raise UserModelUsageError(f"user-model: unknown entry {entry_id}")
+        if found.get("source") != "system-reading" or "provisional" not in found:
+            raise UserModelError(
+                f"user-model: {entry_id} has no provisional field — own-words "
+                "entries are never marked seen"
+            )
+        targets[entry_id] = (letter, found)
+    return fm, containers_map, targets
 
-    Every id is validated — well-formed, known, `source ==
-    system-reading` (has a `provisional` field) — BEFORE any entry is
-    flipped or `_save`d: this function raises on the FIRST invalid id
-    with NOTHING written yet, so a caller that calls this before its own
-    write (as `observe` does) never leaves a flipped entry with no
-    matching record of why.
+
+def _apply_seen(
+    home: Path | str,
+    fm: dict,
+    containers_map: dict[str, list[dict]],
+    targets: dict[str, tuple[str, dict]],
+) -> Path:
+    """Apply the flip for already-:func:`_validate_seen`-d *targets* and
+    `_save` — but does NOT commit (gate r2 S2, split out of the old
+    `_mark_seen_locked`). The CALLER must already hold the ledger lock
+    and is responsible for the commit.
 
     D-a: only a container-C entry moves into B when flipped (B's ≥1
     statement invariant is never violated — nothing moves into B without
@@ -532,21 +595,6 @@ def _mark_seen_locked(home: Path | str, entry_ids: list[str]) -> Path:
     already `provisional: false` — still written/committed by the
     caller, idempotent, not an error."""
     home = Path(home)
-    fm, containers_map = _load(home)
-    targets: dict[str, tuple[str, dict]] = {}
-    for entry_id in entry_ids:
-        if UM_ID_RE.match(entry_id) is None:
-            raise UserModelUsageError(f"user-model: malformed entry id {entry_id!r}")
-        letter, found = _find(containers_map, entry_id)
-        if found is None or letter is None:
-            raise UserModelUsageError(f"user-model: unknown entry {entry_id}")
-        if found.get("source") != "system-reading" or "provisional" not in found:
-            raise UserModelError(
-                f"user-model: {entry_id} has no provisional field — own-words "
-                "entries are never marked seen"
-            )
-        targets[entry_id] = (letter, found)
-
     containers_map = dict(containers_map)
     for entry_id, (letter, found) in targets.items():
         if found["provisional"] is False:
@@ -563,6 +611,22 @@ def _mark_seen_locked(home: Path | str, entry_ids: list[str]) -> Path:
 
     path, _new_fm = _save(home, fm, containers_map, by=None)
     return path
+
+
+def _mark_seen_locked(home: Path | str, entry_ids: list[str]) -> Path:
+    """Flip every id in *entry_ids* STORED `provisional` field `true` ->
+    `false`, in one write — but does NOT commit. The CALLER must already
+    hold the ledger lock (its own outermost acquisition, or a nested
+    pass-through) and is responsible for the commit. A thin combinator
+    of :func:`_validate_seen` + :func:`_apply_seen` (gate r2 S2 split
+    those apart so `cases.observe` can interleave its own case-file
+    write between them); kept as one call for `mark_seen`'s standalone
+    use and any direct/test caller that wants validate-then-flip in one
+    step, with the same "raises on the FIRST invalid id, nothing written
+    yet" guarantee (fold-u2-r1 item 1 / B1) as before the split."""
+    home = Path(home)
+    fm, containers_map, targets = _validate_seen(home, entry_ids)
+    return _apply_seen(home, fm, containers_map, targets)
 
 
 def mark_seen(home: Path | str, entry_id: str) -> Path:
