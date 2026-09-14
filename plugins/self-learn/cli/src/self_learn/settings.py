@@ -957,6 +957,7 @@ REGISTRY: tuple[Setting, ...] = (
         kind="int",
         default=72000,
         validate=lambda v: max(cast(int, v), 0),
+        validate_hint="must be >= 0",
         description="minimum seconds between scheduled steward runs",
     ),
     Setting(

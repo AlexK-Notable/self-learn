@@ -355,10 +355,12 @@ itself never stages, commits, or pushes on their behalf (H-5 unchanged).
 `_worker_autokick_disabled()` span the mine and worker jobs already share,
 for the same reason given there: no producer's follow-on tail may spawn a
 detached child while `serve` is mid-tick. `doctor serve` and `status
---fast` gain `steward_last_run_at`/`steward_cases_since_overseer` and
-`overseer_last_run`/`overseer_next`/`overseer_open_questions` as additive
-JSON fields, following the precedent §7.2a.7 already set for the
-intent-recovery status line (full field list: §7.2a.7 as amended).
+--fast` gain `steward_last_run_at` only, read from the cached marker;
+`steward_cases_since_overseer` walks the case store and stays on full
+`status`, while `overseer_last_run`/`overseer_next`/`overseer_open_questions`
+remain additive JSON fields *(Amended 2026-09-14, U10 fold r1a S6)*,
+following the precedent §7.2a.7 already set for the intent-recovery status
+line (full field list: §7.2a.7 as amended).
 `systemd/self-learn-overseer.service`/`.timer` (weekly `OnCalendar`,
 `Persistent=true`) join the miner/host unit pair; `install.sh` links but
 never enables them, unchanged from every other unit this repo ships

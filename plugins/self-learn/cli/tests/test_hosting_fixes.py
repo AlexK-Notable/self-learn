@@ -962,6 +962,21 @@ class TestCacheMigration:
         assert (old / "worker.window").is_file()  # left for its holder
         assert (new / worker.MIGRATION_MARKER).is_file()  # still complete
 
+    def test_steward_lock_is_left_behind_for_its_live_holder(
+        self, tmp_path, monkeypatch
+    ):
+        xdg = tmp_path / "xdg"
+        monkeypatch.setenv("XDG_CACHE_HOME", str(xdg))
+        monkeypatch.setenv("SELF_LEARN_HOME", str(tmp_path / "home-a"))
+        old = self._old_state(xdg)
+        (old / "steward.lock").write_text("", encoding="utf-8")
+
+        new = worker.cache_dir()
+
+        assert not (new / "steward.lock").exists()
+        assert (old / "steward.lock").is_file()
+        assert (new / worker.MIGRATION_MARKER).is_file()
+
     def test_existing_target_is_never_clobbered(self, tmp_path, monkeypatch):
         xdg = tmp_path / "xdg"
         monkeypatch.setenv("XDG_CACHE_HOME", str(xdg))

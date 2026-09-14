@@ -216,7 +216,9 @@ def _validate_declared_stage(stage: Path) -> None:
             validation_path.unlink(missing_ok=True)
 
 
-def _session_spec(home: Path, run_dir: Path, packet, *, label: str) -> invocation.SessionSpec:
+def _session_spec(
+    home: Path, run_dir: Path, prompt: str, *, label: str
+) -> invocation.SessionSpec:
     timeout_value, _source = settings.resolve_setting(
         home, settings.by_name("steward.timeout_secs")
     )
@@ -229,7 +231,7 @@ def _session_spec(home: Path, run_dir: Path, packet, *, label: str) -> invocatio
     )
     return invocation.SessionSpec(
         surface="steward",
-        prompt=packet.text,
+        prompt=prompt,
         cwd=run_dir,
         timeout=float(timeout),
         containment=containment,
@@ -399,7 +401,7 @@ def _maintain_stage(home: Path, stage: Path, run_record: dict) -> int:
                 uncertainty=item.get("uncertainty"),
                 amends=item.get("amends"),
             )
-        except statements.StatementError as exc:
+        except (statements.StatementError, TypeError, ValueError) as exc:
             refused += 1
             _journal(home, {"ts": chrono.now_iso(), "run_id": run_record.get("run_id"), "status": "statement-refused", "error": str(exc)})
 
@@ -420,7 +422,7 @@ def _maintain_stage(home: Path, stage: Path, run_record: dict) -> int:
                 raise user_model.UserModelUsageError(
                     f"model-updates.yaml: unknown action {action!r}"
                 )
-        except user_model.UserModelError as exc:
+        except (user_model.UserModelError, TypeError, ValueError) as exc:
             refused += 1
             _journal(home, {"ts": chrono.now_iso(), "run_id": run_record.get("run_id"), "status": "model-update-refused", "error": str(exc)})
 
@@ -598,7 +600,7 @@ def _apply_packet(
             for rid in case_data.get("records") or []:
                 verbs.reconsider(home, rid, case=case_id, by="steward", no_push=True)
 
-        items = _prepare_sheet(sheet_path, case_id)
+        _prepare_sheet(sheet_path, case_id)
         # Re-load with the real home only after the runner substituted the
         # newly committed case id.
         items = batch.load_sheet(sheet_path, home=home)
@@ -621,7 +623,7 @@ def _apply_packet(
                 actor="steward",
             )
         else:
-            preview = batch.dry_run(home, items)
+            preview = batch.dry_run(home, items, actor="steward")
             if not _preview_is_clean_for_sequence(preview, items):
                 result = batch.BatchResult(
                     items=[
@@ -641,7 +643,7 @@ def _apply_packet(
                     actor="steward",
                 )
             else:
-                result = batch.run(home, items, no_push=True)
+                result = batch.run(home, items, no_push=True, actor="steward")
         result_path = run_dir / f"batch-result-{len(record.setdefault('batch_results', [])) + 1}.json"
         _write_json(result_path, result.to_json())
         record["batch_results"].append(
@@ -667,13 +669,18 @@ def _apply_packet(
     return decided, refused
 
 
-def last_run_iso(home: Path | str | None = None) -> str | None:
-    resolved = Path(home) if home is not None else None
-    marker = cache_dir(resolved) / "steward" / "steward.last-run"
+def last_run_iso_from_cache(resolved_cache_dir: Path) -> str | None:
+    """Read the one cached marker without creating or migrating its directory."""
+    marker = resolved_cache_dir / "steward" / "steward.last-run"
     try:
         return marker.read_text(encoding="utf-8").strip() or None
     except OSError:
         return None
+
+
+def last_run_iso(home: Path | str | None = None) -> str | None:
+    resolved = Path(home) if home is not None else None
+    return last_run_iso_from_cache(cache_dir(resolved))
 
 
 def cases_since_overseer(home: Path | str) -> int:
@@ -781,7 +788,12 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
             )
             packet = steward_prompt.assemble(home, cache_dir(home), context, proposals)
             fsops.atomic_write(run_dir / f"packet-{packet_index:04d}.md", packet.text, fsync=True)
-            spec = _session_spec(home, run_dir, packet, label=f"steward-{run_id}-{packet_index}")
+            spec = _session_spec(
+                home,
+                run_dir,
+                packet.text,
+                label=f"steward-{run_id}-{packet_index}",
+            )
             outcome = invocation.write_session(spec)
             result.calls += 1
             packet_record = {

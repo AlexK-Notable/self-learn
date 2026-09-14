@@ -12,11 +12,23 @@ from ruamel.yaml import YAML
 import pytest
 
 from self_learn import cli as cli_mod
-from self_learn import cases, intents, ledger_ops, settings, statements, steward, verbs
+from self_learn import (
+    cases,
+    gitops,
+    intents,
+    ledger_ops,
+    provider,
+    settings,
+    statements,
+    steward,
+    user_model,
+    verbs,
+)
 from self_learn.ledger_ops import create_record
 from self_learn.invocation.contract import Outcome
 from self_learn.invocation_sdk.backend import SdkOutcome
 from self_learn.records import Record
+from test_recover_or_refuse import _plant_stop
 from support import commit_all, git, make_behavior, make_home, proposal_dict
 
 
@@ -103,7 +115,9 @@ def _write_hook_stage(spec):
 
 def test_steward_settings_are_registered_with_safe_defaults():
     assert settings.by_name("steward.packet_size").default == 10
-    assert settings.by_name("steward.cooldown_secs").default == 72000
+    cooldown = settings.by_name("steward.cooldown_secs")
+    assert cooldown.default == 72000
+    assert cooldown.validate_hint == "must be >= 0"
     enabled = settings.by_name("steward.enabled")
     assert enabled.default is False
     assert enabled.env_var is None
@@ -192,6 +206,35 @@ def test_twenty_five_records_are_decided_across_three_packets(tmp_path, monkeypa
     assert result.decided == ids
     assert ledger_ops.list_items(home) == []
     assert git(home, "log", "--format=%B").stdout.count("By: steward") >= 25
+    recorded = cases.list_cases(home, only_ok=True)
+    assert len(recorded) == 25
+    assert {row["actor"] for row in recorded} == {"steward"}
+    assert steward.cases_since_overseer(home) == 25
+
+
+def test_cross_bucket_queue_is_globally_oldest_first(tmp_path):
+    home = make_home(tmp_path, skills=("a", "b"))
+    plan = [
+        ("skill:a", "2026-01-01T00:00:00Z", "lrn-aaaa0001"),
+        ("skill:b", "2026-01-02T00:00:00Z", "lrn-bbbb0001"),
+        ("skill:a", "2026-01-03T00:00:00Z", "lrn-aaaa0002"),
+        ("skill:b", "2026-01-04T00:00:00Z", "lrn-bbbb0002"),
+    ]
+    for scope, created_at, rid in plan:
+        create_record(
+            home,
+            make_behavior(record_id=rid, scope=scope, created_at=created_at),
+        )
+        ledger_ops.write_proposal(home, rid, proposal_dict(scope=scope))
+        ledger_ops.stamp_proposal(home, rid)
+    commit_all(home, "seed interleaved steward queue")
+
+    assert [entry.record.id for entry, _ in steward._eligible_proposals(home)] == [
+        "lrn-aaaa0001",
+        "lrn-bbbb0001",
+        "lrn-aaaa0002",
+        "lrn-bbbb0002",
+    ]
 
 
 def test_runner_forces_steward_attribution_on_every_status_changing_sheet_item(tmp_path):
@@ -223,6 +266,68 @@ def test_runner_forces_steward_attribution_on_every_status_changing_sheet_item(t
     parsed = steward._prepare_sheet(sheet, "case-deadbeef")
 
     assert all(item.fields.get("by") == "steward" for item in parsed)
+
+
+def test_runner_attributes_every_batch_preview_and_apply_to_steward(
+    tmp_path, monkeypatch
+):
+    home = make_home(tmp_path)
+    _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+    real_dry_run = steward.batch.dry_run
+    real_run = steward.batch.run
+    actors: list[tuple[str, object]] = []
+
+    def attributed_dry_run(*args, **kwargs):
+        actors.append(("dry-run", kwargs.get("actor")))
+        return real_dry_run(*args, **kwargs)
+
+    def attributed_run(*args, **kwargs):
+        actors.append(("run", kwargs.get("actor")))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(steward.invocation, "write_session", _write_decision_stage)
+    monkeypatch.setattr(steward.batch, "dry_run", attributed_dry_run)
+    monkeypatch.setattr(steward.batch, "run", attributed_run)
+
+    assert steward.run(home).status == "applied"
+    assert actors
+    assert {kind for kind, _actor in actors} == {"dry-run", "run"}
+    assert {actor for _kind, actor in actors} == {"steward"}
+
+
+def test_session_spec_and_doctor_share_the_required_steward_containment(
+    tmp_path, monkeypatch
+):
+    home = make_home(tmp_path)
+    _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+    captured = []
+
+    def capture(spec):
+        captured.append(spec)
+        return _write_decision_stage(spec)
+
+    monkeypatch.setattr(steward.invocation, "write_session", capture)
+    assert steward.run(home).status == "applied"
+
+    spec = captured[0]
+    run_record = next((steward.cache_dir(home) / "steward" / "runs").glob("*/run.json"))
+    assert spec.cwd == run_record.parent
+    assert spec.containment.write_globs == (f"{spec.cwd}/steward/**",)
+    assert spec.containment.write_exact == ()
+    assert spec.containment.strict_mcp is True
+    assert spec.containment.allowed_tools == "Read,Grep,Glob,Write,Edit"
+    assert spec.containment.disallowed_tools == "Bash,NotebookEdit,Task,WebFetch,WebSearch"
+
+    row = provider._steward_containment_row(home)
+    assert row.verdict == "PASS"
+    assert "writes confined to the run directory" in row.detail
+
+    monkeypatch.setattr(steward, "_DISALLOWED_TOOLS", None)
+    refused_row = provider._steward_containment_row(home)
+    assert refused_row.verdict == "FAIL"
+    assert "disallowed_tools=None" in refused_row.detail
 
 
 def test_dry_run_writes_stage_files_without_a_ledger_commit(tmp_path, monkeypatch):
@@ -534,6 +639,86 @@ def test_statement_maintenance_requires_a_transcript_reference_and_is_journaled(
     assert "statement-refused" in steward.journal_path(home).read_text(encoding="utf-8")
 
 
+def test_malformed_maintenance_entries_are_refused_and_later_entries_apply(
+    tmp_path, monkeypatch
+):
+    home = make_home(tmp_path)
+    _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+
+    def write_stage(spec):
+        outcome = _write_decision_stage(spec)
+        match = re.search(
+            r"^stage directory \(the only place you may write\): (.+)$",
+            spec.prompt,
+            re.M,
+        )
+        assert match is not None
+        stage = Path(match.group(1))
+        _dump_yaml(
+            stage / "statements.yaml",
+            {
+                "items": [
+                    {
+                        "verbatim": "bad type",
+                        "source": {"message_ref": "transcript:session#L1"},
+                        "answers": 1,
+                    },
+                    {
+                        "verbatim": "bad value",
+                        "source": {"message_ref": "transcript:session#L2"},
+                        "answers": [["kind"]],
+                    },
+                    {
+                        "verbatim": "The narrow surface is preferred.",
+                        "source": {"message_ref": "transcript:session#L3"},
+                    },
+                ]
+            },
+        )
+        _dump_yaml(
+            stage / "model-updates.yaml",
+            {
+                "items": [
+                    {
+                        "action": "add",
+                        "container": "C",
+                        "title": "malformed",
+                        "because": "a stray key must be refused",
+                        "source": "system-reading",
+                        "ref": "transcript:session#L4",
+                        "not_a_real_key": 1,
+                    },
+                    {
+                        "action": "add",
+                        "container": "C",
+                        "title": "valid reading",
+                        "because": "later entries still apply",
+                        "source": "system-reading",
+                        "ref": "transcript:session#L5",
+                        "statements": ["stmt-deadbeef"],
+                    },
+                ]
+            },
+        )
+        return outcome
+
+    monkeypatch.setattr(steward.invocation, "write_session", write_stage)
+
+    result = steward.run(home)
+
+    assert result.status == "partial"
+    assert result.refused == 3
+    assert [row["verbatim"] for row in statements.list_statements(home)] == [
+        "The narrow surface is preferred."
+    ]
+    model = user_model.show(home)
+    assert [row["title"] for row in model["containers"]["C"]] == ["valid reading"]
+    journal = steward.journal_path(home).read_text(encoding="utf-8")
+    assert journal.count('"status":"statement-refused"') == 2
+    assert journal.count('"status":"model-update-refused"') == 1
+
+
 def test_dependency_observation_is_mechanically_reconsidered(tmp_path, monkeypatch):
     home = make_home(tmp_path)
     rid = _seed_fresh_proposals(home, 1)[0]
@@ -630,6 +815,53 @@ def test_cli_steward_run_exit_codes_and_json(monkeypatch, capsys, tmp_path):
     }
 
 
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("idle", cli_mod.EXIT_HELD),
+        ("disabled", cli_mod.EXIT_HELD),
+        ("dry-run", cli_mod.EXIT_OK),
+        ("applied", cli_mod.EXIT_OK),
+        ("partial", cli_mod.EXIT_BATCH_PARTIAL),
+        ("refused", 1),
+        ("stopped", gitops.EXIT_GIT_FAILED),
+    ],
+)
+def test_cli_steward_run_maps_every_status_to_fw85(
+    status, expected, monkeypatch, capsys, tmp_path
+):
+    home = make_home(tmp_path)
+    monkeypatch.setattr(cli_mod, "resolve_home", lambda: home)
+    monkeypatch.setattr(
+        cli_mod.steward,
+        "run",
+        lambda actual, dry_run=False: steward.RunResult(
+            status,
+            stopped=["intent-deadbeef: path hosts.yaml changed twice"]
+            if status == "stopped"
+            else [],
+        ),
+    )
+
+    assert cli_mod.main(["steward", "run", "--json"]) == expected
+    assert json.loads(capsys.readouterr().out)["outcome"] == status
+
+
+def test_cli_steward_stop_names_the_planted_intent_and_clear_command(
+    tmp_path, monkeypatch, capsys
+):
+    home = make_home(tmp_path)
+    target = home / "hosts.yaml"
+    intent = _plant_stop(home, target, op="steward-stop")
+    monkeypatch.setattr(cli_mod, "resolve_home", lambda: home)
+
+    assert cli_mod.main(["steward", "run"]) == gitops.EXIT_GIT_FAILED
+    err = capsys.readouterr().err
+    assert intent.id in err
+    assert target.name in err
+    assert "reconcile --clear-intent" in err
+
+
 def test_status_json_has_steward_fields_and_doctor_names_containment(
     monkeypatch, capsys, tmp_path
 ):
@@ -648,3 +880,17 @@ def test_status_json_has_steward_fields_and_doctor_names_containment(
     assert "models — steward:" in doctor
     assert "containment — steward:" in doctor
     assert "writes confined to the run directory" in doctor
+
+
+def test_doctor_serve_reads_the_threaded_homes_cached_steward_marker(
+    monkeypatch, tmp_path
+):
+    home = make_home(tmp_path)
+    marker = steward.cache_dir(home) / "steward" / "steward.last-run"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("2026-09-14T12:34:56Z\n", encoding="utf-8")
+    monkeypatch.setenv("SELF_LEARN_HOME", str(tmp_path / "different-home"))
+
+    row = provider._serve_row(home)
+
+    assert "steward_last_run_at=2026-09-14T12:34:56Z" in row.detail

@@ -734,7 +734,7 @@ def _sdk_row(
 # --------------------------------------------------------- Doc-e: orphans
 
 
-def _serve_row() -> Row:
+def _serve_row(home: Path | str) -> Row:
     """`Doc-g` / U-engine Phase 2 (spec Sec 5.6) -- the staleness alarm
     lives OUTSIDE the daemon: this row is what makes a dead `serve` LOUD
     even when nothing else is watching (`SUP2`/`SUP3`). Local imports of
@@ -753,6 +753,7 @@ def _serve_row() -> Row:
     configuration (Sec 5.7) -- never FAIL, because that pairing is
     supported, not broken."""
     from . import serve as serve_mod
+    from . import steward as steward_mod
 
     # `Doc-0`'s own contract: `preflight` "computes no verdict... and
     # PRINTS NOTHING" -- and, pinned by `test_ns5_doctor_writes_nothing`,
@@ -760,7 +761,9 @@ def _serve_row() -> Row:
     # directory as a side effect (`mkdir(parents=True, exist_ok=True)`
     # plus a migration shim); `cache_dir_readonly()` resolves the SAME
     # path without ever touching the filesystem.
-    cache_dir = serve_mod.cache_dir_readonly()
+    cache_dir = serve_mod.cache_dir_readonly(home)
+    steward_last_run_at = steward_mod.last_run_iso_from_cache(cache_dir)
+    steward_detail = f"; steward_last_run_at={steward_last_run_at or 'never'}"
     both_enabled = serve_mod.is_enabled(
         "self-learn-host.service", "default.target"
     ) and serve_mod.is_enabled("self-learn-miner.timer", "timers.target")
@@ -786,9 +789,13 @@ def _serve_row() -> Row:
                     "ever seen -- is `self-learn serve` running?"
                 )
             )
-            return Row(name="serve", verdict="FAIL", detail=detail)
+            return Row(
+                name="serve", verdict="FAIL", detail=detail + steward_detail
+            )
         return Row(
-            name="serve", verdict="SKIP", detail="serve is not configured on this machine"
+            name="serve",
+            verdict="SKIP",
+            detail="serve is not configured on this machine" + steward_detail,
         )
 
     age = serve_mod.heartbeat_age_secs(cache_dir)
@@ -799,7 +806,10 @@ def _serve_row() -> Row:
         return Row(
             name="serve",
             verdict="FAIL",
-            detail=f"heartbeat is stale (age={age_detail}, tick={tick_secs:.0f}s) -- serve may have died",
+            detail=(
+                f"heartbeat is stale (age={age_detail}, tick={tick_secs:.0f}s) "
+                f"-- serve may have died{steward_detail}"
+            ),
         )
 
     next_job = record.get("next_job") or "idle"
@@ -811,10 +821,15 @@ def _serve_row() -> Row:
                 f"heartbeat fresh (age={age:.1f}s) -- next: {next_job}; "
                 "self-learn-miner.timer is ALSO enabled -- deliberate "
                 "belt-and-braces poke configuration (Sec 5.7), not a fault"
+                f"{steward_detail}"
             ),
         )
     return Row(
-        name="serve", verdict="PASS", detail=f"heartbeat fresh (age={age:.1f}s) -- next: {next_job}"
+        name="serve",
+        verdict="PASS",
+        detail=(
+            f"heartbeat fresh (age={age:.1f}s) -- next: {next_job}{steward_detail}"
+        ),
     )
 
 
@@ -869,6 +884,52 @@ def _ui_row() -> Row:
         name="ui",
         verdict="WARN",
         detail=f"{unit_name} is linked but not enabled — state only, it writes no heartbeat",
+    )
+
+
+def _steward_containment_row(home: Path | str) -> Row:
+    """Build doctor output from the runner's actual SessionSpec builder."""
+    from . import steward as steward_mod
+
+    resolved_home = Path(home)
+    run_dir = resolved_home / ".steward-doctor-run"
+    spec = steward_mod._session_spec(
+        resolved_home,
+        run_dir,
+        "doctor containment probe",
+        label="steward-doctor-containment",
+    )
+    containment = spec.containment
+    expected_glob = (f"{run_dir}/steward/**",)
+    matches = (
+        spec.cwd == run_dir
+        and containment.write_globs == expected_glob
+        and containment.write_exact == ()
+        and containment.strict_mcp is True
+        and containment.allowed_tools == "Read,Grep,Glob,Write,Edit"
+        and containment.disallowed_tools
+        == "Bash,NotebookEdit,Task,WebFetch,WebSearch"
+    )
+    if matches:
+        return Row(
+            name="containment",
+            verdict="PASS",
+            detail=(
+                "steward: Read/Grep/Glob plus file writes confined to the run "
+                "directory; Bash, task delegation, notebooks, and web tools refused"
+            ),
+        )
+    return Row(
+        name="containment",
+        verdict="FAIL",
+        detail=(
+            "steward containment does not match the required run-directory shape: "
+            f"cwd={spec.cwd}; write_globs={list(containment.write_globs)!r}; "
+            f"write_exact={list(containment.write_exact)!r}; "
+            f"strict_mcp={containment.strict_mcp!r}; "
+            f"allowed_tools={containment.allowed_tools!r}; "
+            f"disallowed_tools={containment.disallowed_tools!r}"
+        ),
     )
 
 
@@ -960,16 +1021,7 @@ def preflight(home: Path | str) -> list[Row]:
     rows.extend(_models_rows(resolutions, home))
     rows.append(_small_fast_row(home, provider))
 
-    rows.append(
-        Row(
-            name="containment",
-            verdict="PASS",
-            detail=(
-                "steward: Read/Grep/Glob plus file writes confined to the run "
-                "directory; Bash, task delegation, notebooks, and web tools refused"
-            ),
-        )
-    )
+    rows.append(_steward_containment_row(home))
 
     # env (per-surface)
     env_rows, env_details = _env_rows(resolutions, home)
@@ -979,7 +1031,7 @@ def preflight(home: Path | str) -> list[Row]:
     rows.append(_orphan_report_row())
 
     # serve (U-engine Phase 2, Doc-g)
-    rows.append(_serve_row())
+    rows.append(_serve_row(home))
 
     # ui (M-N) — self-learn-ui.service's linked/enabled state
     rows.append(_ui_row())

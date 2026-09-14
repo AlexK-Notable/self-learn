@@ -489,8 +489,10 @@ job does, unless `--dry-run` is given.
   steward` — filter `case list` or the record's own history to see which
   decisions were the steward's.
 - Exit codes follow the unattended-run contract in the exit-code list
-  above: `0` ran and decided something, `EXIT_HELD` nothing was due, `6`
-  a STOP intent blocked the run before it started, `64` usage.
+  above: `0` is `dry-run` or `applied`; `EXIT_HELD` (10) is `idle`,
+  `disabled`, or a held `steward.lock`; `8` is `partial`; `1` is
+  `refused`; `6` is `stopped` because a STOP intent blocked the run before
+  it started; `64` is usage.
 - There is no per-run cap on records decided — a large queue is decided
   in one run, across as many model calls as it needs; the run record
   prints calls, turns, and duration per call so an unusually long run is

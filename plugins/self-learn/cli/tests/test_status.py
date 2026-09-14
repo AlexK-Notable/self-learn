@@ -139,6 +139,27 @@ def test_status_fast_omits_the_unreadable_field(monkeypatch, tmp_path, capsys):
         assert "unreadable" not in b
 
 
+def test_status_fast_reads_only_the_cached_steward_marker(
+    monkeypatch, tmp_path, capsys
+):
+    home = _seed_valid_plus_corrupt(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli.cases,
+        "list_cases",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("status --fast walked the case store")
+        ),
+    )
+    marker = cli.serve.cache_dir_readonly(home) / "steward" / "steward.last-run"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("2026-09-14T12:00:00Z\n", encoding="utf-8")
+
+    assert cli.main(["status", "--json", "--fast"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["steward_last_run_at"] == "2026-09-14T12:00:00Z"
+    assert "steward_cases_since_overseer" not in payload
+
+
 def test_status_fast_does_not_crash_on_undecodable_bytes(
     monkeypatch, tmp_path, capsys
 ):
