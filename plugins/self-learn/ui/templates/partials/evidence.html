@@ -56,10 +56,17 @@
       {% if evidence.canon_path %}<code>{{ evidence.canon_path }}</code>{% else %}the target{% endif %}
       by hand.</p>
     {% endif %}
-  {% elif evidence.action == "graduate" %}
-  <p>Graduated <code>{{ evidence.record_id }}</code> into authored canon
-    — the entry is retired.{% if evidence.host_commit_sha %} Host commit
+  {% elif evidence.action == "retire" %}
+  <p>Retired <code>{{ evidence.record_id }}</code> — something already
+    loaded covers it.{% if evidence.host_commit_sha %} Host commit
     <code>{{ evidence.host_commit_sha[:7] }}</code>.{% endif %}</p>
+  {% elif evidence.action == "graduate" %}
+  {# S-67: the deprecated `graduate` alias's legacy leg (no surface
+     named) — `retire`, above, is the current one. #}
+  <p>Retired <code>{{ evidence.record_id }}</code> — covering surface
+    unrecorded (the deprecated <code>graduate</code> alias; name one with
+    <code>retire --covered-by</code> next time).{% if evidence.host_commit_sha %}
+    Host commit <code>{{ evidence.host_commit_sha[:7] }}</code>.{% endif %}</p>
   {% elif evidence.action == "defer" %}
   <p>Deferred <code>{{ evidence.record_id }}</code> until
     {{ evidence.deferred_until }}.</p>
@@ -93,7 +100,7 @@
     {% if evidence.next_url %}<a href="{{ evidence.next_url }}" data-key-action="success_next">Next pending record (j)</a>{% endif %}
     {% if evidence.bucket_url %}<a href="{{ evidence.bucket_url }}" data-key-action="success_bucket">Back to the bucket (u)</a>{% endif %}
     {# Code-gate finding 2 (MAJOR), corrected post U-grad-ui: route/
-       reject/graduate all move the record out of pending/deferred
+       reject/retire all move the record out of pending/deferred
        BEFORE this leg renders. `/record/{id}` no longer redirects for
        that (§2.1 VIEWABLE — the record now renders its own resolved
        view there), but this link stays omitted for those three anyway

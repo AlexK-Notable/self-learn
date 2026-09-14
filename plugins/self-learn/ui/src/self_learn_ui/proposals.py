@@ -41,6 +41,8 @@ from typing import Any
 
 from self_learn.hosts import HostsError, load_hosts, slug_for
 from self_learn.ledger_ops import record_title
+from self_learn.records import ValidationError as RecordValidationError
+from self_learn.records import build_covered_by
 
 from . import ledger
 
@@ -64,7 +66,7 @@ __all__ = [
 #: v1 decision. `rehome` joined 2026-07-18 (feedback round 3 item 3;
 #: §11 Y-18) — Y-11 holds because only already-registered targets are
 #: nameable: the agent widens no read scope and mints no write target.
-PROPOSABLE_VERBS = frozenset({"route", "reject", "defer", "graduate", "rehome"})
+PROPOSABLE_VERBS = frozenset({"route", "reject", "defer", "retire", "rehome"})
 
 #: 10 §1: the in-process SDK MCP server name and the single tool it
 #: exposes. The fully-qualified form is what the charter callback's
@@ -146,6 +148,10 @@ class VerbProposal:
     #: hosts.yaml path the handler resolved, never the agent's raw
     #: string. The confirm rebuilds argv from it.
     to: str | None = None
+    #: S-67, retire only: a suggested `<kind>:<name>` covering surface —
+    #: pre-fills the detail page's required surface field; the human may
+    #: still change or supply it themselves (never auto-applied).
+    covered_by: str | None = None
     armed: bool = False
     #: Server nonce (review F5): arm/confirm/disarm/dismiss POSTs must
     #: echo it, so a clear-then-reoccupy between the human's read and
@@ -396,6 +402,20 @@ def validate_proposal(
         except ValueError:
             return _refuse(f"until {until!r} is not a real calendar date")
 
+    covered_by = args.get("covered_by")
+    if covered_by is not None:
+        if verb != "retire":
+            return _refuse("covered_by only applies to retire proposals")
+        if not isinstance(covered_by, str):
+            return _refuse("covered_by must be a string")
+        # S-67: the SAME parser `retire`'s CLI flag and the UI's own
+        # surface field route through — a malformed suggestion never
+        # reaches the human as an armable proposal.
+        try:
+            build_covered_by(covered_by)
+        except RecordValidationError as exc:
+            return _refuse(str(exc))
+
     note = args.get("note")
     if note is not None:
         if not isinstance(note, str):
@@ -418,6 +438,7 @@ def validate_proposal(
         note=note,
         until=until,
         to=resolved_to,
+        covered_by=covered_by,
     )
 
 

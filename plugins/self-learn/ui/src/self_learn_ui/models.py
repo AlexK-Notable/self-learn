@@ -40,6 +40,9 @@ import self_learn.primitives.text as sl_text
 from self_learn import sentinel as sl_sentinel
 from self_learn import worker as sl_worker
 from self_learn.records import Record
+from self_learn.records import ValidationError as _RecordValidationError
+from self_learn.records import build_covered_by
+from self_learn.records import supersession_display
 
 __all__ = [
     "HOOK_VERBATIM_CAPTION",
@@ -1234,8 +1237,8 @@ class RecordRow:
 @dataclass(frozen=True)
 class BulkCollapseRow:
     """09 §2.2 carried P1-1: a homogeneous already-canon group renders as
-    ONE collapsible decision row arming a loop of per-record ``graduate``
-    verbs — never rejection."""
+    ONE collapsible decision row arming a loop of per-record ``retire``
+    verbs (S-67) — never rejection."""
 
     count: int
     ids: tuple[str, ...]
@@ -1582,6 +1585,28 @@ class WhyRegion:
     #: only `recommendation == "defer"` is behavioural (§8A.2(2)).
     recommendation: str | None = None
     flags: tuple[str, ...] = ()
+    #: S-67: pre-fills the detail action bar's required `covered_by`
+    #: field when `already_canon_reason` happens to already be in the
+    #: `<kind>:<name>` shape (:func:`_covered_by_suggestion`) — never
+    #: invented, and always still human-typed/confirmed, never applied
+    #: on its own.
+    covered_by: str | None = None
+
+
+def _covered_by_suggestion(already_canon_reason: str | None) -> str | None:
+    """S-67: `already_canon_reason` is free analyst prose today ("the
+    lesson already lives in X") and only occasionally already names a
+    surface in the `<kind>:<name>` shape `retire --covered-by` takes —
+    validated by the SAME parser the CLI uses
+    (:func:`self_learn.records.build_covered_by`) so a pre-fill is
+    never offered for text that would just refuse at confirm time."""
+    if not already_canon_reason:
+        return None
+    try:
+        build_covered_by(already_canon_reason)
+    except _RecordValidationError:
+        return None
+    return already_canon_reason
 
 
 @dataclass(frozen=True)
@@ -1889,6 +1914,7 @@ def _build_why(item: dict, proposal: dict | None, scope: str) -> WhyRegion:
         # proposal that never set them.
         recommendation=(proposal or {}).get("recommendation"),
         flags=tuple((proposal or {}).get("flags") or ()),
+        covered_by=_covered_by_suggestion((proposal or {}).get("already_canon_reason")),
     )
 
 
@@ -1985,6 +2011,12 @@ class ResolvedDetailModel:
     routing: ResolvedRoutingFacts
     host_registered: bool
     host_add_command: str | None
+    #: S-67: "replaced by lrn-…" / "retired, covered by <kind>:<name>" /
+    #: "retired, covering surface unrecorded" — `None` unless
+    #: `status == "superseded"` (:func:`self_learn.records.
+    #: supersession_display`, the ONE display helper every surface
+    #: routes through; never built a second time here).
+    supersession: str | None = None
 
 
 def build_resolved_detail_model(
@@ -2029,4 +2061,7 @@ def build_resolved_detail_model(
         ),
         host_registered=host_registered,
         host_add_command=host_add_command,
+        supersession=(
+            supersession_display(record) if record.status == "superseded" else None
+        ),
     )

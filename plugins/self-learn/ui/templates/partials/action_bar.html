@@ -90,6 +90,7 @@
     {% if armed.target %}<input type="hidden" name="target" value="{{ armed.target }}">{% endif %}
     {% if armed.dest_touched %}<input type="hidden" name="dest_touched" value="true">{% endif %}
     {% if armed.why %}<input type="hidden" name="why" value="{{ armed.why }}">{% endif %}
+    {% if armed.covered_by %}<input type="hidden" name="covered_by" value="{{ armed.covered_by }}">{% endif %}
     <p class="action-bar-armed">
       <strong>{{ armed.verb_label }}</strong>
       <code>{{ armed.record_id }}</code>
@@ -135,6 +136,12 @@
         {% endfor %}
       </select>
     </label>
+    {# S-67: retire's own required covering surface — <kind>:<name>,
+       validated server-side by the SAME parser the CLI's `--covered-by`
+       uses (records.build_covered_by); pre-filled from the proposal
+       when one suggested a surface. #}
+    <label>Covered by <input type="text" name="covered_by" placeholder="kind:name"
+                              value="{{ covered_by or '' }}" required></label>
     <button type="button" data-key-action="tolerate"
             hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
             hx-vals='{"verb":"confirm-recurrence","kind":"holding","tolerate":"true"}'
@@ -143,11 +150,11 @@
             hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
             hx-vals='{"verb":"confirm-recurrence","kind":"holding"}'
             hx-target="#{{ dom_id }}" hx-swap="outerHTML">Confirm (c)</button>
-    <button type="button" data-key-action="graduate"
+    <button type="button" data-key-action="retire"
             hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
-            hx-vals='{"verb":"graduate","kind":"holding"}'
+            hx-vals='{"verb":"retire","kind":"holding"}'
             hx-target="#{{ dom_id }}" hx-swap="outerHTML"
-            title="Retire this lesson — canon (the guidance file it calls for) already covers it, so there's nothing left to write">Graduate (g)</button>
+            title="Retire this lesson — something already loaded covers it; name the surface above">Retire (g)</button>
     <button type="button" data-key-action="dismiss_suspect"
             hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
             hx-vals='{"verb":"dismiss-suspect","kind":"holding"}'
@@ -172,10 +179,10 @@
           hx-target="#{{ dom_id }}" hx-swap="outerHTML">Link contradiction &rarr; {{ target }}</button>
 
   {% elif kind == "resolved" %}
-  {# U-grad-ui §2.3/§2.4 door 3: RESOLVED-VERBS = {graduate}, offered iff
+  {# U-grad-ui §2.3/§2.4 door 3: RESOLVED-VERBS = {retire}, offered iff
      the record's status == "routed" — door 2's guard (`detail_resolved.
      html`'s own GET render only ever includes this partial with
-     kind="resolved" when `model.status == "routed"`; a graduated/
+     kind="resolved" when `model.status == "routed"`; a retired/
      rejected record's GET page includes no action bar at all, criterion
      7's GET-side guard).
 
@@ -184,23 +191,27 @@
      field on the arm/disarm/confirm POST routes (action_arm/action_
      disarm/action_confirm), none of which re-check the record's actual
      status (§1.3). A hand-crafted POST with kind="resolved" against a
-     graduated or rejected record still renders this branch and still
-     dispatches `graduate` — FW-51's territory, not closed here. Door 2
+     retired or rejected record still renders this branch and still
+     dispatches `retire` — FW-51's territory, not closed here. Door 2
      is a GET-render guard, not a POST-side one.
 
      Guarded here by the SAME `{% if not evidence %}` as the pending
      quad below — door 3: the post-confirm re-render carries evidence
-     and must NOT re-offer Graduate on the record that was just
-     graduated (M13's regression target: dropping this guard reddens
+     and must NOT re-offer Retire on the record that was just
+     retired (M13's regression target: dropping this guard reddens
      criterion 8(c), one click from the HalfWrittenError, §2.4). No
-     dest, no note, no cycle — a resolved record has nothing left to arm
-     but the one verb. #}
+     dest, no cycle — a resolved record has nothing left to arm but the
+     one verb (S-67: a covering surface, this branch's own form). #}
   {% if not evidence %}
-  <button type="button" data-key-action="graduate"
-          hx-post="/record/{{ record_id }}/action/arm"
-          hx-vals='{"verb":"graduate","kind":"resolved"}'
+  <form id="form-{{ dom_id }}">
+    <label>Covered by <input type="text" name="covered_by" placeholder="kind:name"
+                              value="{{ covered_by or '' }}" required></label>
+  </form>
+  <button type="button" data-key-action="retire"
+          hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
+          hx-vals='{"verb":"retire","kind":"resolved"}'
           hx-target="#{{ dom_id }}" hx-swap="outerHTML"
-          title="Retire this lesson — canon (the guidance file it calls for) already covers it, so there's nothing left to write">Graduate (g)</button>
+          title="Retire this lesson — something already loaded covers it; name the surface above">Retire (g)</button>
   {# U-verbs S-54 §4.9 (UIP3): the verb with 0 uses ever (§2.1) and
      `last_confirmed` present on 0 records (§4.9) — the staleness
      metric is unfed because the surface a human actually reviews on
@@ -230,6 +241,14 @@
        retry) once the human uses the (o) cycle control below. #}
     {% if dest_touched %}<input type="hidden" name="dest_touched" value="true">{% endif %}
     <label>Note <input type="text" name="note" placeholder="optional resolution note"></label>
+    {# S-67: retire's own required covering surface — <kind>:<name>,
+       validated server-side by the SAME parser the CLI's `--covered-by`
+       uses (records.build_covered_by); pre-filled from the proposal
+       when one suggested a surface. Harmless for the other three
+       buttons in this shared form — `build_argv` only reads it inside
+       the `retire` branch. #}
+    <label>Covered by <input type="text" name="covered_by" placeholder="kind:name"
+                              value="{{ covered_by or '' }}" required></label>
     <button type="button" data-key-action="route"
             hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
             hx-vals='{"verb":"route","kind":"detail"}'
@@ -242,12 +261,12 @@
             hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
             hx-vals='{"verb":"defer","kind":"detail"}'
             hx-target="#{{ dom_id }}" hx-swap="outerHTML">Defer (f)</button>
-    <button type="button" data-key-action="graduate"
+    <button type="button" data-key-action="retire"
             hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
-            hx-vals='{"verb":"graduate","kind":"detail"}'
+            hx-vals='{"verb":"retire","kind":"detail"}'
             hx-target="#{{ dom_id }}" hx-swap="outerHTML"
-            title="Retire this lesson — canon (the guidance file it calls for) already covers it, so there's nothing left to write">
-      Graduate (g){% if already_canon %} <span class="badge badge-already-canon" title="canon = the guidance file(s) this lesson would write into — already there, so there's nothing new to write">already canon</span>{% endif %}
+            title="Retire this lesson — something already loaded covers it; name the surface above">
+      Retire (g){% if already_canon %} <span class="badge badge-already-canon" title="canon = the guidance file(s) this lesson would write into — already there, so there's nothing new to write">already canon</span>{% endif %}
     </button>
     {# F5-1 (feedback round 5, U19 §1.2 gate M1): the cycle button ALWAYS
        rendered, even when the record's own cycle has nowhere to go

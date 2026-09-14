@@ -119,6 +119,38 @@ class TestDryRunNoReceipt:
 
 
 class TestRealRunReceipt:
+    def test_legacy_graduate_warning_reaches_json_stderr_and_case_receipt(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e00000f9")
+        case_id = _seed_case(home, tmp_path, records=[rid], outcome="reject")
+        sheet = _write_sheet(
+            tmp_path,
+            "version: 1\n"
+            f"case: {case_id}\n"
+            "items:\n"
+            f"  - id: {rid}\n    verb: graduate\n",
+            name="legacy-graduate.yaml",
+        )
+
+        rc = cli.main(["batch", str(sheet), "--no-push", "--json"])
+        captured = capsys.readouterr()
+        payload = json.loads(captured.out)
+        notice = (
+            "`graduate` is `retire` now; covering surface unrecorded — "
+            "name it with --covered-by"
+        )
+
+        assert rc == 0
+        assert payload["items"][0]["warnings"] == [notice]
+        assert notice in captured.err
+        record = Record.from_path(find_record_path(home, rid))
+        assert record.superseded_by == "canon"
+        lines = _application_lines(home, case_id)
+        assert len(lines) == 1
+        assert notice in lines[0]
+
     def test_real_run_writes_one_line_per_item(self, tmp_path, monkeypatch, capsys):
         home = _env(tmp_path, monkeypatch)
         rid1 = _seed_pending(home, "lrn-e0000002")

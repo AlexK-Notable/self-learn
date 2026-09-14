@@ -6,12 +6,13 @@ tests the spec re-contracts in place (criterion 11 — those stay in their
 own files: test_routes.py, test_proposals.py, test_degradation_walk.py,
 test_resolution_evidence.py) and are NOT already covered, untouched, by
 an existing test (criterion 10's both legs — `test_proposals.py::
-test_bulk_graduate_sweeps_a_stale_proposal` for `:1253`,
+test_bulk_retire_sweeps_a_stale_proposal` (S-67: was
+test_bulk_graduate_sweeps_a_stale_proposal) for `:1253`,
 `test_stale_arm_after_external_resolution_renders_gone` for `:2117`).
 
 §3.0 fixture note: `resolve_record_directly` never writes
-`superseded_by`, so it cannot mint a GRADUATED record on its own —
-`_graduate_directly` below does the extra re-read + `set_superseded_by`
+`superseded_by`, so it cannot mint a RETIRED (legacy-canon) record on
+its own — `_retire_directly` below does the extra re-read + `set_superseded_by`
 step the spec pins, on top of the shared helper (not inside it — it is
 shared with the concurrent CLI wave and is deliberately not extended).
 """
@@ -56,21 +57,23 @@ def _bucket_dir(sb, scope: str = "skill", name: str = "s") -> Path:
     return sb.ledger / f"{scope}s" / name
 
 
-def _graduate_directly(sb, bucket_dir: Path, rec: Record) -> None:
-    """§3.0: mint a genuinely GRADUATED record (`superseded_by: canon`),
-    which the shared `resolve_record_directly` helper cannot produce on
-    its own — it never writes `superseded_by`, so a `superseded` record
-    it mints alone is one replaced by a successor, not graduated into
-    canon (`report.gather` counts the two differently, and criterion 7
-    would be vacuous against a `None` record). Re-reads the file
+def _retire_directly(sb, bucket_dir: Path, rec: Record) -> None:
+    """§3.0: mint a genuinely RETIRED record — the legacy literal
+    `superseded_by: canon` (S-67: what `graduate` always wrote, and
+    still writes when called with no `--covered-by`), which the shared
+    `resolve_record_directly` helper cannot produce on its own — it
+    never writes `superseded_by`, so a `superseded` record it mints
+    alone is one REPLACED by a successor, not retired into canon
+    (`report.gather` counts the two differently, and criterion 7 would
+    be vacuous against a `None` record). Re-reads the file
     `resolve_record_directly` just wrote and finishes the mint in place
     — NOT an extension of the shared helper itself (it is shared with
     the concurrent CLI wave)."""
     resolve_record_directly(sb.ledger, bucket_dir, rec, status="superseded")
     path = bucket_dir / "resolved" / f"{rec.id}.md"
-    graduated = Record.from_path(path)
-    graduated.set_superseded_by("canon")
-    graduated.write(path)
+    retired = Record.from_path(path)
+    retired.set_superseded_by("canon")
+    retired.write(path)
 
 
 def _archive_section(html: str) -> str:
@@ -142,7 +145,7 @@ class TestIndexListsIndexSetOnly:
 
         graduated = make_behavior(scope="skill:s")
         seed_record(sb.ledger, graduated)
-        _graduate_directly(sb, bucket_dir, graduated)
+        _retire_directly(sb, bucket_dir, graduated)
 
         c, _runner = make_client(sb)
         archive = _archive_section(c.get("/bucket/skill/s").text)
@@ -292,7 +295,7 @@ class TestViewableRendersEveryStatus:
 
         graduated = make_behavior(scope="skill:s", trigger=TRIGGER)
         seed_record(sb.ledger, graduated)
-        _graduate_directly(sb, bucket_dir, graduated)
+        _retire_directly(sb, bucket_dir, graduated)
 
         pending = make_behavior(scope="skill:s", trigger=TRIGGER)
         seed_record(sb.ledger, pending)
@@ -308,13 +311,51 @@ class TestViewableRendersEveryStatus:
             assert TRIGGER in r.text, rec.id
 
 
+class TestSupersessionPhrasesRenderOnResolvedDetail:
+    def test_legacy_retirement_phrase_renders_in_the_routing_region(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s", trigger=TRIGGER)
+        seed_record(sb.ledger, rec)
+        _retire_directly(sb, _bucket_dir(sb), rec)
+        c, _runner = make_client(sb)
+
+        page = c.get(f"/record/{rec.id}", follow_redirects=False).text
+
+        assert '<section aria-label="routing">' in page  # positive control
+        assert '<p class="supersession">retired, covering surface unrecorded</p>' in page
+
+    def test_named_covering_surface_phrase_renders_in_the_routing_region(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s", trigger=TRIGGER)
+        seed_record(sb.ledger, rec)
+        bucket_dir = _bucket_dir(sb)
+        resolve_record_directly(sb.ledger, bucket_dir, rec, status="superseded")
+        path = bucket_dir / "resolved" / f"{rec.id}.md"
+        stored = Record.from_path(path)
+        stored.set_superseded_by("covered_by:output-style:plain-pairing")
+        stored.write(path)
+        c, _runner = make_client(sb)
+
+        page = c.get(f"/record/{rec.id}", follow_redirects=False).text
+
+        assert '<section aria-label="routing">' in page  # positive control
+        assert (
+            '<p class="supersession">retired, covered by '
+            'output-style:plain-pairing</p>' in page
+        )
+
+
 # ===================================================================== #
 # Criterion 6 — RESOLVED-VERBS offered, and nothing else
 # ===================================================================== #
 
 
 class TestResolvedVerbsOfferedAndNothingElse:
-    def test_routed_record_offers_exactly_one_graduate_and_nothing_else(
+    def test_routed_record_offers_exactly_one_retire_and_nothing_else(
         self, tmp_path: Path
     ) -> None:
         sb = make_env(tmp_path)
@@ -324,7 +365,7 @@ class TestResolvedVerbsOfferedAndNothingElse:
         c, _runner = make_client(sb)
         page = c.get(f"/record/{rec.id}", follow_redirects=False).text
 
-        assert page.count('data-key-action="graduate"') == 1
+        assert page.count('data-key-action="retire"') == 1  # S-67: was "graduate"
         for verb in ("route", "reject", "defer", "iterate"):
             assert f'data-key-action="{verb}"' not in page, verb
         # F5-1's singleton-cycle branch renders the control under
@@ -340,19 +381,19 @@ class TestResolvedVerbsOfferedAndNothingElse:
 
 
 class TestActionNotOfferedTwiceGetSide:
-    def test_graduated_record_offers_no_graduate_control(self, tmp_path: Path) -> None:
+    def test_retired_record_offers_no_retire_control(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
         bucket_dir = _bucket_dir(sb)
         rec = make_behavior(scope="skill:s", trigger=TRIGGER)
         seed_record(sb.ledger, rec)
-        _graduate_directly(sb, bucket_dir, rec)
+        _retire_directly(sb, bucket_dir, rec)
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}", follow_redirects=False)
         assert r.status_code == 200
         assert TRIGGER in r.text  # criterion 5's control, reused
-        assert 'data-key-action="graduate"' not in r.text
+        assert 'data-key-action="retire"' not in r.text  # S-67: was "graduate"
 
-    def test_rejected_record_offers_no_graduate_control(self, tmp_path: Path) -> None:
+    def test_rejected_record_offers_no_retire_control(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
         bucket_dir = _bucket_dir(sb)
         rec = make_behavior(scope="skill:s", trigger=TRIGGER)
@@ -362,7 +403,7 @@ class TestActionNotOfferedTwiceGetSide:
         r = c.get(f"/record/{rec.id}", follow_redirects=False)
         assert r.status_code == 200
         assert TRIGGER in r.text  # criterion 5's control, reused
-        assert 'data-key-action="graduate"' not in r.text
+        assert 'data-key-action="retire"' not in r.text  # S-67: was "graduate"
 
 
 # ===================================================================== #
@@ -393,36 +434,64 @@ def _envelope(**overrides) -> dict:
     return base
 
 
-class TestGraduateEndToEnd:
+class TestRetireEndToEnd:
+    """S-67: was TestGraduateEndToEnd."""
+
     def test_argv_evidence_and_no_reoffer(self, tmp_path: Path) -> None:
-        """(a) argv, with nothing hand-written: parsed off the rendered
-        Graduate control's own hx-vals/hx-post, then the SAME discipline
-        against the armed confirm form's own hidden fields. (b)
-        envelope-sourced evidence: the 7-char host_commit_sha comes from
-        the QUEUED envelope, not a URL/argv value. (c) no re-offer: the
-        same confirm response's own absence of the control, controlled
-        by (b)'s presence assertion on that same response."""
+        """(a) argv, with nothing hand-written EXCEPT the one value a
+        REQUIRED text field forces a human to type (S-67: the covering
+        surface — there is no server-suggested default here, no
+        proposal named one, so a real human's own keystroke is the only
+        source; every OTHER value still comes straight off the rendered
+        page): parsed off the rendered Retire control's own hx-vals/
+        hx-post plus its sibling `covered_by` input (hx-include='#form-
+        <dom_id>'), then the SAME discipline against the armed confirm
+        form's own hidden fields. (b) envelope-sourced evidence: the
+        7-char host_commit_sha comes from the QUEUED envelope, not a
+        URL/argv value. (c) no re-offer: the same confirm response's
+        own absence of the control, controlled by (b)'s presence
+        assertion on that same response."""
         sb = make_env(tmp_path)
         bucket_dir = _bucket_dir(sb)
         rec = make_behavior(scope="skill:s")
         seed_record(sb.ledger, rec)
         resolve_record_directly(sb.ledger, bucket_dir, rec)
 
-        env_dict = _envelope(record_id=rec.id, host_commit_sha="abcdef0123456789")
+        env_dict = _envelope(
+            action="retire", record_id=rec.id, host_commit_sha="abcdef0123456789",
+        )
         runner = FakeRunner()
         runner.queue_result(RunResult(0, stdout=json.dumps(env_dict)))
         c, _runner = make_client(sb, runner=runner)
 
         page = c.get(f"/record/{rec.id}", follow_redirects=False).text
         button = re.search(
-            r'<button type="button" data-key-action="graduate"\s+'
-            r'hx-post="([^"]+)"\s+hx-vals=\'([^\']+)\'',
+            r'<button type="button" data-key-action="retire"\s+'
+            r'hx-post="([^"]+)" hx-include="#(form-[^"]+)"\s+'
+            r'hx-vals=\'([^\']+)\'',
             page,
         )
-        assert button, "no rendered Graduate control found"
-        hx_post, hx_vals_raw = button.group(1), button.group(2)
+        assert button, "no rendered Retire control found"
+        hx_post, form_id, hx_vals_raw = button.group(1), button.group(2), button.group(3)
         vals = json.loads(hx_vals_raw)
 
+        # Positive control: the sibling REQUIRED covered_by input this
+        # button's own hx-include pulls in really is on the page, empty
+        # (no proposal suggested a surface here) -- proving the ONE
+        # hand-written value below stands in for a real keystroke into a
+        # field that genuinely had nothing pre-filled, not a guess.
+        form_match = re.search(
+            rf'<form id="{re.escape(form_id)}">(.*?)</form>', page, re.S
+        )
+        assert form_match, "no sibling covered_by form found"
+        covered_by_input = re.search(
+            r'<input type="text" name="covered_by"[^>]*value="([^"]*)"[^>]*required',
+            form_match.group(1),
+        )
+        assert covered_by_input is not None
+        assert covered_by_input.group(1) == ""  # genuinely empty, not pre-filled
+
+        vals["covered_by"] = "claude-md:rules"  # the human's own keystroke
         arm_resp = c.post(hx_post, data=vals, headers=HX)
         assert arm_resp.status_code == 200
 
@@ -439,20 +508,27 @@ class TestGraduateEndToEnd:
                 confirm_form.group(2),
             )
         )
+        # The human's typed surface carries forward as the armed bar's
+        # own hidden field (action_bar.html: `{% if armed.covered_by %}
+        # <input type="hidden" name="covered_by" ...>`) -- scraped like
+        # every other hidden field above, not re-typed.
+        assert confirm_fields.get("covered_by") == "claude-md:rules"
 
         confirm_resp = c.post(confirm_url, data=confirm_fields, headers=HX)
         assert confirm_resp.status_code == 200
 
         # (a) argv — no verb/kind string written literally above; every
-        # value came off the rendered page itself.
-        assert runner.calls == [["graduate", rec.id, "--json"]]
+        # value came off the rendered page itself (bar one keystroke).
+        assert runner.calls == [
+            ["retire", rec.id, "--covered-by", "claude-md:rules", "--json"]
+        ]
 
         # (b) envelope-sourced evidence — the sha's 7-char prefix, from
         # the QUEUED envelope.
         assert "abcdef0" in confirm_resp.text
 
         # (c) no re-offer — same response, controlled by (b) above.
-        assert 'data-key-action="graduate"' not in confirm_resp.text
+        assert 'data-key-action="retire"' not in confirm_resp.text
 
     def test_evidence_ctx_carries_canon_path_and_host_commit_sha_from_the_envelope(
         self,
@@ -470,7 +546,7 @@ class TestGraduateEndToEnd:
             ),
         )
         ctx = routes._evidence_ctx(
-            verb="graduate",
+            verb="retire",
             record_id="lrn-aa000001",
             run_result=result,
             next_url=None,
@@ -582,10 +658,17 @@ class TestDistinctPageKindAdvertisesGraduate:
         # pins "advertised iff present" in both directions (criterion 6
         # already pins the five controls absent from the page itself).
         css = STYLE_CSS_PATH.read_text(encoding="utf-8")
+        # S-67: this selector's `data-action` was "graduate"; a stale
+        # CSS rule discovered by this rename (the CSS and this
+        # assertion still matched EACH OTHER at "graduate" after the
+        # keymap action itself became "retire" -- a silently vacuous
+        # pass neither side's own edit would have caught). Fixed at
+        # `static/style.css` alongside this assertion.
         assert (
-            f'body[data-page="{page_kind}"] .keymap-footer-entry[data-action="graduate"]'
+            f'body[data-page="{page_kind}"] .keymap-footer-entry[data-action="retire"]'
             in css
         )
+        assert 'button[data-key-action="retire"]:hover' in css
         assert (
             f'body[data-page="{page_kind}"] .keymap-footer-entry[data-context="detail"]'
             not in css

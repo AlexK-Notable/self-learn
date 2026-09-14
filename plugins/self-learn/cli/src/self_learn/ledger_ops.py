@@ -46,7 +46,7 @@ from .compilers import BEGIN_MARKER, END_MARKER
 from .ledger import Bucket, discover_buckets, home_state, home_state_message, resolve_home
 from .normalize import sha_anchor
 from .primitives import procs
-from .records import RECORD_ID_RE, Record, RecordError
+from .records import RECORD_ID_RE, Record, RecordError, is_retirement
 from .skill_scaffold import SkillScaffoldError, validate_skill_name
 
 __all__ = [
@@ -180,8 +180,12 @@ TRACE_FLAGS = (
     "unregistered-ancestor",
 )
 
-#: Set-R (§3.3): the `recommendation` enum.
-TRACE_RECOMMENDATIONS = ("route", "reject", "defer", "graduate")
+#: Set-R (§3.3): the `recommendation` enum. S-67: the fourth value is the
+#: human verb `retire` — the decision-trace OUTCOME token stays `GRADUATE`
+#: (an internal machine token, orchestrator ruling 2026-09-13), but the
+#: recommendation string a proposal writes now names the verb that
+#: actually applies it.
+TRACE_RECOMMENDATIONS = ("route", "reject", "defer", "retire")
 
 #: Set-O (§3.3): the `gates.outcome` enum. Defined HERE, not in the future
 #: `gates.py` (U-table) — the validator needs the set before that module
@@ -580,8 +584,23 @@ def _proposal_path(bucket_dir: Path, record_id: str) -> Path:
 
 def read_proposal(path: Path) -> dict:
     """Parse a proposal sibling (no schema validation — see
-    :func:`validate_proposal`)."""
-    return _load_yaml_map(path)
+    :func:`validate_proposal`). S-67's one read-side compatibility
+    normalization maps an already-stored ``recommendation: graduate``
+    to ``retire`` before any reader branches on the value."""
+    data = _load_yaml_map(path)
+    _normalize_legacy_recommendation(data)
+    return data
+
+
+def _normalize_legacy_recommendation(data: dict) -> None:
+    """Read S-67's legacy recommendation spelling as ``retire``.
+
+    This is the one normalizer shared by stored proposal reads and direct
+    validation. New analyses remain constrained by
+    :data:`TRACE_RECOMMENDATIONS` and therefore never write ``graduate``.
+    """
+    if data.get("recommendation") == "graduate":
+        data["recommendation"] = "retire"
 
 
 def _validate_card(data: dict) -> None:
@@ -1703,11 +1722,13 @@ _RENDER_DESTINATIONS = {
     "NEW_SKILL": "new-skill",
 }
 
-#: u-table §3.3: outcome -> the R-FALL `recommendation` it renders.
+#: u-table §3.3: outcome -> the R-FALL `recommendation` it renders. S-67:
+#: the GRADUATE key is the unchanged machine token; the value it renders
+#: is the human verb, `retire`.
 _FALLBACK_RECOMMENDATIONS = {
     "REJECT": "reject",
     "DEFER": "defer",
-    "GRADUATE": "graduate",
+    "GRADUATE": "retire",
 }
 
 
@@ -2065,6 +2086,7 @@ def validate_proposal(
     Raises :class:`ProposalError`."""
     if not isinstance(data, dict):
         raise ProposalError("proposal is not a mapping")
+    _normalize_legacy_recommendation(data)
     dest = data.get("destination")
     if dest not in PROPOSAL_DESTINATIONS:
         raise ProposalError(
@@ -2392,7 +2414,8 @@ def resolve_record(
         raise LedgerOpsError("routing needs a destination")
     if new_status == "superseded" and superseded_by is None:
         raise LedgerOpsError(
-            "supersession needs superseded_by (<record-id> or 'canon')"
+            "supersession needs superseded_by (<record-id>, "
+            "covered_by:<kind>:<name>, or legacy 'canon')"
         )
 
     if follow_up is not None and new_status != "routed":
@@ -2609,13 +2632,27 @@ def reopen_record(home: Path, record_id: str) -> tuple[list[Path], list[Path]]:
     leaves a STAGED rename (`reconcile` blocks it) rather than a
     silently-committable modified file at the OLD path. Proposal
     siblings are swept, same shape as the move verbs. Trusts the caller
-    to have already gated on status (:func:`require_status` with
-    ``REOPENABLE_STATUSES`` — same trust boundary :func:`move_record`
-    has toward its own caller). Returns ``(touched, swept)``."""
+    to have already gated on status (:func:`require_status`, widened by
+    the caller for a retirement — same trust boundary :func:`move_record`
+    has toward its own caller). Returns ``(touched, swept)``.
+
+    S-67: a SUPERSEDED record admitted here is a retirement the caller
+    has already confirmed is not a replacement (`verbs.reopen`'s own
+    record-level check, never re-checked here — same trust boundary as
+    the status gate). Its `superseded_by` is cleared back to ``None`` —
+    the displaced resolution is still recorded into ``history`` exactly
+    as the rejected-record path always has
+    (:func:`_displace_resolution_note`, unchanged); the covering
+    surface itself is not additionally threaded into that payload — it
+    stays recoverable from the commit this reopen displaces, the same
+    way a displaced ``resolution_note``'s prior TEXT is (nothing new
+    here reads it back out of ``history``)."""
     path = find_record_path(home, record_id, statuses=("resolved",))
     record = Record.from_path(path)
     bucket_dir = path.parent.parent
     _displace_resolution_note(record)  # fold r1 (F2): shared writer, see its docstring
+    if record.superseded_by is not None:
+        record.set_superseded_by(None)
     record.set_status("pending")
     pending_dir = bucket_dir / "pending"
     pending_dir.mkdir(parents=True, exist_ok=True)
@@ -2709,7 +2746,10 @@ def supersede_cycle_check(home: Path, old_id: str, new_id: str) -> None:
             return  # dangling id: not this check's problem
         record = Record.from_path(path)
         nxt = record.superseded_by
-        if not nxt or nxt == "canon":
+        if not nxt or is_retirement(nxt):
+            # S-67: a retirement (`covered_by:<kind>:<name>`, or the
+            # legacy literal "canon") is terminal, exactly like "canon"
+            # always was — never a hop to another record.
             return
         if nxt == old_id:
             raise LedgerOpsError(
@@ -2728,9 +2768,12 @@ def supersede_record(
     note: str | None = None,
     verb: str = "supersede",
 ) -> list[Path]:
-    """Mark the old record superseded_by=<new-id|'canon'> and move it to
-    ``resolved/`` (``'canon'`` = graduation, 02 §2). When *superseded_by*
-    names a real record (not ``'canon'``), refuses a direct self-cycle
+    """Resolve the old record under *superseded_by* and move it to
+    ``resolved/``. Current callers pass a successor record id; the legacy
+    ``"canon"`` bypass remains behaviorally unchanged for compatibility,
+    while S-67 retirement writes go through :func:`resolve_record` with a
+    ``covered_by:<kind>:<name>`` value instead. For a successor id, refuses
+    a direct self-cycle
     (``old_id == superseded_by``) — root-cause extra, code gate r1:
     :func:`supersede_cycle_check` alone does NOT catch this degenerate
     case, since the walk starts at *superseded_by*'s OWN
@@ -2739,7 +2782,7 @@ def supersede_record(
     a longer cycle, see :func:`supersede_cycle_check`."""
     if old_id == superseded_by:
         raise LedgerOpsError(f"record {old_id} cannot supersede itself")
-    if superseded_by != "canon":
+    if superseded_by != "canon":  # legacy retirement sentinel; current callers pass ids
         supersede_cycle_check(home, old_id, superseded_by)
     return resolve_record(
         home, old_id, "superseded", superseded_by=superseded_by, note=note, verb=verb

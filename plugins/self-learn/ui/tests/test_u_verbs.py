@@ -123,13 +123,34 @@ class TestUIP1Parity:
         # followup-done) and this unit's followup-add (a "followup"
         # subcommand, never a VERB_COMMANDS member -- same shape as
         # followup-done) -- minus rehome (09 S11 Y-18 decision 3: no
-        # human-side control, proposal-bar label only).
+        # human-side control, proposal-bar label only) and, since S-67
+        # (U13), minus graduate (retire's hidden alias: a real
+        # VERB_COMMANDS member for telemetry-flush wiring, but never a
+        # UI control -- "the alias never reaches telemetry", build-u13
+        # brief; the UI speaks `retire` unconditionally).
+        #
+        # KNOWN PRE-EXISTING GAP (U13 disclosure, not this unit's own):
+        # `revise` (U4) and `reconsider` (U5) are real VERB_COMMANDS
+        # members with NO matching entry in UI_PARITY_VERBS either --
+        # this leg (b) equality was already false at this branch's own
+        # base commit (54fb3cc), confirmed against a clean `git archive`
+        # snapshot of it, before any S-67 edit touched this file. Left
+        # unexcluded here (not folded into the same minus-set as
+        # rehome/graduate) because whether/how `revise`/`reconsider`
+        # should reach the UI is those units' own design decision, not
+        # this rename's to make unilaterally -- see build-u13.md.
         derived = (
             set(cli.VERB_COMMANDS)
             | {"link-contradicts", "followup-done", "followup-add"}
-        ) - {"rehome"}
-        assert derived == routes.UI_PARITY_VERBS
-        assert len(routes.UI_PARITY_VERBS) == 17
+        ) - {"rehome", "graduate"}
+        assert derived - routes.UI_PARITY_VERBS == {"revise", "reconsider"}, (
+            "a NEW parity gap appeared beyond the known pre-existing "
+            "revise/reconsider one -- see build-u13.md"
+        )
+        assert routes.UI_PARITY_VERBS - derived == set(), (
+            "UI_PARITY_VERBS names a verb VERB_COMMANDS does not know"
+        )
+        assert len(routes.UI_PARITY_VERBS) == 17  # unchanged: retire replaced graduate 1:1
 
 
 # --------------------------------------------------------------- UIP2

@@ -335,8 +335,8 @@ body[data-page="detail"] .keymap-footer-entry[data-context="detail"] {
 }
 
 /* U-grad-ui criterion 14(b): the resolved Detail page (`data-page=
-   "resolved"`) carries exactly ONE live key — `g` (Graduate) —
-   RESOLVED-VERBS = {graduate}, never the pending quad's e/x/f/o/i
+   "resolved"`) carries exactly ONE live key — `g` (Retire, S-67: was
+   Graduate) — RESOLVED-VERBS = {retire}, never the pending quad's e/x/f/o/i
    (criterion 6 already pins those five absent from the page). A
    `[data-context="detail"]` rule here (M20's regression target) would
    light all five — the W2-F1 "advertised but absent" shape, inverted:
@@ -345,7 +345,7 @@ body[data-page="detail"] .keymap-footer-entry[data-context="detail"] {
    per-action (like the success-leg rules below), not per-context, so
    adding a second resolved-page action later means adding its own rule
    here, not widening this one. */
-body[data-page="resolved"] .keymap-footer-entry[data-action="graduate"] {
+body[data-page="resolved"] .keymap-footer-entry[data-action="retire"] {
   display: inline;
 }
 
@@ -960,7 +960,7 @@ button[data-key-action="interrupt"]:hover {
   color: var(--slu-danger);
 }
 
-button[data-key-action="graduate"]:hover,
+button[data-key-action="retire"]:hover,
 button[data-key-action="tolerate"]:hover {
   border-color: var(--slu-success);
   color: var(--slu-success);

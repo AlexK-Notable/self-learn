@@ -148,7 +148,7 @@
    * and that is the subtlest rule in this unit. With the bulk row
    * SELECTED, a `data-key-action`-only query would find 0 in scope,
    * fall through page-wide, find the single record row in another
-   * group, and GRADUATE a record the operator never selected — a new,
+   * group, and RETIRE a record the operator never selected — a new,
    * quieter version of the same bug. Treating the selected row's gated
    * control as a positive, in-scope answer is what stops that (`B2`).
    *
@@ -399,7 +399,7 @@
     const el = resolved.el;
     if (isGatedTarget(el)) {
       // Server-marked gated control (the singleton `o` cycle; the
-      // bulk-collapse graduate after §4.5). Nothing to defer or click —
+      // bulk-collapse retire after §4.5). Nothing to defer or click —
       // say why, and report HANDLED so the caller does not fall through
       // to a page-wide search of its own.
       showNoopHint(el.getAttribute("data-noop-hint"));
@@ -1805,6 +1805,24 @@
       formEffectiveTriggerIsSubmit(form)
     );
   }
+
+  // The pending-quad action form now has two text inputs, so the browser no
+  // longer performs implicit submission when Enter is pressed in either one.
+  // Re-create that one event and let the existing submit guard decide whether
+  // htmx will intercept it; bare action-bar forms therefore keep the same
+  // visible "Enter doesn't submit" warning as before.
+  document.addEventListener("keydown", function (evt) {
+    if (evt.key !== "Enter" || evt.isComposing) return;
+    const target = evt.target;
+    if (!target || typeof target.closest !== "function") return;
+    if (!target.matches('input[name="note"], input[name="covered_by"]')) return;
+    const form = target.closest("form");
+    if (!form || !form.closest(".action-bar") || htmxWillInterceptSubmit(form)) return;
+    const method = form.getAttribute("method");
+    if (method && method.toLowerCase() === "dialog") return;
+    evt.preventDefault();
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
 
   document.addEventListener(
     "submit",

@@ -226,12 +226,20 @@ class TestPhaseBoundary:
         ("PERMITTED_KEYS gains it together with the by: key",
         03-decisions.md S-54). A membership pin for it sits right below
         the count, the same discipline `followup-add` gets above, so
-        the growth is self-verifying rather than a silent widening."""
+        the growth is self-verifying rather than a silent widening.
+
+        S-67 (2026-09-14, U13): 16 grows to 17 -- `retire` joins as its
+        own sheet verb (`graduate` stays too, the hidden alias for one
+        release; PERMITTED_KEYS carries both). Not a Phase-2 verb
+        either (`phase2_verbs` below is unchanged) -- the SAME
+        self-verifying membership-pin discipline the two additions
+        above already established."""
         phase2_verbs = {"reroute", "followup-add", "reclassify", "host remove", "bucket prune"}
         assert "followup-add" in phase2_verbs  # gate r2 m-2: pins the spelling itself
         assert not (batch.PERMITTED_VERBS & phase2_verbs)
         assert "revise" in batch.PERMITTED_VERBS  # U4: the one deliberate addition
-        assert len(batch.PERMITTED_VERBS) == 16
+        assert "retire" in batch.PERMITTED_VERBS  # S-67: the other deliberate addition
+        assert len(batch.PERMITTED_VERBS) == 17
 
     def test_phase1_touches_no_host(self, tmp_path, monkeypatch):
         """PH2: a fixture with a registered host (env's ``host_a``) runs
@@ -830,11 +838,19 @@ class TestState:
         )
         assert package_hits == 2, proc.stdout
 
-    @pytest.mark.parametrize("verb", ["graduate", "route"])
+    @pytest.mark.parametrize("verb", ["supersede", "route"])
     def test_state6_reopen_refuses_terminal(self, env2, verb):
+        # S-67: `graduate`'s own terminal state (legacy `superseded_by:
+        # canon`, a RETIREMENT) is no longer refused here -- `reopen`
+        # now admits it (test_rename_retire.py's own
+        # `TestReopenWidening` covers that positive case + its mutation).
+        # `supersede` (a REPLACEMENT, a live-successor record id) is
+        # this test's new terminal case for the same status,
+        # `superseded` -- still refused, `route` unchanged.
         record = env2.seed(scope="skill:a")
-        if verb == "graduate":
-            verbs.graduate(env2.home, record.id, no_push=True)
+        if verb == "supersede":
+            successor = env2.seed(scope="skill:a")
+            verbs.supersede(env2.home, record.id, successor.id, no_push=True)
             status = "superseded"
         else:
             write_proposal(env2.home, record.id, proposal_dict(scope="skill:a"))

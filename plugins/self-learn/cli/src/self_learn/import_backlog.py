@@ -198,7 +198,7 @@ def _now_iso() -> str:
 _RECORD_QUOTE = "status: pending"
 
 
-def _graduate_gates(canon_evidence: str) -> dict:
+def _retire_gates(canon_evidence: str) -> dict:
     """A GRADUATE decision trace (u-schema-decision-trace §3, u-table's
     Table-1 G3 row) for this importer's pinned canon-match heuristic —
     S-26 (`ledger_ops.TRACE_REQUIRED`) made the trace mandatory on every
@@ -342,7 +342,8 @@ def _import_entries(
                     "rationale": (
                         "backlog import: knowledge entry whose substance already "
                         f"lives in curated {CANON_BASENAME} — bulk-acknowledge "
-                        "candidate (graduation, superseded_by: canon)"
+                        "candidate (retirement, superseded_by: covered_by:"
+                        f"reference:{CANON_BASENAME})"
                     ),
                     "already_canon": True,
                     "already_canon_reason": (
@@ -355,7 +356,7 @@ def _import_entries(
                     # importer's bulk-acknowledge write included — a gap the
                     # composer spec didn't anticipate (its own producer is
                     # the worker/analyst, not this heuristic importer).
-                    # `_graduate_gates` states plainly what actually
+                    # `_retire_gates` states plainly what actually
                     # happened: G3 (g0.canon) fired on a pinned string-match
                     # heuristic, never on Table-1 gate-by-gate reasoning —
                     # every downstream gate is the honest "not reached"
@@ -364,11 +365,16 @@ def _import_entries(
                     # required 'evidence-gap' flag admitting it, rather than
                     # a fabricated sha claiming a roster that was never
                     # loaded.
-                    "gates": _graduate_gates(
+                    "gates": _retire_gates(
                         f"normalized title matches {CANON_BASENAME} content"
                     ),
                     "flags": ["evidence-gap"],
-                    "recommendation": "graduate",
+                    # S-67: TRACE_RECOMMENDATIONS' fourth value is `retire`
+                    # now — the GRADUATE outcome token below (an unchanged
+                    # machine token) still maps to this via
+                    # `_FALLBACK_RECOMMENDATIONS["GRADUATE"]`, whose VALUE
+                    # this rename changed from "graduate" to "retire".
+                    "recommendation": "retire",
                 },
             )
             stamp_proposal(home, record.id)  # CLI stamps record_sha (08 §7.1)

@@ -8,9 +8,9 @@ invocation, no network, no real ledger) — mirrors
 
 Covers: serialization (two concurrent submissions -> strictly sequential
 subprocess spawns), the exact argv shapes for every pinned verb
-(route/reject/defer/graduate/confirm-recurrence ± --tolerate/link
-contradicts/followup done/route --collapse — P3-2), the bulk-graduate
-loop end-to-end through the REAL routes.py endpoint with a REAL runner
+(route/reject/defer/retire/confirm-recurrence ± --tolerate/link
+contradicts/followup done/route --collapse — P3-2), the bulk-retire
+(S-67: was bulk-graduate) loop end-to-end through the REAL routes.py endpoint with a REAL runner
 (--no-push sequence + terminal push on success AND on abort-at-item-N +
 halt-with-failing-id), the interrupt-first dispatch race (P1-4), non-zero
 exit -> stderr surfaced verbatim, and the forced refresh push after every
@@ -778,10 +778,12 @@ class TestArgvMatrixThroughRealSubprocess:
         entries = await self._run_and_log(tmp_path, argv)
         assert entries[0]["argv"] == ["defer", "lrn-aa000001", "--until", "2026-08-01"]
 
-    async def test_graduate(self, tmp_path: Path) -> None:
-        argv = build_argv("graduate", "lrn-aa000001")
+    async def test_retire(self, tmp_path: Path) -> None:
+        argv = build_argv("retire", "lrn-aa000001", covered_by="claude-md:rules")
         entries = await self._run_and_log(tmp_path, argv)
-        assert entries[0]["argv"] == ["graduate", "lrn-aa000001"]
+        assert entries[0]["argv"] == [
+            "retire", "lrn-aa000001", "--covered-by", "claude-md:rules",
+        ]
 
     async def test_confirm_recurrence_without_tolerate(self, tmp_path: Path) -> None:
         argv = build_argv("confirm-recurrence", "lrn-aa000001", event="ev-1")
@@ -812,12 +814,13 @@ class TestArgvMatrixThroughRealSubprocess:
 
 # --------------------------------------------------- bulk loop, end to end
 #
-# Through the REAL routes.py `/bucket/{scope}/{name}/graduate-bulk`
-# endpoint (owned by the concurrent track, imported/used here — not
-# edited) with a REAL RealRunner wired via create_app, proving the
-# already-tested (against FakeRunner, in test_routes.py) bulk-loop
-# contract holds when actual subprocesses spawn: --no-push sequence,
-# terminal push on success AND on abort, halt-with-failing-id.
+# Through the REAL routes.py `/bucket/{scope}/{name}/retire-bulk`
+# endpoint (S-67: was `/graduate-bulk`; owned by the concurrent track,
+# imported/used here — not edited) with a REAL RealRunner wired via
+# create_app, proving the already-tested (against FakeRunner, in
+# test_routes.py) bulk-loop contract holds when actual subprocesses
+# spawn: --no-push sequence, terminal push on success AND on abort,
+# halt-with-failing-id.
 
 
 def _make_real_client(
@@ -828,7 +831,7 @@ def _make_real_client(
     if fail_argv_contains is not None:
         env_for_fake["FAKE_SELF_LEARN_FAIL_ARGV_CONTAINS"] = fail_argv_contains
         env_for_fake["FAKE_SELF_LEARN_EXIT_CODE"] = "1"
-        env_for_fake["FAKE_SELF_LEARN_STDERR"] = "self-learn: graduate failed"
+        env_for_fake["FAKE_SELF_LEARN_STDERR"] = "self-learn: retire failed"
     runner = RealRunner(home=sb.ledger, argv_prefix=_direct_prefix(), env=env_for_fake)
     env = load_env(sb.env)
     app = create_app(env=env, token=TOKEN, runner=runner, start_watcher=False)
@@ -837,7 +840,9 @@ def _make_real_client(
     return c, log
 
 
-class TestBulkGraduateThroughRealRunner:
+class TestBulkRetireThroughRealRunner:
+    """S-67: was TestBulkGraduateThroughRealRunner."""
+
     def test_success_sequence_no_push_then_terminal_push(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
         ids = []
@@ -849,16 +854,16 @@ class TestBulkGraduateThroughRealRunner:
 
         c, log = _make_real_client(sb, tmp_path)
         r = c.post(
-            "/bucket/skill/s/graduate-bulk",
-            data={"ids": ",".join(ids)},
+            "/bucket/skill/s/retire-bulk",
+            data={"ids": ",".join(ids), "covered_by": "claude-md:rules"},
             headers={"HX-Request": "true"},
         )
         assert r.status_code in (200, 303)
         entries = _read_log(log)
         assert [e["argv"] for e in entries] == [
-            ["graduate", ids[0], "--no-push"],
-            ["graduate", ids[1], "--no-push"],
-            ["graduate", ids[2], "--no-push"],
+            ["retire", ids[0], "--covered-by", "claude-md:rules", "--no-push"],
+            ["retire", ids[1], "--covered-by", "claude-md:rules", "--no-push"],
+            ["retire", ids[2], "--covered-by", "claude-md:rules", "--no-push"],
             ["push"],
         ]
 
@@ -875,15 +880,15 @@ class TestBulkGraduateThroughRealRunner:
 
         c, log = _make_real_client(sb, tmp_path, fail_argv_contains=ids[1])
         r = c.post(
-            "/bucket/skill/s/graduate-bulk",
-            data={"ids": ",".join(ids)},
+            "/bucket/skill/s/retire-bulk",
+            data={"ids": ",".join(ids), "covered_by": "claude-md:rules"},
             headers={"HX-Request": "true"},
         )
         entries = _read_log(log)
         assert [e["argv"] for e in entries] == [
-            ["graduate", ids[0], "--no-push"],
-            ["graduate", ids[1], "--no-push"],
+            ["retire", ids[0], "--covered-by", "claude-md:rules", "--no-push"],
+            ["retire", ids[1], "--covered-by", "claude-md:rules", "--no-push"],
             ["push"],  # terminal push runs on ABORT too (08 §1 amendment)
         ]
         assert ids[1] in r.text  # the failing id is shown, per the halt contract
-        assert ids[2] not in [e["argv"][1] for e in entries if e["argv"][0] == "graduate"]
+        assert ids[2] not in [e["argv"][1] for e in entries if e["argv"][0] == "retire"]

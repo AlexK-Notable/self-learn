@@ -389,9 +389,32 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     def _verb(
-        name: str, help_text: str, *, json_flag: bool = False
+        name: str,
+        help_text: str,
+        *,
+        json_flag: bool = False,
+        hidden: bool = False,
     ) -> argparse.ArgumentParser:
-        p = sub.add_parser(name, help=help_text)
+        # S-67: `hidden=True` (the `graduate` alias) registers the
+        # sub-parser exactly as before -- `self-learn graduate ...` still
+        # runs and `self-learn graduate --help` still shows *help_text*
+        # -- but omits it from `self-learn --help`'s own listing of
+        # commands. `help=argparse.SUPPRESS` on `add_parser()` alone does
+        # NOT do this (measured on Python 3.13.11: the row still prints,
+        # with the literal string "==SUPPRESS==" as its help text --
+        # `_format_action` only skips an action whose `.help is SUPPRESS`
+        # for ordinary arguments, not for a subparsers choice-pseudo-
+        # action). The actual fix strips the pseudo-action `add_parser`
+        # appended to the subparsers action's own choices list, which is
+        # what `HelpFormatter` iterates to build that listing --
+        # `p.add_argument("--covered-by", ...)` runs later and is
+        # unaffected; `self-learn graduate --help` still resolves *p*
+        # directly, never through this list.
+        p = sub.add_parser(name, help=argparse.SUPPRESS if hidden else help_text)
+        if hidden:
+            sub._choices_actions = [  # noqa: SLF001 -- no public API for this
+                a for a in sub._choices_actions if a.dest != name
+            ]
         p.add_argument("--note", metavar="TEXT", help="resolution note → commit body")
         p.add_argument(
             "--no-push",
@@ -403,10 +426,12 @@ def _build_parser() -> argparse.ArgumentParser:
             # Resolution-evidence unit (§2.1/§3.1): a machine envelope on
             # stdout, populated ONLY on a successful (exit 0) run — never
             # a second outcome channel. Scoped to route/reject/defer/
-            # graduate/reconsider (fold r1, F7: U5 adds `reconsider` as
-            # a fifth `--json` verb — the resolution verbs the UI's
-            # evidence surface drives) — never rehome/supersede/
-            # confirm-recurrence/confirm-held, which stay text-only.
+            # retire/graduate/reconsider (fold r1, F7: U5 adds
+            # `reconsider` as a fifth `--json` verb; S-67 adds `retire`
+            # as a sixth, `graduate` staying its hidden alias — the
+            # resolution verbs the UI's evidence surface drives) — never
+            # rehome/supersede/confirm-recurrence/confirm-held, which
+            # stay text-only.
             p.add_argument(
                 "--json",
                 action="store_true",
@@ -489,10 +514,43 @@ def _build_parser() -> argparse.ArgumentParser:
     defer.add_argument("id", metavar="ID")
     defer.add_argument("--until", metavar="YYYY-MM-DD", help="explicit defer date")
 
+    retire = _verb(
+        "retire",
+        "retire a lesson: something already loaded covers it; name the surface",
+        json_flag=True,
+    )
+    retire.add_argument("id", metavar="ID")
+    retire.add_argument(
+        "--covered-by",
+        metavar="KIND:NAME",
+        required=True,
+        dest="covered_by",
+        help="the surface that already covers this lesson — <kind>:<name>, "
+        "kind one of claude-md/skill-md/reference/output-style (S-67)",
+    )
+
+    # S-67: `graduate` is `retire`'s deprecated, hidden alias for one
+    # release — `hidden=True` drops it from `self-learn --help`'s own
+    # command list, never from what actually runs. `--covered-by` is
+    # OPTIONAL here (unlike `retire`'s own, required): omitted, the
+    # record is retired against the legacy literal `canon` and the verb
+    # prints a deprecation line; given, this call is byte-identical to
+    # calling `retire` directly (`verbs.graduate`'s own docstring).
     graduate = _verb(
-        "graduate", "mark a lesson graduated into authored canon", json_flag=True
+        "graduate",
+        "deprecated alias for `retire` (S-67) — kept for one release",
+        json_flag=True,
+        hidden=True,
     )
     graduate.add_argument("id", metavar="ID")
+    graduate.add_argument(
+        "--covered-by",
+        metavar="KIND:NAME",
+        default=None,
+        dest="covered_by",
+        help="the same surface `retire --covered-by` accepts; omitted, "
+        "writes the legacy `canon` literal with a deprecation notice",
+    )
 
     rehome = _verb(
         "rehome", "move a pending record to any registered scope"
@@ -2023,7 +2081,7 @@ def _phase_note(push: gitops.PushResult | None) -> str:
 
 # ------------------------------------------------ resolution-evidence (§2.1)
 #
-# The `--json` envelope for route/reject/defer/graduate. Built ENTIRELY
+# The `--json` envelope for route/reject/defer/retire/graduate. Built ENTIRELY
 # from typed `VerbResult` attributes — never by re-parsing `commit_message`
 # (that class of mistake is what `_routed_destination` / the `" until "`
 # split below still do, for the UNRELATED plain-text summary line only;
@@ -2095,13 +2153,14 @@ def _outcome_state(result: verbs.VerbResult) -> str:
     the existing file**", which is false copy for a reject that just
     moved the record to `resolved/`).
 
-    `graduate`'s retirement host phase discards its compile object even
-    on a genuine success (`_, host_sha = _host_phase(...)`,
+    `retire`/`graduate`'s retirement host phase discards its compile
+    object even on a genuine success (`_, host_sha = `_host_phase(...)`,
     verbs.py:1570 in `_retirement_host_phase`) — so `compile_result` is
-    ALWAYS `None` on a `VerbResult` from `graduate`, success or not.
-    Worse, `_retirement_preflight` (verbs.py:1514) returns an empty
+    ALWAYS `None` on a `VerbResult` from either (S-67: one shared
+    implementation, `verbs._retire_impl`), success or not. Worse,
+    `_retirement_preflight` (verbs.py:1514) returns an empty
     `_Retirement()` — no host phase even attempted — whenever the
-    graduated record was never routed at all, which is graduate's own
+    retired record was never routed at all, which is retire's own
     documented second door: "a pending already-canon one (the
     bulk-acknowledge door)" (verbs.py ~2907). Applying route's literal
     predicate here would report EVERY bulk-acknowledge as "drift",
@@ -2119,7 +2178,7 @@ def _outcome_state(result: verbs.VerbResult) -> str:
         # `"drift"` on a fully successful call, telling a consumer to
         # `recompile` canon that `reconsider` never touched.
         return "landed"
-    if result.action == "graduate":
+    if result.action in ("retire", "graduate"):
         return "landed" if result.host_commit_sha is not None else "no_op"
     # route: the full 4-state predicate.
     if result.host_commit_sha is not None:
@@ -2132,8 +2191,8 @@ def _outcome_state(result: verbs.VerbResult) -> str:
     # never sets host_commit_sha (no host commit exists in plain mode by
     # construction), so without this the shipped predicate fell through
     # to "unknown" for every plain route. `result.mode` is `None` for a
-    # spec-less verb (reject/defer/graduate), which correctly never
-    # reaches this branch.
+    # spec-less verb (reject/defer/retire/graduate), which correctly
+    # never reaches this branch.
     if result.variant == "local" or result.mode == "plain":
         return "wrote_uncommitted"
     return "unknown"
@@ -2149,7 +2208,7 @@ def _canon_path(result: verbs.VerbResult) -> str | None:
     success — code-gate finding 1 (BLOCKER): the render surface then
     interpolated it unguarded, printing literal "in `None`". Fall back
     to `ReferenceResult.path`, the one compile-result type that carries
-    its own path outside `target`; still `None` for graduate/defer
+    its own path outside `target`; still `None` for retire/graduate/defer
     (nothing to fall back to) and for a genuine drift (no compile
     result reached at all)."""
     if result.target is not None:
@@ -2353,11 +2412,19 @@ def _cmd_verb(args: argparse.Namespace) -> int:
             return _finish_verb(
                 result, f"deferred until {until_str}", as_json=args.as_json
             )
+        if args.command == "retire":
+            result = verbs.retire(
+                home, args.id, covered_by=args.covered_by, note=args.note,
+                no_push=args.no_push,
+            )
+            return _finish_verb(result, args.covered_by, as_json=args.as_json)
         if args.command == "graduate":
             result = verbs.graduate(
-                home, args.id, note=args.note, no_push=args.no_push
+                home, args.id, covered_by=args.covered_by, note=args.note,
+                no_push=args.no_push,
             )
-            return _finish_verb(result, "canon", as_json=args.as_json)
+            target = args.covered_by if args.covered_by is not None else "canon"
+            return _finish_verb(result, target, as_json=args.as_json)
         if args.command == "rehome":
             result = verbs.rehome(
                 home, args.id, to=args.to, note=args.note, no_push=args.no_push
@@ -3304,7 +3371,14 @@ def _cmd_show(args: argparse.Namespace) -> int:
             f"(count {data['deferred_count']})"
         )
     if data["superseded_by"]:
-        print(f"  superseded by: {data['superseded_by']}")
+        # S-67: the human phrase from the one display helper
+        # (`records.supersession_display`, computed into `data` by
+        # `verbs.show`), never the raw field re-printed — "replaced by
+        # lrn-…" / "retired, covered by <kind>:<name>" / "retired,
+        # covering surface unrecorded". `data["supersession"]` is set
+        # whenever `data["superseded_by"]` is truthy, including the
+        # schema-legal pending merge-collapse loser shape (02-schema §2).
+        print(f"  superseded by: {data['supersession']}")
     if data["resolution_note"]:
         print(f"  resolution note: {data['resolution_note']}")
     routing = data["routing"]
@@ -3613,6 +3687,9 @@ def _cmd_batch(args: argparse.Namespace) -> int:
 
     sentinel.heartbeat()  # mutating invocation class (08 §1)
     result = batch.run(home, items, no_push=args.no_push)
+    for item in result.items:
+        for warning in item.warnings:
+            print(f"self-learn batch item {item.n}: {warning}", file=sys.stderr)
 
     # Fold r1 (F1/F2/F5/F6/F7): the receipt attempt runs BEFORE either
     # output branch below, so its own outcome can ride the SAME --json
@@ -3702,6 +3779,7 @@ VERB_COMMANDS = frozenset(
         "route",
         "reject",
         "defer",
+        "retire",
         "graduate",
         "rehome",
         "rescope",
