@@ -309,7 +309,11 @@ class TestT1KindSchema:
         assert "reference-read" in telemetry.EVENT_KINDS
 
     def test_t1_2_schema_version_bumped(self):
-        assert telemetry.SCHEMA_VERSION == 3
+        """v2 -> v3 (U-readref §5.1) is this test's own origin; v3 -> v4
+        (steward build, U6, 11 §4.3: the `fire` kind's `outcome` enum)
+        moved the pin again — the assertion tracks the CURRENT version,
+        not this test's own vintage."""
+        assert telemetry.SCHEMA_VERSION == 4
 
     def test_t1_3_not_a_note_kind(self):
         assert "reference-read" not in telemetry.NOTE_KINDS

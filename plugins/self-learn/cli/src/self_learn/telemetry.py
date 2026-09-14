@@ -63,11 +63,15 @@ __all__ = [
 
 #: Extending the closed event-kind set is a schema version bump (11 §4.3).
 #: v1 → v2 (U-reach §2.2): `route` joins the set. v2 → v3 (U-readref §5.1):
-#: `reference-read` joins the set. No consumer filters on this number
-#: (`read_events`, `report.gather`, `worker._recurrence_suspects` all key
-#: on `kind` alone — verified), so the bump is honest bookkeeping, not a
-#: migration.
-SCHEMA_VERSION = 3
+#: `reference-read` joins the set. v3 → v4 (steward build, U6, 2026-09-13):
+#: no kind joins the set this time — the `fire` kind's own `outcome` field
+#: goes from the two-value `complied|violated` to the three-value
+#: `suspected-compliance|suspected-violation|cannot-tell` (11 §4.3's "v2 of
+#: this kind"), read-side mapped for old rows in `read_events` below. No
+#: consumer filters on this number (`read_events`, `report.gather`,
+#: `worker._recurrence_suspects` all key on `kind` alone — verified), so
+#: the bump is honest bookkeeping, not a migration.
+SCHEMA_VERSION = 4
 
 #: The v3 closed set (11 §4.3) — `route` and `reference-read` are
 #: code-emitted only (never via `telemetry note`; see NOTE_KINDS below).
@@ -526,7 +530,40 @@ def _commit_flush(home: Path, report: FlushReport) -> None:
     )
 
 
-def read_events(home: Path | str) -> list[dict]:
+#: 11 §4.3 (steward build, U6, 2026-09-13 amendment): the `fire` kind's
+#: `outcome` went from two values to three. Two DISTINCT legacy shapes
+#: read as the new vocabulary:
+#: - a row with the OLD two-value enum (`complied`/`violated`, written by
+#:   the pre-U6 crossover) maps to its new-vocabulary equivalent;
+#: - a row that predates `outcome` entirely (no key at all — the shape
+#:   the amendment says the kind ORIGINALLY had, `confidence` only) reads
+#:   as `cannot-tell`, since the digest evidence behind it was never
+#:   categorized either way.
+#: A row already carrying a v4 value passes through unchanged. Non-`fire`
+#: events and any `outcome` value outside this map (defensive; the
+#: acceptance check in miner.py never lets an unrecognized value land)
+#: are left untouched.
+_LEGACY_FIRE_OUTCOME = {"complied": "suspected-compliance", "violated": "suspected-violation"}
+
+
+def _mapped_fire_event(event: dict) -> dict:
+    """Read-side mapping for one event (11 §4.3). Returns a NEW dict when
+    a `fire` event's `outcome` needs translating; returns ``event``
+    itself (no copy) otherwise, so a v4-native row is byte-identical
+    through this function."""
+    if event.get("kind") != "fire":
+        return event
+    outcome = event.get("outcome")
+    if outcome is None:
+        mapped = "cannot-tell"
+    elif outcome in _LEGACY_FIRE_OUTCOME:
+        mapped = _LEGACY_FIRE_OUTCOME[outcome]
+    else:
+        return event
+    return {**event, "outcome": mapped}
+
+
+def read_events(home: Path | str, *, map_legacy_outcome: bool = True) -> list[dict]:
     """Every event in the tracked plane, ts-ordered (11 §5: ts is the
     order; cross-machine order is partial and callers must say so).
 
@@ -543,7 +580,16 @@ def read_events(home: Path | str) -> list[dict]:
     before the per-line loop even started — for a caller on the miner's
     path (`_event_seen`, called at the top of every `_reconcile_and_land`)
     that was `run()`'s outer handler turning the whole nightly run into
-    `status: failed` over one torn telemetry line."""
+    `status: failed` over one torn telemetry line.
+
+    ``map_legacy_outcome`` (11 §4.3, U6): default ``True`` maps a `fire`
+    event's legacy ``outcome`` to the current three-value vocabulary (see
+    :func:`_mapped_fire_event`) — every ordinary caller (`report.gather`,
+    the steward, the UI) wants this. `_event_seen` in miner.py passes
+    ``False``: its backfill needs the RAW on-disk value, since only a row
+    literally never touched by this mapping can be proven to predate the
+    acceptance check that now refuses the old enum — the one honest
+    signal that a `violated` fire is legacy, not new."""
     tdir = telemetry_dir(home)
     events: list[dict] = []
     seen: set[str] = set()
@@ -569,4 +615,6 @@ def read_events(home: Path | str) -> list[dict]:
                 seen.add(line)
                 events.append(event)
     events.sort(key=lambda e: str(e.get("ts", "")))
+    if map_legacy_outcome:
+        events = [_mapped_fire_event(e) for e in events]
     return events
