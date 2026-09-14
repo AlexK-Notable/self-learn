@@ -449,6 +449,7 @@ _LITERAL_CONFIG_FIRST_NAMES = frozenset(
         "steward.timeout_secs",  # U8
         "overseer.timeout_secs",  # U8
         "overseer.max_model_calls",  # U8
+        "overseer.enabled",  # O-3
         "sdk.max_budget_usd",
         "sdk.event_logs",
         "sdk.max_turns.worker",
@@ -482,14 +483,14 @@ def test_major2_env_first_literal_16_names_match_the_registry_exactly():
     assert len(_LITERAL_ENV_FIRST_NAMES) == 22  # U8: 16 -> 22 (+6)
 
 
-def test_major2_config_first_literal_complement_21_names_match_the_registry_exactly():
+def test_major2_config_first_literal_complement_27_names_match_the_registry_exactly():
     """The complement gives the COUNT too -- a mutation that silently
     reclassifies one entry's `direction` changes which of these two
     frozensets it belongs to, and this test (unlike a derived list)
     still knows the ORIGINAL 16/21 split to compare against."""
     actual = frozenset(s.name for s in settings.REGISTRY if s.direction == "config-first")
     assert actual == _LITERAL_CONFIG_FIRST_NAMES
-    assert len(_LITERAL_CONFIG_FIRST_NAMES) == 26  # U8: 21 -> 26 (+5)
+    assert len(_LITERAL_CONFIG_FIRST_NAMES) == 27  # U8: 21 -> 26; O-3: +1
     assert _LITERAL_ENV_FIRST_NAMES | _LITERAL_CONFIG_FIRST_NAMES == frozenset(
         s.name for s in settings.REGISTRY
     )

@@ -367,6 +367,11 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
         "append-only XDG cache run journal (JSONL); NOT_REPO_TRUTH",
         "keep",
     ),
+    # O-3 (2026-09-14): same cache-only journal class as miner._journal.
+    ("cli", "overseer/run.py", "_journal"): (
+        "append-only XDG cache run journal (JSONL); NOT_REPO_TRUTH",
+        "keep",
+    ),
     ("cli", "miner.py", "_save_cursors"): (
         "XDG cache JSON bookkeeping (cursors.json); NOT_REPO_TRUTH",
         "keep",

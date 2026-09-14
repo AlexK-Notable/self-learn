@@ -46,8 +46,7 @@ title with no ``": "`` is a boolean-shaped declaration, value
 so a future entry whose author omits the prefix in `title` still lands
 on the same key shape.
 
-**``steward.*`` / ``overseer.*`` run records — both provisional readings
-of an interface U10/O-3 have not built yet, not an applied spec.**
+**``steward.*`` / ``overseer.*`` run records.**
 ``steward.last_run_at`` / ``.last_run_outcome`` / ``.cases_since_overseer``
 read the newest ``<cache_dir>/steward/runs/<run_id>/run.json`` by file
 mtime (U10 not yet built — no run_id naming convention exists to sort by
@@ -55,21 +54,10 @@ instead); its top-level keys are read as exactly those three suffixes.
 Absent (no runs directory yet, the expected pre-U10 state) →
 ``"unavailable"`` for all three, never a missing key.
 
-``overseer.last_run_at`` / ``.last_examined_at`` are a genuine schema gap,
-recorded here rather than resolved (common-builder-rules.md: "the spec
-wins; do not resolve it yourself" — extended here to an already-shipped
-module's own contract): `overseer/population.py`'s `_COVERAGE_ALLOWED_KEYS`
-is a strict allowlist (``strata``, ``nudges_offered``, ``nudges_taken``,
-``examined_count``, ``population_count``) that `render_coverage` REFUSES
-to write past — `coverage.yaml` carries NO top-level ``last_run_at`` or
-``last_examined_at`` at all, only a PER-STRATUM ``last_examined_at``
-nested inside ``strata``. There is no signal anywhere in the current
-schema for a whole-registry "last run" time, so ``overseer.last_run_at``
-is always ``"unavailable"`` until O-3 defines a source. ``overseer.
-last_examined_at`` is DERIVED here as the most recent non-null per-stratum
-``last_examined_at`` across the file (the closest honest reading of "the
-overseer's own last run" the current schema supports) — ``"unavailable"``
-when the file is absent or every stratum is unexamined.
+O-3 adds top-level ``last_run_at`` / ``last_examined_at`` to
+``<ledger>/overseer/coverage.yaml``. The feed reads those two persisted
+facts directly; it does not derive a run time from stratum timestamps.
+Either missing field yields ``"unavailable"`` independently.
 
 **``status.*`` — no `cli.py` extraction (this unit's own resolution of
 the build brief's conditional "if those are inline in `cli.py`,
@@ -355,17 +343,11 @@ def _steward_run_items(cache_dir: Path, observed_at: str) -> list[Item]:
 def _overseer_run_items(home: Path, observed_at: str) -> list[Item]:
     path = home / "overseer" / "coverage.yaml"
     source = str(path)
-    # `overseer.last_run_at`: no field in coverage.yaml's current schema
-    # carries this (see module docstring) — always unavailable until O-3
-    # defines a source.
-    run_at_item = Item(
-        "overseer.last_run_at",
-        "unavailable",
-        observed_at,
-        f"{source}: no such field in the current schema (O-3 not yet built)",
-    )
     if not path.is_file():
-        return [run_at_item, Item("overseer.last_examined_at", "unavailable", observed_at, source)]
+        return [
+            Item("overseer.last_run_at", "unavailable", observed_at, source),
+            Item("overseer.last_examined_at", "unavailable", observed_at, source),
+        ]
     try:
         from ruamel.yaml import YAML, YAMLError
 
@@ -377,22 +359,12 @@ def _overseer_run_items(home: Path, observed_at: str) -> list[Item]:
             Item("overseer.last_run_at", "unavailable", observed_at, fail_source),
             Item("overseer.last_examined_at", "unavailable", observed_at, fail_source),
         ]
-    strata = data.get("strata") if isinstance(data, dict) else None
-    newest_examined: str | None = None
-    if isinstance(strata, dict):
-        for entry in strata.values():
-            if not isinstance(entry, dict):
-                continue
-            value = entry.get("last_examined_at")
-            if isinstance(value, str) and (newest_examined is None or value > newest_examined):
-                newest_examined = value
-    examined_item = Item(
-        "overseer.last_examined_at",
-        newest_examined if newest_examined is not None else "unavailable",
-        observed_at,
-        f"{source} (max over strata[*].last_examined_at)",
-    )
-    return [run_at_item, examined_item]
+    if not isinstance(data, dict):
+        data = {}
+    return [
+        Item("overseer.last_run_at", data.get("last_run_at") or "unavailable", observed_at, source),
+        Item("overseer.last_examined_at", data.get("last_examined_at") or "unavailable", observed_at, source),
+    ]
 
 
 def _ledger_head_item(home: Path, observed_at: str) -> Item:
