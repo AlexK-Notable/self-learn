@@ -889,9 +889,22 @@ def activate(
             # O-2b's `batch._dispatch` became the first caller to pass
             # `register=False`). The step's own detail text is the same
             # truthful sentence, reused so the two can never drift.
+            #
+            # Fold r1 (F1): every reader of this SAME string --
+            # `ItemResult.detail` (via `hook_result.post_notes`), the
+            # `hook-activated` history entry's own `note`, and the CLI's
+            # printed line (which just echoes `ItemResult.detail`) --
+            # must name the two manual steps a human still owes (route's
+            # own Apply text already names them for the human path;
+            # `verbs._hook_manual_steps` is the one place that renders
+            # them, reused here so the two can never drift apart).
+            manual_snippet = settings_snippet(list(tools), name, claude_dir=claude_dir)
+            manual_steps = verbs._hook_manual_steps(manual_snippet, name)  # noqa: SLF001
             delegated_note = (
                 "activation is delegated but switched off "
-                "(overseer.hook_activation is false) — placed only"
+                "(overseer.hook_activation is false) — placed only; "
+                "registration and check are the human's two manual "
+                "steps: " + " ".join(manual_steps[1:])
             )
             steps.append(StepReceipt("delegated", delegated_note))
             return ActivationResult(

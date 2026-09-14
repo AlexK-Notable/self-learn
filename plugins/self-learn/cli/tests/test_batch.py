@@ -619,6 +619,130 @@ class TestByTrailer:
         assert trailer == "steward"
 
 
+# ========================================================= fold r1: F3
+
+
+class TestRouteReviseActorDefault:
+    """gate-o2b-r1.md F3 (ruling 6): `route`/`revise` never joined the
+    EIGHT-verb `By:`-trailer widening above (their own `by` feeds a
+    DIFFERENT sink -- `routing.by` / the proposal's `revised_by`) but
+    each gets its OWN narrower default: `by = f.get("by") or (actor if
+    actor != "human" else None)`. "Test both": a non-human caller names
+    itself on EACH of the two verbs, and the default (`"human"`) caller
+    keeps each verb's existing heuristic byte-for-byte."""
+
+    def test_route_overseer_actor_names_routing_by(self, tmp_path, monkeypatch):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-f0000010")
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\nitems:\n  - id: {rid}\n    verb: route\n    dest: skill-md\n",
+        )
+        items = batch.load_sheet(sheet)
+        result = batch.run(home, items, no_push=True, actor="overseer")
+        assert result.summary["applied"] == 1
+        record = Record.from_path(find_record_path(home, rid))
+        assert record.routing["by"] == "overseer"
+
+    def test_route_default_actor_keeps_the_dest_is_not_none_heuristic(
+        self, tmp_path, monkeypatch
+    ):
+        """Companion (default-human unchanged): with `dest:` explicit
+        on the item and no `by:` key, `route`'s own heuristic reads
+        `by="human"` — the SAME as before this fold, since the default
+        actor maps to `by=None` and the verb's own fallback then picks
+        `"human"` because `dest is not None`."""
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-f0000011")
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\nitems:\n  - id: {rid}\n    verb: route\n    dest: skill-md\n",
+        )
+        items = batch.load_sheet(sheet)
+        result = batch.run(home, items, no_push=True)  # actor defaults to "human"
+        assert result.summary["applied"] == 1
+        record = Record.from_path(find_record_path(home, rid))
+        assert record.routing["by"] == "human"
+
+    def test_revise_overseer_actor_names_revised_by(self, tmp_path, monkeypatch):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-f0000012")
+        sheet = _write_sheet(
+            tmp_path,
+            "version: 1\nitems:\n"
+            f"  - id: {rid}\n    verb: revise\n    section: Trigger\n"
+            "    text: Reworded by the overseer.\n"
+            "    because: F3 companion test\n",
+        )
+        items = batch.load_sheet(sheet)
+        result = batch.run(home, items, no_push=True, actor="overseer")
+        assert result.summary["applied"] == 1
+        proposal_path = (
+            find_record_path(home, rid).parent.parent / "proposals" / f"{rid}.yaml"
+        )
+        from self_learn.ledger_ops import read_proposal
+
+        assert read_proposal(proposal_path)["revised_by"] == "overseer"
+
+    def test_revise_default_actor_stamps_no_revised_by(self, tmp_path, monkeypatch):
+        """Companion (default-human unchanged): `revise`'s own
+        contract is "informational only... `by` is optional and, when
+        given, rides the proposal stamp" -- the default actor maps to
+        `by=None`, so no `revised_by` key is stamped at all, exactly as
+        before this fold."""
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-f0000013")
+        sheet = _write_sheet(
+            tmp_path,
+            "version: 1\nitems:\n"
+            f"  - id: {rid}\n    verb: revise\n    section: Trigger\n"
+            "    text: Reworded by a human.\n"
+            "    because: F3 companion test\n",
+        )
+        items = batch.load_sheet(sheet)
+        result = batch.run(home, items, no_push=True)  # actor defaults to "human"
+        assert result.summary["applied"] == 1
+        proposal_path = (
+            find_record_path(home, rid).parent.parent / "proposals" / f"{rid}.yaml"
+        )
+        from self_learn.ledger_ops import read_proposal
+
+        assert "revised_by" not in read_proposal(proposal_path)
+
+    def test_mutation_reverting_route_by_to_unwidened_reddens(
+        self, tmp_path, monkeypatch
+    ):
+        """Mutation witness: `route`'s own call in `_dispatch` reverted
+        to the pre-fold `by=f.get("by")` -- reddens the overseer-actor
+        assertion above (a dest-explicit item with no `by:` key would
+        read `routing.by == "human"` regardless of `actor="overseer"`).
+        Reproduced by monkeypatching `verbs.route` to discard the `by`
+        kwarg it is called with before calling through (the hand-edit
+        was ALSO performed once directly against `batch.py`'s own call
+        site: RED on `test_route_overseer_actor_names_routing_by`
+        above, reverted, GREEN; recorded in this build's report)."""
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-f0000014")
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\nitems:\n  - id: {rid}\n    verb: route\n    dest: skill-md\n",
+        )
+        items = batch.load_sheet(sheet)
+        real_route = verbs.route
+
+        def drop_by(*a, **kw):
+            kw["by"] = None
+            return real_route(*a, **kw)
+
+        monkeypatch.setattr(verbs, "route", drop_by)
+        result = batch.run(home, items, no_push=True, actor="overseer")
+        assert result.summary["applied"] == 1
+        record = Record.from_path(find_record_path(home, rid))
+        # RED shape: falls back to the dest-is-not-None heuristic,
+        # never the actor.
+        assert record.routing["by"] == "human"
+
+
 class TestActorValidated:
     """O-2b test 5: ``actor`` is validated up front, before item 1 —
     the SAME closed set (:data:`verbs.ROUTING_BY_VALUES`) an item's own
@@ -663,6 +787,54 @@ class TestActorValidated:
             items = batch.load_sheet(sheet)
             result = batch.run(home, items, no_push=True, actor=actor)
             assert result.summary["applied"] == 1, actor
+
+
+# ========================================================= fold r1: F2
+
+
+class TestActorRidesTheEnvelope:
+    """gate-o2b-r1.md F2(a): `BatchResult.actor`/`DryRunResult.actor`
+    ride `to_json()` as one new key, always present (`"human"` by
+    default, since every pre-O-2b caller passes no `actor`). Update to
+    U3's own `to_json()` coverage (`test_sheet_with_case_round_trips_
+    into_json`, above, is the precedent shape this follows for
+    `case`)."""
+
+    def test_default_actor_json_key_is_human(self, tmp_path, monkeypatch):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e0000030")
+        sheet = _write_sheet(
+            tmp_path, f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n",
+        )
+        items = batch.load_sheet(sheet)
+        result = batch.run(home, items, no_push=True)  # actor defaults to "human"
+        assert result.actor == "human"
+        assert result.to_json()["actor"] == "human"
+
+    def test_overseer_actor_json_key_is_overseer(self, tmp_path, monkeypatch):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e0000031")
+        sheet = _write_sheet(
+            tmp_path, f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n",
+        )
+        items = batch.load_sheet(sheet)
+        result = batch.run(home, items, no_push=True, actor="overseer")
+        assert result.actor == "overseer"
+        assert result.to_json()["actor"] == "overseer"
+
+    def test_dry_run_actor_rides_the_envelope_too(self, tmp_path, monkeypatch):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e0000032")
+        sheet = _write_sheet(
+            tmp_path, f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n",
+        )
+        items = batch.load_sheet(sheet)
+        dr_default = batch.dry_run(home, items)
+        assert dr_default.actor == "human"
+        assert dr_default.to_json()["actor"] == "human"
+        dr_overseer = batch.dry_run(home, items, actor="steward")
+        assert dr_overseer.actor == "steward"
+        assert dr_overseer.to_json()["actor"] == "steward"
 
 
 # ========================================================= fold r1: F9

@@ -5,7 +5,9 @@ ever hand-writes another bash script (S-54).
 Public surface:
 
     load_sheet(path, *, home=None) -> Sheet  # BAT1: validated WHOLE, or raises
-    classify(home, item) -> bool             # True iff already-applied (§3.3b)
+    classify(home, item, *, actor="human", hook_activation=False) -> bool
+        # True iff already-applied (§3.3b); the two keyword-only params
+        # matter only for a route item resolving to `hook` (fold r1, F4)
     run(home, items, *, no_push=False, actor="human",
         hook_activation=False) -> BatchResult
     dry_run(home, items, *, actor="human",
@@ -170,6 +172,18 @@ REFUSED_VERBS_LITERAL = frozenset(
 REFUSED_HOOK_DESTINATION = "hook"
 
 
+def _hook_refused_detail(record_id: str) -> str:
+    """Fold r1 (F8): the ONE S-29 refusal sentence both `_dispatch`
+    (the real run) and `dry_run` (the preview) show for a hook route at
+    any non-overseer actor — a single definition so the two copies can
+    never drift (gate-o2b-r1.md F8 measured them byte-identical today
+    but only one of the two carried a test pinning its text)."""
+    return (
+        f"{record_id}: a hook route is refused inside a batch (S-29) — "
+        "route it by hand"
+    )
+
+
 class BatchError(Exception):
     """Whole-sheet validation failure (BAT1) — exit 64, nothing runs."""
 
@@ -276,6 +290,15 @@ class BatchResult:
     #: every other surface's refusal; `process_code == 6` with this
     #: `None` never happens together.
     stop_message: str | None = None
+    #: Fold r1 (F2): who ran this sheet -- always present (`"human"` by
+    #: default, since every pre-O-2b caller, the CLI included, passes
+    #: no `actor`), threaded straight from `run`'s own validated
+    #: `actor=` parameter. The ONE ledger surface that already knew
+    #: this (the `By: <actor>` commit trailer, on the eight
+    #: commit-trailer verbs only) still exists unchanged; this is the
+    #: field a `--json`/receipt READER can consult without parsing a
+    #: git log.
+    actor: str = "human"
 
     @property
     def summary(self) -> dict:
@@ -320,6 +343,7 @@ class BatchResult:
             "recovered_rolled_forward": self.recovered_rolled_forward,
             "recovered_restored": self.recovered_restored,
             "stop_message": self.stop_message,
+            "actor": self.actor,
         }
 
 
@@ -469,10 +493,34 @@ def _resolved_route_dest(home: Path, path: Path, item: SheetItem):
     return resolved.destination, resolved.ref_name
 
 
-def classify(home: Path, item: SheetItem) -> bool:
+def _hook_activation_registered(record: Record) -> bool | None:
+    """Fold r1 (F4): what the record's OWN LAST ``hook-activated``
+    history entry says about registration -- ``True`` (a full
+    activation: registered + activation-checked), ``False`` (F1's
+    delegated/placed-only note -- the ONE marker durably distinguishing
+    the two on the ledger, since a history entry carries only ``event``/
+    ``note``), or ``None`` (no ``hook-activated`` entry at all -- never
+    activated, successfully or not, e.g. after F5's undo)."""
+    entries = [h for h in (record.history or []) if h.get("event") == "hook-activated"]
+    if not entries:
+        return None
+    note = entries[-1].get("note") or ""
+    return "delegated" not in note
+
+
+def classify(
+    home: Path, item: SheetItem, *, actor: str = "human",
+    hook_activation: bool = False,
+) -> bool:
     """True iff *item* is ALREADY-APPLIED (§3.3b) — a STATE READ, never
     a parse of a refusal message. An unresolvable record id is never
-    already-applied — it surfaces as the item's own refusal at dispatch."""
+    already-applied — it surfaces as the item's own refusal at dispatch.
+
+    ``actor``/``hook_activation`` (fold r1, F4): read ONLY for a
+    ``route`` item resolving to the ``hook`` destination under
+    ``actor == "overseer"`` -- every other verb, and every OTHER actor
+    (including the default), is byte-unchanged by these two parameters;
+    see the ``route`` branch below for what they change."""
     try:
         path = find_record_path(home, item.id)
     except LedgerOpsError:
@@ -506,6 +554,20 @@ def classify(home: Path, item: SheetItem) -> bool:
         routing = record.routing or {}
         if routing.get("destination") != want_dest:
             return False
+        if want_dest == REFUSED_HOOK_DESTINATION and actor == "overseer":
+            # Fold r1 (F4): the route leg landed (status/destination
+            # already matched above), but for the OVERSEER's own path
+            # "already applied" also means the ACTIVATION leg matches
+            # the CURRENT gate -- a failed or never-attempted
+            # activation, or one parked under a gate that has since
+            # flipped, is NOT already-applied: `_dispatch` re-attempts
+            # the activation leg only (the route leg is skipped there,
+            # since `verbs.route` itself would refuse a second attempt
+            # against an already-routed record).
+            registered = _hook_activation_registered(record)
+            if registered is None:
+                return False
+            return registered == hook_activation
         if want_dest == "reference" and want_ref is not None:
             return routing.get("reference_file") == want_ref
         return True
@@ -662,6 +724,74 @@ def _reconsider_case_for(
     return case
 
 
+def _dispatch_hook_activation(
+    home: Path,
+    item: SheetItem,
+    *,
+    actor: str,
+    hook_activation: bool,
+    route_result: "verbs.VerbResult | None",
+) -> "ItemResult":
+    """Fold r1 (F4, F5, F9): the activation leg of an overseer hook
+    route, factored out of :func:`_dispatch` (pyright's own complexity
+    limit flagged `_dispatch` once this logic was inlined there too).
+
+    *route_result* is the FRESH route's own :class:`verbs.VerbResult`
+    when this call just landed a NEW route commit, or ``None`` when the
+    record was ALREADY routed to ``hook`` and only the activation leg
+    is being re-attempted (F4 — `verbs.route` itself would refuse a
+    second attempt against an already-routed record, so `_dispatch`'s
+    route branch never calls it in that shape).
+
+    Any exception from the activation call — not only
+    :class:`verbs.VerbError` — refuses THIS item rather than escaping
+    :func:`run` (F5); the runtime undo, if any, has already run inside
+    :func:`hook_activation.activate` itself by the time this catches
+    it. On success, F9: both commits' worth of post-notes ride the ONE
+    item result when *route_result* is given — route's own (the
+    exact-bytes preview and manual-steps text a human reviewing this
+    route sees today) alongside hook_activate's; route's own commit sha
+    rides `detail` since :class:`ItemResult` has only one `sha` slot
+    and hook_activate's is the more RECENT of the two commits."""
+    verb = item.verb
+    f = item.fields
+    try:
+        hook_result = verbs.hook_activate(
+            home, item.id, register=hook_activation, no_push=True,
+            by=(f.get("by") or actor),
+        )
+    except Exception as exc:  # noqa: BLE001 — F5: nothing escapes `run`
+        if route_result is None:
+            detail = (
+                f"{item.id}: already routed; the activation re-attempt "
+                f"failed — {exc}"
+            )
+        else:
+            detail = (
+                f"{item.id}: routed (commit {route_result.commit_sha}) "
+                f"but activation failed — {exc}"
+            )
+        return ItemResult(
+            n=item.n, id=item.id, verb=verb, rc=1, state="refused",
+            sha=route_result.commit_sha if route_result is not None else None,
+            detail=detail,
+        )
+    if route_result is None:
+        notes = list(hook_result.post_notes)
+        detail = "already routed — re-attempting activation only" + (
+            "; " + "; ".join(notes) if notes else ""
+        )
+    else:
+        notes = list(route_result.post_notes) + list(hook_result.post_notes)
+        detail = f"route commit {route_result.commit_sha}" + (
+            "; " + "; ".join(notes) if notes else ""
+        )
+    return ItemResult(
+        n=item.n, id=item.id, verb=verb, rc=0,
+        sha=hook_result.commit_sha, state="applied", detail=detail,
+    )
+
+
 def _dispatch(
     home: Path,
     item: SheetItem,
@@ -696,19 +826,32 @@ def _dispatch(
     eight now carries ``By: human`` where it carried nothing before
     (build-o2b.md's own line: "it is the default `by` for every item
     that names none" — see this build's report for the carried test
-    this widens, and for why ``route``/``revise`` are excluded: their
-    own ``by`` parameter feeds a DIFFERENT mechanism — ``route``'s
-    resolves ``Record.set_routing``'s schema field via its own
-    dest-is-not-None heuristic, and ``revise``'s rides the proposal's
-    ``revised_by`` stamp — neither ever writes the commit trailer this
-    widening is about, so forcing ``actor`` onto either would silently
-    misreport provenance the verb already computes correctly on its
-    own); (2) it is the ONE condition (``actor == "overseer"``) under
-    which a ``route`` item resolving to the ``hook`` destination is not
-    refused outright (S-29) — the sheet text itself can never request
-    either value (``actor``/``activate`` stay unknown ITEM keys; a
-    top-level ``actor:`` stays a refused unknown top-level key, both
-    unchanged by this build)."""
+    this widens); ``route``/``revise`` never join this EIGHT-verb
+    trailer widening — their own ``by`` parameter feeds a DIFFERENT
+    mechanism (``route``'s resolves ``Record.set_routing``'s schema
+    field via its own dest-is-not-None heuristic; ``revise``'s rides
+    the proposal's ``revised_by`` stamp; neither ever writes the commit
+    trailer this widening is about) — but fold r1 (F3, ruling 6) gives
+    each its OWN narrower actor default at its own call site below:
+    ``by = f.get("by") or (actor if actor != "human" else None)`` —
+    a default-``"human"`` caller keeps each verb's existing heuristic
+    byte-for-byte; a non-human runner is named; (2) it is the ONE
+    condition (``actor == "overseer"``) under which a ``route`` item
+    resolving to the ``hook`` destination is not refused outright
+    (S-29) — the sheet text itself can never request either value
+    (``actor``/``activate`` stay unknown ITEM keys; a top-level
+    ``actor:`` stays a refused unknown top-level key, both unchanged by
+    this build). Fold r1 (F4): a hook-dest item under ``actor==
+    "overseer"`` reaching this function with the record ALREADY routed
+    to ``hook`` (``classify`` decided the route leg landed but the
+    activation leg does not match the CURRENT gate) skips the route
+    leg entirely and only re-attempts activation, through the same
+    idempotent :func:`verbs.hook_activate`. Fold r1 (F5): either
+    activation call (fresh-route or re-attempt) is wrapped broadly —
+    any exception, not only :class:`verbs.VerbError` — so nothing ever
+    escapes :func:`run`; the runtime undo (if any) has already run
+    inside :func:`hook_activation.activate` itself by the time this
+    catches it."""
     verb = item.verb
     f = item.fields
     try:
@@ -717,10 +860,32 @@ def _dispatch(
             resolved = _resolved_route_dest(home, route_path, item)
             is_hook_dest = resolved == (REFUSED_HOOK_DESTINATION, None)
             if is_hook_dest and actor != "overseer":
-                raise verbs.VerbError(
-                    f"{item.id}: a hook route is refused inside a batch "
-                    "(S-29) — route it by hand"
+                raise verbs.VerbError(_hook_refused_detail(item.id))
+            if is_hook_dest and actor == "overseer":
+                # Fold r1 (F4): a hook-dest item reaches HERE, under
+                # `actor="overseer"`, in one of two shapes -- a fresh
+                # route (record still `pending`, falls through below)
+                # or a RETRY (`classify` already decided the record is
+                # already routed to `hook` but the activation leg does
+                # not match the current gate: a failed attempt, or one
+                # parked under a gate that has since flipped). The
+                # second shape must never call `verbs.route` again --
+                # it would refuse against an already-routed record --
+                # so it is detected here and only the activation leg
+                # (through the SAME idempotent `verbs.hook_activate` —
+                # a placed symlink is re-verified, not re-placed) runs,
+                # via `_dispatch_hook_activation`.
+                pre_record = Record.from_path(route_path)
+                already_routed_to_hook = (
+                    pre_record.status == "routed"
+                    and (pre_record.routing or {}).get("destination")
+                    == REFUSED_HOOK_DESTINATION
                 )
+                if already_routed_to_hook:
+                    return _dispatch_hook_activation(
+                        home, item, actor=actor, hook_activation=hook_activation,
+                        route_result=None,
+                    )
             follow_up = None
             if f.get("follow_up") is not None:
                 follow_up = {"action": f["follow_up"]}
@@ -729,7 +894,18 @@ def _dispatch(
                 if f.get("follow_up_note") is not None:
                     follow_up["note"] = f["follow_up_note"]
             result = verbs.route(
-                home, item.id, dest=f.get("dest"), by=f.get("by"),
+                home, item.id,
+                dest=f.get("dest"),
+                # Fold r1 (F3, ruling 6): the actor is the default `by`
+                # here TOO, but only for a non-human caller -- a
+                # default-`"human"` run keeps `route`'s own
+                # dest-is-not-None heuristic byte-for-byte (S-29's
+                # `resolved_by` fallback below still decides it), since
+                # `route`/`revise` are the two verbs excluded from the
+                # EIGHT-verb widening above (their own `by` feeds a
+                # DIFFERENT mechanism — `Record.set_routing`'s schema
+                # field, never the commit trailer).
+                by=(f.get("by") or (actor if actor != "human" else None)),
                 note=f.get("note"), no_push=True, follow_up=follow_up,
                 collapse=f.get("collapse"),
                 allow_empty_glob=bool(f.get("allow_empty_glob", False)),
@@ -739,23 +915,17 @@ def _dispatch(
                 # the ONE caller that carries a hook route through to
                 # activation: route's own commit above is unchanged from
                 # the human path (the script it commits is identical
-                # either way); this second call runs the SAME
+                # either way); `_dispatch_hook_activation` runs the SAME
                 # `hook_activation` module O-2a built, inside
-                # `verbs.hook_activate`'s own lock/handoff/undo — a
-                # failure here (caught by this function's own
-                # `except verbs.VerbError` below, since `hook_activate`
-                # wraps `hook_activation.HookActivationError` in one)
-                # leaves the route's commit standing (exactly the state
-                # a human's own two-step sequence — route now, `hook
-                # activate` later — already leaves it in) and reports
-                # THIS item refused, naming the reason.
-                hook_result = verbs.hook_activate(
-                    home, item.id, register=hook_activation, no_push=True,
-                )
-                return ItemResult(
-                    n=item.n, id=item.id, verb=verb, rc=0,
-                    sha=hook_result.commit_sha, state="applied",
-                    detail="; ".join(hook_result.post_notes) or None,
+                # `verbs.hook_activate`'s own lock/handoff/undo, and
+                # (F5) wraps any failure so it refuses THIS item rather
+                # than escaping `run` — route's own commit stands
+                # (exactly the state a human's own two-step sequence —
+                # route now, `hook activate` later — already leaves it
+                # in) either way.
+                return _dispatch_hook_activation(
+                    home, item, actor=actor, hook_activation=hook_activation,
+                    route_result=result,
                 )
         elif verb == "reject":
             result = verbs.reject(
@@ -841,7 +1011,14 @@ def _dispatch(
             # is always present by the time `run`/`_dispatch` reach it.
             result = verbs.revise(
                 home, item.id, section=f["section"], text=f["text"],
-                because=f["because"], by=f.get("by"), no_push=True,
+                because=f["because"],
+                # Fold r1 (F3, ruling 6): same non-human-only actor
+                # default `route` gets above -- `revise`'s own `by`
+                # rides the proposal's `revised_by` stamp, not a commit
+                # trailer, but the SAME "default-human is unchanged,
+                # a non-human runner is named" rule applies to it.
+                by=(f.get("by") or (actor if actor != "human" else None)),
+                no_push=True,
             )
         else:  # pragma: no cover — load_sheet already gated the verb set
             raise AssertionError(f"unreachable: unpermitted verb {verb!r}")
@@ -975,6 +1152,10 @@ class DryRunResult:
     #: Fold r1: the sheet's own `.sheet_sha`, same as `BatchResult.
     #: sheet_sha` -- `None` for a plain `list[SheetItem]` caller.
     sheet_sha: str | None = None
+    #: Fold r1 (F2): same field, same default, as `BatchResult.actor` --
+    #: a preview names the actor it would run as, same as it names
+    #: every other would-happen detail.
+    actor: str = "human"
 
     @property
     def ok(self) -> bool:
@@ -993,6 +1174,7 @@ class DryRunResult:
             "case": self.case,
             "sheet_sha": self.sheet_sha,
             "ok": self.ok,
+            "actor": self.actor,
         }
 
 
@@ -1033,9 +1215,10 @@ def dry_run(
     result = DryRunResult(
         case=sheet_case,
         sheet_sha=getattr(items, "sheet_sha", None),
+        actor=actor,
     )
     for item in items:
-        if classify(home, item):
+        if classify(home, item, actor=actor, hook_activation=hook_activation):
             result.items.append(
                 DryRunItem(n=item.n, id=item.id, verb=item.verb,
                            state="already-applied")
@@ -1055,16 +1238,14 @@ def dry_run(
             if is_hook_dest:
                 result.hook_items.append(item.id)
                 if actor != "overseer":
-                    # Same S-29 refusal `_dispatch` raises for real —
-                    # previewed here, nothing touched.
+                    # Fold r1 (F8): the SAME shared sentence `_dispatch`
+                    # raises for real — previewed here, nothing touched,
+                    # never a second hand-copied literal to drift.
                     result.items.append(
                         DryRunItem(
                             n=item.n, id=item.id, verb=item.verb,
                             state="would-refuse",
-                            detail=(
-                                f"{item.id}: a hook route is refused "
-                                "inside a batch (S-29) — route it by hand"
-                            ),
+                            detail=_hook_refused_detail(item.id),
                         )
                     )
                     continue
@@ -1214,19 +1395,21 @@ def run(
             recovered_rolled_forward=list(exc.result.rolled_forward),
             recovered_restored=list(exc.result.restored),
             stop_message=str(exc),
+            actor=actor,
         )
     result = BatchResult(
         case=case,
         sheet_sha=sheet_sha,
         recovered_rolled_forward=list(recovered.rolled_forward),
         recovered_restored=list(recovered.restored),
+        actor=actor,
     )
     push_exit: int | None = None
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
         for idx, item in enumerate(items):
-            if classify(home, item):
+            if classify(home, item, actor=actor, hook_activation=hook_activation):
                 result.items.append(
                     ItemResult(n=item.n, id=item.id, verb=item.verb, rc=0,
                                state="already-applied")
@@ -1342,6 +1525,10 @@ def write_receipt(
         "code": result.process_code,
         "stop_message": result.stop_message,
         "items": result.to_json()["items"],
+        # Fold r1 (F2): threaded through for future readers -- `cases.
+        # receipt` reads only the keys named in its own docstring and
+        # ignores this one, so the section-5 line format is unchanged.
+        "actor": result.actor,
     }
     try:
         cases.receipt(home, result.case, batch_result)
