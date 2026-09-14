@@ -1645,30 +1645,62 @@ def _write_sheet(base_dir: Path, items: list[dict]) -> Path:
 
 class TestProd:
     @pytest.mark.parametrize(
-        "outcome", ["spawned", "absorbed-window", "absorbed-race", "disabled", "depth-limited"]
+        "outcome,expect_rc",
+        [
+            ("spawned", 0),
+            ("absorbed-window", cli.EXIT_HELD),
+            ("absorbed-race", cli.EXIT_HELD),
+            ("disabled", cli.EXIT_HELD),
+            ("depth-limited", cli.EXIT_HELD),
+        ],
     )
-    def test_prod1_worker_kick_json(self, env2, monkeypatch, capsys, outcome):
+    def test_prod1_worker_kick_json(self, env2, monkeypatch, capsys, outcome, expect_rc):
         """PROD1: `worker kick --json` passes the library's own outcome
         string through UNCHANGED, for all five outcomes -- never a
-        re-derived label."""
+        re-derived label -- and `ok` stays True for every outcome (none
+        of the five is a failure). FW-85 (U0) SUPERSEDES this test's own
+        prior PROD3 assertion ("kick's own exit is unconditionally 0",
+        which FW-134 (`14-forward-work-map.md`) explicitly named this
+        test as pinning against a later "improvement"): the exit code
+        is no longer byte-unchanged across outcomes -- only `spawned`
+        actually started a child, so only `spawned` returns `EXIT_OK`;
+        the other four -- no child spawned, for a reason short of
+        failure -- return the new `EXIT_HELD` (`commands/review.md`'s
+        exit-code table)."""
         monkeypatch.setenv("SELF_LEARN_HOME", str(env2.home))
         monkeypatch.setattr(cli.worker, "kick", lambda home: outcome)
         rc = cli.main(["worker", "kick", "--json"])
-        assert rc == 0  # PROD3: kick's own exit is unconditionally 0
+        assert rc == expect_rc
         data = json.loads(capsys.readouterr().out)
         assert data["outcome"] == outcome
         assert data["ok"] is True
 
     @pytest.mark.parametrize(
         "status,expect_ok,expect_rc",
-        [("ok", True, 0), ("idle", True, 0), ("failed", False, 1)],
+        [
+            ("ok", True, 0),
+            ("idle", True, cli.EXIT_HELD),
+            ("failed", False, 1),
+            ("stopped", False, gitops.EXIT_GIT_FAILED),
+        ],
     )
     def test_prod2_and_prod3_worker_run_json(self, env2, monkeypatch, capsys, status, expect_ok, expect_rc):
-        """PROD2 (ok flag correctness) and PROD3 (byte-unchanged exit
-        code) in one table -- worker run's three statuses."""
+        """PROD2 (ok flag correctness, unchanged by FW-85) and PROD3
+        (the exit code) in one table -- worker run's four statuses
+        (`worker.py`'s own `RunResult.status` docstring: `ok | idle |
+        failed | stopped`; `stopped` was missing from this table before
+        FW-85 -- added here for full discrimination). FW-85 (U0): `idle`
+        (0 eligible -- nothing due) now returns the new `EXIT_HELD`
+        rather than `0` -- `commands/review.md`'s exit-code table:
+        "the new EXIT_HELD (10) means the run found nothing due and
+        held ... before FW-85 it was indistinguishable from 0". `ok`
+        stays True for `idle` (not a failure); only the exit code
+        changed."""
         import types
         monkeypatch.setenv("SELF_LEARN_HOME", str(env2.home))
-        stub = types.SimpleNamespace(status=status, proposed=[], merge_proposed=[], eligible=0, suspects=0)
+        stub = types.SimpleNamespace(
+            status=status, proposed=[], merge_proposed=[], eligible=0, suspects=0
+        )
         monkeypatch.setattr(cli.worker, "run", lambda home, **kw: stub)
         rc = cli.main(["worker", "run", "--json"])
         assert rc == expect_rc
@@ -1679,19 +1711,39 @@ class TestProd:
     @pytest.mark.parametrize(
         "status,expect_ok,expect_rc",
         [
-            ("ok", True, 0), ("idle", True, 0), ("busy", True, 0), ("held-gate", True, 0),
-            ("disabled", True, 0), ("initialized", True, 0),
-            ("failed", False, 1), ("landed-uncommitted", False, gitops.EXIT_HALF_WRITTEN),
+            ("ok", True, 0),
+            ("initialized", True, 0),
+            ("idle", True, cli.EXIT_HELD),
+            ("busy", True, cli.EXIT_HELD),
+            ("held-gate", True, cli.EXIT_HELD),
+            ("disabled", True, cli.EXIT_HELD),
+            ("failed", False, 1),
+            ("landed-uncommitted", False, gitops.EXIT_HALF_WRITTEN),
+            ("stopped", False, gitops.EXIT_GIT_FAILED),
         ],
     )
     def test_prod2_and_prod3_mine_run_json(self, env2, monkeypatch, capsys, status, expect_ok, expect_rc):
-        """PROD2 + PROD3 for mine run's eight statuses: `ok` is false
-        ONLY for failed/landed-uncommitted, and the exit code is the
-        pinned integer for each (7 for landed-uncommitted, 1 for failed,
-        0 for the other six) -- never derived from the exit code itself."""
+        """PROD2 (ok flag correctness, unchanged by FW-85) + PROD3 (the
+        exit code) for mine run's nine statuses (`stopped` was missing
+        from this table before FW-85 -- added here for full
+        discrimination). FW-85 (U0) SUPERSEDES this test's own prior
+        PROD3 assertion (FW-134, `14-forward-work-map.md`, named this
+        test's table as the "negative criterion" pinning `busy`/
+        `held-gate`/`disabled`/`idle` at `0` "so a later builder cannot
+        'improve' it silently" -- FW-85's own dated disposition on that
+        same row is the authorization to do exactly that, for this
+        SEPARATE run-command contract, not the verb/batch one FW-134's
+        `EXIT_BATCH_PARTIAL` guards): `idle`/`held-gate`/`busy`/
+        `disabled` are all "the run found nothing due and held" per
+        `commands/review.md`'s exit-code table and now return the new
+        `EXIT_HELD`, never `0`. `ok`/`landed-uncommitted`/`failed` are
+        untouched; `initialized` performs a real one-time action
+        (cursor seeding) and stays `EXIT_OK`."""
         import types
         monkeypatch.setenv("SELF_LEARN_HOME", str(env2.home))
-        stub = types.SimpleNamespace(status=status, landed=[], folded=[], recurrences=[], fires=0, run_id="run-1")
+        stub = types.SimpleNamespace(
+            status=status, landed=[], folded=[], recurrences=[], fires=0, run_id="run-1"
+        )
         monkeypatch.setattr(cli.miner, "run", lambda home, **kw: stub)
         rc = cli.main(["mine", "run", "--json"])
         assert rc == expect_rc
