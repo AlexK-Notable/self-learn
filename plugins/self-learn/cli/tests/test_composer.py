@@ -651,13 +651,16 @@ def test_a12_worker_prompt_ingredients_and_to_text_containment(tmp_path):
     entry = _entry_for(env.ledger, reloaded)
     prompt, _roster = worker.compose_batch_prompt(env.ledger, [entry])
 
-    # doctrine tokens + registry + digest survive (regression guard, N1).
+    # doctrine tokens + registry + cases block survive (regression guard, N1).
     assert "trigger_recognizable" in prompt
     assert "why_present" in prompt
     assert "§9" in prompt
     assert "§10" in prompt
     assert "headline" in prompt  # card registry
-    assert "(no rejected proposals yet)" in prompt  # digest, empty leg
+    # U7: the rejected-proposal digest is replaced by the cases block —
+    # this env has no cases/ dir, so the empty-index leg renders.
+    assert "Prior decisions on this record's class, as cases:" in prompt
+    assert "none yet" in prompt
 
     # roster sha line + candidate block + path roster.
     assert "roster sha:" in prompt
@@ -672,6 +675,63 @@ def test_a12_worker_prompt_ingredients_and_to_text_containment(tmp_path):
     # header, not merely inside the interpolated doctrine text.
     header = prompt[: prompt.index("=== SKILL ROSTER")]
     assert "gates" in header and "flags" in header and "recommendation" in header
+
+
+def test_u7_cases_block_cites_a_real_case_not_a_rejection_instruction(tmp_path):
+    """U7 (`01-architecture.md` §3.3 as amended; `03-decisions.md` S-26
+    as amended): the batch prompt cites prior decisions AS CASES —
+    test_a12's empty-index leg proves the heading/fallback survive, but
+    only a NON-empty index proves a real case id actually reaches the
+    prompt and that the old 'never re-propose' framing is truly gone,
+    not merely relabeled. Absent/broken: a build that still injects the
+    old imperative digest line, or that drops the cases block's own
+    heading once the index is non-empty, would pass test_a12 (empty
+    leg) and fail only here."""
+    from self_learn import cases as cases_mod
+
+    env = make_env(tmp_path, skills=("s",))
+    record = make_behavior(scope="skill:s", record_id="lrn-44000000")
+    create_record(env.ledger, record)
+    entry = _entry_for(env.ledger, record)
+
+    stage = tmp_path / "case-stage.yaml"
+    stage.write_text(
+        "kind: resolution\n"
+        "trigger: nightly\n"
+        "outcome: reject\n"
+        "records: [lrn-44000000]\n"
+        "scope: skill:s\n"
+        "question: does this class belong on the shelf?\n"
+        "evidence:\n"
+        "  - ref: 'transcript:abc12345#L1'\n"
+        "    quote: 'one-off task instruction'\n"
+        "decision:\n"
+        "  verb: reject\n"
+        "  because: this is a one-off, not a standing rule\n"
+        "  confidence: settled\n",
+        encoding="utf-8",
+    )
+    case_id = cases_mod.record(env.ledger, stage, actor="steward")
+
+    prompt, _roster = worker.compose_batch_prompt(env.ledger, [entry])
+
+    assert "Prior decisions on this record's class, as cases:" in prompt
+    assert case_id in prompt
+    assert "reject" in prompt  # the case's own outcome, one-line
+    assert "Never re-propose" not in prompt
+    assert "recently rejected" not in prompt
+
+
+def test_u7_cases_block_empty_index_renders_none_yet(tmp_path):
+    """U7: the exact fallback the plan/brief name — an empty case index
+    (a real ledger with no `cases/` dir at all) renders 'none yet', never
+    a blank line or an exception (mirrors `_digest`'s own '(no rejected
+    proposals yet)' degradation posture for the same composer slot)."""
+    from support import make_home  # local: avoid touching the pinned import line
+
+    home = make_home(tmp_path)
+    assert not (home / "cases").exists()
+    assert worker._cases_block(home) == "none yet"
 
 
 def test_a12b_trace_less_deletion_and_pipeline_not_dead_control(tmp_path, monkeypatch):

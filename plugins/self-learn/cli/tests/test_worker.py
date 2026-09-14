@@ -646,6 +646,59 @@ def test_digest_contains_rejected_with_notes(env, sdk_fake_worker, monkeypatch):
     assert "one-off task instruction" in digest
 
 
+# --------------------------------------------------------- U7: cases/brief
+
+
+def test_validate_proposal_accepts_evidence_questions_advice_sections():
+    """U7 (`03-decisions.md` S-26 as amended): card-sections.yaml gained
+    three new keys (`evidence`, `questions`, `advice` — J0). The proposal
+    validator (`ledger_ops._validate_card`) is deliberately shape-only —
+    its own docstring: "the section SET is governed by the skill's
+    card-sections.yaml registry, deliberately not enforced here" — so it
+    already accepts any non-empty str -> str mapping, including these
+    three, with no code change needed. Positive control: a malformed
+    card (an all-whitespace section value) still refuses, proving this
+    test actually exercises validation rather than a no-op."""
+    from self_learn.ledger_ops import ProposalError, validate_proposal
+
+    good = proposal_dict(
+        card={
+            "headline": "A test headline.",
+            "evidence": "record body quote (ledger@...)",
+            "questions": "which scope applies is unclear.",
+            "advice": "route to skill-md; nothing contentious.",
+        }
+    )
+    validate_proposal(good)  # must not raise
+
+    bad = proposal_dict(card={"evidence": "   "})
+    with pytest.raises(ProposalError):
+        validate_proposal(bad)
+
+
+def test_render_brief_orders_sections_and_places_recommendation_last():
+    """U7 (routing-doctrine.md §8): the steward reads identity, then
+    evidence, then whatever is unresolved, then advice last — and
+    `recommendation` (a top-level field, not a card section) renders as
+    the FINAL row regardless of where the proposal's own YAML happened
+    to place that key. Constructing `recommendation` FIRST in the input
+    dict is the point: a renderer that merely preserved dict/YAML key
+    order would put it first too."""
+    proposal = {
+        "recommendation": "route",
+        "card": {
+            "advice": "route to skill-md.",
+            "evidence": "the record body quote.",
+            "headline": "What this is about.",
+            "questions": "none",
+        },
+    }
+    rows = worker.render_brief(proposal)
+    keys = [k for k, _ in rows]
+    assert keys == ["headline", "evidence", "questions", "advice", "recommendation"]
+    assert rows[-1] == ("recommendation", "route")
+
+
 # ------------------------------------------------- T14: template + escalation
 
 

@@ -348,7 +348,23 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         nodes=59, dump_sha="c61c80a0b91bc6e10dfc53e81e91549f6c7642f32b3c4a9ea91cbe9bbbd3eaa6",
     ),
     "test_composer.py": Behaviour(
-        nodes=58, dump_sha="3c920c0066c5f9db54b2a243a4714d331822cba6e82c6e029d8add6c6f4c7a5f"
+        nodes=58, dump_sha="3c920c0066c5f9db54b2a243a4714d331822cba6e82c6e029d8add6c6f4c7a5f",
+        edited={
+            "func:test_a12_worker_prompt_ingredients_and_to_text_containment": (
+                "2026-09-14 U7 (`01-architecture.md` §3.3 as amended; "
+                "`03-decisions.md` S-26 as amended, steward build): the M2 "
+                "batch prompt's rejected-proposal digest is replaced by a "
+                "cases-as-evidence block (case ids + one-line outcomes from "
+                "`cases.list_cases`) -- the analyst cites prior decisions "
+                "rather than obeying a 'never re-propose' instruction. This "
+                "test's digest-survives assertion, '(no rejected proposals "
+                "yet)' in prompt, becomes the cases block's own empty-index "
+                "form, 'none yet' in prompt, under the new heading 'Prior "
+                "decisions on this record's class, as cases:'. `_digest` "
+                "itself is untouched and still exercised directly by its "
+                "own two pinned tests in test_worker.py."
+            ),
+        },
     ),
     "test_u_fake.py": Behaviour(
         nodes=31, dump_sha="4fbcee5f5481c7a339d32fe303760e5ea8a024e647cb2c1a82795da70c942f46",
@@ -884,7 +900,7 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=8,
+        value=9,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
             "2026-09-13 steward-overseer integration (U0 + U8 merged), "
@@ -896,7 +912,12 @@ MEASURED: dict[str, Measured] = {
             "`test_invocation.py` test (`func:test_rg1_five_rung_precedence_"
             "resolves_in_isolation`, the steward/overseer env-leak fix). Each lane "
             "transcribed its own count alone (1 and 7); the merge carries the sum, "
-            "re-verified by running this file. Previous value 0 (2026-09-11, at a41ddb3)."
+            "re-verified by running this file. Previous value 0 (2026-09-11, at a41ddb3). "
+            "2026-09-14 U7 (`01-architecture.md` §3.3 as amended; `03-decisions.md` "
+            "S-26 as amended): 8 -> 9, one more door, `test_composer.py: "
+            "func:test_a12_worker_prompt_ingredients_and_to_text_containment` (the "
+            "M2 batch prompt's rejected-proposal digest assertion is replaced by "
+            "the U7 cases-block assertion)."
         ),
         measure=_measure_census_edited,
     ),
@@ -913,7 +934,7 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=191,
+        value=192,
         scope=_SCOPE_HEAD,
         reason=(
             "2026-09-13 U8 (17-invocation-runbook.md §1), HEAD-scoped, "
@@ -922,7 +943,10 @@ MEASURED: dict[str, Measured] = {
             "genuinely-edited nodes also differing from c3b48e7 (two of the "
             "seven already differed from c3b48e7 independently of this "
             "build and so moved nothing here, unlike at the live ANCHOR). "
-            "Previously 186 (2026-09-04 Sprint 2 integration)."
+            "Previously 186 (2026-09-04 Sprint 2 integration). 2026-09-14 U7, "
+            "re-run after this build's own edit: 191 -> 192 -- "
+            "`test_composer.py`'s newly-edited `test_a12_...` node also "
+            "differs from c3b48e7."
         ),
         measure=_measure_control_edited,
     ),
