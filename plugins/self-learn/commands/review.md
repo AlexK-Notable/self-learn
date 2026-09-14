@@ -416,9 +416,9 @@ what an unattended run decided, and how you correct it:
   `scope-conflict`).
 - `self-learn case observe <id> --kind
   examined|presented|statement|corrected|dependency-moved --text …
-  [--ref …] [--outcome agreed|corrected|noted]` — appends a Later
+  [--ref …] [--presented-outcome agreed|corrected|noted]` — appends a Later
   observations entry with its own `obs-<8hex>` id; never edits the
-  frozen account. `--outcome` applies to a `presented` observation only.
+  frozen account. `--presented-outcome` applies to a `presented` observation only.
   A `statement` or `dependency-moved` observation whose reference is one
   of the case's own dependencies queues that case for the steward's next
   nightly run automatically — you do not additionally ask for a

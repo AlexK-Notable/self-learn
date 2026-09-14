@@ -1078,9 +1078,10 @@ clause above, worked example):
 with `um-0012` and `um-0019` marked `LAPSED`,
 `changed_condition: consolidated-into:um-00c4`.
 
-`um-<4hex>` ids are stable for the life of the entry; every write bumps its
-`r<n>`, so "did the dependency move" is a revision comparison, not a diff of
-prose.
+`um-<4hex>` ids are stable for the life of the entry; every write that changes
+the claim bumps its `r<n>` (a presentation flipping `provisional` is not a
+change of claim), so "did the dependency move" is a revision comparison, not
+a diff of prose.
 
 ### 3a.5 Conditions feed
 

@@ -157,14 +157,15 @@ def default_memory_dir() -> Path | None:
 
 
 def _add_case_parser(sub) -> None:
-    """`case record|show|list|observe|receipt|rebuild-index` (U2,
-    `02-schema.md` §3a.2). `commands/review.md`'s "Cases" section
-    documents `show`/`list`/`observe` (and `record` in prose, for the
-    parked-successor flow) with no `--actor`/`--by` flags shown there —
-    this parser adds them explicitly (the review doc's grammar is
-    illustrative prose, not the full flag table); `receipt` and
-    `rebuild-index` are not mentioned in that doc at all. See this unit's
-    report for the full list against `commands/review.md`."""
+    """`case record|show|list|observe|receipt|index --rebuild` (U2,
+    `02-schema.md` §3a.2; `index` per D-d/S9 — was `rebuild-index`).
+    `commands/review.md`'s "Cases" section documents `show`/`list`/
+    `observe` (and `record` in prose, for the parked-successor flow)
+    with no `--actor`/`--by` flags shown there — this parser adds them
+    explicitly (the review doc's grammar is illustrative prose, not the
+    full flag table); `receipt` and `index` are not mentioned in that
+    doc at all. See this unit's report for the full list against
+    `commands/review.md`."""
     case_p = sub.add_parser("case", help="decision-case store (S-65, 02 §3a.2)")
     case_sub = case_p.add_subparsers(dest="case_command", metavar="<verb>")
 
@@ -213,16 +214,24 @@ def _add_case_parser(sub) -> None:
     # conflict between two already-landed artifacts on this branch,
     # documented (not resolved) in this unit's report.
     cobserve.add_argument("--presented-outcome", dest="outcome", choices=sorted(cases.PRESENTED_OUTCOMES))
-    cobserve.add_argument("--via")
+    cobserve.add_argument("--via", choices=sorted(cases.VIA_VALUES))
     cobserve.add_argument("--json", action="store_true", dest="as_json")
 
     creceipt = case_sub.add_parser("receipt", help="append Application-section lines from a batch result")
     creceipt.add_argument("id", metavar="case-...")
     creceipt.add_argument("--from-batch", required=True, dest="from_batch", metavar="BATCH-RESULT.json")
-    creceipt.add_argument("--by", default="human", choices=sorted(cases.ACTORS))
     creceipt.add_argument("--json", action="store_true", dest="as_json")
 
-    case_sub.add_parser("rebuild-index", help="rebuild the cache index from the case files on disk")
+    # D-d / S9: the interface draft's standing working name (§6, R-12) is
+    # `case index --rebuild`, not `case rebuild-index` — the function has
+    # a clear spec basis, only the CLI spelling diverges. `--rebuild` is
+    # required (the only mode today), matching that exact invocation.
+    cindex = case_sub.add_parser("index", help="rebuild the cache index from the case files on disk")
+    cindex.add_argument(
+        "--rebuild", action="store_true", required=True,
+        help="rebuild from the case files on disk (the only mode today)",
+    )
+    cindex.add_argument("--json", action="store_true", dest="as_json")
 
 
 def _add_statement_parser(sub) -> None:
@@ -254,9 +263,11 @@ def _add_statement_parser(sub) -> None:
 
 
 def _add_user_model_parser(sub) -> None:
-    """`user-model show|add|lapse|bump` (U2, `02-schema.md` §3a.4).
-    `show` and `bump` are not in the interface draft's verb table or in
-    `commands/review.md` — see this unit's report."""
+    """`user-model show|add|lapse` (U2, `02-schema.md` §3a.4). `show` is
+    not in the interface draft's verb table or in `commands/review.md`
+    — see this unit's report. `bump` is GONE (D-d/S8: no spec or draft
+    basis — every other verb already bumps `revision` through `_save`,
+    so `bump` committed with no content change)."""
     um_p = sub.add_parser("user-model", help="the model of the user (S-65, 02 §3a.4)")
     um_sub = um_p.add_subparsers(dest="user_model_command", metavar="<verb>")
 
@@ -274,8 +285,14 @@ def _add_user_model_parser(sub) -> None:
     uadd.add_argument("--statements", metavar="stmt-...[,stmt-...]")
     uadd.add_argument("--recorded-by", dest="recorded_by", choices=sorted(user_model.ACTORS))
     uadd.add_argument("--basis", metavar="um-...@r...[,um-...@r...]")
+    # D-f: `--no-provisional` is GONE — the flag that let a caller create
+    # an already-seen (`provisional: false`) system-reading entry at
+    # creation time. `--provisional` stays (inert: `add_entry` no longer
+    # takes a `provisional` parameter at all — a system-reading entry is
+    # always created `true`) because `commands/review.md` documents an
+    # example invocation using it; this parses without erroring but no
+    # longer changes anything.
     uadd.add_argument("--provisional", dest="provisional", action="store_true", default=None)
-    uadd.add_argument("--no-provisional", dest="provisional", action="store_false")
     uadd.add_argument("--json", action="store_true", dest="as_json")
 
     ulapse = um_sub.add_parser("lapse", help="mark one entry LAPSED")
@@ -286,10 +303,6 @@ def _add_user_model_parser(sub) -> None:
     ulapse.add_argument("--by", required=True, choices=sorted(user_model.ACTORS))
     ulapse.add_argument("--at", metavar="YYYY-MM-DD")
     ulapse.add_argument("--json", action="store_true", dest="as_json")
-
-    ubump = um_sub.add_parser("bump", help="bump the document revision without adding or lapsing anything")
-    ubump.add_argument("--by", required=True, choices=sorted(user_model.ACTORS))
-    ubump.add_argument("--json", action="store_true", dest="as_json")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -3094,11 +3107,12 @@ def _csv(value: str | None) -> list[str]:
 
 
 def _cmd_case(args: argparse.Namespace) -> int:
-    """`case record|show|list|observe|receipt|rebuild-index` (U2). No
-    push (case verbs never carry a `--no-push` flag — `commands/review.md`
-    §"Cases" describes only "commits under the ledger lock", never a
-    publish step; push happens once at session end, same as everything
-    else)."""
+    """`case record|show|list|observe|receipt|index --rebuild` (U2;
+    `index` renamed from `rebuild-index` per D-d/S9, the interface
+    draft's standing working name). No push (case verbs never carry a
+    `--no-push` flag — `commands/review.md` §"Cases" describes only
+    "commits under the ledger lock", never a publish step; push happens
+    once at session end, same as everything else)."""
     home = resolve_home()
     if (code := _home_gate(home)) is not None:
         return code
@@ -3153,18 +3167,18 @@ def _cmd_case(args: argparse.Namespace) -> int:
             return EXIT_OK
         if args.case_command == "receipt":
             batch_result = json.loads(Path(args.from_batch).read_text(encoding="utf-8"))
-            case_id = cases.receipt(home, args.id, batch_result, by=args.by)
+            case_id = cases.receipt(home, args.id, batch_result)
             if args.as_json:
                 print(json.dumps({"case": case_id}))
             else:
                 print(f"case receipt → {case_id}")
             return EXIT_OK
-        if args.case_command == "rebuild-index":
+        if args.case_command == "index":
             path = cases.rebuild_index(worker.cache_dir(home), home)
             if args.as_json:
                 print(json.dumps({"index": str(path)}))
             else:
-                print(f"case rebuild-index → {path}")
+                print(f"case index --rebuild → {path}")
             return EXIT_OK
     except cases.CaseError as exc:
         print(f"self-learn case {args.case_command}: {exc}", file=sys.stderr)
@@ -3178,7 +3192,7 @@ def _cmd_case(args: argparse.Namespace) -> int:
         print(f"self-learn case {args.case_command}: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED
     print(
-        "usage: self-learn case record|show|list|observe|receipt|rebuild-index",
+        "usage: self-learn case record|show|list|observe|receipt|index",
         file=sys.stderr,
     )
     return EXIT_USAGE
@@ -3246,10 +3260,11 @@ def _cmd_statement(args: argparse.Namespace) -> int:
 
 
 def _cmd_user_model(args: argparse.Namespace) -> int:
-    """`user-model show|add|lapse|bump` (U2). No `mark-seen` verb here —
+    """`user-model show|add|lapse` (U2). No `mark-seen` verb here —
     §3a.4: "an entry is marked seen only via `case observe --kind
     presented`, never by any other write" — there is deliberately no CLI
-    path to it beyond that one."""
+    path to it beyond that one. No `bump` verb (D-d/S8: dropped, no spec
+    or draft basis)."""
     home = resolve_home()
     if (code := _home_gate(home)) is not None:
         return code
@@ -3278,7 +3293,6 @@ def _cmd_user_model(args: argparse.Namespace) -> int:
                 statements=_csv(args.statements),
                 recorded_by=args.recorded_by,
                 basis=_csv(args.basis),
-                provisional=args.provisional,
             )
             if args.as_json:
                 print(json.dumps({"entry": entry_id}))
@@ -3300,13 +3314,6 @@ def _cmd_user_model(args: argparse.Namespace) -> int:
             else:
                 print(f"user-model lapse → {entry_id}")
             return EXIT_OK
-        if args.user_model_command == "bump":
-            revision = user_model.bump_revision(home, by=args.by)
-            if args.as_json:
-                print(json.dumps({"revision": revision}))
-            else:
-                print(f"user-model bump → revision {revision}")
-            return EXIT_OK
     except user_model.UserModelError as exc:
         print(f"self-learn user-model {args.user_model_command}: {exc}", file=sys.stderr)
         return exc.exit_code
@@ -3318,7 +3325,7 @@ def _cmd_user_model(args: argparse.Namespace) -> int:
     except gitops.GitOpsError as exc:
         print(f"self-learn user-model {args.user_model_command}: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED
-    print("usage: self-learn user-model show|add|lapse|bump", file=sys.stderr)
+    print("usage: self-learn user-model show|add|lapse", file=sys.stderr)
     return EXIT_USAGE
 
 

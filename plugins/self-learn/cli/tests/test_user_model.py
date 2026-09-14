@@ -9,6 +9,7 @@ path here lapses on age.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import re
 
@@ -211,3 +212,185 @@ def test_h_no_time_based_lapse_anywhere_in_this_module():
     src = inspect.getsource(user_model)
     assert not re.search(r"\bdays\b", src), src
     assert not re.search(r"\btimedelta\b", src), src
+
+
+# ================================================================ D-a
+
+
+def test_da_mark_seen_keeps_a_container_d_entry_in_d(tmp_path):
+    home = make_home(tmp_path)
+    entry_id = user_model.add_entry(
+        home, container="D", title="observed regularity", because="because text",
+        source="system-reading", by="overseer", ref="telemetry:e1",
+    )
+    user_model.mark_seen(home, entry_id)
+    doc = user_model.show(home)
+    after = next(e for e in doc["containers"]["D"] if e["id"] == entry_id)
+    assert after["provisional"] is False
+    assert not any(e["id"] == entry_id for e in doc["containers"]["B"])
+
+
+# ================================================================ D-f
+
+
+def test_df_system_reading_entry_is_always_created_provisional_true(tmp_path):
+    home = make_home(tmp_path)
+    entry_id = user_model.add_entry(
+        home, container="C", title="x", because="y", source="system-reading",
+        by="steward", ref="case-00000000", statements=["stmt-11112222"],
+    )
+    doc = user_model.show(home)
+    entry = next(e for e in doc["containers"]["C"] if e["id"] == entry_id)
+    assert entry["provisional"] is True
+    assert "provisional" not in inspect.signature(user_model.add_entry).parameters
+
+
+def test_df_no_provisional_flag_is_gone_from_the_cli(tmp_path):
+    from self_learn import cli
+
+    parser = cli._build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "user-model", "add", "--container", "C", "--title", "x",
+            "--because", "y", "--source", "system-reading", "--by", "steward",
+            "--no-provisional",
+        ])
+    # positive control: --provisional still parses (inert; review.md's
+    # own example invocation keeps using it)
+    args = parser.parse_args([
+        "user-model", "add", "--container", "C", "--title", "x",
+        "--because", "y", "--source", "system-reading", "--by", "steward",
+        "--provisional",
+    ])
+    assert args.provisional is True
+
+
+# ================================================================ S10
+
+
+def test_s10_container_e_refuses_system_reading(tmp_path):
+    home = make_home(tmp_path)
+    with pytest.raises(user_model.UserModelError):
+        user_model.add_entry(
+            home, container="E", title="a declared condition", because="y",
+            source="system-reading", by="steward", ref="case-00000000",
+        )
+    # positive control: own-words still works, human and steward/overseer
+    entry_id = user_model.add_entry(
+        home, container="E", title="a declared condition", because="y",
+        source="own-words", by="human", ref="stmt-11112222",
+    )
+    assert user_model.UM_ID_RE.match(entry_id)
+
+
+# ============================================================= item 2
+
+
+def test_2_b2_lapse_entry_scans_the_changed_condition_text(tmp_path):
+    home = make_home(tmp_path)
+    entry_id = _seed_provisional_entry(home)
+    token = "ghp_" + "Ab1" * 12
+    with pytest.raises(user_model.UserModelError):
+        user_model.lapse_entry(
+            home, entry_id, contrary=f"the deploy token is {token}", by="steward",
+        )
+    doc = user_model.show(home)
+    still = next(e for e in doc["containers"]["C"] if e["id"] == entry_id)
+    assert still["status"] == "CURRENT"
+
+
+# ============================================================= item 6
+
+
+def test_6_add_entry_allocates_id_under_the_lock(tmp_path, monkeypatch):
+    """Astra 4/10 (fold-u2-r1 item 6). A peer `add_entry` lands, under
+    the SAME lock, between this call's "acquire" and its own `_load` —
+    reproduced by hooking `intents.ledger_write` to fire the peer write
+    the instant the lock is (first) held, before this call's own body
+    runs. Fixed code (`_load` under the lock) sees the peer and appends
+    onto it — both entries survive. Pre-fix code (`_load` before the
+    lock) holds a stale snapshot and its own `_save` clobbers the peer's
+    disk write when it rewrites the whole document."""
+    home = make_home(tmp_path)
+    real_ledger_write = user_model.intents.ledger_write
+    state = {"injected": False}
+
+    @contextlib.contextmanager
+    def hook(home_arg, **kwargs):
+        with real_ledger_write(home_arg, **kwargs) as recovered:
+            if not state["injected"]:
+                state["injected"] = True
+                # A nested acquire of the SAME lock — safe, pass-through.
+                user_model.add_entry(
+                    home_arg, container="A", title="peer entry",
+                    because="peer because text", source="own-words",
+                    by="human", ref="stmt-99998888",
+                )
+            yield recovered
+
+    monkeypatch.setattr(user_model.intents, "ledger_write", hook)
+
+    entry_id = user_model.add_entry(
+        home, container="A", title="own entry", because="own because text",
+        source="own-words", by="human", ref="stmt-11112222",
+    )
+    doc = user_model.show(home)
+    ids = {e["id"] for e in doc["containers"]["A"]}
+    assert entry_id in ids
+    assert len(doc["containers"]["A"]) == 2, "the peer's entry must survive, not be clobbered"
+
+
+def test_6_lapse_entry_reads_current_state_under_the_lock(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    id_a = _seed_provisional_entry(home)
+    id_b = user_model.add_entry(
+        home, container="A", title="own words b", because="because b",
+        source="own-words", by="human", ref="stmt-33334444",
+    )
+    real_ledger_write = user_model.intents.ledger_write
+    state = {"injected": False}
+
+    @contextlib.contextmanager
+    def hook(home_arg, **kwargs):
+        with real_ledger_write(home_arg, **kwargs) as recovered:
+            if not state["injected"]:
+                state["injected"] = True
+                user_model.lapse_entry(
+                    home_arg, id_b, changed_condition="peer cause", by="human",
+                )
+            yield recovered
+
+    monkeypatch.setattr(user_model.intents, "ledger_write", hook)
+
+    user_model.lapse_entry(home, id_a, changed_condition="own cause", by="steward")
+
+    doc = user_model.show(home)
+    a = next(e for e in doc["containers"]["C"] if e["id"] == id_a)
+    b = next(e for e in doc["containers"]["A"] if e["id"] == id_b)
+    assert a["status"] == "LAPSED"
+    assert b["status"] == "LAPSED", "the peer's lapse must survive, not be clobbered"
+
+
+def test_6_mark_seen_reads_current_state_under_the_lock(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    id_a = _seed_provisional_entry(home)
+    id_b = _seed_provisional_entry(home)
+    real_ledger_write = user_model.intents.ledger_write
+    state = {"injected": False}
+
+    @contextlib.contextmanager
+    def hook(home_arg, **kwargs):
+        with real_ledger_write(home_arg, **kwargs) as recovered:
+            if not state["injected"]:
+                state["injected"] = True
+                user_model.mark_seen(home_arg, id_b)
+            yield recovered
+
+    monkeypatch.setattr(user_model.intents, "ledger_write", hook)
+
+    user_model.mark_seen(home, id_a)
+
+    doc = user_model.show(home)
+    seen_ids = {e["id"] for e in doc["containers"]["B"]}
+    assert id_a in seen_ids
+    assert id_b in seen_ids, "the peer's mark_seen must survive, not be clobbered"

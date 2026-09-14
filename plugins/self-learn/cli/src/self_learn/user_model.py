@@ -19,10 +19,20 @@ Public surface:
     add_entry(home, *, container, title, because, source, by, ...) -> str
     lapse_entry(home, entry_id, *, changed_condition=None, contrary=None,
                 consolidated_into=None, by, at=None) -> str
-    mark_seen(home, entry_id) -> Path                  # called only from
-                                                         # cases.observe
-    bump_revision(home, *, by) -> int
+    mark_seen(home, entry_id) -> Path                  # standalone: own
+                                                         # lock span, own commit
     show(home) -> dict
+
+`_mark_seen_locked(home, entry_ids)` is the internal counterpart:
+validates every id, flips, and `_save`s — but does NOT commit. It
+assumes the CALLER already holds the ledger lock (its own, or a nested
+pass-through). `mark_seen` is a thin wrapper that opens its own lock and
+commits alone; `cases.observe(kind="presented")` calls the locked helper
+directly, inside its OWN already-open span, so the case file's write and
+every named entry's flip land in ONE commit (fold-u2-r1 item 1 / B1: a
+refused observation must never leave a flipped entry with no
+presentation record — see `_mark_seen_locked`'s own docstring for how it
+guarantees that).
 
 Rendering note: the spec's own worked examples (§3a.4) pack several
 sub-fields onto one bullet line (``- source: system-reading; ref: …;
@@ -57,7 +67,6 @@ __all__ = [
     "add_entry",
     "lapse_entry",
     "mark_seen",
-    "bump_revision",
     "show",
 ]
 
@@ -306,13 +315,19 @@ def add_entry(
     statements: list[str] | None = None,
     recorded_by: str | None = None,
     basis: list[str] | None = None,
-    provisional: bool | None = None,
 ) -> str:
     """Add one entry to *container* (§3a.4 table). Refuses a container/
     source mismatch, a container B add (nobody adds there directly — see
-    :func:`mark_seen`), an actor not permitted for that container, a B/C
-    system-reading with no statement id (R-6c), forbidden vocabulary, or
-    a secret-scan hit on `title`/`because`."""
+    :func:`mark_seen`), a container E system-reading add (S10: E holds
+    only own-words entries — human unconditionally, steward/overseer
+    only with an own-words reference), an actor not permitted for that
+    container, a B/C system-reading with no statement id (R-6c),
+    forbidden vocabulary, or a secret-scan hit on `title`/`because`.
+
+    D-f: there is no `provisional` parameter — a system-reading entry is
+    ALWAYS created `provisional: true` (an own-words entry never carries
+    the field at all); no caller, CLI or Python, can create an
+    already-seen reading."""
     home = Path(home)
     if container not in CONTAINERS:
         raise UserModelUsageError(f"user-model add: container must be one of {CONTAINERS}, got {container!r}")
@@ -328,6 +343,10 @@ def add_entry(
         raise UserModelError("user-model add: container A holds only own-words entries")
     if container in ("C", "D") and source != "system-reading":
         raise UserModelError(f"user-model add: container {container} holds only system-reading entries")
+    if container == "E" and source != "own-words":
+        raise UserModelError(
+            "user-model add: container E holds only own-words entries (S10, §3a.4 E row)"
+        )
     if not title or not title.strip():
         raise UserModelUsageError("user-model add: title is required")
     if not because or not because.strip():
@@ -349,36 +368,40 @@ def add_entry(
     if source == "own-words" and not ref:
         raise UserModelUsageError("user-model add: own-words entries need a stmt-... ref")
 
-    fm, containers_map = _load(home)
-    entry_id = _new_um_id(containers_map)
-    entry: dict[str, Any] = {
-        "id": entry_id,
-        "title": title,
-        "r": 1,
-        "held_since": held_since or chrono.now_iso()[:10],
-        "because": because,
-        "conditions": list(conditions or []),
-        "status": "CURRENT",
-        "source": source,
-        "ref": ref,
-    }
-    if source == "system-reading":
-        entry["statements"] = statements
-        entry["provisional"] = True if provisional is None else bool(provisional)
-    else:
-        if recorded_by is not None:
-            entry["recorded_by"] = recorded_by
-    if basis:
-        entry["basis"] = list(basis)
-
-    containers_map = dict(containers_map)
-    containers_map[container] = containers_map[container] + [entry]
-
+    # Astra 4/10 (item 6): id allocation is state-dependent (it must see
+    # every currently-live id to avoid a collision) — load and allocate
+    # INSIDE the lock, not before it. Every check above is pure input,
+    # unaffected by a concurrent writer, and stays outside.
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
         with intents.ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
+            fm, containers_map = _load(home)
+            entry_id = _new_um_id(containers_map)
+            entry: dict[str, Any] = {
+                "id": entry_id,
+                "title": title,
+                "r": 1,
+                "held_since": held_since or chrono.now_iso()[:10],
+                "because": because,
+                "conditions": list(conditions or []),
+                "status": "CURRENT",
+                "source": source,
+                "ref": ref,
+            }
+            if source == "system-reading":
+                entry["statements"] = statements
+                entry["provisional"] = True
+            else:
+                if recorded_by is not None:
+                    entry["recorded_by"] = recorded_by
+            if basis:
+                entry["basis"] = list(basis)
+
+            containers_map = dict(containers_map)
+            containers_map[container] = containers_map[container] + [entry]
+
             path, _new_fm = _save(home, fm, containers_map, by=by)
             message = f"self-learn: user-model add {entry_id} ({container})"
             sha = gitops.stage_and_commit(home, [path], message, because)
@@ -419,35 +442,51 @@ def lapse_entry(
     if UM_ID_RE.match(entry_id) is None:
         raise UserModelUsageError(f"user-model lapse: malformed entry id {entry_id!r}")
 
-    fm, containers_map = _load(home)
-    letter, found = _find(containers_map, entry_id)
-    if found is None or letter is None:
-        raise UserModelUsageError(f"user-model lapse: unknown entry {entry_id}")
-    if by not in _WHO_MAY_LAPSE[letter]:
-        raise UserModelError(f"user-model lapse: container {letter} may not be lapsed by {by!r}")
-    if found.get("status") == "LAPSED":
-        raise UserModelError(f"user-model lapse: {entry_id} is already LAPSED")
-
     if consolidated_into is not None:
         changed_text = f"consolidated-into:{consolidated_into}"
     else:
         changed_text = changed_condition or contrary
+    # `named` above already guarantees exactly one of the three is
+    # truthy, so this is never None here — asserted, not re-validated,
+    # purely so the type checker sees a plain `str` from here on.
+    assert changed_text is not None
     _check_vocabulary(changed_text)
+    # B2 (item 2): the changed-condition/contrary text is free text like
+    # any other — scan it before it can ever reach the committed file.
+    hits = secret_scan(changed_text)
+    if hits:
+        raise UserModelError(format_refusal(hits))
 
-    new_entry = dict(found)
-    new_entry["r"] = int(found["r"]) + 1
-    new_entry["status"] = "LAPSED"
-    new_entry["lapsed_at"] = at or chrono.now_iso()[:10]
-    new_entry["changed_condition"] = changed_text
-
-    containers_map = dict(containers_map)
-    containers_map[letter] = [new_entry if e["id"] == entry_id else e for e in containers_map[letter]]
-
+    # Astra 4/10 (item 6): `_load`/`_find` (and the checks that depend on
+    # what they find — permission-by-container, already-LAPSED) are
+    # state-dependent and move inside the lock; only the pure-input
+    # checks above (actor shape, exactly-one-cause, id shape, vocabulary,
+    # secret scan) run before it.
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
         with intents.ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
+            fm, containers_map = _load(home)
+            letter, found = _find(containers_map, entry_id)
+            if found is None or letter is None:
+                raise UserModelUsageError(f"user-model lapse: unknown entry {entry_id}")
+            if by not in _WHO_MAY_LAPSE[letter]:
+                raise UserModelError(f"user-model lapse: container {letter} may not be lapsed by {by!r}")
+            if found.get("status") == "LAPSED":
+                raise UserModelError(f"user-model lapse: {entry_id} is already LAPSED")
+
+            new_entry = dict(found)
+            new_entry["r"] = int(found["r"]) + 1
+            new_entry["status"] = "LAPSED"
+            new_entry["lapsed_at"] = at or chrono.now_iso()[:10]
+            new_entry["changed_condition"] = changed_text
+
+            containers_map = dict(containers_map)
+            containers_map[letter] = [
+                new_entry if e["id"] == entry_id else e for e in containers_map[letter]
+            ]
+
             path, _new_fm = _save(home, fm, containers_map, by=by)
             message = f"self-learn: user-model lapse {entry_id}"
             sha = gitops.stage_and_commit(home, [path], message, changed_text)
@@ -461,55 +500,87 @@ def lapse_entry(
 # ------------------------------------------------------------- mark_seen
 
 
-def mark_seen(home: Path | str, entry_id: str) -> Path:
-    """Flip a system-reading entry's STORED `provisional` field
-    `true` -> `false`; move it from container C or D into B (§3a.4 table
-    B: "an entry moves here when a presentation record names it").
-    Changes NOTHING else about the entry — never bumps its own `r`
-    (a presentation is not a dependency move; bumping `r` here would make
+def _mark_seen_locked(home: Path | str, entry_ids: list[str]) -> Path:
+    """Flip every id in *entry_ids* STORED `provisional` field `true` ->
+    `false`, in one write — but does NOT commit. The CALLER must already
+    hold the ledger lock (its own outermost acquisition, or a nested
+    pass-through) and is responsible for the commit; this split is what
+    lets `cases.observe(kind="presented")` land the case file's own
+    write and every named entry's flip in ONE commit (fold-u2-r1 item 1
+    / B1).
+
+    Every id is validated — well-formed, known, `source ==
+    system-reading` (has a `provisional` field) — BEFORE any entry is
+    flipped or `_save`d: this function raises on the FIRST invalid id
+    with NOTHING written yet, so a caller that calls this before its own
+    write (as `observe` does) never leaves a flipped entry with no
+    matching record of why.
+
+    D-a: only a container-C entry moves into B when flipped (B's ≥1
+    statement invariant is never violated — nothing moves into B without
+    one). A container-D entry (which `add_entry` may create with zero
+    statements, §3a.4 D row) flips `provisional` IN PLACE and stays in D
+    — moving it into B would manufacture a B entry `add_entry` itself
+    would have refused to create directly (S5).
+
+    Changes NOTHING else about any entry — never bumps `r` (a
+    presentation is not a dependency move; bumping `r` here would make
     every case citing `um-…@rN` read as "the dependency moved" merely
     because the user was shown it, which is exactly the confusion the
-    revision counter exists to avoid). Refuses on an own-words entry (no
-    `provisional` field) or an unknown id. A no-op on an entry that is
-    already `provisional: false` (still writes/commits — idempotent, not
-    an error). Called only from `cases.observe` with `kind: presented`,
-    per §3a.2/§3a.4 — never a standalone CLI verb (no `user-model
-    mark-seen` in the CLI's parser)."""
+    revision counter exists to avoid — D-b amends the spec sentence that
+    otherwise reads as requiring this). A no-op (per id) on an entry
+    already `provisional: false` — still written/committed by the
+    caller, idempotent, not an error."""
     home = Path(home)
-    if UM_ID_RE.match(entry_id) is None:
-        raise UserModelUsageError(f"user-model: malformed entry id {entry_id!r}")
-
     fm, containers_map = _load(home)
-    letter, found = _find(containers_map, entry_id)
-    if found is None or letter is None:
-        raise UserModelUsageError(f"user-model: unknown entry {entry_id}")
-    if found.get("source") != "system-reading" or "provisional" not in found:
-        raise UserModelError(
-            f"user-model: {entry_id} has no provisional field — own-words "
-            "entries are never marked seen"
-        )
+    targets: dict[str, tuple[str, dict]] = {}
+    for entry_id in entry_ids:
+        if UM_ID_RE.match(entry_id) is None:
+            raise UserModelUsageError(f"user-model: malformed entry id {entry_id!r}")
+        letter, found = _find(containers_map, entry_id)
+        if found is None or letter is None:
+            raise UserModelUsageError(f"user-model: unknown entry {entry_id}")
+        if found.get("source") != "system-reading" or "provisional" not in found:
+            raise UserModelError(
+                f"user-model: {entry_id} has no provisional field — own-words "
+                "entries are never marked seen"
+            )
+        targets[entry_id] = (letter, found)
 
     containers_map = dict(containers_map)
-    if found["provisional"] is False:
-        new_containers = containers_map  # no-op: already seen
-    else:
+    for entry_id, (letter, found) in targets.items():
+        if found["provisional"] is False:
+            continue  # no-op: already seen
         new_entry = dict(found)
         new_entry["provisional"] = False
-        if letter in ("C", "D"):
+        if letter == "C":
             containers_map[letter] = [e for e in containers_map[letter] if e["id"] != entry_id]
             containers_map["B"] = containers_map["B"] + [new_entry]
-        else:  # letter == "B" already, or a future container — flip in place
+        else:  # D-a: D stays D; B (already there) or any other flips in place
             containers_map[letter] = [
                 new_entry if e["id"] == entry_id else e for e in containers_map[letter]
             ]
-        new_containers = containers_map
 
+    path, _new_fm = _save(home, fm, containers_map, by=None)
+    return path
+
+
+def mark_seen(home: Path | str, entry_id: str) -> Path:
+    """Standalone single-entry entry point: opens its own lock, flips
+    *entry_id* via :func:`_mark_seen_locked`, and commits alone. Never a
+    CLI verb (no `user-model mark-seen` in the parser) — the only
+    production caller is `cases.observe(kind="presented")`, which calls
+    `_mark_seen_locked` directly inside its OWN already-open lock span
+    instead, so its write and this one land in a single commit; this
+    wrapper exists for direct/test callers and any future standalone
+    use."""
+    home = Path(home)
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
         with intents.ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
-            path, _new_fm = _save(home, fm, new_containers, by=None)
+            path = _mark_seen_locked(home, [entry_id])
             message = f"self-learn: user-model mark-seen {entry_id}"
             sha = gitops.stage_and_commit(home, [path], message, None)
             if sha is None:  # pragma: no cover
@@ -517,34 +588,6 @@ def mark_seen(home: Path | str, entry_id: str) -> Path:
     finally:
         hold.release()
     return path
-
-
-# --------------------------------------------------------- bump_revision
-
-
-def bump_revision(home: Path | str, *, by: str) -> int:
-    """A bare "touch": bumps the document's `revision`/`updated_at`/
-    `updated_by` without adding or lapsing any entry. Not in the spec's
-    or the interface draft's verb table — this unit's OWN brief names it
-    in the CLI wiring line; see this unit's report for the discrepancy
-    against `commands/review.md`, which shows no `user-model bump`."""
-    home = Path(home)
-    if by not in ACTORS:
-        raise UserModelUsageError(f"user-model bump: by must be one of {sorted(ACTORS)}, got {by!r}")
-    fm, containers_map = _load(home)
-    hold = sentinel.hold()
-    sentinel.heartbeat()
-    try:
-        with intents.ledger_write(home) as recovered:
-            intents.announce_recovered(recovered)
-            path, new_fm = _save(home, fm, containers_map, by=by)
-            message = "self-learn: user-model bump"
-            sha = gitops.stage_and_commit(home, [path], message, None)
-            if sha is None:  # pragma: no cover
-                raise UserModelError("user-model bump: internal — commit produced nothing")
-    finally:
-        hold.release()
-    return int(new_fm["revision"])
 
 
 # ---------------------------------------------------------------- show

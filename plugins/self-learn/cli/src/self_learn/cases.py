@@ -12,9 +12,9 @@ Public surface:
 
     record(home, stage_file, *, actor) -> str                # case id
     show(home, case_id, *, evidence_only=True) -> CaseView
-    list_cases(home, **filters) -> list[dict]
+    list_cases(home, **filters) -> list[dict]                 # only_ok=False
     rebuild_index(cache_dir, home) -> Path
-    receipt(home, case_id, batch_result, *, by) -> str        # obs id? -> commit sha
+    receipt(home, case_id, batch_result) -> str                # case id
     observe(home, case_id, kind, *, text, by, ref=None,
             to=None, covering=None, entries=None, outcome=None,
             via=None) -> str                                  # obs id
@@ -65,6 +65,8 @@ item and the caller's own identity.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import io
 import json
@@ -91,6 +93,7 @@ __all__ = [
     "OBSERVE_KINDS",
     "PRESENTED_OUTCOMES",
     "COVERING_VALUES",
+    "VIA_VALUES",
     "CASE_ID_RE",
     "CaseError",
     "CaseUsageError",
@@ -138,6 +141,11 @@ OBSERVE_KINDS = frozenset(
 )
 PRESENTED_OUTCOMES = frozenset({"agreed", "corrected", "noted"})
 COVERING_VALUES = frozenset({"decision", "dependencies", "all"})
+#: D-g / N4: `via` on a `presented` observation's closed set (02-schema.md
+#: §3a.2's YAML example). Required to be a member when GIVEN; whether
+#: `via` is itself required is a spec-vs-test drift this fold does not
+#: resolve (see this unit's report) — kept optional here.
+VIA_VALUES = frozenset({"overseer-conversation", "review-ui", "teach", "cli"})
 
 CASE_ID_RE = re.compile(r"^case-[0-9a-f]{8}$")
 _RECORD_ID_RE = re.compile(r"^lrn-[0-9a-f]{8}$")
@@ -225,13 +233,46 @@ def _render_frontmatter(fm: dict) -> str:
     return f"{_DELIM}\n{buf.getvalue()}{_DELIM}\n"
 
 
+def _locate_headings(body: str) -> list[tuple[str, re.Match]]:
+    """Find the six known headings, in `_SECTION_ORDER`, POSITIONALLY
+    (D-i): heading *i+1* is searched for starting at the END of heading
+    *i*'s own `## Heading\\n` line, never by a bare scan for the first
+    occurrence of a string anywhere in the body. A `## Evidence` line
+    embedded inside an EARLIER section's own free text can still be
+    found by the search for the next heading in order — the defense
+    against that is `_refuse_headings` at write time, which keeps a
+    heading-shaped line out of free text in the first place; this
+    function's job is to refuse a body that is missing or misorders any
+    of the six, rather than silently mis-assign content to the wrong
+    key the way a `finditer`-into-a-dict approach would (B3/S4)."""
+    matches: list[tuple[str, re.Match]] = []
+    cursor = 0
+    for heading in _SECTION_ORDER:
+        pat = re.compile(r"^## " + re.escape(heading) + r"\n", re.MULTILINE)
+        m = pat.search(body, cursor)
+        if m is None:
+            raise CaseError(
+                f"case: missing or out-of-order section '## {heading}' — malformed"
+            )
+        matches.append((heading, m))
+        cursor = m.end()
+    return matches
+
+
 def _split_frozen(body: str) -> tuple[str, str]:
-    """(frozen sections 1-4 text, rest) split on the one marker this
-    module ever writes between them."""
-    idx = body.find(_FROZEN_MARKER)
-    if idx == -1:
-        raise CaseError("case: file has no '## Application' section — malformed")
-    return body[:idx], body[idx + 2 :]  # rest keeps its own leading "## Application..."
+    """(frozen sections 1-4 text, rest) split at the START of the fifth
+    known heading, '## Application' — located POSITIONALLY via
+    :func:`_locate_headings` (D-i), never by a bare string search for
+    the `_FROZEN_MARKER` literal, which a `because`/`quote`/... field
+    containing that exact text could spoof (S4: a case committed
+    successfully but became permanently unreadable on every later read)."""
+    matches = _locate_headings(body)
+    app_start = matches[4][1].start()  # index 4 == "Application", the 5th heading
+    # `app_start` is the position of the "#" in "## Application"; the
+    # module always writes exactly "\n\n## Application\n" between
+    # sections, so `app_start - 2` is where the frozen span (sections
+    # 1-4) ends, matching `_FROZEN_MARKER`'s own literal byte-for-byte.
+    return body[: app_start - 2], body[app_start - 2 :]
 
 
 def _hash_frozen(frozen_text: str) -> str:
@@ -259,6 +300,24 @@ def _scan_or_refuse(texts: list[str]) -> None:
         hits = secret_scan(text)
         if hits:
             raise CaseError(format_refusal(hits))
+
+
+#: D-i / B3 / S4 / Astra 1: any line that LOOKS like a section heading
+#: inside a free-text field is refused outright at write time — never
+#: escaped, never silently accepted — the same secret-scan-style refusal
+#: `_scan_or_refuse` uses. This is what keeps `_parse_sections`/
+#: `_split_frozen`'s positional heading search meaningful: a heading
+#: line can never reach disk from a free-text field in the first place.
+_HEADING_LINE_RE = re.compile(r"^## ", re.MULTILINE)
+
+
+def _refuse_headings(texts: list[str]) -> None:
+    for text in texts:
+        if text and _HEADING_LINE_RE.search(text):
+            raise CaseError(
+                "case: a free-text field contains a '## ' heading-shaped line — "
+                "refused (heading injection, D-i)"
+            )
 
 
 def _new_case_id(home: Path) -> str:
@@ -331,14 +390,19 @@ def _render_frozen(records: list[str], scope: str, question: str, trigger: str,
 
 def _parse_sections(body: str) -> dict[str, str]:
     """heading -> its content text (without the '## Heading' line
-    itself), for the six known fixed headings, in file order."""
-    pattern = re.compile(r"^## (" + "|".join(re.escape(h) for h in _SECTION_ORDER) + r")\n", re.MULTILINE)
-    matches = list(pattern.finditer(body))
+    itself), for exactly the six known fixed headings, in `_SECTION_ORDER`
+    (D-i). Uses :func:`_locate_headings`'s POSITIONAL search — each
+    heading's content runs from the end of its own heading line to the
+    START of the NEXT heading's match (found by the ordered search, not
+    by a dict keyed on heading NAME, which is what let a second
+    occurrence of the same heading name silently overwrite the first —
+    B3)."""
+    matches = _locate_headings(body)
     out: dict[str, str] = {}
-    for i, m in enumerate(matches):
+    for i, (heading, m) in enumerate(matches):
         start = m.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
-        out[m.group(1)] = body[start:end].rstrip("\n")
+        end = matches[i + 1][1].start() if i + 1 < len(matches) else len(body)
+        out[heading] = body[start:end].rstrip("\n")
     return out
 
 
@@ -435,16 +499,29 @@ def record(home: Path | str, stage_file: Path | str, *, actor: str) -> str:
         if not isinstance(val, list) or not all(isinstance(v, str) for v in val):
             raise CaseUsageError(f"case record: dependencies.{key} must be a list of strings")
 
-    # Secret scan every free-text field BEFORE any write (02 §3a.2:
-    # "secret-scan every free-text field with scan.scan"). Scans the
-    # STAGE's inputs, never the rendered file — the rendered frontmatter
-    # carries `decided_sha256`, a 64-char hex string that would trip the
-    # scanner's own high-entropy-hex rule (>=48 chars) if it were ever
-    # fed back through this same scan.
-    free_texts = [question, str(decision.get("because"))]
+    # Secret scan EVERY free-text field BEFORE any write (02 §3a.2:
+    # "secret-scan every free-text field with scan.scan"; B2: the
+    # original scan missed `scope`, `decision.verb`, `decision.
+    # covered_by`, every evidence `ref`, and the dependency strings).
+    # Scans the STAGE's inputs, never the rendered file — the rendered
+    # frontmatter carries `decided_sha256`, a 64-char hex string that
+    # would trip the scanner's own high-entropy-hex rule (>=48 chars) if
+    # it were ever fed back through this same scan.
+    free_texts = [scope, question, str(decision.get("because"))]
+    if decision.get("verb") is not None:
+        free_texts.append(str(decision["verb"]))
+    if decision.get("covered_by") is not None:
+        free_texts.append(str(decision["covered_by"]))
     free_texts += [str(b) for b in what_would_change]
-    free_texts += [str(item.get("quote", "")) for item in evidence]
+    for item in evidence:
+        free_texts.append(str(item.get("ref", "")))
+        free_texts.append(str(item.get("quote", "")))
+    for key in ("statements", "user_model", "conditions", "capabilities"):
+        free_texts += [str(v) for v in (deps.get(key) or [])]
     _scan_or_refuse(free_texts)
+    # D-i / B3 / S4: refuse a heading-shaped line in ANY of the same
+    # free-text fields, before it can ever be rendered into the file.
+    _refuse_headings(free_texts)
 
     opened_at = chrono.now_iso()
     case_id = _new_case_id(home)
@@ -483,10 +560,16 @@ def record(home: Path | str, stage_file: Path | str, *, actor: str) -> str:
             intents.announce_recovered(recovered)
             month = _ensure_case_dirs(home, opened_at)
             path = month / f"{case_id}.md"
-            fsops.atomic_write(path, file_text, fsync=True)
-            touched = [path]
 
+            # Astra 9 / item 7: validate the predecessor BEFORE writing
+            # anything — a refused `supersedes` (unknown id, tampered
+            # predecessor, already superseded) used to leave a complete,
+            # valid-hash new case file on disk with no commit ever
+            # landing for it (a readable phantom case). Nothing is
+            # written until every check below has passed.
             supersedes_path: Path | None = None
+            sup_fm: dict | None = None
+            sup_body: str | None = None
             if supersedes is not None:
                 supersedes_path = _case_path_for_id(home, str(supersedes))
                 sup_text = supersedes_path.read_text(encoding="utf-8")
@@ -503,6 +586,12 @@ def record(home: Path | str, stage_file: Path | str, *, actor: str) -> str:
                         f"case record: {supersedes} is already superseded by "
                         f"{sup_fm['superseded_by']}"
                     )
+
+            fsops.atomic_write(path, file_text, fsync=True)
+            touched = [path]
+
+            if supersedes_path is not None:
+                assert sup_fm is not None and sup_body is not None
                 sup_fm["superseded_by"] = case_id
                 fsops.atomic_write(
                     supersedes_path, _render_frontmatter(sup_fm) + sup_body, fsync=True
@@ -533,7 +622,10 @@ class CaseView:
     sections: dict[str, str] = field(default_factory=dict)
 
     def to_text(self) -> str:
-        lines = [f"case: {self.case_id}"]
+        # N6: print which view this is — `to_json()` already carries
+        # `evidence_only`; the human-readable text used not to say so.
+        view_name = "evidence-only (blind)" if self.evidence_only else "full"
+        lines = [f"case: {self.case_id}", f"  view: {view_name}"]
         for key in (
             "opened_at", "actor", "run_id", "records", "kind", "trigger",
             "outcome", "supersedes", "superseded_by", "parked_for",
@@ -557,16 +649,32 @@ class CaseView:
         }
 
 
-_BLIND_FRONTMATTER_DROPS = frozenset({"outcome", "superseded_by", "parked_for", "parked_reason"})
+#: D-h: the blind view is an ALLOWLIST, not a denylist — the prior
+#: denylist (`outcome`/`superseded_by`/`parked_for`/`parked_reason`)
+#: let every OTHER frontmatter key leak through, `presented` included.
+#: As given in the brief, `scope` is not an actual frontmatter key (it
+#: is section-1 body text); intersected against the real frontmatter
+#: keys this allowlist resolves to exactly `{case, opened_at, actor,
+#: kind, records, supersedes}` — narrower than §3a.2's own four-field
+#: denylist (which would also keep `run_id`, `trigger`, `presented`,
+#: `decided_sha256`). Implemented as literally given (the orchestrator's
+#: decision, not re-litigated here); the drift is noted in this unit's
+#: report, not resolved.
+_BLIND_FRONTMATTER_ALLOW = frozenset(
+    {"case", "opened_at", "actor", "kind", "records", "scope", "supersedes"}
+)
 _BLIND_SECTIONS = ("Identity and scope", "Evidence", "Dependencies")
 
 
 def show(home: Path | str, case_id: str, *, evidence_only: bool = True) -> CaseView:
-    """Two views (§3a.2): the evidence-only view is blind by default —
-    frontmatter without outcome/superseded_by/parked_for/parked_reason,
-    sections 1/2/4 only. `evidence_only=False` is the full view,
-    everything. Re-verifies the freeze hash before returning either
-    view; refuses on mismatch."""
+    """Two views (§3a.2). This module's OWN keyword default
+    (`evidence_only=True`) is the BLIND view; `self-learn case show`
+    with no flag is the FULL view (the CLI's own `args.evidence_only`
+    argparse default is `False` — see `cli._add_case_parser`). The blind
+    view is an allowlist (D-h): frontmatter `case, opened_at, actor,
+    kind, records, supersedes` only, sections 1/2/4 only.
+    `evidence_only=False` is the full view, everything. Re-verifies the
+    freeze hash before returning either view; refuses on mismatch."""
     home = Path(home)
     path = _case_path_for_id(home, case_id)
     text = path.read_text(encoding="utf-8")
@@ -580,7 +688,7 @@ def show(home: Path | str, case_id: str, *, evidence_only: bool = True) -> CaseV
     sections = _parse_sections(body)
 
     if evidence_only:
-        fm_view = {k: v for k, v in fm.items() if k not in _BLIND_FRONTMATTER_DROPS}
+        fm_view = {k: v for k, v in fm.items() if k in _BLIND_FRONTMATTER_ALLOW}
         sections_view = {h: sections[h] for h in _BLIND_SECTIONS if h in sections}
     else:
         fm_view = dict(fm)
@@ -597,9 +705,28 @@ def _index_path(cache_dir: Path) -> Path:
 
 
 def _index_row(path: Path) -> dict:
+    """One case file -> one index row. S6: the freeze hash is ALWAYS
+    re-verified here — the overseer "samples from it and never rereads
+    the catalogue" (§3a.2), so a tampered case must never reach that
+    surface silently. A hash mismatch (or a structurally malformed body
+    — `_parse_sections`/`_split_frozen` can themselves refuse, D-i)
+    degrades to `frozen_ok: false` with whatever frontmatter could still
+    be read, rather than raising: ONE corrupt case must never hide the
+    whole population from `rebuild_index` (exclude-with-flag, per the
+    brief's own choice)."""
     text = path.read_text(encoding="utf-8")
-    fm, body = _split_frontmatter(text)
-    sections = _parse_sections(body)
+    fm: dict = {}
+    sections: dict[str, str] = {}
+    frozen_ok = False
+    try:
+        fm, body = _split_frontmatter(text)
+        frozen_text, _rest = _split_frozen(body)
+        if _hash_frozen(frozen_text) == fm.get("decided_sha256"):
+            sections = _parse_sections(body)
+            frozen_ok = True
+    except CaseError:
+        pass
+
     deps_text = sections.get("Dependencies", "")
     dependency_refs: list[str] = []
     for line in deps_text.splitlines():
@@ -632,6 +759,7 @@ def _index_row(path: Path) -> dict:
         "presented_count": len(presented),
         "dependency_refs": dependency_refs,
         "last_observation_at": last_obs_at,
+        "frozen_ok": frozen_ok,
     }
 
 
@@ -655,27 +783,77 @@ def _write_index(cache_dir: Path, rows: list[dict]) -> Path:
     return path
 
 
+@contextlib.contextmanager
+def _index_lock(cache_dir: Path):
+    """Astra 6 / item 5: `_update_index` and `rebuild_index` both
+    read-modify-write the SAME cache file (`_load_index` then
+    `_write_index`); without mutual exclusion, two concurrent writers
+    can race and one's upsert is lost. A blocking `flock` on a lockfile
+    beside the index — the cache dir's own lock, `worker.py`'s
+    established pattern, and NEVER `gitops.commit_lock`: this index is
+    `NOT_REPO_TRUTH`, never the ledger."""
+    cache_dir = Path(cache_dir)
+    lock_path = _index_path(cache_dir).parent / "index.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w", encoding="utf-8") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+
+
 def _update_index(home: Path, case_id: str) -> Path:
     """Incremental upsert (§1.8: "the CLI updates it incrementally after
-    each write") — cache-only, `NOT_REPO_TRUTH`, never inside the ledger
-    lock. Recomputes the row from the FILE it just wrote (never from
-    in-memory state) so this path and :func:`rebuild_index` are the same
-    pure function of file content, byte for byte."""
+    each write") — cache-only, `NOT_REPO_TRUTH`: even though every call
+    site (`record`, `receipt`, `observe`) happens to run textually
+    inside that writer's own `ledger_write` span, the index file itself
+    is never part of the ledger's git-tracked truth, which is why its
+    one write function (`_write_index`) carries its own `NOT_REPO_TRUTH`
+    census exemption rather than needing (or using) the ledger lock — it
+    takes the cache-dir `_index_lock` instead (item 5). Recomputes the
+    row from the FILE it just wrote (never from in-memory state) so this
+    path and :func:`rebuild_index` are the same pure function of file
+    content, byte for byte."""
     from . import worker
 
     cache_dir = worker.cache_dir(home)
-    rows = [r for r in _load_index(cache_dir) if r["case"] != case_id]
-    path = _case_path_for_id(home, case_id)
-    rows.append(_index_row(path))
-    return _write_index(cache_dir, rows)
+    with _index_lock(cache_dir):
+        rows = [r for r in _load_index(cache_dir) if r["case"] != case_id]
+        path = _case_path_for_id(home, case_id)
+        rows.append(_index_row(path))
+        return _write_index(cache_dir, rows)
 
 
 def rebuild_index(cache_dir: Path | str, home: Path | str) -> Path:
-    """Rebuild `<cache>/cases/index.json` from the case files on disk.
-    Cache-only (`NOT_REPO_TRUTH`) — never touches the ledger lock."""
+    """Rebuild `<cache>/cases/index.json` from the case files on disk,
+    under the cache-dir `_index_lock` (item 5) — cache-only
+    (`NOT_REPO_TRUTH`), never the ledger lock. Atomic (tmp + replace) via
+    `_write_index`/`fsops.atomic_write`."""
     home = Path(home)
-    rows = [_index_row(p) for p in sorted(_cases_root(home).glob("*/case-*.md"))]
-    return _write_index(Path(cache_dir), rows)
+    cache_dir = Path(cache_dir)
+    with _index_lock(cache_dir):
+        rows = [_index_row(p) for p in sorted(_cases_root(home).glob("*/case-*.md"))]
+        return _write_index(cache_dir, rows)
+
+
+def _index_is_stale(cache_dir: Path, home: Path) -> bool:
+    """Astra 6 / item 5: the index is stale — and must be rebuilt before
+    being trusted — when it is absent, OR any case file on disk is newer
+    than the index file (a write landed without going through this
+    module's own incremental upsert, e.g. a restored/copied ledger), OR
+    the case-file count on disk differs from the row count in the index
+    (a write or a deletion the incremental path never saw)."""
+    index_file = _index_path(cache_dir)
+    if not index_file.exists():
+        return True
+    case_files = sorted(_cases_root(home).glob("*/case-*.md"))
+    index_mtime = index_file.stat().st_mtime
+    if any(p.stat().st_mtime > index_mtime for p in case_files):
+        return True
+    if len(_load_index(cache_dir)) != len(case_files):
+        return True
+    return False
 
 
 def list_cases(
@@ -686,16 +864,22 @@ def list_cases(
     parked_for: str | None = None,
     parked_reason: str | None = None,
     record_id: str | None = None,
+    only_ok: bool = False,
 ) -> list[dict]:
-    """Query the index (rebuilding it first if it does not exist yet —
-    every writer keeps it current afterward via incremental upserts)."""
+    """Query the index (rebuilding it first when stale — item 5 — not
+    only when it is missing; every writer also keeps it current via
+    incremental upserts). `only_ok`: S6 — when true, excludes rows whose
+    freeze hash failed re-verification (`frozen_ok: false`); every row
+    always CARRIES `frozen_ok` regardless."""
     from . import worker
 
     home = Path(home)
     cache_dir = worker.cache_dir(home)
-    if not _index_path(cache_dir).exists():
+    if _index_is_stale(cache_dir, home):
         rebuild_index(cache_dir, home)
     rows = _load_index(cache_dir)
+    if only_ok:
+        rows = [r for r in rows if r.get("frozen_ok", True)]
     if since is not None:
         rows = [r for r in rows if (r.get("opened_at") or "") >= since]
     if provisional is not None:
@@ -712,11 +896,13 @@ def list_cases(
 # -------------------------------------------------------------- receipt
 
 
-def receipt(home: Path | str, case_id: str, batch_result: dict, *, by: str = "human") -> str:
+def receipt(home: Path | str, case_id: str, batch_result: dict) -> str:
     """Append the Application section from a batch result (§3a.2 section
     5) — one line per sheet item, including `not-attempted` for items
     after `stopped_at`. Never edits the frozen sections 1-4; refuses if
-    they were tampered with.
+    they were tampered with. N1: no `by` parameter — §3a.2's section-5
+    line format carries no actor, so this never stored it (probe
+    confirmed `by` never reached the file); the dead parameter is gone.
 
     *batch_result* shape (this module's own contract for U2 — U3 wires
     the real `batch.run()` producer; see this module's own docstring):
@@ -755,6 +941,10 @@ def receipt(home: Path | str, case_id: str, batch_result: dict, *, by: str = "hu
             rc = item.get("rc", 0)
             lines.append(f"- {at} sheet={sheet} item={n} {rid} {verb} → {state} (exit {rc})")
     new_text = "\n".join(lines)
+
+    # B2 (item 2): scan every rendered line before it can reach the
+    # committed file — receipt previously scanned nothing at all.
+    _scan_or_refuse(lines)
 
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -824,14 +1014,19 @@ def observe(
 ) -> str:
     """Append one Later-observations entry (§3a.2 section 6). A
     `presented` observation ALSO writes the frontmatter `presented` entry
-    (never a separate flag) and calls `user_model.mark_seen` for every id
-    in `entries`, BEFORE the case file's own write — `mark_seen` is a
-    self-contained mini-verb with its own lock span and its own commit
-    (a nested, pass-through acquire of the same ledger lock, so nothing
-    else can interleave), so an observation naming an unknown or
-    ineligible entry id refuses before the case file is ever touched;
-    the case file and user-model.md land as two separate commits inside
-    one held lock, not one shared commit.
+    (never a separate flag) and flips every id in `entries` via
+    `user_model._mark_seen_locked`, called INSIDE this SAME lock span,
+    BEFORE this function's own case-file write. B1 (item 1): every id in
+    `entries` is validated by that call before ANYTHING is written —
+    raising on the first invalid id leaves neither file touched — and
+    the case file's write plus the user-model flip land in ONE commit
+    (`gitops.stage_and_commit(home, touched, ...)`, `touched` naming both
+    paths when entries is non-empty), not two separate commits, so a
+    refusal OR a crash between them can never leave a flipped entry with
+    no presentation record anywhere.
+
+    D-g: a `presented` observation is refused unless `to == "human"`;
+    `via`, when given, must be one of `VIA_VALUES` (N4).
 
     A `statement`/`dependency-moved` observation whose `ref` names one of
     the case's own section-4 dependencies is, per §3a.2, supposed to
@@ -850,12 +1045,29 @@ def observe(
     if kind == "presented":
         if to is None or covering is None or outcome is None:
             raise CaseUsageError("case observe --kind presented needs --to, --covering, --outcome")
+        if to != "human":
+            raise CaseError(
+                f"case observe: a presented observation must be to='human', got {to!r} (D-g)"
+            )
         if covering not in COVERING_VALUES:
             raise CaseUsageError(f"case observe: covering must be one of {sorted(COVERING_VALUES)}, got {covering!r}")
         if outcome not in PRESENTED_OUTCOMES:
             raise CaseUsageError(f"case observe: outcome must be one of {sorted(PRESENTED_OUTCOMES)}, got {outcome!r}")
+        if via is not None and via not in VIA_VALUES:
+            raise CaseUsageError(f"case observe: via must be one of {sorted(VIA_VALUES)}, got {via!r}")
+    elif outcome is not None:
+        # N5: a presented-outcome value on any other kind used to be
+        # silently discarded (the check above lived only inside the
+        # `if kind == "presented":` branch, with no else refusal).
+        raise CaseUsageError(
+            f"case observe: outcome is only accepted when kind='presented', not {kind!r}"
+        )
 
-    _scan_or_refuse([text])
+    # B2 (item 2): scan `text` AND `ref` — the original scanned `text`
+    # only. D-i / B3 / S4: refuse a heading-shaped line in either.
+    free_texts = [text] + ([ref] if ref is not None else [])
+    _scan_or_refuse(free_texts)
+    _refuse_headings(free_texts)
 
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -904,17 +1116,17 @@ def observe(
                 fm = dict(fm)
                 fm["presented"] = presented_list
 
-            # `mark_seen` is its own self-contained mini-verb (own lock
-            # span, own commit — see its docstring): called BEFORE this
-            # observation's own write/commit so an unknown/ineligible
-            # entry id refuses here without ever touching the case file.
-            # This is a nested acquire of the SAME lock (safe, pass-
-            # through per `intents.ledger_write`), so nothing else can
-            # interleave between the two commits even though they land
-            # separately.
-            if kind == "presented":
-                for entry_id in entries:
-                    user_model.mark_seen(home, entry_id)
+            # B1 (item 1): validate + flip EVERY named entry, inside this
+            # SAME lock span, BEFORE the case file's own write below.
+            # `_mark_seen_locked` validates every id first and raises on
+            # the FIRST invalid one with nothing written yet — so an
+            # unknown/ineligible entry id refuses here with NEITHER file
+            # touched, not after some entries are already flipped and
+            # committed. It does not commit; the one `stage_and_commit`
+            # below covers both files in a single commit.
+            if kind == "presented" and entries:
+                um_path = user_model._mark_seen_locked(home, entries)
+                touched.append(um_path)
 
             fsops.atomic_write(path, _render_frontmatter(fm) + new_body, fsync=True)
 

@@ -46,8 +46,10 @@ SCOPE_LEVELS = frozenset({"user", "project"})
 STMT_ID_RE = re.compile(r"^stmt-[0-9a-f]{8}$")
 #: `source.message_ref` — the miner's own transcript grammar, or the
 #: `conversation:<obs-id>` form for words typed into the overseer's own
-#: conversation (R-6a) where no transcript line exists yet.
-_MESSAGE_REF_RE = re.compile(r"^(transcript:.+#L\d+|conversation:.+)$")
+#: conversation (R-6a) where no transcript line exists yet. D-c: the
+#: `conversation:` form means exactly `conversation:obs-<8 hex>` — an
+#: observation id, not an arbitrary trailing string.
+_MESSAGE_REF_RE = re.compile(r"^(transcript:.+#L\d+|conversation:obs-[0-9a-f]{8})$")
 
 
 class StatementError(Exception):
@@ -147,33 +149,44 @@ def add(
     if hits:
         raise StatementError(format_refusal(hits))
 
-    existing = _read_lines(home)
-    for row in existing:
-        if row.get("source", {}).get("message_ref") == message_ref and row.get("verbatim") == verbatim:
-            return row["id"]  # already recorded — idempotent, nothing written
-
-    if amends is not None and not any(row["id"] == amends for row in existing):
-        raise StatementUsageError(f"statement add: amends references unknown statement {amends}")
-
-    stmt_id = _new_stmt_id(existing)
-    row = {
-        "id": stmt_id,
-        "at": chrono.now_iso(),
-        "verbatim": verbatim,
-        "answers": answers,
-        "source": dict(source),
-        "scope": scope,
-        "uncertainty": uncertainty,
-        "recorded_by": recorded_by,
-        "amends": amends,
-    }
-    line = json.dumps(row, sort_keys=True)
-
+    # Astra 4/10 (item 6): the dedupe check, the amends-existence check,
+    # and id allocation are all state-dependent — they must read the
+    # store AFTER the lock is held, not before, or a peer's write landing
+    # in between "read" and "acquire" is invisible to this call and a
+    # duplicate (or a false "unknown amends") results. Only pure-input
+    # checks (above) run before the lock.
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
         with intents.ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
+            existing = _read_lines(home)
+            for row in existing:
+                if (
+                    row.get("source", {}).get("message_ref") == message_ref
+                    and row.get("verbatim") == verbatim
+                ):
+                    return row["id"]  # already recorded — idempotent, nothing written
+
+            if amends is not None and not any(row["id"] == amends for row in existing):
+                raise StatementUsageError(
+                    f"statement add: amends references unknown statement {amends}"
+                )
+
+            stmt_id = _new_stmt_id(existing)
+            row = {
+                "id": stmt_id,
+                "at": chrono.now_iso(),
+                "verbatim": verbatim,
+                "answers": answers,
+                "source": dict(source),
+                "scope": scope,
+                "uncertainty": uncertainty,
+                "recorded_by": recorded_by,
+                "amends": amends,
+            }
+            line = json.dumps(row, sort_keys=True)
+
             path = _path(home)
             prior = path.read_text(encoding="utf-8") if path.exists() else ""
             if prior and not prior.endswith("\n"):

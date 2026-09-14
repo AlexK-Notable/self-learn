@@ -233,7 +233,9 @@ NOT_REPO_TRUTH = {
     # function whose write reaches `fsops.atomic_write`; every caller
     # (`_update_index`, `rebuild_index`, `list_cases`) is the SAME cache
     # write, exempted here once rather than at each wrapper.
-    "cases._write_index": "cache-only, rebuildable (S-65 §1.8): <cache>/cases/index.json, never the ledger",
+    # N3 (fold-u2-r1): was mis-cited "S-65 §1.8" — S-65 is a decisions-
+    # table row with no subsections; §1.8 is the interface draft's own.
+    "cases._write_index": "cache-only, rebuildable (interface draft §1.8): <cache>/cases/index.json, never the ledger",
 }
 
 

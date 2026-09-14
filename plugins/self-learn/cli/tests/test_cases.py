@@ -232,7 +232,7 @@ def _batch_result(stopped_at):
 def test_d_receipt_not_attempted_after_stopped_at(tmp_path):
     home = make_home(tmp_path)
     case_id = _record(tmp_path, home)
-    cases.receipt(home, case_id, _batch_result(2), by="human")
+    cases.receipt(home, case_id, _batch_result(2))
     view = cases.show(home, case_id, evidence_only=False)
     app = view.sections["Application"]
     assert app.count("not-attempted") == 3
@@ -314,10 +314,10 @@ def test_f_evidence_only_is_the_cli_default_flag_behavior(tmp_path):
 
 
 def test_observe_presented_with_entries_threads_into_user_model(tmp_path):
-    """`case observe --kind presented --entries um-...` calls
-    `user_model.mark_seen` for each named entry — the case file and
-    user-model.md land as two separate commits inside one held lock
-    (see `cases.observe`'s own docstring)."""
+    """`case observe --kind presented --entries um-...` flips each named
+    entry via `user_model._mark_seen_locked` — the case file and
+    user-model.md land in ONE commit inside one held lock (fold-u2-r1
+    item 1 / B1; see `cases.observe`'s own docstring)."""
     home = make_home(tmp_path)
     um_id = user_model.add_entry(
         home, container="C", title="a reading", because="because text",
@@ -372,3 +372,262 @@ def test_list_filters_by_record_and_parked_reason(tmp_path):
     assert [r["case"] for r in only_c1] == [c1]
     only_parked = cases.list_cases(home, parked_reason="hook")
     assert [r["case"] for r in only_parked] == [c2]
+
+
+# ============================================================ fold-u2-r1
+#
+# New mutation checks pinned here (each recorded red-then-green in the
+# U2 round-2 report): (1) B1 validate-before-write on presented entries,
+# (2) B2 the newly-covered free-text fields, (3) D-i heading-injection
+# refusal + S4's multi-line-quote/literal-marker cases, (4) S6 the
+# index's frozen_ok, (5) Astra 6 the stale-index rebuild, (7) Astra 9 no
+# phantom case, (8) D-d/D-g/D-h, (9) N5, plus N6's own view label.
+
+_TOKEN = "ghp_" + "Ab1" * 12
+
+
+# --------------------------------------------------------------- (1) B1
+
+
+def test_1_b1_unknown_entry_in_presented_refuses_before_any_flip(tmp_path):
+    home = make_home(tmp_path)
+    good_id = user_model.add_entry(
+        home, container="C", title="a reading", because="because text",
+        source="system-reading", by="steward", ref="case-00000000",
+        statements=["stmt-11112222"],
+    )
+    case_id = _record(tmp_path, home)
+    with pytest.raises(user_model.UserModelUsageError):
+        cases.observe(
+            home, case_id, "presented", text="shown with two entries",
+            by="steward", to="human", covering="all",
+            entries=[good_id, "um-dead"], outcome="agreed",
+        )
+    doc = user_model.show(home)
+    still_c = next(e for e in doc["containers"]["C"] if e["id"] == good_id)
+    assert still_c["provisional"] is True
+    view = cases.show(home, case_id, evidence_only=False)
+    assert view.frontmatter["presented"] == []
+
+
+# --------------------------------------------------------------- (2) B2
+
+
+@pytest.mark.parametrize("kw", [
+    {"overrides": {"scope": _TOKEN}},
+    {"overrides": {"decision.verb": _TOKEN}},
+    {"overrides": {"decision.covered_by": _TOKEN}},
+    {"evidence": [{"ref": _TOKEN, "quote": "fine text"}]},
+    {"dependencies": {"statements": [_TOKEN]}},
+])
+def test_2_b2_record_scans_every_newly_covered_field(tmp_path, kw):
+    home = make_home(tmp_path)
+    with pytest.raises(cases.CaseError):
+        _record(tmp_path, home, **kw)
+    assert not (home / "cases").exists() or not list((home / "cases").glob("*/case-*.md"))
+
+
+def test_2_b2_observe_scans_ref(tmp_path):
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    with pytest.raises(cases.CaseError):
+        cases.observe(home, case_id, "examined", text="fine text", by="steward", ref=_TOKEN)
+    view = cases.show(home, case_id, evidence_only=False)
+    assert view.sections["Later observations"] == "(none)"
+
+
+def test_2_b2_receipt_scans_every_line(tmp_path):
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    bad_result = {
+        "sheet": "01.yaml", "stopped_at": None, "code": None,
+        "items": [{"n": 1, "id": "lrn-08ed825b", "verb": _TOKEN, "state": "applied", "rc": 0}],
+    }
+    with pytest.raises(cases.CaseError):
+        cases.receipt(home, case_id, bad_result)
+    view = cases.show(home, case_id, evidence_only=False)
+    assert view.sections["Application"] == "(none)"
+
+
+# ----------------------------------------------------------- (3) D-i/S4
+
+
+def test_3_di_heading_in_because_refused_at_record(tmp_path):
+    home = make_home(tmp_path)
+    with pytest.raises(cases.CaseError):
+        _record(tmp_path, home, overrides={
+            "decision.because": "harmless prefix\n\n## Evidence\nLEAKED-REASONING-NONCE",
+        })
+    assert not (home / "cases").exists() or not list((home / "cases").glob("*/case-*.md"))
+
+
+def test_3_di_heading_in_examined_observation_refused(tmp_path):
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    with pytest.raises(cases.CaseError):
+        cases.observe(
+            home, case_id, "examined", text="prefix\n\n## Evidence\nLEAK", by="steward",
+        )
+    view = cases.show(home, case_id, evidence_only=False)
+    assert view.sections["Later observations"] == "(none)"
+
+
+def test_3_s4_multiline_evidence_quote_roundtrips_byte_exact(tmp_path):
+    home = make_home(tmp_path)
+    quote = "they wrote:\nline two of the quote\nline three"
+    case_id = _record(tmp_path, home, overrides={
+        "evidence": [{"ref": "transcript:x#L1", "quote": quote}],
+    })
+    blind = cases.show(home, case_id, evidence_only=True)
+    assert quote in blind.sections["Evidence"]
+
+
+def test_3_di_because_containing_the_literal_marker_is_refused(tmp_path):
+    home = make_home(tmp_path)
+    with pytest.raises(cases.CaseError):
+        _record(tmp_path, home, overrides={
+            "decision.because": "sneaky\n\n## Application\nfoo",
+        })
+    assert not (home / "cases").exists() or not list((home / "cases").glob("*/case-*.md"))
+
+
+# --------------------------------------------------------------- (4) S6
+
+
+def test_4_s6_tampered_case_gets_frozen_ok_false_and_is_excluded(tmp_path):
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    path = next((home / "cases").glob(f"*/{case_id}.md"))
+    text = path.read_text(encoding="utf-8")
+    tampered = text.replace("settled", "settleD")
+    assert tampered != text
+    path.write_text(tampered, encoding="utf-8")
+
+    cache_dir = worker.cache_dir(home)
+    rebuilt = cases.rebuild_index(cache_dir, home)
+    rows = json.loads(rebuilt.read_bytes())["cases"]
+    row = next(r for r in rows if r["case"] == case_id)
+    assert row["frozen_ok"] is False
+
+    ok_rows = cases.list_cases(home, only_ok=True)
+    assert not any(r["case"] == case_id for r in ok_rows)
+    all_rows = cases.list_cases(home, only_ok=False)
+    assert any(r["case"] == case_id for r in all_rows)
+
+
+# ---------------------------------------------------------- (5) Astra 6
+
+
+def test_5_astra6_list_cases_rebuilds_when_stale(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    c1 = _record(tmp_path, home)
+    cases.list_cases(home)  # index built once, current
+
+    # A write that bypasses the incremental upsert (`_update_index`
+    # no-op'd) simulates a restored/copied ledger, or a write from
+    # elsewhere the incremental path never saw — item 5's OWN staleness
+    # detection (case-file count vs index row count) must still catch it.
+    monkeypatch.setattr(cases, "_update_index", lambda home, case_id: None)
+    c2 = _record(tmp_path, home)
+
+    rows = cases.list_cases(home)
+    assert {r["case"] for r in rows} == {c1, c2}
+
+
+# ---------------------------------------------------------- (7) Astra 9
+
+
+def test_7_astra9_refused_supersedes_leaves_no_phantom_case(tmp_path):
+    home = make_home(tmp_path)
+    with pytest.raises(cases.CaseUsageError):
+        _record(tmp_path, home, overrides={"supersedes": "case-deadbeef"})
+    assert not (home / "cases").exists() or not list((home / "cases").glob("*/case-*.md"))
+
+
+# ------------------------------------------------------ (8) D-d/D-g/D-h
+
+
+def test_8_dd_case_index_rebuild_cli_verb(tmp_path):
+    from self_learn import cli
+
+    parser = cli._build_parser()
+    args = parser.parse_args(["case", "index", "--rebuild"])
+    assert args.case_command == "index"
+    assert args.rebuild is True
+    with pytest.raises(SystemExit):
+        parser.parse_args(["case", "rebuild-index"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["case", "index"])  # --rebuild is required
+
+
+def test_8_dd_receipt_by_flag_is_gone(tmp_path):
+    from self_learn import cli
+
+    parser = cli._build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "case", "receipt", "case-11112222", "--from-batch", "x.json", "--by", "human",
+        ])
+    args = parser.parse_args(["case", "receipt", "case-11112222", "--from-batch", "x.json"])
+    assert args.id == "case-11112222"
+
+
+def test_8_dg_presented_to_other_than_human_is_refused(tmp_path):
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    with pytest.raises(cases.CaseError):
+        cases.observe(
+            home, case_id, "presented", text="shown", by="steward",
+            to="robot", covering="decision", outcome="agreed",
+        )
+    view = cases.show(home, case_id, evidence_only=False)
+    assert view.frontmatter["presented"] == []
+
+
+def test_8_dg_via_is_a_closed_set(tmp_path):
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    with pytest.raises(cases.CaseUsageError):
+        cases.observe(
+            home, case_id, "presented", text="shown", by="steward",
+            to="human", covering="decision", outcome="agreed", via="carrier-pigeon",
+        )
+    obs_id = cases.observe(
+        home, case_id, "presented", text="shown again", by="steward",
+        to="human", covering="decision", outcome="agreed", via="cli",
+    )
+    assert obs_id
+
+
+def test_8_dh_blind_view_frontmatter_key_set(tmp_path):
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    blind = cases.show(home, case_id, evidence_only=True)
+    assert set(blind.frontmatter.keys()) == {
+        "case", "opened_at", "actor", "kind", "records", "supersedes",
+    }
+
+
+# --------------------------------------------------------------- (9) N5
+
+
+def test_9_n5_presented_outcome_on_non_presented_kind_is_refused(tmp_path):
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    with pytest.raises(cases.CaseUsageError):
+        cases.observe(
+            home, case_id, "examined", text="looked at it", by="steward",
+            outcome="agreed",
+        )
+
+
+# --------------------------------------------------------------- N6
+
+
+def test_n6_to_text_prints_which_view(tmp_path):
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    blind_text = cases.show(home, case_id, evidence_only=True).to_text()
+    full_text = cases.show(home, case_id, evidence_only=False).to_text()
+    assert "evidence-only" in blind_text.lower()
+    assert "full" in full_text.lower()

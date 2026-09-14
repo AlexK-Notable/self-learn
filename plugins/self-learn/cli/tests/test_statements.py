@@ -2,10 +2,13 @@
 
 Mutation check pinned here (recorded red-then-green in the U2 report):
 (c) a bearer-token-shaped `verbatim` is refused.
+(f) the dedupe check runs under the lock (Astra 4/10, fold-u2-r1 item 6).
+(dc) D-c — `conversation:<id>` requires the `obs-<8hex>` shape.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 
 import pytest
@@ -127,3 +130,74 @@ def test_c_bearer_token_shaped_verbatim_is_refused(tmp_path):
             source={"message_ref": "transcript:s#L1"}, recorded_by="human",
         )
     assert not (home / "user-statements.jsonl").exists()
+
+
+# --------------------------------------------------- (dc) message_ref grammar
+
+
+def test_dc_conversation_ref_requires_obs_id_shape(tmp_path):
+    home = make_home(tmp_path)
+    with pytest.raises(statements.StatementUsageError):
+        statements.add(
+            home, verbatim="x",
+            source={"message_ref": "conversation:banana"}, recorded_by="human",
+        )
+    # positive control: the well-shaped form is accepted
+    stmt_id = statements.add(
+        home, verbatim="y",
+        source={"message_ref": "conversation:obs-1234abcd"}, recorded_by="human",
+    )
+    assert statements.STMT_ID_RE.match(stmt_id)
+
+
+# ------------------------------------------- (f) load/dedupe under the lock
+
+
+def test_f_dedupe_check_runs_under_the_lock(tmp_path, monkeypatch):
+    """Astra 4/10 (fold-u2-r1 item 6). A peer write lands the exact same
+    (message_ref, verbatim) pair between lock-acquisition and this call's
+    own read. Hooked by wrapping `intents.ledger_write` so the injection
+    happens the instant the lock is held — before `add`'s own first read.
+    Fixed code (dedupe computed under the lock) sees the peer and returns
+    its id, writing nothing new. Pre-fix code (dedupe computed before the
+    lock) misses the peer and writes a second, duplicate line."""
+    home = make_home(tmp_path)
+    real_ledger_write = statements.intents.ledger_write
+    state = {"injected": False}
+
+    @contextlib.contextmanager
+    def hook(home_arg, **kwargs):
+        with real_ledger_write(home_arg, **kwargs) as recovered:
+            if not state["injected"]:
+                state["injected"] = True
+                path = statements._path(home_arg)
+                peer_row = {
+                    "id": "stmt-deadbeef",
+                    "at": "2026-01-01T00:00:00Z",
+                    "verbatim": "same words",
+                    "answers": {"kind": "proposition", "ref": None, "text": None},
+                    "source": {"message_ref": "transcript:s#L1"},
+                    "scope": {"level": "user", "host": None},
+                    "uncertainty": None,
+                    "recorded_by": "human",
+                    "amends": None,
+                }
+                line = json.dumps(peer_row, sort_keys=True)
+                prior = path.read_text(encoding="utf-8") if path.exists() else ""
+                if prior and not prior.endswith("\n"):
+                    prior += "\n"
+                statements.fsops.atomic_write(path, prior + line + "\n", fsync=True)
+                statements.gitops.stage_and_commit(
+                    home_arg, [path], "peer: statement add stmt-deadbeef", None
+                )
+            yield recovered
+
+    monkeypatch.setattr(statements.intents, "ledger_write", hook)
+
+    result_id = statements.add(
+        home, verbatim="same words",
+        source={"message_ref": "transcript:s#L1"}, recorded_by="human",
+    )
+    assert result_id == "stmt-deadbeef"
+    lines = statements._path(home).read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1

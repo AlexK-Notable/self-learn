@@ -330,6 +330,13 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
         "flock lock file only (worker.spawn.lock) -- never carries content",
         "keep",
     ),
+    ("cli", "cases.py", "_index_lock"): (
+        "flock lock file only (cases/index.lock, cache-dir-scoped, same "
+        "fcntl.flock pattern as gitops._flock_lock/worker._open_window) -- "
+        "never carries content; U2 fold r1, item 5 (Astra6 stale-index "
+        "rebuild)",
+        "keep",
+    ),
     ("cli", "worker.py", "run"): (
         "flock lock file only (worker.lock) -- never carries content",
         "keep",
