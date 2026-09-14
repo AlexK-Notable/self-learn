@@ -28,7 +28,14 @@ from .hosts import is_repo_root
 DEFAULT_HOME = "~/.self-learn"
 
 #: The layout dirs + registry that a bootstrapped home has (doc 13 §3).
-_LAYOUT = ("skills", "projects", "user", "telemetry")
+#: S-65 (2026-09-13, 02-schema.md §3): "cases" joins this tuple — decision
+#: cases are eager-created like the other four, never lazy like
+#: "compiled" below, because a fresh home has nowhere else for the
+#: steward/overseer to write one from their first run. An older home
+#: without it is never refused: `init_home`'s step-6 top-up (below) tops
+#: up whatever `_LAYOUT` names, and this is the ONLY create-missing path
+#: today — no case-writing verb exists yet (U2).
+_LAYOUT = ("skills", "projects", "user", "telemetry", "cases")
 
 #: U-hostmode RCN3: NOT folded into `_LAYOUT` itself — that tuple also
 #: drives `init_home`'s eager dir-creation/`added_dirs` set

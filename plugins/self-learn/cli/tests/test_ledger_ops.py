@@ -236,6 +236,27 @@ def test_resolve_touched_path_list_is_exact(tmp_path):
     )
 
 
+@pytest.mark.parametrize("by", ["steward", "overseer"])
+def test_resolve_record_accepts_steward_and_overseer_by(tmp_path, by):
+    """S-65 (02-schema.md §1/§3a.1 rule 5): `resolve_record` itself
+    performs no `by` validation (unlike `verbs.route`/`route_direct`,
+    which gate on `ROUTING_BY_VALUES` before ever calling in here) — it
+    threads whatever string the caller passes straight into the routing
+    block. Confirmed empirically: this is already true of every string,
+    so the widened set needs no change at this layer; this test pins
+    that "accepts" claim for the two new actors specifically."""
+    home = make_home(tmp_path)
+    record_id = f"lrn-aa0000{'01' if by == 'steward' else '02'}"
+    create_record(home, make_behavior(record_id=record_id))
+
+    resolve_record(home, record_id, "routed", destination="skill-md", by=by)
+
+    resolved = Record.from_path(
+        home / "skills" / "s" / "resolved" / f"{record_id}.md"
+    )
+    assert resolved.routing["by"] == by
+
+
 def test_resolve_routed_requires_destination(tmp_path):
     home = make_home(tmp_path)
     create_record(home, make_behavior(record_id="lrn-aa000001"))

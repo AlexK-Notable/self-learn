@@ -10,6 +10,7 @@ deliberately NOT implemented here.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -181,9 +182,42 @@ def test_o10_partial_layout_completes_without_refusing(tmp_path):
     result = init_home(target)
 
     assert result.already_complete is False
-    assert set(result.added_dirs) == {"skills", "projects"}
+    # S-65 (02-schema.md §3): `_LAYOUT` widened to add "cases" — this
+    # partial home never created it either, so it tops up alongside the
+    # two dirs the test already names.
+    assert set(result.added_dirs) == {"skills", "projects", "cases"}
     for name in _LAYOUT:
         assert (target / name).is_dir()
+
+
+# ------------------------------------------------------------- S-65 cases
+
+
+def test_cases_dir_in_fresh_home_layout(tmp_path):
+    """S-65 (02-schema.md §3, `_LAYOUT` widened): a brand-new ledger home
+    gets `cases/` from `init`, eager-created like the four pre-existing
+    layout dirs, never lazily like `compiled/`."""
+    target = tmp_path / "fresh-home"
+    result = init_home(target)
+    assert "cases" in result.added_dirs
+    assert (target / "cases").is_dir()
+
+
+def test_cases_dir_created_on_old_home_topup(tmp_path):
+    """S-65: an old home bootstrapped before `cases/` existed is never
+    refused — the create-missing path (`init_home`'s step-6 top-up, the
+    only such path today; no case-writing verb exists until U2) creates
+    it same as any other missing `_LAYOUT` member."""
+    target = tmp_path / "old-home"
+    init_home(target)
+    assert (target / "cases").is_dir()
+    shutil.rmtree(target / "cases")  # simulate a pre-S-65 old home
+    assert not (target / "cases").is_dir()
+
+    result = init_home(target)  # the create-missing path
+
+    assert (target / "cases").is_dir()
+    assert result.added_dirs == ("cases",)
 
 
 # --------------------------------------------------------------------- O-12

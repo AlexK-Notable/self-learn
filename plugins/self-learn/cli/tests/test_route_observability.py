@@ -445,6 +445,63 @@ def test_route_direct_invalid_by_refuses(env):
         verbs.route_direct(env.ledger, record, dest="skill-md", by="bogus")
 
 
+# --------------------------------------- Part E (S-65): steward/overseer widen `by`
+
+#: Literal, independent of `verbs.ROUTING_BY_VALUES` on purpose: a
+#: parametrize sourced from the set under test would silently DROP a
+#: case (never fail one) if a value were removed from that set, which is
+#: exactly the mutation `test_route_accepts_every_routing_actor` exists
+#: to catch (measured empirically while writing this test).
+_EXPECTED_ROUTING_ACTORS = ("agent", "analyst", "human", "overseer", "steward")
+
+
+def test_routing_by_values_is_exactly_the_five_s65_actors():
+    """S-65 (02-schema.md §1/§3a.1 rule 5): the closed set is these five
+    values, no more, no fewer — a direct equality check independent of
+    the parametrized tests below, which rely on `ROUTING_BY_VALUES`
+    itself for their case list and so cannot alone catch a member being
+    silently dropped."""
+    assert verbs.ROUTING_BY_VALUES == frozenset(_EXPECTED_ROUTING_ACTORS)
+
+
+@pytest.mark.parametrize("actor", _EXPECTED_ROUTING_ACTORS)
+def test_route_accepts_every_routing_actor(env, actor):
+    """S-65 (02-schema.md §1/§3a.1 rule 5): `steward` and `overseer` widen
+    `ROUTING_BY_VALUES` alongside the three FW-64 actors — every member of
+    the closed set is accepted by `route`, not just the three with their
+    own dedicated tests above."""
+    record_id = f"lrn-0000{_EXPECTED_ROUTING_ACTORS.index(actor):04d}"
+    record = seed_pending(env, record_id=record_id)
+
+    verbs.route(env.ledger, record.id, dest="skill-md", by=actor)
+
+    routed = Record.from_path(resolved_path(env, record.id))
+    assert routed.routing["by"] == actor
+
+
+@pytest.mark.parametrize("actor", _EXPECTED_ROUTING_ACTORS)
+def test_route_direct_accepts_every_routing_actor(env, actor):
+    """Same widening, `route_direct`'s own `by` parameter (the
+    `teach --route` path)."""
+    record_id = f"lrn-0001{_EXPECTED_ROUTING_ACTORS.index(actor):04d}"
+    record = make_behavior(record_id=record_id)
+
+    verbs.route_direct(env.ledger, record, dest="skill-md", by=actor)
+
+    routed = Record.from_path(resolved_path(env, record.id))
+    assert routed.routing["by"] == actor
+
+
+def test_route_refuses_a_sixth_actor_not_in_the_widened_set(env):
+    """S-65 widened the set to five members; a value outside even the
+    widened set still refuses with the existing message — the widening
+    is additive, not a removal of the closed-set guard FW-64 added."""
+    record = seed_pending(env)
+    with pytest.raises(verbs.VerbError, match="by must be one of"):
+        verbs.route(env.ledger, record.id, dest="skill-md", by="nobody")
+    assert resolved_path(env, record.id).exists() is False
+
+
 def test_cli_route_by_flag_threads_through(env):
     """The review UI's own subprocess call, reproduced exactly: `self-learn
     route <id> --dest X --by analyst` — the CLI's `--by` flag (cli.py) must
