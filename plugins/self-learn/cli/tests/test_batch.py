@@ -206,14 +206,18 @@ class TestNotAttempted:
         real_dispatch = batch._dispatch
         calls = {"n": 0}
 
-        def fake_dispatch(home_, item, *, case=None):
+        def fake_dispatch(home_, item, *, case=None, **kw):
+            # O-2b: `run` now also passes `actor`/`hook_activation` on
+            # every call — accepted and forwarded (`**kw`) so this fake
+            # keeps working unchanged rather than raising a TypeError
+            # on the new keywords.
             calls["n"] += 1
             if item.n == 2:
                 return batch.ItemResult(
                     n=item.n, id=item.id, verb=item.verb, rc=7,
                     state="refused", detail="simulated git failure",
                 )
-            return real_dispatch(home_, item, case=case)
+            return real_dispatch(home_, item, case=case, **kw)
 
         monkeypatch.setattr(batch, "_dispatch", fake_dispatch)
         result = batch.run(home, items, no_push=True)
@@ -530,10 +534,24 @@ class TestByTrailer:
         ).stdout.strip().splitlines()
         assert trailers == ["By: steward"]  # the forged "Reason:" line never joins it
 
-    def test_by_absent_leaves_commit_body_untouched(self, tmp_path, monkeypatch):
-        """Positive control: no `by:` on the item -> no trailer
-        paragraph at all -- every pre-existing single-verb commit body
-        stays byte-identical to before this fold."""
+    def test_by_absent_takes_the_actor_default(self, tmp_path, monkeypatch):
+        """O-2b widening (build-o2b.md: "`actor` is ... the default `by`
+        for every item that names none"): this test used to be named
+        ``test_by_absent_leaves_commit_body_untouched`` and asserted the
+        OPPOSITE -- "no `by:` on the item -> no trailer paragraph at
+        all -- every pre-existing single-verb commit body stays
+        byte-identical to before this fold" (U3 fold r1, F3's own
+        positive control, quoted verbatim). That is no longer true:
+        `batch.run` now ALWAYS has an `actor` (default `"human"`, since
+        every pre-O-2b caller -- including the CLI, which never exposes
+        the parameter -- passes none), and `_dispatch` uses it as the
+        `by` an item that names none gets. This is the one place this
+        build's brief and a prior unit's own carried positive control
+        disagree (see this build's report); the brief is later and
+        wins, so the trailer now appears where it used to be absent --
+        by DESIGN, not a regression. `test_by_default_actor_overseer_
+        writes_by_overseer` (added by this build) covers the other
+        actor a caller might pass."""
         import subprocess
 
         home = _env(tmp_path, monkeypatch)
@@ -544,14 +562,107 @@ class TestByTrailer:
             '    note: "a plain note, no by at all"\n',
         )
         items = batch.load_sheet(sheet)
-        result = batch.run(home, items, no_push=True)
+        result = batch.run(home, items, no_push=True)  # actor defaults to "human"
         assert result.summary["applied"] == 1
         body_only = subprocess.run(
             ["git", "-C", str(home), "log", "-1", "--format=%b"],
             capture_output=True, text=True, check=True,
         ).stdout
-        assert "By:" not in body_only
-        assert body_only.strip() == "a plain note, no by at all"
+        assert "By: human" in body_only
+        assert body_only.strip() == "a plain note, no by at all\n\nBy: human"
+
+    def test_by_default_actor_overseer_writes_by_overseer(self, tmp_path, monkeypatch):
+        """The same widening, over a caller who DOES pass a non-default
+        `actor` (the shape O-3's own runner will use) -- the default
+        `by` tracks whichever actor ran the batch, not a hardcoded
+        `"human"`."""
+        import subprocess
+
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e0000013")
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n",
+        )
+        items = batch.load_sheet(sheet)
+        result = batch.run(home, items, no_push=True, actor="overseer")
+        assert result.summary["applied"] == 1
+        trailer = subprocess.run(
+            ["git", "-C", str(home), "log", "-1",
+             "--format=%(trailers:key=By,valueonly)"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert trailer == "overseer"
+
+    def test_by_explicit_on_item_overrides_the_actor_default(
+        self, tmp_path, monkeypatch
+    ):
+        """An item's own `by:` still wins over the actor default -- the
+        widening only fills a GAP, it never overrides an explicit
+        sheet-level choice."""
+        import subprocess
+
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e0000014")
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n    by: steward\n",
+        )
+        items = batch.load_sheet(sheet)
+        result = batch.run(home, items, no_push=True, actor="overseer")
+        assert result.summary["applied"] == 1
+        trailer = subprocess.run(
+            ["git", "-C", str(home), "log", "-1",
+             "--format=%(trailers:key=By,valueonly)"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert trailer == "steward"
+
+
+class TestActorValidated:
+    """O-2b test 5: ``actor`` is validated up front, before item 1 —
+    the SAME closed set (:data:`verbs.ROUTING_BY_VALUES`) an item's own
+    ``by:`` already validates against (:class:`TestByValidated` above),
+    now also checked on the CALLER's own ``actor=`` keyword. Hook-route
+    specific coverage (a bogus actor against a sheet that also carries
+    a hook item) lives in ``test_batch_hook.py``'s own
+    ``TestActorValidated`` — this is the plain, non-hook case."""
+
+    def test_bogus_actor_refused_before_item_1(self, tmp_path, monkeypatch):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e0000015")
+        sheet = _write_sheet(
+            tmp_path, f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n"
+        )
+        items = batch.load_sheet(sheet)
+        with pytest.raises(batch.BatchError, match="actor="):
+            batch.run(home, items, no_push=True, actor="bogus")
+        # nothing ran
+        assert Record.from_path(find_record_path(home, rid)).status == "pending"
+
+    def test_bogus_actor_refused_in_dry_run(self, tmp_path, monkeypatch):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e0000016")
+        sheet = _write_sheet(
+            tmp_path, f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n"
+        )
+        items = batch.load_sheet(sheet)
+        with pytest.raises(batch.BatchError, match="actor="):
+            batch.dry_run(home, items, actor="bogus")
+
+    def test_valid_actor_values_all_load_and_run(self, tmp_path, monkeypatch):
+        """Positive control: every member of ``ROUTING_BY_VALUES`` is
+        accepted as ``actor``, not just ``"human"``/``"overseer"``."""
+        home = _env(tmp_path, monkeypatch)
+        for i, actor in enumerate(sorted(verbs.ROUTING_BY_VALUES)):
+            rid = _seed_pending(home, f"lrn-e00001{i:02d}")
+            sheet = _write_sheet(
+                tmp_path, f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n",
+                name=f"sheet-{actor}.yaml",
+            )
+            items = batch.load_sheet(sheet)
+            result = batch.run(home, items, no_push=True, actor=actor)
+            assert result.summary["applied"] == 1, actor
 
 
 # ========================================================= fold r1: F9

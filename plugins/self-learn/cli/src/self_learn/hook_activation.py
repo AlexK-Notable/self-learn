@@ -877,14 +877,26 @@ def activate(
             )
 
         if not register:
-            steps.append(
-                StepReceipt(
-                    "delegated",
-                    "activation is delegated but switched off "
-                    "(overseer.hook_activation is false) — placed only",
-                )
+            # O-2b: `ActivationResult.backup_note` is what the CALLER's
+            # own `hook-activated` history entry records (`verbs.
+            # _hook_commit_or_undo` writes `result.backup_note` verbatim
+            # as the entry's `note`) — left at its dataclass default here
+            # before this fix, this branch's history entry read "no
+            # settings.json change (already registered)" on a record
+            # that was never registered at all, a false statement no
+            # caller had ever exercised (`hook_activate` hardcoded
+            # `register=True`, so this early return was unreached until
+            # O-2b's `batch._dispatch` became the first caller to pass
+            # `register=False`). The step's own detail text is the same
+            # truthful sentence, reused so the two can never drift.
+            delegated_note = (
+                "activation is delegated but switched off "
+                "(overseer.hook_activation is false) — placed only"
             )
-            return ActivationResult(steps=tuple(steps), progress=progress)
+            steps.append(StepReceipt("delegated", delegated_note))
+            return ActivationResult(
+                steps=tuple(steps), progress=progress, backup_note=delegated_note,
+            )
 
         # [CHECK] replay against the placed SYMLINK, BEFORE registering
         # -- a dangling or wrong-target link (or a broken guard) must

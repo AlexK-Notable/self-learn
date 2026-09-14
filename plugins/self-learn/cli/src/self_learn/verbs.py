@@ -2631,13 +2631,21 @@ def hook_activate(
     home: Path | str,
     record_id: str,
     *,
+    register: bool = True,
     no_push: bool = False,
 ) -> VerbResult:
     """13 §7.4 — the human path: ``self-learn hook activate <id>``
     always performs every step (placed, registered, activation-
     checked) regardless of ``overseer.hook_activation``; only the
-    overseer's own call (O-2b) ever reads that gate — this verb never
-    does. Fold r1, D-b (Opus B2 / Astra 3, 5): the runtime-dir write
+    overseer's own call (O-2b, ``batch._dispatch``) ever passes
+    ``register=False`` — it reads the ``overseer.hook_activation`` gate
+    itself and forwards it here as this keyword; this verb's own
+    default (``True``) keeps the human path exactly as it was before
+    O-2b, and the CLI's ``self-learn hook activate`` never passes
+    anything but the default either. ``register=False`` performs step 1
+    (placed) only and returns the delegated-and-switched-off receipt —
+    see :func:`hook_activation.activate`'s own docstring for the three
+    steps. Fold r1, D-b (Opus B2 / Astra 3, 5): the runtime-dir write
     (:func:`hook_activation.activate`) happens INSIDE the ledger lock
     span, right after :func:`intents.announce_recovered` — exactly
     where :func:`route` performs its own host writes — so a live STOP
@@ -2662,7 +2670,7 @@ def hook_activate(
             intents.announce_recovered(recovered)
             try:
                 result = hook_activation.activate(
-                    home, record_id, claude_dir=claude_dir, register=True
+                    home, record_id, claude_dir=claude_dir, register=register
                 )
             except hook_activation.HookActivationError as exc:
                 # Fold r3, S1: fold the residual-effect notes in, or a

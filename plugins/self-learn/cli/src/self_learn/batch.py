@@ -6,7 +6,11 @@ Public surface:
 
     load_sheet(path, *, home=None) -> Sheet  # BAT1: validated WHOLE, or raises
     classify(home, item) -> bool             # True iff already-applied (§3.3b)
-    run(home, items, *, dry_run=False, no_push=False) -> BatchResult
+    run(home, items, *, no_push=False, actor="human",
+        hook_activation=False) -> BatchResult
+    dry_run(home, items, *, actor="human",
+            hook_activation=False) -> DryRunResult
+    write_receipt(home, result, sheet_name, *, no_push=False) -> dict | None
 
 ``run`` holds the sentinel ONCE (the owning hold), dispatches each item to
 the SAME ``verbs.*`` function the CLI dispatches to (``no_push=True``,
@@ -14,12 +18,18 @@ inside that verb's own ``_ledger_write`` span), classifies
 already-applied items as a STATE READ and skips them without calling the
 verb, stops on the first ledger-level failure (5/6/7), flushes exactly
 once through ``cli._mutating_epilogue`` (§3.3c — the ONE remaining call
-site), and pushes once at the end.
+site), and pushes once at the end. ``actor``/``hook_activation`` (O-2b,
+13 §7.4) are set by the overseer's own runner call, never by sheet text
+or a CLI flag — see :func:`_dispatch`'s own docstring for exactly what
+each does. ``write_receipt`` (O-2b) is the case-receipt extraction: the
+block ``cli._cmd_batch`` used to build inline, now a plain function any
+caller (the CLI, or O-3's own runner) can call after ``run`` returns.
 """
 
 from __future__ import annotations
 
 import hashlib
+import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -56,6 +66,7 @@ __all__ = [
     "dry_run",
     "load_sheet",
     "run",
+    "write_receipt",
 ]
 
 #: U-verbs §4.4 — the 16 permitted verbs (15 Phase-1 plus U4's `revise`)
@@ -651,7 +662,14 @@ def _reconsider_case_for(
     return case
 
 
-def _dispatch(home: Path, item: SheetItem, *, case: str | None = None) -> ItemResult:
+def _dispatch(
+    home: Path,
+    item: SheetItem,
+    *,
+    case: str | None = None,
+    actor: str = "human",
+    hook_activation: bool = False,
+) -> ItemResult:
     """Call the SAME ``verbs.*`` function the CLI calls, with
     ``no_push=True``, inside that verb's own ``_ledger_write`` span,
     catching the SAME exception set ``cli._cmd_verb`` catches and mapping
@@ -665,14 +683,40 @@ def _dispatch(home: Path, item: SheetItem, *, case: str | None = None) -> ItemRe
     case naming a wrong record, or one whose ``kind`` is not
     ``reconsider`` at all, refuses inside the verb itself
     (:func:`self_learn.verbs._reconsider_case_check`) with a message
-    naming which check failed — no separate refusal lives here."""
+    naming which check failed — no separate refusal lives here.
+
+    ``actor``/``hook_activation`` (O-2b, 13 §7.4): *actor* is validated
+    once, up front, by :func:`run`/:func:`dry_run` — never here — and
+    serves two roles on every item this function dispatches: (1) it is
+    the default ``by`` for any item whose sheet text names none, on the
+    EIGHT resolution verbs that write a ``By: <actor>`` git commit
+    trailer (reject/defer/undefer/reopen/graduate/supersede/rehome/
+    rescope) — every existing caller passes no ``actor`` and gets the
+    unwidened default ``"human"``, so a by-less item on one of those
+    eight now carries ``By: human`` where it carried nothing before
+    (build-o2b.md's own line: "it is the default `by` for every item
+    that names none" — see this build's report for the carried test
+    this widens, and for why ``route``/``revise`` are excluded: their
+    own ``by`` parameter feeds a DIFFERENT mechanism — ``route``'s
+    resolves ``Record.set_routing``'s schema field via its own
+    dest-is-not-None heuristic, and ``revise``'s rides the proposal's
+    ``revised_by`` stamp — neither ever writes the commit trailer this
+    widening is about, so forcing ``actor`` onto either would silently
+    misreport provenance the verb already computes correctly on its
+    own); (2) it is the ONE condition (``actor == "overseer"``) under
+    which a ``route`` item resolving to the ``hook`` destination is not
+    refused outright (S-29) — the sheet text itself can never request
+    either value (``actor``/``activate`` stay unknown ITEM keys; a
+    top-level ``actor:`` stays a refused unknown top-level key, both
+    unchanged by this build)."""
     verb = item.verb
     f = item.fields
     try:
         if verb == "route":
-            if _resolved_route_dest(home, find_record_path(home, item.id), item) == (
-                REFUSED_HOOK_DESTINATION, None,
-            ):
+            route_path = find_record_path(home, item.id)
+            resolved = _resolved_route_dest(home, route_path, item)
+            is_hook_dest = resolved == (REFUSED_HOOK_DESTINATION, None)
+            if is_hook_dest and actor != "overseer":
                 raise verbs.VerbError(
                     f"{item.id}: a hook route is refused inside a batch "
                     "(S-29) — route it by hand"
@@ -690,45 +734,76 @@ def _dispatch(home: Path, item: SheetItem, *, case: str | None = None) -> ItemRe
                 collapse=f.get("collapse"),
                 allow_empty_glob=bool(f.get("allow_empty_glob", False)),
             )
+            if is_hook_dest and actor == "overseer":
+                # 13 §7.4 "The path" — the overseer's own runner call is
+                # the ONE caller that carries a hook route through to
+                # activation: route's own commit above is unchanged from
+                # the human path (the script it commits is identical
+                # either way); this second call runs the SAME
+                # `hook_activation` module O-2a built, inside
+                # `verbs.hook_activate`'s own lock/handoff/undo — a
+                # failure here (caught by this function's own
+                # `except verbs.VerbError` below, since `hook_activate`
+                # wraps `hook_activation.HookActivationError` in one)
+                # leaves the route's commit standing (exactly the state
+                # a human's own two-step sequence — route now, `hook
+                # activate` later — already leaves it in) and reports
+                # THIS item refused, naming the reason.
+                hook_result = verbs.hook_activate(
+                    home, item.id, register=hook_activation, no_push=True,
+                )
+                return ItemResult(
+                    n=item.n, id=item.id, verb=verb, rc=0,
+                    sha=hook_result.commit_sha, state="applied",
+                    detail="; ".join(hook_result.post_notes) or None,
+                )
         elif verb == "reject":
             result = verbs.reject(
-                home, item.id, note=f.get("note"), by=f.get("by"), no_push=True,
+                home, item.id, note=f.get("note"), by=(f.get("by") or actor),
+                no_push=True,
                 reconsider_case=_reconsider_case_for(home, item.id, case, verb),
             )
         elif verb == "defer":
             until = f.get("until")
             result = verbs.defer(
-                home, item.id, until=until, note=f.get("note"), by=f.get("by"),
+                home, item.id, until=until, note=f.get("note"),
+                by=(f.get("by") or actor),
                 no_push=True,
                 reconsider_case=_reconsider_case_for(home, item.id, case, verb),
             )
         elif verb == "undefer":
             result = verbs.undefer(
-                home, item.id, note=f.get("note"), by=f.get("by"), no_push=True
+                home, item.id, note=f.get("note"), by=(f.get("by") or actor),
+                no_push=True,
             )
         elif verb == "reopen":
             result = verbs.reopen(
-                home, item.id, note=f.get("note"), by=f.get("by"), no_push=True
+                home, item.id, note=f.get("note"), by=(f.get("by") or actor),
+                no_push=True,
             )
         elif verb == "graduate":
             result = verbs.graduate(
-                home, item.id, note=f.get("note"), by=f.get("by"), no_push=True,
+                home, item.id, note=f.get("note"), by=(f.get("by") or actor),
+                no_push=True,
                 reconsider_case=_reconsider_case_for(home, item.id, case, verb),
             )
         elif verb == "supersede":
             result = verbs.supersede(
-                home, item.id, f["new_id"], note=f.get("note"), by=f.get("by"),
+                home, item.id, f["new_id"], note=f.get("note"),
+                by=(f.get("by") or actor),
                 no_push=True,
                 reconsider_case=_reconsider_case_for(home, item.id, case, verb),
             )
         elif verb == "rehome":
             result = verbs.rehome(
-                home, item.id, to=f["to"], note=f.get("note"), by=f.get("by"),
+                home, item.id, to=f["to"], note=f.get("note"),
+                by=(f.get("by") or actor),
                 no_push=True,
             )
         elif verb == "rescope":
             result = verbs.rescope(
-                home, item.id, to=f["to"], note=f.get("note"), by=f.get("by"),
+                home, item.id, to=f["to"], note=f.get("note"),
+                by=(f.get("by") or actor),
                 no_push=True,
             )
         elif verb == "note":
@@ -921,14 +996,38 @@ class DryRunResult:
         }
 
 
-def dry_run(home: Path | str, items: list[SheetItem]) -> DryRunResult:
-    """BAT9: writes nothing at all — ledger AND hosts. For a `route`
-    item this is EXACTLY `route --dry-run`'s own payload, called as a
-    function (the delegation leg) — no second preflight implementation.
-    Every other verb reports its own status precondition
-    (:data:`_STATUS_GATE`) with nothing written. `hook_items` names the
-    sheet-level prerequisite the two hand scripts (§2.4) had to sequence
-    by hand: a route item whose resolved destination is `hook`."""
+def dry_run(
+    home: Path | str,
+    items: list[SheetItem],
+    *,
+    actor: str = "human",
+    hook_activation: bool = False,
+) -> DryRunResult:
+    """BAT9: writes nothing at all — ledger AND hosts (O-2b: this
+    includes the runtime directory — a hook item's preview below never
+    calls :func:`self_learn.hook_activation.activate`, only labels what
+    :func:`_dispatch` WOULD do). For a `route` item this is EXACTLY
+    `route --dry-run`'s own payload, called as a function (the
+    delegation leg) — no second preflight implementation. Every other
+    verb reports its own status precondition (:data:`_STATUS_GATE`)
+    with nothing written. `hook_items` names the sheet-level
+    prerequisite the two hand scripts (§2.4) had to sequence by hand: a
+    route item whose resolved destination is `hook` — populated
+    unconditionally, regardless of *actor*, exactly as before this
+    build (`test_bat6_refuses_hook_routes`'s own dry-run leg pins this
+    at the default ``actor="human"``).
+
+    ``actor``/``hook_activation`` (O-2b, 13 §7.4): same two keyword-only
+    parameters :func:`run` takes, previewing the SAME per-actor
+    decision `_dispatch` would make for a hook item WITHOUT touching
+    anything — refused (``actor != "overseer"``), placed only
+    (``actor == "overseer"`` and the gate is ``False``), or activated
+    (``actor == "overseer"`` and the gate is ``True``)."""
+    if actor not in verbs.ROUTING_BY_VALUES:
+        raise BatchError(
+            f"batch: actor={actor!r} must be one of "
+            f"{sorted(verbs.ROUTING_BY_VALUES)}"
+        )
     home = Path(home)
     sheet_case = getattr(items, "case", None)
     result = DryRunResult(
@@ -952,8 +1051,49 @@ def dry_run(home: Path | str, items: list[SheetItem]) -> DryRunResult:
                 )
                 continue
             resolved = _resolved_route_dest(home, path, item)
-            if resolved is not None and resolved[0] == REFUSED_HOOK_DESTINATION:
+            is_hook_dest = resolved is not None and resolved[0] == REFUSED_HOOK_DESTINATION
+            if is_hook_dest:
                 result.hook_items.append(item.id)
+                if actor != "overseer":
+                    # Same S-29 refusal `_dispatch` raises for real —
+                    # previewed here, nothing touched.
+                    result.items.append(
+                        DryRunItem(
+                            n=item.n, id=item.id, verb=item.verb,
+                            state="would-refuse",
+                            detail=(
+                                f"{item.id}: a hook route is refused "
+                                "inside a batch (S-29) — route it by hand"
+                            ),
+                        )
+                    )
+                    continue
+                # actor == "overseer": preview the SAME two-tier outcome
+                # `_dispatch` would apply — "placed only" (gate false)
+                # or "activated" (gate true) — after route's own
+                # preflight (`route_dry_run`) still clears, and without
+                # ever calling `hook_activation.activate` (BAT9: a dry
+                # run writes nothing at all, ledger AND hosts).
+                dr = verbs.route_dry_run(home, item.id, dest=item.fields.get("dest"))
+                if dr.would_refuse:
+                    result.items.append(
+                        DryRunItem(
+                            n=item.n, id=item.id, verb=item.verb,
+                            state="would-refuse",
+                            detail="; ".join(dr.would_refuse),
+                            route_preview=dr.to_json(),
+                        )
+                    )
+                    continue
+                label = "activated" if hook_activation else "placed only"
+                result.items.append(
+                    DryRunItem(
+                        n=item.n, id=item.id, verb=item.verb, state="would-apply",
+                        detail=f"overseer path: route, then hook {label}",
+                        route_preview=dr.to_json(),
+                    )
+                )
+                continue
             dr = verbs.route_dry_run(home, item.id, dest=item.fields.get("dest"))
             state = "would-refuse" if dr.would_refuse else "would-apply"
             result.items.append(
@@ -1006,12 +1146,38 @@ def run(
     items: list[SheetItem],
     *,
     no_push: bool = False,
+    actor: str = "human",
+    hook_activation: bool = False,
 ) -> BatchResult:
     """Apply *items* in one locked run (§4.4's procedure): ONE owning
     sentinel hold → heartbeat → per item, classify (skip if
     already-applied) or dispatch → stop on the first 5/6/7 → flush
     exactly once through ``cli._mutating_epilogue`` (§3.3c, the seventh
-    and last call site) → one push unless ``no_push`` → release."""
+    and last call site) → one push unless ``no_push`` → release.
+
+    ``actor``/``hook_activation`` (O-2b, 13 §7.4 "The path"): two
+    keyword-only parameters ONLY the overseer's own runner call (O-3)
+    sets — the CLI `batch` verb never exposes either as a flag, and
+    sheet text can never set them (``actor``/``activate`` stay unknown
+    ITEM keys; a top-level ``actor:`` stays a refused unknown top-level
+    key). *actor* is validated here, before item 1, against the SAME
+    closed set every sheet item's own ``by:`` already validates against
+    (:data:`verbs.ROUTING_BY_VALUES`) — a bad value refuses the WHOLE
+    run before any lock is taken, the same shape :func:`load_sheet`'s
+    own BAT1 validation uses. Both are threaded to :func:`_dispatch` for
+    every item: *actor* is the default ``by`` for an item naming none,
+    on the EIGHT commit-trailer verbs only (route/revise excluded —
+    see :func:`_dispatch`'s own docstring for why), and the ONE
+    condition (``actor == "overseer"``) under which a hook route is not
+    refused outright — *hook_activation* is read only on that path,
+    forwarded to ``verbs.hook_activate``'s own ``register`` keyword
+    (default ``True`` there — the human path, and every OTHER caller of
+    this function, are unaffected)."""
+    if actor not in verbs.ROUTING_BY_VALUES:
+        raise BatchError(
+            f"batch: actor={actor!r} must be one of "
+            f"{sorted(verbs.ROUTING_BY_VALUES)}"
+        )
     # Lazy import: `cli` imports THIS module for `_cmd_batch`, so a
     # module-level import here would be circular. `_mutating_epilogue`
     # is only ever needed once execution actually reaches this point.
@@ -1066,7 +1232,9 @@ def run(
                                state="already-applied")
                 )
                 continue
-            item_result = _dispatch(home, item, case=case)
+            item_result = _dispatch(
+                home, item, case=case, actor=actor, hook_activation=hook_activation,
+            )
             if item_result.rc in _STOP_CODES:
                 # Fold r1 (F9): this is the ONE item whose rc actually
                 # halted the sheet -- 02-schema.md §3a.2 §5 names
@@ -1122,3 +1290,76 @@ def run(
         # decision the same way it does for a single verb.
         result.process_code = push_exit
     return result
+
+
+def write_receipt(
+    home: Path | str,
+    result: BatchResult,
+    sheet_name: str,
+    *,
+    no_push: bool = False,
+) -> dict | None:
+    """O-2b: the case-receipt block moved verbatim out of
+    ``cli._cmd_batch`` — a SECOND, non-nested ``intents.ledger_write``
+    acquisition (``cases.receipt`` opens its own; ``run``'s own locked
+    section is already closed by the time a caller has a
+    :class:`BatchResult` to hand this), so this is a plain function, not
+    a continuation of ``run``'s own lock span. ``None`` when *result*
+    names no case (``result.case is None`` — every sheet with no
+    top-level ``case:`` key, unchanged from before this move: nothing
+    receipted, nothing printed). Otherwise returns exactly the dict
+    ``cli._cmd_batch`` used to build inline and rides in the ``--json``
+    envelope's ``"receipt"`` key: ``{"state": "ok", "pushed": bool |
+    None}`` on success, ``{"state": "failed", "reason": str(exc)}`` on a
+    ``cases.CaseError``/``gitops.GitOpsError`` — the SAME breadth the
+    original inline ``except`` clause caught (``GitOpsError`` is the
+    shared base of ``HalfWrittenError``/``intents.LedgerStoppedError``
+    too). A receipt failure prints to stderr here, unconditionally
+    (json or text mode — matching the original call site, which printed
+    before either output branch), and NEVER raises: the batch's own
+    ``process_code`` is already decided by the time a caller reaches
+    this, and a bookkeeping append failing afterward must never rewrite
+    it (F2, `03-decisions.md` S-54 as amended). *no_push* mirrors the
+    sheet's own ``--no-push``: the receipt's own commit is pushed
+    separately, strictly AFTER ``run``'s single push already returned,
+    under the same rule. A direct call from a non-CLI caller (O-3's own
+    runner) writes the SAME Application section `cases.receipt` always
+    has — this function has no CLI-specific behaviour left in it."""
+    if result.case is None:
+        return None
+    home = Path(home)
+    # F1: EVERY item rides the receipt, including `already-applied` —
+    # `cases.receipt` is idempotent BY KEY now (a re-run of the SAME
+    # sheet REPLACES a key's line rather than appending), so the OLD
+    # "exclude already-applied, skip the call once nothing remains"
+    # filter — the CLI's own former (broken) idempotence mechanism,
+    # gate-u3-r1.md F1 — is gone; the real one lives in `cases.receipt`
+    # itself now.
+    batch_result = {
+        "sheet": sheet_name,
+        "sheet_sha": result.sheet_sha,
+        "stopped_at": result.stopped_at,
+        "code": result.process_code,
+        "stop_message": result.stop_message,
+        "items": result.to_json()["items"],
+    }
+    try:
+        cases.receipt(home, result.case, batch_result)
+    except (cases.CaseError, gitops.GitOpsError) as exc:
+        # F2: a receipt failure is a bookkeeping append failing AFTER
+        # the batch's own decision already landed — it must NEVER
+        # rewrite the batch's own documented exit code (S-54: "1 is
+        # emitted only when nothing landed"; by the time this can fail,
+        # the batch has already decided its own code).
+        print(f"self-learn batch: case receipt: {exc}", file=sys.stderr)
+        return {"state": "failed", "reason": str(exc)}
+    pushed = None
+    if not no_push:
+        # F6: the receipt's own commit rides OUTSIDE `run`'s single
+        # push — it lands strictly AFTER that push already returned, so
+        # it is never published by it. Publish it under the SAME
+        # `--no-push` rule the sheet's own commits already followed.
+        # `push_pending` takes no sentinel/lock of its own (read-only
+        # w.r.t. records — the same call `run` itself makes).
+        pushed = verbs.push_pending(home).ok
+    return {"state": "ok", "pushed": pushed}
