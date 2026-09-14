@@ -896,8 +896,13 @@ nightly run (a `kind: reconsider, trigger: reconsider` case, run through
 `reconsider`); the queue itself is cache, rebuildable from the observations.
 
 **Two views.** `case show --evidence-only` is **blind by default** (no
-separate `--blind` flag): frontmatter without `outcome`, `superseded_by`,
-`parked_for`, and `parked_reason`; sections 1, 2, and 4 only — neither the
+separate `--blind` flag): frontmatter reduced to exactly `case`, `opened_at`,
+`actor`, `kind`, `records`, and `supersedes` (an allowlist, so
+`presented`, `outcome`, `superseded_by`, `parked_for`, `parked_reason`, and any
+key added later stay out unless named here — amended 2026-09-14 after a
+denylist let `presented` through; `scope` is section 1's own body text, never
+a frontmatter key, and stays visible there in this same blind view); sections
+1, 2, and 4 only — neither the
 reasoning, the verb, nor the receipts (which name the verb) reach the
 reader. `case show` (no flag) is the full view, everything. The overseer
 reads the evidence-only view first, by tool, so "evidence before rationale"
@@ -1078,9 +1083,10 @@ clause above, worked example):
 with `um-0012` and `um-0019` marked `LAPSED`,
 `changed_condition: consolidated-into:um-00c4`.
 
-`um-<4hex>` ids are stable for the life of the entry; every write bumps its
-`r<n>`, so "did the dependency move" is a revision comparison, not a diff of
-prose.
+`um-<4hex>` ids are stable for the life of the entry; every write that changes
+the claim bumps its `r<n>` (a presentation flipping `provisional` is not a
+change of claim), so "did the dependency move" is a revision comparison, not
+a diff of prose.
 
 ### 3a.5 Conditions feed
 

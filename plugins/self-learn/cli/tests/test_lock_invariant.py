@@ -227,6 +227,15 @@ NOT_REPO_TRUTH = {
     "serve.request_poke": "XDG cache: cache_dir()/serve.poke (Sec 5.3's verb-to-daemon poke request)",
     "serve._consume_poke": "XDG cache: cache_dir()/serve.poke, unlinked once the tick has read it",
     "serve._today_mine_target": "XDG cache: cache_dir()/serve.schedule (the day's jittered mine-pass target, Sec 5.2/5.8.1 Persistent=true parity)",
+    # U2 (S-65, 02-schema.md §3a.2 §1.8): <cache>/cases/index.json is a
+    # NOT_REPO_TRUTH index over the case files -- rebuildable from them,
+    # never itself the ledger's truth. `cases._write_index` is the one
+    # function whose write reaches `fsops.atomic_write`; every caller
+    # (`_update_index`, `rebuild_index`, `list_cases`) is the SAME cache
+    # write, exempted here once rather than at each wrapper.
+    # N3 (fold-u2-r1): was mis-cited "S-65 §1.8" — S-65 is a decisions-
+    # table row with no subsections; §1.8 is the interface draft's own.
+    "cases._write_index": "cache-only, rebuildable (interface draft §1.8): <cache>/cases/index.json, never the ledger",
 }
 
 
@@ -785,6 +794,16 @@ _ARGV_FOR = {
     # --dry-run so this held-lock probe never depends on there being an
     # actual empty bucket to remove in the fixture.
     "_cmd_canary": None,  # writes canaries.json (cache-local), not the ledger
+    "_cmd_case": [["case", "record", "{stage}", "--actor", "human"]],  # U2
+    "_cmd_statement": [
+        ["statement", "add", "--verbatim", "held-lock statement",
+         "--ref", "transcript:heldlock#L1", "--recorded-by", "human"],
+    ],  # U2
+    "_cmd_user_model": [
+        ["user-model", "add", "--container", "A", "--title", "held lock title",
+         "--because", "held lock because", "--source", "own-words",
+         "--by", "human", "--ref", "stmt-11112222"],
+    ],  # U2
     "_cmd_config": [
         # U-settings Phase 2: `get` never mutates (ungated, like `doctor`);
         # `set`/`unset` ARE ledger-mutating and must take the lock -- the
@@ -963,6 +982,26 @@ class TestEveryCommandSurvivesAHeldLock:
             '  - {id: lrn-eeee0001, verb: reject, note: "held-lock invariant sheet"}\n',
             encoding="utf-8",
         )
+        # U2 (S-65): `case record`'s stage-file input — the six-part
+        # shape `cases.record` validates (this module's own contract;
+        # 02-schema.md §3a.2 fixes the CASE FILE it produces, not this
+        # input format). Content only needs to be valid enough to reach
+        # the ledger lock; the held-lock probe never checks what landed.
+        stage_path = tmp_path / "held-lock-stage.yaml"
+        stage_path.write_text(
+            "kind: resolution\n"
+            "trigger: human\n"
+            "outcome: reject\n"
+            "records: [lrn-eeee0001]\n"
+            "scope: user\n"
+            "question: held-lock invariant probe\n"
+            "evidence:\n"
+            '  - {ref: "transcript:heldlock#L1", quote: "probe evidence"}\n'
+            "decision:\n"
+            "  because: held-lock invariant probe\n"
+            "  confidence: settled\n",
+            encoding="utf-8",
+        )
 
         argv = [
             a.format(
@@ -971,6 +1010,7 @@ class TestEveryCommandSurvivesAHeldLock:
                 empty=str(tmp_path / "empty"),
                 project_slug=str(env.host),
                 sheet=str(sheet_path),
+                stage=str(stage_path),
             )
             for a in argv
         ]

@@ -402,9 +402,12 @@ what an unattended run decided, and how you correct it:
 
 - `self-learn case show <id> [--evidence-only] [--json]` — the frozen
   decided account. `--evidence-only` is BLIND by default (no separate
-  `--blind` flag): it withholds the frontmatter's `outcome`,
-  `superseded_by`, `parked_for`, and `parked_reason`, plus the Decision,
-  Application, and Later-observations sections — so it hides the verb,
+  `--blind` flag): it is an ALLOWLIST, keeping only the frontmatter's
+  `case`, `opened_at`, `actor`, `kind`, `records`, and `supersedes` —
+  `outcome`, `superseded_by`, `parked_for`, `parked_reason`, `presented`,
+  and any key added later stay out unless named here — plus the Identity
+  and scope, Evidence, and Dependencies sections; never the Decision,
+  Application, or Later-observations sections — so it hides the verb,
   the reasoning, and the receipts, not only the reasoning. Read it first
   if you are re-examining a decision before reading the full view, the
   same discipline the overseer follows.
@@ -416,9 +419,9 @@ what an unattended run decided, and how you correct it:
   `scope-conflict`).
 - `self-learn case observe <id> --kind
   examined|presented|statement|corrected|dependency-moved --text …
-  [--ref …] [--outcome agreed|corrected|noted]` — appends a Later
+  [--ref …] [--presented-outcome agreed|corrected|noted]` — appends a Later
   observations entry with its own `obs-<8hex>` id; never edits the
-  frozen account. `--outcome` applies to a `presented` observation only.
+  frozen account. `--presented-outcome` applies to a `presented` observation only.
   A `statement` or `dependency-moved` observation whose reference is one
   of the case's own dependencies queues that case for the steward's next
   nightly run automatically — you do not additionally ask for a
@@ -429,7 +432,7 @@ what an unattended run decided, and how you correct it:
   with what it answers and its stated scope. `conversation:<obs-id>` is
   the reference to use for words typed into the overseer's own
   conversation, where no transcript line exists.
-- `self-learn user-model add --provisional --statements stmt-…[,stmt-…]
+- `self-learn user-model add --statements stmt-…[,stmt-…]
   [--basis um-…@r…,…] …` / `user-model lapse um-…
   --changed-condition <key>|--contrary <ref>|--consolidated-into um-…
   --at <date>` — the human path into the model of the user. A system
