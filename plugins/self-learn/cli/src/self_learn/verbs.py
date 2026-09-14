@@ -162,7 +162,9 @@ from .ledger_ops import (
 # a single field without re-validating the whole proposal (a revised
 # body's trace quotes need not still containment-check against the new
 # wording -- that is `validate_proposal`'s job at analysis time, not a
-# wording-fix stamp's).
+# wording-fix stamp's). This extends the tree's existing private-import
+# precedent (the compilers names above) deliberately; a public
+# `stamp_proposal_fields` wrapper is the alternative if it spreads.
 from .ledger_ops import _dump_yaml
 from . import records as records_mod
 from .records import RECORD_ID_RE, Record, RecordError, _validate_follow_up
@@ -7975,6 +7977,11 @@ def _revise_body(record: Record, section: str, text: str) -> str:
     only the trimmed text in between -- never reformats to
     :meth:`Record.create`'s own convention, which would risk touching
     bytes this verb has no claim to touch."""
+    # Strip ONCE, before the guard, and splice the same value: the guard
+    # is line-anchored, so checking the raw text and splicing a stripped
+    # one let a single leading space or tab put a smuggled heading back
+    # at the start of a line (gate r1 F1, 2026-09-14).
+    text = text.strip()
     if text_mod.HEADING_RE.search(text):
         raise VerbError(
             "revise --text may not itself contain a '## ' heading line "
@@ -8003,7 +8010,7 @@ def _revise_body(record: Record, section: str, text: str) -> str:
     trailing = segment[len(segment.rstrip()) :] or (
         "\n" if idx + 1 == len(matches) else "\n\n"
     )
-    return body[:start] + leading + text.strip() + trailing + body[end:]
+    return body[:start] + leading + text + trailing + body[end:]
 
 
 def revise(
@@ -8038,7 +8045,12 @@ def revise(
     -- it becomes the commit body only. ``by`` (02-schema.md
     §1/§3a.1 rule 5, the same ``ROUTING_BY_VALUES`` every sheet item's
     ``by:`` draws from) is optional and, when given, rides the proposal
-    stamp below alongside ``revised_at`` -- never the record.
+    stamp below alongside ``revised_at`` -- never the record. That stamp
+    is informational only: the proposal is stale by construction after a
+    revise (``record_sha`` is not re-stamped), so the next worker run
+    re-analyses the record and overwrites the file, stamp included. A
+    steward's durable account of a revise lives in its decision case
+    (S-65, U10), not here.
 
     The record's sibling PROPOSAL, if one exists, is kept (never swept
     -- the record never leaves ``pending/``, so

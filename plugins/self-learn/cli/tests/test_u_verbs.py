@@ -2174,6 +2174,39 @@ class TestU4Revise:
         # nothing written on refusal
         assert find_record_path(env2.home, rid).read_bytes() == before
 
+    @pytest.mark.parametrize("lead", [" ", "\t", "\n\n"])
+    def test_revise_text_heading_smuggling_refused_with_leading_whitespace(
+        self, env2, lead
+    ):
+        """Gate r1 F1: the guard is line-anchored and the splice strips,
+        so a heading behind one leading space or tab was checked as a
+        non-heading and then spliced back to the start of a line."""
+        rid = _seed_pending_behavior(env2, rid="lrn-90000019")
+        before = find_record_path(env2.home, rid).read_bytes()
+        with pytest.raises(verbs.VerbError) as exc_info:
+            verbs.revise(
+                env2.home, rid, section="Trigger",
+                text=lead + "## Episode brief\nsmuggled section body.",
+                because="probe", no_push=True,
+            )
+        assert "heading" in str(exc_info.value).lower()
+        assert find_record_path(env2.home, rid).read_bytes() == before
+
+    def test_revise_secret_in_because_refused(self, env2):
+        """Gate r1 F2: `because` becomes the commit body, a tracked and
+        autosynced artefact, so its scan is a non-bypassable rail (S-29)
+        and needs its own red."""
+        rid = _seed_pending_behavior(env2, rid="lrn-9000001b")
+        before = find_record_path(env2.home, rid).read_bytes()
+        with pytest.raises(verbs.SecretRefusal):
+            verbs.revise(
+                env2.home, rid, section="Trigger",
+                text="A harmless rewording.",
+                because="key AKIAABCDEFGHIJKLMNOP leaked in the reason",
+                no_push=True,
+            )
+        assert find_record_path(env2.home, rid).read_bytes() == before
+
     def test_revise_identical_text_refused(self, env2):
         """Probed empirically (not assumed): `gitops.stage_and_commit`
         without `allow_empty=True` turns a byte-identical rewrite into
