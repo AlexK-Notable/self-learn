@@ -933,8 +933,8 @@ Register rules that apply across all sections:
   discuss?" — the card tells them, and an honest "nothing here" is what
   licenses fast approval with confidence rather than in place of it.
 - **`rationale` stays machine-facing.** It justifies the destination to
-  the next analyst (and feeds the M2 rejected-proposal digest). Do not
-  repurpose it as card copy, and do not duplicate card copy into it.
+  the next analyst and to the steward's case. Do not repurpose it as
+  card copy, and do not duplicate card copy into it.
 
 ## 9. Proposal-time lint (Y-22)
 

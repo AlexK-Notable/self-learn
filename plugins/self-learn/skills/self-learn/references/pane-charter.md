@@ -111,5 +111,7 @@ weeks ago. Two rules, both non-negotiable:
 
 Rationale text inside the proposal YAML (the `rationale` field, not the
 `card:` map) is the one exception — that field is machine-facing, read by
-the next analyst and the rejected-proposal digest, and keeps its
-technical vocabulary. Everything else you write is for the human.
+the next analyst and the steward's case (Amended 2026-09-14, U7: no
+longer the rejected-proposal digest, which has no caller in the analyst
+prompt path as of this build), and keeps its technical vocabulary.
+Everything else you write is for the human.

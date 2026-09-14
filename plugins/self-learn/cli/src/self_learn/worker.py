@@ -1554,6 +1554,16 @@ def _digest(home: Path, limit: int = 20) -> str:
     sorted explicitly; the grep is line-anchored so a Revert subject
     quoting the message does not re-list an undone rejection).
 
+    U7 (`01-architecture.md` §3.3 as amended): RETAINED, but no longer
+    interpolated into the M2 batch prompt — `_cases_block`, below,
+    replaces it there (a proposal cites prior decisions as cases now,
+    rather than being told never to re-propose a rejected class). This
+    function's own direct callers stay: its two pinned unit tests in
+    `test_worker.py` (`test_digest_contains_rejected_with_notes`,
+    `test_digest_ordered_by_author_date_newest_first`) exercise it
+    unchanged; no other production call site remains at this build (see
+    this unit's report for what "review's hint" means absent one).
+
     M-G: a LOCAL, read-only git call — bounded like every other one
     (``gitops.GIT_LOCAL_TIMEOUT``) via the shared primitive instead of a
     bare, unbounded ``subprocess.run``. A wedged git degrades this digest
@@ -1615,6 +1625,73 @@ def _digest(home: Path, limit: int = 20) -> str:
             break
     if not lines:
         return "(no rejected proposals yet)"
+    return "\n".join(lines)
+
+
+def _cases_block(home: Path, limit: int = 20) -> str:
+    """U7 (`01-architecture.md` §3.3 as amended; `03-decisions.md` S-26 as
+    amended): "Prior decisions on this record's class, as cases" — the
+    block that REPLACES the rejected-proposal digest in the analyst's
+    batch prompt (`_digest`, above, stays; it no longer feeds this
+    prompt — see that function's own docstring). Case ids and one-line
+    outcomes, read from the case index (`cases.list_cases`).
+
+    The index carries no scope or class field to filter by — `scope` is
+    Section 1 BODY text on the case file itself, never a frontmatter or
+    index key (`02-schema.md` §3a.2's index row list, `:946-950`) — so
+    this reads the WHOLE index, newest-`opened_at` first, capped at
+    `limit`, rather than inventing a filter the index cannot perform.
+
+    Fold r1 / B1 (`cases.py` S6, `list_cases`'s own contract at
+    `:939-941`; the SAME posture `case list`'s text view gives its
+    `TAMPERED` column, U2 gate r2 decision 6): rows whose freeze hash
+    failed re-verification (`frozen_ok: false`) are EXCLUDED from
+    citation — `only_ok=True` — never rendered to the analyst verbatim,
+    because a tampered case's `outcome` is arbitrary text past that
+    point (`cases.py:452` only validates `outcome` at write time) and
+    this function's whole purpose is to cite decisions, not obey
+    whatever a hand-edited file claims one said. When one or more rows
+    were excluded, the block ends with one visible line, `(<n> case(s)
+    excluded: freeze hash failed)` — a marker, never a silent drop.
+
+    Fold r1 / S1: a read failure (a corrupt cache index, an unreadable
+    lock, a case file that will not decode) is NOT the same claim as an
+    empty index — collapsing both into "none yet" would tell the
+    analyst nothing has ever been decided when the truth is the index
+    could not be read this run. The except clause is narrowed to what
+    `list_cases`/`rebuild_index` can actually raise: `CaseError` and
+    `YAMLError` (defense in depth — `_index_row` already catches both
+    internally and should never let either escape, but the tuple stays
+    aligned with that function's own catch list rather than assuming
+    it always will), `OSError`/`UnicodeDecodeError` (a lock file or
+    case file that cannot be opened or decoded), and
+    `json.JSONDecodeError` (the actual failure mode measured for a
+    hand-corrupted `<cache>/cases/index.json` — `_load_index`'s
+    `json.loads`). A read failure degrades to the distinct sentinel
+    `(prior decisions unavailable this run)`, never "none yet"."""
+    from . import cases as cases_mod
+    from .cases import CaseError
+    from ruamel.yaml.error import YAMLError
+
+    try:
+        rows_all = cases_mod.list_cases(home)
+        rows = cases_mod.list_cases(home, only_ok=True)
+    except (CaseError, YAMLError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return "(prior decisions unavailable this run)"
+    excluded = len(rows_all) - len(rows)
+    if not rows:
+        body = "none yet"
+        if excluded:
+            body += f"\n({excluded} case(s) excluded: freeze hash failed)"
+        return body
+    rows = sorted(rows, key=lambda r: r.get("opened_at") or "", reverse=True)
+    lines: list[str] = []
+    for row in rows[:limit]:
+        records = ", ".join(row.get("records") or []) or "(no records)"
+        outcome = row.get("outcome") or "(no outcome)"
+        lines.append(f"- {row.get('case')}: {records} → {outcome}")
+    if excluded:
+        lines.append(f"({excluded} case(s) excluded: freeze hash failed)")
     return "\n".join(lines)
 
 
@@ -1982,8 +2059,8 @@ filename token is dead on arrival at route --collapse.
 roster sha: {roster_sha}
 {roster_text}
 
-Never re-propose the classes below (recently rejected):
-{digest}
+Prior decisions on this record's class, as cases:
+{cases}
 
 === ROUTING DOCTRINE ===
 {doctrine}
@@ -2082,13 +2159,79 @@ def _doctrine_and_registry_text() -> tuple[str, str]:
     return doctrine, registry
 
 
+def render_brief(proposal: dict) -> list[tuple[str, str]]:
+    """U7 (routing-doctrine.md §8, `01-architecture.md` §3.3 as
+    amended): the steward-facing reading order for one proposal's
+    human-facing content — identity, then evidence, then whatever is
+    unresolved, then advice last (§8's own words) — with the top-level
+    `recommendation` enum appended as the FINAL row regardless of where
+    the proposal's own YAML happened to place that key: §8 reads
+    `recommendation` as advice, and advice is read last.
+
+    Reads `card-sections.yaml`'s own `order:` field (never hardcoding a
+    section name or its order here — the registry owns that, per its
+    own file-header contract) and, for each section present in the
+    proposal's `card:` map with non-empty text, emits one
+    ``(section_key, text)`` row in ascending `order`. A card key the
+    registry does not name (should not happen post-validation — this is
+    a pure reader, not a re-validator) renders after every known
+    section, in stable sorted-key order — the registry's own "render
+    unknown keys last" rule, never a silent drop.
+
+    Read-only: parses the registry and the proposal dict only, writes
+    nothing, and is not called from the worker's run path — it exists
+    for the steward's own reading (U9, not yet built at this cut)."""
+    from ruamel.yaml import YAML, YAMLError
+
+    registry_path = package_skill_refs() / "card-sections.yaml"
+    sections: dict = {}
+    if registry_path.is_file():
+        try:
+            loader = YAML(typ="safe")
+            loaded = loader.load(registry_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                sections = loaded
+        except (OSError, UnicodeDecodeError, YAMLError):
+            sections = {}
+
+    def _order(key: str) -> int:
+        # N3 (fold r1): a registry top-level value need not be a
+        # mapping — `render_brief` already degrades carefully around a
+        # missing file, an OSError, and a YAMLError; a scalar value for
+        # one key (a malformed hand-edit of the registry) sorts last
+        # rather than raising `AttributeError` on `.get`.
+        value = sections[key]
+        return value.get("order", 999) if isinstance(value, dict) else 999
+
+    ordered_keys = sorted(sections.keys(), key=_order)
+    card = proposal.get("card")
+    card = card if isinstance(card, dict) else {}
+
+    def _present(key: str) -> bool:
+        text = card.get(key)
+        return isinstance(text, str) and bool(text.strip())
+
+    rows: list[tuple[str, str]] = [(key, card[key]) for key in ordered_keys if _present(key)]
+    known = set(ordered_keys)
+    for key in sorted(card):
+        if key not in known and _present(key):
+            rows.append((key, card[key]))
+    recommendation = proposal.get("recommendation")
+    if isinstance(recommendation, str) and recommendation.strip():
+        rows.append(("recommendation", recommendation))
+    return rows
+
+
 def compose_batch_prompt(home: Path, batch: list) -> tuple[str, Roster]:
     """The M2 worker's prompt (replaces the old ``_compose_prompt``):
-    everything it composed before — the rejected-proposal digest, the
-    doctrine and the card registry, and per-record text/bucket/record
-    path/canon excerpt — plus the roster once per prompt (its sha stated
-    verbatim, §3.6) and, per record, the T-N candidate block and the
-    absolute-path roster (§3.5). Returns the composed prompt AND the
+    everything it composed before — the doctrine and the card registry,
+    and per-record text/bucket/record path/canon excerpt — plus the
+    roster once per prompt (its sha stated verbatim, §3.6) and, per
+    record, the T-N candidate block and the absolute-path roster (§3.5).
+    U7 (`01-architecture.md` §3.3 as amended): the rejected-proposal
+    digest this composed before is replaced by ``_cases_block`` — prior
+    decisions cited as cases, not a "never re-propose" instruction; see
+    that function's own docstring. Returns the composed prompt AND the
     :class:`Roster` used, so the caller that later validates model output
     can compare ``gates.t3.roster_sha`` against the roster actually
     composed for THIS run."""
@@ -2108,7 +2251,7 @@ def compose_batch_prompt(home: Path, batch: list) -> tuple[str, Roster]:
         for entry in batch
     ]
     prompt = _PROMPT_TEMPLATE.format(
-        digest=_digest(home),
+        cases=_cases_block(home),
         doctrine=doctrine,
         registry=registry,
         roster_sha=roster.sha,

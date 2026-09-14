@@ -437,8 +437,11 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   under freeze-at-routing — it is part of the resolution event, not a later
   edit of substance. It is the user's *why*, and it is fuel: the M2 worker's
   rejected-proposal digest reads it, so a noted denial teaches the analyst
-  why that proposal class loses. Secret-scanned like every record-body
-  write.
+  why that proposal class loses *(Amended 2026-09-14, U7: the digest no
+  longer reaches the analyst prompt — prior decisions arrive there as
+  cited cases instead, §3a.1 item 6, below; `_digest` still reads
+  `resolution_note` this way, unused in that path)*. Secret-scanned like
+  every record-body write.
 - **Lifecycle notes for the implementer** *(deliberate choices, stated so no
   one hunts for missing fields)*: rejection/supersession provenance is
   carried by git — the resolving commit's author, date, and message are the

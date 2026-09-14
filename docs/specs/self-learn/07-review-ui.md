@@ -82,7 +82,10 @@ different producers. Many producers, one adjudication surface.
   `resolution_note` (`02-schema.md` §2) and echoed in the resolving
   commit. Notes are also fuel: the M2 worker's rejected-proposal digest
   reads them, so a note on a denial teaches the analyst *why* that class
-  of proposal loses. *(Dated note 2026-07-18: the shipped surface's
+  of proposal loses. *(Amended 2026-09-14, U7: the digest no longer
+  reaches the analyst prompt — prior decisions arrive there as cited
+  cases instead, `01-architecture.md` §3.3 as amended; `_digest` still
+  reads notes this way, unused in that path.)* *(Dated note 2026-07-18: the shipped surface's
   action set grew beyond this list — armed `host add` on unregistered
   buckets (Y-11/Y-17), agent-proposed `rehome` (Y-18), worker force-run
   (Y-19) — and the Detail page gained the budget indicator (Y-20) and
