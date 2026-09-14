@@ -967,11 +967,15 @@ For an opted-in ordinary ledger mutation, the item's own mutation commit has
 one canonical final trailer block: `By: <runner>`, `Case: <case-id>`,
 `Sheet: <sheet_sha>`, `Item: <original-n>`. The manifest's full digest binds
 the trusted continuation map; recovery requires exact case, digest, ordinal,
-record, verb, ancestry, and committed-effect matching. Prose that merely
-contains trailer-shaped text, a matching present status, `By:` alone, a cache
-SHA, an unrelated matching commit, conflicting proof, or an intervening
-incompatible change proves nothing and causes recover-or-refuse before
-dispatch.
+record, verb, ancestry, and committed-effect matching. The shared lookup seam
+requires the final trailer block's exact identity and the pinned subject the
+referenced verb writes for that record. Before a matching commit can make an
+item proven and skipped, the delegated runner must additionally verify that
+commit's content against the original item and its verb-specific ledger
+effect. Trailer-shaped prose under a foreign subject, a matching present
+status, `By:` alone, a cache SHA, an unrelated matching commit, conflicting
+proof, or an intervening incompatible change proves nothing and causes
+recover-or-refuse before dispatch.
 
 An intent-backed compound mutation such as collapse adds one `ledger_effect`
 proof entry to its run manifest inside the same existing transaction and
@@ -989,7 +993,13 @@ outcome is written to Application before the next dependent item dispatches;
 failure of that ordered receipt checkpoint halts with the actual partial
 batch result and untouched tail. A host result reconstructed after an
 interruption names `recompile` as its source. A trailer proves only the ledger
-leg and never authorizes repeating that leg or inventing a host exit code.
+leg and never authorizes repeating that leg or inventing a host exit code. If
+`recompile` refuses an implicated target, the continuation carries that
+ledger-proven item as `unresolved-host`, with the target and refusal reason.
+`batch.run` skips the ledger leg, receipts
+`unresolved-host: <target>: <reason>` before anything dependent can run, and
+halts with the partial result and untouched tail in `BookkeepingHalt` so the
+runner can report the outstanding host obligation.
 
 **Section 6, Later observations** — append-only; each entry has an id
 (`obs-<8hex>`), a timestamp, an actor, a kind, and text, some kinds also a

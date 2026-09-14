@@ -10,7 +10,16 @@ import sys
 
 import pytest
 
-from self_learn import batch, cases, execution_evidence, gitops, intents, verbs
+from self_learn import (
+    batch,
+    cases,
+    cli,
+    execution_evidence,
+    gitops,
+    intents,
+    telemetry,
+    verbs,
+)
 from self_learn.ledger_ops import create_record, find_record_path, write_proposal
 from self_learn.records import Record
 from support import commit_all, make_behavior, make_home, proposal_dict
@@ -157,6 +166,145 @@ def test_exact_trailer_match_rejects_wrong_values_and_duplicate_matches(tmp_path
     )
     with pytest.raises(execution_evidence.ExecutionEvidenceError, match="more than one"):
         execution_evidence.find_mutation_commit(home, ref)
+
+
+def test_model_note_with_canonical_foreign_trailers_is_not_mutation_proof(tmp_path):
+    home = make_home(tmp_path)
+    rid = "lrn-acde1234"
+    _seed_pending(home, rid)
+    forged_ref = _ref(verb="reject")
+    forged = (
+        "model-authored note\n\n"
+        "By: steward\nCase: case-acde1234\nSheet: 12ab34cd\nItem: 1"
+    )
+
+    verbs.note(home, rid, append=forged, no_push=True)
+
+    assert execution_evidence.parse_trailers(forged) == forged_ref.trailer_identity()
+    assert execution_evidence.find_mutation_commit(home, forged_ref) is None
+
+
+_THREADED_VERBS = (
+    "route",
+    "reject",
+    "defer",
+    "rehome",
+    "rescope",
+    "undefer",
+    "reopen",
+    "retire",
+    "graduate",
+    "supersede",
+    "note",
+    "followup-done",
+    "confirm-recurrence",
+    "confirm-held",
+    "dismiss-suspect",
+    "link-contradicts",
+    "revise",
+)
+
+
+def _invoke_threaded_verb(home, verb: str):
+    rid = "lrn-acde1234"
+    other = "lrn-acde1235"
+    ref = _ref(verb=verb)
+    if verb in {"supersede", "link-contradicts"}:
+        _seed_pending(home, other)
+    if verb == "route":
+        result = verbs.route(home, rid, dest="skill-md", no_push=True, execution=ref)
+    elif verb == "reject":
+        result = verbs.reject(home, rid, no_push=True, execution=ref)
+    elif verb == "defer":
+        result = verbs.defer(home, rid, no_push=True, execution=ref)
+    elif verb in {"rehome", "rescope"}:
+        result = getattr(verbs, verb)(home, rid, to="user", no_push=True, execution=ref)
+    elif verb == "undefer":
+        verbs.defer(home, rid, no_push=True)
+        result = verbs.undefer(home, rid, no_push=True, execution=ref)
+    elif verb == "reopen":
+        verbs.reject(home, rid, no_push=True)
+        result = verbs.reopen(home, rid, no_push=True, execution=ref)
+    elif verb in {"retire", "graduate"}:
+        verbs.route(home, rid, dest="skill-md", no_push=True)
+        result = getattr(verbs, verb)(
+            home, rid, covered_by="skill-md:s", no_push=True, execution=ref
+        )
+    elif verb == "supersede":
+        result = verbs.supersede(home, rid, other, no_push=True, execution=ref)
+    elif verb == "note":
+        result = verbs.note(home, rid, append="observation", no_push=True, execution=ref)
+    elif verb == "followup-done":
+        verbs.route(
+            home,
+            rid,
+            dest="skill-md",
+            follow_up={"action": "verify later"},
+            no_push=True,
+        )
+        result = verbs.followup_done(home, rid, no_push=True, execution=ref)
+    elif verb in {"confirm-recurrence", "dismiss-suspect"}:
+        verbs.route(home, rid, dest="skill-md", no_push=True)
+        telemetry.spool_event(
+            "recurrence-suspect", record=rid, origin=other, basis="miner-match"
+        )
+        telemetry.flush(home, push=False)
+        event_ref = next(
+            event["nonce"]
+            for event in telemetry.read_events(home)
+            if event.get("kind") == "recurrence-suspect"
+            and event.get("record") == rid
+        )
+        if verb == "confirm-recurrence":
+            result = verbs.confirm_recurrence(
+                home, rid, event_ref=event_ref, no_push=True, execution=ref
+            )
+        else:
+            result = verbs.dismiss_suspect(
+                home,
+                rid,
+                event_ref=event_ref,
+                why="rule-followed",
+                no_push=True,
+                execution=ref,
+            )
+    elif verb == "confirm-held":
+        verbs.route(home, rid, dest="skill-md", no_push=True)
+        result = verbs.confirm_held(home, rid, no_push=True, execution=ref)
+    elif verb == "link-contradicts":
+        result = verbs.link_contradicts(
+            home, rid, other, no_push=True, execution=ref
+        )
+    else:
+        assert verb == "revise"
+        result = verbs.revise(
+            home,
+            rid,
+            section="Trigger",
+            text="Reworded trigger.",
+            because="make the trigger precise",
+            no_push=True,
+            execution=ref,
+        )
+    return ref, result
+
+
+@pytest.mark.parametrize("verb", _THREADED_VERBS)
+def test_every_threaded_verb_writes_exact_trailers_and_matching_subject(
+    tmp_path, monkeypatch, verb
+):
+    assert set(_THREADED_VERBS) == set(batch.PERMITTED_KEYS)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    home = make_home(tmp_path)
+    _seed_pending(home, "lrn-acde1234")
+
+    ref, result = _invoke_threaded_verb(home, verb)
+
+    body = gitops._git(home, "show", "-s", "--format=%B", "HEAD").stdout.rstrip()
+    assert body.endswith(
+        "By: steward\nCase: case-acde1234\nSheet: 12ab34cd\nItem: 1"
+    )
+    assert execution_evidence.find_mutation_commit(home, ref) == result.commit_sha
 
 
 def test_manifest_binding_is_read_from_the_pinned_git_object_not_worktree(tmp_path):
@@ -345,6 +493,50 @@ def test_compound_proof_history_refuses_removal_and_duplicate_dispatch(tmp_path)
     intents.finish(intent)
 
 
+@pytest.mark.parametrize("surface", ["history", "writer"])
+def test_conflicting_compound_proof_refuses_at_read_and_write_seams(
+    tmp_path, surface
+):
+    home = make_home(tmp_path)
+    ref = _ref(verb="route")
+    path = execution_evidence.manifest_path(home, ref.run_id)
+    path.parent.mkdir(parents=True)
+    manifest = {
+        "version": 1,
+        "run_id": ref.run_id,
+        "cases": {
+            ref.case_id: {
+                "sheet_sha": ref.sheet_sha,
+                "sheet_digest": ref.sheet_digest,
+                "items": [{"n": ref.item, "id": ref.record_id, "verb": ref.verb}],
+            }
+        },
+        "ledger_effects": [],
+    }
+    path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+    commit_all(home, "prepared run")
+    prepared = gitops.head_sha(home)
+    conflict = {**ref.to_proof(), "record": "lrn-deadbeef"}
+    manifest["ledger_effects"] = [conflict]
+    path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+    if surface == "history":
+        commit_all(home, "conflicting proof")
+        with pytest.raises(
+            execution_evidence.ExecutionEvidenceError, match="conflicting ledger effect"
+        ):
+            execution_evidence.find_compound_proof_commit(
+                home, ref, after=prepared
+            )
+    else:
+        marker = home / "marker"
+        intent = intents.begin(home, "collapse", [marker], "collapse")
+        with pytest.raises(
+            execution_evidence.ExecutionEvidenceError, match="conflicting ledger effect"
+        ):
+            execution_evidence.write_compound_proof(intent, ref)
+        intents.finish(intent)
+
+
 def test_trusted_continuation_skips_original_ordinal_and_preserves_sheet_identity(
     tmp_path,
 ):
@@ -390,143 +582,6 @@ def test_trusted_continuation_skips_original_ordinal_and_preserves_sheet_identit
     )
 
 
-def test_reopen_then_defer_continuation_skips_the_proven_reopen(tmp_path):
-    home = make_home(tmp_path)
-    rid = "lrn-acde1234"
-    _seed_pending(home, rid)
-    verbs.reject(home, rid, no_push=True)
-    reopen_ref = _ref(item=1, verb="reopen")
-    reopen = verbs.reopen(
-        home,
-        rid,
-        by="steward",
-        no_push=True,
-        execution=reopen_ref,
-    )
-    items = batch.Sheet(
-        [
-            batch.SheetItem(n=1, id=rid, verb="reopen", fields={}),
-            batch.SheetItem(n=2, id=rid, verb="defer", fields={}),
-        ],
-        case=reopen_ref.case_id,
-        sheet_sha=reopen_ref.sheet_sha,
-        sheet_digest=reopen_ref.sheet_digest,
-    )
-
-    result = batch.run(
-        home,
-        items,
-        no_push=True,
-        actor="steward",
-        continuation=batch.BatchContinuation(
-            run_id=reopen_ref.run_id,
-            case_id=reopen_ref.case_id,
-            sheet_digest=reopen_ref.sheet_digest,
-            completed={
-                1: batch.ItemResult(
-                    n=1,
-                    id=rid,
-                    verb="reopen",
-                    rc=0,
-                    sha=reopen.commit_sha,
-                    state="applied",
-                )
-            },
-        ),
-        checkpoint=lambda _partial: {"state": "ok"},
-    )
-
-    assert [(item.n, item.state) for item in result.items] == [
-        (1, "applied"),
-        (2, "applied"),
-    ]
-    assert Record.from_path(find_record_path(home, rid)).status == "deferred"
-    reopen_commits = gitops._git(
-        home,
-        "log",
-        "--format=%H",
-        "--grep",
-        f"self-learn: reopen {rid}",
-        "--fixed-strings",
-    ).stdout.splitlines()
-    assert reopen_commits == [reopen.commit_sha]
-
-
-def test_revise_then_route_continuation_skips_the_proven_revision(tmp_path):
-    home = make_home(tmp_path)
-    rid = "lrn-acde1234"
-    _seed_pending(home, rid)
-    revise_ref = _ref(item=1, verb="revise")
-    revised = verbs.revise(
-        home,
-        rid,
-        section="Trigger",
-        text="Reworded before routing.",
-        because="tighten wording before route",
-        by="steward",
-        no_push=True,
-        execution=revise_ref,
-    )
-    items = batch.Sheet(
-        [
-            batch.SheetItem(
-                n=1,
-                id=rid,
-                verb="revise",
-                fields={
-                    "section": "Trigger",
-                    "text": "Reworded before routing.",
-                    "because": "tighten wording before route",
-                },
-            ),
-            batch.SheetItem(
-                n=2, id=rid, verb="route", fields={"dest": "skill-md"}
-            ),
-        ],
-        case=revise_ref.case_id,
-        sheet_sha=revise_ref.sheet_sha,
-        sheet_digest=revise_ref.sheet_digest,
-    )
-
-    result = batch.run(
-        home,
-        items,
-        no_push=True,
-        actor="steward",
-        continuation=batch.BatchContinuation(
-            run_id=revise_ref.run_id,
-            case_id=revise_ref.case_id,
-            sheet_digest=revise_ref.sheet_digest,
-            completed={
-                1: batch.ItemResult(
-                    n=1,
-                    id=rid,
-                    verb="revise",
-                    rc=0,
-                    sha=revised.commit_sha,
-                    state="applied",
-                )
-            },
-        ),
-        checkpoint=lambda _partial: {"state": "ok"},
-    )
-
-    assert [(item.n, item.state) for item in result.items] == [
-        (1, "applied"),
-        (2, "applied"),
-    ]
-    assert Record.from_path(find_record_path(home, rid)).status == "routed"
-    revise_commits = gitops._git(
-        home,
-        "log",
-        "--format=%H",
-        "--grep",
-        f"self-learn: revise {rid}",
-        "--fixed-strings",
-    ).stdout.splitlines()
-    assert revise_commits == [revised.commit_sha]
-
-
 def test_continuation_binding_mismatch_refuses_before_item_one(tmp_path):
     home = make_home(tmp_path)
     rid = "lrn-acde1234"
@@ -547,6 +602,205 @@ def test_continuation_binding_mismatch_refuses_before_item_one(tmp_path):
     with pytest.raises(batch.BatchError, match="full sheet digest"):
         batch.run(home, items, no_push=True, actor="steward", continuation=continuation)
     assert gitops.head_sha(home) == before
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("n", 2), ("id", "lrn-deadbeef"), ("verb", "defer")],
+)
+def test_continuation_item_identity_mismatch_refuses_before_item_one(
+    tmp_path, field, value
+):
+    home = make_home(tmp_path)
+    rid = "lrn-acde1234"
+    _seed_pending(home, rid)
+    before = gitops.head_sha(home)
+    items = batch.Sheet(
+        [batch.SheetItem(n=1, id=rid, verb="reject", fields={})],
+        case="case-acde1234",
+        sheet_sha="12ab34cd",
+        sheet_digest="a" * 64,
+    )
+    completed_values = {
+        "n": 1,
+        "id": rid,
+        "verb": "reject",
+        "rc": 0,
+        "state": "applied",
+    }
+    completed_values[field] = value
+    continuation = batch.BatchContinuation(
+        run_id="run-u14-01",
+        case_id="case-acde1234",
+        sheet_digest="a" * 64,
+        completed={1: batch.ItemResult(**completed_values)},
+    )
+
+    with pytest.raises(batch.BatchError, match="item 1 does not match"):
+        batch.run(
+            home,
+            items,
+            no_push=True,
+            actor="steward",
+            continuation=continuation,
+            checkpoint=lambda _partial: {"state": "ok"},
+        )
+    assert gitops.head_sha(home) == before
+
+
+def test_mid_sheet_stop_under_continuation_returns_the_stopped_item_outcome(
+    tmp_path,
+):
+    home = make_home(tmp_path)
+    first, second = "lrn-aaaa0001", "lrn-aaaa0002"
+    _seed_pending(home, first)
+    _seed_pending(home, second)
+    items = batch.Sheet(
+        [
+            batch.SheetItem(n=1, id=first, verb="reject", fields={}),
+            batch.SheetItem(n=2, id=second, verb="reject", fields={}),
+        ],
+        case="case-acde1234",
+        sheet_sha="12ab34cd",
+        sheet_digest="a" * 64,
+    )
+
+    def plant_stop(partial):
+        if len(partial.items) == 1:
+            stop_dir = home / ".intents"
+            stop_dir.mkdir(parents=True, exist_ok=True)
+            (stop_dir / "bogus-stop.json").write_text("{not json", encoding="utf-8")
+        return {"state": "ok"}
+
+    result = batch.run(
+        home,
+        items,
+        no_push=True,
+        actor="steward",
+        continuation=batch.BatchContinuation(
+            run_id="run-u14-01",
+            case_id="case-acde1234",
+            sheet_digest="a" * 64,
+            completed={},
+        ),
+        checkpoint=plant_stop,
+    )
+
+    assert result.process_code == 8
+    assert result.stopped_at == 2
+    assert [(item.n, item.state, item.rc) for item in result.items] == [
+        (1, "applied", 0),
+        (2, "stopped", 6),
+    ]
+
+
+def test_unresolved_host_is_receipted_then_halts_with_the_dependent_tail(tmp_path):
+    home = make_home(tmp_path)
+    rid = "lrn-acde1234"
+    _seed_pending(home, rid)
+    routed = verbs.route(home, rid, dest="skill-md", no_push=True)
+    case_id = cases.record(
+        home,
+        _case_stage(tmp_path),
+        actor="steward",
+        reserved_id="case-acde1234",
+    )
+    items = batch.Sheet(
+        [
+            batch.SheetItem(n=1, id=rid, verb="route", fields={"dest": "skill-md"}),
+            batch.SheetItem(
+                n=2, id=rid, verb="note", fields={"append": "must not run"}
+            ),
+        ],
+        case=case_id,
+        sheet_sha="12ab34cd",
+        sheet_digest="a" * 64,
+    )
+    unresolved = batch.ItemResult(
+        n=1,
+        id=rid,
+        verb="route",
+        rc=1,
+        sha=routed.commit_sha,
+        state="unresolved-host",
+        detail="skill-md:s: edited target",
+    )
+
+    with pytest.raises(batch.BookkeepingHalt, match="unresolved host") as raised:
+        batch.run(
+            home,
+            items,
+            no_push=True,
+            actor="steward",
+            continuation=batch.BatchContinuation(
+                run_id="run-u14-01",
+                case_id=case_id,
+                sheet_digest="a" * 64,
+                completed={1: unresolved},
+            ),
+            checkpoint=lambda partial: batch.write_receipt(
+                home, partial, "u14.yaml", no_push=True, prefix=True
+            ),
+        )
+
+    assert [item.n for item in raised.value.result.items] == [1]
+    assert [item.n for item in raised.value.untouched_tail] == [2]
+    assert not Record.from_path(find_record_path(home, rid)).notes
+    application = cases.show(home, case_id, evidence_only=False).sections[
+        "Application"
+    ]
+    assert "unresolved-host: skill-md:s: edited target" in application
+
+
+def test_bookkeeping_halt_flushes_telemetry_before_release_and_never_pushes(
+    tmp_path, monkeypatch
+):
+    home = make_home(tmp_path)
+    rid = "lrn-acde1234"
+    _seed_pending(home, rid)
+    verbs.reject(home, rid, no_push=True)
+    events = []
+
+    class Hold:
+        owned = True
+
+        def release(self):
+            events.append("release")
+
+    monkeypatch.setattr(batch.sentinel, "hold", lambda: Hold())
+    monkeypatch.setattr(
+        cli,
+        "_mutating_epilogue",
+        lambda _home, *, no_push: events.append(("epilogue", no_push)),
+    )
+    monkeypatch.setattr(
+        verbs,
+        "push_pending",
+        lambda _home: events.append("push") or pytest.fail("halt pushed"),
+    )
+    items = batch.Sheet(
+        [batch.SheetItem(n=1, id=rid, verb="reject", fields={})],
+        case="case-acde1234",
+        sheet_sha="12ab34cd",
+        sheet_digest="a" * 64,
+    )
+
+    with pytest.raises(batch.BookkeepingHalt):
+        batch.run(
+            home,
+            items,
+            no_push=False,
+            actor="steward",
+            continuation=batch.BatchContinuation(
+                run_id="run-u14-01",
+                case_id="case-acde1234",
+                sheet_digest="a" * 64,
+                completed={},
+            ),
+            checkpoint=lambda _partial: None,
+        )
+
+    assert events == [("epilogue", True), "release"]
 
 
 def test_failed_ordered_checkpoint_halts_with_partial_result_and_untouched_tail(
@@ -739,171 +993,6 @@ def test_host_failure_is_receipted_then_halts_before_dependent_item(
     routed = Record.from_path(find_record_path(home, rid))
     assert routed.status == "routed"
     assert all(note.get("text") != "must not run" for note in routed.notes)
-
-
-def test_recompile_establishes_unreceipted_route_without_rerunning_ledger_leg(
-    tmp_path, monkeypatch
-):
-    home = make_home(tmp_path)
-    rid = "lrn-acde1234"
-    _seed_pending(home, rid)
-    case_id = cases.record(
-        home,
-        _case_stage(tmp_path),
-        actor="steward",
-        reserved_id="case-acde1234",
-    )
-    ref = _ref(verb="route")
-
-    with monkeypatch.context() as scoped:
-        scoped.setattr(
-            verbs,
-            "_host_phase",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                batch.CompileError("killed between ledger and host")
-            ),
-        )
-        with pytest.raises(batch.CompileError, match="between ledger and host"):
-            verbs.route(
-                home,
-                rid,
-                dest="skill-md",
-                by="steward",
-                no_push=True,
-                execution=ref,
-            )
-
-    route_sha = gitops.head_sha(home)
-    skill_md = tmp_path / "host-repo/plugins/s-plugin/skills/s/SKILL.md"
-    assert rid not in skill_md.read_text(encoding="utf-8")
-    repair = verbs.recompile(home, no_push=True)
-    assert rid in skill_md.read_text(encoding="utf-8")
-    assert not [warning for warning in repair.warnings if rid in warning]
-
-    completed = batch.ItemResult(
-        n=1,
-        id=rid,
-        verb="route",
-        rc=0,
-        sha=route_sha,
-        state="applied",
-        evidence="host result established by recompile",
-    )
-    items = batch.Sheet(
-        [
-            batch.SheetItem(
-                n=1, id=rid, verb="route", fields={"dest": "skill-md"}
-            ),
-            batch.SheetItem(
-                n=2, id=rid, verb="note", fields={"append": "after repair"}
-            ),
-        ],
-        case=case_id,
-        sheet_sha=ref.sheet_sha,
-        sheet_digest=ref.sheet_digest,
-    )
-    result = batch.run(
-        home,
-        items,
-        no_push=True,
-        actor="steward",
-        continuation=batch.BatchContinuation(
-            run_id=ref.run_id,
-            case_id=case_id,
-            sheet_digest=ref.sheet_digest,
-            completed={1: completed},
-        ),
-        checkpoint=lambda partial: batch.write_receipt(
-            home, partial, "u14.yaml", no_push=True, prefix=True
-        ),
-    )
-
-    assert [item.n for item in result.items] == [1, 2]
-    route_commits = gitops._git(
-        home,
-        "log",
-        "--format=%H",
-        "--grep",
-        f"self-learn: route {rid}",
-        "--fixed-strings",
-    ).stdout.splitlines()
-    assert route_commits == [route_sha]
-    application = cases.show(home, case_id, evidence_only=False).sections["Application"]
-    assert "item=1" in application
-    assert "evidence: host result established by recompile" in application
-
-
-def test_noop_then_mutation_resume_never_reopens_the_rejected_record(tmp_path):
-    home = make_home(tmp_path)
-    rid = "lrn-acde1234"
-    _seed_pending(home, rid)
-    verbs.reject(home, rid, note="first resolution", no_push=True)
-    verbs.reopen(home, rid, note="correction", no_push=True)
-    case_id = cases.record(
-        home,
-        _case_stage(tmp_path),
-        actor="steward",
-        reserved_id="case-acde1234",
-    )
-    items = batch.Sheet(
-        [
-            batch.SheetItem(n=1, id=rid, verb="reopen", fields={}),
-            batch.SheetItem(n=2, id=rid, verb="reject", fields={}),
-        ],
-        case=case_id,
-        sheet_sha="12ab34cd",
-        sheet_digest="a" * 64,
-    )
-    continuation = batch.BatchContinuation(
-        run_id="run-u14-01",
-        case_id=case_id,
-        sheet_digest="a" * 64,
-        completed={},
-    )
-
-    def kill_before_second_receipt(partial):
-        if len(partial.items) == 2:
-            raise RuntimeError("simulated death before second receipt")
-        return batch.write_receipt(
-            home, partial, "u14.yaml", no_push=True, prefix=True
-        )
-
-    with pytest.raises(batch.BookkeepingHalt) as halted:
-        batch.run(
-            home,
-            items,
-            no_push=True,
-            actor="steward",
-            continuation=continuation,
-            checkpoint=kill_before_second_receipt,
-        )
-    assert [item.n for item in halted.value.result.items] == [1, 2]
-    assert Record.from_path(find_record_path(home, rid)).status == "rejected"
-
-    completed = {1: halted.value.result.items[0]}
-    resumed = batch.run(
-        home,
-        items,
-        no_push=True,
-        actor="steward",
-        continuation=batch.BatchContinuation(
-            run_id="run-u14-01",
-            case_id=case_id,
-            sheet_digest="a" * 64,
-            completed=completed,
-        ),
-        checkpoint=lambda partial: batch.write_receipt(
-            home, partial, "u14.yaml", no_push=True, prefix=True
-        ),
-    )
-    assert [(item.n, item.state) for item in resumed.items] == [
-        (1, "already-applied"),
-        (2, "already-applied"),
-    ]
-    assert Record.from_path(find_record_path(home, rid)).status == "rejected"
-    application = cases.show(home, case_id, evidence_only=False).sections["Application"]
-    assert application.count("item=1") == 1
-    assert application.count("item=2") == 1
 
 
 def test_prefix_receipt_preserves_previously_committed_lines_byte_for_byte(tmp_path):

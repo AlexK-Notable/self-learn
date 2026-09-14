@@ -215,28 +215,54 @@ def find_mutation_commit(
     after: str | None = None,
     at: str = "HEAD",
 ) -> str | None:
-    """Find the sole reachable commit with *ref*'s exact final trailers.
+    """Find the sole reachable commit with *ref*'s subject and trailers.
 
-    Content/effect validation remains the caller's verb-specific job. More
-    than one exact match is ambiguity and therefore a refusal, never a guess.
+    The subject must be one the referenced verb can write for the referenced
+    record, and the final trailer identity must match exactly. Content/effect
+    validation against the original item remains the caller's verb-specific
+    job. More than one exact match is ambiguity and therefore a refusal, never
+    a guess.
     """
     home = Path(home)
     revision = f"{after}..{at}" if after is not None else at
-    proc = gitops._git(home, "log", "--format=%H%x1f%B%x1e", revision)  # noqa: SLF001
+    proc = gitops._git(  # noqa: SLF001
+        home, "log", "--format=%H%x1f%s%x1f%B%x1e", revision
+    )
     want = ref.trailer_identity()
     matches: list[str] = []
     for entry in proc.stdout.split("\x1e"):
         entry = entry.strip("\n")
         if not entry or "\x1f" not in entry:
             continue
-        sha, body = entry.split("\x1f", 1)
-        if parse_trailers(body) == want:
+        sha, subject, body = entry.split("\x1f", 2)
+        if parse_trailers(body) == want and _subject_matches(ref, subject):
             matches.append(sha.strip())
     if len(matches) > 1:
         raise ExecutionEvidenceError(
             "more than one mutation commit matches the execution reference"
         )
     return matches[0] if matches else None
+
+
+def _subject_matches(ref: ExecutionRef, subject: str) -> bool:
+    """Whether *subject* is one the referenced verb can actually write."""
+    rid = ref.record_id
+    exact = {
+        "followup-done": f"self-learn: follow-up done on {rid}",
+        "confirm-recurrence": f"self-learn: recurrence confirmed on {rid}",
+        "confirm-held": f"self-learn: confirmed holding {rid}",
+        "dismiss-suspect": f"self-learn: suspect dismissed on {rid}",
+    }
+    if ref.verb in exact:
+        return subject == exact[ref.verb]
+    if ref.verb == "link-contradicts":
+        return subject.startswith(f"self-learn: link {rid} contradicts ")
+    prefixes = [f"self-learn: {ref.verb} {rid}"]
+    # The compatibility alias delegates to retire when `covered_by` is
+    # supplied, and therefore deliberately uses retire's subject.
+    if ref.verb == "graduate":
+        prefixes.append(f"self-learn: retire {rid}")
+    return any(subject == prefix or subject.startswith(prefix + " ") for prefix in prefixes)
 
 
 def _proof_state(manifest: dict[str, Any], ref: ExecutionRef) -> str:

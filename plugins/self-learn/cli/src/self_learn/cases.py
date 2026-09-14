@@ -1317,10 +1317,17 @@ def receipt(home: Path | str, case_id: str, batch_result: dict) -> str:
                 evidence_suffix = (
                     f"; evidence: {evidence}" if evidence is not None else ""
                 )
-                new_by_key[key] = (
-                    f"- {at} sheet={sheet}#{sheet_sha} item={n} {rid} {verb} → "
-                    f"{state} (exit {rc}){warning_suffix}{evidence_suffix}"
-                )
+                if state == "unresolved-host":
+                    detail = item.get("detail")
+                    new_by_key[key] = (
+                        f"- {at} sheet={sheet}#{sheet_sha} item={n} {rid} {verb} → "
+                        f"unresolved-host: {detail}{warning_suffix}{evidence_suffix}"
+                    )
+                else:
+                    new_by_key[key] = (
+                        f"- {at} sheet={sheet}#{sheet_sha} item={n} {rid} {verb} → "
+                        f"{state} (exit {rc}){warning_suffix}{evidence_suffix}"
+                    )
     new_lines = list(new_by_key.values())
 
     # B2 (item 2): scan every rendered line before it can reach the

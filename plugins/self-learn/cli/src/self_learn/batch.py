@@ -278,7 +278,7 @@ class ItemResult:
     #: generic ``refused`` `_dispatch` gives every non-stopping refusal
     #: -- the receipt line for that item now reads ``stopped (exit N)``
     #: instead of being indistinguishable from an ordinary refusal.
-    state: str = "applied"  # applied | already-applied | refused | stopped | not-attempted
+    state: str = "applied"  # applied | already-applied | unresolved-host | refused | stopped | not-attempted
     detail: str | None = None
     #: S-67 fold r1: verb warnings survive the sheet adapter just as
     #: commit/detail facts do. Additive and empty for every existing item.
@@ -295,7 +295,8 @@ class BatchContinuation:
     A completed item with ``evidence is None`` came from an existing
     committed Application line. A completed item carrying ``evidence`` was
     reconstructed from mutation/host proof and is checkpointed before the
-    next item.
+    next item. ``state="unresolved-host"`` instead names a ledger-proven host
+    obligation in ``detail``; it is receipted and halts the dependent tail.
     """
 
     run_id: str
@@ -1282,9 +1283,16 @@ def _validate_continuation(
             raise BatchError(f"batch continuation names unknown original item {n}")
         if (completed.n, completed.id, completed.verb) != (item.n, item.id, item.verb):
             raise BatchError(f"batch continuation item {n} does not match the sheet")
-        if completed.state not in {"applied", "already-applied"} or completed.rc != 0:
+        successful = completed.state in {"applied", "already-applied"} and completed.rc == 0
+        unresolved_host = (
+            completed.state == "unresolved-host"
+            and isinstance(completed.detail, str)
+            and bool(completed.detail.strip())
+        )
+        if not successful and not unresolved_host:
             raise BatchError(
-                f"batch continuation item {n} is not a proven successful completion"
+                f"batch continuation item {n} is neither a proven completion "
+                "nor a named unresolved host obligation"
             )
     # ExecutionRef applies its strict run/case/digest validation before item 1.
     if items:
@@ -1321,6 +1329,39 @@ def _checkpoint_or_halt(
             reason = f"ordered receipt checkpoint failed: {outcome['reason']}"
         raise BookkeepingHalt(reason, result, tail)
     result.preserved_receipt_items.update(item.n for item in result.items)
+
+
+def _record_ledger_stop(
+    result: BatchResult,
+    item: SheetItem,
+    tail: list[SheetItem],
+    exc: intents.LedgerStoppedError,
+) -> None:
+    """Convert a continuation-span STOP to the ordinary stopped-item shape."""
+    result.recovered_rolled_forward.extend(exc.result.rolled_forward)
+    result.recovered_restored.extend(exc.result.restored)
+    result.stop_message = str(exc)
+    result.stopped_at = item.n
+    result.items.append(
+        ItemResult(
+            n=item.n,
+            id=item.id,
+            verb=item.verb,
+            rc=gitops.EXIT_GIT_FAILED,
+            state="stopped",
+            detail=str(exc),
+        )
+    )
+    for remaining in tail:
+        result.items.append(
+            ItemResult(
+                n=remaining.n,
+                id=remaining.id,
+                verb=remaining.verb,
+                rc=-1,
+                state="not-attempted",
+            )
+        )
 
 
 def decision_code(results: list[ItemResult]) -> int:
@@ -1651,6 +1692,7 @@ def run(
     from . import cli as cli_mod
 
     home = Path(home)
+    flush_epilogue = lambda: cli_mod._mutating_epilogue(home, no_push=True)
     # U3: `items` is a `Sheet` when it came from `load_sheet`; a plain
     # `list[SheetItem]` (every pre-existing caller, incl. U4's own
     # `test_revise_then_route_sheet_applies_both`) has no `.case` and
@@ -1702,7 +1744,7 @@ def run(
         preserved_receipt_items={
             n
             for n, completed in (continuation.completed.items() if continuation else [])
-            if completed.evidence is None
+            if completed.evidence is None and completed.state != "unresolved-host"
         },
     )
     push_exit: int | None = None
@@ -1730,6 +1772,18 @@ def run(
                 # before a dependent item starts. Entries reconstructed from
                 # an existing committed receipt omit ``evidence`` and need no
                 # redundant checkpoint.
+                if completed.state == "unresolved-host":
+                    assert checkpoint is not None
+                    _checkpoint_or_halt(
+                        checkpoint, result, list(items[idx + 1:])
+                    )
+                    result.process_code = decision_code(result.items)
+                    raise BookkeepingHalt(
+                        f"unresolved host obligation for item {item.n}: "
+                        f"{completed.detail}",
+                        result,
+                        list(items[idx + 1:]),
+                    )
                 if completed.evidence is not None:
                     assert checkpoint is not None
                     _checkpoint_or_halt(
@@ -1741,48 +1795,52 @@ def run(
                 # Bind present-state classification and its ordered receipt to
                 # one ledger span. Otherwise a manual/intervening edit could
                 # make a dirty working file look like a committed no-op.
-                with intents.ledger_write(home) as item_recovered:
-                    intents.announce_recovered(item_recovered)
-                    result.recovered_rolled_forward.extend(
-                        item_recovered.rolled_forward
-                    )
-                    result.recovered_restored.extend(item_recovered.restored)
-                    try:
-                        item_path = find_record_path(home, item.id)
-                    except LedgerOpsError:
-                        item_path = None
-                    dirty = (
-                        gitops.dirty_paths(home, item_path)
-                        if item_path is not None
-                        else []
-                    )
-                    if dirty:
-                        raise BookkeepingHalt(
-                            "batch continuation refuses uncommitted record "
-                            f"state before item {item.n}: {dirty}",
-                            result,
-                            list(items[idx:]),
+                try:
+                    with intents.ledger_write(home) as item_recovered:
+                        intents.announce_recovered(item_recovered)
+                        result.recovered_rolled_forward.extend(
+                            item_recovered.rolled_forward
                         )
-                    already_applied = classify(
-                        home,
-                        item,
-                        actor=actor,
-                        hook_activation=hook_activation,
-                    )
-                    if already_applied:
-                        result.items.append(
-                            ItemResult(
-                                n=item.n,
-                                id=item.id,
-                                verb=item.verb,
-                                rc=0,
-                                state="already-applied",
+                        result.recovered_restored.extend(item_recovered.restored)
+                        try:
+                            item_path = find_record_path(home, item.id)
+                        except LedgerOpsError:
+                            item_path = None
+                        dirty = (
+                            gitops.dirty_paths(home, item_path)
+                            if item_path is not None
+                            else []
+                        )
+                        if dirty:
+                            raise BookkeepingHalt(
+                                "batch continuation refuses uncommitted record "
+                                f"state before item {item.n}: {dirty}",
+                                result,
+                                list(items[idx:]),
                             )
+                        already_applied = classify(
+                            home,
+                            item,
+                            actor=actor,
+                            hook_activation=hook_activation,
                         )
-                        assert checkpoint is not None
-                        _checkpoint_or_halt(
-                            checkpoint, result, list(items[idx + 1:])
-                        )
+                        if already_applied:
+                            result.items.append(
+                                ItemResult(
+                                    n=item.n,
+                                    id=item.id,
+                                    verb=item.verb,
+                                    rc=0,
+                                    state="already-applied",
+                                )
+                            )
+                            assert checkpoint is not None
+                            _checkpoint_or_halt(
+                                checkpoint, result, list(items[idx + 1:])
+                            )
+                except intents.LedgerStoppedError as exc:
+                    _record_ledger_stop(result, item, list(items[idx + 1:]), exc)
+                    break
             else:
                 already_applied = classify(
                     home, item, actor=actor, hook_activation=hook_activation
@@ -1799,92 +1857,96 @@ def run(
                 if continuation is not None
                 else nullcontext(None)
             )
-            with dispatch_span as dispatch_recovered:
-                if continuation is not None:
-                    assert dispatch_recovered is not None
-                    intents.announce_recovered(dispatch_recovered)
-                    result.recovered_rolled_forward.extend(
-                        dispatch_recovered.rolled_forward
-                    )
-                    result.recovered_restored.extend(
-                        dispatch_recovered.restored
-                    )
-                    try:
-                        item_path = find_record_path(home, item.id)
-                    except LedgerOpsError:
-                        item_path = None
-                    dirty = (
-                        gitops.dirty_paths(home, item_path)
-                        if item_path is not None
-                        else []
-                    )
-                    if dirty:
-                        raise BookkeepingHalt(
-                            "batch continuation refuses uncommitted record "
-                            f"state before item {item.n}: {dirty}",
-                            result,
-                            list(items[idx:]),
+            try:
+                with dispatch_span as dispatch_recovered:
+                    if continuation is not None:
+                        assert dispatch_recovered is not None
+                        intents.announce_recovered(dispatch_recovered)
+                        result.recovered_rolled_forward.extend(
+                            dispatch_recovered.rolled_forward
                         )
-                head_before = (
-                    gitops.head_sha(home) if continuation is not None else None
-                )
-                execution = None
-                if continuation is not None:
-                    assert case is not None and sheet_sha is not None
-                    execution = execution_evidence.ExecutionRef(
-                        run_id=continuation.run_id,
-                        case_id=case,
-                        sheet_sha=sheet_sha,
-                        sheet_digest=continuation.sheet_digest,
-                        item=item.n,
-                        record_id=item.id,
-                        verb=item.verb,
+                        result.recovered_restored.extend(
+                            dispatch_recovered.restored
+                        )
+                        try:
+                            item_path = find_record_path(home, item.id)
+                        except LedgerOpsError:
+                            item_path = None
+                        dirty = (
+                            gitops.dirty_paths(home, item_path)
+                            if item_path is not None
+                            else []
+                        )
+                        if dirty:
+                            raise BookkeepingHalt(
+                                "batch continuation refuses uncommitted record "
+                                f"state before item {item.n}: {dirty}",
+                                result,
+                                list(items[idx:]),
+                            )
+                    head_before = (
+                        gitops.head_sha(home) if continuation is not None else None
+                    )
+                    execution = None
+                    if continuation is not None:
+                        assert case is not None and sheet_sha is not None
+                        execution = execution_evidence.ExecutionRef(
+                            run_id=continuation.run_id,
+                            case_id=case,
+                            sheet_sha=sheet_sha,
+                            sheet_digest=continuation.sheet_digest,
+                            item=item.n,
+                            record_id=item.id,
+                            verb=item.verb,
+                            actor=actor,
+                        )
+                    item_result = _dispatch(
+                        home,
+                        item,
+                        case=case,
                         actor=actor,
+                        hook_activation=hook_activation,
+                        execution=execution,
                     )
-                item_result = _dispatch(
-                    home,
-                    item,
-                    case=case,
-                    actor=actor,
-                    hook_activation=hook_activation,
-                    execution=execution,
-                )
-                if continuation is not None and item.verb in _HOST_OUTCOME_VERBS:
-                    item_result.evidence = (
-                        f"host result returned by {item.verb}"
-                        if item_result.rc == 0
-                        else f"host failure returned by {item.verb}"
-                    )
-                if item_result.rc in _STOP_CODES:
-                    # Fold r1 (F9): this is the ONE item whose rc actually
-                    # halted the sheet -- 02-schema.md §3a.2 §5 names
-                    # `stopped` as its own receipt state, distinct from an
-                    # ordinary per-verb `refused`; `_dispatch` cannot know
-                    # at dispatch time whether ITS OWN refusal is the one
-                    # that stops the sheet, so `run` (the only place that
-                    # DOES know) overrides here, before the item ever joins
-                    # `result.items`.
-                    item_result.state = "stopped"
-                result.items.append(item_result)
-                if checkpoint_required:
-                    assert checkpoint is not None
-                    head_after = gitops.head_sha(home)
-                    no_mutation = head_before == head_after
-                    if (
-                        no_mutation
-                        or item_result.rc != 0
-                        or item.verb in _HOST_OUTCOME_VERBS
-                    ):
-                        _checkpoint_or_halt(
-                            checkpoint, result, list(items[idx + 1:])
+                    if continuation is not None and item.verb in _HOST_OUTCOME_VERBS:
+                        item_result.evidence = (
+                            f"host result returned by {item.verb}"
+                            if item_result.rc == 0
+                            else f"host failure returned by {item.verb}"
                         )
-                    if item.verb in _HOST_OUTCOME_VERBS and item_result.rc != 0:
-                        result.process_code = decision_code(result.items)
-                        raise BookkeepingHalt(
-                            f"host outcome failed for item {item.n} ({item.verb})",
-                            result,
-                            list(items[idx + 1:]),
-                        )
+                    if item_result.rc in _STOP_CODES:
+                        # Fold r1 (F9): this is the ONE item whose rc actually
+                        # halted the sheet -- 02-schema.md §3a.2 §5 names
+                        # `stopped` as its own receipt state, distinct from an
+                        # ordinary per-verb `refused`; `_dispatch` cannot know
+                        # at dispatch time whether ITS OWN refusal is the one
+                        # that stops the sheet, so `run` (the only place that
+                        # DOES know) overrides here, before the item ever joins
+                        # `result.items`.
+                        item_result.state = "stopped"
+                    result.items.append(item_result)
+                    if checkpoint_required:
+                        assert checkpoint is not None
+                        head_after = gitops.head_sha(home)
+                        no_mutation = head_before == head_after
+                        if (
+                            no_mutation
+                            or item_result.rc != 0
+                            or item.verb in _HOST_OUTCOME_VERBS
+                        ):
+                            _checkpoint_or_halt(
+                                checkpoint, result, list(items[idx + 1:])
+                            )
+                        if item.verb in _HOST_OUTCOME_VERBS and item_result.rc != 0:
+                            result.process_code = decision_code(result.items)
+                            raise BookkeepingHalt(
+                                f"host outcome failed for item {item.n} ({item.verb})",
+                                result,
+                                list(items[idx + 1:]),
+                            )
+            except intents.LedgerStoppedError as exc:
+                _record_ledger_stop(result, item, list(items[idx + 1:]), exc)
+                break
             sentinel.heartbeat()
             if item_result.rc in _STOP_CODES:
                 result.stopped_at = item.n
@@ -1913,12 +1975,15 @@ def run(
         # hold, before the push, always `no_push=True`: the batch owns
         # the single push, so the flush's own commit rides it rather
         # than publishing itself.
-        cli_mod._mutating_epilogue(home, no_push=True)
+        flush_epilogue()
         if not no_push:
             push = verbs.push_pending(home)
             result.pushed = True
             if not push.ok:
                 push_exit = push.exit_code
+    except BookkeepingHalt:
+        flush_epilogue()
+        raise
     finally:
         hold.release()
     result.process_code = decision_code(result.items)
