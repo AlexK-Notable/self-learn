@@ -134,7 +134,7 @@ OUTCOMES = frozenset(
 PARKED_REASONS = frozenset(
     {
         "hook", "always-loaded-user-scope", "broad-removal",
-        "authority-unclear", "scope-conflict",
+        "authority-unclear", "scope-conflict", "plain-host-committed-file",
     }
 )
 CONFIDENCE_VALUES = frozenset({"settled", "provisional"})
@@ -217,6 +217,30 @@ def _case_path_for_id(home: Path, case_id: str) -> Path:
             f"case: {case_id} found at more than one path: {matches}"
         )
     return matches[0]
+
+
+def _committed_case_for_id(home: Path, case_id: str) -> tuple[Path, str] | None:
+    """Return a case from ``HEAD`` without consulting the rebuildable index."""
+    if CASE_ID_RE.fullmatch(case_id) is None:
+        raise CaseUsageError(f"case: malformed case id {case_id!r}")
+    listing = gitops._git(  # noqa: SLF001 — committed case truth query
+        home, "ls-tree", "-r", "--name-only", "HEAD", "--", "cases"
+    ).stdout.splitlines()
+    suffix = f"/{case_id}.md"
+    matches = [
+        rel
+        for rel in listing
+        if rel.startswith("cases/") and rel.endswith(suffix)
+    ]
+    if len(matches) > 1:
+        raise CaseError(f"case: {case_id} found at more than one committed path: {matches}")
+    if not matches:
+        return None
+    relpath = matches[0]
+    content = gitops._git(  # noqa: SLF001 — committed case truth query
+        home, "show", f"HEAD:{relpath}"
+    ).stdout
+    return home / relpath, content
 
 
 def _yaml() -> YAML:
@@ -430,7 +454,13 @@ def _parse_sections(body: str) -> dict[str, str]:
 # --------------------------------------------------------------- record
 
 
-def record(home: Path | str, stage_file: Path | str, *, actor: str) -> str:
+def record(
+    home: Path | str,
+    stage_file: Path | str,
+    *,
+    actor: str,
+    reserved_id: str | None = None,
+) -> str:
     """Validate a stage file's six parts + closed sets, assign the id,
     secret-scan every free-text field, compute the freeze hash, write,
     commit. Returns the new case id."""
@@ -438,6 +468,8 @@ def record(home: Path | str, stage_file: Path | str, *, actor: str) -> str:
     stage = Path(stage_file)
     if actor not in ACTORS:
         raise CaseUsageError(f"case record: actor must be one of {sorted(ACTORS)}, got {actor!r}")
+    if reserved_id is not None and CASE_ID_RE.fullmatch(reserved_id) is None:
+        raise CaseUsageError(f"case record: malformed reserved id: {reserved_id!r}")
     try:
         text = stage.read_text(encoding="utf-8")
     except OSError as exc:
@@ -550,7 +582,7 @@ def record(home: Path | str, stage_file: Path | str, *, actor: str) -> str:
     _refuse_headings(free_texts)
 
     opened_at = chrono.now_iso()
-    case_id = _new_case_id(home)
+    case_id = reserved_id or _new_case_id(home)
 
     frozen_text = _render_frozen(records_field, scope, question, trigger, evidence, decision, deps)
     decided_sha256 = _hash_frozen(frozen_text)
@@ -584,6 +616,50 @@ def record(home: Path | str, stage_file: Path | str, *, actor: str) -> str:
     try:
         with intents.ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
+            if reserved_id is not None:
+                committed = _committed_case_for_id(home, reserved_id)
+                if committed is not None:
+                    existing_path, existing_text = committed
+                    try:
+                        worktree_text = existing_path.read_text(encoding="utf-8")
+                    except OSError as exc:
+                        raise CaseError(
+                            f"case record: committed reserved case {reserved_id} "
+                            f"is unavailable in the worktree: {exc}"
+                        ) from exc
+                    if worktree_text != existing_text:
+                        raise CaseError(
+                            f"case record: reserved case {reserved_id} has "
+                            "uncommitted incompatible content"
+                        )
+                    existing_fm, existing_body = _split_frontmatter(existing_text)
+                    existing_frozen, _ = _split_frozen(existing_body)
+                    same = (
+                        existing_fm.get("case") == case_id
+                        and existing_fm.get("kind") == kind
+                        and existing_fm.get("actor") == actor
+                        and existing_fm.get("run_id") == data.get("run_id")
+                        and existing_fm.get("trigger") == trigger
+                        and existing_fm.get("outcome") == outcome
+                        and existing_fm.get("supersedes") == supersedes
+                        and existing_fm.get("parked_for") == parked_for
+                        and existing_fm.get("parked_reason") == parked_reason
+                        and existing_fm.get("decided_sha256") == decided_sha256
+                        and _hash_frozen(existing_frozen) == decided_sha256
+                    )
+                    if same:
+                        return case_id
+                    raise CaseError(
+                        f"case record: reserved id collision for {reserved_id}"
+                    )
+                uncommitted_matches = sorted(
+                    _cases_root(home).glob(f"*/{reserved_id}.md")
+                )
+                if uncommitted_matches:
+                    raise CaseError(
+                        f"case record: reserved id collision for {reserved_id} "
+                        "outside committed truth"
+                    )
             month = _ensure_case_dirs(home, opened_at)
             path = month / f"{case_id}.md"
 
@@ -622,11 +698,15 @@ def record(home: Path | str, stage_file: Path | str, *, actor: str) -> str:
             # whole transaction forward or back on the next
             # `ledger_write` acquisition, never leaving a successor
             # without its predecessor link (Astra 9's crash leg).
-            intent: intents.Intent | None = None
+            publication_paths = [path]
             if supersedes_path is not None:
-                intent = intents.begin(
-                    home, "case-record-supersedes", [path, supersedes_path], message,
-                )
+                publication_paths.append(supersedes_path)
+            intent = intents.begin(
+                home,
+                "case-record-supersedes" if supersedes_path is not None else "case-record",
+                publication_paths,
+                message,
+            )
 
             fsops.atomic_write(path, file_text, fsync=True)
             touched = [path]
@@ -639,8 +719,7 @@ def record(home: Path | str, stage_file: Path | str, *, actor: str) -> str:
                 )
                 touched.append(supersedes_path)
 
-            if intent is not None:
-                intents.complete(intent)
+            intents.complete(intent)
 
             sha = gitops.stage_and_commit(home, touched, message, question)
             if sha is None:  # pragma: no cover — never allow_empty here
@@ -651,10 +730,8 @@ def record(home: Path | str, stage_file: Path | str, *, actor: str) -> str:
             # from the exact same on-disk files a second time for no
             # reason; one call after the commit covers both the new
             # case and its predecessor's `superseded_by` flip.
+            intents.finish(intent)
             _update_index(home, case_id)
-
-            if intent is not None:
-                intents.finish(intent)
     finally:
         hold.release()
 
@@ -1236,10 +1313,21 @@ def receipt(home: Path | str, case_id: str, batch_result: dict) -> str:
                     f"; warnings: {' | '.join(str(warning) for warning in warnings)}"
                     if warnings else ""
                 )
-                new_by_key[key] = (
-                    f"- {at} sheet={sheet}#{sheet_sha} item={n} {rid} {verb} → "
-                    f"{state} (exit {rc}){warning_suffix}"
+                evidence = item.get("evidence")
+                evidence_suffix = (
+                    f"; evidence: {evidence}" if evidence is not None else ""
                 )
+                if state == "unresolved-host":
+                    detail = item.get("detail")
+                    new_by_key[key] = (
+                        f"- {at} sheet={sheet}#{sheet_sha} item={n} {rid} {verb} → "
+                        f"unresolved-host: {detail}{warning_suffix}{evidence_suffix}"
+                    )
+                else:
+                    new_by_key[key] = (
+                        f"- {at} sheet={sheet}#{sheet_sha} item={n} {rid} {verb} → "
+                        f"{state} (exit {rc}){warning_suffix}{evidence_suffix}"
+                    )
     new_lines = list(new_by_key.values())
 
     # B2 (item 2): scan every rendered line before it can reach the
@@ -1272,22 +1360,18 @@ def receipt(home: Path | str, case_id: str, batch_result: dict) -> str:
             merged_lines = _merge_receipt_lines(existing_lines, new_by_key)
             merged = "\n".join(merged_lines)
             new_body = _rebuild_body(frozen_text, merged or "(none)", sections.get("Later observations", "(none)"))
-            fsops.atomic_write(path, _render_frontmatter(fm) + new_body, fsync=True)
+            new_text = _render_frontmatter(fm) + new_body
+            if new_text == text:
+                return case_id
             message = f"self-learn: case receipt {case_id} (sheet={sheet})"
-            # F8: `allow_empty=True` — a call whose every key already
-            # matches its existing line byte for byte writes an
-            # identical file, a REAL no-op, not an internal error. The
-            # old `if sha is None: raise CaseError(...)` guard was DEAD
-            # CODE (its own `# pragma: no cover` said so): a
-            # byte-identical rewrite never reached it — `stage_and_
-            # commit` raised `gitops.HalfWrittenError` first, since it
-            # was never called with `allow_empty=True` before this fold
-            # (gate-u3-r1.md F8, probe5, measured).
-            sha = gitops.stage_and_commit(
-                home, [path], message, None, allow_empty=True
-            )
-            if sha is not None:
-                _update_index(home, case_id)
+            intent = intents.begin(home, "case-receipt", [path], message)
+            fsops.atomic_write(path, new_text, fsync=True)
+            intents.complete(intent)
+            sha = gitops.stage_and_commit(home, [path], message, None)
+            if sha is None:  # pragma: no cover — never allow_empty here
+                raise CaseError("case receipt: internal — commit produced nothing")
+            intents.finish(intent)
+            _update_index(home, case_id)
     finally:
         hold.release()
     return case_id
@@ -1330,6 +1414,7 @@ def observe(
     entries: list[str] | None = None,
     outcome: str | None = None,
     via: str | None = None,
+    reserved_id: str | None = None,
 ) -> str:
     """Append one Later-observations entry (§3a.2 section 6). A
     `presented` observation ALSO writes the frontmatter `presented` entry
@@ -1367,6 +1452,10 @@ def observe(
         raise CaseUsageError(f"case observe: kind must be one of {sorted(OBSERVE_KINDS)}, got {kind!r}")
     if by not in ACTORS:
         raise CaseUsageError(f"case observe: by must be one of {sorted(ACTORS)}, got {by!r}")
+    if reserved_id is not None and re.fullmatch(r"obs-[0-9a-f]{8}", reserved_id) is None:
+        raise CaseUsageError(
+            f"case observe: malformed reserved observation id: {reserved_id!r}"
+        )
     entries = list(entries or [])
 
     if kind == "presented":
@@ -1417,7 +1506,53 @@ def observe(
                 )
             sections = _parse_sections(body)
             at = chrono.now_iso()
-            obs_id = _new_obs_id(content)
+            obs_id = reserved_id or _new_obs_id(content)
+
+            expected_suffix = f"{by} {kind}: {text}"
+            if ref is not None:
+                expected_suffix += f" (ref: {ref})"
+            if reserved_id is not None:
+                committed = _committed_case_for_id(home, case_id)
+                if committed is None:  # pragma: no cover — path lookup above found it
+                    raise CaseError(
+                        f"case observe: {case_id} is absent from committed truth"
+                    )
+                committed_path, committed_text = committed
+                if committed_path != path:
+                    raise CaseError(
+                        f"case observe: committed path mismatch for {case_id}"
+                    )
+                _, committed_body = _split_frontmatter(committed_text)
+                committed_sections = _parse_sections(committed_body)
+                reserved_lines = [
+                    line
+                    for line in committed_sections.get(
+                        "Later observations", ""
+                    ).splitlines()
+                    if line.startswith(f"- {obs_id} ")
+                ]
+                if len(reserved_lines) > 1:
+                    raise CaseError(
+                        f"case observe: reserved observation id collision for {obs_id}"
+                    )
+                if reserved_lines:
+                    remainder = reserved_lines[0][len(f"- {obs_id} "):]
+                    _timestamp, separator, actual_suffix = remainder.partition(" ")
+                    if separator and actual_suffix == expected_suffix:
+                        if content != committed_text:
+                            raise CaseError(
+                                f"case observe: reserved observation {obs_id} "
+                                "has uncommitted incompatible content"
+                            )
+                        return obs_id
+                    raise CaseError(
+                        f"case observe: reserved observation id collision for {obs_id}"
+                    )
+                if f"- {obs_id} " in sections.get("Later observations", ""):
+                    raise CaseError(
+                        f"case observe: reserved observation id collision for {obs_id} "
+                        "outside committed truth"
+                    )
 
             line = f"- {obs_id} {at} {by} {kind}: {text}"
             if ref is not None:
@@ -1461,14 +1596,18 @@ def observe(
             # an intent, opened before the FIRST mutation below, so a
             # crash between the case write and the user-model flip is
             # recoverable rather than stranding one half.
-            intent: intents.Intent | None = None
+            intent_paths = [path]
             um_path: Path | None = None
             if kind == "presented" and entries:
                 um_path = user_model._doc_path(home)
-                intent = intents.begin(
-                    home, "case-observe-presented", [path, um_path],
-                    f"self-learn: case observe {case_id} ({kind})",
-                )
+                intent_paths.append(um_path)
+            message = f"self-learn: case observe {case_id} ({kind})"
+            intent = intents.begin(
+                home,
+                "case-observe-presented" if len(intent_paths) > 1 else "case-observe",
+                intent_paths,
+                message,
+            )
 
             # The case file is written FIRST (settled ordering) — then
             # the user-model flip, using the already-validated targets.
@@ -1479,29 +1618,20 @@ def observe(
                 written_um_path = user_model._apply_seen(home, um_fm, um_containers, um_targets)
                 touched.append(written_um_path)
 
-            if intent is not None:
-                # Both writes have now landed — record each step's REAL
-                # final state in one pass (mirrors `verbs._execute_route`'s
-                # collapse path). A crash before this line leaves every
-                # step's `new_sha` unrecorded (`recover()` restores both
-                # files); a crash after it (commit included) leaves every
-                # step verified (`recover()` rolls both forward).
-                intents.complete(intent)
+            # All writes have now landed — ordinary observations and the
+            # presented two-file form use the same publication discipline.
+            intents.complete(intent)
 
             # U5: a `statement`/`dependency-moved` observation whose `ref`
             # names a section-4 dependency should enqueue this case for
             # the steward's next `reconsider` run here. Deferred — see
             # docstring.
 
-            message = f"self-learn: case observe {case_id} ({kind})"
             sha = gitops.stage_and_commit(home, touched, message, text)
             if sha is None:  # pragma: no cover
                 raise CaseError("case observe: internal — commit produced nothing")
+            intents.finish(intent)
             _update_index(home, case_id)
-
-            if intent is not None:
-                # The commit landed — this intent's job is done.
-                intents.finish(intent)
     finally:
         hold.release()
     return obs_id

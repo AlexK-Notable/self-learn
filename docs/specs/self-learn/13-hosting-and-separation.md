@@ -90,11 +90,20 @@ HOSTS     repos holding COMPILED canon: claude-skills (SKILL.md managed
   user/{pending,resolved,proposals}/
   telemetry/<month>.<actor>.jsonl
   cases/<yyyy-mm>/case-<8hex>.md      # decision cases (02 §3a; S-65)
+  cases/runs/<run_id>.json             # committed delegated-run recipe,
+                                       # evidence and unfinished obligations
   user-statements.jsonl               # append-only, the user's own words
   user-model.md                       # CURRENT/LAPSED readings (02 §3a)
   overseer/{<date>-report.md, latest-report.md, coverage.yaml,
     open-questions.yaml, evaluation-<date>.md}   # the overseer's own subtree
 ```
+
+`cases/runs/<run_id>.json` is ledger truth, not runner cache. Its schema and
+continuation rules are in 02 §3a. A compound intent may register that one
+manifest path alongside its existing mutation paths so a `ledger_effect`
+proof lands in the same commit as the compound mutation. This uses the
+existing `intents.add_step` path list and recovery algorithm; it adds no
+intent field, phase, or second executor.
 
 - **Skill buckets** are host-global as before; `hosts.yaml` names the
   skills root (claude-skills) so compilers find SKILL.md targets.

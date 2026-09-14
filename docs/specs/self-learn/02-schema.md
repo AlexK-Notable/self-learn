@@ -745,7 +745,8 @@ own subtree.*
 
 ### 3a.1 The ledger content contract
 
-1. `<ledger>/cases/**`, `<ledger>/user-statements.jsonl`,
+1. `<ledger>/cases/**` (including committed delegated-run manifests at
+   `<ledger>/cases/runs/<run_id>.json`), `<ledger>/user-statements.jsonl`,
    `<ledger>/user-model.md`, and `<ledger>/overseer/**` (the overseer's own
    subtree — reports, the coverage record, open questions, evaluations) are
    ledger truth: written only under `intents.ledger_write`, committed in the
@@ -829,7 +830,8 @@ superseded_by: null            # filled by the CLI when a successor lands
 parked_for: null               # overseer, always (only when kind: parked)
 parked_reason: null            # hook | always-loaded-user-scope |
                                 #   broad-removal | authority-unclear |
-                                #   scope-conflict (closed set; only when
+                                #   scope-conflict | plain-host-committed-file
+                                #   (closed set; only when
                                 #   kind: parked)
 decided_sha256: "a3c1…"        # hash of sections 1-4 as committed
 presented: []                  # scoped presentation records, see below
@@ -897,6 +899,107 @@ executor never reached:
 ```
 Receipt states mirror `ItemResult.state` (`applied | already-applied |
 refused | stopped`) plus `not-attempted`, for items after `stopped_at`.
+
+**Committed delegated-run recipe and continuation.** A delegated runner
+that may need to survive interruption commits one JSON manifest at
+`cases/runs/<run_id>.json`. Version 1 binds the runner-owned `run_id`, its
+starting ledger commit and selected input blob/version identities, packet
+membership, reconsider-observation ids, invocation/repair bookkeeping, and
+outstanding or terminal dispositions. Before publishing a case, it also
+commits that case's reserved id, validated and secret-scanned case input,
+the exact effective sheet bytes, the existing eight-hex `sheet_sha`, the
+full SHA-256 digest, and each original item ordinal/id/verb. Supported
+time-dependent defaults are frozen in that effective sheet. Maintenance
+instructions remain in the same committed recipe. Invalid or secret-bearing
+prepared output publishes no manifest, case, or Application entry.
+
+The version-1 object has this core shape (the runner may add
+versioned bookkeeping fields, but may not rename or weaken these bindings):
+
+```json
+{
+  "version": 1,
+  "run_id": "run-...",
+  "actor": "steward",
+  "start_head": "<40-hex ledger commit>",
+  "inputs": [
+    {"path": "<ledger-relative>", "blob": "<40-hex>", "version": "<source version>"}
+  ],
+  "reconsider_observations": ["obs-<8hex>"],
+  "cases": {
+    "case-<8hex>": {
+      "sheet": "<exact effective YAML bytes>",
+      "sheet_sha": "<8-hex>",
+      "sheet_digest": "<64-hex>",
+      "items": [{"n": 1, "id": "lrn-<8hex>", "verb": "reject"}],
+      "maintenance": [],
+      "dispositions": []
+    }
+  },
+  "ledger_effects": [
+    {
+      "case": "case-<8hex>", "sheet_sha": "<8-hex>",
+      "sheet_digest": "<64-hex>", "item": 1,
+      "record": "lrn-<8hex>", "verb": "route"
+    }
+  ]
+}
+```
+
+The `cases` mapping key is the reserved case id. `inputs` and
+`reconsider_observations` may be empty; `ledger_effects` starts empty and is
+otherwise populated only by the compound-commit rule below. Each disposition
+names its original instruction key and one of the states described next; it
+does not substitute a new item number or a cache-local phase flag.
+
+The manifest records executable instructions and unfinished obligations; it
+does not replace the case or its Application section. Application remains the
+receipt. Completion is checked against every expected original
+`(sheet_sha, item)` key. Dispositions distinguish applied-and-receipted,
+pending retry, parked with a committed case reference, refused with reason
+and input version, abandoned with a durable successor/redecision obligation,
+and visible unresolved evidence. A partially receipted sheet or unfinished
+maintenance/packet remains unfinished. A legacy case without a committed
+recipe is reported as an unknown execution-evidence gap; no sheet, success,
+or receipt is invented from cache.
+
+For an opted-in ordinary ledger mutation, the item's own mutation commit has
+one canonical final trailer block: `By: <runner>`, `Case: <case-id>`,
+`Sheet: <sheet_sha>`, `Item: <original-n>`. The manifest's full digest binds
+the trusted continuation map; recovery requires exact case, digest, ordinal,
+record, verb, ancestry, and committed-effect matching. The shared lookup seam
+requires the final trailer block's exact identity and the pinned subject the
+referenced verb writes for that record. Before a matching commit can make an
+item proven and skipped, the delegated runner must additionally verify that
+commit's content against the original item and its verb-specific ledger
+effect. Trailer-shaped prose under a foreign subject, a matching present
+status, `By:` alone, a cache SHA, an unrelated matching commit, conflicting
+proof, or an intervening incompatible change proves nothing and causes
+recover-or-refuse before dispatch.
+
+An intent-backed compound mutation such as collapse adds one `ledger_effect`
+proof entry to its run manifest inside the same existing transaction and
+mutation commit. The manifest path is registered with `intents.add_step`
+before it is changed; this is one additional registered path in the existing
+intent, not an extension of the intent schema and not a separate progress
+commit. A recovered commit is accepted only when it first introduces the
+matching proof together with the compound ledger mutation.
+
+Continuation reuses the original case, exact sheet bytes, short hash, full
+digest, and ordinals. `batch.run` alone classifies and dispatches the
+unproven suffix; it never reserializes or renumbers a remainder. Proven
+successful items are skipped. A no-op, refusal, or owner-returned host
+outcome is written to Application before the next dependent item dispatches;
+failure of that ordered receipt checkpoint halts with the actual partial
+batch result and untouched tail. A host result reconstructed after an
+interruption names `recompile` as its source. A trailer proves only the ledger
+leg and never authorizes repeating that leg or inventing a host exit code. If
+`recompile` refuses an implicated target, the continuation carries that
+ledger-proven item as `unresolved-host`, with the target and refusal reason.
+`batch.run` skips the ledger leg, receipts
+`unresolved-host: <target>: <reason>` before anything dependent can run, and
+halts with the partial result and untouched tail in `BookkeepingHalt` so the
+runner can report the outstanding host obligation.
 
 **Section 6, Later observations** — append-only; each entry has an id
 (`obs-<8hex>`), a timestamp, an actor, a kind, and text, some kinds also a

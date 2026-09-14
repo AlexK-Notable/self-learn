@@ -85,6 +85,7 @@ passes the same compile+commit path this sentence's own paragraph names.
 
 ## Revision log
 
+- **2026-09-14 — U14 (S-54/S-65): delegated batch runs gain committed recipes, exact mutation trailers, original-ordinal continuation, ordered early Application receipts, compound in-commit ledger-effect proof, and intent-backed case publications.** `02-schema.md` §3a defines `cases/runs/<run_id>.json`, binding/disposition/recovery rules, and `plain-host-committed-file`; `13-hosting-and-separation.md` §3 adds the truth path and states that the companion is one registered path in an existing intent.
 - **2026-09-14 — U10 fold r1a S6: the cheap steward status field is narrowed to the cached last-run marker.** `13-hosting-and-separation.md` §5 now keeps case-store-backed `steward_cases_since_overseer` on full `status`; `doctor serve` and `status --fast` carry only `steward_last_run_at`.
 - **2026-09-14 — O-2a fold r2, ruling 5: the `hook-activated`/`hook-deactivated` history note text amended — deactivation never has a backup of its own to name, so its note instead names the removed registration and the symlink path.** `02-schema.md` §2's five-kind `history` bullet amended.
 - **2026-09-13 — U0 fold r1: FW-134 gains a dated clause closing it for the run-command contract — FW-85's disposition (same date) supersedes its PROD3 negative criterion for `mine run`/`worker run`/`worker kick` only; S-54's batch exit space is untouched.** `14-forward-work-map.md` FW-134 amended and closed (trigger fired: the steward/overseer runners cannot read stdout).
