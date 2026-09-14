@@ -32,7 +32,14 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import gitops, intents, reconcile as reconcile_mod, verbs, worker
+from self_learn import (
+    execution_evidence,
+    gitops,
+    intents,
+    reconcile as reconcile_mod,
+    verbs,
+    worker,
+)
 from self_learn.hosts import host_add, host_rebind, load_hosts, slug_for
 from self_learn.ledger_ops import create_record
 from self_learn.primitives import procs
@@ -79,7 +86,7 @@ def seed_pending(home, rid, *, supersedes=None, **kwargs):
 #: script serves every kill point without six near-duplicate files.
 _COLLAPSE_CHILD = r"""
 import os, signal
-from self_learn import intents, ledger_ops, records, verbs
+from self_learn import execution_evidence, intents, ledger_ops, records, verbs
 
 KILL_AFTER = os.environ["KILL_AFTER"]
 BARRIER = os.environ["BARRIER"]
@@ -161,6 +168,14 @@ def _complete(intent):
         _die("complete")
 verbs.intents.complete = _complete
 
+_orig_proof = execution_evidence.write_compound_proof
+def _proof(*a, **k):
+    r = _orig_proof(*a, **k)
+    if KILL_AFTER == "proof":
+        _die("proof")
+    return r
+execution_evidence.write_compound_proof = _proof
+
 _orig_commit = verbs._commit_ledger
 def _commit(*a, **k):
     r = _orig_commit(*a, **k)
@@ -169,12 +184,26 @@ def _commit(*a, **k):
     return r
 verbs._commit_ledger = _commit
 
+execution = None
+if os.environ.get("RUN_ID"):
+    execution = execution_evidence.ExecutionRef(
+        run_id=os.environ["RUN_ID"],
+        case_id=os.environ["CASE_ID"],
+        sheet_sha=os.environ["SHEET_SHA"],
+        sheet_digest=os.environ["SHEET_DIGEST"],
+        item=1,
+        record_id=os.environ["SURVIVOR_ID"],
+        verb="route",
+        actor="steward",
+    )
+
 verbs.route(
     os.environ["SELF_LEARN_HOME"],
     os.environ["SURVIVOR_ID"],
     dest=os.environ.get("DEST", "skill-md"),
     collapse=os.environ["MERGE_ID"],
     no_push=True,
+    execution=execution,
 )
 """
 
@@ -387,6 +416,112 @@ class TestCollapseCrashWindows:
         assert result.rolled_forward, result
         assert head(env.ledger) == sha_before_reconcile  # no duplicate commit
         self._assert_fully_rolled_forward(env, survivor, loser, sha_before_crash)
+
+    @pytest.mark.parametrize("kill_after", ["proof", "complete", "commit"])
+    def test_u14_compound_proof_recovers_in_the_same_mutation_commit(
+        self, cluster, tmp_path, kill_after
+    ):
+        env, survivor, loser, _merge_path = cluster
+        run_id = "run-u14-collapse"
+        case_id = "case-acde1234"
+        sheet_sha = "12ab34cd"
+        sheet_digest = "a" * 64
+        manifest_path = execution_evidence.manifest_path(env.ledger, run_id)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "run_id": run_id,
+                    "cases": {
+                        case_id: {
+                            "sheet_sha": sheet_sha,
+                            "sheet_digest": sheet_digest,
+                            "items": [
+                                {"n": 1, "id": survivor.id, "verb": "route"}
+                            ],
+                        }
+                    },
+                    "ledger_effects": [],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        commit_all(env.ledger, "prepared U14 run")
+        prepared_sha = head(env.ledger)
+        barrier = tmp_path / "barrier-u14-proof"
+        cache = tmp_path / "u14-entire-cache"
+        proc = _run_child(
+            _COLLAPSE_CHILD,
+            {
+                "SELF_LEARN_HOME": str(env.ledger),
+                "XDG_CACHE_HOME": str(cache),
+                "SURVIVOR_ID": survivor.id,
+                "MERGE_ID": "merge-0000f001",
+                "KILL_AFTER": kill_after,
+                "RUN_ID": run_id,
+                "CASE_ID": case_id,
+                "SHEET_SHA": sheet_sha,
+                "SHEET_DIGEST": sheet_digest,
+            },
+            barrier,
+        )
+        _assert_killed(proc, barrier, kill_after)
+        shutil.rmtree(cache, ignore_errors=True)
+        recovered = reconcile_mod.reconcile(env.ledger, no_push=True)
+        assert not recovered.stopped
+        ref = execution_evidence.ExecutionRef(
+            run_id=run_id,
+            case_id=case_id,
+            sheet_sha=sheet_sha,
+            sheet_digest=sheet_digest,
+            item=1,
+            record_id=survivor.id,
+            verb="route",
+            actor="steward",
+        )
+        if kill_after == "proof":
+            assert recovered.restored
+            verbs.route(
+                env.ledger,
+                survivor.id,
+                dest="skill-md",
+                collapse="merge-0000f001",
+                no_push=True,
+                execution=ref,
+            )
+        else:
+            assert recovered.rolled_forward
+
+        route_commits = git(
+            env.ledger,
+            "log",
+            "--format=%H",
+            f"{prepared_sha}..HEAD",
+            "--grep",
+            f"^self-learn: route {survivor.id}",
+        ).stdout.strip().splitlines()
+        assert len(route_commits) == 1
+        route_sha = route_commits[0]
+        committed_manifest = json.loads(
+            git(env.ledger, "show", f"{route_sha}:cases/runs/{run_id}.json").stdout
+        )
+        assert committed_manifest["ledger_effects"] == [ref.to_proof()]
+        prior_manifest = json.loads(
+            git(env.ledger, "show", f"{route_sha}^:cases/runs/{run_id}.json").stdout
+        )
+        assert prior_manifest["ledger_effects"] == []
+        assert execution_evidence.find_compound_proof_commit(
+            env.ledger, ref, after=prepared_sha
+        ) == route_sha
+        if kill_after == "complete":
+            tagless_body = git(
+                env.ledger, "show", "-s", "--format=%B", route_sha
+            ).stdout
+            assert execution_evidence.parse_trailers(tagless_body) is None
 
 
 class TestCollapseWithOldIdCrashWindow:

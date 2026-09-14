@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import cases, intents, user_model, worker
+from self_learn import cases, gitops, intents, user_model, worker
 from support import make_home
 
 STAGE_BASE = {
@@ -106,6 +106,54 @@ def test_record_parked_requires_overseer_and_reason(tmp_path):
     )
     view = cases.show(home, case_id, evidence_only=False)
     assert view.frontmatter["parked_reason"] == "hook"
+
+
+def test_u14_plain_host_committed_file_is_a_parked_reason(tmp_path):
+    home = make_home(tmp_path)
+    case_id = _record(
+        tmp_path,
+        home,
+        kind="parked",
+        outcome="parked",
+        overrides={
+            "parked_for": "overseer",
+            "parked_reason": "plain-host-committed-file",
+        },
+    )
+    assert cases.show(home, case_id, evidence_only=False).frontmatter[
+        "parked_reason"
+    ] == "plain-host-committed-file"
+
+
+def test_u14_reserved_case_id_is_repeat_safe_and_collision_checked(tmp_path):
+    home = make_home(tmp_path)
+    stage = _write_stage(tmp_path, run_id="run-u14-01")
+    reserved = "case-acde1234"
+    first = cases.record(home, stage, actor="steward", reserved_id=reserved)
+    commits = gitops._git(home, "rev-list", "--count", "HEAD").stdout.strip()
+    second = cases.record(home, stage, actor="steward", reserved_id=reserved)
+    assert first == second == reserved
+    assert gitops._git(home, "rev-list", "--count", "HEAD").stdout.strip() == commits
+
+    conflicting = _write_stage(tmp_path, run_id="run-u14-02")
+    with pytest.raises(cases.CaseError, match="reserved id collision"):
+        cases.record(home, conflicting, actor="steward", reserved_id=reserved)
+
+
+def test_u14_record_finishes_intent_before_fallible_index_refresh(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    stage = _write_stage(tmp_path)
+
+    def fail_index(*_args, **_kwargs):
+        raise OSError("index unavailable")
+
+    monkeypatch.setattr(cases, "_update_index", fail_index)
+    with pytest.raises(OSError, match="index unavailable"):
+        cases.record(home, stage, actor="steward", reserved_id="case-acde1234")
+    assert (home / ".intents").exists() is False or not list(
+        (home / ".intents").glob("*.json")
+    )
+    assert gitops._git(home, "show", "HEAD:cases/2026-09/case-acde1234.md").stdout
 
 
 def test_record_secret_scan_refuses_evidence_quote(tmp_path):
@@ -1128,3 +1176,90 @@ def test_require_reconsider_case_refuses_when_predecessor_link_is_broken(tmp_pat
 
     with pytest.raises(cases.CaseError, match="predecessor link is broken"):
         cases.require_reconsider_case(home, reconsider_case, "lrn-08ed825b")
+
+
+def test_u14_byte_identical_receipt_is_not_a_transaction(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    payload = {
+        "sheet": "u14.yaml",
+        "sheet_sha": "12ab34cd",
+        "at": "2026-09-14T13:00:00Z",
+        "stopped_at": None,
+        "code": 0,
+        "items": [
+            {
+                "n": 1,
+                "id": "lrn-08ed825b",
+                "verb": "reject",
+                "state": "applied",
+                "rc": 0,
+            }
+        ],
+    }
+    cases.receipt(home, case_id, payload)
+    commits = gitops._git(home, "rev-list", "--count", "HEAD").stdout.strip()
+
+    def forbidden_begin(*_args, **_kwargs):
+        raise AssertionError("byte-identical receipt opened an intent")
+
+    monkeypatch.setattr(intents, "begin", forbidden_begin)
+    cases.receipt(home, case_id, payload)
+    assert gitops._git(home, "rev-list", "--count", "HEAD").stdout.strip() == commits
+
+
+def test_u14_reserved_observation_id_is_repeat_safe_and_collision_checked(tmp_path):
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    reserved = "obs-acde1234"
+    first = cases.observe(
+        home,
+        case_id,
+        "abandoned",
+        text="unsafe legacy recipe",
+        by="steward",
+        reserved_id=reserved,
+    )
+    commits = gitops._git(home, "rev-list", "--count", "HEAD").stdout.strip()
+    second = cases.observe(
+        home,
+        case_id,
+        "abandoned",
+        text="unsafe legacy recipe",
+        by="steward",
+        reserved_id=reserved,
+    )
+    assert first == second == reserved
+    assert gitops._git(home, "rev-list", "--count", "HEAD").stdout.strip() == commits
+    with pytest.raises(cases.CaseError, match="reserved observation id collision"):
+        cases.observe(
+            home,
+            case_id,
+            "abandoned",
+            text="different reason",
+            by="steward",
+            reserved_id=reserved,
+        )
+
+    case_path = next((home / "cases").glob(f"*/{case_id}.md"))
+    content = case_path.read_text(encoding="utf-8")
+    committed_line = next(
+        line for line in content.splitlines() if line.startswith(f"- {reserved} ")
+    )
+    dirty_line = (
+        "- obs-deadbeef 2026-09-14T13:00:00Z steward abandoned: "
+        "uncommitted recipe"
+    )
+    case_path.write_text(
+        content.replace(committed_line, f"{committed_line}\n{dirty_line}"),
+        encoding="utf-8",
+    )
+    with pytest.raises(cases.CaseError, match="outside committed truth"):
+        cases.observe(
+            home,
+            case_id,
+            "abandoned",
+            text="uncommitted recipe",
+            by="steward",
+            reserved_id="obs-deadbeef",
+        )
