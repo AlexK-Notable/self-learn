@@ -44,6 +44,7 @@ from self_learn.ledger_ops import (
     defer_record,
     find_record_path,
     move_record,
+    read_proposal,
     write_proposal,
 )
 from self_learn.records import RECORD_ID_RE, MutationError, Record, ValidationError
@@ -214,11 +215,22 @@ class TestPhaseBoundary:
         ``"followup add"`` leaves the overlap assertion green either
         way, because NEITHER spelling is in PERMITTED_VERBS today. The
         explicit membership pin just below makes the correct spelling
-        self-verifying: it fails directly if the literal reverts."""
+        self-verifying: it fails directly if the literal reverts.
+
+        U4 (2026-09-13, S-54 as amended, steward/overseer build): the
+        literal 15 grows to 16 here -- `revise` is not a U-verbs
+        Phase-2 verb (the `phase2_verbs` set below is unchanged and
+        still excluded), it is the ONE new sheet verb a LATER,
+        different unit adds to the sheet grammar on purpose
+        ("PERMITTED_KEYS gains it together with the by: key",
+        03-decisions.md S-54). A membership pin for it sits right below
+        the count, the same discipline `followup-add` gets above, so
+        the growth is self-verifying rather than a silent widening."""
         phase2_verbs = {"reroute", "followup-add", "reclassify", "host remove", "bucket prune"}
         assert "followup-add" in phase2_verbs  # gate r2 m-2: pins the spelling itself
         assert not (batch.PERMITTED_VERBS & phase2_verbs)
-        assert len(batch.PERMITTED_VERBS) == 15
+        assert "revise" in batch.PERMITTED_VERBS  # U4: the one deliberate addition
+        assert len(batch.PERMITTED_VERBS) == 16
 
     def test_phase1_touches_no_host(self, tmp_path, monkeypatch):
         """PH2: a fixture with a registered host (env's ``host_a``) runs
@@ -1957,3 +1969,255 @@ class TestUnaffected:
             "test_armor.py::test_fix1_fixtures_are_byte_identical (this unit's own "
             "armor-pin guard) failed:\n" + proc.stdout[-4000:] + proc.stderr[-2000:]
         )
+
+
+# =============================================================== U4 revise
+
+
+def _seed_pending_behavior(
+    env2,
+    rid="lrn-90000001",
+    scope="skill:a",
+    trigger="About to edit .storage while HA is running.",
+    instruction="Stop the container first.",
+):
+    create_record(
+        env2.home,
+        make_behavior(
+            record_id=rid, scope=scope, trigger=trigger, instruction=instruction
+        ),
+    )
+    commit_all(env2.home, "pending seed")
+    return rid
+
+
+def _tail_from(body: str, heading: str) -> str:
+    """Everything from ``## <heading>`` to the end of *body* — the
+    positive control :func:`test_revise_...` tests use to prove every
+    OTHER section stayed byte-for-byte identical: for a two-section
+    behavior record (Trigger, Instruction), revising Trigger must leave
+    this exact tail untouched."""
+    idx = body.index(f"## {heading}")
+    return body[idx:]
+
+
+class TestU4Revise:
+    """U4 (build-u4.md): `self-learn revise` — the one new sheet verb
+    this build adds (S-54 as amended, S-65). Covers build-u4.md's
+    Tests section named cases (a routed record refused; a pending
+    record changes exactly the named section; a deferred record
+    allowed; a secret in ``text`` refused; the proposal survives with
+    ``revised_at``; an unknown section name refused) plus one mutation
+    of this builder's own choosing (heading-smuggling through
+    ``--text``)."""
+
+    def test_revise_refused_on_routed_record(self, env2):
+        rid = seed_routed(env2.home, rid="lrn-90000010", scope="skill:a")
+        with pytest.raises(verbs.VerbError) as exc_info:
+            verbs.revise(
+                env2.home, rid, section="Trigger", text="New trigger wording.",
+                because="tighten wording", no_push=True,
+            )
+        message = str(exc_info.value)
+        assert "routed" in message
+        assert "pending/deferred" in message  # require_status's own phrasing (02 §2)
+
+    def test_revise_pending_changes_named_section_only(self, env2):
+        rid = _seed_pending_behavior(env2, rid="lrn-90000011")
+        before_body = Record.from_path(find_record_path(env2.home, rid)).body
+        before_tail = _tail_from(before_body, "Instruction")
+
+        result = verbs.revise(
+            env2.home, rid, section="Trigger",
+            text="About to edit .storage while HA is running (reworded).",
+            because="tightened the trigger wording", no_push=True,
+        )
+        assert result.action == "revise"
+
+        after = Record.from_path(find_record_path(env2.home, rid))
+        assert "reworded" in after.body
+        # positive control: the Instruction section (and everything
+        # from its heading onward) is byte-for-byte identical.
+        assert _tail_from(after.body, "Instruction") == before_tail
+
+    def test_revise_deferred_allowed(self, env2):
+        rid = _seed_pending_behavior(env2, rid="lrn-90000012")
+        verbs.defer(env2.home, rid, no_push=True)
+        assert Record.from_path(find_record_path(env2.home, rid)).status == "deferred"
+
+        result = verbs.revise(
+            env2.home, rid, section="Trigger", text="Reworded while deferred.",
+            because="clarify", no_push=True,
+        )
+        assert result.action == "revise"
+        after = Record.from_path(find_record_path(env2.home, rid))
+        assert after.status == "deferred"  # revise never touches status
+        assert "Reworded while deferred." in after.body
+
+    def test_revise_secret_in_text_refused(self, env2):
+        rid = _seed_pending_behavior(env2, rid="lrn-90000013")
+        before = find_record_path(env2.home, rid).read_bytes()
+        with pytest.raises(verbs.SecretRefusal):
+            verbs.revise(
+                env2.home, rid, section="Trigger",
+                text="key AKIAABCDEFGHIJKLMNOP leaked here",
+                because="oops", no_push=True,
+            )
+        # nothing written on refusal (P2-7: scan runs before any lock)
+        assert find_record_path(env2.home, rid).read_bytes() == before
+
+    def test_revise_keeps_proposal_and_stamps_revised_at(self, env2):
+        rid = _seed_pending_behavior(env2, rid="lrn-90000014")
+        write_proposal(env2.home, rid, proposal_dict(scope="skill:a"))
+        commit_all(env2.home, "proposal seed")
+        proposal_path = (
+            find_record_path(env2.home, rid).parent.parent
+            / "proposals" / f"{rid}.yaml"
+        )
+        assert proposal_path.is_file()
+        before_data = read_proposal(proposal_path)
+        assert "revised_at" not in before_data
+
+        result = verbs.revise(
+            env2.home, rid, section="Trigger", text="Retitled trigger wording.",
+            because="polish", by="steward", no_push=True,
+        )
+        assert result.action == "revise"
+
+        # proposal file KEPT (never swept -- the record never left
+        # pending/, so worker._still_pending's orphan sweep, keyed on
+        # "no matching pending record", cannot reach it) and stamped.
+        assert proposal_path.is_file()
+        after_data = read_proposal(proposal_path)
+        assert "revised_at" in after_data
+        assert after_data["revised_by"] == "steward"
+        # record_sha is deliberately left untouched (the analyst never
+        # saw the new wording) -- still the fixture's original stub.
+        assert after_data["record_sha"] == before_data["record_sha"]
+
+    def test_revise_unknown_section_refused(self, env2):
+        rid = _seed_pending_behavior(env2, rid="lrn-90000015")
+        with pytest.raises(verbs.VerbError) as exc_info:
+            verbs.revise(
+                env2.home, rid, section="Bogus", text="whatever",
+                because="oops", no_push=True,
+            )
+        assert "Bogus" in str(exc_info.value)
+
+    def test_revise_permitted_and_required_keys_in_batch(self):
+        """Not the sheet-dispatch behaviour (U3/so-batch's own scope --
+        see the builder's report for the spec-vs-plan note) — just the
+        two dict entries this build actually adds."""
+        assert batch.PERMITTED_KEYS["revise"] == frozenset(
+            {"section", "text", "because", "by"}
+        )
+        assert batch.REQUIRED_KEYS["revise"] == frozenset(
+            {"section", "text", "because"}
+        )
+
+    @pytest.mark.skip(
+        reason="batch.py sheet DISPATCH for `revise` (_dispatch/classify/"
+        "_STATUS_GATE) is out of this build's scope -- build-u4.md says "
+        "both 'dispatch to verbs.revise' AND 'Touch NOTHING else in "
+        "batch.py (U3 owns the rest of that file concurrently)'; the "
+        "task's own scoping ('exactly two dict entries ... touch "
+        "nothing else in that file, another lane owns the rest of it') "
+        "resolves that in favor of the two dict entries only. Lane "
+        "so-batch (U3, build-u3.md) owns _dispatch/classify wiring; "
+        "until it lands, a sheet naming `revise` passes load_sheet "
+        "(PERMITTED_VERBS now includes it) but crashes _dispatch's "
+        "`else: raise AssertionError('unreachable: unpermitted verb')` "
+        "-- reported to the orchestrator, not resolved here."
+    )
+    def test_revise_then_route_sheet_applies_both(self, env2):
+        rid = _seed_pending_behavior(env2, rid="lrn-90000016")
+        write_proposal(env2.home, rid, proposal_dict(scope="skill:a"))
+        commit_all(env2.home, "proposal seed")
+        sheet = env2.home / "sheet.yaml"
+        sheet.write_text(
+            "version: 1\n"
+            "items:\n"
+            f"  - id: {rid}\n"
+            "    verb: revise\n"
+            "    section: Trigger\n"
+            "    text: Reworded before routing.\n"
+            "    because: tighten wording before route\n"
+            f"  - id: {rid}\n"
+            "    verb: route\n"
+            "    dest: skill-md\n",
+            encoding="utf-8",
+        )
+        items = batch.load_sheet(sheet)
+        result = batch.run(env2.home, items, no_push=True)
+        assert result.summary["applied"] == 2
+        after = Record.from_path(find_record_path(env2.home, rid))
+        assert after.status == "routed"
+        assert "Reworded before routing." in after.body
+
+    # ------------------------------------------------- builder's own mutation
+
+    def test_revise_text_heading_smuggling_refused(self, env2):
+        """Least-protected edge :func:`records.validate_body` cannot
+        catch on its own: it only counts KNOWN headings, so a --text
+        value carrying its own '## ' line would sail through set_body
+        and grow the body a whole section through a verb whose entire
+        contract is 'never a substance change' (02 §2 as amended)."""
+        rid = _seed_pending_behavior(env2, rid="lrn-90000017")
+        before = find_record_path(env2.home, rid).read_bytes()
+        with pytest.raises(verbs.VerbError) as exc_info:
+            verbs.revise(
+                env2.home, rid, section="Trigger",
+                text="Fixed wording.\n\n## Sneaky\nSmuggled section.",
+                because="oops", no_push=True,
+            )
+        assert "heading" in str(exc_info.value).lower()
+        # nothing written on refusal
+        assert find_record_path(env2.home, rid).read_bytes() == before
+
+    @pytest.mark.parametrize("lead", [" ", "\t", "\n\n"])
+    def test_revise_text_heading_smuggling_refused_with_leading_whitespace(
+        self, env2, lead
+    ):
+        """Gate r1 F1: the guard is line-anchored and the splice strips,
+        so a heading behind one leading space or tab was checked as a
+        non-heading and then spliced back to the start of a line."""
+        rid = _seed_pending_behavior(env2, rid="lrn-90000019")
+        before = find_record_path(env2.home, rid).read_bytes()
+        with pytest.raises(verbs.VerbError) as exc_info:
+            verbs.revise(
+                env2.home, rid, section="Trigger",
+                text=lead + "## Episode brief\nsmuggled section body.",
+                because="probe", no_push=True,
+            )
+        assert "heading" in str(exc_info.value).lower()
+        assert find_record_path(env2.home, rid).read_bytes() == before
+
+    def test_revise_secret_in_because_refused(self, env2):
+        """Gate r1 F2: `because` becomes the commit body, a tracked and
+        autosynced artefact, so its scan is a non-bypassable rail (S-29)
+        and needs its own red."""
+        rid = _seed_pending_behavior(env2, rid="lrn-9000001b")
+        before = find_record_path(env2.home, rid).read_bytes()
+        with pytest.raises(verbs.SecretRefusal):
+            verbs.revise(
+                env2.home, rid, section="Trigger",
+                text="A harmless rewording.",
+                because="key AKIAABCDEFGHIJKLMNOP leaked in the reason",
+                no_push=True,
+            )
+        assert find_record_path(env2.home, rid).read_bytes() == before
+
+    def test_revise_identical_text_refused(self, env2):
+        """Probed empirically (not assumed): `gitops.stage_and_commit`
+        without `allow_empty=True` turns a byte-identical rewrite into
+        `HalfWrittenError` ("nothing to commit"), which would be a
+        confusing failure mode for a genuine no-op re-apply -- refused
+        early instead, before any lock."""
+        rid = _seed_pending_behavior(env2, rid="lrn-90000018")
+        with pytest.raises(verbs.VerbError) as exc_info:
+            verbs.revise(
+                env2.home, rid, section="Trigger",
+                text="About to edit .storage while HA is running.",
+                because="noop", no_push=True,
+            )
+        assert "nothing to revise" in str(exc_info.value)
