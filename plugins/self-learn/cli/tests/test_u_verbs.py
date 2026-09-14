@@ -1557,10 +1557,12 @@ class TestBatch:
         result = batch.run(env2.home, items, no_push=True)
         assert result.process_code == 8
         # U3: `summary` gained `not_attempted` (0 here -- a refusal
-        # that is not a STOP code never truncates the sheet).
+        # that is not a STOP code never truncates the sheet). Fold r1:
+        # `summary` also gained `stopped` (0 here too -- the refusal is
+        # rc=1, not a STOP code (5/6/7), so no item is `stopped`).
         assert result.summary == {
             "applied": 3, "already_applied": 0, "refused": 1,
-            "not_attempted": 0, "total": 4,
+            "stopped": 0, "not_attempted": 0, "total": 4,
         }
         commits_after = int(git(env2.home, "rev-list", "--count", "HEAD").stdout.strip())
         assert commits_after - commits_before == 4  # 3 items + 1 flush commit

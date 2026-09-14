@@ -213,16 +213,22 @@ class TestNotAttempted:
         states = [(it.n, it.state, it.rc) for it in result.items]
         assert states == [
             (1, "applied", 0),
-            (2, "refused", 7),
+            # Fold r1 (F9): item 2 is the ONE item whose rc actually
+            # stopped the sheet -- `run` gives it `state="stopped"`,
+            # not the generic `"refused"` `fake_dispatch` returned,
+            # distinct from an ordinary per-verb refusal (02-schema.md
+            # §3a.2 §5 names `stopped` as its own receipt state).
+            (2, "stopped", 7),
             (3, "not-attempted", -1),
             (4, "not-attempted", -1),
             (5, "not-attempted", -1),
         ]
         summary = result.summary
         assert summary["not_attempted"] == 3
+        assert summary["stopped"] == 1
         assert (
             summary["applied"] + summary["already_applied"]
-            + summary["refused"] + summary["not_attempted"]
+            + summary["refused"] + summary["stopped"] + summary["not_attempted"]
             == summary["total"]
             == 5
         )
@@ -370,7 +376,7 @@ class TestReviseDispatch:
         result2 = batch.run(home, items2, no_push=True)
         assert result2.summary == {
             "applied": 0, "already_applied": 1, "refused": 0,
-            "not_attempted": 0, "total": 1,
+            "stopped": 0, "not_attempted": 0, "total": 1,
         }
 
     def test_revise_classify_false_on_wrong_status(self, tmp_path, monkeypatch):
@@ -404,3 +410,203 @@ class TestReviseDispatch:
         items = batch.load_sheet(sheet)
         dr = batch.dry_run(home, items)
         assert dr.items[0].state == "would-refuse"
+
+
+# ========================================================= fold r1: F3
+
+
+class TestByValidation:
+    """gate-u3-r1.md F3: `by`, where permitted, is validated against
+    `verbs.ROUTING_BY_VALUES` at `load_sheet` time -- `by: bogus` is
+    refused on `reject` exactly as it already was on `route`, before
+    item 1, never silently accepted and dropped at dispatch."""
+
+    def test_by_bogus_refused_on_reject(self, tmp_path, monkeypatch):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e0000001")
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n    by: bogus\n",
+        )
+        with pytest.raises(batch.BatchError, match="by=") :
+            batch.load_sheet(sheet)
+
+    def test_by_bogus_refused_on_defer(self, tmp_path, monkeypatch):
+        """A second non-route verb, as build-u3.md's own Tests bullet
+        asks for."""
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e0000002")
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\nitems:\n  - id: {rid}\n    verb: defer\n    by: bogus\n",
+        )
+        with pytest.raises(batch.BatchError, match="by="):
+            batch.load_sheet(sheet)
+
+    def test_by_valid_value_loads_on_reject(self, tmp_path, monkeypatch):
+        """Positive control: a real `ROUTING_BY_VALUES` member loads
+        fine -- the validation only refuses OUTSIDE the closed set."""
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e0000003")
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n    by: steward\n",
+        )
+        items = batch.load_sheet(sheet)  # must not raise
+        assert items[0].fields["by"] == "steward"
+
+
+class TestByTrailer:
+    """F3: `by`, on any of the eight non-route/non-revise resolution
+    verbs, rides the LEDGER commit body as its own final paragraph --
+    ``By: <actor>``, git trailer semantics -- never the record's own
+    `resolution.note` (F3(c): not an attribution slot)."""
+
+    def test_by_trailer_is_its_own_final_paragraph_on_reject(
+        self, tmp_path, monkeypatch
+    ):
+        import subprocess
+
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e0000010")
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n    by: steward\n",
+        )
+        items = batch.load_sheet(sheet)
+        result = batch.run(home, items, no_push=True)
+        assert result.summary["applied"] == 1
+
+        body = subprocess.run(
+            ["git", "-C", str(home), "log", "-1", "--format=%B"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert body.strip().splitlines()[-1] == "By: steward"
+        trailer = subprocess.run(
+            ["git", "-C", str(home), "log", "-1", "--format=%(trailers:key=By,valueonly)"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert trailer == "steward"
+        # the resolution note field itself is untouched (F3(c)) -- no
+        # note was ever given, so the record must not have acquired one
+        # just because `by` did.
+        record = Record.from_path(find_record_path(home, rid))
+        assert record.resolution_note in (None, "")
+
+    def test_note_ending_in_key_value_does_not_merge_into_by_trailer(
+        self, tmp_path, monkeypatch
+    ):
+        """F3(b): a `--note` whose own last line already looks
+        trailer-shaped (`Key: value`) must not let its forged line ride
+        along as part of the `By:` block -- the blank line this fold
+        always inserts keeps them in separate paragraphs, and git's
+        trailer scan (`%(trailers)`) only reads the LAST one."""
+        import subprocess
+
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e0000011")
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n"
+            "    by: steward\n"
+            '    note: "Reason: this line looks like a trailer"\n',
+        )
+        items = batch.load_sheet(sheet)
+        result = batch.run(home, items, no_push=True)
+        assert result.summary["applied"] == 1
+
+        trailers = subprocess.run(
+            ["git", "-C", str(home), "log", "-1", "--format=%(trailers)"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip().splitlines()
+        assert trailers == ["By: steward"]  # the forged "Reason:" line never joins it
+
+    def test_by_absent_leaves_commit_body_untouched(self, tmp_path, monkeypatch):
+        """Positive control: no `by:` on the item -> no trailer
+        paragraph at all -- every pre-existing single-verb commit body
+        stays byte-identical to before this fold."""
+        import subprocess
+
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e0000012")
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n"
+            '    note: "a plain note, no by at all"\n',
+        )
+        items = batch.load_sheet(sheet)
+        result = batch.run(home, items, no_push=True)
+        assert result.summary["applied"] == 1
+        body_only = subprocess.run(
+            ["git", "-C", str(home), "log", "-1", "--format=%b"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "By:" not in body_only
+        assert body_only.strip() == "a plain note, no by at all"
+
+
+# ========================================================= fold r1: F9
+
+
+class TestDecisionCodeStoppedItem:
+    """F9's regression trap: `decision_code` used to spot a stop purely
+    by `item.state == "refused"`. Now that `run` gives the item that
+    actually stopped the sheet `state="stopped"` instead, `decision_code`
+    must count `stopped` as a refusal too, or an rc=5 stop with nothing
+    landed would silently decide 0 ("nothing refused") instead of 1
+    ("refused, nothing written")."""
+
+    def test_rc5_stop_with_nothing_landed_is_one(self):
+        results = [
+            batch.ItemResult(n=1, id="lrn-h0000001", verb="reject", rc=5, state="stopped"),
+        ]
+        assert batch.decision_code(results) == 1
+
+    def test_rc5_stop_after_something_landed_is_eight(self):
+        results = [
+            batch.ItemResult(n=1, id="lrn-h0000001", verb="reject", rc=0, state="applied"),
+            batch.ItemResult(n=2, id="lrn-h0000002", verb="reject", rc=5, state="stopped"),
+        ]
+        assert batch.decision_code(results) == 8
+
+
+# ========================================================= fold r1: F2 load
+
+
+class TestLoadSheetCaseExistence:
+    def test_nonexistent_case_refused_when_home_given(self, tmp_path, monkeypatch):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e0000020")
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\ncase: case-deadbeef\nitems:\n  - id: {rid}\n    verb: reject\n",
+        )
+        with pytest.raises(batch.BatchError, match="case"):
+            batch.load_sheet(sheet, home=home)
+
+    def test_nonexistent_case_accepted_when_home_omitted(self, tmp_path, monkeypatch):
+        """Positive control: every pre-existing caller passes no
+        `home` and gets exactly today's behaviour -- a malformed-
+        SHAPE-only check, no existence check at all."""
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e0000021")
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\ncase: case-deadbeef\nitems:\n  - id: {rid}\n    verb: reject\n",
+        )
+        items = batch.load_sheet(sheet)  # must not raise
+        assert items.case == "case-deadbeef"
+
+    def test_real_case_accepted_when_home_given(self, tmp_path, monkeypatch):
+        """Positive control: a case that DOES exist loads fine with
+        `home` given -- the existence check only refuses a missing
+        one."""
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-e0000022")
+        case_id = _seed_case(home, tmp_path, records=[rid], outcome="reject")
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\ncase: {case_id}\nitems:\n  - id: {rid}\n    verb: reject\n",
+        )
+        items = batch.load_sheet(sheet, home=home)  # must not raise
+        assert items.case == case_id

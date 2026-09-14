@@ -4,7 +4,7 @@ ever hand-writes another bash script (S-54).
 
 Public surface:
 
-    load_sheet(path) -> list[SheetItem]      # BAT1: validated WHOLE, or raises
+    load_sheet(path, *, home=None) -> Sheet  # BAT1: validated WHOLE, or raises
     classify(home, item) -> bool             # True iff already-applied (§3.3b)
     run(home, items, *, dry_run=False, no_push=False) -> BatchResult
 
@@ -19,13 +19,14 @@ site), and pushes once at the end.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 from ruamel.yaml import YAML
 
-from . import gitops, intents, sentinel, verbs
+from . import cases, gitops, intents, sentinel, verbs
 from .cases import CASE_ID_RE
 from .compilers import CompileError
 from .ledger_ops import (
@@ -67,28 +68,26 @@ __all__ = [
 #: every STATUS-changing (resolution) verb's set -- ``route`` already
 #: had it, ``revise`` (U4) already carries it -- widened here to
 #: ``reject``/``defer``/``undefer``/``reopen``/``graduate``/
-#: ``supersede``/``rehome``/``rescope``. The five ANNOTATION verbs
+#: ``supersede``/``rehome``/``rescope``. The six ANNOTATION verbs
 #: (``note``, ``confirm-recurrence``, ``dismiss-suspect``,
 #: ``confirm-held``, ``link-contradicts``, ``followup-done``) never
 #: change a record's status and stay as they were -- 02-schema.md's
 #: ``by`` line (§1) is about who RESOLVED a record, not who annotated
-#: one. Only ``route`` (``routing.by``) and ``revise`` (the proposal's
-#: ``revised_by``) have an existing sink that actually PERSISTS the
-#: value onto a record or its proposal sibling (`verbs.route`,
-#: `verbs.revise` — both already accept a ``by`` parameter). The other
-#: eight verbs (`verbs.reject` et al.) have NO ``by`` parameter today
-#: and this build does not add one -- build-u3.md's own Tests bullet
-#: says a non-route `by` "lands in the record's routing block", but
-#: `Record.set_routing` (records.py:479-487) REQUIRES
-#: ``{routed_at, destination, by}`` together and is read as "this
-#: record was ROUTED" by ~15 call sites across compilers.py/
-#: selfcheck.py/report.py/reachability.py/verbs.py/batch.py itself;
-#: repurposing it for a reject/defer's bare ``by`` would misreport
-#: every one of those. `by` is accepted on the sheet (spec-compliant:
-#: "permitted on every resolution verb, not route alone") and threaded
-#: to nothing for these eight -- a gap named in this build's report,
-#: not silently invented around (common-builder-rules.md: "the spec
-#: wins; do not resolve it yourself").
+#: one. Fold r1 (F3): the other eight verbs (`verbs.reject` et al.)
+#: now DO take a ``by`` parameter too and validate it against the same
+#: ``verbs.ROUTING_BY_VALUES`` closed set `route`/`revise` already
+#: enforce (`load_sheet` validates every item's `by` up front, so a
+#: bad value is refused before item 1 like any other malformed key,
+#: not at dispatch) -- but `Record.set_routing` (records.py:479-487)
+#: still REQUIRES ``{routed_at, destination, by}`` together and is
+#: read as "this record was ROUTED" by ~15 call sites across
+#: compilers.py/selfcheck.py/report.py/reachability.py/verbs.py/
+#: batch.py itself, so repurposing it for a reject/defer's bare ``by``
+#: would misreport every one of those. Its durable home is the commit
+#: body instead: each of the eight now writes ``By: <actor>`` as its
+#: own final paragraph of the ledger commit (git trailer semantics) --
+#: not `Record.set_routing`, and not `resolve_record`'s `note` (a
+#: schema change S-54 did not authorize; gate-u3-r1.md F3(c)).
 PERMITTED_KEYS: dict[str, frozenset[str]] = {
     "route": frozenset(
         {
@@ -185,11 +184,29 @@ class Sheet(list):
     their own result's ``case`` field without a new required
     parameter -- a caller that hands either function a plain
     ``list[SheetItem]`` (as every existing test still may) simply gets
-    ``case=None``, exactly today's behaviour."""
+    ``case=None``, exactly today's behaviour.
 
-    def __init__(self, iterable=(), *, case: str | None = None) -> None:
+    Fold r1 (F1, N4): also carries ``.sheet_sha`` -- a short sha256 of
+    the sheet's own raw bytes, computed once by :func:`load_sheet` --
+    the identity `cases.receipt` keys a receipt line on (F1's ruling:
+    "a receipt line's key is (sheet sha256 short, item index)", never
+    the sheet's bare filename, which two differently-named-but-same-
+    named sheets against one case could collide on). Kept as a second
+    attribute on the same ``list`` subclass rather than a new required
+    parameter, for the identical reason ``.case`` is: every existing
+    plain-``list[SheetItem]`` caller gets ``sheet_sha=None`` and is
+    unaffected. N4 (named, not fixed): a caller that turns a ``Sheet``
+    into a plain ``list`` (``list(sheet)``, a slice, a comprehension)
+    silently loses both attributes -- today's only caller is
+    `cli._cmd_batch`, which never does that (grepped across `cli/src`,
+    `ui/src`, `scripts`)."""
+
+    def __init__(
+        self, iterable=(), *, case: str | None = None, sheet_sha: str | None = None
+    ) -> None:
         super().__init__(iterable)
         self.case = case
+        self.sheet_sha = sheet_sha
 
 
 @dataclass
@@ -204,8 +221,15 @@ class ItemResult:
     #: §3a.1 rule 5 / §3a.2 §5's own tail format;
     #: `commands/review.md` "a sheet item after a stop point is
     #: reported with `state: not-attempted` rather than being silently
-    #: dropped from the output").
-    state: str = "applied"  # applied | already-applied | refused | not-attempted
+    #: dropped from the output"). Fold r1 (F9): ``stopped`` also joins
+    #: the set -- 02-schema.md §3a.2 §5 names a receipt state the
+    #: executor never emitted ("applied | already-applied | refused |
+    #: stopped"); `run` now sets it on the ONE item whose rc actually
+    #: triggered the mid-sheet STOP (rc in 5/6/7), in place of the
+    #: generic ``refused`` `_dispatch` gives every non-stopping refusal
+    #: -- the receipt line for that item now reads ``stopped (exit N)``
+    #: instead of being indistinguishable from an ordinary refusal.
+    state: str = "applied"  # applied | already-applied | refused | stopped | not-attempted
     detail: str | None = None
 
 
@@ -224,6 +248,11 @@ class BatchResult:
     #: whether to call `cases.receipt` after this run's own locked
     #: section has closed.
     case: str | None = None
+    #: Fold r1 (F1, N4): the sheet's own ``.sheet_sha``, threaded
+    #: through from :class:`Sheet` the same way ``case`` is -- ``None``
+    #: for a plain ``list[SheetItem]`` caller. `cli._cmd_batch` reads
+    #: this to key the receipt call's identity (F1).
+    sheet_sha: str | None = None
     #: S-62 (§7.2a.5(3)): the sheet-level preflight's own recovery
     #: outcome — "a batch item's outcome rides the --json envelope"
     #: means the WHOLE run's, here, since this recovery runs before
@@ -242,15 +271,22 @@ class BatchResult:
         applied = sum(1 for i in self.items if i.state == "applied")
         already = sum(1 for i in self.items if i.state == "already-applied")
         refused = sum(1 for i in self.items if i.state == "refused")
+        # Fold r1 (F9): counted separately from `refused` for the same
+        # reason `not_attempted` already is -- the one item whose rc
+        # actually stopped the sheet is a distinct fact from an
+        # ordinary per-verb refusal.
+        stopped = sum(1 for i in self.items if i.state == "stopped")
         # U3: counted separately so `applied + already_applied + refused
-        # + not_attempted == total` always holds -- folding these into
-        # `refused` would misreport an item `run` never even dispatched
-        # as one the verb itself turned down.
+        # + stopped + not_attempted == total` always holds -- folding
+        # these into `refused` would misreport an item `run` never even
+        # dispatched (or the one that stopped it) as an ordinary
+        # per-verb refusal.
         not_attempted = sum(1 for i in self.items if i.state == "not-attempted")
         return {
             "applied": applied,
             "already_applied": already,
             "refused": refused,
+            "stopped": stopped,
             "not_attempted": not_attempted,
             "total": len(self.items),
         }
@@ -267,6 +303,7 @@ class BatchResult:
             ],
             "stopped_at": self.stopped_at,
             "case": self.case,
+            "sheet_sha": self.sheet_sha,
             "pushed": self.pushed,
             "process_code": self.process_code,
             "recovered_rolled_forward": self.recovered_rolled_forward,
@@ -290,19 +327,39 @@ class BatchResult:
 _KNOWN_TOP_LEVEL_KEYS = frozenset({"version", "items", "case"})
 
 
-def load_sheet(path: Path | str) -> Sheet:
+def load_sheet(path: Path | str, *, home: Path | str | None = None) -> Sheet:
     """Parse + validate a sheet WHOLE (BAT1): an unknown verb, an unknown
     item key, an unknown TOP-LEVEL key, a malformed id, a malformed
-    ``case:`` id, or ``version != 1`` raises — nothing runs. Returns a
-    :class:`Sheet` (a ``list[SheetItem]`` subclass carrying the sheet's
-    own ``case`` as an attribute) -- every existing ``list[SheetItem]``
-    caller is unaffected (see :class:`Sheet`'s own docstring)."""
+    ``case:`` id, a ``case:`` naming no case that EXISTS (fold r1, F2 --
+    only when *home* is given), a ``by:`` value outside
+    ``verbs.ROUTING_BY_VALUES`` (fold r1, F3), or ``version != 1``
+    raises — nothing runs. Returns a :class:`Sheet` (a
+    ``list[SheetItem]`` subclass carrying the sheet's own ``case`` and
+    ``sheet_sha`` as attributes) -- every existing ``list[SheetItem]``
+    caller is unaffected (see :class:`Sheet`'s own docstring).
+
+    *home* is optional and keyword-only (fold r1): every pre-existing
+    caller (every test file, plus this module's own carried tests) calls
+    ``load_sheet(path)`` and gets exactly today's behaviour -- the
+    case-EXISTENCE check below only runs when a caller can name a home
+    to check it against. `cli._cmd_batch` is the one caller that does
+    (F2's ruling: "a case id that does not exist is refused at
+    load_sheet time, before item 1 (usage, 64), so it can never fail
+    after a commit" -- the receipt call can then assume the case it was
+    given exists)."""
     path = Path(path)
     yaml = YAML(typ="safe")
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise BatchError(f"batch: cannot read {path}: {exc}") from exc
+    # Fold r1 (F1, N4): a short content-addressed identity for this
+    # sheet -- the key `cases.receipt` dedupes a receipt line on, never
+    # the bare filename (two differently-run sheets sharing a basename
+    # would otherwise collide, and a re-run of the SAME sheet must key
+    # identically even if the CLI's `args.sheet` path differs, e.g. a
+    # relative vs. absolute invocation).
+    sheet_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
     try:
         data = yaml.load(text)
     except Exception as exc:  # noqa: BLE001 — any YAML parse failure is a sheet error
@@ -324,6 +381,11 @@ def load_sheet(path: Path | str) -> Sheet:
     case = data.get("case")
     if case is not None and (not isinstance(case, str) or not CASE_ID_RE.match(case)):
         raise BatchError(f"batch {path}: malformed case id: {case!r}")
+    if case is not None and home is not None:
+        try:
+            cases._case_path_for_id(Path(home), case)
+        except cases.CaseError as exc:
+            raise BatchError(f"batch {path}: {exc}") from exc
 
     items: list[SheetItem] = []
     for n, raw in enumerate(raw_items, start=1):
@@ -361,9 +423,22 @@ def load_sheet(path: Path | str) -> Sheet:
                 f"batch {path}: item {n} ({verb}) is missing required "
                 f"key(s): {sorted(missing)}"
             )
+        # Fold r1 (F3): `by`, where permitted, is validated against the
+        # SAME closed set `route`/`revise` already enforce at dispatch --
+        # a sheet naming `by: bogus` on ANY resolution verb is refused
+        # BEFORE item 1, exactly like a malformed id or an unknown key,
+        # never silently accepted and dropped at dispatch (gate-u3-r1.md
+        # F3's own measurement: "reject by=bogus rc = 0 (applied; the
+        # value is discarded)" -- closed here).
+        by_val = raw.get("by")
+        if by_val is not None and by_val not in verbs.ROUTING_BY_VALUES:
+            raise BatchError(
+                f"batch {path}: item {n} ({verb}) has by={by_val!r}, must "
+                f"be one of {sorted(verbs.ROUTING_BY_VALUES)}"
+            )
         fields = {k: v for k, v in raw.items() if k not in ("id", "verb")}
         items.append(SheetItem(n=n, id=rid, verb=verb, fields=fields))
-    return Sheet(items, case=case)
+    return Sheet(items, case=case, sheet_sha=sheet_sha)
 
 
 def _resolved_route_dest(home: Path, path: Path, item: SheetItem):
@@ -540,29 +615,41 @@ def _dispatch(home: Path, item: SheetItem) -> ItemResult:
                 allow_empty_glob=bool(f.get("allow_empty_glob", False)),
             )
         elif verb == "reject":
-            result = verbs.reject(home, item.id, note=f.get("note"), no_push=True)
+            result = verbs.reject(
+                home, item.id, note=f.get("note"), by=f.get("by"), no_push=True
+            )
         elif verb == "defer":
             until = f.get("until")
             result = verbs.defer(
-                home, item.id, until=until, note=f.get("note"), no_push=True
+                home, item.id, until=until, note=f.get("note"), by=f.get("by"),
+                no_push=True,
             )
         elif verb == "undefer":
-            result = verbs.undefer(home, item.id, note=f.get("note"), no_push=True)
+            result = verbs.undefer(
+                home, item.id, note=f.get("note"), by=f.get("by"), no_push=True
+            )
         elif verb == "reopen":
-            result = verbs.reopen(home, item.id, note=f.get("note"), no_push=True)
+            result = verbs.reopen(
+                home, item.id, note=f.get("note"), by=f.get("by"), no_push=True
+            )
         elif verb == "graduate":
-            result = verbs.graduate(home, item.id, note=f.get("note"), no_push=True)
+            result = verbs.graduate(
+                home, item.id, note=f.get("note"), by=f.get("by"), no_push=True
+            )
         elif verb == "supersede":
             result = verbs.supersede(
-                home, item.id, f["new_id"], note=f.get("note"), no_push=True
+                home, item.id, f["new_id"], note=f.get("note"), by=f.get("by"),
+                no_push=True,
             )
         elif verb == "rehome":
             result = verbs.rehome(
-                home, item.id, to=f["to"], note=f.get("note"), no_push=True
+                home, item.id, to=f["to"], note=f.get("note"), by=f.get("by"),
+                no_push=True,
             )
         elif verb == "rescope":
             result = verbs.rescope(
-                home, item.id, to=f["to"], note=f.get("note"), no_push=True
+                home, item.id, to=f["to"], note=f.get("note"), by=f.get("by"),
+                no_push=True,
             )
         elif verb == "note":
             result = verbs.note(
@@ -656,7 +743,13 @@ def decision_code(results: list[ItemResult]) -> int:
                 return code
     if any(r.rc == 6 for r in results):
         return 8 if landed else 6
-    refused = any(r.state == "refused" for r in results)
+    # Fold r1 (F9): a `stopped` item (rc 5/6/7, the one that actually
+    # halted the sheet) counts as a refusal here too -- an rc=5 stop
+    # with nothing landed must still decide 1 ("refused, nothing
+    # written"), not 0, now that `run` gives that item `state=
+    # "stopped"` instead of the generic `"refused"` every other
+    # per-verb refusal gets.
+    refused = any(r.state in ("refused", "stopped") for r in results)
     if not refused:
         return 0
     if landed:
@@ -709,6 +802,9 @@ class DryRunResult:
     #: -- a `--dry-run` preview names the case it WOULD receipt into,
     #: same as it names every other would-happen detail.
     case: str | None = None
+    #: Fold r1: the sheet's own `.sheet_sha`, same as `BatchResult.
+    #: sheet_sha` -- `None` for a plain `list[SheetItem]` caller.
+    sheet_sha: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -725,6 +821,7 @@ class DryRunResult:
             ],
             "hook_items": self.hook_items,
             "case": self.case,
+            "sheet_sha": self.sheet_sha,
             "ok": self.ok,
         }
 
@@ -738,7 +835,10 @@ def dry_run(home: Path | str, items: list[SheetItem]) -> DryRunResult:
     sheet-level prerequisite the two hand scripts (§2.4) had to sequence
     by hand: a route item whose resolved destination is `hook`."""
     home = Path(home)
-    result = DryRunResult(case=getattr(items, "case", None))
+    result = DryRunResult(
+        case=getattr(items, "case", None),
+        sheet_sha=getattr(items, "sheet_sha", None),
+    )
     for item in items:
         if classify(home, item):
             result.items.append(
@@ -820,6 +920,7 @@ def run(
     # `test_revise_then_route_sheet_applies_both`) has no `.case` and
     # gets `None` here, exactly today's behaviour.
     case = getattr(items, "case", None)
+    sheet_sha = getattr(items, "sheet_sha", None)
     # S-62 (13 §5): the sheet-level check, once, before item 1 — a
     # pre-existing STOP refuses the WHOLE sheet before anything lands,
     # the same way a sheet-invalid (64) or home-gate (5) refusal does.
@@ -839,6 +940,7 @@ def run(
         # why, unlike every other surface's refusal.
         return BatchResult(
             case=case,
+            sheet_sha=sheet_sha,
             process_code=gitops.EXIT_GIT_FAILED,
             recovered_rolled_forward=list(exc.result.rolled_forward),
             recovered_restored=list(exc.result.restored),
@@ -846,6 +948,7 @@ def run(
         )
     result = BatchResult(
         case=case,
+        sheet_sha=sheet_sha,
         recovered_rolled_forward=list(recovered.rolled_forward),
         recovered_restored=list(recovered.restored),
     )
@@ -861,6 +964,16 @@ def run(
                 )
                 continue
             item_result = _dispatch(home, item)
+            if item_result.rc in _STOP_CODES:
+                # Fold r1 (F9): this is the ONE item whose rc actually
+                # halted the sheet -- 02-schema.md §3a.2 §5 names
+                # `stopped` as its own receipt state, distinct from an
+                # ordinary per-verb `refused`; `_dispatch` cannot know
+                # at dispatch time whether ITS OWN refusal is the one
+                # that stops the sheet, so `run` (the only place that
+                # DOES know) overrides here, before the item ever joins
+                # `result.items`.
+                item_result.state = "stopped"
             result.items.append(item_result)
             sentinel.heartbeat()
             if item_result.rc in _STOP_CODES:

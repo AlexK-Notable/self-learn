@@ -1017,6 +1017,36 @@ def _ledger_write(home: Path, *, earlier_commits: list[str] | None = None):
     return intents.ledger_write(home, earlier_commits=earlier_commits)
 
 
+def _by_trailer(by: str | None) -> str | None:
+    """Fold r1 (F3, U3's own ruling): validates *by* against the SAME
+    closed set `route`/`revise` already enforce at their own call sites
+    (``ROUTING_BY_VALUES``), and renders it as ``By: <actor>`` — its own
+    commit-body PARAGRAPH, git trailer semantics. Returns ``None`` when
+    *by* is ``None`` — every pre-existing single-verb commit body stays
+    byte-identical to before this fold (no trailer paragraph at all)."""
+    if by is None:
+        return None
+    if by not in ROUTING_BY_VALUES:
+        raise VerbError(f"by must be one of {sorted(ROUTING_BY_VALUES)}, got {by!r}")
+    return f"By: {by}"
+
+
+def _body_with_by_trailer(body: str | None, by: str | None) -> str | None:
+    """Appends :func:`_by_trailer`'s result to *body* as its OWN FINAL
+    paragraph — a blank line always separates it from whatever *body*
+    already was, so a ``--note`` whose own last line already looks
+    trailer-shaped (``Key: value``) can never merge into the ``By:``
+    block: git's trailer scan stops at the first paragraph break
+    scanning up from the end, and the blank line here always puts one
+    between the two (gate-u3-r1.md F3(b))."""
+    trailer = _by_trailer(by)
+    if trailer is None:
+        return body
+    if body is None or not body.strip():
+        return trailer
+    return f"{body.rstrip()}\n\n{trailer}"
+
+
 def _stage_and_commit(
     home: Path,
     touched: list[Path],
@@ -5049,6 +5079,7 @@ def reject(
     record_id: str,
     *,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
 ) -> VerbResult:
     """Reject a pending (or deferred) record. Commit: ``self-learn:
@@ -5057,10 +5088,17 @@ def reject(
     lying "not found" (:func:`require_status`). A genuinely UNKNOWN id
     stays a bare :class:`LedgerOpsError` (exit 64, unwrapped) —
     `find_record_path` runs first, outside the wrap, exactly as
-    `test_unknown_record_id_is_usage_error` pins."""
+    `test_unknown_record_id_is_usage_error` pins.
+
+    Fold r1 (F3): *by*, when given, is validated (:func:`_by_trailer`)
+    and rides the commit body ONLY, as its own trailing ``By:``
+    paragraph — never `resolve_record`'s *note* (the record's own
+    `resolution.note` is unaffected; F3(c) — that is not an attribution
+    slot and adding one is a schema change this fold does not make)."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
+    body = _body_with_by_trailer(note, by)  # validates `by`; raises before any lock
     try:
         require_status(home, record_id, LIVE_STATUSES, verb="reject")
     except LedgerOpsError as exc:
@@ -5072,7 +5110,7 @@ def reject(
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
             touched = resolve_record(home, record_id, "rejected", note=note, verb="reject")
-            staged, sha = _stage_and_commit(home, touched, message, note)
+            staged, sha = _stage_and_commit(home, touched, message, body)
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="reject",
@@ -5093,6 +5131,7 @@ def defer(
     *,
     until=None,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
 ) -> VerbResult:
     """Defer a pending (or already-deferred) record (default +30 d).
@@ -5103,10 +5142,14 @@ def defer(
     resolved — never the old lying "not found" (:func:`require_status`).
     A genuinely UNKNOWN id stays a bare :class:`LedgerOpsError` (exit 64,
     unwrapped) — `find_record_path` runs first, outside the wrap, same
-    contract `reject`/`route` pin."""
+    contract `reject`/`route` pin.
+
+    Fold r1 (F3): *by*, when given, rides the commit body as its own
+    trailing ``By:`` paragraph — see :func:`reject`'s docstring."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
+    body = _body_with_by_trailer(note, by)  # validates `by`; raises before any lock
     try:
         require_status(home, record_id, LIVE_STATUSES, verb="defer")
     except LedgerOpsError as exc:
@@ -5127,7 +5170,7 @@ def defer(
                 raise VerbError(str(exc)) from exc
             deferred_until = _date_str(Record.from_path(touched[0]).deferred_until)
             message = f"self-learn: defer {record_id} until {deferred_until}"
-            staged, sha = _stage_and_commit(home, touched, message, note)
+            staged, sha = _stage_and_commit(home, touched, message, body)
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="defer",
@@ -5266,6 +5309,7 @@ def _move(
     to: str,
     verb: str,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
 ) -> VerbResult:
     """The ONE verb body behind both ``rehome`` and ``rescope`` (U-verbs
@@ -5288,6 +5332,9 @@ def _move(
     # note (P2-7): `rescope`/project legs genuinely rewrite the file
     # (`scope:` changes), so this is load-bearing, not a formality.
     _scan_or_refuse([path], note)
+    # Fold r1 (F3): validates `by` before any lock/mutation, same as
+    # every other refusal in this function.
+    _by_trailer(by)
 
     try:
         require_status(home, record_id, LIVE_STATUSES, verb=verb)
@@ -5339,6 +5386,7 @@ def _move(
                 p.relative_to(home) if p.is_relative_to(home) else p for p in swept
             ]
             body = _rescope_commit_body(note, relswept)  # R-DISCLOSE-2
+            body = _body_with_by_trailer(body, by)  # F3: By: trailer, own final paragraph
             staged, sha = _commit_ledger(home, touched, message, body)
         push = _push_ledger(home, no_push)
         return VerbResult(
@@ -5363,6 +5411,7 @@ def rehome(
     *,
     to: str,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
 ) -> VerbResult:
     """Move a PENDING (or ``deferred``) record to any registered scope —
@@ -5381,7 +5430,9 @@ def rehome(
 
     All work is delegated to :func:`_move` — this function contains no
     file-op of its own (``MOVE10``)."""
-    return _move(home, record_id, to=to, verb="rehome", note=note, no_push=no_push)
+    return _move(
+        home, record_id, to=to, verb="rehome", note=note, by=by, no_push=no_push
+    )
 
 
 def rescope(
@@ -5390,6 +5441,7 @@ def rescope(
     *,
     to: str,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
 ) -> VerbResult:
     """Move a PENDING (or ``deferred``) record to any registered scope —
@@ -5407,7 +5459,9 @@ def rescope(
 
     All work is delegated to :func:`_move` — this function contains no
     file-op of its own (``MOVE10``)."""
-    return _move(home, record_id, to=to, verb="rescope", note=note, no_push=no_push)
+    return _move(
+        home, record_id, to=to, verb="rescope", note=note, by=by, no_push=no_push
+    )
 
 
 def undefer(
@@ -5415,6 +5469,7 @@ def undefer(
     record_id: str,
     *,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
 ) -> VerbResult:
     """Bring a deferred record back to the queue NOW (U-verbs §4.2) — the
@@ -5426,10 +5481,12 @@ def undefer(
     `git mv`. Ledger-only, one commit `self-learn: undefer lrn-…`;
     `--note` rides the commit body only (`resolution_note` untouched —
     an un-defer is not a resolution). Re-running it refuses naming
-    'pending' (GUARD3/GUARD4)."""
+    'pending' (GUARD3/GUARD4). Fold r1 (F3): *by*, when given, rides the
+    commit body as its own trailing ``By:`` paragraph."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
+    body = _body_with_by_trailer(note, by)  # validates `by`; raises before any lock
     try:
         require_status(home, record_id, DEFERRED_ONLY, verb="undefer")
     except LedgerOpsError as exc:
@@ -5445,7 +5502,7 @@ def undefer(
             record.set_status("pending")
             record.set_deferred_until(None)
             record.write(path)
-            staged, sha = _commit_ledger(home, [path], message, note)
+            staged, sha = _commit_ledger(home, [path], message, body)
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="undefer",
@@ -5465,6 +5522,7 @@ def reopen(
     record_id: str,
     *,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
 ) -> VerbResult:
     """Return a REJECTED record to the draft plane (U-verbs §4.2) — the
@@ -5480,10 +5538,14 @@ def reopen(
     successor, or a merge-collapse evidence merge, would be orphaned)
     and `routed` (un-writing canon is FW-133 — deliberately out of this
     unit's scope; correcting a wrong DESTINATION on an already-routed
-    record is separate, dated work)."""
+    record is separate, dated work).
+
+    Fold r1 (F3): *by*, when given, rides the commit body as its own
+    trailing ``By:`` paragraph."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
+    _by_trailer(by)  # validates `by` before any lock/mutation
     try:
         require_status(home, record_id, REOPENABLE_STATUSES, verb="reopen")
     except LedgerOpsError as exc:
@@ -5500,6 +5562,7 @@ def reopen(
                 p.relative_to(home) if p.is_relative_to(home) else p for p in swept
             ]
             body = _rescope_commit_body(note, relswept)
+            body = _body_with_by_trailer(body, by)  # F3: By: trailer, own final paragraph
             staged, sha = _commit_ledger(home, touched, message, body)
         push = _push_ledger(home, no_push)
         post_notes = ["re-entering the queue — this record will be re-analyzed"]
@@ -5887,6 +5950,7 @@ def graduate(
     record_id: str,
     *,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
 ) -> VerbResult:
@@ -5899,10 +5963,16 @@ def graduate(
     metadata-only for doc targets ("drops at the next compile"), which
     stranded the line forever when the graduated record was the target's
     LAST — recompile enumerates targets off routed records, so an
-    all-retired target was never revisited (found live 2026-07-16)."""
+    all-retired target was never revisited (found live 2026-07-16).
+
+    Fold r1 (F3): *by*, when given, rides the LEDGER commit's body as
+    its own trailing ``By:`` paragraph -- the separate HOST-repo commit
+    (`_retirement_host_phase`, a different repo entirely) keeps taking
+    the raw *note*, unchanged."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
+    _by_trailer(by)  # validates `by` before any lock/mutation
     warnings = _orphaned_followup_warning(path, record_id)
     # FW-51: refuses BEFORE any lock/mutation, naming the record's actual
     # status, when it is already terminal (rejected, or already
@@ -6017,7 +6087,9 @@ def graduate(
                 )
                 if removal_record_path is not None:
                     touched = touched + [removal_record_path]
-            staged, sha = _stage_and_commit(home, touched, message, note)
+            staged, sha = _stage_and_commit(
+                home, touched, message, _body_with_by_trailer(note, by)
+            )
 
             post_notes: list[str] = []
             host_sha, host_repo = _retirement_host_phase(
@@ -6058,6 +6130,7 @@ def supersede(
     new_id: str,
     *,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
 ) -> VerbResult:
@@ -6068,13 +6141,19 @@ def supersede(
     ledger commit the host phase recompiles the target and commits the
     host. A pending old record stays a single ledger commit. A
     reference-routed old record's entry drops too (U-verbs S-54 —
-    references are no longer append-only for their own lifetime)."""
+    references are no longer append-only for their own lifetime).
+
+    Fold r1 (F3): *by*, when given, rides the LEDGER commit's body as
+    its own trailing ``By:`` paragraph -- the separate HOST-repo commits
+    (`_host_phase`/`_remove_hook_script`/`_retire_reference_host_phase`,
+    a different repo entirely) keep taking the raw *note*, unchanged."""
     home = Path(home)
     if old_id == new_id:
         raise VerbError("a record cannot supersede itself")
     old_path = find_record_path(home, old_id)  # pending OR routed flavor
     find_record_path(home, new_id)  # the replacement must exist
     _scan_or_refuse([old_path], note)
+    _by_trailer(by)  # validates `by` before any lock/mutation
     warnings = _orphaned_followup_warning(old_path, old_id)
     # FW-51: status/cycle refusals — BEFORE any lock/mutation, naming the
     # record's actual status. Existence of both ids is already confirmed
@@ -6230,7 +6309,9 @@ def supersede(
                 )
                 if removal_record_path is not None:
                     touched = touched + [removal_record_path]
-            staged, sha = _commit_ledger(home, touched, message, note)
+            staged, sha = _commit_ledger(
+                home, touched, message, _body_with_by_trailer(note, by)
+            )
 
             # (e) HOST phase: recompile the target — the entry drops out. For
             # hooks: git rm the script in the host repo (M3-4 rollback pin)

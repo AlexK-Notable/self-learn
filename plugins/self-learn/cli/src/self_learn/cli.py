@@ -3480,7 +3480,11 @@ def _cmd_batch(args: argparse.Namespace) -> int:
     if (code := _home_gate(home)) is not None:
         return code
     try:
-        items = batch.load_sheet(args.sheet)
+        # Fold r1 (F2): `home` lets `load_sheet` check the named `case:`
+        # EXISTS, not just that it is SHAPED like one -- a case id that
+        # does not exist is refused here, before item 1 (usage, 64), so
+        # it can never fail after the sheet has already committed.
+        items = batch.load_sheet(args.sheet, home=home)
     except batch.BatchError as exc:
         print(f"self-learn batch: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -3506,8 +3510,67 @@ def _cmd_batch(args: argparse.Namespace) -> int:
 
     sentinel.heartbeat()  # mutating invocation class (08 §1)
     result = batch.run(home, items, no_push=args.no_push)
+
+    # Fold r1 (F1/F2/F5/F6/F7): the receipt attempt runs BEFORE either
+    # output branch below, so its own outcome can ride the SAME --json
+    # envelope (F2's ruling) instead of surfacing only as an
+    # afterthought once stdout already carries the batch's own report.
+    # `batch.run`'s own locked section is CLOSED by now (it released
+    # its hold before returning `result`), so this is a second, NOT
+    # nested, `intents.ledger_write` acquisition — `cases.receipt`
+    # opens its own internally; `_cmd_batch` never wraps this call in a
+    # lock of its own (that WOULD nest).
+    receipt_info: dict | None = None
+    if result.case is not None:
+        # F1: EVERY item rides the receipt, including `already-applied`
+        # — `cases.receipt` is idempotent BY KEY now (a re-run of the
+        # SAME sheet REPLACES a key's line rather than appending), so
+        # the OLD "exclude already-applied, skip the call once nothing
+        # remains" filter — THIS function's own (broken) idempotence
+        # mechanism, gate-u3-r1.md F1 — is gone; the real one lives in
+        # `cases.receipt` itself now.
+        batch_result = {
+            "sheet": Path(args.sheet).name,
+            "sheet_sha": result.sheet_sha,
+            "stopped_at": result.stopped_at,
+            "code": result.process_code,
+            "stop_message": result.stop_message,
+            "items": result.to_json()["items"],
+        }
+        try:
+            cases.receipt(home, result.case, batch_result)
+        except (cases.CaseError, gitops.GitOpsError) as exc:
+            # F2: a receipt failure is a bookkeeping append failing
+            # AFTER the batch's own decision already landed — it must
+            # NEVER rewrite the batch's own documented exit code (S-54:
+            # "1 is emitted only when nothing landed"; by the time this
+            # can fail, the batch has already decided its own code).
+            # F5: this catches everything `cases.receipt` can raise —
+            # `gitops.GitOpsError` is the shared base of both
+            # `HalfWrittenError` and `intents.LedgerStoppedError`, so
+            # one tuple suffices — the SAME breadth `_cmd_user_model`
+            # gives its own adjacent call immediately above this
+            # function.
+            receipt_info = {"state": "failed", "reason": str(exc)}
+            print(f"self-learn batch: case receipt: {exc}", file=sys.stderr)
+        else:
+            pushed = None
+            if not args.no_push:
+                # F6: the receipt's own commit rides OUTSIDE `batch.
+                # run`'s single push — it lands strictly AFTER that
+                # push already returned, so it is never published by
+                # it. Publish it under the SAME `--no-push` rule the
+                # sheet's own commits already followed. `push_pending`
+                # takes no sentinel/lock of its own (read-only w.r.t.
+                # records — the same call `batch.run` itself makes).
+                pushed = verbs.push_pending(home).ok
+            receipt_info = {"state": "ok", "pushed": pushed}
+
     if args.as_json:
-        print(json.dumps(result.to_json()))
+        envelope = result.to_json()
+        if receipt_info is not None:
+            envelope["receipt"] = receipt_info
+        print(json.dumps(envelope))
     else:
         # §7.2a.5(3): attended, text mode — the --json envelope above
         # already carries the same two lists for that mode.
@@ -3529,10 +3592,14 @@ def _cmd_batch(args: argparse.Namespace) -> int:
                 line += f" — {it.detail}"
             print(line)
         summary = result.summary
+        # F7: all five states, not three — `total` counts `stopped` and
+        # `not_attempted` too (fold r1), so the old three-count line no
+        # longer summed to `total` after a mid-sheet stop.
         print(
             f"self-learn batch: {summary['applied']} applied, "
             f"{summary['already_applied']} already-applied, "
-            f"{summary['refused']} refused (of {summary['total']})",
+            f"{summary['refused']} refused, {summary['stopped']} stopped, "
+            f"{summary['not_attempted']} not-attempted (of {summary['total']})",
             file=sys.stderr,
         )
         if result.stopped_at is not None:
@@ -3541,42 +3608,14 @@ def _cmd_batch(args: argparse.Namespace) -> int:
                 "— ledger-level failure, unsafe to keep writing",
                 file=sys.stderr,
             )
-    if result.case is not None:
-        # U3 (02-schema.md §3a.1/§3a.2; S-54 as amended): the sheet
-        # named a case (`--dry-run` already returned above, so this run
-        # was real) — `batch.run`'s own locked section is CLOSED by now
-        # (it released its hold before returning `result`), so this is
-        # a second, NOT nested, `intents.ledger_write` acquisition —
-        # `cases.receipt` opens its own internally; `_cmd_batch` never
-        # wraps this call in a lock of its own (that WOULD nest).
-        #
-        # `cases.receipt` (U2) has no dedupe (cases.py:1036-1038:
-        # `existing` + `new_text` concatenated) and raises when it
-        # would commit NOTHING (`sha is None`, cases.py:1043) — so
-        # idempotence (S-54: "a second run of an applied sheet applies
-        # 0 items and exits 0") is this call's own responsibility, not
-        # `cases.receipt`'s: already-applied items are excluded from
-        # what gets receipted (they took no action THIS run — a prior
-        # run's receipt already has their line), and the call is
-        # skipped entirely once nothing remains — a re-run of a fully
-        # applied sheet then makes NO second receipt call at all,
-        # appending nothing.
-        receipt_items = [
-            it for it in result.to_json()["items"]
-            if it["state"] != "already-applied"
-        ]
-        if receipt_items:
-            batch_result = {
-                "sheet": Path(args.sheet).name,
-                "stopped_at": result.stopped_at,
-                "code": result.process_code,
-                "items": receipt_items,
-            }
-            try:
-                cases.receipt(home, result.case, batch_result)
-            except cases.CaseError as exc:
-                print(f"self-learn batch: case receipt: {exc}", file=sys.stderr)
-                return exc.exit_code
+        if receipt_info is not None and receipt_info["state"] == "failed":
+            print(
+                "self-learn batch: the case's Application section was "
+                "NOT updated this run — retry the same sheet to repair it",
+                file=sys.stderr,
+            )
+    # F2: the batch's own exit code is the batch's — a receipt outcome
+    # never changes it, success or failure.
     return result.process_code
 
 
