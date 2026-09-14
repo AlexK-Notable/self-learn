@@ -1,0 +1,27 @@
+# self-learn overseer (S-66) — one weekly examination pass.
+# Installed by install.sh (which links this unit + its timer into
+# ~/.config/systemd/user/ -- or $XDG_CONFIG_HOME/systemd/user if set --
+# and runs `systemctl --user daemon-reload`); this unit is NEVER enabled
+# by install.sh. The primary path is the fourth job inside
+# self-learn-host.service (17-invocation-runbook.md §10) -- this pair is
+# for a timer-topology host that does not run the host service. Enabling
+# it is the human's step:
+#   systemctl --user enable --now self-learn-overseer.timer
+[Unit]
+Description=self-learn overseer (weekly examination pass)
+
+[Service]
+Type=oneshot
+# B-1 (doc 13 §7.1), same reasoning as the miner and host units: the
+# systemd user manager does not inherit the shell's env.
+Environment=SELF_LEARN_HOME=%h/.self-learn
+# U-uvpath reasoning applies identically here (see self-learn-host.service
+# and self-learn-miner.service's own comments) -- this unit's ExecStart
+# goes through the same scripts/self-learn wrapper and depends on `uv`
+# being resolvable the same way.
+Environment=PATH=%h/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/bin/self-learn overseer run
+# Two frontier-model invocations per run -- evidence-only first, full
+# view second; give it headroom.
+TimeoutStartSec=30m
+Nice=10

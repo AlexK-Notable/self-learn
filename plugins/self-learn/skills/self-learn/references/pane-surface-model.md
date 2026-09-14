@@ -17,7 +17,7 @@ sessions. Lessons are captured as **pending records**, each waiting for
 the human to decide what happens to it: fold it into the living
 documentation (**approve/route**), decline it (**deny/reject**), push
 the decision to later (**defer**), or mark it as already covered
-(**graduate**). Records are grouped into **buckets** by where the
+(**retire**). Records are grouped into **buckets** by where the
 lesson belongs: one bucket per skill, one per registered project, and
 one for universal personal rules (user scope). An automated analyst
 usually pre-reads each record and attaches a **proposal** — a suggested
@@ -47,8 +47,10 @@ without that human confirm.
 - **reject** — declines the lesson (with an optional note saying why —
   the note feeds the analyst's future judgment).
 - **defer** — takes it off the queue until a date (default 30 days).
-- **graduate** — records that the lesson already lives in the
-  documentation; the win is acknowledged, nothing is written.
+- **retire** (the verb the specs used to call `graduate`, still accepted
+  as a hidden alias for one release) — records that the lesson already
+  lives in the documentation; the win is acknowledged, nothing is
+  written.
 - **rehome** *(added 2026-07-18)* — moves a still-pending lesson to a
   different registered project's queue, for when the lesson really
   belongs to a wider project than the repo it was captured in (the
@@ -73,7 +75,7 @@ waiting, tell the human and let them deal with the pending one first.
 
 Rules that will save you refusals:
 
-- Only `route`, `reject`, `defer`, `graduate`, and *(added
+- Only `route`, `reject`, `defer`, `retire`, and *(added
   2026-07-18)* `rehome` are proposable. You can never propose
   registering a project (`host add`) or collapsing a duplicate
   cluster — those are the human's own controls.

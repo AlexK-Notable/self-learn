@@ -21,6 +21,10 @@
 #   - ~/.config/systemd/user/self-learn-host.service -> systemd/self-learn-host.service
 #     (U-engine Phase 2 — the long-lived scheduler; NOT enabled by this
 #     script, same as the other units — u-engine-shared-sdk-core-spec.md §5.7)
+#   - ~/.config/systemd/user/self-learn-overseer.{service,timer} -> systemd/…
+#     (S-66 — the weekly overseer examination pass; always linked, never
+#     enabled; the primary path is the fourth job inside
+#     self-learn-host.service — this pair is for a timer-topology host)
 #   - with --legacy-miner:
 #     ~/.config/systemd/user/self-learn-miner.{service,timer} -> systemd/…
 #     (opt-in now that self-learn-host.service schedules the nightly mine;
@@ -286,5 +290,15 @@ if command -v systemctl >/dev/null 2>&1; then
     fi
   fi
 fi
+
+say "== overseer unit + timer (S-66; systemd --user) =="
+link "$REPO/systemd/self-learn-overseer.service" "$UNIT_DIR/self-learn-overseer.service"
+link "$REPO/systemd/self-learn-overseer.timer" "$UNIT_DIR/self-learn-overseer.timer"
+run "timeout 10 systemctl --user daemon-reload"
+say "  NOT enabled by this script. The primary path is the fourth job"
+say "  inside self-learn-host.service, once the human sets"
+say "  overseer.enabled: true in config.yaml and starts its maiden run"
+say "  by hand; the timer pair above is for a timer-topology host:"
+say "  systemctl --user enable --now self-learn-overseer.timer"
 
 say "done."

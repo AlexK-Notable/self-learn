@@ -63,6 +63,12 @@ ledger on a given host) belong in `CLAUDE.local.md`, which is git-ignored.
   `SELF_LEARN_OVERRIDE_*` variable exported: `test_worker.py` fails 10 tests under
   them (measured 2026-09-03). The override channel outranks `config.yaml` and exists
   for read verbs against a live ledger.
+- `self-learn overseer run --dry-run` is a read verb against the live
+  ledger: it writes only inside the cache stage, commits nothing, and is
+  safe under the standing override prefix a host's `CLAUDE.local.md`
+  names for read-only work. `self-learn steward run --dry-run` has the
+  same property, for the same reason (`commands/review.md`'s
+  `## Steward run` section).
 
 ## Safety rules inherent to the product
 
@@ -76,6 +82,18 @@ ledger on a given host) belong in `CLAUDE.local.md`, which is git-ignored.
 - Agents never enable, start, stop, or restart systemd units, never run
   `daemon-reload`, and never signal the host process. Unit-file edits are inert
   until the human reloads; say so in the commit body.
+- The steward (S-29 as amended) and the overseer (S-66) run as jobs
+  inside the same `serve` process as the miner and the worker — nothing
+  here adds a standalone process for an agent to start or stop. The
+  cases they write follow S-65's content contract. Agents never set
+  `steward.enabled` or `overseer.enabled` to `true`, and never set
+  `overseer.hook_activation` to `true` — the human sets these true and
+  starts that agent's maiden run by hand, watching it; there is no later
+  switch from a supervised phase to an unattended one, and after the
+  maiden run the same setting is only the human's rollback switch.
+  Every case either agent writes is ledger content
+  (`$SELF_LEARN_HOME/cases/**`, `$SELF_LEARN_HOME/overseer/**`) and never
+  appears in this repository, exactly like every other lesson.
 - Revert probes by inverse edit and verify with `sha256sum` against
   `git show HEAD:<path>`. Never `git checkout --`, `git restore`, `git stash`, or
   `git reset --hard` to undo a probe; they have destroyed uncommitted work here.

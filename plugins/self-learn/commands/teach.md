@@ -65,6 +65,20 @@ to stop the container").
     up). Only what the transcript actually shows; skip when unknown.
   All optional — a capture with none of them is still a good capture.
 
+- **A user statement, separately from the lesson (S-65 — optional).**
+  When something the user just said is itself worth keeping on
+  record — a preference they expressed, a scope, an answer to a standing
+  question the system has been carrying — pass `--statement "<verbatim
+  words>"` (requires `--session`, the same transcript reference the
+  lesson's evidence uses). This appends one line to the user-statement
+  store (`statement add --verbatim … --ref
+  transcript:<session>#L<n>`, recorded as `recorded_by: human` — you
+  typed the command, so it is never attributed to an agent), completely
+  separate from the lesson record itself: a statement is the user's own
+  words on the record, not a
+  lesson to route. It is never inferred or paraphrased — capture it only
+  when you can quote it, and only the words actually said.
+
 ## 3. Echo and confirm — never silently capture
 
 Show the user exactly what you are about to store — type, kind, scope,

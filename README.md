@@ -25,19 +25,28 @@ compiler write skills into the product, which is what D1 forbids.
 ```
 plugins/self-learn/
   cli/                  the Python CLI (uv project; `uv run pytest -q`)
+                        cases/statements/user_model — the decision-case store,
+                        the user-statement store, and the model of the user (S-65)
+                        steward.py + steward_prompt.py — the nightly steward runner (S-29 as amended)
+                        overseer/ — the weekly overseer runner, population sampler,
+                        hook-activation path, and catalogue-health checks (S-66)
   ui/                    the G-3 web adjudication surface (uv project; localhost, systemd service)
-  skills/self-learn/    SKILL.md + references (routing doctrine, card registry)
-  commands/             /self-learn:review, /self-learn:teach
-  hooks/                self-learn-pending.sh (SessionStart pending-count line)
+  skills/self-learn/    SKILL.md + references (routing doctrine, card registry, steward method)
+  commands/             /self-learn:review, /self-learn:teach, /self-learn:overseer
+  hooks/                self-learn-pending.sh (SessionStart pending-count line;
+                        also names the overseer's open interpretation questions)
                         self-learn-refread.sh (PostToolUse reference-read observer)
   scripts/self-learn    ~/bin shim (readlink -f → uv run against cli/)
   scripts/self-learn-ui        ~/bin shim (readlink -f → uv run against ui/; `serve` = the systemd entry point)
   scripts/self-learn-ui-open   ~/bin deep-link launcher / window-focuser (the only WM/browser-aware file)
   scripts/self-learn-notify    ~/bin desktop notifier (swaync action → self-learn-ui-open)
 docs/specs/self-learn/  the ratified spec corpus (00–13 + fixtures + reviews)
-systemd/                self-learn-host.service (resident host process: nightly mine at 03:30 + worker)
+systemd/                self-learn-host.service (resident host process: nightly mine at
+                        03:30 + worker + steward; weekly overseer)
                         self-learn-ui.service (G-3 surface, resident web server)
                         self-learn-miner.{service,timer} (legacy timer route, opt-in via --legacy-miner; superseded by the host service)
+                        self-learn-overseer.{service,timer} (S-66 timer-topology pair; always
+                        linked, never enabled — the primary path is the host service's fourth job)
 install.sh              idempotent live-symlink deploy (shims, hooks, skill, commands, units); --dry-run, --legacy-miner, --help
 ```
 
@@ -157,7 +166,7 @@ inert while focus is in a text input.
 | `a` | route (approve) |
 | `d` | reject (deny) |
 | `f` | defer |
-| `g` | graduate |
+| `g` | retire |
 | `i` | iterate (open the adjudication pane) |
 | `o` | cycle override destination |
 | `n` | attach/edit a note |
@@ -165,6 +174,9 @@ inert while focus is in a text input.
 | `r` | retry the pane |
 | `q` | (pane focused) close the split — ends the session |
 | `?` | help overlay (full keymap reference) |
+
+*(`g` was labelled "graduate" before the 2026-09-13 rename; the key and
+its shortcut are unchanged, only the display word is.)*
 
 Resolution keys **arm** the action bar (showing exactly what will run);
 `Enter` executes, any other key disarms — one extra keystroke, zero

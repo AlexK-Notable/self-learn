@@ -1,0 +1,13 @@
+# Weekly examination pass. Persistent=true is the same R1-layer-1
+# reasoning as the miner's timer: a machine asleep at the scheduled hour
+# runs the missed pass at next boot.
+[Unit]
+Description=self-learn overseer — weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 04:15
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

@@ -3,6 +3,12 @@ description: Triage pending self-learn records in a bounded review batch — ana
 argument-hint: [--skill <name> to scope the batch]
 ---
 
+*(For readers of older specs: what this command calls* **retire** *the
+specs used to call* **graduate***, and what it calls* **replaced** *they
+called corrective supersession — both land in the same ledger status,
+`superseded`, told apart by the field that names what covers or replaces
+the record.)*
+
 Run one bounded self-learn review session. You are a **thin caller**: you
 analyze and present; every resolution — compile, commit, sentinel, push,
 note capture — is a `self-learn` CLI verb. You never edit canon targets,
@@ -95,7 +101,15 @@ limit; free-text "Other" is always there beyond them):
   on the exact diff, never a summary) — plus the analyst's stated
   over-block from the rationale. After a hook Apply, the CLI prints two
   required manual steps (./install.sh + the settings.json snippet):
-  relay them verbatim — the guard is inert until both are done.
+  relay them verbatim — the guard is inert until both are done. Inside a
+  *human* review session the two manual steps stay exactly as printed —
+  with one shortcut: `self-learn hook activate <id>` performs both by
+  hand (and `hook deactivate <id>` reverses it), no setting required.
+  Separately, when the user's delegation switch
+  (`overseer.hook_activation`) is on, the overseer places and activates
+  an approved hook route by code on its own owned path (S-66); with the
+  switch off it places the route and parks it with a receipt saying
+  activation is delegated but switched off.
 - **Discuss** — open-ended: drop into conversation with the record and
   proposal in context. You may **edit the pending record** per the user's
   direction (pending substance is freely editable; use Edit on the record
@@ -128,6 +142,57 @@ review session must never hand-sequence a run of individual `self-learn
 naming a `host` verb or a hook route is refused at validation (nothing
 runs) — sequence those by hand, outside the sheet.
 
+**A sheet may name the decision case it is applying (S-65).** A
+top-level `case: case-<8hex>` key is optional; when present, the sheet's
+receipts thread automatically to that case's Application section (no
+extra call needed). An unknown top-level key — including a hand-written
+`actor:` — is refused before item 1 runs, the same way an unknown item
+key is refused today. Results JSON gains the same `case` field, and a
+sheet item after a stop point is reported with `state: not-attempted`
+rather than being silently dropped from the output.
+
+**One new verb joins the sheet grammar**, scanned and lock-guarded like
+every other write:
+
+- `revise` — a wording fix, never a substance change: keys `section`,
+  `text`, `because`. Refused on anything but a pending or deferred
+  record. Use it before a `route`/`reject`/etc. in the same sheet when
+  the lesson is right and its sentence is wrong.
+
+`reconsider` is not a sheet verb — it is a command,
+`self-learn reconsider <lrn-…> --case case-…`, run by the steward's
+runner or by hand against a successor case (`kind: reconsider`, naming
+the record's original case in `supersedes`). The sheet that then carries
+the corrected verb names that same case with the top-level `case:` key;
+naming it is what makes a resolution verb legal again on an
+already-routed record — a resolution verb on an already-routed record is
+otherwise refused. This is what lets a wrong route or reject be
+corrected: the original case is marked superseded by the `reconsider`
+case, and it is the new verb the sheet applies that actually takes
+effect. Whether the mechanics of a `routed → rejected` transition are a
+plain status flip or need a `supersede`+`recompile` step is still an
+open build-gate question for that unit — nothing here depends on which
+way it lands.
+
+**Two different undo paths — do not confuse them.** Among supersessions,
+`reopen` is for a mistaken retirement only: `self-learn reopen <id>`
+restores a wrongly retired record to `pending` with no successor case
+needed, because the named surface never actually covered it, so there is
+nothing to supersede. A wrong `route` or other resolution is revisited
+with `reconsider` instead, which opens a new case and a new verb rather
+than reverting the old one — a routed record's correction is itself a
+decision, recorded as one, not a reset to an earlier state. `reopen`
+also keeps its existing use for a rejected record, unchanged; it is
+refused for a replaced record, which has a live successor.
+
+`by:` names the actor that made the decision and is permitted on every
+resolution verb (this build widens it from today's `route`-only key);
+inside a human review session it is implicit (`by: human`) and you never
+need to set it. The value set now includes `steward` and `overseer`
+alongside `human`, `analyst`, and `agent` — those two are written only by
+the steward's and the overseer's own runners, never by a hand-written
+sheet.
+
 **Scope mismatch** — not a card option, but tell the user when you see it:
 if a pending record's firing range clearly belongs to a different scope
 than the bucket it's filed in (captured at user scope but really only
@@ -137,11 +202,15 @@ it **discards the current proposal and re-analyzes the record in the new
 bucket** — the analyst's judgment is bucket-relative, so a carried
 proposal would render a stale card reasoning from the wrong scope.
 
-**Graduate** — when the proposal sets `already_canon: true` on a single
-card, the right resolution is graduation, not routing: replace Apply with
-**Graduate** (`self-learn graduate <id>`), showing
-`already_canon_reason`. Never reject an already-canon record for being
-redundant — the lesson won.
+**Retire** — when the proposal sets `already_canon: true` on a single
+card, the right resolution is retirement, not routing: replace Apply with
+**Retire** (`self-learn retire <id> --covered-by <surface>`), naming the
+surface that already covers it (a `claude-md`, a `SKILL.md`, a reference
+file, or an output style), and showing `already_canon_reason`. Never
+reject an already-canon record for being redundant — the lesson won.
+(`graduate` is the old name for this verb and stays a hidden alias for
+one release; `superseded_by` now carries `covered_by:<kind>:<name>` in
+place of the old literal `"canon"`.)
 
 **Bulk-acknowledge** — a homogeneous group of already-canon records gets
 **one** multiSelect card listing them, not N detail cards. Each item gets
@@ -149,8 +218,8 @@ redundant — the lesson won.
 what the episode was about, in plain words) plus where canon already covers it
 (`already_canon_reason`); the record id rides along as metadata, never
 as the label. Every selected record resolves via its own
-`self-learn graduate <id>` call; any the user de-selects gets an
-individual card in this batch.
+`self-learn retire <id> --covered-by <surface>` call; any the user
+de-selects gets an individual card in this batch.
 
 **Budget card (U-cap, 02 §4).** Run `self-learn report --json` and read
 `.context_budget`. If **any** signal carries `flagged: true`, open the
@@ -169,12 +238,12 @@ Offers, in this order, and only for signals that are actually flagged:
   `self-learn teach … --supersedes <lrn-id>` (**one id — the flag is
   single-valued and the field is scalar; never repeat it**), route it,
   then retire each remaining member individually with
-  `self-learn graduate <id>`. The human runs these; the card runs
-  nothing.
-- **`composition` flagged** → offer **Graduate**
-  (`self-learn graduate <id>`) for the named oldest entries, showing
-  `managed_share`, `managed_share_growth_30d_pp`, and `caution_share`.
-  State `past_is_lower_bound` when any delta is shown.
+  `self-learn retire <id> --covered-by <surface>`. The human runs these;
+  the card runs nothing.
+- **`composition` flagged** → offer **Retire**
+  (`self-learn retire <id> --covered-by <surface>`) for the named oldest
+  entries, showing `managed_share`, `managed_share_growth_30d_pp`, and
+  `caution_share`. State `past_is_lower_bound` when any delta is shown.
 - **`growth` flagged** → state the rate and `doubling_days_est`. **Offer
   nothing.** There is no per-record action for a rate; it is a fact for
   the human, and manufacturing an action for it would re-create the cap.
@@ -229,18 +298,23 @@ tolerate, or retire?"* The resolutions map to verbs:
 - **Tolerate** → `self-learn confirm-recurrence <id> --event <nonce>
   --tolerate --note "<why the rule stays>"`.
 - **Retire** → discuss; retirement without a successor is
-  `self-learn graduate <id>` (woven into canon) or a bare supersede —
-  the user chooses, you never guess.
+  `self-learn retire <id> --covered-by <surface>` (something already
+  loaded covers it) — or, if a rewritten successor exists, `supersede`
+  (which displays as **replaced**, `replaced by lrn-…`) — the user
+  chooses, you never guess.
 - **Dismiss** → `self-learn dismiss-suspect <id> --event <nonce> --why
   <reason> [--note "<why it's false>"]` — the sighting was a matcher
   false-positive, not a recurrence at all; the telemetry event is
   preserved, only the card clears.
 A plain confirmation (recurrence is real, fix comes later) is
 `confirm-recurrence` without `--tolerate`. Read `basis` before choosing
-Tolerate vs Dismiss: `fire-violated` is the model's own report that it
-broke the rule, while `miner-match` and `title-token-overlap` are
-text-similarity heuristics that can fire on a lesson nobody actually
-violated.
+Tolerate vs Dismiss: `fire-suspected-violation` (renamed from
+`fire-violated` — a fire is always a suspicion for the steward to check
+against the transcript line, never a confirmed violation by itself) is
+the model's own suspected report, while `miner-match` and
+`title-token-overlap` are text-similarity heuristics that can fire on a
+lesson nobody actually violated. (A basis recorded before this rename
+still reads `fire-violated`; the CLI accepts both spellings on read.)
 
 Read each verb's output line: it reports the commit and push state. Show
 the CLI's message verbatim on the card and never work around it with
@@ -304,6 +378,115 @@ ever see a self-learn surface report a state it cannot know — "nothing was
 written" from a layer that did not do the writing — that is the same bug
 class, and it is worth a capture.
 
+Separately from the table above, the unattended run commands — `mine
+run`, `worker run`, `worker kick`, and `steward run` (the `## Cases` and
+`## Steward run` sections, below) — use a smaller, separate contract
+(FW-85): `0` something ran and landed; the new `EXIT_HELD` (10) means
+the run found nothing due and held — this is NOT a failure, and before
+FW-85 it was indistinguishable from `0`; `6` a STOP intent blocked the
+run before it started — a different cause from the verb table's `6`
+above, with the same consequence: nothing was written; `64` usage.
+Before FW-85, a held run and an actually-successful run both returned
+`0`, so a wrapper script or a human glancing at `$?` could not tell
+"nothing to do" from "something happened" — `EXIT_HELD` is the fix, not
+a new failure mode.
+
+## Cases
+
+Every steward and overseer decision is a **decision case**
+(`$LEDGER/cases/<yyyy-mm>/case-<8hex>.md` — six frozen-then-appended
+sections; S-65) rather than a bare verb call. You do not normally need to
+touch these directly in a human review session — routing through the
+cards above still works exactly as before — but they are how you inspect
+what an unattended run decided, and how you correct it:
+
+- `self-learn case show <id> [--evidence-only] [--json]` — the frozen
+  decided account. `--evidence-only` is BLIND by default (no separate
+  `--blind` flag): it withholds the frontmatter's `outcome`,
+  `superseded_by`, `parked_for`, and `parked_reason`, plus the Decision,
+  Application, and Later-observations sections — so it hides the verb,
+  the reasoning, and the receipts, not only the reasoning. Read it first
+  if you are re-examining a decision before reading the full view, the
+  same discipline the overseer follows.
+- `self-learn case list [--since T] [--provisional] [--parked-for
+  overseer] [--parked-reason <reason>] [--record lrn-…] [--json]` — the
+  index; use it to find what ran overnight or what is waiting on the
+  overseer. `--parked-reason` filters on the closed set (`hook`,
+  `always-loaded-user-scope`, `broad-removal`, `authority-unclear`,
+  `scope-conflict`).
+- `self-learn case observe <id> --kind
+  examined|presented|statement|corrected|dependency-moved --text …
+  [--ref …] [--outcome agreed|corrected|noted]` — appends a Later
+  observations entry with its own `obs-<8hex>` id; never edits the
+  frozen account. `--outcome` applies to a `presented` observation only.
+  A `statement` or `dependency-moved` observation whose reference is one
+  of the case's own dependencies queues that case for the steward's next
+  nightly run automatically — you do not additionally ask for a
+  reconsideration.
+- `self-learn statement add --verbatim … --ref
+  transcript:<session>#L<n>|conversation:<obs-id> [--answers …]
+  [--scope …]` — records something the user actually said, verbatim,
+  with what it answers and its stated scope. `conversation:<obs-id>` is
+  the reference to use for words typed into the overseer's own
+  conversation, where no transcript line exists.
+- `self-learn user-model add --provisional --statements stmt-…[,stmt-…]
+  [--basis um-…@r…,…] …` / `user-model lapse um-…
+  --changed-condition <key>|--contrary <ref>|--consolidated-into um-…
+  --at <date>` — the human path into the model of the user. A system
+  reading in containers B or C needs at least one statement id behind it
+  — the CLI refuses one that names none. An entry is marked seen only
+  through `case observe --kind presented`, never by any other write, and
+  a presentation clears "provisional" regardless of what the user says
+  in reply, or whether they reply at all.
+
+A parked case (`kind: parked`, `parked_for: overseer`) is a question the
+steward could not settle alone — its `parked_reason` names which of the
+five kinds stopped it, and section 3 holds its tentative answer, if it
+has one, and its reason for stopping there. Deciding a parked item
+yourself in a human session still needs the successor case: write the
+stage file, `self-learn case record <stage-file>` to get its id (naming
+`supersedes: <parked case>`), put that id in the sheet's top-level
+`case:` key, then apply the sheet the usual way — the receipts thread
+back to the case automatically. Skipping the case leaves the parked case
+with `parked_for: overseer` and no `superseded_by`, so it never leaves
+the overseer's intake and draws a refused attempt every week. This is
+the same order the overseer's own
+runner uses when it decides a parked item in the user's stead — a human
+resolving one is not a special case.
+
+## Steward run
+
+`self-learn steward run [--dry-run] [--json]` runs the same decision the
+nightly `serve` job runs, on demand. It is the manual path for the
+maiden run and for a human who wants a run right now rather than waiting
+for the schedule; it never has a smaller authority than the automatic
+run — it applies its own decisions immediately, the same as the nightly
+job does, unless `--dry-run` is given.
+
+- `--dry-run` writes its stage files and no ledger commit — a fixture and
+  inspection flag, never a rollout step. Use it to see what the steward
+  would do before trusting it unattended, the same way you would inspect
+  a batch sheet with `--dry-run` first.
+- Every routed or resolved record from a steward run carries `by:
+  steward` — filter `case list` or the record's own history to see which
+  decisions were the steward's.
+- Exit codes follow the unattended-run contract in the exit-code list
+  above: `0` ran and decided something, `EXIT_HELD` nothing was due, `6`
+  a STOP intent blocked the run before it started, `64` usage.
+- There is no per-run cap on records decided — a large queue is decided
+  in one run, across as many model calls as it needs; the run record
+  prints calls, turns, and duration per call so an unusually long run is
+  visible the morning after, never silent.
+- The run's report names its coverage across the seven verb strata
+  (route, reject, retire, replaced, consolidate, no-action,
+  parked-then-decided) crossed with the three scopes (user, project,
+  skill) and says plainly which of those twenty-one cells had nothing in
+  them this run — an empty stratum is stated, never left for you to
+  notice by its absence.
+
+A steward run never asks you anything mid-run; read its cases afterward
+(§ Cases, above) the same way you would read anyone else's.
+
 ## Session end
 
 1. If the session's decision sheet still has unapplied items, apply it
@@ -312,7 +495,7 @@ class, and it is worth a capture.
    per the table above; on **8** or **1**, show the refused items' own
    reasons from the `--json` envelope.
 2. `self-learn sentinel release`.
-3. Summary: resolved (routed/rejected/graduated), deferred, and what
+3. Summary: resolved (routed/rejected/retired), deferred, and what
    remains pending beyond this batch.
 4. If `batch` (or any verb) reported a failed push ("PUSH FAILED —
    commit kept", exit **3**), run `self-learn push` once and show its
