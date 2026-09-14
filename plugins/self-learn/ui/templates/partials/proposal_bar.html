@@ -46,6 +46,9 @@
     <span class="proposal-title">{{ proposal.title or "(untitled record)" }}</span>
     {% if proposal.dest %}<span class="arrow">&rarr;</span> <span class="dest">{{ proposal.dest }}</span>{% endif %}
     {% if proposal.until %}<span class="dest">until {{ proposal.until }}</span>{% endif %}
+    {# S-67: the agent's suggested covering surface — a suggestion the
+       human still confirms, never auto-applied. #}
+    {% if proposal.covered_by %}<span class="dest">covered by {{ proposal.covered_by }}</span>{% endif %}
     <code class="record-row-id">{{ proposal.record_id }}</code>
   </p>
   {% endif %}

@@ -11,7 +11,7 @@ Two upstream sources merge into one outgoing stream:
 - :class:`AppEventHub` (this module) — everything else: ``applying``
   (wrapped around each verb-runner call — 09 §3: "further resolution
   submissions are disabled with a visible 'applying…' state"),
-  ``bulk_progress`` (the bulk-graduate loop), ``banner`` (resolved-
+  ``bulk_progress`` (the bulk-retire loop), ``banner`` (resolved-
   elsewhere / bucket-clear). Deliberately envelope-agnostic — a future
   U6 publishing ``pane_delta``/``pane_block``/``pane_tool``/``pane_result``
   needs zero changes here.

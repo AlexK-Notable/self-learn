@@ -46,7 +46,7 @@ in-flight session; ``start()`` on a DIFFERENT record while one is live
 returns ``"armed"`` (09 §2.4: "armed prompt to interrupt current first")
 rather than silently switching. :meth:`PaneManager.interrupt_active_session`
 is the ONE hook the verb-dispatch call sites (``routes.py``'s
-``action_confirm``/``graduate_bulk``) await BEFORE running a resolution
+``action_confirm``/``retire_bulk``) await BEFORE running a resolution
 verb on a record under active iteration (09 §3 P1-4 / P3-8's
 resolved-elsewhere-implies-interrupt rule) — wired directly in
 ``routes.py`` (owned by this same track), so no ``runner.py`` change is

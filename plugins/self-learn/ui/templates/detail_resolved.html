@@ -47,6 +47,12 @@
 
   <section aria-label="routing">
     <h2>Routing</h2>
+    {# S-67: the ONE display helper's rendering — "replaced by lrn-…" or
+       "retired, covered by <kind>:<name>" / "retired, covering surface
+       unrecorded" — present only for a superseded record. #}
+    {% if model.supersession %}
+    <p class="supersession">{{ model.supersession }}</p>
+    {% endif %}
     {% if model.routing.destination %}
     <p>Routed{% if model.routing.routed_at %} {{ model.routing.routed_at | humanize_ts }}{% endif %}
       <span class="arrow">&rarr;</span>
@@ -78,7 +84,7 @@
      `model.status` is `record.status` at render time (build_resolved_
      detail_model), so this IS the "Detail render independently
      re-checks record.status == 'routed'" guard §2.4 names — a
-     graduated or rejected record's page includes NO action bar at all
+     retired or rejected record's page includes NO action bar at all
      (criterion 7), never a resolved quad with nothing left to arm. #}
   {% if record_proposal %}
     {% with proposal=record_proposal, kind="detail", verb_label=proposal_verb_label, error=None %}

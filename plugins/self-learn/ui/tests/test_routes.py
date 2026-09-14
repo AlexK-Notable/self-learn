@@ -1,7 +1,7 @@
 """routes.py — the T-A interaction half (10 §2): httpx against the ASGI
 app, in-process, fake runner, constructed throwaway ledgers via
 tests/support.py. Covers: arm->disarm->confirm flows with argv asserted,
-o-cycle, bulk-collapse graduate loop, cluster expand -> survivor select,
+o-cycle, bulk-collapse retire loop (S-67: was graduate), cluster expand -> survivor select,
 t/c holding rows, post-route contradicts offer, followup done,
 advance-to-next + bucket-clear, deep-link + resolved-elsewhere, keymap
 single-source, /report verbatim, hook Detail, unregistered-host notice,
@@ -84,12 +84,16 @@ class TestBuildArgv:
             "defer", "lrn-aa000001", "--until", "2026-08-01",
         ]
 
-    def test_graduate(self) -> None:
-        assert build_argv("graduate", "lrn-aa000001") == ["graduate", "lrn-aa000001"]
+    def test_retire(self) -> None:
+        assert build_argv("retire", "lrn-aa000001", covered_by="claude-md:rules") == [
+            "retire", "lrn-aa000001", "--covered-by", "claude-md:rules",
+        ]
 
-    def test_graduate_no_push(self) -> None:
-        assert build_argv("graduate", "lrn-aa000001", no_push=True) == [
-            "graduate", "lrn-aa000001", "--no-push",
+    def test_retire_no_push(self) -> None:
+        assert build_argv(
+            "retire", "lrn-aa000001", covered_by="claude-md:rules", no_push=True
+        ) == [
+            "retire", "lrn-aa000001", "--covered-by", "claude-md:rules", "--no-push",
         ]
 
     def test_confirm_recurrence_tolerate(self) -> None:
@@ -915,34 +919,35 @@ class TestDetailPage:
         r = c.get(f"/record/{rec.id}")
         assert "already canon" in r.text.lower()
 
-    def test_graduate_highlighted_when_already_canon(self, tmp_path: Path) -> None:
+    def test_retire_highlighted_when_already_canon(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
         rec = make_behavior(scope="skill:s")
         seed_record(sb.ledger, rec)
         seed_proposal(sb.ledger, rec.id, already_canon=True)
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}")
-        # Graduate stays available (P1-9b: affordance, never a gate) AND
+        # Retire stays available (P1-9b: affordance, never a gate) AND
         # carries a visible highlight — a text-labeled badge (Y-10: never
-        # color alone), not just a CSS class.
-        assert 'data-key-action="graduate"' in r.text
+        # color alone), not just a CSS class. S-67: `graduate`'s old
+        # data-key-action is `retire` now.
+        assert 'data-key-action="retire"' in r.text
         assert "already canon" in r.text.lower()
 
-    def test_graduate_not_highlighted_when_not_already_canon(self, tmp_path: Path) -> None:
+    def test_retire_not_highlighted_when_not_already_canon(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
         rec = make_behavior(scope="skill:s")
         seed_record(sb.ledger, rec)
         seed_proposal(sb.ledger, rec.id, already_canon=False)
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}")
-        assert 'data-key-action="graduate"' in r.text
+        assert 'data-key-action="retire"' in r.text
         import re as _re3
 
-        graduate_button = _re3.search(
-            r'data-key-action="graduate".*?</button>', r.text, _re3.S
+        retire_button = _re3.search(
+            r'data-key-action="retire".*?</button>', r.text, _re3.S
         )
-        assert graduate_button is not None
-        assert "already canon" not in graduate_button.group(0).lower()
+        assert retire_button is not None
+        assert "already canon" not in retire_button.group(0).lower()
 
     def test_no_proposal_detail_shows_cta(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
@@ -1029,18 +1034,19 @@ class TestTerminologyDefinitions:
         # THREE independent render sites carry this gloss for an
         # already-canon pending record: the top-of-page model.badges
         # loop, the Why section's own paragraph, and the action bar's
-        # Graduate button badge — exact count so a regression in any ONE
-        # of the three (not just all three at once) reddens this.
+        # Retire button badge (S-67: was Graduate) — exact count so a
+        # regression in any ONE of the three (not just all three at
+        # once) reddens this.
         assert r.text.count("canon = the guidance file") == 3
 
-    def test_graduate_button_defines_canon_on_detail(self, tmp_path: Path) -> None:
+    def test_retire_button_defines_canon_on_detail(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
         rec = make_behavior(scope="skill:s")
         seed_record(sb.ledger, rec)
         seed_proposal(sb.ledger, rec.id, already_canon=False)
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}")
-        assert 'data-key-action="graduate"' in r.text  # positive control
+        assert 'data-key-action="retire"' in r.text  # positive control
         assert "Retire this lesson" in r.text
 
     def test_already_canon_badge_defines_canon_on_bucket_row(self, tmp_path: Path) -> None:
@@ -1407,9 +1413,9 @@ class TestArmDisarmConfirm:
         assert "Approve (e)" in r.text
 
     def test_confirm_route_calls_runner_with_exact_argv(self, tmp_path: Path) -> None:
-        """Resolution-evidence unit (§2.1/§4): route/reject/defer/graduate
-        now carry `--json` on every confirm — the CLI envelope this unit
-        renders as the success leg.
+        """Resolution-evidence unit (§2.1/§4): route/reject/defer/retire
+        (S-67: was graduate) now carry `--json` on every confirm — the
+        CLI envelope this unit renders as the success leg.
 
         FW-64: this POST never carries `dest_touched` (no cycle-destination
         round trip happened), so it is an unmodified approve-as-proposed —
@@ -1471,15 +1477,17 @@ class TestArmDisarmConfirm:
         )
         assert runner.calls == [["defer", rec.id, "--until", "2026-08-01", "--json"]]
 
-    def test_confirm_graduate_argv(self, tmp_path: Path) -> None:
+    def test_confirm_retire_argv(self, tmp_path: Path) -> None:
         sb, rec = self._seed(tmp_path)
         c, runner = make_client(sb)
         c.post(
             f"/record/{rec.id}/action/confirm",
-            data={"verb": "graduate", "kind": "detail"},
+            data={"verb": "retire", "kind": "detail", "covered_by": "claude-md:rules"},
             headers={"HX-Request": "true"},
         )
-        assert runner.calls == [["graduate", rec.id, "--json"]]
+        assert runner.calls == [
+            ["retire", rec.id, "--covered-by", "claude-md:rules", "--json"]
+        ]
 
     def test_confirm_requires_cookie_and_hx_request(self, tmp_path: Path) -> None:
         sb, rec = self._seed(tmp_path)
@@ -1524,12 +1532,12 @@ class TestArmDisarmConfirm:
         cannot tell an authentic refusal apart from a hand-typed string
         — the exact "FakeRunner doesn't carry page reads" trap):
 
-        1. POSITIVE CONTROL, first: call the real `verbs.graduate`
-           in-process against the record this test just resolved to
-           "rejected" on disk. If FW-51's guard were reverted, `graduate`
-           would stop raising here and THIS line goes red before the
-           HTTP half ever runs — proof the refusal text below is
-           authentic, not a guess.
+        1. POSITIVE CONTROL, first: call the real `verbs.retire` (S-67:
+           was `verbs.graduate`) in-process against the record this test
+           just resolved to "rejected" on disk. If FW-51's guard were
+           reverted, `retire` would stop raising here and THIS line goes
+           red before the HTTP half ever runs — proof the refusal text
+           below is authentic, not a guess.
         2. READ CONTROL, last: re-read the record's exact bytes straight
            off disk (never through FakeRunner, which never wrote
            anything) and assert both bytes and status are unchanged —
@@ -1551,18 +1559,18 @@ class TestArmDisarmConfirm:
         before_bytes = resolved_path.read_bytes()
 
         with pytest.raises(verbs.VerbError) as excinfo:
-            verbs.graduate(sb.ledger, rec.id)
+            verbs.retire(sb.ledger, rec.id, covered_by="claude-md:rules")
         refusal_message = str(excinfo.value)
         assert "rejected" in refusal_message  # sanity on the control itself
 
         runner = FakeRunner()
         runner.queue_result(
-            RunResult(1, stderr=f"self-learn graduate: {refusal_message}")
+            RunResult(1, stderr=f"self-learn retire: {refusal_message}")
         )
         c, _runner = make_client(sb, runner=runner)
         r = c.post(
             f"/record/{rec.id}/action/confirm",
-            data={"verb": "graduate", "kind": "detail"},
+            data={"verb": "retire", "kind": "detail", "covered_by": "claude-md:rules"},
             headers={"HX-Request": "true"},
         )
         assert r.status_code == 200
@@ -2794,7 +2802,12 @@ class TestNextHopIsScopedNotJustNamed:
         assert f'href="/record/{user_wrong.id}"' not in r.text
 
 
-class TestBulkGraduate:
+class TestBulkRetire:
+    """S-67 (U13): was TestBulkGraduate -- `/bucket/<scope>/<name>/
+    graduate-bulk` is `/retire-bulk` now, with a REQUIRED `covered_by`
+    Form param applied to every selected id (`routes.py`'s
+    `retire_bulk`)."""
+
     def test_argv_sequence_no_push_then_terminal_push(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
         ids = []
@@ -2805,15 +2818,15 @@ class TestBulkGraduate:
             ids.append(rec.id)
         c, runner = make_client(sb)
         r = c.post(
-            "/bucket/skill/s/graduate-bulk",
-            data={"ids": ",".join(ids)},
+            "/bucket/skill/s/retire-bulk",
+            data={"ids": ",".join(ids), "covered_by": "claude-md:rules"},
             headers={"HX-Request": "true"},
         )
         assert r.status_code in (200, 303)
         assert runner.calls == [
-            ["graduate", ids[0], "--no-push"],
-            ["graduate", ids[1], "--no-push"],
-            ["graduate", ids[2], "--no-push"],
+            ["retire", ids[0], "--covered-by", "claude-md:rules", "--no-push"],
+            ["retire", ids[1], "--covered-by", "claude-md:rules", "--no-push"],
+            ["retire", ids[2], "--covered-by", "claude-md:rules", "--no-push"],
             ["push"],
         ]
 
@@ -2830,13 +2843,13 @@ class TestBulkGraduate:
         runner.queue_result(RunResult(1, stderr="boom"))
         c, _runner = make_client(sb, runner=runner)
         r = c.post(
-            "/bucket/skill/s/graduate-bulk",
-            data={"ids": ",".join(ids)},
+            "/bucket/skill/s/retire-bulk",
+            data={"ids": ",".join(ids), "covered_by": "claude-md:rules"},
             headers={"HX-Request": "true"},
         )
         assert runner.calls == [
-            ["graduate", ids[0], "--no-push"],
-            ["graduate", ids[1], "--no-push"],
+            ["retire", ids[0], "--covered-by", "claude-md:rules", "--no-push"],
+            ["retire", ids[1], "--covered-by", "claude-md:rules", "--no-push"],
             ["push"],
         ]
         assert ids[1] in r.text  # failing id shown
@@ -4157,9 +4170,10 @@ class TestNextRecordPrefetch:
         it must not be weakened to bare `200`, which a stale pending
         render would ALSO produce): the replacement observable is the
         RENDERED STATE itself — `route` absent (the pending quad is
-        gone), `graduate` present (the resolved quad's one control). A
-        stale bundle would hold the record as it was while pending,
-        which renders `route` — this bites exactly where the 303 did."""
+        gone), `retire` present (S-67: was `graduate` — the resolved
+        quad's one control). A stale bundle would hold the record as it
+        was while pending, which renders `route` — this bites exactly
+        where the 303 did."""
         sb = make_env(tmp_path)
         older = make_behavior(scope="skill:s", created_at="2026-01-01T00:00:00Z")
         newer = make_behavior(scope="skill:s", created_at="2026-01-05T00:00:00Z")
@@ -4176,7 +4190,7 @@ class TestNextRecordPrefetch:
         r = c.get(f"/record/{newer.id}", follow_redirects=False)
         assert r.status_code == 200
         assert 'data-key-action="route"' not in r.text
-        assert 'data-key-action="graduate"' in r.text
+        assert 'data-key-action="retire"' in r.text
 
     def test_bucket_clear_next_id_none_schedules_no_prefetch(self, tmp_path: Path) -> None:
         """The last pending record in a bucket has no "next" — nothing

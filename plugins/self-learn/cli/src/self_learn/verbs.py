@@ -1,7 +1,15 @@
-"""Resolution verbs (T7): route / reject / defer / graduate / supersede —
+"""Resolution verbs (T7): route / reject / defer / retire / supersede —
 plus the non-resolution filing moves `rehome` (02 §2, added 2026-07-18)
 and `rescope` (u-rescope, added 2026-08-23 — the `user <-> skill:<name>`
 sibling; `rehome` stays project<->project only).
+
+S-67 (2026-09-14): `graduate` is renamed `retire` — a lesson is retired
+because guidance already loaded elsewhere covers it, and the covering
+surface is named (`--covered-by <kind>:<name>`). `graduate` stays a
+thin, hidden alias for one release (`covered_by` optional; absent, it
+writes the legacy `superseded_by: canon` and prints a deprecation
+line). `supersede` is unchanged in code; its outcome displays as
+`replaced` (:func:`self_learn.records.supersession_display`).
 
 Function layer only — T8 wires these into the CLI. Public signatures:
 
@@ -9,7 +17,8 @@ Function layer only — T8 wires these into the CLI. Public signatures:
           user_claude_md=None) -> VerbResult
     reject(home, record_id, *, note=None, no_push=False) -> VerbResult
     defer(home, record_id, *, until=None, note=None, no_push=False) -> VerbResult
-    graduate(home, record_id, *, note=None, no_push=False) -> VerbResult
+    retire(home, record_id, *, covered_by, note=None, no_push=False) -> VerbResult
+    graduate(home, record_id, *, covered_by=None, note=None, no_push=False) -> VerbResult
     supersede(home, old_id, new_id, *, note=None, no_push=False) -> VerbResult
     rehome(home, record_id, *, to, note=None, no_push=False) -> VerbResult
     rescope(home, record_id, *, to, note=None, no_push=False) -> VerbResult
@@ -45,10 +54,10 @@ Sentinel-scoping pins; 02 §2 commit formats; doc 13 §4 two-phase revision):
     failed push is loud but the commit is kept.
 (g) Release the sentinel iff owned.
 
-Ledger-only verbs (reject, defer, graduate — the managed-section line
-drops at the target's next recompile) stay single-commit in the ledger
-repo. ``supersede`` of a ROUTED record is canon-touching: its entry must
-drop, so the host phase recompiles the target.
+Ledger-only verbs (reject, defer, retire/graduate — the managed-section
+line drops at the target's next recompile) stay single-commit in the
+ledger repo. ``supersede`` of a ROUTED record is canon-touching: its
+entry must drop, so the host phase recompiles the target.
 
 Compile-set note (doc 13): because the ledger op now commits FIRST, the
 compile set is read straight off disk — no shadow copies. skill-md
@@ -212,6 +221,7 @@ __all__ = [
     "reroute",
     "rescope",
     "reject",
+    "retire",
     "route",
     "route_direct",
     "route_dry_run",
@@ -4146,6 +4156,18 @@ def show(home: Path | str, record_id: str) -> dict:
         "deferred_until": record.deferred_until,
         "deferred_count": record.deferred_count,
         "superseded_by": record.superseded_by,
+        # S-67: the ONE display helper's rendering of the raw field
+        # above -- "replaced by lrn-…" / "retired, covered by
+        # <kind>:<name>" / "retired, covering surface unrecorded" --
+        # additive (never removes `superseded_by`, so a `--json`
+        # consumer reading the raw field is unaffected); `None` unless
+        # `status == "superseded"`, same guard `models.py`'s
+        # `ResolvedDetailModel.supersession` uses for the UI detail page.
+        "supersession": (
+            records_mod.supersession_display(record)
+            if record.status == "superseded"
+            else None
+        ),
         "resolution_note": record.resolution_note,
         "routing": (
             {
@@ -6162,6 +6184,18 @@ def reconsider(
         hold.release()
 
 
+#: S-67: `reopen`'s own widened admission — a mistaken RETIREMENT joins
+#: the always-admitted REJECTED record. Deliberately NOT folded into the
+#: shared `REOPENABLE_STATUSES` constant (`ledger_ops.py`): that name is
+#: reused verbatim elsewhere (`batch._STATUS_GATE`'s own dry-run mirror,
+#: separately widened below) and, unlike here, a "superseded" status
+#: alone is not sufficient there either — a REPLACED record (a record-id
+#: `superseded_by`) must stay refused, checked one level down once the
+#: record is in hand (`is_replacement`), never by widening the status
+#: set itself.
+_REOPEN_ADMITTED_STATUSES = REOPENABLE_STATUSES | frozenset({"superseded"})
+
+
 def reopen(
     home: Path | str,
     record_id: str,
@@ -6170,20 +6204,27 @@ def reopen(
     by: str | None = None,
     no_push: bool = False,
 ) -> VerbResult:
-    """Return a REJECTED record to the draft plane (U-verbs §4.2) — the
-    inverse motion 02 §2's freeze-at-routing pin never had to give a
-    rejected record: the old resolution is DISPLACED into `history`
-    (never destroyed — :meth:`Record.clear_resolution_note` refuses
-    unless the note is already there), the record moves resolved/ →
-    pending/ (mv-first, §6.4), and any stale proposal sibling is swept
-    and the sweep DISCLOSED, same shape as the move verbs. `--note`
-    rides the commit body only.
+    """Return a REJECTED record, or a wrongly RETIRED one, to the draft
+    plane (U-verbs §4.2; retirement admitted S-67) — the inverse motion
+    02 §2's freeze-at-routing pin never had to give a rejected record:
+    the old resolution is DISPLACED into `history` (never destroyed —
+    :meth:`Record.clear_resolution_note` refuses unless the note is
+    already there), `superseded_by` is cleared when the record was
+    retired (S-67), the record moves resolved/ → pending/ (mv-first,
+    §6.4), and any stale proposal sibling is swept and the sweep
+    DISCLOSED, same shape as the move verbs. `--note` rides the commit
+    body only.
 
-    Refused, each naming the status AND the reason: `superseded` (a live
-    successor, or a merge-collapse evidence merge, would be orphaned)
-    and `routed` (un-writing canon is FW-133 — deliberately out of this
+    Refused, each naming the status AND the reason: a REPLACED record —
+    `superseded` with a record-id `superseded_by` (a live successor
+    exists; correcting it is `reconsider`'s territory, U5) — and
+    `routed` (un-writing canon is FW-133 — deliberately out of this
     unit's scope; correcting a wrong DESTINATION on an already-routed
-    record is separate, dated work).
+    record is separate, dated work). A RETIRED record — `superseded`
+    with a `covered_by:` reference or the legacy literal `"canon"` — is
+    now ADMITTED (S-67): the covering surface named at retirement time
+    never actually covered the lesson, so there is nothing to supersede,
+    unlike a replacement's live successor.
 
     Fold r1 (F3): *by*, when given, rides the commit body as its own
     trailing ``By:`` paragraph."""
@@ -6192,9 +6233,24 @@ def reopen(
     _scan_or_refuse([path], note)
     _by_trailer(by)  # validates `by` before any lock/mutation
     try:
-        require_status(home, record_id, REOPENABLE_STATUSES, verb="reopen")
+        _, record = require_status(
+            home, record_id, _REOPEN_ADMITTED_STATUSES, verb="reopen"
+        )
     except LedgerOpsError as exc:
         raise VerbError(str(exc)) from exc
+    if record.status == "superseded" and records_mod.is_replacement(
+        record.superseded_by
+    ):
+        # Same "record X is 'status' — reason" shape `require_status`
+        # itself uses (ledger_ops.py) — this refusal is a SECOND gate,
+        # one level below the status check above (which now admits
+        # `superseded` unconditionally), so it has to build that shape
+        # by hand rather than get it from `require_status` for free.
+        raise VerbError(
+            f"record {record_id} is {record.status!r} — superseded by "
+            f"a replacement ({record.superseded_by}); a live successor "
+            f"exists, use reconsider instead of reopen"
+        )
 
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -6590,26 +6646,131 @@ def reroute(
         hold.release()
 
 
-def graduate(
+def retire(
     home: Path | str,
     record_id: str,
     *,
+    covered_by: str,
     note: str | None = None,
     by: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
     reconsider_case: str | None = None,
 ) -> VerbResult:
-    """Graduate a lesson into authored canon: ``superseded_by: canon``
-    (02 §2/§4). Works on a routed record (the hand-weave) or a pending
-    already-canon one (the bulk-acknowledge door). Commit: ``self-learn:
-    graduate lrn-…``. A ROUTED record's host presence is cleaned in the
-    same motion — its managed-section entry drops (or its hook script is
-    removed, M3-4) via the shared retirement host phase. It used to be
-    metadata-only for doc targets ("drops at the next compile"), which
-    stranded the line forever when the graduated record was the target's
-    LAST — recompile enumerates targets off routed records, so an
-    all-retired target was never revisited (found live 2026-07-16).
+    """Retire a lesson: guidance already loaded elsewhere covers it, and
+    *covered_by* NAMES that covering surface — ``<kind>:<name>``, *kind*
+    one of :data:`self_learn.records.COVERAGE_KINDS`
+    (``claude-md``/``skill-md``/``reference``/``output-style``), parsed
+    and validated by :func:`self_learn.records.build_covered_by` (S-67 —
+    "the same parser as the CLI" the UI's own surface field routes
+    through). The stored ``superseded_by`` becomes
+    ``covered_by:<kind>:<name>``, replacing the old bare literal
+    ``"canon"`` new writes never produce again. Delegates to
+    :func:`_retire_impl` — see its docstring for the mechanics (host
+    cleanup, locking, the retirement compile record); this function only
+    owns parsing *covered_by* and refusing an unknown kind or empty name
+    BY NAME before any lock. ``graduate`` (below) is a thin, hidden-alias
+    entry point onto the SAME implementation."""
+    try:
+        surface = records_mod.build_covered_by(covered_by)
+    except records_mod.ValidationError as exc:
+        raise VerbError(str(exc)) from exc
+    return _retire_impl(
+        home,
+        record_id,
+        superseded_by=surface,
+        verb_word="retire",
+        note=note,
+        by=by,
+        no_push=no_push,
+        user_claude_md=user_claude_md,
+        reconsider_case=reconsider_case,
+    )
+
+
+def graduate(
+    home: Path | str,
+    record_id: str,
+    *,
+    covered_by: str | None = None,
+    note: str | None = None,
+    by: str | None = None,
+    no_push: bool = False,
+    user_claude_md: Path | str | None = None,
+    reconsider_case: str | None = None,
+) -> VerbResult:
+    """Deprecated alias for :func:`retire` (S-67), kept for one release
+    so a pre-rename `graduate` sheet or script still applies unchanged.
+    *covered_by*, when given, makes this call BYTE-IDENTICAL to calling
+    :func:`retire` directly (same commit subject, same
+    ``action="retire"`` result) — a caller may adopt the new surface
+    argument without renaming the verb yet. Omitted (the exact
+    pre-rename calling convention), the record is retired against the
+    LEGACY literal ``superseded_by: canon`` exactly as ``graduate``
+    always did — same commit subject (``self-learn: graduate <id>``),
+    same ``action="graduate"`` — plus ONE new deprecation line appended
+    to the result's ``warnings`` (never ``post_notes``: `_finish_verb`
+    prints ``warnings`` to stderr under BOTH ``--json`` and plain text,
+    so the notice surfaces either way without disturbing §4's
+    stdout-is-the-envelope pin for `--json`)."""
+    if covered_by is not None:
+        return retire(
+            home,
+            record_id,
+            covered_by=covered_by,
+            note=note,
+            by=by,
+            no_push=no_push,
+            user_claude_md=user_claude_md,
+            reconsider_case=reconsider_case,
+        )
+    result = _retire_impl(
+        home,
+        record_id,
+        superseded_by="canon",
+        verb_word="graduate",
+        note=note,
+        by=by,
+        no_push=no_push,
+        user_claude_md=user_claude_md,
+        reconsider_case=reconsider_case,
+    )
+    result.warnings = result.warnings + [
+        "`graduate` is `retire` now; covering surface unrecorded — "
+        "name it with --covered-by"
+    ]
+    return result
+
+
+def _retire_impl(
+    home: Path | str,
+    record_id: str,
+    *,
+    superseded_by: str,
+    verb_word: str,
+    note: str | None = None,
+    by: str | None = None,
+    no_push: bool = False,
+    user_claude_md: Path | str | None = None,
+    reconsider_case: str | None = None,
+) -> VerbResult:
+    """Shared mechanics for :func:`retire` and the pre-rename-shaped leg
+    of :func:`graduate` (S-67 — one operation on one record;
+    `batch.classify`/`_dispatch` treat both verb names identically).
+    *verb_word* (``"retire"`` or ``"graduate"``) names the commit
+    subject, the `VerbResult.action`, and `require_status`'s refusal
+    message — the two entry points differ ONLY in *superseded_by* (a
+    `covered_by:` surface vs the legacy ``"canon"``) and *verb_word*;
+    everything below is byte-identical to what ``graduate`` alone used
+    to do (02 §2/§4). Works on a routed record (the hand-weave) or a
+    pending already-canon one (the bulk-acknowledge door). A ROUTED
+    record's host presence is cleaned in the same motion — its
+    managed-section entry drops (or its hook script is removed, M3-4)
+    via the shared retirement host phase. It used to be metadata-only
+    for doc targets ("drops at the next compile"), which stranded the
+    line forever when the retired record was the target's LAST —
+    recompile enumerates targets off routed records, so an all-retired
+    target was never revisited (found live 2026-07-16).
 
     Fold r1 (F3): *by*, when given, rides the LEDGER commit's body as
     its own trailing ``By:`` paragraph -- the separate HOST-repo commit
@@ -6617,12 +6778,12 @@ def graduate(
     the raw *note*, unchanged.
 
     U5 (`reconsider_case`, default ``None``): ``RESOLVABLE_STATUSES``
-    already admits ``routed`` unconditionally — the hand-weave graduate
+    already admits ``routed`` unconditionally — the hand-weave retire
     above IS that path, no case ever needed. When a caller passes this
     anyway (``batch._dispatch``, uniformly, for every resolution verb a
     sheet item names), it is still validated
     (:func:`_reconsider_case_check`) before any lock: a sheet naming a
-    bad case still refuses, even though graduate's own admitted-status
+    bad case still refuses, even though retire's own admitted-status
     set does not change."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
@@ -6632,11 +6793,11 @@ def graduate(
     warnings = _orphaned_followup_warning(path, record_id)
     # FW-51: refuses BEFORE any lock/mutation, naming the record's actual
     # status, when it is already terminal (rejected, or already
-    # superseded/graduated) — the reject-then-graduate inversion this
-    # unit closes.
+    # superseded/retired) — the reject-then-retire inversion this unit
+    # closes.
     try:
         _, record = require_status(
-            home, record_id, RESOLVABLE_STATUSES, verb="graduate"
+            home, record_id, RESOLVABLE_STATUSES, verb=verb_word
         )
     except LedgerOpsError as exc:
         raise VerbError(str(exc)) from exc
@@ -6645,7 +6806,7 @@ def graduate(
     try:
         # Pre-flight the host-side cleanup BEFORE the ledger commit
         # (doc-target recompile or M3-4 hook-script removal).
-        retire = _retirement_preflight(
+        retirement = _retirement_preflight(
             home,
             record,
             path.parent.parent,
@@ -6661,48 +6822,48 @@ def graduate(
         # (`gitops._held_locks`), never a self-deadlock. A record with no
         # host presence to retire (pending, reference-routed) takes no
         # host lock at all.
-        if retire.spec is not None:
-            _graduate_host_lock = gitops.host_lock(retire.spec.host_path, retire.spec.mode)
-        elif retire.removal is not None:
-            _graduate_host_lock = gitops.host_lock(retire.removal[0], retire.removal[3])
-        elif retire.reference is not None:
-            _graduate_host_lock = gitops.host_lock(
-                retire.reference[1].host_path, retire.reference[1].mode
+        if retirement.spec is not None:
+            _retire_host_lock = gitops.host_lock(retirement.spec.host_path, retirement.spec.mode)
+        elif retirement.removal is not None:
+            _retire_host_lock = gitops.host_lock(retirement.removal[0], retirement.removal[3])
+        elif retirement.reference is not None:
+            _retire_host_lock = gitops.host_lock(
+                retirement.reference[1].host_path, retirement.reference[1].mode
             )
         else:
-            _graduate_host_lock = contextlib.nullcontext()
+            _retire_host_lock = contextlib.nullcontext()
 
-        with _ledger_write(home) as recovered, _graduate_host_lock:
+        with _ledger_write(home) as recovered, _retire_host_lock:
             intents.announce_recovered(recovered)
-            observed_hash = _observe_retirement_region(retire)
+            observed_hash = _observe_retirement_region(retirement)
 
-            message = f"self-learn: graduate {record_id}"
+            message = f"self-learn: {verb_word} {record_id}"
             touched = resolve_record(
                 home,
                 record_id,
                 "superseded",
-                superseded_by="canon",
+                superseded_by=superseded_by,
                 note=note,
-                verb="graduate",
+                verb=verb_word,
             )
-            # U-hostmode REC1/REC9: the graduated record's own doc-target
+            # U-hostmode REC1/REC9: the retired record's own doc-target
             # entry drops out of the compile at the host phase below — the
             # compile record must be kept in sync with that rewrite (see
             # `_write_retirement_compile_record`'s docstring for the bug
             # this closes), inside this SAME ledger commit.
             record_path = _write_retirement_compile_record(
-                home, retire, observed_hash, by=f"graduate {record_id}"
+                home, retirement, observed_hash, by=f"{verb_word} {record_id}"
             )
             if record_path is not None:
                 touched = touched + [record_path]
-            elif retire.reference is not None:
+            elif retirement.reference is not None:
                 # U-verbs S-54 (RER6/RER7): same same-commit-prediction
                 # shape as the managed branch above — `_write_retirement_
-                # compile_record` only ever covers `retire.spec`, so a
+                # compile_record` only ever covers `retirement.spec`, so a
                 # reference retirement's compile-record entry is resynced
                 # here, predicted via the SAME pure text transform the
                 # real removal (host phase, below) applies.
-                ref_path, ref_spec = retire.reference
+                ref_path, ref_spec = retirement.reference
                 ref_observed = _observe_region_hash_at(ref_path, "reference")
                 ref_expected = _predicted_retired_reference_region(ref_path, record_id)
                 ref_record_path = _resync_region_entry(
@@ -6714,21 +6875,21 @@ def graduate(
                     region_kind="reference",
                     expected=ref_expected,
                     observed_hash=ref_observed,
-                    by=f"graduate {record_id}",
+                    by=f"{verb_word} {record_id}",
                 )
                 if ref_record_path is not None:
                     touched = touched + [ref_record_path]
-            elif retire.removal is not None:
+            elif retirement.removal is not None:
                 # D-3 completion (code gate r1 fold, coordinator
                 # ruling 2026-08-28): same shape as `supersede`'s
                 # own hook-removal leg — `_write_retirement_compile_
-                # record` only ever covers `retire.spec` (a managed
+                # record` only ever covers `retirement.spec` (a managed
                 # drop); a hook-routed record's script disappearing
                 # at the host phase below needs its record entry
                 # predictively DELETED here too, or a stale WRITE
                 # entry misreads the next legitimate route to this
                 # same script path as `edited`.
-                host_repo, script_abs, _rel, removal_mode = retire.removal
+                host_repo, script_abs, _rel, removal_mode = retirement.removal
                 removal_record_path = _resync_region_entry(
                     home,
                     host_path=host_repo,
@@ -6739,7 +6900,7 @@ def graduate(
                     expected=None,
                     observed_hash=None,
                     delete=True,
-                    by=f"graduate {record_id}",
+                    by=f"{verb_word} {record_id}",
                 )
                 if removal_record_path is not None:
                     touched = touched + [removal_record_path]
@@ -6750,7 +6911,7 @@ def graduate(
             post_notes: list[str] = []
             host_sha, host_repo = _retirement_host_phase(
                 home,
-                retire,
+                retirement,
                 record_id,
                 note=note,
                 message=message,
@@ -6764,7 +6925,7 @@ def graduate(
         if not no_push and host_sha is not None and host_repo is not None:
             host_push = gitops.push_if_remote(host_repo)
         return VerbResult(
-            action="graduate",
+            action=verb_word,
             record_id=record_id,
             commit_message=message,
             commit_sha=sha,

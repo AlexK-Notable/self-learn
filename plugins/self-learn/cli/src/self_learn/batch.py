@@ -50,7 +50,15 @@ from .ledger_ops import (
     LedgerOpsError,
     find_record_path,
 )
-from .records import RECORD_ID_RE, MutationError, Record, RecordError
+from .records import (
+    RECORD_ID_RE,
+    MutationError,
+    Record,
+    RecordError,
+    ValidationError as RecordValidationError,
+    build_covered_by,
+    is_replacement,
+)
 
 __all__ = [
     "PERMITTED_KEYS",
@@ -112,7 +120,12 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
     "defer": frozenset({"until", "note", "by"}),
     "undefer": frozenset({"note", "by"}),
     "reopen": frozenset({"note", "by"}),
-    "graduate": frozenset({"note", "by"}),
+    # S-67: `retire`'s own key set requires `covered_by` (REQUIRED_KEYS,
+    # below — refused before item 1 runs, like `supersede`'s `new_id`).
+    # `graduate` stays the alias's key set, `covered_by` now OPTIONAL —
+    # a pre-rename sheet (no `covered_by` at all) still applies.
+    "retire": frozenset({"covered_by", "note", "by"}),
+    "graduate": frozenset({"covered_by", "note", "by"}),
     "supersede": frozenset({"new_id", "note", "by"}),
     "rehome": frozenset({"to", "note", "by"}),
     "rescope": frozenset({"to", "note", "by"}),
@@ -147,6 +160,7 @@ PERMITTED_VERBS = frozenset(PERMITTED_KEYS)
 #: it reaches the verb at dispatch and refuses there, naming the actual
 #: status.
 REQUIRED_KEYS: dict[str, frozenset[str]] = {
+    "retire": frozenset({"covered_by"}),
     "supersede": frozenset({"new_id"}),
     "rehome": frozenset({"to"}),
     "rescope": frozenset({"to"}),
@@ -601,8 +615,36 @@ def classify(
         if record.status != "pending":
             return False
         return any(h.get("event") == "resolution" for h in record.history)
+    if verb == "retire":
+        # S-67: `covered_by` is REQUIRED (REQUIRED_KEYS), so `f["covered_by"]`
+        # is always present by the time classify reaches here -- already-
+        # applied iff the record is superseded by EXACTLY that surface (a
+        # second run naming a DIFFERENT surface is not "already applied";
+        # it reaches `_dispatch` and `verbs.retire` refuses it there, same
+        # precedent as a dest-less `route` against an already-routed
+        # record above).
+        if record.status != "superseded":
+            return False
+        try:
+            surface = build_covered_by(f["covered_by"])
+        except RecordValidationError:
+            return False  # malformed sheet value: not this function's refusal
+        return record.superseded_by == surface
     if verb == "graduate":
-        return record.status == "superseded" and record.superseded_by == "canon"
+        # S-67: the alias. A sheet item naming `covered_by` is already-
+        # applied under the SAME rule `retire` uses; one that omits it
+        # (the pre-rename shape) is already-applied iff the record
+        # carries the legacy literal.
+        if record.status != "superseded":
+            return False
+        covered_by = f.get("covered_by")
+        if covered_by is None:
+            return record.superseded_by == "canon"
+        try:
+            surface = build_covered_by(covered_by)
+        except RecordValidationError:
+            return False
+        return record.superseded_by == surface
     if verb == "supersede":
         return (
             record.status == "superseded"
@@ -676,7 +718,9 @@ def classify(
 #: `rehome` against a routed record under a valid reconsider case even
 #: though `_dispatch` never forwards `reconsider_case` to any of the
 #: three (they gained no such parameter) and the real run refused.
-_RECONSIDER_FORWARDING_VERBS = frozenset({"reject", "defer", "graduate", "supersede"})
+_RECONSIDER_FORWARDING_VERBS = frozenset(
+    {"reject", "defer", "retire", "graduate", "supersede"}
+)
 
 
 def _reconsider_case_for(
@@ -798,6 +842,54 @@ def _dispatch_hook_activation(
     return ItemResult(
         n=item.n, id=item.id, verb=verb, rc=0,
         sha=hook_result.commit_sha, state="applied", detail=detail,
+    )
+
+
+def _dispatch_retire_or_graduate(
+    home: Path,
+    item: SheetItem,
+    f: dict,
+    actor: str,
+    case: str | None,
+    verb: str,
+) -> "verbs.VerbResult":
+    """S-67 (U13): the ``retire``/``graduate`` leg of :func:`_dispatch`,
+    factored out for the SAME reason :func:`_dispatch_hook_activation`
+    already was (its own docstring: "pyright's own complexity limit
+    flagged ``_dispatch`` once this logic was inlined there too") — a
+    plain two-branch ``elif verb == "retire": ... elif verb ==
+    "graduate": ...`` split, and even a single merged ``elif verb in
+    (...)"`` branch with an inline ternary, both measured to push
+    ``_dispatch`` itself over pyright's per-function CFG complexity
+    ceiling ("Code is too complex to analyze",
+    ``reportGeneralTypeIssues``); only moving the branch OUT into its
+    own function cleared it.
+
+    *verb* is ``"retire"`` or ``"graduate"`` — the caller's own ``elif``
+    guard already narrowed it, so this trusts it rather than re-
+    checking. ``retire``'s ``covered_by`` is REQUIRED (``REQUIRED_KEYS``
+    — ``f["covered_by"]`` is always present here); ``graduate``'s stays
+    OPTIONAL (``f.get("covered_by")``, the alias's own legacy-canon path
+    when omitted) — kept as two separate calls (not one polymorphic
+    ``retire_fn = ... if ... else ...`` picking between the two
+    functions) so each call site's own ``covered_by`` keeps its own
+    correctly-narrowed static type: a shared variable typed ``str |
+    None`` fed to :func:`verbs.retire`'s required, non-optional
+    ``covered_by: str`` is itself a fresh pyright error
+    (``reportArgumentType`` — measured while fixing the complexity
+    error above; the FIRST attempt at this extraction hit exactly this)."""
+    if verb == "retire":
+        return verbs.retire(
+            home, item.id, covered_by=f["covered_by"],
+            note=f.get("note"), by=(f.get("by") or actor),
+            no_push=True,
+            reconsider_case=_reconsider_case_for(home, item.id, case, verb),
+        )
+    return verbs.graduate(
+        home, item.id, covered_by=f.get("covered_by"),
+        note=f.get("note"), by=(f.get("by") or actor),
+        no_push=True,
+        reconsider_case=_reconsider_case_for(home, item.id, case, verb),
     )
 
 
@@ -960,12 +1052,19 @@ def _dispatch(
                 home, item.id, note=f.get("note"), by=(f.get("by") or actor),
                 no_push=True,
             )
-        elif verb == "graduate":
-            result = verbs.graduate(
-                home, item.id, note=f.get("note"), by=(f.get("by") or actor),
-                no_push=True,
-                reconsider_case=_reconsider_case_for(home, item.id, case, verb),
-            )
+        elif verb in ("retire", "graduate"):
+            # S-67 (U13): pulled out to `_dispatch_retire_or_graduate`
+            # (below) -- a straight two-branch elif split here (one
+            # `retire`, one `graduate`, mirroring every other verb's own
+            # branch) pushed `_dispatch` itself over pyright's CFG
+            # complexity ceiling (measured: "Code is too complex to
+            # analyze" reportGeneralTypeIssues); MERGING the two
+            # branches into one `elif verb in (...)` with an inline
+            # ternary was not enough on its own -- the node count that
+            # trips the ceiling is per-FUNCTION, so only moving the
+            # branch OUT of `_dispatch` entirely (a real subroutine, not
+            # a same-function merge) actually clears it.
+            result = _dispatch_retire_or_graduate(home, item, f, actor, case, verb)
         elif verb == "supersede":
             result = verbs.supersede(
                 home, item.id, f["new_id"], note=f.get("note"),
@@ -1121,7 +1220,12 @@ _STATUS_GATE: dict[str, frozenset[str]] = {
     "reject": LIVE_STATUSES,
     "defer": LIVE_STATUSES,
     "undefer": DEFERRED_ONLY,
-    "reopen": REOPENABLE_STATUSES,
+    # S-67: mirrors `verbs._REOPEN_ADMITTED_STATUSES` — the status half
+    # of `reopen`'s widened admission. The REPLACED-vs-RETIRED distinction
+    # (a record-id `superseded_by` stays refused) is not a status-set
+    # question and is previewed separately below, in `dry_run` itself.
+    "reopen": REOPENABLE_STATUSES | frozenset({"superseded"}),
+    "retire": RESOLVABLE_STATUSES,
     "graduate": RESOLVABLE_STATUSES,
     "supersede": RESOLVABLE_STATUSES,
     "rehome": LIVE_STATUSES,
@@ -1323,6 +1427,27 @@ def dry_run(
                 DryRunItem(n=item.n, id=item.id, verb=item.verb,
                            state="would-refuse",
                            detail=f"record {item.id} is {record.status!r}")
+            )
+            continue
+        # S-67: `_STATUS_GATE["reopen"]` admits `superseded` for BOTH a
+        # retirement and a replacement — the same distinction
+        # `verbs.reopen` itself draws one level down, once the record is
+        # in hand, previewed here rather than left to look like
+        # `would-apply` and then refuse for real.
+        if (
+            item.verb == "reopen"
+            and record.status == "superseded"
+            and is_replacement(record.superseded_by)
+        ):
+            result.items.append(
+                DryRunItem(
+                    n=item.n, id=item.id, verb=item.verb,
+                    state="would-refuse",
+                    detail=(
+                        f"record {item.id} is superseded by a replacement "
+                        f"({record.superseded_by}) — use reconsider"
+                    ),
+                )
             )
             continue
         result.items.append(

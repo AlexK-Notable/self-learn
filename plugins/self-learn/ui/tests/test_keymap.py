@@ -15,7 +15,7 @@ EXPECTED_ACTIONS = {
     "route",
     "reject",
     "defer",
-    "graduate",
+    "retire",
     "iterate",
     "cycle_destination",
     "note",
@@ -80,7 +80,7 @@ def test_pinned_key_bindings() -> None:
     assert by_action["route"] == ("e",)
     assert by_action["reject"] == ("x",)
     assert by_action["defer"] == ("f",)
-    assert by_action["graduate"] == ("g",)
+    assert by_action["retire"] == ("g",)
     assert by_action["iterate"] == ("i",)
     assert by_action["cycle_destination"] == ("o",)
     assert by_action["note"] == ("n",)

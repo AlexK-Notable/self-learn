@@ -148,7 +148,7 @@
    * and that is the subtlest rule in this unit. With the bulk row
    * SELECTED, a `data-key-action`-only query would find 0 in scope,
    * fall through page-wide, find the single record row in another
-   * group, and GRADUATE a record the operator never selected — a new,
+   * group, and RETIRE a record the operator never selected — a new,
    * quieter version of the same bug. Treating the selected row's gated
    * control as a positive, in-scope answer is what stops that (`B2`).
    *
@@ -399,7 +399,7 @@
     const el = resolved.el;
     if (isGatedTarget(el)) {
       // Server-marked gated control (the singleton `o` cycle; the
-      // bulk-collapse graduate after §4.5). Nothing to defer or click —
+      // bulk-collapse retire after §4.5). Nothing to defer or click —
       // say why, and report HANDLED so the caller does not fall through
       // to a page-wide search of its own.
       showNoopHint(el.getAttribute("data-noop-hint"));

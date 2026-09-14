@@ -777,8 +777,8 @@ def test_no_autograduate_on_hand_written_hit(tmp_path):
         "evidence": "the covering hand-written rule lives here",
         "target": target,
     }
-    both["gates"]["outcome"] = "GRADUATE"  # Table-1: g0.canon "yes" derives GRADUATE
-    both["recommendation"] = "graduate"  # R-FALL: GRADUATE outcome renders "graduate"
+    both["gates"]["outcome"] = "GRADUATE"  # Table-1: g0.canon "yes" derives GRADUATE (unchanged token, S-67)
+    both["recommendation"] = "retire"  # R-FALL: GRADUATE outcome renders "retire" (S-67)
     both["already_canon"] = True
     both["flags"] = ["canon-hand-written"]
     both["card"] = {"already_kept": "It loads: host CLAUDE.md line 11."}

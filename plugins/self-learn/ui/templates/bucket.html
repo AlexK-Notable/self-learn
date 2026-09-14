@@ -65,11 +65,14 @@
   {% if group.bulk_collapse %}
   <div class="bulk-collapse-row" data-row>
     <p>{{ group.bulk_collapse.text }}</p>
-    <form hx-post="/bucket/{{ model.scope }}/{{ model.bucket }}/graduate-bulk" hx-swap="none" hx-disabled-elt="find button">
+    <form hx-post="/bucket/{{ model.scope }}/{{ model.bucket }}/retire-bulk" hx-swap="none" hx-disabled-elt="find button">
       <input type="hidden" name="ids" value="{{ group.bulk_collapse.ids | join(',') }}">
+      {# S-67: ONE covering surface, required, applied to every id in
+         this homogeneous group (routes.py's `retire_bulk` docstring). #}
+      <label>Covered by <input type="text" name="covered_by" placeholder="kind:name" required></label>
       {# U-target §4.5: this button is CLICK-ONLY, deliberately. It is
          the only un-armed, MULTI-RECORD, immediately-writing control
-         that touches the LEDGER -- `graduate-bulk` loops the runner
+         that touches the LEDGER -- `retire-bulk` loops the runner
          over every id in the hidden `ids` field with no arm step, no
          nonce and no confirm, so one press of `g` retired two records
          the operator never selected. It carries the SAME gated pair
@@ -81,8 +84,8 @@
          only then a key) is FW deferred as U-target [B-1]. #}
       <button type="submit"
               data-noop-hint="Acknowledging a whole group as canon is click-only — it retires every record in the group at once, with no confirm step."
-              data-noop-action="graduate"
-              title="Retire all of these — canon (the guidance file each calls for) already covers them, so there's nothing left to write">Acknowledge all as canon</button>
+              data-noop-action="retire"
+              title="Retire all of these — something already loaded covers them, so name the surface above">Acknowledge all as canon</button>
     </form>
   </div>
   {% endif %}

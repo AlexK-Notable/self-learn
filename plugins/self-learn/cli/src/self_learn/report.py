@@ -36,7 +36,7 @@ from .hosts import HostsError, load_hosts
 from .ledger import discover_buckets
 from .ledger_ops import open_followups
 from .reachability import reachability_rows
-from .records import Record, RecordError
+from .records import Record, RecordError, is_retirement
 from .refread import resolve_ref_target
 from .telemetry import read_events
 
@@ -121,9 +121,13 @@ def supply_mix(home: Path | str) -> dict[str, int]:
 #: Resolution-verb commit subjects (02 §2 pinned formats). Every lrn-id in
 #: a matching subject resolved in that commit — collapse losers ride the
 #: route subject's "supersedes …" suffix, so extracting ALL ids is the
-#: honest read.
+#: honest read. S-67: `retire` joins the set (its own pinned subject);
+#: `graduate` STAYS — both a pre-rename ledger's real history and the
+#: hidden alias's own commits (unchanged subject, `self-learn: graduate
+#: <id>`) still need to read as a resolution here, or `ledger_metrics`'s
+#: time-to-triage/routed_and_corrected counters silently drop every one.
 _RESOLUTION_SUBJECT_RE = re.compile(
-    r"^self-learn: (?:route|reject|graduate|supersede) "
+    r"^self-learn: (?:route|reject|graduate|retire|supersede) "
 )
 _LRN_ID_RE = re.compile(r"lrn-[0-9a-f]{8}")
 
@@ -198,7 +202,7 @@ def ledger_metrics(home: Path | str, *, today: date | None = None) -> dict:
             pending_ages.append(domain.record_age_days(record, now))
             continue
         if record.routing is not None and record.superseded_by is not None:
-            if record.superseded_by != "canon":
+            if not is_retirement(record.superseded_by):
                 corrected += 1
         if record.status in ("routed", "rejected", "superseded"):
             resolved_on = None
@@ -1818,7 +1822,7 @@ def gather(
                 counts[record.status] += 1
                 if record.source == "session":
                     if record.status == "superseded":
-                        if record.superseded_by == "canon":
+                        if is_retirement(record.superseded_by):
                             mined["graduated"] += 1
                         elif record.routing is not None:
                             # accepted (routed), later replaced — stays in
@@ -1851,7 +1855,7 @@ def gather(
                 elif record.status == "rejected":
                     rejected += 1
                 elif record.status == "superseded":
-                    if record.superseded_by == "canon":
+                    if is_retirement(record.superseded_by):
                         graduated += 1
                     elif record.routing is not None:
                         superseded_after_routing += 1
@@ -1967,7 +1971,7 @@ def render_text(facts: dict) -> str:
         f"Iteration: {facts['routed_ever']} routed ever · "
         f"{facts['superseded_after_routing']} later replaced "
         f"(supersede rate {_pct(facts['supersede_rate'])}) · "
-        f"{facts['graduated']} graduated into authored canon · "
+        f"{facts['graduated']} retired (covered elsewhere) · "
         f"{facts['rejected']} rejected"
     )
 
@@ -1976,7 +1980,7 @@ def render_text(facts: dict) -> str:
         lines.append("")
         lines.append(
             f"Mined supply (transcript miner): {mined['pending']} pending · "
-            f"{mined['routed']} routed · {mined['graduated']} graduated · "
+            f"{mined['routed']} routed · {mined['graduated']} retired · "
             f"{mined['rejected']} rejected — accept rate "
             f"{_pct(mined['accept_rate'])} (adjudicated cards only)"
         )

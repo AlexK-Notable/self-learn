@@ -1231,10 +1231,17 @@ def test_d7_r_fall():
     proposal with already_canon: false refused, true accepted. AND: the
     destination is asserted to equal the LOAD CLASS's destination, with a
     second fixture whose load class DIFFERS from the first — otherwise
-    the rule passes for a build that hardcodes one destination."""
+    the rule passes for a build that hardcodes one destination.
+
+    S-67 (U13): the GRADUATE outcome TOKEN is unchanged (it is
+    `gates.py`'s/`TRACE_OUTCOMES`'s internal machine name), but the
+    `recommendation` VALUE it renders is now `retire`, not `graduate` —
+    `graduate` dropped out of `TRACE_RECOMMENDATIONS` entirely, so a
+    proposal carrying the old value is refused the same as any other
+    invalid one."""
     scope = "project"
     for outcome, correct_rec in (
-        ("REJECT", "reject"), ("DEFER", "defer"), ("GRADUATE", "graduate"),
+        ("REJECT", "reject"), ("DEFER", "defer"), ("GRADUATE", "retire"),
     ):
         trace, rp = _outcome_trace(outcome, scope)
         dest = _RENDER_DESTINATIONS[gates.load_class(trace, scope)]
@@ -1254,13 +1261,13 @@ def test_d7_r_fall():
     dest = _RENDER_DESTINATIONS[gates.load_class(trace, scope)]
     bad = proposal_dict(
         gates=trace, rules_paths=rp, destination=dest,
-        recommendation="graduate", already_canon=False,
+        recommendation="retire", already_canon=False,
     )
     with pytest.raises(ProposalError):
         validate_proposal(bad, scope=scope)
     good = proposal_dict(
         gates=trace, rules_paths=rp, destination=dest,
-        recommendation="graduate", already_canon=True,
+        recommendation="retire", already_canon=True,
     )
     validate_proposal(good, scope=scope)
 

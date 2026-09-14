@@ -72,7 +72,7 @@ class RunResult:
     always — that invariant is unchanged by ``evidence`` below.
 
     ``evidence`` (resolution-evidence unit, §3.1): the parsed ``--json``
-    envelope route/reject/defer/graduate print on stdout, or ``None``.
+    envelope route/reject/defer/retire print on stdout, or ``None``.
     This is NOT the exception §3.1's own doctrine forbids — a JSON
     envelope is machine structure, not "human-formatted stdout", so no
     carve-out is needed for it to coexist with the rule above. Populated
@@ -260,7 +260,7 @@ async def _default_interrupt_hook(record_id: str) -> None:
 # reap, never left running (leaked) or left a zombie (un-reaped).
 
 #: Ceiling on a SHORT verb subprocess's `communicate()` (every pinned verb
-#: except `mine run` — route/reject/defer/graduate/confirm-recurrence/
+#: except `mine run` — route/reject/defer/retire/confirm-recurrence/
 #: link-contradicts/followup-done/push/worker-kick: all seconds, not
 #: minutes) — generous by design, a backstop against a HANG, never a
 #: normal-operation budget. `mine run` gets its OWN, much longer bound;
@@ -312,7 +312,7 @@ def _verb_timeout_for(
     `self_learn.worker.INVOKE_TIMEOUT_SECS` uses). A flat ``default``
     ceiling on the OUTER subprocess this UI spawns would SIGKILL a
     legitimate run before that INNER timeout even fires. Every other
-    pinned verb (route/reject/defer/graduate/confirm-recurrence/
+    pinned verb (route/reject/defer/retire/confirm-recurrence/
     link-contradicts/followup-done/push/worker-kick) is fast — seconds,
     not minutes — and keeps the flat ``default`` (still generous: a hang
     backstop, not a normal-operation budget)."""
@@ -458,7 +458,7 @@ class RealRunner(VerbRunner):
     (``SELF_LEARN_INVOKE_TIMEOUT_SECS``, default 1800s/30min — the same
     number the CLI's own inner batch timeout,
     ``self_learn.worker.INVOKE_TIMEOUT_SECS``, uses). Every OTHER pinned
-    verb (``route``/``reject``/``defer``/``graduate``/
+    verb (``route``/``reject``/``defer``/``retire``/
     ``confirm-recurrence``/``link contradicts``/``followup done``/
     ``push``/``worker kick``) is fast (seconds) and keeps the flat
     ``verb_timeout`` constructor default (600s — still a hang backstop,

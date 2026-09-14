@@ -1677,6 +1677,15 @@ class TestD3RegionResyncCoverageWalker:
     _MERGE_FOR = {
         "route": ("_execute_route", "_resync_three_regions", "_complete_old_retirement"),
         "route_direct": ("_execute_route", "_resync_three_regions", "_complete_old_retirement"),
+        # S-67 (U13): `graduate`'s own body no longer holds ANY of its
+        # write-delegating/resync calls directly -- they moved into the
+        # shared `_retire_impl` both `retire` and `graduate` now call
+        # (the same "thin adapter, shared core" shape `route`/
+        # `route_direct` already used above). `retire` is the NEW verb
+        # this merge set exists for just as much as `graduate` -- both
+        # delegate their entire body into the one function.
+        "graduate": ("_retire_impl",),
+        "retire": ("_retire_impl",),
     }
 
     @staticmethod
@@ -1811,6 +1820,14 @@ class TestD3RegionResyncCoverageWalker:
         ),
         (
             "graduate",
+            ("_retirement_host_phase",),
+            frozenset({"managed", "script"}),
+        ),
+        (
+            # S-67 (U13): `retire`'s own mechanics are `_retire_impl`,
+            # the SAME shared core `graduate` delegates into above --
+            # identical delegate list, identical kind coverage.
+            "retire",
             ("_retirement_host_phase",),
             frozenset({"managed", "script"}),
         ),
@@ -4396,7 +4413,17 @@ class TestRec12HostLockDiscipline:
     #: this walker's line-range test, producing a false leg-(c) failure.
     #: `_execute_route` alone is where the `with` itself lives, so one
     #: hop is exactly what every leg here needs.
-    _MERGE_FOR = {"route": ("_execute_route",), "route_direct": ("_execute_route",)}
+    _MERGE_FOR = {
+        "route": ("_execute_route",),
+        "route_direct": ("_execute_route",),
+        # S-67 (U13): `retire`/`graduate` both delegate their entire
+        # body -- including the host-lock `with` this class's every leg
+        # checks -- into the shared `_retire_impl`, the same "thin
+        # adapter, shared core" shape `route`/`route_direct` already use
+        # above via `_execute_route`.
+        "retire": ("_retire_impl",),
+        "graduate": ("_retire_impl",),
+    }
 
     @staticmethod
     def _verbs_tree() -> ast.Module:
@@ -4585,6 +4612,17 @@ class TestRec12HostLockDiscipline:
                 ),
                 ("push_if_remote", "_push_ledger"),
             ),
+            (
+                # S-67 (U13): `retire`'s mechanics ARE `_retire_impl`,
+                # the same shared core `graduate` delegates into above.
+                "retire",
+                (
+                    "_observe_retirement_region",
+                    "resolve_record",
+                    "_retirement_host_phase",
+                ),
+                ("push_if_remote", "_push_ledger"),
+            ),
         ],
     )
     def test_legs_bcd_verb_holds_host_lock_before_its_reads_and_writes(
@@ -4657,7 +4695,7 @@ class TestRec12HostLockDiscipline:
         )
 
     @pytest.mark.parametrize(
-        "verb_name", ["route", "route_direct", "supersede", "graduate"]
+        "verb_name", ["route", "route_direct", "supersede", "graduate", "retire"]
     )
     def test_leg_e_ledger_lock_is_acquired_before_the_host_lock(self, verb_name):
         """M-1 (code gate r2): §4.5b pins ONE order — ledger first, host

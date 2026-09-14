@@ -2096,7 +2096,7 @@ rules_topic: <kebab-slug topic — required iff variant is rules>
 rules_paths: [<glob>, ...]  # optional; omit for an unpathed rule
 gates: <the full decision trace — §5>
 flags: []
-recommendation: <route | reject | defer | graduate>
+recommendation: <route | reject | defer | retire>
 
 === SKILL ROSTER (T3) ===
 roster sha: {roster_sha}

@@ -152,7 +152,7 @@ class TestValidateProposal:
     def test_bucket_session_accepts_own_bucket_record(self, tmp_path: Path) -> None:
         sb, (rec,) = _seed(tmp_path)
         result = validate_proposal(
-            sb.ledger, _bucket_scope(sb), {"verb": "graduate", "record_id": rec.id}
+            sb.ledger, _bucket_scope(sb), {"verb": "retire", "record_id": rec.id}
         )
         assert isinstance(result, VerbProposal)
         assert result.session_key == pane.bucket_session_key("skill", "s")
@@ -319,7 +319,7 @@ class TestValidateProposal:
         """Review F2: the bar LEADS with the record's human line."""
         sb, (rec,) = _seed(tmp_path)
         result = validate_proposal(
-            sb.ledger, _record_scope(rec), {"verb": "graduate", "record_id": rec.id}
+            sb.ledger, _record_scope(rec), {"verb": "retire", "record_id": rec.id}
         )
         assert isinstance(result, VerbProposal)
         assert result.title  # the Trigger first line, non-empty
@@ -358,7 +358,7 @@ class TestValidateProposal:
         result2 = validate_proposal(
             sb.ledger,
             _record_scope(rec),
-            {"verb": "graduate", "record_id": rec.id, "dest": "", "note": "", "until": ""},
+            {"verb": "retire", "record_id": rec.id, "dest": "", "note": "", "until": ""},
         )
         assert isinstance(result2, VerbProposal)
         assert result2.dest is None and result2.note is None
@@ -413,12 +413,12 @@ class TestProposeHandler:
         handle = self._handler(sb, rec, slot, published)
         assert run(handle({"verb": "reject", "record_id": rec.id})) == TOOL_ACCEPTED_MESSAGE
         # waiting
-        second = run(handle({"verb": "graduate", "record_id": rec.id}))
+        second = run(handle({"verb": "retire", "record_id": rec.id}))
         assert "already awaiting the human" in second
         assert slot.current is not None and slot.current.verb == "reject"
         # armed
         slot.arm(rec.id)
-        third = run(handle({"verb": "graduate", "record_id": rec.id}))
+        third = run(handle({"verb": "retire", "record_id": rec.id}))
         assert "already awaiting the human" in third
         assert slot.current.verb == "reject"
         assert len(published) == 1  # refusals render nothing
@@ -765,7 +765,7 @@ class TestProposalRoutes:
         assert manager.proposal_slot.current is None
         assert "Approve (e)" in out  # detail region got its standing bar back
         assert manager.proposal_slot.occupy(
-            VerbProposal(verb="graduate", record_id=rec.id, bucket_scope="skill",
+            VerbProposal(verb="retire", record_id=rec.id, bucket_scope="skill",
                          bucket_name="s", session_key=rec.id)
         )
 
@@ -928,23 +928,23 @@ class TestProposalRoutes:
         _occupy(manager, rec)
         c.post(
             f"/record/{rec.id}/action/confirm",
-            data={"verb": "graduate", "kind": "detail"},
+            data={"verb": "retire", "kind": "detail", "covered_by": "claude-md:rules"},
             headers=HX,
         )
         assert manager.proposal_slot.current is None
 
-    def test_bulk_graduate_sweeps_a_stale_proposal(self, tmp_path: Path) -> None:
+    def test_bulk_retire_sweeps_a_stale_proposal(self, tmp_path: Path) -> None:
         """Review F3: bulk-resolved records must not leave a stale bar."""
         sb, (rec,) = _seed(tmp_path)
         c, runner, manager = make_client(sb)
         _occupy(manager, rec)
         # The fake runner doesn't move files — simulate the resolution the
-        # real graduate performs, then run the bulk loop (whose sweep
-        # re-reads status).
+        # real retire performs (S-67: was graduate), then run the bulk
+        # loop (whose sweep re-reads status).
         resolve_record_directly(sb.ledger, _bucket_dir(sb), rec)
         c.post(
-            "/bucket/skill/s/graduate-bulk",
-            data={"ids": rec.id},
+            "/bucket/skill/s/retire-bulk",
+            data={"ids": rec.id, "covered_by": "claude-md:rules"},
             headers=HX,
         )
         assert manager.proposal_slot.current is None
@@ -987,15 +987,17 @@ class TestBucketPane:
         assert 'data-proposal="waiting"' in page
 
     def test_bucket_confirm_redirects_to_bucket_page(self, tmp_path: Path) -> None:
-        """Resolution-evidence unit (§3.4's 4th site): `graduate` is one
-        of the four evidence-bearing verbs, so this no longer redirects
-        — the evidence leg renders with a "back to the bucket" link
-        carrying the SAME target the old auto-redirect used to jump to."""
+        """Resolution-evidence unit (§3.4's 4th site): `retire` (S-67:
+        was `graduate`) is one of the four evidence-bearing verbs, so
+        this no longer redirects — the evidence leg renders with a
+        "back to the bucket" link carrying the SAME target the old
+        auto-redirect used to jump to."""
         sb, (rec,) = _seed(tmp_path)
         c, runner, manager = make_client(sb)
         prop = VerbProposal(
-            verb="graduate", record_id=rec.id, bucket_scope="skill", bucket_name="s",
+            verb="retire", record_id=rec.id, bucket_scope="skill", bucket_name="s",
             session_key=pane.bucket_session_key("skill", "s"),
+            covered_by="claude-md:rules",
         )
         manager.proposal_slot.occupy(prop)
         manager.proposal_slot.arm(rec.id)
@@ -1004,7 +1006,7 @@ class TestBucketPane:
             data={"record_id": rec.id, "kind": "bucket", "nonce": prop.nonce},
             headers=HX,
         )
-        assert ["graduate", rec.id, "--json"] in runner.calls
+        assert ["retire", rec.id, "--covered-by", "claude-md:rules", "--json"] in runner.calls
         assert resp.headers.get("HX-Redirect") is None
         assert 'data-verb-success="true"' in resp.text
         assert 'href="/bucket/skill/s"' in resp.text
@@ -1024,8 +1026,9 @@ class TestBucketPane:
         runner.queue_result(RunResult(1, stderr="refused: scan hit"))
         c, _runner, manager = make_client(sb, runner=runner)
         prop = VerbProposal(
-            verb="graduate", record_id=rec.id, bucket_scope="skill", bucket_name="s",
+            verb="retire", record_id=rec.id, bucket_scope="skill", bucket_name="s",
             session_key=pane.bucket_session_key("skill", "s"),
+            covered_by="claude-md:rules",
         )
         manager.proposal_slot.occupy(prop)
         manager.proposal_slot.arm(rec.id)

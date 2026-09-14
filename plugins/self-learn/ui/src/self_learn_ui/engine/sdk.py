@@ -366,14 +366,17 @@ class SdkPaneEngine(PaneEngine):
             # proposals.validate_proposal; this schema is the braces).
             @tool(
                 PROPOSAL_TOOL_NAME,
-                "Propose a resolution verb (route/reject/defer/graduate/"
+                "Propose a resolution verb (route/reject/defer/retire/"
                 "rehome) on a pending record. The human sees the proposal "
                 "and decides — nothing executes unless they confirm. Args: "
                 "verb, record_id, and optionally dest (route only), note "
                 "(<=200 chars), until (defer only, YYYY-MM-DD), to (rehome "
                 "only — a REGISTERED project's path or bucket slug; an "
                 "unregistered project is a fact to tell the human, never a "
-                "proposal).",
+                "proposal), covered_by (retire only — <kind>:<name>, kind "
+                "one of claude-md/skill-md/reference/output-style; a "
+                "SUGGESTED surface that pre-fills the human's confirm form, "
+                "never auto-applied).",
                 {
                     "type": "object",
                     "properties": {
@@ -383,6 +386,7 @@ class SdkPaneEngine(PaneEngine):
                         "note": {"type": "string"},
                         "until": {"type": "string"},
                         "to": {"type": "string"},
+                        "covered_by": {"type": "string"},
                     },
                     "required": ["verb", "record_id"],
                 },
