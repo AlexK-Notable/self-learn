@@ -61,13 +61,16 @@ _PATTERN = re.compile("graduate", re.IGNORECASE)
 #: `_retire_gates`), gates.py's `GRADUATE` return (G3, unchanged), and
 #: selfcheck.py/hosts.py/gitops.py/cases.py/compilers.py's prose
 #: comments naming the pre-rename word to explain PAST behaviour, never
-#: presenting it as today's current verb.
+#: presenting it as today's current verb; execution_evidence.py accepts
+#: the hidden compatibility alias's two real subjects (`graduate` without
+#: `covered_by`, `retire` with it) when authenticating mutation proof.
 _CLI_ALLOWLIST = frozenset(
     {
         "plugins/self-learn/cli/src/self_learn/batch.py",
         "plugins/self-learn/cli/src/self_learn/cases.py",
         "plugins/self-learn/cli/src/self_learn/cli.py",
         "plugins/self-learn/cli/src/self_learn/compilers.py",
+        "plugins/self-learn/cli/src/self_learn/execution_evidence.py",
         "plugins/self-learn/cli/src/self_learn/gates.py",
         "plugins/self-learn/cli/src/self_learn/gitops.py",
         "plugins/self-learn/cli/src/self_learn/hosts.py",
