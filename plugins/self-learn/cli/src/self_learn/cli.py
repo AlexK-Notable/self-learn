@@ -3541,6 +3541,42 @@ def _cmd_batch(args: argparse.Namespace) -> int:
                 "— ledger-level failure, unsafe to keep writing",
                 file=sys.stderr,
             )
+    if result.case is not None:
+        # U3 (02-schema.md §3a.1/§3a.2; S-54 as amended): the sheet
+        # named a case (`--dry-run` already returned above, so this run
+        # was real) — `batch.run`'s own locked section is CLOSED by now
+        # (it released its hold before returning `result`), so this is
+        # a second, NOT nested, `intents.ledger_write` acquisition —
+        # `cases.receipt` opens its own internally; `_cmd_batch` never
+        # wraps this call in a lock of its own (that WOULD nest).
+        #
+        # `cases.receipt` (U2) has no dedupe (cases.py:1036-1038:
+        # `existing` + `new_text` concatenated) and raises when it
+        # would commit NOTHING (`sha is None`, cases.py:1043) — so
+        # idempotence (S-54: "a second run of an applied sheet applies
+        # 0 items and exits 0") is this call's own responsibility, not
+        # `cases.receipt`'s: already-applied items are excluded from
+        # what gets receipted (they took no action THIS run — a prior
+        # run's receipt already has their line), and the call is
+        # skipped entirely once nothing remains — a re-run of a fully
+        # applied sheet then makes NO second receipt call at all,
+        # appending nothing.
+        receipt_items = [
+            it for it in result.to_json()["items"]
+            if it["state"] != "already-applied"
+        ]
+        if receipt_items:
+            batch_result = {
+                "sheet": Path(args.sheet).name,
+                "stopped_at": result.stopped_at,
+                "code": result.process_code,
+                "items": receipt_items,
+            }
+            try:
+                cases.receipt(home, result.case, batch_result)
+            except cases.CaseError as exc:
+                print(f"self-learn batch: case receipt: {exc}", file=sys.stderr)
+                return exc.exit_code
     return result.process_code
 
 

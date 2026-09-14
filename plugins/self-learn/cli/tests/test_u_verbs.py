@@ -1246,8 +1246,13 @@ class TestBatch:
         ]))
         result = batch.run(env2.home, items, no_push=True)
         assert result.stopped_at == 1
-        assert len(result.items) == 1
+        # U3 (S-54 as amended, 02-schema.md §3a.1 rule 5): the result
+        # carries the WHOLE sheet, not just what ran before the stop --
+        # item 2 is now a `not-attempted` entry rather than absent.
+        assert len(result.items) == 2
         assert result.items[0].rc == gitops.EXIT_GIT_FAILED
+        assert result.items[1].state == "not-attempted"
+        assert result.items[1].rc == -1
 
         monkeypatch.undo()
         routed = seed_routed(env2.home, "lrn-a0000001")  # not LIVE_STATUSES
@@ -1551,7 +1556,12 @@ class TestBatch:
         ]))
         result = batch.run(env2.home, items, no_push=True)
         assert result.process_code == 8
-        assert result.summary == {"applied": 3, "already_applied": 0, "refused": 1, "total": 4}
+        # U3: `summary` gained `not_attempted` (0 here -- a refusal
+        # that is not a STOP code never truncates the sheet).
+        assert result.summary == {
+            "applied": 3, "already_applied": 0, "refused": 1,
+            "not_attempted": 0, "total": 4,
+        }
         commits_after = int(git(env2.home, "rev-list", "--count", "HEAD").stdout.strip())
         assert commits_after - commits_before == 4  # 3 items + 1 flush commit
 
@@ -2115,20 +2125,9 @@ class TestU4Revise:
             {"section", "text", "because"}
         )
 
-    @pytest.mark.skip(
-        reason="batch.py sheet DISPATCH for `revise` (_dispatch/classify/"
-        "_STATUS_GATE) is out of this build's scope -- build-u4.md says "
-        "both 'dispatch to verbs.revise' AND 'Touch NOTHING else in "
-        "batch.py (U3 owns the rest of that file concurrently)'; the "
-        "task's own scoping ('exactly two dict entries ... touch "
-        "nothing else in that file, another lane owns the rest of it') "
-        "resolves that in favor of the two dict entries only. Lane "
-        "so-batch (U3, build-u3.md) owns _dispatch/classify wiring; "
-        "until it lands, a sheet naming `revise` passes load_sheet "
-        "(PERMITTED_VERBS now includes it) but crashes _dispatch's "
-        "`else: raise AssertionError('unreachable: unpermitted verb')` "
-        "-- reported to the orchestrator, not resolved here."
-    )
+    # U3 (build-u3.md, lane so-batch) landed `_dispatch`/`classify`/
+    # `_STATUS_GATE` wiring for `revise` -- carried from the U4 gate
+    # (gate-u4-r1.md F5): un-skipped, now passes for real.
     def test_revise_then_route_sheet_applies_both(self, env2):
         rid = _seed_pending_behavior(env2, rid="lrn-90000016")
         write_proposal(env2.home, rid, proposal_dict(scope="skill:a"))
