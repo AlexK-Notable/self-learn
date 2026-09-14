@@ -345,8 +345,8 @@ class TestBulkGraduateResumeIdempotency:
         c, runner = make_client(sb)
         remaining = ids[1:]
         r = c.post(
-            "/bucket/skill/s/graduate-bulk",
-            data={"ids": ",".join(remaining)},
+            "/bucket/skill/s/retire-bulk",
+            data={"ids": ",".join(remaining), "covered_by": "skill-md:s"},
             headers=HX,
         )
         assert r.status_code in (200, 303)
@@ -356,8 +356,8 @@ class TestBulkGraduateResumeIdempotency:
         # that half); this proves the loop itself is clean given that
         # input, with no special-casing needed for a stale id.
         assert runner.calls == [
-            ["graduate", remaining[0], "--no-push"],
-            ["graduate", remaining[1], "--no-push"],
+            ["retire", remaining[0], "--covered-by", "skill-md:s", "--no-push"],
+            ["retire", remaining[1], "--covered-by", "skill-md:s", "--no-push"],
             ["push"],
         ]
 

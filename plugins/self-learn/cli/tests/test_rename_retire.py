@@ -41,7 +41,7 @@ from pathlib import Path
 import pytest
 
 from self_learn import cli, ledger_ops, verbs
-from self_learn.ledger_ops import ProposalError, create_record, validate_proposal
+from self_learn.ledger_ops import create_record, validate_proposal
 from self_learn.records import Record
 from support import commit_all, default_trace_for, make_behavior, make_home
 
@@ -61,13 +61,16 @@ _PATTERN = re.compile("graduate", re.IGNORECASE)
 #: `_retire_gates`), gates.py's `GRADUATE` return (G3, unchanged), and
 #: selfcheck.py/hosts.py/gitops.py/cases.py/compilers.py's prose
 #: comments naming the pre-rename word to explain PAST behaviour, never
-#: presenting it as today's current verb.
+#: presenting it as today's current verb; execution_evidence.py accepts
+#: the hidden compatibility alias's two real subjects (`graduate` without
+#: `covered_by`, `retire` with it) when authenticating mutation proof.
 _CLI_ALLOWLIST = frozenset(
     {
         "plugins/self-learn/cli/src/self_learn/batch.py",
         "plugins/self-learn/cli/src/self_learn/cases.py",
         "plugins/self-learn/cli/src/self_learn/cli.py",
         "plugins/self-learn/cli/src/self_learn/compilers.py",
+        "plugins/self-learn/cli/src/self_learn/execution_evidence.py",
         "plugins/self-learn/cli/src/self_learn/gates.py",
         "plugins/self-learn/cli/src/self_learn/gitops.py",
         "plugins/self-learn/cli/src/self_learn/hosts.py",
@@ -358,6 +361,51 @@ def test_supersession_display_three_phrases():
     assert supersession_display(live) == ""  # superseded_by is None: no phrase
 
 
+def test_coverage_kinds_round_trip_through_the_one_display_helper():
+    from self_learn.records import COVERAGE_KINDS, build_covered_by, supersession_display
+
+    expected = frozenset({"claude-md", "skill-md", "reference", "output-style"})
+    assert COVERAGE_KINDS == expected
+    for kind in sorted(expected):
+        record = make_behavior(record_id="lrn-d0000006")
+        stored = build_covered_by(f"{kind}:surface")
+        record.set_superseded_by(stored)
+        assert supersession_display(record) == f"retired, covered by {kind}:surface"
+
+
+def test_show_uses_the_display_helper_for_legacy_and_pending_supersessions(
+    tmp_path, monkeypatch, capsys
+):
+    """The raw field is a machine value; both dict and text use its phrase."""
+    home = make_home(tmp_path)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+
+    _seed_pending_r(home, OLD_R)
+    verbs.graduate(home, OLD_R, no_push=True)
+
+    pending_id = "lrn-0000d003"
+    _seed_pending_r(home, pending_id)
+    pending_path = home / "skills" / "s" / "pending" / f"{pending_id}.md"
+    pending = Record.from_path(pending_path)
+    pending.set_superseded_by(OLD_R)
+    pending.write(pending_path)
+
+    cases = (
+        (OLD_R, "canon", "retired, covering surface unrecorded"),
+        (pending_id, OLD_R, f"replaced by {OLD_R}"),
+    )
+    for record_id, raw, phrase in cases:
+        data = verbs.show(home, record_id)
+        assert data["superseded_by"] == raw  # positive control: raw field is present
+        assert data["supersession"] == phrase
+
+        capsys.readouterr()
+        assert cli.main(["show", record_id]) == 0
+        text = capsys.readouterr().out
+        assert f"  superseded by: {phrase}\n" in text
+        assert f"  superseded by: {raw}\n" not in text
+
+
 def test_no_second_phrase_set_in_cli_src():
     root = _repo_root()
     hits = set()
@@ -387,16 +435,11 @@ def test_no_second_phrase_set_in_ui_src():
 #
 # Tests item 6: recommendation `retire` round-trips through
 # `validate_proposal` (the real validator, not a hand-rolled shadow of
-# it); `recommendation: graduate` no longer does -- DISCLOSED, not
-# silently accommodated: `TRACE_RECOMMENDATIONS` is a brief-pinned
-# ruling (build-u13.md "do not re-decide"), so an on-disk proposal
-# written before this rename lands with `recommendation: graduate` set
-# will refuse re-validation post-landing (`route` with no `--dest`,
-# `self-learn proposal validate`, `selfcheck`, `reconcile` all call
-# `validate_proposal` against the STORED value). Flagged in
-# build-u13.md's report as an operational risk for the landing step,
-# not fixed here -- the brief's own ruling leaves no accommodating value
-# to add. `GRADUATE` itself stays a valid `gates.outcome` token
+# it); the S-67 read-side compatibility rule admits an already-stored
+# `recommendation: graduate` and normalizes the value to `retire` at
+# the shared proposal boundary. `TRACE_RECOMMENDATIONS` stays narrowed,
+# so new analyses cannot emit the old value. `GRADUATE` itself stays a
+# valid `gates.outcome` token
 # (positive control: the machine token is UNCHANGED, only the
 # `recommendation` VALUE it renders was renamed).
 
@@ -408,7 +451,7 @@ def test_trace_recommendations_dropped_graduate_kept_grade_outcome_token():
     assert ledger_ops._FALLBACK_RECOMMENDATIONS["GRADUATE"] == "retire"
 
 
-def test_recommendation_retire_round_trips_graduate_now_refused():
+def test_recommendation_retire_round_trips_and_legacy_graduate_reads_as_retire():
     base = {
         "destination": "claude-md",
         "rationale": "deterministic guard beats advisory text",
@@ -424,6 +467,5 @@ def test_recommendation_retire_round_trips_graduate_now_refused():
     validate_proposal(retiring)  # must not raise: retire round-trips
 
     stale = {**base, **trace, "recommendation": "graduate"}
-    with pytest.raises(ProposalError) as excinfo:
-        validate_proposal(stale)
-    assert "recommendation" in str(excinfo.value)
+    validate_proposal(stale)
+    assert stale["recommendation"] == "retire"

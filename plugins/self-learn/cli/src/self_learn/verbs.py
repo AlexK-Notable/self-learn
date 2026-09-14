@@ -81,7 +81,16 @@ from pathlib import Path
 
 from . import cases
 from . import config as policy_config
-from . import domain, gitops, hook_activation, intents, ledger_ops, sentinel, telemetry
+from . import (
+    domain,
+    execution_evidence,
+    gitops,
+    hook_activation,
+    intents,
+    ledger_ops,
+    sentinel,
+    telemetry,
+)
 from .primitives import chrono, fsops, text as text_mod
 from .hook_compiler import replay_examples, script_name, settings_snippet
 from .normalize import sha_anchor
@@ -1063,7 +1072,11 @@ def _by_trailer(by: str | None) -> str | None:
     return f"By: {by}"
 
 
-def _body_with_by_trailer(body: str | None, by: str | None) -> str | None:
+def _body_with_by_trailer(
+    body: str | None,
+    by: str | None,
+    execution: execution_evidence.ExecutionRef | None = None,
+) -> str | None:
     """Appends :func:`_by_trailer`'s result to *body* as its OWN FINAL
     paragraph — a blank line always separates it from whatever *body*
     already was, so a ``--note`` whose own last line already looks
@@ -1071,6 +1084,12 @@ def _body_with_by_trailer(body: str | None, by: str | None) -> str | None:
     block: git's trailer scan stops at the first paragraph break
     scanning up from the end, and the blank line here always puts one
     between the two (gate-u3-r1.md F3(b))."""
+    if execution is not None:
+        # The delegated runner, not a model-controlled sheet field, owns
+        # execution attribution. Existing ``by`` state/proposal semantics
+        # stay separate; the commit evidence names the actual runner.
+        _by_trailer(by)  # retain the verb's existing by-value refusal
+        return execution_evidence.append_trailers(body, execution)
     trailer = _by_trailer(by)
     if trailer is None:
         return body
@@ -4160,14 +4179,11 @@ def show(home: Path | str, record_id: str) -> dict:
         # above -- "replaced by lrn-…" / "retired, covered by
         # <kind>:<name>" / "retired, covering surface unrecorded" --
         # additive (never removes `superseded_by`, so a `--json`
-        # consumer reading the raw field is unaffected); `None` unless
-        # `status == "superseded"`, same guard `models.py`'s
-        # `ResolvedDetailModel.supersession` uses for the UI detail page.
-        "supersession": (
-            records_mod.supersession_display(record)
-            if record.status == "superseded"
-            else None
-        ),
+        # consumer reading the raw field is unaffected). The field is
+        # mutable in every status: a merge-collapse loser can remain
+        # pending while naming its survivor (02-schema §2), so status
+        # must not gate the helper. It already returns "" for None.
+        "supersession": records_mod.supersession_display(record),
         "resolution_note": record.resolution_note,
         "routing": (
             {
@@ -4395,6 +4411,7 @@ def _execute_route(
     follow_up: dict | None = None,
     collapse: "_CollapseCtx | None" = None,
     capture_diff: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """THE pinned route sequence (M-R, lane L7): every step `route`
     (pending-file input, git-mv) and `route_direct` (in-memory record,
@@ -4678,6 +4695,15 @@ def _execute_route(
             intent=intent,
         )
 
+        if intent is not None and execution is not None:
+            # Collapse roll-forward commits use the intent's pinned subject
+            # without a body. Register and mutate the manifest before
+            # ``complete`` so the mutation and its first proof are restored
+            # or committed together by existing intent recovery.
+            proof_path = execution_evidence.write_compound_proof(intent, execution)
+            if proof_path not in touched:
+                touched.append(proof_path)
+
         if intent is not None:
             # M-W (D7): every collapse mutation has now landed on disk —
             # record each step's REAL final state in one pass. A crash
@@ -4694,10 +4720,16 @@ def _execute_route(
                 raise gitops.HalfWrittenError.for_commit(
                     home, message, touched, exc
                 ) from exc
-            _, sha = _commit_ledger(home, touched, message, note)
+            _, sha = _commit_ledger(
+                home, touched, message,
+                _body_with_by_trailer(note, None, execution),
+            )
         else:
             diff_text = None
-            staged, sha = _commit_ledger(home, touched, message, note)
+            staged, sha = _commit_ledger(
+                home, touched, message,
+                _body_with_by_trailer(note, None, execution),
+            )
 
         if intent is not None:
             # The commit landed — this intent's job is done.
@@ -4825,6 +4857,7 @@ def route(
     follow_up: dict | None = None,
     collapse: str | None = None,
     allow_empty_glob: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Route a pending record into canon. See the module docstring for the
     pinned sequence (M-R: the post-preflight half now lives once, in
@@ -4978,6 +5011,7 @@ def route(
             follow_up=follow_up,
             collapse=collapse_ctx,
             capture_diff=False,
+            execution=execution,
         )
     finally:
         hold.release()  # (g) release iff owned
@@ -5499,6 +5533,7 @@ def reject(
     by: str | None = None,
     no_push: bool = False,
     reconsider_case: str | None = None,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Reject a pending (or deferred) record. Commit: ``self-learn:
     reject lrn-…``. FW-51: refuses BEFORE any lock/mutation, naming the
@@ -5529,7 +5564,7 @@ def reject(
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
-    body = _body_with_by_trailer(note, by)  # validates `by`; raises before any lock
+    body = _body_with_by_trailer(note, by, execution)  # validates before any lock
     _reconsider_case_check(home, reconsider_case, record_id)
     extra_allowed = frozenset({"routed"}) if reconsider_case is not None else None
     try:
@@ -5607,6 +5642,7 @@ def defer(
     by: str | None = None,
     no_push: bool = False,
     reconsider_case: str | None = None,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Defer a pending (or already-deferred) record (default +30 d).
     Commit: ``self-learn: defer lrn-… until <date>``. The note rides the
@@ -5631,7 +5667,7 @@ def defer(
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
-    body = _body_with_by_trailer(note, by)  # validates `by`; raises before any lock
+    body = _body_with_by_trailer(note, by, execution)  # validates before any lock
     _reconsider_case_check(home, reconsider_case, record_id)
     extra_allowed = frozenset({"routed"}) if reconsider_case is not None else None
     try:
@@ -5838,6 +5874,7 @@ def _move(
     note: str | None = None,
     by: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """The ONE verb body behind both ``rehome`` and ``rescope`` (U-verbs
     §4.1, ruling R1 / criterion ``MOVE10``): neither entry point may
@@ -5913,7 +5950,7 @@ def _move(
                 p.relative_to(home) if p.is_relative_to(home) else p for p in swept
             ]
             body = _rescope_commit_body(note, relswept)  # R-DISCLOSE-2
-            body = _body_with_by_trailer(body, by)  # F3: By: trailer, own final paragraph
+            body = _body_with_by_trailer(body, by, execution)
             staged, sha = _commit_ledger(home, touched, message, body)
         push = _push_ledger(home, no_push)
         return VerbResult(
@@ -5940,6 +5977,7 @@ def rehome(
     note: str | None = None,
     by: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Move a PENDING (or ``deferred``) record to any registered scope —
     ``user`` | ``skill:<name>`` | a registered project (02 §2 verb pin;
@@ -5958,7 +5996,8 @@ def rehome(
     All work is delegated to :func:`_move` — this function contains no
     file-op of its own (``MOVE10``)."""
     return _move(
-        home, record_id, to=to, verb="rehome", note=note, by=by, no_push=no_push
+        home, record_id, to=to, verb="rehome", note=note, by=by,
+        no_push=no_push, execution=execution,
     )
 
 
@@ -5970,6 +6009,7 @@ def rescope(
     note: str | None = None,
     by: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Move a PENDING (or ``deferred``) record to any registered scope —
     ``user`` | ``skill:<name>`` | a registered project (u-rescope spec
@@ -5987,7 +6027,8 @@ def rescope(
     All work is delegated to :func:`_move` — this function contains no
     file-op of its own (``MOVE10``)."""
     return _move(
-        home, record_id, to=to, verb="rescope", note=note, by=by, no_push=no_push
+        home, record_id, to=to, verb="rescope", note=note, by=by,
+        no_push=no_push, execution=execution,
     )
 
 
@@ -5998,6 +6039,7 @@ def undefer(
     note: str | None = None,
     by: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Bring a deferred record back to the queue NOW (U-verbs §4.2) — the
     exact inverse of `defer`'s own write: `status: pending`, clears
@@ -6013,7 +6055,7 @@ def undefer(
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
-    body = _body_with_by_trailer(note, by)  # validates `by`; raises before any lock
+    body = _body_with_by_trailer(note, by, execution)  # validates before any lock
     try:
         require_status(home, record_id, DEFERRED_ONLY, verb="undefer")
     except LedgerOpsError as exc:
@@ -6203,6 +6245,7 @@ def reopen(
     note: str | None = None,
     by: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Return a REJECTED record, or a wrongly RETIRED one, to the draft
     plane (U-verbs §4.2; retirement admitted S-67) — the inverse motion
@@ -6263,7 +6306,7 @@ def reopen(
                 p.relative_to(home) if p.is_relative_to(home) else p for p in swept
             ]
             body = _rescope_commit_body(note, relswept)
-            body = _body_with_by_trailer(body, by)  # F3: By: trailer, own final paragraph
+            body = _body_with_by_trailer(body, by, execution)
             staged, sha = _commit_ledger(home, touched, message, body)
         push = _push_ledger(home, no_push)
         post_notes = ["re-entering the queue — this record will be re-analyzed"]
@@ -6290,6 +6333,7 @@ def note(
     append: str,
     key: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Append one commentary entry to a record's `notes[]` (U-verbs
     §4.2) — ANY status, and NEVER touches `resolution_note`: `notes`
@@ -6329,7 +6373,10 @@ def note(
             record = Record.from_path(path)
             record.append_note(append, key=key)
             record.write(path)
-            staged, sha = _commit_ledger(home, [path], message, append)
+            staged, sha = _commit_ledger(
+                home, [path], message,
+                _body_with_by_trailer(append, None, execution),
+            )
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="note",
@@ -6656,6 +6703,7 @@ def retire(
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
     reconsider_case: str | None = None,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Retire a lesson: guidance already loaded elsewhere covers it, and
     *covered_by* NAMES that covering surface — ``<kind>:<name>``, *kind*
@@ -6685,6 +6733,7 @@ def retire(
         no_push=no_push,
         user_claude_md=user_claude_md,
         reconsider_case=reconsider_case,
+        execution=execution,
     )
 
 
@@ -6698,6 +6747,7 @@ def graduate(
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
     reconsider_case: str | None = None,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Deprecated alias for :func:`retire` (S-67), kept for one release
     so a pre-rename `graduate` sheet or script still applies unchanged.
@@ -6723,6 +6773,7 @@ def graduate(
             no_push=no_push,
             user_claude_md=user_claude_md,
             reconsider_case=reconsider_case,
+            execution=execution,
         )
     result = _retire_impl(
         home,
@@ -6734,6 +6785,7 @@ def graduate(
         no_push=no_push,
         user_claude_md=user_claude_md,
         reconsider_case=reconsider_case,
+        execution=execution,
     )
     result.warnings = result.warnings + [
         "`graduate` is `retire` now; covering surface unrecorded — "
@@ -6753,6 +6805,7 @@ def _retire_impl(
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
     reconsider_case: str | None = None,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Shared mechanics for :func:`retire` and the pre-rename-shaped leg
     of :func:`graduate` (S-67 — one operation on one record;
@@ -6905,7 +6958,7 @@ def _retire_impl(
                 if removal_record_path is not None:
                     touched = touched + [removal_record_path]
             staged, sha = _stage_and_commit(
-                home, touched, message, _body_with_by_trailer(note, by)
+                home, touched, message, _body_with_by_trailer(note, by, execution)
             )
 
             post_notes: list[str] = []
@@ -6951,6 +7004,7 @@ def supersede(
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
     reconsider_case: str | None = None,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Corrective supersession (08 §1 pin): mark ``old`` superseded by
     ``new`` (which must exist). Commit: ``self-learn: supersede lrn-old →
@@ -7134,7 +7188,7 @@ def supersede(
                 if removal_record_path is not None:
                     touched = touched + [removal_record_path]
             staged, sha = _commit_ledger(
-                home, touched, message, _body_with_by_trailer(note, by)
+                home, touched, message, _body_with_by_trailer(note, by, execution)
             )
 
             # (e) HOST phase: recompile the target — the entry drops out. For
@@ -7199,6 +7253,7 @@ def followup_done(
     *,
     note: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Clear a routed record's open follow-up (11 §2.5): move
     ``routing.follow_up`` to a dated ``follow_up_done`` block. Standard
@@ -7238,7 +7293,10 @@ def followup_done(
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
             record.write(path)
-            staged, sha = _stage_and_commit(home, [path], message, note)
+            staged, sha = _stage_and_commit(
+                home, [path], message,
+                _body_with_by_trailer(note, None, execution),
+            )
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="followup-done",
@@ -7261,6 +7319,7 @@ def confirm_recurrence(
     tolerate: bool = False,
     note: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Human confirmation of a recurrence suspect (11 §2.2/§2.5): append
     to the record's append-only ``recurrences:`` list, copying the minimal
@@ -7331,7 +7390,10 @@ def confirm_recurrence(
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
             record.write(path)
-            staged, sha = _stage_and_commit(home, [path], message, note)
+            staged, sha = _stage_and_commit(
+                home, [path], message,
+                _body_with_by_trailer(note, None, execution),
+            )
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="confirm-recurrence",
@@ -7352,6 +7414,7 @@ def confirm_held(
     *,
     note: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """A human observed the rule working (11 §2.2): write
     ``last_confirmed`` (today). Age-since-confirmation, not
@@ -7378,7 +7441,10 @@ def confirm_held(
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
             record.write(path)
-            staged, sha = _stage_and_commit(home, [path], message, note)
+            staged, sha = _stage_and_commit(
+                home, [path], message,
+                _body_with_by_trailer(note, None, execution),
+            )
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="confirm-held",
@@ -7418,6 +7484,7 @@ def dismiss_suspect(
     why: str,
     note: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """The third door out of ``recurrence_suspects`` (11 §2.2, U-dismiss
     §1): a human judged a recurrence-suspect telemetry claim to be a
@@ -7493,7 +7560,10 @@ def dismiss_suspect(
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
             record.write(path)
-            staged, sha = _stage_and_commit(home, [path], message, note)
+            staged, sha = _stage_and_commit(
+                home, [path], message,
+                _body_with_by_trailer(note, None, execution),
+            )
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="dismiss-suspect",
@@ -7515,6 +7585,7 @@ def link_contradicts(
     *,
     note: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """First-class contradiction edge (11 §2.4): append ``target`` (a
     record id or canon anchor) to ``links.contradicts``. Commit:
@@ -7543,7 +7614,10 @@ def link_contradicts(
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
             record.write(path)
-            staged, sha = _stage_and_commit(home, [path], message, note)
+            staged, sha = _stage_and_commit(
+                home, [path], message,
+                _body_with_by_trailer(note, None, execution),
+            )
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="link-contradicts",
@@ -8927,6 +9001,7 @@ def revise(
     because: str,
     by: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """``self-learn revise`` (02 §2 as amended 2026-09-13 / S-54 as
     amended / S-65; `commands/review.md` ~:154-160): the ONE sanctioned
@@ -9041,7 +9116,10 @@ def revise(
                     data["revised_by"] = by
                 _dump_yaml(data, proposal_path)
                 touched.append(proposal_path)
-            staged, sha = _commit_ledger(home, touched, message, because)
+            staged, sha = _commit_ledger(
+                home, touched, message,
+                _body_with_by_trailer(because, None, execution),
+            )
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="revise",

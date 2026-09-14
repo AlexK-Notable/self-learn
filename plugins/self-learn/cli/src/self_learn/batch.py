@@ -32,13 +32,15 @@ from __future__ import annotations
 
 import hashlib
 import sys
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Callable, Mapping
 
 from ruamel.yaml import YAML
 
-from . import cases, gitops, intents, sentinel, verbs
+from . import cases, execution_evidence, gitops, intents, sentinel, verbs
 from .cases import CASE_ID_RE
 from .compilers import CompileError
 from .ledger_ops import (
@@ -65,6 +67,8 @@ __all__ = [
     "PERMITTED_VERBS",
     "REFUSED_HOOK_DESTINATION",
     "BatchError",
+    "BatchContinuation",
+    "BookkeepingHalt",
     "BatchResult",
     "DryRunItem",
     "DryRunResult",
@@ -241,11 +245,17 @@ class Sheet(list):
     `ui/src`, `scripts`)."""
 
     def __init__(
-        self, iterable=(), *, case: str | None = None, sheet_sha: str | None = None
+        self,
+        iterable=(),
+        *,
+        case: str | None = None,
+        sheet_sha: str | None = None,
+        sheet_digest: str | None = None,
     ) -> None:
         super().__init__(iterable)
         self.case = case
         self.sheet_sha = sheet_sha
+        self.sheet_digest = sheet_digest
 
 
 @dataclass
@@ -268,8 +278,45 @@ class ItemResult:
     #: generic ``refused`` `_dispatch` gives every non-stopping refusal
     #: -- the receipt line for that item now reads ``stopped (exit N)``
     #: instead of being indistinguishable from an ordinary refusal.
-    state: str = "applied"  # applied | already-applied | refused | stopped | not-attempted
+    state: str = "applied"  # applied | already-applied | unresolved-host | refused | stopped | not-attempted
     detail: str | None = None
+    #: S-67 fold r1: verb warnings survive the sheet adapter just as
+    #: commit/detail facts do. Additive and empty for every existing item.
+    warnings: list[str] = field(default_factory=list)
+    #: Trusted provenance for an established outcome whose source matters
+    #: on recovery (for example, a host result established by recompile).
+    evidence: str | None = None
+
+
+@dataclass(frozen=True)
+class BatchContinuation:
+    """Trusted committed prefix for one immutable case/sheet pair.
+
+    A completed item with ``evidence is None`` came from an existing
+    committed Application line. A completed item carrying ``evidence`` was
+    reconstructed from mutation/host proof and is checkpointed before the
+    next item. ``state="unresolved-host"`` instead names a ledger-proven host
+    obligation in ``detail``; it is receipted and halts the dependent tail.
+    """
+
+    run_id: str
+    case_id: str
+    sheet_digest: str
+    completed: Mapping[int, ItemResult]
+
+
+class BookkeepingHalt(Exception):
+    """An opted-in durability checkpoint failed after an item outcome."""
+
+    def __init__(
+        self,
+        message: str,
+        result: "BatchResult",
+        untouched_tail: list[SheetItem],
+    ) -> None:
+        super().__init__(message)
+        self.result = result
+        self.untouched_tail = untouched_tail
 
 
 @dataclass
@@ -313,6 +360,10 @@ class BatchResult:
     #: field a `--json`/receipt READER can consult without parsing a
     #: git log.
     actor: str = "human"
+    #: Internal receipt-owner state. These original ordinals already have
+    #: committed Application lines and are omitted from later prefix writes.
+    #: It is intentionally absent from ``to_json`` and every CLI envelope.
+    preserved_receipt_items: set[int] = field(default_factory=set, repr=False)
 
     @property
     def summary(self) -> dict:
@@ -346,6 +397,8 @@ class BatchResult:
                 {
                     "n": i.n, "id": i.id, "verb": i.verb, "rc": i.rc,
                     "sha": i.sha, "state": i.state, "detail": i.detail,
+                    "warnings": list(i.warnings),
+                    **({"evidence": i.evidence} if i.evidence is not None else {}),
                 }
                 for i in self.items
             ],
@@ -408,7 +461,8 @@ def load_sheet(path: Path | str, *, home: Path | str | None = None) -> Sheet:
     # would otherwise collide, and a re-run of the SAME sheet must key
     # identically even if the CLI's `args.sheet` path differs, e.g. a
     # relative vs. absolute invocation).
-    sheet_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+    sheet_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    sheet_sha = sheet_digest[:8]
     try:
         data = yaml.load(text)
     except Exception as exc:  # noqa: BLE001 — any YAML parse failure is a sheet error
@@ -487,7 +541,9 @@ def load_sheet(path: Path | str, *, home: Path | str | None = None) -> Sheet:
             )
         fields = {k: v for k, v in raw.items() if k not in ("id", "verb")}
         items.append(SheetItem(n=n, id=rid, verb=verb, fields=fields))
-    return Sheet(items, case=case, sheet_sha=sheet_sha)
+    return Sheet(
+        items, case=case, sheet_sha=sheet_sha, sheet_digest=sheet_digest
+    )
 
 
 def _resolved_route_dest(home: Path, path: Path, item: SheetItem):
@@ -828,6 +884,7 @@ def _dispatch_hook_activation(
             n=item.n, id=item.id, verb=verb, rc=1, state="refused",
             sha=route_result.commit_sha if route_result is not None else None,
             detail=detail,
+            warnings=(list(route_result.warnings) if route_result is not None else []),
         )
     if route_result is None:
         notes = list(hook_result.post_notes)
@@ -842,6 +899,10 @@ def _dispatch_hook_activation(
     return ItemResult(
         n=item.n, id=item.id, verb=verb, rc=0,
         sha=hook_result.commit_sha, state="applied", detail=detail,
+        warnings=(
+            (list(route_result.warnings) if route_result is not None else [])
+            + list(hook_result.warnings)
+        ),
     )
 
 
@@ -852,6 +913,7 @@ def _dispatch_retire_or_graduate(
     actor: str,
     case: str | None,
     verb: str,
+    execution: execution_evidence.ExecutionRef | None,
 ) -> "verbs.VerbResult":
     """S-67 (U13): the ``retire``/``graduate`` leg of :func:`_dispatch`,
     factored out for the SAME reason :func:`_dispatch_hook_activation`
@@ -884,12 +946,14 @@ def _dispatch_retire_or_graduate(
             note=f.get("note"), by=(f.get("by") or actor),
             no_push=True,
             reconsider_case=_reconsider_case_for(home, item.id, case, verb),
+            execution=execution,
         )
     return verbs.graduate(
         home, item.id, covered_by=f.get("covered_by"),
         note=f.get("note"), by=(f.get("by") or actor),
         no_push=True,
         reconsider_case=_reconsider_case_for(home, item.id, case, verb),
+        execution=execution,
     )
 
 
@@ -900,6 +964,7 @@ def _dispatch(
     case: str | None = None,
     actor: str = "human",
     hook_activation: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> ItemResult:
     """Call the SAME ``verbs.*`` function the CLI calls, with
     ``no_push=True``, inside that verb's own ``_ledger_write`` span,
@@ -1010,6 +1075,7 @@ def _dispatch(
                 note=f.get("note"), no_push=True, follow_up=follow_up,
                 collapse=f.get("collapse"),
                 allow_empty_glob=bool(f.get("allow_empty_glob", False)),
+                execution=execution,
             )
             if is_hook_dest and actor == "overseer":
                 # 13 §7.4 "The path" — the overseer's own runner call is
@@ -1033,6 +1099,7 @@ def _dispatch(
                 home, item.id, note=f.get("note"), by=(f.get("by") or actor),
                 no_push=True,
                 reconsider_case=_reconsider_case_for(home, item.id, case, verb),
+                execution=execution,
             )
         elif verb == "defer":
             until = f.get("until")
@@ -1041,16 +1108,19 @@ def _dispatch(
                 by=(f.get("by") or actor),
                 no_push=True,
                 reconsider_case=_reconsider_case_for(home, item.id, case, verb),
+                execution=execution,
             )
         elif verb == "undefer":
             result = verbs.undefer(
                 home, item.id, note=f.get("note"), by=(f.get("by") or actor),
                 no_push=True,
+                execution=execution,
             )
         elif verb == "reopen":
             result = verbs.reopen(
                 home, item.id, note=f.get("note"), by=(f.get("by") or actor),
                 no_push=True,
+                execution=execution,
             )
         elif verb in ("retire", "graduate"):
             # S-67 (U13): pulled out to `_dispatch_retire_or_graduate`
@@ -1064,50 +1134,65 @@ def _dispatch(
             # trips the ceiling is per-FUNCTION, so only moving the
             # branch OUT of `_dispatch` entirely (a real subroutine, not
             # a same-function merge) actually clears it.
-            result = _dispatch_retire_or_graduate(home, item, f, actor, case, verb)
+            result = _dispatch_retire_or_graduate(
+                home, item, f, actor, case, verb, execution
+            )
         elif verb == "supersede":
             result = verbs.supersede(
                 home, item.id, f["new_id"], note=f.get("note"),
                 by=(f.get("by") or actor),
                 no_push=True,
                 reconsider_case=_reconsider_case_for(home, item.id, case, verb),
+                execution=execution,
             )
         elif verb == "rehome":
             result = verbs.rehome(
                 home, item.id, to=f["to"], note=f.get("note"),
                 by=(f.get("by") or actor),
                 no_push=True,
+                execution=execution,
             )
         elif verb == "rescope":
             result = verbs.rescope(
                 home, item.id, to=f["to"], note=f.get("note"),
                 by=(f.get("by") or actor),
                 no_push=True,
+                execution=execution,
             )
         elif verb == "note":
             result = verbs.note(
                 home, item.id, append=f["append"], key=f.get("key"),
                 no_push=True,
+                execution=execution,
             )
         elif verb == "confirm-recurrence":
             result = verbs.confirm_recurrence(
                 home, item.id, event_ref=f["event"],
                 tolerate=bool(f.get("tolerate", False)), note=f.get("note"),
                 no_push=True,
+                execution=execution,
             )
         elif verb == "dismiss-suspect":
             result = verbs.dismiss_suspect(
                 home, item.id, event_ref=f["event"], why=f["why"],
                 note=f.get("note"), no_push=True,
+                execution=execution,
             )
         elif verb == "confirm-held":
-            result = verbs.confirm_held(home, item.id, note=f.get("note"), no_push=True)
+            result = verbs.confirm_held(
+                home, item.id, note=f.get("note"), no_push=True,
+                execution=execution,
+            )
         elif verb == "link-contradicts":
             result = verbs.link_contradicts(
-                home, item.id, f["target"], note=f.get("note"), no_push=True
+                home, item.id, f["target"], note=f.get("note"), no_push=True,
+                execution=execution,
             )
         elif verb == "followup-done":
-            result = verbs.followup_done(home, item.id, note=f.get("note"), no_push=True)
+            result = verbs.followup_done(
+                home, item.id, note=f.get("note"), no_push=True,
+                execution=execution,
+            )
         elif verb == "revise":
             # U3 (carried from the U4 gate): U4 added `revise` to
             # PERMITTED_VERBS/PERMITTED_KEYS/REQUIRED_KEYS but this
@@ -1127,6 +1212,7 @@ def _dispatch(
                 # a non-human runner is named" rule applies to it.
                 by=(f.get("by") or (actor if actor != "human" else None)),
                 no_push=True,
+                execution=execution,
             )
         else:  # pragma: no cover — load_sheet already gated the verb set
             raise AssertionError(f"unreachable: unpermitted verb {verb!r}")
@@ -1164,13 +1250,118 @@ def _dispatch(
                            detail=str(exc))
     return ItemResult(
         n=item.n, id=item.id, verb=verb, rc=0, sha=result.commit_sha,
-        state="applied",
+        state="applied", warnings=list(result.warnings),
     )
 
 
 #: A pre-mutation ledger-level failure — nothing written, safe to retry
 #: (§3.3: "the ledger is unsafe to keep writing into").
 _STOP_CODES = frozenset({5, 6, 7})
+
+# These verbs can return only after a ledger commit and one or more host
+# effects. Their owner-returned result must be receipted before a dependent
+# item starts; a mutation trailer proves only the ledger leg.
+_HOST_OUTCOME_VERBS = frozenset({"route", "reject", "retire", "graduate", "supersede"})
+
+
+def _validate_continuation(
+    items: list[SheetItem], continuation: BatchContinuation
+) -> tuple[str, str, str]:
+    case = getattr(items, "case", None)
+    sheet_sha = getattr(items, "sheet_sha", None)
+    sheet_digest = getattr(items, "sheet_digest", None)
+    if case != continuation.case_id:
+        raise BatchError("batch continuation case id does not match the sheet")
+    if sheet_digest != continuation.sheet_digest:
+        raise BatchError("batch continuation full sheet digest does not match the sheet")
+    if not isinstance(sheet_sha, str):
+        raise BatchError("batch continuation requires the original short sheet sha")
+    by_n = {item.n: item for item in items}
+    for n, completed in continuation.completed.items():
+        item = by_n.get(n)
+        if item is None:
+            raise BatchError(f"batch continuation names unknown original item {n}")
+        if (completed.n, completed.id, completed.verb) != (item.n, item.id, item.verb):
+            raise BatchError(f"batch continuation item {n} does not match the sheet")
+        successful = completed.state in {"applied", "already-applied"} and completed.rc == 0
+        unresolved_host = (
+            completed.state == "unresolved-host"
+            and isinstance(completed.detail, str)
+            and bool(completed.detail.strip())
+        )
+        if not successful and not unresolved_host:
+            raise BatchError(
+                f"batch continuation item {n} is neither a proven completion "
+                "nor a named unresolved host obligation"
+            )
+    # ExecutionRef applies its strict run/case/digest validation before item 1.
+    if items:
+        first = items[0]
+        execution_evidence.ExecutionRef(
+            run_id=continuation.run_id,
+            case_id=continuation.case_id,
+            sheet_sha=sheet_sha,
+            sheet_digest=continuation.sheet_digest,
+            item=first.n,
+            record_id=first.id,
+            verb=first.verb,
+            actor="steward",
+        )
+    return continuation.case_id, sheet_sha, continuation.sheet_digest
+
+
+def _checkpoint_or_halt(
+    checkpoint: Callable[[BatchResult], dict | None],
+    result: BatchResult,
+    tail: list[SheetItem],
+) -> None:
+    try:
+        outcome = checkpoint(result)
+    except Exception as exc:  # noqa: BLE001 — durability owner failures halt uniformly
+        result.process_code = decision_code(result.items)
+        raise BookkeepingHalt(
+            f"ordered receipt checkpoint raised: {exc}", result, tail
+        ) from exc
+    if outcome is None or outcome.get("state") != "ok":
+        result.process_code = decision_code(result.items)
+        reason = "ordered receipt checkpoint returned no result"
+        if isinstance(outcome, dict) and outcome.get("reason"):
+            reason = f"ordered receipt checkpoint failed: {outcome['reason']}"
+        raise BookkeepingHalt(reason, result, tail)
+    result.preserved_receipt_items.update(item.n for item in result.items)
+
+
+def _record_ledger_stop(
+    result: BatchResult,
+    item: SheetItem,
+    tail: list[SheetItem],
+    exc: intents.LedgerStoppedError,
+) -> None:
+    """Convert a continuation-span STOP to the ordinary stopped-item shape."""
+    result.recovered_rolled_forward.extend(exc.result.rolled_forward)
+    result.recovered_restored.extend(exc.result.restored)
+    result.stop_message = str(exc)
+    result.stopped_at = item.n
+    result.items.append(
+        ItemResult(
+            n=item.n,
+            id=item.id,
+            verb=item.verb,
+            rc=gitops.EXIT_GIT_FAILED,
+            state="stopped",
+            detail=str(exc),
+        )
+    )
+    for remaining in tail:
+        result.items.append(
+            ItemResult(
+                n=remaining.n,
+                id=remaining.id,
+                verb=remaining.verb,
+                rc=-1,
+                state="not-attempted",
+            )
+        )
 
 
 def decision_code(results: list[ItemResult]) -> int:
@@ -1463,6 +1654,8 @@ def run(
     no_push: bool = False,
     actor: str = "human",
     hook_activation: bool = False,
+    continuation: BatchContinuation | None = None,
+    checkpoint: Callable[[BatchResult], dict | None] | None = None,
 ) -> BatchResult:
     """Apply *items* in one locked run (§4.4's procedure): ONE owning
     sentinel hold → heartbeat → per item, classify (skip if
@@ -1499,12 +1692,23 @@ def run(
     from . import cli as cli_mod
 
     home = Path(home)
+    flush_epilogue = lambda: cli_mod._mutating_epilogue(home, no_push=True)
     # U3: `items` is a `Sheet` when it came from `load_sheet`; a plain
     # `list[SheetItem]` (every pre-existing caller, incl. U4's own
     # `test_revise_then_route_sheet_applies_both`) has no `.case` and
     # gets `None` here, exactly today's behaviour.
     case = getattr(items, "case", None)
     sheet_sha = getattr(items, "sheet_sha", None)
+    sheet_digest = getattr(items, "sheet_digest", None)
+    if continuation is not None:
+        case, sheet_sha, sheet_digest = _validate_continuation(items, continuation)
+        if checkpoint is None:
+            raise BatchError(
+                "batch continuation requires an ordered receipt checkpoint"
+            )
+        checkpoint_required = True
+    else:
+        checkpoint_required = False
     # S-62 (13 §5): the sheet-level check, once, before item 1 — a
     # pre-existing STOP refuses the WHOLE sheet before anything lands,
     # the same way a sheet-invalid (64) or home-gate (5) refusal does.
@@ -1537,32 +1741,212 @@ def run(
         recovered_rolled_forward=list(recovered.rolled_forward),
         recovered_restored=list(recovered.restored),
         actor=actor,
+        preserved_receipt_items={
+            n
+            for n, completed in (continuation.completed.items() if continuation else [])
+            if completed.evidence is None and completed.state != "unresolved-host"
+        },
     )
     push_exit: int | None = None
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
         for idx, item in enumerate(items):
-            if classify(home, item, actor=actor, hook_activation=hook_activation):
+            if continuation is not None and item.n in continuation.completed:
+                completed = continuation.completed[item.n]
                 result.items.append(
-                    ItemResult(n=item.n, id=item.id, verb=item.verb, rc=0,
-                               state="already-applied")
+                    ItemResult(
+                        n=completed.n,
+                        id=completed.id,
+                        verb=completed.verb,
+                        rc=completed.rc,
+                        sha=completed.sha,
+                        state=completed.state,
+                        detail=completed.detail,
+                        warnings=list(completed.warnings),
+                        evidence=completed.evidence,
+                    )
                 )
+                # A recovered ledger-only completion carries explicit
+                # reconstruction evidence. Its Application line must land
+                # before a dependent item starts. Entries reconstructed from
+                # an existing committed receipt omit ``evidence`` and need no
+                # redundant checkpoint.
+                if completed.state == "unresolved-host":
+                    assert checkpoint is not None
+                    _checkpoint_or_halt(
+                        checkpoint, result, list(items[idx + 1:])
+                    )
+                    result.process_code = decision_code(result.items)
+                    raise BookkeepingHalt(
+                        f"unresolved host obligation for item {item.n}: "
+                        f"{completed.detail}",
+                        result,
+                        list(items[idx + 1:]),
+                    )
+                if completed.evidence is not None:
+                    assert checkpoint is not None
+                    _checkpoint_or_halt(
+                        checkpoint, result, list(items[idx + 1:])
+                    )
                 continue
-            item_result = _dispatch(
-                home, item, case=case, actor=actor, hook_activation=hook_activation,
+            already_applied = False
+            if continuation is not None:
+                # Bind present-state classification and its ordered receipt to
+                # one ledger span. Otherwise a manual/intervening edit could
+                # make a dirty working file look like a committed no-op.
+                try:
+                    with intents.ledger_write(home) as item_recovered:
+                        intents.announce_recovered(item_recovered)
+                        result.recovered_rolled_forward.extend(
+                            item_recovered.rolled_forward
+                        )
+                        result.recovered_restored.extend(item_recovered.restored)
+                        try:
+                            item_path = find_record_path(home, item.id)
+                        except LedgerOpsError:
+                            item_path = None
+                        dirty = (
+                            gitops.dirty_paths(home, item_path)
+                            if item_path is not None
+                            else []
+                        )
+                        if dirty:
+                            raise BookkeepingHalt(
+                                "batch continuation refuses uncommitted record "
+                                f"state before item {item.n}: {dirty}",
+                                result,
+                                list(items[idx:]),
+                            )
+                        already_applied = classify(
+                            home,
+                            item,
+                            actor=actor,
+                            hook_activation=hook_activation,
+                        )
+                        if already_applied:
+                            result.items.append(
+                                ItemResult(
+                                    n=item.n,
+                                    id=item.id,
+                                    verb=item.verb,
+                                    rc=0,
+                                    state="already-applied",
+                                )
+                            )
+                            assert checkpoint is not None
+                            _checkpoint_or_halt(
+                                checkpoint, result, list(items[idx + 1:])
+                            )
+                except intents.LedgerStoppedError as exc:
+                    _record_ledger_stop(result, item, list(items[idx + 1:]), exc)
+                    break
+            else:
+                already_applied = classify(
+                    home, item, actor=actor, hook_activation=hook_activation
+                )
+            if already_applied:
+                if continuation is None:
+                    result.items.append(
+                        ItemResult(n=item.n, id=item.id, verb=item.verb, rc=0,
+                                   state="already-applied")
+                    )
+                continue
+            dispatch_span = (
+                intents.ledger_write(home)
+                if continuation is not None
+                else nullcontext(None)
             )
-            if item_result.rc in _STOP_CODES:
-                # Fold r1 (F9): this is the ONE item whose rc actually
-                # halted the sheet -- 02-schema.md §3a.2 §5 names
-                # `stopped` as its own receipt state, distinct from an
-                # ordinary per-verb `refused`; `_dispatch` cannot know
-                # at dispatch time whether ITS OWN refusal is the one
-                # that stops the sheet, so `run` (the only place that
-                # DOES know) overrides here, before the item ever joins
-                # `result.items`.
-                item_result.state = "stopped"
-            result.items.append(item_result)
+            try:
+                with dispatch_span as dispatch_recovered:
+                    if continuation is not None:
+                        assert dispatch_recovered is not None
+                        intents.announce_recovered(dispatch_recovered)
+                        result.recovered_rolled_forward.extend(
+                            dispatch_recovered.rolled_forward
+                        )
+                        result.recovered_restored.extend(
+                            dispatch_recovered.restored
+                        )
+                        try:
+                            item_path = find_record_path(home, item.id)
+                        except LedgerOpsError:
+                            item_path = None
+                        dirty = (
+                            gitops.dirty_paths(home, item_path)
+                            if item_path is not None
+                            else []
+                        )
+                        if dirty:
+                            raise BookkeepingHalt(
+                                "batch continuation refuses uncommitted record "
+                                f"state before item {item.n}: {dirty}",
+                                result,
+                                list(items[idx:]),
+                            )
+                    head_before = (
+                        gitops.head_sha(home) if continuation is not None else None
+                    )
+                    execution = None
+                    if continuation is not None:
+                        assert case is not None and sheet_sha is not None
+                        execution = execution_evidence.ExecutionRef(
+                            run_id=continuation.run_id,
+                            case_id=case,
+                            sheet_sha=sheet_sha,
+                            sheet_digest=continuation.sheet_digest,
+                            item=item.n,
+                            record_id=item.id,
+                            verb=item.verb,
+                            actor=actor,
+                        )
+                    item_result = _dispatch(
+                        home,
+                        item,
+                        case=case,
+                        actor=actor,
+                        hook_activation=hook_activation,
+                        execution=execution,
+                    )
+                    if continuation is not None and item.verb in _HOST_OUTCOME_VERBS:
+                        item_result.evidence = (
+                            f"host result returned by {item.verb}"
+                            if item_result.rc == 0
+                            else f"host failure returned by {item.verb}"
+                        )
+                    if item_result.rc in _STOP_CODES:
+                        # Fold r1 (F9): this is the ONE item whose rc actually
+                        # halted the sheet -- 02-schema.md §3a.2 §5 names
+                        # `stopped` as its own receipt state, distinct from an
+                        # ordinary per-verb `refused`; `_dispatch` cannot know
+                        # at dispatch time whether ITS OWN refusal is the one
+                        # that stops the sheet, so `run` (the only place that
+                        # DOES know) overrides here, before the item ever joins
+                        # `result.items`.
+                        item_result.state = "stopped"
+                    result.items.append(item_result)
+                    if checkpoint_required:
+                        assert checkpoint is not None
+                        head_after = gitops.head_sha(home)
+                        no_mutation = head_before == head_after
+                        if (
+                            no_mutation
+                            or item_result.rc != 0
+                            or item.verb in _HOST_OUTCOME_VERBS
+                        ):
+                            _checkpoint_or_halt(
+                                checkpoint, result, list(items[idx + 1:])
+                            )
+                        if item.verb in _HOST_OUTCOME_VERBS and item_result.rc != 0:
+                            result.process_code = decision_code(result.items)
+                            raise BookkeepingHalt(
+                                f"host outcome failed for item {item.n} ({item.verb})",
+                                result,
+                                list(items[idx + 1:]),
+                            )
+            except intents.LedgerStoppedError as exc:
+                _record_ledger_stop(result, item, list(items[idx + 1:]), exc)
+                break
             sentinel.heartbeat()
             if item_result.rc in _STOP_CODES:
                 result.stopped_at = item.n
@@ -1591,12 +1975,15 @@ def run(
         # hold, before the push, always `no_push=True`: the batch owns
         # the single push, so the flush's own commit rides it rather
         # than publishing itself.
-        cli_mod._mutating_epilogue(home, no_push=True)
+        flush_epilogue()
         if not no_push:
             push = verbs.push_pending(home)
             result.pushed = True
             if not push.ok:
                 push_exit = push.exit_code
+    except BookkeepingHalt:
+        flush_epilogue()
+        raise
     finally:
         hold.release()
     result.process_code = decision_code(result.items)
@@ -1615,6 +2002,7 @@ def write_receipt(
     sheet_name: str,
     *,
     no_push: bool = False,
+    prefix: bool = False,
 ) -> dict | None:
     """O-2b: the case-receipt block moved verbatim out of
     ``cli._cmd_batch`` — a SECOND, non-nested ``intents.ledger_write``
@@ -1641,7 +2029,13 @@ def write_receipt(
     separately, strictly AFTER ``run``'s single push already returned,
     under the same rule. A direct call from a non-CLI caller (O-3's own
     runner) writes the SAME Application section `cases.receipt` always
-    has — this function has no CLI-specific behaviour left in it."""
+    has — this function has no CLI-specific behaviour left in it.
+
+    ``prefix=True`` is the delegated continuation form. It omits ordinals
+    already known to have committed Application lines, and after each
+    successful checkpoint :func:`run` marks that prefix as preserved. Thus a
+    later checkpoint submits only missing or legitimately advanced keys and
+    never refreshes an earlier receipt line's timestamp."""
     if result.case is None:
         return None
     home = Path(home)
@@ -1658,11 +2052,16 @@ def write_receipt(
         "stopped_at": result.stopped_at,
         "code": result.process_code,
         "stop_message": result.stop_message,
-        "items": result.to_json()["items"],
+        "items": [
+            item
+            for item in result.to_json()["items"]
+            if not prefix or item["n"] not in result.preserved_receipt_items
+        ],
         # Fold r1 (F2): threaded through for future readers -- `cases.
         # receipt` reads only the keys named in its own docstring and
         # ignores this one, so the section-5 line format is unchanged.
         "actor": result.actor,
+        "prefix": prefix,
     }
     try:
         cases.receipt(home, result.case, batch_result)
