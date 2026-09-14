@@ -89,6 +89,11 @@ HOSTS     repos holding COMPILED canon: claude-skills (SKILL.md managed
   projects/<slug>/{pending,resolved,proposals}/   # per-project (NEW)
   user/{pending,resolved,proposals}/
   telemetry/<month>.<actor>.jsonl
+  cases/<yyyy-mm>/case-<8hex>.md      # decision cases (02 §3a; S-65)
+  user-statements.jsonl               # append-only, the user's own words
+  user-model.md                       # CURRENT/LAPSED readings (02 §3a)
+  overseer/{<date>-report.md, latest-report.md, coverage.yaml,
+    open-questions.yaml, evaluation-<date>.md}   # the overseer's own subtree
 ```
 
 - **Skill buckets** are host-global as before; `hosts.yaml` names the
@@ -130,6 +135,10 @@ HOSTS     repos holding COMPILED canon: claude-skills (SKILL.md managed
   about to be written into a *git-mode* host) runs before any such
   write, refusing or redacting exactly as the existing secret scan does
   today (`02-schema.md`, evidence-quote rule).
+- **Cases, statements, and the user model** *(Added 2026-09-13, S-65 — the
+  steward and overseer build)*: three ledger-truth files at the home root
+  and one subtree, `overseer/`, owned by the overseer's own runner. Full
+  content contract: `02-schema.md` §3a.
 - `hosts.yaml` is data, tracked in the ledger repo — one file to read
   to know where canon may land. Registration is a CLI verb
   (`self-learn host add <path>`), never a hand edit the compilers
@@ -333,6 +342,27 @@ not-roots — `serve` gives every mutation already reachable from them a
 SECOND path into the lock-obligation walk, through `cli.entrypoint ->
 ... -> cli._cmd_serve -> serve.run_forever -> serve._run_tick`, which the
 walker checks structurally, without anyone declaring it.
+
+**Two more jobs join the tick** *(Added 2026-09-13, U10 + O-4)*. `serve`'s
+one-job-at-a-time tick (§5's own rule, unchanged) gains a steward job,
+nightly, after the worker job in the same tick — never before it, since the
+steward reads the worker's brief — and an overseer job, weekly, after the
+steward job. Both are ordinary `serve` jobs in exactly this section's sense:
+each takes its own lock, commits under its own pinned subject, and `serve`
+itself never stages, commits, or pushes on their behalf (H-5 unchanged).
+`_steward_is_due`/`_overseer_is_due` follow the existing
+`_mine_is_due`/schedule-state-parity shape; both run inside the same
+`_worker_autokick_disabled()` span the mine and worker jobs already share,
+for the same reason given there: no producer's follow-on tail may spawn a
+detached child while `serve` is mid-tick. `doctor serve` and `status
+--fast` gain `steward_last_run_at`/`steward_cases_since_overseer` and
+`overseer_last_run`/`overseer_next`/`overseer_open_questions` as additive
+JSON fields, following the precedent §7.2a.7 already set for the
+intent-recovery status line (full field list: §7.2a.7 as amended).
+`systemd/self-learn-overseer.service`/`.timer` (weekly `OnCalendar`,
+`Persistent=true`) join the miner/host unit pair; `install.sh` links but
+never enables them, unchanged from every other unit this repo ships
+(`CLAUDE.md` § Layout).
 
 ## 6. Cache namespacing
 
@@ -862,7 +892,9 @@ today, a batch item's outcome rides the `--json` envelope, the miner
 and worker log each recovered id on its own line. Unattended callers
 (the miner's landing commit, the worker's commit and harvest locks,
 `telemetry.flush` when the miner or worker calls it, and all of these
-again under `serve`'s tick) recover the LEDGER half of a recoverable
+again under `serve`'s tick, the steward's own run
+(`13-hosting-and-separation.md` §5, added
+2026-09-13), and the overseer's own run (same section)) recover the LEDGER half of a recoverable
 intent exactly as their run-start recovery already does, log it, and
 never act on a host step; an attended caller does not act on a host
 step either — the attended host repair is `self-learn recompile`, named
@@ -878,9 +910,12 @@ against `compiled.py`).
 **(4) STOP scope — OPTION 1, refuse everything.** When the check finds
 an intent it cannot finish (a `stopped` outcome), EVERY ledger-write
 verb refuses at lock acquisition, exit 6, nothing written — one generic
-seam, no per-verb path prediction. For the two unattended runs the
+seam, no per-verb path prediction. For the four unattended runs the
 refusal point is the RUN START, not the landing lock: the miner's
-run-start `reconcile` and the worker's run-start `intents.recover`
+run-start `reconcile` and the worker's run-start `intents.recover`, the
+steward's run-start `intents.recover` (`steward.py`, mirroring the
+worker's), and the overseer's run-start `intents.recover` (`overseer.py`,
+same shape)
 already report a `stopped` outcome, and a run that sees one ends
 there — exit 6, or the job record under `serve` — before enumeration
 and before any model session is spent. Today both log the STOP and
@@ -1003,6 +1038,12 @@ floors (hook routes never auto-applied, secret-scan blocks always
 escalate) are unchanged, and the policy's supervised-first sequencing
 still governs when an agent may run it unattended.
 
+*Amended 2026-09-13:* "hook routes never auto-applied" now has one named
+exception, the overseer (`S-29` as amended, `S-66`); the secret-scan floor
+is unchanged and, per the amended S-29, is now the *only* unconditional
+floor. `reconcile --clear-intent` itself is unaffected by either clause —
+it was never a hook route.
+
 ### 7.2a.7 Visibility — a STOP must be seen where the operator looks
 
 Two measured gaps at `a41ddb3` make option 1's outage silent, and the
@@ -1058,6 +1099,17 @@ heartbeat is RECOMMENDED — `serve.write_heartbeat` carries only
 restatement — and the `doctor` row reads it when present. A refusal
 that reaches only the job record and the journal does not satisfy this
 section.
+
+**The overseer's status/doctor row** *(Added 2026-09-13, O-4/O-5)*: the
+same visibility discipline this section states for a STOP applies to the
+overseer's own cadence — `status --fast` and `doctor serve` gain
+`overseer_last_run`, `overseer_next` (the next due weekly tick), and
+`overseer_open_questions` (a count: the last report's open questions and
+whether each received a statement — the same content `S-66`'s report
+distinguishes, `misc/audit-2026-09-02/steward-design/plan-overseer-
+2026-09-12.md` item 6 of its report contents). These are additive JSON fields on an existing read-only surface,
+not a new command; a `status`/`doctor` run that omits them is not this
+section's fault, but a build that never wires them through is.
 
 ### 7.2a.8 Test plan the blind code gate verifies
 
@@ -1351,6 +1403,96 @@ repo clone. After step 5: the pre-removal master sha is tagged in the
 snapshot; `git revert` the removal commit + re-run install.sh restores
 every symlink — no ledger or canon state is touched at any step, so
 rollback is purely a code-repo affair.
+
+## 7.4 The overseer's hook-activation path (O-2)
+
+*Added 2026-09-13, S-66 — the overseer build.* Today a hook route
+generates a guard script and prints two manual steps that a human runs by
+hand; the batch executor refuses hook routes outright ("a hook route is
+refused inside a batch (S-29) — route it by hand"); `install.sh`
+deliberately never touches guard scripts or `settings.json`. `S-29` as
+amended gives the overseer the authority to approve *and install* a hook on
+the user's behalf. This section makes that authority one verb, not a
+relaxation of the batch refusal above.
+
+**The gate.** `overseer.hook_activation` is a committed-config key (the
+S-10 opt-in pattern), **default `false`, fail-closed on anything but YAML
+`true`.** It governs only the overseer's own automatic path, never a
+human's: with it `false`, the overseer applies an approved hook route only
+as far as step 1 below (placed) and then parks it, with a receipt saying
+activation is delegated but switched off — the same two-manual-steps state
+this file already describes for a human. With it `true`, the overseer's
+own call proceeds through all three steps. `misc/audit-2026-09-02/steward-design/seam-reconciliation-2026-09-12.md`'s
+standing recommendation — switch this OFF until one hook has been
+activated by hand — governs the setting's initial value, not this
+section's mechanics.
+
+**The path.** Two callers, one set of steps, resolved against
+`<claude_dir>` — `$SELF_LEARN_CLAUDE_DIR` if set, else `~/.claude` — so a
+test run never touches the real directory:
+
+- **The human path**: `self-learn hook activate <record-id> [--json]`, a
+  CLI verb outside `batch`, writes its own receipt directly.
+- **The overseer's path**: a sheet item for the hook route, applied
+  through `batch.run(..., actor="overseer", hook_activation=True)` — two
+  keyword-only parameters only the overseer's own runner call sets, never
+  sheet text. `batch` keeps refusing a hook route on every ordinary sheet,
+  unchanged (the default is `actor="human", hook_activation=False`); this
+  is the one caller that lifts the refusal, and only for its own call.
+
+Both paths perform the same three steps; the gate above conditions only
+the overseer's path — each step produces its own receipt line:
+
+1. **Placed:** a symlink `<claude_dir>/hooks/<script_name>` → the host's
+   guard script, created atomically (write to a temp name, then rename
+   into place); refuses if a *different* target already occupies that
+   name.
+2. **Registered** (on the overseer's path, skipped with a receipt saying
+   so when `overseer.hook_activation` is `false`; the human's `hook
+   activate` always performs this step): renders the exact bytes the
+   guard script and the `settings.json` snippet would be — the same diff
+   a human reviewing this route would see today, no shortcut on what gets
+   shown — then merges the snippet into the correct event array in
+   `settings.json`, under a backup of the prior file (same discipline
+   this file's other host-file writers already follow — a hand-edit is
+   reversible).
+3. **Activation-checked** (same skip condition as step 2 — on the
+   overseer's path only): replays the
+   hook's own preview examples against the *symlink path* (so a dangling
+   or wrong-target link fails here, not silently later), then runs the
+   same detection the doctor's hook check performs and requires it to
+   report the registration as live. The receipt states explicitly that
+   Claude Code's own reload of `settings.json` was **not observed** —
+   `FW-154`'s rule that delivery is never inferred from a file existing
+   applies here exactly as it does to the delivery-instrumentation work
+   that row names.
+
+**The receipt.** One mechanism for either caller: the verb's own ledger
+write records a `hook-activated`/`hook-deactivated` history entry on the
+record (`02-schema.md` §2 as amended), the same entries this build adds
+for either actor. The overseer's own activation additionally lands, as an
+ordinary executor receipt, in the Application section of the overseer's
+decision case for that parked item — the same path that appends any
+other verb's receipt there (`02-schema.md` §3a.2 §5); the human path opens
+no case, so no Application section exists to write to. `batch`'s flush
+epilogue remains the Application section's one writer.
+
+**What stays true regardless of actor.** The two manual steps this file's
+existing hook-compile path already requires — the exact-bytes preview and a
+diff-approved step — are the human's `hook activate` unconditionally, and
+the overseer's step 2 (registered) whenever the gate allows it: neither
+caller's activation removes them. `install.sh` is untouched — it never
+enables a hook, same as it never
+enables a systemd unit. `hook deactivate <record-id>` reverses the symlink
+and the `settings.json` merge from the recorded backup and is
+unattended-callable under the same §7.2a.5 contract as every other
+ledger-write verb.
+
+**What this section does not do.** It does not widen the hook *destination
+grammar* itself (advisory PreToolUse, PostToolUse, bounded-command hooks) —
+that is `FW-161`'s own scope, sequenced independently of this section; O-2
+only decides *who* may approve and install a hook already compiled under
+whatever destination grammar exists at build time.
 
 ## 8. Invariants
 

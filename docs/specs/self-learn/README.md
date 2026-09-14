@@ -32,14 +32,17 @@ Code**: lessons accumulate quietly into per-skill and per-project buckets; a
 review surface presents them pre-analyzed; the user routes each one — with
 agent help — into the surface where it becomes permanent (SKILL.md, CLAUDE.md,
 reference docs, a new skill, or a hook). Nothing influences Claude until a
-human routes it.
+human routes it. *Amended 2026-09-13 (S-29 as amended):* "a human" now has
+one named exception — the steward routes nightly, alone, under the
+delegated judgment `03-decisions.md` S-29 describes; every route still
+passes the same compile+commit path this sentence's own paragraph names.
 
 ## Reading order
 
 | Doc | What it holds |
 |---|---|
 | `00-vision.md` | The problem (restated correctly), the target UX, and the ten design principles with their evidence |
-| `01-architecture.md` | The six components, the life of a learning, failure modes, and what is deliberately absent |
+| `01-architecture.md` | The seven components, the life of a learning, failure modes, and what is deliberately absent |
 | `02-schema.md` | The learning record, storage layout, and mutation rules |
 | `03-decisions.md` | The decision register: settled / open / v2-gated (with explicit activation triggers) |
 | `04-roadmap.md` | Build milestones, acceptance fixture, success metrics |
@@ -51,7 +54,8 @@ human routes it.
 | `10-surface-build-plan.md` | **Execution authority for the G-3 build** (gated on G-3's trigger): surface-local pins + verify-at-build ledger, acceptance fixtures incl. live trials, task DAG U1–U11 plus the post-ship extension units U12–U18, judgment routing, playbooks — 09 wins on conflict; shared pins stay owned by 08 |
 | `11-telemetry-and-lifecycle.md` | **RATIFIED 2026-07-15 (v2; user-delegated — Q&A in the revision log)** — the life of a lesson after routing: follow-ups, recurrence tracking (suspect→confirm), certainty-as-measured-events, the three-plane data model (record frontmatter / actor-scoped telemetry JSONL / disposable index+report), and the standing multi-machine posture principles |
 | `12-transcript-miner.md` | **RATIFIED 2026-07-15 (same-day; §8 records the round — resolves O-3)** — autonomous capture: the nightly transcript miner as a third producer ("continuous import"), structural-digest → rubric-driven reader → verb-gated landing with use-scaled caps, run-journal observability contract (feeds the future G-3 miner pane), 24h three-layer watchdog, staged-autonomy ladder for future review autonomy, fire observation folded in, and the §5 embeddings decision of record (declined transcript-side, pinned as the ledger-side scaling path). §9 is the build plan |
-| `13-hosting-and-separation.md` | **RATIFIED 2026-07-16 (user-directed; four calls answered live, §1)** — the product / ledger / host split: independent ledger home at `~/.self-learn` (git, own remote, hosts.yaml registry), per-project buckets (fixes cross-project mis-homing), ledger-first two-phase routing (revises 02 §2 — ledger is truth, canon is compiled output), producers commit their own writes (no watcher on the ledger), cache renamed + home-namespaced, history-preserving migration T-H1…T-H5, product-repo extraction as step 2 |
+| `13-hosting-and-separation.md` | **RATIFIED 2026-07-16 (user-directed; four calls answered live, §1)** — the product / ledger / host split: independent ledger home at `~/.self-learn` (git, own remote, hosts.yaml registry), per-project buckets (fixes cross-project mis-homing), ledger-first two-phase routing (revises 02 §2 — ledger is truth, canon is compiled output), producers commit their own writes (no watcher on the ledger), cache renamed + home-namespaced, history-preserving migration T-H1…T-H5, product-repo extraction as step 2, the overseer's own `overseer/` subtree (§7.4's hook-activation path,
+its coverage record and reports) |
 | `14-forward-work-map.md` | **The forward work register (FW-1…FW-29)**: potential required work mapped with triggers, types (BUILD/DRILL/DECIDE/WATCH), the consolidated user-decision queue, the first-firing trigger table, and sequencing — authored 2026-07-18; items graduate into specs via the normal gates |
 | `forward/` | Theme deep-dives behind 14: supply quality, canon lifecycle, packaging, UI/UX, sync & fleet, platform drift, process & horizon, worker ecology |
 | `15-orchestration-runbook.md` | **How the agent rounds actually run** (FW-26): round lifecycle, worktree/blindness/merge/sandbox discipline, the gotcha bank, prompt skeletons — written so a fresh orchestrator can run a round without violating a standing rule |
@@ -82,6 +86,20 @@ human routes it.
 
 ## Revision log
 
+- **2026-09-13 — U9 (steward plan)/O-0 (overseer plan): the README's own reading-order table gains the overseer's `overseer/` subtree and the corrected count of `01-architecture.md`'s components.** `README.md:42` "six components" → "seven"; `README.md:54`'s `13-hosting-and-separation.md` row gains the `overseer/` subtree.
+- **2026-09-13 — U13 (steward plan): the rename's mapping sentence, in each spec file it falls to but does not otherwise touch.** `04-roadmap.md`, `06-horizon.md`, `08-build-plan.md`, `10-surface-build-plan.md` each gain one sentence mapping `graduate`/`superseded_by: canon` to `retire`/`covered_by:<kind>:<name>`; `09-surface-spec.md` gains the bulk-collapse mapping sentence.
+- **2026-09-13 — U13 (steward plan): `graduate`/`supersede` become one internal status, `superseded`, displayed as `retire` (with a named covering surface) or `replaced`; `graduate` stays a hidden alias for one release; `reopen` widens to a wrong retirement.** `02-schema.md` §2's `superseded_by` bullet amended (domain widened to `covered_by:<kind>:<name>`), new §3a.1 rule 7; `03-decisions.md` gains S-67.
+- **2026-09-13 — U1/U4 (steward plan): three new ledger-truth files — decision cases, the user-statement store, the user model — and the content contract confining free text to them.** New `02-schema.md` §3a; `13-hosting-and-separation.md` §3 gains the layout; `03-decisions.md` gains S-65.
+- **2026-09-13 — U7/U9 (steward plan): the worker's output becomes a brief, not a verdict; a new steward agent decides every queued record nightly, alone, with no daily human sign-off list.** `01-architecture.md` §3.3 amended, new §3.3a "The steward"; `03-decisions.md` S-29 amended in place, S-18/S-26 amended.
+- **2026-09-13 — U6 (steward plan): a mined `fire` observation is a suspicion the steward evaluates, never a verdict — `complied\|violated` replaced by `suspected-compliance\|suspected-violation\|cannot-tell`.** `11-telemetry-and-lifecycle.md` §4.3 (version bump, read-side legacy mapping); `12-transcript-miner.md` §1/§2/§7/§8 amended.
+- **2026-09-13 — O-1/O-6 (overseer plan): recurrence suspects and always-loaded lessons with zero fires join the overseer's coverage nudges; the overseer's weekly report and any conversation stay ambient-informative, never a demand.** `11-telemetry-and-lifecycle.md` §2.2, §4.4 amended; `03-decisions.md` S-9 amended.
+- **2026-09-13 — U8/O-3 (steward and overseer plans): two new invocation surfaces, `steward` and `overseer`, join the four this file already documents.** `17-invocation-runbook.md` §1's surface table widened to six rows; §9 dated note.
+- **2026-09-13 — U3/U10/O-4 (steward and overseer plans): the steward's runner applies decisions through the existing verb surface with a `case:` sheet key; `serve` gains a nightly steward job and a weekly overseer job.** `03-decisions.md` S-54 amended; `13-hosting-and-separation.md` §5; `17-invocation-runbook.md` §10.
+- **2026-09-13 — O-2 (overseer plan): the overseer may approve and install a hook on the user's behalf — the secret scan becomes the sole unconditional floor.** New `13-hosting-and-separation.md` §7.4; `01-architecture.md` §3.5/§5 amended; `03-decisions.md` S-29 amended (user decision 2026-09-12, recorded as S-66), new S-66.
+- **2026-09-13 — U8/U10 (steward plan)/O-1..O-7 (overseer plan): the steward and overseer join every unattended-caller enumeration the intent-transaction contract already governs.** `13-hosting-and-separation.md` §7.2a.5, §7.2a.6, §7.2a.7 amended; `03-decisions.md` S-62 amended.
+- **2026-09-13 — U2 (steward plan): the review UI's don't-subvert list notes that decision cases are not rendered in this cut, and that every overseer write is a verb.** `07-review-ui.md` §4 gains two contract lines.
+- **2026-09-13 — FW-82 status rewrite: BUILT; supervised period open, ending after two consecutive zero-correction overseer examinations rather than a fixed date.** `14-forward-work-map.md` §6, FW-82, FW-85, FW-154/FW-155, FW-161/FW-162/FW-163 sequencing notes; new rows FW-164 through FW-174.
+- **2026-09-13 — S-29 as amended: "a human routes it" gains the steward as a named exception.** `README.md:34-35` amended.
 - **2026-09-12 — FW-82 (the steward agent, S-29) gains the 2026-09-12 steward-trial evidence and the decision classes it exercised; FW-161/FW-162 now cite FW-82 as the build they follow.** Text only.
 - **2026-09-12 — FW-163: a host can declare `CLAUDE.local.md` as its always-loaded surface, honoured by the analyst and the route verb (closes the S-64 residual).** Text only.
 - **2026-09-12 — FW-161 (hook destination widening, user ruling 2026-09-11) and FW-162 (worktree captures resolve to the parent host) added to `14-forward-work-map.md`, both sequenced after the steward agent build.** Text only.

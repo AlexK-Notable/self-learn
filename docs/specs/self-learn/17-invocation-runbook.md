@@ -24,7 +24,7 @@ Agent SDK unconditionally. There is nothing left to flip a surface
 BETWEEN — `backend` is no longer a real switch, it is a single-valued
 constant with a refusal wired to its old alternative.*
 
-Self-learn invokes a model on **four surfaces**, all of them on the
+Self-learn invokes a model on **six surfaces**, all of them on the
 Agent SDK. One switch remains live:
 
 | Switch | Scope | Values | Default |
@@ -50,7 +50,7 @@ applies — every surface's own default is already `sdk`); the doctor's
 `rollout` row still catches the one way a Bedrock configuration can go
 fully inert today — every surface explicitly refused (§3).
 
-The four surfaces, and the three selector names that address them:
+The six surfaces, and the five selector names that address them:
 
 | Surface | What it is | Env selector | `config.yaml` key |
 |---|---|---|---|
@@ -58,6 +58,15 @@ The four surfaces, and the three selector names that address them:
 | `worker-repair` | the same worker's repair round | `WORKER` (**shared — not independently settable by environment**) | `backend_worker-repair` (**independently settable by config**) |
 | `miner-reader` | the nightly transcript miner's reader | `MINER` (**not `MINER_READER`**) | `backend_miner-reader` |
 | `analyst` | the one-shot `teach --route` analyst | `ANALYST` | `backend_analyst` |
+| `steward` | the steward's nightly decision run | `STEWARD` | `backend_steward` |
+| `overseer` | the overseer's weekly examination run | `OVERSEER` | `backend_overseer` |
+
+Both new surfaces are `Containment` objects in the same sense `03-decisions.md`
+`S-34`/`S-50` already describe: on the `sdk` backend, the `can_use_tool`
+charter denies `Bash` and `Task` structurally and grants `Edit`/`Write` only
+inside the run's own declared stage directory — never the ledger or canon
+directly. Neither surface is a new kind of charter; each gets its own
+`Containment` instance with a narrower write set than the surfaces it joins.
 
 ## 2. The `[sdk]` extra is no longer optional
 
@@ -708,6 +717,12 @@ added in this same commit; §5.2's watchdog description and §3 of
 scheduled and timer-scheduled) rather than picking one, since adopting
 `serve` is a per-host deployment choice, not a code default.
 
+**2026-09-13 (steward and overseer build, `03-decisions.md` `S-29` as
+amended / `S-65` / `S-66`):** two new invocation surfaces — `steward` and
+`overseer` — join the four this file already documents (§1); `serve`
+gains their two jobs in the same tick (§10). §1 and §10 are updated in
+this same commit to describe the six-surface, four-job world.
+
 ## 10. `serve`
 
 `self-learn serve` is a long-lived scheduler, not a new producer. It
@@ -716,6 +731,14 @@ by hand or `self-learn-miner.timer` already calls nightly — on its own
 clock, in-process, one job at a time. It never stages, commits, or
 pushes on a producer's behalf (H-5 unchanged); each job it starts still
 takes its own lock and commits under its own pinned subject.
+
+*Amended 2026-09-13 (U10 + O-4, S-29/S-66 as amended):* `serve`'s tick
+gains two more jobs on the same "one job at a time" rule this section
+already states — a nightly steward job after the worker job, and a weekly
+overseer job after the steward job. Neither is a new producer in any sense
+this section doesn't already cover: each takes its own lock and commits
+under its own pinned subject, same as the mine and worker jobs. Full
+mechanics: `13-hosting-and-separation.md` §5.
 
 **Starting and stopping it.** `self-learn serve` runs in the foreground
 until it receives `SIGTERM`/`SIGINT`, at which point it finishes its
@@ -741,6 +764,18 @@ supervisor shapes are supported:
 - **A plain terminal / `tmux`/`screen` session:** `self-learn serve`
   with no supervisor at all — fine for trying it out, not for unattended
   operation (nothing restarts it if it dies or the terminal closes).
+
+**The human's one-time steps for the two new jobs.** After this build
+lands and the working tree is the installed checkout: run `./install.sh`
+(links `self-learn-overseer.service`/`.timer`; enables nothing),
+`systemctl --user daemon-reload`, and
+`systemctl --user restart self-learn-host.service` so the running `serve`
+process picks up the two new jobs; optionally,
+`systemctl --user enable --now self-learn-overseer.timer` on a timer-topology
+host. Separately, after the steward's supervised maiden run: set
+`overseer.enabled: true` in `config.yaml`, and decide `overseer.hook_activation`
+on its own. `self-learn doctor serve` then shows the fourth job's next
+scheduled time. Agents perform none of these steps.
 
 **The heartbeat and doctor's four verdicts.** `serve` writes into its
 cache directory (`XDG_CACHE_HOME`-namespaced by ledger, never the ledger

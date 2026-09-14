@@ -57,6 +57,13 @@ launcher name.)*
 
 ## 1. Pinned interface contracts (single reference table)
 
+*(2026-09-13: this build plan's own `graduate` — the resolution verb and
+the `superseded_by: canon` domain the table below pins — is renamed
+`retire`/`covered_by:<kind>:<name>`, `01-architecture.md` §3.5 and
+`02-schema.md` §2 as amended; `graduate` stays a hidden alias for one
+release. The pins below are historical record of what this plan built
+and are not rewritten.)*
+
 These pins close the implementability review's gaps. The schema-level ones
 also live in the corpus (cited); the rest live here. **Do not re-derive
 them; do not silently change them.**

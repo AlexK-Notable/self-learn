@@ -93,6 +93,16 @@ A new capture that matches an **already-routed** lesson is a
   pointed at resolved records; plus origin/id matching). A detection is
   a **suspect** and lives in the observation plane (§4) — the machine
   never writes the record.
+
+  *Amended 2026-09-13 (O-1):* a recurrence suspect is also one of the
+  overseer's coverage nudges (`13-hosting-and-separation.md` §3, the
+  `overseer/` subtree) — a suspect the human review surface has not yet
+  confirmed or dismissed is exactly the kind of "not examined for the
+  longest time" signal the overseer's own sampling reads, alongside strata
+  never examined, always-loaded lessons with zero fires this week, and
+  provisional user-model entries no examination has touched. The nudge is
+  information only, never a forced draw — the overseer still chooses its
+  own sample (`S-66`).
 - **Confirmation** is human work: a routed record with suspects
   surfaces in review as a **"not holding" card**: *"Routed <date>.
   Sighted N times since. Revise, escalate, tolerate, or retire?"*
@@ -263,10 +273,24 @@ plane, fixes the mechanism.
 | `offer-made` / `offer-declined` | the model, via `telemetry note` (spool-only, cache write — permitted per-session) | decline reason: **closed enum** `not-durable \| wrong \| duplicate \| private \| later \| other` — **no free text** (audit v2) |
 | `capture` | teach/import (CLI) | source, bucket |
 | `card-shown` / `card-decided` | CLI/TUI code paths; tolerated-absent in the slash-review era (prompt-driven surface) | recommendation, decision, overridden: bool, dest-delta |
-| `fire` | worker harness (CLI) from miner candidates | **non-textual anchor only: (transcript-id, line-number) or content-hash — never a phrase or span** (audit v2; transcript text is the least-trusted text in the system), confidence |
+| `fire` | worker harness (CLI) from miner candidates; read by the steward as evidence, never auto-decided | **non-textual anchor only: (transcript-id, line-number) or content-hash — never a phrase or span** (audit v2; transcript text is the least-trusted text in the system), confidence, `outcome: suspected-compliance \| suspected-violation \| cannot-tell` (new field, v2 of this kind; `outcome` is the miner's categorical reading, per `12-transcript-miner.md` §1 and §7 — `confidence` is unchanged and continues to carry whatever numeric signal it always did) |
 | `recurrence-suspect` | worker harness (CLI) | matched record id, origin id, similarity basis label |
 | `staleness-flag` | env sweep (CLI) | component, from-version, to-version |
 | `surface-budget` | compilers (CLI, inside verb flow) | target, words, cap, overflow: bool |
+
+*Amended 2026-09-13 (steward build, U6):* this is the version bump this
+section's own heading requires. `schema_version` for the `fire` kind
+increments; a legacy event predates `outcome` entirely — this kind's
+payload never carried a `complied\|violated` field before this amendment,
+only `confidence` — so any event without an `outcome` field reads as
+`outcome: cannot-tell`, and its `confidence` value is read exactly as it
+always was by whatever code already consumes it. The
+rename matters because a fire was never a verdict: it is the miner's
+observation that a routed rule's trigger situation occurred; whether the
+situation was actually complied with or violated is exactly the judgment
+call `12-transcript-miner.md` §7 M-1 reserves — previously to the human,
+now also to the steward (`03-decisions.md` S-29 as amended) — never to the
+miner itself.
 
 **Honesty pins (audit v2):** the offer denominator is **model-emitted,
 best-effort** — accepted offers get a code-emitted `capture` event
@@ -284,6 +308,14 @@ Events carry ids, enums, versions, hashes, counts — **never lesson body
 text, quotes, transcript spans, or free text** (the one free-ish field,
 decline reason, is an enum). The scan-at-flush (§4.2) enforces the
 class; the schema makes violations structurally awkward first.
+
+*Amended 2026-09-13 (S-65):* this is the telemetry plane's own version of
+the rule `02-schema.md` §3a states for the ledger's free-text files —
+`<ledger>/cases/**`, `user-statements.jsonl`, `user-model.md`,
+`overseer/**` are the *only* places outside this plane's own enum
+discipline where prose is permitted, and even there, `overseer/**`'s
+report content stays ids and counts, never lesson bodies (§3a.1 rule 2 as
+amended).
 
 ## 5. Derived plane (index + report)
 

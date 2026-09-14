@@ -183,6 +183,11 @@ znote-compatible for a future backend (v2 gate G-5).
 
 ### 3.3 Pre-analysis worker
 
+*Amended 2026-09-13 (S-29 as amended — the steward build): the worker's
+product changes from a verdict a human takes or leaves to a brief the
+steward reads. The worker prepares; it never decides. §3.3a is the deciding
+party's own page.*
+
 When a learning lands (teach without `--route`, or import), a **detached
 `claude -p` worker** (the proven home-net-capture pattern: `setsid`, flock,
 survives the session) analyzes it and writes the proposal — destination,
@@ -247,6 +252,52 @@ negative exemplars, so the worker stops proposing classes of lesson the
 human has already declined (SkillOpt's rejected-edit-buffer pattern, E-20).
 A queue that re-surfaces rejected material is the fastest way to re-run E-3;
 the digest costs nothing because rejection provenance already lives in git.
+
+### 3.3a The steward
+
+*Added 2026-09-13 (S-29 as amended; steward build, U9).*
+
+A new component, seated between the worker and the review surface: a
+bounded, nightly, autonomous decider — Fable 5.1 by
+default (`17-invocation-runbook.md` §1) — that reads every queued record's
+brief and decides it, alone, with no daily human sign-off list.
+
+**Role.** Where §3.3's worker prepares, the steward decides: route, reject,
+defer, retire (something already loaded covers the lesson), replaced (a
+rewritten successor supersedes it), rehome, revise (reshape the lesson
+before choosing an action), no-action, or parked. Every decision is a
+decision case (`02-schema.md` §3a) with evidence, reasons, and
+dependencies, attributed `by: steward`.
+
+**Inputs.** The worker's brief (evidence, questions, advice — §3.3 as
+amended); the user model and the conditions feed (`02-schema.md` §3a); open
+parked cases and observations since the steward's last run.
+
+**Outputs.** Decision cases; sheets its runner applies through the same CLI
+verbs a human types; provisional user-model entries (never a standing
+belief); statements it records from a transcript line it read by reference.
+
+**What it never does.** Install a standing belief about the user — its own
+readings enter the user model as PROVISIONAL, meaning only that the user has
+not yet seen them. Apply a hook route or a values call it cannot ground in
+evidence — those park for the overseer, always, never for a human directly
+(`parked_reason` ∈ `hook | always-loaded-user-scope | broad-removal |
+authority-unclear | scope-conflict`, `02-schema.md` §3a.2). **A secret-scan
+block is never parked — it is refused outright**, same as it is for every
+other verb-gated write today; the scan is the one mechanical floor, and a
+floor that stops a write cannot also queue that write for later approval.
+Hold anything for a daily review session — there is none in the steady
+state (S-29 as amended). Write anywhere outside its own run's stage
+directory — every ledger mutation is a CLI verb the runner invokes from a
+declared stage file (`13-hosting-and-separation.md` §5). **Apply a route
+resolving into a plain-mode host's committed file until `FW-163` lands** —
+that route parks instead (seam ruling R-7, `misc/audit-2026-09-02/steward-design/seam-reconciliation-2026-09-12.md:40`).
+
+The overseer — weekly, also Fable 5.1 — examines a sample of the steward's
+cases, decides parked items in the user's stead (including approving and
+installing hooks), and consolidates the user model; its own serve job is
+`13-hosting-and-separation.md` §5, its hook-activation path §7.4, and its
+decision row S-66.
 
 ### 3.4 Review surface
 
@@ -321,6 +372,11 @@ the digest costs nothing because rejection provenance already lives in git.
   `superseded_by: canon` so the compiler drops its managed-section line —
   the same move ha-note exposes as `--promoted`. The CLI is the dependable
   substrate; the slash command is the experience.
+
+  `graduate` is now `retire` in every human-facing surface, and
+  `superseded_by: canon` is now `superseded_by: covered_by:<kind>:<name>`
+  (`02-schema.md` §2 as amended); the CLI verb itself stays callable as
+  `graduate` for one release as a hidden alias.
 - **`--selftest`** (inherited from ha-note): proves capture path, worker
   spawn (M2+ — M1 has no worker; the check is conditional), and compiler
   dry-run still work — loud, not silent, when dead.
@@ -336,7 +392,7 @@ only their managed region:
 | CLAUDE.md (repo or `~/.claude/`) | same managed-section pattern | project/user conduct + knowledge. **`~/.claude/CLAUDE.md` is a first-class PLAIN host** (`U-hostmode` Phase 1/2, landed 2026-08-28 — `13-hosting-and-separation.md` §2/§4 item 5): no repository, so the compiler writes canon and commits nothing there; a ledger-side compile record is the integrity instrument instead. The chezmoi description this row used to carry is superseded |
 | `references/<file>` | plain append (ha-note-style) | bulk knowledge; progressive disclosure. Default target: the skill's `references/LEARNINGS.md`, created if absent; another **existing** references file may be named by the proposal/`--dest` — never `GOTCHAS.journal.md`, which is ha-note's surface (O-7 parks ha-note as independent; gate-check F4) |
 | new skill | deterministic CLI-owned template scaffold (plugin.json + SKILL.md with a managed section + marketplace entry) — *amended 2026-07-12 (M3 review): plugin-dev delegation demoted to optional post-hoc enrichment; the substrate must not depend on another plugin's agents (`08-build-plan.md` §8.1)* | when triage decides a lesson cluster wants to be a skill |
-| hook | scaffolds script + prints the `settings.json` snippet | **never auto-registers** (repo doctrine: settings.json is manual) and **always explicit-diff-approved** (P9). For `kind: anti-pattern` lessons where advisory text is the weakest enforcement and a PreToolUse guard is the strongest |
+| hook | scaffolds script + prints the `settings.json` snippet | **never auto-registers** (repo doctrine: settings.json is manual) and **always explicit-diff-approved** (P9). For `kind: anti-pattern` lessons where advisory text is the weakest enforcement and a PreToolUse guard is the strongest. *Amended 2026-09-13 (S-29 as amended, `S-66`):* "always" now has one named exception — the overseer may review and activate a hook on the user's behalf (`13-hosting-and-separation.md` §7.4); every other route stays explicit-diff-approved by a human, and the overseer's own activation still diffs the exact bytes it would write, same as a human's approval. |
 
 Routing doctrine (the analyst's map, human overridable): behavior/anti-pattern
 → hook candidate or SKILL.md rule · behavior/surface-rule → SKILL.md rule ·
@@ -403,7 +459,7 @@ documented install step, not an assumed one.
 | Noisy supply floods triage | silent capture's base rate (E-2) | v1 supply is explicit + imported only; appender is v1.1, precision-tuned, optional |
 | Worker dies silently | detached processes rot (E-5) | staleness alarm in notifications + `--selftest` |
 | Bad lesson lands in canon | teach/`--route` is trust-by-invocation | diff shown before apply · git revert · supersede records · managed sections isolate the blast radius |
-| Hook compiles from bad text | executable surface | P9: explicit human diff approval, no auto-registration |
+| Hook compiles from bad text | executable surface | P9: explicit human diff approval, no auto-registration *Amended 2026-09-13:* the overseer's activation of a hook it approved is the one sanctioned exception (`03-decisions.md` S-29 as amended); it is still a diff-approved step, just not necessarily a human's. |
 | Managed sections bloat canon | every routed token loads every activation | *(amended 2026-08-23, U-cap)* the mechanical cap is retired — it treated the SYMPTOM (a bloated file) while the routing gate treats the CAUSE (misplaced always-on rules). Two report-only instruments now carry this risk: (1) the strict routing gate (upstream, shipped separately, #6) keeps content out of the always-on tier it never belonged in; (2) a report-only context budget (`report --json .context_budget`, `02-schema.md` §4) — four signals plus a reference-safety verdict, all `severity: "informational"`, surfaced as §6.4's budget card in review — makes the cost visible without ever refusing a route · narrowest-surface bias in the doctrine |
 | Concurrent writers (worker, autosync, sessions) | E-8; flock is machine-local | record-per-file · a fully append-only worker (analysis *and* merges are proposal files; no record is ever worker-written) · no per-session writes to tracked files |
 | Two machines review or route at once | compile targets (managed sections) are shared lines; the ledger is conflict-free but canon isn't | single-machine-safe by design; cross-machine collisions degrade to autosync's standard safe halt. Operating discipline: one review host at a time, and review self-pushes so the next host starts current |

@@ -55,8 +55,13 @@ miner   (autonomous, machine-suggested) ─┘
   ("machine-mined from session …, why-durable: …") — the analyst reads
   `source: session` off the record; **no card-registry change**.
 - Fire observations (a routed rule's trigger-situation occurring in a
-  later session, complied or violated) land as telemetry events using
-  the existing closed `fire` kind — ids/enums only, per S-7.
+  later session) land as telemetry events using the existing closed
+  `fire` kind — ids/enums only, per S-7. *Amended 2026-09-13 (U6):* the
+  miner marks the situation `suspected-compliance`,
+  `suspected-violation`, or `cannot-tell` — a suspicion for the steward to
+  evaluate against the rule's actual text and the surrounding transcript,
+  never a verdict the miner itself renders (`11-telemetry-and-lifecycle.md`
+  §4.3 as amended).
 
 ## 2. Pipeline
 
@@ -156,7 +161,9 @@ Structured output (schema-validated, like the worker):
   is the full contract);
 - **fire observations** — given the compiled canon index (record id +
   trigger line, supplied in the prompt): spans where a routed rule's
-  situation occurred, marked complied|violated, with turn ref.
+  situation occurred, marked `suspected-compliance \| suspected-violation \| cannot-tell`, with
+  turn ref *(amended 2026-09-13, U6 — see §1's amendment; the miner's
+  reader classifies a suspicion, the steward decides what it means)*.
 
 ### Phase 3 — ledger reconciliation (mechanical, in the CLI)
 
@@ -354,6 +361,13 @@ spirit).
 
 - **M-1 · Mined records never auto-route.** The miner grows the queue;
   only the human, at review, changes canon. No exception, no flag.
+
+  *Amended 2026-09-13 (S-29 as amended):* "only the human" is superseded for
+  who changes canon at review — the steward now does, nightly, alone
+  (`01-architecture.md` §3.3a) — but the miner-side half of this invariant is
+  untouched and remains absolute: **the miner itself never auto-routes, under
+  any actor.** A mined record still lands in `pending/` and is still analyzed
+  by the worker before either a human or the steward ever sees it.
 - **M-2 · Landing is verb-gated.** Every mined write passes the CLI's
   secret scan (refuse default), caps, sentinel, and pinned commits —
   the miner has no direct file or git path into the repo.
@@ -520,6 +534,16 @@ old §4).
   by kind × scope × confidence bucket × rubric version from day one.
   M-1 is untouched: the *miner* never routes at any level — the ladder
   governs the review component, not capture.
+
+  *Amended 2026-09-13:* the L0–L3 tiered-config ladder above is the shape
+  S-29 originally specified and is superseded by the steward, which decides
+  every level without a config tier (S-29 as amended). This ladder's
+  calibration intent — per-class accept rates justifying more autonomy —
+  survives as the overseer's coverage record (`02-schema.md` §3a.1 rule 1,
+  `13-hosting-and-separation.md` §3) rather than as a dated register edit
+  per level. *Renamed 2026-09-13 (`S-67`):* this bullet's own "already-canon
+  graduations" is now "already-covered retirements" — the rename does not
+  change which records this ladder describes, only the word.
 - **A3 · Rubric version stamping** on every run and journal entry, so
   accept-rate shifts are attributable to rubric edits.
 - **A4 · Notification restraint.** Mined landings ride existing

@@ -148,7 +148,8 @@ Scope: record schema + ledger ops (create/supersede/move) · `self-learn`
 CLI (`teach` with scope/type/structured-field/`--route` flags, `list`,
 `status`, **`route`/`reject`/`defer`** — the resolution verbs own
 compile+commit, sentinel set/heartbeat/release, self-push, and `--note`
-(`resolution_note`); `graduate`, `--selftest`; `--json` on read verbs; the
+(`resolution_note`); `graduate`, `--selftest`; (`graduate` is now `retire`, `01-architecture.md` §3.5 as amended, kept
+here as a hidden alias for one release) `--json` on read verbs; the
 slash command is a thin caller (S-2 amendment, `07-review-ui.md` §4);
 secret scan on **every** record write) ·
 `/teach` wrapper with in-session extraction (O-4) · backlog importer with

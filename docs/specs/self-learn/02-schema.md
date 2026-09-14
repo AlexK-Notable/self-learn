@@ -27,12 +27,15 @@ routing:                  # written on routing; null before
   routed_at: 2026-07-13T18:02:00Z
   destination: hook
   by: human               # FW-64: the actor that chose the destination —
-                          #   human | analyst | agent (this line was
-                          #   stale even before FW-64: U-reach's §2.3
-                          #   already introduced `analyst` and never
-                          #   updated this comment; `agent` names the
-                          #   SDK pane's own `propose_verb` route
-                          #   proposals — verbs.py's `ROUTING_BY_VALUES`)
+                          #   human | analyst | agent | steward | overseer
+                          #   (this line was stale even before FW-64:
+                          #   U-reach's §2.3 already introduced `analyst`
+                          #   and never updated this comment; `agent` names
+                          #   the SDK pane's own `propose_verb` route
+                          #   proposals — verbs.py's `ROUTING_BY_VALUES`;
+                          #   `steward` and `overseer` widen the same list,
+                          #   2026-09-13, S-65 — every sheet item and case
+                          #   `actor` field draws from it)
   reference_file: null    # 2026-07-16 (doc 13 audit): `reference`
                           #   destination ONLY — WHICH references file got
                           #   the entry (`--dest reference:<file>`); absent
@@ -300,6 +303,21 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
 > this set has ever touched — the schema addition is **absent**, not an
 > empty list.
 
+- **`history`'s closed set widens to five kinds** *(2026-09-13 — the
+  overseer build, O-0)*: `{"resolution", "routing", "hook-activated",
+  "hook-deactivated", "reconsidered"}`, superseding the 2026-08-28
+  amendment's two-kind set above without rewriting it. `hook-activated`/
+  `hook-deactivated` record `13-hosting-and-separation.md` §7.4's verb
+  applying or reversing a hook route, for either caller — the human's
+  `hook activate` or the overseer's own runner call — each entry's `note`
+  carrying the settings-file backup path. `reconsidered` is the
+  successor-case pointer a dependency-moved observation queues
+  (`02-schema.md` §3a.2) — a decision, made once, here.
+- **`<ledger>/overseer/` is not a bucket** *(2026-09-13 — the overseer
+  build, O-0)*: it holds no `pending/resolved/proposals` records, is never
+  a route destination, and never appears in `list --json`'s bucket
+  enumeration.
+
 - **What a placement must eventually persist, named here descriptively
   — no field below exists yet, and this amendment adds none**
   *(2026-09-11 — the placement amendment; forward work, not this
@@ -325,7 +343,12 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   `type`, `source`, and the body never change afterward; a wrong *routed*
   lesson is corrected by a new record with `supersedes:` set, and the old
   one gets `superseded_by:` + `status: superseded`. The provenance ceremony
-  is for canon, not drafts.
+  is for canon, not drafts. *(Added 2026-09-13, S-65:)* `self-learn revise
+  <id> --section … --text … --because …` is the one sanctioned pending or
+  deferred edit through a scanned verb — for refining a lesson's wording
+  at adjudication
+  without changing what it claims; a routed record still admits no edit but
+  `reconsider` (§3a).
 - **`evidence` is append-only** — it may *gain* entries (cluster merges add
   the merged record's provenance) but existing entries are never rewritten
   or removed. *(Draft 1 listed `evidence` as immutable while also having the
@@ -368,6 +391,27 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   redundant — take `superseded_by: <survivor-id>` while still pending; the
   *corrective* reading ("the lesson was wrong") applies only when the
   superseded record had reached `routed`.
+
+  *Amended 2026-09-13 (`S-67`, U13):* the field's domain widens to
+  `superseded_by ∈ {null, <record-id>, covered_by:<kind>:<name>}`
+  (`claude-md:<path>`, `skill-md:<name>`, `reference:<file>`, or
+  `output-style:<name>`) — a new write always names the covering surface,
+  never the bare literal `"canon"`. The two meanings this bullet already
+  calls opposite now get display words to match: a canon-superseded record
+  — what this bullet calls **graduation** — is displayed as **retire**; a
+  record-id supersession — this bullet's *corrective* case — is displayed
+  as **replaced**. Both stay one internal status, `status: superseded`;
+  nothing branches on the display word. A legacy record still carrying the
+  bare literal `superseded_by: "canon"` is read as a retirement whose
+  covering surface is unrecorded — never invented, never blocking the read.
+  `self-learn graduate <id>` stays callable, unchanged, for one release as a
+  hidden alias for `self-learn retire <id> --covered-by <surface>`;
+  `self-learn supersede`/`--supersedes` are untouched by this rename (they
+  were never the ambiguous word). `reopen` widens to admit a wrong
+  **retire** back to `pending`; it stays refused for a **replaced** record,
+  since undoing a live successor is `reconsider`'s territory
+  (`misc/audit-2026-09-02/steward-design/plan-steward-2026-09-12.md` U5),
+  never a reopen.
 - **Lifecycle metadata may mutate**: `status`, `routing`, `sightings`,
   `scope`/`kind` (triage may re-classify — the filing is never frozen).
   `deferred` adds `deferred_until` (default: +30 days — the record is
@@ -609,6 +653,24 @@ plugins/<p>/skills/<s>/.self-learn/
 .self-learn/                # repo root: project + user scopes, same shape
 ```
 
+*(Added 2026-09-13, S-65 — the steward/overseer build, `_LAYOUT` in
+`ledger.py:31` widened; "create if missing", never "refuse if missing" on an
+older home):*
+
+```
+<ledger>/
+  cases/<yyyy-mm>/case-<8hex>.md   # decision cases (§3a); one per decision
+  user-statements.jsonl            # append-only; the user's own words (§3a)
+  user-model.md                    # the model of the user (§3a)
+  overseer/{<date>-report.md, latest-report.md, coverage.yaml,
+    open-questions.yaml, evaluation-<date>.md}   # the overseer's own
+                                    # subtree, owned by the overseer plan
+```
+
+(Full shape of the `overseer/` subtree — this fence names only the files —
+is the same list `13-hosting-and-separation.md` §3's own K1 delta carries;
+the contract is one list, described twice for readability, not two lists.)
+
 - **In-repo** → autosynced across machines, versioned, `git blame`-able.
 - **Record-per-file** → atomic writes, no merge conflicts between concurrent
   writers, and directly readable by any future UI without a serving layer.
@@ -634,7 +696,18 @@ plugins/<p>/skills/<s>/.self-learn/
   runtime bearer token lives under `$XDG_RUNTIME_DIR/self-learn/`
   (`ui-token`, 0600 — runtime secrets belong in the runtime dir, not
   the cache; replaces the TUI revision's socket entry — the socket
-  subsystem was deleted with the platform change). No new state
+  subsystem was deleted with the platform change).
+
+  *Amended 2026-09-13 (O-3/O-4, overseer build):* the overseer adds two
+  items to this same cache dir, both transient — `overseer.journal` (the
+  same append-only journal shape the miner's own `<cache>/…/journal` already
+  uses, one line per run) and the overseer's own schedule-state file,
+  beside the mine schedule state `serve.py` already keeps there (the same
+  `_target_for`/`_recently_attempted` shape, one weekly target instead of
+  one nightly one). Neither is repo truth; both are rebuildable from the
+  ledger's own `overseer/` subtree and the case index.
+
+  No new state
   locations. **The autosync
   pause sentinel is part of this contract** *(the one cross-repo interface;
   implementability review 2026-07-12)*: path
@@ -651,6 +724,382 @@ plugins/<p>/skills/<s>/.self-learn/
   deleted by either side.
 - The format is znote-compatible (md + frontmatter) by design; a znote
   backend (v2 gate G-5) is a relocation, not a migration.
+
+## 3a. Cases, statements, and the user model
+
+*Added 2026-09-13, S-65 — the steward and overseer build. Three new
+ledger-truth files and the rules for them, plus one line for the overseer's
+own subtree.*
+
+### 3a.1 The ledger content contract
+
+1. `<ledger>/cases/**`, `<ledger>/user-statements.jsonl`,
+   `<ledger>/user-model.md`, and `<ledger>/overseer/**` (the overseer's own
+   subtree — reports, the coverage record, open questions, evaluations) are
+   ledger truth: written only under `intents.ledger_write`, committed in the
+   same section, secret-scanned before commit, never edited by an agent's
+   file tool — each agent's write scope is its own run's stage directory;
+   the CLI copies validated content in.
+2. Free text is allowed in these files and nowhere else new. Within
+   `overseer/**`, the report and evaluation files carry prose about *what
+   was examined and decided* — ids, counts, and dates, drawn from cases and
+   receipts already committed — never a lesson's body text or a transcript
+   span; `coverage.yaml` and `open-questions.yaml` carry no free text at
+   all (structured records only), matching the content discipline
+   `11-telemetry-and-lifecycle.md` §4.4 already states for telemetry.
+3. Sections 1–4 of a case are frozen at commit; sections 5–6 are
+   append-only; a change of decision is a **successor case**, never an edit.
+4. `provisional`, on a case or a user-model entry, is derived and never
+   stored: it means only "the user has not yet seen it" (§3a.2, §3a.4). The
+   case index and the steward's reconsider queue
+   (`<cache>/steward/reconsider-queue.jsonl`) are cache, not truth.
+5. Attribution draws from one list, `{human, steward, overseer, analyst,
+   agent}`: `actor` on a case, `recorded_by` on a statement, `updated_by` on
+   the user model, and `by:` on every sheet item, permitted on every
+   resolution verb, not `route` alone (U3).
+6. The worker's rejected-proposal digest (`worker.py:1549-1618`, built from
+   `git log --grep '^self-learn: reject '`) attributes every entry with its
+   decider (`human | steward | overseer`) and the rejected reason; the
+   analyst prompt's "Never re-propose" wording is dropped in favour of "Prior
+   decisions on this record's class, as cases:" (with case ids and outcomes,
+   `misc/audit-2026-09-02/steward-design/plan-steward-2026-09-12.md:538`).
+   Until this lands, the overseer withholds the digest from its own prompts.
+7. `graduate`/`superseded_by: "canon"` are read as legacy: `graduate` decides
+   the same status this section calls **retire**, and the literal `"canon"`
+   is read as a `covered_by:` reference with the covering surface
+   unrecorded. See §2's amendment note on `superseded_by` for the field's
+   two live shapes.
+
+### 3a.2 Decision-case record
+
+```
+<ledger>/cases/<yyyy-mm>/case-<8hex>.md
+```
+
+One file per decision. `<yyyy-mm>` is the month the case was opened;
+`<8hex>` is the first eight hex digits of a random 128-bit id, the same
+shape as a record id, so the record-id pattern's sibling validates it. The
+file is committed by the CLI in the same locked section that applies the
+decision; git history is the case's own change log, never a field inside it.
+
+YAML frontmatter plus six fixed Markdown sections, in this order:
+
+| # | Section | Frozen? | Who writes |
+|---|---|---|---|
+| 1 | `## Identity and scope` | yes | the deciding actor, at decision time |
+| 2 | `## Evidence` | yes | same |
+| 3 | `## Decision` | yes | same |
+| 4 | `## Dependencies` | yes | same |
+| 5 | `## Application` | append-only | the CLI, from executor receipts |
+| 6 | `## Later observations` | append-only | the CLI, on behalf of the overseer, a human, or a later steward run |
+
+"Frozen" is mechanical: the frontmatter's `decided_sha256` is the SHA-256 of
+sections 1–4 exactly as committed; a later append re-hashes them and refuses
+if they differ. A change of mind is a successor case, never an edit.
+
+```yaml
+---
+case: case-3f9a1c2e            # id; file name matches
+opened_at: 2026-09-13T03:41:00Z
+actor: steward                 # human | steward | overseer (closed set; no alias)
+run_id: st-20260913-0341-7b1c  # the run that wrote it; null for a human case
+records: [lrn-08ed825b]        # every lrn-… this case decides about
+kind: resolution               # resolution | maintenance | parked | reconsider
+trigger: nightly               # nightly | reconsider | maiden | human | weekly
+outcome: reject                # route | reject | defer | retire | replaced |
+                                #   rehome | revise | no-action | parked
+supersedes: null               # case id this one replaces, else null
+superseded_by: null            # filled by the CLI when a successor lands
+parked_for: null               # overseer, always (only when kind: parked)
+parked_reason: null            # hook | always-loaded-user-scope |
+                                #   broad-removal | authority-unclear |
+                                #   scope-conflict (closed set; only when
+                                #   kind: parked)
+decided_sha256: "a3c1…"        # hash of sections 1-4 as committed
+presented: []                  # scoped presentation records, see below
+---
+```
+
+**Section 1, Identity and scope:**
+
+```
+- records: lrn-08ed825b
+- scope: project:/home/…/dotfiles
+- question: <one sentence: what is being decided>
+- trigger: nightly | reconsider | maiden | human | weekly
+```
+
+**Section 2, Evidence** — every item is a reference plus a verbatim quote (a
+few lines at most); no paraphrase-only evidence. The reference is one of:
+
+| Evidence kind | Reference grammar |
+|---|---|
+| ledger record body or proposal | `ledger@<commit>:<path>#L<a>-<b>` |
+| transcript line | `transcript:<session-id>#L<n>` |
+| a line typed into the overseer conversation | `conversation:<obs-id>` (the `presented` observation's id, below) |
+| a canon or reference file | `file@<commit>:<path>#L<a>-<b>`, or `file:<path>@<mtime-iso>` for untracked files |
+| an output style | `file:~/.claude/output-styles/<name>.md@<mtime-iso>#L<a>-<b>` plus `cond:surface.output-style.active` |
+| a user statement | `stmt-<8hex>` (§3a.3) |
+| a user-model entry | `um-<4hex>@r<n>` (§3a.4) |
+| a condition | `cond:<key>@<observed_at>` (§3a.5) |
+| telemetry | `telemetry:<event-id>` |
+| a prior case | `case-<8hex>` |
+
+**Section 3, Decision** — free text, with these labelled lines first:
+
+```
+- verb: retire
+- covered_by: output-style:shared-context   (retire only: claude-md:<path> |
+                                              skill-md:<name> |
+                                              reference:<file> |
+                                              output-style:<name>)
+- because: <the deciding reason, one or two sentences>
+- confidence: settled | provisional   (provisional ⇒ section 6 must
+                                        eventually carry a presentation)
+```
+followed by "What would change this decision" (one to three bullets). The
+deciding actor writes reasons, not votes.
+
+**Section 4, Dependencies** — everything the decision rests on, each cited
+from the evidence table:
+
+```
+- statements: [stmt-…]
+- user_model: [um-…@r…]
+- conditions: [cond:…]
+- capabilities: [FW-163]     (a forward-work row id where one exists, else a
+                               settings key such as models.steward)
+```
+
+**Section 5, Application** — appended by the CLI from the executor's
+receipts, never by an agent. One line per sheet item, including items the
+executor never reached:
+
+```
+- 2026-09-13T03:44:03Z sheet=01.yaml item=1 lrn-08ed825b reject → applied (exit 0)
+- 2026-09-13T03:44:03Z sheet=01.yaml item=2 lrn-e8b13ee8 defer → not-attempted (stopped_at=1, code 6)
+```
+Receipt states mirror `ItemResult.state` (`applied | already-applied |
+refused | stopped`) plus `not-attempted`, for items after `stopped_at`.
+
+**Section 6, Later observations** — append-only; each entry has an id
+(`obs-<8hex>`), a timestamp, an actor, a kind, and text, some kinds also a
+reference. Kinds: `examined | presented | statement | corrected |
+dependency-moved | reconsider-queued | abandoned`. A `statement` or
+`dependency-moved` observation whose reference is one of the case's own
+section-4 dependencies makes the CLI enqueue the case for the steward's next
+nightly run (a `kind: reconsider, trigger: reconsider` case, run through
+`reconsider`); the queue itself is cache, rebuildable from the observations.
+
+**Two views.** `case show --evidence-only` is **blind by default** (no
+separate `--blind` flag): frontmatter without `outcome`, `superseded_by`,
+`parked_for`, and `parked_reason`; sections 1, 2, and 4 only — neither the
+reasoning, the verb, nor the receipts (which name the verb) reach the
+reader. `case show` (no flag) is the full view, everything. The overseer
+reads the evidence-only view first, by tool, so "evidence before rationale"
+is a property of the CLI, not of a prompt.
+
+**`provisional`** is derived, never stored: a case is provisional when
+`actor != human` and no `presented` entry covers its decision (`covering`
+∈ {`decision`, `all`}) —
+`provisional = actor != "human" and not any(p.covering in ("decision",
+"all") for p in presented)`. A presentation with any outcome clears it —
+seen is seen; what the user said, if anything, lives in the presentation's
+own `outcome` and in the statement it produced, never in the flag. A
+`presented` entry is written only by the operation that actually displayed
+that content, with `covering` naming what was shown: a case whose id is
+merely cited in a question, a report, or a user-model entry the user was
+shown is not thereby presented, and showing a system reading does not
+present every case that depends on it — `overseer open` records a
+presentation only for the content it printed, never for every case a
+question cites:
+
+```yaml
+presented:
+  - id: obs-…
+    at: 2026-09-20T18:10:00Z
+    to: human
+    covering: [decision]     # decision | dependencies | all
+    outcome: agreed | corrected | noted
+    via: overseer-conversation | review-ui | teach | cli
+```
+
+**A parked case** has `kind: parked`, `outcome: parked`, `parked_for:
+overseer` (always — a values call the overseer cannot settle is raised in
+its own conversation with the user, never parked for a human by the
+steward), a `parked_reason` from the closed set above, sections 1/2/4
+filled, and section 3 holding the question and the steward's tentative
+answer if any. The overseer decides it in the user's stead as a **successor
+case** (`actor: overseer`, `supersedes: <parked case>`); the parked case
+gets `superseded_by`. Parking never installs a standing belief.
+
+**The index**, `<cache>/cases/index.json`, is rebuildable, not truth (a
+`NOT_REPO_TRUTH` disposition): `case, opened_at, actor, kind, trigger,
+outcome, records[], supersedes, superseded_by, parked_for, parked_reason,
+provisional, presented_count, dependency_refs[], last_observation_at`. The
+overseer samples from it and never rereads the catalogue.
+
+### 3a.3 User-statement store
+
+```
+<ledger>/user-statements.jsonl
+```
+
+Append-only JSON Lines; nothing is ever rewritten in place. A correction is
+a new line naming the line it amends.
+
+```json
+{"id": "stmt-2b7e91c0",
+ "at": "2026-09-12T17:47:00-07:00",
+ "verbatim": "cost-sensitivity was a symptom of a broken pipeline",
+ "answers": {"kind": "proposition", "ref": "um-00a3@r1", "text": "load cost dominates"},
+ "source": {"message_ref": "transcript:9c1e…#L412", "surface": "conversation"},
+ "scope": {"level": "user", "host": null},
+ "uncertainty": "said in passing while affirming a design note",
+ "recorded_by": "steward",
+ "amends": null}
+```
+
+- `verbatim` is the user's words, unedited; secret-scanned on write, refused
+  if it trips.
+- `answers.kind` ∈ `proposition | question | instruction`; `answers.ref` is
+  the thing it answers (a user-model entry, a case, a record, or null).
+- `source.message_ref` is `transcript:<session-id>#L<n>` (the miner's own
+  grammar, for words found in a transcript) or `conversation:<obs-id>` (for
+  words typed into the overseer conversation, where no transcript line
+  exists at record time — `<obs-id>` is the `presented` observation the
+  reply answers). Dedupe key: `(source.message_ref, verbatim)`.
+- `scope.level` ∈ `user | project`; `scope.host` is a registered host path
+  when `project`.
+- `uncertainty` is the recorder's doubt about what the words *mean*, kept
+  beside them, never inside them.
+- `recorded_by` ∈ `human | steward | overseer` — whoever captured the words
+  records them, the steward included. An agent records a statement only
+  with a `transcript:` or `conversation:` reference, never from memory of a
+  conversation.
+- `amends` is a `stmt-…` id when this line corrects an earlier one; readers
+  follow `amends` chains to the newest line.
+
+A reading of a statement is a user-model entry (§3a.4) that cites the
+statement id, or a case dependency that cites it — the statement line
+itself never grows an "interpretation" field.
+
+### 3a.4 The user model
+
+```
+<ledger>/user-model.md
+```
+
+**Vocabulary, binding for every entry and every document describing one.**
+The words "ratified", "ruled", "stated", and "contradicted" are never used.
+Every entry carries `held_since` (the date held from), `because` (the
+reason), `conditions` (the feed keys, §3a.5, it depends on), `status`
+(`CURRENT` or `LAPSED` — a LAPSED entry carries `lapsed_at` and
+`changed_condition`, naming the condition that changed, the contrary
+evidence's reference, or `consolidated-into:um-…`; nothing lapses for lack
+of a reply), and `source` — one of `own-words` (a verbatim quote with a
+`stmt-…` reference, recorded by whoever captured it, the steward included)
+or `system-reading` (the system's reading of an episode, with a case or
+telemetry reference and at least one `stmt-…` it is a reading of;
+`provisional: true` means only "the user has not yet seen it", the same
+derivation §3a.2 states for a case). **There
+is no `review_by` field and no expiry** — this is the mechanical half of
+D6 (nothing lapses for silence): an entry is never deleted and never
+edited into a different claim — a change is a LAPSED status with its date
+and cause, or a new entry.
+
+One Markdown file, YAML frontmatter, five containers grouping entries by
+source (the grouping adds no meaning of its own):
+
+```yaml
+---
+revision: 7
+updated_at: 2026-09-13T21:00:00Z
+updated_by: human           # human | steward | overseer
+---
+```
+
+| Container | Holds | Who may add | Who may mark LAPSED |
+|---|---|---|---|
+| `## A. From the user's own words` | `own-words` entries | human; steward or overseer, with a `transcript:` or `conversation:` reference | human; steward or overseer, naming the changed condition or contrary evidence |
+| `## B. System readings the user has seen` | `system-reading, provisional: false`; ≥1 `stmt-…` each | nobody directly — an entry moves here when a presentation records it as seen | steward, overseer, human |
+| `## C. System readings, provisional` | `system-reading, provisional: true`; ≥1 `stmt-…` each | steward; overseer, including a consolidation of two or more entries into one, with a `basis` citing the lapsed entries and their statements | steward, overseer, human |
+| `## D. Observed regularities` | system readings whose reference is telemetry or receipts rather than one episode; `provisional` as above; ≥1 `stmt-…` where the regularity is about a preference, else the telemetry refs alone | overseer | overseer, human |
+| `## E. Declared conditions` | facts about the environment no probe observes (§3a.5) | human; steward or overseer with an own-words reference | human; steward or overseer, when the feed starts observing the key |
+
+One entry, and the same entry after its condition clears:
+
+```
+### um-00a3 — load cost dominates          (r1)
+- held_since: 2026-08-14
+- because: the pipeline was misrouting lessons and the always-loaded file had no cheaper neighbour
+- conditions: [report.destinations, report.reference_shelf]
+- status: CURRENT
+- source: system-reading; ref: <August review-model note>; statements: [stmt-…]; provisional: true
+
+### um-00a3 — load cost dominates          (r2)
+- held_since: 2026-08-14
+- because: (unchanged)
+- conditions: [report.destinations, report.reference_shelf]
+- status: LAPSED
+- lapsed_at: 2026-09-20
+- changed_condition: report.destinations   (misrouting cleared; a cheaper neighbour surface exists)
+- source: system-reading; ref: <August review-model note>; statements: [stmt-…]; provisional: true
+```
+
+An own-words entry:
+
+```
+### um-00b1 — cost-sensitivity was a symptom          (r1)
+- held_since: 2026-09-12
+- because: (the user's words) "cost-sensitivity was a symptom of a broken pipeline"
+- conditions: []
+- status: CURRENT
+- source: own-words; ref: stmt-2b7e91c0; recorded_by: steward
+```
+
+A consolidation written by the overseer (container C's own-only-action
+clause above, worked example):
+
+```
+### um-00c4 — correct-then-land          (r1)
+- held_since: 2026-09-27
+- because: two readings said the same thing from two episodes: fix the root cause, then land
+- conditions: []
+- status: CURRENT
+- basis: [um-0012@r1, um-0019@r2]; statements: [stmt-…, stmt-…]
+- source: system-reading; ref: case-…; provisional: true
+```
+with `um-0012` and `um-0019` marked `LAPSED`,
+`changed_condition: consolidated-into:um-00c4`.
+
+`um-<4hex>` ids are stable for the life of the entry; every write bumps its
+`r<n>`, so "did the dependency move" is a revision comparison, not a diff of
+prose.
+
+### 3a.5 Conditions feed
+
+A block of facts about the world *as of this run*, assembled by code and
+handed to the deciding agent with its prompt — never stored as a snapshot;
+a case records only the items its decision relied on, each with its
+`observed_at`, so the overseer can re-observe the same key later and
+compare. Importable as `conditions.feed(home) -> list[Item]`, `Item = (key,
+value, observed_at, source)`.
+
+| Source | Keys |
+|---|---|
+| `self-learn report --json` | `report.buckets`, `report.destinations`, `report.routed_live`, `report.open_followups`, `report.recurrence_suspects`, `report.deferred`, `report.reference_shelf`, `report.context_budget`, `report.surface_reach` |
+| `self-learn status --json` | `status.total_pending`, `status.unanalyzed_total`, `status.intents_probe`, `status.intents_stopped_count` |
+| `hosts.yaml` | `host.<path>.mode`, `host.<path>.claude-md` (after FW-163) |
+| settings | `models.worker`, `models.miner`, `models.analyst`, `models.steward`, `models.overseer`, `sdk.max_turns.*` |
+| `~/.claude/settings.json` `outputStyle` | `surface.output-style.active` — output styles are a canon surface that can already contain a lesson; self-learn reads them and never writes to them |
+| user-model container E | `declared.<key>` |
+| the steward's own last run | `steward.last_run_at`, `steward.last_run_outcome`, `steward.cases_since_overseer` |
+| the overseer's own last run | `overseer.last_run_at`, `overseer.last_examined_at` |
+| git | `ledger.head`, `repo.head` |
+
+Withheld on purpose: lesson bodies (they arrive through the worker's brief,
+not the feed), telemetry event text (counts and ids only), transcript text.
 
 ## 4. Managed sections (the compile targets' contract)
 
