@@ -80,8 +80,11 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from . import gitops, intents, sentinel, user_model
+from .ledger import discover_buckets
+from .ledger_ops import LedgerOpsError, find_record_path
 from .primitives import chrono, fsops
 from .primitives.yamlio import rt_yaml
+from .records import Record, RecordError
 from .scan import format_refusal
 from .scan import scan as secret_scan
 
@@ -751,7 +754,39 @@ def _index_path(cache_dir: Path) -> Path:
     return Path(cache_dir) / "cases" / "index.json"
 
 
-def _index_row(path: Path) -> dict:
+def _record_scope_and_bucket(home: Path, record_id: str) -> tuple[str | None, str | None]:
+    """O-1 fold r1 (`scope_kind` on the index row): the FIRST cited
+    record's controlled `scope` ("user" | "project" | "skill:<name>"),
+    bucketed to one of the three coverage-stratum kinds
+    (`folds/fold-j0-r1.md` F2), plus the NAME of the bucket the record
+    was found in (`ledger.discover_buckets`, matched by the record
+    file's own parent-of-parent directory — the same layout
+    `find_record_path` walks: ``<bucket.path>/<status>/<id>.md``).
+
+    Read ONCE, here, at index-build time — never re-derived downstream
+    (`overseer.population.coverage_update` no longer takes `home` or
+    looks up records itself) — so a record deleted AFTER this row was
+    cached does not erase the classification a stale-but-not-rebuilt
+    index row already carries. `(None, None)` on any failure (record
+    missing, corrupt, unreadable): the same "one bad record must never
+    hide the whole population" degrade this function's caller already
+    uses for `dependency_refs`/`provisional`, never a raise."""
+    try:
+        path = find_record_path(home, record_id)
+        record = Record.from_path(path)
+        scope = record.scope
+        kind = "skill" if isinstance(scope, str) and scope.startswith("skill:") else scope
+        bucket_name = None
+        for bucket in discover_buckets(home):
+            if path.parent.parent == bucket.path:
+                bucket_name = bucket.name
+                break
+        return kind, bucket_name
+    except (LedgerOpsError, RecordError, OSError, UnicodeDecodeError):
+        return None, None
+
+
+def _index_row(path: Path, home: Path) -> dict:
     """One case file -> one index row. S6: the freeze hash is ALWAYS
     re-verified here — the overseer "samples from it and never rereads
     the catalogue" (§3a.2), so a tampered case must never reach that
@@ -760,7 +795,17 @@ def _index_row(path: Path) -> dict:
     degrades to `frozen_ok: false` with whatever frontmatter could still
     be read, rather than raising: ONE corrupt case must never hide the
     whole population from `rebuild_index` (exclude-with-flag, per the
-    brief's own choice). Gate r2 S4 / Astra 11: the original catch was
+    brief's own choice).
+
+    O-1 fold r1: also carries `scope_kind` (user | skill | project,
+    `folds/fold-j0-r1.md` F2) and `record_bucket` — both read ONCE here
+    from the case's FIRST cited record (`_record_scope_and_bucket`),
+    `None` when that record is unreadable. Not yet named in
+    `02-schema.md`'s own index-field list (that list predates this
+    fold); `overseer.population.coverage_update` depends on
+    `scope_kind` and refuses a row that lacks it rather than guessing.
+
+    Gate r2 S4 / Astra 11: the original catch was
     `except CaseError` only — a case whose YAML itself will not parse
     (`_split_frontmatter`'s `_yaml().load(...)`) raised a bare
     `ruamel.yaml` error PAST this function, killing the whole rebuild —
@@ -803,6 +848,10 @@ def _index_row(path: Path) -> dict:
         m = re.match(r"^- obs-[0-9a-f]{8} (\S+) ", line.strip())
         if m:
             last_obs_at = m.group(1)
+    records_list = list(fm.get("records") or [])
+    scope_kind, record_bucket = (
+        _record_scope_and_bucket(home, records_list[0]) if records_list else (None, None)
+    )
     return {
         "case": fm.get("case") or path.stem,
         "opened_at": fm.get("opened_at"),
@@ -810,7 +859,7 @@ def _index_row(path: Path) -> dict:
         "kind": fm.get("kind"),
         "trigger": fm.get("trigger"),
         "outcome": fm.get("outcome"),
-        "records": list(fm.get("records") or []),
+        "records": records_list,
         "supersedes": fm.get("supersedes"),
         "superseded_by": fm.get("superseded_by"),
         "parked_for": fm.get("parked_for"),
@@ -820,6 +869,8 @@ def _index_row(path: Path) -> dict:
         "dependency_refs": dependency_refs,
         "last_observation_at": last_obs_at,
         "frozen_ok": frozen_ok,
+        "scope_kind": scope_kind,
+        "record_bucket": record_bucket,
     }
 
 
@@ -901,7 +952,7 @@ def rebuild_index(cache_dir: Path | str, home: Path | str) -> Path:
     home = Path(home)
     cache_dir = Path(cache_dir)
     with _index_lock(cache_dir):
-        rows = [_index_row(p) for p in sorted(_cases_root(home).glob("*/case-*.md"))]
+        rows = [_index_row(p, home) for p in sorted(_cases_root(home).glob("*/case-*.md"))]
         return _write_index(cache_dir, rows)
 
 
@@ -911,7 +962,13 @@ def _index_is_stale(cache_dir: Path, home: Path) -> bool:
     than the index file (a write landed without going through this
     module's own incremental upsert, e.g. a restored/copied ledger), OR
     the case-file count on disk differs from the row count in the index
-    (a write or a deletion the incremental path never saw)."""
+    (a write or a deletion the incremental path never saw), OR any
+    cached row lacks `scope_kind` (O-1 fold r1: a cache written by code
+    from before this fold has the RIGHT mtime and the RIGHT row count —
+    neither check above catches it — so a missing key, not merely a
+    `None` value, is its own staleness signal; otherwise a pre-fold
+    cache would leave `overseer.population.coverage_update` refusing
+    every row forever)."""
     index_file = _index_path(cache_dir)
     if not index_file.exists():
         return True
@@ -919,7 +976,10 @@ def _index_is_stale(cache_dir: Path, home: Path) -> bool:
     index_mtime = index_file.stat().st_mtime
     if any(p.stat().st_mtime > index_mtime for p in case_files):
         return True
-    if len(_load_index(cache_dir)) != len(case_files):
+    rows = _load_index(cache_dir)
+    if len(rows) != len(case_files):
+        return True
+    if any("scope_kind" not in row for row in rows):
         return True
     return False
 

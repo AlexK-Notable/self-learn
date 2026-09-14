@@ -26,9 +26,22 @@ returned dict. `02-schema.md` §3a.1 item 2 states plainly: "`coverage.yaml`
 and `open-questions.yaml` carry no free text at all (structured records
 only)". This module follows the spec: `coverage_update` never copies
 `why_these`/`why_stopped` prose out of `selection_yaml` into the returned
-dict. The plan's own report template (§4.2) already carries "why these,
-why it stopped" in the *report's* "Examined" section header — that prose
-belongs to O-3's report-writing, not to this structured record.
+dict — those two fields are the ONLY free text `selection.yaml` (the
+model's own file, not `coverage.yaml`) is allowed to carry
+(`_SELECTION_ALLOWED_KEYS`, O-1 fold r1 / gate ruling B2). The plan's own
+report template (§4.2) already carries "why these, why it stopped" in the
+*report's* "Examined" section header — that prose belongs to O-3's
+report-writing, not to this structured record.
+
+**O-1 fold r1** (gate findings B1, B2, B3, S1-S6, N1-N4): `home` is gone
+from `coverage_update`'s signature — `cases._index_row` now computes and
+caches each row's `scope_kind` (and `record_bucket`) once, at
+index-build time, from the case's first cited record
+(`cases._record_scope_and_bucket`); this module trusts that field as
+given and refuses (`CoverageError`) rather than guess when it is
+missing. `nudges_offered`/`nudges_taken` are validated per kind and never
+read from the model's `selection.yaml` — the RUNNER passes through
+whatever `nudges()` itself returned (gap 3 / B2).
 """
 
 from __future__ import annotations
@@ -54,6 +67,8 @@ __all__ = [
     "SCOPE_KINDS",
     "BlindCase",
     "BlindRecordRef",
+    "CoverageError",
+    "PopulationError",
     "coverage_update",
     "load_coverage",
     "nudges",
@@ -77,6 +92,19 @@ OUTCOMES = (
 SCOPE_KINDS = ("user", "project", "skill")
 
 _SCOPE_LINE_RE = re.compile(r"^- scope:\s*(.*)$", re.MULTILINE)
+
+
+class PopulationError(Exception):
+    """This module refuses invalid INPUT (never a missing/corrupt case,
+    which always degrades — S6). Never raised for ledger content itself:
+    `overseer/**` truth is written by the runner (O-3), not here."""
+
+
+class CoverageError(PopulationError):
+    """`coverage_update`/`render_coverage` refuse: an unknown key in the
+    model's `selection.yaml` (B2), a case row that cannot be classified
+    into a stratum (B1/S1 — no guessed default), or an unknown top-level
+    key in a coverage dict about to be rendered (N2)."""
 
 
 def stratum_key(outcome: str, scope_kind: str) -> str:
@@ -107,9 +135,9 @@ class BlindCase:
     `outcome`, NOT section 3 (Decision), NOT receipts. `scope` here is
     the case's OWN free-text scope (section 1's `- scope:` line, part of
     the blind view's allowed sections) — a human-readable label for the
-    overseer's listing, distinct from the per-record `scope` KIND used
-    to bucket the coverage stratum (`_record_scope_kind`, coverage-only,
-    never rendered in this listing)."""
+    overseer's listing, distinct from the per-record `scope_kind` used
+    to bucket the coverage stratum (`cases._index_row`'s own field,
+    coverage-only, never rendered in this listing)."""
 
     case: str
     opened_at: str | None
@@ -130,12 +158,6 @@ class BlindCase:
 # ------------------------------------------------------- record lookups
 
 
-def _scope_kind(scope: str) -> str:
-    """A record's controlled `scope` property ("user" | "project" |
-    "skill:<name>") bucketed to its coverage-stratum kind."""
-    return "skill" if scope.startswith("skill:") else scope
-
-
 def _record_ref(home: Path, record_id: str) -> BlindRecordRef:
     """(id, headline) for one cited record — id-only, no scope/status/
     body. Degrades to an empty headline rather than raising: one
@@ -150,18 +172,6 @@ def _record_ref(home: Path, record_id: str) -> BlindRecordRef:
     return BlindRecordRef(id=record_id, headline=record_title(record))
 
 
-def _record_scope_kind(home: Path, record_id: str) -> str | None:
-    """The FIRST record's scope kind, for the coverage stratum only —
-    never rendered in the blind listing. `None` when the record cannot
-    be read; the caller falls back to the case's own free-text scope."""
-    try:
-        path = find_record_path(home, record_id)
-        record = Record.from_path(path)
-    except (LedgerOpsError, RecordError, OSError, UnicodeDecodeError):
-        return None
-    return _scope_kind(record.scope)
-
-
 def _scope_text_from_view(sections: dict[str, str]) -> str | None:
     """Parse the `- scope: <text>` line out of the blind view's own
     "Identity and scope" section body (`cases._render_identity`'s
@@ -170,24 +180,6 @@ def _scope_text_from_view(sections: dict[str, str]) -> str | None:
     body = sections.get("Identity and scope", "")
     m = _SCOPE_LINE_RE.search(body)
     return m.group(1).strip() if m else None
-
-
-def _scope_kind_from_text(text: str | None) -> str:
-    """Best-effort classification of a case's own free-text scope into
-    one of the three coverage-stratum kinds, used ONLY when the
-    underlying record can't be read (`_record_scope_kind` returned
-    `None`) — never crashes, never produces a fourth key. `project` is
-    the default: the stage schema's own worked example
-    (`test_cases.py::STAGE_BASE`) writes scope as a path-shaped string
-    ("project:~/.config"), and a case whose scope text is unclassifiable
-    is far more likely to be project-shaped free text than a skill or
-    user one-word label."""
-    t = (text or "").strip()
-    if t.startswith("skill:"):
-        return "skill"
-    if t == "user" or t.startswith("user:") or t.startswith("user "):
-        return "user"
-    return "project"
 
 
 # ------------------------------------------------------------- population
@@ -202,11 +194,14 @@ def population(home: Path | str, since: str) -> list[BlindCase]:
     rendered: it exists only for `coverage_update`, downstream, once the
     outcome is no longer being withheld.
 
-    A case whose freeze hash failed re-verification (`frozen_ok: false`
-    in the index row) still appears in the listing (S6: "one corrupt
-    case must never hide the whole population") but with `scope: None` —
-    its section text cannot be trusted without a successful re-hash, and
-    `cases.show` refuses to return it."""
+    A case whose freeze hash fails `cases.show`'s own re-verification is
+    STILL listed (S6: "one corrupt case must never hide the whole
+    population" — `cases.show` raises `CaseError`, caught here) but with
+    `scope: None`: its section text cannot be trusted without a
+    successful re-hash, so this function never reads the index row's own
+    `frozen_ok` flag directly — the degrade comes from `cases.show`
+    refusing, not from a docstring's claim about a field this function
+    never touches."""
     home = Path(home)
     rows = cases_mod.list_cases(home, since=since)
     out: list[BlindCase] = []
@@ -253,9 +248,24 @@ def write_blind_views(
     Returns `{"written": [case ids], "skipped": [case ids]}` — a case
     whose freeze hash fails re-verification is skipped, not crashed on
     (same S6 discipline as `population`); the runner (O-3) decides what
-    a non-empty `skipped` list means for that week's run."""
-    home = Path(home)
-    stage_dir = Path(stage_dir)
+    a non-empty `skipped` list means for that week's run.
+
+    N1: refuses when `stage_dir` resolves inside `home` — this module's
+    advertised "no ledger write" property must be intrinsic to it, not a
+    property only of callers that happen to point it elsewhere. Gate
+    finding: "`write_blind_views` trusts its `stage_dir` ... no check
+    that the path is outside `home`"; the fold brief's own wording
+    ("refuses a `stage_dir` outside the run's stage root") names no
+    stage-root parameter this function has to compare against, so this
+    implements the gate's concrete mechanism instead — both lines
+    recorded here per common-builder-rules.md, not resolved silently."""
+    home = Path(home).resolve()
+    stage_dir = Path(stage_dir).resolve()
+    if stage_dir == home or home in stage_dir.parents:
+        raise PopulationError(
+            f"write_blind_views: refusing to stage inside the ledger home ({home}); "
+            f"stage_dir was {stage_dir}"
+        )
     stage_dir.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
     skipped: list[str] = []
@@ -388,7 +398,14 @@ def _worktree_bucket_nudges(home: Path) -> list[dict]:
     known mis-homing exposure while FW-162 (worktree-to-parent-host
     resolution) is still open. This module always computes the list;
     whether the runner ACTS on it while FW-162 is open is the runner's
-    (O-3's) gate, not this pure module's."""
+    (O-3's) gate, not this pure module's.
+
+    O-1 fold r1 / S3: carries `id: <bucket name>` (the fold brief's own
+    wording) so `coverage_update` can record it as TAKEN the same
+    uniform way as every other nudge kind — matched against an examined
+    case's `record_bucket` (`cases._index_row`'s own field: the bucket
+    the case's first cited record physically lives in). `bucket` stays,
+    unchanged, for anything already reading it."""
     try:
         out = []
         for bucket in discover_buckets(home):
@@ -396,7 +413,9 @@ def _worktree_bucket_nudges(home: Path) -> list[dict]:
                 continue
             path = bucket_project_path(bucket.path)
             if path is not None and "/.claude/worktrees/" in path.as_posix():
-                out.append({"kind": "worktree-bucket", "bucket": bucket.name, "path": str(path)})
+                out.append(
+                    {"kind": "worktree-bucket", "id": bucket.name, "bucket": bucket.name, "path": str(path)}
+                )
         return out
     except Exception:
         return []
@@ -407,7 +426,9 @@ def nudges(home: Path | str, coverage: dict, week: str) -> list[dict]:
     §4.5). Order: strata not examined for the longest time first, then
     recurrence suspects, always-loaded zero-fire lessons, untouched
     system readings, and worktree-bucket captures (build-o1.md §Code's
-    own listed order)."""
+    own listed order). The runner (O-3) passes this list's own return
+    value through to `coverage_update`'s `offered` parameter, never the
+    model's own copy of it (B2 / gap 3)."""
     home = Path(home)
     out: list[dict] = []
     out.extend(_stratum_nudges(coverage))
@@ -436,13 +457,30 @@ def _empty_strata() -> dict[str, dict]:
 
 
 def _empty_coverage() -> dict:
-    return {"strata": _empty_strata(), "nudges_offered": [], "nudges_taken": []}
+    return {
+        "strata": _empty_strata(),
+        "nudges_offered": [],
+        "nudges_taken": [],
+        "examined_count": 0,
+        "population_count": 0,
+    }
+
+
+#: N2/N3: the coverage dict's own top-level shape — `render_coverage`
+#: refuses anything outside this set (B2's discipline extended to the
+#: dict's own keys, not just to a nudge entry's fields).
+_COVERAGE_ALLOWED_KEYS = frozenset(
+    {"strata", "nudges_offered", "nudges_taken", "examined_count", "population_count"}
+)
 
 
 def load_coverage(path: Path | str) -> dict:
     """Read `coverage.yaml`; a missing file is the empty structure (every
     stratum `empty`, zero cumulative counts), never `None` — O-3's first
-    run has nothing to merge against yet."""
+    run has nothing to merge against yet. `examined_count`/
+    `population_count` (N3, added this fold) default to 0 when the file
+    predates them — a hand-edited or older-shaped file must never make
+    this raise."""
     path = Path(path)
     if not path.exists():
         return _empty_coverage()
@@ -459,6 +497,8 @@ def load_coverage(path: Path | str) -> dict:
         "strata": strata,
         "nudges_offered": list(data.get("nudges_offered") or []),
         "nudges_taken": list(data.get("nudges_taken") or []),
+        "examined_count": int(data.get("examined_count") or 0),
+        "population_count": int(data.get("population_count") or 0),
     }
 
 
@@ -467,11 +507,23 @@ def render_coverage(data: dict) -> str:
     (`02-schema.md` §3a.1 item 2). Strata are emitted in the fixed
     outcome-then-scope order (`_empty_strata`'s own iteration), never a
     dict's insertion order, so the file's diff each week is the actual
-    change, not key reordering."""
+    change, not key reordering.
+
+    N2: raises `CoverageError` on any top-level key this module does not
+    know — the prior behaviour silently DROPPED an unrecognized key
+    (`render_coverage` rebuilt the mapping from exactly three names),
+    which is indistinguishable, at the call site, from "nothing extra
+    was ever there" — consistent with B2's refuse-don't-drop discipline
+    for a nudge entry's own fields."""
+    unknown = set(data) - _COVERAGE_ALLOWED_KEYS
+    if unknown:
+        raise CoverageError(f"render_coverage: unknown key(s) {sorted(unknown)!r}")
     ordered = {
         "strata": {key: data.get("strata", {}).get(key, default) for key, default in _empty_strata().items()},
         "nudges_offered": list(data.get("nudges_offered") or []),
         "nudges_taken": list(data.get("nudges_taken") or []),
+        "examined_count": int(data.get("examined_count") or 0),
+        "population_count": int(data.get("population_count") or 0),
     }
     y = rt_yaml(default_flow_style=False)
     import io
@@ -481,26 +533,118 @@ def render_coverage(data: dict) -> str:
     return buf.getvalue()
 
 
-def _stratum_for_case(home: Path, row: dict) -> str:
+#: B2 / O-1 fold r1: `selection.yaml`'s own top-level shape. The model's
+#: file contributes ONLY the case ids it chose plus its stated reasons
+#: for choosing and for stopping — `why_these`/`why_stopped` are the two
+#: free-text fields `02-schema.md` §3a.1 item 2 allows on THIS file
+#: (never on `coverage.yaml` itself; `coverage_update` never copies
+#: either one into its returned dict).
+_SELECTION_ALLOWED_KEYS = frozenset({"cases", "why_these", "why_stopped"})
+#: One selected case's own entry: an id, nothing else — never a
+#: `stratum` (or any other) key the model might supply to steer
+#: classification (test 3 / gate check (b)).
+_SELECTION_CASE_ALLOWED_KEYS = frozenset({"id"})
+
+
+def _validate_selection_yaml(selection_yaml: dict) -> None:
+    unknown = set(selection_yaml) - _SELECTION_ALLOWED_KEYS
+    if unknown:
+        raise CoverageError(f"selection.yaml: unknown key(s) {sorted(unknown)!r}")
+    for entry in selection_yaml.get("cases") or []:
+        if not isinstance(entry, dict):
+            continue
+        extra = set(entry) - _SELECTION_CASE_ALLOWED_KEYS
+        if extra:
+            raise CoverageError(
+                f"selection.yaml: case entry has unknown key(s) {sorted(extra)!r}"
+            )
+
+
+#: B2 / gap 3: the five nudge kinds `nudges()` ever emits, and the exact
+#: field set each one's own emitter writes (`_stratum_nudges`,
+#: `_recurrence_nudges`, `_always_loaded_zero_fire_nudges`,
+#: `_untouched_system_reading_nudges`, `_worktree_bucket_nudges`) —
+#: `_sanitize_offered` drops anything outside a KNOWN kind's own shape,
+#: so an entry that arrives with an invented extra field (gate probe F's
+#: `why_i_skipped_it`) never reaches `render_coverage`'s output even if
+#: it rode in on an otherwise-legitimate `kind`.
+_NUDGE_KIND_FIELDS: dict[str, frozenset[str]] = {
+    "stratum": frozenset({"kind", "key", "last_examined_at"}),
+    "recurrence-suspect": frozenset({"kind", "id", "nonce", "basis"}),
+    "always-loaded-zero-fire": frozenset({"kind", "id"}),
+    "system-reading-untouched": frozenset({"kind", "id"}),
+    "worktree-bucket": frozenset({"kind", "id", "bucket", "path"}),
+}
+
+
+def _sanitize_offered(offered: list[dict] | None) -> list[dict]:
+    """`offered` is meant to be exactly what `nudges()` returned — the
+    runner passes it through, never the model's own file (B2 / gap 3:
+    the ORIGINAL bug read `nudges_offered` back out of `selection_yaml`,
+    trusting the party being audited). This still re-validates
+    defensively, per kind, dropping: a non-dict entry; an entry whose
+    `kind` is not one of the five known values; and any field on an
+    otherwise-known entry that isn't part of THAT kind's own shape."""
+    out = []
+    for nudge in offered or []:
+        if not isinstance(nudge, dict):
+            continue
+        kind = nudge.get("kind")
+        allowed = _NUDGE_KIND_FIELDS.get(kind) if isinstance(kind, str) else None
+        if allowed is None:
+            continue
+        out.append({k: v for k, v in nudge.items() if k in allowed})
+    return out
+
+
+def _forward_only(prev_iso: str | None, now_iso: str, now_dt: datetime) -> str:
+    """S2: `last_examined_at` moves FORWARD only. A `None` previous is
+    older than anything (the stratum was never examined before);
+    otherwise the later of the two timestamps wins — a replay, a re-run
+    of a stored selection, or a clock-skewed run must never make a
+    just-examined stratum sort as if it were the stalest (`nudges`'s own
+    ordering reads this field literally)."""
+    if not prev_iso:
+        return now_iso
+    prev_dt = chrono.to_dt(prev_iso)
+    if prev_dt is None:
+        return now_iso
+    return now_iso if now_dt >= prev_dt else prev_iso
+
+
+def _case_stratum_key(row: dict) -> str | None:
     """The stratum key for one FULL case row (carries `outcome`, unlike
-    the blind listing's `BlindCase`) — never trusts a `stratum` key a
-    model might have written into `selection.yaml` (test 3): always
-    recomputed from the row's own `outcome` plus the first cited
-    record's scope kind, falling back to the case's own free-text scope
-    only when the record can't be read."""
+    the blind listing's `BlindCase`), or `None` when the row is not a
+    stratum MEMBER at all this run:
+
+    - S6: a row with `superseded_by` set is not a member of any stratum
+      — its successor (a separate row, `supersedes: <this case>`)
+      carries the lineage under the SUCCESSOR's own outcome. `parked/
+      <scope>` is therefore the CURRENT backlog of undecided parked
+      cases, never a history of every case ever parked.
+    - an unrecognized/missing `outcome` (a malformed row) is dropped,
+      same "degrade, don't hide the rest" discipline `cases._index_row`
+      itself already uses.
+
+    `scope_kind` is trusted AS GIVEN on the row (O-1 fold r1:
+    `cases._index_row` computes it once, from the case's first cited
+    record, at index-build time — this function never looks anything up
+    itself and never falls back to a guess): a row whose outcome IS
+    valid but whose `scope_kind` is missing, or not one of the three
+    known kinds, raises `CoverageError` naming the case — filing it
+    under a guessed stratum is exactly the silent miscount B1/S1
+    found."""
+    if row.get("superseded_by"):
+        return None
     outcome = row.get("outcome")
     if outcome not in OUTCOMES:
-        # An unrecognized/missing outcome (a malformed row, a case kind
-        # this coverage record doesn't track) never crashes the merge
-        # and never grows a 28th stratum — dropped from accounting,
-        # same "degrade, don't hide the rest" discipline as `_index_row`.
-        return ""
-    records = row.get("records") or []
-    scope_kind = None
-    if records:
-        scope_kind = _record_scope_kind(home, records[0])
-    if scope_kind is None:
-        scope_kind = _scope_kind_from_text(row.get("scope"))
+        return None
+    scope_kind = row.get("scope_kind")
+    if scope_kind not in SCOPE_KINDS:
+        raise CoverageError(
+            f"coverage_update: case {row.get('case')!r} has no usable scope_kind "
+            f"({scope_kind!r}) — refusing to file it under a guessed stratum"
+        )
     return stratum_key(outcome, scope_kind)
 
 
@@ -508,36 +652,39 @@ def coverage_update(
     previous: dict | None,
     selection_yaml: dict,
     cases: list[dict],
+    offered: list[dict],
     *,
     now: datetime | None = None,
-    home: Path | str | None = None,
 ) -> dict:
     """Compute the next `coverage.yaml` dict from the PREVIOUS record,
     the model's `selection.yaml` (only its list of chosen case ids is
-    trusted — `test 3`), and *cases*: the FULL (non-blind) case index
-    rows for the week's population (`cases.list_cases`'s own shape,
-    carrying `outcome`) — the blind `BlindCase` list from `population()`
-    deliberately does not carry `outcome`, so it cannot answer this
-    function's question.
+    trusted; `why_these`/`why_stopped` are the only other keys it may
+    carry, and neither reaches this function's return value — see the
+    module docstring), *cases*: the FULL (non-blind) case index rows for
+    the week's population (`cases.list_cases`'s own shape, carrying
+    `outcome` and `scope_kind` — the blind `BlindCase` list from
+    `population()` deliberately carries neither, so it cannot answer
+    this function's question), and *offered*: the list `nudges()`
+    itself returned this run (the runner passes it through — B2 / gap
+    3, never the model's own copy).
 
     Per stratum: `last_examined_at` and `cumulative_count` are MERGED,
     never overwritten — a stratum with no examined case this run keeps
-    whatever the previous record already had (test 5). A stratum with
-    zero members in THIS WEEK'S population is recorded `empty`, not
-    dropped (test 4); one with members but none of them selected is
-    `unexamined`; one with an examined case is `examined`, its
-    cumulative count incremented by the number of examined cases in that
-    cell this run and its `last_examined_at` set to *now*.
+    whatever the previous record already had (test 5), and
+    `last_examined_at` only ever moves FORWARD (S2, `_forward_only`). A
+    stratum with zero members in THIS WEEK'S population is recorded
+    `empty`, not dropped (test 4); one with members but none of them
+    selected is `unexamined`; one with an examined case is `examined`,
+    its cumulative count incremented by the number of examined cases in
+    that cell this run.
 
-    `home` resolves each case's record scope for stratum bucketing
-    (`_stratum_for_case`); omit it only when every row's own `scope`
-    text is enough (falls back to `_scope_kind_from_text`, degrading
-    gracefully — see that function's docstring).
+    Raises `CoverageError` when `selection_yaml` carries an unknown key
+    (top-level or on one case entry — B2) or when a case row cannot be
+    classified into a stratum (`_case_stratum_key` — B1/S1): a degrade
+    is not defensible for a ledger-truth artifact whose whole purpose is
+    telling "uninspected" apart from "healthy"."""
+    _validate_selection_yaml(selection_yaml)
 
-    Per the module docstring's recorded spec/brief disagreement, this
-    function does NOT copy `selection_yaml`'s `why_these`/`why_stopped`
-    prose into the returned dict — `02-schema.md` §3a.1 item 2 rules
-    `coverage.yaml` "no free text at all"."""
     now_dt = now or datetime.now(timezone.utc)
     now_iso = chrono.now_iso(now_dt)
     prev = previous if previous is not None else _empty_coverage()
@@ -551,11 +698,10 @@ def coverage_update(
     }
     selected_ids.discard(None)
 
-    home_path = Path(home) if home is not None else None
     members_by_stratum: dict[str, list[dict]] = {key: [] for key in prev_strata}
     for row in cases:
-        key = _stratum_for_case(home_path, row) if home_path is not None else ""
-        if not key or key not in members_by_stratum:
+        key = _case_stratum_key(row)
+        if key is None or key not in members_by_stratum:
             continue
         members_by_stratum[key].append(row)
 
@@ -564,12 +710,13 @@ def coverage_update(
         outcome, _, scope = key.partition("/")
         members = members_by_stratum.get(key, [])
         examined = [m for m in members if m.get("case") in selected_ids]
+        prev_last = prev_entry.get("last_examined_at")
         if examined:
             new_strata[key] = {
                 "outcome": outcome,
                 "scope": scope,
                 "cumulative_count": int(prev_entry.get("cumulative_count") or 0) + len(examined),
-                "last_examined_at": now_iso,
+                "last_examined_at": _forward_only(prev_last, now_iso, now_dt),
                 "status": "examined",
             }
         elif members:
@@ -577,7 +724,7 @@ def coverage_update(
                 "outcome": outcome,
                 "scope": scope,
                 "cumulative_count": int(prev_entry.get("cumulative_count") or 0),
-                "last_examined_at": prev_entry.get("last_examined_at"),
+                "last_examined_at": prev_last,
                 "status": "unexamined",
             }
         else:
@@ -585,25 +732,43 @@ def coverage_update(
                 "outcome": outcome,
                 "scope": scope,
                 "cumulative_count": int(prev_entry.get("cumulative_count") or 0),
-                "last_examined_at": prev_entry.get("last_examined_at"),
+                "last_examined_at": prev_last,
                 "status": "empty",
             }
 
-    offered = list(selection_yaml.get("nudges_offered") or [])
-    taken = []
-    for nudge in offered:
-        if not isinstance(nudge, dict):
-            continue
-        if nudge.get("kind") == "stratum":
+    offered_valid = _sanitize_offered(offered)
+
+    examined_rows = [row for row in cases if row.get("case") in selected_ids]
+    examined_record_ids = {rid for row in examined_rows for rid in (row.get("records") or [])}
+    examined_dependency_refs = {
+        ref for row in examined_rows for ref in (row.get("dependency_refs") or [])
+    }
+    examined_buckets = {
+        row.get("record_bucket") for row in examined_rows if row.get("record_bucket")
+    }
+
+    taken: list[dict] = []
+    for nudge in offered_valid:
+        kind = nudge.get("kind")
+        if kind == "stratum":
             nudge_key = nudge.get("key")
             if isinstance(nudge_key, str) and new_strata.get(nudge_key, {}).get("status") == "examined":
                 taken.append(nudge)
-        elif nudge.get("id") in {
-            rid
-            for row in cases
-            if row.get("case") in selected_ids
-            for rid in (row.get("records") or [])
-        }:
-            taken.append(nudge)
+        elif kind in ("recurrence-suspect", "always-loaded-zero-fire"):
+            if nudge.get("id") in examined_record_ids:
+                taken.append(nudge)
+        elif kind == "system-reading-untouched":
+            if nudge.get("id") in examined_dependency_refs:
+                taken.append(nudge)
+        elif kind == "worktree-bucket":
+            if nudge.get("id") in examined_buckets:
+                taken.append(nudge)
 
-    return {"strata": new_strata, "nudges_offered": offered, "nudges_taken": taken}
+    population_ids = {row.get("case") for row in cases}
+    return {
+        "strata": new_strata,
+        "nudges_offered": offered_valid,
+        "nudges_taken": taken,
+        "examined_count": len(selected_ids & population_ids),
+        "population_count": len(cases),
+    }

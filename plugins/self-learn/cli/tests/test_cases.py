@@ -538,6 +538,31 @@ def test_5_astra6_list_cases_rebuilds_when_stale(tmp_path, monkeypatch):
     assert {r["case"] for r in rows} == {c1, c2}
 
 
+def test_o1_fold_r1_index_missing_scope_kind_forces_rebuild(tmp_path):
+    """O-1 fold r1: `scope_kind`/`record_bucket` are new index-row keys
+    (`overseer.population.coverage_update` refuses a row that lacks
+    `scope_kind` rather than guessing). An index cached by code from
+    BEFORE this fold has the right mtime and the right row count, so
+    the two PRE-EXISTING staleness checks (mtime, row count) alone
+    would never catch it, and every row would stay `scope_kind`-less
+    forever — a real O-3-facing failure, not a hypothetical one."""
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    cases.list_cases(home)  # index built once, current, WITH scope_kind
+
+    cache_dir = worker.cache_dir(home)
+    index_path = cache_dir / "cases" / "index.json"
+    data = json.loads(index_path.read_bytes())
+    for row in data["cases"]:
+        row.pop("scope_kind", None)
+        row.pop("record_bucket", None)
+    index_path.write_text(json.dumps(data), encoding="utf-8")  # same mtime-or-newer, same row count
+
+    rows = cases.list_cases(home)
+    row = next(r for r in rows if r["case"] == case_id)
+    assert "scope_kind" in row, "a pre-fold cached index row was trusted forever"
+
+
 # ---------------------------------------------------------- (7) Astra 9
 
 
