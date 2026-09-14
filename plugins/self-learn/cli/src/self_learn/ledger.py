@@ -29,7 +29,7 @@ DEFAULT_HOME = "~/.self-learn"
 
 #: The layout dirs + registry that a bootstrapped home has (doc 13 §3).
 #: S-65 (2026-09-13, 02-schema.md §3): "cases" joins this tuple — decision
-#: cases are eager-created like the other four, never lazy like
+#: cases are eager-created like the other four members, never lazy like
 #: "compiled" below, because a fresh home has nowhere else for the
 #: steward/overseer to write one from their first run. An older home
 #: without it is never refused: `init_home`'s step-6 top-up (below) tops
@@ -270,7 +270,7 @@ def _create_layout(target: Path) -> tuple[str, ...]:
     """Create whatever `_LAYOUT` dirs are missing at *target*; return the
     ones actually created (C1 §2.2 P-C1.14: per-directory, never per-state
     — this is safe to call on ANY repo shape, including one that already
-    has some of the four)."""
+    has some of the five)."""
     created = []
     for name in _LAYOUT:
         d = target / name
@@ -300,7 +300,7 @@ def init_home(path: Path | str) -> InitResult:
        must refuse here, not fall through to a raw ``mkdir`` error) and is
        NOT a directory (regular file, FIFO, socket, device node, dangling
        symlink) → refuse.
-    3. *path* is absent → create it, ``git init``, all four `_LAYOUT`
+    3. *path* is absent → create it, ``git init``, all five `_LAYOUT`
        dirs, initial ``--allow-empty`` commit. Done.
     4. :func:`~self_learn.hosts.is_repo_root` is False and the dir is
        NON-EMPTY → refuse. Never ``git init`` over foreign files.

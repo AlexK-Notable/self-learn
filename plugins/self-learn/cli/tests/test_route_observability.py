@@ -24,7 +24,8 @@ FALSE — driven end to end, the review UI always sends an explicit
 human never touched it, so `verbs.route`'s dest-is-not-None heuristic
 alone read "human" on every UI approval. FW-64 gave `verbs.route` and
 `verbs.route_direct` an explicit, caller-supplied `by` override
-(`ROUTING_BY_VALUES = {"human", "analyst", "agent"}`) so a caller that
+(`ROUTING_BY_VALUES`, then `{"human", "analyst", "agent"}`; five members
+since 2026-09-13, `02-schema.md` §3a.1 rule 5) so a caller that
 knows better than the heuristic — the review UI's own CLI subprocess
 call, via a new `--by` flag — never has to be guessed at. `route_direct`
 gained the SAME plumbing already anticipated by this spec's own §6/§7

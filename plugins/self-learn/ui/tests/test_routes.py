@@ -2152,11 +2152,15 @@ class TestRoutingByFW64:
         here as documentation of the contract build_argv relies on: this
         app only ever computes "human"/"agent"/"analyst", never anything
         else, so a `--by` CLI usage refusal should never be reachable
-        through this UI. Guards the value set itself, independent of any
-        one call site's derivation logic."""
+        through this UI. Guards that the three values this app computes
+        are members of the CLI's closed set, independent of any one call
+        site's derivation logic. The set itself widened to five on
+        2026-09-13 (`02-schema.md` §3a.1 rule 5: steward, overseer — the
+        two unattended deciders); the UI still computes only its three."""
         from self_learn.verbs import ROUTING_BY_VALUES
 
-        assert ROUTING_BY_VALUES == {"human", "analyst", "agent"}
+        assert {"human", "analyst", "agent"} <= ROUTING_BY_VALUES
+        assert ROUTING_BY_VALUES == {"human", "analyst", "agent", "steward", "overseer"}
 
 
 class TestDestinationGlosses:
