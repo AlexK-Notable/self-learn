@@ -116,10 +116,13 @@ def test_route_is_a_code_emitted_event_kind():
     assert "route" not in telemetry.NOTE_KINDS
 
 
-def test_schema_version_is_3():
+def test_schema_version_is_4():
     """Criterion 15: extending the closed set is a version bump. v2 -> v3
-    (U-readref §5.1): `reference-read` joined `EVENT_KINDS`."""
-    assert telemetry.SCHEMA_VERSION == 3
+    (U-readref §5.1): `reference-read` joined `EVENT_KINDS`. v3 -> v4
+    (steward build, U6, 11 §4.3): no kind joined this time — the `fire`
+    kind's own `outcome` enum went from two values to three, which is
+    the version bump 11 §4.3's heading itself requires."""
+    assert telemetry.SCHEMA_VERSION == 4
 
 
 def test_route_emits_via_the_verb_directly(env):
