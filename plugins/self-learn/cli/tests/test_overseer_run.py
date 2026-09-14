@@ -5,14 +5,15 @@ from __future__ import annotations
 import argparse
 import json
 import io
+import os
 from pathlib import Path
 
 import pytest
 from ruamel.yaml import YAML
 
-from self_learn import cases, intents, settings
+from self_learn import batch, cases, gitops, intents, settings, verbs
 from self_learn.invocation import Outcome
-from self_learn.ledger_ops import create_record, stamp_proposal, write_proposal
+from self_learn.ledger_ops import create_record, find_record_path, stamp_proposal, write_proposal
 from self_learn.overseer import cli as overseer_cli
 from self_learn.overseer import run as overseer_run
 from support import commit_all, make_behavior, make_home, proposal_dict
@@ -114,7 +115,7 @@ def _seed_parked_hook(home, tmp_path):
     return rid, cases.record(home, path, actor="steward")
 
 
-def _fake_hook_phases(monkeypatch, rid, parked):
+def _fake_hook_phases(monkeypatch, rid, parked, *, extra_refusal=False):
     calls = []
 
     def invoke(spec):
@@ -141,7 +142,10 @@ def _fake_hook_phases(monkeypatch, rid, parked):
                 "evidence": [{"ref": f"record:{rid}", "quote": "status: pending"}],
                 "decision": {"verb": "route", "because": "guard is specific", "confidence": "settled"},
             })
-            _dump(stage / "sheet-hook.yaml", {"version": 1, "items": [{"id": rid, "verb": "route", "dest": "hook"}]})
+            items = [{"id": rid, "verb": "route", "dest": "hook"}]
+            if extra_refusal:
+                items.append({"id": rid, "verb": "undefer"})
+            _dump(stage / "sheet-hook.yaml", {"version": 1, "items": items})
         return type("SdkLike", (), {
             "ok": True, "rc": 0, "stdout": "", "detail": "", "failure": None, "turns": 1,
         })()
@@ -194,6 +198,40 @@ def _fake_selected_phases(monkeypatch, case_id):
     monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
 
 
+def _fake_reference_reconsider_phases(monkeypatch, rid, parked):
+    def invoke(spec):
+        stage = spec.cwd
+        if spec.label == "phase-a":
+            _dump(stage / "selection.yaml", {"cases": [], "why_these": "parked intake", "why_stopped": "none blind"})
+            _dump(stage / "initial-views.yaml", {"cases": []})
+        else:
+            headings = [
+                "Examined", "Decided in the user's stead", "Hooks", "User model",
+                "Catalogue health", "Questions for you", "Refused / could not do",
+            ]
+            (stage / "report.md").write_text(
+                "# draft\n" + "\n".join(f"## {h}\n- none" for h in headings) + "\n",
+                encoding="utf-8",
+            )
+            _dump(stage / "findings.yaml", {"findings": []})
+            _dump(stage / "questions.yaml", {"questions": []})
+            _dump(stage / "case-reconsider.yaml", {
+                "kind": "reconsider", "trigger": "reconsider", "outcome": "reject",
+                "records": [rid], "scope": "skill:s", "question": "correct reference route?",
+                "supersedes": parked,
+                "evidence": [{"ref": f"record:{rid}", "quote": "status: routed"}],
+                "decision": {"verb": "reject", "because": "route was wrong", "confidence": "settled"},
+            })
+            _dump(stage / "sheet-reconsider.yaml", {
+                "version": 1, "items": [{"id": rid, "verb": "reject"}],
+            })
+        return type("SdkLike", (), {
+            "ok": True, "rc": 0, "stdout": "", "detail": "", "failure": None, "turns": 1,
+        })()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+
+
 def test_stop_precedes_invocation(tmp_path, monkeypatch):
     home = make_home(tmp_path)
     stopped = intents.RecoverResult(stopped=["deadbeef: mismatch"])
@@ -208,7 +246,16 @@ def test_stop_precedes_invocation(tmp_path, monkeypatch):
 
 def test_two_invocations_are_blind_then_full(tmp_path, monkeypatch):
     home = make_home(tmp_path)
-    calls = _fake_two_phase(monkeypatch)
+    _rid, case_id = _seed_decided_case(home, tmp_path)
+    _fake_selected_phases(monkeypatch, case_id)
+    calls: list[object] = []
+    real_invoke = overseer_run.invocation.write_session
+
+    def capture(spec):
+        calls.append(spec)
+        return real_invoke(spec)
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", capture)
     result = overseer_run.run(home, dry_run=True, no_push=True)
     assert result.status == "dry-run"
     assert len(calls) == 2
@@ -218,6 +265,8 @@ def test_two_invocations_are_blind_then_full(tmp_path, monkeypatch):
     assert calls[0].cwd.name == "overseer"
     assert calls[0].containment.allowed_tools == "Read,Grep,Glob,Write"
     assert calls[0].containment.disallowed_tools == "Bash"
+    blind_view = calls[0].cwd / "blind" / f"{case_id}.md"
+    assert "## Decision" not in blind_view.read_text(encoding="utf-8")
 
 
 def test_no_push_is_read_once_at_the_run_boundary(tmp_path, monkeypatch):
@@ -260,11 +309,13 @@ def test_runaway_after_a_never_starts_b(tmp_path, monkeypatch):
     assert result.model_calls == 50
     assert len(calls) == 1
     assert "runaway" in Path(result.report).read_text(encoding="utf-8").lower()
+    assert not (home / "overseer").exists()
 
 
 def test_coverage_precedes_uncapped_parked_intake(tmp_path, monkeypatch):
     home = make_home(tmp_path)
     _fake_two_phase(monkeypatch)
+    _enabled(monkeypatch)
     parked = [{"case": f"case-{n:08x}", "superseded_by": None} for n in range(75)]
     captured = []
     real_list = overseer_run.cases.list_cases
@@ -272,6 +323,7 @@ def test_coverage_precedes_uncapped_parked_intake(tmp_path, monkeypatch):
     def listed(given_home, **kwargs):
         if kwargs.get("parked_for") == "overseer":
             assert (overseer_run.worker.stage_dir() / "overseer" / "coverage.yaml").is_file()
+            assert (home / "overseer" / "coverage.yaml").is_file()
             assert kwargs.get("only_ok") is True
             return parked
         return real_list(given_home, **kwargs)
@@ -282,8 +334,8 @@ def test_coverage_precedes_uncapped_parked_intake(tmp_path, monkeypatch):
         "_full_inputs",
         lambda home, stage, selected, parked_rows: captured.extend(parked_rows),
     )
-    result = overseer_run.run(home, dry_run=True, no_push=True)
-    assert result.status == "dry-run"
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+    assert result.status == "applied"
     assert captured == parked
 
 
@@ -292,7 +344,8 @@ def test_phase_b_runaway_applies_nothing(tmp_path, monkeypatch):
     _fake_two_phase(monkeypatch, a_turns=2, b_turns=48)
     applied = []
     monkeypatch.setattr(overseer_run.batch, "run", lambda *a, **kw: applied.append((a, kw)))
-    result = overseer_run.run(home, dry_run=True, no_push=True)
+    _enabled(monkeypatch)
+    result = overseer_run.run(home, dry_run=False, no_push=True)
     assert result.status == "runaway"
     assert result.model_calls == 50
     assert applied == []
@@ -306,6 +359,10 @@ def test_hook_route_obeys_current_gate_and_writes_case_receipt(tmp_path, monkeyp
     _fake_hook_phases(monkeypatch, rid, parked)
     claude_dir = tmp_path / "claude"
     monkeypatch.setenv("SELF_LEARN_CLAUDE_DIR", str(claude_dir))
+    claude_dir.mkdir()
+    settings_path = claude_dir / "settings.json"
+    original_settings = b'{"existing": true}\n'
+    settings_path.write_bytes(original_settings)
     if gate:
         (home / "config.yaml").write_text("overseer:\n  hook_activation: true\n", encoding="utf-8")
         commit_all(home, "enable hook activation")
@@ -314,6 +371,12 @@ def test_hook_route_obeys_current_gate_and_writes_case_receipt(tmp_path, monkeyp
 
     assert result.status == "applied"
     assert result.applied == 1
+    if not gate:
+        assert settings_path.read_bytes() == original_settings
+    else:
+        links = list((claude_dir / "hooks").iterdir())
+        assert len(links) == 1
+        assert links[0].is_symlink()
     successors = [row for row in cases.list_cases(home, only_ok=True) if row.get("supersedes") == parked]
     assert len(successors) == 1
     view = cases.show(home, successors[0]["case"], evidence_only=False)
@@ -326,13 +389,21 @@ def test_hook_route_obeys_current_gate_and_writes_case_receipt(tmp_path, monkeyp
     assert len(sheet_rows) == 1
     assert len(sheet_rows[0]["sheet_sha"]) == 8
     assert sheet_rows[0]["stopped"] == 0
-    settings_path = claude_dir / "settings.json"
-    assert settings_path.exists() is gate
     record_path = next(home.glob(f"skills/*/resolved/{rid}.md"))
     assert "By: overseer" in __import__("subprocess").run(
         ["git", "-C", str(home), "log", "--format=%B", "--", str(record_path.relative_to(home))],
         check=True, capture_output=True, text=True,
     ).stdout
+
+
+def test_dry_run_preview_reports_sheet_apply_and_refusal_counts(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    rid, parked = _seed_parked_hook(home, tmp_path)
+    _fake_hook_phases(monkeypatch, rid, parked, extra_refusal=True)
+    result = overseer_run.run(home, dry_run=True, no_push=True)
+    text = Path(result.report).read_text(encoding="utf-8")
+    assert result.status == "dry-run"
+    assert "- Dry-run preview: 1 sheet(s); 1 would apply; 1 would refuse" in text
 
 
 def test_secret_scan_names_files_and_applies_nothing(tmp_path, monkeypatch):
@@ -341,8 +412,14 @@ def test_secret_scan_names_files_and_applies_nothing(tmp_path, monkeypatch):
     _fake_two_phase(monkeypatch, secret=True)
     applied = []
     notices = []
+    notice_lock_states = []
     monkeypatch.setattr(overseer_run.batch, "run", lambda *a, **kw: applied.append((a, kw)))
-    monkeypatch.setattr(overseer_run.worker, "_notify_with_ids", lambda message, ids: notices.append((message, ids)))
+
+    def notified(message, ids):
+        notices.append((message, ids))
+        notice_lock_states.append(str(gitops.commit_lock_path(home)) in gitops._held_locks)
+
+    monkeypatch.setattr(overseer_run.worker, "_notify_with_ids", notified)
     result = overseer_run.run(home, dry_run=False, no_push=True)
     assert result.status == "refused"
     assert result.code == 1
@@ -352,6 +429,7 @@ def test_secret_scan_names_files_and_applies_nothing(tmp_path, monkeypatch):
     assert "report.md" in report
     assert "ghp_" not in report
     assert notices == [("overseer refused: secret-hit report.md", [])]
+    assert notice_lock_states == [False]
     assert overseer_run.read_journal(home)[-1]["reason"] == "secret-hit report.md"
 
 
@@ -368,6 +446,7 @@ def test_report_is_written_before_notification(tmp_path, monkeypatch):
     result = overseer_run.run(home, dry_run=False, no_push=True)
     assert result.status == "applied"
     assert observed == [True]
+    assert not os.path.islink(home / "overseer" / "latest-report.md")
 
 
 def test_report_names_sample_and_examined_observation_lands(tmp_path, monkeypatch):
@@ -381,6 +460,7 @@ def test_report_names_sample_and_examined_observation_lands(tmp_path, monkeypatc
     assert case_id in text
     view = cases.show(home, case_id, evidence_only=False)
     assert "examined" in view.sections["Later observations"]
+    assert "- not examined this run (the user-model delta leg lands in a later unit)" in text
 
 
 def test_disabled_is_success_without_invocation(tmp_path, monkeypatch):
@@ -433,16 +513,191 @@ def test_exit_decision_keeps_refused_partial_and_stop_distinct():
     assert overseer_run._worst_code([6], any_applied=False) == 6
 
 
-def test_reference_reconsider_refusal_is_copied_verbatim_to_report(tmp_path):
+def test_write_stage_refuses_outside_stage_before_mkdir(tmp_path):
+    stage = tmp_path / "stage"
+    outside = tmp_path / "ledger" / "outside.md"
+    with pytest.raises(overseer_run.OverseerError, match="outside overseer stage"):
+        overseer_run._write_stage(stage, outside, "nope\n")
+    assert not outside.exists()
+    assert not outside.parent.exists()
+    inside = stage / "inside.md"
+    overseer_run._write_stage(stage, inside, "yes\n")
+    assert inside.read_text(encoding="utf-8") == "yes\n"
+
+
+def test_reference_reconsider_refusal_is_committed_and_not_retried(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    rid = "lrn-0f0e0d0c"
+    create_record(home, make_behavior(record_id=rid))
+    write_proposal(home, rid, proposal_dict(destination="reference"))
+    stamp_proposal(home, rid)
+    commit_all(home, "reference seed")
+    verbs.route(home, rid, dest="reference", no_push=True)
+    record_path = find_record_path(home, rid)
+    before = record_path.read_bytes()
+    parked_stage = tmp_path / "parked-reference.yaml"
+    _dump(parked_stage, {
+        "kind": "parked", "trigger": "nightly", "outcome": "parked",
+        "records": [rid], "scope": "skill:s", "question": "correct reference route?",
+        "parked_for": "overseer", "parked_reason": "authority-unclear",
+        "evidence": [{"ref": f"record:{rid}", "quote": "status: routed"}],
+        "decision": {"verb": "parked", "because": "needs review", "confidence": "provisional"},
+    })
+    parked = cases.record(home, parked_stage, actor="steward")
+    _enabled(monkeypatch)
+    _fake_reference_reconsider_phases(monkeypatch, rid, parked)
+    calls = []
+    real_run = overseer_run.batch.run
+
+    def counted(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(overseer_run.batch, "run", counted)
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+    message = (
+        f"reject {rid}: a reconsider correction of a routed 'reference'-destination "
+        "record is not supported here"
+    )
+    text = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    assert result.status == "refused"
+    assert message in text.partition("## Refused / could not do")[2]
+    assert len(calls) == 1
+    assert record_path.read_bytes() == before
+    assert not __import__("subprocess").run(
+        ["git", "-C", str(home), "status", "--porcelain"], check=True,
+        capture_output=True, text=True,
+    ).stdout
+    assert __import__("subprocess").run(
+        ["git", "-C", str(home), "log", "-1", "--format=%B", "--", "overseer/latest-report.md"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+
+
+def test_run_exit_8_when_a_sheet_applies_and_refuses(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    rid, parked = _seed_parked_hook(home, tmp_path)
+    _enabled(monkeypatch)
+    _fake_hook_phases(monkeypatch, rid, parked, extra_refusal=True)
+    fake = batch.BatchResult(
+        items=[
+            batch.ItemResult(n=1, id=rid, verb="route", rc=0, state="applied"),
+            batch.ItemResult(n=2, id=rid, verb="reject", rc=1, state="refused", detail="refused"),
+        ],
+        process_code=1, sheet_sha="01234567", actor="overseer",
+    )
+    monkeypatch.setattr(overseer_run.batch, "run", lambda *args, **kwargs: fake)
+    monkeypatch.setattr(overseer_run.batch, "write_receipt", lambda *args, **kwargs: {})
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+    assert (result.code, result.status, result.applied, result.refused) == (8, "partial", 1, 1)
+
+
+def test_failed_boundary_push_keeps_applied_status_and_records_failure(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    rid, parked = _seed_parked_hook(home, tmp_path)
+    _enabled(monkeypatch)
+    _fake_hook_phases(monkeypatch, rid, parked)
+    fake = batch.BatchResult(
+        items=[batch.ItemResult(n=1, id=rid, verb="route", rc=0, state="applied")],
+        process_code=0, sheet_sha="01234567", actor="overseer",
+    )
+    monkeypatch.setattr(overseer_run.batch, "run", lambda *args, **kwargs: fake)
+    monkeypatch.setattr(overseer_run.batch, "write_receipt", lambda *args, **kwargs: {})
+    push = verbs.PushReport(entries=[(home, gitops.PushResult(ok=False, detail="offline"))])
+    monkeypatch.setattr(overseer_run.verbs, "push_pending", lambda given_home: push)
+    result = overseer_run.run(home, dry_run=False, no_push=False)
+    text = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    assert (result.code, result.status) == (3, "applied")
+    assert "push: failed (3)" in text
+    assert overseer_run.read_journal(home)[-1]["push"] == "push: failed (3)"
+
+
+def test_model_report_owned_facts_truncate_model_prose_not_the_run(tmp_path):
     path = tmp_path / "report.md"
     headings = [
         "Examined", "Decided in the user's stead", "Hooks", "User model",
         "Catalogue health", "Questions for you", "Refused / could not do",
     ]
-    path.write_text("# draft\n" + "\n".join(f"## {h}\n- none" for h in headings) + "\n")
-    refusal = "reconsider: reference destination is not supported"
+    lines = ["# draft"]
+    for heading in headings:
+        lines.extend([f"## {heading}", "- model prose"])
+    lines.extend("- more model prose" for _ in range(57 - len(lines)))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     text = overseer_run._finalize_model_report(
         path, date="2026-09-14", run_id="12345678", model="m", selected=(),
-        population_count=0, excluded=0, model_calls=2, guard=50, refusals=[refusal],
+        population_count=0, excluded=0, model_calls=2, guard=50,
+        refusals=["first refusal", "second refusal"],
     )
-    assert f"- {refusal}" in text
+    assert len(text.splitlines()) <= 60
+    assert "- model report truncated:" in text
+
+
+def test_late_finalize_failure_after_apply_is_partial_and_finishes_intent(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    rid, parked = _seed_parked_hook(home, tmp_path)
+    _enabled(monkeypatch)
+    _fake_hook_phases(monkeypatch, rid, parked)
+    monkeypatch.setattr(
+        overseer_run, "_finalize_model_report",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            overseer_run.OverseerError("report.md: code-owned facts make the report exceed 60 lines")
+        ),
+    )
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+    report = home / "overseer" / "latest-report.md"
+    dated_reports = list((home / "overseer").glob("????-??-??-report.md"))
+    assert (result.status, result.code, result.applied) == ("partial", 8, 1)
+    assert report.is_file()
+    assert len(dated_reports) == 1
+    assert "run ended early: report.md: code-owned facts make the report exceed 60 lines" in report.read_text(encoding="utf-8")
+    recovered = intents.recover(home)
+    assert not recovered.stopped
+    assert recovered.restored == []
+    assert overseer_run.status(home)["last_run_at"] is not None
+
+
+def test_receipt_failure_after_applied_sheet_retries_and_stays_partial(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    rid, parked = _seed_parked_hook(home, tmp_path)
+    _enabled(monkeypatch)
+    _fake_hook_phases(monkeypatch, rid, parked)
+    real_receipt = overseer_run.batch.write_receipt
+    calls = []
+
+    def write_then_raise(*args, **kwargs):
+        calls.append(True)
+        receipt = real_receipt(*args, **kwargs)
+        if len(calls) == 1:
+            raise RuntimeError("receipt postcondition failed")
+        return receipt
+
+    monkeypatch.setattr(overseer_run.batch, "write_receipt", write_then_raise)
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+    successor = next(row["case"] for row in cases.list_cases(home, only_ok=True) if row.get("supersedes") == parked)
+    application = cases.show(home, successor, evidence_only=False).sections["Application"]
+    assert (result.status, result.code, result.applied) == ("partial", 8, 1)
+    assert len(calls) == 2
+    assert "sheet-hook.yaml" in application
+
+
+def test_invalid_raw_report_refuses_before_any_ledger_write(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    real_invoke = overseer_run.invocation.write_session
+
+    def oversized(spec):
+        outcome = real_invoke(spec)
+        if spec.label == "phase-b":
+            with (spec.cwd / "report.md").open("a", encoding="utf-8") as fh:
+                fh.write("- excess model prose\n" * 50)
+        return outcome
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", oversized)
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+    assert (result.status, result.code) == ("refused", 1)
+    assert not (home / "overseer").exists()
+    assert not __import__("subprocess").run(
+        ["git", "-C", str(home), "status", "--porcelain"], check=True,
+        capture_output=True, text=True,
+    ).stdout

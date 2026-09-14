@@ -89,9 +89,8 @@ from self_learn import cli, gitops
 from support import commit_all, git, init_repo, make_env
 
 SRC = Path(gitops.__file__).parent
-# Parse the nested package first so its same-basename ``cli.py`` cannot
-# replace the root CLI's import-resolution table.  The runner/population
-# modules keep their own unique names either way.
+# Parse the nested package and root modules.  `_Analysis` keys them by their
+# path relative to SRC, so same-basename modules remain distinct.
 SOURCE_ROOTS = (SRC / "overseer", SRC)
 MODULES = {p.stem for root in SOURCE_ROOTS for p in root.glob("*.py")}
 CLI_SRC = str(Path(__file__).resolve().parents[1] / "src")
@@ -168,11 +167,11 @@ NOT_REPO_TRUTH = {
     "worker._write_failure_count": "XDG cache: the follow-on backoff counter",
     "worker._increment_failure_count": "XDG cache: the follow-on backoff counter",
     "worker._reset_failure_count": "XDG cache: the follow-on backoff counter",
-    # 2026-09-14, O-3: both are confined by construction to
-    # worker.cache_dir(home)/overseer.journal or worker.stage/overseer/.
-    "run._journal": "XDG cache: the overseer JSONL run journal",
-    "run._write_stage": "XDG cache: the overseer's exclusive nested stage",
-    "population.write_blind_views": "XDG cache: blind case views in the overseer's exclusive nested stage; the function refuses a ledger-contained target",
+    # 2026-09-14, O-3: `_journal` computes its own cache-only path;
+    # `_write_stage` rejects any path outside its supplied nested stage.
+    "overseer/run._journal": "XDG cache: the overseer JSONL run journal",
+    "overseer/run._write_stage": "XDG cache: the overseer's exclusive nested stage",
+    "overseer/population.write_blind_views": "XDG cache: blind case views in the overseer's exclusive nested stage; the function refuses a ledger-contained target",
     # …/miner/ — cursors, journal, the model's spool. The reader is pointed
     # at the spool precisely so the model cannot touch the repo (M-5).
     "miner.miner_dir": "XDG cache: the miner cache dir itself",
@@ -487,19 +486,25 @@ def _append_mutation_calls(node) -> set[int]:
 
 
 class _Analysis:
-    """The whole package, parsed once. ``root`` is the source dir — a
-    parameter, not a constant, so the planted-violation test can point it
-    at a deliberately-broken COPY of the tree."""
+    """The whole package, parsed once from injectable source roots."""
 
-    def __init__(self, root: Path | None = None) -> None:
+    def __init__(self, roots: tuple[Path, ...] | Path = SOURCE_ROOTS) -> None:
         self.funcs: dict[str, ast.AST] = {}
         self.aliases: dict[str, dict[str, str]] = {}
         self.imported: dict[str, dict[str, str]] = {}
-        roots = SOURCE_ROOTS if root is None else (root,)
+        if isinstance(roots, Path):
+            roots = (roots,)
+        module_root = roots[-1]
+        known_modules = {
+            path.relative_to(module_root).with_suffix("").as_posix()
+            for source_root in roots
+            for path in source_root.glob("*.py")
+        }
         for source_root in roots:
             for path in sorted(source_root.glob("*.py")):
                 tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-                collector = _Collector(path.stem)
+                module = path.relative_to(module_root).with_suffix("").as_posix()
+                collector = _Collector(module)
                 collector.visit(tree)
                 self.funcs.update(collector.funcs)
                 # `from . import gitops` → module alias; `from .compilers
@@ -513,15 +518,22 @@ class _Analysis:
                 for node in ast.walk(tree):
                     if not isinstance(node, ast.ImportFrom) or (node.level or 0) < 1:
                         continue
+                    package = module.split("/")[:-1]
+                    base = package[:len(package) - (node.level - 1)]
+                    imported_module = "/".join(
+                        base + (node.module.split(".") if node.module else [])
+                    )
                     for name in node.names:
-                        if node.module is None and name.name in MODULES:
-                            alias[name.asname or name.name] = name.name
-                        elif node.module in MODULES:
+                        if node.module is None:
+                            target = "/".join([*base, name.name])
+                            if target in known_modules:
+                                alias[name.asname or name.name] = target
+                        elif imported_module in known_modules:
                             imported[name.asname or name.name] = (
-                                f"{node.module}.{name.name}"
+                                f"{imported_module}.{name.name}"
                             )
-                self.aliases[path.stem] = alias
-                self.imported[path.stem] = imported
+                self.aliases[module] = alias
+                self.imported[module] = imported
         self._guarded = {q: self._guarded_lines(n) for q, n in self.funcs.items()}
         self._appends = {q: _append_mutation_calls(n) for q, n in self.funcs.items()}
 
@@ -706,10 +718,21 @@ class TestNoMutationPrecedesItsLock:
         assert {"verbs.route", "hosts.host_rebind", "miner._run_locked"} <= set(
             analysis.funcs
         )
-        assert analysis.aliases["cli"].get("gitops") == "gitops", (
-            "the nested overseer/cli.py basename replaced the root CLI's "
-            "import-resolution table"
+        overseer_modules = {
+            path.relative_to(SRC).with_suffix("").as_posix()
+            for path in (SRC / "overseer").glob("*.py")
+        }
+        assert overseer_modules <= set(analysis.aliases), (
+            "every nested overseer module needs its own alias table"
         )
+        assert overseer_modules <= set(analysis.imported), (
+            "every nested overseer module needs its own imported-name table"
+        )
+        assert {"overseer/cli.add_parser", "cli._build_parser"} <= set(analysis.funcs)
+        assert analysis.aliases["overseer/cli"]["runner"] == "overseer/run"
+        assert analysis._resolve(
+            ast.parse("runner.run(None)").body[0].value, "overseer/cli"  # type: ignore[attr-defined]
+        ) == ["overseer/run.run"]
         requires = analysis.requires_lock()
         # the leaves REALLY are classified as needing a lock — if these
         # ever come out clean, the primitive detector has gone blind and
@@ -731,6 +754,23 @@ class TestNoMutationPrecedesItsLock:
             "telemetry.flush's tracked-plane append reads as unguarded — "
             "the M-M commit_lock around Phase 2 came out or moved"
         )
+
+    def test_nested_same_basename_write_is_not_hidden(self, tmp_path):
+        """A nested ``cli.py`` must not overwrite root ``cli.py`` analysis."""
+        (tmp_path / "overseer").mkdir()
+        (tmp_path / "cli.py").write_text(
+            "def _build_parser():\n    return None\n", encoding="utf-8"
+        )
+        (tmp_path / "overseer" / "cli.py").write_text(
+            "from pathlib import Path\n\n"
+            "def _build_parser():\n"
+            "    Path('unlocked').write_text('write')\n",
+            encoding="utf-8",
+        )
+        synthetic = _Analysis((tmp_path / "overseer", tmp_path))
+        nested = synthetic.requires_lock().get("overseer/cli._build_parser")
+        assert nested is not None
+        assert nested[1] == "Path.write_text"
 
     def test_the_exemption_list_cannot_rot(self, analysis):
         """Every NOT_REPO_TRUTH entry must still name a real function.

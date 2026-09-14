@@ -299,7 +299,7 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         nodes=94, dump_sha="eb90005324f7f1483dcd618a80501d03a11e2f0ebb2541b5af696d31b48644fe",
         edited={
             "func:test_wr7_seam_is_only_called_from_the_three_call_sites": (
-                "2026-09-14 O-3 (plan-overseer §O-3 / §5.1): the overseer runner "
+                "2026-09-14 O-3 (S-66; 17-invocation-runbook.md §10): the overseer runner "
                 "is the fourth direct invocation.write_session caller, so the "
                 "call-site census admits overseer/run.py and still refuses every "
                 "unlisted caller."
@@ -323,7 +323,7 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         nodes=137, dump_sha="f43ed618ce773521da88c2cacd89f3559f0e27cdef51388de2b1af856a990b6a",
         edited={
             "func:test_pl5_no_other_module_calls_write_session_or_text_session": (
-                "2026-09-14 O-3 (plan-overseer §O-3 / §5.1): the overseer runner "
+                "2026-09-14 O-3 (S-66; 17-invocation-runbook.md §10): the overseer runner "
                 "is the fourth direct invocation.write_session caller, so this "
                 "independent call-site census admits overseer/run.py only."
             ),
