@@ -896,8 +896,11 @@ nightly run (a `kind: reconsider, trigger: reconsider` case, run through
 `reconsider`); the queue itself is cache, rebuildable from the observations.
 
 **Two views.** `case show --evidence-only` is **blind by default** (no
-separate `--blind` flag): frontmatter without `outcome`, `superseded_by`,
-`parked_for`, and `parked_reason`; sections 1, 2, and 4 only — neither the
+separate `--blind` flag): frontmatter reduced to exactly `case`, `opened_at`,
+`actor`, `kind`, `records`, `scope`, and `supersedes` (an allowlist, so
+`presented`, `outcome`, `superseded_by`, `parked_for`, `parked_reason`, and any
+key added later stay out unless named here — amended 2026-09-14 after a
+denylist let `presented` through); sections 1, 2, and 4 only — neither the
 reasoning, the verb, nor the receipts (which name the verb) reach the
 reader. `case show` (no flag) is the full view, everything. The overseer
 reads the evidence-only view first, by tool, so "evidence before rationale"
