@@ -263,7 +263,13 @@ SURFACE_FILL_PROBED_DESTINATIONS: tuple[str, ...] = ("skill-md", "claude-md")
 #: it, and 16-ecology-spec.md §10 (FW-65) already warns that constant is
 #: double-booked for an unrelated future bump; this change does not
 #: touch it.
-ROUTING_BY_VALUES = frozenset({"human", "analyst", "agent"})
+#: S-65 (2026-09-13, 02-schema.md §1/§3a.1 rule 5): "steward" and
+#: "overseer" widen the same list — the two new delegated deciders join
+#: the three actors above as values every sheet item's `by:` and a
+#: case's `actor` field also draw from (02-schema.md §1's `by:` comment;
+#: `resolve_record` itself performs no `by` validation of its own — see
+#: ``ledger_ops.py``).
+ROUTING_BY_VALUES = frozenset({"human", "analyst", "agent", "steward", "overseer"})
 
 
 def one_motion_allowed(home: Path | str, destination: str) -> bool:
