@@ -327,6 +327,8 @@ MODEL_KEY_FOR_SURFACE = {
     "worker-repair": "worker",
     "miner-reader": "miner",
     "analyst": "analyst",
+    "steward": "steward",
+    "overseer": "overseer",
 }
 
 
@@ -1017,7 +1019,7 @@ def _rollout_rows(resolutions: dict[str, ProviderResolution], home: Path | str) 
             Row(
                 name="rollout",
                 verdict="PASS",
-                detail="all four surfaces resolve backend=sdk: " + ", ".join(SURFACES),
+                detail=f"all {len(SURFACES)} surfaces resolve backend=sdk: " + ", ".join(SURFACES),
             )
         ]
     rows: list[Row] = []

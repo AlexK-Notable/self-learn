@@ -1479,7 +1479,7 @@ def test_dr2_bedrock_rollout_delta_full_row_set(tmp_path, monkeypatch):
     assert models_analyst.verdict == "FAIL"
 
     rollout_rows = by_name["rollout"]
-    assert len(rollout_rows) == 4
+    assert len(rollout_rows) == 6  # U8 (17-invocation-runbook.md §1): +steward/+overseer
     for r in rollout_rows:
         assert r.verdict == "INFO"
 

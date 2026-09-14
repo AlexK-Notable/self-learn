@@ -54,7 +54,20 @@ __all__ = ["SdkBackend", "SdkOutcome", "run_sync", "options_kwargs"]
 T = TypeVar("T")
 
 #: `O-1` -- per-surface `max_turns` defaults, keyed by `SELECTOR_FOR_SURFACE`.
-_DEFAULT_MAX_TURNS: dict[str, int] = {"WORKER": 120, "MINER": 60, "ANALYST": 30}
+#: U8 (17-invocation-runbook.md §1): `STEWARD`/`OVERSEER` join, matching
+#: `settings.py`'s `sdk.max_turns.steward`/`.overseer` Setting defaults
+#: (`_max_turns_for` never actually falls back to these two entries --
+#: both selectors are registered in `_MAX_TURNS_SETTING_NAME` below --
+#: but the pair still lives here as the single source of truth
+#: `test_registry_defaults_match_their_source_constants` duplicates
+#: against, same discipline as the three pre-existing entries).
+_DEFAULT_MAX_TURNS: dict[str, int] = {
+    "WORKER": 120,
+    "MINER": 60,
+    "ANALYST": 30,
+    "STEWARD": 80,
+    "OVERSEER": 80,  # builder's judgment call -- no sourced number, see build-u8.md report
+}
 
 #: `Map-1` -- surfaces on which the SDK backend enters this build's
 #: analyst-vs-worker/miner OSError/ClaudeSDKError split.
@@ -140,12 +153,15 @@ def _supported_option_fields() -> set[str]:
     return {f.name for f in _dataclass_fields(ClaudeAgentOptions)}
 
 
-#: Selector ("WORKER"/"MINER"/"ANALYST") -> the registry entry naming
-#: that surface's max-turns setting (U-settings Phase 1).
+#: Selector ("WORKER"/"MINER"/"ANALYST"/"STEWARD"/"OVERSEER") -> the
+#: registry entry naming that surface's max-turns setting (U-settings
+#: Phase 1; STEWARD/OVERSEER added U8, 17-invocation-runbook.md §1).
 _MAX_TURNS_SETTING_NAME = {
     "WORKER": "sdk.max_turns.worker",
     "MINER": "sdk.max_turns.miner",
     "ANALYST": "sdk.max_turns.analyst",
+    "STEWARD": "sdk.max_turns.steward",
+    "OVERSEER": "sdk.max_turns.overseer",
 }
 
 
@@ -154,7 +170,7 @@ def _max_turns_for(selector: str, *, home: Path | str) -> int:
     `sdk.max_turns.<surface>` entry (config.yaml `sdk.max_turns.<surface>`
     > env `SELF_LEARN_SDK_MAX_TURNS_<selector>` > :data:`_DEFAULT_MAX_TURNS`
     -- U-flip 2026-09-01, S-58: config wins). `selector` outside `_MAX_TURNS_SETTING_
-    NAME` (never real input — `SELECTOR_FOR_SURFACE`'s three members are
+    NAME` (never real input — `SELECTOR_FOR_SURFACE`'s five members are
     the only callers) falls back to the bare default, unregistered."""
     name = _MAX_TURNS_SETTING_NAME.get(selector)
     if name is None:

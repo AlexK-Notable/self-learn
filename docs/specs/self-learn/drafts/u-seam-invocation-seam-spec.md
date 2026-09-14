@@ -467,6 +467,8 @@ construction; a builder who removes the duplication removes the test.
 | `worker-repair` | `write_exact` tuple, `enforce`, tool strings | `allowed_tools` argument | `disallowed_tools` argument | `()` | the repair set `E`, as passed | `True` | `"default"` when `enforce`, else `None` |
 | `miner-reader` | `spool_dir`, `disallowed_tools` string | `None` | `disallowed_tools` argument | rendered from the `contract.py` spool literal | `()` | `False` | `"default"` |
 | `analyst` | `allowed_tools` string | `allowed_tools` argument | `None` | `()` | `()` | `False` | `None` |
+| `steward` *(added 2026-09-13, U8; 17 §1)* | `stage_dir`, tool strings | `allowed_tools` argument (`Read,Grep,Glob`) | `disallowed_tools` argument (`Bash,NotebookEdit,Task,WebFetch,WebSearch`) | rendered from the `contract.py` stage literal: `<stage_dir>/steward/**` only | `()` | `True` | `"default"` |
+| `overseer` *(added 2026-09-13, U8; 17 §1)* | `stage_dir`, tool strings | `allowed_tools` argument (`Read,Grep,Glob`) | `disallowed_tools` argument (`Bash,NotebookEdit,Task,WebFetch,WebSearch`) | rendered from the `contract.py` stage literal: `<stage_dir>/overseer/**` only | `()` | `True` | `"default"` |
 
 **The "Scalar inputs" column is exhaustive** — anything not listed is a
 value `containment_for` must not be given.
@@ -487,6 +489,8 @@ each call site is obliged to pass:
 | `worker`, `worker-repair` | `worker.ALLOWED_TOOLS` | `worker.DISALLOWED_TOOLS` |
 | `miner-reader` | `None` | `miner.READER_DISALLOWED_TOOLS` |
 | `analyst` | `analyst.ANALYST_ALLOWED_TOOLS` | `None` |
+| `steward` *(2026-09-13, U8)* | the steward runner's own constant, `"Read,Grep,Glob"` (U9/U10 name it) | `"Bash,NotebookEdit,Task,WebFetch,WebSearch"` — no Bash, no MCP, no `propose_verb` |
+| `overseer` *(2026-09-13, U8)* | the overseer runner's own constant, `"Read,Grep,Glob"` (O-3 names it) | `"Bash,NotebookEdit,Task,WebFetch,WebSearch"` — same containment as the steward |
 
 r1 checked this table by reading `containment_for`'s own defaults, which
 proves nothing about the call sites. `CN2` is restated in §4 to observe

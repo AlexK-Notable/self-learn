@@ -118,6 +118,35 @@ _WORKER_DISALLOWED = "Bash,Edit,NotebookEdit,Task,WebFetch,WebSearch"
 _MINER_DISALLOWED = _WORKER_DISALLOWED + ",Read,Grep,Glob"
 _ANALYST_ALLOWED = "Read,Grep,Glob"
 
+#: U8 (17-invocation-runbook.md §1): unlike the worker, steward/overseer
+#: need Write AND Edit inside their own stage subdirectory, so -- unlike
+#: `_WORKER_DISALLOWED` -- neither tool is blanket-denied here; the
+#: `write_globs` path decision (`containment_for`'s `Cont-1`) is what
+#: scopes them.
+_STEWARD_OVERSEER_ALLOWED = "Read,Grep,Glob"
+_STEWARD_OVERSEER_DISALLOWED = "Bash,NotebookEdit,Task,WebFetch,WebSearch"
+
+#: U8 (17-invocation-runbook.md §1): the six repeated inline surface
+#: tuples this file's OP-series `options_kwargs` tests used to spell
+#: out individually, collapsed into one module constant -- so the NEXT
+#: surface this seam gains costs one edit here, not six (plan-steward-
+#: 2026-09-12.md §U8 / plan-overseer-2026-09-12.md O-3's own framing).
+#: Left at the original four, NOT widened to steward/overseer: `_spec`/
+#: `_containment` above are EXPORTED names (`test_u_engine.py` imports
+#: `_containment`/`_run`/`_spec` by name, `BEH5`-pinned byte-identical)
+#: -- widening `_containment`'s own dispatch to cover the two new
+#: surfaces would edit an exported node, which this build avoids by
+#: design (see the U8 build report). steward/overseer's `options_kwargs`
+#: -level properties are still exercised, just via `test_ch14`'s own
+#: direct `containment_for(...)` calls below rather than through this
+#: constant.
+_FOUR_SURFACES: tuple[str, ...] = (
+    "worker",
+    "worker-repair",
+    "miner-reader",
+    "analyst",
+)
+
 
 # U-cleanup §7: `_worker_argv`/`_miner_argv`/`_analyst_argv` DELETED --
 # they built the CLI-flavoured argv `_spec`'s deleted `cli_argv_builder`
@@ -447,7 +476,7 @@ def test_op1_query_is_never_called(tmp_path, sdk_cli_path, monkeypatch):
 def test_op2_allowed_tools_always_empty(tmp_path, sdk_cli_path):
     home = tmp_path / "op2-home"
     home.mkdir()
-    for surface in ("worker", "worker-repair", "miner-reader", "analyst"):
+    for surface in _FOUR_SURFACES:
         spec = _spec(surface, home=home)
         kwargs = backend_mod.options_kwargs(spec)
         assert kwargs["allowed_tools"] == [], surface
@@ -456,7 +485,7 @@ def test_op2_allowed_tools_always_empty(tmp_path, sdk_cli_path):
 def test_op3_setting_sources_explicit_empty_list(tmp_path, sdk_cli_path):
     home = tmp_path / "op3-home"
     home.mkdir()
-    for surface in ("worker", "worker-repair", "miner-reader", "analyst"):
+    for surface in _FOUR_SURFACES:
         kwargs = backend_mod.options_kwargs(_spec(surface, home=home))
         assert kwargs["setting_sources"] == []
         assert kwargs["setting_sources"] is not None
@@ -471,7 +500,7 @@ def test_op4_settings_always_none(tmp_path, sdk_cli_path):
     reader's live residual, §2.3)."""
     home = tmp_path / "op4-home"
     home.mkdir()
-    for surface in ("worker", "worker-repair", "miner-reader", "analyst"):
+    for surface in _FOUR_SURFACES:
         kwargs = backend_mod.options_kwargs(_spec(surface, home=home))
         assert kwargs["settings"] is None, surface
 
@@ -480,7 +509,7 @@ def test_op5_permission_mode_always_default(tmp_path, sdk_cli_path, monkeypatch)
     home = tmp_path / "op5-home"
     home.mkdir()
     for enforce in (True, False):
-        for surface in ("worker", "worker-repair", "miner-reader", "analyst"):
+        for surface in _FOUR_SURFACES:
             containment = _containment(surface, home=home, enforce=enforce)
             kwargs = backend_mod.options_kwargs(_spec(surface, home=home, containment=containment))
             assert kwargs["permission_mode"] == "default", (surface, enforce)
@@ -489,7 +518,7 @@ def test_op5_permission_mode_always_default(tmp_path, sdk_cli_path, monkeypatch)
 def test_op6_strict_mcp_config_always_true(tmp_path, sdk_cli_path):
     home = tmp_path / "op6-home"
     home.mkdir()
-    for surface in ("worker", "worker-repair", "miner-reader", "analyst"):
+    for surface in _FOUR_SURFACES:
         kwargs = backend_mod.options_kwargs(_spec(surface, home=home))
         assert kwargs["strict_mcp_config"] is True
         assert kwargs["mcp_servers"] == {}
@@ -682,7 +711,7 @@ def test_op17_options_env_is_empty_leak_test(tmp_path, sdk_cli_path, monkeypatch
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     home = tmp_path / "op17-home"
     home.mkdir()
-    for surface in ("worker", "worker-repair", "miner-reader", "analyst"):
+    for surface in _FOUR_SURFACES:
         kwargs = backend_mod.options_kwargs(_spec(surface, home=home))
         assert kwargs["env"] == {}, surface
 
@@ -1058,6 +1087,56 @@ def test_ch13_silence_parity_on_both_hatch_paths(env, sdk_fake_worker, monkeypat
     for line in src.splitlines():
         if "_enforce_scope()" in line:
             assert "log(" not in line
+
+
+def test_ch14_steward_and_overseer_write_stage_only_bash_and_mcp_tools_denied(tmp_path):
+    """U8 (17-invocation-runbook.md §1): Write/Edit reach only the run's
+    OWN stage subdirectory -- positive control (inside `stage/<surface>`)
+    checked BEFORE the negative ones (`stage/` root, and the OTHER new
+    surface's own subdirectory) -- and Bash plus every MCP/network-
+    shaped tool named in `test_ch2`'s deny sweep is refused on both
+    surfaces, same posture as every other surface. Mirrors `test_ch1`/
+    `test_ch2`'s shape for the new surfaces rather than editing them.
+    Builds containment via `containment_for(...)` directly, NOT through
+    the exported `_containment` dispatcher (`test_u_engine.py` imports
+    it by name, `BEH5`-pinned) -- widening that shared helper's own
+    dispatch is out of scope for this build, see the U8 report."""
+    home = tmp_path / "ch14-home"
+    home.mkdir()
+    for surface in ("steward", "overseer"):
+        containment = containment_for(
+            surface,
+            allowed_tools=_STEWARD_OVERSEER_ALLOWED,
+            disallowed_tools=_STEWARD_OVERSEER_DISALLOWED,
+            stage_dir=home / "stage",
+        )
+        assert containment.default_mode == "default", surface  # C-10: no hatch for either
+        assert containment.strict_mcp is True, surface  # U8 fold r1 (gate N1): pinned
+        cb = charter_mod.build_can_use_tool(containment)
+
+        inside = home / "stage" / surface / "note.md"
+        allow_write = _call(cb, "Write", {"file_path": str(inside)})
+        assert isinstance(allow_write, PermissionResultAllow), surface
+        allow_edit = _call(cb, "Edit", {"file_path": str(inside)})
+        assert isinstance(allow_edit, PermissionResultAllow), (surface, "Edit must reach the same scope as Write")
+
+        outside_root = home / "stage" / "note.md"
+        deny_root = _call(cb, "Write", {"file_path": str(outside_root)})
+        assert isinstance(deny_root, PermissionResultDeny), surface
+
+        other = "overseer" if surface == "steward" else "steward"
+        outside_sibling = home / "stage" / other / "note.md"
+        deny_sibling = _call(cb, "Write", {"file_path": str(outside_sibling)})
+        assert isinstance(deny_sibling, PermissionResultDeny), (surface, "must not reach the OTHER surface's stage subdir")
+
+        for tool in ("Bash", "Task", "WebFetch", "WebSearch", "NotebookEdit", "FutureTool"):
+            result = _call(cb, tool, {})
+            assert isinstance(result, PermissionResultDeny), (surface, tool)
+
+        # unscoped reads: allowed_tools grants these regardless of path (C-2)
+        for tool in ("Read", "Grep", "Glob"):
+            result = _call(cb, tool, {"file_path": str(tmp_path / "anywhere.txt")})
+            assert isinstance(result, PermissionResultAllow), (surface, tool)
 
 
 # ===================================================================== #

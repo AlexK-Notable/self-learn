@@ -1000,9 +1000,9 @@ scolded. Exactly one shape is unambiguously wrong:
 
 | State | Verdict | Line |
 |---|---|---|
-| `provider=bedrock` and **all four** surfaces resolve `backend=cli` | **FAIL** | *"provider=bedrock but every surface resolves backend=cli — the provider configuration does nothing. Flip at least one surface to backend=sdk, or set provider=anthropic."* |
+| `provider=bedrock` and **all** surfaces resolve `backend=cli` | **FAIL** | *"provider=bedrock but every surface resolves backend=cli — the provider configuration does nothing. Flip at least one surface to backend=sdk, or set provider=anthropic."* |
 | `provider=bedrock`, **some** surfaces `sdk` | **INFO**, one line per surface | `worker: backend=cli — provider does not apply` / `analyst: backend=sdk provider=bedrock — [checks]`, where `[checks]` is that surface's `region`/`models`/`env` verdicts |
-| `provider=bedrock`, **all** surfaces `sdk` | **PASS** | the four surfaces named |
+| `provider=bedrock`, **all** surfaces `sdk` | **PASS** | every surface named (six since 2026-09-13: `steward` and `overseer` joined the four) |
 | `provider=anthropic` | **SKIP** | *"provider=anthropic — rollout state not applicable"* |
 
 **The FAIL is deliberately narrow and the INFO is deliberately loud.** A
@@ -1022,9 +1022,9 @@ unconditional FAIL) must redden it.
 
 **`Doc-d` — the handoff block.** After the rows, a separator line
 `doctor: ---`, then one `doctor: handoff: <field> = <value>` line per
-field, in this fixed set: `provider`, `backend.<surface>` ×4, `region`,
-`profile`, `credential-mechanisms`, `model.<surface>` ×4,
-`model.small_fast`, `env-keys.<surface>` ×4, `sdk-version`,
+field, in this fixed set: `provider`, `backend.<surface>` ×6, `region`,
+`profile`, `credential-mechanisms`, `model.<surface>` ×6,
+`model.small_fast`, `env-keys.<surface>` ×6, `sdk-version`,
 `cli-version.bundled`, `cli-version.host`. This block is what gets pasted
 to an AWS administrator who has never seen this project: it names the
 region, the profile *name*, the mechanism, and the exact model ids —

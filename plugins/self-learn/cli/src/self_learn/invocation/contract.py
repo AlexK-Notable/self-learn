@@ -1,5 +1,5 @@
 """U-seam §3.1/3.2/3.3/3.4/3.5/3.6/3.7.4 — the invocation seam's data
-contracts: the four surfaces, containment-as-data, the session/outcome
+contracts: the six surfaces, containment-as-data, the session/outcome
 shapes, the ``Backend`` protocol, the log-template table and the
 transport table.
 
@@ -37,18 +37,32 @@ __all__ = [
 
 # --------------------------------------------------------- Surf-1 (Sec 3.2)
 
-Surface = Literal["worker", "worker-repair", "miner-reader", "analyst"]
+Surface = Literal[
+    "worker", "worker-repair", "miner-reader", "analyst", "steward", "overseer"
+]
 
-SURFACES: tuple[Surface, ...] = ("worker", "worker-repair", "miner-reader", "analyst")
+SURFACES: tuple[Surface, ...] = (
+    "worker",
+    "worker-repair",
+    "miner-reader",
+    "analyst",
+    "steward",
+    "overseer",
+)
 
-#: Three environment selectors for four surfaces (Sec 3.2) -- the repair
+#: Five environment selectors for six surfaces (Sec 3.2) -- the repair
 #: round is the worker's second invocation and is never independently
-#: configurable.
+#: configurable. `steward`/`overseer` (17-invocation-runbook.md §1,
+#: 2026-09-13 note; S-18 as amended) join with their own, independent
+#: selectors -- neither shares a round with another surface the way
+#: worker-repair does.
 SELECTOR_FOR_SURFACE: dict[str, str] = {
     "worker": "WORKER",
     "worker-repair": "WORKER",
     "miner-reader": "MINER",
     "analyst": "ANALYST",
+    "steward": "STEWARD",
+    "overseer": "OVERSEER",
 }
 
 #: `Flip-1` (U-sdka, U-flip) -- rung 5 of the backend precedence chain,
@@ -56,12 +70,17 @@ SELECTOR_FOR_SURFACE: dict[str, str] = {
 #: the flip IS the F3 containment fix); worker/worker-repair/miner-reader
 #: flip together in this wave (user ruling 2026-08-23: burn-in cancelled,
 #: Lane B full steam). Every value must be a member of
-#: `registry.KNOWN_BACKENDS`.
+#: `registry.KNOWN_BACKENDS`. `steward`/`overseer` (2026-09-13, S-18 as
+#: amended) ship directly on `sdk` -- there is no `cli` backend left to
+#: default away from (S-49), so unlike the four above there was never a
+#: burn-in period for these two to flip through.
 DEFAULT_BACKEND_FOR_SURFACE: dict[str, str] = {
     "worker": "sdk",
     "worker-repair": "sdk",
     "miner-reader": "sdk",
     "analyst": "sdk",
+    "steward": "sdk",
+    "overseer": "sdk",
 }
 
 
@@ -158,6 +177,24 @@ def containment_for(
             write_exact=(),
             strict_mcp=False,
             default_mode=None,
+        )
+    if surface == "steward":
+        return Containment(
+            allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
+            write_globs=(f"{stage_dir}/steward/**",),
+            write_exact=(),
+            strict_mcp=True,
+            default_mode="default",
+        )
+    if surface == "overseer":
+        return Containment(
+            allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
+            write_globs=(f"{stage_dir}/overseer/**",),
+            write_exact=(),
+            strict_mcp=True,
+            default_mode="default",
         )
     raise ValueError(f"containment_for: unknown surface {surface!r}")
 
@@ -269,15 +306,43 @@ _ANALYST_TEMPLATES = LogTemplates(
     detail_strip=True,
 )
 
+#: U8 (17-invocation-runbook.md §1, 2026-09-13 note) -- steward and
+#: overseer both run through `write_session`, like the miner, and
+#: neither carries a worker-style repair-round label; each mirrors
+#: `_MINER_TEMPLATES`'s shape, naming itself only in `os_error` the same
+#: way the miner's own row names itself "reader".
+_STEWARD_TEMPLATES = LogTemplates(
+    exited="run: claude exited {rc}: {detail}",
+    timed_out="run: claude timed out after {timeout}s",
+    not_found="run: claude CLI not found on PATH",
+    os_error="run: steward invocation failed ({exc})",
+    unavailable="run: invocation backend unavailable ({exc})",
+    detail_cap=400,
+    detail_strip=False,
+)
+
+_OVERSEER_TEMPLATES = LogTemplates(
+    exited="run: claude exited {rc}: {detail}",
+    timed_out="run: claude timed out after {timeout}s",
+    not_found="run: claude CLI not found on PATH",
+    os_error="run: overseer invocation failed ({exc})",
+    unavailable="run: invocation backend unavailable ({exc})",
+    detail_cap=400,
+    detail_strip=False,
+)
+
 #: ``L-a`` -- the templates are NOT uniform across surfaces, and that is
 #: the shipped truth (worker and worker-repair share one table; the
 #: miner carries no label and different wording; the analyst has no
 #: `run: ` prefix, no truncation, strips, and has no `os_error` leg).
+#: steward/overseer (U8) each carry their own row, miner-shaped.
 LOG_TEMPLATES: dict[str, LogTemplates] = {
     "worker": _WORKER_TEMPLATES,
     "worker-repair": _WORKER_TEMPLATES,
     "miner-reader": _MINER_TEMPLATES,
     "analyst": _ANALYST_TEMPLATES,
+    "steward": _STEWARD_TEMPLATES,
+    "overseer": _OVERSEER_TEMPLATES,
 }
 
 
@@ -298,4 +363,6 @@ TRANSPORT: dict[str, bool] = {
     "worker-repair": True,
     "miner-reader": True,
     "analyst": True,  # Err-1 (U-sdka): FW-87, R-1 closed
+    "steward": True,  # U8 -- same split as every other surface
+    "overseer": True,
 }

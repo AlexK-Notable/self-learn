@@ -412,16 +412,22 @@ _LITERAL_ENV_FIRST_NAMES = frozenset(
         "provider.bedrock.models.worker",
         "provider.bedrock.models.miner",
         "provider.bedrock.models.analyst",
+        "provider.bedrock.models.steward",  # U8 (17-invocation-runbook.md §1)
+        "provider.bedrock.models.overseer",  # U8
         "provider.bedrock.models.small_fast",
         "invocation.backend",
         "invocation.backend_worker",
         "invocation.backend_worker-repair",
         "invocation.backend_miner-reader",
         "invocation.backend_analyst",
+        "invocation.backend_steward",  # U8
+        "invocation.backend_overseer",  # U8
         "sdk.cli_path",
         "models.worker",
         "models.miner",
         "models.analyst",
+        "models.steward",  # U8
+        "models.overseer",  # U8
     ]
 )
 
@@ -440,11 +446,16 @@ _LITERAL_CONFIG_FIRST_NAMES = frozenset(
         "miner.autokick",
         "miner.transcripts_dir",
         "analyst.timeout_secs",
+        "steward.timeout_secs",  # U8
+        "overseer.timeout_secs",  # U8
+        "overseer.max_model_calls",  # U8
         "sdk.max_budget_usd",
         "sdk.event_logs",
         "sdk.max_turns.worker",
         "sdk.max_turns.miner",
         "sdk.max_turns.analyst",
+        "sdk.max_turns.steward",  # U8
+        "sdk.max_turns.overseer",  # U8
         "serve.tick_secs",
         "ledger.actor",
         "ledger.glob_probe_budget_s",
@@ -458,6 +469,8 @@ _LITERAL_ENABLED_WHEN_NAMES = frozenset(
         "provider.bedrock.models.worker",
         "provider.bedrock.models.miner",
         "provider.bedrock.models.analyst",
+        "provider.bedrock.models.steward",  # U8
+        "provider.bedrock.models.overseer",  # U8
         "provider.bedrock.models.small_fast",
     ]
 )
@@ -466,7 +479,7 @@ _LITERAL_ENABLED_WHEN_NAMES = frozenset(
 def test_major2_env_first_literal_16_names_match_the_registry_exactly():
     actual = frozenset(s.name for s in settings.REGISTRY if s.direction == "env-first")
     assert actual == _LITERAL_ENV_FIRST_NAMES
-    assert len(_LITERAL_ENV_FIRST_NAMES) == 16
+    assert len(_LITERAL_ENV_FIRST_NAMES) == 22  # U8: 16 -> 22 (+6)
 
 
 def test_major2_config_first_literal_complement_21_names_match_the_registry_exactly():
@@ -476,7 +489,7 @@ def test_major2_config_first_literal_complement_21_names_match_the_registry_exac
     still knows the ORIGINAL 16/21 split to compare against."""
     actual = frozenset(s.name for s in settings.REGISTRY if s.direction == "config-first")
     assert actual == _LITERAL_CONFIG_FIRST_NAMES
-    assert len(_LITERAL_CONFIG_FIRST_NAMES) == 21
+    assert len(_LITERAL_CONFIG_FIRST_NAMES) == 26  # U8: 21 -> 26 (+5)
     assert _LITERAL_ENV_FIRST_NAMES | _LITERAL_CONFIG_FIRST_NAMES == frozenset(
         s.name for s in settings.REGISTRY
     )
@@ -486,7 +499,7 @@ def test_major2_config_first_literal_complement_21_names_match_the_registry_exac
 def test_major3_enabled_when_literal_6_names_match_the_registry_exactly():
     actual = frozenset(s.name for s in settings.REGISTRY if s.enabled_when is not None)
     assert actual == _LITERAL_ENABLED_WHEN_NAMES
-    assert len(_LITERAL_ENABLED_WHEN_NAMES) == 6
+    assert len(_LITERAL_ENABLED_WHEN_NAMES) == 8  # U8: 6 -> 8 (+2)
 
 
 @pytest.mark.parametrize("name", sorted(_LITERAL_ENV_FIRST_NAMES))
