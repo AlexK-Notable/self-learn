@@ -567,7 +567,16 @@ def classify(
             registered = _hook_activation_registered(record)
             if registered is None:
                 return False
-            return registered == hook_activation
+            # Orchestrator residual after the fold (merge fdab290): a
+            # FULLY registered hook is complete whatever the CURRENT
+            # gate says -- the gate governs whether a re-run may
+            # register, never whether a registered hook should be
+            # re-placed as "delegated" (that would write a false
+            # placed-only note over a live registration on every
+            # re-run once the human switches the gate off; the human's
+            # rollback is `hook deactivate`, not the gate). A placed-only
+            # hook is at the gate's state only while the gate is off.
+            return registered or not hook_activation
         if want_dest == "reference" and want_ref is not None:
             return routing.get("reference_file") == want_ref
         return True

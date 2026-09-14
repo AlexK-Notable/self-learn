@@ -922,6 +922,46 @@ class TestReRunReAttemptsActivationOnly:
         command = f"{env.claude}/hooks/{_link_path(env).name}"
         assert command in settings.read_text(encoding="utf-8")
 
+    def test_shape_iii_registered_hook_stays_applied_when_gate_flips_false(
+        self, env, tmp_path
+    ):
+        """(iii) orchestrator residual: activated under gate TRUE (registered
+        + checked); the gate later flips FALSE and the same sheet re-runs.
+        A registered hook is COMPLETE whatever the current gate says --
+        `already-applied`, no activation re-attempt, settings.json bytes
+        identical, no second `hook-activated` history entry (a re-run
+        that re-placed it as "delegated" would write a false placed-only
+        note over a live registration)."""
+        seed_hook(env, rid=RID)
+        sheet1 = _hook_sheet(tmp_path, RID, name="hook-sheet-1.yaml")
+        run1 = batch.run(
+            env.home, batch.load_sheet(sheet1), no_push=True,
+            actor="overseer", hook_activation=True,
+        )
+        assert run1.items[0].state == "applied", run1.items[0].detail
+        settings = env.claude / "settings.json"
+        before = settings.read_bytes()
+        rec_before = Record.from_path(env.resolved(RID))
+        n_before = sum(
+            1 for h in (rec_before.history or []) if h.get("event") == "hook-activated"
+        )
+        assert n_before == 1
+
+        sheet2 = _hook_sheet(tmp_path, RID, name="hook-sheet-2.yaml")
+        run2 = batch.run(
+            env.home, batch.load_sheet(sheet2), no_push=True,
+            actor="overseer", hook_activation=False,
+        )
+        item2 = run2.items[0]
+        assert item2.state == "already-applied", item2.detail
+        assert settings.read_bytes() == before
+        rec_after = Record.from_path(env.resolved(RID))
+        n_after = sum(
+            1 for h in (rec_after.history or []) if h.get("event") == "hook-activated"
+        )
+        assert n_after == 1
+        assert "delegated" not in ((rec_after.history or [])[-1].get("note") or "")
+
     def test_mutation_restoring_the_status_only_check_reddens(
         self, env, tmp_path, monkeypatch
     ):
