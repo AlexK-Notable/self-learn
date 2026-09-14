@@ -243,6 +243,78 @@ def test_d_receipt_not_attempted_after_stopped_at(tmp_path):
     assert app.count("refused (exit 1)") == 1
 
 
+# ------------------------------------------------- fold r1 (F1, F8): receipt
+
+
+def test_fold_r1_f8_zero_item_shape_receipts_one_line(tmp_path):
+    """F8: a whole-sheet refusal (the sheet-level preflight STOPPED
+    before item 1 ever dispatched, `items: []`) still receipts -- ONE
+    line, keyed (sheet_sha, 0), naming the reason. This used to raise
+    `gitops.HalfWrittenError` out of a dead 'commit produced nothing'
+    guard (gate-u3-r1.md F8, probe5) instead of writing anything."""
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    result = cases.receipt(home, case_id, {
+        "sheet": "x.yaml", "sheet_sha": "deadbeef", "stopped_at": None,
+        "code": 6, "stop_message": "a live intent is STOPPED", "items": [],
+    })
+    assert result == case_id
+    view = cases.show(home, case_id, evidence_only=False)
+    app = view.sections["Application"]
+    assert "refused before item 1: a live intent is STOPPED" in app
+    assert "item=" not in app  # F8's zero-item shape carries no item= key
+
+
+def test_fold_r1_f8_empty_items_is_a_true_no_op_on_rerun(tmp_path):
+    """A second call with the SAME sheet_sha and the SAME rendered text
+    is a genuine no-op -- no duplicate line, no raise (F8's
+    `allow_empty=True` fix)."""
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    batch_result = {
+        "sheet": "x.yaml", "sheet_sha": "deadbeef", "at": "2026-01-01T00:00:00Z",
+        "stopped_at": None, "code": 6, "stop_message": "stopped", "items": [],
+    }
+    cases.receipt(home, case_id, batch_result)
+    cases.receipt(home, case_id, batch_result)  # must not raise
+    view = cases.show(home, case_id, evidence_only=False)
+    app = view.sections["Application"]
+    assert app.count("refused before item 1") == 1
+
+
+def test_fold_r1_f1_keyed_replace_not_append(tmp_path):
+    """F1: a re-run of the SAME sheet (same sheet_sha) REPLACES the
+    line for each key rather than appending -- a different sheet
+    (different sheet_sha) against the same case adds its OWN block."""
+    home = make_home(tmp_path)
+    case_id = _record(tmp_path, home)
+    run1 = {
+        "sheet": "01.yaml", "sheet_sha": "aaaa1111", "stopped_at": None, "code": 0,
+        "items": [{"n": 1, "id": "lrn-08ed825b", "verb": "reject", "state": "applied", "rc": 0}],
+    }
+    cases.receipt(home, case_id, run1)
+    run2 = {
+        "sheet": "01.yaml", "sheet_sha": "aaaa1111", "stopped_at": None, "code": 0,
+        "items": [{"n": 1, "id": "lrn-08ed825b", "verb": "reject", "state": "already-applied", "rc": 0}],
+    }
+    cases.receipt(home, case_id, run2)
+    view = cases.show(home, case_id, evidence_only=False)
+    lines = [ln for ln in view.sections["Application"].splitlines() if ln.strip()]
+    assert len(lines) == 1  # replaced, not appended
+    assert "already-applied" in lines[0]
+
+    # a DIFFERENT sheet (different sheet_sha) against the SAME case adds
+    # its own block rather than colliding on item index alone.
+    run3 = {
+        "sheet": "02.yaml", "sheet_sha": "bbbb2222", "stopped_at": None, "code": 0,
+        "items": [{"n": 1, "id": "lrn-e8b13ee8", "verb": "defer", "state": "applied", "rc": 0}],
+    }
+    cases.receipt(home, case_id, run3)
+    view2 = cases.show(home, case_id, evidence_only=False)
+    lines2 = [ln for ln in view2.sections["Application"].splitlines() if ln.strip()]
+    assert len(lines2) == 2
+
+
 # ------------------------------------------------------------- (e) index
 
 

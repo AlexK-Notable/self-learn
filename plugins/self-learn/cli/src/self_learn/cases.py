@@ -1023,24 +1023,90 @@ def list_cases(
 
 # -------------------------------------------------------------- receipt
 
+#: Fold r1 (F1): a receipt line's KEY is ``(sheet sha256 short, item
+#: index)`` -- parsed back out of the rendered line text itself, since
+#: the Application section is the only place a prior run's identity
+#: survives (there is no second, structured store). ``item=0`` is F8's
+#: whole-sheet-refusal shape (a sheet the preflight stopped before any
+#: item ever dispatched). A line with no parseable key (hand-written
+#: text, or a receipt predating this format) has nothing to match and
+#: is preserved verbatim by :func:`_merge_receipt_lines` below -- never
+#: dropped.
+_RECEIPT_ITEM_KEY_RE = re.compile(r"sheet=\S*#([0-9a-f]{6,64}) item=(\d+) ")
+_RECEIPT_REFUSAL_KEY_RE = re.compile(r"sheet=\S*#([0-9a-f]{6,64}) refused before item 1:")
+
+
+def _receipt_line_key(line: str) -> tuple[str, int] | None:
+    m = _RECEIPT_ITEM_KEY_RE.search(line)
+    if m is not None:
+        return (m.group(1), int(m.group(2)))
+    m = _RECEIPT_REFUSAL_KEY_RE.search(line)
+    if m is not None:
+        return (m.group(1), 0)
+    return None
+
+
+def _merge_receipt_lines(
+    existing_lines: list[str], new_by_key: dict[tuple[str, int], str]
+) -> list[str]:
+    """F1: receipts are keyed, never appended blindly. A key already
+    present among *existing_lines* gets the NEW rendering in its OLD
+    position (a re-run of the SAME sheet — same ``sheet_sha`` — REPLACES
+    that item's line, whatever its previous state was: this is what
+    makes a pre-applied item's missing line reappear, a refused item's
+    re-run stop duplicating, and a failed receipt's retry repair the
+    gap, all the SAME mechanism). A key not yet present is appended, in
+    item order — which is also what makes "a different sheet against
+    the same case adds its own block" true: every line from a
+    differently-CONTENTED sheet carries a different ``sheet_sha``, so
+    none of them match an existing key and they land together at the
+    end. A line whose key cannot be parsed (pre-fold-r1 text, or a
+    hand-edit) is preserved exactly, never dropped."""
+    out: list[str] = []
+    seen: set[tuple[str, int]] = set()
+    for ln in existing_lines:
+        key = _receipt_line_key(ln)
+        if key is not None and key in new_by_key:
+            out.append(new_by_key[key])
+            seen.add(key)
+        else:
+            out.append(ln)
+    for key in sorted(new_by_key, key=lambda k: k[1]):
+        if key not in seen:
+            out.append(new_by_key[key])
+    return out
+
 
 def receipt(home: Path | str, case_id: str, batch_result: dict) -> str:
-    """Append the Application section from a batch result (§3a.2 section
-    5) — one line per sheet item, including `not-attempted` for items
-    after `stopped_at`. Never edits the frozen sections 1-4; refuses if
-    they were tampered with. N1: no `by` parameter — §3a.2's section-5
-    line format carries no actor, so this never stored it (probe
-    confirmed `by` never reached the file); the dead parameter is gone.
+    """Append (fold r1: MERGE — see :func:`_merge_receipt_lines`) the
+    Application section from a batch result (§3a.2 section 5) — one
+    line per sheet item, including `already-applied` and `not-attempted`
+    for items after `stopped_at`, plus a `stopped` line for the one item
+    that actually halted the sheet. Never edits the frozen sections 1-4;
+    refuses if they were tampered with. N1: no `by` parameter — §3a.2's
+    section-5 line format carries no actor, so this never stored it
+    (probe confirmed `by` never reached the file); the dead parameter is
+    gone.
 
-    *batch_result* shape (this module's own contract for U2 — U3 wires
-    the real `batch.run()` producer; see this module's own docstring):
+    *batch_result* shape (`batch.run()`'s own `to_json()["items"]`/
+    `.summary` shape, threaded straight through by `cli._cmd_batch`):
 
-        {"sheet": "01.yaml", "at": "<iso, optional>",
-         "stopped_at": <int|None>, "code": <int, only used if stopped_at>,
+        {"sheet": "01.yaml", "sheet_sha": "<8-hex, optional>",
+         "at": "<iso, optional>", "stopped_at": <int|None>,
+         "code": <int, only used if stopped_at>, "stop_message": "<str,
+         optional — F8's whole-sheet-refusal reason>",
          "items": [{"n": 1, "id": "lrn-...", "verb": "reject",
                      "state": "applied", "rc": 0}, ...]}
 
-    Every item with ``n <= stopped_at`` (or every item, when
+    ``sheet_sha`` defaults to a hash of the bare ``sheet`` name when
+    absent (every pre-existing direct caller — this module's own test
+    suite included) so the keying below always has an identity to work
+    with. Fold r1 (F8): ``items: []`` (or absent) renders ONE line
+    instead of none — the whole-sheet-refusal shape, keyed ``(sheet_sha,
+    0)`` — rather than silently writing nothing, which the OLD zero-item
+    path did (and which then hit a dead "commit produced nothing" guard
+    the moment nothing had genuinely changed; gate-u3-r1.md F8/probe5).
+    Otherwise: every item with ``n <= stopped_at`` (or every item, when
     ``stopped_at`` is None) renders from its own `state`/`rc`; every item
     with ``n > stopped_at`` renders `not-attempted (stopped_at=N, code C)`
     regardless of any state field present — the tail loop that does this
@@ -1050,35 +1116,54 @@ def receipt(home: Path | str, case_id: str, batch_result: dict) -> str:
 
     at = batch_result.get("at") or chrono.now_iso()
     sheet = batch_result.get("sheet", "")
+    sheet_sha = batch_result.get("sheet_sha") or hashlib.sha256(
+        sheet.encode("utf-8")
+    ).hexdigest()[:8]
     stopped_at = batch_result.get("stopped_at")
     code = batch_result.get("code")
     items = sorted(batch_result.get("items") or [], key=lambda it: it["n"])
 
-    lines: list[str] = []
-    for item in items:
-        n = item["n"]
-        rid = item["id"]
-        verb = item["verb"]
-        if stopped_at is not None and n > stopped_at:
-            lines.append(
-                f"- {at} sheet={sheet} item={n} {rid} {verb} → "
-                f"not-attempted (stopped_at={stopped_at}, code {code})"
-            )
-        else:
-            state = item.get("state", "applied")
-            rc = item.get("rc", 0)
-            lines.append(f"- {at} sheet={sheet} item={n} {rid} {verb} → {state} (exit {rc})")
-    new_text = "\n".join(lines)
+    new_by_key: dict[tuple[str, int], str] = {}
+    if not items:
+        # F8: the sheet-level preflight refused the WHOLE sheet before
+        # item 1 ever dispatched — section 5 still gets a line for it,
+        # keyed (sheet_sha, 0).
+        reason = batch_result.get("stop_message") or (
+            f"refused before item 1 (code {code})"
+            if code is not None else "refused before item 1"
+        )
+        new_by_key[(sheet_sha, 0)] = (
+            f"- {at} sheet={sheet}#{sheet_sha} refused before item 1: {reason}"
+        )
+    else:
+        for item in items:
+            n = item["n"]
+            rid = item["id"]
+            verb = item["verb"]
+            key = (sheet_sha, n)
+            if stopped_at is not None and n > stopped_at:
+                new_by_key[key] = (
+                    f"- {at} sheet={sheet}#{sheet_sha} item={n} {rid} {verb} → "
+                    f"not-attempted (stopped_at={stopped_at}, code {code})"
+                )
+            else:
+                state = item.get("state", "applied")
+                rc = item.get("rc", 0)
+                new_by_key[key] = (
+                    f"- {at} sheet={sheet}#{sheet_sha} item={n} {rid} {verb} → "
+                    f"{state} (exit {rc})"
+                )
+    new_lines = list(new_by_key.values())
 
     # B2 (item 2): scan every rendered line before it can reach the
     # committed file — receipt previously scanned nothing at all.
-    _scan_or_refuse(lines)
+    _scan_or_refuse(new_lines)
     # Gate r2 S1: `record`/`observe` already refuse a heading-shaped
     # line in their own free text (D-i) — `receipt` scanned its lines
     # but never refused one, so a batch-result `verb` containing
     # `"\n\n## Later observations\n..."` could forge an append-only
     # entry. Refused the same way, before anything is written.
-    _refuse_headings(lines)
+    _refuse_headings(new_lines)
 
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -1095,14 +1180,27 @@ def receipt(home: Path | str, case_id: str, batch_result: dict) -> str:
             sections = _parse_sections(body)
             existing = sections.get("Application", "").strip()
             existing = "" if existing == "(none)" else existing
-            merged = "\n".join(x for x in (existing, new_text) if x)
+            existing_lines = [ln for ln in existing.splitlines() if ln.strip()]
+            # F1: replace by (sheet_sha, n) key, never append blindly.
+            merged_lines = _merge_receipt_lines(existing_lines, new_by_key)
+            merged = "\n".join(merged_lines)
             new_body = _rebuild_body(frozen_text, merged or "(none)", sections.get("Later observations", "(none)"))
             fsops.atomic_write(path, _render_frontmatter(fm) + new_body, fsync=True)
             message = f"self-learn: case receipt {case_id} (sheet={sheet})"
-            sha = gitops.stage_and_commit(home, [path], message, None)
-            if sha is None:  # pragma: no cover
-                raise CaseError("case receipt: internal — commit produced nothing")
-            _update_index(home, case_id)
+            # F8: `allow_empty=True` — a call whose every key already
+            # matches its existing line byte for byte writes an
+            # identical file, a REAL no-op, not an internal error. The
+            # old `if sha is None: raise CaseError(...)` guard was DEAD
+            # CODE (its own `# pragma: no cover` said so): a
+            # byte-identical rewrite never reached it — `stage_and_
+            # commit` raised `gitops.HalfWrittenError` first, since it
+            # was never called with `allow_empty=True` before this fold
+            # (gate-u3-r1.md F8, probe5, measured).
+            sha = gitops.stage_and_commit(
+                home, [path], message, None, allow_empty=True
+            )
+            if sha is not None:
+                _update_index(home, case_id)
     finally:
         hold.release()
     return case_id
