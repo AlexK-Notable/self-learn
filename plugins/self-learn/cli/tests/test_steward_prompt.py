@@ -3,7 +3,14 @@ blocks in order, evidence before advice, the withheld list.
 
 Every test relies on the suite-wide autouse `SELF_LEARN_HOME`/
 `XDG_CACHE_HOME`/`XDG_CONFIG_HOME`/`SELF_LEARN_CLAUDE_DIR` sandboxing in
-`conftest.py`."""
+`conftest.py`.
+
+N5 (fold r1): the `test_negative_control_*` functions below monkeypatch
+a BROKEN implementation and assert the mutated, wrong behaviour -- they
+permanently document a defect shape for a future reader, they do not
+guard against a regression the way every other test here does. Do not
+read a green `test_negative_control_*` as coverage of the real code
+path; the real guard is the un-prefixed test right above each one."""
 
 from __future__ import annotations
 
@@ -14,7 +21,7 @@ from pathlib import Path
 import pytest
 from ruamel.yaml import YAML
 
-from self_learn import cases, steward_prompt, user_model
+from self_learn import cases, conditions, steward_prompt, user_model
 from support import make_home
 
 STAGE_BASE = {
@@ -116,7 +123,7 @@ def test_block_order_by_offset(tmp_path):
     assert ev < ad
 
 
-def test_mutation_swapped_blocks_fails_the_offset_check(tmp_path, monkeypatch):
+def test_negative_control_swapped_blocks_fails_the_offset_check(tmp_path, monkeypatch):
     """Mutation for test 1: swap two blocks via `_ordered_blocks` (the
     one seam `assemble` calls) and confirm the SAME offset check the
     previous test used now fails -- proving that check is not vacuous."""
@@ -154,7 +161,7 @@ def test_brief_evidence_before_advice_even_if_card_dict_lists_advice_first(tmp_p
     assert briefs_text.index("[evidence]") < briefs_text.index("[advice]")
 
 
-def test_mutation_bypassing_render_brief_with_dict_order_fails(tmp_path, monkeypatch):
+def test_negative_control_bypassing_render_brief_with_dict_order_fails(tmp_path, monkeypatch):
     """Mutation for test 2: replace `worker.render_brief` (as
     `steward_prompt` sees it) with a dict-order-preserving stand-in and
     confirm the ordering the previous test pins now fails."""
@@ -198,7 +205,7 @@ def test_user_model_lapsed_a_entry_renders_after_current_d_entry(tmp_path):
     assert "changed_condition: report.destinations" in um_text
 
 
-def test_mutation_dropping_current_lapsed_split_fails(tmp_path, monkeypatch):
+def test_negative_control_dropping_current_lapsed_split_fails(tmp_path, monkeypatch):
     """Mutation for test 3: render containers in fixed order WITHOUT
     splitting CURRENT before LAPSED -- since A precedes D in
     `_USER_MODEL_CONTAINER_ORDER`, A's LAPSED entry would then render
@@ -263,7 +270,7 @@ def test_open_cases_excludes_tampered_and_shows_intact(tmp_path):
     assert "1 cases excluded: freeze hash mismatch" in open_cases_text
 
 
-def test_mutation_including_tampered_rows_fails_the_exclusion_check(tmp_path, monkeypatch):
+def test_negative_control_including_tampered_rows_fails_the_exclusion_check(tmp_path, monkeypatch):
     """Mutation for test 4: stop filtering by `frozen_ok` (the
     `only_ok=False`-shaped bug the brief names) and confirm the
     tampered case now surfaces (as an 'unavailable' stub, since
@@ -312,7 +319,7 @@ def test_withheld_names_the_digest_and_transcript_text():
     assert any("transcript" in s.lower() for s in items)
 
 
-def test_mutation_dropping_one_withheld_entry_fails(monkeypatch):
+def test_negative_control_dropping_one_withheld_entry_fails(monkeypatch):
     real = steward_prompt.withheld
 
     def _missing_transcript_entry():
@@ -340,7 +347,7 @@ def test_open_cases_blind_view_never_leaks_outcome_or_decision_section(tmp_path)
     assert "verb: reject" not in open_cases_text  # section 3 (Decision) content
 
 
-def test_mutation_full_view_in_open_cases_leaks_decision_section(tmp_path, monkeypatch):
+def test_negative_control_full_view_in_open_cases_leaks_decision_section(tmp_path, monkeypatch):
     """Own extra mutation (brief: at least one of the builder's own
     choosing) -- the behaviour least protected by the brief's own eight
     named tests is the BLIND default itself: flip `cases.show`'s
@@ -397,3 +404,223 @@ def test_assemble_with_empty_home_does_not_raise(tmp_path):
     packet = steward_prompt.assemble(home, tmp_path / "cache", run, [])
     assert packet.text
     assert packet.withheld == steward_prompt.withheld()
+
+
+# ------------------------------------------------ fold r1: S1 (since filter)
+
+
+def _tamper_observation_timestamp(home: Path, case_id: str, marker: str, new_ts: str) -> None:
+    """Rewrite one "Later observations" bullet's timestamp in place, the
+    same technique the gate probe used (gate-u9-r1-probe.py.txt P4):
+    section 6 is append-only and NOT covered by the frozen-sections hash
+    (`_hash_frozen` only spans sections 1-4), so this never trips a
+    tamper/`frozen_ok` check."""
+    path = next((home / "cases").glob(f"*/{case_id}.md"))
+    text = path.read_text(encoding="utf-8")
+    out = []
+    for ln in text.splitlines():
+        if ln.startswith("- obs-") and marker in ln:
+            parts = ln.split()
+            parts[2] = new_ts
+            ln = " ".join(parts)
+        out.append(ln)
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def test_later_observations_since_filter_only_renders_newer_entries(tmp_path):
+    home = make_home(tmp_path)
+    case_id = _record_case(
+        tmp_path, home, kind="parked", outcome="parked",
+        overrides={"parked_for": "overseer", "parked_reason": "authority-unclear"},
+    )
+    cases.observe(home, case_id, "examined", text="OLD-OBSERVATION-S1", by="human")
+    cases.observe(home, case_id, "examined", text="NEW-OBSERVATION-S1", by="human")
+    _tamper_observation_timestamp(home, case_id, "OLD-OBSERVATION-S1", "2026-09-01T00:00:00Z")
+    _tamper_observation_timestamp(home, case_id, "NEW-OBSERVATION-S1", "2026-09-10T00:00:00Z")
+
+    run = _run(tmp_path, last_run_at="2026-09-05T00:00:00Z")
+    packet = steward_prompt.assemble(home, tmp_path / "cache", run, [])
+    oc = dict(packet.blocks)["open_cases"]
+    assert "NEW-OBSERVATION-S1" in oc
+    assert "OLD-OBSERVATION-S1" not in oc
+
+    # last_run_at None: no prior run, both render (fail-open for "never").
+    run2 = _run(tmp_path)
+    packet2 = steward_prompt.assemble(home, tmp_path / "cache", run2, [])
+    oc2 = dict(packet2.blocks)["open_cases"]
+    assert "NEW-OBSERVATION-S1" in oc2 and "OLD-OBSERVATION-S1" in oc2
+
+
+# ------------------------------------------------- fold r1: S2 (prior case)
+
+
+def test_prior_case_for_record_precedes_brief_and_is_blind(tmp_path):
+    home = make_home(tmp_path)
+    case_id = _record_case(tmp_path, home, records=["lrn-aa00beef"])
+    run = _run(tmp_path)
+    packet = steward_prompt.assemble(home, tmp_path / "cache", run, [_proposal("lrn-aa00beef")])
+    briefs = dict(packet.blocks)["briefs"]
+    assert "### prior case for lrn-aa00beef" in briefs
+    assert briefs.index("### prior case") < briefs.index("### brief:")
+    assert case_id in briefs
+    # blind view: no Decision section content
+    assert "outcome: reject" not in briefs
+    assert "verb: reject" not in briefs
+
+
+# ------------------------------------------- fold r1: S3 (container order)
+
+
+def test_user_model_container_order_is_a_b_e_before_c_then_lapsed(tmp_path):
+    # Container B is only ever populated by `mark_seen` (`add_entry`
+    # refuses a direct B add — §3a.4); this second A-container entry
+    # stands in for "A/B" collectively, the same shape the gate probe
+    # (P1) used.
+    home = make_home(tmp_path)
+    a_id = user_model.add_entry(
+        home, container="A", title="own words S3", because="x",
+        source="own-words", by="human", ref="stmt-a-s3",
+    )
+    user_model.lapse_entry(home, a_id, changed_condition="report.destinations", by="human")
+    b_id = user_model.add_entry(
+        home, container="A", title="second own words S3", because="x",
+        source="own-words", by="human", ref="stmt-b-s3",
+    )
+    c_id = user_model.add_entry(
+        home, container="C", title="provisional reading S3", because="x",
+        source="system-reading", by="steward", ref="case-s3",
+        statements=["stmt-c-s3"],
+    )
+    e_id = user_model.add_entry(
+        home, container="E", title="declared.some.key.s3: yes", because="x",
+        source="own-words", by="human", ref="stmt-e-s3",
+    )
+    run = _run(tmp_path)
+    packet = steward_prompt.assemble(home, tmp_path / "cache", run, [])
+    um = dict(packet.blocks)["user_model"]
+
+    # A, B and E (in that container order) all precede C.
+    assert um.index(b_id) < um.index(c_id)
+    assert um.index(e_id) < um.index(c_id)
+    # the LAPSED A entry renders after every CURRENT entry, including C.
+    assert um.index(a_id) > um.index(c_id)
+    assert "the user has not yet seen this" in um
+
+
+# --------------------------------------------------- fold r1: S5 (superseded)
+
+
+def test_superseded_parked_case_is_not_rendered_only_the_successor_is(tmp_path):
+    home = make_home(tmp_path)
+    first = _record_case(
+        tmp_path, home, kind="parked", outcome="parked",
+        overrides={"parked_for": "overseer", "parked_reason": "authority-unclear"},
+    )
+    second = _record_case(
+        tmp_path, home, kind="parked", outcome="parked", supersedes=first,
+        overrides={"parked_for": "overseer", "parked_reason": "authority-unclear"},
+    )
+    run = _run(tmp_path)
+    oc = dict(steward_prompt.assemble(home, tmp_path / "cache", run, []).blocks)["open_cases"]
+    assert f"case: {second}" in oc
+    assert f"case: {first}" not in oc
+
+
+# ------------------------------------ fold r1: S6 (tampered prior case)
+
+
+def test_tampered_prior_case_is_excluded_with_a_line_not_silently(tmp_path):
+    home = make_home(tmp_path)
+    case_id = _record_case(tmp_path, home, records=["lrn-aa00beef"])
+    path = next((home / "cases").glob(f"*/{case_id}.md"))
+    text = path.read_text(encoding="utf-8")
+    tampered = text.replace("settled", "settleD")
+    assert tampered != text
+    path.write_text(tampered, encoding="utf-8")
+
+    run = _run(tmp_path)
+    packet = steward_prompt.assemble(home, tmp_path / "cache", run, [_proposal("lrn-aa00beef")])
+    briefs = dict(packet.blocks)["briefs"]
+    assert case_id not in briefs
+    assert "1 prior cases excluded: freeze hash mismatch" in briefs
+
+
+def test_negative_control_dropping_the_prior_case_exclusion_line_fails(tmp_path, monkeypatch):
+    """Mutation for S6: restore the pre-fold behaviour (`only_ok=True`,
+    no exclusion count at all) and confirm the previous test's positive
+    assertion -- the exclusion line's presence -- now fails."""
+    home = make_home(tmp_path)
+    case_id = _record_case(tmp_path, home, records=["lrn-aa00beef"])
+    path = next((home / "cases").glob(f"*/{case_id}.md"))
+    text = path.read_text(encoding="utf-8")
+    path.write_text(text.replace("settled", "settleD"), encoding="utf-8")
+
+    def _no_exclusion_line(home, record_id):
+        if not record_id:
+            return [], 0
+        return cases.list_cases(home, record_id=record_id, only_ok=True), 0
+
+    monkeypatch.setattr(steward_prompt, "_existing_cases_for_record", _no_exclusion_line)
+    run = _run(tmp_path)
+    packet = steward_prompt.assemble(home, tmp_path / "cache", run, [_proposal("lrn-aa00beef")])
+    briefs = dict(packet.blocks)["briefs"]
+    assert "prior cases excluded" not in briefs  # RED: the count is gone
+
+
+# --------------------------------------------------- fold r1: S7 (withheld)
+
+
+def test_withheld_provisional_entries_text_has_no_review_date(tmp_path):
+    items = steward_prompt.withheld()
+    joined = " ".join(items)
+    assert "review date" not in joined.lower()
+    assert "review_by" not in joined.lower() or "no review_by" in joined.lower()
+    assert "has not yet seen" in joined.lower()
+
+
+def test_negative_control_reintroducing_a_review_date_phrase_is_caught(monkeypatch):
+    real = steward_prompt.withheld
+
+    def _with_review_date():
+        items = list(real())
+        items[2] = items[2].replace(
+            "the user has not yet seen -- there is no review_by field and no expiry",
+            "with a review date",
+        )
+        return tuple(items)
+
+    monkeypatch.setattr(steward_prompt, "withheld", _with_review_date)
+    joined = " ".join(steward_prompt.withheld())
+    assert "review date" in joined.lower()  # RED under the mutation
+
+
+# --------------------------------------------------------- fold r1: N3
+
+
+def test_conditions_table_escapes_pipe_and_newline_in_a_cell(tmp_path):
+    home = make_home(tmp_path)
+    items = conditions.feed(home)
+    poisoned = conditions.Item(
+        "test.poison", "a|value\nwith a newline", "2026-01-01T00:00:00Z", "src|with|pipes"
+    )
+    table = steward_prompt._render_conditions(items + [poisoned])
+    lines = table.splitlines()
+    # header + separator + one row per item -- the poisoned item's `|`
+    # and `\n` must not have split it across rows or columns.
+    assert len(lines) == 2 + len(items) + 1
+    assert any("a\\|value\\nwith a newline" in ln and "src\\|with\\|pipes" in ln for ln in lines)
+
+
+# --------------------------------------------------------- fold r1: N4
+
+
+def test_render_briefs_preserves_the_callers_proposal_order(tmp_path):
+    home = make_home(tmp_path)
+    run = _run(tmp_path)
+    packet = steward_prompt.assemble(
+        home, tmp_path / "cache", run,
+        [_proposal("lrn-bb00beef"), _proposal("lrn-aa00beef")],
+    )
+    briefs = dict(packet.blocks)["briefs"]
+    # caller order (bb before aa), never re-sorted (e.g. alphabetically).
+    assert briefs.index("### brief: lrn-bb00beef") < briefs.index("### brief: lrn-aa00beef")

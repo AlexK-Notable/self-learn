@@ -148,35 +148,44 @@ def _report_items(home: Path, observed_at: str) -> list[Item]:
 
 
 def _status_items(home: Path, observed_at: str) -> list[Item]:
-    keys = (
-        "status.total_pending",
-        "status.unanalyzed_total",
-        "status.intents_probe",
-        "status.intents_stopped_count",
-    )
-    try:
-        from . import worker  # deferred: same-family reuse convention
+    """N1: `worker.fast_status` and `intents.classify_status` are two
+    independent producers feeding four keys between them; each gets its
+    OWN try/except so one producer's failure never blanks the other's
+    two keys, and a key's `source` names only the producer that actually
+    made it."""
+    from . import worker  # deferred: same-family reuse convention
 
+    try:
         fast = worker.fast_status(home)
-        cls = intents.classify_status(home)
-        values = (
-            fast.get("total_pending", "unavailable"),
-            fast.get("unanalyzed_total", "unavailable"),
-            cls.probe,
-            len(cls.stopped),
-        )
-        sources = (
-            "worker.fast_status(home)",
-            "worker.fast_status(home)",
-            "intents.classify_status(home)",
-            "intents.classify_status(home)",
-        )
-        return [
-            Item(k, v, observed_at, s) for k, v, s in zip(keys, values, sources)
-        ]
+        fast_source = "worker.fast_status(home)"
+        total_pending = fast.get("total_pending", "unavailable")
+        unanalyzed_total = fast.get("unanalyzed_total", "unavailable")
     except Exception as exc:  # noqa: BLE001 — fail-closed
-        source = f"worker.fast_status(home)/intents.classify_status(home) failed: {exc}"
-        return [Item(k, "unavailable", observed_at, source) for k in keys]
+        fast_source = f"worker.fast_status(home) failed: {exc}"
+        total_pending = "unavailable"
+        unanalyzed_total = "unavailable"
+
+    try:
+        cls = intents.classify_status(home)
+        cls_source = "intents.classify_status(home)"
+        intents_probe = cls.probe
+        intents_stopped_count = len(cls.stopped)
+    except Exception as exc:  # noqa: BLE001 — fail-closed
+        cls_source = f"intents.classify_status(home) failed: {exc}"
+        intents_probe = "unavailable"
+        intents_stopped_count = "unavailable"
+
+    return [
+        Item("status.total_pending", total_pending, observed_at, fast_source),
+        Item("status.unanalyzed_total", unanalyzed_total, observed_at, fast_source),
+        Item("status.intents_probe", intents_probe, observed_at, cls_source),
+        Item(
+            "status.intents_stopped_count",
+            intents_stopped_count,
+            observed_at,
+            cls_source,
+        ),
+    ]
 
 
 def _host_items(home: Path, observed_at: str) -> list[Item]:
@@ -399,14 +408,24 @@ def _ledger_head_item(home: Path, observed_at: str) -> Item:
 def feed(home: Path | str, cache_dir: Path | str | None = None) -> list[Item]:
     """Interface §4 / R-11: THE importable conditions feed. Never raises
     (every source group is its own try/except, fail-closed to
-    ``"unavailable"``); never mutates the ledger; takes no lock. One
-    ``observed_at`` timestamp is computed once and shared by every item —
-    the whole feed is one snapshot "as of this run" (plan §4.4)."""
+    ``"unavailable"``, N2 -- this now includes the ``cache_dir`` fallback
+    and the output-style read, not only the nine source-group helpers);
+    never mutates the ledger; takes no lock. One ``observed_at``
+    timestamp is computed once and shared by every item — the whole feed
+    is one snapshot "as of this run" (plan §4.4)."""
     home = Path(home)
     if cache_dir is None:
-        from . import worker  # deferred: same-family reuse convention
+        try:
+            from . import worker  # deferred: same-family reuse convention
 
-        cache_dir = worker.cache_dir(home)
+            cache_dir = worker.cache_dir(home)
+        except Exception:  # noqa: BLE001 — fail-closed; feed() never raises
+            # No readable cache dir: `_steward_run_items` below already
+            # degrades a missing/unreadable runs directory to
+            # "unavailable" for all three `steward.*` keys, so handing it
+            # a path that provably does not exist reaches the same
+            # fail-closed shape without a second code path.
+            cache_dir = home / ".self-learn-cache-unavailable"
     else:
         cache_dir = Path(cache_dir)
     observed_at = chrono.now_iso()
@@ -416,7 +435,17 @@ def feed(home: Path | str, cache_dir: Path | str | None = None) -> list[Item]:
     items.extend(_status_items(home, observed_at))
     items.extend(_host_items(home, observed_at))
     items.extend(_settings_items(home, observed_at))
-    items.append(_output_style_item(observed_at))
+    try:
+        items.append(_output_style_item(observed_at))
+    except Exception as exc:  # noqa: BLE001 — fail-closed; feed() never raises
+        items.append(
+            Item(
+                "surface.output-style.active",
+                "unavailable",
+                observed_at,
+                f"_output_style_item failed: {exc}",
+            )
+        )
     items.extend(_declared_items(home, observed_at))
     items.extend(_steward_run_items(cache_dir, observed_at))
     items.extend(_overseer_run_items(home, observed_at))

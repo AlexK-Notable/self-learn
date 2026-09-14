@@ -28,6 +28,10 @@ caller can meet: each dict in ``proposals`` MAY carry an ``"id"`` key
 ``read_proposal``/``validate_proposal`` already produce. A proposal
 without one still renders — its card, through :func:`worker.render_brief`
 unchanged — just with an "(unknown id)" header and no prior-case lookup.
+**Ordering is the caller's job.** ``assemble`` renders ``proposals`` in
+the exact order the caller passes them — it never sorts or reorders.
+U10 is the one that must hand them over oldest first; this module only
+preserves whatever order it is given.
 
 **"Later observations", evidence-only view, and the blind default
 (plan §4.1 item 5; this unit's own reading).** `cases.show`'s BLIND
@@ -40,7 +44,12 @@ case, from which ONLY the "Later observations" section text is taken —
 sections 3/5 (Decision, Application) from that full read are never
 rendered anywhere. When `run.last_run_at` is `None` (no prior run),
 every "Later observations" line is treated as newer than never — all of
-them render."""
+them render. This makes an observation's free text (`cases.observe`'s
+`text` argument) the ONE section-6 channel that reaches the steward at
+all — U10/O-3 should know that text is constrained only by a secret
+scan and a heading refusal (`cases._scan_or_refuse` /
+`cases._refuse_headings`), never by anything narrower this module
+adds."""
 
 from __future__ import annotations
 
@@ -168,8 +177,9 @@ def withheld() -> tuple[str, ...]:
         "first, the human on presentation)') -- both describe a "
         "different reader",
         "the August reviewer-preference numbers P1-P9 as facts (they "
-        "enter only as provisional user-model entries with a review "
-        "date, interface §3.4)",
+        "enter only as provisional user-model entries the user has not "
+        "yet seen -- there is no review_by field and no expiry, "
+        "02-schema.md §3a.4)",
         "other pending records outside the batch, except their ids and "
         "headlines when a brief's 'you may already have this' section "
         "or the canon index names them",
@@ -238,10 +248,23 @@ def _render_user_model(home: Path) -> str:
     return "\n\n".join(ordered)
 
 
+def _escape_cell(value: object) -> str:
+    """N3: a declared-condition title or a settings value can legitimately
+    contain a ``|`` or a newline; unescaped, either breaks the Markdown
+    table row the steward reads (a `|` opens a new column, a newline
+    opens a new row). Backslash is escaped first so escaping this
+    function's OWN output a second time would not double up."""
+    text = str(value)
+    return text.replace("\\", "\\\\").replace("|", "\\|").replace("\n", "\\n").replace(
+        "\r", ""
+    )
+
+
 def _render_conditions(items: list[Item]) -> str:
     lines = ["| key | value | observed_at | source |", "|---|---|---|---|"]
     for item in items:
-        lines.append(f"| {item.key} | {item.value} | {item.observed_at} | {item.source} |")
+        cells = (item.key, item.value, item.observed_at, item.source)
+        lines.append("| " + " | ".join(_escape_cell(c) for c in cells) + " |")
     return "\n".join(lines)
 
 
@@ -258,6 +281,11 @@ def _later_observations(home: Path, case_id: str, since: str | None) -> list[str
             continue
         m = _OBS_LINE_RE.match(line)
         ts = m.group(1) if m else None
+        # S1: a line whose timestamp does not match `_OBS_LINE_RE` (ts is
+        # None) renders unconditionally -- fail-OPEN by design. An
+        # unparseable line is more likely an observation-line format drift
+        # than something safe to withhold from the steward, so this
+        # module errs toward showing it rather than silently dropping it.
         if since is None or ts is None or ts > since:
             out.append(line)
     return out
@@ -291,10 +319,20 @@ def _render_open_cases(home: Path, run: RunContext) -> str:
     return "\n\n".join(blocks)
 
 
-def _existing_cases_for_record(home: Path, record_id: str | None) -> list[dict]:
+def _existing_cases_for_record(
+    home: Path, record_id: str | None
+) -> tuple[list[dict], int]:
+    """S6: mirrors `_render_open_cases`'s own `frozen_ok` filter (the U2
+    TAMPERED convention "the rule every index consumer follows") instead
+    of relying on `list_cases(only_ok=True)` to drop tampered rows
+    invisibly. Returns the intact rows plus how many were excluded, so
+    the caller can render the same one-line exclusion count the
+    open_cases block renders."""
     if not record_id:
-        return []
-    return cases.list_cases(home, record_id=record_id, only_ok=True)
+        return [], 0
+    all_rows = cases.list_cases(home, record_id=record_id, only_ok=False)
+    ok_rows = [r for r in all_rows if r.get("frozen_ok", True)]
+    return ok_rows, len(all_rows) - len(ok_rows)
 
 
 def _render_briefs(home: Path, proposals: list[dict]) -> str:
@@ -303,12 +341,15 @@ def _render_briefs(home: Path, proposals: list[dict]) -> str:
     blocks: list[str] = []
     for proposal in proposals:
         record_id = proposal.get("id")
-        for prior_row in _existing_cases_for_record(home, record_id):
+        prior_rows, excluded = _existing_cases_for_record(home, record_id)
+        for prior_row in prior_rows:
             try:
                 prior_view = cases.show(home, prior_row["case"])  # blind default
             except cases.CaseError:
                 continue
             blocks.append(f"### prior case for {record_id}\n{prior_view.to_text()}")
+        if excluded:
+            blocks.append(f"{excluded} prior cases excluded: freeze hash mismatch")
         header = f"### brief: {record_id or '(unknown id)'}"
         rows = worker.render_brief(proposal)
         body = "\n".join(f"[{key}] {text}" for key, text in rows)
