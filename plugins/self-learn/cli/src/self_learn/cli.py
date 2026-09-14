@@ -403,9 +403,10 @@ def _build_parser() -> argparse.ArgumentParser:
             # Resolution-evidence unit (§2.1/§3.1): a machine envelope on
             # stdout, populated ONLY on a successful (exit 0) run — never
             # a second outcome channel. Scoped to route/reject/defer/
-            # graduate (the resolution verbs the UI's evidence surface
-            # drives) — never rehome/supersede/confirm-recurrence/
-            # confirm-held, which stay text-only.
+            # graduate/reconsider (fold r1, F7: U5 adds `reconsider` as
+            # a fifth `--json` verb — the resolution verbs the UI's
+            # evidence surface drives) — never rehome/supersede/
+            # confirm-recurrence/confirm-held, which stay text-only.
             p.add_argument(
                 "--json",
                 action="store_true",
@@ -532,6 +533,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "reopen", "return a rejected record to the draft plane (U-verbs §4.2)"
     )
     reopen.add_argument("id", metavar="ID")
+
+    reconsider = _verb(
+        "reconsider",
+        "record a successor decision against a routed, rejected, or "
+        "deferred record, over a kind: reconsider case (U5, "
+        "`commands/review.md` ~160-186)",
+        json_flag=True,
+    )
+    reconsider.add_argument("id", metavar="ID")
+    reconsider.add_argument(
+        "--case",
+        required=True,
+        metavar="CASE_ID",
+        help="a kind: reconsider case whose supersedes names the "
+        "record's original case — self-learn case record opens it",
+    )
+    reconsider.add_argument(
+        "--by",
+        choices=sorted(verbs.ROUTING_BY_VALUES),
+        help="names the actor that made this reconsideration",
+    )
 
     reroute = _verb(
         "reroute",
@@ -2087,7 +2109,15 @@ def _outcome_state(result: verbs.VerbResult) -> str:
     retirement failure still surfaces via `warnings` regardless (§3.7
     renders it on the success leg unconditionally) — this function only
     controls the summary label, never the repair text."""
-    if result.action in ("reject", "defer"):
+    if result.action in ("reject", "defer", "reconsider"):
+        # Fold r1 (F4): `reconsider` shares `reject`/`defer`'s exact
+        # shape here — it never attempts a host write at all (it only
+        # ever appends a `reconsidered` history entry and commits the
+        # ledger), so neither `compile_result` nor `host_commit_sha` is
+        # ever set on its `VerbResult`. Falling through to `route`'s
+        # 4-state predicate below landed on `compile_result is None` →
+        # `"drift"` on a fully successful call, telling a consumer to
+        # `recompile` canon that `reconsider` never touched.
         return "landed"
     if result.action == "graduate":
         return "landed" if result.host_commit_sha is not None else "no_op"
@@ -2388,6 +2418,11 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         if args.command == "reopen":
             result = verbs.reopen(home, args.id, note=args.note, no_push=args.no_push)
             return _finish_verb(result, "pending")
+        if args.command == "reconsider":
+            result = verbs.reconsider(
+                home, args.id, case=args.case, by=args.by, no_push=args.no_push
+            )
+            return _finish_verb(result, "reconsidered", as_json=args.as_json)
         if args.command == "note":
             result = verbs.note(
                 home, args.id, append=args.append, key=args.key, no_push=args.no_push
@@ -3723,6 +3758,9 @@ VERB_COMMANDS = frozenset(
         # U4: revise dispatches through the SAME `_cmd_verb` ladder too
         # — no new caller of the epilogue.
         "revise",
+        # U5: reconsider dispatches through the SAME `_cmd_verb` ladder
+        # too — no new caller of the epilogue.
+        "reconsider",
     }
 )
 

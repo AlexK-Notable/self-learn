@@ -51,11 +51,18 @@ def _seed_pending(home, rid, *, scope="skill:s", with_proposal=True):
     return rid
 
 
-def _seed_case(home, tmp_path, *, records, outcome="route", actor="steward", n=[0]):
+def _seed_case(
+    home, tmp_path, *, records, outcome="route", actor="steward",
+    kind="resolution", supersedes=None, n=[0],
+):
+    """U5 widening: ``kind``/``supersedes`` are new optional keywords,
+    both defaulted to U3's own original literals — every pre-existing
+    call site (bare ``kind: resolution``, no ``supersedes``) is
+    byte-identical to before."""
     n[0] += 1
     data = {
-        "kind": "resolution",
-        "trigger": "nightly",
+        "kind": kind,
+        "trigger": "reconsider" if kind == "reconsider" else "nightly",
         "outcome": outcome,
         "records": list(records),
         "scope": "skill:s",
@@ -63,6 +70,8 @@ def _seed_case(home, tmp_path, *, records, outcome="route", actor="steward", n=[
         "evidence": [{"ref": "transcript:u3test#L1", "quote": "u3 quote"}],
         "decision": {"verb": outcome, "because": "u3 test", "confidence": "settled"},
     }
+    if supersedes is not None:
+        data["supersedes"] = supersedes
     stage = tmp_path / f"stage-{n[0]}.yaml"
     y = YAML(typ="safe")
     y.default_flow_style = False
@@ -197,14 +206,14 @@ class TestNotAttempted:
         real_dispatch = batch._dispatch
         calls = {"n": 0}
 
-        def fake_dispatch(home_, item):
+        def fake_dispatch(home_, item, *, case=None):
             calls["n"] += 1
             if item.n == 2:
                 return batch.ItemResult(
                     n=item.n, id=item.id, verb=item.verb, rc=7,
                     state="refused", detail="simulated git failure",
                 )
-            return real_dispatch(home_, item)
+            return real_dispatch(home_, item, case=case)
 
         monkeypatch.setattr(batch, "_dispatch", fake_dispatch)
         result = batch.run(home, items, no_push=True)
@@ -610,3 +619,309 @@ class TestLoadSheetCaseExistence:
         )
         items = batch.load_sheet(sheet, home=home)  # must not raise
         assert items.case == case_id
+
+
+# ============================================= U5: reject under reconsider
+
+
+class TestU5ReconsiderInSheet:
+    """U5 (`build-u5.md` test 3): a `reject` on an already-ROUTED record
+    is refused in a sheet with no reconsider case, and applies — status
+    `rejected`, compiled line gone — in the same sheet shape once the
+    top-level `case:` names a valid `kind: reconsider` case over that
+    record."""
+
+    def _skill_md(self, tmp_path):
+        return tmp_path / "host-repo" / "plugins" / "s-plugin" / "skills" / "s" / "SKILL.md"
+
+    def test_reject_on_routed_record_refused_without_case_applies_with(
+        self, tmp_path, monkeypatch
+    ):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-f0000001")
+        verbs.route(home, rid, dest="skill-md", no_push=True)
+        target = self._skill_md(tmp_path)
+        assert rid in target.read_text(encoding="utf-8")  # positive control
+
+        old_case = _seed_case(home, tmp_path, records=[rid], outcome="route")
+
+        no_case_sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n",
+            name="no-case.yaml",
+        )
+        items_no_case = batch.load_sheet(no_case_sheet, home=home)
+        result_no_case = batch.run(home, items_no_case, no_push=True)
+        assert result_no_case.items[0].state == "refused"
+        assert Record.from_path(find_record_path(home, rid)).status == "routed"
+        assert rid in target.read_text(encoding="utf-8")  # still there, refused
+
+        reconsider_case = _seed_case(
+            home, tmp_path, records=[rid], outcome="reject",
+            kind="reconsider", supersedes=old_case,
+        )
+        with_case_sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\ncase: {reconsider_case}\nitems:\n"
+            f"  - id: {rid}\n    verb: reject\n",
+            name="with-case.yaml",
+        )
+        items_with_case = batch.load_sheet(with_case_sheet, home=home)
+        result_with_case = batch.run(home, items_with_case, no_push=True)
+        assert result_with_case.items[0].state == "applied"
+        assert Record.from_path(find_record_path(home, rid)).status == "rejected"
+        assert rid not in target.read_text(encoding="utf-8")  # compiled line gone
+
+
+# ======================================================= fold r1: F1 dry-run
+
+
+class TestU5DryRunVerbAware:
+    """Fold r1 (F1): `dry_run`'s per-item widening for a routed record
+    under a validated reconsider case must be VERB-aware, same as
+    `_dispatch` itself -- `_dispatch` only ever forwards
+    `reconsider_case` to reject/defer/graduate/supersede
+    (`batch._RECONSIDER_FORWARDING_VERBS`); `revise`/`rescope`/
+    `rehome` never gained the parameter at all, so a routed record's
+    `revise` item is refused by `run` regardless of any case, and
+    `dry_run` must preview that SAME refusal, never a stale
+    `would-apply`."""
+
+    def test_revise_on_routed_record_previews_the_same_refusal_run_gives(
+        self, tmp_path, monkeypatch
+    ):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-f1000001")
+        verbs.route(home, rid, dest="skill-md", no_push=True)
+
+        old_case = _seed_case(home, tmp_path, records=[rid], outcome="route")
+        reconsider_case = _seed_case(
+            home, tmp_path, records=[rid], outcome="reject",
+            kind="reconsider", supersedes=old_case,
+        )
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\ncase: {reconsider_case}\nitems:\n"
+            f"  - id: {rid}\n    verb: revise\n"
+            "    section: Trigger\n"
+            "    text: a harmless rewording\n"
+            "    because: fold r1 F1 probe\n",
+        )
+        items = batch.load_sheet(sheet, home=home)
+
+        dr = batch.dry_run(home, items)
+        assert dr.items[0].state == "would-refuse"
+        assert "routed" in (dr.items[0].detail or "")
+
+        result = batch.run(home, items, no_push=True)
+        assert result.items[0].state == "refused"
+        assert Record.from_path(find_record_path(home, rid)).status == "routed"
+
+
+# ================================================== fold r1: F2 MutationError
+
+
+class TestU5MutationErrorRefusedNotRaised:
+    """Fold r1 (F2 leg i): a resolution verb's own write-once
+    `resolution_note` collision (pre-existing at base -- `graduate
+    --note` over an already-routed record that already carries a
+    routing note; `verbs.py`'s call site is byte-identical to base)
+    used to propagate a bare `records.MutationError` out of
+    `batch.run` entirely -- the exact mid-sheet-abort shape U4 closed
+    for other exception types (whatever landed before it stayed
+    committed, the rest got no receipt). `_dispatch`'s except-set now
+    catches it too: the item that hits it is REFUSED and the sheet
+    continues per the ordinary stop rules."""
+
+    def test_mid_sheet_mutation_error_is_refused_not_a_crash(
+        self, tmp_path, monkeypatch
+    ):
+        home = _env(tmp_path, monkeypatch)
+        routed_id = _seed_pending(home, "lrn-f2000001")
+        verbs.route(
+            home, routed_id, dest="skill-md", note="the first why", no_push=True
+        )
+        assert (
+            Record.from_path(find_record_path(home, routed_id)).resolution_note
+            == "the first why"
+        )
+
+        other_id = _seed_pending(home, "lrn-f2000002")
+
+        sheet = _write_sheet(
+            tmp_path,
+            "version: 1\nitems:\n"
+            f"  - id: {other_id}\n    verb: reject\n"
+            f"  - id: {routed_id}\n    verb: graduate\n    note: a new why\n",
+        )
+        items = batch.load_sheet(sheet, home=home)
+        result = batch.run(home, items, no_push=True)  # must NOT raise
+
+        assert result.items[0].state == "applied"
+        assert Record.from_path(find_record_path(home, other_id)).status == "rejected"
+        assert result.items[1].state == "refused"
+        assert "resolution_note is write-once" in (result.items[1].detail or "")
+        routed_record = Record.from_path(find_record_path(home, routed_id))
+        assert routed_record.status == "routed"  # untouched by the failed graduate
+        assert routed_record.resolution_note == "the first why"
+
+
+# ============================================ fold r1: F2 note displacement
+
+
+class TestU5ResolutionNoteDisplacement:
+    """Fold r1 (F2 leg i/ii): a resolution verb applied under a
+    validated reconsider case displaces the record's PRIOR resolution
+    note into `history` before setting the new one -- the same
+    discipline `reopen` already gives a rejected record's undo, reused
+    here (`ledger_ops._displace_resolution_note`) rather than crashing
+    on the write-once field (leg i) or silently keeping a stale note
+    across the correction (leg ii)."""
+
+    def test_reject_with_new_note_displaces_the_old_one_to_history(
+        self, tmp_path, monkeypatch
+    ):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-f2000003")
+        verbs.route(home, rid, dest="skill-md", note="the first why", no_push=True)
+
+        old_case = _seed_case(home, tmp_path, records=[rid], outcome="route")
+        reconsider_case = _seed_case(
+            home, tmp_path, records=[rid], outcome="reject",
+            kind="reconsider", supersedes=old_case,
+        )
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\ncase: {reconsider_case}\nitems:\n"
+            f"  - id: {rid}\n    verb: reject\n    note: the corrected why\n",
+        )
+        items = batch.load_sheet(sheet, home=home)
+        result = batch.run(home, items, no_push=True)
+
+        assert result.items[0].state == "applied"
+        record = Record.from_path(find_record_path(home, rid))
+        assert record.status == "rejected"
+        assert record.resolution_note == "the corrected why"
+        displaced = [h for h in record.history if h.get("event") == "resolution"]
+        assert len(displaced) == 1
+        assert displaced[0]["note"] == "the first why"
+        assert displaced[0]["status"] == "routed"
+
+    def test_reject_with_no_note_clears_the_stale_one_instead_of_keeping_it(
+        self, tmp_path, monkeypatch
+    ):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-f2000004")
+        verbs.route(home, rid, dest="skill-md", note="the first why", no_push=True)
+
+        old_case = _seed_case(home, tmp_path, records=[rid], outcome="route")
+        reconsider_case = _seed_case(
+            home, tmp_path, records=[rid], outcome="reject",
+            kind="reconsider", supersedes=old_case,
+        )
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\ncase: {reconsider_case}\nitems:\n"
+            f"  - id: {rid}\n    verb: reject\n",
+        )
+        items = batch.load_sheet(sheet, home=home)
+        result = batch.run(home, items, no_push=True)
+
+        assert result.items[0].state == "applied"
+        record = Record.from_path(find_record_path(home, rid))
+        assert record.status == "rejected"
+        assert record.resolution_note is None  # displaced, never silently kept
+        displaced = [h for h in record.history if h.get("event") == "resolution"]
+        assert len(displaced) == 1
+        assert displaced[0]["note"] == "the first why"
+
+
+# ============================================== fold r1: F3 the reopen shape
+
+
+class TestU5ReconsiderReopenShape:
+    """Fold r1 (F3, the orchestrator's ruling): a WRONG REJECT is
+    corrected via a sheet whose FIRST item is `reopen` (already legal
+    on a rejected record, no case needed for that step) followed by
+    the corrective verb -- never a direct widening of
+    route/rehome/revise to admit `rejected`. Both items receipt to the
+    same reconsider case via the sheet's top-level `case:` key."""
+
+    def test_route_alone_refused_reopen_then_route_applies(
+        self, tmp_path, monkeypatch
+    ):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-f3000001")
+        verbs.reject(home, rid, no_push=True)
+        assert Record.from_path(find_record_path(home, rid)).status == "rejected"
+
+        old_case = _seed_case(home, tmp_path, records=[rid], outcome="reject")
+        reconsider_case = _seed_case(
+            home, tmp_path, records=[rid], outcome="route",
+            kind="reconsider", supersedes=old_case,
+        )
+        # F3's own applicability fix: `reconsider` itself must accept
+        # this while the record is STILL rejected.
+        verbs.reconsider(home, rid, case=reconsider_case, no_push=True)
+
+        # Positive control: `route` ALONE, no `reopen` first -- refused,
+        # the same as before U5 -- proves nothing widens
+        # route/rehome/revise directly to admit a rejected record.
+        route_only_sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\ncase: {reconsider_case}\nitems:\n"
+            f"  - id: {rid}\n    verb: route\n    dest: skill-md\n",
+            name="route-only.yaml",
+        )
+        items_route_only = batch.load_sheet(route_only_sheet, home=home)
+        result_route_only = batch.run(home, items_route_only, no_push=True)
+        assert result_route_only.items[0].state == "refused"
+        assert Record.from_path(find_record_path(home, rid)).status == "rejected"
+
+        # The corrected shape: [reopen, route], both receipted to the
+        # same case.
+        sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\ncase: {reconsider_case}\nitems:\n"
+            f"  - id: {rid}\n    verb: reopen\n"
+            f"  - id: {rid}\n    verb: route\n    dest: skill-md\n",
+        )
+        items = batch.load_sheet(sheet, home=home)
+        result = batch.run(home, items, no_push=True)
+        assert result.items[0].state == "applied"
+        assert result.items[1].state == "applied"
+        assert Record.from_path(find_record_path(home, rid)).status == "routed"
+
+
+# ============================================ fold r1: F6b routed-only guard
+
+
+class TestReconsiderCaseForRoutedOnlyGuard:
+    """Fold r1 (F6b): ruling (8)'s guard `batch._reconsider_case_for`
+    has always had -- never forward a case for a non-routed record --
+    had no test pinning it (gate mutation G: removing the guard left
+    every committed test green, since `reject`/`defer`'s OWN
+    `pre_record.status == "routed"` check already no-ops the
+    retirement leg for a non-routed record regardless). Constructed so
+    the guard's absence IS observable: a `kind: reconsider` case that
+    genuinely validates FOR this record (right predecessor, right
+    coverage) but whose record is currently `pending`, never
+    `routed` -- `cases.require_reconsider_case` does not itself care
+    about the record's OWN current status, so without the guard this
+    would return the case id instead of `None`."""
+
+    def test_returns_none_for_a_pending_record_even_with_a_case_that_would_validate(
+        self, tmp_path, monkeypatch
+    ):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-f6000002")
+        old_case = _seed_case(home, tmp_path, records=[rid], outcome="reject")
+        reconsider_case = _seed_case(
+            home, tmp_path, records=[rid], outcome="route",
+            kind="reconsider", supersedes=old_case,
+        )
+        assert Record.from_path(find_record_path(home, rid)).status == "pending"
+        assert (
+            batch._reconsider_case_for(home, rid, reconsider_case, "reject")
+            is None
+        )

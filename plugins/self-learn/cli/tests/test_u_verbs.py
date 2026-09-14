@@ -30,12 +30,13 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import batch, cli, gitops, sentinel, telemetry, verbs
+from self_learn import batch, cases, cli, gitops, sentinel, telemetry, verbs
 from self_learn.hosts import HostsError, host_add, skill_dir_for, slug_for
 from self_learn.ledger_ops import (
     DEFERRED_ONLY,
     LIVE_STATUSES,
     LedgerOpsError,
+    RECONSIDERABLE_STATUSES,
     REOPENABLE_STATUSES,
     RESOLVABLE_STATUSES,
     ROUTED_ONLY,
@@ -2228,3 +2229,215 @@ class TestU4Revise:
                 because="noop", no_push=True,
             )
         assert "nothing to revise" in str(exc_info.value)
+
+
+# ================================================================== U5
+
+
+def _u5_case(
+    tmp_path, home, *, records, kind="resolution", outcome="route",
+    supersedes=None, actor="steward", n=[0],
+) -> str:
+    """U5's own case-stage builder — same shape as `test_cases.py`'s
+    `_write_stage`/`_record` and `test_batch.py`'s `_seed_case`,
+    purpose-built here so this file needs no cross-import (both of
+    those build against a different home fixture)."""
+    n[0] += 1
+    data = {
+        "kind": kind,
+        "trigger": "reconsider" if kind == "reconsider" else "nightly",
+        "outcome": outcome,
+        "records": list(records),
+        "scope": "skill:a",
+        "question": "U5 test case",
+        "evidence": [{"ref": "transcript:u5test#L1", "quote": "u5 quote"}],
+        "decision": {"verb": outcome, "because": "u5 test", "confidence": "settled"},
+    }
+    if supersedes is not None:
+        data["supersedes"] = supersedes
+    stage = tmp_path / f"u5-stage-{n[0]}.yaml"
+    from ruamel.yaml import YAML
+    import io
+
+    y = YAML(typ="safe")
+    y.default_flow_style = False
+    buf = io.StringIO()
+    y.dump(data, buf)
+    stage.write_text(buf.getvalue(), encoding="utf-8")
+    return cases.record(home, stage, actor=actor)
+
+
+class TestU5Reconsider:
+    """U5 (`build-u5.md`): `reconsider` records a successor decision
+    against a routed/rejected/deferred record; it never itself changes
+    the record's status or writes `superseded_by` on the old case —
+    `cases.record` already wrote that link atomically when the
+    reconsider case was created (naming the predecessor in
+    `supersedes`)."""
+
+    def test_1_no_reconsider_case_refuses(self, env2, tmp_path):
+        """(a) a `resolution`-kind case over the SAME record: wrong
+        kind. (b) a `reconsider`-kind case whose predecessor covers a
+        DIFFERENT record: wrong record. Both refused, nothing written."""
+        rid = seed_routed(env2.home, "lrn-95000001", scope="skill:a")
+        before = find_record_path(env2.home, rid).read_bytes()
+
+        wrong_kind = _u5_case(tmp_path, env2.home, records=[rid], kind="resolution")
+        with pytest.raises(verbs.VerbError) as exc_a:
+            verbs.reconsider(env2.home, rid, case=wrong_kind, no_push=True)
+        assert "reconsider" in str(exc_a.value).lower()
+        assert find_record_path(env2.home, rid).read_bytes() == before
+
+        other_rid = seed_routed(env2.home, "lrn-95000002", scope="skill:a")
+        other_before = find_record_path(env2.home, other_rid).read_bytes()
+        other_case = _u5_case(tmp_path, env2.home, records=[other_rid], kind="resolution")
+        reconsider_for_other = _u5_case(
+            tmp_path, env2.home, records=[other_rid], kind="reconsider",
+            outcome="reject", supersedes=other_case,
+        )
+        with pytest.raises(verbs.VerbError) as exc_b:
+            verbs.reconsider(env2.home, rid, case=reconsider_for_other, no_push=True)
+        assert "record" in str(exc_b.value).lower()
+        assert find_record_path(env2.home, rid).read_bytes() == before
+        assert find_record_path(env2.home, other_rid).read_bytes() == other_before
+
+    def test_2_valid_case_appends_history_status_unchanged(self, env2, tmp_path):
+        rid = seed_routed(env2.home, "lrn-95000003", scope="skill:a")
+        old_case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="resolution", outcome="route"
+        )
+        reconsider_case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="reconsider",
+            outcome="reject", supersedes=old_case,
+        )
+        # `cases.record` itself already flipped the predecessor's
+        # `superseded_by` at CASE-CREATION time (`test_cases.py::
+        # test_supersedes_sets_superseded_by_on_the_target` pins that
+        # mechanism directly) — asserted here as the FIXTURE's own
+        # state, not evidence of what `reconsider` itself writes.
+        old_view = cases.show(env2.home, old_case, evidence_only=False)
+        assert old_view.frontmatter["superseded_by"] == reconsider_case
+
+        result = verbs.reconsider(
+            env2.home, rid, case=reconsider_case, by="steward", no_push=True
+        )
+        assert result.action == "reconsider"
+
+        record = Record.from_path(find_record_path(env2.home, rid))
+        assert record.status == "routed"  # unchanged — reconsider never flips it
+        assert record.history[-1]["event"] == "reconsidered"
+        assert record.history[-1]["case"] == reconsider_case
+        assert record.history[-1]["supersedes"] == old_case
+
+    def test_4_reopen_still_refused_for_replaced_record(self, env2):
+        """Regression guard (distinct from `test_state6_reopen_refuses_
+        terminal`'s graduate/route parametrization, which never exercises
+        a record-to-record `supersede`): a RECORD-id supersession
+        ("replaced") stays refused for `reopen`, same as before U5 —
+        `REOPENABLE_STATUSES` is untouched by this build."""
+        old_id = seed_routed(env2.home, "lrn-95000004", scope="skill:a")
+        new_record = env2.seed(scope="skill:a")
+        verbs.supersede(env2.home, old_id, new_record.id, no_push=True)
+        replaced_path = env2.bucket_skill_a / "resolved" / f"{old_id}.md"
+        assert Record.from_path(replaced_path).status == "superseded"
+        with pytest.raises(verbs.VerbError) as exc:
+            verbs.reopen(env2.home, old_id, no_push=True)
+        assert "superseded" in str(exc.value)
+
+    def test_5_outcome_not_applicable_to_status_refuses(self, env2, tmp_path):
+        """U5's own least-protected surface (not named in `build-u5.md`'s
+        test list): `_OUTCOME_APPLICABLE_STATUSES` refuses a reconsider
+        case whose `outcome` cannot correct the record's CURRENT status
+        even though the case itself is otherwise perfectly valid (right
+        kind, right record) — `outcome: route` never widens `route`'s
+        own admitted statuses, so it applies only to a `deferred`
+        record, never an already-`routed` one."""
+        rid = seed_routed(env2.home, "lrn-95000005", scope="skill:a")
+        old_case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="resolution", outcome="route"
+        )
+        reconsider_case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="reconsider",
+            outcome="route", supersedes=old_case,
+        )
+        with pytest.raises(verbs.VerbError) as exc:
+            verbs.reconsider(env2.home, rid, case=reconsider_case, no_push=True)
+        assert "route" in str(exc.value) and "routed" in str(exc.value)
+
+    def test_6_outcome_applicable_to_rejected_record_for_the_reopen_shape(
+        self, env2, tmp_path
+    ):
+        """Fold r1 (F3, the orchestrator's ruling): `reconsider` itself
+        must accept an outcome that corrects a WRONG REJECT while the
+        record is STILL `rejected` — the corrective verb only runs
+        afterward, in a sheet whose first item is `reopen`
+        (`test_batch.py::TestU5ReconsiderReopenShape` covers that full
+        flow). Before this fix,
+        `_OUTCOME_APPLICABLE_STATUSES["route"]` excluded `rejected`
+        entirely and this call refused."""
+        rid = "lrn-95000006"
+        create_record(env2.home, make_behavior(record_id=rid, scope="skill:a"))
+        write_proposal(env2.home, rid, proposal_dict(scope="skill:a"))
+        commit_all(env2.home, "pending seed")
+        verbs.reject(env2.home, rid, no_push=True)
+        assert (
+            Record.from_path(find_record_path(env2.home, rid)).status == "rejected"
+        )
+
+        old_case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="resolution", outcome="reject"
+        )
+        reconsider_case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="reconsider",
+            outcome="route", supersedes=old_case,
+        )
+        result = verbs.reconsider(env2.home, rid, case=reconsider_case, no_push=True)
+        assert result.action == "reconsider"
+        record = Record.from_path(find_record_path(env2.home, rid))
+        assert record.status == "rejected"  # reconsider itself never flips it
+        assert record.history[-1]["event"] == "reconsidered"
+        assert record.history[-1]["case"] == reconsider_case
+
+
+class TestU5ReconsiderCLI:
+    """Fold r1 (F4, F5): CLI-level checks on `self-learn reconsider`
+    that `build-u5.md`'s own test list did not cover (verb/batch-level
+    only) -- the gate's own probes (P9, R2) were run by hand, never
+    committed."""
+
+    def test_json_outcome_state_is_landed_not_drift(self, env2, tmp_path, capsys):
+        """Fold r1 (F4): `reconsider` never attempts a host write --
+        the ledger resolution (a `reconsidered` history entry) IS the
+        whole verb, same shape `reject`/`defer` already have. Before
+        this fix `_outcome_state` fell through to route's 4-state
+        predicate and reported `drift` (`compile_result is None`) on a
+        fully successful call."""
+        rid = seed_routed(env2.home, "lrn-95000007", scope="skill:a")
+        old_case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="resolution", outcome="route"
+        )
+        reconsider_case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="reconsider",
+            outcome="reject", supersedes=old_case,
+        )
+        rc = cli.main(
+            ["reconsider", rid, "--case", reconsider_case, "--no-push", "--json"]
+        )
+        assert rc == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["action"] == "reconsider"
+        assert out["outcome_state"] == "landed"
+
+    def test_unknown_case_exits_64_not_1(self, env2):
+        """Fold r1 (F5): an unknown/malformed CASE id must exit 64
+        (EX_USAGE), the same discipline every other surface's
+        unknown-id refusal already gets (`commands/review.md`: "An
+        unknown record id is 64 (usage), not 1") — before this fix,
+        both `_reconsider_case_check` and `reconsider`'s own wrap
+        discarded `cases.CaseUsageError.exit_code` and substituted
+        `VerbError`'s default of 1."""
+        rid = seed_routed(env2.home, "lrn-95000008", scope="skill:a")
+        rc = cli.main(
+            ["reconsider", rid, "--case", "case-deadbeef", "--no-push"]
+        )
+        assert rc == 64

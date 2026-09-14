@@ -70,6 +70,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from . import cases
 from . import config as policy_config
 from . import domain, gitops, hook_activation, intents, ledger_ops, sentinel, telemetry
 from .primitives import chrono, fsops, text as text_mod
@@ -130,6 +131,7 @@ from .ledger_ops import (
     LIVE_STATUSES,
     ProposalError,
     QueueEntry,
+    RECONSIDERABLE_STATUSES,
     REOPENABLE_STATUSES,
     RESOLVABLE_STATUSES,
     ROUTED_ONLY,
@@ -5354,6 +5356,91 @@ def commit_drift(
             hold.release()
 
 
+#: U5 (`self-learn reconsider`): the ONLY three destinations a routed
+#: record's `reject`/`defer` retirement leg (below) will drop a
+#: compiled entry for — exactly `_retirement_preflight`'s own managed-
+#: doc-target branch (`skill-md`/`claude-md`/`new-skill`). A hook- or
+#: reference-routed record's reconsider correction refuses by name
+#: instead of silently reusing the hook-removal/reference-retirement
+#: legs UNTESTED under a non-graduating resolution — U5's own gate
+#: tested only the managed-target shape (`build-u5.md` test 3).
+_RECONSIDER_RETIREABLE_DESTINATIONS = frozenset({"skill-md", "claude-md", "new-skill"})
+
+
+def _wrap_case_error(exc: cases.CaseError) -> VerbError:
+    """Fold r1 (F5): preserve a :class:`cases.CaseUsageError`'s
+    EX_USAGE exit code (64) across the wrap into :class:`VerbError` —
+    the same discipline `commands/review.md` already promises for an
+    unknown RECORD id ("An unknown record id is 64 (usage), not 1").
+    Before this, both call sites below raised a bare ``VerbError``
+    unconditionally, which discards `CaseUsageError.exit_code` and
+    substitutes `VerbError`'s own default of 1 — an unknown/malformed
+    CASE id came back exit 1 instead of 64, the one thing every other
+    surface's unknown-id refusal promises. A plain
+    :class:`cases.CaseError` (exit_code 1, e.g. a corrupt multi-match)
+    stays an ordinary :class:`VerbError`."""
+    if getattr(exc, "exit_code", VerbError.exit_code) == VerbUsageError.exit_code:
+        return VerbUsageError(str(exc))
+    return VerbError(str(exc))
+
+
+def _reconsider_case_check(
+    home: Path, reconsider_case: str | None, record_id: str
+) -> dict | None:
+    """The one call site `reject`/`defer`/`graduate`/`supersede` each
+    use to validate a caller-supplied `reconsider_case` BEFORE any lock
+    (U5's brief: "when the check fails the verb refuses before any
+    lock, even if the record is live") — a thin wrap of
+    :func:`cases.require_reconsider_case` that turns every
+    :class:`cases.CaseError` into a :class:`VerbError`, the exception
+    type every one of these verbs' callers already catches
+    (:func:`_wrap_case_error`, fold r1 F5, preserves a
+    `CaseUsageError`'s exit_code 64 across the wrap). Returns the
+    reconsider case's own frontmatter (unused by reject/defer/graduate/
+    supersede today — only :func:`reconsider` itself consults
+    `outcome`) or ``None`` when *reconsider_case* is ``None`` (the
+    default, every pre-U5 call site, behaviour unchanged)."""
+    if reconsider_case is None:
+        return None
+    try:
+        case_fm, _old_fm = cases.require_reconsider_case(
+            home, reconsider_case, record_id
+        )
+    except cases.CaseError as exc:
+        raise _wrap_case_error(exc) from exc
+    return case_fm
+
+
+def _reconsider_retirement_preflight(
+    home: Path,
+    record: Record,
+    path: Path,
+    *,
+    verb: str,
+    user_claude_md: Path | str | None = None,
+) -> tuple["_Retirement", list[str]]:
+    """U5: the read-only preflight half of dropping a ROUTED record's
+    compiled entry when `reject`/`defer` admit it only via a validated
+    reconsider case — MUST run before any status-flip mutation
+    (``record.status`` must still be ``"routed"``, the same
+    precondition :func:`_retirement_preflight` itself checks). Reuses
+    that shared preflight verbatim (the same one `graduate`/`supersede`
+    use for their own retirements) rather than a second implementation
+    of "what host presence does this routed record have"."""
+    destination = (record.routing or {}).get("destination")
+    if destination not in _RECONSIDER_RETIREABLE_DESTINATIONS:
+        raise VerbError(
+            f"{verb} {record.id}: a reconsider correction of a routed "
+            f"{destination!r}-destination record is not supported here "
+            "— hook and reference routes are corrected by hand"
+        )
+    warnings: list[str] = []
+    retire = _retirement_preflight(
+        home, record, path.parent.parent, warnings, user_claude_md=user_claude_md
+    )
+    return retire, warnings
+
+
 def reject(
     home: Path | str,
     record_id: str,
@@ -5361,6 +5448,7 @@ def reject(
     note: str | None = None,
     by: str | None = None,
     no_push: bool = False,
+    reconsider_case: str | None = None,
 ) -> VerbResult:
     """Reject a pending (or deferred) record. Commit: ``self-learn:
     reject lrn-…``. FW-51: refuses BEFORE any lock/mutation, naming the
@@ -5374,24 +5462,75 @@ def reject(
     and rides the commit body ONLY, as its own trailing ``By:``
     paragraph — never `resolve_record`'s *note* (the record's own
     `resolution.note` is unaffected; F3(c) — that is not an attribution
-    slot and adding one is a schema change this fold does not make)."""
+    slot and adding one is a schema change this fold does not make).
+
+    U5 (`reconsider_case`, default ``None``): when given, validated
+    BEFORE any lock (:func:`_reconsider_case_check`) and widens the
+    admitted status set to include ``routed`` — a wrong route or reject
+    corrected without a reopen (`commands/review.md` ~160-186). A
+    record that WAS routed drops its compiled entry in the SAME locked
+    section the status flips in (the retirement leg every
+    `graduate`/`supersede` retirement already takes, reused here for a
+    resolution that does not graduate the record — it just stops being
+    live canon; `_reconsider_retirement_preflight` scopes this to a
+    managed doc target). The CLI's single-verb parser never gains a
+    `--reconsider-case` flag — only `batch._dispatch` passes this,
+    naming the sheet's own top-level `case:`."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
     body = _body_with_by_trailer(note, by)  # validates `by`; raises before any lock
+    _reconsider_case_check(home, reconsider_case, record_id)
+    extra_allowed = frozenset({"routed"}) if reconsider_case is not None else None
     try:
-        require_status(home, record_id, LIVE_STATUSES, verb="reject")
+        require_status(
+            home, record_id, LIVE_STATUSES | (extra_allowed or frozenset()),
+            verb="reject",
+        )
     except LedgerOpsError as exc:
         raise VerbError(str(exc)) from exc
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
         message = f"self-learn: reject {record_id}"
-        with _ledger_write(home) as recovered:
+        pre_record = Record.from_path(path)
+        retire: "_Retirement | None" = None
+        warnings: list[str] = []
+        host_lock_cm: object = contextlib.nullcontext()
+        if extra_allowed is not None and pre_record.status == "routed":
+            retire, warnings = _reconsider_retirement_preflight(
+                home, pre_record, path, verb="reject"
+            )
+            assert retire.spec is not None  # the destination allowlist guarantees this
+            host_lock_cm = gitops.host_lock(retire.spec.host_path, retire.spec.mode)
+        with _ledger_write(home) as recovered, host_lock_cm:
             intents.announce_recovered(recovered)
-            touched = resolve_record(home, record_id, "rejected", note=note, verb="reject")
+            observed_hash = _observe_retirement_region(retire) if retire else None
+            touched = resolve_record(
+                home, record_id, "rejected", note=note, verb="reject",
+                extra_allowed_source=extra_allowed,
+            )
+            if retire is not None:
+                record_path = _write_retirement_compile_record(
+                    home, retire, observed_hash, by=f"reject {record_id}"
+                )
+                if record_path is not None:
+                    touched = touched + [record_path]
             staged, sha = _stage_and_commit(home, touched, message, body)
+            post_notes: list[str] = []
+            host_sha = host_repo = None
+            if retire is not None:
+                host_sha, host_repo = _retirement_host_phase(
+                    home, retire, record_id, note=note, message=message,
+                    warnings=warnings, post_notes=post_notes, user_push=not no_push,
+                )
         push = _push_ledger(home, no_push)
+        host_push = None
+        if (
+            retire is not None and not no_push
+            and host_sha is not None and host_repo is not None
+        ):
+            host_push = gitops.push_if_remote(host_repo)
         return VerbResult(
             action="reject",
             record_id=record_id,
@@ -5400,6 +5539,10 @@ def reject(
             staged=staged,
             push=push,
             sentinel_owned=hold.owned,
+            warnings=warnings,
+            post_notes=post_notes,
+            host_commit_sha=host_sha,
+            host_push=host_push,
         )
     finally:
         hold.release()
@@ -5413,6 +5556,7 @@ def defer(
     note: str | None = None,
     by: str | None = None,
     no_push: bool = False,
+    reconsider_case: str | None = None,
 ) -> VerbResult:
     """Defer a pending (or already-deferred) record (default +30 d).
     Commit: ``self-learn: defer lrn-… until <date>``. The note rides the
@@ -5425,22 +5569,48 @@ def defer(
     contract `reject`/`route` pin.
 
     Fold r1 (F3): *by*, when given, rides the commit body as its own
-    trailing ``By:`` paragraph — see :func:`reject`'s docstring."""
+    trailing ``By:`` paragraph — see :func:`reject`'s docstring.
+
+    U5 (`reconsider_case`, default ``None``): same widening `reject`
+    gains, and the same reasoning — see its docstring. A record admitted
+    here only via a validated reconsider case may currently live in
+    ``resolved/`` (a routed record's own directory); :func:`defer_record`
+    moves it to ``pending/`` as part of the same write (deferred records
+    live there — 02 §2), and its compiled entry drops through the SAME
+    retirement leg `reject` takes, in the SAME locked section."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
     body = _body_with_by_trailer(note, by)  # validates `by`; raises before any lock
+    _reconsider_case_check(home, reconsider_case, record_id)
+    extra_allowed = frozenset({"routed"}) if reconsider_case is not None else None
     try:
-        require_status(home, record_id, LIVE_STATUSES, verb="defer")
+        require_status(
+            home, record_id, LIVE_STATUSES | (extra_allowed or frozenset()),
+            verb="defer",
+        )
     except LedgerOpsError as exc:
         raise VerbError(str(exc)) from exc
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
-        with _ledger_write(home) as recovered:
+        pre_record = Record.from_path(path)
+        retire: "_Retirement | None" = None
+        warnings: list[str] = []
+        host_lock_cm: object = contextlib.nullcontext()
+        if extra_allowed is not None and pre_record.status == "routed":
+            retire, warnings = _reconsider_retirement_preflight(
+                home, pre_record, path, verb="defer"
+            )
+            assert retire.spec is not None  # the destination allowlist guarantees this
+            host_lock_cm = gitops.host_lock(retire.spec.host_path, retire.spec.mode)
+        with _ledger_write(home) as recovered, host_lock_cm:
             intents.announce_recovered(recovered)
+            observed_hash = _observe_retirement_region(retire) if retire else None
             try:
-                touched = defer_record(home, record_id, until)
+                touched = defer_record(
+                    home, record_id, until, extra_allowed_source=extra_allowed
+                )
             except LedgerOpsError as exc:
                 # U-verbs §4.2: a past `--until` is a REFUSAL (exit 1,
                 # nothing written), never a usage error (64) — the flag
@@ -5448,10 +5618,33 @@ def defer(
                 # makes it illegal (02 §2's own distinction). Nothing has
                 # been written yet at this point.
                 raise VerbError(str(exc)) from exc
-            deferred_until = _date_str(Record.from_path(touched[0]).deferred_until)
+            # `touched[-1]` (not `[0]`): the FINAL/current path -- byte-
+            # identical to `touched[0]` when nothing moved, but a U5
+            # retirement leaves `touched[0]` pointing at the now-vacated
+            # `resolved/` location (`defer_record`'s own mv-first order).
+            deferred_until = _date_str(Record.from_path(touched[-1]).deferred_until)
             message = f"self-learn: defer {record_id} until {deferred_until}"
+            if retire is not None:
+                record_path = _write_retirement_compile_record(
+                    home, retire, observed_hash, by=f"defer {record_id}"
+                )
+                if record_path is not None:
+                    touched = touched + [record_path]
             staged, sha = _stage_and_commit(home, touched, message, body)
+            post_notes: list[str] = []
+            host_sha = host_repo = None
+            if retire is not None:
+                host_sha, host_repo = _retirement_host_phase(
+                    home, retire, record_id, note=note, message=message,
+                    warnings=warnings, post_notes=post_notes, user_push=not no_push,
+                )
         push = _push_ledger(home, no_push)
+        host_push = None
+        if (
+            retire is not None and not no_push
+            and host_sha is not None and host_repo is not None
+        ):
+            host_push = gitops.push_if_remote(host_repo)
         return VerbResult(
             action="defer",
             record_id=record_id,
@@ -5461,6 +5654,10 @@ def defer(
             push=push,
             sentinel_owned=hold.owned,
             deferred_until=deferred_until,
+            warnings=warnings,
+            post_notes=post_notes,
+            host_commit_sha=host_sha,
+            host_push=host_push,
         )
     finally:
         hold.release()
@@ -5786,6 +5983,146 @@ def undefer(
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="undefer",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()
+
+
+#: U5: which record status(es) a reconsider case's `outcome` may
+#: correct — the intersection of :data:`RECONSIDERABLE_STATUSES` with
+#: each outcome's own resolution verb's admitted-status set, AFTER this
+#: build's widening (`reject`/`defer`/`graduate`/`supersede` admit
+#: `routed` only under a validated reconsider case; `route`/`rehome`/
+#: `revise` are NOT widened by this build — a routed record's status is
+#: never applicable through those three here). `no-action`/`parked`
+#: name no correcting verb at all — the steward examined and did
+#: nothing, or handed the record to the overseer — so both are
+#: applicable from any reconsiderable status.
+_RECONSIDER_WIDENED_STATUSES = frozenset({"routed", "deferred"})  # ROUTED_ONLY | DEFERRED_ONLY
+#: Fold r1 (F3, the orchestrator's ruling): a WRONG REJECT is corrected
+#: through `reopen` (already legal on a `rejected` record —
+#: `REOPENABLE_STATUSES`, no reconsider case needed for THAT step) as
+#: the sheet's FIRST item, receipted to the same reconsider case, with
+#: the corrective verb (`route`/`defer`/`graduate`/…) AFTER it — by the
+#: time the corrective verb runs, `reopen` has already moved the record
+#: to `pending`, so the verb itself needs no widening at all (`route`'s
+#: own unwidened gate already admits `pending`). This is NOT a new
+#: widening of `route`/`rehome`/`revise` to admit `rejected` directly —
+#: none of the three ever gain it. What DOES need to admit `rejected`
+#: is `reconsider` itself: the verb that records the "this was wrong"
+#: history entry is called BEFORE that corrective sheet ever runs,
+#: while the record is STILL `rejected` — so the corresponding outcome
+#: must already be applicable to a `rejected` record for that call to
+#: succeed at all. `reject`'s own outcome is deliberately excluded
+#: (correcting a reject into ANOTHER reject is not a correction).
+#: `REOPENABLE_STATUSES` (`ledger_ops.py` — the rejected-only set) is
+#: reused below rather than a fresh inline set literal — it names
+#: EXACTLY what this fold means (GUARD2, `test_guard2_new_status_sets_
+#: are_constants`, pins that `verbs.py` never re-derives that constant
+#: — or `DEFERRED_ONLY`'s — own literal by hand).
+_RECONSIDER_WIDENED_STATUSES_INCL_REJECTED = (
+    _RECONSIDER_WIDENED_STATUSES | REOPENABLE_STATUSES
+)
+_OUTCOME_APPLICABLE_STATUSES: dict[str, frozenset[str]] = {
+    "route": DEFERRED_ONLY | REOPENABLE_STATUSES,
+    "reject": _RECONSIDER_WIDENED_STATUSES,
+    "defer": _RECONSIDER_WIDENED_STATUSES_INCL_REJECTED,
+    "retire": _RECONSIDER_WIDENED_STATUSES_INCL_REJECTED,
+    "replaced": _RECONSIDER_WIDENED_STATUSES_INCL_REJECTED,
+    "rehome": DEFERRED_ONLY,
+    "revise": DEFERRED_ONLY,
+    "no-action": RECONSIDERABLE_STATUSES,
+    "parked": RECONSIDERABLE_STATUSES,
+}
+
+
+def reconsider(
+    home: Path | str,
+    record_id: str,
+    *,
+    case: str,
+    by: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """U5 (`commands/review.md` ~160-186, `02-schema.md` §2/§3a): record
+    a successor decision against a record whose prior resolution (route,
+    reject, or defer) turned out wrong — never a reset. Requires an
+    EXISTING case whose ``kind`` is ``reconsider`` and whose
+    ``supersedes`` names a case that already covers *record_id*
+    (:func:`cases.require_reconsider_case` — the SAME check
+    `reject`/`defer`/`graduate`/`supersede`'s own ``reconsider_case``
+    widening performs).
+
+    This verb does NOT itself change the record's status, and does NOT
+    write the old case's ``superseded_by`` — :func:`cases.record`
+    already wrote that link atomically when *case* itself was created
+    (naming the predecessor in ``supersedes``; a second write through
+    that same path is refused outright — a case is superseded once).
+    What lands here is the record's own ``reconsidered`` history entry —
+    the pointer FROM the record TO the case that reconsidered it
+    (``02-schema.md`` §2's five-kind ``history`` set). The actual
+    correction is an ordinary sheet item run afterwards, naming *case*
+    at the sheet's own top level — THAT is what makes a resolution verb
+    legal again on an already-routed record (``batch._dispatch``'s own
+    widening, beside this verb, never duplicated here).
+
+    Refuses, nothing written, when: *case* fails
+    :func:`cases.require_reconsider_case`'s checks (no case / wrong kind
+    / wrong record / tampered / predecessor link broken); *record_id*'s
+    current status is not one of ``routed``/``rejected``/``deferred``
+    (:data:`RECONSIDERABLE_STATUSES` — nothing to reconsider about a
+    pending record, and a superseded one already has a live successor);
+    or the case's own ``outcome`` does not apply to the record's current
+    status (:data:`_OUTCOME_APPLICABLE_STATUSES`). A genuinely UNKNOWN
+    id stays a bare :class:`LedgerOpsError` (exit 64, unwrapped) —
+    `find_record_path` runs first, outside every wrap, the same
+    contract `reject`/`defer`/`reopen` pin."""
+    home = Path(home)
+    path = find_record_path(home, record_id)  # pending OR resolved
+    _by_trailer(by)  # validates `by` before any lock/mutation
+    if not cases.CASE_ID_RE.match(case or ""):
+        raise VerbError(f"reconsider: not a case id: {case!r}")
+    try:
+        case_fm, _old_fm = cases.require_reconsider_case(home, case, record_id)
+    except cases.CaseError as exc:
+        raise _wrap_case_error(exc) from exc  # fold r1 (F5): preserve exit 64
+    try:
+        _, record = require_status(
+            home, record_id, RECONSIDERABLE_STATUSES, verb="reconsider"
+        )
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+    outcome = str(case_fm.get("outcome") or "")
+    applicable = _OUTCOME_APPLICABLE_STATUSES.get(outcome, frozenset())
+    if record.status not in applicable:
+        raise VerbError(
+            f"reconsider {record_id}: {case}'s outcome {outcome!r} does not "
+            f"apply to a {record.status!r} record"
+        )
+
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        message = f"self-learn: reconsider {record_id} (case {case})"
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
+            record.append_history(
+                "reconsidered",
+                {"case": case, "supersedes": case_fm.get("supersedes")},
+            )
+            record.write(path)
+            staged, sha = _commit_ledger(
+                home, [path], message, _body_with_by_trailer(None, by)
+            )
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="reconsider",
             record_id=record_id,
             commit_message=message,
             commit_sha=sha,
@@ -6233,6 +6570,7 @@ def graduate(
     by: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
+    reconsider_case: str | None = None,
 ) -> VerbResult:
     """Graduate a lesson into authored canon: ``superseded_by: canon``
     (02 §2/§4). Works on a routed record (the hand-weave) or a pending
@@ -6248,11 +6586,21 @@ def graduate(
     Fold r1 (F3): *by*, when given, rides the LEDGER commit's body as
     its own trailing ``By:`` paragraph -- the separate HOST-repo commit
     (`_retirement_host_phase`, a different repo entirely) keeps taking
-    the raw *note*, unchanged."""
+    the raw *note*, unchanged.
+
+    U5 (`reconsider_case`, default ``None``): ``RESOLVABLE_STATUSES``
+    already admits ``routed`` unconditionally — the hand-weave graduate
+    above IS that path, no case ever needed. When a caller passes this
+    anyway (``batch._dispatch``, uniformly, for every resolution verb a
+    sheet item names), it is still validated
+    (:func:`_reconsider_case_check`) before any lock: a sheet naming a
+    bad case still refuses, even though graduate's own admitted-status
+    set does not change."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
     _by_trailer(by)  # validates `by` before any lock/mutation
+    _reconsider_case_check(home, reconsider_case, record_id)
     warnings = _orphaned_followup_warning(path, record_id)
     # FW-51: refuses BEFORE any lock/mutation, naming the record's actual
     # status, when it is already terminal (rejected, or already
@@ -6413,6 +6761,7 @@ def supersede(
     by: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
+    reconsider_case: str | None = None,
 ) -> VerbResult:
     """Corrective supersession (08 §1 pin): mark ``old`` superseded by
     ``new`` (which must exist). Commit: ``self-learn: supersede lrn-old →
@@ -6426,7 +6775,12 @@ def supersede(
     Fold r1 (F3): *by*, when given, rides the LEDGER commit's body as
     its own trailing ``By:`` paragraph -- the separate HOST-repo commits
     (`_host_phase`/`_remove_hook_script`/`_retire_reference_host_phase`,
-    a different repo entirely) keep taking the raw *note*, unchanged."""
+    a different repo entirely) keep taking the raw *note*, unchanged.
+
+    U5 (`reconsider_case`, default ``None``): same non-widening
+    validation-only addition `graduate` gains, over ``old_id`` — see its
+    docstring; ``RESOLVABLE_STATUSES`` already admits a routed
+    ``old_id`` unconditionally."""
     home = Path(home)
     if old_id == new_id:
         raise VerbError("a record cannot supersede itself")
@@ -6434,6 +6788,7 @@ def supersede(
     find_record_path(home, new_id)  # the replacement must exist
     _scan_or_refuse([old_path], note)
     _by_trailer(by)  # validates `by` before any lock/mutation
+    _reconsider_case_check(home, reconsider_case, old_id)
     warnings = _orphaned_followup_warning(old_path, old_id)
     # FW-51: status/cycle refusals — BEFORE any lock/mutation, naming the
     # record's actual status. Existence of both ids is already confirmed

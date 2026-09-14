@@ -80,11 +80,13 @@ REQUIRED_SECTIONS = {"behavior": ("Trigger", "Instruction"), "knowledge": ("Fact
 #: `13-hosting-and-separation.md` §7.4's activation verb applying or
 #: reversing a hook route, for either caller — the human's `hook
 #: activate` or the overseer's own runner call — each entry's `note`
-#: carrying the settings-file backup path. `reconsidered` (U5's own
-#: kind, not added here) completes the five-kind set the amendment
-#: describes.
+#: carrying the settings-file backup path. `reconsidered` completes the
+#: five-kind set the amendment describes: U5's own kind, the successor-
+#: case pointer a `self-learn reconsider` call appends to the record it
+#: revisits (payload carries `case`/`supersedes`, never a status/note —
+#: `reconsider` does not itself change the record's status).
 HISTORY_EVENTS = frozenset(
-    {"resolution", "routing", "hook-activated", "hook-deactivated"}
+    {"resolution", "routing", "hook-activated", "hook-deactivated", "reconsidered"}
 )
 #: "Episode brief" (02 §1 amendment, 10 §3 U18): a miner-only, optional
 #: body section for BOTH types — no ``required`` weight, duplicate-guarded
