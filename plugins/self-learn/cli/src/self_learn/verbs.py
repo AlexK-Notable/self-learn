@@ -2464,6 +2464,31 @@ def _hook_script_location(
     return root, root / rel, rel, host_mode(home, root)
 
 
+def _residual_notes(exc: BaseException) -> list[str]:
+    """Fold r3, S1: every note attached to ``exc`` (e.g. by
+    :func:`hook_activation._undo` via ``add_note``) and to
+    ``exc.__cause__`` — ``str(exc)`` never includes ``__notes__``, so a
+    caller that builds its message from ``str(exc)`` alone silently
+    drops exactly the residual-effect reporting fold r2 built (gate
+    round-3 SHOULD-FIX 1). Order: ``exc``'s own notes first, then its
+    cause's."""
+    notes: list[str] = list(getattr(exc, "__notes__", None) or [])
+    cause = exc.__cause__
+    if cause is not None:
+        notes.extend(getattr(cause, "__notes__", None) or [])
+    return notes
+
+
+def _residual_message(exc: BaseException) -> str:
+    """``str(exc)`` joined with every line :func:`_residual_notes`
+    finds — the single place :func:`hook_activate`/
+    :func:`hook_deactivate` build a ``VerbError`` message from a caught
+    :class:`hook_activation.HookActivationError` so the residual text
+    reaches ``_cmd_hook``'s stderr (and the ``--json`` error envelope,
+    which prints this same string)."""
+    return "\n".join([str(exc), *_residual_notes(exc)])
+
+
 def _hook_commit_or_undo(
     home: Path,
     record_id: str,
@@ -2485,17 +2510,33 @@ def _hook_commit_or_undo(
     is KEPT — an activated hook a ledger record fails to fully describe
     is a smaller problem than silently deactivating a guard the record
     says is live — and the uncertain outcome is raised as its own
-    :class:`VerbError` instead of being undone."""
+    :class:`VerbError` instead of being undone.
+
+    Fold r3, S2: the ``try`` now starts above ``find_record_path`` — a
+    raise from ``find_record_path``/``Record.from_path``/
+    ``append_history`` used to sit OUTSIDE it entirely, so it skipped
+    :func:`hook_activation._undo` altogether and left the runtime change
+    live with no ledger record at all (gate round-3 SHOULD-FIX 2, probe
+    PF). The ``except``-side ``head_sha`` read is now its OWN inner
+    ``try``: if reading the post-failure ``HEAD`` itself raises, this
+    falls through to the undo rather than skip it (probe PH2) — treating
+    an unreadable ``HEAD`` as "uncertain, assume the commit did not
+    land" is the over-cautious direction; treating it as "the commit
+    landed, keep the runtime change" on nothing more than a failed read
+    would be the dangerous one."""
     commit_body = "\n".join(result.receipts)
-    path = ledger_ops.find_record_path(home, record_id)
-    record = Record.from_path(path)
-    record.append_history(event, {"note": result.backup_note})
     head_before = gitops.head_sha(home)
     try:
+        path = ledger_ops.find_record_path(home, record_id)
+        record = Record.from_path(path)
+        record.append_history(event, {"note": result.backup_note})
         record.write(path)
         return _commit_ledger(home, [path], message, commit_body)
     except BaseException as exc:
-        head_after = gitops.head_sha(home)
+        try:
+            head_after = gitops.head_sha(home)
+        except Exception:  # noqa: BLE001 - fold r3, S2: uncertain -> undo
+            head_after = head_before
         if head_after != head_before:
             raise VerbError(
                 f"{message}: the ledger commit landed ({head_before[:7]} -> "
@@ -2524,7 +2565,15 @@ def _prune_hook_backups(
     if result.backup_path is None:
         return None
     try:
-        existing = sorted(claude_dir.glob("settings.json.self-learn-bak.*"))
+        # Fold r3, N8: sort by the backup's own INTEGER suffix, not by
+        # the path's string form — a plain `sorted()` only agrees with
+        # numeric order while every `time.time_ns()` suffix has the
+        # same digit count (true until ~2286; gate round-3 NIT 8), after
+        # which "oldest first" silently inverts.
+        existing = sorted(
+            claude_dir.glob("settings.json.self-learn-bak.*"),
+            key=lambda p: int(p.name.rsplit(".", 1)[-1]) if p.name.rsplit(".", 1)[-1].isdigit() else 0,
+        )
         keep = hook_activation._BACKUP_KEEP  # noqa: SLF001
         stale = tuple(existing[: max(0, len(existing) - keep)])
         if not stale:
@@ -2573,7 +2622,10 @@ def hook_activate(
                     home, record_id, claude_dir=claude_dir, register=True
                 )
             except hook_activation.HookActivationError as exc:
-                raise VerbError(str(exc)) from exc
+                # Fold r3, S1: fold the residual-effect notes in, or a
+                # cleanup that itself failed reads to the person running
+                # this as though nothing happened at all.
+                raise VerbError(_residual_message(exc)) from exc
             message = f"self-learn: hook activate {record_id}"
             staged, sha = _hook_commit_or_undo(
                 home, record_id, result, "hook-activated", message
@@ -2635,7 +2687,8 @@ def hook_deactivate(
                     home, record_id, claude_dir=claude_dir
                 )
             except hook_activation.HookActivationError as exc:
-                raise VerbError(str(exc)) from exc
+                # Fold r3, S1: same join as hook_activate above.
+                raise VerbError(_residual_message(exc)) from exc
             message = f"self-learn: hook deactivate {record_id}"
             staged, sha = _hook_commit_or_undo(
                 home, record_id, result, "hook-deactivated", message

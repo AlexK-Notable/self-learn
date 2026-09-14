@@ -248,6 +248,27 @@ class _Progress:
     backup_written: bool = False
 
 
+def _restore_landed(settings_path: Path, expected_bytes: bytes | None) -> bool:
+    """Fold r3, N6: whether ``settings_path`` actually holds
+    ``expected_bytes`` on disk (or, when ``expected_bytes`` is ``None``,
+    is genuinely absent) — read back after the attempt, never inferred
+    from whether the write call itself raised. The same boundary
+    :class:`_Progress`'s own eager marking already draws for the
+    FORWARD write ("a replace that lands and then fails its own
+    trailing directory fsync still counts as WRITTEN") applies just as
+    much to :func:`_undo`'s restore attempts: a call that raises AFTER
+    genuinely landing the bytes must not be reported as a failed
+    restore, and — the rarer direction — a call that returns cleanly
+    but somehow left the wrong bytes on disk must not be reported as a
+    success either way this function is ever called."""
+    if expected_bytes is None:
+        return not settings_path.exists()
+    try:
+        return settings_path.read_bytes() == expected_bytes
+    except OSError:
+        return False
+
+
 def _undo(progress: _Progress) -> list[str]:
     """Fold r2, item A: each cleanup attempted INDEPENDENTLY in its own
     ``try`` — a failure undoing one effect must never skip the others.
@@ -258,9 +279,19 @@ def _undo(progress: _Progress) -> list[str]:
     Returns the list of effects a cleanup itself could NOT undo (empty =
     fully undone); the caller's ORIGINAL exception stays primary
     regardless — this function never raises, and never decides what the
-    caller's error should be."""
+    caller's error should be.
+
+    Fold r3, N7: a pre-commit ledger failure (the verb's own
+    ``record.write``/``_commit_ledger`` raising) leaves the ledger
+    record on disk DIRTY with a ``hook-activated``/``hook-deactivated``
+    history entry, by design — this function only ever touches the
+    Claude runtime directory (the symlink, ``settings.json``, the
+    backup file) and never the ledger record itself; the next call's
+    recover-or-refuse path (§7.2a.5) is what reconciles that dirty
+    record, not this function."""
     residual: list[str] = []
     if progress.settings_written:
+        write_exc: Exception | None = None
         try:
             if progress.start_bytes is not None:
                 _write_claude_runtime(
@@ -269,8 +300,17 @@ def _undo(progress: _Progress) -> list[str]:
             else:
                 _write_claude_runtime(settings_path=progress.settings_path, unlink_settings=True)
         except Exception as exc:  # noqa: BLE001 - reported, never raised
+            write_exc = exc
+        # Fold r3, N6: decide by reading the bytes back, not by whether
+        # the write call above raised.
+        if not _restore_landed(progress.settings_path, progress.start_bytes):
+            detail = (
+                write_exc
+                if write_exc is not None
+                else "the file on disk does not match the expected restored bytes"
+            )
             residual.append(
-                f"settings.json restore failed: {exc} — the registration "
+                f"settings.json restore failed: {detail} — the registration "
                 "change made by this call may still be live"
             )
     if progress.link_placed:
@@ -428,21 +468,34 @@ def _command_for(name: str, claude_dir: Path) -> str:
 
 
 def _registered_matcher_for(data: dict, event: str, command: str):
-    """The matcher ``command`` is CURRENTLY registered under, in
-    ``event``'s array — fold r2, item D, mirrored on the removal side:
-    ``None`` when found but the item's own ``matcher`` key is itself
-    missing or null (distinguished from "not registered anywhere",
-    which returns the module-level :data:`_NOT_FOUND` sentinel — the
-    same collapse :func:`_merge_snippet` guards against on the write
-    side)."""
+    """Every matcher ``command`` is registered under, in ``event``'s
+    array — fold r2, item D, mirrored on the removal side; fold r3,
+    item S4: collect-ALL, matching :func:`_merge_snippet`'s write-side
+    scan. The round-2 shape returned only the FIRST matching item's
+    matcher and stopped, so whether :func:`deactivate` refused depended
+    on array ORDER (gate round-3 SHOULD-FIX 4, probes M7/M8/M9): the
+    reachable sequence — activate normally, hand-add a foreign-matcher
+    entry for the SAME command, deactivate — silently removed the
+    OWNED entry and left a dangling foreign registration pointing at
+    the symlink this call had just deleted, its own receipt claiming
+    "every other registration untouched". Returns the module-level
+    :data:`_NOT_FOUND` sentinel when ``command`` is not registered
+    anywhere in this event's array; otherwise a list of EVERY matcher
+    found (duplicates included; a missing or null ``matcher`` key
+    normalizes to ``None``, same as the write side) — the caller
+    refuses whenever anything besides its own matcher appears in that
+    list, regardless of which element came first."""
     hooks_cfg = data.get("hooks") or {}
+    found: list = []
     for item in hooks_cfg.get(event) or []:
         if not isinstance(item, dict):
             continue
         for h in item.get("hooks") or []:
             if isinstance(h, dict) and h.get("command") == command:
-                return item.get("matcher")
-    return _NOT_FOUND
+                found.append(item.get("matcher"))
+    if not found:
+        return _NOT_FOUND
+    return found
 
 
 def _registered_item(data: dict, event: str, matcher, command: str) -> dict | None:
@@ -997,16 +1050,21 @@ def deactivate(
     settings_changed = False
     new_settings_bytes: bytes | None = None
     if problem is None:
-        found_matcher = _registered_matcher_for(data, event, command)
-        if found_matcher is not _NOT_FOUND and found_matcher != matcher:
-            desc = repr(found_matcher) if isinstance(found_matcher, str) else "no matcher"
-            raise HookActivationError(
-                f"{command} is registered under matcher {desc}, expected "
-                f"{matcher!r} — refusing to remove a registration this "
-                "call does not own (deactivate the record that owns it, "
-                "or fix settings.json by hand)"
-            )
-        if found_matcher == matcher:
+        found_matchers = _registered_matcher_for(data, event, command)
+        if isinstance(found_matchers, list):
+            # Fold r3, S4: collect-all — refuse when ANY entry names a
+            # matcher other than this record's own, even when the own
+            # matcher ALSO appears elsewhere in the same array (D-a's
+            # ownership boundary must not depend on array order).
+            foreign = [m for m in found_matchers if m != matcher]
+            if foreign:
+                desc = repr(foreign[0]) if isinstance(foreign[0], str) else "no matcher"
+                raise HookActivationError(
+                    f"{command} is also registered under matcher {desc}, "
+                    f"expected {matcher!r} — refusing to remove a "
+                    "registration this call does not own (deactivate the "
+                    "record that owns it, or fix settings.json by hand)"
+                )
             merged, settings_changed = _remove_command(data, event, matcher, command)
             if settings_changed:
                 new_settings_bytes = (json.dumps(merged, indent=2) + "\n").encode("utf-8")

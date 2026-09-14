@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import cli, config, hook_activation, intents, selfcheck, verbs
+from self_learn import cli, config, gitops, hook_activation, intents, selfcheck, verbs
 from self_learn.hook_compiler import command_for, command_root, script_name, settings_snippet
 from self_learn.records import Record
 from support import git, hook_proposal_fields, make_behavior
@@ -1236,6 +1236,64 @@ class TestPrepareFirstIndependentCleanups:
         assert not link_path(env, name).exists()
         assert sorted(env.claude.glob("settings.json.self-learn-bak.*")) == []
 
+    def test_cli_activate_prints_residual_notes_on_stderr(self, env, monkeypatch, capsys):
+        # S1 (fold r3): drives the exact scenario above
+        # (test_undo_settings_restore_failure_still_removes_link_and_
+        # backup) through `cli.main` instead of the module API --
+        # `verbs.hook_activate` used to build its `VerbError` from
+        # `str(exc)` alone, which never includes `exc.__notes__`, so the
+        # residual-effect text `_undo` computed was silently discarded
+        # at the only surface a human actually reads (gate round-3
+        # SHOULD-FIX 1, probe PB-CLI). Mutation witness: reverting
+        # `verbs.hook_activate`'s `except hook_activation.
+        # HookActivationError` arm to `raise VerbError(str(exc)) from
+        # exc` reddens the `"settings.json restore failed" in err`
+        # assertion below -- verified by hand, reverted.
+        name, rel = route_hook(env, RID)
+        settings = env.claude / "settings.json"
+        unrelated_command = "$HOME/.claude/hooks/self-learn-deadbeef-unrelated.sh"
+        settings.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Bash",
+                                "hooks": [{"type": "command", "command": unrelated_command}],
+                            }
+                        ]
+                    }
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        real_write = hook_activation._write_claude_runtime
+        calls = {"settings_writes": 0}
+
+        def spy(**kwargs):
+            if kwargs.get("settings_bytes") is not None:
+                calls["settings_writes"] += 1
+                if calls["settings_writes"] == 2:
+                    # The FIRST settings-bytes write is activate()'s own
+                    # registration; the SECOND is the undo's own restore
+                    # attempt -- fail exactly that one, without landing
+                    # (so the restore genuinely fails, not merely raises
+                    # after landing -- see the N6 test for that half).
+                    raise OSError("simulated restore failure")
+            return real_write(**kwargs)
+
+        monkeypatch.setattr(hook_activation, "_write_claude_runtime", spy)
+
+        rc = cli.main(["hook", "activate", RID, "--no-push"])
+
+        assert rc != 0
+        err = capsys.readouterr().err
+        assert "did not verify as live" in err  # the primary error, still present
+        assert "settings.json restore failed" in err  # S1: the residual note reaches stderr
+
     def test_os_replace_failure_leaves_no_temp_symlink(self, env, monkeypatch):
         # Opus N10 (ii): if `os.replace(tmp, link)` raises, the temp
         # symlink must not litter `hooks/`. Mutation witness: removing
@@ -1258,6 +1316,67 @@ class TestPrepareFirstIndependentCleanups:
 
         leftovers = sorted((env.claude / "hooks").glob(".*"))
         assert leftovers == []
+
+
+class TestUndoDecidesRestoreSuccessByBytes:
+    def test_restore_that_genuinely_lands_but_still_raises_is_not_reported_as_failed(
+        self, env, monkeypatch
+    ):
+        # N6 (fold r3): `_undo` used to decide a restore "failed" from
+        # whether the write call itself raised -- the exact boundary
+        # the fold rejects for `_Progress`'s own eager marking ("a
+        # replace that lands and then fails its own trailing directory
+        # fsync still counts as WRITTEN"). Here the undo's settings
+        # restore genuinely lands (the real write runs first) and THEN
+        # raises; the correct decision reads the bytes back off disk,
+        # sees they match, and must NOT report a residual failure.
+        # Mutation witness: reverting `_undo` to decide from the write
+        # call's exception alone (any raise == failed, regardless of
+        # what actually landed) reddens the `not any(...)` assertion
+        # below -- verified by hand, reverted.
+        name, rel = route_hook(env, RID)
+        settings = env.claude / "settings.json"
+        unrelated_command = "$HOME/.claude/hooks/self-learn-deadbeef-unrelated.sh"
+        settings.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Bash",
+                                "hooks": [{"type": "command", "command": unrelated_command}],
+                            }
+                        ]
+                    }
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        before_bytes = settings.read_bytes()
+
+        real_write = hook_activation._write_claude_runtime
+        calls = {"settings_writes": 0}
+
+        def spy(**kwargs):
+            if kwargs.get("settings_bytes") is not None:
+                calls["settings_writes"] += 1
+                if calls["settings_writes"] == 2:
+                    real_write(**kwargs)  # the restore genuinely lands...
+                    raise OSError("simulated trailing fsync failure after landing")
+            return real_write(**kwargs)
+
+        monkeypatch.setattr(hook_activation, "_write_claude_runtime", spy)
+
+        with pytest.raises(
+            hook_activation.HookActivationError, match="did not verify as live"
+        ) as exc_info:
+            hook_activation.activate(env.home, RID, claude_dir=env.claude, register=True)
+
+        notes = list(getattr(exc_info.value, "__notes__", []))
+        assert settings.read_bytes() == before_bytes  # ...restore really landed
+        assert not any("settings.json restore failed" in n for n in notes)
 
 
 class TestBackupInventoryUnchangedOnAbort:
@@ -1296,6 +1415,91 @@ class TestBackupInventoryUnchangedOnAbort:
 
         after_backups = sorted(claude.glob("settings.json.self-learn-bak.*"))
         assert after_backups == existing_backups
+
+
+class TestPruningRunsOnlyAfterCommit:
+    def test_record_write_failure_leaves_backup_inventory_byte_for_byte_unchanged(
+        self, env, monkeypatch
+    ):
+        # S5 (fold r3): fold r2, item A's own docstring makes the
+        # ordering load-bearing -- pruning "runs in the verb only after
+        # `_commit_ledger` has succeeded". No existing test was
+        # sensitive to the ORDER (gate round-3 SHOULD-FIX 5: moving
+        # `_prune_hook_backups` back above `_hook_commit_or_undo`
+        # reddened nothing). Seeds `_BACKUP_KEEP + 1` backups directly
+        # (bypassing the verb, like `test_activate_alone_never_prunes`
+        # above, so none of them get pruned during seeding), then
+        # injects a `record.write` failure through the VERB and asserts
+        # the inventory is byte-for-byte unchanged -- pruning must never
+        # run when the commit itself never landed. Mutation witness:
+        # moving the `_prune_hook_backups(claude_dir, result)` call to
+        # run BEFORE `_hook_commit_or_undo` in `verbs.hook_activate`
+        # reddens the final assertion below (the six seeded backups
+        # collapse to five) -- verified by hand, reverted.
+        claude = env.claude
+        (claude / "settings.json").write_text(json.dumps({"hooks": {}}) + "\n", encoding="utf-8")
+        n_seed = hook_activation._BACKUP_KEEP + 1
+        for i in range(1, n_seed + 1):
+            rid = f"lrn-0000fd{i:02d}"
+            route_hook(env, rid)
+            hook_activation.activate(env.home, rid, claude_dir=claude, register=True)
+        before = sorted(claude.glob("settings.json.self-learn-bak.*"))
+        assert len(before) == n_seed  # none pruned yet -- seeded directly, not via the verb
+        before_bytes = {p.name: p.read_bytes() for p in before}
+
+        rid_bad = "lrn-0000fd99"
+        route_hook(env, rid_bad)
+
+        def fail_write(self, *a, **kw):
+            raise OSError("simulated record.write failure")
+
+        monkeypatch.setattr(Record, "write", fail_write)
+
+        with pytest.raises(OSError, match="simulated record.write failure"):
+            verbs.hook_activate(env.home, rid_bad, no_push=True)
+
+        after = sorted(claude.glob("settings.json.self-learn-bak.*"))
+        after_bytes = {p.name: p.read_bytes() for p in after}
+        assert after_bytes == before_bytes
+
+
+class TestPruningSortsByNumericSuffix:
+    def test_prune_removes_the_genuinely_oldest_suffix_not_the_lexicographically_first(
+        self, env
+    ):
+        # N8 (fold r3): `_prune_hook_backups` used to `sorted()` backup
+        # paths by their STRING form -- correct only while every
+        # `time.time_ns()` suffix has the same digit count (true until
+        # ~2286; gate round-3 NIT 8). Seeds suffixes that cross a digit
+        # boundary (9, 10..14) so lexicographic order and numeric order
+        # disagree about which is oldest: with 7 total backups (6 seeded
+        # + 1 fresh one this activation writes) and `_BACKUP_KEEP == 5`,
+        # 2 are pruned. Numerically the two oldest are 9 and 10;
+        # lexicographically ("10" < "11" < ... < "14" < the fresh
+        # 19-digit timestamp < "9") the two "oldest" are 10 and 11.
+        # Mutation witness: reverting the sort key to plain
+        # `sorted(claude_dir.glob(...))` reddens the `not paths[9].
+        # exists()` assertion below (suffix 9 survives instead) --
+        # verified by hand, reverted.
+        claude = env.claude
+        (claude / "settings.json").write_text(json.dumps({"hooks": {}}) + "\n", encoding="utf-8")
+        assert hook_activation._BACKUP_KEEP == 5
+        suffixes = [9, 10, 11, 12, 13, 14]
+        paths = {}
+        for n in suffixes:
+            p = claude / f"settings.json.self-learn-bak.{n}"
+            p.write_text("{}", encoding="utf-8")
+            paths[n] = p
+
+        rid = "lrn-0000fc01"
+        route_hook(env, rid)
+        rc = cli.main(["hook", "activate", rid, "--no-push"])
+        assert rc == 0
+
+        assert not paths[9].exists()  # numerically oldest -- pruned under the fix
+        assert not paths[10].exists()  # second-oldest -- also pruned
+        for n in (11, 12, 13, 14):
+            assert paths[n].exists(), n
 
 
 # ---------------------------------------------------------- item B (the
@@ -1357,6 +1561,91 @@ class TestRuntimeLedgerHandoffFailureModel:
         record = resolved_record(env)
         kinds = [h.get("event") for h in record.history]
         assert "hook-activated" in kinds
+
+    def test_from_path_failure_undoes_runtime_no_commit(self, env, monkeypatch):
+        # S2 (fold r3): `Record.from_path` used to sit OUTSIDE the old
+        # `try` (alongside `find_record_path` and `append_history`) --
+        # a raise there skipped `_undo` entirely, leaving the runtime
+        # change activated with NO ledger record describing it at all
+        # (gate round-3 SHOULD-FIX 2, probe PF). `Record.from_path` is
+        # ALSO called twice earlier in a successful run before this
+        # handoff is ever reached: once inside `hook_activation.
+        # activate`'s own `require_status` precondition check, and
+        # again inside `selfcheck._check_hooks` (the doctor-verdict
+        # step, `activate`'s own Phase 2) -- both must succeed
+        # normally, and only the THIRD call (inside
+        # `_hook_commit_or_undo`, after the runtime change has already
+        # landed) must fail, or this test cannot tell the fixed code
+        # from the pre-fold-r3 layout at all (confirmed by hand with a
+        # traceback: the naive "fail on the second call" version failed
+        # inside `selfcheck._check_hooks`, never reaching
+        # `_hook_commit_or_undo`). Mutation witness: moving the `try`
+        # back below `find_record_path`/`Record.from_path`/
+        # `append_history` (the pre-fold-r3 layout) reddens the `not
+        # link_path` assertion below -- verified by hand, reverted.
+        name, rel = route_hook(env, RID)
+        sha_before = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        real_from_path = Record.from_path.__func__
+        calls = {"n": 0}
+
+        def flaky_from_path(cls, path):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                return real_from_path(cls, path)
+            raise OSError("simulated Record.from_path failure")
+
+        monkeypatch.setattr(Record, "from_path", classmethod(flaky_from_path))
+
+        with pytest.raises(OSError, match="simulated Record.from_path failure"):
+            verbs.hook_activate(env.home, RID, no_push=True)
+
+        assert calls["n"] >= 3  # the third (handoff) call really was reached
+        assert not link_path(env, name).exists()
+        assert not (env.claude / "settings.json").exists()
+        sha_after = git(env.home, "rev-parse", "HEAD").stdout.strip()
+        assert sha_after == sha_before
+
+    def test_except_side_head_sha_failure_falls_through_to_undo(self, env, monkeypatch):
+        # S2 (fold r3): the `except`-side `head_sha` call used to have
+        # no guard of its own -- a raise there BOTH replaced the
+        # original error AND skipped the undo, leaving the runtime
+        # activated (gate round-3 SHOULD-FIX 2, probe PH2). Fails
+        # `record.write` (so we reach the `except` branch) and makes
+        # the SECOND `gitops.head_sha` call (the except-side read) raise
+        # while the first (`head_before`) succeeds normally. Mutation
+        # witness: dropping the inner `try` around the except-side
+        # `head_sha` call reddens the `pytest.raises(OSError,
+        # match="simulated record.write failure")` block below (the
+        # head_sha failure would replace it and escape uncaught) --
+        # verified by hand, reverted.
+        name, rel = route_hook(env, RID)
+        sha_before = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        def fail_write(self, *a, **kw):
+            raise OSError("simulated record.write failure")
+
+        monkeypatch.setattr(Record, "write", fail_write)
+
+        real_head_sha = gitops.head_sha
+        calls = {"n": 0}
+
+        def flaky_head_sha(repo):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return real_head_sha(repo)
+            raise OSError("simulated head_sha failure inside the except")
+
+        monkeypatch.setattr(gitops, "head_sha", flaky_head_sha)
+
+        with pytest.raises(OSError, match="simulated record.write failure"):
+            verbs.hook_activate(env.home, RID, no_push=True)
+
+        assert not link_path(env, name).exists()
+        assert not (env.claude / "settings.json").exists()
+        sha_after = git(env.home, "rev-parse", "HEAD").stdout.strip()
+        assert sha_after == sha_before
+        assert calls["n"] >= 2  # the except-side read really was attempted
 
 
 # ---------------------------------------------------------- item C
@@ -1589,15 +1878,22 @@ class TestMatcherConflictPrecedence:
 
 class TestRemovalSideOwnership:
     def test_deactivate_never_removes_a_command_under_a_different_matcher(self, env):
-        # Reproduces gate round-2's G16 mutation (the gate found NO test
-        # protected this) as a real regression test: deactivate must
-        # refuse, naming the matcher found, rather than silently
-        # reporting "already absent" while the registration (under a
-        # DIFFERENT matcher) survives untouched. Mutation witness:
-        # `if not isinstance(item, dict):` in place of the matcher
-        # condition inside `_remove_command`'s loop (G16's own edit)
-        # reddens the `settings.read_bytes() == before` assertion below
-        # -- verified by hand (the exact G16 edit), reverted.
+        # Gate round-3 SHOULD-FIX 3: this test protects deactivate's
+        # PHASE-1 refusal (`_registered_matcher_for`'s foreign-matcher
+        # check) -- it registers the command ONLY under 'Read', so
+        # `deactivate`'s phase-1 check fires and `_remove_command` is
+        # NEVER reached. A mutation to `_remove_command`'s OWN matcher
+        # condition (the false claim this comment used to make, through
+        # round 2) cannot redden this test; see
+        # `test_remove_command_never_touches_a_foreign_matcher_item`
+        # below for the direct test of that function, and
+        # `test_deactivate_refuses_regardless_of_which_matcher_comes_
+        # first` for the mixed-registration case fold r3's S4 now
+        # refuses on this same phase-1 check, in both array orders.
+        # Mutation witness: dropping the phase-1 foreign-matcher check
+        # in `deactivate` (`hook_activation.py`, "found_matchers is not
+        # _NOT_FOUND" branch) reddens the `settings.read_bytes() ==
+        # before` assertion below -- verified by hand, reverted.
         name, rel = route_hook(env, RID)
         command = hook_activation._command_for(name, env.claude)
         settings = env.claude / "settings.json"
@@ -1623,6 +1919,78 @@ class TestRemovalSideOwnership:
         assert "'Read'" in str(exc_info.value)
         assert "'Edit|Write'" in str(exc_info.value)
         assert settings.read_bytes() == before
+
+    def test_remove_command_never_touches_a_foreign_matcher_item(self, env):
+        # S3 (fold r3): a DIRECT unit test of `_remove_command`'s own
+        # matcher condition -- the removal-side twin of
+        # `_merge_snippet`. Registered under BOTH the record's own
+        # matcher and a foreign one; `_remove_command` must remove only
+        # the own-matcher item and leave the foreign one untouched byte
+        # for byte. Called directly (not through `deactivate`, which
+        # now refuses this exact shape at phase 1 under S4 before
+        # `_remove_command` is ever reached) so THIS function's own
+        # condition is what is actually exercised. Mutation witness:
+        # `if not isinstance(item, dict):` in place of the matcher
+        # condition inside `_remove_command`'s loop (gate round-2's G16
+        # edit) reddens the assertions below -- verified by hand,
+        # reverted.
+        name, rel = route_hook(env, RID)
+        command = hook_activation._command_for(name, env.claude)
+        data = {
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Read", "hooks": [{"type": "command", "command": command}]},
+                    {"matcher": "Edit|Write", "hooks": [{"type": "command", "command": command}]},
+                ]
+            }
+        }
+
+        new_data, changed = hook_activation._remove_command(
+            data, "PreToolUse", "Edit|Write", command
+        )
+
+        assert changed is True
+        remaining = new_data["hooks"]["PreToolUse"]
+        assert len(remaining) == 1
+        assert remaining[0]["matcher"] == "Read"
+        assert remaining[0]["hooks"] == [{"type": "command", "command": command}]
+
+    def test_deactivate_refuses_regardless_of_which_matcher_comes_first(self, env):
+        # S4 (fold r3): `_registered_matcher_for` used to return the
+        # FIRST matching item's matcher and stop -- so whether
+        # `deactivate` refused depended on array ORDER, not on whether a
+        # foreign registration existed at all (gate round-3 SHOULD-FIX
+        # 4, probes M7/M8/M9: own-matcher-first silently removed the
+        # owned entry and left a dangling foreign one). Now collect-all,
+        # symmetric with `_merge_snippet`: refuse in BOTH orders.
+        # Mutation witness: reverting `_registered_matcher_for` to
+        # "return the first match's matcher and stop" reddens the
+        # `own_first` half below (the `foreign_first` half already
+        # passed before this fold, since the old code happened to find
+        # the foreign matcher first in that order) -- verified by hand,
+        # reverted.
+        name, rel = route_hook(env, RID)
+        command = hook_activation._command_for(name, env.claude)
+        own_item = {"matcher": "Edit|Write", "hooks": [{"type": "command", "command": command}]}
+        foreign_item = {"matcher": "Read", "hooks": [{"type": "command", "command": command}]}
+        settings = env.claude / "settings.json"
+
+        for label, order in (
+            ("own_first", [own_item, foreign_item]),
+            ("foreign_first", [foreign_item, own_item]),
+        ):
+            settings.write_text(
+                json.dumps({"hooks": {"PreToolUse": order}}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            before = settings.read_bytes()
+
+            with pytest.raises(hook_activation.HookActivationError) as exc_info:
+                hook_activation.deactivate(env.home, RID, claude_dir=env.claude)
+
+            assert "'Read'" in str(exc_info.value), label
+            assert "'Edit|Write'" in str(exc_info.value), label
+            assert settings.read_bytes() == before, label
 
 
 # ---------------------------------------------------------- item E
