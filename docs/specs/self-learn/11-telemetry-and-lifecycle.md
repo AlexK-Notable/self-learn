@@ -121,8 +121,9 @@ A new capture that matches an **already-routed** lesson is a
   false-positive, not evidence the rule is absent or weak; appends to
   `dismissed_suspects:` (append-only, §3) and the telemetry event
   itself is preserved untouched). Read the suspect's `basis` before
-  choosing tolerate vs dismiss: `fire-violated` is the model's own
-  report that it broke the rule, while `miner-match` and
+  choosing tolerate vs dismiss: `fire-suspected-violation` (and the
+  legacy spelling `fire-violated` on rows written before 2026-09-13) is
+  the model's own report that it broke the rule, while `miner-match` and
   `title-token-overlap` are text-similarity heuristics that can fire on
   a lesson nobody actually violated.
 - `last_confirmed:` (date) is the flip side — written by the
@@ -280,11 +281,13 @@ plane, fixes the mechanism.
 
 *Amended 2026-09-13 (steward build, U6):* this is the version bump this
 section's own heading requires. `schema_version` for the `fire` kind
-increments; a legacy event predates `outcome` entirely — this kind's
-payload never carried a `complied\|violated` field before this amendment,
-only `confidence` — so any event without an `outcome` field reads as
-`outcome: cannot-tell`, and its `confidence` value is read exactly as it
-always was by whatever code already consumes it. The
+increments. Rows written before this amendment carry the two-value
+`outcome: complied\|violated` (the miner wrote it from the day fires
+existed; the pre-U6 fires loop passed no `confidence`) and are mapped on
+read to `suspected-compliance\|suspected-violation`; any event without an
+`outcome` field at all reads as `outcome: cannot-tell`, and a `confidence`
+value, where present, is read exactly as it always was by whatever code
+already consumes it. The
 rename matters because a fire was never a verdict: it is the miner's
 observation that a routed rule's trigger situation occurred; whether the
 situation was actually complied with or violated is exactly the judgment

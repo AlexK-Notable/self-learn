@@ -553,6 +553,20 @@ def test_reader_prompt_pins_episode_brief_instruction(home):
     assert "optional" in prompt.lower()
 
 
+def test_reader_prompt_pins_three_value_fire_outcome(home):
+    """U6 (12 §Phase-2 contract; rubric lines 70–76): the prompt's fire shape
+    names the three suspicion values and never the retired two. The
+    acceptance check refuses the old values, so a prompt that reverted to
+    them would have every fire silently dropped — pin the TEXT."""
+    prompt, corrupt = miner._compose_prompt(home, ["(digest)"], Path("/tmp/out.json"))
+    assert corrupt == []
+    assert '"suspected-compliance"' in prompt
+    assert '"suspected-violation"' in prompt
+    assert '"cannot-tell"' in prompt
+    assert '"outcome": "complied"' not in prompt
+    assert '"complied" | "violated"' not in prompt
+
+
 def test_fold_into_matching_pending(home, transcripts, monkeypatch):
     existing = make_behavior()
     create_record(home, existing)

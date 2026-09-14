@@ -863,6 +863,7 @@ def _sentinel_live(mtime: float | None, now: datetime) -> bool:
 #: mapping exists to fix.
 _BASIS_LABELS = {
     "fire-violated": "the model reported violating this rule",
+    "fire-suspected-violation": "the model reported violating this rule",
     "miner-match": "a transcript matched this rule's text",
     "origin-match": "a new lesson names the same origin",
     "title-token-overlap": "a new lesson's title overlaps this one",

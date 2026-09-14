@@ -1125,7 +1125,7 @@ def _event_seen(
     deliberately here: the mapped view (every other caller's default)
     would show `"suspected-violation"` for these same rows and erase the
     one signal that proves a row is legacy rather than newly-reported —
-    which is exactly what THE BACKFILL (:1586) needs to stay a bounded
+    which is exactly what THE BACKFILL (the comment block below, grep `THE BACKFILL`) needs to stay a bounded
     migration net instead of reopening the crossover one run late. This
     is still THE BACKFILL's source list (U-recur spec §4 decision 4):
     one ``read_events`` pass serves both purposes, no second read.

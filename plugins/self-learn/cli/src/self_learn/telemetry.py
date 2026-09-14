@@ -73,7 +73,8 @@ __all__ = [
 #: the bump is honest bookkeeping, not a migration.
 SCHEMA_VERSION = 4
 
-#: The v3 closed set (11 §4.3) — `route` and `reference-read` are
+#: The closed set, unchanged since v3 (11 §4.3; v4 changed the `fire`
+#: payload's outcome values, not the kind set) — `route` and `reference-read` are
 #: code-emitted only (never via `telemetry note`; see NOTE_KINDS below).
 #: `reference-read` (U-readref §5.1) is the observation half of S-23's
 #: reopening condition — ids-only (§5.2/§5.3), never model-emittable.
