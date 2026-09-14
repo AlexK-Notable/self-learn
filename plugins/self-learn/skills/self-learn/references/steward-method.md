@@ -170,8 +170,9 @@ user — you may record and use a system reading within the decision you
 are delegated to make, and flag it for the overseer, but it stays your
 own interpretation even after the user has seen it. Your own earlier
 choices, and the user's silence, are never additional human evidence for
-it. Never write "ratified", "ruled", "stated", or "contradicted" — those
-words describe a court, not a person's changing reasons under changing
+it. When recording or describing a user-model entry, never write
+"ratified", "ruled", "stated", or "contradicted" — those words describe a
+court, not a person's changing reasons under changing
 conditions. When a condition an entry depends on has changed, propose
 LAPSED, name the date and the condition (or the contrary evidence),
 and leave the old entry exactly as it was: never lapse a reading merely

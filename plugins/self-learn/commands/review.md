@@ -477,12 +477,15 @@ job does, unless `--dry-run` is given.
   in one run, across as many model calls as it needs; the run record
   prints calls, turns, and duration per call so an unusually long run is
   visible the morning after, never silent.
-- The run's report names its coverage across the seven verb strata
-  (route, reject, retire, replaced, consolidate, no-action,
-  parked-then-decided) crossed with the three scopes (user, project,
-  skill) and says plainly which of those twenty-one cells had nothing in
-  them this run — an empty stratum is stated, never left for you to
-  notice by its absence.
+- The run's report names its coverage across the nine case outcomes
+  (route, reject, defer, retire, replaced, rehome, revise, no-action,
+  parked — the outcome set in `02-schema.md` §3a) crossed with the three
+  scopes (user, project, skill) and says plainly which of those
+  twenty-seven cells had nothing in them this run — an empty cell is
+  stated, never left for you to notice by its absence. A case decided
+  after being parked counts under its deciding outcome; the overseer's
+  consolidations of user-model entries are reported on their own line,
+  not as a case outcome.
 
 A steward run never asks you anything mid-run; read its cases afterward
 (§ Cases, above) the same way you would read anyone else's.

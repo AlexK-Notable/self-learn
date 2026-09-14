@@ -749,8 +749,12 @@ own subtree.*
    `11-telemetry-and-lifecycle.md` §4.4 already states for telemetry.
 3. Sections 1–4 of a case are frozen at commit; sections 5–6 are
    append-only; a change of decision is a **successor case**, never an edit.
-4. `provisional`, on a case or a user-model entry, is derived and never
-   stored: it means only "the user has not yet seen it" (§3a.2, §3a.4). The
+4. `provisional` means only "the user has not yet seen it" (§3a.2, §3a.4).
+   On a **case** it is derived and never stored: `actor != human` and no
+   `presented` entry covers its decision. On a **user-model entry** it is a
+   stored field, written `true` by the steward or overseer and flipped to
+   `false` only by the presentation record that lists the entry in its
+   `entries` (§3a.2); nothing else flips it, and no run re-derives it. The
    case index and the steward's reconsider queue
    (`<cache>/steward/reconsider-queue.jsonl`) are cache, not truth.
 5. Attribution draws from one list, `{human, steward, overseer, analyst,
@@ -919,7 +923,8 @@ presented:
   - id: obs-…
     at: 2026-09-20T18:10:00Z
     to: human
-    covering: [decision]     # decision | dependencies | all
+    covering: decision       # one of: decision | dependencies | all
+    entries: [um-…]          # user-model entries displayed with the case; each one's stored provisional flips to false
     outcome: agreed | corrected | noted
     via: overseer-conversation | review-ui | teach | cli
 ```
@@ -1022,7 +1027,7 @@ updated_by: human           # human | steward | overseer
 | Container | Holds | Who may add | Who may mark LAPSED |
 |---|---|---|---|
 | `## A. From the user's own words` | `own-words` entries | human; steward or overseer, with a `transcript:` or `conversation:` reference | human; steward or overseer, naming the changed condition or contrary evidence |
-| `## B. System readings the user has seen` | `system-reading, provisional: false`; ≥1 `stmt-…` each | nobody directly — an entry moves here when a presentation records it as seen | steward, overseer, human |
+| `## B. System readings the user has seen` | `system-reading, provisional: false`; ≥1 `stmt-…` each | nobody directly — an entry moves here when a presentation record names it in `entries` (§3a.2) | steward, overseer, human |
 | `## C. System readings, provisional` | `system-reading, provisional: true`; ≥1 `stmt-…` each | steward; overseer, including a consolidation of two or more entries into one, with a `basis` citing the lapsed entries and their statements | steward, overseer, human |
 | `## D. Observed regularities` | system readings whose reference is telemetry or receipts rather than one episode; `provisional` as above; ≥1 `stmt-…` where the regularity is about a preference, else the telemetry refs alone | overseer | overseer, human |
 | `## E. Declared conditions` | facts about the environment no probe observes (§3a.5) | human; steward or overseer with an own-words reference | human; steward or overseer, when the feed starts observing the key |
