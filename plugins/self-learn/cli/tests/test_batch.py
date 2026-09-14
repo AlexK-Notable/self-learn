@@ -87,6 +87,34 @@ def _write_sheet(tmp_path, body, *, name="sheet.yaml"):
     return sheet
 
 
+def _ledger_bytes(home):
+    return {
+        str(path.relative_to(home)): path.read_bytes()
+        for path in sorted(home.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_retire_without_covered_by_is_refused_while_loading_the_sheet(
+    tmp_path, monkeypatch
+):
+    home = _env(tmp_path, monkeypatch)
+    rid = _seed_pending(home, "lrn-a00000f2")
+    sheet = _write_sheet(
+        tmp_path,
+        "version: 1\nitems:\n"
+        f"  - id: {rid}\n    verb: retire\n"
+        f"  - id: {rid}\n    verb: reject\n",
+        name="retire-missing-covered-by.yaml",
+    )
+    before = _ledger_bytes(home)
+
+    with pytest.raises(batch.BatchError, match=r"item 1 .*missing required.*covered_by"):
+        batch.load_sheet(sheet)
+
+    assert _ledger_bytes(home) == before
+
+
 # =========================================================== top-level case
 
 

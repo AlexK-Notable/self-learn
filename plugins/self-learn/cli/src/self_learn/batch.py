@@ -270,6 +270,9 @@ class ItemResult:
     #: instead of being indistinguishable from an ordinary refusal.
     state: str = "applied"  # applied | already-applied | refused | stopped | not-attempted
     detail: str | None = None
+    #: S-67 fold r1: verb warnings survive the sheet adapter just as
+    #: commit/detail facts do. Additive and empty for every existing item.
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -346,6 +349,7 @@ class BatchResult:
                 {
                     "n": i.n, "id": i.id, "verb": i.verb, "rc": i.rc,
                     "sha": i.sha, "state": i.state, "detail": i.detail,
+                    "warnings": list(i.warnings),
                 }
                 for i in self.items
             ],
@@ -828,6 +832,7 @@ def _dispatch_hook_activation(
             n=item.n, id=item.id, verb=verb, rc=1, state="refused",
             sha=route_result.commit_sha if route_result is not None else None,
             detail=detail,
+            warnings=(list(route_result.warnings) if route_result is not None else []),
         )
     if route_result is None:
         notes = list(hook_result.post_notes)
@@ -842,6 +847,10 @@ def _dispatch_hook_activation(
     return ItemResult(
         n=item.n, id=item.id, verb=verb, rc=0,
         sha=hook_result.commit_sha, state="applied", detail=detail,
+        warnings=(
+            (list(route_result.warnings) if route_result is not None else [])
+            + list(hook_result.warnings)
+        ),
     )
 
 
@@ -1164,7 +1173,7 @@ def _dispatch(
                            detail=str(exc))
     return ItemResult(
         n=item.n, id=item.id, verb=verb, rc=0, sha=result.commit_sha,
-        state="applied",
+        state="applied", warnings=list(result.warnings),
     )
 
 

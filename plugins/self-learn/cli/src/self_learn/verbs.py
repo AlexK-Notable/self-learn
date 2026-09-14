@@ -4160,14 +4160,11 @@ def show(home: Path | str, record_id: str) -> dict:
         # above -- "replaced by lrn-…" / "retired, covered by
         # <kind>:<name>" / "retired, covering surface unrecorded" --
         # additive (never removes `superseded_by`, so a `--json`
-        # consumer reading the raw field is unaffected); `None` unless
-        # `status == "superseded"`, same guard `models.py`'s
-        # `ResolvedDetailModel.supersession` uses for the UI detail page.
-        "supersession": (
-            records_mod.supersession_display(record)
-            if record.status == "superseded"
-            else None
-        ),
+        # consumer reading the raw field is unaffected). The field is
+        # mutable in every status: a merge-collapse loser can remain
+        # pending while naming its survivor (02-schema §2), so status
+        # must not gate the helper. It already returns "" for None.
+        "supersession": records_mod.supersession_display(record),
         "resolution_note": record.resolution_note,
         "routing": (
             {

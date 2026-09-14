@@ -4934,6 +4934,28 @@ class TestA16RecommendationAndFlagsRenderedOnDetailPage:
         assert "why-recommendation" not in r.text
         assert "Analyst recommendation" not in r.text
 
+    def test_legacy_graduate_recommendation_renders_as_retire(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_raw_proposal(
+            sb.ledger,
+            rec.id,
+            proposal_dict(
+                auto_trace=False,
+                destination="claude-md",
+                recommendation="graduate",
+            ),
+        )
+        c, _runner = make_client(sb)
+
+        r = c.get(f"/record/{rec.id}")
+
+        assert r.status_code == 200
+        assert "Analyst recommendation: retire" in r.text
+        assert 'data-key-action="retire"' in r.text
+        assert "Analyst recommendation: graduate" not in r.text
+
 
 class TestA17DeferredProposalRendersEmptyHiddenDest:
     """A17 — a `defer` recommendation arms no destination, at every

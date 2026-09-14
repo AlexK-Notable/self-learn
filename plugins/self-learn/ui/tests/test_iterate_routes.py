@@ -737,8 +737,8 @@ class TestResolveUnderIterationInterruptsFirst:
         assert manager.active_record_id == ids[0]
 
         r = c.post(
-            f"/bucket/skill/s/graduate-bulk",
-            data={"ids": ",".join(ids)},
+            f"/bucket/skill/s/retire-bulk",
+            data={"ids": ",".join(ids), "covered_by": "skill-md:s"},
             headers=HX,
         )
         assert r.status_code in (200, 303)
@@ -748,8 +748,8 @@ class TestResolveUnderIterationInterruptsFirst:
         # "proposal validate" call — the bulk loop's argv sequence is
         # everything after it.
         assert runner.calls[1:] == [
-            ["graduate", ids[0], "--no-push"],
-            ["graduate", ids[1], "--no-push"],
+            ["retire", ids[0], "--covered-by", "skill-md:s", "--no-push"],
+            ["retire", ids[1], "--covered-by", "skill-md:s", "--no-push"],
             ["push"],
         ]
 

@@ -1806,6 +1806,24 @@
     );
   }
 
+  // The pending-quad action form now has two text inputs, so the browser no
+  // longer performs implicit submission when Enter is pressed in either one.
+  // Re-create that one event and let the existing submit guard decide whether
+  // htmx will intercept it; bare action-bar forms therefore keep the same
+  // visible "Enter doesn't submit" warning as before.
+  document.addEventListener("keydown", function (evt) {
+    if (evt.key !== "Enter" || evt.isComposing) return;
+    const target = evt.target;
+    if (!target || typeof target.closest !== "function") return;
+    if (!target.matches('input[name="note"], input[name="covered_by"]')) return;
+    const form = target.closest("form");
+    if (!form || !form.closest(".action-bar") || htmxWillInterceptSubmit(form)) return;
+    const method = form.getAttribute("method");
+    if (method && method.toLowerCase() === "dialog") return;
+    evt.preventDefault();
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+
   document.addEventListener(
     "submit",
     function (evt) {

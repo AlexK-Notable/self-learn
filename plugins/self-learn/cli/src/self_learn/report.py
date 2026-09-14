@@ -1912,6 +1912,7 @@ def gather(
         "routed_ever": routed_ever,
         "superseded_after_routing": superseded_after_routing,
         "supersede_rate": supersede_rate,
+        # Stable report --json machine key; only human-facing vocabulary changed.
         "graduated": graduated,
         "rejected": rejected,
         "open_followups": open_followups(home),

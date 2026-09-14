@@ -3424,8 +3424,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
         # `verbs.show`), never the raw field re-printed — "replaced by
         # lrn-…" / "retired, covered by <kind>:<name>" / "retired,
         # covering surface unrecorded". `data["supersession"]` is set
-        # whenever `data["superseded_by"]` is truthy (both come from the
-        # same `record.status == "superseded"` record).
+        # whenever `data["superseded_by"]` is truthy, including the
+        # schema-legal pending merge-collapse loser shape (02-schema §2).
         print(f"  superseded by: {data['supersession']}")
     if data["resolution_note"]:
         print(f"  resolution note: {data['resolution_note']}")
@@ -3735,6 +3735,9 @@ def _cmd_batch(args: argparse.Namespace) -> int:
 
     sentinel.heartbeat()  # mutating invocation class (08 §1)
     result = batch.run(home, items, no_push=args.no_push)
+    for item in result.items:
+        for warning in item.warnings:
+            print(f"self-learn batch item {item.n}: {warning}", file=sys.stderr)
 
     # Fold r1 (F1/F2/F5/F6/F7): the receipt attempt runs BEFORE either
     # output branch below, so its own outcome can ride the SAME --json
