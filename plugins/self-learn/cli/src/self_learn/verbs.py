@@ -450,6 +450,17 @@ class VerbResult:
     #: host.
     #: `None` for ledger-only verbs (reject/defer/graduate).
     mode: str | None = None
+    # Fold r1, D-f (Astra 9 — exact bytes shown): `hook-activate`-only.
+    # The exact PreToolUse entry `hook_activation.activate` wrote (or
+    # found already registered), the ledger-side script path, and its
+    # sha256 — carried into BOTH the human CLI's post_notes text and
+    # the `--json` envelope (`cli._verb_envelope`), never the full
+    # script body (that stays the route/Apply step's and the
+    # overseer's O-5 display's job). `None` for every other verb, and
+    # for a delegated (`register=False`) activation.
+    hook_registered_entry: str | None = None
+    hook_script_path: str | None = None
+    hook_script_sha256: str | None = None
 
 
 # ------------------------------------------------------------------ helpers
@@ -2270,6 +2281,15 @@ def _prepare_one_motion_hook(
         "deny_message": hook["deny_message"],
         "script_path": rel,
         "script": data["script"],
+        # Fold r1, D-e (Opus S4 / Astra 8 — swept-proposal gap): the
+        # proposal sibling `data["examples"]` came from never survives
+        # routing (`remove_proposal_siblings` sweeps it), so activation-
+        # time replay would otherwise have nothing to replay for EVERY
+        # one-motion-routed record. Persisted here, same class as
+        # `script` above — `hook_activation._examples_for` reads this
+        # first, falling back to a still-present proposal sibling only
+        # for the narrow case one happens to exist.
+        "examples": data["examples"],
     }
     snippet = settings_snippet(list(hook["tools"]), spec.target.name)
     return _HookRoute(
@@ -2357,6 +2377,13 @@ def _prepare_hook_route(
         "deny_message": hook["deny_message"],
         "script_path": rel,
         "script": script,
+        # Fold r1, D-e (Opus S4 / Astra 8 — the swept-proposal gap):
+        # `route()` sweeps `proposals/<id>.yaml` on every successful
+        # route (`ledger_ops.remove_proposal_siblings`), so without
+        # this, `hook_activation._examples_for` would have nothing to
+        # replay for ANY normally-routed record. Same persistence
+        # class as `script` above — already the full compiled bytes.
+        "examples": data["examples"],
     }
     snippet = settings_snippet(list(hook["tools"]), spec.target.name)
     return _HookRoute(spec=spec, meta=meta, snippet=snippet, script=script)
@@ -2438,12 +2465,17 @@ def hook_activate(
     always performs every step (placed, registered, activation-
     checked) regardless of ``overseer.hook_activation``; only the
     overseer's own call (O-2b) ever reads that gate — this verb never
-    does. The runtime-dir writes (:func:`hook_activation.activate`)
-    happen OUTSIDE the ledger lock, before it — they are never ledger
-    truth (``tests/test_lock_invariant.py``'s ``NOT_REPO_TRUTH``) — so
-    a failed runtime step raises before the lock ever opens and leaves
-    no ``hook-activated`` history entry: only a completed activation
-    ever reaches the ledger write below."""
+    does. Fold r1, D-b (Opus B2 / Astra 3, 5): the runtime-dir write
+    (:func:`hook_activation.activate`) happens INSIDE the ledger lock
+    span, right after :func:`intents.announce_recovered` — exactly
+    where :func:`route` performs its own host writes — so a live STOP
+    refuses BEFORE this call ever runs, never after it has already
+    mutated the user's Claude runtime directory. A concurrent editor
+    that is not self-learn (a human hand-editing settings.json in an
+    editor at the same moment) cannot be serialised by this lock — the
+    read-once-then-atomic-replace discipline inside
+    :func:`hook_activation.activate` is the bound on that case, not
+    this lock."""
     home = Path(home)
     from . import selfcheck  # deferred: selfcheck imports verbs at its own top
 
@@ -2451,24 +2483,19 @@ def hook_activate(
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
-        try:
-            result = hook_activation.activate(
-                home, record_id, claude_dir=claude_dir, register=True
-            )
-        except hook_activation.HookActivationError as exc:
-            raise VerbError(str(exc)) from exc
-        history_note = (
-            str(result.backup_path)
-            if result.backup_path is not None
-            else "no settings.json change (already registered)"
-        )
-        commit_body = "\n".join(result.receipts)
-        message = f"self-learn: hook activate {record_id}"
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
+            try:
+                result = hook_activation.activate(
+                    home, record_id, claude_dir=claude_dir, register=True
+                )
+            except hook_activation.HookActivationError as exc:
+                raise VerbError(str(exc)) from exc
+            commit_body = "\n".join(result.receipts)
+            message = f"self-learn: hook activate {record_id}"
             path = ledger_ops.find_record_path(home, record_id)
             record = Record.from_path(path)
-            record.append_history("hook-activated", {"note": history_note})
+            record.append_history("hook-activated", {"note": result.backup_note})
             record.write(path)
             staged, sha = _commit_ledger(home, [path], message, commit_body)
         push = _push_ledger(home, no_push)
@@ -2481,6 +2508,9 @@ def hook_activate(
             push=push,
             sentinel_owned=hold.owned,
             post_notes=list(result.receipts),
+            hook_registered_entry=result.hook_registered_entry,
+            hook_script_path=result.hook_script_path,
+            hook_script_sha256=result.hook_script_sha256,
         )
     finally:
         hold.release()
@@ -2493,12 +2523,17 @@ def hook_deactivate(
     no_push: bool = False,
 ) -> VerbResult:
     """13 §7.4: reverses :func:`hook_activate` — removes the symlink
-    (only if it points at the expected target) and the settings entry
-    (restored from the recorded backup when one exists), then writes
+    (only if it points at the expected target) and surgically removes
+    only this hook's own settings.json registration (fold r1, D-a: a
+    whole-file backup restore would silently roll back every OTHER
+    registration made since — never done), then writes
     ``hook-deactivated``. Unattended-callable under the same §7.2a.5
-    contract as every other ledger-write verb (13 §7.4: "and is
-    unattended-callable under the same §7.2a.5 contract as every other
-    ledger-write verb")."""
+    contract as every other ledger-write verb. Fold r1, D-b: the
+    runtime-dir write (:func:`hook_activation.deactivate`) happens
+    INSIDE the ledger lock span, right after
+    :func:`intents.announce_recovered` — exactly like
+    :func:`hook_activate` above — so a live STOP refuses before this
+    call ever runs."""
     home = Path(home)
     from . import selfcheck  # deferred: selfcheck imports verbs at its own top
 
@@ -2506,24 +2541,19 @@ def hook_deactivate(
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
-        try:
-            result = hook_activation.deactivate(
-                home, record_id, claude_dir=claude_dir
-            )
-        except hook_activation.HookActivationError as exc:
-            raise VerbError(str(exc)) from exc
-        history_note = (
-            str(result.backup_path)
-            if result.backup_path is not None
-            else "no settings.json backup used (surgical removal or idempotent)"
-        )
-        commit_body = "\n".join(result.receipts)
-        message = f"self-learn: hook deactivate {record_id}"
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
+            try:
+                result = hook_activation.deactivate(
+                    home, record_id, claude_dir=claude_dir
+                )
+            except hook_activation.HookActivationError as exc:
+                raise VerbError(str(exc)) from exc
+            commit_body = "\n".join(result.receipts)
+            message = f"self-learn: hook deactivate {record_id}"
             path = ledger_ops.find_record_path(home, record_id)
             record = Record.from_path(path)
-            record.append_history("hook-deactivated", {"note": history_note})
+            record.append_history("hook-deactivated", {"note": result.backup_note})
             record.write(path)
             staged, sha = _commit_ledger(home, [path], message, commit_body)
         push = _push_ledger(home, no_push)

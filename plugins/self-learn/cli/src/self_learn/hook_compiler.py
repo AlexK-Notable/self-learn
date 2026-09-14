@@ -51,6 +51,7 @@ __all__ = [
     "GUARDABLE_TOOLS",
     "TOOL_FIELDS",
     "HookCompileError",
+    "command_root",
     "generate_script",
     "replay_examples",
     "script_name",
@@ -97,14 +98,40 @@ def script_name(record_id: str, trigger: str) -> str:
     return f"self-learn-{_id8(record_id)}-{trigger_slug(trigger)}.sh"
 
 
-def settings_snippet(tools: list[str], name: str) -> str:
+def command_root(claude_dir: Path | None) -> str:
+    """13 §7.4 fold r1, D-d (Astra 7 — a registered command must name
+    the directory the symlink actually went into): the portable
+    ``$HOME/.claude`` form when ``claude_dir`` is ``None`` or the
+    default runtime directory (no ``SELF_LEARN_CLAUDE_DIR`` override —
+    matches the spec snippet and the doctor's own basename-only
+    detection either way); the literal ``claude_dir`` path otherwise,
+    so an OVERRIDE runtime directory's own registered command names
+    where the symlink really lives rather than a ``$HOME`` form that
+    resolves somewhere else entirely on that machine. Compares against
+    ``Path("~/.claude").expanduser()`` freshly on every call (never
+    cached at import time) so a test that points ``$HOME`` itself at a
+    scratch directory can exercise the default branch without ever
+    reading or writing the real ``~/.claude``."""
+    if claude_dir is None:
+        return "$HOME/.claude"
+    default = Path("~/.claude").expanduser()
+    if claude_dir == default:
+        return "$HOME/.claude"
+    return str(claude_dir)
+
+
+def settings_snippet(tools: list[str], name: str, claude_dir: Path | None = None) -> str:
     """The M3-1 literal registration snippet. The matcher is the tool-name
     set ONLY (M3-14) — ``hook.tools`` joined with ``|``; the path regex
-    lives exclusively in-script."""
+    lives exclusively in-script. ``claude_dir`` (D-d, default ``None``)
+    selects the command's root via :func:`command_root` — every route-
+    time caller leaves it ``None`` (the printed two-step snippet stays
+    the portable ``$HOME`` form, unchanged from before this amendment);
+    only :mod:`hook_activation` ever passes a resolved directory, at
+    the moment it actually writes the command into ``settings.json``."""
     matcher = "|".join(tools)
-    hooks = json.dumps(
-        [{"type": "command", "command": f"$HOME/.claude/hooks/{name}"}]
-    )
+    command = f"{command_root(claude_dir)}/hooks/{name}"
+    hooks = json.dumps([{"type": "command", "command": command}])
     return f'"PreToolUse": [{{"matcher": {json.dumps(matcher)}, "hooks": {hooks}}}]'
 
 

@@ -21,49 +21,79 @@ Three receipted steps, each independently observable:
 1. **placed** — a symlink ``<claude_dir>/hooks/<script_name>`` →
    the host's approved script, created atomically; refuses if a
    *different* target (or a plain file) already occupies the name;
-   idempotent if the same target already does.
+   idempotent if the same target already does. Re-verified immediately
+   after a fresh placement (fold r1, D-b) — a placement that does not
+   read back as ``"matches"`` is undone and raises, rather than being
+   trusted blind.
 2. **registered** — parses ``settings.json`` with the same rules
    :func:`selfcheck._registered_hook_commands` already applies; an
    unparseable file is a hard refusal that leaves it byte-identical
    — never silently treated as empty; inserts the exact snippet bytes
    :func:`hook_compiler.settings_snippet` renders into the right event
-   array, idempotent by presence-of-command (not dict/array equality
-   — the same rule the doctor's own detection uses); keeps a
-   timestamped backup, pruned to the last five.
+   array, idempotent by (matcher, command) both matching — a command
+   already registered under a DIFFERENT matcher is a refusal naming
+   both (fold r1, D-a / Astra 6), never silently accepted or
+   overwritten; keeps a timestamped backup, pruned to the last five,
+   built from the SAME bytes this call already read once at the top —
+   never a re-read at write time (fold r1, D-b / Astra 3's late-read
+   lost-update risk).
 3. **activation-checked** — replays the hook's own preview examples,
-   when they are still readable (from its ``proposals/<id>.yaml``
-   sibling — the same file :func:`verbs._prepare_hook_route` reads its
-   ``examples`` from), against the placed SYMLINK path, so a dangling
-   or wrong-target link fails here rather than silently later. NOTE:
-   ``route()`` sweeps that proposal sibling on every successful route
-   (``ledger_ops.remove_proposal_siblings``, confirmed by
-   ``tests/test_route_hook.py``), and one-motion routing never writes
-   one at all, so for a record routed through either real production
-   path there is nothing left to replay — the receipt says "0
-   examples replayed" rather than claiming a clean replay it never
-   ran; see :func:`_examples_for`. The step then requires
+   read from the record's OWN persisted ``routing.hook.examples``
+   first (fold r1, D-e — written at route time by
+   ``verbs._prepare_hook_route``/``_prepare_one_motion_hook``),
+   falling back to a still-present ``proposals/<id>.yaml`` sibling for
+   the narrow case where one happens to exist; against the placed
+   SYMLINK path, so a dangling or wrong-target link fails here rather
+   than silently later. When NEITHER source carries examples (a
+   record routed before this amendment persisted them, its proposal
+   long swept) the receipt says so plainly rather than ever claiming a
+   clean replay it never ran. The step then requires
    :func:`selfcheck._check_hooks`'s own byte-identity detection to
    report the registration live regardless. FW-154's rule applies
    exactly here: Claude Code's own reload of ``settings.json`` is
    never observed, and the receipt says so in those words.
 
+Before step 1 ever places anything, the script at the ledger path is
+byte-compared against the record's own approved bytes
+(``routing.hook.script``) — the same check
+:func:`selfcheck._check_hooks` performs, run here BEFORE the symlink
+exists rather than only after (fold r1, D-c): a hand-edited or
+recompiled-but-unrouted script must never get linked into a live
+runtime directory, and the refusal names this specifically so it is
+never confused with unrelated ``settings.json`` drift.
+
 ``register=False`` performs step 1 only and returns a receipt saying
 activation is delegated but switched off — the overseer's own path
 when ``overseer.hook_activation`` reads ``false`` (``config.py``); the
-human path never passes it.
+human path never passes it. The byte check above still runs on this
+path too — a delegated placement is still a placement.
+
+Every raw filesystem mutation this call makes is undone if the call
+itself later raises (fold r1, D-b / Astra 5): a failed activation
+never leaves a half-state or a mutation with no receipt to show for
+it. ``deactivate`` is surgical, never a whole-file restore (fold r1,
+D-a / Opus B1, Astra 1+2): it removes exactly this record's own
+registration — the hook dict whose command AND matcher are this
+record's own, inside the ``PreToolUse`` event — leaving every other
+registration (this record's siblings, another record's, or a human's
+own hand-edit) untouched, byte-for-byte, in content. The settings.json
+backup a registration writes is kept purely as a human/rollback
+artefact; nothing in this module ever reads it back.
 
 No ledger write happens here. The verb's own ``hook-activated`` /
 ``hook-deactivated`` history entry and commit are written separately,
-inside :func:`verbs._ledger_write`, by the caller — this module's own
-writes land entirely outside every repo (the user's Claude runtime
-directory), which is exactly the disposition
-``tests/test_lock_invariant.py``'s one ``NOT_REPO_TRUTH`` entry for
-this module records: :func:`_write_claude_runtime` is the ONLY
-function in this module whose body performs a raw filesystem mutation
-— every other function here only decides WHAT should happen."""
+inside :func:`verbs._ledger_write`, by the caller — but the caller
+(fold r1, D-b) now invokes THIS module's own writes from INSIDE that
+same lock span, so ``tests/test_lock_invariant.py``'s walker finds
+:func:`_write_claude_runtime` — the ONLY function in this module whose
+body performs a raw filesystem mutation, every other function here
+only decides WHAT should happen — lock-reachable on its own, with no
+``NOT_REPO_TRUTH`` exemption needed (the pre-fold entry for it was
+removed once the walker confirmed it: see the fold r1 report)."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -106,18 +136,36 @@ class StepReceipt:
 
 @dataclass(frozen=True)
 class ActivationResult:
-    """What :func:`activate`/:func:`deactivate` did. ``backup_path`` is
-    the settings.json backup path this call's own history entry note
-    should carry (02 §2 amendment: "carrying the settings-file backup
-    path", for BOTH ``hook-activated`` and ``hook-deactivated``) — for
-    :func:`activate` the backup it just WROTE (``None`` when no
-    settings change happened, e.g. idempotent or ``register=False``);
-    for :func:`deactivate` the backup it just RESTORED FROM (``None``
-    when it instead did a surgical removal, or found nothing to
-    remove)."""
+    """What :func:`activate`/:func:`deactivate` did.
+
+    ``backup_note`` (02 §2 amendment: each history entry's ``note``
+    "carrying the settings-file backup path") is the exact text the
+    caller's ``hook-activated``/``hook-deactivated`` history entry
+    should record — computed HERE, not inferred by the caller from
+    ``backup_path is None``, because that single boolean collapses
+    three genuinely different truths: nothing changed (idempotent),
+    something changed but there was no prior file to back up (a fresh
+    ``settings.json``), and something changed with a real backup
+    written. ``backup_path`` stays the literal path for the one case
+    a backup file actually landed on disk (fold r1, D-g: never a path
+    naming a file that was never written); ``None`` in every other
+    case, INCLUDING every :func:`deactivate` call — D-a's surgical
+    removal never restores from a backup, so deactivation never has
+    one to name.
+
+    ``hook_registered_entry``/``hook_script_path``/``hook_script_sha256``
+    (fold r1, D-f / Astra 9) are the exact ``PreToolUse`` entry
+    :func:`activate` wrote (or found already registered), the ledger-
+    side script path, and its sha256 — set only when ``register=True``
+    reached the registration step; ``None`` for a delegated
+    (``register=False``) activation and always for :func:`deactivate`."""
 
     steps: tuple[StepReceipt, ...]
     backup_path: Path | None = None
+    backup_note: str = "no settings.json change (already registered)"
+    hook_registered_entry: str | None = None
+    hook_script_path: str | None = None
+    hook_script_sha256: str | None = None
 
     @property
     def receipts(self) -> tuple[str, ...]:
@@ -148,53 +196,84 @@ def _classify_symlink(link: Path, target: Path) -> str:
     return "matches" if matches else "conflict"
 
 
-def _read_settings(settings_path: Path) -> tuple[dict, str | None]:
-    """Parse ``settings.json``. Returns ``({}, None)`` when the file is
-    absent (nothing registered yet — a real, legitimate empty state);
-    ``({}, problem)`` when the file EXISTS but does not parse or is
-    not a JSON object — a hard refusal the caller must never treat as
-    "empty" (13 §7.4)."""
+def _read_settings(settings_path: Path) -> tuple[bytes | None, dict, str | None]:
+    """Parse ``settings.json``, returning its RAW bytes too (fold r1,
+    D-b / Astra 3): those bytes are the ONLY legitimate backup source
+    for this call — :func:`_write_claude_runtime` never re-reads the
+    file for its own backup, so a concurrent editor's write landing
+    between this read and the eventual write can never silently win
+    over what THIS call is backing up. ``(None, {}, None)`` when the
+    file is absent (nothing registered yet — a real, legitimate empty
+    state); ``(bytes, {}, problem)`` when the file EXISTS but does not
+    parse or is not a JSON object — a hard refusal the caller must
+    never treat as "empty" (13 §7.4)."""
     if not settings_path.is_file():
-        return {}, None
+        return None, {}, None
+    raw = settings_path.read_bytes()
     try:
-        data = json.loads(settings_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        return {}, f"unparseable {settings_path}: {exc}"
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        return raw, {}, f"unparseable {settings_path}: {exc}"
     if not isinstance(data, dict):
-        return {}, f"{settings_path} top level must be a JSON object"
-    return data, None
+        return raw, {}, f"{settings_path} top level must be a JSON object"
+    return raw, data, None
 
 
-def _command_for(name: str) -> str:
-    """The exact command string ``settings_snippet`` embeds for hook
-    ``name`` — the presence test both merge and removal key on."""
-    return f"$HOME/.claude/hooks/{name}"
+def _snippet_fragment(snippet: str) -> tuple[str, dict]:
+    """Parse a :func:`hook_compiler.settings_snippet` fragment into its
+    ``(event, entry)`` pair — shared by :func:`_merge_snippet` (what to
+    insert), :func:`_remove_command`'s caller (what to remove), and
+    :func:`activate`'s own receipt (the exact bytes the D-f/Astra 9
+    fix shows)."""
+    fragment = json.loads("{" + snippet + "}")
+    ((event, new_entries),) = fragment.items()
+    return event, new_entries[0]
+
+
+def _command_for(name: str, claude_dir: Path) -> str:
+    """The exact command string a registration for hook ``name`` under
+    ``claude_dir`` keys on — the same rule
+    :func:`hook_compiler.command_root` applies when rendering the
+    snippet itself (fold r1, D-d), so merge/removal always compares
+    against exactly what got written."""
+    from .hook_compiler import command_root
+
+    return f"{command_root(claude_dir)}/hooks/{name}"
 
 
 def _merge_snippet(data: dict, snippet: str, command: str) -> tuple[dict, bool]:
     """Insert ``snippet``'s event entry into ``data["hooks"][event]``
-    unless ``command`` is already registered ANYWHERE in that event's
-    array — idempotent by presence, the same rule
-    :func:`selfcheck._registered_hook_commands` already applies when
-    checking liveness (M3-1/M3-14: identical bytes twice would still
-    read as two registrations under dict/array equality, which is not
-    the question that matters). Returns ``(data, False)`` unchanged
-    when already present."""
-    fragment = json.loads("{" + snippet + "}")
-    ((event, new_entries),) = fragment.items()
-    new_entry = new_entries[0]
+    unless (matcher, command) is ALREADY registered together, ANYWHERE
+    in that event's array (fold r1, D-a / Astra 6): idempotent only
+    when both match; the same ``command`` found under a DIFFERENT
+    matcher is a refusal naming both matchers, never silently accepted
+    (it would leave the guard registered for the wrong tool set) and
+    never silently rewritten (that would touch a registration this
+    call does not own). Returns ``(data, False)`` unchanged when
+    already present under the SAME matcher."""
+    event, new_entry = _snippet_fragment(snippet)
+    matcher = new_entry.get("matcher")
     hooks_cfg = dict(data.get("hooks") or {})
     event_list = list(hooks_cfg.get(event) or [])
-    already = any(
-        isinstance(item, dict)
-        and any(
-            isinstance(h, dict) and h.get("command") == command
-            for h in (item.get("hooks") or [])
-        )
-        for item in event_list
-    )
-    if already:
+    same_matcher_hit = False
+    other_matcher: str | None = None
+    for item in event_list:
+        if not isinstance(item, dict):
+            continue
+        item_matcher = item.get("matcher")
+        for h in item.get("hooks") or []:
+            if isinstance(h, dict) and h.get("command") == command:
+                if item_matcher == matcher:
+                    same_matcher_hit = True
+                elif other_matcher is None:
+                    other_matcher = item_matcher
+    if same_matcher_hit:
         return data, False
+    if other_matcher is not None:
+        raise HookActivationError(
+            f"{command} is already registered under matcher "
+            f"{other_matcher!r}, expected {matcher!r} — deactivate first"
+        )
     event_list = event_list + [new_entry]
     hooks_cfg[event] = event_list
     merged = dict(data)
@@ -202,78 +281,85 @@ def _merge_snippet(data: dict, snippet: str, command: str) -> tuple[dict, bool]:
     return merged, True
 
 
-def _remove_command(data: dict, command: str) -> tuple[dict, bool]:
-    """The deactivate-side twin of :func:`_merge_snippet`, used only
-    when no recorded backup exists to restore from: drop every array
-    entry that registers ``command``, in every event, leaving every
-    other registration (this record's OR anyone else's) untouched."""
+def _remove_command(data: dict, event: str, matcher: str, command: str) -> tuple[dict, bool]:
+    """The deactivate-side twin of :func:`_merge_snippet` (fold r1,
+    D-a / Opus B1, Astra 1+2 — deactivate is surgical, never a
+    whole-file restore): removes exactly the hook dict whose
+    ``command`` equals ``command``, inside the ``event`` item whose
+    ``matcher`` equals ``matcher`` — this record's own registration,
+    and only it. If that item's ``hooks`` list still has other
+    commands afterwards, the item stays with the survivors; it is
+    dropped only when its list empties, and the ``event`` key itself
+    is dropped only when ITS list empties (so a deactivation that
+    undoes the only entry ever added restores the file to exactly
+    what it looked like before — no stray empty containers). Every
+    other item, every other event, and every other key on ``data`` is
+    untouched byte-for-byte in content."""
     hooks_cfg = data.get("hooks")
     if not isinstance(hooks_cfg, dict):
         return data, False
-    new_hooks_cfg: dict = {}
+    event_list = hooks_cfg.get(event)
+    if not isinstance(event_list, list):
+        return data, False
+    new_event_list = []
     changed = False
-    for event, entries in hooks_cfg.items():
-        if not isinstance(entries, list):
-            new_hooks_cfg[event] = entries
+    for item in event_list:
+        if not (isinstance(item, dict) and item.get("matcher") == matcher):
+            new_event_list.append(item)
             continue
-        kept = []
-        for item in entries:
-            hooks_list = item.get("hooks") if isinstance(item, dict) else None
-            has_cmd = isinstance(hooks_list, list) and any(
-                isinstance(h, dict) and h.get("command") == command
-                for h in hooks_list
-            )
-            if has_cmd:
-                changed = True
-                continue
-            kept.append(item)
-        if kept:
-            new_hooks_cfg[event] = kept
+        hooks_list = item.get("hooks")
+        if not isinstance(hooks_list, list):
+            new_event_list.append(item)
+            continue
+        survivors = [
+            h for h in hooks_list
+            if not (isinstance(h, dict) and h.get("command") == command)
+        ]
+        if len(survivors) == len(hooks_list):
+            new_event_list.append(item)  # this item never had our command
+            continue
+        changed = True
+        if survivors:
+            new_item = dict(item)
+            new_item["hooks"] = survivors
+            new_event_list.append(new_item)
+        # else: the item's hooks list emptied -- drop the whole item.
     if not changed:
         return data, False
+    new_hooks_cfg = dict(hooks_cfg)
+    if new_event_list:
+        new_hooks_cfg[event] = new_event_list
+    else:
+        del new_hooks_cfg[event]
     merged = dict(data)
-    merged["hooks"] = new_hooks_cfg
+    if new_hooks_cfg:
+        merged["hooks"] = new_hooks_cfg
+    else:
+        del merged["hooks"]
     return merged, True
 
 
-def _latest_hook_activation_backup(record: Record) -> str | None:
-    """The settings.json backup path recorded on the record's most
-    recent ``hook-activated`` history entry that actually carries one
-    (02 §2 amendment), skipping past any entry whose ``note`` is not a
-    ``settings.json.self-learn-bak.*`` path — a ``register=False``
-    activation's own fallback note (see :func:`activate`'s
-    ``"delegated"`` step) is not a backup path, and a naive "most
-    recent entry, whatever its note says" read would stop there and
-    report no backup even when an EARLIER activation on the same
-    record really did register (and back up) settings.json. ``None``
-    when no ``hook-activated`` entry carries a real backup path."""
-    for entry in reversed(record.history):
-        if entry.get("event") != "hook-activated":
-            continue
-        note = entry.get("note")
-        if isinstance(note, str) and note and Path(note).name.startswith(
-            "settings.json.self-learn-bak."
-        ):
-            return note
-    return None
-
-
 def _examples_for(record: Record, bucket_dir: Path) -> dict:
-    """The proposal-carried allow/deny examples for ``record``, when
-    they still exist. ``proposals/<id>.yaml`` is NOT durable past
-    routing: ``resolve_record`` sweeps every destination's proposal
-    sibling as part of a successful ``route()`` (confirmed in
+    """The hook's own allow/deny preview examples, for replay (fold
+    r1, D-e / Astra 8). The record's OWN persisted
+    ``routing.hook.examples`` (written at route time by
+    ``verbs._prepare_hook_route``/``_prepare_one_motion_hook``) is read
+    FIRST; ``proposals/<id>.yaml`` is a fallback for the narrow case
+    where that sibling still happens to exist (a re-authored proposal,
+    or a hand-seeded test fixture) — NOT the normal case:
+    ``resolve_record`` sweeps every destination's proposal sibling as
+    part of a successful ``route()`` (confirmed in
     ``tests/test_route_hook.py::test_two_phase_route_lands_a_working_guard``,
     which asserts the file is gone immediately after ``verbs.route()``
-    returns), and one-motion routing never writes a proposal file at
-    all. So for a record routed through either real production path,
-    this returns ``{}`` — examples survive here only for a record
-    whose proposal was re-authored after routing, or a hand-seeded
-    test fixture that plants one deliberately. ``{}`` is not treated
-    as a refusal — :func:`replay_examples` on zero examples is a
-    no-op, and :func:`activate` reports the count explicitly so a
-    zero-example run never reads as "replay clean" (see the
-    ``activation-checked`` receipt)."""
+    returns), and one-motion routing never writes one at all. ``{}``
+    when NEITHER source carries examples — for a record routed before
+    this amendment persisted them, this is the honest "nothing to
+    replay" state; :func:`activate` reports it explicitly rather than
+    ever claiming a clean replay it never ran."""
+    meta = (record.routing or {}).get("hook") or {}
+    examples = meta.get("examples")
+    if isinstance(examples, dict):
+        return examples
     proposal_path = bucket_dir / "proposals" / f"{record.id}.yaml"
     if not proposal_path.is_file():
         return {}
@@ -293,16 +379,32 @@ def _write_claude_runtime(
     settings_path: Path | None = None,
     settings_bytes: bytes | None = None,
     backup_path: Path | None = None,
+    backup_bytes: bytes | None = None,
+    unlink_settings: bool = False,
     prune_backups: tuple[Path, ...] = (),
 ) -> None:
     """THE single function that performs every raw filesystem mutation
     under the user's Claude runtime directory. Every other function in
     this module only computes WHAT should happen; this is the only
-    place any of it actually lands on disk — ``tests/
-    test_lock_invariant.py``'s ``NOT_REPO_TRUTH`` carries exactly one
-    entry, for this function, because these writes are never ledger
-    truth (the verb's own history-entry receipt is written separately,
-    under :func:`verbs._ledger_write`)."""
+    place any of it actually lands on disk. Fold r1, D-b: the caller
+    (``verbs.hook_activate``/``hook_deactivate``) now invokes this
+    module's calls from INSIDE the same ``with _ledger_write(home)``
+    span the ledger's own history-entry write uses, so ``tests/
+    test_lock_invariant.py``'s walker finds this function
+    lock-reachable directly — no ``NOT_REPO_TRUTH`` exemption needed
+    (these writes still are never ledger TRUTH in content — the
+    ledger's own receipt is the separate history-entry write below —
+    but "not ledger truth" and "not lock-reachable" are different
+    questions; only the second one is what that exemption list is for).
+
+    ``backup_bytes`` (fold r1, D-b / Astra 3) is the CALLER's already-
+    read bytes to preserve as the backup — this function never reads
+    ``settings_path`` itself to decide what the backup should contain,
+    closing the late-read lost-update window a re-read would open.
+    ``unlink_settings`` (fold r1, D-b / Astra 5) is the undo primitive
+    for "this call created settings.json and must now un-create it" —
+    the caller's OWN failed-activation rollback, never used on any
+    success path."""
     if link is not None:
         link.parent.mkdir(parents=True, exist_ok=True)
         if unlink:
@@ -312,11 +414,14 @@ def _write_claude_runtime(
             tmp = link.parent / f".{link.name}.tmp-{os.getpid()}-{time.time_ns()}"
             os.symlink(link_target, tmp)
             os.replace(tmp, link)
-    if settings_path is not None and settings_bytes is not None:
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
-        if backup_path is not None and settings_path.is_file():
-            fsops.atomic_write(backup_path, settings_path.read_bytes())
-        fsops.atomic_write(settings_path, settings_bytes)
+    if settings_path is not None:
+        if unlink_settings:
+            settings_path.unlink(missing_ok=True)
+        elif settings_bytes is not None:
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            if backup_path is not None and backup_bytes is not None:
+                fsops.atomic_write(backup_path, backup_bytes)
+            fsops.atomic_write(settings_path, settings_bytes)
     for stale in prune_backups:
         stale.unlink(missing_ok=True)
 
@@ -333,7 +438,8 @@ def activate(
 ) -> ActivationResult:
     """Place the symlink; when ``register`` (the human path always
     passes the default, ``True``), also register + verify. See the
-    module docstring for the three steps and their ordering."""
+    module docstring for the three steps, their ordering, and the
+    undo-on-failure guarantee."""
     home = Path(home)
     path, record = require_status(
         home, record_id, frozenset({"routed"}), verb="hook activate"
@@ -376,96 +482,171 @@ def activate(
 
     name = script_abs.name
     link = claude_dir / "hooks" / name
+    settings_path = claude_dir / "settings.json"
     steps: list[StepReceipt] = []
 
-    classification = _classify_symlink(link, script_abs)
-    if classification == "conflict":
+    # Fold r1, D-c (Astra 4 / Opus B3 / N10): the byte check runs
+    # BEFORE placing anything, regardless of `register` — a delegated
+    # (register=False) activation still places a symlink, and this is
+    # the check that protects placement itself. Distinguishable from
+    # unrelated settings.json drift by its own wording.
+    try:
+        current_script = script_abs.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HookActivationError(f"cannot read {script_abs}: {exc}") from exc
+    if current_script != meta.get("script"):
         raise HookActivationError(
-            f"{link} already exists and does not point at {script_abs} — "
-            "refusing to overwrite (a different hook or a hand-edit owns it)"
-        )
-    if classification == "absent":
-        _write_claude_runtime(link=link, link_target=script_abs, unlink=False)
-        steps.append(StepReceipt("placed", f"symlinked {link} -> {script_abs}"))
-    else:
-        steps.append(
-            StepReceipt("placed", f"{link} already points at {script_abs} (idempotent)")
+            f"hook script {script_abs} no longer matches its approved "
+            "bytes (drifted since routing) — never hand-edit a "
+            "generated guard; run `self-learn recompile` before "
+            "activating (13 §7.4 byte check)"
         )
 
-    if not register:
+    placed_by_this_call = False
+    wrote_settings = False
+    start_bytes: bytes | None = None
+    try:
+        classification = _classify_symlink(link, script_abs)
+        if classification == "conflict":
+            raise HookActivationError(
+                f"{link} already exists and does not point at {script_abs} — "
+                "refusing to overwrite (a different hook or a hand-edit owns it)"
+            )
+        if classification == "absent":
+            _write_claude_runtime(link=link, link_target=script_abs, unlink=False)
+            placed_by_this_call = True
+            verify = _classify_symlink(link, script_abs)
+            if verify != "matches":
+                raise HookActivationError(
+                    f"placed symlink {link} did not verify as pointing at "
+                    f"{script_abs} immediately after placement"
+                )
+            steps.append(StepReceipt("placed", f"symlinked {link} -> {script_abs}"))
+        else:
+            steps.append(
+                StepReceipt("placed", f"{link} already points at {script_abs} (idempotent)")
+            )
+
+        if not register:
+            steps.append(
+                StepReceipt(
+                    "delegated",
+                    "activation is delegated but switched off "
+                    "(overseer.hook_activation is false) — placed only",
+                )
+            )
+            return ActivationResult(steps=tuple(steps))
+
+        # M3-12-style replay against the SYMLINK path, BEFORE
+        # registering — a dangling or wrong-target link (or a broken
+        # guard) must never be written into settings.json (13 §7.4's
+        # own stated purpose: "so a dangling or wrong-target link
+        # fails here, not silently later").
+        bucket_dir = path.parent.parent
+        examples = _examples_for(record, bucket_dir)
+        n_examples = len(examples.get("allow", []) or []) + len(examples.get("deny", []) or [])
+        mismatches = replay_examples(link, examples)
+        if mismatches:
+            raise HookActivationError(
+                "guard replay failed against the placed symlink — aborting "
+                "before registering (13 §7.4):\n  " + "\n  ".join(mismatches)
+            )
+
+        # Fold r1, D-b: read settings.json ONCE here — this read's
+        # bytes are the ONLY backup source below (Astra 3's late-read
+        # lost-update risk); nothing re-reads the file to decide what
+        # the backup should contain.
+        start_bytes, data, problem = _read_settings(settings_path)
+        if problem is not None:
+            raise HookActivationError(f"{problem} — settings.json left untouched")
+
+        command = _command_for(name, claude_dir)
+        snippet = settings_snippet(list(tools), name, claude_dir=claude_dir)
+        _entry_event, entry = _snippet_fragment(snippet)
+        entry_json = json.dumps(entry, sort_keys=True)
+        script_sha256 = hashlib.sha256(current_script.encode("utf-8")).hexdigest()
+        merged, changed = _merge_snippet(data, snippet, command)
+        backup_path: Path | None = None
+        backup_note = "no settings.json change (already registered)"
+        if changed:
+            new_bytes = (json.dumps(merged, indent=2) + "\n").encode("utf-8")
+            if start_bytes is not None:
+                existing = sorted(claude_dir.glob("settings.json.self-learn-bak.*"))
+                backup_path = claude_dir / f"settings.json.self-learn-bak.{time.time_ns()}"
+                all_after = existing + [backup_path]
+                prune = tuple(all_after[: max(0, len(all_after) - _BACKUP_KEEP)])
+                _write_claude_runtime(
+                    settings_path=settings_path,
+                    settings_bytes=new_bytes,
+                    backup_path=backup_path,
+                    backup_bytes=start_bytes,
+                    prune_backups=prune,
+                )
+                backup_note = str(backup_path)
+            else:
+                _write_claude_runtime(settings_path=settings_path, settings_bytes=new_bytes)
+                backup_note = "settings.json created — no prior file to back up"
+            wrote_settings = True
+            steps.append(
+                StepReceipt(
+                    "registered",
+                    f"inserted the PreToolUse entry for {name}: {entry_json} "
+                    f"(script {script_abs}, sha256 {script_sha256})",
+                )
+            )
+        else:
+            steps.append(
+                StepReceipt(
+                    "registered",
+                    f"{command} already registered (idempotent): {entry_json} "
+                    f"(script {script_abs}, sha256 {script_sha256})",
+                )
+            )
+
+        verdict, message = selfcheck._check_hooks(home, claude_dir)  # noqa: SLF001
+        if verdict is not selfcheck.Verdict.PASS:
+            raise HookActivationError(
+                f"registration did not verify as live: {message}"
+            )
+        if n_examples:
+            replay_note = f"{n_examples} example(s) replayed clean against the symlink"
+        else:
+            # Fold r1, D-e: honest either way -- a record with no
+            # persisted examples (its own meta AND any proposal
+            # sibling both empty) never reads as "replay clean".
+            replay_note = (
+                "no examples recorded on this record — replay skipped; "
+                "doctor verdict governs"
+            )
         steps.append(
             StepReceipt(
-                "delegated",
-                "activation is delegated but switched off "
-                "(overseer.hook_activation is false) — placed only",
+                "activation-checked",
+                f"{replay_note}; the doctor confirms the approved bytes at "
+                "the host path and that the symlink resolves — it does not "
+                "read the bytes through the symlink itself; Claude Code's "
+                "own reload of settings.json was NOT observed (FW-154)",
             )
         )
-        return ActivationResult(steps=tuple(steps))
-
-    # M3-12-style replay against the SYMLINK path, BEFORE registering —
-    # a dangling or wrong-target link (or a broken guard) must never be
-    # written into settings.json (13 §7.4's own stated purpose: "so a
-    # dangling or wrong-target link fails here, not silently later").
-    bucket_dir = path.parent.parent
-    examples = _examples_for(record, bucket_dir)
-    n_examples = len(examples.get("allow", []) or []) + len(examples.get("deny", []) or [])
-    mismatches = replay_examples(link, examples)
-    if mismatches:
-        raise HookActivationError(
-            "guard replay failed against the placed symlink — aborting "
-            "before registering (13 §7.4):\n  " + "\n  ".join(mismatches)
-        )
-
-    settings_path = claude_dir / "settings.json"
-    data, problem = _read_settings(settings_path)
-    if problem is not None:
-        raise HookActivationError(f"{problem} — settings.json left untouched")
-    command = _command_for(name)
-    snippet = settings_snippet(list(tools), name)
-    merged, changed = _merge_snippet(data, snippet, command)
-    backup_path: Path | None = None
-    if changed:
-        existing = sorted(claude_dir.glob("settings.json.self-learn-bak.*"))
-        backup_path = claude_dir / f"settings.json.self-learn-bak.{time.time_ns()}"
-        all_after = existing + [backup_path]
-        prune = tuple(all_after[: max(0, len(all_after) - _BACKUP_KEEP)])
-        new_bytes = (json.dumps(merged, indent=2) + "\n").encode("utf-8")
-        _write_claude_runtime(
-            settings_path=settings_path,
-            settings_bytes=new_bytes,
+        return ActivationResult(
+            steps=tuple(steps),
             backup_path=backup_path,
-            prune_backups=prune,
+            backup_note=backup_note,
+            hook_registered_entry=entry_json,
+            hook_script_path=str(script_abs),
+            hook_script_sha256=script_sha256,
         )
-        steps.append(
-            StepReceipt("registered", f"inserted the PreToolUse entry for {name}")
-        )
-    else:
-        steps.append(
-            StepReceipt("registered", f"{command} already registered (idempotent)")
-        )
-
-    verdict, message = selfcheck._check_hooks(home, claude_dir)  # noqa: SLF001
-    if verdict is not selfcheck.Verdict.PASS:
-        raise HookActivationError(
-            f"registration did not verify as live: {message}"
-        )
-    if n_examples:
-        replay_note = f"{n_examples} example(s) replayed clean against the symlink"
-    else:
-        replay_note = (
-            "0 examples replayed — proposal sibling swept at route time; "
-            "behavioral replay ran at route, the doctor's byte-identity "
-            "check below is the live verification"
-        )
-    steps.append(
-        StepReceipt(
-            "activation-checked",
-            f"{replay_note}; registration verified live by the doctor's own "
-            "hook check; Claude Code's own reload of settings.json was NOT "
-            "observed (FW-154)",
-        )
-    )
-    return ActivationResult(steps=tuple(steps), backup_path=backup_path)
+    except BaseException:
+        # Fold r1, D-b / Astra 5: undo ONLY what THIS call did, so a
+        # failed activation never leaves a half-state or a mutation
+        # with no receipt to show for it.
+        if wrote_settings:
+            if start_bytes is not None:
+                _write_claude_runtime(settings_path=settings_path, settings_bytes=start_bytes)
+            else:
+                _write_claude_runtime(settings_path=settings_path, unlink_settings=True)
+        if placed_by_this_call:
+            _write_claude_runtime(link=link, unlink=True)
+        raise
 
 
 def deactivate(
@@ -475,12 +656,13 @@ def deactivate(
     claude_dir: Path,
 ) -> ActivationResult:
     """Reverse :func:`activate`: remove the symlink (only if it points
-    at the expected target) and restore ``settings.json`` from the
-    recorded backup when one exists (only THIS activation's own prior
-    state, never a later, unrelated edit — the backup is read from the
-    record's own ``hook-activated`` history note); with no recorded
-    backup (e.g. a ``register=False`` activation never registered
-    anything), surgically removes only this hook's own entry."""
+    at the expected target) and surgically remove only this hook's own
+    registration from ``settings.json`` — every other registration
+    (this record's siblings, another record's, or a human's own hand-
+    edit) is left byte-for-byte untouched (fold r1, D-a / Opus B1,
+    Astra 1+2). Never restores a whole-file backup: the settings.json
+    backup a registration wrote is kept purely as a human/rollback
+    artefact, never read back by this function."""
     home = Path(home)
     path, record = require_status(
         home, record_id, frozenset({"routed"}), verb="hook deactivate"
@@ -509,6 +691,7 @@ def deactivate(
     _host_repo, script_abs, _rel, _mode = location
     name = script_abs.name
     link = claude_dir / "hooks" / name
+    settings_path = claude_dir / "settings.json"
     steps: list[StepReceipt] = []
 
     classification = _classify_symlink(link, script_abs)
@@ -526,37 +709,35 @@ def deactivate(
             )
         )
 
-    command = _command_for(name)
-    settings_path = claude_dir / "settings.json"
-    backup_note = _latest_hook_activation_backup(record)
-    restored_from: Path | None = None
-    if backup_note is not None and Path(backup_note).is_file():
-        restore_bytes = Path(backup_note).read_bytes()
-        _write_claude_runtime(settings_path=settings_path, settings_bytes=restore_bytes)
+    tools = list(meta.get("tools") or [])
+    command = _command_for(name, claude_dir)
+    snippet = settings_snippet(tools, name, claude_dir=claude_dir)
+    event, entry = _snippet_fragment(snippet)
+    matcher = entry.get("matcher")
+    # `settings_snippet` always sets a string "matcher" key -- narrows
+    # the type for pyright, not a runtime-load-bearing check.
+    assert isinstance(matcher, str)
+    start_bytes, data, problem = _read_settings(settings_path)
+    if problem is not None:
         steps.append(
-            StepReceipt("unregistered", f"restored settings.json from {backup_note}")
+            StepReceipt("unregistered", f"{problem} — settings.json left untouched")
         )
-        restored_from = Path(backup_note)
+        backup_note = f"{problem} — settings.json left untouched"
     else:
-        data, problem = _read_settings(settings_path)
-        if problem is not None:
+        merged, changed = _remove_command(data, event, matcher, command)
+        if changed:
+            new_bytes = (json.dumps(merged, indent=2) + "\n").encode("utf-8")
+            _write_claude_runtime(settings_path=settings_path, settings_bytes=new_bytes)
             steps.append(
-                StepReceipt("unregistered", f"{problem} — settings.json left untouched")
+                StepReceipt(
+                    "unregistered",
+                    f"removed the PreToolUse entry for {name} (surgical — "
+                    "every other registration untouched)",
+                )
             )
+            backup_note = "no settings.json backup used (surgical removal)"
         else:
-            merged, changed = _remove_command(data, command)
-            if changed:
-                new_bytes = (json.dumps(merged, indent=2) + "\n").encode("utf-8")
-                _write_claude_runtime(settings_path=settings_path, settings_bytes=new_bytes)
-                steps.append(
-                    StepReceipt(
-                        "unregistered",
-                        f"removed the PreToolUse entry for {name} (no recorded backup)",
-                    )
-                )
-            else:
-                steps.append(
-                    StepReceipt("unregistered", f"{command} already absent (idempotent)")
-                )
+            steps.append(StepReceipt("unregistered", f"{command} already absent (idempotent)"))
+            backup_note = "no settings.json change (already absent)"
 
-    return ActivationResult(steps=tuple(steps), backup_path=restored_from)
+    return ActivationResult(steps=tuple(steps), backup_path=None, backup_note=backup_note)

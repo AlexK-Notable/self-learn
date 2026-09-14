@@ -239,7 +239,6 @@ NOT_REPO_TRUTH = {
     # separately, inside `verbs._ledger_write`, by the caller
     # (`verbs.hook_activate`/`hook_deactivate`) -- this exemption covers
     # exactly the runtime-dir write, nothing else in that call chain.
-    "hook_activation._write_claude_runtime": "writes the user's Claude runtime dir, atomically with backup; the ledger receipt is written separately under _ledger_write",
 }
 
 

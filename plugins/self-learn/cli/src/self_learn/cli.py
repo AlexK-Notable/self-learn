@@ -516,8 +516,9 @@ def _build_parser() -> argparse.ArgumentParser:
     hact.add_argument("id", metavar="ID")
     hact.add_argument(
         "--json", action="store_true", dest="as_json",
-        help="machine-readable outcome envelope; the step receipts stay "
-        "stdout text either way (§4 pin: envelope and nothing else)",
+        help="machine-readable outcome envelope, including the exact "
+        "registered PreToolUse entry + script path + sha256 (§4 pin: "
+        "no other stdout text under --json)",
     )
     hact.add_argument(
         "--no-push", action="store_true", dest="no_push",
@@ -525,13 +526,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     hdeact = hook_sub.add_parser(
         "deactivate", help="reverse hook activate: remove the symlink + "
-        "settings entry, restoring from the recorded backup when present",
+        "surgically remove only this hook's own settings entry (never a "
+        "whole-file restore — every other registration is untouched)",
     )
     hdeact.add_argument("id", metavar="ID")
     hdeact.add_argument(
         "--json", action="store_true", dest="as_json",
-        help="machine-readable outcome envelope; the step receipts stay "
-        "stdout text either way (§4 pin: envelope and nothing else)",
+        help="machine-readable outcome envelope (§4 pin: no other "
+        "stdout text under --json)",
     )
     hdeact.add_argument(
         "--no-push", action="store_true", dest="no_push",
@@ -1959,6 +1961,14 @@ def _verb_envelope(result: verbs.VerbResult) -> dict:
             if result.host_commit_sha is not None
             else None
         ),
+        # Fold r1, D-f (Astra 9 — exact bytes shown): `hook-activate`
+        # only. `None` for every other verb, and for a delegated
+        # (register=False) activation — never the full script body,
+        # which stays the route/Apply step's and the overseer's O-5
+        # display's job.
+        "hook_registered_entry": result.hook_registered_entry,
+        "hook_script_path": result.hook_script_path,
+        "hook_script_sha256": result.hook_script_sha256,
     }
 
 
@@ -3224,6 +3234,16 @@ def _cmd_hook(args: argparse.Namespace) -> int:
     except LedgerOpsError as exc:
         print(f"self-learn hook {args.hook_command}: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    except intents.LedgerStoppedError as exc:
+        # Fold r1, N9 (S-62 §7.2a.5(5)): a DEDICATED arm, ahead of the
+        # generic GitOpsError arm below — that arm prepends its own
+        # "self-learn hook <verb>:" prefix, which would double the one
+        # `str(exc)` already carries (the exact shape
+        # test_reject_stop_message_is_not_double_prefixed forbids for
+        # `reject`). `_cmd_hook` used to copy `_cmd_link`, the one
+        # other dispatcher that also lacked this arm.
+        print(str(exc), file=sys.stderr)
+        return EXIT_BATCH_PARTIAL if exc.earlier_commits else EXIT_GIT_FAILED
     except gitops.GitOpsError as exc:  # BLOCKER B: never a traceback
         print(f"self-learn hook {args.hook_command}: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED
