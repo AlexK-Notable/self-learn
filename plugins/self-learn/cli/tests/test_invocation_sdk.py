@@ -1111,6 +1111,7 @@ def test_ch14_steward_and_overseer_write_stage_only_bash_and_mcp_tools_denied(tm
             stage_dir=home / "stage",
         )
         assert containment.default_mode == "default", surface  # C-10: no hatch for either
+        assert containment.strict_mcp is True, surface  # U8 fold r1 (gate N1): pinned
         cb = charter_mod.build_can_use_tool(containment)
 
         inside = home / "stage" / surface / "note.md"

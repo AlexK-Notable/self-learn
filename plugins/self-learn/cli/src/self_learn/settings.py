@@ -190,7 +190,7 @@ class Setting:
     #: ``config_key`` by construction, checked at import time below).
     name: str
     #: ``None`` => no env rung at all (M-S, S-58: `provider.bedrock.
-    #: models.*`'s four entries -- `worker`/`miner`/`analyst` because
+    #: models.*`'s entries (six after U8) -- `worker`/`miner`/`analyst` because
     #: their env var moved to a different, always-active `models.*`
     #: entry; `small_fast` because it never had one -- its value feeds
     #: the CHILD session's own `ANTHROPIC_DEFAULT_HAIKU_MODEL`, so a
@@ -514,7 +514,7 @@ def _try_config(
 
 def _try_env(setting: Setting, *, next_rung: str | None) -> tuple[SettingValue, str] | None:
     """The env rung, factored out unchanged. `env_var=None` (M-S: the
-    four `provider.bedrock.models.*` entries) means no env rung at all
+    `provider.bedrock.models.*` entries) means no env rung at all
     -- skipped, exactly like `config_section=None` skips the config
     rung above. `next_rung=None` means env is the LAST live rung
     (`"config-first"`, unchanged from before this amendment) -- warn
@@ -934,6 +934,8 @@ REGISTRY: tuple[Setting, ...] = (
         config_key="timeout_secs",
         kind="float",
         default=1800.0,  # plan-steward-2026-09-12.md §5.4
+        validate=lambda v: v if cast(float, v) > 0 else None,  # a <=0 timeout kills every run instantly (E4; U8 fold r1 gate N5)
+        validate_hint="must be > 0",
         description="subprocess timeout (seconds) for one steward model call",
     ),
     # ------------------------------------------------------ overseer
@@ -949,6 +951,8 @@ REGISTRY: tuple[Setting, ...] = (
         config_key="timeout_secs",
         kind="float",
         default=900.0,  # plan-overseer-2026-09-12.md §5.4
+        validate=lambda v: v if cast(float, v) > 0 else None,  # a <=0 timeout kills every run instantly (E4; U8 fold r1 gate N5)
+        validate_hint="must be > 0",
         description="subprocess timeout (seconds) for one overseer model call",
     ),
     Setting(

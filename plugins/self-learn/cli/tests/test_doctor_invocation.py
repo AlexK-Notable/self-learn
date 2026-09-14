@@ -200,6 +200,12 @@ def test_dc3_rollout_four_states(monkeypatch, capsys, _home):
     rc, out = _run(["doctor", "invocation"], capsys)
     (line,) = _rows_by_name(out, "rollout")
     assert line.startswith("PASS")
+    # U8 fold r1 (gate S1): the detail text counts and names every surface —
+    # a stale "four" survived the widening to six because only the verdict
+    # prefix was asserted here.
+    assert f"all {len(provider.SURFACES)} surfaces resolve backend=sdk" in line
+    for s in provider.SURFACES:
+        assert s in line, s
     monkeypatch.delenv("SELF_LEARN_BACKEND")
 
     # anthropic -> SKIP regardless of backend
@@ -475,13 +481,18 @@ def test_dc9_handoff_block_fixed_fields_and_no_leak_and_equality(monkeypatch, ca
     rc, out = _run(["doctor", "invocation"], capsys)
     assert "doctor: ---" in out
     handoff_lines = [ln for ln in out.splitlines() if ln.startswith("doctor: handoff: ")]
+    # DC9 asks for the FIXED field set, transcribed — a literal, not
+    # `provider.SURFACES`, so a surface added to the tuple trips this test
+    # instead of being silently followed (U8 fold r1, gate S2).
+    _HANDOFF_SURFACES = ("worker", "worker-repair", "miner-reader", "analyst", "steward", "overseer")
+    assert tuple(provider.SURFACES) == _HANDOFF_SURFACES
     expected_fields = (
         ["provider"]
-        + [f"backend.{s}" for s in provider.SURFACES]
+        + [f"backend.{s}" for s in _HANDOFF_SURFACES]
         + ["region", "profile", "credential-mechanisms"]
-        + [f"model.{s}" for s in provider.SURFACES]
+        + [f"model.{s}" for s in _HANDOFF_SURFACES]
         + ["model.small_fast"]
-        + [f"env-keys.{s}" for s in provider.SURFACES]
+        + [f"env-keys.{s}" for s in _HANDOFF_SURFACES]
         + ["sdk-version", "cli-version.bundled", "cli-version.host"]
     )
     got_fields = [ln[len("doctor: handoff: ") :].split(" = ", 1)[0] for ln in handoff_lines]

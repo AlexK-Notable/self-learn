@@ -1,5 +1,5 @@
 """U-seam §3.1/3.2/3.3/3.4/3.5/3.6/3.7.4 — the invocation seam's data
-contracts: the four surfaces, containment-as-data, the session/outcome
+contracts: the six surfaces, containment-as-data, the session/outcome
 shapes, the ``Backend`` protocol, the log-template table and the
 transport table.
 
