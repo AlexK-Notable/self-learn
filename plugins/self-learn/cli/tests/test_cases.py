@@ -1091,3 +1091,40 @@ def test_r2_n5_index_lock_is_mutually_exclusive_across_two_writers(tmp_path):
     t.join(timeout=5)
     assert acquired.is_set(), "the second writer must acquire once released"
     assert events == ["acquired"]
+
+
+# =================================================== fold r1 (U5): F6a
+
+
+def test_require_reconsider_case_refuses_when_predecessor_link_is_broken(tmp_path):
+    """Fold r1 (F6a): the predecessor-link check
+    (`old_fm.get("superseded_by") != case_id`) had no test pinning it
+    -- gate mutation F neutralised it and the whole committed suite
+    stayed green (only an ad-hoc probe went red). `cases.record` would
+    refuse a SECOND write through its own `supersedes` path (a case is
+    superseded once), so the only way to reach a mismatched link is to
+    hand-corrupt it after a valid supersession -- simulating a stale
+    or tampered link, not a state reachable through the ordinary CLI."""
+    home = make_home(tmp_path)
+    predecessor = _record(tmp_path, home, kind="resolution", outcome="route")
+    reconsider_case = _record(
+        tmp_path, home, actor="steward", kind="reconsider", outcome="reject",
+        overrides={"supersedes": predecessor},
+    )
+    view = cases.show(home, predecessor, evidence_only=False)
+    assert view.frontmatter["superseded_by"] == reconsider_case  # fixture sanity
+
+    # Hand-corrupt the predecessor's OWN frontmatter link. Frontmatter
+    # sits OUTSIDE the frozen body span the tamper check hashes, so
+    # this does not trip that check first.
+    cases_dir = home / "cases"
+    predecessor_path = next(cases_dir.glob(f"*/{predecessor}.md"))
+    text = predecessor_path.read_text(encoding="utf-8")
+    corrupted = text.replace(
+        f"superseded_by: {reconsider_case}", "superseded_by: case-deadbeef"
+    )
+    assert corrupted != text  # sanity: the substitution actually matched
+    predecessor_path.write_text(corrupted, encoding="utf-8")
+
+    with pytest.raises(cases.CaseError, match="predecessor link is broken"):
+        cases.require_reconsider_case(home, reconsider_case, "lrn-08ed825b")

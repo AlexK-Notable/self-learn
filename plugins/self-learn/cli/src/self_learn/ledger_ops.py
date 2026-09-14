@@ -2468,6 +2468,20 @@ def resolve_record(
         record.set_routing(routing)
     if superseded_by is not None:
         record.set_superseded_by(superseded_by)
+    # U5 fold r1 (F2 leg i/ii): a record admitted here only via
+    # `extra_allowed_source` (a validated reconsider case widening
+    # `reject`/`defer` onto an already-`routed` record) may already
+    # carry a resolution note from ITS OWN routing — displace it into
+    # `history` (the SAME writer `reopen_record` uses) BEFORE the
+    # status flip below, so `record.status` in the history entry still
+    # names the status being corrected. Without this: a *note* given
+    # here crashed on the write-once field below (leg i — a
+    # `MutationError` `batch._dispatch` now also catches, see its own
+    # comment); no *note* given here silently kept the STALE note from
+    # the resolution being corrected (leg ii). Every pre-U5 caller
+    # passes `extra_allowed_source=None` and is unaffected.
+    if extra_allowed_source and record.resolution_note is not None:
+        _displace_resolution_note(record)
     record.set_status(new_status)
     if note is not None:
         record.set_resolution_note(note)
@@ -2562,6 +2576,28 @@ def move_record(
     return touched, swept
 
 
+def _displace_resolution_note(record: Record) -> None:
+    """U5 fold r1 (F2): the ONE shared writer for a resolution-note
+    displacement — :func:`reopen_record` (below) has always done this
+    unconditionally on every call, and `resolve_record`/`defer_record`
+    now call it too, gated on their own `extra_allowed_source` path
+    (a validated reconsider case widening a record already carrying a
+    resolution note). Appends the record's CURRENT `resolution_note`
+    (possibly ``None`` — `reopen_record`'s own pre-U5 behaviour never
+    skipped this even when there was nothing to displace) into
+    ``history`` as an ``event: "resolution"`` entry naming the
+    record's status AT THE MOMENT OF DISPLACEMENT (the caller must
+    call this BEFORE its own `record.set_status(...)`, matching
+    `reopen_record`'s existing order), then clears the note
+    (:meth:`Record.clear_resolution_note` is idempotent when there is
+    nothing to clear, and refuses unless the note it would clear is
+    already the one just appended — never a silent second writer)."""
+    record.append_history(
+        "resolution", {"status": record.status, "note": record.resolution_note}
+    )
+    record.clear_resolution_note()
+
+
 def reopen_record(home: Path, record_id: str) -> tuple[list[Path], list[Path]]:
     """File-op half of ``reopen`` (U-verbs §4.2): a REJECTED record's old
     resolution is DISPLACED into ``history`` (never destroyed —
@@ -2579,9 +2615,7 @@ def reopen_record(home: Path, record_id: str) -> tuple[list[Path], list[Path]]:
     path = find_record_path(home, record_id, statuses=("resolved",))
     record = Record.from_path(path)
     bucket_dir = path.parent.parent
-    old_note = record.resolution_note
-    record.append_history("resolution", {"status": record.status, "note": old_note})
-    record.clear_resolution_note()
+    _displace_resolution_note(record)  # fold r1 (F2): shared writer, see its docstring
     record.set_status("pending")
     pending_dir = bucket_dir / "pending"
     pending_dir.mkdir(parents=True, exist_ok=True)
@@ -2788,6 +2822,16 @@ def defer_record(
     if extra_allowed_source:
         allowed_source = allowed_source | extra_allowed_source
     path, record = require_status(home, record_id, allowed_source, verb="defer")
+    # U5 fold r1 (F2): same displacement `resolve_record` gains, same
+    # reason — a record admitted here only via `extra_allowed_source`
+    # may still carry a resolution note from its own prior routing;
+    # BEFORE `record.set_status("deferred")` below, so the record does
+    # not sit in a LIVE status with a stale RESOLUTION-only field.
+    # `defer` takes no `note` of its own (the note rides the commit
+    # body only — see its verb docstring), so there is never a NEW
+    # note to set afterward, only the old one to clear.
+    if extra_allowed_source and record.resolution_note is not None:
+        _displace_resolution_note(record)
     clock = _now(now)
     if until is None:
         until = (clock + timedelta(days=DEFAULT_DEFER_DAYS)).strftime("%Y-%m-%d")

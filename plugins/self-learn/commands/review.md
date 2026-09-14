@@ -170,9 +170,15 @@ already-routed record — a resolution verb on an already-routed record is
 otherwise refused. This is what lets a wrong route or reject be
 corrected: the original case is marked superseded by the `reconsider`
 case, and it is the new verb the sheet applies that actually takes
-effect. Whether the mechanics of a `routed → rejected` transition are a
-plain status flip or need a `supersede`+`recompile` step is still an
-open build-gate question for that unit — nothing here depends on which
+effect. For a wrong **reject** specifically, the corrected sheet's first
+item is `reopen` (already legal on a rejected record, no case needed for
+that step) followed by the corrective verb, both receipted to the same
+case — reopening back to `pending` is what makes the corrective verb
+ordinary again, never a further widening of `route`/`rehome`/`revise`
+to admit a rejected record directly. Whether the mechanics of a
+`routed → rejected` transition are a plain status flip or need a
+`supersede`+`recompile` step is still an open build-gate question for
+that unit — nothing here depends on which
 way it lands.
 
 **Two different undo paths — do not confuse them.** Among supersessions,

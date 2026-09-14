@@ -403,9 +403,10 @@ def _build_parser() -> argparse.ArgumentParser:
             # Resolution-evidence unit (§2.1/§3.1): a machine envelope on
             # stdout, populated ONLY on a successful (exit 0) run — never
             # a second outcome channel. Scoped to route/reject/defer/
-            # graduate (the resolution verbs the UI's evidence surface
-            # drives) — never rehome/supersede/confirm-recurrence/
-            # confirm-held, which stay text-only.
+            # graduate/reconsider (fold r1, F7: U5 adds `reconsider` as
+            # a fifth `--json` verb — the resolution verbs the UI's
+            # evidence surface drives) — never rehome/supersede/
+            # confirm-recurrence/confirm-held, which stay text-only.
             p.add_argument(
                 "--json",
                 action="store_true",
@@ -2108,7 +2109,15 @@ def _outcome_state(result: verbs.VerbResult) -> str:
     retirement failure still surfaces via `warnings` regardless (§3.7
     renders it on the success leg unconditionally) — this function only
     controls the summary label, never the repair text."""
-    if result.action in ("reject", "defer"):
+    if result.action in ("reject", "defer", "reconsider"):
+        # Fold r1 (F4): `reconsider` shares `reject`/`defer`'s exact
+        # shape here — it never attempts a host write at all (it only
+        # ever appends a `reconsidered` history entry and commits the
+        # ledger), so neither `compile_result` nor `host_commit_sha` is
+        # ever set on its `VerbResult`. Falling through to `route`'s
+        # 4-state predicate below landed on `compile_result is None` →
+        # `"drift"` on a fully successful call, telling a consumer to
+        # `recompile` canon that `reconsider` never touched.
         return "landed"
     if result.action == "graduate":
         return "landed" if result.host_commit_sha is not None else "no_op"

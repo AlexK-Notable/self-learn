@@ -5367,6 +5367,23 @@ def commit_drift(
 _RECONSIDER_RETIREABLE_DESTINATIONS = frozenset({"skill-md", "claude-md", "new-skill"})
 
 
+def _wrap_case_error(exc: cases.CaseError) -> VerbError:
+    """Fold r1 (F5): preserve a :class:`cases.CaseUsageError`'s
+    EX_USAGE exit code (64) across the wrap into :class:`VerbError` —
+    the same discipline `commands/review.md` already promises for an
+    unknown RECORD id ("An unknown record id is 64 (usage), not 1").
+    Before this, both call sites below raised a bare ``VerbError``
+    unconditionally, which discards `CaseUsageError.exit_code` and
+    substitutes `VerbError`'s own default of 1 — an unknown/malformed
+    CASE id came back exit 1 instead of 64, the one thing every other
+    surface's unknown-id refusal promises. A plain
+    :class:`cases.CaseError` (exit_code 1, e.g. a corrupt multi-match)
+    stays an ordinary :class:`VerbError`."""
+    if getattr(exc, "exit_code", VerbError.exit_code) == VerbUsageError.exit_code:
+        return VerbUsageError(str(exc))
+    return VerbError(str(exc))
+
+
 def _reconsider_case_check(
     home: Path, reconsider_case: str | None, record_id: str
 ) -> dict | None:
@@ -5376,7 +5393,9 @@ def _reconsider_case_check(
     lock, even if the record is live") — a thin wrap of
     :func:`cases.require_reconsider_case` that turns every
     :class:`cases.CaseError` into a :class:`VerbError`, the exception
-    type every one of these verbs' callers already catches. Returns the
+    type every one of these verbs' callers already catches
+    (:func:`_wrap_case_error`, fold r1 F5, preserves a
+    `CaseUsageError`'s exit_code 64 across the wrap). Returns the
     reconsider case's own frontmatter (unused by reject/defer/graduate/
     supersede today — only :func:`reconsider` itself consults
     `outcome`) or ``None`` when *reconsider_case* is ``None`` (the
@@ -5388,7 +5407,7 @@ def _reconsider_case_check(
             home, reconsider_case, record_id
         )
     except cases.CaseError as exc:
-        raise VerbError(str(exc)) from exc
+        raise _wrap_case_error(exc) from exc
     return case_fm
 
 
@@ -5986,12 +6005,36 @@ def undefer(
 #: nothing, or handed the record to the overseer — so both are
 #: applicable from any reconsiderable status.
 _RECONSIDER_WIDENED_STATUSES = frozenset({"routed", "deferred"})  # ROUTED_ONLY | DEFERRED_ONLY
+#: Fold r1 (F3, the orchestrator's ruling): a WRONG REJECT is corrected
+#: through `reopen` (already legal on a `rejected` record —
+#: `REOPENABLE_STATUSES`, no reconsider case needed for THAT step) as
+#: the sheet's FIRST item, receipted to the same reconsider case, with
+#: the corrective verb (`route`/`defer`/`graduate`/…) AFTER it — by the
+#: time the corrective verb runs, `reopen` has already moved the record
+#: to `pending`, so the verb itself needs no widening at all (`route`'s
+#: own unwidened gate already admits `pending`). This is NOT a new
+#: widening of `route`/`rehome`/`revise` to admit `rejected` directly —
+#: none of the three ever gain it. What DOES need to admit `rejected`
+#: is `reconsider` itself: the verb that records the "this was wrong"
+#: history entry is called BEFORE that corrective sheet ever runs,
+#: while the record is STILL `rejected` — so the corresponding outcome
+#: must already be applicable to a `rejected` record for that call to
+#: succeed at all. `reject`'s own outcome is deliberately excluded
+#: (correcting a reject into ANOTHER reject is not a correction).
+#: `REOPENABLE_STATUSES` (`ledger_ops.py` — the rejected-only set) is
+#: reused below rather than a fresh inline set literal — it names
+#: EXACTLY what this fold means (GUARD2, `test_guard2_new_status_sets_
+#: are_constants`, pins that `verbs.py` never re-derives that constant
+#: — or `DEFERRED_ONLY`'s — own literal by hand).
+_RECONSIDER_WIDENED_STATUSES_INCL_REJECTED = (
+    _RECONSIDER_WIDENED_STATUSES | REOPENABLE_STATUSES
+)
 _OUTCOME_APPLICABLE_STATUSES: dict[str, frozenset[str]] = {
-    "route": DEFERRED_ONLY,
+    "route": DEFERRED_ONLY | REOPENABLE_STATUSES,
     "reject": _RECONSIDER_WIDENED_STATUSES,
-    "defer": _RECONSIDER_WIDENED_STATUSES,
-    "retire": _RECONSIDER_WIDENED_STATUSES,
-    "replaced": _RECONSIDER_WIDENED_STATUSES,
+    "defer": _RECONSIDER_WIDENED_STATUSES_INCL_REJECTED,
+    "retire": _RECONSIDER_WIDENED_STATUSES_INCL_REJECTED,
+    "replaced": _RECONSIDER_WIDENED_STATUSES_INCL_REJECTED,
     "rehome": DEFERRED_ONLY,
     "revise": DEFERRED_ONLY,
     "no-action": RECONSIDERABLE_STATUSES,
@@ -6048,7 +6091,7 @@ def reconsider(
     try:
         case_fm, _old_fm = cases.require_reconsider_case(home, case, record_id)
     except cases.CaseError as exc:
-        raise VerbError(str(exc)) from exc
+        raise _wrap_case_error(exc) from exc  # fold r1 (F5): preserve exit 64
     try:
         _, record = require_status(
             home, record_id, RECONSIDERABLE_STATUSES, verb="reconsider"
