@@ -48,6 +48,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from re import compile as re_compile
 
+from self_learn.cli import EXIT_HELD
+
 __all__ = [
     "DEFAULT_MINE_RUN_TIMEOUT_SECS",
     "FakeRunner",
@@ -101,6 +103,16 @@ class RunResult:
     @property
     def ok(self) -> bool:
         return self.exit_code == 0
+
+    @property
+    def held(self) -> bool:
+        """U0 (FW-85/gate B1): the run found nothing due and held —
+        not a failure and not `ok`. Deliberately NOT folded into
+        `ok` (that invariant stays `exit_code == 0`, always); a
+        caller that wants to treat a held run like a completed one
+        checks `result.ok or result.held` explicitly (see the two
+        Force-run routes in `routes.py`)."""
+        return self.exit_code == EXIT_HELD
 
 
 class VerbRunner(ABC):

@@ -192,6 +192,25 @@ def test_hp4_landed_mine_job_triggers_an_in_process_worker_follow_on_no_popen(mo
     assert len(worker_run_calls) == 1
 
 
+def test_fw85_run_mine_job_returns_the_mine_result_object_untranslated(monkeypatch):
+    """FW-85 (U0) acceptance #3: `_run_mine_job` is a plain call to
+    `miner.run` and hands its caller the `MineResult` object BACK
+    UNCHANGED -- `serve.py` consumes result objects, never an exit
+    code, so `_cmd_mine`'s new `_MINE_RUN_EXIT` mapping (`cli.py`) has
+    nothing to do with this path. `status="held-gate"` is deliberately
+    a status whose CLI exit code changed under FW-85 (0 -> EXIT_HELD)
+    -- proving the serve scheduling path never even looks at it."""
+    sentinel = miner.MineResult(status="held-gate", run_id="run-fw85")
+
+    def fake_miner_run(home, **kwargs):
+        assert kwargs.get("trigger") == "serve"
+        return sentinel
+
+    monkeypatch.setattr(miner, "run", fake_miner_run)
+    result = serve._run_mine_job(Path("/irrelevant-home"))
+    assert result is sentinel
+
+
 def test_hp4_m2_real_worker_run_never_opens_a_followon_window_from_a_serve_tick(
     env, sdk_fake_worker, monkeypatch, tmp_path
 ):

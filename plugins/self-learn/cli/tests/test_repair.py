@@ -2260,12 +2260,17 @@ def test_f6_no_test_invokes_a_real_claude():
 
 def test_h1_the_exit_code_contract(env, sdk_fake_worker, monkeypatch, capsys):
     """H1 — the exit-code contract: `cli.main(["worker","run"])` returns 0
-    on an ok run, 0 on an idle run, 1 on a failed run (`cli.py:761`)."""
+    on an ok run, the new `EXIT_HELD` (10) on an idle run, 1 on a failed
+    run. FW-85 (U0), 2026-09-13, dated exemption entry `test_repair.py:
+    func:test_h1_the_exit_code_contract` in `test_armor.py`'s `ARMOR`
+    table: `worker run`'s `idle` status used to return `0` here
+    (`cli.py:761`, pre-FW-85) -- `commands/review.md`'s exit-code table
+    now names that "nothing due and held", distinguishable from `0`."""
     rid = seed_pending(env)
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
     assert cli.main(["worker", "run"]) == 0  # ok
 
-    assert cli.main(["worker", "run"]) == 0  # idle — nothing eligible
+    assert cli.main(["worker", "run"]) == cli.EXIT_HELD  # idle — nothing eligible
 
     rid2 = seed_pending(env, "lrn-0000bbbb", created_at="2026-07-02T00:00:00Z")
     bad2 = worker.stage_dir() / f"{rid2}.yaml"

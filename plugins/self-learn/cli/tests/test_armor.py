@@ -290,7 +290,18 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         nodes=80, dump_sha="16e45a867ecebd6471586640f1f52417427c235d04777e74ec4f34c14506627c"
     ),
     "test_repair.py": Behaviour(
-        nodes=85, dump_sha="6bd9c4787b4d5a2f2887548228694edf88d76f82596ce4f4c2ed9d2598e1730d"
+        nodes=85, dump_sha="6bd9c4787b4d5a2f2887548228694edf88d76f82596ce4f4c2ed9d2598e1730d",
+        edited={
+            "func:test_h1_the_exit_code_contract": (
+                "2026-09-13 FW-85 (U0): `worker run`'s `idle` status now "
+                "returns the new `EXIT_HELD` (10), not `0` -- this test's "
+                "second assertion pinned the old fail-open contract this "
+                "build retires for the run-command surface (`commands/"
+                "review.md`'s exit-code table: nothing due and held is "
+                "NOT `0`, distinguishable from an actual run; before "
+                "FW-85 the two were indistinguishable)."
+            ),
+        },
     ),
     "test_attrib.py": Behaviour(
         nodes=68, dump_sha="9ebb1c1e42628b325b968bc8df082891f3d79946dd8a115b5b28e8f6898831c7",
@@ -835,15 +846,16 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=1,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-09-11, transcribed at ANCHOR a41ddb3 from this module's own "
-            "STALE refusal (Sprint 3 landing): 2 -> 0. test_invocation_sdk.py "
-            "`func:test_pl3_...` (M-V, 1737499) and test_route_cli.py "
-            "`func:test_teach_route_missing_doctrine_exits_2_pre_spawn` (M-K, "
-            "2a02431) are behind the anchor, so both `edited` doors went VACUOUS "
-            "and were dropped. Previous value 2 (2026-09-05, at 3fd2279)."
+            "2026-09-13 FW-85 (U0), transcribed at ANCHOR a41ddb3: 0 -> 1. "
+            "This build's own new door, `test_repair.py: func:test_h1_the_"
+            "exit_code_contract` (`worker run`'s `idle` status now returns "
+            "the new `EXIT_HELD` rather than `0` -- see that door's own "
+            "dated reason in the ARMOR table above), is present at both the "
+            "anchor and HEAD with a differing dump, so it counts here. "
+            "Previous value 0 (2026-09-11, at a41ddb3)."
         ),
         measure=_measure_census_edited,
     ),

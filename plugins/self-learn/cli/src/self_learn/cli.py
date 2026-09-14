@@ -98,6 +98,18 @@ EXIT_OK = 0
 # exit stays 2 but cannot occur on a well-formed programmatic invocation.
 EXIT_USAGE = 64
 
+#: FW-85 (U0): the unattended-run contract for `mine run` / `worker run` /
+#: `worker kick` — a SEPARATE, smaller integer space from the eight-plus-
+#: one verb/batch contract above (`EXIT_BATCH_PARTIAL`'s own docstring
+#: draws that line; `mine run`/`worker kick` were never inside it). `10`
+#: is the next free integer (0-9 and 64 are taken above). Means: the run
+#: found nothing due and held, or no child was spawned, for a reason
+#: SHORT of failure — `commands/review.md`'s exit-code table: "this is
+#: NOT a failure, and before FW-85 it was indistinguishable from `0`."
+#: Distinct from `gitops.EXIT_GIT_FAILED` (a STOP intent blocked the run
+#: before it started) and from plain `1` (an actual failure).
+EXIT_HELD = 10
+
 #: U-verbs §3.3a: the ONE integer the batch executor adds to the
 #: eight-integer contract above — "batch completed; N applied, M
 #: refused; the ledger DID change; read the --json envelope". The next
@@ -1091,6 +1103,46 @@ def _cmd_status_fast() -> int:
     return EXIT_OK
 
 
+#: FW-85 (U0): every `MineResult.status` this dict does NOT name is
+#: handled by an earlier, dedicated branch in `_cmd_mine` before this
+#: map is even consulted — `landed-uncommitted` -> `gitops.
+#: EXIT_HALF_WRITTEN`, `stopped` -> `gitops.EXIT_GIT_FAILED`. Of the
+#: rest: `ok` is a real mining pass; `initialized` performs a real
+#: one-time action (first-activation cursor seeding, `miner.py`'s
+#: `initialize_cursors`) and is not a "nothing due" outcome, so both
+#: are `EXIT_OK`. `idle` (nothing new to mine), `held-gate` (flood
+#: gate — too much pending to add more), `busy` (another producer
+#: already holds `miner.lock`), and `disabled` (`miner.enabled` is
+#: False) are all "the run found nothing due and held" per `commands/
+#: review.md`'s exit-code table ("this is NOT a failure, and before
+#: FW-85 it was indistinguishable from `0`") — that wording, not the
+#: draft plan's bare `idle -> EXIT_OK`, is what this map follows,
+#: because the applied doc text wins (steward-design brief, common-
+#: builder-rules.md). `failed` is a real failure, `1`. No status may
+#: fall through silently: `_cmd_mine` raises on anything absent here.
+_MINE_RUN_EXIT = {
+    "ok": EXIT_OK,
+    "initialized": EXIT_OK,
+    "idle": EXIT_HELD,
+    "held-gate": EXIT_HELD,
+    "busy": EXIT_HELD,
+    "disabled": EXIT_HELD,
+    "failed": 1,
+}
+
+#: FW-85 (U0): `RunResult.status` is only `ok | idle | failed | stopped`
+#: (`worker.py`'s own docstring on the class) — `stopped` is handled by
+#: a dedicated branch in `_cmd_worker` before this map is consulted.
+#: `idle` (0 eligible this run — nothing due) is `EXIT_HELD` for the
+#: same review.md reason `_MINE_RUN_EXIT` is. No status may fall
+#: through silently: `_cmd_worker` raises on anything absent here.
+_WORKER_RUN_EXIT = {
+    "ok": EXIT_OK,
+    "idle": EXIT_HELD,
+    "failed": 1,
+}
+
+
 def _cmd_mine(args: argparse.Namespace) -> int:
     home = resolve_home()
     if args.mine_command == "run":
@@ -1115,9 +1167,13 @@ def _cmd_mine(args: argparse.Namespace) -> int:
             # U-verbs §3.7/§4.8: one outcome object, nothing else on
             # stdout. The library's own `status` string rides through
             # UNCHANGED as `outcome` — never a re-derived label (PROD1).
-            # Exit codes are byte-unchanged (PROD3): `ok` is derived
-            # from the same two statuses the return below already maps
-            # to non-zero, never from the integer itself (PROD2).
+            # `ok` stays derived from the same three statuses (PROD2):
+            # `failed`, `landed-uncommitted`, `stopped`. FW-85 (U0):
+            # unlike `ok`, the EXIT CODE below now DOES distinguish
+            # `idle`/`held-gate`/`busy`/`disabled` (EXIT_HELD) from
+            # `ok`/`initialized` (EXIT_OK) — PROD3's "byte-unchanged"
+            # framing is retired by this build; see FW-85's dated
+            # disposition in `14-forward-work-map.md`.
             print(
                 json.dumps(
                     {
@@ -1163,7 +1219,14 @@ def _cmd_mine(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return gitops.EXIT_GIT_FAILED
-        return EXIT_OK if result.status != "failed" else 1
+        try:
+            return _MINE_RUN_EXIT[result.status]
+        except KeyError:
+            raise ValueError(
+                f"self-learn mine run: unmapped MineResult.status "
+                f"{result.status!r} — FW-85's exit-code map "
+                "(cli.py:_MINE_RUN_EXIT) has no entry for it"
+            ) from None
     if args.mine_command == "status":
         entries = miner.read_journal()
         if args.as_json:
@@ -1249,7 +1312,13 @@ def _cmd_worker(args: argparse.Namespace) -> int:
         if getattr(args, "as_json", False):
             # U-verbs §3.7/§4.8: one outcome object, nothing else on
             # stdout — `outcome` is the library's own string UNCHANGED
-            # (PROD1), never re-derived; exit stays byte-unchanged (PROD3).
+            # (PROD1), never re-derived. `ok` stays True for every
+            # outcome (PROD2): none of the five is a failure, only
+            # `spawned` did anything. FW-85 (U0): the EXIT CODE below —
+            # unlike `ok` — now DOES distinguish "spawned" from the
+            # rest (PROD3's "byte-unchanged" framing is retired by this
+            # build; see FW-85's dated disposition in `14-forward-work
+            # -map.md`).
             print(
                 json.dumps(
                     {"command": "worker kick", "outcome": outcome, "ok": True}
@@ -1257,7 +1326,12 @@ def _cmd_worker(args: argparse.Namespace) -> int:
             )
         else:
             print(f"worker kick: {outcome}")
-        return EXIT_OK
+        # FW-85 (U0): `worker.kick`'s docstring names its five outcomes
+        # (`spawned | absorbed-window | absorbed-race | disabled |
+        # depth-limited`) — only `spawned` actually started a child;
+        # the other four are "no child was spawned, for a reason short
+        # of failure" (review.md's own wording for `EXIT_HELD`).
+        return EXIT_OK if outcome == "spawned" else EXIT_HELD
     if args.worker_command == "run":
         result = worker.run(
             home, coalesce=args.coalesce, no_push=worker.no_push_requested()
@@ -1297,7 +1371,14 @@ def _cmd_worker(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return gitops.EXIT_GIT_FAILED
-        return EXIT_OK if ok else 1
+        try:
+            return _WORKER_RUN_EXIT[result.status]
+        except KeyError:
+            raise ValueError(
+                f"self-learn worker run: unmapped RunResult.status "
+                f"{result.status!r} — FW-85's exit-code map "
+                "(cli.py:_WORKER_RUN_EXIT) has no entry for it"
+            ) from None
     print("usage: self-learn worker kick | worker run [--coalesce]", file=sys.stderr)
     return EXIT_USAGE
 
