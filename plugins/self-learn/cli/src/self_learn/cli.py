@@ -1167,9 +1167,13 @@ def _cmd_mine(args: argparse.Namespace) -> int:
             # U-verbs §3.7/§4.8: one outcome object, nothing else on
             # stdout. The library's own `status` string rides through
             # UNCHANGED as `outcome` — never a re-derived label (PROD1).
-            # Exit codes are byte-unchanged (PROD3): `ok` is derived
-            # from the same two statuses the return below already maps
-            # to non-zero, never from the integer itself (PROD2).
+            # `ok` stays derived from the same three statuses (PROD2):
+            # `failed`, `landed-uncommitted`, `stopped`. FW-85 (U0):
+            # unlike `ok`, the EXIT CODE below now DOES distinguish
+            # `idle`/`held-gate`/`busy`/`disabled` (EXIT_HELD) from
+            # `ok`/`initialized` (EXIT_OK) — PROD3's "byte-unchanged"
+            # framing is retired by this build; see FW-85's dated
+            # disposition in `14-forward-work-map.md`.
             print(
                 json.dumps(
                     {

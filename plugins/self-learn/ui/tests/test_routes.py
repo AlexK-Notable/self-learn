@@ -20,6 +20,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from self_learn import verbs
+from self_learn.cli import EXIT_HELD
 from self_learn.records import Record
 from self_learn_ui.app import create_app
 from self_learn_ui.env import load_env
@@ -3706,6 +3707,57 @@ class TestForceRunApplyingFeedback:
         q.get_nowait()  # start
         done = q.get_nowait()
         assert done["state"] == "error"
+
+
+class TestForceRunHeldIsNotFailure:
+    """U0 (code gate r1 fold, finding B1): `runner.py`'s `held`
+    property (`exit_code == EXIT_HELD`) makes a Force-run route's
+    held outcome (nothing due, not a failure) take the SAME path as
+    `ok` -- the SSE `state` published is "done", not "error" (the
+    state app.js's `renderInflight` reads to decide `role="alert"`
+    client-side -- unreachable from this server-side TestClient, so
+    this class pins the SSE state, not the DOM attribute; that layer
+    is test_js_dom.py's, out of scope for this fold), and the route
+    still redirects and force-refreshes (the FW-76 error leg -- no
+    redirect, no refresh -- fires only when NEITHER `ok` nor `held`).
+    Positive controls for exit 0 ("done") and exit 1 ("error")
+    already exist above (`TestForceRunApplyingFeedback`); this class
+    adds the one new discriminating case. Mutation: reverting either
+    route's guard back to bare `if not result.ok:` makes BOTH
+    assertions in each test below fail (state reads "error", no
+    hx-redirect header) -- see the fold report for the measured red."""
+
+    def test_worker_kick_held_is_done_and_still_redirects(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(EXIT_HELD))
+        c, _runner, refresh_hub, app_hub = _make_client_with_hubs(sb, runner=runner)
+        q_app = app_hub.subscribe()
+        q_refresh = refresh_hub.subscribe()  # subscribe BEFORE the POST
+        r = c.post("/worker/kick", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        q_app.get_nowait()  # start
+        done = q_app.get_nowait()
+        assert done["state"] == "done"
+        assert r.headers.get("hx-redirect") == "/"
+        event = q_refresh.get_nowait()
+        assert event.scope == "front"
+
+    def test_mine_run_held_is_done_and_still_redirects(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(EXIT_HELD))
+        c, _runner, refresh_hub, app_hub = _make_client_with_hubs(sb, runner=runner)
+        q_app = app_hub.subscribe()
+        q_refresh = refresh_hub.subscribe()  # subscribe BEFORE the POST
+        r = c.post("/mine/run", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        q_app.get_nowait()  # start
+        done = q_app.get_nowait()
+        assert done["state"] == "done"
+        assert r.headers.get("hx-redirect") == "/"
+        event = q_refresh.get_nowait()
+        assert event.scope == "front"
 
 
 # --------------------------------------------------- Y-24: near-miss promote

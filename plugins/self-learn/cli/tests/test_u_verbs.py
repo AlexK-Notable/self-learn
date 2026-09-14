@@ -1751,6 +1751,35 @@ class TestProd:
         assert data["outcome"] == status
         assert data["ok"] is expect_ok
 
+    def test_prod4_mine_run_unmapped_status_raises(self, env2, monkeypatch):
+        """S3 (code gate r1 fold, U0): the unmapped-status guard at
+        `cli.py:1220-1226` is the mechanism that keeps PROD2/PROD3's
+        table exhaustive as `MineResult.status` grows a value later --
+        unpinned, a future builder could silently restore FW-85's own
+        fail-open bug (an unmapped status returning `0`). A status
+        absent from `_MINE_RUN_EXIT` must raise, not exit 0."""
+        import types
+        monkeypatch.setenv("SELF_LEARN_HOME", str(env2.home))
+        stub = types.SimpleNamespace(
+            status="quokka", landed=[], folded=[], recurrences=[], fires=0, run_id="run-1"
+        )
+        monkeypatch.setattr(cli.miner, "run", lambda home, **kw: stub)
+        with pytest.raises(ValueError, match="unmapped MineResult.status"):
+            cli.main(["mine", "run"])
+
+    def test_prod5_worker_run_unmapped_status_raises(self, env2, monkeypatch):
+        """S3 (code gate r1 fold, U0): the same guard's `worker run`
+        twin, `cli.py:1373-1378` against `_WORKER_RUN_EXIT`. A status
+        absent from that map must raise, not exit 0."""
+        import types
+        monkeypatch.setenv("SELF_LEARN_HOME", str(env2.home))
+        stub = types.SimpleNamespace(
+            status="quokka", proposed=[], merge_proposed=[], eligible=0, suspects=0
+        )
+        monkeypatch.setattr(cli.worker, "run", lambda home, **kw: stub)
+        with pytest.raises(ValueError, match="unmapped RunResult.status"):
+            cli.main(["worker", "run"])
+
 
 # =================================================================== UN
 
