@@ -169,13 +169,15 @@ class TestRealRunReceipt:
         )
         real_dispatch = batch_mod._dispatch
 
-        def fake_dispatch(home_, item, *, case=None):
+        def fake_dispatch(home_, item, *, case=None, **kw):
+            # O-2b: accept/forward the new `actor`/`hook_activation`
+            # keywords `run` now always passes.
             if item.n == 1:
                 return batch_mod.ItemResult(
                     n=item.n, id=item.id, verb=item.verb, rc=7,
                     state="refused", detail="simulated git failure",
                 )
-            return real_dispatch(home_, item, case=case)
+            return real_dispatch(home_, item, case=case, **kw)
 
         monkeypatch.setattr(batch_mod, "_dispatch", fake_dispatch)
         rc = cli.main(["batch", str(sheet), "--no-push", "--json"])
@@ -618,13 +620,15 @@ class TestF7TextSummaryCountsWholeSheet:
         )
         real_dispatch = batch_mod._dispatch
 
-        def fake_dispatch(home_, item, *, case=None):
+        def fake_dispatch(home_, item, *, case=None, **kw):
+            # O-2b: accept/forward the new `actor`/`hook_activation`
+            # keywords `run` now always passes.
             if item.n == 1:
                 return batch_mod.ItemResult(
                     n=item.n, id=item.id, verb=item.verb, rc=7,
                     state="refused", detail="simulated git failure",
                 )
-            return real_dispatch(home_, item, case=case)
+            return real_dispatch(home_, item, case=case, **kw)
 
         monkeypatch.setattr(batch_mod, "_dispatch", fake_dispatch)
         rc = cli.main(["batch", str(sheet), "--no-push"])
@@ -673,3 +677,63 @@ class TestF8WholeSheetRefusalReceipt:
         lines = _application_lines(home, case_id)
         assert len(lines) == 1
         assert "refused before item 1: a live intent is STOPPED (simulated)" in lines[0]
+
+
+# ============================================== O-2b test 6: no CLI flag
+
+
+class TestNoCliFlagExposesOverseerParameters:
+    """O-2b (13 §7.4 "The path"): "`batch` keeps refusing a hook route
+    on every ordinary sheet, unchanged... this is the one caller
+    [the overseer's own runner] that lifts the refusal, and only for
+    its own call" -- the CLI `batch` verb must never be able to pass
+    either `actor` or `hook_activation` to `batch.run`/`batch.dry_run`.
+
+    `cli._main` does not use argparse's default `parse_args` (which
+    raises `SystemExit` on an unrecognized flag) -- it calls
+    `parser.parse_known_args` itself and turns any leftover `_extra`
+    into a printed message plus a returned `EXIT_USAGE` (64), not a
+    raised `SystemExit` (confirmed empirically: the first version of
+    this test asserted `pytest.raises(SystemExit)` and failed with
+    "DID NOT RAISE" even though the flag was correctly refused --
+    `cli.main` returned 64 having already printed "unrecognized
+    arguments" to stderr). These two tests assert the REAL contract:
+    `cli.main(...)` returns `cli.EXIT_USAGE`, prints the unrecognized-
+    arguments message naming the flag, and never dispatches the verb.
+
+    Mutation witness: adding
+    ``batch_p.add_argument("--actor")``/``batch_p.add_argument(
+    "--hook-activation", action="store_true")`` to `cli.py`'s parser
+    setup (and threading them into the two calls below) would redden
+    BOTH assertions here (argparse would accept the flag, `_extra`
+    would stay empty, and `cli.main` would return the verb's own exit
+    code instead of `EXIT_USAGE`, and the record would move off
+    `pending`) -- verified by hand-adding the two lines, running RED,
+    reverting, confirming GREEN (recorded in this build's report; not
+    left as a live toggle, since it would require a real argparse
+    wiring change to demonstrate rather than a monkeypatch)."""
+
+    def test_actor_flag_does_not_parse(self, tmp_path, monkeypatch, capsys):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-d0000001")
+        sheet = _write_sheet(
+            tmp_path, f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n"
+        )
+        rc = cli.main(["batch", str(sheet), "--actor", "overseer"])
+        err = capsys.readouterr().err
+        assert rc == cli.EXIT_USAGE
+        assert "unrecognized arguments" in err and "--actor" in err
+        # nothing ran -- the verb was never dispatched
+        assert Record.from_path(find_record_path(home, rid)).status == "pending"
+
+    def test_hook_activation_flag_does_not_parse(self, tmp_path, monkeypatch, capsys):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-d0000002")
+        sheet = _write_sheet(
+            tmp_path, f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n"
+        )
+        rc = cli.main(["batch", str(sheet), "--hook-activation"])
+        err = capsys.readouterr().err
+        assert rc == cli.EXIT_USAGE
+        assert "unrecognized arguments" in err and "--hook-activation" in err
+        assert Record.from_path(find_record_path(home, rid)).status == "pending"

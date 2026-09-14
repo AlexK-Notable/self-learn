@@ -141,7 +141,11 @@ hand-written apply scripts is exactly the scaffolding this replaces; a
 review session must never hand-sequence a run of individual `self-learn
 <verb> <id>` shell commands as its own bulk-apply mechanism. A sheet item
 naming a `host` verb or a hook route is refused at validation (nothing
-runs) — sequence those by hand, outside the sheet.
+runs) — sequence those by hand, outside the sheet. A `--dry-run` of a
+sheet carrying a hook route reports that item refused and exits 1,
+exactly as the real run would — the overseer's own runner (13 §7.4) is
+the one caller a hook route is ever not refused for, and this session
+is never that caller.
 
 **A sheet may name the decision case it is applying (S-65).** A
 top-level `case: case-<8hex>` key is optional; when present, the sheet's

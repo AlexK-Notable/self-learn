@@ -2538,8 +2538,18 @@ def _hook_commit_or_undo(
     result: "hook_activation.ActivationResult",
     event: str,
     message: str,
+    *,
+    by: str | None = None,
 ) -> tuple[list[Path], str]:
-    """Fold r2, item B: wraps the ledger-side write
+    """Fold r1, F2(b): *by* — pre-validated by the caller
+    (:func:`hook_activate`, before any lock) — rides the commit body as
+    its own final ``By: <actor>`` paragraph, through the SAME
+    :func:`_body_with_by_trailer` every other resolution verb already
+    uses; ``None`` (the human path, and :func:`hook_deactivate`'s own
+    call, which passes none) leaves the body exactly as before this
+    fold.
+
+    Fold r2, item B: wraps the ledger-side write
     (``Record.write``/:func:`_commit_ledger`) around a runtime
     activation/deactivation that has ALREADY landed. A raise here calls
     :func:`hook_activation._undo` against ``result.progress`` — exactly
@@ -2567,7 +2577,7 @@ def _hook_commit_or_undo(
     land" is the over-cautious direction; treating it as "the commit
     landed, keep the runtime change" on nothing more than a failed read
     would be the dangerous one."""
-    commit_body = "\n".join(result.receipts)
+    commit_body = _body_with_by_trailer("\n".join(result.receipts), by)
     head_before = gitops.head_sha(home)
     try:
         path = ledger_ops.find_record_path(home, record_id)
@@ -2631,13 +2641,22 @@ def hook_activate(
     home: Path | str,
     record_id: str,
     *,
+    register: bool = True,
     no_push: bool = False,
+    by: str | None = None,
 ) -> VerbResult:
     """13 §7.4 — the human path: ``self-learn hook activate <id>``
     always performs every step (placed, registered, activation-
     checked) regardless of ``overseer.hook_activation``; only the
-    overseer's own call (O-2b) ever reads that gate — this verb never
-    does. Fold r1, D-b (Opus B2 / Astra 3, 5): the runtime-dir write
+    overseer's own call (O-2b, ``batch._dispatch``) ever passes
+    ``register=False`` — it reads the ``overseer.hook_activation`` gate
+    itself and forwards it here as this keyword; this verb's own
+    default (``True``) keeps the human path exactly as it was before
+    O-2b, and the CLI's ``self-learn hook activate`` never passes
+    anything but the default either. ``register=False`` performs step 1
+    (placed) only and returns the delegated-and-switched-off receipt —
+    see :func:`hook_activation.activate`'s own docstring for the three
+    steps. Fold r1, D-b (Opus B2 / Astra 3, 5): the runtime-dir write
     (:func:`hook_activation.activate`) happens INSIDE the ledger lock
     span, right after :func:`intents.announce_recovered` — exactly
     where :func:`route` performs its own host writes — so a live STOP
@@ -2650,10 +2669,19 @@ def hook_activate(
     :func:`_hook_commit_or_undo` (item B — a later failure undoes the
     runtime change, unless the commit landed anyway) and backup
     pruning runs AFTER the commit via :func:`_prune_hook_backups`
-    (item A)."""
+    (item A).
+
+    ``by`` (fold r1, F2(b)): validated against the SAME closed set
+    every other verb's ``by`` uses (:func:`_by_trailer`), BEFORE any
+    lock is taken — the human path (the CLI's own ``hook activate``)
+    passes none and is unaffected; only ``batch._dispatch``'s overseer
+    path ever names one, rendered as the ``hook-activated`` ledger
+    commit's own final ``By:`` paragraph (git trailer semantics) by
+    :func:`_hook_commit_or_undo`."""
     home = Path(home)
     from . import selfcheck  # deferred: selfcheck imports verbs at its own top
 
+    _by_trailer(by)  # validates *by*; raises before any lock is taken
     claude_dir = selfcheck.claude_runtime_dir()
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -2662,7 +2690,7 @@ def hook_activate(
             intents.announce_recovered(recovered)
             try:
                 result = hook_activation.activate(
-                    home, record_id, claude_dir=claude_dir, register=True
+                    home, record_id, claude_dir=claude_dir, register=register
                 )
             except hook_activation.HookActivationError as exc:
                 # Fold r3, S1: fold the residual-effect notes in, or a
@@ -2671,7 +2699,7 @@ def hook_activate(
                 raise VerbError(_residual_message(exc)) from exc
             message = f"self-learn: hook activate {record_id}"
             staged, sha = _hook_commit_or_undo(
-                home, record_id, result, "hook-activated", message
+                home, record_id, result, "hook-activated", message, by=by,
             )
             prune_note = _prune_hook_backups(claude_dir, result)
         push = _push_ledger(home, no_push)
