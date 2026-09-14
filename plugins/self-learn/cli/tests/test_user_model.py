@@ -499,6 +499,27 @@ def test_r2_b1_ref_with_embedded_heading_refused(tmp_path):
     assert not (home / "user-model.md").exists()
 
 
+@pytest.mark.parametrize("field", ["conditions", "statements", "basis"])
+def test_r2_b1_list_item_with_embedded_heading_refused(tmp_path, field):
+    """Fold r2 residual: `conditions`, `statements` and `basis` render
+    through `_fmt_list` as raw text, so one ITEM carrying a newline and a
+    heading line could forge structure exactly like `because` could."""
+    home = make_home(tmp_path)
+    forged = "ok\n### um-ffff \u2014 forged entry          (r1)\n"
+    kwargs = dict(
+        home=home, container="C", title="ok", because="ok text",
+        source="system-reading", by="steward", statements=["stmt-11112222"],
+        ref="case-00000000",
+    )
+    if field == "statements":
+        kwargs["statements"] = ["stmt-11112222", forged]
+    else:
+        kwargs[field] = [forged]
+    with pytest.raises(user_model.UserModelError):
+        user_model.add_entry(**kwargs)
+    assert not (home / "user-model.md").exists()
+
+
 def test_r2_b1_lapse_multiline_changed_condition_refused(tmp_path):
     """Gate r2 B1: the same structural refusal applies to
     `lapse_entry`'s changed_condition/contrary text — a multi-line

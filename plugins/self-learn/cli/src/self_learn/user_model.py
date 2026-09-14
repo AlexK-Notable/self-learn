@@ -389,6 +389,10 @@ def add_entry(
     # scan just above — `ref` is included because it too is rendered as
     # a raw line (`_render_entry`'s `- ref: …`).
     _refuse_structural(title, because, ref)
+    # Fold r2 residual (builder's own post-commit find): the list-shaped
+    # fields render through `_fmt_list` as raw text on one line each, so
+    # every ITEM is a free-text field too — refuse per item.
+    _refuse_structural(*(conditions or []), *(statements or []), *(basis or []))
 
     statements = list(statements or [])
     if source == "system-reading":
