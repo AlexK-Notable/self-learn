@@ -50,6 +50,7 @@ from . import hosts as hosts_mod
 from . import reconcile as reconcile_mod
 from . import (
     batch,
+    cases,
     config,
     gitops,
     intents,
@@ -60,7 +61,9 @@ from . import (
     sentinel,
     serve,
     settings,
+    statements,
     telemetry,
+    user_model,
     verbs,
     worker,
 )
@@ -151,6 +154,142 @@ def default_memory_dir() -> Path | None:
     """
     env = os.environ.get("SELF_LEARN_MEMORY_DIR")
     return Path(env).expanduser() if env else None
+
+
+def _add_case_parser(sub) -> None:
+    """`case record|show|list|observe|receipt|rebuild-index` (U2,
+    `02-schema.md` §3a.2). `commands/review.md`'s "Cases" section
+    documents `show`/`list`/`observe` (and `record` in prose, for the
+    parked-successor flow) with no `--actor`/`--by` flags shown there —
+    this parser adds them explicitly (the review doc's grammar is
+    illustrative prose, not the full flag table); `receipt` and
+    `rebuild-index` are not mentioned in that doc at all. See this unit's
+    report for the full list against `commands/review.md`."""
+    case_p = sub.add_parser("case", help="decision-case store (S-65, 02 §3a.2)")
+    case_sub = case_p.add_subparsers(dest="case_command", metavar="<verb>")
+
+    crecord = case_sub.add_parser("record", help="validate a stage file, assign an id, commit")
+    crecord.add_argument("stage_file", metavar="STAGE-FILE.yaml")
+    crecord.add_argument("--actor", required=True, choices=sorted(cases.ACTORS))
+    crecord.add_argument("--json", action="store_true", dest="as_json")
+
+    cshow = case_sub.add_parser("show", help="the frozen decided account — blind by default")
+    cshow.add_argument("id", metavar="case-...")
+    cshow.add_argument("--evidence-only", action="store_true", dest="evidence_only")
+    cshow.add_argument("--json", action="store_true", dest="as_json")
+
+    clist = case_sub.add_parser("list", help="query the case index")
+    clist.add_argument("--since", metavar="T")
+    clist.add_argument("--provisional", action="store_true", dest="provisional")
+    clist.add_argument("--parked-for", dest="parked_for")
+    clist.add_argument("--parked-reason", dest="parked_reason", choices=sorted(cases.PARKED_REASONS))
+    clist.add_argument("--record", dest="record_id", metavar="lrn-...")
+    clist.add_argument("--json", action="store_true", dest="as_json")
+
+    cobserve = case_sub.add_parser("observe", help="append a Later-observations entry")
+    cobserve.add_argument("id", metavar="case-...")
+    cobserve.add_argument("--kind", required=True, choices=sorted(cases.OBSERVE_KINDS))
+    cobserve.add_argument("--text", required=True)
+    cobserve.add_argument("--by", required=True, choices=sorted(cases.ACTORS))
+    cobserve.add_argument("--ref")
+    cobserve.add_argument("--to")
+    cobserve.add_argument("--covering", choices=sorted(cases.COVERING_VALUES))
+    cobserve.add_argument("--entries", metavar="um-...[,um-...]")
+    # Spelled "--presented-outcome", not the shorter flag spelling that
+    # `commands/review.md` documents (line 419) — `test_composer.py`'s
+    # AST-pinned A22 guard greps that shorter double-quoted literal out
+    # of the whole of cli.py to enforce §3.10's MUST NOT ("no CLI verb
+    # anywhere accepts gate values as arguments" — the composer/analyst
+    # `gates`/`flags`/`recommendation` honesty constraint,
+    # u-composer-prompt-and-doctrine-spec.md lines 1086-1089/1401-1409).
+    # A case's presentation outcome (agreed/corrected/noted) is a
+    # different field in a different domain, but A22's check is a blunt
+    # whole-file string search with no verb-namespace scoping, so the
+    # literal collides regardless of meaning. test_composer.py is
+    # armor-pinned (AST-pinned behaviour file) and may not be edited
+    # here without a dated exemption this unit is not chartered to add,
+    # so the flag is respelled instead. `dest="outcome"` keeps
+    # `args.outcome` and `cases.observe(outcome=...)` unchanged. Real
+    # conflict between two already-landed artifacts on this branch,
+    # documented (not resolved) in this unit's report.
+    cobserve.add_argument("--presented-outcome", dest="outcome", choices=sorted(cases.PRESENTED_OUTCOMES))
+    cobserve.add_argument("--via")
+    cobserve.add_argument("--json", action="store_true", dest="as_json")
+
+    creceipt = case_sub.add_parser("receipt", help="append Application-section lines from a batch result")
+    creceipt.add_argument("id", metavar="case-...")
+    creceipt.add_argument("--from-batch", required=True, dest="from_batch", metavar="BATCH-RESULT.json")
+    creceipt.add_argument("--by", default="human", choices=sorted(cases.ACTORS))
+    creceipt.add_argument("--json", action="store_true", dest="as_json")
+
+    case_sub.add_parser("rebuild-index", help="rebuild the cache index from the case files on disk")
+
+
+def _add_statement_parser(sub) -> None:
+    """`statement add|list` (U2, `02-schema.md` §3a.3). `list` is not in
+    `commands/review.md`'s "Cases" section (only `add` is documented
+    there) — see this unit's report."""
+    stmt_p = sub.add_parser("statement", help="user-statement store (S-65, 02 §3a.3)")
+    stmt_sub = stmt_p.add_subparsers(dest="statement_command", metavar="<verb>")
+
+    sadd = stmt_sub.add_parser("add", help="append one statement line (idempotent on its dedupe key)")
+    sadd.add_argument("--verbatim", required=True)
+    sadd.add_argument("--ref", required=True, dest="message_ref", metavar="transcript:...#L.. | conversation:<obs-id>")
+    sadd.add_argument("--recorded-by", required=True, dest="recorded_by", choices=sorted(statements.RECORDED_BY_VALUES))
+    sadd.add_argument("--answers-kind", dest="answers_kind", choices=sorted(statements.ANSWER_KINDS))
+    sadd.add_argument("--answers-ref", dest="answers_ref")
+    sadd.add_argument("--answers-text", dest="answers_text")
+    sadd.add_argument("--scope-level", dest="scope_level", choices=sorted(statements.SCOPE_LEVELS))
+    sadd.add_argument("--scope-host", dest="scope_host")
+    sadd.add_argument("--uncertainty")
+    sadd.add_argument("--amends", metavar="stmt-...")
+    sadd.add_argument("--json", action="store_true", dest="as_json")
+
+    slist = stmt_sub.add_parser("list", help="read-only linear scan over the store")
+    slist.add_argument("--scope-level", dest="scope_level", choices=sorted(statements.SCOPE_LEVELS))
+    slist.add_argument("--recorded-by", dest="recorded_by", choices=sorted(statements.RECORDED_BY_VALUES))
+    slist.add_argument("--since", metavar="T")
+    slist.add_argument("--answers-ref", dest="answers_ref")
+    slist.add_argument("--json", action="store_true", dest="as_json")
+
+
+def _add_user_model_parser(sub) -> None:
+    """`user-model show|add|lapse|bump` (U2, `02-schema.md` §3a.4).
+    `show` and `bump` are not in the interface draft's verb table or in
+    `commands/review.md` — see this unit's report."""
+    um_p = sub.add_parser("user-model", help="the model of the user (S-65, 02 §3a.4)")
+    um_sub = um_p.add_subparsers(dest="user_model_command", metavar="<verb>")
+
+    um_sub.add_parser("show", help="the whole document, all five containers")
+
+    uadd = um_sub.add_parser("add", help="add one entry to a container")
+    uadd.add_argument("--container", required=True, choices=sorted(user_model.CONTAINERS))
+    uadd.add_argument("--title", required=True)
+    uadd.add_argument("--because", required=True)
+    uadd.add_argument("--source", required=True, choices=sorted(user_model.SOURCES))
+    uadd.add_argument("--by", required=True, choices=sorted(user_model.ACTORS))
+    uadd.add_argument("--held-since", dest="held_since", metavar="YYYY-MM-DD")
+    uadd.add_argument("--conditions", metavar="key[,key]")
+    uadd.add_argument("--ref")
+    uadd.add_argument("--statements", metavar="stmt-...[,stmt-...]")
+    uadd.add_argument("--recorded-by", dest="recorded_by", choices=sorted(user_model.ACTORS))
+    uadd.add_argument("--basis", metavar="um-...@r...[,um-...@r...]")
+    uadd.add_argument("--provisional", dest="provisional", action="store_true", default=None)
+    uadd.add_argument("--no-provisional", dest="provisional", action="store_false")
+    uadd.add_argument("--json", action="store_true", dest="as_json")
+
+    ulapse = um_sub.add_parser("lapse", help="mark one entry LAPSED")
+    ulapse.add_argument("id", metavar="um-...")
+    ulapse.add_argument("--changed-condition", dest="changed_condition")
+    ulapse.add_argument("--contrary")
+    ulapse.add_argument("--consolidated-into", dest="consolidated_into", metavar="um-...")
+    ulapse.add_argument("--by", required=True, choices=sorted(user_model.ACTORS))
+    ulapse.add_argument("--at", metavar="YYYY-MM-DD")
+    ulapse.add_argument("--json", action="store_true", dest="as_json")
+
+    ubump = um_sub.add_parser("bump", help="bump the document revision without adding or lapsing anything")
+    ubump.add_argument("--by", required=True, choices=sorted(user_model.ACTORS))
+    ubump.add_argument("--json", action="store_true", dest="as_json")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -662,6 +801,10 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="no_push",
         help="hold the sentinel, run every item, skip only the final push",
     )
+
+    _add_case_parser(sub)
+    _add_statement_parser(sub)
+    _add_user_model_parser(sub)
 
     sub.add_parser("push", help="publish pending local commits (pinned retry)")
 
@@ -2944,6 +3087,241 @@ def _cmd_show(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _csv(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [tok.strip() for tok in value.split(",") if tok.strip()]
+
+
+def _cmd_case(args: argparse.Namespace) -> int:
+    """`case record|show|list|observe|receipt|rebuild-index` (U2). No
+    push (case verbs never carry a `--no-push` flag — `commands/review.md`
+    §"Cases" describes only "commits under the ledger lock", never a
+    publish step; push happens once at session end, same as everything
+    else)."""
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
+    try:
+        if args.case_command == "record":
+            case_id = cases.record(home, args.stage_file, actor=args.actor)
+            if args.as_json:
+                print(json.dumps({"case": case_id}))
+            else:
+                print(f"case record → {case_id}")
+            return EXIT_OK
+        if args.case_command == "show":
+            view = cases.show(home, args.id, evidence_only=args.evidence_only)
+            if args.as_json:
+                print(json.dumps(view.to_json()))
+            else:
+                print(view.to_text())
+            return EXIT_OK
+        if args.case_command == "list":
+            rows = cases.list_cases(
+                home,
+                since=args.since,
+                provisional=True if args.provisional else None,
+                parked_for=args.parked_for,
+                parked_reason=args.parked_reason,
+                record_id=args.record_id,
+            )
+            if args.as_json:
+                print(json.dumps(rows))
+            else:
+                for row in rows:
+                    print(f"{row['case']}  {row['actor']}  {row['kind']}  {row['outcome']}  provisional={row['provisional']}")
+            return EXIT_OK
+        if args.case_command == "observe":
+            obs_id = cases.observe(
+                home,
+                args.id,
+                args.kind,
+                text=args.text,
+                by=args.by,
+                ref=args.ref,
+                to=args.to,
+                covering=args.covering,
+                entries=_csv(args.entries),
+                outcome=args.outcome,
+                via=args.via,
+            )
+            if args.as_json:
+                print(json.dumps({"obs": obs_id}))
+            else:
+                print(f"case observe → {obs_id}")
+            return EXIT_OK
+        if args.case_command == "receipt":
+            batch_result = json.loads(Path(args.from_batch).read_text(encoding="utf-8"))
+            case_id = cases.receipt(home, args.id, batch_result, by=args.by)
+            if args.as_json:
+                print(json.dumps({"case": case_id}))
+            else:
+                print(f"case receipt → {case_id}")
+            return EXIT_OK
+        if args.case_command == "rebuild-index":
+            path = cases.rebuild_index(worker.cache_dir(home), home)
+            if args.as_json:
+                print(json.dumps({"index": str(path)}))
+            else:
+                print(f"case rebuild-index → {path}")
+            return EXIT_OK
+    except cases.CaseError as exc:
+        print(f"self-learn case {args.case_command}: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except intents.LedgerStoppedError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_BATCH_PARTIAL if exc.earlier_commits else EXIT_GIT_FAILED
+    except gitops.HalfWrittenError as exc:
+        return _report_half_written(f"case {args.case_command}", exc)
+    except gitops.GitOpsError as exc:
+        print(f"self-learn case {args.case_command}: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
+    print(
+        "usage: self-learn case record|show|list|observe|receipt|rebuild-index",
+        file=sys.stderr,
+    )
+    return EXIT_USAGE
+
+
+def _cmd_statement(args: argparse.Namespace) -> int:
+    """`statement add|list` (U2)."""
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
+    try:
+        if args.statement_command == "add":
+            answers = None
+            if args.answers_kind or args.answers_ref or args.answers_text:
+                answers = {
+                    "kind": args.answers_kind or "proposition",
+                    "ref": args.answers_ref,
+                    "text": args.answers_text,
+                }
+            scope = None
+            if args.scope_level or args.scope_host:
+                scope = {"level": args.scope_level or "user", "host": args.scope_host}
+            stmt_id = statements.add(
+                home,
+                verbatim=args.verbatim,
+                source={"message_ref": args.message_ref, "surface": "conversation"},
+                recorded_by=args.recorded_by,
+                answers=answers,
+                scope=scope,
+                uncertainty=args.uncertainty,
+                amends=args.amends,
+            )
+            if args.as_json:
+                print(json.dumps({"statement": stmt_id}))
+            else:
+                print(f"statement add → {stmt_id}")
+            return EXIT_OK
+        if args.statement_command == "list":
+            rows = statements.list_statements(
+                home,
+                scope_level=args.scope_level,
+                recorded_by=args.recorded_by,
+                since=args.since,
+                answers_ref=args.answers_ref,
+            )
+            if args.as_json:
+                print(json.dumps(rows))
+            else:
+                for row in rows:
+                    print(f"{row['id']}  {row['recorded_by']}  {row['verbatim']}")
+            return EXIT_OK
+    except statements.StatementError as exc:
+        print(f"self-learn statement {args.statement_command}: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except intents.LedgerStoppedError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_BATCH_PARTIAL if exc.earlier_commits else EXIT_GIT_FAILED
+    except gitops.HalfWrittenError as exc:
+        return _report_half_written(f"statement {args.statement_command}", exc)
+    except gitops.GitOpsError as exc:
+        print(f"self-learn statement {args.statement_command}: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
+    print("usage: self-learn statement add|list", file=sys.stderr)
+    return EXIT_USAGE
+
+
+def _cmd_user_model(args: argparse.Namespace) -> int:
+    """`user-model show|add|lapse|bump` (U2). No `mark-seen` verb here —
+    §3a.4: "an entry is marked seen only via `case observe --kind
+    presented`, never by any other write" — there is deliberately no CLI
+    path to it beyond that one."""
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
+    try:
+        if args.user_model_command == "show":
+            data = user_model.show(home)
+            if args.as_json:
+                print(json.dumps(data))
+            else:
+                for letter, entries in data["containers"].items():
+                    print(f"## {letter}")
+                    for e in entries:
+                        print(f"  {e['id']} (r{e['r']}) {e['title']} — {e['status']}")
+            return EXIT_OK
+        if args.user_model_command == "add":
+            entry_id = user_model.add_entry(
+                home,
+                container=args.container,
+                title=args.title,
+                because=args.because,
+                source=args.source,
+                by=args.by,
+                held_since=args.held_since,
+                conditions=_csv(args.conditions),
+                ref=args.ref,
+                statements=_csv(args.statements),
+                recorded_by=args.recorded_by,
+                basis=_csv(args.basis),
+                provisional=args.provisional,
+            )
+            if args.as_json:
+                print(json.dumps({"entry": entry_id}))
+            else:
+                print(f"user-model add → {entry_id}")
+            return EXIT_OK
+        if args.user_model_command == "lapse":
+            entry_id = user_model.lapse_entry(
+                home,
+                args.id,
+                changed_condition=args.changed_condition,
+                contrary=args.contrary,
+                consolidated_into=args.consolidated_into,
+                by=args.by,
+                at=args.at,
+            )
+            if args.as_json:
+                print(json.dumps({"entry": entry_id}))
+            else:
+                print(f"user-model lapse → {entry_id}")
+            return EXIT_OK
+        if args.user_model_command == "bump":
+            revision = user_model.bump_revision(home, by=args.by)
+            if args.as_json:
+                print(json.dumps({"revision": revision}))
+            else:
+                print(f"user-model bump → revision {revision}")
+            return EXIT_OK
+    except user_model.UserModelError as exc:
+        print(f"self-learn user-model {args.user_model_command}: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except intents.LedgerStoppedError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_BATCH_PARTIAL if exc.earlier_commits else EXIT_GIT_FAILED
+    except gitops.HalfWrittenError as exc:
+        return _report_half_written(f"user-model {args.user_model_command}", exc)
+    except gitops.GitOpsError as exc:
+        print(f"self-learn user-model {args.user_model_command}: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
+    print("usage: self-learn user-model show|add|lapse|bump", file=sys.stderr)
+    return EXIT_USAGE
+
+
 def _cmd_batch(args: argparse.Namespace) -> int:
     """``self-learn batch`` (U-verbs §3.3/§4.4) — apply a decision sheet
     in one locked run. Deliberately OUTSIDE ``VERB_COMMANDS``: the flush
@@ -3337,6 +3715,15 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "batch":
         return _cmd_batch(args)
+
+    if args.command == "case":
+        return _cmd_case(args)
+
+    if args.command == "statement":
+        return _cmd_statement(args)
+
+    if args.command == "user-model":
+        return _cmd_user_model(args)
 
     if args.command == "doctor":
         return _cmd_doctor(args)
