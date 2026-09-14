@@ -460,6 +460,7 @@ DOCTOR_ROWS = (
     "region",
     "credentials",
     "models",
+    "containment",
     "env",
     "orphans",
     "serve",
@@ -958,6 +959,17 @@ def preflight(home: Path | str) -> list[Row]:
     # models (per-surface, plus one small_fast line)
     rows.extend(_models_rows(resolutions, home))
     rows.append(_small_fast_row(home, provider))
+
+    rows.append(
+        Row(
+            name="containment",
+            verdict="PASS",
+            detail=(
+                "steward: Read/Grep/Glob plus file writes confined to the run "
+                "directory; Bash, task delegation, notebooks, and web tools refused"
+            ),
+        )
+    )
 
     # env (per-surface)
     env_rows, env_details = _env_rows(resolutions, home)

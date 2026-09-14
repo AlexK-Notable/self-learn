@@ -298,6 +298,11 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     "test_invocation.py": Behaviour(
         nodes=94, dump_sha="eb90005324f7f1483dcd618a80501d03a11e2f0ebb2541b5af696d31b48644fe",
         edited={
+            "func:test_wr7_seam_is_only_called_from_the_three_call_sites": (
+                "2026-09-14 U10 (S-29 as amended): the steward runner is the "
+                "fourth authorized invocation.write_session caller; its model "
+                "session writes only declared stage files and never calls a verb."
+            ),
             "func:test_rg1_five_rung_precedence_resolves_in_isolation": (
                 "2026-09-13 U8 (17-invocation-runbook.md §1): SURFACES gained "
                 "steward/overseer, so this test's per-surface loop now sets "
@@ -316,6 +321,11 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     "test_invocation_sdk.py": Behaviour(
         nodes=137, dump_sha="f43ed618ce773521da88c2cacd89f3559f0e27cdef51388de2b1af856a990b6a",
         edited={
+            "func:test_pl5_no_other_module_calls_write_session_or_text_session": (
+                "2026-09-14 U10 (S-29 as amended): the steward runner is the "
+                "fourth authorized invocation.write_session caller; its model "
+                "session writes only declared stage files and never calls a verb."
+            ),
             "func:test_op2_allowed_tools_always_empty": _U8_FOUR_SURFACES_REASON,
             "func:test_op3_setting_sources_explicit_empty_list": _U8_FOUR_SURFACES_REASON,
             "func:test_op4_settings_always_none": _U8_FOUR_SURFACES_REASON,
@@ -900,7 +910,7 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=9,
+        value=11,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
             "2026-09-13 steward-overseer integration (U0 + U8 merged), "
@@ -917,7 +927,10 @@ MEASURED: dict[str, Measured] = {
             "S-26 as amended): 8 -> 9, one more door, `test_composer.py: "
             "func:test_a12_worker_prompt_ingredients_and_to_text_containment` (the "
             "M2 batch prompt's rejected-proposal digest assertion is replaced by "
-            "the U7 cases-block assertion)."
+            "the U7 cases-block assertion). 2026-09-14 U10 (`03-decisions.md` "
+            "S-29 as amended): 9 -> 11, the invocation seam census now names the "
+            "steward runner as the fourth authorized caller in `test_invocation.py` "
+            "WR7 and `test_invocation_sdk.py` PL5."
         ),
         measure=_measure_census_edited,
     ),
@@ -934,7 +947,7 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=192,
+        value=193,
         scope=_SCOPE_HEAD,
         reason=(
             "2026-09-13 U8 (17-invocation-runbook.md §1), HEAD-scoped, "
@@ -946,7 +959,9 @@ MEASURED: dict[str, Measured] = {
             "Previously 186 (2026-09-04 Sprint 2 integration). 2026-09-14 U7, "
             "re-run after this build's own edit: 191 -> 192 -- "
             "`test_composer.py`'s newly-edited `test_a12_...` node also "
-            "differs from c3b48e7."
+            "differs from c3b48e7. 2026-09-14 U10 (`03-decisions.md` S-29 "
+            "as amended), re-run after this build's authorized seam-test edits: "
+            "192 -> 193 -- WR7 newly differs from c3b48e7 while PL5 already did."
         ),
         measure=_measure_control_edited,
     ),

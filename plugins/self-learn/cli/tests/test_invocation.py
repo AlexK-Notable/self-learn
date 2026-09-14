@@ -1941,7 +1941,7 @@ def test_wr7_seam_is_only_called_from_the_three_call_sites():
                 if name in seam_funcs:
                     rel = str(path.relative_to(src_dir))
                     sites.setdefault(rel, []).append((node.lineno, name))
-    assert set(sites) == {"worker.py", "miner.py", "analyst.py"}, sites
+    assert set(sites) == {"worker.py", "miner.py", "analyst.py", "steward.py"}, sites
 
     # O-a/D-24: the exclusion is EXPLICIT, by name -- every non-model
     # subprocess spawn site named in Sec 7.1's table, deliberately outside

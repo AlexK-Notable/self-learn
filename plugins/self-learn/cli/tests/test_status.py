@@ -42,6 +42,8 @@ def test_status_zero_state_json_exact_shape(sandbox_home, capsys):
         "total_unreadable": 0,
         "open_followups": 0,
         "worker_last_run": None,
+        "steward_last_run_at": None,
+        "steward_cases_since_overseer": 0,
         # T19: supply mix + 04 success-metrics counters ride full status;
         # zero-state is honest — empty mix, null medians, never fake zeros.
         "supply_mix": {},

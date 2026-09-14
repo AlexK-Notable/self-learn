@@ -938,6 +938,37 @@ REGISTRY: tuple[Setting, ...] = (
         validate_hint="must be > 0",
         description="subprocess timeout (seconds) for one steward model call",
     ),
+    Setting(
+        name="steward.packet_size",
+        env_var="SELF_LEARN_STEWARD_PACKET_SIZE",
+        config_section="steward",
+        config_key="packet_size",
+        kind="int",
+        default=10,
+        validate=lambda v: v if cast(int, v) > 0 else None,
+        validate_hint="must be > 0",
+        description="briefs in one steward model call (the run itself has no record cap)",
+    ),
+    Setting(
+        name="steward.cooldown_secs",
+        env_var="SELF_LEARN_STEWARD_COOLDOWN_SECS",
+        config_section="steward",
+        config_key="cooldown_secs",
+        kind="int",
+        default=72000,
+        validate=lambda v: max(cast(int, v), 0),
+        description="minimum seconds between scheduled steward runs",
+    ),
+    Setting(
+        name="steward.enabled",
+        env_var=None,
+        config_section="steward",
+        config_key="enabled",
+        kind="bool",
+        default=False,
+        description="enable the steward's applying runner after its watched maiden run",
+        tier="C",
+    ),
     # ------------------------------------------------------ overseer
     # U8 (17-invocation-runbook.md §1; plan-overseer-2026-09-12.md §5.4
     # "overseer.timeout_secs per invocation (default 900 s)"; §5.4/O-3

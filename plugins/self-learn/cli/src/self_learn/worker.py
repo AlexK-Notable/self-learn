@@ -735,7 +735,12 @@ MIGRATION_MARKER = ".migrated-from-claude-skills"
 #: Live processes hold these (flock / pid window); moving them out from
 #: under a running worker or miner is how you get two of them. They are
 #: regenerable per-machine state, so they are left behind deliberately.
-_MIGRATION_SKIP = ("worker.lock", "worker.spawn.lock", "worker.window")
+_MIGRATION_SKIP = (
+    "worker.lock",
+    "worker.spawn.lock",
+    "worker.window",
+    "steward.lock",
+)
 
 
 def _migrate_cache(old: Path, new: Path) -> None:

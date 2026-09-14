@@ -43,7 +43,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, cast
 
-from . import miner, settings, worker
+from . import gitops, intents, miner, settings, steward, worker
 from .primitives import fsops
 from .ledger import resolve_home
 
@@ -426,7 +426,65 @@ def _describe_next(cache_dir: Path, now: float) -> str:
     if now >= target:
         target = _target_for(now + 24 * 60 * 60)
     when = datetime.fromtimestamp(target).isoformat(timespec="seconds")
-    return f"mine at {when}"
+    home = resolve_home()
+    last_iso = steward.last_run_iso(home)
+    last_epoch = 0.0
+    if last_iso is not None:
+        try:
+            last_epoch = datetime.fromisoformat(last_iso.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            last_epoch = 0.0
+    cooldown_value, _source = settings.resolve_setting(
+        home, settings.by_name("steward.cooldown_secs")
+    )
+    cooldown = cast(int | float | str, cooldown_value)
+    steward_when = datetime.fromtimestamp(max(now, last_epoch + float(cooldown))).isoformat(
+        timespec="seconds"
+    )
+    return f"mine at {when}; steward at {steward_when} when fresh proposals exist"
+
+
+def _eligible_proposal_paths(home: Path) -> list[Path]:
+    return [entry.proposal_path for entry, _proposal in steward._eligible_proposals(home)]
+
+
+def _proposal_commit_epoch(home: Path, path: Path) -> float:
+    try:
+        rel = path.resolve().relative_to(home.resolve())
+    except ValueError:
+        return 0.0
+    proc = gitops._git(home, "log", "-1", "--format=%ct", "--", str(rel))
+    if proc.returncode != 0:
+        return 0.0
+    try:
+        return float(proc.stdout.strip())
+    except ValueError:
+        return 0.0
+
+
+def _steward_is_due(cache_dir: Path, now: float) -> bool:
+    """True only for fresh queued proposals outside cooldown and STOP."""
+    home = resolve_home()
+    enabled, _source = settings.resolve_setting(home, settings.by_name("steward.enabled"))
+    if not enabled or intents.classify_status(home).stopped:
+        return False
+    proposal_paths = _eligible_proposal_paths(home)
+    if not proposal_paths:
+        return False
+    last_iso = steward.last_run_iso(home)
+    if last_iso is None:
+        return True
+    try:
+        last_epoch = datetime.fromisoformat(last_iso.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        last_epoch = 0.0
+    cooldown_value, _source = settings.resolve_setting(
+        home, settings.by_name("steward.cooldown_secs")
+    )
+    cooldown = cast(int | float | str, cooldown_value)
+    if now - last_epoch < float(cooldown):
+        return False
+    return any(_proposal_commit_epoch(home, path) > last_epoch for path in proposal_paths)
 
 
 # ------------------------------------------------------------------- jobs
@@ -515,6 +573,10 @@ def _run_worker_job(home: Path) -> "worker.RunResult":
     return worker.run(home, coalesce=True, no_push=False)
 
 
+def _run_steward_job(home: Path) -> "steward.RunResult":
+    return steward.run(home)
+
+
 def _log_stopped_refusal(job_name: str, stopped: list[str]) -> None:
     """§7.2a.7 (REQUIRED): "a job refused by the guard logs the refusal
     on its own line naming the intent id ... a refusal that reaches
@@ -559,8 +621,8 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
     passes with `serve` alive."""
     ran: list[JobRecord] = []
     poked = _consume_poke(cache_dir)
-    if (poked and _mine_is_due(cache_dir, now, ignore_schedule=True)) or _mine_is_due(cache_dir, now):
-        with _worker_autokick_disabled():
+    with _worker_autokick_disabled():
+        if (poked and _mine_is_due(cache_dir, now, ignore_schedule=True)) or _mine_is_due(cache_dir, now):
             mine_record = run_one_job(
                 cache_dir, Job("mine", "miner-reader", lambda: _run_mine_job(home)), pid=pid, tick_secs=tick_secs
             )
@@ -573,6 +635,17 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
                 )
                 ran.append(worker_record)
                 _log_stopped_refusal("worker", getattr(worker_record.result, "stopped", None) or [])
+        if _steward_is_due(cache_dir, now):
+            steward_record = run_one_job(
+                cache_dir,
+                Job("steward", "steward", lambda: _run_steward_job(home)),
+                pid=pid,
+                tick_secs=tick_secs,
+            )
+            ran.append(steward_record)
+            _log_stopped_refusal(
+                "steward", getattr(steward_record.result, "stopped", None) or []
+            )
     # Gate r1 N-1: `run_one_job`'s own heartbeat write (inside the `with`
     # block above, when a job ran) records the job it just RAN as
     # `next_job` -- correct the instant that job finishes, but stale

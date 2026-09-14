@@ -249,6 +249,11 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
         "(FW-159, atomic-append primitive) -- not this atomic-REPLACE one",
         "keep",
     ),
+    ("cli", "steward.py", "_journal"): (
+        "steward recovery journal, XDG-cache-only and append-only; run.json "
+        "declares NOT_REPO_TRUTH and ledger commits remain authoritative",
+        "keep",
+    ),
     # -------------------------------------------------------- wave 4:
     # legitimate atomic-write candidates outside the ledger tree itself
     # (an external tool's file, a UI-side derived/regenerable cache) --
@@ -319,6 +324,10 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
     ("cli", "gitops.py", "_flock_lock"): (
         "flock lock file only (open 'w' just creates/truncates it for "
         "fcntl.flock) -- never carries content",
+        "keep",
+    ),
+    ("cli", "steward.py", "run"): (
+        "flock lock file only (steward.lock) -- never carries content",
         "keep",
     ),
     ("cli", "sentinel.py", "_lock_section"): (

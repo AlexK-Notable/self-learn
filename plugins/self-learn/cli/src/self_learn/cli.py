@@ -62,6 +62,7 @@ from . import (
     serve,
     settings,
     statements,
+    steward,
     telemetry,
     user_model,
     verbs,
@@ -917,6 +918,14 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="sleep SELF_LEARN_COALESCE_SECS first (the kick-spawned form)",
     )
+
+    steward_p = sub.add_parser(
+        "steward", help="autonomous decision runner: run"
+    )
+    steward_sub = steward_p.add_subparsers(dest="steward_command", metavar="<verb>")
+    steward_run = steward_sub.add_parser("run", help="decide every queued proposed lesson")
+    steward_run.add_argument("--dry-run", action="store_true", dest="dry_run")
+    steward_run.add_argument("--json", action="store_true", dest="as_json")
     wrun.add_argument(
         "--json",
         action="store_true",
@@ -1702,6 +1711,43 @@ def _cmd_worker(args: argparse.Namespace) -> int:
     return EXIT_USAGE
 
 
+def _cmd_steward(args: argparse.Namespace) -> int:
+    if args.steward_command != "run":
+        print("usage: self-learn steward run [--dry-run] [--json]", file=sys.stderr)
+        return EXIT_USAGE
+    result = steward.run(resolve_home(), dry_run=args.dry_run)
+    ok = result.status in ("idle", "disabled", "dry-run", "applied")
+    if args.as_json:
+        print(
+            json.dumps(
+                {
+                    "command": "steward run",
+                    "outcome": result.status,
+                    "ok": ok,
+                    "run_id": result.run_id,
+                    "decided": result.decided,
+                    "calls": result.calls,
+                    "refused": result.refused,
+                    "stopped": result.stopped,
+                }
+            )
+        )
+    else:
+        print(
+            f"steward run: {result.status} — {len(result.decided)} decided, "
+            f"{result.refused} refused, {result.calls} model call(s)"
+        )
+    if result.status == "stopped":
+        return gitops.EXIT_GIT_FAILED
+    if result.status == "partial":
+        return EXIT_BATCH_PARTIAL
+    if result.status == "refused":
+        return 1
+    if ok:
+        return EXIT_OK
+    raise ValueError(f"self-learn steward run: unmapped RunResult.status {result.status!r}")
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     """U-engine Phase 2 (spec Sec 5) -- runs `serve.run_forever` in the
     foreground until SIGINT/SIGTERM, or for exactly `--max-ticks` ticks
@@ -1945,6 +1991,8 @@ def _cmd_status(as_json: bool) -> int:
             "open_followups": followups,
             # 08 §7.1 amendment: iso8601 | null (null = never ran here)
             "worker_last_run": worker.last_run_iso(),
+            "steward_last_run_at": steward.last_run_iso(home),
+            "steward_cases_since_overseer": steward.cases_since_overseer(home),
             # T19 (08 §8.1 O-3/O-7-revisit row): supply mix + the 04
             # success-metrics counters — FULL status only; the --fast
             # SessionStart path stays a pending/-only scan, no git.
@@ -4171,6 +4219,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "worker":
         return _cmd_worker(args)
+
+    if args.command == "steward":
+        return _cmd_steward(args)
 
     if args.command == "serve":
         return _cmd_serve(args)

@@ -91,7 +91,9 @@ def _env_string(value: object) -> str:
     return str(value)
 
 
-_NUMERIC_OR_BOOL_NAMES = [s.name for s in settings.REGISTRY if s.kind != "str"]
+_NUMERIC_OR_BOOL_NAMES = [
+    s.name for s in settings.REGISTRY if s.kind != "str" and s.env_var is not None
+]
 _STR_NAMES = [s.name for s in settings.REGISTRY if s.kind == "str"]
 _ALL_NAMES = [s.name for s in settings.REGISTRY]
 
@@ -112,12 +114,15 @@ _ALL_NAMES = [s.name for s in settings.REGISTRY]
 _ENABLED_WHEN_NAMES = [s.name for s in settings.REGISTRY if s.enabled_when is not None]
 _ACCEPTS_NAMES = [s.name for s in settings.REGISTRY if s.accepts is not None]
 _ENV_FIRST_NAMES = [s.name for s in settings.REGISTRY if s.direction == "env-first"]
+_NO_ENV_NAMES = [s.name for s in settings.REGISTRY if s.env_var is None]
 
 _GENERIC_DEFAULT_NAMES = [n for n in _ALL_NAMES if n not in _ENABLED_WHEN_NAMES]
 _GENERIC_CONFIG_BEATS_DEFAULT_NAMES = [
     n for n in _ALL_NAMES if n not in _ENABLED_WHEN_NAMES and n not in _ACCEPTS_NAMES
 ]
-_GENERIC_CONFIG_BEATS_ENV_NAMES = [n for n in _ALL_NAMES if n not in _ENV_FIRST_NAMES]
+_GENERIC_CONFIG_BEATS_ENV_NAMES = [
+    n for n in _ALL_NAMES if n not in _ENV_FIRST_NAMES and n not in _NO_ENV_NAMES
+]
 _GENERIC_STR_NAMES = [n for n in _STR_NAMES if n not in _ENABLED_WHEN_NAMES]
 
 
