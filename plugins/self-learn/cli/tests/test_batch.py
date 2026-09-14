@@ -51,11 +51,18 @@ def _seed_pending(home, rid, *, scope="skill:s", with_proposal=True):
     return rid
 
 
-def _seed_case(home, tmp_path, *, records, outcome="route", actor="steward", n=[0]):
+def _seed_case(
+    home, tmp_path, *, records, outcome="route", actor="steward",
+    kind="resolution", supersedes=None, n=[0],
+):
+    """U5 widening: ``kind``/``supersedes`` are new optional keywords,
+    both defaulted to U3's own original literals — every pre-existing
+    call site (bare ``kind: resolution``, no ``supersedes``) is
+    byte-identical to before."""
     n[0] += 1
     data = {
-        "kind": "resolution",
-        "trigger": "nightly",
+        "kind": kind,
+        "trigger": "reconsider" if kind == "reconsider" else "nightly",
         "outcome": outcome,
         "records": list(records),
         "scope": "skill:s",
@@ -63,6 +70,8 @@ def _seed_case(home, tmp_path, *, records, outcome="route", actor="steward", n=[
         "evidence": [{"ref": "transcript:u3test#L1", "quote": "u3 quote"}],
         "decision": {"verb": outcome, "because": "u3 test", "confidence": "settled"},
     }
+    if supersedes is not None:
+        data["supersedes"] = supersedes
     stage = tmp_path / f"stage-{n[0]}.yaml"
     y = YAML(typ="safe")
     y.default_flow_style = False
@@ -197,14 +206,14 @@ class TestNotAttempted:
         real_dispatch = batch._dispatch
         calls = {"n": 0}
 
-        def fake_dispatch(home_, item):
+        def fake_dispatch(home_, item, *, case=None):
             calls["n"] += 1
             if item.n == 2:
                 return batch.ItemResult(
                     n=item.n, id=item.id, verb=item.verb, rc=7,
                     state="refused", detail="simulated git failure",
                 )
-            return real_dispatch(home_, item)
+            return real_dispatch(home_, item, case=case)
 
         monkeypatch.setattr(batch, "_dispatch", fake_dispatch)
         result = batch.run(home, items, no_push=True)
@@ -610,3 +619,55 @@ class TestLoadSheetCaseExistence:
         )
         items = batch.load_sheet(sheet, home=home)  # must not raise
         assert items.case == case_id
+
+
+# ============================================= U5: reject under reconsider
+
+
+class TestU5ReconsiderInSheet:
+    """U5 (`build-u5.md` test 3): a `reject` on an already-ROUTED record
+    is refused in a sheet with no reconsider case, and applies — status
+    `rejected`, compiled line gone — in the same sheet shape once the
+    top-level `case:` names a valid `kind: reconsider` case over that
+    record."""
+
+    def _skill_md(self, tmp_path):
+        return tmp_path / "host-repo" / "plugins" / "s-plugin" / "skills" / "s" / "SKILL.md"
+
+    def test_reject_on_routed_record_refused_without_case_applies_with(
+        self, tmp_path, monkeypatch
+    ):
+        home = _env(tmp_path, monkeypatch)
+        rid = _seed_pending(home, "lrn-f0000001")
+        verbs.route(home, rid, dest="skill-md", no_push=True)
+        target = self._skill_md(tmp_path)
+        assert rid in target.read_text(encoding="utf-8")  # positive control
+
+        old_case = _seed_case(home, tmp_path, records=[rid], outcome="route")
+
+        no_case_sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\nitems:\n  - id: {rid}\n    verb: reject\n",
+            name="no-case.yaml",
+        )
+        items_no_case = batch.load_sheet(no_case_sheet, home=home)
+        result_no_case = batch.run(home, items_no_case, no_push=True)
+        assert result_no_case.items[0].state == "refused"
+        assert Record.from_path(find_record_path(home, rid)).status == "routed"
+        assert rid in target.read_text(encoding="utf-8")  # still there, refused
+
+        reconsider_case = _seed_case(
+            home, tmp_path, records=[rid], outcome="reject",
+            kind="reconsider", supersedes=old_case,
+        )
+        with_case_sheet = _write_sheet(
+            tmp_path,
+            f"version: 1\ncase: {reconsider_case}\nitems:\n"
+            f"  - id: {rid}\n    verb: reject\n",
+            name="with-case.yaml",
+        )
+        items_with_case = batch.load_sheet(with_case_sheet, home=home)
+        result_with_case = batch.run(home, items_with_case, no_push=True)
+        assert result_with_case.items[0].state == "applied"
+        assert Record.from_path(find_record_path(home, rid)).status == "rejected"
+        assert rid not in target.read_text(encoding="utf-8")  # compiled line gone

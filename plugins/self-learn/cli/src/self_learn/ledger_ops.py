@@ -134,6 +134,16 @@ REOPENABLE_STATUSES = frozenset({"rejected"})
 #: `undefer` (U-verbs §3.1): the exact inverse of `defer`'s own write.
 DEFERRED_ONLY = frozenset({"deferred"})
 
+#: U5 (`self-learn reconsider`, `commands/review.md` ~160-186): the
+#: statuses a PRIOR decision may have left a record in, over which a
+#: successor decision may be recorded — `pending` is excluded (nothing
+#: to reconsider yet) and `superseded` is excluded (a live successor
+#: already exists; that correction runs through a fresh record, never a
+#: reconsider of the superseded one). Not `RESOLVABLE_STATUSES` (which
+#: omits `rejected`) and not `RESOLUTION_STATUSES` (which omits
+#: `deferred` and includes `superseded`) — a genuinely new set.
+RECONSIDERABLE_STATUSES = frozenset({"routed", "rejected", "deferred"})
+
 DEFAULT_DEFER_DAYS = 30  # 02 §2: defer default +30 days
 
 MERGE_ID_RE = re.compile(r"^merge-[0-9a-f]{8}$")
@@ -2352,6 +2362,7 @@ def resolve_record(
     allow_empty_glob: bool = False,
     glob_bypass_reason: str | None = None,
     verb: str | None = None,
+    extra_allowed_source: frozenset[str] | None = None,
 ) -> list[Path]:
     """File-op half of a resolution: update frontmatter via T2's mutation
     API, ``git mv`` pending→resolved (fs move when untracked), and remove
@@ -2363,7 +2374,15 @@ def resolve_record(
 
     ``verb`` names the caller for :func:`require_status`'s refusal message
     (FW-51) — defaults to *new_status* itself when the caller does not say
-    (every current caller does)."""
+    (every current caller does).
+
+    ``extra_allowed_source`` (U5): callers other than ``supersede`` widen
+    :data:`_RESOLVE_ALLOWED_SOURCE`\\ [*new_status*] on a per-call basis
+    here — ``reject``/``defer`` union in ``{"routed"}`` ONLY after their
+    own caller has already validated a ``kind: reconsider`` case naming
+    this record (``verbs.reject``/``verbs.defer``, never a raw call).
+    ``None`` (every pre-U5 caller) leaves the closed-set gate exactly as
+    it was — no widening by default."""
     if new_status not in RESOLUTION_STATUSES:
         raise LedgerOpsError(
             f"resolution status must be one of {sorted(RESOLUTION_STATUSES)}, "
@@ -2395,8 +2414,11 @@ def resolve_record(
             "a new-skill routing must name the skill (routing.new_skill) — "
             "recompile and the drift check read it to find the target"
         )
+    allowed_source = _RESOLVE_ALLOWED_SOURCE[new_status]
+    if extra_allowed_source:
+        allowed_source = allowed_source | extra_allowed_source
     path, record = require_status(
-        home, record_id, _RESOLVE_ALLOWED_SOURCE[new_status], verb=verb or new_status
+        home, record_id, allowed_source, verb=verb or new_status
     )
     if new_status == "routed":
         # dict[str, object]: the block mixes str/dict/list values below
@@ -2725,7 +2747,12 @@ def open_followups(home: Path) -> list[dict]:
 
 
 def defer_record(
-    home: Path, record_id: str, until=None, *, now: datetime | None = None
+    home: Path,
+    record_id: str,
+    until=None,
+    *,
+    now: datetime | None = None,
+    extra_allowed_source: frozenset[str] | None = None,
 ) -> list[Path]:
     """Set deferral metadata in place — the record STAYS in ``pending/``;
     queue membership is computed from ``deferred_until`` (02 §2). FW-51:
@@ -2746,8 +2773,21 @@ def defer_record(
     ``until == today`` is ACCEPTED: a same-day re-queue is meaningful and
     ``list``'s eligibility is ``deferred_until <= now``. The default
     (+30 d) can never be in the past, so this check only ever runs for
-    an EXPLICIT ``until``."""
-    path, record = require_status(home, record_id, LIVE_STATUSES, verb="defer")
+    an EXPLICIT ``until``.
+
+    ``extra_allowed_source`` (U5): same per-call widening
+    :func:`resolve_record` takes — ``verbs.defer`` unions in
+    ``{"routed"}`` only after its own caller has validated a ``kind:
+    reconsider`` case naming this record. A record admitted this way
+    currently lives in ``resolved/`` (a routed record's own directory),
+    so — unlike every pre-U5 caller, which only ever lands here from
+    ``pending/`` — the move to ``pending/`` below is no longer a no-op:
+    this docstring's own "STAYS in pending/" is only true starting from
+    THIS write; the file itself may need to arrive there first."""
+    allowed_source = LIVE_STATUSES
+    if extra_allowed_source:
+        allowed_source = allowed_source | extra_allowed_source
+    path, record = require_status(home, record_id, allowed_source, verb="defer")
     clock = _now(now)
     if until is None:
         until = (clock + timedelta(days=DEFAULT_DEFER_DAYS)).strftime("%Y-%m-%d")
@@ -2770,6 +2810,26 @@ def defer_record(
     record.set_status("deferred")
     record.set_deferred_until(until)
     record.set_deferred_count((record.deferred_count or 0) + 1)
+    if path.parent.name != "pending":
+        # U5: reached only via `extra_allowed_source` (a validated
+        # reconsider case) — the record currently lives in `resolved/`
+        # (its prior `routed` status's own directory). Move it to
+        # `pending/` BEFORE the write, mv-first (§6.4), the same
+        # ordering `reopen_record`/`resolve_record` already use for
+        # every other plane change: a kill between the `git mv` and the
+        # write leaves a STAGED rename (`reconcile` blocks it, visibly
+        # stuck) rather than a silently-committable modified file at
+        # the OLD path.
+        bucket_dir = path.parent.parent
+        pending_dir = bucket_dir / "pending"
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = pending_dir / path.name
+        if _is_tracked(home, path):
+            _git_mv(home, path, dest_path)
+        else:
+            path.rename(dest_path)
+        record.write(dest_path)
+        return [path, dest_path]
     record.write(path)
     return [path]
 

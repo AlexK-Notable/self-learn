@@ -103,6 +103,7 @@ __all__ = [
     "CaseUsageError",
     "CaseView",
     "record",
+    "require_reconsider_case",
     "show",
     "list_cases",
     "rebuild_index",
@@ -658,6 +659,87 @@ def record(home: Path | str, stage_file: Path | str, *, actor: str) -> str:
         hold.release()
 
     return case_id
+
+
+# ------------------------------------------------------------ reconsider
+
+
+def require_reconsider_case(
+    home: Path | str, case_id: str, record_id: str
+) -> tuple[dict, dict]:
+    """U5's one shared check (`build-u5.md`): used by both
+    :func:`self_learn.verbs.reconsider` and the ``reconsider_case``
+    widening `reject`/`defer`/`graduate`/`supersede` each gain — every
+    raise here is a :class:`CaseError`, which every verb call site wraps
+    into a :class:`self_learn.verbs.VerbError` before any lock is taken.
+
+    *case_id* must name an EXISTING case whose ``kind`` is
+    ``"reconsider"`` and whose ``supersedes`` names a SECOND existing
+    case that itself covers *record_id* (``record_id in
+    predecessor.records``); both files must still pass their own
+    freeze-hash check.
+
+    This function does **not** write ``superseded_by`` on the
+    predecessor — :func:`record` (this module's own case-creation verb)
+    already does that, atomically, at the moment the reconsider case
+    itself is created (the ``supersedes`` handling above, `record`
+    lines ~590-639: predecessor read, freeze-checked, and flipped in the
+    SAME commit as the new case). By the time a ``reconsider`` case
+    exists at all, its predecessor is therefore already marked — a
+    second write through `record`'s own path is refused outright (a
+    case is superseded once). What this function checks is that the
+    link `record` wrote is the one THIS case actually claims
+    (``predecessor.superseded_by == case_id``) — a defensive read, not
+    a second writer.
+
+    Returns ``(case_frontmatter, predecessor_frontmatter)`` — the caller
+    (``verbs.reconsider``) decides whether ``case_frontmatter["outcome"]``
+    is applicable to the record's current status; the callers widening a
+    resolution verb only need the existence/kind/coverage checks this
+    function already performed to raise."""
+    home = Path(home)
+    case_path = _case_path_for_id(home, case_id)
+    case_text = case_path.read_text(encoding="utf-8")
+    case_fm, case_body = _split_frontmatter(case_text)
+    frozen, _rest = _split_frozen(case_body)
+    if _hash_frozen(frozen) != case_fm.get("decided_sha256"):
+        raise CaseError(
+            f"reconsider: {case_id} failed its freeze-hash check — "
+            "refusing to act on a tampered case"
+        )
+    if case_fm.get("kind") != "reconsider":
+        raise CaseError(
+            f"reconsider: {case_id} is kind {case_fm.get('kind')!r}, not "
+            "'reconsider' — no case"
+        )
+    supersedes = case_fm.get("supersedes")
+    if not supersedes:
+        raise CaseError(
+            f"reconsider: {case_id} names no predecessor case (supersedes "
+            "is unset) — no case"
+        )
+    old_path = _case_path_for_id(home, str(supersedes))
+    old_text = old_path.read_text(encoding="utf-8")
+    old_fm, old_body = _split_frontmatter(old_text)
+    old_frozen, _old_rest = _split_frozen(old_body)
+    if _hash_frozen(old_frozen) != old_fm.get("decided_sha256"):
+        raise CaseError(
+            f"reconsider: {supersedes} failed its freeze-hash check — "
+            "refusing to act on a tampered predecessor case"
+        )
+    if record_id not in (old_fm.get("records") or []):
+        raise CaseError(
+            f"reconsider: {supersedes} does not cover {record_id} — wrong "
+            "record"
+        )
+    if old_fm.get("superseded_by") != case_id:
+        raise CaseError(
+            f"reconsider: {supersedes}'s superseded_by is "
+            f"{old_fm.get('superseded_by')!r}, not {case_id!r} — the "
+            "predecessor link is broken or was superseded by a different "
+            "case"
+        )
+    return case_fm, old_fm
 
 
 # ----------------------------------------------------------------- show

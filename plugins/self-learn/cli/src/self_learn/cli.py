@@ -533,6 +533,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reopen.add_argument("id", metavar="ID")
 
+    reconsider = _verb(
+        "reconsider",
+        "record a successor decision against a routed, rejected, or "
+        "deferred record, over a kind: reconsider case (U5, "
+        "`commands/review.md` ~160-186)",
+        json_flag=True,
+    )
+    reconsider.add_argument("id", metavar="ID")
+    reconsider.add_argument(
+        "--case",
+        required=True,
+        metavar="CASE_ID",
+        help="a kind: reconsider case whose supersedes names the "
+        "record's original case — self-learn case record opens it",
+    )
+    reconsider.add_argument(
+        "--by",
+        choices=sorted(verbs.ROUTING_BY_VALUES),
+        help="names the actor that made this reconsideration",
+    )
+
     reroute = _verb(
         "reroute",
         "correct a wrong routing destination on a routed record "
@@ -2388,6 +2409,11 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         if args.command == "reopen":
             result = verbs.reopen(home, args.id, note=args.note, no_push=args.no_push)
             return _finish_verb(result, "pending")
+        if args.command == "reconsider":
+            result = verbs.reconsider(
+                home, args.id, case=args.case, by=args.by, no_push=args.no_push
+            )
+            return _finish_verb(result, "reconsidered", as_json=args.as_json)
         if args.command == "note":
             result = verbs.note(
                 home, args.id, append=args.append, key=args.key, no_push=args.no_push
@@ -3723,6 +3749,9 @@ VERB_COMMANDS = frozenset(
         # U4: revise dispatches through the SAME `_cmd_verb` ladder too
         # — no new caller of the epilogue.
         "revise",
+        # U5: reconsider dispatches through the SAME `_cmd_verb` ladder
+        # too — no new caller of the epilogue.
+        "reconsider",
     }
 )
 

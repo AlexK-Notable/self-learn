@@ -38,7 +38,7 @@ from .ledger_ops import (
     LedgerOpsError,
     find_record_path,
 )
-from .records import RECORD_ID_RE, Record
+from .records import RECORD_ID_RE, Record, RecordError
 
 __all__ = [
     "PERMITTED_KEYS",
@@ -585,11 +585,65 @@ def classify(home: Path, item: SheetItem) -> bool:
     # can reach this function at all.
 
 
-def _dispatch(home: Path, item: SheetItem) -> ItemResult:
+def _reconsider_case_for(home: Path, record_id: str, case: str | None) -> str | None:
+    """U5: forward the sheet's own top-level ``case:`` into a resolution
+    verb's ``reconsider_case`` ONLY when it could genuinely apply —
+    the record's CURRENT status (read fresh, before dispatch) is
+    ``routed`` AND *case* actually validates as a ``kind: reconsider``
+    case over THIS record (:func:`cases.require_reconsider_case`,
+    pre-checked here, read-only). A record not currently ``routed``
+    never needs the widening at all: `reject`/`defer`'s own unwidened
+    gate already admits `pending`/`deferred` on its own, and
+    `graduate`/`supersede`'s admits `routed` UNCONDITIONALLY regardless
+    of any case — ``None`` changes nothing about what any of the four
+    verbs do next in either case.
+
+    This is a STRICTER pre-check than a literal "pass `case` through
+    unconditionally" would be, and deliberately so: a sheet's top-level
+    ``case:`` threads receipts to that case's Application section
+    (S-65) independent of its ``kind`` — an ordinary ``kind:
+    resolution`` case (U3's own shape, and the everyday hand-weave
+    graduate/supersede of an already-routed record) would otherwise
+    trip a resolution verb's reconsider-only refusal for a record the
+    case was never about, for reasons that have nothing to do with U5.
+    A genuinely WRONG reconsider case over a routed record still
+    refuses either way: `reject`/`defer` fall back to their ordinary
+    unwidened "record ... is 'routed'" refusal (the verb never learns a
+    case was even in play) rather than the more specific "wrong kind /
+    wrong record" wording `_reconsider_case_check` would have produced
+    — reported here, not silently matched, since `build-u5.md` does not
+    test this edge and this repo has no sheet combining a non-reconsider
+    case with an already-routed record's item either way."""
+    if case is None:
+        return None
+    try:
+        record = Record.from_path(find_record_path(home, record_id))
+    except (LedgerOpsError, RecordError, OSError):
+        return None
+    if record.status != "routed":
+        return None
+    try:
+        cases.require_reconsider_case(home, case, record_id)
+    except cases.CaseError:
+        return None
+    return case
+
+
+def _dispatch(home: Path, item: SheetItem, *, case: str | None = None) -> ItemResult:
     """Call the SAME ``verbs.*`` function the CLI calls, with
     ``no_push=True``, inside that verb's own ``_ledger_write`` span,
     catching the SAME exception set ``cli._cmd_verb`` catches and mapping
-    it to the SAME integer."""
+    it to the SAME integer.
+
+    ``case`` (U5): the sheet's own top-level ``case:`` (``run``/
+    ``dry_run`` pass ``items.case``) — threaded into
+    ``reject``/``defer``/``graduate``/``supersede``'s own
+    ``reconsider_case`` via :func:`_reconsider_case_for`, which decides
+    PER ITEM whether forwarding it could matter. A ``kind: reconsider``
+    case naming a wrong record, or one whose ``kind`` is not
+    ``reconsider`` at all, refuses inside the verb itself
+    (:func:`self_learn.verbs._reconsider_case_check`) with a message
+    naming which check failed — no separate refusal lives here."""
     verb = item.verb
     f = item.fields
     try:
@@ -616,13 +670,15 @@ def _dispatch(home: Path, item: SheetItem) -> ItemResult:
             )
         elif verb == "reject":
             result = verbs.reject(
-                home, item.id, note=f.get("note"), by=f.get("by"), no_push=True
+                home, item.id, note=f.get("note"), by=f.get("by"), no_push=True,
+                reconsider_case=_reconsider_case_for(home, item.id, case),
             )
         elif verb == "defer":
             until = f.get("until")
             result = verbs.defer(
                 home, item.id, until=until, note=f.get("note"), by=f.get("by"),
                 no_push=True,
+                reconsider_case=_reconsider_case_for(home, item.id, case),
             )
         elif verb == "undefer":
             result = verbs.undefer(
@@ -634,12 +690,14 @@ def _dispatch(home: Path, item: SheetItem) -> ItemResult:
             )
         elif verb == "graduate":
             result = verbs.graduate(
-                home, item.id, note=f.get("note"), by=f.get("by"), no_push=True
+                home, item.id, note=f.get("note"), by=f.get("by"), no_push=True,
+                reconsider_case=_reconsider_case_for(home, item.id, case),
             )
         elif verb == "supersede":
             result = verbs.supersede(
                 home, item.id, f["new_id"], note=f.get("note"), by=f.get("by"),
                 no_push=True,
+                reconsider_case=_reconsider_case_for(home, item.id, case),
             )
         elif verb == "rehome":
             result = verbs.rehome(
@@ -835,8 +893,9 @@ def dry_run(home: Path | str, items: list[SheetItem]) -> DryRunResult:
     sheet-level prerequisite the two hand scripts (§2.4) had to sequence
     by hand: a route item whose resolved destination is `hook`."""
     home = Path(home)
+    sheet_case = getattr(items, "case", None)
     result = DryRunResult(
-        case=getattr(items, "case", None),
+        case=sheet_case,
         sheet_sha=getattr(items, "sheet_sha", None),
     )
     for item in items:
@@ -885,7 +944,14 @@ def dry_run(home: Path | str, items: list[SheetItem]) -> DryRunResult:
                 continue
         record = Record.from_path(path)
         gate = _STATUS_GATE.get(item.verb)
-        if gate is not None and record.status not in gate:
+        if (
+            gate is not None and record.status not in gate
+            # U5: the same per-item widening `_dispatch` would apply at
+            # apply time — a validated `kind: reconsider` case over a
+            # routed record's item previews `would-apply`, not a stale
+            # `would-refuse` naming a status the real run would admit.
+            and _reconsider_case_for(home, item.id, sheet_case) is None
+        ):
             result.items.append(
                 DryRunItem(n=item.n, id=item.id, verb=item.verb,
                            state="would-refuse",
@@ -963,7 +1029,7 @@ def run(
                                state="already-applied")
                 )
                 continue
-            item_result = _dispatch(home, item)
+            item_result = _dispatch(home, item, case=case)
             if item_result.rc in _STOP_CODES:
                 # Fold r1 (F9): this is the ONE item whose rc actually
                 # halted the sheet -- 02-schema.md §3a.2 §5 names

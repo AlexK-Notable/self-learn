@@ -169,13 +169,13 @@ class TestRealRunReceipt:
         )
         real_dispatch = batch_mod._dispatch
 
-        def fake_dispatch(home_, item):
+        def fake_dispatch(home_, item, *, case=None):
             if item.n == 1:
                 return batch_mod.ItemResult(
                     n=item.n, id=item.id, verb=item.verb, rc=7,
                     state="refused", detail="simulated git failure",
                 )
-            return real_dispatch(home_, item)
+            return real_dispatch(home_, item, case=case)
 
         monkeypatch.setattr(batch_mod, "_dispatch", fake_dispatch)
         rc = cli.main(["batch", str(sheet), "--no-push", "--json"])
@@ -618,13 +618,13 @@ class TestF7TextSummaryCountsWholeSheet:
         )
         real_dispatch = batch_mod._dispatch
 
-        def fake_dispatch(home_, item):
+        def fake_dispatch(home_, item, *, case=None):
             if item.n == 1:
                 return batch_mod.ItemResult(
                     n=item.n, id=item.id, verb=item.verb, rc=7,
                     state="refused", detail="simulated git failure",
                 )
-            return real_dispatch(home_, item)
+            return real_dispatch(home_, item, case=case)
 
         monkeypatch.setattr(batch_mod, "_dispatch", fake_dispatch)
         rc = cli.main(["batch", str(sheet), "--no-push"])
