@@ -249,7 +249,11 @@ ignoring costs nothing. This section pins the mechanics.
   of per-record **`graduate <id>`** verbs — canon-supersession, never
   rejection (02 §2 pins `superseded_by: canon`; a graduation bulk
   landing as rejects would flood the rejected-proposal digest's
-  negative-exemplar window).
+  negative-exemplar window) *(Amended 2026-09-14, U7: the digest no
+  longer feeds the analyst prompt at all — the concern this bullet
+  raises is now moot for that path, though `_digest` itself is
+  unchanged and this bullet's reasoning still applies wherever a
+  future caller reads it)*.
 
   *Amended 2026-09-13 (`S-67`):* `graduate <id>` is now `retire <id>
   --covered-by <surface>` in every human-facing surface, and `02 §2` now

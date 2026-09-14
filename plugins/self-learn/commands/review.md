@@ -120,10 +120,11 @@ limit; free-text "Other" is always there beyond them):
   rephrases (edit again, re-validate). Exit 1 = schema-invalid proposal:
   fix and re-validate before proceeding. When the discussion lands on a
   decision, re-present the card (or invoke the verb the user named).
-- **Reject** — ask one line: *why?* The note is the analyst's fuel (the
-  M2 rejected-proposal digest reads it) — encourage it, never gate on it.
-  Then `self-learn reject <id> --note "…"` (or without `--note` if they
-  decline).
+- **Reject** — ask one line: *why?* The note is the analyst's fuel (`_digest`
+  reads it, though as of U7 that function has no caller in the analyst
+  prompt path — prior decisions arrive there as cited cases instead) —
+  encourage it, never gate on it. Then `self-learn reject <id> --note "…"`
+  (or without `--note` if they decline).
 - **Defer** — `self-learn defer <id>` (default +30 days) or
   `self-learn defer <id> --until YYYY-MM-DD` if they name a date.
 

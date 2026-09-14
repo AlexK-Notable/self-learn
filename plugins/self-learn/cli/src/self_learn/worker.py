@@ -1641,24 +1641,57 @@ def _cases_block(home: Path, limit: int = 20) -> str:
     index key (`02-schema.md` §3a.2's index row list, `:946-950`) — so
     this reads the WHOLE index, newest-`opened_at` first, capped at
     `limit`, rather than inventing a filter the index cannot perform.
-    An empty index (or any read failure — a stale-index rebuild race, a
-    malformed case) degrades to the sentinel body below rather than
-    raising: the analyst gets no case citations this run, not a crashed
-    prompt assembly, the same posture `_digest` takes on a wedged git."""
+
+    Fold r1 / B1 (`cases.py` S6, `list_cases`'s own contract at
+    `:939-941`; the SAME posture `case list`'s text view gives its
+    `TAMPERED` column, U2 gate r2 decision 6): rows whose freeze hash
+    failed re-verification (`frozen_ok: false`) are EXCLUDED from
+    citation — `only_ok=True` — never rendered to the analyst verbatim,
+    because a tampered case's `outcome` is arbitrary text past that
+    point (`cases.py:452` only validates `outcome` at write time) and
+    this function's whole purpose is to cite decisions, not obey
+    whatever a hand-edited file claims one said. When one or more rows
+    were excluded, the block ends with one visible line, `(<n> case(s)
+    excluded: freeze hash failed)` — a marker, never a silent drop.
+
+    Fold r1 / S1: a read failure (a corrupt cache index, an unreadable
+    lock, a case file that will not decode) is NOT the same claim as an
+    empty index — collapsing both into "none yet" would tell the
+    analyst nothing has ever been decided when the truth is the index
+    could not be read this run. The except clause is narrowed to what
+    `list_cases`/`rebuild_index` can actually raise: `CaseError` and
+    `YAMLError` (defense in depth — `_index_row` already catches both
+    internally and should never let either escape, but the tuple stays
+    aligned with that function's own catch list rather than assuming
+    it always will), `OSError`/`UnicodeDecodeError` (a lock file or
+    case file that cannot be opened or decoded), and
+    `json.JSONDecodeError` (the actual failure mode measured for a
+    hand-corrupted `<cache>/cases/index.json` — `_load_index`'s
+    `json.loads`). A read failure degrades to the distinct sentinel
+    `(prior decisions unavailable this run)`, never "none yet"."""
     from . import cases as cases_mod
+    from .cases import CaseError
+    from ruamel.yaml.error import YAMLError
 
     try:
-        rows = cases_mod.list_cases(home)
-    except Exception:  # noqa: BLE001 — degrade, never crash prompt assembly
-        return "none yet"
+        rows_all = cases_mod.list_cases(home)
+        rows = cases_mod.list_cases(home, only_ok=True)
+    except (CaseError, YAMLError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return "(prior decisions unavailable this run)"
+    excluded = len(rows_all) - len(rows)
     if not rows:
-        return "none yet"
+        body = "none yet"
+        if excluded:
+            body += f"\n({excluded} case(s) excluded: freeze hash failed)"
+        return body
     rows = sorted(rows, key=lambda r: r.get("opened_at") or "", reverse=True)
     lines: list[str] = []
     for row in rows[:limit]:
         records = ", ".join(row.get("records") or []) or "(no records)"
         outcome = row.get("outcome") or "(no outcome)"
         lines.append(f"- {row.get('case')}: {records} → {outcome}")
+    if excluded:
+        lines.append(f"({excluded} case(s) excluded: freeze hash failed)")
     return "\n".join(lines)
 
 
@@ -2160,7 +2193,17 @@ def render_brief(proposal: dict) -> list[tuple[str, str]]:
                 sections = loaded
         except (OSError, UnicodeDecodeError, YAMLError):
             sections = {}
-    ordered_keys = sorted(sections.keys(), key=lambda k: sections[k].get("order", 999))
+
+    def _order(key: str) -> int:
+        # N3 (fold r1): a registry top-level value need not be a
+        # mapping — `render_brief` already degrades carefully around a
+        # missing file, an OSError, and a YAMLError; a scalar value for
+        # one key (a malformed hand-edit of the registry) sorts last
+        # rather than raising `AttributeError` on `.get`.
+        value = sections[key]
+        return value.get("order", 999) if isinstance(value, dict) else 999
+
+    ordered_keys = sorted(sections.keys(), key=_order)
     card = proposal.get("card")
     card = card if isinstance(card, dict) else {}
 

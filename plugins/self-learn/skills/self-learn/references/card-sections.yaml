@@ -108,7 +108,14 @@ questions:
 
 advice:
   label: "My advice"
-  order: 39
+  # Fold r1 / S2: moved past `discuss`/`lint`/`conflict` (40/50/55) so
+  # the registry's own order agrees with routing-doctrine.md §8
+  # ("identity, then evidence, then whatever is unresolved, then advice
+  # last") and with this section's own instruction below ("read last by
+  # design") — at order 39 advice sorted BEFORE those three footer
+  # sections on every routing proposal (`discuss` is `required: routing`,
+  # so every one of them renders it), which is the opposite of "last".
+  order: 60
   required: routing
   instruction: >
     Your own recommendation, stated as advice a reader can weigh against

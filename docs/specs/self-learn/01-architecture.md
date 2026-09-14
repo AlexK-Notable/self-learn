@@ -253,6 +253,18 @@ human has already declined (SkillOpt's rejected-edit-buffer pattern, E-20).
 A queue that re-surfaces rejected material is the fastest way to re-run E-3;
 the digest costs nothing because rejection provenance already lives in git.
 
+*Amended 2026-09-14 (U7, steward build): the rejected-proposal digest above
+no longer reaches the analyst prompt. `compose_batch_prompt` interpolates a
+cases block in its place — prior decisions on this record's class, cited by
+case id and one-line outcome, read from the case index
+(`cases.list_cases`; `02-schema.md` §3a.1 item 6) — so the analyst cites a
+prior decision rather than being told never to re-propose a rejected class.
+`_digest` itself is RETAINED, unchanged, with no caller left in the
+worker's run path: it stays for `review`'s own "recently rejected" hint
+pending U9's decision on whether that human surface still wants it
+(`02-schema.md` §3a.1 item 6's other half — attributing every digest entry
+with its decider — is correspondingly unapplied and moot for now).*
+
 ### 3.3a The steward
 
 *Added 2026-09-13 (S-29 as amended; steward build, U9).*

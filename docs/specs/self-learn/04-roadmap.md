@@ -207,7 +207,10 @@ analysis proposals + merge proposals as new files, never record writes;
 coalesced, flock'd per machine, restricted `--allowedTools`; analyst prompt
 carries the **rejected-proposal digest** as negative exemplars — never
 re-propose a declined lesson class, `01` §3.3; the digest reads
-`resolution_note` where present) · SessionStart
+`resolution_note` where present) *(Amended 2026-09-14, U7: the digest no
+longer reaches the analyst prompt — replaced there by cases cited from
+the case index, `01` §3.3 as amended; `_digest` itself is retained,
+unused in this path)* · SessionStart
 pending-count line (manual `settings.json`
 registration — a documented install step, not an assumed one) ·
 **per-worker-run ambient notifications** carrying the aggregate line and
