@@ -340,10 +340,10 @@ class TestC1DataKeyContextDeleted:
     def test_c1_data_key_context_has_zero_occurrences(self) -> None:
         """`C1` — `data-key-context` was declared at `action_bar.html:10`
         and `pane.html:16` and read by NOTHING. It is DELETED, not wired:
-        `KEYMAP` binds `g` -> `graduate` with `context="detail"`, but
+        `KEYMAP` binds `g` -> `retire` with `context="detail"`, but
         `action_bar.html`'s holding branch renders
         `data-key-context="holding"` on a bar carrying
-        `data-key-action="graduate"` — a filter requiring the two to
+        `data-key-action="retire"` — a filter requiring the two to
         match would make `g` DEAD on Front's holding rows, a regression
         delivered by the very mechanism meant to fix targeting."""
         hits = _grep_ui_tree("data-key-context")
@@ -388,9 +388,9 @@ class TestBulkCollapseRowShape:
     def test_b1_bulk_button_is_gated_not_key_bound(self, tmp_path: Path) -> None:
         """`B1` — against the REAL rendered HTML of a bucket page whose
         `skill-md` group is bulk-collapsed. The button that posts
-        straight to `graduate-bulk` with a hidden multi-record `ids`
+        straight to `retire-bulk` with a hidden multi-record `ids`
         field must carry NO `data-key-action`, and must carry the gated
-        `[data-noop-hint][data-noop-action="graduate"]` pair instead."""
+        `[data-noop-hint][data-noop-action="retire"]` pair instead."""
         sb = _bucket_sandbox(tmp_path)
         html = make_client(sb).get("/bucket/skill/s").text
         root = parse(html)
@@ -404,10 +404,10 @@ class TestBulkCollapseRowShape:
         button = buttons[0]
         assert "data-key-action" not in button.attrs, (
             "the bulk-collapse button is keyboard-dispatchable again — one "
-            "press of `g` posts graduate-bulk with a multi-record ids field, "
+            "press of `g` posts retire-bulk with a multi-record ids field, "
             "un-armed"
         )
-        assert button.attrs.get("data-noop-action") == "graduate"
+        assert button.attrs.get("data-noop-action") == "retire"
         assert button.attrs.get("data-noop-hint", "").strip(), (
             "the gated pair needs its hint text — without it `g` on the "
             "selected bulk row refuses SILENTLY"
@@ -415,7 +415,7 @@ class TestBulkCollapseRowShape:
         # The precondition that makes this criterion non-vacuous: the
         # button really is the multi-record write.
         form = closest(button, lambda n: n.tag == "form")
-        assert form is not None and form.attrs.get("hx-post", "").endswith("/graduate-bulk")
+        assert form is not None and form.attrs.get("hx-post", "").endswith("/retire-bulk")
         ids = [n for n in walk(form) if n.attrs.get("name") == "ids"]
         assert len(ids) == 1 and ids[0].attrs.get("value")
 
@@ -449,7 +449,7 @@ class TestBulkCollapseRowShape:
             "route",
             "reject",
             "defer",
-            "graduate",
+            "retire",
             "iterate",
             "cycle_destination",
             "note",
@@ -642,7 +642,7 @@ class TestS2ArmingControlInventory:
         `hx-post` ends in `/arm`. It does NOT see a control that arms
         indirectly (a plain `<button>` wired by future JS, a link, a form
         whose action is computed at runtime), and it does not see the
-        bulk-collapse WRITE (`/graduate-bulk`), which is outside a
+        bulk-collapse WRITE (`/retire-bulk`), which is outside a
         `.action-bar` too and is tracked separately as `[B-1]`. Closing
         the door itself is `[B-7]`."""
         sb = _cluster_sandbox(tmp_path)

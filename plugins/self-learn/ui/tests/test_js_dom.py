@@ -3447,8 +3447,8 @@ class TestApplyingStripServerPublish:
         _start_frame_recorder(page)
         server.wait_for_subscriber(2)
         resp = page.request.post(
-            f"{server.base_url}/bucket/skill/s/graduate-bulk",
-            form={"ids": REC_BRIEF},
+            f"{server.base_url}/bucket/skill/s/retire-bulk",
+            form={"ids": REC_BRIEF, "covered_by": "skill-md:s"},
             headers={"HX-Request": "true"},
         )
         assert resp.ok
@@ -3465,8 +3465,8 @@ class TestApplyingStripServerPublish:
         server.wait_for_subscriber(2)
         server.runner.queue_result(RunResult(1, stderr="boom"))
         resp = page.request.post(
-            f"{server.base_url}/bucket/skill/s/graduate-bulk",
-            form={"ids": REC_BRIEF},
+            f"{server.base_url}/bucket/skill/s/retire-bulk",
+            form={"ids": REC_BRIEF, "covered_by": "skill-md:s"},
             headers={"HX-Request": "true"},
         )
         assert resp.ok  # the failed-bulk response is still a 200 (error_strip)
@@ -3782,25 +3782,26 @@ class TestInFlightDisabling:
         )
         assert f2_page.evaluate("el => !document.body.contains(el)", handle) is True
 
-    def test_21_settle_bulk_graduate_reenables(
+    def test_21_settle_bulk_retire_reenables(
         self, f2_page: "Page", f2_server: ServerHandle
     ) -> None:
         """hx-swap="none": the button is NEVER swapped out, so htmx's own
         post-request re-enable (independent of swap) is what must fire —
         re-enabled, not detached.
 
-        U-target §4.5: the locator moved from `data-key-action='graduate'`
-        to `data-noop-action='graduate'` — this button is now CLICK-ONLY
+        U-target §4.5: the locator moved from `data-key-action='retire'`
+        to `data-noop-action='retire'` — this button is now CLICK-ONLY
         and carries the gated `[data-noop-hint][data-noop-action]` pair
         instead of a key action (one press of `g` used to POST
-        `graduate-bulk` with a multi-record `ids` field, un-armed). The
+        `retire-bulk` with a multi-record `ids` field, un-armed). The
         subject of this test — htmx's swap-independent post-request
         re-enable — is unchanged, and the new attribute is just as
         specific a handle on the same element."""
         _open(f2_page, f2_server, "/bucket/skill/s")
-        button = f2_page.locator(".bulk-collapse-row button[data-noop-action='graduate']")
+        button = f2_page.locator(".bulk-collapse-row button[data-noop-action='retire']")
         expect(button).to_be_visible()
-        held = _hold_post(f2_page, "/graduate-bulk")
+        f2_page.locator(".bulk-collapse-row input[name='covered_by']").fill("skill-md:s")
+        held = _hold_post(f2_page, "/retire-bulk")
         button.click()
         _wait_for_held(held)
         assert button.get_attribute("disabled") is not None
@@ -3832,10 +3833,10 @@ class TestNeverPressedKeymapActions:
         ):
             page.keyboard.press("f")
 
-    def test_graduate_arms_graduate(self, page: "Page", server: ServerHandle) -> None:
+    def test_retire_arms_retire(self, page: "Page", server: ServerHandle) -> None:
         _open(page, server, f"/record/{REC_BRIEF}")
         with page.expect_request(
-            lambda r: r.url.endswith("/action/arm") and "verb=graduate" in (r.post_data or "")
+            lambda r: r.url.endswith("/action/arm") and "verb=retire" in (r.post_data or "")
         ):
             page.keyboard.press("g")
 

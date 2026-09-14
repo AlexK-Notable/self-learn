@@ -311,6 +311,44 @@ class TestViewableRendersEveryStatus:
             assert TRIGGER in r.text, rec.id
 
 
+class TestSupersessionPhrasesRenderOnResolvedDetail:
+    def test_legacy_retirement_phrase_renders_in_the_routing_region(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s", trigger=TRIGGER)
+        seed_record(sb.ledger, rec)
+        _retire_directly(sb, _bucket_dir(sb), rec)
+        c, _runner = make_client(sb)
+
+        page = c.get(f"/record/{rec.id}", follow_redirects=False).text
+
+        assert '<section aria-label="routing">' in page  # positive control
+        assert '<p class="supersession">retired, covering surface unrecorded</p>' in page
+
+    def test_named_covering_surface_phrase_renders_in_the_routing_region(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s", trigger=TRIGGER)
+        seed_record(sb.ledger, rec)
+        bucket_dir = _bucket_dir(sb)
+        resolve_record_directly(sb.ledger, bucket_dir, rec, status="superseded")
+        path = bucket_dir / "resolved" / f"{rec.id}.md"
+        stored = Record.from_path(path)
+        stored.set_superseded_by("covered_by:output-style:plain-pairing")
+        stored.write(path)
+        c, _runner = make_client(sb)
+
+        page = c.get(f"/record/{rec.id}", follow_redirects=False).text
+
+        assert '<section aria-label="routing">' in page  # positive control
+        assert (
+            '<p class="supersession">retired, covered by '
+            'output-style:plain-pairing</p>' in page
+        )
+
+
 # ===================================================================== #
 # Criterion 6 — RESOLVED-VERBS offered, and nothing else
 # ===================================================================== #
@@ -630,6 +668,7 @@ class TestDistinctPageKindAdvertisesGraduate:
             f'body[data-page="{page_kind}"] .keymap-footer-entry[data-action="retire"]'
             in css
         )
+        assert 'button[data-key-action="retire"]:hover' in css
         assert (
             f'body[data-page="{page_kind}"] .keymap-footer-entry[data-context="detail"]'
             not in css

@@ -584,8 +584,23 @@ def _proposal_path(bucket_dir: Path, record_id: str) -> Path:
 
 def read_proposal(path: Path) -> dict:
     """Parse a proposal sibling (no schema validation — see
-    :func:`validate_proposal`)."""
-    return _load_yaml_map(path)
+    :func:`validate_proposal`). S-67's one read-side compatibility
+    normalization maps an already-stored ``recommendation: graduate``
+    to ``retire`` before any reader branches on the value."""
+    data = _load_yaml_map(path)
+    _normalize_legacy_recommendation(data)
+    return data
+
+
+def _normalize_legacy_recommendation(data: dict) -> None:
+    """Read S-67's legacy recommendation spelling as ``retire``.
+
+    This is the one normalizer shared by stored proposal reads and direct
+    validation. New analyses remain constrained by
+    :data:`TRACE_RECOMMENDATIONS` and therefore never write ``graduate``.
+    """
+    if data.get("recommendation") == "graduate":
+        data["recommendation"] = "retire"
 
 
 def _validate_card(data: dict) -> None:
@@ -2071,6 +2086,7 @@ def validate_proposal(
     Raises :class:`ProposalError`."""
     if not isinstance(data, dict):
         raise ProposalError("proposal is not a mapping")
+    _normalize_legacy_recommendation(data)
     dest = data.get("destination")
     if dest not in PROPOSAL_DESTINATIONS:
         raise ProposalError(
@@ -2398,7 +2414,8 @@ def resolve_record(
         raise LedgerOpsError("routing needs a destination")
     if new_status == "superseded" and superseded_by is None:
         raise LedgerOpsError(
-            "supersession needs superseded_by (<record-id> or 'canon')"
+            "supersession needs superseded_by (<record-id>, "
+            "covered_by:<kind>:<name>, or legacy 'canon')"
         )
 
     if follow_up is not None and new_status != "routed":
@@ -2751,9 +2768,12 @@ def supersede_record(
     note: str | None = None,
     verb: str = "supersede",
 ) -> list[Path]:
-    """Mark the old record superseded_by=<new-id|'canon'> and move it to
-    ``resolved/`` (``'canon'`` = graduation, 02 §2). When *superseded_by*
-    names a real record (not ``'canon'``), refuses a direct self-cycle
+    """Resolve the old record under *superseded_by* and move it to
+    ``resolved/``. Current callers pass a successor record id; the legacy
+    ``"canon"`` bypass remains behaviorally unchanged for compatibility,
+    while S-67 retirement writes go through :func:`resolve_record` with a
+    ``covered_by:<kind>:<name>`` value instead. For a successor id, refuses
+    a direct self-cycle
     (``old_id == superseded_by``) — root-cause extra, code gate r1:
     :func:`supersede_cycle_check` alone does NOT catch this degenerate
     case, since the walk starts at *superseded_by*'s OWN
@@ -2762,7 +2782,7 @@ def supersede_record(
     a longer cycle, see :func:`supersede_cycle_check`."""
     if old_id == superseded_by:
         raise LedgerOpsError(f"record {old_id} cannot supersede itself")
-    if superseded_by != "canon":
+    if superseded_by != "canon":  # legacy retirement sentinel; current callers pass ids
         supersede_cycle_check(home, old_id, superseded_by)
     return resolve_record(
         home, old_id, "superseded", superseded_by=superseded_by, note=note, verb=verb

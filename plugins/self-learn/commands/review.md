@@ -223,7 +223,9 @@ file, or an output style), and showing `already_canon_reason`. Never
 reject an already-canon record for being redundant — the lesson won.
 (`graduate` is the old name for this verb and stays a hidden alias for
 one release; `superseded_by` now carries `covered_by:<kind>:<name>` in
-place of the old literal `"canon"`.)
+place of the old literal `"canon"`.) For compatibility, `report --json`
+keeps its existing `graduated` machine key even though human-facing
+report text says "retired."
 
 **Bulk-acknowledge** — a homogeneous group of already-canon records gets
 **one** multiSelect card listing them, not N detail cards. Each item gets

@@ -1231,9 +1231,14 @@ def receipt(home: Path | str, case_id: str, batch_result: dict) -> str:
             else:
                 state = item.get("state", "applied")
                 rc = item.get("rc", 0)
+                warnings = item.get("warnings") or []
+                warning_suffix = (
+                    f"; warnings: {' | '.join(str(warning) for warning in warnings)}"
+                    if warnings else ""
+                )
                 new_by_key[key] = (
                     f"- {at} sheet={sheet}#{sheet_sha} item={n} {rid} {verb} → "
-                    f"{state} (exit {rc})"
+                    f"{state} (exit {rc}){warning_suffix}"
                 )
     new_lines = list(new_by_key.values())
 
