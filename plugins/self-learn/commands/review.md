@@ -175,11 +175,13 @@ item is `reopen` (already legal on a rejected record, no case needed for
 that step) followed by the corrective verb, both receipted to the same
 case — reopening back to `pending` is what makes the corrective verb
 ordinary again, never a further widening of `route`/`rehome`/`revise`
-to admit a rejected record directly. Whether the mechanics of a
-`routed → rejected` transition are a plain status flip or need a
-`supersede`+`recompile` step is still an open build-gate question for
-that unit — nothing here depends on which
-way it lands.
+to admit a rejected record directly. A `routed → rejected` (or
+`→ deferred`) correction is a plain status flip plus the removal of the
+record's compiled line from its host surface inside the same locked
+section — never a `supersede` of the record; the CASE is superseded,
+the record is re-decided (decided at U5's gate, 2026-09-14). A record
+routed to a `reference` or `hook` destination cannot yet be corrected
+this way and the verb refuses by name.
 
 **Two different undo paths — do not confuse them.** Among supersessions,
 `reopen` is for a mistaken retirement only: `self-learn reopen <id>`
