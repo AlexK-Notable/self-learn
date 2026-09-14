@@ -80,6 +80,13 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
     "confirm-held": frozenset({"note"}),
     "link-contradicts": frozenset({"target", "note"}),
     "followup-done": frozenset({"note"}),
+    # U4 (revise) -- S-54 as amended, 2026-09-13: "the one verb this
+    # build adds to the sheet grammar, and PERMITTED_KEYS gains it
+    # together with the by: key" (03-decisions.md S-54). Dispatch
+    # wiring (`_dispatch`/`classify`/`_STATUS_GATE`) is U3's (lane
+    # so-batch) -- out of scope here (builder brief build-u4.md /
+    # common-builder-rules.md: "touch NOTHING else in batch.py").
+    "revise": frozenset({"section", "text", "because", "by"}),
 }
 PERMITTED_VERBS = frozenset(PERMITTED_KEYS)
 
@@ -106,6 +113,10 @@ REQUIRED_KEYS: dict[str, frozenset[str]] = {
     "confirm-recurrence": frozenset({"event"}),
     "dismiss-suspect": frozenset({"event", "why"}),
     "link-contradicts": frozenset({"target"}),
+    # U4 (revise): `because` is required unlike every other verb's
+    # optional `note` -- it plays `note`'s exact role (commit body) for
+    # this verb and has no optional counterpart, so it is never absent.
+    "revise": frozenset({"section", "text", "because"}),
 }
 
 #: S-29 / Y-17: never accepted inside a sheet, by name — a hook route

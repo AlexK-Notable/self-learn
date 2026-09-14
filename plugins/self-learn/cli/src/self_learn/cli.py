@@ -422,6 +422,49 @@ def _build_parser() -> argparse.ArgumentParser:
         "than rewriting the body to fit",
     )
 
+    # U4: no `_verb()` -- that helper auto-adds a generic `--note`,
+    # which `revise` does not take (`--because` plays that role and is
+    # REQUIRED, not optional). Same reasoning as `note_p` just below.
+    revise_p = sub.add_parser(
+        "revise",
+        help="wording fix on one body section of a pending or deferred "
+        "record (02 §2 as amended, S-54/S-65)",
+    )
+    revise_p.add_argument("id", metavar="ID")
+    revise_p.add_argument(
+        "--section",
+        required=True,
+        metavar="NAME",
+        help="the body section heading to replace (e.g. Trigger, "
+        "Instruction, Fact, Context) — must already exist in the record",
+    )
+    revise_p.add_argument(
+        "--text",
+        required=True,
+        metavar="TEXT",
+        help="the section's new text — a wording fix, never a "
+        "substance change; may not itself contain a '## ' heading line",
+    )
+    revise_p.add_argument(
+        "--because",
+        required=True,
+        metavar="TEXT",
+        help="why the wording changed → commit body (required, unlike "
+        "every other verb's optional --note)",
+    )
+    revise_p.add_argument(
+        "--by",
+        choices=sorted(verbs.ROUTING_BY_VALUES),
+        help="the attributing actor (02-schema.md §1/§3a.1 rule 5); "
+        "rides the proposal's revised_at stamp, never the record",
+    )
+    revise_p.add_argument(
+        "--no-push",
+        action="store_true",
+        dest="no_push",
+        help="commit exactly as pinned, skip only the push",
+    )
+
     note_p = sub.add_parser(
         "note", help="append a commentary entry to a record (U-verbs §4.2)"
     )
@@ -2140,6 +2183,12 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 no_push=args.no_push,
             )
             return _finish_verb(result, "reclassified")
+        if args.command == "revise":
+            result = verbs.revise(
+                home, args.id, section=args.section, text=args.text,
+                because=args.because, by=args.by, no_push=args.no_push,
+            )
+            return _finish_verb(result, "revised")
     except verbs.VerbError as exc:  # incl. SecretRefusal
         print(f"self-learn {args.command}: {exc}", file=sys.stderr)
         return exc.exit_code
@@ -3135,6 +3184,9 @@ VERB_COMMANDS = frozenset(
         # `_cmd_verb` ladder too — no new caller of the epilogue.
         "reroute",
         "reclassify",
+        # U4: revise dispatches through the SAME `_cmd_verb` ladder too
+        # — no new caller of the epilogue.
+        "revise",
     }
 )
 

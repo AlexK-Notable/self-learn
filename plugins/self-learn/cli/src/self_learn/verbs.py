@@ -72,7 +72,7 @@ from pathlib import Path
 
 from . import config as policy_config
 from . import domain, gitops, intents, ledger_ops, sentinel, telemetry
-from .primitives import chrono, fsops
+from .primitives import chrono, fsops, text as text_mod
 from .hook_compiler import replay_examples, script_name, settings_snippet
 from .normalize import sha_anchor
 from .skill_scaffold import (
@@ -155,6 +155,15 @@ from .ledger_ops import (
     validate_merge_proposal,
     validate_proposal,
 )
+# U4 (revise): reuses ledger_ops.py's own proposal-stamp primitive
+# directly (never reimplemented) -- the same REC7 precedent as the
+# compilers.py private imports above. `_dump_yaml` is the ONE
+# atomic+fsync'd YAML writer `stamp_proposal` itself uses to overwrite
+# a single field without re-validating the whole proposal (a revised
+# body's trace quotes need not still containment-check against the new
+# wording -- that is `validate_proposal`'s job at analysis time, not a
+# wording-fix stamp's).
+from .ledger_ops import _dump_yaml
 from . import records as records_mod
 from .records import RECORD_ID_RE, Record, RecordError, _validate_follow_up
 from .scan import format_refusal
@@ -7930,6 +7939,195 @@ def reclassify(
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="reclassify",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()
+
+
+def _revise_body(record: Record, section: str, text: str) -> str:
+    """Splice *text* into the ONE named heading's content, leaving every
+    other section's bytes byte-for-byte untouched (02 §2 as amended,
+    S-54: ``self-learn revise`` -- a wording fix, never a substance
+    change). Never writes to disk; :func:`revise` calls this once
+    pre-lock (fail-closed) and once more fresh-under-the-lock (the SAME
+    fresh-read-and-reapply shape :func:`_reclassify_apply`'s callers
+    use, in case the body changed between the two reads).
+
+    *section* must already be a heading in *record*'s body -- an
+    unrecognized name refuses rather than growing the body (a revise
+    edits what is already claimed; it never adds a claim). *text* may
+    not itself contain a ``## `` heading line -- the same boundary from
+    the other direction: smuggling a second heading through the
+    free-text field would let a wording-fix verb add a whole section no
+    resolution verb ever validated as intentional (found empirically --
+    :func:`records.validate_body` only counts KNOWN headings, so this
+    is not caught anywhere else).
+
+    Replacement preserves the ORIGINAL section's surrounding whitespace
+    verbatim (its own leading/trailing blank-line shape, whatever a
+    hand-edited or captured record happens to carry) and substitutes
+    only the trimmed text in between -- never reformats to
+    :meth:`Record.create`'s own convention, which would risk touching
+    bytes this verb has no claim to touch."""
+    if text_mod.HEADING_RE.search(text):
+        raise VerbError(
+            "revise --text may not itself contain a '## ' heading line "
+            "— a wording fix replaces one section's text, never adds a "
+            "section (02 §2 as amended, S-54)"
+        )
+    body = record.body
+    matches = list(text_mod.HEADING_RE.finditer(body))
+    headings = [m.group(1) for m in matches]
+    if section not in headings:
+        raise VerbError(
+            f"record {record.id} has no {section!r} section to revise "
+            f"— has {', '.join(headings) if headings else '(no sections)'}"
+        )
+    if headings.count(section) > 1:
+        raise VerbError(
+            f"record {record.id} has {headings.count(section)} "
+            f"{section!r} sections — ambiguous, fix by hand first"
+        )
+    idx = headings.index(section)
+    m = matches[idx]
+    start = m.end()
+    end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
+    segment = body[start:end]
+    leading = segment[: len(segment) - len(segment.lstrip())] or "\n"
+    trailing = segment[len(segment.rstrip()) :] or (
+        "\n" if idx + 1 == len(matches) else "\n\n"
+    )
+    return body[:start] + leading + text.strip() + trailing + body[end:]
+
+
+def revise(
+    home: Path | str,
+    record_id: str,
+    *,
+    section: str,
+    text: str,
+    because: str,
+    by: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """``self-learn revise`` (02 §2 as amended 2026-09-13 / S-54 as
+    amended / S-65; `commands/review.md` ~:154-160): the ONE sanctioned
+    pending-or-deferred BODY edit through a scanned verb -- a wording
+    fix on exactly one named section, never a substance change. The
+    steward may not write outside its own stage (`01-architecture.md`
+    §3.3 as amended), so refining a lesson's sentence at decision time
+    needs a verb rather than a hand edit.
+
+    Admits exactly ``records.DRAFT_STATUSES`` (pending/deferred) via
+    :func:`require_status` -- everything else, including ``routed``,
+    is refused BEFORE any lock (a routed record's substance is frozen;
+    correcting it is a new record with ``supersedes:``, never an edit).
+    ``section`` must already be a heading in the body (:func:`_revise_body`
+    refuses an unknown name, and a ``text`` that smuggles its own
+    heading). ``because`` is REQUIRED (unlike every other verb's
+    optional ``--note``) and plays that verb's exact role: it never
+    touches the record (no ``history`` entry -- ``history``'s closed
+    set has no wording-edit kind, and the steward's own reason for a
+    revise is recorded in its decision case, U10's surface, not here)
+    -- it becomes the commit body only. ``by`` (02-schema.md
+    §1/§3a.1 rule 5, the same ``ROUTING_BY_VALUES`` every sheet item's
+    ``by:`` draws from) is optional and, when given, rides the proposal
+    stamp below alongside ``revised_at`` -- never the record.
+
+    The record's sibling PROPOSAL, if one exists, is kept (never swept
+    -- the record never leaves ``pending/``, so
+    ``worker._still_pending``'s orphan sweep, keyed on "no matching
+    pending record", cannot reach it) and stamped ``revised_at`` (plus
+    ``revised_by`` when ``by`` is given) through the SAME atomic YAML
+    writer :func:`ledger_ops.stamp_proposal` itself uses
+    (:func:`ledger_ops._dump_yaml`) -- deliberately NOT
+    :func:`ledger_ops.write_proposal`, which re-validates the whole
+    proposal including containment-checking its trace's record-sourced
+    quotes against the CURRENT body (`validate_proposal`'s §3.4); a
+    revised section's old quote would then refuse its own stamp.
+    ``record_sha`` is deliberately left UNTOUCHED -- the analyst never
+    saw the new wording, so re-stamping it fresh would misreport the
+    proposal as re-validated against text it was not."""
+    home = Path(home)
+    if not isinstance(section, str) or not section.strip():
+        raise VerbUsageError("revise needs --section")
+    if not isinstance(text, str) or not text.strip():
+        raise VerbUsageError("revise needs --text")
+    if not isinstance(because, str) or not because.strip():
+        raise VerbUsageError("revise needs --because")
+    if by is not None and by not in ROUTING_BY_VALUES:
+        raise VerbUsageError(
+            f"by must be one of {sorted(ROUTING_BY_VALUES)}, got {by!r}"
+        )
+
+    path = find_record_path(home, record_id)  # pending OR resolved --
+    # require_status below needs the ACTUAL status to refuse BY NAME,
+    # never a lying "not found" for an existing but wrongly-staged id.
+    _scan_or_refuse([path], text)
+    _scan_or_refuse([], because)  # P2-7: `because` rides the commit body
+    record = Record.from_path(path)
+    try:
+        require_status(home, record_id, records_mod.DRAFT_STATUSES, verb="revise")
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+
+    new_body = _revise_body(record, section, text)
+    if new_body == record.body:
+        raise VerbError(
+            f"record {record_id}: --text already matches the current "
+            f"{section!r} section — nothing to revise"
+        )
+
+    # Fail-closed pre-lock simulation (the same B-1 shape reclassify
+    # uses): `Record.set_body` re-validates the resulting body shape
+    # (`records._validate_body`) on a disposable copy before any lock
+    # or write.
+    sim = records_mod.Record.from_text(record.to_text())
+    try:
+        sim.set_body(new_body)
+    except RecordError as exc:
+        raise VerbError(
+            f"record {record_id} cannot revise {section!r}: {exc}"
+        ) from exc
+
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        message = f"self-learn: revise {record_id}"
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
+            record = Record.from_path(path)  # fresh read under the lock
+            fresh_body = _revise_body(record, section, text)
+            try:
+                record.set_body(fresh_body)
+            except records_mod.MutationError as exc:
+                # A genuine race: status left DRAFT_STATUSES between the
+                # pre-lock require_status check and this fresh read --
+                # the pre-lock simulation above already covers every
+                # OTHER failure mode on the SAME transform (gate r2
+                # M-A's lesson, applied here too: never a blanket
+                # `except RecordError`).
+                raise VerbError(str(exc)) from exc
+            record.write(path)
+            touched = [path]
+            proposal_path = path.parent.parent / "proposals" / f"{record_id}.yaml"
+            if proposal_path.is_file():
+                data = read_proposal(proposal_path)
+                data["revised_at"] = _now_iso()
+                if by is not None:
+                    data["revised_by"] = by
+                _dump_yaml(data, proposal_path)
+                touched.append(proposal_path)
+            staged, sha = _commit_ledger(home, touched, message, because)
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="revise",
             record_id=record_id,
             commit_message=message,
             commit_sha=sha,
