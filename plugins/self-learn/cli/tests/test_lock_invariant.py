@@ -236,6 +236,16 @@ NOT_REPO_TRUTH = {
     # N3 (fold-u2-r1): was mis-cited "S-65 §1.8" — S-65 is a decisions-
     # table row with no subsections; §1.8 is the interface draft's own.
     "cases._write_index": "cache-only, rebuildable (interface draft §1.8): <cache>/cases/index.json, never the ledger",
+    # S-66 / 13 §7.4 (O-2a): `hook_activation._write_claude_runtime` had
+    # an entry here through the build and fold r1 (its raw writes sat
+    # OUTSIDE `verbs.hook_activate`/`hook_deactivate`'s ledger lock).
+    # Fold r1, D-b moved both callers' writes INSIDE `_ledger_write`, and
+    # this file's own walker (below) independently confirmed the
+    # function is now lock-REACHABLE from both entrypoints (fold r2
+    # gate's own dump: `verbs.hook_activate @L… -> hook_activation.
+    # activate -> hook_activation._write_claude_runtime -> Path.unlink`)
+    # -- so the entry was removed rather than left stale, and no
+    # replacement is needed (N5, fold r2 nit).
 }
 
 
@@ -832,6 +842,10 @@ _ARGV_FOR = {
         ["host", "remove", "{host}"],
     ],
     "_cmd_host_inner": None,  # driven through _cmd_host
+    "_cmd_hook": [
+        ["hook", "activate", "lrn-eeee0001"],
+        ["hook", "deactivate", "lrn-eeee0001"],
+    ],
     "_cmd_import": [["import", "--backlog", "{empty}"]],
     "_cmd_init": [["init"]],
     "_cmd_link": [["link", "contradicts", "lrn-eeee0001", "lrn-eeee0002"]],

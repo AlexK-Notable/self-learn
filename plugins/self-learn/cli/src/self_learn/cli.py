@@ -699,6 +699,45 @@ def _build_parser() -> argparse.ArgumentParser:
         help="commit exactly as pinned, skip only the push",
     )
 
+    hook = sub.add_parser(
+        "hook", help="hook activation operations (S-66, 13 §7.4)"
+    )
+    hook_sub = hook.add_subparsers(dest="hook_command", metavar="<verb>")
+    hact = hook_sub.add_parser(
+        "activate",
+        help="place the symlink, register settings.json, verify — all "
+        "three steps, always, regardless of overseer.hook_activation "
+        "(13 §7.4; the human path never reads that gate)",
+    )
+    hact.add_argument("id", metavar="ID")
+    hact.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="machine-readable outcome envelope, including the exact "
+        "registered PreToolUse entry + script path + sha256, the three "
+        "step receipts, the replay status (ran/skipped-no-examples), "
+        "and the reload-not-observed caveat (§4 pin: no other stdout "
+        "text under --json)",
+    )
+    hact.add_argument(
+        "--no-push", action="store_true", dest="no_push",
+        help="commit exactly as pinned, skip only the push",
+    )
+    hdeact = hook_sub.add_parser(
+        "deactivate", help="reverse hook activate: remove the symlink + "
+        "surgically remove only this hook's own settings entry (never a "
+        "whole-file restore — every other registration is untouched)",
+    )
+    hdeact.add_argument("id", metavar="ID")
+    hdeact.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="machine-readable outcome envelope (§4 pin: no other "
+        "stdout text under --json)",
+    )
+    hdeact.add_argument(
+        "--no-push", action="store_true", dest="no_push",
+        help="commit exactly as pinned, skip only the push",
+    )
+
     followup = sub.add_parser(
         "followup", help="follow-up lifecycle on routed records (11 §2.1)"
     )
@@ -2124,6 +2163,28 @@ def _verb_envelope(result: verbs.VerbResult) -> dict:
             if result.host_commit_sha is not None
             else None
         ),
+        # Fold r1, D-f (Astra 9 — exact bytes shown): `hook-activate`
+        # only. `None` for every other verb, and for a delegated
+        # (register=False) activation — never the full script body,
+        # which stays the route/Apply step's and the overseer's O-5
+        # display's job.
+        "hook_registered_entry": result.hook_registered_entry,
+        "hook_script_path": result.hook_script_path,
+        "hook_script_sha256": result.hook_script_sha256,
+        # Fold r2, item G (Astra 8): `--json` used to discard every step
+        # receipt (`post_notes` is deliberately prose-only, printed to
+        # stdout ONLY in the non-JSON branch below — see `_finish_verb`),
+        # so a `--json` caller had no way to tell a real replay apart
+        # from a skipped one. `hook_steps` carries the SAME receipt
+        # strings `post_notes` prints in the human form; `hook_replay`/
+        # `hook_reload_caveat` are their structured counterparts
+        # (`verbs.VerbResult.hook_replay`/`.hook_reload_caveat`) — all
+        # three `None`/empty for every verb but `hook-activate`, and
+        # `hook_replay`/`hook_reload_caveat` stay `None` for a delegated
+        # activation too (no replay/doctor step ever ran).
+        "hook_steps": list(result.post_notes) if result.action == "hook-activate" else [],
+        "hook_replay": result.hook_replay,
+        "hook_reload_caveat": result.hook_reload_caveat,
     }
 
 
@@ -2138,9 +2199,15 @@ def _finish_verb(result: verbs.VerbResult, target: str, *, as_json: bool = False
     ``as_json``, where §4 pins stdout as "the envelope and NOTHING else":
     `diff` and `post_notes` are both stdout-bound prose (a hook's entire
     generated script; multi-line manual-step text) that would otherwise
-    turn stdout into "JSON-then-prose". Exit status and stderr (warnings,
-    the budget note, the push-failure code) are UNCHANGED either way —
-    `--json` never moves the outcome, only how it is printed."""
+    turn stdout into "JSON-then-prose". `post_notes` ITSELF still never
+    prints under `--json` — but for `hook-activate`, `_verb_envelope`
+    (fold r2, item G / Astra 8) now carries the SAME receipt strings
+    structurally, as `hook_steps`, plus `hook_replay`/
+    `hook_reload_caveat` — so a `--json` caller is no longer blind to
+    whether the replay step actually ran. Exit status and stderr
+    (warnings, the budget note, the push-failure code) are UNCHANGED
+    either way — `--json` never moves the outcome, only how it is
+    printed."""
     if as_json:
         print(json.dumps(_verb_envelope(result)))
     else:
@@ -3159,8 +3226,9 @@ def _mutating_epilogue(home=None, *, no_push: bool = False) -> str:
     dispatch that may commit ends HERE, so a new surface cannot miss the
     rule by forgetting to copy a line. `_flush_spool_best_effort` itself
     has exactly one caller after the fold: this function (`BAT11` leg
-    (a)). The seven normative call SITES (§3.3c's table): `_cmd_report`,
-    `_main`'s teach/`VERB_COMMANDS`/followup/link/import branches, and
+    (a)). The eight normative call SITES (§3.3c's table, widened
+    2026-09-13 by the overseer build, O-2a): `_cmd_report`, `_main`'s
+    teach/`VERB_COMMANDS`/followup/link/import/hook branches, and
     `batch.run` (after its item loop, inside the sentinel hold, before
     the push, always with `no_push=True` — the batch owns the single
     push, so the flush's own commit rides it rather than publishing
@@ -3610,6 +3678,47 @@ def _cmd_link(args: argparse.Namespace) -> int:
     return _finish_verb(result, f"contradicts {args.target}")
 
 
+def _cmd_hook(args: argparse.Namespace) -> int:
+    """13 §7.4: ``hook activate``/``hook deactivate`` — the human path,
+    always all steps, no gate read here (mirrors ``_cmd_link``'s
+    exit-code contract: 1 = refused, 64 = usage/bad id, 6 via the
+    ``main()`` net on a STOP)."""
+    if args.hook_command not in ("activate", "deactivate"):
+        print(
+            "usage: self-learn hook activate|deactivate <id> [--json] "
+            "[--no-push]",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if (code := _home_gate(resolve_home())) is not None:  # see _cmd_verb
+        return code
+    verb_fn = verbs.hook_activate if args.hook_command == "activate" else verbs.hook_deactivate
+    try:
+        result = verb_fn(resolve_home(), args.id, no_push=args.no_push)
+    except verbs.VerbError as exc:
+        print(f"self-learn hook {args.hook_command}: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except LedgerOpsError as exc:
+        print(f"self-learn hook {args.hook_command}: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    except intents.LedgerStoppedError as exc:
+        # Fold r1, N9 (S-62 §7.2a.5(5)): a DEDICATED arm, ahead of the
+        # generic GitOpsError arm below — that arm prepends its own
+        # "self-learn hook <verb>:" prefix, which would double the one
+        # `str(exc)` already carries (the exact shape
+        # test_reject_stop_message_is_not_double_prefixed forbids for
+        # `reject`). `_cmd_hook` used to copy `_cmd_link`, the one
+        # other dispatcher that also lacked this arm.
+        print(str(exc), file=sys.stderr)
+        return EXIT_BATCH_PARTIAL if exc.earlier_commits else EXIT_GIT_FAILED
+    except gitops.GitOpsError as exc:  # BLOCKER B: never a traceback
+        print(f"self-learn hook {args.hook_command}: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
+    return _finish_verb(
+        result, args.hook_command, as_json=getattr(args, "as_json", False)
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Dispatch, with the last-resort ``GitOpsError`` net (audit
     2026-07-16 round 7 BLOCKER 1).
@@ -3849,6 +3958,11 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "link":
         code = _cmd_link(args)
+        _mutating_epilogue(no_push=getattr(args, "no_push", False))
+        return code
+
+    if args.command == "hook":
+        code = _cmd_hook(args)
         _mutating_epilogue(no_push=getattr(args, "no_push", False))
         return code
 
