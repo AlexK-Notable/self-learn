@@ -71,7 +71,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import config as policy_config
-from . import domain, gitops, intents, ledger_ops, sentinel, telemetry
+from . import domain, gitops, hook_activation, intents, ledger_ops, sentinel, telemetry
 from .primitives import chrono, fsops
 from .hook_compiler import replay_examples, script_name, settings_snippet
 from .normalize import sha_anchor
@@ -2426,6 +2426,119 @@ def _hook_script_location(
         )
     root = _gate_host(home, hosts.skills_root, "skills-root")
     return root, root / rel, rel, host_mode(home, root)
+
+
+def hook_activate(
+    home: Path | str,
+    record_id: str,
+    *,
+    no_push: bool = False,
+) -> VerbResult:
+    """13 §7.4 — the human path: ``self-learn hook activate <id>``
+    always performs every step (placed, registered, activation-
+    checked) regardless of ``overseer.hook_activation``; only the
+    overseer's own call (O-2b) ever reads that gate — this verb never
+    does. The runtime-dir writes (:func:`hook_activation.activate`)
+    happen OUTSIDE the ledger lock, before it — they are never ledger
+    truth (``tests/test_lock_invariant.py``'s ``NOT_REPO_TRUTH``) — so
+    a failed runtime step raises before the lock ever opens and leaves
+    no ``hook-activated`` history entry: only a completed activation
+    ever reaches the ledger write below."""
+    home = Path(home)
+    from . import selfcheck  # deferred: selfcheck imports verbs at its own top
+
+    claude_dir = selfcheck.claude_runtime_dir()
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        try:
+            result = hook_activation.activate(
+                home, record_id, claude_dir=claude_dir, register=True
+            )
+        except hook_activation.HookActivationError as exc:
+            raise VerbError(str(exc)) from exc
+        history_note = (
+            str(result.backup_path)
+            if result.backup_path is not None
+            else "no settings.json change (already registered)"
+        )
+        commit_body = "\n".join(result.receipts)
+        message = f"self-learn: hook activate {record_id}"
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
+            path = ledger_ops.find_record_path(home, record_id)
+            record = Record.from_path(path)
+            record.append_history("hook-activated", {"note": history_note})
+            record.write(path)
+            staged, sha = _commit_ledger(home, [path], message, commit_body)
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="hook-activate",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+            post_notes=list(result.receipts),
+        )
+    finally:
+        hold.release()
+
+
+def hook_deactivate(
+    home: Path | str,
+    record_id: str,
+    *,
+    no_push: bool = False,
+) -> VerbResult:
+    """13 §7.4: reverses :func:`hook_activate` — removes the symlink
+    (only if it points at the expected target) and the settings entry
+    (restored from the recorded backup when one exists), then writes
+    ``hook-deactivated``. Unattended-callable under the same §7.2a.5
+    contract as every other ledger-write verb (13 §7.4: "and is
+    unattended-callable under the same §7.2a.5 contract as every other
+    ledger-write verb")."""
+    home = Path(home)
+    from . import selfcheck  # deferred: selfcheck imports verbs at its own top
+
+    claude_dir = selfcheck.claude_runtime_dir()
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        try:
+            result = hook_activation.deactivate(
+                home, record_id, claude_dir=claude_dir
+            )
+        except hook_activation.HookActivationError as exc:
+            raise VerbError(str(exc)) from exc
+        history_note = (
+            str(result.backup_path)
+            if result.backup_path is not None
+            else "no settings.json backup used (surgical removal or idempotent)"
+        )
+        commit_body = "\n".join(result.receipts)
+        message = f"self-learn: hook deactivate {record_id}"
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
+            path = ledger_ops.find_record_path(home, record_id)
+            record = Record.from_path(path)
+            record.append_history("hook-deactivated", {"note": history_note})
+            record.write(path)
+            staged, sha = _commit_ledger(home, [path], message, commit_body)
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="hook-deactivate",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+            post_notes=list(result.receipts),
+        )
+    finally:
+        hold.release()
 
 
 def _remove_hook_script(

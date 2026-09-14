@@ -191,6 +191,12 @@ def test_pr1_config_module_exports(tmp_path):
         # exports (kept out of the §2.10b census — this is the one-line
         # consequence of MODE3 existing at all).
         "effective_default_mode",
+        # S-66 / 13 §7.4 (the overseer build, O-2a): the overseer's own
+        # delegation switch, `overseer.hook_activation` -- same S-10
+        # fail-closed pattern as `one_motion_enabled` above, added
+        # alongside it for the same reason `effective_default_mode` sits
+        # here: another config.yaml accessor this module already owns.
+        "hook_activation_enabled",
         "invocation_backend",
         "load_editable",
         "one_motion_enabled",

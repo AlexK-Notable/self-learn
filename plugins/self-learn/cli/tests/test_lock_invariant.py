@@ -227,6 +227,19 @@ NOT_REPO_TRUTH = {
     "serve.request_poke": "XDG cache: cache_dir()/serve.poke (Sec 5.3's verb-to-daemon poke request)",
     "serve._consume_poke": "XDG cache: cache_dir()/serve.poke, unlinked once the tick has read it",
     "serve._today_mine_target": "XDG cache: cache_dir()/serve.schedule (the day's jittered mine-pass target, Sec 5.2/5.8.1 Persistent=true parity)",
+    # S-66 / 13 §7.4 (the overseer build, O-2a): the ONE function in
+    # `hook_activation.py` whose body performs a raw filesystem mutation
+    # -- placing/removing the `<claude_dir>/hooks/<name>` symlink and
+    # rewriting `<claude_dir>/settings.json` (with its timestamped
+    # backup). `claude_dir` resolves through `selfcheck.
+    # claude_runtime_dir()` (SELF_LEARN_CLAUDE_DIR first, tests never
+    # touch the real ~/.claude) and is never a repo -- this write is
+    # never ledger truth. The verb's own `hook-activated`/
+    # `hook-deactivated` history entry and commit are written
+    # separately, inside `verbs._ledger_write`, by the caller
+    # (`verbs.hook_activate`/`hook_deactivate`) -- this exemption covers
+    # exactly the runtime-dir write, nothing else in that call chain.
+    "hook_activation._write_claude_runtime": "writes the user's Claude runtime dir, atomically with backup; the ledger receipt is written separately under _ledger_write",
 }
 
 
@@ -813,6 +826,10 @@ _ARGV_FOR = {
         ["host", "remove", "{host}"],
     ],
     "_cmd_host_inner": None,  # driven through _cmd_host
+    "_cmd_hook": [
+        ["hook", "activate", "lrn-eeee0001"],
+        ["hook", "deactivate", "lrn-eeee0001"],
+    ],
     "_cmd_import": [["import", "--backlog", "{empty}"]],
     "_cmd_init": [["init"]],
     "_cmd_link": [["link", "contradicts", "lrn-eeee0001", "lrn-eeee0002"]],

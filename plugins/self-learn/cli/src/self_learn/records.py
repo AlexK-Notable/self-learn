@@ -75,7 +75,17 @@ REQUIRED_SECTIONS = {"behavior": ("Trigger", "Instruction"), "knowledge": ("Fact
 #: verb correcting a wrong routing destination displaces a routing
 #: block the same way. A future third displacement is a decision,
 #: not a silent widening.
-HISTORY_EVENTS = frozenset({"resolution", "routing"})
+#: *Widened 2026-09-13 (the overseer build, O-0, `02-schema.md` §2 as
+#: amended):* `hook-activated`/`hook-deactivated` record
+#: `13-hosting-and-separation.md` §7.4's activation verb applying or
+#: reversing a hook route, for either caller — the human's `hook
+#: activate` or the overseer's own runner call — each entry's `note`
+#: carrying the settings-file backup path. `reconsidered` (U5's own
+#: kind, not added here) completes the five-kind set the amendment
+#: describes.
+HISTORY_EVENTS = frozenset(
+    {"resolution", "routing", "hook-activated", "hook-deactivated"}
+)
 #: "Episode brief" (02 §1 amendment, 10 §3 U18): a miner-only, optional
 #: body section for BOTH types — no ``required`` weight, duplicate-guarded
 #: by ``_validate_body`` once registered here like any other optional

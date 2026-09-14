@@ -503,6 +503,41 @@ def _build_parser() -> argparse.ArgumentParser:
         help="commit exactly as pinned, skip only the push",
     )
 
+    hook = sub.add_parser(
+        "hook", help="hook activation operations (S-66, 13 §7.4)"
+    )
+    hook_sub = hook.add_subparsers(dest="hook_command", metavar="<verb>")
+    hact = hook_sub.add_parser(
+        "activate",
+        help="place the symlink, register settings.json, verify — all "
+        "three steps, always, regardless of overseer.hook_activation "
+        "(13 §7.4; the human path never reads that gate)",
+    )
+    hact.add_argument("id", metavar="ID")
+    hact.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="machine-readable outcome envelope; the step receipts stay "
+        "stdout text either way (§4 pin: envelope and nothing else)",
+    )
+    hact.add_argument(
+        "--no-push", action="store_true", dest="no_push",
+        help="commit exactly as pinned, skip only the push",
+    )
+    hdeact = hook_sub.add_parser(
+        "deactivate", help="reverse hook activate: remove the symlink + "
+        "settings entry, restoring from the recorded backup when present",
+    )
+    hdeact.add_argument("id", metavar="ID")
+    hdeact.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="machine-readable outcome envelope; the step receipts stay "
+        "stdout text either way (§4 pin: envelope and nothing else)",
+    )
+    hdeact.add_argument(
+        "--no-push", action="store_true", dest="no_push",
+        help="commit exactly as pinned, skip only the push",
+    )
+
     followup = sub.add_parser(
         "followup", help="follow-up lifecycle on routed records (11 §2.1)"
     )
@@ -2953,8 +2988,9 @@ def _mutating_epilogue(home=None, *, no_push: bool = False) -> str:
     dispatch that may commit ends HERE, so a new surface cannot miss the
     rule by forgetting to copy a line. `_flush_spool_best_effort` itself
     has exactly one caller after the fold: this function (`BAT11` leg
-    (a)). The seven normative call SITES (§3.3c's table): `_cmd_report`,
-    `_main`'s teach/`VERB_COMMANDS`/followup/link/import branches, and
+    (a)). The eight normative call SITES (§3.3c's table, widened
+    2026-09-13 by the overseer build, O-2a): `_cmd_report`, `_main`'s
+    teach/`VERB_COMMANDS`/followup/link/import/hook branches, and
     `batch.run` (after its item loop, inside the sentinel hold, before
     the push, always with `no_push=True` — the batch owns the single
     push, so the flush's own commit rides it rather than publishing
@@ -3163,6 +3199,37 @@ def _cmd_link(args: argparse.Namespace) -> int:
         print(f"self-learn link contradicts: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED
     return _finish_verb(result, f"contradicts {args.target}")
+
+
+def _cmd_hook(args: argparse.Namespace) -> int:
+    """13 §7.4: ``hook activate``/``hook deactivate`` — the human path,
+    always all steps, no gate read here (mirrors ``_cmd_link``'s
+    exit-code contract: 1 = refused, 64 = usage/bad id, 6 via the
+    ``main()`` net on a STOP)."""
+    if args.hook_command not in ("activate", "deactivate"):
+        print(
+            "usage: self-learn hook activate|deactivate <id> [--json] "
+            "[--no-push]",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if (code := _home_gate(resolve_home())) is not None:  # see _cmd_verb
+        return code
+    verb_fn = verbs.hook_activate if args.hook_command == "activate" else verbs.hook_deactivate
+    try:
+        result = verb_fn(resolve_home(), args.id, no_push=args.no_push)
+    except verbs.VerbError as exc:
+        print(f"self-learn hook {args.hook_command}: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except LedgerOpsError as exc:
+        print(f"self-learn hook {args.hook_command}: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    except gitops.GitOpsError as exc:  # BLOCKER B: never a traceback
+        print(f"self-learn hook {args.hook_command}: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
+    return _finish_verb(
+        result, args.hook_command, as_json=getattr(args, "as_json", False)
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -3404,6 +3471,11 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "link":
         code = _cmd_link(args)
+        _mutating_epilogue(no_push=getattr(args, "no_push", False))
+        return code
+
+    if args.command == "hook":
+        code = _cmd_hook(args)
         _mutating_epilogue(no_push=getattr(args, "no_push", False))
         return code
 

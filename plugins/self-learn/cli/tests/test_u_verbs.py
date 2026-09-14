@@ -1597,9 +1597,15 @@ class TestBatch:
         assert len(pre_callers) == 6, pre_callers
 
     def test_bat11b_epilogue_call_sites_match_spec(self):
+        # S-66 / 13 §7.4 (the overseer build, O-2a): `_main`'s dispatch
+        # gained an EIGHTH call site (`hook activate`/`hook deactivate`,
+        # the human path) alongside the pre-existing seven -- one more
+        # `("cli", "_main")` entry, bumping that arm's own count below
+        # from 5 to 6.
         EXPECTED_EPILOGUE_SITES = [
             ("cli", "_cmd_report"),
             ("cli", "_main"), ("cli", "_main"), ("cli", "_main"), ("cli", "_main"), ("cli", "_main"),
+            ("cli", "_main"),
             ("batch", "run"),
         ]
         sites = []
@@ -1617,9 +1623,9 @@ class TestBatch:
                         name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", None)
                         if name == "_mutating_epilogue":
                             sites.append((modname, node.name))
-        assert len(sites) == len(EXPECTED_EPILOGUE_SITES) == 7
+        assert len(sites) == len(EXPECTED_EPILOGUE_SITES) == 8
         assert sorted(sites) == sorted(EXPECTED_EPILOGUE_SITES)
-        assert sites.count(("cli", "_main")) == 5
+        assert sites.count(("cli", "_main")) == 6
 
     def test_bat11c_shipped_lifecycle_tests_are_present(self):
         text = (Path(__file__).parent / "test_lifecycle_cli.py").read_text(encoding="utf-8")
