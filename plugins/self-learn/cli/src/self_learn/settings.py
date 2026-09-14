@@ -748,6 +748,24 @@ def _default_analyst_model() -> str:
     return analyst._model()
 
 
+#: U8 (17-invocation-runbook.md §1, S-18 as amended: "the steward and
+#: overseer are a fourth, standing tier -- Fable 5.1"). Unlike
+#: `_default_worker_model`/`_default_miner_model`/`_default_analyst_
+#: model` above, there is no `steward.py`/`overseer.py` runner module
+#: yet to delegate to -- those are built by a later unit, out of this
+#: one's scope -- so the literal lives here, directly, until one does.
+_DEFAULT_STEWARD_MODEL = "claude-fable-5-1"
+_DEFAULT_OVERSEER_MODEL = "claude-fable-5-1"
+
+
+def _default_steward_model() -> str:
+    return _DEFAULT_STEWARD_MODEL
+
+
+def _default_overseer_model() -> str:
+    return _DEFAULT_OVERSEER_MODEL
+
+
 def _bedrock_active(provider_value: str) -> bool:
     return provider_value == "bedrock"
 
@@ -903,6 +921,46 @@ REGISTRY: tuple[Setting, ...] = (
         # <=0 value (unlike the worker/miner timeouts above) -- preserved
         # byte-for-byte rather than tightened as a side effect of Phase 1.
     ),
+    # ------------------------------------------------------- steward
+    # U8 (17-invocation-runbook.md §1; plan-steward-2026-09-12.md §5.4
+    # "wall clock per call" row): the steward's own runner (a later
+    # unit, out of this one's scope) is the only intended consumer --
+    # registered here now so it resolves through this registry from its
+    # first commit, per this module's own scope-discipline docstring.
+    Setting(
+        name="steward.timeout_secs",
+        env_var="SELF_LEARN_STEWARD_TIMEOUT",
+        config_section="steward",
+        config_key="timeout_secs",
+        kind="float",
+        default=1800.0,  # plan-steward-2026-09-12.md §5.4
+        description="subprocess timeout (seconds) for one steward model call",
+    ),
+    # ------------------------------------------------------ overseer
+    # U8 (17-invocation-runbook.md §1; plan-overseer-2026-09-12.md §5.4
+    # "overseer.timeout_secs per invocation (default 900 s)"; §5.4/O-3
+    # "overseer.max_model_calls, default 50 per run: the runaway guard").
+    # Same not-yet-consumed note as `steward.timeout_secs` above -- the
+    # overseer runner is a later unit.
+    Setting(
+        name="overseer.timeout_secs",
+        env_var="SELF_LEARN_OVERSEER_TIMEOUT",
+        config_section="overseer",
+        config_key="timeout_secs",
+        kind="float",
+        default=900.0,  # plan-overseer-2026-09-12.md §5.4
+        description="subprocess timeout (seconds) for one overseer model call",
+    ),
+    Setting(
+        name="overseer.max_model_calls",
+        env_var="SELF_LEARN_OVERSEER_MAX_MODEL_CALLS",
+        config_section="overseer",
+        config_key="max_model_calls",
+        kind="int",
+        default=50,  # S-66 / plan-overseer-2026-09-12.md §5.4 -- a runaway guard, not a ration
+        description="cross-invocation runaway guard for one overseer run (a loop stop, not a ration)",
+        validate=lambda v: max(cast(int, v), 0),
+    ),
     # ----------------------------------------------------------- sdk
     Setting(
         name="sdk.max_budget_usd",
@@ -949,6 +1007,32 @@ REGISTRY: tuple[Setting, ...] = (
         kind="int",
         default=30,  # invocation_sdk.backend._DEFAULT_MAX_TURNS["ANALYST"]
         description="max agentic turns for an analyst SDK session",
+    ),
+    Setting(
+        name="sdk.max_turns.steward",
+        env_var="SELF_LEARN_SDK_MAX_TURNS_STEWARD",
+        config_section="sdk",
+        config_key="max_turns.steward",
+        kind="int",
+        default=80,  # invocation_sdk.backend._DEFAULT_MAX_TURNS["STEWARD"]; plan-steward-2026-09-12.md §5.4 "SDK turns per call"
+        description="max agentic turns for a steward SDK session",
+    ),
+    Setting(
+        name="sdk.max_turns.overseer",
+        env_var="SELF_LEARN_SDK_MAX_TURNS_OVERSEER",
+        config_section="sdk",
+        config_key="max_turns.overseer",
+        kind="int",
+        # No sourced number: neither `build-u8.md` nor plan-overseer-
+        # 2026-09-12.md §5.4 gives a per-invocation max_turns default for
+        # this surface -- only `overseer.max_model_calls` (50, a
+        # cross-invocation runaway guard the overseer's own runner
+        # divides across both its calls, §5.4) is sourced. Builder's
+        # judgment call, flagged in the U8 build report: matches
+        # `sdk.max_turns.steward` (80) as the nearest comparable
+        # single-invocation Fable-tier budget.
+        default=80,  # invocation_sdk.backend._DEFAULT_MAX_TURNS["OVERSEER"]
+        description="max agentic turns for an overseer SDK session",
     ),
     # --------------------------------------------------------- serve
     Setting(
@@ -1081,6 +1165,35 @@ REGISTRY: tuple[Setting, ...] = (
         direction="env-first",
         enabled_when=_bedrock_active,
     ),
+    # U8: `provider.model_for` reads `provider.bedrock.models.<surface>`
+    # UNCONDITIONALLY (via `_bedrock_models_setting_name`, not gated on
+    # the active provider) whenever the primary `models.<surface>` rung
+    # did not itself resolve at "env:"/"override:" -- an unregistered
+    # name here is a `settings.by_name` `KeyError` in `model_for` on
+    # EVERY such call, not only under `provider=bedrock` (17-invocation-
+    # runbook.md §1; build-u8.md).
+    Setting(
+        name="provider.bedrock.models.steward",
+        env_var=None,
+        config_section="provider",
+        config_key="bedrock.models.steward",
+        kind="str",
+        default=None,
+        description="Bedrock model id for the steward surface (overrides models.steward)",
+        direction="env-first",
+        enabled_when=_bedrock_active,
+    ),
+    Setting(
+        name="provider.bedrock.models.overseer",
+        env_var=None,
+        config_section="provider",
+        config_key="bedrock.models.overseer",
+        kind="str",
+        default=None,
+        description="Bedrock model id for the overseer surface (overrides models.overseer)",
+        direction="env-first",
+        enabled_when=_bedrock_active,
+    ),
     Setting(
         name="provider.bedrock.models.small_fast",
         # MAJOR-4: never had an env var -- its value feeds the CHILD
@@ -1190,6 +1303,26 @@ REGISTRY: tuple[Setting, ...] = (
         kind="str",
         default=_default_analyst_model,
         description="model id for the analyst surface, under either provider",
+        direction="env-first",
+    ),
+    Setting(
+        name="models.steward",
+        env_var="SELF_LEARN_STEWARD_MODEL",
+        config_section="models",
+        config_key="steward",
+        kind="str",
+        default=_default_steward_model,
+        description="model id for the steward surface, under either provider",
+        direction="env-first",
+    ),
+    Setting(
+        name="models.overseer",
+        env_var="SELF_LEARN_OVERSEER_MODEL",
+        config_section="models",
+        config_key="overseer",
+        kind="str",
+        default=_default_overseer_model,
+        description="model id for the overseer surface, under either provider",
         direction="env-first",
     ),
 )

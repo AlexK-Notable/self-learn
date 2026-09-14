@@ -327,6 +327,8 @@ MODEL_KEY_FOR_SURFACE = {
     "worker-repair": "worker",
     "miner-reader": "miner",
     "analyst": "analyst",
+    "steward": "steward",
+    "overseer": "overseer",
 }
 
 

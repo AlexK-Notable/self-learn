@@ -173,6 +173,8 @@ def test_registry_defaults_match_their_source_constants():
     assert by_name["sdk.max_turns.worker"].default == backend_mod._DEFAULT_MAX_TURNS["WORKER"]
     assert by_name["sdk.max_turns.miner"].default == backend_mod._DEFAULT_MAX_TURNS["MINER"]
     assert by_name["sdk.max_turns.analyst"].default == backend_mod._DEFAULT_MAX_TURNS["ANALYST"]
+    assert by_name["sdk.max_turns.steward"].default == backend_mod._DEFAULT_MAX_TURNS["STEWARD"]
+    assert by_name["sdk.max_turns.overseer"].default == backend_mod._DEFAULT_MAX_TURNS["OVERSEER"]
     assert by_name["serve.tick_secs"].default == serve.DEFAULT_TICK_SECS
     assert by_name["ledger.glob_probe_budget_s"].default == ledger_ops_mod.DEFAULT_GLOB_PROBE_BUDGET_S
     # M-S (S-58, BLOCKER-1): `settings._PROVIDERS`/`_DEFAULT_PROVIDER`
@@ -183,6 +185,16 @@ def test_registry_defaults_match_their_source_constants():
     assert settings._PROVIDERS == provider.PROVIDERS
     assert settings._DEFAULT_PROVIDER == provider.DEFAULT_PROVIDER
     assert by_name["provider.name"].default == provider.DEFAULT_PROVIDER
+    # U8: no `steward.py`/`overseer.py` owning module exists yet (a
+    # later unit's scope) -- the "source constant" these two default to
+    # lives in `settings.py` itself (`_DEFAULT_STEWARD_MODEL`/`_DEFAULT_
+    # OVERSEER_MODEL`), so the duplicated-literal risk this test guards
+    # against doesn't apply the same way; this instead proves the
+    # wrapper calls the module-level constant rather than a copy of it.
+    assert by_name["models.steward"].default() == settings._DEFAULT_STEWARD_MODEL
+    assert by_name["models.overseer"].default() == settings._DEFAULT_OVERSEER_MODEL
+    assert settings._DEFAULT_STEWARD_MODEL == "claude-fable-5-1"
+    assert settings._DEFAULT_OVERSEER_MODEL == "claude-fable-5-1"
 
 
 def test_models_star_defaults_are_the_called_shipped_functions_never_copied():

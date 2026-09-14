@@ -244,6 +244,24 @@ class Behaviour:
     edited_exports: Mapping[str, str] = field(default_factory=dict)
 
 
+#: U8 (17-invocation-runbook.md §1, S-18 as amended): shared reason
+#: string for the six `test_invocation_sdk.py` OP-series tests whose
+#: only edit is the same one-line literal-to-constant swap, so one
+#: reason covers all six (`EXM1`'s grammar check runs per key, but the
+#: STRING is identical on purpose -- these six ARE one edit, repeated).
+_U8_FOUR_SURFACES_REASON = (
+    "2026-09-13 U8 (17-invocation-runbook.md §1): the six inline literal "
+    '`("worker", "worker-repair", "miner-reader", "analyst")` tuples this '
+    "OP-series loop over collapsed into one module constant, "
+    "`_FOUR_SURFACES` (a NEW node, free) -- left at the original four "
+    "rather than widened to steward/overseer, since `_containment`/`_spec` "
+    "are EXPORTED names (test_u_engine.py imports them by name, BEH5-"
+    "pinned) this build does not edit; steward/overseer's own containment "
+    "is exercised instead by the new `test_ch14_...` test below, via "
+    "`containment_for(...)` directly."
+)
+
+
 ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # --- FIXTURES: ground truth, whole-file byte-pinned (section 4.3) -
     "support.py": Fixture(),  # 62 importers  (NEW under this unit -- FIX3)
@@ -278,13 +296,33 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     ),
     # --- BEHAVIOUR: every top-level node (section 4.5) -----------------
     "test_invocation.py": Behaviour(
-        nodes=94, dump_sha="eb90005324f7f1483dcd618a80501d03a11e2f0ebb2541b5af696d31b48644fe"
+        nodes=94, dump_sha="eb90005324f7f1483dcd618a80501d03a11e2f0ebb2541b5af696d31b48644fe",
+        edited={
+            "func:test_rg1_five_rung_precedence_resolves_in_isolation": (
+                "2026-09-13 U8 (17-invocation-runbook.md §1): SURFACES gained "
+                "steward/overseer, so this test's per-surface loop now sets "
+                "SELF_LEARN_BACKEND_STEWARD/_OVERSEER too -- the shared, "
+                "EXPORTED `_clear_backend_env` helper (test_u_sdka.py:45 "
+                "imports it by name) predates those two selectors and is left "
+                "untouched (BEH5); this test clears its own surface's "
+                "selector var directly instead, alongside every existing "
+                "`_clear_backend_env(monkeypatch)` call in its loop."
+            ),
+        },
     ),
     # 2026-08-30, ANCHOR ee62df0: RS8's `edited` exemption was dropped as
     # VACUOUS by this landing's refusal -- U-xdist landed, so the widened
     # lockfile bound IS the anchor content and nothing is owed.
     "test_invocation_sdk.py": Behaviour(
         nodes=137, dump_sha="f43ed618ce773521da88c2cacd89f3559f0e27cdef51388de2b1af856a990b6a",
+        edited={
+            "func:test_op2_allowed_tools_always_empty": _U8_FOUR_SURFACES_REASON,
+            "func:test_op3_setting_sources_explicit_empty_list": _U8_FOUR_SURFACES_REASON,
+            "func:test_op4_settings_always_none": _U8_FOUR_SURFACES_REASON,
+            "func:test_op5_permission_mode_always_default": _U8_FOUR_SURFACES_REASON,
+            "func:test_op6_strict_mcp_config_always_true": _U8_FOUR_SURFACES_REASON,
+            "func:test_op17_options_env_is_empty_leak_test": _U8_FOUR_SURFACES_REASON,
+        },
     ),
     "test_worker.py": Behaviour(
         nodes=80, dump_sha="16e45a867ecebd6471586640f1f52417427c235d04777e74ec4f34c14506627c"
@@ -835,15 +873,17 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=7,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-09-11, transcribed at ANCHOR a41ddb3 from this module's own "
-            "STALE refusal (Sprint 3 landing): 2 -> 0. test_invocation_sdk.py "
-            "`func:test_pl3_...` (M-V, 1737499) and test_route_cli.py "
-            "`func:test_teach_route_missing_doctrine_exits_2_pre_spawn` (M-K, "
-            "2a02431) are behind the anchor, so both `edited` doors went VACUOUS "
-            "and were dropped. Previous value 2 (2026-09-05, at 3fd2279)."
+            "2026-09-13 U8 (17-invocation-runbook.md §1), transcribed at "
+            "ANCHOR a41ddb3, re-run after this build's own edits: 0 -> 7. "
+            "Six `test_invocation_sdk.py` OP-series tests (the surface-tuple "
+            "collapse; `_U8_FOUR_SURFACES_REASON`) plus one "
+            "`test_invocation.py` test (`func:test_rg1_five_rung_precedence_"
+            "resolves_in_isolation`, the steward/overseer env-leak fix) -- "
+            "both rows' shipped `edited` doors above. Previous value 0 "
+            "(2026-09-11, at a41ddb3)."
         ),
         measure=_measure_census_edited,
     ),
@@ -860,14 +900,16 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=186,
+        value=191,
         scope=_SCOPE_HEAD,
         reason=(
-            "2026-09-04 Sprint 2 integration, per §5.1's STALE remediation: 185 -> 186 "
-            "against the RETIRED control anchor c3b48e7 (HEAD-scoped): the M-K/A22 "
-            "teach node (2a02431) is edited relative to c3b48e7; the M-V test_pl3 node "
-            "already differed from c3b48e7 and moves nothing. Previously 185 "
-            "(2026-08-30 U-xdist fold at ANCHOR cf1e32d)."
+            "2026-09-13 U8 (17-invocation-runbook.md §1), HEAD-scoped, "
+            "re-run after this build's own edits against the RETIRED "
+            "control anchor c3b48e7: 186 -> 191, five of this build's seven "
+            "genuinely-edited nodes also differing from c3b48e7 (two of the "
+            "seven already differed from c3b48e7 independently of this "
+            "build and so moved nothing here, unlike at the live ANCHOR). "
+            "Previously 186 (2026-09-04 Sprint 2 integration)."
         ),
         measure=_measure_control_edited,
     ),

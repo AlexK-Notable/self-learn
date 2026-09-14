@@ -101,8 +101,8 @@ def test_dc1_pristine_home_zero_fail_all_rows_once(capsys):
     single_line_rows = ("switches", "provider", "config", "sdk", "rollout", "region", "credentials", "orphans", "ui")
     for row in single_line_rows:
         assert len(_rows_by_name(out, row)) == 1, row
-    assert len(_rows_by_name(out, "models")) == 5  # 4 surfaces + small_fast
-    assert len(_rows_by_name(out, "env")) == 4
+    assert len(_rows_by_name(out, "models")) == 7  # 6 surfaces + small_fast (U8: +steward/+overseer)
+    assert len(_rows_by_name(out, "env")) == 6  # U8: +steward/+overseer
     assert len(_rows_by_name(out, "consistency")) == 0
 
     # row order
@@ -156,10 +156,11 @@ def test_dc3_rollout_four_states(monkeypatch, capsys, _home):
     monkeypatch.delenv("SELF_LEARN_BACKEND")
 
     # mixed -> no FAIL row anywhere, exit 0. worker/worker-repair/
-    # miner-reader are pinned back to cli (their sdk default would
-    # otherwise FAIL the "models" row -- their model is unset) so only
-    # the analyst resolves sdk, matching the bedrock config below (which
-    # names a model for "analyst" only).
+    # miner-reader/steward/overseer (U8: joins this pin -- its sdk
+    # default would otherwise FAIL the "models" row too, same reason as
+    # worker/miner below) are pinned back to cli so only the analyst
+    # resolves sdk, matching the bedrock config below (which names a
+    # model for "analyst" only).
     _write_provider_yaml(
         _home,
         name="bedrock",
@@ -168,6 +169,8 @@ def test_dc3_rollout_four_states(monkeypatch, capsys, _home):
     monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
     monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
     monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_STEWARD", "cli")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_OVERSEER", "cli")
     rc, out = _run(["doctor", "invocation"], capsys)
     assert rc == 0
     body_lines = [ln for ln in out.splitlines() if ln.startswith("doctor: ") and "handoff" not in ln]
@@ -175,6 +178,8 @@ def test_dc3_rollout_four_states(monkeypatch, capsys, _home):
     monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER")
     monkeypatch.delenv("SELF_LEARN_BACKEND_MINER")
     monkeypatch.delenv("SELF_LEARN_BACKEND_ANALYST")
+    monkeypatch.delenv("SELF_LEARN_BACKEND_STEWARD")
+    monkeypatch.delenv("SELF_LEARN_BACKEND_OVERSEER")
 
     # all-sdk -> PASS
     _write_provider_yaml(
@@ -182,7 +187,13 @@ def test_dc3_rollout_four_states(monkeypatch, capsys, _home):
         name="bedrock",
         bedrock={
             "region": "us-east-1",
-            "models": {"worker": BEDROCK_ID, "miner": BEDROCK_ID, "analyst": BEDROCK_ID},
+            "models": {
+                "worker": BEDROCK_ID,
+                "miner": BEDROCK_ID,
+                "analyst": BEDROCK_ID,
+                "steward": BEDROCK_ID,
+                "overseer": BEDROCK_ID,
+            },
         },
     )
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
@@ -466,11 +477,11 @@ def test_dc9_handoff_block_fixed_fields_and_no_leak_and_equality(monkeypatch, ca
     handoff_lines = [ln for ln in out.splitlines() if ln.startswith("doctor: handoff: ")]
     expected_fields = (
         ["provider"]
-        + [f"backend.{s}" for s in ("worker", "worker-repair", "miner-reader", "analyst")]
+        + [f"backend.{s}" for s in provider.SURFACES]
         + ["region", "profile", "credential-mechanisms"]
-        + [f"model.{s}" for s in ("worker", "worker-repair", "miner-reader", "analyst")]
+        + [f"model.{s}" for s in provider.SURFACES]
         + ["model.small_fast"]
-        + [f"env-keys.{s}" for s in ("worker", "worker-repair", "miner-reader", "analyst")]
+        + [f"env-keys.{s}" for s in provider.SURFACES]
         + ["sdk-version", "cli-version.bundled", "cli-version.host"]
     )
     got_fields = [ln[len("doctor: handoff: ") :].split(" = ", 1)[0] for ln in handoff_lines]
@@ -607,11 +618,18 @@ def test_dc11_selftest_row(monkeypatch, capsys, _home, tmp_path):
     monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
     monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
     monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
+    # U8: steward/overseer join the "rest still on cli" pin too -- their
+    # sdk default would otherwise FAIL here the same way worker/miner
+    # would without their own pin above.
+    monkeypatch.setenv("SELF_LEARN_BACKEND_STEWARD", "cli")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_OVERSEER", "cli")
     ok3, reason3 = selfcheck._check_invocation(_home)
     assert ok3 is selfcheck.Verdict.PASS, reason3
     monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER")
     monkeypatch.delenv("SELF_LEARN_BACKEND_MINER")
     monkeypatch.delenv("SELF_LEARN_BACKEND_ANALYST")
+    monkeypatch.delenv("SELF_LEARN_BACKEND_STEWARD")
+    monkeypatch.delenv("SELF_LEARN_BACKEND_OVERSEER")
     _write_provider_yaml(_home, name="anthropic")
 
     # the printed selftest output, end to end (DC11's "PASS invocation" leg)
@@ -639,12 +657,17 @@ def test_dc12_mixed_rollout_info_lines_per_surface(monkeypatch, _home):
     # U-flip flipped worker/worker-repair's default to sdk alongside
     # miner-reader/analyst's; pin them back to cli explicitly to keep
     # this "mixed" fixture's shape (two surfaces cli, two sdk).
+    # U8: steward/overseer also default to sdk with no model configured
+    # here -- pinned to cli too, same reason as worker/worker-repair, so
+    # this fixture's "no FAIL anywhere" bar still holds with six surfaces.
     monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
     monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
     monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "sdk")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_STEWARD", "cli")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_OVERSEER", "cli")
     rows = provider.preflight(_home)
     rollout_rows = {r.surface: r for r in rows if r.name == "rollout"}
-    assert len(rollout_rows) == 4
+    assert len(rollout_rows) == 6
     # U-cleanup-B (§8.1, MAJOR-5 extension): the rollout row's non-sdk
     # wording was "backend=cli" (a value that can no longer be literally
     # true post-collapse) -- corrected to the SEL6 pattern, matching the
@@ -653,6 +676,8 @@ def test_dc12_mixed_rollout_info_lines_per_surface(monkeypatch, _home):
     assert rollout_rows["worker-repair"].detail == "worker-repair: backend=REFUSED (cli retired) — provider does not apply"
     assert "backend=sdk provider=bedrock" in rollout_rows["analyst"].detail
     assert "backend=sdk provider=bedrock" in rollout_rows["miner-reader"].detail
+    assert rollout_rows["steward"].detail == "steward: backend=REFUSED (cli retired) — provider does not apply"
+    assert rollout_rows["overseer"].detail == "overseer: backend=REFUSED (cli retired) — provider does not apply"
     assert not any(r.verdict == "FAIL" for r in rows)
 
 
@@ -708,13 +733,17 @@ def test_dc14_env_row_per_surface_and_catches_refusal(monkeypatch, capsys, _home
     )
     # U-flip flipped worker/worker-repair/miner-reader's default to sdk;
     # pin worker back to cli so its unset model does not refuse (and its
-    # "env" row stays SKIP, which is what this leg is about).
+    # "env" row stays SKIP, which is what this leg is about). U8:
+    # steward/overseer default to sdk too, unpinned here on purpose --
+    # this leg only checks worker/analyst's own verdicts and the row
+    # count, so the two new surfaces' own FAIL rows (unset model) are
+    # unexamined but harmless.
     monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
     monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
     monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
     rows = provider.preflight(_home)
     env_rows = {r.surface: r for r in rows if r.name == "env"}
-    assert len(env_rows) == 4
+    assert len(env_rows) == 6
     assert env_rows["worker"].verdict == "SKIP"
     assert env_rows["analyst"].verdict == "PASS"
 
@@ -757,9 +786,12 @@ def test_dc16_credentials_warn_not_fail_and_dc3_coupling(monkeypatch, _home, tmp
     # U-flip flipped worker/worker-repair's default to sdk too; pin them
     # back to cli so their unset model does not refuse -- this leg's
     # "not any FAIL" assertion is about credentials, not models/env.
+    # U8: steward/overseer join the same pin, same reason.
     monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
     monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
     monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "sdk")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_STEWARD", "cli")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_OVERSEER", "cli")
 
     # NOTE (code gate, 2026-08-19): the "no credentials seeded" leg below
     # only means that if the HOST this test runs on happens to have no
