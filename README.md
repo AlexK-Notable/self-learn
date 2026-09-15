@@ -208,8 +208,8 @@ documented no-op-with-explanation, not a silent fallback.
 
 ### Invocation backend and settings (CLI surfaces)
 
-The six CLI surfaces that invoke a model — worker, miner, analyst,
-steward, overseer, and the adjudication pane — run behind one seam as in-process
+The five CLI surfaces that invoke a model — worker, miner, analyst,
+steward, and overseer — run behind one seam as in-process
 `claude_agent_sdk` sessions. `sdk` is the only backend
 (`invocation/registry.py`, `KNOWN_BACKENDS`); the former `cli` backend (a
 `claude -p` subprocess) was removed in U-cleanup, and a stale `cli` setting
