@@ -539,6 +539,7 @@ def invoke(spec):
         encoding="utf-8",
     )
     (stage / "questions.yaml").write_text("questions: []\n", encoding="utf-8")
+    (stage / "user-model-delta.yaml").write_text("updates: []\n", encoding="utf-8")
     rows = (("a", RID1, PARKED1),) if os.environ.get("COLLAPSE") else (
         ("a", RID1, PARKED1), ("b", RID2, PARKED2)
     )

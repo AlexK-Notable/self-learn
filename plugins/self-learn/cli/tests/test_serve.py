@@ -22,11 +22,14 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from self_learn import miner, provider, serve, steward, worker
+from self_learn import overseer as overseer_package
+from self_learn.overseer import run as overseer_run
 from self_learn.invocation_sdk import events as events_mod
 from self_learn.invocation_sdk import lifecycle as lifecycle_mod
 from self_learn.sdksession import events as sdk_events_mod
@@ -187,6 +190,123 @@ def test_u10_run_forever_gates_steward_on_its_threaded_home(
         home_a, cache_dir=cache_dir, tick_secs=0.01, max_ticks=1
     ) == 0
     assert calls == []
+
+
+def _overseer_schedule_home(tmp_path: Path, *, enabled: bool = True) -> Path:
+    home = tmp_path / "overseer-home"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        f"overseer:\n  enabled: {'true' if enabled else 'false'}\n",
+        encoding="utf-8",
+    )
+    return home
+
+
+def test_o4_overseer_due_calendar_cooldown_unfinished_enabled_and_stop(
+    monkeypatch, tmp_path
+):
+    """Breaks if calendar, cooldown, unfinished-work, opt-in, or STOP is ignored."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    home = _overseer_schedule_home(tmp_path)
+    clear = type("IntentState", (), {"stopped": []})()
+    stopped = type("IntentState", (), {"stopped": [object()]})()
+    monkeypatch.setattr(serve.intents, "classify_status", lambda actual: clear)
+    monkeypatch.setattr(overseer_package, "has_unfinished_work", lambda actual: False)
+    monkeypatch.setattr(overseer_run, "last_run_iso", lambda actual: None)
+    monkeypatch.setattr(serve, "_overseer_recently_attempted", lambda actual, now: False)
+
+    target = time.mktime((2026, 9, 13, 4, 15, 0, 0, 0, -1))  # Sunday
+    assert serve._overseer_is_due(home, cache_dir, target - 24 * 60 * 60) is False
+    assert serve._overseer_is_due(home, cache_dir, target + 1) is True
+    monkeypatch.setattr(serve, "_overseer_recently_attempted", lambda actual, now: True)
+    assert serve._overseer_is_due(home, cache_dir, target + 1) is False
+
+    monday = target + 24 * 60 * 60
+    monkeypatch.setattr(serve, "_overseer_recently_attempted", lambda actual, now: False)
+    monkeypatch.setattr(overseer_package, "has_unfinished_work", lambda actual: True)
+    assert serve._overseer_is_due(home, cache_dir, monday) is True
+
+    disabled = _overseer_schedule_home(tmp_path / "disabled", enabled=False)
+    assert serve._overseer_is_due(disabled, cache_dir, monday) is False
+    monkeypatch.setattr(serve.intents, "classify_status", lambda actual: stopped)
+    assert serve._overseer_is_due(home, cache_dir, monday) is False
+
+
+def test_o4_overseer_attempt_cooldown_reads_the_threaded_cache(tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    now = time.time()
+    recent = datetime.fromtimestamp(now - 1).astimezone().isoformat()
+    (cache_dir / "overseer.journal").write_text(
+        json.dumps({"at": recent, "status": "refused"}) + "\n",
+        encoding="utf-8",
+    )
+    assert serve._overseer_recently_attempted(cache_dir, now) is True
+    assert (
+        serve._overseer_recently_attempted(
+            cache_dir, now + miner.ATTEMPT_COOLDOWN_SECS + 1
+        )
+        is False
+    )
+
+
+def test_o4_tick_order_is_mine_worker_steward_overseer(monkeypatch, tmp_path):
+    """Breaks if the fourth job moves ahead of any earlier producer."""
+    home = _overseer_schedule_home(tmp_path)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    order: list[str] = []
+    monkeypatch.setattr(serve, "_mine_is_due", lambda *args, **kwargs: True)
+    monkeypatch.setattr(serve, "_steward_is_due", lambda *args, **kwargs: True)
+    monkeypatch.setattr(serve, "_overseer_is_due", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        serve, "_run_mine_job",
+        lambda actual: order.append("mine") or miner.MineResult(status="ok", landed=["c1"]),
+    )
+    monkeypatch.setattr(
+        serve, "_run_worker_job",
+        lambda actual: order.append("worker") or worker.RunResult(status="ok"),
+    )
+    monkeypatch.setattr(
+        serve, "_run_steward_job",
+        lambda actual: order.append("steward") or steward.RunResult("idle"),
+    )
+    monkeypatch.setattr(
+        serve, "_run_overseer_job",
+        lambda actual: order.append("overseer") or overseer_run.RunResult("applied", 0, "run"),
+    )
+
+    records = serve._run_tick(
+        home, cache_dir, now=time.time(), pid=os.getpid(), tick_secs=60.0
+    )
+    assert [record.name for record in records] == [
+        "mine", "worker", "steward", "overseer"
+    ]
+    assert order == ["mine", "worker", "steward", "overseer"]
+
+
+def test_o4_disabled_overseer_never_creates_a_job_record(monkeypatch, tmp_path):
+    """Breaks if _run_tick bypasses the enabled-aware due predicate."""
+    home = _overseer_schedule_home(tmp_path, enabled=False)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    monkeypatch.setattr(serve, "_mine_is_due", lambda *args, **kwargs: False)
+    monkeypatch.setattr(serve, "_steward_is_due", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        serve, "_run_overseer_job",
+        lambda actual: pytest.fail("disabled overseer reached the job runner"),
+    )
+    assert serve._run_tick(
+        home, cache_dir, now=time.time(), pid=os.getpid(), tick_secs=60.0
+    ) == []
+
+
+def test_o4_describe_next_names_the_fourth_job(monkeypatch, tmp_path):
+    monkeypatch.setattr(serve, "_today_mine_target", lambda cache, now: now + 60)
+    monkeypatch.setattr(serve, "_overseer_target_for", lambda now: now + 120)
+    text = serve._describe_next(tmp_path / "home", tmp_path, 100.0)
+    assert f"overseer at {datetime.fromtimestamp(220).isoformat(timespec='seconds')}" in text
 
 
 # ===================================================================== #

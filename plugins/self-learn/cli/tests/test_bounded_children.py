@@ -277,12 +277,13 @@ MEASURED_CENSUS_MODULES = frozenset(
         "hosts.py",
         "ledger.py",
         "miner.py",
+        "overseer/notify.py",
         "primitives/procs.py",
         "provider.py",
         "worker.py",
     }
 )
-MEASURED_CENSUS_SITE_COUNT = 15
+MEASURED_CENSUS_SITE_COUNT = 16  # O-6: detached overseer companion notification
 
 
 def test_p3_gate_census_matches_the_measured_count():

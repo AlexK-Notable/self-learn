@@ -54,7 +54,13 @@ def dispatch(args) -> int:
             if args.json:
                 print(json.dumps(payload, sort_keys=True))
             elif payload["last"] is None:
-                print("self-learn overseer: no runs")
+                if payload.get("last_run_at"):
+                    print(
+                        "self-learn overseer: committed coverage; "
+                        f"last run {payload['last_run_at']}"
+                    )
+                else:
+                    print("self-learn overseer: no runs")
             else:
                 row = payload["last"]
                 print(f"self-learn overseer: {row.get('status', 'unknown')} at {row.get('at', 'unknown')}")

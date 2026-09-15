@@ -75,6 +75,7 @@ from .import_memory import import_memory, prune_memory
 from .gitops import EXIT_GIT_FAILED
 from .overseer import cli as overseer_cli
 from .overseer import conversation as overseer_conversation
+from .overseer import run as overseer_run
 from .ledger import (
     EXIT_NO_HOME,
     InitError,
@@ -1414,6 +1415,9 @@ def _cmd_status_fast() -> int:
                     "steward_last_run_at": steward.last_run_iso_from_cache(
                         serve.cache_dir_readonly(home)
                     ),
+                    "overseer_last_run": overseer_run.last_run_iso_from_cache(
+                        serve.cache_dir_readonly(home)
+                    ),
                 }
             )
         )
@@ -1429,6 +1433,9 @@ def _cmd_status_fast() -> int:
     overseer_open_questions = overseer_conversation.open_question_count(home)
     if overseer_open_questions is not None:
         data["overseer_open_questions"] = overseer_open_questions
+    data["overseer_last_run"] = overseer_run.last_run_iso_from_cache(
+        serve.cache_dir_readonly(home)
+    )
     # S-62 (§7.2a.7): additive fields only, so the fact survives
     # `2>/dev/null` by the route the hook already reads on stdout —
     # this is what closes the gap the pending hook's own discard used
@@ -2041,6 +2048,8 @@ def _cmd_status(as_json: bool) -> int:
             "worker_last_run": worker.last_run_iso(),
             "steward_last_run_at": steward.last_run_iso(home),
             "steward_cases_since_overseer": steward.cases_since_overseer(home),
+            "overseer_last_run": overseer_run.last_run_iso(home),
+            "overseer_next": serve.overseer_next_iso(home),
             # T19 (08 §8.1 O-3/O-7-revisit row): supply mix + the 04
             # success-metrics counters — FULL status only; the --fast
             # SessionStart path stays a pending/-only scan, no git.

@@ -754,6 +754,7 @@ def _serve_row(home: Path | str) -> Row:
     supported, not broken."""
     from . import serve as serve_mod
     from . import steward as steward_mod
+    from .overseer import run as overseer_mod
 
     # `Doc-0`'s own contract: `preflight` "computes no verdict... and
     # PRINTS NOTHING" -- and, pinned by `test_ns5_doctor_writes_nothing`,
@@ -764,6 +765,9 @@ def _serve_row(home: Path | str) -> Row:
     cache_dir = serve_mod.cache_dir_readonly(home)
     steward_last_run_at = steward_mod.last_run_iso_from_cache(cache_dir)
     steward_detail = f"; steward_last_run_at={steward_last_run_at or 'never'}"
+    overseer_last_run = overseer_mod.last_run_iso_from_cache(cache_dir)
+    overseer_detail = f"; overseer_last_run={overseer_last_run or 'never'}"
+    run_detail = steward_detail + overseer_detail
     both_enabled = serve_mod.is_enabled(
         "self-learn-host.service", "default.target"
     ) and serve_mod.is_enabled("self-learn-miner.timer", "timers.target")
@@ -790,12 +794,12 @@ def _serve_row(home: Path | str) -> Row:
                 )
             )
             return Row(
-                name="serve", verdict="FAIL", detail=detail + steward_detail
+                name="serve", verdict="FAIL", detail=detail + run_detail
             )
         return Row(
             name="serve",
             verdict="SKIP",
-            detail="serve is not configured on this machine" + steward_detail,
+            detail="serve is not configured on this machine" + run_detail,
         )
 
     age = serve_mod.heartbeat_age_secs(cache_dir)
@@ -808,7 +812,7 @@ def _serve_row(home: Path | str) -> Row:
             verdict="FAIL",
             detail=(
                 f"heartbeat is stale (age={age_detail}, tick={tick_secs:.0f}s) "
-                f"-- serve may have died{steward_detail}"
+                f"-- serve may have died{run_detail}"
             ),
         )
 
@@ -821,14 +825,14 @@ def _serve_row(home: Path | str) -> Row:
                 f"heartbeat fresh (age={age:.1f}s) -- next: {next_job}; "
                 "self-learn-miner.timer is ALSO enabled -- deliberate "
                 "belt-and-braces poke configuration (Sec 5.7), not a fault"
-                f"{steward_detail}"
+                f"{run_detail}"
             ),
         )
     return Row(
         name="serve",
         verdict="PASS",
         detail=(
-            f"heartbeat fresh (age={age:.1f}s) -- next: {next_job}{steward_detail}"
+            f"heartbeat fresh (age={age:.1f}s) -- next: {next_job}{run_detail}"
         ),
     )
 

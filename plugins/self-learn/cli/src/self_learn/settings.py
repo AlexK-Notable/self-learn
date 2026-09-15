@@ -1006,6 +1006,16 @@ REGISTRY: tuple[Setting, ...] = (
         description="cross-invocation runaway guard for one overseer run (a loop stop, not a ration)",
         validate=lambda v: max(cast(int, v), 0),
     ),
+    Setting(
+        name="overseer.broad_removal_threshold",
+        env_var=None,
+        config_section="overseer",
+        config_key="broad_removal_threshold",
+        kind="int",
+        default=3,
+        description="removal actions above this count raise the overseer notification cue",
+        validate=lambda v: max(cast(int, v), 0),
+    ),
     # ----------------------------------------------------------- sdk
     Setting(
         name="sdk.max_budget_usd",
