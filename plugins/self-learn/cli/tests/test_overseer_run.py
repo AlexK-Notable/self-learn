@@ -355,6 +355,33 @@ def test_coverage_precedes_uncapped_parked_intake(tmp_path, monkeypatch):
     assert captured == parked
 
 
+def test_failed_activation_hook_line_names_the_record_once(tmp_path, monkeypatch):
+    """Observed by hand 2026-09-14: O-2b's failure text already leads with the record id,
+    and the runner prefixed it again ("lrn-…: lrn-…: routed … but activation failed").
+    A foreign file at the hook's symlink path makes activation refuse."""
+    home = make_home(tmp_path)
+    rid, parked = _seed_parked_hook(home, tmp_path)
+    _enabled(monkeypatch)
+    _fake_hook_phases(monkeypatch, rid, parked)
+    claude_dir = tmp_path / "claude"
+    monkeypatch.setenv("SELF_LEARN_CLAUDE_DIR", str(claude_dir))
+    (claude_dir / "hooks").mkdir(parents=True)
+    (claude_dir / "settings.json").write_bytes(b'{"existing": true}\n')
+    foreign = claude_dir / "hooks" / f"self-learn-{rid.removeprefix('lrn-')}-about-to-edit-storage.sh"
+    foreign.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    monkeypatch.setattr(overseer_run.notify, "send", lambda *args: None)
+    (home / "config.yaml").write_text("overseer:\n  hook_activation: true\n", encoding="utf-8")
+    commit_all(home, "enable hook activation")
+
+    overseer_run.run(home, dry_run=False, no_push=True)
+
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    hooks = report.split("## Hooks\n", 1)[1].split("\n## User model", 1)[0]
+    assert "activation failed" in hooks, "positive control: the failure line is present"
+    assert hooks.startswith(f"- {rid}: routed"), hooks
+    assert f"{rid}: {rid}:" not in hooks
+
+
 def test_phase_b_runaway_applies_nothing(tmp_path, monkeypatch):
     home = make_home(tmp_path)
     _fake_two_phase(monkeypatch, a_turns=2, b_turns=48)
@@ -730,6 +757,33 @@ def test_runner_added_lines_remove_bare_none_placeholders(tmp_path):
     model = text.split("## User model\n", 1)[1].split("\n## Catalogue health", 1)[0]
     assert hooks == "- lrn-0123abcd: route applied"
     assert model == "- um-abcd: add applied"
+
+
+def test_examined_and_refused_sections_lose_the_placeholder_too(tmp_path):
+    """Observed by hand 2026-09-14: the runner's facts and refusals were followed by the
+    model's own "- none".  Positive control first: the runner-written lines are present."""
+    path = tmp_path / "report.md"
+    headings = [
+        "Examined", "Decided in the user's stead", "Hooks", "User model",
+        "Catalogue health", "Questions for you", "Refused / could not do",
+    ]
+    path.write_text(
+        "# draft\n" + "\n".join(f"## {heading}\n- none" for heading in headings) + "\n",
+        encoding="utf-8",
+    )
+    text = overseer_run._finalize_model_report(
+        path, date="2026-09-14", run_id="12345678", model="m", selected=("case-1",),
+        population_count=1, excluded=0, model_calls=2, guard=50,
+        refusals=["sheet-1.yaml: item 1 close_call must be boolean"], hooks=[],
+        user_model_lines=[],
+    )
+    examined = text.split("## Examined\n", 1)[1].split("\n## Decided", 1)[0]
+    refused = text.split("## Refused / could not do\n", 1)[1].strip()
+    assert "- Model calls this run: 2 of the runaway guard 50" in examined
+    assert "- none" not in examined
+    assert refused == "- sheet-1.yaml: item 1 close_call must be boolean"
+    decided = text.split("## Decided in the user's stead\n", 1)[1].split("\n## Hooks", 1)[0]
+    assert decided == "- none", "a section the runner leaves alone keeps its placeholder"
 
 
 def test_late_finalize_failure_after_apply_is_partial_and_finishes_intent(tmp_path, monkeypatch):

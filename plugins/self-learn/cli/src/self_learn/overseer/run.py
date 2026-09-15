@@ -399,6 +399,22 @@ def _validate_model_report(path: Path) -> list[str]:
     return lines
 
 
+def _drop_bare_none(lines: list[str], section_start: int) -> None:
+    """Remove the model's ``- none`` placeholder from a section the runner has
+    just written its own lines into (observed by hand 2026-09-14: "- Model calls
+    this run: …" followed by "- none")."""
+    section_end = next(
+        (i for i in range(section_start, len(lines)) if lines[i].startswith("## ")),
+        len(lines),
+    )
+    bare_none = next(
+        (i for i in range(section_start, section_end) if lines[i].strip() == "- none"),
+        None,
+    )
+    if bare_none is not None:
+        lines.pop(bare_none)
+
+
 def _finalize_model_report(
     path: Path, *, date: str, run_id: str, model: str, selected: tuple[str, ...],
     population_count: int, excluded: int, model_calls: int, guard: int,
@@ -414,22 +430,15 @@ def _finalize_model_report(
         f"- Model calls this run: {model_calls} of the runaway guard {guard}",
     ]
     lines[examined_at:examined_at] = facts
+    _drop_bare_none(lines, examined_at)
     refused_at = next(i for i, line in enumerate(lines) if line.startswith("## Refused / could not do")) + 1
     if refusals:
         lines[refused_at:refused_at] = [f"- {item}" for item in refusals]
+        _drop_bare_none(lines, refused_at)
     if hooks:
         hooks_at = next(i for i, line in enumerate(lines) if line.startswith("## Hooks")) + 1
         lines[hooks_at:hooks_at] = [f"- {item}" for item in hooks]
-        hooks_end = next(
-            (i for i in range(hooks_at, len(lines)) if lines[i].startswith("## ")),
-            len(lines),
-        )
-        bare_none = next(
-            (i for i in range(hooks_at, hooks_end) if lines[i].strip() == "- none"),
-            None,
-        )
-        if bare_none is not None:
-            lines.pop(bare_none)
+        _drop_bare_none(lines, hooks_at)
     user_model_at = next(i for i, line in enumerate(lines) if line.startswith("## User model")) + 1
     next_heading = next(
         (i for i in range(user_model_at, len(lines)) if lines[i].startswith("## ")),
@@ -1357,9 +1366,12 @@ def _execute_manifest(
                 )
             if sheet_item.verb == "route" and sheet_item.fields.get("dest") == "hook":
                 if item_result is not None:
-                    hook_lines.append(
-                        f"{item_result.id}: {item_result.detail or item_result.state}"
-                    )
+                    detail = item_result.detail or item_result.state
+                    if detail.startswith(f"{item_result.id}:"):
+                        # O-2b's activation message already leads with the id.
+                        hook_lines.append(detail)
+                    else:
+                        hook_lines.append(f"{item_result.id}: {detail}")
         _journal(home, {
             "at": chrono.now_iso(), "run": run_id, "status": "sheet",
             "sheet": recipe["sheet_name"], "sheet_sha": result.sheet_sha,
