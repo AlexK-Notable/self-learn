@@ -1045,7 +1045,7 @@ presented:
     to: human
     covering: decision       # one of: decision | dependencies | all
     entries: [um-…]          # user-model entries displayed with the case; each one's stored provisional flips to false
-    outcome: agreed | corrected | noted
+    outcome: agreed | corrected | noted | declined
     via: overseer-conversation | review-ui | teach | cli
 ```
 

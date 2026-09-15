@@ -33,6 +33,7 @@ from ..ledger_ops import DEFAULT_DEFER_DAYS
 from ..primitives import chrono, fsops
 from ..records import Record, build_covered_by
 from . import population as population_mod
+from . import health
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -300,7 +301,16 @@ def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows
         case_id = row["case"]
         _write_stage(stage, parked_dir / f"{case_id}.md", cases.show(home, case_id, evidence_only=False).to_text() + "\n")
     _write_stage(stage, stage / "user-model.yaml", _yaml_text(user_model.show(home)))
-    _write_stage(stage, stage / "health.yaml", _yaml_text({"facts": [asdict(item) for item in conditions.feed(home)]}))
+    _write_stage(
+        stage,
+        stage / "health.yaml",
+        _yaml_text(
+            {
+                "facts": [asdict(item) for item in conditions.feed(home)],
+                "catalogue_health": health.gather(home),
+            }
+        ),
+    )
 
 
 def _questions(path: Path) -> dict[str, Any]:

@@ -150,9 +150,7 @@ fi
 # not run yet, or had nothing to ask — either way, no line.
 overseer_open_questions="$(jq -r '.overseer_open_questions // 0' <<<"$out" 2>/dev/null)" || exit 0
 if [ "$overseer_open_questions" -gt 0 ] 2>/dev/null; then
-  plural=""
-  if [ "$overseer_open_questions" -ne 1 ]; then plural="s"; fi
-  echo "self-learn: the overseer has ${overseer_open_questions} interpretation question${plural} — /self-learn:overseer"
+  echo "self-learn: the overseer has ${overseer_open_questions} interpretation questions — /self-learn:overseer"
 fi
 
 exit 0
