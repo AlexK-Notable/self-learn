@@ -19,3 +19,12 @@ unit). Import directly from the submodule instead:
 """
 
 from __future__ import annotations
+
+from pathlib import Path
+
+
+def has_unfinished_work(home: Path | str) -> bool:
+    """Expose O-4's due predicate without eagerly importing the runner."""
+    from .run import has_unfinished_work as _has_unfinished_work
+
+    return _has_unfinished_work(home)

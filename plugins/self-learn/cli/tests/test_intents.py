@@ -488,6 +488,197 @@ print(json.dumps({"warnings": result.warnings}, sort_keys=True))
 """
 
 
+_OVERSEER_CRASH_CHILD = r"""
+import json, os, signal
+from pathlib import Path
+from self_learn import batch, cases, settings, verbs
+from self_learn.overseer import run as overseer_run
+
+HOME = Path(os.environ["SELF_LEARN_HOME"])
+KILL_AFTER = os.environ.get("KILL_AFTER", "none")
+RID1 = os.environ["RID1"]
+RID2 = os.environ["RID2"]
+PARKED1 = os.environ["PARKED1"]
+PARKED2 = os.environ["PARKED2"]
+
+def die(point):
+    Path(os.environ["BARRIER"]).write_text(point, encoding="utf-8")
+    os.kill(os.getpid(), signal.SIGKILL)
+
+real_setting = settings.resolve_setting
+def resolve(home, setting):
+    if setting.name == "overseer.enabled":
+        return True, "crash-test"
+    return real_setting(home, setting)
+settings.resolve_setting = resolve
+
+calls = []
+def invoke(spec):
+    calls.append(spec.label)
+    stage = spec.cwd
+    if spec.label == "phase-a":
+        (stage / "selection.yaml").write_text(
+            f"cases:\n- id: {PARKED1}\nwhy_these: crash guard\nwhy_stopped: one selected\n",
+            encoding="utf-8",
+        )
+        (stage / "initial-views.yaml").write_text(
+            f"cases:\n- id: {PARKED1}\n  what_i_would_do: reject\n  why: evidence\n  what_evidence_decides_it: record\n  confidence: clear\n",
+            encoding="utf-8",
+        )
+        return type("Outcome", (), {"ok": True, "failure": None, "turns": 1})()
+    headings = [
+        "Examined", "Decided in the user's stead", "Hooks", "User model",
+        "Catalogue health", "Questions for you", "Refused / could not do",
+    ]
+    (stage / "report.md").write_text(
+        "# crash report\n" + "\n".join(f"## {h}\n- none" for h in headings) + "\n",
+        encoding="utf-8",
+    )
+    (stage / "findings.yaml").write_text(
+        f"findings:\n- case: {PARKED1}\n  kind: examined\n  text: evidence held\n",
+        encoding="utf-8",
+    )
+    (stage / "questions.yaml").write_text("questions: []\n", encoding="utf-8")
+    rows = (("a", RID1, PARKED1),) if os.environ.get("COLLAPSE") else (
+        ("a", RID1, PARKED1), ("b", RID2, PARKED2)
+    )
+    for suffix, rid, parked in rows:
+        records = f"[{RID1}, {RID2}]" if os.environ.get("COLLAPSE") else f"[{rid}]"
+        (stage / f"case-{suffix}.yaml").write_text(
+            "kind: resolution\ntrigger: weekly\noutcome: reject\n"
+            f"records: {records}\nscope: skill:s\nquestion: reject it?\n"
+            f"supersedes: {parked}\nevidence:\n- ref: record:{rid}\n  quote: pending\n"
+            "decision:\n  verb: reject\n  because: evidence is conclusive\n  confidence: settled\n",
+            encoding="utf-8",
+        )
+    if os.environ.get("COLLAPSE"):
+        (stage / "sheet-a.yaml").write_text(
+            f"version: 1\nitems:\n- id: {RID1}\n  verb: route\n  dest: skill-md\n  collapse: merge-0000f001\n",
+            encoding="utf-8",
+        )
+    else:
+        (stage / "sheet-a.yaml").write_text(
+            "version: 1\nitems:\n"
+            f"- id: {RID1}\n  verb: revise\n  section: Trigger\n  text: Reworded after evidence.\n  because: make the trigger exact\n"
+            f"- id: {RID1}\n  verb: reject\n",
+            encoding="utf-8",
+        )
+        (stage / "sheet-b.yaml").write_text(
+            f"version: 1\nitems:\n- id: {RID2}\n  verb: reject\n",
+            encoding="utf-8",
+        )
+    return type("Outcome", (), {"ok": True, "failure": None, "turns": 1})()
+
+if KILL_AFTER == "none":
+    def invoke(spec):
+        raise AssertionError("committed recovery invoked the model")
+overseer_run.invocation.write_session = invoke
+
+if KILL_AFTER == "after-successor":
+    original = cases.record
+    def record(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if kwargs.get("actor") == "overseer":
+            die(KILL_AFTER)
+        return result
+    overseer_run.cases.record = record
+elif KILL_AFTER == "raise-after-successor":
+    original = cases.record
+    def record(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if kwargs.get("actor") == "overseer":
+            raise RuntimeError("successor publication returned late failure")
+        return result
+    overseer_run.cases.record = record
+elif KILL_AFTER == "between-items":
+    original = verbs.revise
+    def revise(*args, **kwargs):
+        result = original(*args, **kwargs)
+        die(KILL_AFTER)
+        return result
+    verbs.revise = revise
+elif KILL_AFTER == "after-ledger":
+    original = verbs.reject
+    def reject(*args, **kwargs):
+        result = original(*args, **kwargs)
+        die(KILL_AFTER)
+        return result
+    verbs.reject = reject
+elif KILL_AFTER == "after-sheet-1":
+    original = batch.run
+    sheet_calls = []
+    def run(*args, **kwargs):
+        result = original(*args, **kwargs)
+        sheet_calls.append(getattr(args[1], "case", None))
+        if len(sheet_calls) == 1:
+            die(KILL_AFTER)
+        return result
+    overseer_run.batch.run = run
+elif KILL_AFTER == "after-observation":
+    original = cases.observe
+    def observe(*args, **kwargs):
+        result = original(*args, **kwargs)
+        die(KILL_AFTER)
+        return result
+    overseer_run.cases.observe = observe
+elif KILL_AFTER == "before-report":
+    original = overseer_run._write_manifest_truth
+    def truth(*args, **kwargs):
+        die(KILL_AFTER)
+    overseer_run._write_manifest_truth = truth
+elif KILL_AFTER == "after-collapse-commit":
+    original = verbs._commit_ledger
+    def commit(*args, **kwargs):
+        result = original(*args, **kwargs)
+        die(KILL_AFTER)
+        return result
+    verbs._commit_ledger = commit
+elif KILL_AFTER == "stop-first":
+    sheet_calls = []
+    def run(*args, **kwargs):
+        sheet_calls.append(getattr(args[1], "case", None))
+        assert len(sheet_calls) == 1, "a later sheet ran after whole-sheet STOP"
+        return batch.BatchResult(
+            items=[], process_code=6, case=getattr(args[1], "case", None),
+            sheet_sha=getattr(args[1], "sheet_sha", None), actor="overseer",
+            stop_message="intent STOP before item 1",
+        )
+    overseer_run.batch.run = run
+elif KILL_AFTER == "partial-first":
+    sheet_calls = []
+    def run(*args, **kwargs):
+        sheet_calls.append(getattr(args[1], "case", None))
+        assert len(sheet_calls) == 1, "a later sheet ran after aggregate exit 8"
+        return batch.BatchResult(
+            items=[
+                batch.ItemResult(n=1, id=RID1, verb="revise", rc=0, state="applied"),
+                batch.ItemResult(n=2, id=RID1, verb="reject", rc=1, state="refused", detail="refused item"),
+            ],
+            process_code=8, case=getattr(args[1], "case", None),
+            sheet_sha=getattr(args[1], "sheet_sha", None), actor="overseer",
+        )
+    overseer_run.batch.run = run
+elif KILL_AFTER == "item-stop-first":
+    sheet_calls = []
+    def run(*args, **kwargs):
+        sheet_calls.append(getattr(args[1], "case", None))
+        assert len(sheet_calls) == 1, "a later sheet ran after item stop"
+        return batch.BatchResult(
+            items=[
+                batch.ItemResult(n=1, id=RID1, verb="revise", rc=7, state="stopped", detail="item stopped"),
+                batch.ItemResult(n=2, id=RID1, verb="reject", rc=-1, state="not-attempted"),
+            ],
+            stopped_at=1, process_code=7,
+            case=getattr(args[1], "case", None),
+            sheet_sha=getattr(args[1], "sheet_sha", None), actor="overseer",
+        )
+    overseer_run.batch.run = run
+
+result = overseer_run.run(HOME, dry_run=False, no_push=True)
+print(json.dumps(result.to_json(), sort_keys=True))
+"""
+
+
 def _run_child(script: str, env_overrides: dict, barrier: Path) -> subprocess.CompletedProcess:
     child_env = dict(os.environ)
     child_env.pop("SELF_LEARN_ANALYST_MODEL", None)
@@ -508,6 +699,243 @@ def _assert_killed(proc: subprocess.CompletedProcess, barrier: Path, expected_st
     assert proc.returncode == -9, (proc.returncode, proc.stdout, proc.stderr)
     assert barrier.is_file(), "the child never reached the intended kill point"
     assert barrier.read_text(encoding="utf-8") == expected_step
+
+
+def _seed_overseer_crash_run(home: Path, tmp_path: Path) -> tuple[str, str, str, str]:
+    rid1 = "lrn-0a0b0c0d"
+    rid2 = "lrn-0e0f0102"
+    seed_pending(home, rid1)
+    seed_pending(home, rid2)
+    parked_ids = []
+    for index, rid in enumerate((rid1, rid2), start=1):
+        stage = tmp_path / f"overseer-parked-{index}.yaml"
+        stage.write_text(
+            "kind: parked\ntrigger: nightly\noutcome: parked\n"
+            f"records: [{rid}]\nscope: skill:s\nquestion: decide this?\n"
+            "parked_for: overseer\nparked_reason: authority-unclear\n"
+            f"evidence:\n- ref: record:{rid}\n  quote: pending\n"
+            "decision:\n  verb: parked\n  because: delegated authority\n  confidence: provisional\n",
+            encoding="utf-8",
+        )
+        parked_ids.append(cases.record(home, stage, actor="steward"))
+    return rid1, rid2, parked_ids[0], parked_ids[1]
+
+
+@pytest.mark.parametrize(
+    "kill_after",
+    [
+        "after-successor",
+        "between-items",
+        "after-ledger",
+        "after-sheet-1",
+        "after-observation",
+        "before-report",
+    ],
+)
+def test_overseer_real_kill_resumes_committed_recipe_without_replay(
+    tmp_path, kill_after
+):
+    home = make_home(tmp_path)
+    rid1, rid2, parked1, parked2 = _seed_overseer_crash_run(home, tmp_path)
+    cache = tmp_path / "entire-overseer-cache"
+    claude_dir = tmp_path / "isolated-claude"
+    barrier = tmp_path / f"overseer-{kill_after}-barrier"
+    child_env = {
+        "SELF_LEARN_HOME": str(home),
+        "XDG_CACHE_HOME": str(cache),
+        "SELF_LEARN_CLAUDE_DIR": str(claude_dir),
+        "RID1": rid1,
+        "RID2": rid2,
+        "PARKED1": parked1,
+        "PARKED2": parked2,
+        "KILL_AFTER": kill_after,
+    }
+
+    killed = _run_child(_OVERSEER_CRASH_CHILD, child_env, barrier)
+    _assert_killed(killed, barrier, kill_after)
+    manifests = git(
+        home, "ls-tree", "-r", "--name-only", "HEAD", "--", "cases/runs"
+    ).stdout.splitlines()
+    assert len(manifests) == 1
+    prepared = json.loads(git(home, "show", f"HEAD:{manifests[0]}").stdout)
+    assert prepared["status"] == "unfinished"
+    reserved = list(prepared["case_order"])
+    shutil.rmtree(cache, ignore_errors=True)
+
+    resumed = _run_child(
+        _OVERSEER_CRASH_CHILD,
+        {**child_env, "KILL_AFTER": "none"},
+        tmp_path / "unused-overseer-resume-barrier",
+    )
+    assert resumed.returncode == 0, (resumed.stdout, resumed.stderr)
+    result = json.loads(resumed.stdout.splitlines()[-1])
+    assert (result["run"], result["status"]) == (prepared["run_id"], "applied")
+    finished = json.loads(git(home, "show", f"HEAD:{manifests[0]}").stdout)
+    assert finished["status"] == "complete"
+    assert finished["case_order"] == reserved
+    assert subjects(home).count(f"self-learn: revise {rid1}") == 1
+    assert subjects(home).count(f"self-learn: reject {rid1}") == 1
+    assert subjects(home).count(f"self-learn: reject {rid2}") == 1
+    assert len(list((home / "overseer").glob("????-??-??-report.md"))) == 1
+    assert intents.recover(home).restored == []
+    observations = cases.show(home, parked1, evidence_only=False).sections[
+        "Later observations"
+    ]
+    assert observations.count("overseer examined: evidence held") == 1
+    for case_id in reserved:
+        application = cases.show(home, case_id, evidence_only=False).sections[
+            "Application"
+        ]
+        assert application.count("item=1") == 1
+
+
+def test_overseer_collapse_commit_kill_resumes_from_compound_proof(tmp_path):
+    home = make_home(tmp_path)
+    rid1, rid2, parked1, parked2 = _seed_overseer_crash_run(home, tmp_path)
+    proposal_dir = home / "skills" / "s" / "proposals"
+    proposal_dir.mkdir(parents=True, exist_ok=True)
+    (proposal_dir / "merge-0000f001.yaml").write_text(
+        merge_proposal_text("merge-0000f001", [rid1, rid2], rid1),
+        encoding="utf-8",
+    )
+    commit_all(home, "seed overseer collapse")
+    cache = tmp_path / "overseer-collapse-cache"
+    child_env = {
+        "SELF_LEARN_HOME": str(home),
+        "XDG_CACHE_HOME": str(cache),
+        "SELF_LEARN_CLAUDE_DIR": str(tmp_path / "isolated-claude"),
+        "RID1": rid1,
+        "RID2": rid2,
+        "PARKED1": parked1,
+        "PARKED2": parked2,
+        "COLLAPSE": "1",
+        "KILL_AFTER": "after-collapse-commit",
+    }
+    barrier = tmp_path / "overseer-collapse-barrier"
+
+    killed = _run_child(_OVERSEER_CRASH_CHILD, child_env, barrier)
+    _assert_killed(killed, barrier, "after-collapse-commit")
+    shutil.rmtree(cache, ignore_errors=True)
+    resumed = _run_child(
+        _OVERSEER_CRASH_CHILD,
+        {**child_env, "KILL_AFTER": "none"},
+        tmp_path / "unused-collapse-resume-barrier",
+    )
+
+    assert resumed.returncode == 0, (resumed.stdout, resumed.stderr)
+    result = json.loads(resumed.stdout.splitlines()[-1])
+    assert result["status"] == "applied"
+    assert sum(
+        subject.startswith(
+            f"self-learn: route {rid1} → skill-md (collapse merge-0000f001,"
+        )
+        for subject in subjects(home)
+    ) == 1
+    assert Record.from_path(find_record_path(home, rid1)).status == "routed"
+    assert Record.from_path(find_record_path(home, rid2)).status == "superseded"
+    manifest_rel = git(
+        home, "ls-tree", "-r", "--name-only", "HEAD", "--", "cases/runs"
+    ).stdout.strip()
+    case_id = json.loads(git(home, "show", f"HEAD:{manifest_rel}").stdout)[
+        "case_order"
+    ][0]
+    assert "evidence: host result established by recompile" in cases.show(
+        home, case_id, evidence_only=False
+    ).sections["Application"]
+
+
+def test_overseer_whole_sheet_stop_halts_later_sheets_and_finalization(tmp_path):
+    home = make_home(tmp_path)
+    rid1, rid2, parked1, parked2 = _seed_overseer_crash_run(home, tmp_path)
+    child_env = {
+        "SELF_LEARN_HOME": str(home),
+        "XDG_CACHE_HOME": str(tmp_path / "overseer-stop-cache"),
+        "SELF_LEARN_CLAUDE_DIR": str(tmp_path / "isolated-claude"),
+        "RID1": rid1,
+        "RID2": rid2,
+        "PARKED1": parked1,
+        "PARKED2": parked2,
+        "KILL_AFTER": "stop-first",
+    }
+    proc = _run_child(
+        _OVERSEER_CRASH_CHILD, child_env, tmp_path / "unused-stop-barrier"
+    )
+
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+    result = json.loads(proc.stdout.splitlines()[-1])
+    assert (result["status"], result["code"]) == ("partial", 8)
+    manifest_rel = git(
+        home, "ls-tree", "-r", "--name-only", "HEAD", "--", "cases/runs"
+    ).stdout.strip()
+    manifest = json.loads(git(home, "show", f"HEAD:{manifest_rel}").stdout)
+    assert manifest["status"] == "unfinished"
+    assert manifest["remaining"] == manifest["case_order"]
+    successor_rows = [
+        row for row in cases.list_cases(home, only_ok=True)
+        if row.get("actor") == "overseer"
+    ]
+    assert len(successor_rows) == 1
+    assert "intent STOP before item 1" in (
+        home / "overseer" / "latest-report.md"
+    ).read_text(encoding="utf-8")
+    assert not (home / "overseer" / "open-questions.yaml").exists()
+
+
+def test_overseer_aggregate_exit_8_halts_later_sheets(tmp_path):
+    home = make_home(tmp_path)
+    rid1, rid2, parked1, parked2 = _seed_overseer_crash_run(home, tmp_path)
+    proc = _run_child(
+        _OVERSEER_CRASH_CHILD,
+        {
+            "SELF_LEARN_HOME": str(home),
+            "XDG_CACHE_HOME": str(tmp_path / "overseer-partial-cache"),
+            "SELF_LEARN_CLAUDE_DIR": str(tmp_path / "isolated-claude"),
+            "RID1": rid1, "RID2": rid2,
+            "PARKED1": parked1, "PARKED2": parked2,
+            "KILL_AFTER": "partial-first",
+        },
+        tmp_path / "unused-partial-barrier",
+    )
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+    result = json.loads(proc.stdout.splitlines()[-1])
+    assert (result["status"], result["code"]) == ("partial", 8)
+    assert len([
+        row for row in cases.list_cases(home, only_ok=True)
+        if row.get("actor") == "overseer"
+    ]) == 1
+
+
+@pytest.mark.parametrize("scenario", ["item-stop-first", "raise-after-successor"])
+def test_overseer_item_stop_and_late_successor_failure_are_partial(
+    tmp_path, scenario
+):
+    home = make_home(tmp_path)
+    rid1, rid2, parked1, parked2 = _seed_overseer_crash_run(home, tmp_path)
+    proc = _run_child(
+        _OVERSEER_CRASH_CHILD,
+        {
+            "SELF_LEARN_HOME": str(home),
+            "XDG_CACHE_HOME": str(tmp_path / f"overseer-{scenario}-cache"),
+            "SELF_LEARN_CLAUDE_DIR": str(tmp_path / "isolated-claude"),
+            "RID1": rid1, "RID2": rid2,
+            "PARKED1": parked1, "PARKED2": parked2,
+            "KILL_AFTER": scenario,
+        },
+        tmp_path / f"unused-{scenario}-barrier",
+    )
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+    result = json.loads(proc.stdout.splitlines()[-1])
+    assert (result["status"], result["code"]) == ("partial", 8)
+    manifest_rel = git(
+        home, "ls-tree", "-r", "--name-only", "HEAD", "--", "cases/runs"
+    ).stdout.strip()
+    assert json.loads(git(home, "show", f"HEAD:{manifest_rel}").stdout)[
+        "status"
+    ] == "unfinished"
+    assert len([
+        row for row in cases.list_cases(home, only_ok=True)
+        if row.get("actor") == "overseer"
+    ]) == 1
 
 
 def _u14_child_env(home: Path, cache: Path, scenario: str) -> dict[str, str]:

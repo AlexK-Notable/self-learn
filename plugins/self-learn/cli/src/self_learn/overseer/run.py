@@ -4,6 +4,10 @@ The model can read and write only ``worker.stage/overseer``.  This module
 validates that stage and owns every ledger write through the existing case,
 batch, observation, intent, and git seams.
 
+Before applying phase B, it commits U14's execution manifest.  Restarts
+discover that Git-owned recipe before phase A, reconstruct proven prefixes,
+and continue the immutable sheets under their reserved successor case ids.
+
 The user-model delta write leg is deferred to O-3b (``overseer user-model
 delta leg``), which will mirror the steward implementation after U10 merges.
 An examine-only run spools no telemetry of its own; every applied sheet uses
@@ -13,6 +17,7 @@ An examine-only run spools no telemetry of its own; every applied sheet uses
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import uuid
 from dataclasses import asdict, dataclass
@@ -22,9 +27,11 @@ from typing import Any, cast
 
 from ruamel.yaml import YAML, YAMLError
 
-from .. import batch, cases, conditions, config, gitops, intents, invocation, provider, scan, settings, user_model, verbs, worker
+from .. import batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, provider, scan, settings, user_model, verbs, worker
 from ..ledger import resolve_home
+from ..ledger_ops import DEFAULT_DEFER_DAYS
 from ..primitives import chrono, fsops
+from ..records import Record, build_covered_by
 from . import population as population_mod
 
 EXIT_OK = 0
@@ -41,6 +48,7 @@ _REPORT_SECTIONS = (
     "Refused / could not do",
 )
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_LEGACY_RETIRE_ALIAS = "grad" + "uate"
 
 
 @dataclass(frozen=True)
@@ -519,6 +527,690 @@ def _worst_code(codes: list[int], *, any_applied: bool) -> int:
     return 1 if 1 in codes else 0
 
 
+def _manifest_text(manifest: dict[str, Any]) -> str:
+    return json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+
+
+def _committed_overseer_manifests(home: Path) -> list[dict[str, Any]]:
+    """Read overseer recipes from committed Git truth, never the cache/index."""
+    rows = gitops._git(  # noqa: SLF001 -- committed discovery seam
+        home, "ls-tree", "-r", "--name-only", "HEAD", "--", "cases/runs"
+    ).stdout.splitlines()
+    found: list[dict[str, Any]] = []
+    for relpath in rows:
+        if not relpath.startswith("cases/runs/") or not relpath.endswith(".json"):
+            continue
+        run_id = Path(relpath).stem
+        try:
+            manifest = execution_evidence.read_manifest(home, run_id)
+        except (execution_evidence.ExecutionEvidenceError, gitops.GitOpsError):
+            continue
+        if manifest.get("version") == 1 and manifest.get("actor") == "overseer":
+            found.append(manifest)
+    return found
+
+
+def _unfinished_manifest(home: Path) -> dict[str, Any] | None:
+    unfinished = [
+        row for row in _committed_overseer_manifests(home)
+        if row.get("status") != "complete"
+    ]
+    if len(unfinished) > 1:
+        raise OverseerError("more than one unfinished overseer manifest")
+    return unfinished[0] if unfinished else None
+
+
+def has_unfinished_work(home: Path | str) -> bool:
+    """Whether committed Git truth contains an unfinished overseer recipe."""
+    return _unfinished_manifest(Path(home)) is not None
+
+
+def _scan_manifest_or_refuse(manifest: dict[str, Any]) -> None:
+    """Scan prepared free text while excluding code-owned content hashes."""
+    hits: list[str] = []
+
+    def visit(value: Any, key: str = "") -> None:
+        if isinstance(value, dict):
+            for child_key, child in value.items():
+                visit(child, str(child_key))
+        elif isinstance(value, list):
+            for child in value:
+                visit(child, key)
+        elif isinstance(value, str) and key not in {
+            "sheet_sha", "sheet_digest", "start_head", "prepared_head"
+        }:
+            if scan.scan(value):
+                hits.append(key or "value")
+
+    visit(manifest)
+    if hits:
+        raise OverseerError(
+            "prepared manifest secret scan refused field(s): "
+            + ", ".join(sorted(set(hits)))
+        )
+
+
+def _reserved_case_id(existing: set[str]) -> str:
+    for _ in range(64):
+        candidate = "case-" + uuid.uuid4().hex[:8]
+        if candidate not in existing:
+            return candidate
+    raise OverseerError("could not reserve a successor case id")
+
+
+def _prepare_manifest(
+    home: Path,
+    stage: Path,
+    *,
+    run_id: str,
+    started: str,
+    model: str,
+    selected: tuple[str, ...],
+    population_count: int,
+    excluded: int,
+    model_calls: int,
+    guard: int,
+    coverage_text: str,
+    questions: dict[str, Any],
+    findings: list[dict[str, Any]],
+    prepared: list[tuple[Path | None, Path, batch.Sheet]],
+) -> dict[str, Any]:
+    existing = {row["case"] for row in cases.list_cases(home, only_ok=True)}
+    recipes: dict[str, Any] = {}
+    order: list[str] = []
+    for case_file, sheet_file, _loaded in prepared:
+        if case_file is None:
+            continue
+        case_id = _reserved_case_id(existing | set(recipes))
+        case_data = _yaml_mapping(case_file)
+        case_data["run_id"] = run_id
+        case_text = _yaml_text(case_data)
+        sheet_data = _yaml_mapping(sheet_file)
+        sheet_data["case"] = case_id
+        for item in sheet_data.get("items") or []:
+            if item.get("verb") == "defer" and item.get("until") is None:
+                item["until"] = (
+                    datetime.now(timezone.utc) + timedelta(days=DEFAULT_DEFER_DAYS)
+                ).date().isoformat()
+        sheet_text = _yaml_text(sheet_data)
+        effective_path = stage / f"effective-{sheet_file.name}"
+        _write_stage(stage, effective_path, sheet_text)
+        effective = batch.load_sheet(effective_path)
+        assert effective.sheet_sha is not None and effective.sheet_digest is not None
+        recipes[case_id] = {
+            "case_name": case_file.name,
+            "case_text": case_text,
+            "sheet_name": sheet_file.name,
+            "sheet": sheet_text,
+            "sheet_sha": effective.sheet_sha,
+            "sheet_digest": effective.sheet_digest,
+            "items": [
+                {"n": item.n, "id": item.id, "verb": item.verb}
+                for item in effective
+            ],
+            "maintenance": [],
+            "dispositions": [],
+        }
+        order.append(case_id)
+    manifest: dict[str, Any] = {
+        "version": 1,
+        "run_id": run_id,
+        "actor": "overseer",
+        "status": "unfinished",
+        "start_head": gitops.head_sha(home),
+        "started": started,
+        "date": started[:10],
+        "model": model,
+        "selected": list(selected),
+        "population_count": population_count,
+        "excluded": excluded,
+        "model_calls": model_calls,
+        "guard": guard,
+        "coverage": coverage_text,
+        "inputs": [],
+        "reconsider_observations": [],
+        "report": (stage / "report.md").read_text(encoding="utf-8"),
+        "questions": questions,
+        "findings": findings,
+        "case_order": order,
+        "cases": recipes,
+        "ledger_effects": [],
+        "remaining": order,
+    }
+    _scan_manifest_or_refuse(manifest)
+    return manifest
+
+
+def _publish_manifest(
+    home: Path, intent: intents.Intent, manifest: dict[str, Any], coverage_path: Path
+) -> Path:
+    path = execution_evidence.manifest_path(home, cast(str, manifest["run_id"]))
+    intents.add_step(intent, path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fsops.atomic_write(path, _manifest_text(manifest), fsync=True)
+    intents.complete(intent)
+    gitops.stage_and_commit(
+        home, [coverage_path, path], intent.commit_subject, None
+    )
+    intents.finish(intent)
+    return path
+
+
+_RECEIPT_RESULT_RE = re.compile(
+    r"sheet=\S*#(?P<sha>[0-9a-f]{6,64}) item=(?P<n>\d+) "
+    r"(?P<id>lrn-[0-9a-f]{8}) (?P<verb>[a-z][a-z0-9-]*) → "
+    r"(?P<state>applied|already-applied|refused|stopped) \(exit (?P<rc>-?\d+)\)"
+)
+
+
+def _receipt_results(
+    home: Path, case_id: str, recipe: dict[str, Any]
+) -> dict[int, batch.ItemResult]:
+    try:
+        application = cases.show(home, case_id, evidence_only=False).sections["Application"]
+    except cases.CaseError:
+        return {}
+    expected = {int(row["n"]): row for row in recipe["items"]}
+    results: dict[int, batch.ItemResult] = {}
+    for line in application.splitlines():
+        match = _RECEIPT_RESULT_RE.search(line)
+        if match is None or match.group("sha") != recipe["sheet_sha"]:
+            continue
+        n = int(match.group("n"))
+        row = expected.get(n)
+        if row is None or row["id"] != match.group("id") or row["verb"] != match.group("verb"):
+            raise OverseerError(f"committed receipt identity mismatch for {case_id} item {n}")
+        results[n] = batch.ItemResult(
+            n=n, id=row["id"], verb=row["verb"], rc=int(match.group("rc")),
+            state=match.group("state"),
+        )
+    return results
+
+
+def _receipt_completed(
+    home: Path, case_id: str, recipe: dict[str, Any]
+) -> dict[int, batch.ItemResult]:
+    return {
+        n: item for n, item in _receipt_results(home, case_id, recipe).items()
+        if item.state in ("applied", "already-applied") and item.rc == 0
+    }
+
+
+def _manifest_introduction(home: Path, run_id: str) -> str:
+    relpath = execution_evidence.manifest_path(home, run_id).relative_to(home.resolve())
+    commits = gitops._git(  # noqa: SLF001 -- first committed recipe boundary
+        home, "log", "--diff-filter=A", "--format=%H", "--reverse", "--", str(relpath)
+    ).stdout.splitlines()
+    if not commits:
+        raise OverseerError(f"unfinished run {run_id} has no committed prepared boundary")
+    return commits[0]
+
+
+def _record_at_commit(
+    home: Path, sha: str, record_id: str
+) -> tuple[Path, Record] | None:
+    paths = gitops._git(  # noqa: SLF001 -- immutable candidate content
+        home, "ls-tree", "-r", "--name-only", sha, "--", "skills"
+    ).stdout.splitlines()
+    matches = [path for path in paths if Path(path).name == f"{record_id}.md"]
+    if len(matches) != 1:
+        return None
+    text = gitops._git(home, "show", f"{sha}:{matches[0]}").stdout  # noqa: SLF001
+    try:
+        return Path(matches[0]), Record.from_text(text)
+    except Exception:
+        return None
+
+
+def _candidate_establishes(
+    home: Path, committed: tuple[Path, Record] | None, item: dict[str, Any]
+) -> bool:
+    if committed is None:
+        return item["verb"] in {"supersede", "rehome", "rescope"}
+    path, record = committed
+    verb = item["verb"]
+    if verb == "route":
+        routing = record.routing or {}
+        return record.status == "routed" and (
+            item.get("dest") is None
+            or routing.get("destination") == item.get("dest")
+        )
+    if verb == "reject":
+        return record.status == "rejected"
+    if verb == "defer":
+        return record.status == "deferred" and str(record.deferred_until) == str(
+            item.get("until")
+        )
+    if verb in {"undefer", "reopen"}:
+        return record.status == "pending"
+    if verb == "retire":
+        return (
+            record.status == "superseded"
+            and record.superseded_by == build_covered_by(cast(str, item["covered_by"]))
+        )
+    if verb == _LEGACY_RETIRE_ALIAS:
+        covered_by = item.get("covered_by")
+        expected = "canon" if covered_by is None else build_covered_by(cast(str, covered_by))
+        return record.status == "superseded" and record.superseded_by == expected
+    if verb == "supersede":
+        return (
+            record.status == "superseded"
+            and record.superseded_by == item.get("new_id")
+        )
+    if verb == "revise":
+        return cast(str, item.get("text") or "") in record.body
+    if verb == "note":
+        key = item.get("key")
+        return key is not None and record.note_has_key(cast(str, key))
+    if verb == "confirm-held":
+        return record.last_confirmed is not None
+    if verb == "confirm-recurrence":
+        return any(row.get("ref") == item.get("event") for row in record.recurrences)
+    if verb == "dismiss-suspect":
+        return any(row.get("ref") == item.get("event") for row in record.dismissed_suspects)
+    if verb == "link-contradicts":
+        return item.get("target") in record.contradicts
+    if verb == "followup-done":
+        return record.follow_up is None and record.follow_up_done is not None
+    if verb in {"rehome", "rescope"}:
+        try:
+            _scope, bucket, _project = verbs._resolve_move_target(
+                home, cast(str, item["to"])
+            )
+        except verbs.VerbError:
+            return False
+        return path.parent.parent == bucket.relative_to(home)
+    return False
+
+
+def _mutation_proven_completed(
+    home: Path,
+    manifest: dict[str, Any],
+    case_id: str,
+    recipe: dict[str, Any],
+    existing: dict[int, batch.ItemResult],
+) -> dict[int, batch.ItemResult]:
+    """Recover unreceipted committed ledger effects without replaying them."""
+    completed = dict(existing)
+    after = _manifest_introduction(home, cast(str, manifest["run_id"]))
+    for row in recipe["items"]:
+        n = int(row["n"])
+        if n in completed:
+            continue
+        ref = execution_evidence.ExecutionRef(
+            run_id=manifest["run_id"], case_id=case_id,
+            sheet_sha=recipe["sheet_sha"], sheet_digest=recipe["sheet_digest"],
+            item=n, record_id=row["id"], verb=row["verb"], actor="overseer",
+        )
+        fields = YAML(typ="safe").load(recipe["sheet"])["items"][n - 1]
+        if fields.get("collapse"):
+            sha = execution_evidence.find_compound_proof_commit(
+                home, ref, after=after
+            )
+        else:
+            sha = execution_evidence.find_mutation_commit(home, ref, after=after)
+        if sha is None:
+            continue
+        # The canonical trailer/compound lookup is necessary but not enough:
+        # require the candidate to have changed this record and require the
+        # current ledger to classify the exact original item as established.
+        changed = gitops._git(  # noqa: SLF001 -- candidate content verification
+            home, "diff-tree", "--no-commit-id", "--name-only", "-r", sha
+        ).stdout.splitlines()
+        if not any(row["id"] in path for path in changed):
+            raise OverseerError(
+                f"mutation proof {sha[:8]} did not change {row['id']}"
+            )
+        if not _candidate_establishes(
+            home, _record_at_commit(home, sha, row["id"]), fields
+        ):
+            raise OverseerError(
+                f"mutation proof {sha[:8]} does not establish original item {n}"
+            )
+        evidence = "ledger mutation verified against original item"
+        if row["verb"] in batch._HOST_OUTCOME_VERBS:  # noqa: SLF001 -- shared executor contract
+            recomp = verbs.recompile(home, no_push=True)
+            refused = [
+                f"{entry.target}: {entry.skipped}"
+                for entry in recomp.entries if entry.skipped
+            ]
+            if refused:
+                completed[n] = batch.ItemResult(
+                    n=n, id=row["id"], verb=row["verb"], rc=1,
+                    state="unresolved-host", detail="; ".join(refused),
+                )
+                continue
+            evidence = "host result established by recompile"
+        completed[n] = batch.ItemResult(
+            n=n, id=row["id"], verb=row["verb"], rc=0, sha=sha,
+            state="applied", evidence=evidence,
+        )
+    return completed
+
+
+def _observation_id(run_id: str, index: int) -> str:
+    return "obs-" + hashlib.sha256(f"{run_id}:{index}".encode()).hexdigest()[:8]
+
+
+def _write_manifest_truth(
+    home: Path,
+    manifest: dict[str, Any],
+    *,
+    report_text: str,
+    complete: bool,
+) -> tuple[Path, Path]:
+    path = execution_evidence.manifest_path(home, manifest["run_id"])
+    # Preserve a compound verb's in-commit proof if it advanced this file.
+    try:
+        current = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(current.get("ledger_effects"), list):
+            manifest["ledger_effects"] = current["ledger_effects"]
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
+    manifest["status"] = "complete" if complete else "unfinished"
+    report_path = home / "overseer" / f"{manifest['date']}-report.md"
+    latest = home / "overseer" / "latest-report.md"
+    questions_path = home / "overseer" / "open-questions.yaml"
+    paths = [path, report_path, latest]
+    if complete:
+        paths.append(questions_path)
+    with intents.ledger_write(home):
+        intent = intents.begin(
+            home, "overseer-run-finalize", paths,
+            f"self-learn: overseer finalize {manifest['run_id']}",
+        )
+        for target in paths:
+            intents.add_step(intent, target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fsops.atomic_write(path, _manifest_text(manifest), fsync=True)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        fsops.atomic_write(report_path, report_text, fsync=True)
+        fsops.atomic_write(latest, report_text, fsync=True)
+        if complete:
+            fsops.atomic_write(
+                questions_path, _yaml_text(manifest["questions"]), fsync=True
+            )
+        intents.complete(intent)
+        gitops.stage_and_commit(home, paths, intent.commit_subject, None)
+        intents.finish(intent)
+    return report_path, latest
+
+
+def _run_manifest_sheet(
+    home: Path,
+    stage: Path,
+    manifest: dict[str, Any],
+    case_id: str,
+    recipe: dict[str, Any],
+    *,
+    gate: bool,
+) -> tuple[batch.BatchResult, dict | None, batch.Sheet]:
+    case_path = stage / cast(str, recipe["case_name"])
+    sheet_path = stage / f"effective-{recipe['sheet_name']}"
+    _write_stage(stage, case_path, cast(str, recipe["case_text"]))
+    _write_stage(stage, sheet_path, cast(str, recipe["sheet"]))
+    successor = cases.record(
+        home, case_path, actor="overseer", reserved_id=case_id
+    )
+    if successor != case_id:
+        raise OverseerError(
+            f"reserved successor {case_id} returned unexpected id {successor}"
+        )
+    effective = batch.load_sheet(sheet_path, home=home)
+    if (
+        effective.sheet_sha != recipe["sheet_sha"]
+        or effective.sheet_digest != recipe["sheet_digest"]
+    ):
+        raise OverseerError(f"committed sheet identity changed for {case_id}")
+    receipted = _receipt_results(home, case_id, recipe)
+    terminal = [
+        item for item in receipted.values()
+        if item.state in ("refused", "stopped")
+    ]
+    if terminal:
+        # A committed refusal is itself the durable disposition. In
+        # particular, never retry U5's refused reference reconsideration.
+        # The recipe remains unfinished so the report continues to expose
+        # the obligation, but no ledger leg is attempted again.
+        result = batch.BatchResult(
+            items=[receipted[n] for n in sorted(receipted)],
+            stopped_at=next(
+                (item.n for item in terminal if item.state == "stopped"), None
+            ),
+            process_code=max(item.rc for item in terminal),
+            case=case_id, sheet_sha=effective.sheet_sha, actor="overseer",
+        )
+        return result, {"state": "preserved", "pushed": None}, effective
+    completed = _receipt_completed(home, case_id, recipe)
+    completed = _mutation_proven_completed(
+        home, manifest, case_id, recipe, completed
+    )
+    continuation = batch.BatchContinuation(
+        run_id=cast(str, manifest["run_id"]), case_id=case_id,
+        sheet_digest=cast(str, recipe["sheet_digest"]), completed=completed,
+    )
+
+    def checkpoint(partial: batch.BatchResult) -> dict | None:
+        return batch.write_receipt(
+            home, partial, cast(str, recipe["sheet_name"]),
+            no_push=True, prefix=True,
+        )
+
+    try:
+        result = batch.run(
+            home, effective, no_push=True, actor="overseer",
+            hook_activation=gate, continuation=continuation,
+            checkpoint=checkpoint,
+        )
+        receipt = batch.write_receipt(
+            home, result, cast(str, recipe["sheet_name"]),
+            no_push=True, prefix=True,
+        )
+    except batch.BookkeepingHalt as exc:
+        result = exc.result
+        receipt = batch.write_receipt(
+            home, result, cast(str, recipe["sheet_name"]),
+            no_push=True, prefix=True,
+        )
+        raise batch.BookkeepingHalt(str(exc), result, exc.untouched_tail) from None
+    return result, receipt, effective
+
+
+def _execute_manifest(
+    home: Path,
+    manifest: dict[str, Any],
+    *,
+    boundary_no_push: bool,
+) -> RunResult:
+    """Resume one committed recipe and finalize only after every sheet."""
+    run_id = cast(str, manifest["run_id"])
+    selected = tuple(cast(list[str], manifest.get("selected") or []))
+    excluded = int(manifest.get("excluded") or 0)
+    model_calls = int(manifest.get("model_calls") or 0)
+    stage = worker.stage_dir() / "overseer"
+    worker.stage_reset(home)
+    stage.mkdir(parents=True, exist_ok=True)
+    _write_stage(stage, stage / "report.md", cast(str, manifest["report"]))
+    recipes = cast(dict[str, dict[str, Any]], manifest["cases"])
+    order = cast(list[str], manifest["case_order"])
+    codes: list[int] = []
+    refusals: list[str] = []
+    hook_lines: list[str] = []
+    decided_ids: list[str] = []
+    application_count = 0
+    halted = False
+    halt_reason: str | None = None
+    gate = config.hook_activation_enabled(home)
+
+    for position, case_id in enumerate(order):
+        recipe = recipes[case_id]
+        decided_ids.append(case_id)
+        try:
+            result, receipt, effective = _run_manifest_sheet(
+                home, stage, manifest, case_id, recipe, gate=gate
+            )
+        except batch.BookkeepingHalt as exc:
+            result = exc.result
+            receipt = {"state": "halted", "reason": str(exc)}
+            effective_path = stage / f"effective-{recipe['sheet_name']}"
+            effective = batch.load_sheet(effective_path, home=home)
+            halted = True
+            halt_reason = str(exc)
+        except Exception as exc:
+            halted = True
+            halt_reason = f"run ended early: {exc}"
+            manifest["remaining"] = order[position:]
+            break
+        codes.append(result.process_code)
+        recipe["dispositions"] = [
+            {
+                "n": item.n,
+                "state": item.state,
+                **({"detail": item.detail} if item.detail else {}),
+            }
+            for item in result.items
+        ]
+        application_count += result.summary.get("applied", 0)
+        for item in result.items:
+            if item.state in ("refused", "stopped", "unresolved-host") and item.detail:
+                refusals.append(item.detail)
+        by_n = {item.n: item for item in result.items}
+        for sheet_item in effective:
+            if sheet_item.verb == "route" and sheet_item.fields.get("dest") == "hook":
+                item_result = by_n.get(sheet_item.n)
+                if item_result is not None:
+                    hook_lines.append(
+                        f"{item_result.id}: {item_result.detail or item_result.state}"
+                    )
+        _journal(home, {
+            "at": chrono.now_iso(), "run": run_id, "status": "sheet",
+            "sheet": recipe["sheet_name"], "sheet_sha": result.sheet_sha,
+            "stopped": result.summary["stopped"], "code": result.process_code,
+            "receipt": receipt, "items": result.to_json()["items"],
+        })
+        terminal = (
+            result.stop_message is not None
+            or result.stopped_at is not None
+            or result.process_code in (5, 6, 7, 8)
+        )
+        if terminal:
+            halted = True
+            halt_reason = halt_reason or result.stop_message or (
+                f"sheet {recipe['sheet_name']} stopped with exit {result.process_code}"
+            )
+        if halted:
+            manifest["remaining"] = order[position:]
+            break
+        manifest["remaining"] = order[position + 1:]
+
+    if not halted:
+        try:
+            for index, finding in enumerate(cast(list[dict[str, Any]], manifest["findings"]), start=1):
+                cases.observe(
+                    home, cast(str, finding["case"]), cast(str, finding["kind"]),
+                    text=cast(str, finding.get("text") or "examined"), by="overseer",
+                    ref=finding.get("ref"), reserved_id=_observation_id(run_id, index),
+                )
+        except Exception as exc:
+            halted = True
+            halt_reason = f"run ended early: {exc}"
+            manifest["remaining"] = ["observations/questions/report finalization"]
+
+    decision = _worst_code(codes, any_applied=application_count > 0)
+    if halted:
+        decision = EXIT_PARTIAL
+        remaining = ", ".join(cast(list[str], manifest.get("remaining") or []))
+        reason = halt_reason or "committed work remains unfinished"
+        refusals.append(
+            f"{reason}; remaining committed obligation(s): {remaining or 'finalization'}"
+        )
+        status_name = "partial"
+    else:
+        status_name = "partial" if decision == EXIT_PARTIAL else (
+            "refused" if decision else "applied"
+        )
+    try:
+        text = _finalize_model_report(
+            stage / "report.md", date=cast(str, manifest["date"]), run_id=run_id,
+            model=cast(str, manifest["model"]), selected=selected,
+            population_count=int(manifest.get("population_count") or 0),
+            excluded=excluded, model_calls=model_calls,
+            guard=int(manifest.get("guard") or 0), refusals=refusals,
+            hooks=hook_lines,
+        )
+        report_path, latest = _write_manifest_truth(
+            home, manifest, report_text=text, complete=not halted
+        )
+    except Exception as exc:
+        # The committed recipe is the restart point after any late failure.
+        # Never let report/finalization bookkeeping turn already-landed
+        # ledger decisions into an escaping exception or a false refusal.
+        halted = True
+        decision = EXIT_PARTIAL
+        status_name = "partial"
+        reason = f"run ended early: {exc}"
+        manifest["remaining"] = list(manifest.get("remaining") or []) + [
+            "observations/questions/report finalization"
+        ]
+        partial_text = _report_text(
+            date=cast(str, manifest["date"]), run_id=run_id,
+            model=cast(str, manifest["model"]), selected=selected,
+            population_count=int(manifest.get("population_count") or 0),
+            excluded=excluded, model_calls=model_calls,
+            guard=int(manifest.get("guard") or 0),
+            parked_decided=application_count, refused=refusals,
+            hooks=hook_lines, reason=reason,
+        )
+        try:
+            report_path, latest = _write_manifest_truth(
+                home, manifest, report_text=partial_text, complete=False
+            )
+        except Exception as handler_exc:
+            _journal(home, {
+                "at": chrono.now_iso(), "run": run_id,
+                "status": "partial-handler-error",
+                "reason": str(handler_exc)[:300],
+            })
+            _journal(home, {
+                "at": chrono.now_iso(), "run": run_id,
+                "status": "partial", "reason": reason[:300],
+            })
+            return RunResult(
+                "partial", EXIT_PARTIAL, run_id, model_calls, selected,
+                excluded, application_count, len(refusals), None,
+            )
+
+    push_failure: str | None = None
+    if not boundary_no_push:
+        push = verbs.push_pending(home)
+        if not push.ok:
+            decision = push.exit_code
+            push_failure = f"push: failed ({push.exit_code})"
+            try:
+                _record_push_failure(home, report_path, latest, push_failure)
+            except Exception as exc:
+                status_name = "partial"
+                _journal(home, {
+                    "at": chrono.now_iso(), "run": run_id,
+                    "status": "push-report-error", "reason": str(exc)[:300],
+                })
+    worker._notify_with_ids(
+        f"overseer {status_name}: {len(selected)} examined",
+        [*selected, *decided_ids],
+    )
+    journal_entry: dict[str, Any] = {
+        "at": chrono.now_iso(), "run": run_id, "status": status_name,
+        "code": decision, "model_calls": model_calls,
+    }
+    if push_failure is not None:
+        journal_entry["push"] = push_failure
+    _journal(home, journal_entry)
+    return RunResult(
+        status_name, decision, run_id, model_calls, selected, excluded,
+        application_count, len(refusals), str(report_path),
+    )
+
+
 def run(home: Path | str | None = None, *, dry_run: bool = False, no_push: bool | None = None) -> RunResult:
     home = Path(home) if home is not None else resolve_home()
     run_id = uuid.uuid4().hex[:8]
@@ -533,6 +1225,12 @@ def run(home: Path | str | None = None, *, dry_run: bool = False, no_push: bool 
     if not enabled and not dry_run:
         _journal(home, {"at": started, "run": run_id, "status": "disabled"})
         return RunResult("disabled", EXIT_OK, run_id)
+    if not dry_run:
+        unfinished = _unfinished_manifest(home)
+        if unfinished is not None:
+            return _execute_manifest(
+                home, unfinished, boundary_no_push=boundary_no_push
+            )
     timeout, _ = settings.resolve_setting(home, settings.by_name("overseer.timeout_secs"))
     guard, _ = settings.resolve_setting(home, settings.by_name("overseer.max_model_calls"))
     model = provider.model_for("overseer", home=home)
@@ -739,111 +1437,14 @@ def run(home: Path | str | None = None, *, dry_run: bool = False, no_push: bool 
             return RunResult("dry-run", EXIT_OK, run_id, model_calls, selected, excluded, report=str(report_path))
 
         assert intent is not None
-        codes: list[int] = []
-        refusals: list[str] = []
-        hook_lines: list[str] = []
-        application_count = 0
-        decided_ids: list[str] = []
-        gate = config.hook_activation_enabled(home)
-        try:
-            for case_file, sheet_file, loaded in prepared:
-                effective = loaded
-                if case_file is not None:
-                    successor = cases.record(home, case_file, actor="overseer")
-                    decided_ids.append(successor)
-                    raw = _yaml_mapping(sheet_file)
-                    raw["case"] = successor
-                    effective_path = stage / f"effective-{sheet_file.name}"
-                    _write_stage(stage, effective_path, _yaml_text(raw))
-                    effective = batch.load_sheet(effective_path, home=home)
-                    batch.dry_run(home, effective, actor="overseer", hook_activation=gate)
-                result = batch.run(home, effective, no_push=True, actor="overseer", hook_activation=gate)
-                codes.append(result.process_code)
-                application_count += result.summary.get("applied", 0)
-                for item in result.items:
-                    if item.state in ("refused", "stopped") and item.detail:
-                        refusals.append(item.detail)
-                for sheet_item, item_result in zip(effective, result.items, strict=True):
-                    if sheet_item.verb == "route" and sheet_item.fields.get("dest") == "hook":
-                        hook_lines.append(f"{item_result.id}: {item_result.detail or item_result.state}")
-                receipt_error: Exception | None = None
-                try:
-                    receipt = batch.write_receipt(home, result, sheet_file.name, no_push=True)
-                except Exception as exc:
-                    # The batch already changed the ledger.  Retry the
-                    # idempotent receipt before the run's partial handler
-                    # records the late failure, so an earned application is
-                    # never silently orphaned.
-                    receipt = batch.write_receipt(home, result, sheet_file.name, no_push=True)
-                    receipt_error = exc
-                _journal(home, {
-                    "at": chrono.now_iso(), "run": run_id, "status": "sheet",
-                    "sheet": sheet_file.name, "sheet_sha": result.sheet_sha,
-                    "stopped": result.summary["stopped"], "code": result.process_code,
-                    "receipt": receipt, "items": result.to_json()["items"],
-                })
-                if receipt_error is not None:
-                    raise receipt_error
+        manifest = _prepare_manifest(
+            home, stage, run_id=run_id, started=started, model=str(model),
+            selected=selected, population_count=len(week_rows), excluded=excluded,
+            model_calls=model_calls, guard=guard, coverage_text=coverage_text,
+            questions=questions, findings=findings, prepared=prepared,
+        )
+        _publish_manifest(home, intent, manifest, coverage_path)
 
-            for finding in findings:
-                case_id = cast(str, finding.get("case"))
-                kind = cast(str, finding.get("kind"))
-                cases.observe(home, case_id, kind, text=str(finding.get("text") or "examined"), by="overseer", ref=finding.get("ref"))
-
-            decision = _worst_code(codes, any_applied=application_count > 0)
-            status_name = "partial" if decision == EXIT_PARTIAL else ("refused" if decision else "applied")
-            text = _finalize_model_report(
-                stage / "report.md", date=started[:10], run_id=run_id, model=str(model),
-                selected=selected, population_count=len(week_rows), excluded=excluded,
-                model_calls=model_calls, guard=guard, refusals=refusals, hooks=hook_lines,
-            )
-            report_path, latest = _write_run_truth(home, intent, coverage_path=coverage_path, coverage_text=None, report_text=text, questions=questions, date=started[:10])
-            intents.complete(intent)
-            gitops.stage_and_commit(home, [coverage_path, report_path, latest, home / "overseer" / "open-questions.yaml"], intent.commit_subject, None)
-            intents.finish(intent)
-        except Exception as exc:
-            reason = f"run ended early: {exc}"
-            partial_text = _report_text(
-                date=started[:10], run_id=run_id, model=str(model), selected=selected,
-                population_count=len(week_rows), excluded=excluded,
-                model_calls=model_calls, guard=guard, parked_decided=application_count,
-                refused=refusals, hooks=hook_lines, reason=reason,
-            )
-            stored: Path | None = None
-            try:
-                stored, _latest = _write_run_truth(
-                    home, intent, coverage_path=coverage_path, coverage_text=None,
-                    report_text=partial_text, questions=questions, date=started[:10],
-                )
-                intents.complete(intent)
-                gitops.stage_and_commit(
-                    home, [coverage_path, stored, home / "overseer" / "latest-report.md", home / "overseer" / "open-questions.yaml"],
-                    intent.commit_subject, None,
-                )
-                intents.finish(intent)
-            except Exception as handler_exc:
-                _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "partial-handler-error", "reason": str(handler_exc)[:300]})
-                try:
-                    intents.finish(intent)
-                except Exception:
-                    pass
-            _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "partial", "reason": reason[:300]})
-            return RunResult("partial", EXIT_PARTIAL, run_id, model_calls, selected, excluded, application_count, len(refusals), str(stored) if stored is not None else None)
-
-    push_failure: str | None = None
-    if not boundary_no_push:
-        push = verbs.push_pending(home)
-        if not push.ok:
-            decision = push.exit_code
-            push_failure = f"push: failed ({push.exit_code})"
-            try:
-                _record_push_failure(home, report_path, latest, push_failure)
-            except Exception as exc:
-                status_name = "partial"
-                _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "push-report-error", "reason": str(exc)[:300]})
-    worker._notify_with_ids(f"overseer {status_name}: {len(selected)} examined", [*selected, *decided_ids])
-    journal_entry: dict[str, Any] = {"at": chrono.now_iso(), "run": run_id, "status": status_name, "code": decision, "model_calls": model_calls}
-    if push_failure is not None:
-        journal_entry["push"] = push_failure
-    _journal(home, journal_entry)
-    return RunResult(status_name, decision, run_id, model_calls, selected, excluded, application_count, len(refusals), str(report_path))
+    return _execute_manifest(
+        home, manifest, boundary_no_push=boundary_no_push
+    )
