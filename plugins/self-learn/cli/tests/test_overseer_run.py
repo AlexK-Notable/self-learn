@@ -759,6 +759,21 @@ def test_runner_added_lines_remove_bare_none_placeholders(tmp_path):
     assert model == "- um-abcd: add applied"
 
 
+def test_runner_template_refused_section_has_no_placeholder_beside_a_reason():
+    """The runner-owned template (refused runs, partial runs) must not print the
+    run-level reason and then a '- none'.  Positive control: no reason, no refusals
+    keeps the placeholder."""
+    kwargs = dict(date="2026-09-14", run_id="12345678", model="m", selected=(),
+                  population_count=0, excluded=0, model_calls=2, guard=50)
+    quiet = overseer_run._report_text(**kwargs)
+    assert quiet.split("## Refused / could not do\n", 1)[1].strip() == "- none"
+    refused = overseer_run._report_text(**kwargs, reason="sheet-1.yaml: item 1 close_call must be boolean")
+    section = refused.split("## Refused / could not do\n", 1)[1].strip()
+    assert section == "- sheet-1.yaml: item 1 close_call must be boolean"
+    both = overseer_run._report_text(**kwargs, reason="run ended early", refused=["item 2 refused"])
+    assert both.split("## Refused / could not do\n", 1)[1].strip() == "- run ended early\n- item 2 refused"
+
+
 def test_examined_and_refused_sections_lose_the_placeholder_too(tmp_path):
     """Observed by hand 2026-09-14: the runner's facts and refusals were followed by the
     model's own "- none".  Positive control first: the runner-written lines are present."""

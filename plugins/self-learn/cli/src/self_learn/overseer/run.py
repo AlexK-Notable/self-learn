@@ -367,11 +367,11 @@ def _report_text(
     refused = refused or []
     hooks = hooks or []
     selected_text = ", ".join(selected) if selected else "none"
-    refusal_lines = [f"- {line}" for line in refused] or ["- none"]
+    # The run-level reason and the per-item refusals share one list, so a refused
+    # run never reads "- <reason>" followed by "- none" (observed by hand 2026-09-14).
+    refusal_lines = [f"- {line}" for line in ([reason] if reason else []) + refused] or ["- none"]
     hook_lines = [f"- {line}" for line in hooks] or ["- none"]
     model_lines = [f"- {line}" for line in (user_model_lines or [])] or ["- none"]
-    if reason:
-        refusal_lines = [f"- {reason}", *refusal_lines]
     lines = [
         f"# Overseer report — {date}   run {run_id}   actor overseer   model {model}", "",
         f"## Examined ({len(selected)} of {population_count} cases this week, chosen by the overseer; why these, why it stopped)",
