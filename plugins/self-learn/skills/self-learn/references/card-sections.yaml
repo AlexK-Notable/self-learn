@@ -78,6 +78,54 @@ already_kept:
     verdict and never argue for one resolution: it is evidence for the reader's
     decision, and the reader makes that decision.
 
+evidence:
+  label: "What the evidence shows"
+  order: 36
+  required: always
+  instruction: >
+    The checks you actually ran, each as a reference plus the quoted span
+    it rests on (the evidence-reference discipline in routing-doctrine.md
+    §5.2 — RECORD-sourced quotes are containment-checked, TARGET-sourced
+    ones are not). Include the record's own body, its provenance, any
+    canon hits, and whatever `already_kept` above already found — this
+    section is the superset, not a duplicate; do not re-argue the
+    conclusion here, only what supports it. Never paraphrase a check you
+    did not perform as one you did.
+
+questions:
+  label: "What's unresolved"
+  order: 38
+  required: optional
+  instruction: >
+    Name, in one line each, whatever you could not settle: a roster you
+    were never given, a scope you are genuinely unsure of, a doubt about
+    which tier fits. Omit this section entirely when nothing is
+    unresolved — an empty "nothing unresolved" line is not owed here the
+    way it is in `discuss`, because a genuinely settled proposal has no
+    open question to name. Never phrase a rhetorical or leading question
+    here; a real open question is one whose answer would change the
+    outcome.
+
+advice:
+  label: "My advice"
+  # Fold r1 / S2: moved past `discuss`/`lint`/`conflict` (40/50/55) so
+  # the registry's own order agrees with routing-doctrine.md §8
+  # ("identity, then evidence, then whatever is unresolved, then advice
+  # last") and with this section's own instruction below ("read last by
+  # design") — at order 39 advice sorted BEFORE those three footer
+  # sections on every routing proposal (`discuss` is `required: routing`,
+  # so every one of them renders it), which is the opposite of "last".
+  order: 60
+  required: routing
+  instruction: >
+    Your own recommendation, stated as advice a reader can weigh against
+    the evidence above, never as an instruction ("you should…") and never
+    as a fact about what the user prefers unless it cites a statement id.
+    This is `recommendation` in prose, read last by design (routing-doctrine
+    §8's brief order: identity, evidence, questions, advice) — write it
+    assuming the reader has already formed their own view from the sections
+    above, and say what would change your mind.
+
 discuss:
   label: "Worth discussing"
   order: 40

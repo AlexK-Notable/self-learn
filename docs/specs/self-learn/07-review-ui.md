@@ -82,7 +82,10 @@ different producers. Many producers, one adjudication surface.
   `resolution_note` (`02-schema.md` §2) and echoed in the resolving
   commit. Notes are also fuel: the M2 worker's rejected-proposal digest
   reads them, so a note on a denial teaches the analyst *why* that class
-  of proposal loses. *(Dated note 2026-07-18: the shipped surface's
+  of proposal loses. *(Amended 2026-09-14, U7: the digest no longer
+  reaches the analyst prompt — prior decisions arrive there as cited
+  cases instead, `01-architecture.md` §3.3 as amended; `_digest` still
+  reads notes this way, unused in that path.)* *(Dated note 2026-07-18: the shipped surface's
   action set grew beyond this list — armed `host add` on unregistered
   buckets (Y-11/Y-17), agent-proposed `rehome` (Y-18), worker force-run
   (Y-19) — and the Detail page gained the budget indicator (Y-20) and
@@ -160,6 +163,11 @@ Design rules:
    compile+commit, sentinel set/heartbeat/release, self-push, and `--note`
    capture. `/self-learn:review` is a thin caller. If routing logic ever
    lives in the slash command's prompt, the TUI inherits nothing.
+
+   *Renamed 2026-09-13 (`S-67`):* `graduate` is now `retire` in every
+   human-facing surface; the CLI verb itself stays callable as `graduate` for
+   one release as a hidden alias (`02-schema.md` §2 as amended), so this
+   item's verb list is unchanged in substance — only the display word moves.
 2. **`--json` on the read verbs** — the TUI parses structures, not
    human-formatted text.
 3. **Notification payload carries record ids** from M2 day one — the
@@ -174,6 +182,20 @@ Design rules:
    the aggregate notification line both presuppose analysis already done.
 6. **`resolution_note` exists from M1** — the notes corpus and the habit
    must predate the UI that displays them.
+
+7. **Cases are not rendered in this cut** (steward build, U2): the
+   decision case (`02-schema.md` §3a.2) is a new file kind alongside the
+   lesson record; this UI's pages, verbs, and `FakeRunner` contract are
+   unchanged by the steward and overseer build. A case-aware page is
+   forward work (`14-forward-work-map.md` FW-174, merged with the
+   overseer's UI page).
+8. **Every overseer write is a verb, same as every other write this
+   contract already requires** (overseer build, O-3/O-5): `hook activate`/
+   `hook deactivate` (`13-hosting-and-separation.md` §7.4), `overseer
+   open` / `overseer respond` (the conversation surface), and the successor-case verbs a
+   parked-item resolution uses are ordinary CLI verbs behind a thin caller,
+   never UI-side mutation logic — contract 1's own rule extended to the
+   overseer's surfaces before any UI page for them exists.
 
 ## 5. Non-goals
 

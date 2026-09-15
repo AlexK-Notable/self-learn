@@ -62,7 +62,7 @@ _VERB_LABELS = {
     "route": "Approve",
     "reject": "Deny",
     "defer": "Defer",
-    "graduate": "Graduate",
+    "retire": "Retire",
     "rehome": "Move",
     "confirm-recurrence": "Confirm recurrence",
     "link-contradicts": "Link contradiction",
@@ -111,7 +111,7 @@ UI_PARITY_VERBS = frozenset(
         "route",
         "reject",
         "defer",
-        "graduate",
+        "retire",
         "confirm-recurrence",
         "link-contradicts",
         "followup-done",
@@ -151,6 +151,7 @@ def build_argv(
     target: str | None = None,
     to: str | None = None,
     why: str | None = None,
+    covered_by: str | None = None,
     action: str | None = None,
     unblocks_on: str | None = None,
     kind: str | None = None,
@@ -167,7 +168,7 @@ def build_argv(
 
     ``as_json`` (resolution-evidence unit, §2.1): appends ``--json``
     ONLY inside the four branches that support it (route/reject/defer/
-    graduate) — never at the shared ``--note``/``--no-push`` tail below,
+    retire) — never at the shared ``--note``/``--no-push`` tail below,
     which every OTHER verb branch also runs through and whose CLI
     parsers carry no ``--json`` flag at all (``cli.py``'s ``_verb``
     helper only adds it when ``json_flag=True``).
@@ -199,8 +200,8 @@ def build_argv(
             argv += ["--until", until]
         if as_json:
             argv.append("--json")
-    elif verb == "graduate":
-        argv = ["graduate", record_id]
+    elif verb == "retire":
+        argv = ["retire", record_id, "--covered-by", covered_by or ""]
         if as_json:
             argv.append("--json")
     elif verb == "rehome":
@@ -545,7 +546,7 @@ def _pane_manager(request: Request) -> "pane.PaneManager | None":
     """``None`` until the orchestrator applies U6's one-line app.py
     wiring (see ``pane.build_pane_manager``'s docstring) — every pane
     route degrades to a 503 rather than crashing when it's absent, so
-    the rest of the app (approve/deny/defer/graduate, per 09 §5's
+    the rest of the app (approve/deny/defer/retire, per 09 §5's
     invariant: "adjudication never depends on any optional subsystem")
     keeps working even before that line lands."""
     return getattr(request.app.state, "pane_manager", None)
@@ -859,8 +860,8 @@ def detail_page(
         # Code-gate MAJOR 1: the arm/confirm POST routes carry NO status
         # check of their own (§1.3 — measured: `action_arm`/`action_
         # confirm` validate only `verb not in _KNOWN_VERBS`). A
-        # hand-crafted POST still dispatches `graduate` against a
-        # graduated or rejected record — FW-51's territory, not closed
+        # hand-crafted POST still dispatches `retire` against a
+        # retired or rejected record — FW-51's territory, not closed
         # here. Never claim a third gate exists; there are two here.
         # (Spec §2.4 numbers three doors project-wide — this comment
         # is scoped to the two that are action gates in THIS code path,
@@ -1196,13 +1197,18 @@ async def worker_kick(request: Request) -> Response:
     runner = request.app.state.runner
     await _publish_applying(request, "worker", "kick", "start")
     result = await runner.run(["worker", "kick"])
-    await _publish_applying(request, "worker", "kick", "done" if result.ok else "error")
+    await _publish_applying(
+        request, "worker", "kick", "done" if result.ok or result.held else "error"
+    )
     # FW-76 §2.2: on failure, do NOT erase what was just published —
     # no forced refresh, no redirect. Both buttons carry hx-swap="none"
     # (index.html), so a body-less 200 swaps nothing and the human stays
     # on the page they clicked from, with the applying strip's failed
     # entry rendered. The success path below is byte-for-byte unchanged.
-    if not result.ok:
+    # U0 (gate B1): a `held` result (EXIT_HELD, 10) is a completed run
+    # with nothing to show — not a failure — so it takes the SAME path
+    # as `ok`, not this FW-76 error leg.
+    if not result.ok and not result.held:
         return Response(status_code=200)
     _force_refresh(request, "front")
     resp = Response(status_code=200)
@@ -1217,7 +1223,7 @@ async def worker_kick(request: Request) -> Response:
 async def mine_run(request: Request) -> Response:
     """09 §11 Y-5's ONE miner action (R3's one-action pin): force a
     mining pass. No arm-then-confirm ceremony — the miner run is
-    idempotent/non-destructive (unlike route/reject/defer/graduate,
+    idempotent/non-destructive (unlike route/reject/defer/retire,
     which is why THOSE verbs get the arm dance and this doesn't).
 
     UI-walk defect fix: same "Force run" perceptibility gap as
@@ -1230,10 +1236,14 @@ async def mine_run(request: Request) -> Response:
     runner = request.app.state.runner
     await _publish_applying(request, "mine", "run", "start")
     result = await runner.run(["mine", "run", "--trigger", "manual"])
-    await _publish_applying(request, "mine", "run", "done" if result.ok else "error")
+    await _publish_applying(
+        request, "mine", "run", "done" if result.ok or result.held else "error"
+    )
     # FW-76 §2.2: mirrors worker_kick's failure leg above — no forced
-    # refresh, no redirect, on `not result.ok`. See that comment.
-    if not result.ok:
+    # refresh, no redirect, on `not result.ok and not result.held`. See
+    # that comment (U0, gate B1: a `held` result is nothing-to-do, not
+    # a failure).
+    if not result.ok and not result.held:
         return Response(status_code=200)
     _force_refresh(request, "front")
     resp = Response(status_code=200)
@@ -1489,7 +1499,7 @@ def cluster_expand(request: Request, scope: str, name: str, cluster_id: str) -> 
 #
 # ONE partial (templates/partials/action_bar.html) renders every action
 # bar "kind" in the app — Detail's/a Bucket row's full quad (route/
-# reject/defer/graduate — 09 §1: "also usable on a Bucket row"), a Y-4
+# reject/defer/retire — 09 §1: "also usable on a Bucket row"), a Y-4
 # holding row's t/c pair, a Y-6 followup row's single done action, and a
 # post-route Y-8 contradicts-edge offer. ARMED rendering is verb-agnostic
 # (verb/id/destination/note-presence — 09 §1) so the branch is shared;
@@ -1530,7 +1540,7 @@ def _unarmed_context(
         "commit_drift": None,
         # Resolution-evidence unit (§2.2): set by action_confirm's,
         # proposal_confirm's AND commit_drift_confirm's success legs for
-        # route/reject/defer/graduate — every other caller leaves this
+        # route/reject/defer/retire — every other caller leaves this
         # `None`, which is what lets action_bar.html's final quad branch
         # keep rendering for them.
         #
@@ -1607,6 +1617,7 @@ def _armed_context(
     dest_touched: bool = False,
     scope: str | None = None,
     why: str | None = None,
+    covered_by: str | None = None,
 ) -> dict[str, Any]:
     return {
         "kind": kind,
@@ -1636,6 +1647,7 @@ def _armed_context(
             "tolerate": tolerate,
             "target": target,
             "why": why,
+            "covered_by": covered_by,
             "show_note_hint": verb == "reject" and not note,
             # FW-64: carried through to the confirm form as a hidden
             # field, same discipline as every other armed.* value here
@@ -1660,7 +1672,7 @@ def _armed_context(
 # contradicts/followup-done, which stay on the pre-existing
 # HX-Redirect (unchanged, out of scope: they carry no envelope at all,
 # `RunResult.evidence` is always `None` for them by construction).
-_EVIDENCE_VERBS = frozenset({"route", "reject", "defer", "graduate"})
+_EVIDENCE_VERBS = frozenset({"route", "reject", "defer", "retire"})
 
 #: The envelope keys (§2.1) copied verbatim into the render context —
 #: never renamed, never reshaped; action_bar.html/evidence.html do the
@@ -1706,7 +1718,7 @@ def _evidence_ctx(
         # U-grad-ui §6.2 (superseding the old Code-gate finding 2
         # rationale, now FALSE): `/record/{id}` no longer redirects for a
         # resolved record — `detail_page`'s GET renders the VIEWABLE
-        # resolved template instead (§2.1). So `route`/`reject`/`graduate`
+        # resolved template instead (§2.1). So `route`/`reject`/`retire`
         # COULD now honestly offer "View the record" here. This link
         # stays omitted for them anyway — deliberately, not by omission:
         # wiring it is a behaviour change to a success-leg surface shipped
@@ -1740,6 +1752,7 @@ def action_arm(
     target: str | None = Form(None),
     dest_touched: bool = Form(False),
     why: str | None = Form(None),
+    covered_by: str | None = Form(None),
 ) -> HTMLResponse:
     if verb not in _KNOWN_VERBS:
         return HTMLResponse("unknown verb", status_code=400)
@@ -1760,6 +1773,7 @@ def action_arm(
         dest_touched=dest_touched,
         scope=_record_scope(request, record_id),
         why=why or None,
+        covered_by=covered_by or None,
     )
     return _render(request, "partials/action_bar.html", ctx)
 
@@ -1993,6 +2007,7 @@ async def action_confirm(
     target: str | None = Form(None),
     dest_touched: bool = Form(False),
     why: str | None = Form(None),
+    covered_by: str | None = Form(None),
 ) -> Response:
     if verb not in _KNOWN_VERBS:
         return HTMLResponse("unknown verb", status_code=400)
@@ -2022,6 +2037,7 @@ async def action_confirm(
         tolerate=tolerate,
         target=target or None,
         why=why or None,
+        covered_by=covered_by or None,
         as_json=verb in _EVIDENCE_VERBS,
     )
 
@@ -2089,7 +2105,7 @@ async def action_confirm(
     # Y-13 clear-set: the record left pending — a pane proposal on it
     # must not outlive the resolution (this is the same-server half; the
     # detail_page banner path covers external resolutions on next render).
-    if verb in ("route", "reject", "graduate", "defer"):
+    if verb in ("route", "reject", "retire", "defer"):
         slot = _proposal_slot(request)
         if slot is not None:
             slot.clear_for_record(record_id)
@@ -2250,7 +2266,7 @@ COMMIT_DRIFT_MARKERS = (GITOPS_DIRTY_MARKER,)
 def _commit_drift_eligible(verb: str, stderr: str | None) -> bool:
     """§2.2: the button renders ONLY for a failed ``route`` whose stderr
     carries one of the two pinned dirty markers — never for any other
-    verb (reject/defer/graduate/… never touch a compile target), and
+    verb (reject/defer/retire/… never touch a compile target), and
     never for the drift refusal, which carries neither (gate M2)."""
     if verb != "route" or not stderr:
         return False
@@ -2944,6 +2960,7 @@ async def proposal_confirm(
         note=prop.note,
         until=prop.until,
         to=prop.to,
+        covered_by=prop.covered_by,
         as_json=prop.verb in _EVIDENCE_VERBS,
     )
     # U-C3 fix: same pre-verb capture as action_confirm (see
@@ -3202,11 +3219,24 @@ async def events(request: Request) -> StreamingResponse:
     )
 
 
-# --------------------------------------------------------------- bulk graduate
+# ----------------------------------------------------------------- bulk retire
 
 
-@router.post("/bucket/{scope}/{name}/graduate-bulk", response_class=HTMLResponse)
-async def graduate_bulk(request: Request, scope: str, name: str, ids: str = Form(...)) -> Response:
+@router.post("/bucket/{scope}/{name}/retire-bulk", response_class=HTMLResponse)
+async def retire_bulk(
+    request: Request,
+    scope: str,
+    name: str,
+    ids: str = Form(...),
+    covered_by: str = Form(...),
+) -> Response:
+    """S-67: the Bulk-acknowledge card's Apply — ONE covering surface
+    (`covered_by`), REQUIRED, applied to every selected id (the group is
+    homogeneous by construction — `commands/review.md`'s composition/
+    already-canon card — so a single surface, not a per-record one, is
+    the shape this bulk action collects; each id still resolves via its
+    own `self-learn retire <id> --covered-by <surface>` call below,
+    never a batch verb)."""
     home = _home(request)
     runner = request.app.state.runner
     id_list = [i for i in ids.split(",") if i]
@@ -3230,7 +3260,7 @@ async def graduate_bulk(request: Request, scope: str, name: str, ids: str = Form
         # client reads `<done + 1>` as the item now running.
         if hub is not None:
             await hub.publish(envelope_bulk_progress(done, total))
-        argv = build_argv("graduate", record_id, no_push=True)
+        argv = build_argv("retire", record_id, covered_by=covered_by, no_push=True)
         result = await runner.run(argv)
         if not result.ok:
             failed_id = record_id
@@ -3250,13 +3280,13 @@ async def graduate_bulk(request: Request, scope: str, name: str, ids: str = Form
         # user is waiting through, so the strip stays up for it (R2).
         await hub.publish(envelope_bulk_progress(done, total))
     _force_refresh(request, f"bucket:{name}")
-    _sweep_stale_proposal(request)  # review F3: bulk-graduated records
+    _sweep_stale_proposal(request)  # review F3: bulk-retired records
 
     if failed_id is not None:
         return _render(
             request,
             "partials/error_strip.html",
-            {"error": f"bulk graduate stopped at {failed_id}"},
+            {"error": f"bulk retire stopped at {failed_id}"},
             status_code=200,
         )
     return RedirectResponse(url=f"/bucket/{scope}/{name}", status_code=303)

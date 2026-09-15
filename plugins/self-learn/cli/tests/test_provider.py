@@ -55,10 +55,14 @@ _PROVIDER_ENV_VARS = (
     "SELF_LEARN_WORKER_MODEL",
     "SELF_LEARN_MINER_MODEL",
     "SELF_LEARN_ANALYST_MODEL",
+    "SELF_LEARN_STEWARD_MODEL",
+    "SELF_LEARN_OVERSEER_MODEL",
     "SELF_LEARN_BACKEND",
     "SELF_LEARN_BACKEND_WORKER",
     "SELF_LEARN_BACKEND_MINER",
     "SELF_LEARN_BACKEND_ANALYST",
+    "SELF_LEARN_BACKEND_STEWARD",
+    "SELF_LEARN_BACKEND_OVERSEER",
 )
 
 
@@ -191,6 +195,12 @@ def test_pr1_config_module_exports(tmp_path):
         # exports (kept out of the §2.10b census — this is the one-line
         # consequence of MODE3 existing at all).
         "effective_default_mode",
+        # S-66 / 13 §7.4 (the overseer build, O-2a): the overseer's own
+        # delegation switch, `overseer.hook_activation` -- same S-10
+        # fail-closed pattern as `one_motion_enabled` above, added
+        # alongside it for the same reason `effective_default_mode` sits
+        # here: another config.yaml accessor this module already owns.
+        "hook_activation_enabled",
         "invocation_backend",
         "load_editable",
         "one_motion_enabled",
@@ -715,6 +725,40 @@ def test_md6_no_claude_literal_in_provider_module_and_no_real_id_in_tests():
         for m in id_re.finditer(text):
             literal = m.group(0)
             assert "example" in literal, f"D-6: non-placeholder Bedrock id {literal!r} in {name}"
+
+
+def test_md7_steward_and_overseer_model_env_first_and_bedrock_config(tmp_path, monkeypatch):
+    """U8 (17-invocation-runbook.md §1; S-18 as amended: Fable 5.1
+    default). `model_for` treats `steward`/`overseer` exactly like every
+    other surface: default (no env, no config) is the shipped Fable
+    literal; `SELF_LEARN_<SURFACE>_MODEL` wins verbatim, even under
+    provider=bedrock (mirrors `test_md2`); the `provider.bedrock.models.
+    <surface>` config rung wins over the default only when active and
+    set, and never over env (mirrors `test_md3`)."""
+    assert provider.model_for("steward", home=tmp_path) == "claude-fable-5-1"
+    assert provider.model_for("overseer", home=tmp_path) == "claude-fable-5-1"
+
+    monkeypatch.setenv("SELF_LEARN_STEWARD_MODEL", "env-steward")
+    monkeypatch.setenv("SELF_LEARN_OVERSEER_MODEL", "env-overseer")
+    assert provider.model_for("steward", home=tmp_path) == "env-steward"
+    assert provider.model_for("overseer", home=tmp_path) == "env-overseer"
+    _write_provider_yaml(tmp_path, name="bedrock")
+    assert provider.model_for("steward", home=tmp_path) == "env-steward"
+    assert provider.model_for("overseer", home=tmp_path) == "env-overseer"
+    monkeypatch.delenv("SELF_LEARN_STEWARD_MODEL")
+    monkeypatch.delenv("SELF_LEARN_OVERSEER_MODEL")
+    (tmp_path / "config.yaml").unlink()
+
+    _write_provider_yaml(
+        tmp_path,
+        name="bedrock",
+        bedrock={"models": {"steward": BEDROCK_ID, "overseer": BEDROCK_ID_2}},
+    )
+    assert provider.model_for("steward", home=tmp_path) == BEDROCK_ID
+    assert provider.model_for("overseer", home=tmp_path) == BEDROCK_ID_2
+
+    monkeypatch.setenv("SELF_LEARN_STEWARD_MODEL", "env-wins-over-bedrock-config")
+    assert provider.model_for("steward", home=tmp_path) == "env-wins-over-bedrock-config"
 
 
 # ===================================================================== #

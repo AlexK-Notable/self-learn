@@ -24,6 +24,22 @@ serious corrections in one session each deserve an offer. Invocation is
 the approval: if the user says capture it, run teach — no confirmation
 prompt after.
 
+## The steward and the overseer
+
+Most pending lessons are now decided without a human in the loop. The
+**steward** runs nightly: it reads each candidate's brief, decides the
+ones it has clear authority for, and **parks** the rest — a values call,
+a hook route, anything whose consequences would be severe or would
+spread before the next examination — for the **overseer**, which runs
+weekly, decides parked items in the user's
+stead, and independently re-examines a sample of the week's steward
+decisions before writing a short report. Neither ever treats its own
+reading of the user as something the user said: a system-formed reading
+is marked provisional until a presentation shows it to them, and silence
+is never read as agreement.
+`/self-learn:review` and the G-3 surface still work exactly as before —
+this is what happens on the nights and weeks nobody opens either one.
+
 ## CLI surface
 
 | Verb | Semantics (one line) |
@@ -35,7 +51,7 @@ prompt after.
 | `telemetry note <kind> [--reason …]` | Spool one offer-ledger event (`offer-made` \| `offer-declined`, reason enum: not-durable\|wrong\|duplicate\|private\|later\|other). Cache-only — no repo write, no commit |
 | `telemetry flush` | Spool → tracked `telemetry/` files in the ledger home (scan-at-flush; the flush commits them — every producer commits its own writes, H-5). Teach/import/resolution verbs flush automatically |
 | `report [--json]` | Facts layer v1: lifecycle counts, open follow-ups, deferred aging, offer ledger (capture rate labeled as a ceiling — declined-offer logging is best-effort) |
-| `reject <id>` / `defer <id> [--until D]` / `graduate <id>` | Resolve without routing: rejected / hidden until date (default +30 d) / woven into authored canon |
+| `reject <id>` / `defer <id> [--until D]` / `retire <id> --covered-by <surface>` | Resolve without routing: rejected / hidden until date (default +30 d) / woven into already-loaded canon, the surface named (`graduate` is the old name, kept as a hidden alias for one release) |
 | `supersede <old> <new>` | Mark a lesson corrected by a newer one (metadata + recompile) |
 | `route <survivor> --collapse <cluster-id>` | Collapse a worker-proposed duplicate cluster in ONE commit: evidence merged, sightings summed, losers superseded by the survivor |
 | `confirm-recurrence <id> --event <nonce> [--tolerate --note …]` | A routed rule was sighted failing again: append the dated recurrence (facts copied from the telemetry event). Tolerate = the rule stays, with the why |
@@ -63,6 +79,9 @@ rule printed), `--redact` opt-in on capture surfaces, no bypass flag.
 - `/self-learn:review` — bounded triage batch: proposal per card, four
   options (route / reject / defer / discuss), bulk-acknowledge, session-end
   push. Routing doctrine: `references/routing-doctrine.md`.
+- `/self-learn:overseer` — open the overseer's latest report and its
+  interpretation questions, and record your replies. Never a review
+  session: nothing here approves a lesson.
 
 ## The G-3 surface — a richer review venue
 

@@ -50,6 +50,7 @@ from . import hosts as hosts_mod
 from . import reconcile as reconcile_mod
 from . import (
     batch,
+    cases,
     config,
     gitops,
     intents,
@@ -60,7 +61,10 @@ from . import (
     sentinel,
     serve,
     settings,
+    statements,
+    steward,
     telemetry,
+    user_model,
     verbs,
     worker,
 )
@@ -69,6 +73,9 @@ from .import_backlog import import_backlog
 from .import_common import ImporterError
 from .import_memory import import_memory, prune_memory
 from .gitops import EXIT_GIT_FAILED
+from .overseer import cli as overseer_cli
+from .overseer import conversation as overseer_conversation
+from .overseer import run as overseer_run
 from .ledger import (
     EXIT_NO_HOME,
     InitError,
@@ -97,6 +104,18 @@ EXIT_OK = 0
 # never see usage errors aliased onto scan hits). argparse's own flag-error
 # exit stays 2 but cannot occur on a well-formed programmatic invocation.
 EXIT_USAGE = 64
+
+#: FW-85 (U0): the unattended-run contract for `mine run` / `worker run` /
+#: `worker kick` — a SEPARATE, smaller integer space from the eight-plus-
+#: one verb/batch contract above (`EXIT_BATCH_PARTIAL`'s own docstring
+#: draws that line; `mine run`/`worker kick` were never inside it). `10`
+#: is the next free integer (0-9 and 64 are taken above). Means: the run
+#: found nothing due and held, or no child was spawned, for a reason
+#: SHORT of failure — `commands/review.md`'s exit-code table: "this is
+#: NOT a failure, and before FW-85 it was indistinguishable from `0`."
+#: Distinct from `gitops.EXIT_GIT_FAILED` (a STOP intent blocked the run
+#: before it started) and from plain `1` (an actual failure).
+EXIT_HELD = 10
 
 #: U-verbs §3.3a: the ONE integer the batch executor adds to the
 #: eight-integer contract above — "batch completed; N applied, M
@@ -151,6 +170,156 @@ def default_memory_dir() -> Path | None:
     """
     env = os.environ.get("SELF_LEARN_MEMORY_DIR")
     return Path(env).expanduser() if env else None
+
+
+def _add_case_parser(sub) -> None:
+    """`case record|show|list|observe|receipt|index --rebuild` (U2,
+    `02-schema.md` §3a.2; `index` per D-d/S9 — was `rebuild-index`).
+    `commands/review.md`'s "Cases" section documents `show`/`list`/
+    `observe` (and `record` in prose, for the parked-successor flow)
+    with no `--actor`/`--by` flags shown there — this parser adds them
+    explicitly (the review doc's grammar is illustrative prose, not the
+    full flag table); `receipt` and `index` are not mentioned in that
+    doc at all. See this unit's report for the full list against
+    `commands/review.md`."""
+    case_p = sub.add_parser("case", help="decision-case store (S-65, 02 §3a.2)")
+    case_sub = case_p.add_subparsers(dest="case_command", metavar="<verb>")
+
+    crecord = case_sub.add_parser("record", help="validate a stage file, assign an id, commit")
+    crecord.add_argument("stage_file", metavar="STAGE-FILE.yaml")
+    crecord.add_argument("--actor", required=True, choices=sorted(cases.ACTORS))
+    crecord.add_argument("--json", action="store_true", dest="as_json")
+
+    cshow = case_sub.add_parser("show", help="the frozen decided account — blind by default")
+    cshow.add_argument("id", metavar="case-...")
+    cshow.add_argument("--evidence-only", action="store_true", dest="evidence_only")
+    cshow.add_argument("--json", action="store_true", dest="as_json")
+
+    clist = case_sub.add_parser("list", help="query the case index")
+    clist.add_argument("--since", metavar="T")
+    clist.add_argument("--provisional", action="store_true", dest="provisional")
+    clist.add_argument("--parked-for", dest="parked_for")
+    clist.add_argument("--parked-reason", dest="parked_reason", choices=sorted(cases.PARKED_REASONS))
+    clist.add_argument("--record", dest="record_id", metavar="lrn-...")
+    clist.add_argument("--json", action="store_true", dest="as_json")
+
+    cobserve = case_sub.add_parser("observe", help="append a Later-observations entry")
+    cobserve.add_argument("id", metavar="case-...")
+    cobserve.add_argument("--kind", required=True, choices=sorted(cases.OBSERVE_KINDS))
+    cobserve.add_argument("--text", required=True)
+    cobserve.add_argument("--by", required=True, choices=sorted(cases.ACTORS))
+    cobserve.add_argument("--ref")
+    cobserve.add_argument("--to")
+    cobserve.add_argument("--covering", choices=sorted(cases.COVERING_VALUES))
+    cobserve.add_argument("--entries", metavar="um-...[,um-...]")
+    # Spelled "--presented-outcome", not the shorter flag spelling that
+    # `commands/review.md` documents (line 419) — `test_composer.py`'s
+    # AST-pinned A22 guard greps that shorter double-quoted literal out
+    # of the whole of cli.py to enforce §3.10's MUST NOT ("no CLI verb
+    # anywhere accepts gate values as arguments" — the composer/analyst
+    # `gates`/`flags`/`recommendation` honesty constraint,
+    # u-composer-prompt-and-doctrine-spec.md lines 1086-1089/1401-1409).
+    # A case's presentation outcome (agreed/corrected/noted) is a
+    # different field in a different domain, but A22's check is a blunt
+    # whole-file string search with no verb-namespace scoping, so the
+    # literal collides regardless of meaning. test_composer.py is
+    # armor-pinned (AST-pinned behaviour file) and may not be edited
+    # here without a dated exemption this unit is not chartered to add,
+    # so the flag is respelled instead. `dest="outcome"` keeps
+    # `args.outcome` and `cases.observe(outcome=...)` unchanged. Real
+    # conflict between two already-landed artifacts on this branch,
+    # documented (not resolved) in this unit's report.
+    cobserve.add_argument("--presented-outcome", dest="outcome", choices=sorted(cases.PRESENTED_OUTCOMES))
+    cobserve.add_argument("--via", choices=sorted(cases.VIA_VALUES))
+    cobserve.add_argument("--json", action="store_true", dest="as_json")
+
+    creceipt = case_sub.add_parser("receipt", help="append Application-section lines from a batch result")
+    creceipt.add_argument("id", metavar="case-...")
+    creceipt.add_argument("--from-batch", required=True, dest="from_batch", metavar="BATCH-RESULT.json")
+    creceipt.add_argument("--json", action="store_true", dest="as_json")
+
+    # D-d / S9: the interface draft's standing working name (§6, R-12) is
+    # `case index --rebuild`, not `case rebuild-index` — the function has
+    # a clear spec basis, only the CLI spelling diverges. `--rebuild` is
+    # required (the only mode today), matching that exact invocation.
+    cindex = case_sub.add_parser("index", help="rebuild the cache index from the case files on disk")
+    cindex.add_argument(
+        "--rebuild", action="store_true", required=True,
+        help="rebuild from the case files on disk (the only mode today)",
+    )
+    cindex.add_argument("--json", action="store_true", dest="as_json")
+
+
+def _add_statement_parser(sub) -> None:
+    """`statement add|list` (U2, `02-schema.md` §3a.3). `list` is not in
+    `commands/review.md`'s "Cases" section (only `add` is documented
+    there) — see this unit's report."""
+    stmt_p = sub.add_parser("statement", help="user-statement store (S-65, 02 §3a.3)")
+    stmt_sub = stmt_p.add_subparsers(dest="statement_command", metavar="<verb>")
+
+    sadd = stmt_sub.add_parser("add", help="append one statement line (idempotent on its dedupe key)")
+    sadd.add_argument("--verbatim", required=True)
+    sadd.add_argument("--ref", required=True, dest="message_ref", metavar="transcript:...#L.. | conversation:<obs-id>")
+    sadd.add_argument("--recorded-by", required=True, dest="recorded_by", choices=sorted(statements.RECORDED_BY_VALUES))
+    sadd.add_argument("--answers-kind", dest="answers_kind", choices=sorted(statements.ANSWER_KINDS))
+    sadd.add_argument("--answers-ref", dest="answers_ref")
+    sadd.add_argument("--answers-text", dest="answers_text")
+    sadd.add_argument("--scope-level", dest="scope_level", choices=sorted(statements.SCOPE_LEVELS))
+    sadd.add_argument("--scope-host", dest="scope_host")
+    sadd.add_argument("--uncertainty")
+    sadd.add_argument("--amends", metavar="stmt-...")
+    sadd.add_argument("--json", action="store_true", dest="as_json")
+
+    slist = stmt_sub.add_parser("list", help="read-only linear scan over the store")
+    slist.add_argument("--scope-level", dest="scope_level", choices=sorted(statements.SCOPE_LEVELS))
+    slist.add_argument("--recorded-by", dest="recorded_by", choices=sorted(statements.RECORDED_BY_VALUES))
+    slist.add_argument("--since", metavar="T")
+    slist.add_argument("--answers-ref", dest="answers_ref")
+    slist.add_argument("--json", action="store_true", dest="as_json")
+
+
+def _add_user_model_parser(sub) -> None:
+    """`user-model show|add|lapse` (U2, `02-schema.md` §3a.4). `show` is
+    not in the interface draft's verb table or in `commands/review.md`
+    — see this unit's report. `bump` is GONE (D-d/S8: no spec or draft
+    basis — every other verb already bumps `revision` through `_save`,
+    so `bump` committed with no content change)."""
+    um_p = sub.add_parser("user-model", help="the model of the user (S-65, 02 §3a.4)")
+    um_sub = um_p.add_subparsers(dest="user_model_command", metavar="<verb>")
+
+    um_sub.add_parser("show", help="the whole document, all five containers")
+
+    uadd = um_sub.add_parser("add", help="add one entry to a container")
+    uadd.add_argument("--container", required=True, choices=sorted(user_model.CONTAINERS))
+    uadd.add_argument("--title", required=True)
+    uadd.add_argument("--because", required=True)
+    uadd.add_argument("--source", required=True, choices=sorted(user_model.SOURCES))
+    uadd.add_argument("--by", required=True, choices=sorted(user_model.ACTORS))
+    uadd.add_argument("--held-since", dest="held_since", metavar="YYYY-MM-DD")
+    uadd.add_argument("--conditions", metavar="key[,key]")
+    uadd.add_argument("--ref")
+    uadd.add_argument("--statements", metavar="stmt-...[,stmt-...]")
+    uadd.add_argument("--recorded-by", dest="recorded_by", choices=sorted(user_model.ACTORS))
+    uadd.add_argument("--basis", metavar="um-...@r...[,um-...@r...]")
+    # D-f: `--no-provisional` is GONE — the flag that let a caller create
+    # an already-seen (`provisional: false`) system-reading entry at
+    # creation time. Gate r2 N2: `--provisional` is GONE TOO — round 1
+    # kept it as an inert flag (`add_entry` never took a `provisional`
+    # parameter; a system-reading entry is always created `true`)
+    # because `commands/review.md` documented an example invocation
+    # using it; round 2 settles this the other way — drop the flag,
+    # fix the one doc line instead of carrying a parse-but-do-nothing
+    # flag forward.
+    uadd.add_argument("--json", action="store_true", dest="as_json")
+
+    ulapse = um_sub.add_parser("lapse", help="mark one entry LAPSED")
+    ulapse.add_argument("id", metavar="um-...")
+    ulapse.add_argument("--changed-condition", dest="changed_condition")
+    ulapse.add_argument("--contrary")
+    ulapse.add_argument("--consolidated-into", dest="consolidated_into", metavar="um-...")
+    ulapse.add_argument("--by", required=True, choices=sorted(user_model.ACTORS))
+    ulapse.add_argument("--at", metavar="YYYY-MM-DD")
+    ulapse.add_argument("--json", action="store_true", dest="as_json")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -224,9 +393,32 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     def _verb(
-        name: str, help_text: str, *, json_flag: bool = False
+        name: str,
+        help_text: str,
+        *,
+        json_flag: bool = False,
+        hidden: bool = False,
     ) -> argparse.ArgumentParser:
-        p = sub.add_parser(name, help=help_text)
+        # S-67: `hidden=True` (the `graduate` alias) registers the
+        # sub-parser exactly as before -- `self-learn graduate ...` still
+        # runs and `self-learn graduate --help` still shows *help_text*
+        # -- but omits it from `self-learn --help`'s own listing of
+        # commands. `help=argparse.SUPPRESS` on `add_parser()` alone does
+        # NOT do this (measured on Python 3.13.11: the row still prints,
+        # with the literal string "==SUPPRESS==" as its help text --
+        # `_format_action` only skips an action whose `.help is SUPPRESS`
+        # for ordinary arguments, not for a subparsers choice-pseudo-
+        # action). The actual fix strips the pseudo-action `add_parser`
+        # appended to the subparsers action's own choices list, which is
+        # what `HelpFormatter` iterates to build that listing --
+        # `p.add_argument("--covered-by", ...)` runs later and is
+        # unaffected; `self-learn graduate --help` still resolves *p*
+        # directly, never through this list.
+        p = sub.add_parser(name, help=argparse.SUPPRESS if hidden else help_text)
+        if hidden:
+            sub._choices_actions = [  # noqa: SLF001 -- no public API for this
+                a for a in sub._choices_actions if a.dest != name
+            ]
         p.add_argument("--note", metavar="TEXT", help="resolution note → commit body")
         p.add_argument(
             "--no-push",
@@ -238,9 +430,12 @@ def _build_parser() -> argparse.ArgumentParser:
             # Resolution-evidence unit (§2.1/§3.1): a machine envelope on
             # stdout, populated ONLY on a successful (exit 0) run — never
             # a second outcome channel. Scoped to route/reject/defer/
-            # graduate (the resolution verbs the UI's evidence surface
-            # drives) — never rehome/supersede/confirm-recurrence/
-            # confirm-held, which stay text-only.
+            # retire/graduate/reconsider (fold r1, F7: U5 adds
+            # `reconsider` as a fifth `--json` verb; S-67 adds `retire`
+            # as a sixth, `graduate` staying its hidden alias — the
+            # resolution verbs the UI's evidence surface drives) — never
+            # rehome/supersede/confirm-recurrence/confirm-held, which
+            # stay text-only.
             p.add_argument(
                 "--json",
                 action="store_true",
@@ -323,10 +518,43 @@ def _build_parser() -> argparse.ArgumentParser:
     defer.add_argument("id", metavar="ID")
     defer.add_argument("--until", metavar="YYYY-MM-DD", help="explicit defer date")
 
+    retire = _verb(
+        "retire",
+        "retire a lesson: something already loaded covers it; name the surface",
+        json_flag=True,
+    )
+    retire.add_argument("id", metavar="ID")
+    retire.add_argument(
+        "--covered-by",
+        metavar="KIND:NAME",
+        required=True,
+        dest="covered_by",
+        help="the surface that already covers this lesson — <kind>:<name>, "
+        "kind one of claude-md/skill-md/reference/output-style (S-67)",
+    )
+
+    # S-67: `graduate` is `retire`'s deprecated, hidden alias for one
+    # release — `hidden=True` drops it from `self-learn --help`'s own
+    # command list, never from what actually runs. `--covered-by` is
+    # OPTIONAL here (unlike `retire`'s own, required): omitted, the
+    # record is retired against the legacy literal `canon` and the verb
+    # prints a deprecation line; given, this call is byte-identical to
+    # calling `retire` directly (`verbs.graduate`'s own docstring).
     graduate = _verb(
-        "graduate", "mark a lesson graduated into authored canon", json_flag=True
+        "graduate",
+        "deprecated alias for `retire` (S-67) — kept for one release",
+        json_flag=True,
+        hidden=True,
     )
     graduate.add_argument("id", metavar="ID")
+    graduate.add_argument(
+        "--covered-by",
+        metavar="KIND:NAME",
+        default=None,
+        dest="covered_by",
+        help="the same surface `retire --covered-by` accepts; omitted, "
+        "writes the legacy `canon` literal with a deprecation notice",
+    )
 
     rehome = _verb(
         "rehome", "move a pending record to any registered scope"
@@ -368,6 +596,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reopen.add_argument("id", metavar="ID")
 
+    reconsider = _verb(
+        "reconsider",
+        "record a successor decision against a routed, rejected, or "
+        "deferred record, over a kind: reconsider case (U5, "
+        "`commands/review.md` ~160-186)",
+        json_flag=True,
+    )
+    reconsider.add_argument("id", metavar="ID")
+    reconsider.add_argument(
+        "--case",
+        required=True,
+        metavar="CASE_ID",
+        help="a kind: reconsider case whose supersedes names the "
+        "record's original case — self-learn case record opens it",
+    )
+    reconsider.add_argument(
+        "--by",
+        choices=sorted(verbs.ROUTING_BY_VALUES),
+        help="names the actor that made this reconsideration",
+    )
+
     reroute = _verb(
         "reroute",
         "correct a wrong routing destination on a routed record "
@@ -408,6 +657,49 @@ def _build_parser() -> argparse.ArgumentParser:
         help="pending/deferred only (02 §2 freezes type at routing); "
         "re-validates the required body sections and refuses rather "
         "than rewriting the body to fit",
+    )
+
+    # U4: no `_verb()` -- that helper auto-adds a generic `--note`,
+    # which `revise` does not take (`--because` plays that role and is
+    # REQUIRED, not optional). Same reasoning as `note_p` just below.
+    revise_p = sub.add_parser(
+        "revise",
+        help="wording fix on one body section of a pending or deferred "
+        "record (02 §2 as amended, S-54/S-65)",
+    )
+    revise_p.add_argument("id", metavar="ID")
+    revise_p.add_argument(
+        "--section",
+        required=True,
+        metavar="NAME",
+        help="the body section heading to replace (e.g. Trigger, "
+        "Instruction, Fact, Context) — must already exist in the record",
+    )
+    revise_p.add_argument(
+        "--text",
+        required=True,
+        metavar="TEXT",
+        help="the section's new text — a wording fix, never a "
+        "substance change; may not itself contain a '## ' heading line",
+    )
+    revise_p.add_argument(
+        "--because",
+        required=True,
+        metavar="TEXT",
+        help="why the wording changed → commit body (required, unlike "
+        "every other verb's optional --note)",
+    )
+    revise_p.add_argument(
+        "--by",
+        choices=sorted(verbs.ROUTING_BY_VALUES),
+        help="the attributing actor (02-schema.md §1/§3a.1 rule 5); "
+        "rides the proposal's revised_at stamp, never the record",
+    )
+    revise_p.add_argument(
+        "--no-push",
+        action="store_true",
+        dest="no_push",
+        help="commit exactly as pinned, skip only the push",
     )
 
     note_p = sub.add_parser(
@@ -487,6 +779,45 @@ def _build_parser() -> argparse.ArgumentParser:
     lc.add_argument("target", metavar="TARGET")
     lc.add_argument("--note", metavar="TEXT", help="why → commit body")
     lc.add_argument(
+        "--no-push", action="store_true", dest="no_push",
+        help="commit exactly as pinned, skip only the push",
+    )
+
+    hook = sub.add_parser(
+        "hook", help="hook activation operations (S-66, 13 §7.4)"
+    )
+    hook_sub = hook.add_subparsers(dest="hook_command", metavar="<verb>")
+    hact = hook_sub.add_parser(
+        "activate",
+        help="place the symlink, register settings.json, verify — all "
+        "three steps, always, regardless of overseer.hook_activation "
+        "(13 §7.4; the human path never reads that gate)",
+    )
+    hact.add_argument("id", metavar="ID")
+    hact.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="machine-readable outcome envelope, including the exact "
+        "registered PreToolUse entry + script path + sha256, the three "
+        "step receipts, the replay status (ran/skipped-no-examples), "
+        "and the reload-not-observed caveat (§4 pin: no other stdout "
+        "text under --json)",
+    )
+    hact.add_argument(
+        "--no-push", action="store_true", dest="no_push",
+        help="commit exactly as pinned, skip only the push",
+    )
+    hdeact = hook_sub.add_parser(
+        "deactivate", help="reverse hook activate: remove the symlink + "
+        "surgically remove only this hook's own settings entry (never a "
+        "whole-file restore — every other registration is untouched)",
+    )
+    hdeact.add_argument("id", metavar="ID")
+    hdeact.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="machine-readable outcome envelope (§4 pin: no other "
+        "stdout text under --json)",
+    )
+    hdeact.add_argument(
         "--no-push", action="store_true", dest="no_push",
         help="commit exactly as pinned, skip only the push",
     )
@@ -598,6 +929,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "status unchanged",
     )
 
+    overseer_cli.add_parser(sub)
+
+    steward_p = sub.add_parser(
+        "steward", help="autonomous decision runner: run"
+    )
+    steward_sub = steward_p.add_subparsers(dest="steward_command", metavar="<verb>")
+    steward_run = steward_sub.add_parser("run", help="decide every queued proposed lesson")
+    steward_run.add_argument("--dry-run", action="store_true", dest="dry_run")
+    steward_run.add_argument("--json", action="store_true", dest="as_json")
+
     mine_p = sub.add_parser(
         "mine", help="transcript miner: run | status (doc 12)"
     )
@@ -662,6 +1003,10 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="no_push",
         help="hold the sentinel, run every item, skip only the final push",
     )
+
+    _add_case_parser(sub)
+    _add_statement_parser(sub)
+    _add_user_model_parser(sub)
 
     sub.add_parser("push", help="publish pending local commits (pinned retry)")
 
@@ -1067,6 +1412,12 @@ def _cmd_status_fast() -> int:
                     "escalate": False,
                     "miner_last_run": None,
                     "miner_stale": False,
+                    "steward_last_run_at": steward.last_run_iso_from_cache(
+                        serve.cache_dir_readonly(home)
+                    ),
+                    "overseer_last_run": overseer_run.last_run_iso_from_cache(
+                        serve.cache_dir_readonly(home)
+                    ),
                 }
             )
         )
@@ -1076,6 +1427,15 @@ def _cmd_status_fast() -> int:
     data["home_state"] = state
     data["miner_last_run"] = miner.last_run_iso()
     data["miner_stale"] = miner.stale()
+    data["steward_last_run_at"] = steward.last_run_iso_from_cache(
+        serve.cache_dir_readonly(home)
+    )
+    overseer_open_questions = overseer_conversation.open_question_count(home)
+    if overseer_open_questions is not None:
+        data["overseer_open_questions"] = overseer_open_questions
+    data["overseer_last_run"] = overseer_run.last_run_iso_from_cache(
+        serve.cache_dir_readonly(home)
+    )
     # S-62 (§7.2a.7): additive fields only, so the fact survives
     # `2>/dev/null` by the route the hook already reads on stdout —
     # this is what closes the gap the pending hook's own discard used
@@ -1089,6 +1449,81 @@ def _cmd_status_fast() -> int:
     print(json.dumps(data))
     _warn_intents_in_flight_report(intent_status)
     return EXIT_OK
+
+
+#: FW-85 (U0): every `MineResult.status` this dict does NOT name is
+#: handled by an earlier, dedicated branch in `_cmd_mine` before this
+#: map is even consulted — `landed-uncommitted` -> `gitops.
+#: EXIT_HALF_WRITTEN`, `stopped` -> `gitops.EXIT_GIT_FAILED`. Of the
+#: rest: `ok` is a real mining pass; `initialized` performs a real
+#: one-time action (first-activation cursor seeding, `miner.py`'s
+#: `initialize_cursors`) and is not a "nothing due" outcome, so both
+#: are `EXIT_OK`. `idle` (nothing new to mine), `held-gate` (flood
+#: gate — too much pending to add more), `busy` (another producer
+#: already holds `miner.lock`), and `disabled` (`miner.enabled` is
+#: False) are all "the run found nothing due and held" per `commands/
+#: review.md`'s exit-code table ("this is NOT a failure, and before
+#: FW-85 it was indistinguishable from `0`") — that wording, not the
+#: draft plan's bare `idle -> EXIT_OK`, is what this map follows,
+#: because the applied doc text wins (steward-design brief, common-
+#: builder-rules.md). `failed` is a real failure, `1`. No status may
+#: fall through silently: `_cmd_mine` raises on anything absent here.
+_MINE_RUN_EXIT = {
+    "ok": EXIT_OK,
+    "initialized": EXIT_OK,
+    "idle": EXIT_HELD,
+    "held-gate": EXIT_HELD,
+    "busy": EXIT_HELD,
+    "disabled": EXIT_HELD,
+    "failed": 1,
+}
+
+#: FW-85 (U0): `RunResult.status` is only `ok | idle | failed | stopped`
+#: (`worker.py`'s own docstring on the class) — `stopped` is handled by
+#: a dedicated branch in `_cmd_worker` before this map is consulted.
+#: `idle` (0 eligible this run — nothing due) is `EXIT_HELD` for the
+#: same review.md reason `_MINE_RUN_EXIT` is. No status may fall
+#: through silently: `_cmd_worker` raises on anything absent here.
+_WORKER_RUN_EXIT = {
+    "ok": EXIT_OK,
+    "idle": EXIT_HELD,
+    "failed": 1,
+}
+
+#: FW-85 (U10 fold r1a): `stopped` is handled before this map because it
+#: also emits the unattended-run STOP refusal. `idle` (including a held
+#: lock) and `disabled` are held/no-work outcomes, while a dry run and an
+#: applied run did real work. Unknown statuses fail loudly.
+_STEWARD_RUN_EXIT = {
+    "idle": EXIT_HELD,
+    "disabled": EXIT_HELD,
+    "dry-run": EXIT_OK,
+    "applied": EXIT_OK,
+    "partial": EXIT_BATCH_PARTIAL,
+    "refused": 1,
+}
+
+
+def _print_unattended_stop(surface: str, stopped: list[str]) -> None:
+    """Print the shared worker/steward recover-or-refuse STOP detail."""
+    if not stopped:
+        print(
+            f"self-learn {surface}: refused — a live intent STOP froze this "
+            "run before it did anything. Recovery could neither roll it "
+            "forward nor restore it. Run `self-learn reconcile --clear-intent "
+            "<id>` after inspecting it, or `self-learn status` to see it.",
+            file=sys.stderr,
+        )
+        return
+    for line in stopped:
+        intent_id = line.split(":", 1)[0]
+        print(
+            f"self-learn {surface}: refused — live intent {line}. Recovery "
+            "could neither roll it forward nor restore it; every ledger write "
+            "refuses until it is cleared. Run `self-learn reconcile "
+            f"--clear-intent {intent_id}` after inspecting the offender.",
+            file=sys.stderr,
+        )
 
 
 def _cmd_mine(args: argparse.Namespace) -> int:
@@ -1115,9 +1550,13 @@ def _cmd_mine(args: argparse.Namespace) -> int:
             # U-verbs §3.7/§4.8: one outcome object, nothing else on
             # stdout. The library's own `status` string rides through
             # UNCHANGED as `outcome` — never a re-derived label (PROD1).
-            # Exit codes are byte-unchanged (PROD3): `ok` is derived
-            # from the same two statuses the return below already maps
-            # to non-zero, never from the integer itself (PROD2).
+            # `ok` stays derived from the same three statuses (PROD2):
+            # `failed`, `landed-uncommitted`, `stopped`. FW-85 (U0):
+            # unlike `ok`, the EXIT CODE below now DOES distinguish
+            # `idle`/`held-gate`/`busy`/`disabled` (EXIT_HELD) from
+            # `ok`/`initialized` (EXIT_OK) — PROD3's "byte-unchanged"
+            # framing is retired by this build; see FW-85's dated
+            # disposition in `14-forward-work-map.md`.
             print(
                 json.dumps(
                     {
@@ -1163,7 +1602,14 @@ def _cmd_mine(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return gitops.EXIT_GIT_FAILED
-        return EXIT_OK if result.status != "failed" else 1
+        try:
+            return _MINE_RUN_EXIT[result.status]
+        except KeyError:
+            raise ValueError(
+                f"self-learn mine run: unmapped MineResult.status "
+                f"{result.status!r} — FW-85's exit-code map "
+                "(cli.py:_MINE_RUN_EXIT) has no entry for it"
+            ) from None
     if args.mine_command == "status":
         entries = miner.read_journal()
         if args.as_json:
@@ -1249,7 +1695,13 @@ def _cmd_worker(args: argparse.Namespace) -> int:
         if getattr(args, "as_json", False):
             # U-verbs §3.7/§4.8: one outcome object, nothing else on
             # stdout — `outcome` is the library's own string UNCHANGED
-            # (PROD1), never re-derived; exit stays byte-unchanged (PROD3).
+            # (PROD1), never re-derived. `ok` stays True for every
+            # outcome (PROD2): none of the five is a failure, only
+            # `spawned` did anything. FW-85 (U0): the EXIT CODE below —
+            # unlike `ok` — now DOES distinguish "spawned" from the
+            # rest (PROD3's "byte-unchanged" framing is retired by this
+            # build; see FW-85's dated disposition in `14-forward-work
+            # -map.md`).
             print(
                 json.dumps(
                     {"command": "worker kick", "outcome": outcome, "ok": True}
@@ -1257,7 +1709,12 @@ def _cmd_worker(args: argparse.Namespace) -> int:
             )
         else:
             print(f"worker kick: {outcome}")
-        return EXIT_OK
+        # FW-85 (U0): `worker.kick`'s docstring names its five outcomes
+        # (`spawned | absorbed-window | absorbed-race | disabled |
+        # depth-limited`) — only `spawned` actually started a child;
+        # the other four are "no child was spawned, for a reason short
+        # of failure" (review.md's own wording for `EXIT_HELD`).
+        return EXIT_OK if outcome == "spawned" else EXIT_HELD
     if args.worker_command == "run":
         result = worker.run(
             home, coalesce=args.coalesce, no_push=worker.no_push_requested()
@@ -1289,17 +1746,61 @@ def _cmd_worker(args: argparse.Namespace) -> int:
             # intent it could neither roll forward nor restore, and
             # ended the run there — exit 6, "nothing was written" by
             # THIS run.
-            print(
-                "self-learn worker: refused — a live intent STOP froze this "
-                "run before it did anything. Run `self-learn reconcile "
-                "--clear-intent <id>` after inspecting it, or `self-learn "
-                "status` to see it.",
-                file=sys.stderr,
-            )
+            _print_unattended_stop("worker", getattr(result, "stopped", []) or [])
             return gitops.EXIT_GIT_FAILED
-        return EXIT_OK if ok else 1
+        try:
+            return _WORKER_RUN_EXIT[result.status]
+        except KeyError:
+            raise ValueError(
+                f"self-learn worker run: unmapped RunResult.status "
+                f"{result.status!r} — FW-85's exit-code map "
+                "(cli.py:_WORKER_RUN_EXIT) has no entry for it"
+            ) from None
     print("usage: self-learn worker kick | worker run [--coalesce]", file=sys.stderr)
     return EXIT_USAGE
+
+
+def _cmd_steward(args: argparse.Namespace) -> int:
+    if args.steward_command != "run":
+        print("usage: self-learn steward run [--dry-run] [--json]", file=sys.stderr)
+        return EXIT_USAGE
+    result = steward.run(resolve_home(), dry_run=args.dry_run)
+    ok = result.status in ("idle", "disabled", "dry-run", "applied")
+    if args.as_json:
+        print(
+            json.dumps(
+                {
+                    "command": "steward run",
+                    "outcome": result.status,
+                    "ok": ok,
+                    "run_id": result.run_id,
+                    "decided": result.decided,
+                    "calls": result.calls,
+                    "refused": result.refused,
+                    "unfinished": result.unfinished,
+                    "coverage": result.coverage,
+                    "stopped": result.stopped,
+                }
+            )
+        )
+    else:
+        print(
+            f"steward run: {result.status} — {len(result.decided)} decided, "
+            f"{result.refused} refused, {len(result.unfinished)} unfinished, "
+            f"{result.calls} model call(s); coverage "
+            + ", ".join(f"{key}={value}" for key, value in sorted(result.coverage.items()))
+        )
+    if result.status == "stopped":
+        _print_unattended_stop("steward", result.stopped)
+        return gitops.EXIT_GIT_FAILED
+    try:
+        return _STEWARD_RUN_EXIT[result.status]
+    except KeyError:
+        raise ValueError(
+            f"self-learn steward run: unmapped RunResult.status "
+            f"{result.status!r} — FW-85's exit-code map "
+            "(cli.py:_STEWARD_RUN_EXIT) has no entry for it"
+        ) from None
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
@@ -1545,6 +2046,10 @@ def _cmd_status(as_json: bool) -> int:
             "open_followups": followups,
             # 08 §7.1 amendment: iso8601 | null (null = never ran here)
             "worker_last_run": worker.last_run_iso(),
+            "steward_last_run_at": steward.last_run_iso(home),
+            "steward_cases_since_overseer": steward.cases_since_overseer(home),
+            "overseer_last_run": overseer_run.last_run_iso(home),
+            "overseer_next": serve.overseer_next_iso(home),
             # T19 (08 §8.1 O-3/O-7-revisit row): supply mix + the 04
             # success-metrics counters — FULL status only; the --fast
             # SessionStart path stays a pending/-only scan, no git.
@@ -1681,7 +2186,7 @@ def _phase_note(push: gitops.PushResult | None) -> str:
 
 # ------------------------------------------------ resolution-evidence (§2.1)
 #
-# The `--json` envelope for route/reject/defer/graduate. Built ENTIRELY
+# The `--json` envelope for route/reject/defer/retire/graduate. Built ENTIRELY
 # from typed `VerbResult` attributes — never by re-parsing `commit_message`
 # (that class of mistake is what `_routed_destination` / the `" until "`
 # split below still do, for the UNRELATED plain-text summary line only;
@@ -1753,13 +2258,14 @@ def _outcome_state(result: verbs.VerbResult) -> str:
     the existing file**", which is false copy for a reject that just
     moved the record to `resolved/`).
 
-    `graduate`'s retirement host phase discards its compile object even
-    on a genuine success (`_, host_sha = _host_phase(...)`,
+    `retire`/`graduate`'s retirement host phase discards its compile
+    object even on a genuine success (`_, host_sha = `_host_phase(...)`,
     verbs.py:1570 in `_retirement_host_phase`) — so `compile_result` is
-    ALWAYS `None` on a `VerbResult` from `graduate`, success or not.
-    Worse, `_retirement_preflight` (verbs.py:1514) returns an empty
+    ALWAYS `None` on a `VerbResult` from either (S-67: one shared
+    implementation, `verbs._retire_impl`), success or not. Worse,
+    `_retirement_preflight` (verbs.py:1514) returns an empty
     `_Retirement()` — no host phase even attempted — whenever the
-    graduated record was never routed at all, which is graduate's own
+    retired record was never routed at all, which is retire's own
     documented second door: "a pending already-canon one (the
     bulk-acknowledge door)" (verbs.py ~2907). Applying route's literal
     predicate here would report EVERY bulk-acknowledge as "drift",
@@ -1767,9 +2273,17 @@ def _outcome_state(result: verbs.VerbResult) -> str:
     retirement failure still surfaces via `warnings` regardless (§3.7
     renders it on the success leg unconditionally) — this function only
     controls the summary label, never the repair text."""
-    if result.action in ("reject", "defer"):
+    if result.action in ("reject", "defer", "reconsider"):
+        # Fold r1 (F4): `reconsider` shares `reject`/`defer`'s exact
+        # shape here — it never attempts a host write at all (it only
+        # ever appends a `reconsidered` history entry and commits the
+        # ledger), so neither `compile_result` nor `host_commit_sha` is
+        # ever set on its `VerbResult`. Falling through to `route`'s
+        # 4-state predicate below landed on `compile_result is None` →
+        # `"drift"` on a fully successful call, telling a consumer to
+        # `recompile` canon that `reconsider` never touched.
         return "landed"
-    if result.action == "graduate":
+    if result.action in ("retire", "graduate"):
         return "landed" if result.host_commit_sha is not None else "no_op"
     # route: the full 4-state predicate.
     if result.host_commit_sha is not None:
@@ -1782,8 +2296,8 @@ def _outcome_state(result: verbs.VerbResult) -> str:
     # never sets host_commit_sha (no host commit exists in plain mode by
     # construction), so without this the shipped predicate fell through
     # to "unknown" for every plain route. `result.mode` is `None` for a
-    # spec-less verb (reject/defer/graduate), which correctly never
-    # reaches this branch.
+    # spec-less verb (reject/defer/retire/graduate), which correctly
+    # never reaches this branch.
     if result.variant == "local" or result.mode == "plain":
         return "wrote_uncommitted"
     return "unknown"
@@ -1799,7 +2313,7 @@ def _canon_path(result: verbs.VerbResult) -> str | None:
     success — code-gate finding 1 (BLOCKER): the render surface then
     interpolated it unguarded, printing literal "in `None`". Fall back
     to `ReferenceResult.path`, the one compile-result type that carries
-    its own path outside `target`; still `None` for graduate/defer
+    its own path outside `target`; still `None` for retire/graduate/defer
     (nothing to fall back to) and for a genuine drift (no compile
     result reached at all)."""
     if result.target is not None:
@@ -1843,6 +2357,28 @@ def _verb_envelope(result: verbs.VerbResult) -> dict:
             if result.host_commit_sha is not None
             else None
         ),
+        # Fold r1, D-f (Astra 9 — exact bytes shown): `hook-activate`
+        # only. `None` for every other verb, and for a delegated
+        # (register=False) activation — never the full script body,
+        # which stays the route/Apply step's and the overseer's O-5
+        # display's job.
+        "hook_registered_entry": result.hook_registered_entry,
+        "hook_script_path": result.hook_script_path,
+        "hook_script_sha256": result.hook_script_sha256,
+        # Fold r2, item G (Astra 8): `--json` used to discard every step
+        # receipt (`post_notes` is deliberately prose-only, printed to
+        # stdout ONLY in the non-JSON branch below — see `_finish_verb`),
+        # so a `--json` caller had no way to tell a real replay apart
+        # from a skipped one. `hook_steps` carries the SAME receipt
+        # strings `post_notes` prints in the human form; `hook_replay`/
+        # `hook_reload_caveat` are their structured counterparts
+        # (`verbs.VerbResult.hook_replay`/`.hook_reload_caveat`) — all
+        # three `None`/empty for every verb but `hook-activate`, and
+        # `hook_replay`/`hook_reload_caveat` stay `None` for a delegated
+        # activation too (no replay/doctor step ever ran).
+        "hook_steps": list(result.post_notes) if result.action == "hook-activate" else [],
+        "hook_replay": result.hook_replay,
+        "hook_reload_caveat": result.hook_reload_caveat,
     }
 
 
@@ -1857,9 +2393,15 @@ def _finish_verb(result: verbs.VerbResult, target: str, *, as_json: bool = False
     ``as_json``, where §4 pins stdout as "the envelope and NOTHING else":
     `diff` and `post_notes` are both stdout-bound prose (a hook's entire
     generated script; multi-line manual-step text) that would otherwise
-    turn stdout into "JSON-then-prose". Exit status and stderr (warnings,
-    the budget note, the push-failure code) are UNCHANGED either way —
-    `--json` never moves the outcome, only how it is printed."""
+    turn stdout into "JSON-then-prose". `post_notes` ITSELF still never
+    prints under `--json` — but for `hook-activate`, `_verb_envelope`
+    (fold r2, item G / Astra 8) now carries the SAME receipt strings
+    structurally, as `hook_steps`, plus `hook_replay`/
+    `hook_reload_caveat` — so a `--json` caller is no longer blind to
+    whether the replay step actually ran. Exit status and stderr
+    (warnings, the budget note, the push-failure code) are UNCHANGED
+    either way — `--json` never moves the outcome, only how it is
+    printed."""
     if as_json:
         print(json.dumps(_verb_envelope(result)))
     else:
@@ -1975,11 +2517,19 @@ def _cmd_verb(args: argparse.Namespace) -> int:
             return _finish_verb(
                 result, f"deferred until {until_str}", as_json=args.as_json
             )
+        if args.command == "retire":
+            result = verbs.retire(
+                home, args.id, covered_by=args.covered_by, note=args.note,
+                no_push=args.no_push,
+            )
+            return _finish_verb(result, args.covered_by, as_json=args.as_json)
         if args.command == "graduate":
             result = verbs.graduate(
-                home, args.id, note=args.note, no_push=args.no_push
+                home, args.id, covered_by=args.covered_by, note=args.note,
+                no_push=args.no_push,
             )
-            return _finish_verb(result, "canon", as_json=args.as_json)
+            target = args.covered_by if args.covered_by is not None else "canon"
+            return _finish_verb(result, target, as_json=args.as_json)
         if args.command == "rehome":
             result = verbs.rehome(
                 home, args.id, to=args.to, note=args.note, no_push=args.no_push
@@ -2040,6 +2590,11 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         if args.command == "reopen":
             result = verbs.reopen(home, args.id, note=args.note, no_push=args.no_push)
             return _finish_verb(result, "pending")
+        if args.command == "reconsider":
+            result = verbs.reconsider(
+                home, args.id, case=args.case, by=args.by, no_push=args.no_push
+            )
+            return _finish_verb(result, "reconsidered", as_json=args.as_json)
         if args.command == "note":
             result = verbs.note(
                 home, args.id, append=args.append, key=args.key, no_push=args.no_push
@@ -2059,6 +2614,12 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 no_push=args.no_push,
             )
             return _finish_verb(result, "reclassified")
+        if args.command == "revise":
+            result = verbs.revise(
+                home, args.id, section=args.section, text=args.text,
+                because=args.because, by=args.by, no_push=args.no_push,
+            )
+            return _finish_verb(result, "revised")
     except verbs.VerbError as exc:  # incl. SecretRefusal
         print(f"self-learn {args.command}: {exc}", file=sys.stderr)
         return exc.exit_code
@@ -2872,8 +3433,9 @@ def _mutating_epilogue(home=None, *, no_push: bool = False) -> str:
     dispatch that may commit ends HERE, so a new surface cannot miss the
     rule by forgetting to copy a line. `_flush_spool_best_effort` itself
     has exactly one caller after the fold: this function (`BAT11` leg
-    (a)). The seven normative call SITES (§3.3c's table): `_cmd_report`,
-    `_main`'s teach/`VERB_COMMANDS`/followup/link/import branches, and
+    (a)). The eight normative call SITES (§3.3c's table, widened
+    2026-09-13 by the overseer build, O-2a): `_cmd_report`, `_main`'s
+    teach/`VERB_COMMANDS`/followup/link/import/hook branches, and
     `batch.run` (after its item loop, inside the sentinel hold, before
     the push, always with `no_push=True` — the batch owns the single
     push, so the flush's own commit rides it rather than publishing
@@ -2914,7 +3476,14 @@ def _cmd_show(args: argparse.Namespace) -> int:
             f"(count {data['deferred_count']})"
         )
     if data["superseded_by"]:
-        print(f"  superseded by: {data['superseded_by']}")
+        # S-67: the human phrase from the one display helper
+        # (`records.supersession_display`, computed into `data` by
+        # `verbs.show`), never the raw field re-printed — "replaced by
+        # lrn-…" / "retired, covered by <kind>:<name>" / "retired,
+        # covering surface unrecorded". `data["supersession"]` is set
+        # whenever `data["superseded_by"]` is truthy, including the
+        # schema-legal pending merge-collapse loser shape (02-schema §2).
+        print(f"  superseded by: {data['supersession']}")
     if data["resolution_note"]:
         print(f"  resolution note: {data['resolution_note']}")
     routing = data["routing"]
@@ -2944,6 +3513,242 @@ def _cmd_show(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _csv(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [tok.strip() for tok in value.split(",") if tok.strip()]
+
+
+def _cmd_case(args: argparse.Namespace) -> int:
+    """`case record|show|list|observe|receipt|index --rebuild` (U2;
+    `index` renamed from `rebuild-index` per D-d/S9, the interface
+    draft's standing working name). No push (case verbs never carry a
+    `--no-push` flag — `commands/review.md` §"Cases" describes only
+    "commits under the ledger lock", never a publish step; push happens
+    once at session end, same as everything else)."""
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
+    try:
+        if args.case_command == "record":
+            case_id = cases.record(home, args.stage_file, actor=args.actor)
+            if args.as_json:
+                print(json.dumps({"case": case_id}))
+            else:
+                print(f"case record → {case_id}")
+            return EXIT_OK
+        if args.case_command == "show":
+            view = cases.show(home, args.id, evidence_only=args.evidence_only)
+            if args.as_json:
+                print(json.dumps(view.to_json()))
+            else:
+                print(view.to_text())
+            return EXIT_OK
+        if args.case_command == "list":
+            rows = cases.list_cases(
+                home,
+                since=args.since,
+                provisional=True if args.provisional else None,
+                parked_for=args.parked_for,
+                parked_reason=args.parked_reason,
+                record_id=args.record_id,
+            )
+            if args.as_json:
+                print(json.dumps(rows))
+            else:
+                for row in rows:
+                    # Astra r2 finding 5 / gate r2 decision 6: the JSON
+                    # view always carries `frozen_ok`, but the text view
+                    # silently dropped it — a human running `case list`
+                    # at a terminal never saw that a row's freeze hash
+                    # failed re-verification. A visible marker, not a
+                    # silent flag only the JSON consumer sees.
+                    tampered = "  TAMPERED" if row.get("frozen_ok") is False else ""
+                    print(f"{row['case']}  {row['actor']}  {row['kind']}  {row['outcome']}  provisional={row['provisional']}{tampered}")
+            return EXIT_OK
+        if args.case_command == "observe":
+            obs_id = cases.observe(
+                home,
+                args.id,
+                args.kind,
+                text=args.text,
+                by=args.by,
+                ref=args.ref,
+                to=args.to,
+                covering=args.covering,
+                entries=_csv(args.entries),
+                outcome=args.outcome,
+                via=args.via,
+            )
+            if args.as_json:
+                print(json.dumps({"obs": obs_id}))
+            else:
+                print(f"case observe → {obs_id}")
+            return EXIT_OK
+        if args.case_command == "receipt":
+            batch_result = json.loads(Path(args.from_batch).read_text(encoding="utf-8"))
+            case_id = cases.receipt(home, args.id, batch_result)
+            if args.as_json:
+                print(json.dumps({"case": case_id}))
+            else:
+                print(f"case receipt → {case_id}")
+            return EXIT_OK
+        if args.case_command == "index":
+            path = cases.rebuild_index(worker.cache_dir(home), home)
+            if args.as_json:
+                print(json.dumps({"index": str(path)}))
+            else:
+                print(f"case index --rebuild → {path}")
+            return EXIT_OK
+    except cases.CaseError as exc:
+        print(f"self-learn case {args.case_command}: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except intents.LedgerStoppedError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_BATCH_PARTIAL if exc.earlier_commits else EXIT_GIT_FAILED
+    except gitops.HalfWrittenError as exc:
+        return _report_half_written(f"case {args.case_command}", exc)
+    except gitops.GitOpsError as exc:
+        print(f"self-learn case {args.case_command}: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
+    print(
+        "usage: self-learn case record|show|list|observe|receipt|index",
+        file=sys.stderr,
+    )
+    return EXIT_USAGE
+
+
+def _cmd_statement(args: argparse.Namespace) -> int:
+    """`statement add|list` (U2)."""
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
+    try:
+        if args.statement_command == "add":
+            answers = None
+            if args.answers_kind or args.answers_ref or args.answers_text:
+                answers = {
+                    "kind": args.answers_kind or "proposition",
+                    "ref": args.answers_ref,
+                    "text": args.answers_text,
+                }
+            scope = None
+            if args.scope_level or args.scope_host:
+                scope = {"level": args.scope_level or "user", "host": args.scope_host}
+            stmt_id = statements.add(
+                home,
+                verbatim=args.verbatim,
+                source={"message_ref": args.message_ref, "surface": "conversation"},
+                recorded_by=args.recorded_by,
+                answers=answers,
+                scope=scope,
+                uncertainty=args.uncertainty,
+                amends=args.amends,
+            )
+            if args.as_json:
+                print(json.dumps({"statement": stmt_id}))
+            else:
+                print(f"statement add → {stmt_id}")
+            return EXIT_OK
+        if args.statement_command == "list":
+            rows = statements.list_statements(
+                home,
+                scope_level=args.scope_level,
+                recorded_by=args.recorded_by,
+                since=args.since,
+                answers_ref=args.answers_ref,
+            )
+            if args.as_json:
+                print(json.dumps(rows))
+            else:
+                for row in rows:
+                    print(f"{row['id']}  {row['recorded_by']}  {row['verbatim']}")
+            return EXIT_OK
+    except statements.StatementError as exc:
+        print(f"self-learn statement {args.statement_command}: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except intents.LedgerStoppedError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_BATCH_PARTIAL if exc.earlier_commits else EXIT_GIT_FAILED
+    except gitops.HalfWrittenError as exc:
+        return _report_half_written(f"statement {args.statement_command}", exc)
+    except gitops.GitOpsError as exc:
+        print(f"self-learn statement {args.statement_command}: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
+    print("usage: self-learn statement add|list", file=sys.stderr)
+    return EXIT_USAGE
+
+
+def _cmd_user_model(args: argparse.Namespace) -> int:
+    """`user-model show|add|lapse` (U2). No `mark-seen` verb here —
+    §3a.4: "an entry is marked seen only via `case observe --kind
+    presented`, never by any other write" — there is deliberately no CLI
+    path to it beyond that one. No `bump` verb (D-d/S8: dropped, no spec
+    or draft basis)."""
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
+    try:
+        if args.user_model_command == "show":
+            data = user_model.show(home)
+            if args.as_json:
+                print(json.dumps(data))
+            else:
+                for letter, entries in data["containers"].items():
+                    print(f"## {letter}")
+                    for e in entries:
+                        print(f"  {e['id']} (r{e['r']}) {e['title']} — {e['status']}")
+            return EXIT_OK
+        if args.user_model_command == "add":
+            entry_id = user_model.add_entry(
+                home,
+                container=args.container,
+                title=args.title,
+                because=args.because,
+                source=args.source,
+                by=args.by,
+                held_since=args.held_since,
+                conditions=_csv(args.conditions),
+                ref=args.ref,
+                statements=_csv(args.statements),
+                recorded_by=args.recorded_by,
+                basis=_csv(args.basis),
+            )
+            if args.as_json:
+                print(json.dumps({"entry": entry_id}))
+            else:
+                print(f"user-model add → {entry_id}")
+            return EXIT_OK
+        if args.user_model_command == "lapse":
+            entry_id = user_model.lapse_entry(
+                home,
+                args.id,
+                changed_condition=args.changed_condition,
+                contrary=args.contrary,
+                consolidated_into=args.consolidated_into,
+                by=args.by,
+                at=args.at,
+            )
+            if args.as_json:
+                print(json.dumps({"entry": entry_id}))
+            else:
+                print(f"user-model lapse → {entry_id}")
+            return EXIT_OK
+    except user_model.UserModelError as exc:
+        print(f"self-learn user-model {args.user_model_command}: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except intents.LedgerStoppedError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_BATCH_PARTIAL if exc.earlier_commits else EXIT_GIT_FAILED
+    except gitops.HalfWrittenError as exc:
+        return _report_half_written(f"user-model {args.user_model_command}", exc)
+    except gitops.GitOpsError as exc:
+        print(f"self-learn user-model {args.user_model_command}: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
+    print("usage: self-learn user-model show|add|lapse", file=sys.stderr)
+    return EXIT_USAGE
+
+
 def _cmd_batch(args: argparse.Namespace) -> int:
     """``self-learn batch`` (U-verbs §3.3/§4.4) — apply a decision sheet
     in one locked run. Deliberately OUTSIDE ``VERB_COMMANDS``: the flush
@@ -2957,7 +3762,11 @@ def _cmd_batch(args: argparse.Namespace) -> int:
     if (code := _home_gate(home)) is not None:
         return code
     try:
-        items = batch.load_sheet(args.sheet)
+        # Fold r1 (F2): `home` lets `load_sheet` check the named `case:`
+        # EXISTS, not just that it is SHAPED like one -- a case id that
+        # does not exist is refused here, before item 1 (usage, 64), so
+        # it can never fail after the sheet has already committed.
+        items = batch.load_sheet(args.sheet, home=home)
     except batch.BatchError as exc:
         print(f"self-learn batch: {exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -2983,8 +3792,34 @@ def _cmd_batch(args: argparse.Namespace) -> int:
 
     sentinel.heartbeat()  # mutating invocation class (08 §1)
     result = batch.run(home, items, no_push=args.no_push)
+    for item in result.items:
+        for warning in item.warnings:
+            print(f"self-learn batch item {item.n}: {warning}", file=sys.stderr)
+
+    # Fold r1 (F1/F2/F5/F6/F7): the receipt attempt runs BEFORE either
+    # output branch below, so its own outcome can ride the SAME --json
+    # envelope (F2's ruling) instead of surfacing only as an
+    # afterthought once stdout already carries the batch's own report.
+    # `batch.run`'s own locked section is CLOSED by now (it released
+    # its hold before returning `result`), so this is a second, NOT
+    # nested, `intents.ledger_write` acquisition — `cases.receipt`
+    # opens its own internally; `_cmd_batch` never wraps this call in a
+    # lock of its own (that WOULD nest). O-2b: the block that used to
+    # sit here (build/read the `batch_result` dict, call
+    # `cases.receipt`, catch its two exception types, push the receipt
+    # commit) moved verbatim into `batch.write_receipt` — O-3's own
+    # runner calls `batch.run` directly and would otherwise never
+    # receipt at all; `_cmd_batch` is now just this one call, printing
+    # exactly what the inline block printed before.
+    receipt_info = batch.write_receipt(
+        home, result, Path(args.sheet).name, no_push=args.no_push
+    )
+
     if args.as_json:
-        print(json.dumps(result.to_json()))
+        envelope = result.to_json()
+        if receipt_info is not None:
+            envelope["receipt"] = receipt_info
+        print(json.dumps(envelope))
     else:
         # §7.2a.5(3): attended, text mode — the --json envelope above
         # already carries the same two lists for that mode.
@@ -3006,10 +3841,14 @@ def _cmd_batch(args: argparse.Namespace) -> int:
                 line += f" — {it.detail}"
             print(line)
         summary = result.summary
+        # F7: all five states, not three — `total` counts `stopped` and
+        # `not_attempted` too (fold r1), so the old three-count line no
+        # longer summed to `total` after a mid-sheet stop.
         print(
             f"self-learn batch: {summary['applied']} applied, "
             f"{summary['already_applied']} already-applied, "
-            f"{summary['refused']} refused (of {summary['total']})",
+            f"{summary['refused']} refused, {summary['stopped']} stopped, "
+            f"{summary['not_attempted']} not-attempted (of {summary['total']})",
             file=sys.stderr,
         )
         if result.stopped_at is not None:
@@ -3018,6 +3857,14 @@ def _cmd_batch(args: argparse.Namespace) -> int:
                 "— ledger-level failure, unsafe to keep writing",
                 file=sys.stderr,
             )
+        if receipt_info is not None and receipt_info["state"] == "failed":
+            print(
+                "self-learn batch: the case's Application section was "
+                "NOT updated this run — retry the same sheet to repair it",
+                file=sys.stderr,
+            )
+    # F2: the batch's own exit code is the batch's — a receipt outcome
+    # never changes it, success or failure.
     return result.process_code
 
 
@@ -3037,6 +3884,7 @@ VERB_COMMANDS = frozenset(
         "route",
         "reject",
         "defer",
+        "retire",
         "graduate",
         "rehome",
         "rescope",
@@ -3054,6 +3902,12 @@ VERB_COMMANDS = frozenset(
         # `_cmd_verb` ladder too — no new caller of the epilogue.
         "reroute",
         "reclassify",
+        # U4: revise dispatches through the SAME `_cmd_verb` ladder too
+        # — no new caller of the epilogue.
+        "revise",
+        # U5: reconsider dispatches through the SAME `_cmd_verb` ladder
+        # too — no new caller of the epilogue.
+        "reconsider",
     }
 )
 
@@ -3082,6 +3936,47 @@ def _cmd_link(args: argparse.Namespace) -> int:
         print(f"self-learn link contradicts: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED
     return _finish_verb(result, f"contradicts {args.target}")
+
+
+def _cmd_hook(args: argparse.Namespace) -> int:
+    """13 §7.4: ``hook activate``/``hook deactivate`` — the human path,
+    always all steps, no gate read here (mirrors ``_cmd_link``'s
+    exit-code contract: 1 = refused, 64 = usage/bad id, 6 via the
+    ``main()`` net on a STOP)."""
+    if args.hook_command not in ("activate", "deactivate"):
+        print(
+            "usage: self-learn hook activate|deactivate <id> [--json] "
+            "[--no-push]",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if (code := _home_gate(resolve_home())) is not None:  # see _cmd_verb
+        return code
+    verb_fn = verbs.hook_activate if args.hook_command == "activate" else verbs.hook_deactivate
+    try:
+        result = verb_fn(resolve_home(), args.id, no_push=args.no_push)
+    except verbs.VerbError as exc:
+        print(f"self-learn hook {args.hook_command}: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except LedgerOpsError as exc:
+        print(f"self-learn hook {args.hook_command}: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    except intents.LedgerStoppedError as exc:
+        # Fold r1, N9 (S-62 §7.2a.5(5)): a DEDICATED arm, ahead of the
+        # generic GitOpsError arm below — that arm prepends its own
+        # "self-learn hook <verb>:" prefix, which would double the one
+        # `str(exc)` already carries (the exact shape
+        # test_reject_stop_message_is_not_double_prefixed forbids for
+        # `reject`). `_cmd_hook` used to copy `_cmd_link`, the one
+        # other dispatcher that also lacked this arm.
+        print(str(exc), file=sys.stderr)
+        return EXIT_BATCH_PARTIAL if exc.earlier_commits else EXIT_GIT_FAILED
+    except gitops.GitOpsError as exc:  # BLOCKER B: never a traceback
+        print(f"self-learn hook {args.hook_command}: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
+    return _finish_verb(
+        result, args.hook_command, as_json=getattr(args, "as_json", False)
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -3326,6 +4221,11 @@ def _main(argv: list[str] | None = None) -> int:
         _mutating_epilogue(no_push=getattr(args, "no_push", False))
         return code
 
+    if args.command == "hook":
+        code = _cmd_hook(args)
+        _mutating_epilogue(no_push=getattr(args, "no_push", False))
+        return code
+
     if args.command == "telemetry":
         return _cmd_telemetry(args)
 
@@ -3337,6 +4237,15 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "batch":
         return _cmd_batch(args)
+
+    if args.command == "case":
+        return _cmd_case(args)
+
+    if args.command == "statement":
+        return _cmd_statement(args)
+
+    if args.command == "user-model":
+        return _cmd_user_model(args)
 
     if args.command == "doctor":
         return _cmd_doctor(args)
@@ -3370,6 +4279,12 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "worker":
         return _cmd_worker(args)
+
+    if args.command == "steward":
+        return _cmd_steward(args)
+
+    if args.command == "overseer":
+        return args._overseer_dispatch(args)
 
     if args.command == "serve":
         return _cmd_serve(args)

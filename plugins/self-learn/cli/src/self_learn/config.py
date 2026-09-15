@@ -63,6 +63,7 @@ __all__ = [
     "config_path",
     "dump_editable",
     "effective_default_mode",
+    "hook_activation_enabled",
     "invocation_backend",
     "load_editable",
     "one_motion_enabled",
@@ -601,6 +602,63 @@ def effective_default_mode(home: Path | str) -> str:
         f"'plain' or 'git', got {value!r}; defaulting to git"
     )
     return "git"
+
+
+#: 13 §7.4 (S-66, the overseer build): the section carrying the
+#: overseer's own delegation switches.
+OVERSEER_SECTION = "overseer"
+
+#: The one key this section carries so far: whether the overseer's own
+#: hook route may proceed past "placed" into registering + verifying.
+HOOK_ACTIVATION_KEY = "hook_activation"
+
+
+def hook_activation_enabled(home: Path | str) -> bool:
+    """13 §7.4: ``True`` iff ``config.yaml`` explicitly sets
+    ``overseer.hook_activation`` to the YAML boolean ``true``. Same
+    fail-closed discipline as :func:`one_motion_enabled` — every other
+    shape (missing file, unparseable, non-mapping top level or
+    section, absent key, or any value that is not exactly ``true``)
+    reads as ``False``, the review-gated default; a PRESENT but wrong
+    value warns on stderr so a typo never silently reads as a policy
+    decision. This governs only the overseer's OWN automatic path
+    (O-2b) — the human's ``hook activate`` never consults it and
+    always performs every step (13 §7.4)."""
+    path = config_path(home)
+    if not path.is_file():
+        return False
+    try:
+        data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
+    except (YAMLError, OSError, UnicodeDecodeError) as exc:
+        _warn(f"unparseable ({exc}); overseer.hook_activation stays disabled")
+        return False
+    if data is None:
+        return False
+    if not isinstance(data, dict):
+        _warn(
+            f"top level must be a mapping, got {type(data).__name__}; "
+            "overseer.hook_activation stays disabled"
+        )
+        return False
+    section = data.get(OVERSEER_SECTION)
+    if section is None:
+        return False
+    if not isinstance(section, dict):
+        _warn(
+            f"{OVERSEER_SECTION} must be a mapping, got {section!r}; "
+            "overseer.hook_activation stays disabled"
+        )
+        return False
+    value = section.get(HOOK_ACTIVATION_KEY)
+    if value is None or value is False:
+        return False
+    if value is True:
+        return True
+    _warn(
+        f"{OVERSEER_SECTION}.{HOOK_ACTIVATION_KEY} must be the YAML "
+        f"boolean true, got {value!r}; staying disabled"
+    )
+    return False
 
 
 # ===================================================================== #

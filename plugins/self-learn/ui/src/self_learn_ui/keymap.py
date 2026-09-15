@@ -67,7 +67,7 @@ KEYMAP: tuple[KeymapEntry, ...] = (
     KeymapEntry(("e",), "route", "Approve", "detail"),
     KeymapEntry(("x",), "reject", "Deny", "detail"),
     KeymapEntry(("f",), "defer", "Defer", "detail"),
-    KeymapEntry(("g",), "graduate", "Graduate", "detail"),
+    KeymapEntry(("g",), "retire", "Retire", "detail"),
     KeymapEntry(("i",), "iterate", "Iterate (open agent pane)", "detail"),
     KeymapEntry(("o",), "cycle_destination", "Cycle destination", "detail"),
     KeymapEntry(("n",), "note", "Attach / edit note", "detail"),

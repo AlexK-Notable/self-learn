@@ -116,7 +116,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "a41ddb3"
+ANCHOR = "715e1ee"
 
 
 # ===================================================================== #
@@ -244,6 +244,24 @@ class Behaviour:
     edited_exports: Mapping[str, str] = field(default_factory=dict)
 
 
+#: U8 (17-invocation-runbook.md §1, S-18 as amended): shared reason
+#: string for the six `test_invocation_sdk.py` OP-series tests whose
+#: only edit is the same one-line literal-to-constant swap, so one
+#: reason covers all six (`EXM1`'s grammar check runs per key, but the
+#: STRING is identical on purpose -- these six ARE one edit, repeated).
+_U8_FOUR_SURFACES_REASON = (
+    "2026-09-13 U8 (17-invocation-runbook.md §1): the six inline literal "
+    '`("worker", "worker-repair", "miner-reader", "analyst")` tuples this '
+    "OP-series loop over collapsed into one module constant, "
+    "`_FOUR_SURFACES` (a NEW node, free) -- left at the original four "
+    "rather than widened to steward/overseer, since `_containment`/`_spec` "
+    "are EXPORTED names (test_u_engine.py imports them by name, BEH5-"
+    "pinned) this build does not edit; steward/overseer's own containment "
+    "is exercised instead by the new `test_ch14_...` test below, via "
+    "`containment_for(...)` directly."
+)
+
+
 ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # --- FIXTURES: ground truth, whole-file byte-pinned (section 4.3) -
     "support.py": Fixture(),  # 62 importers  (NEW under this unit -- FIX3)
@@ -278,19 +296,63 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     ),
     # --- BEHAVIOUR: every top-level node (section 4.5) -----------------
     "test_invocation.py": Behaviour(
-        nodes=94, dump_sha="eb90005324f7f1483dcd618a80501d03a11e2f0ebb2541b5af696d31b48644fe"
+        nodes=94, dump_sha="eb90005324f7f1483dcd618a80501d03a11e2f0ebb2541b5af696d31b48644fe",
+        edited={
+            "func:test_wr7_seam_is_only_called_from_the_three_call_sites": (
+                "2026-09-14 U10 (S-29 as amended) + O-3 (S-66; 17-invocation-runbook.md "
+                "§10): the steward runner and the overseer runner are the fourth and "
+                "fifth authorized invocation.write_session callers; each model session "
+                "writes only declared stage files and never calls a verb; the census "
+                "still refuses every unlisted caller."
+            ),
+            "func:test_rg1_five_rung_precedence_resolves_in_isolation": (
+                "2026-09-13 U8 (17-invocation-runbook.md §1): SURFACES gained "
+                "steward/overseer, so this test's per-surface loop now sets "
+                "SELF_LEARN_BACKEND_STEWARD/_OVERSEER too -- the shared, "
+                "EXPORTED `_clear_backend_env` helper (test_u_sdka.py:45 "
+                "imports it by name) predates those two selectors and is left "
+                "untouched (BEH5); this test clears its own surface's "
+                "selector var directly instead, alongside every existing "
+                "`_clear_backend_env(monkeypatch)` call in its loop."
+            ),
+        },
     ),
     # 2026-08-30, ANCHOR ee62df0: RS8's `edited` exemption was dropped as
     # VACUOUS by this landing's refusal -- U-xdist landed, so the widened
     # lockfile bound IS the anchor content and nothing is owed.
     "test_invocation_sdk.py": Behaviour(
         nodes=137, dump_sha="f43ed618ce773521da88c2cacd89f3559f0e27cdef51388de2b1af856a990b6a",
+        edited={
+            "func:test_pl5_no_other_module_calls_write_session_or_text_session": (
+                "2026-09-14 U10 (S-29 as amended) + O-3 (S-66; 17-invocation-runbook.md "
+                "§10): the steward runner and the overseer runner are the fourth and "
+                "fifth authorized invocation.write_session callers; this independent "
+                "call-site census admits steward.py and overseer/run.py only."
+            ),
+            "func:test_op2_allowed_tools_always_empty": _U8_FOUR_SURFACES_REASON,
+            "func:test_op3_setting_sources_explicit_empty_list": _U8_FOUR_SURFACES_REASON,
+            "func:test_op4_settings_always_none": _U8_FOUR_SURFACES_REASON,
+            "func:test_op5_permission_mode_always_default": _U8_FOUR_SURFACES_REASON,
+            "func:test_op6_strict_mcp_config_always_true": _U8_FOUR_SURFACES_REASON,
+            "func:test_op17_options_env_is_empty_leak_test": _U8_FOUR_SURFACES_REASON,
+        },
     ),
     "test_worker.py": Behaviour(
         nodes=80, dump_sha="16e45a867ecebd6471586640f1f52417427c235d04777e74ec4f34c14506627c"
     ),
     "test_repair.py": Behaviour(
-        nodes=85, dump_sha="6bd9c4787b4d5a2f2887548228694edf88d76f82596ce4f4c2ed9d2598e1730d"
+        nodes=85, dump_sha="6bd9c4787b4d5a2f2887548228694edf88d76f82596ce4f4c2ed9d2598e1730d",
+        edited={
+            "func:test_h1_the_exit_code_contract": (
+                "2026-09-13 FW-85 (U0): `worker run`'s `idle` status now "
+                "returns the new `EXIT_HELD` (10), not `0` -- this test's "
+                "second assertion pinned the old fail-open contract this "
+                "build retires for the run-command surface (`commands/"
+                "review.md`'s exit-code table: nothing due and held is "
+                "NOT `0`, distinguishable from an actual run; before "
+                "FW-85 the two were indistinguishable)."
+            ),
+        },
     ),
     "test_attrib.py": Behaviour(
         nodes=68, dump_sha="9ebb1c1e42628b325b968bc8df082891f3d79946dd8a115b5b28e8f6898831c7",
@@ -299,7 +361,23 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         nodes=59, dump_sha="c61c80a0b91bc6e10dfc53e81e91549f6c7642f32b3c4a9ea91cbe9bbbd3eaa6",
     ),
     "test_composer.py": Behaviour(
-        nodes=58, dump_sha="3c920c0066c5f9db54b2a243a4714d331822cba6e82c6e029d8add6c6f4c7a5f"
+        nodes=58, dump_sha="3c920c0066c5f9db54b2a243a4714d331822cba6e82c6e029d8add6c6f4c7a5f",
+        edited={
+            "func:test_a12_worker_prompt_ingredients_and_to_text_containment": (
+                "2026-09-14 U7 (`01-architecture.md` §3.3 as amended; "
+                "`03-decisions.md` S-26 as amended, steward build): the M2 "
+                "batch prompt's rejected-proposal digest is replaced by a "
+                "cases-as-evidence block (case ids + one-line outcomes from "
+                "`cases.list_cases`) -- the analyst cites prior decisions "
+                "rather than obeying a 'never re-propose' instruction. This "
+                "test's digest-survives assertion, '(no rejected proposals "
+                "yet)' in prompt, becomes the cases block's own empty-index "
+                "form, 'none yet' in prompt, under the new heading 'Prior "
+                "decisions on this record's class, as cases:'. `_digest` "
+                "itself is untouched and still exercised directly by its "
+                "own two pinned tests in test_worker.py."
+            ),
+        },
     ),
     "test_u_fake.py": Behaviour(
         nodes=31, dump_sha="4fbcee5f5481c7a339d32fe303760e5ea8a024e647cb2c1a82795da70c942f46",
@@ -835,15 +913,28 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=11,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-09-11, transcribed at ANCHOR a41ddb3 from this module's own "
-            "STALE refusal (Sprint 3 landing): 2 -> 0. test_invocation_sdk.py "
-            "`func:test_pl3_...` (M-V, 1737499) and test_route_cli.py "
-            "`func:test_teach_route_missing_doctrine_exits_2_pre_spawn` (M-K, "
-            "2a02431) are behind the anchor, so both `edited` doors went VACUOUS "
-            "and were dropped. Previous value 2 (2026-09-05, at 3fd2279)."
+            "2026-09-13 steward-overseer integration (U0 + U8 merged), "
+            "transcribed at ANCHOR a41ddb3: 0 -> 8. FW-85 (U0): one door, "
+            "`test_repair.py: func:test_h1_the_exit_code_contract` (`worker run`'s "
+            "`idle` status now returns EXIT_HELD, not 0). U8 (17-invocation-runbook.md "
+            "§1): seven doors -- six `test_invocation_sdk.py` OP-series tests (the "
+            "surface-tuple collapse; `_U8_FOUR_SURFACES_REASON`) plus one "
+            "`test_invocation.py` test (`func:test_rg1_five_rung_precedence_"
+            "resolves_in_isolation`, the steward/overseer env-leak fix). Each lane "
+            "transcribed its own count alone (1 and 7); the merge carries the sum, "
+            "re-verified by running this file. Previous value 0 (2026-09-11, at a41ddb3). "
+            "2026-09-14 U7 (`01-architecture.md` §3.3 as amended; `03-decisions.md` "
+            "S-26 as amended): 8 -> 9, one more door, `test_composer.py: "
+            "func:test_a12_worker_prompt_ingredients_and_to_text_containment` (the "
+            "M2 batch prompt's rejected-proposal digest assertion is replaced by "
+            "the U7 cases-block assertion). 2026-09-14 U10 (`03-decisions.md` "
+            "S-29 as amended) and O-3 (plan-overseer §O-3 / §5.1): 9 -> 11, the "
+            "invocation seam census in `test_invocation.py` WR7 and "
+            "`test_invocation_sdk.py` PL5 names the steward runner and the overseer "
+            "runner as the fourth and fifth authorized callers (the same two nodes)."
         ),
         measure=_measure_census_edited,
     ),
@@ -860,14 +951,22 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=186,
+        value=193,
         scope=_SCOPE_HEAD,
         reason=(
-            "2026-09-04 Sprint 2 integration, per §5.1's STALE remediation: 185 -> 186 "
-            "against the RETIRED control anchor c3b48e7 (HEAD-scoped): the M-K/A22 "
-            "teach node (2a02431) is edited relative to c3b48e7; the M-V test_pl3 node "
-            "already differed from c3b48e7 and moves nothing. Previously 185 "
-            "(2026-08-30 U-xdist fold at ANCHOR cf1e32d)."
+            "2026-09-13 U8 (17-invocation-runbook.md §1), HEAD-scoped, "
+            "re-run after this build's own edits against the RETIRED "
+            "control anchor c3b48e7: 186 -> 191, five of this build's seven "
+            "genuinely-edited nodes also differing from c3b48e7 (two of the "
+            "seven already differed from c3b48e7 independently of this "
+            "build and so moved nothing here, unlike at the live ANCHOR). "
+            "Previously 186 (2026-09-04 Sprint 2 integration). 2026-09-14 U7, "
+            "re-run after this build's own edit: 191 -> 192 -- "
+            "`test_composer.py`'s newly-edited `test_a12_...` node also "
+            "differs from c3b48e7. 2026-09-14 U10 (`03-decisions.md` S-29 "
+            "as amended) and O-3 (plan-overseer §O-3 / §5.1), re-run after both "
+            "builds' authorized seam-test edits: 192 -> 193 -- WR7 newly differs "
+            "from c3b48e7 while PL5 already did (the same two nodes for both units)."
         ),
         measure=_measure_control_edited,
     ),

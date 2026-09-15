@@ -1,4 +1,4 @@
-<!-- rubric-version: 1 -->
+<!-- rubric-version: 2 -->
 # Mining rubric — what counts as a durable lesson in a transcript
 
 You are reading structural digests of real work sessions. Your output is
@@ -35,9 +35,13 @@ which kills the whole system. **When in doubt, do not emit.**
   or anything a CLAUDE.md/SKILL.md in the digest already states.
 - Secrets, tokens, keys, or anything resembling them — shorten the quote
   to exclude the span; the CLI scan will refuse the record anyway.
-- Meta-lessons about the self-learn system observed in its own review or
-  teach sessions (those spans are excluded upstream; if one leaks
-  through, skip it).
+- Meta-lessons observed FROM INSIDE the system's own review or teach
+  sessions (those spans are excluded upstream; if one leaks through,
+  skip it) — this is about where the observation was made, not about the
+  subject. A lesson learned while **developing** self-learn itself is a
+  normal candidate since S-64 registered this repository as a plain-mode
+  host: it lands like any other project-scope lesson, routed to
+  `claude-md:local`.
 - Emotional or interpersonal observations about the user. Lessons are
   about work, surfaces, and systems.
 
@@ -54,6 +58,27 @@ which kills the whole system. **When in doubt, do not emit.**
   `user` only for genuinely universal conduct.
 - **Confidence** = high only for corrections and verified gotchas you
   can quote directly; repeated-friction inferences are medium at best.
+
+## Fire observations (a suspicion, never a verdict)
+
+When a digest shows a session apparently applying or breaking an
+already-routed lesson, emit a **fire** observation rather than folding it
+into one of the four lesson shapes above — a fire is about an existing
+rule, not a candidate for a new one. Record which of three outcomes the
+digest actually supports:
+
+- `suspected-compliance` — the session's own text reads as following the
+  rule.
+- `suspected-violation` — the session's own text reads as breaking it.
+- `cannot-tell` — the digest does not show enough to say either way; emit
+  this rather than guessing at one of the other two.
+
+Never emit `complied` or `violated` (the old two-value enum) — a fire is
+evidence for the steward to weigh alongside the transcript line it cites,
+never a recurrence confirmed on its own. Deciding whether a
+`suspected-violation` fire is a real recurrence-suspect, after checking
+the transcript line, is the steward's job; this rubric's job stops at
+reporting what the digest actually shows.
 
 ## Reconciliation honesty
 

@@ -26,7 +26,7 @@ env, never a shared mutable file the test would have to lock:
   code/stderr above apply ONLY to an invocation whose argv contains this
   exact token; every other invocation exits 0 with no stderr — this is
   what lets the bulk-loop "abort at item N" test fail exactly one
-  ``graduate <id>`` call while its siblings (and the terminal ``push``)
+  ``retire <id>`` call while its siblings (and the terminal ``push``)
   succeed.
 """
 

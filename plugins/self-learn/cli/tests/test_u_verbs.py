@@ -30,12 +30,13 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import batch, cli, gitops, sentinel, telemetry, verbs
+from self_learn import batch, cases, cli, gitops, sentinel, telemetry, verbs
 from self_learn.hosts import HostsError, host_add, skill_dir_for, slug_for
 from self_learn.ledger_ops import (
     DEFERRED_ONLY,
     LIVE_STATUSES,
     LedgerOpsError,
+    RECONSIDERABLE_STATUSES,
     REOPENABLE_STATUSES,
     RESOLVABLE_STATUSES,
     ROUTED_ONLY,
@@ -44,6 +45,7 @@ from self_learn.ledger_ops import (
     defer_record,
     find_record_path,
     move_record,
+    read_proposal,
     write_proposal,
 )
 from self_learn.records import RECORD_ID_RE, MutationError, Record, ValidationError
@@ -214,11 +216,30 @@ class TestPhaseBoundary:
         ``"followup add"`` leaves the overlap assertion green either
         way, because NEITHER spelling is in PERMITTED_VERBS today. The
         explicit membership pin just below makes the correct spelling
-        self-verifying: it fails directly if the literal reverts."""
+        self-verifying: it fails directly if the literal reverts.
+
+        U4 (2026-09-13, S-54 as amended, steward/overseer build): the
+        literal 15 grows to 16 here -- `revise` is not a U-verbs
+        Phase-2 verb (the `phase2_verbs` set below is unchanged and
+        still excluded), it is the ONE new sheet verb a LATER,
+        different unit adds to the sheet grammar on purpose
+        ("PERMITTED_KEYS gains it together with the by: key",
+        03-decisions.md S-54). A membership pin for it sits right below
+        the count, the same discipline `followup-add` gets above, so
+        the growth is self-verifying rather than a silent widening.
+
+        S-67 (2026-09-14, U13): 16 grows to 17 -- `retire` joins as its
+        own sheet verb (`graduate` stays too, the hidden alias for one
+        release; PERMITTED_KEYS carries both). Not a Phase-2 verb
+        either (`phase2_verbs` below is unchanged) -- the SAME
+        self-verifying membership-pin discipline the two additions
+        above already established."""
         phase2_verbs = {"reroute", "followup-add", "reclassify", "host remove", "bucket prune"}
         assert "followup-add" in phase2_verbs  # gate r2 m-2: pins the spelling itself
         assert not (batch.PERMITTED_VERBS & phase2_verbs)
-        assert len(batch.PERMITTED_VERBS) == 15
+        assert "revise" in batch.PERMITTED_VERBS  # U4: the one deliberate addition
+        assert "retire" in batch.PERMITTED_VERBS  # S-67: the other deliberate addition
+        assert len(batch.PERMITTED_VERBS) == 17
 
     def test_phase1_touches_no_host(self, tmp_path, monkeypatch):
         """PH2: a fixture with a registered host (env's ``host_a``) runs
@@ -817,11 +838,19 @@ class TestState:
         )
         assert package_hits == 2, proc.stdout
 
-    @pytest.mark.parametrize("verb", ["graduate", "route"])
+    @pytest.mark.parametrize("verb", ["supersede", "route"])
     def test_state6_reopen_refuses_terminal(self, env2, verb):
+        # S-67: `graduate`'s own terminal state (legacy `superseded_by:
+        # canon`, a RETIREMENT) is no longer refused here -- `reopen`
+        # now admits it (test_rename_retire.py's own
+        # `TestReopenWidening` covers that positive case + its mutation).
+        # `supersede` (a REPLACEMENT, a live-successor record id) is
+        # this test's new terminal case for the same status,
+        # `superseded` -- still refused, `route` unchanged.
         record = env2.seed(scope="skill:a")
-        if verb == "graduate":
-            verbs.graduate(env2.home, record.id, no_push=True)
+        if verb == "supersede":
+            successor = env2.seed(scope="skill:a")
+            verbs.supersede(env2.home, record.id, successor.id, no_push=True)
             status = "superseded"
         else:
             write_proposal(env2.home, record.id, proposal_dict(scope="skill:a"))
@@ -1234,8 +1263,13 @@ class TestBatch:
         ]))
         result = batch.run(env2.home, items, no_push=True)
         assert result.stopped_at == 1
-        assert len(result.items) == 1
+        # U3 (S-54 as amended, 02-schema.md §3a.1 rule 5): the result
+        # carries the WHOLE sheet, not just what ran before the stop --
+        # item 2 is now a `not-attempted` entry rather than absent.
+        assert len(result.items) == 2
         assert result.items[0].rc == gitops.EXIT_GIT_FAILED
+        assert result.items[1].state == "not-attempted"
+        assert result.items[1].rc == -1
 
         monkeypatch.undo()
         routed = seed_routed(env2.home, "lrn-a0000001")  # not LIVE_STATUSES
@@ -1539,7 +1573,14 @@ class TestBatch:
         ]))
         result = batch.run(env2.home, items, no_push=True)
         assert result.process_code == 8
-        assert result.summary == {"applied": 3, "already_applied": 0, "refused": 1, "total": 4}
+        # U3: `summary` gained `not_attempted` (0 here -- a refusal
+        # that is not a STOP code never truncates the sheet). Fold r1:
+        # `summary` also gained `stopped` (0 here too -- the refusal is
+        # rc=1, not a STOP code (5/6/7), so no item is `stopped`).
+        assert result.summary == {
+            "applied": 3, "already_applied": 0, "refused": 1,
+            "stopped": 0, "not_attempted": 0, "total": 4,
+        }
         commits_after = int(git(env2.home, "rev-list", "--count", "HEAD").stdout.strip())
         assert commits_after - commits_before == 4  # 3 items + 1 flush commit
 
@@ -1597,9 +1638,15 @@ class TestBatch:
         assert len(pre_callers) == 6, pre_callers
 
     def test_bat11b_epilogue_call_sites_match_spec(self):
+        # S-66 / 13 §7.4 (the overseer build, O-2a): `_main`'s dispatch
+        # gained an EIGHTH call site (`hook activate`/`hook deactivate`,
+        # the human path) alongside the pre-existing seven -- one more
+        # `("cli", "_main")` entry, bumping that arm's own count below
+        # from 5 to 6.
         EXPECTED_EPILOGUE_SITES = [
             ("cli", "_cmd_report"),
             ("cli", "_main"), ("cli", "_main"), ("cli", "_main"), ("cli", "_main"), ("cli", "_main"),
+            ("cli", "_main"),
             ("batch", "run"),
         ]
         sites = []
@@ -1617,9 +1664,9 @@ class TestBatch:
                         name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", None)
                         if name == "_mutating_epilogue":
                             sites.append((modname, node.name))
-        assert len(sites) == len(EXPECTED_EPILOGUE_SITES) == 7
+        assert len(sites) == len(EXPECTED_EPILOGUE_SITES) == 8
         assert sorted(sites) == sorted(EXPECTED_EPILOGUE_SITES)
-        assert sites.count(("cli", "_main")) == 5
+        assert sites.count(("cli", "_main")) == 6
 
     def test_bat11c_shipped_lifecycle_tests_are_present(self):
         text = (Path(__file__).parent / "test_lifecycle_cli.py").read_text(encoding="utf-8")
@@ -1645,30 +1692,62 @@ def _write_sheet(base_dir: Path, items: list[dict]) -> Path:
 
 class TestProd:
     @pytest.mark.parametrize(
-        "outcome", ["spawned", "absorbed-window", "absorbed-race", "disabled", "depth-limited"]
+        "outcome,expect_rc",
+        [
+            ("spawned", 0),
+            ("absorbed-window", cli.EXIT_HELD),
+            ("absorbed-race", cli.EXIT_HELD),
+            ("disabled", cli.EXIT_HELD),
+            ("depth-limited", cli.EXIT_HELD),
+        ],
     )
-    def test_prod1_worker_kick_json(self, env2, monkeypatch, capsys, outcome):
+    def test_prod1_worker_kick_json(self, env2, monkeypatch, capsys, outcome, expect_rc):
         """PROD1: `worker kick --json` passes the library's own outcome
         string through UNCHANGED, for all five outcomes -- never a
-        re-derived label."""
+        re-derived label -- and `ok` stays True for every outcome (none
+        of the five is a failure). FW-85 (U0) SUPERSEDES this test's own
+        prior PROD3 assertion ("kick's own exit is unconditionally 0",
+        which FW-134 (`14-forward-work-map.md`) explicitly named this
+        test as pinning against a later "improvement"): the exit code
+        is no longer byte-unchanged across outcomes -- only `spawned`
+        actually started a child, so only `spawned` returns `EXIT_OK`;
+        the other four -- no child spawned, for a reason short of
+        failure -- return the new `EXIT_HELD` (`commands/review.md`'s
+        exit-code table)."""
         monkeypatch.setenv("SELF_LEARN_HOME", str(env2.home))
         monkeypatch.setattr(cli.worker, "kick", lambda home: outcome)
         rc = cli.main(["worker", "kick", "--json"])
-        assert rc == 0  # PROD3: kick's own exit is unconditionally 0
+        assert rc == expect_rc
         data = json.loads(capsys.readouterr().out)
         assert data["outcome"] == outcome
         assert data["ok"] is True
 
     @pytest.mark.parametrize(
         "status,expect_ok,expect_rc",
-        [("ok", True, 0), ("idle", True, 0), ("failed", False, 1)],
+        [
+            ("ok", True, 0),
+            ("idle", True, cli.EXIT_HELD),
+            ("failed", False, 1),
+            ("stopped", False, gitops.EXIT_GIT_FAILED),
+        ],
     )
     def test_prod2_and_prod3_worker_run_json(self, env2, monkeypatch, capsys, status, expect_ok, expect_rc):
-        """PROD2 (ok flag correctness) and PROD3 (byte-unchanged exit
-        code) in one table -- worker run's three statuses."""
+        """PROD2 (ok flag correctness, unchanged by FW-85) and PROD3
+        (the exit code) in one table -- worker run's four statuses
+        (`worker.py`'s own `RunResult.status` docstring: `ok | idle |
+        failed | stopped`; `stopped` was missing from this table before
+        FW-85 -- added here for full discrimination). FW-85 (U0): `idle`
+        (0 eligible -- nothing due) now returns the new `EXIT_HELD`
+        rather than `0` -- `commands/review.md`'s exit-code table:
+        "the new EXIT_HELD (10) means the run found nothing due and
+        held ... before FW-85 it was indistinguishable from 0". `ok`
+        stays True for `idle` (not a failure); only the exit code
+        changed."""
         import types
         monkeypatch.setenv("SELF_LEARN_HOME", str(env2.home))
-        stub = types.SimpleNamespace(status=status, proposed=[], merge_proposed=[], eligible=0, suspects=0)
+        stub = types.SimpleNamespace(
+            status=status, proposed=[], merge_proposed=[], eligible=0, suspects=0
+        )
         monkeypatch.setattr(cli.worker, "run", lambda home, **kw: stub)
         rc = cli.main(["worker", "run", "--json"])
         assert rc == expect_rc
@@ -1679,25 +1758,74 @@ class TestProd:
     @pytest.mark.parametrize(
         "status,expect_ok,expect_rc",
         [
-            ("ok", True, 0), ("idle", True, 0), ("busy", True, 0), ("held-gate", True, 0),
-            ("disabled", True, 0), ("initialized", True, 0),
-            ("failed", False, 1), ("landed-uncommitted", False, gitops.EXIT_HALF_WRITTEN),
+            ("ok", True, 0),
+            ("initialized", True, 0),
+            ("idle", True, cli.EXIT_HELD),
+            ("busy", True, cli.EXIT_HELD),
+            ("held-gate", True, cli.EXIT_HELD),
+            ("disabled", True, cli.EXIT_HELD),
+            ("failed", False, 1),
+            ("landed-uncommitted", False, gitops.EXIT_HALF_WRITTEN),
+            ("stopped", False, gitops.EXIT_GIT_FAILED),
         ],
     )
     def test_prod2_and_prod3_mine_run_json(self, env2, monkeypatch, capsys, status, expect_ok, expect_rc):
-        """PROD2 + PROD3 for mine run's eight statuses: `ok` is false
-        ONLY for failed/landed-uncommitted, and the exit code is the
-        pinned integer for each (7 for landed-uncommitted, 1 for failed,
-        0 for the other six) -- never derived from the exit code itself."""
+        """PROD2 (ok flag correctness, unchanged by FW-85) + PROD3 (the
+        exit code) for mine run's nine statuses (`stopped` was missing
+        from this table before FW-85 -- added here for full
+        discrimination). FW-85 (U0) SUPERSEDES this test's own prior
+        PROD3 assertion (FW-134, `14-forward-work-map.md`, named this
+        test's table as the "negative criterion" pinning `busy`/
+        `held-gate`/`disabled`/`idle` at `0` "so a later builder cannot
+        'improve' it silently" -- FW-85's own dated disposition on that
+        same row is the authorization to do exactly that, for this
+        SEPARATE run-command contract, not the verb/batch one FW-134's
+        `EXIT_BATCH_PARTIAL` guards): `idle`/`held-gate`/`busy`/
+        `disabled` are all "the run found nothing due and held" per
+        `commands/review.md`'s exit-code table and now return the new
+        `EXIT_HELD`, never `0`. `ok`/`landed-uncommitted`/`failed` are
+        untouched; `initialized` performs a real one-time action
+        (cursor seeding) and stays `EXIT_OK`."""
         import types
         monkeypatch.setenv("SELF_LEARN_HOME", str(env2.home))
-        stub = types.SimpleNamespace(status=status, landed=[], folded=[], recurrences=[], fires=0, run_id="run-1")
+        stub = types.SimpleNamespace(
+            status=status, landed=[], folded=[], recurrences=[], fires=0, run_id="run-1"
+        )
         monkeypatch.setattr(cli.miner, "run", lambda home, **kw: stub)
         rc = cli.main(["mine", "run", "--json"])
         assert rc == expect_rc
         data = json.loads(capsys.readouterr().out)
         assert data["outcome"] == status
         assert data["ok"] is expect_ok
+
+    def test_prod4_mine_run_unmapped_status_raises(self, env2, monkeypatch):
+        """S3 (code gate r1 fold, U0): the unmapped-status guard at
+        `cli.py:1220-1226` is the mechanism that keeps PROD2/PROD3's
+        table exhaustive as `MineResult.status` grows a value later --
+        unpinned, a future builder could silently restore FW-85's own
+        fail-open bug (an unmapped status returning `0`). A status
+        absent from `_MINE_RUN_EXIT` must raise, not exit 0."""
+        import types
+        monkeypatch.setenv("SELF_LEARN_HOME", str(env2.home))
+        stub = types.SimpleNamespace(
+            status="quokka", landed=[], folded=[], recurrences=[], fires=0, run_id="run-1"
+        )
+        monkeypatch.setattr(cli.miner, "run", lambda home, **kw: stub)
+        with pytest.raises(ValueError, match="unmapped MineResult.status"):
+            cli.main(["mine", "run"])
+
+    def test_prod5_worker_run_unmapped_status_raises(self, env2, monkeypatch):
+        """S3 (code gate r1 fold, U0): the same guard's `worker run`
+        twin, `cli.py:1373-1378` against `_WORKER_RUN_EXIT`. A status
+        absent from that map must raise, not exit 0."""
+        import types
+        monkeypatch.setenv("SELF_LEARN_HOME", str(env2.home))
+        stub = types.SimpleNamespace(
+            status="quokka", proposed=[], merge_proposed=[], eligible=0, suspects=0
+        )
+        monkeypatch.setattr(cli.worker, "run", lambda home, **kw: stub)
+        with pytest.raises(ValueError, match="unmapped RunResult.status"):
+            cli.main(["worker", "run"])
 
 
 # =================================================================== UN
@@ -1876,3 +2004,456 @@ class TestUnaffected:
             "test_armor.py::test_fix1_fixtures_are_byte_identical (this unit's own "
             "armor-pin guard) failed:\n" + proc.stdout[-4000:] + proc.stderr[-2000:]
         )
+
+
+# =============================================================== U4 revise
+
+
+def _seed_pending_behavior(
+    env2,
+    rid="lrn-90000001",
+    scope="skill:a",
+    trigger="About to edit .storage while HA is running.",
+    instruction="Stop the container first.",
+):
+    create_record(
+        env2.home,
+        make_behavior(
+            record_id=rid, scope=scope, trigger=trigger, instruction=instruction
+        ),
+    )
+    commit_all(env2.home, "pending seed")
+    return rid
+
+
+def _tail_from(body: str, heading: str) -> str:
+    """Everything from ``## <heading>`` to the end of *body* — the
+    positive control :func:`test_revise_...` tests use to prove every
+    OTHER section stayed byte-for-byte identical: for a two-section
+    behavior record (Trigger, Instruction), revising Trigger must leave
+    this exact tail untouched."""
+    idx = body.index(f"## {heading}")
+    return body[idx:]
+
+
+class TestU4Revise:
+    """U4 (build-u4.md): `self-learn revise` — the one new sheet verb
+    this build adds (S-54 as amended, S-65). Covers build-u4.md's
+    Tests section named cases (a routed record refused; a pending
+    record changes exactly the named section; a deferred record
+    allowed; a secret in ``text`` refused; the proposal survives with
+    ``revised_at``; an unknown section name refused) plus one mutation
+    of this builder's own choosing (heading-smuggling through
+    ``--text``)."""
+
+    def test_revise_refused_on_routed_record(self, env2):
+        rid = seed_routed(env2.home, rid="lrn-90000010", scope="skill:a")
+        with pytest.raises(verbs.VerbError) as exc_info:
+            verbs.revise(
+                env2.home, rid, section="Trigger", text="New trigger wording.",
+                because="tighten wording", no_push=True,
+            )
+        message = str(exc_info.value)
+        assert "routed" in message
+        assert "pending/deferred" in message  # require_status's own phrasing (02 §2)
+
+    def test_revise_pending_changes_named_section_only(self, env2):
+        rid = _seed_pending_behavior(env2, rid="lrn-90000011")
+        before_body = Record.from_path(find_record_path(env2.home, rid)).body
+        before_tail = _tail_from(before_body, "Instruction")
+
+        result = verbs.revise(
+            env2.home, rid, section="Trigger",
+            text="About to edit .storage while HA is running (reworded).",
+            because="tightened the trigger wording", no_push=True,
+        )
+        assert result.action == "revise"
+
+        after = Record.from_path(find_record_path(env2.home, rid))
+        assert "reworded" in after.body
+        # positive control: the Instruction section (and everything
+        # from its heading onward) is byte-for-byte identical.
+        assert _tail_from(after.body, "Instruction") == before_tail
+
+    def test_revise_deferred_allowed(self, env2):
+        rid = _seed_pending_behavior(env2, rid="lrn-90000012")
+        verbs.defer(env2.home, rid, no_push=True)
+        assert Record.from_path(find_record_path(env2.home, rid)).status == "deferred"
+
+        result = verbs.revise(
+            env2.home, rid, section="Trigger", text="Reworded while deferred.",
+            because="clarify", no_push=True,
+        )
+        assert result.action == "revise"
+        after = Record.from_path(find_record_path(env2.home, rid))
+        assert after.status == "deferred"  # revise never touches status
+        assert "Reworded while deferred." in after.body
+
+    def test_revise_secret_in_text_refused(self, env2):
+        rid = _seed_pending_behavior(env2, rid="lrn-90000013")
+        before = find_record_path(env2.home, rid).read_bytes()
+        with pytest.raises(verbs.SecretRefusal):
+            verbs.revise(
+                env2.home, rid, section="Trigger",
+                text="key AKIAABCDEFGHIJKLMNOP leaked here",
+                because="oops", no_push=True,
+            )
+        # nothing written on refusal (P2-7: scan runs before any lock)
+        assert find_record_path(env2.home, rid).read_bytes() == before
+
+    def test_revise_keeps_proposal_and_stamps_revised_at(self, env2):
+        rid = _seed_pending_behavior(env2, rid="lrn-90000014")
+        write_proposal(env2.home, rid, proposal_dict(scope="skill:a"))
+        commit_all(env2.home, "proposal seed")
+        proposal_path = (
+            find_record_path(env2.home, rid).parent.parent
+            / "proposals" / f"{rid}.yaml"
+        )
+        assert proposal_path.is_file()
+        before_data = read_proposal(proposal_path)
+        assert "revised_at" not in before_data
+
+        result = verbs.revise(
+            env2.home, rid, section="Trigger", text="Retitled trigger wording.",
+            because="polish", by="steward", no_push=True,
+        )
+        assert result.action == "revise"
+
+        # proposal file KEPT (never swept -- the record never left
+        # pending/, so worker._still_pending's orphan sweep, keyed on
+        # "no matching pending record", cannot reach it) and stamped.
+        assert proposal_path.is_file()
+        after_data = read_proposal(proposal_path)
+        assert "revised_at" in after_data
+        assert after_data["revised_by"] == "steward"
+        # record_sha is deliberately left untouched (the analyst never
+        # saw the new wording) -- still the fixture's original stub.
+        assert after_data["record_sha"] == before_data["record_sha"]
+
+    def test_revise_unknown_section_refused(self, env2):
+        rid = _seed_pending_behavior(env2, rid="lrn-90000015")
+        with pytest.raises(verbs.VerbError) as exc_info:
+            verbs.revise(
+                env2.home, rid, section="Bogus", text="whatever",
+                because="oops", no_push=True,
+            )
+        assert "Bogus" in str(exc_info.value)
+
+    def test_revise_permitted_and_required_keys_in_batch(self):
+        """Not the sheet-dispatch behaviour (U3/so-batch's own scope --
+        see the builder's report for the spec-vs-plan note) — just the
+        two dict entries this build actually adds."""
+        assert batch.PERMITTED_KEYS["revise"] == frozenset(
+            {"section", "text", "because", "by"}
+        )
+        assert batch.REQUIRED_KEYS["revise"] == frozenset(
+            {"section", "text", "because"}
+        )
+
+    # U3 (build-u3.md, lane so-batch) landed `_dispatch`/`classify`/
+    # `_STATUS_GATE` wiring for `revise` -- carried from the U4 gate
+    # (gate-u4-r1.md F5): un-skipped, now passes for real.
+    def test_revise_then_route_sheet_applies_both(self, env2):
+        rid = _seed_pending_behavior(env2, rid="lrn-90000016")
+        write_proposal(env2.home, rid, proposal_dict(scope="skill:a"))
+        commit_all(env2.home, "proposal seed")
+        sheet = env2.home / "sheet.yaml"
+        sheet.write_text(
+            "version: 1\n"
+            "items:\n"
+            f"  - id: {rid}\n"
+            "    verb: revise\n"
+            "    section: Trigger\n"
+            "    text: Reworded before routing.\n"
+            "    because: tighten wording before route\n"
+            f"  - id: {rid}\n"
+            "    verb: route\n"
+            "    dest: skill-md\n",
+            encoding="utf-8",
+        )
+        items = batch.load_sheet(sheet)
+        result = batch.run(env2.home, items, no_push=True)
+        assert result.summary["applied"] == 2
+        after = Record.from_path(find_record_path(env2.home, rid))
+        assert after.status == "routed"
+        assert "Reworded before routing." in after.body
+
+    # ------------------------------------------------- builder's own mutation
+
+    def test_revise_text_heading_smuggling_refused(self, env2):
+        """Least-protected edge :func:`records.validate_body` cannot
+        catch on its own: it only counts KNOWN headings, so a --text
+        value carrying its own '## ' line would sail through set_body
+        and grow the body a whole section through a verb whose entire
+        contract is 'never a substance change' (02 §2 as amended)."""
+        rid = _seed_pending_behavior(env2, rid="lrn-90000017")
+        before = find_record_path(env2.home, rid).read_bytes()
+        with pytest.raises(verbs.VerbError) as exc_info:
+            verbs.revise(
+                env2.home, rid, section="Trigger",
+                text="Fixed wording.\n\n## Sneaky\nSmuggled section.",
+                because="oops", no_push=True,
+            )
+        assert "heading" in str(exc_info.value).lower()
+        # nothing written on refusal
+        assert find_record_path(env2.home, rid).read_bytes() == before
+
+    @pytest.mark.parametrize("lead", [" ", "\t", "\n\n"])
+    def test_revise_text_heading_smuggling_refused_with_leading_whitespace(
+        self, env2, lead
+    ):
+        """Gate r1 F1: the guard is line-anchored and the splice strips,
+        so a heading behind one leading space or tab was checked as a
+        non-heading and then spliced back to the start of a line."""
+        rid = _seed_pending_behavior(env2, rid="lrn-90000019")
+        before = find_record_path(env2.home, rid).read_bytes()
+        with pytest.raises(verbs.VerbError) as exc_info:
+            verbs.revise(
+                env2.home, rid, section="Trigger",
+                text=lead + "## Episode brief\nsmuggled section body.",
+                because="probe", no_push=True,
+            )
+        assert "heading" in str(exc_info.value).lower()
+        assert find_record_path(env2.home, rid).read_bytes() == before
+
+    def test_revise_secret_in_because_refused(self, env2):
+        """Gate r1 F2: `because` becomes the commit body, a tracked and
+        autosynced artefact, so its scan is a non-bypassable rail (S-29)
+        and needs its own red."""
+        rid = _seed_pending_behavior(env2, rid="lrn-9000001b")
+        before = find_record_path(env2.home, rid).read_bytes()
+        with pytest.raises(verbs.SecretRefusal):
+            verbs.revise(
+                env2.home, rid, section="Trigger",
+                text="A harmless rewording.",
+                because="key AKIAABCDEFGHIJKLMNOP leaked in the reason",
+                no_push=True,
+            )
+        assert find_record_path(env2.home, rid).read_bytes() == before
+
+    def test_revise_identical_text_refused(self, env2):
+        """Probed empirically (not assumed): `gitops.stage_and_commit`
+        without `allow_empty=True` turns a byte-identical rewrite into
+        `HalfWrittenError` ("nothing to commit"), which would be a
+        confusing failure mode for a genuine no-op re-apply -- refused
+        early instead, before any lock."""
+        rid = _seed_pending_behavior(env2, rid="lrn-90000018")
+        with pytest.raises(verbs.VerbError) as exc_info:
+            verbs.revise(
+                env2.home, rid, section="Trigger",
+                text="About to edit .storage while HA is running.",
+                because="noop", no_push=True,
+            )
+        assert "nothing to revise" in str(exc_info.value)
+
+
+# ================================================================== U5
+
+
+def _u5_case(
+    tmp_path, home, *, records, kind="resolution", outcome="route",
+    supersedes=None, actor="steward", n=[0],
+) -> str:
+    """U5's own case-stage builder — same shape as `test_cases.py`'s
+    `_write_stage`/`_record` and `test_batch.py`'s `_seed_case`,
+    purpose-built here so this file needs no cross-import (both of
+    those build against a different home fixture)."""
+    n[0] += 1
+    data = {
+        "kind": kind,
+        "trigger": "reconsider" if kind == "reconsider" else "nightly",
+        "outcome": outcome,
+        "records": list(records),
+        "scope": "skill:a",
+        "question": "U5 test case",
+        "evidence": [{"ref": "transcript:u5test#L1", "quote": "u5 quote"}],
+        "decision": {"verb": outcome, "because": "u5 test", "confidence": "settled"},
+    }
+    if supersedes is not None:
+        data["supersedes"] = supersedes
+    stage = tmp_path / f"u5-stage-{n[0]}.yaml"
+    from ruamel.yaml import YAML
+    import io
+
+    y = YAML(typ="safe")
+    y.default_flow_style = False
+    buf = io.StringIO()
+    y.dump(data, buf)
+    stage.write_text(buf.getvalue(), encoding="utf-8")
+    return cases.record(home, stage, actor=actor)
+
+
+class TestU5Reconsider:
+    """U5 (`build-u5.md`): `reconsider` records a successor decision
+    against a routed/rejected/deferred record; it never itself changes
+    the record's status or writes `superseded_by` on the old case —
+    `cases.record` already wrote that link atomically when the
+    reconsider case was created (naming the predecessor in
+    `supersedes`)."""
+
+    def test_1_no_reconsider_case_refuses(self, env2, tmp_path):
+        """(a) a `resolution`-kind case over the SAME record: wrong
+        kind. (b) a `reconsider`-kind case whose predecessor covers a
+        DIFFERENT record: wrong record. Both refused, nothing written."""
+        rid = seed_routed(env2.home, "lrn-95000001", scope="skill:a")
+        before = find_record_path(env2.home, rid).read_bytes()
+
+        wrong_kind = _u5_case(tmp_path, env2.home, records=[rid], kind="resolution")
+        with pytest.raises(verbs.VerbError) as exc_a:
+            verbs.reconsider(env2.home, rid, case=wrong_kind, no_push=True)
+        assert "reconsider" in str(exc_a.value).lower()
+        assert find_record_path(env2.home, rid).read_bytes() == before
+
+        other_rid = seed_routed(env2.home, "lrn-95000002", scope="skill:a")
+        other_before = find_record_path(env2.home, other_rid).read_bytes()
+        other_case = _u5_case(tmp_path, env2.home, records=[other_rid], kind="resolution")
+        reconsider_for_other = _u5_case(
+            tmp_path, env2.home, records=[other_rid], kind="reconsider",
+            outcome="reject", supersedes=other_case,
+        )
+        with pytest.raises(verbs.VerbError) as exc_b:
+            verbs.reconsider(env2.home, rid, case=reconsider_for_other, no_push=True)
+        assert "record" in str(exc_b.value).lower()
+        assert find_record_path(env2.home, rid).read_bytes() == before
+        assert find_record_path(env2.home, other_rid).read_bytes() == other_before
+
+    def test_2_valid_case_appends_history_status_unchanged(self, env2, tmp_path):
+        rid = seed_routed(env2.home, "lrn-95000003", scope="skill:a")
+        old_case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="resolution", outcome="route"
+        )
+        reconsider_case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="reconsider",
+            outcome="reject", supersedes=old_case,
+        )
+        # `cases.record` itself already flipped the predecessor's
+        # `superseded_by` at CASE-CREATION time (`test_cases.py::
+        # test_supersedes_sets_superseded_by_on_the_target` pins that
+        # mechanism directly) — asserted here as the FIXTURE's own
+        # state, not evidence of what `reconsider` itself writes.
+        old_view = cases.show(env2.home, old_case, evidence_only=False)
+        assert old_view.frontmatter["superseded_by"] == reconsider_case
+
+        result = verbs.reconsider(
+            env2.home, rid, case=reconsider_case, by="steward", no_push=True
+        )
+        assert result.action == "reconsider"
+
+        record = Record.from_path(find_record_path(env2.home, rid))
+        assert record.status == "routed"  # unchanged — reconsider never flips it
+        assert record.history[-1]["event"] == "reconsidered"
+        assert record.history[-1]["case"] == reconsider_case
+        assert record.history[-1]["supersedes"] == old_case
+
+    def test_4_reopen_still_refused_for_replaced_record(self, env2):
+        """Regression guard (distinct from `test_state6_reopen_refuses_
+        terminal`'s graduate/route parametrization, which never exercises
+        a record-to-record `supersede`): a RECORD-id supersession
+        ("replaced") stays refused for `reopen`, same as before U5 —
+        `REOPENABLE_STATUSES` is untouched by this build."""
+        old_id = seed_routed(env2.home, "lrn-95000004", scope="skill:a")
+        new_record = env2.seed(scope="skill:a")
+        verbs.supersede(env2.home, old_id, new_record.id, no_push=True)
+        replaced_path = env2.bucket_skill_a / "resolved" / f"{old_id}.md"
+        assert Record.from_path(replaced_path).status == "superseded"
+        with pytest.raises(verbs.VerbError) as exc:
+            verbs.reopen(env2.home, old_id, no_push=True)
+        assert "superseded" in str(exc.value)
+
+    def test_5_outcome_not_applicable_to_status_refuses(self, env2, tmp_path):
+        """U5's own least-protected surface (not named in `build-u5.md`'s
+        test list): `_OUTCOME_APPLICABLE_STATUSES` refuses a reconsider
+        case whose `outcome` cannot correct the record's CURRENT status
+        even though the case itself is otherwise perfectly valid (right
+        kind, right record) — `outcome: route` never widens `route`'s
+        own admitted statuses, so it applies only to a `deferred`
+        record, never an already-`routed` one."""
+        rid = seed_routed(env2.home, "lrn-95000005", scope="skill:a")
+        old_case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="resolution", outcome="route"
+        )
+        reconsider_case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="reconsider",
+            outcome="route", supersedes=old_case,
+        )
+        with pytest.raises(verbs.VerbError) as exc:
+            verbs.reconsider(env2.home, rid, case=reconsider_case, no_push=True)
+        assert "route" in str(exc.value) and "routed" in str(exc.value)
+
+    def test_6_outcome_applicable_to_rejected_record_for_the_reopen_shape(
+        self, env2, tmp_path
+    ):
+        """Fold r1 (F3, the orchestrator's ruling): `reconsider` itself
+        must accept an outcome that corrects a WRONG REJECT while the
+        record is STILL `rejected` — the corrective verb only runs
+        afterward, in a sheet whose first item is `reopen`
+        (`test_batch.py::TestU5ReconsiderReopenShape` covers that full
+        flow). Before this fix,
+        `_OUTCOME_APPLICABLE_STATUSES["route"]` excluded `rejected`
+        entirely and this call refused."""
+        rid = "lrn-95000006"
+        create_record(env2.home, make_behavior(record_id=rid, scope="skill:a"))
+        write_proposal(env2.home, rid, proposal_dict(scope="skill:a"))
+        commit_all(env2.home, "pending seed")
+        verbs.reject(env2.home, rid, no_push=True)
+        assert (
+            Record.from_path(find_record_path(env2.home, rid)).status == "rejected"
+        )
+
+        old_case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="resolution", outcome="reject"
+        )
+        reconsider_case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="reconsider",
+            outcome="route", supersedes=old_case,
+        )
+        result = verbs.reconsider(env2.home, rid, case=reconsider_case, no_push=True)
+        assert result.action == "reconsider"
+        record = Record.from_path(find_record_path(env2.home, rid))
+        assert record.status == "rejected"  # reconsider itself never flips it
+        assert record.history[-1]["event"] == "reconsidered"
+        assert record.history[-1]["case"] == reconsider_case
+
+
+class TestU5ReconsiderCLI:
+    """Fold r1 (F4, F5): CLI-level checks on `self-learn reconsider`
+    that `build-u5.md`'s own test list did not cover (verb/batch-level
+    only) -- the gate's own probes (P9, R2) were run by hand, never
+    committed."""
+
+    def test_json_outcome_state_is_landed_not_drift(self, env2, tmp_path, capsys):
+        """Fold r1 (F4): `reconsider` never attempts a host write --
+        the ledger resolution (a `reconsidered` history entry) IS the
+        whole verb, same shape `reject`/`defer` already have. Before
+        this fix `_outcome_state` fell through to route's 4-state
+        predicate and reported `drift` (`compile_result is None`) on a
+        fully successful call."""
+        rid = seed_routed(env2.home, "lrn-95000007", scope="skill:a")
+        old_case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="resolution", outcome="route"
+        )
+        reconsider_case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="reconsider",
+            outcome="reject", supersedes=old_case,
+        )
+        rc = cli.main(
+            ["reconsider", rid, "--case", reconsider_case, "--no-push", "--json"]
+        )
+        assert rc == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["action"] == "reconsider"
+        assert out["outcome_state"] == "landed"
+
+    def test_unknown_case_exits_64_not_1(self, env2):
+        """Fold r1 (F5): an unknown/malformed CASE id must exit 64
+        (EX_USAGE), the same discipline every other surface's
+        unknown-id refusal already gets (`commands/review.md`: "An
+        unknown record id is 64 (usage), not 1") — before this fix,
+        both `_reconsider_case_check` and `reconsider`'s own wrap
+        discarded `cases.CaseUsageError.exit_code` and substituted
+        `VerbError`'s default of 1."""
+        rid = seed_routed(env2.home, "lrn-95000008", scope="skill:a")
+        rc = cli.main(
+            ["reconsider", rid, "--case", "case-deadbeef", "--no-push"]
+        )
+        assert rc == 64

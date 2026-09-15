@@ -9,6 +9,10 @@ Description=self-learn transcript miner (nightly pass)
 
 [Service]
 Type=oneshot
+# FW-85/EXIT_HELD (U0, 2026-09-13): `mine run` now exits 10 for
+# "nothing due, held" — not a failure; without this directive a
+# benign no-op timer tick would mark the unit failed (FW-134).
+SuccessExitStatus=10
 # B-1 (doc 13 §7.1): the systemd user manager does not inherit the shell's
 # env — pin the ledger home explicitly so the unit and the shell agree.
 Environment=SELF_LEARN_HOME=%h/.self-learn

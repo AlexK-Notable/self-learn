@@ -148,7 +148,8 @@ Scope: record schema + ledger ops (create/supersede/move) · `self-learn`
 CLI (`teach` with scope/type/structured-field/`--route` flags, `list`,
 `status`, **`route`/`reject`/`defer`** — the resolution verbs own
 compile+commit, sentinel set/heartbeat/release, self-push, and `--note`
-(`resolution_note`); `graduate`, `--selftest`; `--json` on read verbs; the
+(`resolution_note`); `graduate`, `--selftest`; (`graduate` is now `retire`, `01-architecture.md` §3.5 as amended, kept
+here as a hidden alias for one release) `--json` on read verbs; the
 slash command is a thin caller (S-2 amendment, `07-review-ui.md` §4);
 secret scan on **every** record write) ·
 `/teach` wrapper with in-session extraction (O-4) · backlog importer with
@@ -206,7 +207,10 @@ analysis proposals + merge proposals as new files, never record writes;
 coalesced, flock'd per machine, restricted `--allowedTools`; analyst prompt
 carries the **rejected-proposal digest** as negative exemplars — never
 re-propose a declined lesson class, `01` §3.3; the digest reads
-`resolution_note` where present) · SessionStart
+`resolution_note` where present) *(Amended 2026-09-14, U7: the digest no
+longer reaches the analyst prompt — replaced there by cases cited from
+the case index, `01` §3.3 as amended; `_digest` itself is retained,
+unused in this path)* · SessionStart
 pending-count line (manual `settings.json`
 registration — a documented install step, not an assumed one) ·
 **per-worker-run ambient notifications** carrying the aggregate line and

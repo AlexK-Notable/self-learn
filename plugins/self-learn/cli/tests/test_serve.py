@@ -22,11 +22,14 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
-from self_learn import miner, provider, serve, worker
+from self_learn import miner, provider, serve, steward, worker
+from self_learn import overseer as overseer_package
+from self_learn.overseer import run as overseer_run
 from self_learn.invocation_sdk import events as events_mod
 from self_learn.invocation_sdk import lifecycle as lifecycle_mod
 from self_learn.sdksession import events as sdk_events_mod
@@ -44,6 +47,266 @@ from datetime import datetime, timezone
 from test_worker import env, sdk_fake_worker, seed_pending, shim_writes  # noqa: F401
 
 _SRC_DIR = Path(serve.__file__).resolve().parent
+
+
+def test_u10_steward_runs_after_worker_and_on_a_tick_where_mine_is_not_due(
+    monkeypatch, tmp_path
+):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    order = []
+    monkeypatch.setattr(serve, "_mine_is_due", lambda *a, **k: False)
+    monkeypatch.setattr(serve, "_steward_is_due", lambda *a, **k: True)
+    monkeypatch.setattr(
+        serve,
+        "_run_steward_job",
+        lambda home: order.append("steward") or steward.RunResult("idle"),
+    )
+
+    records = serve._run_tick(
+        tmp_path / "home", cache_dir, now=time.time(), pid=os.getpid(), tick_secs=60.0
+    )
+
+    assert [record.name for record in records] == ["steward"]
+    assert order == ["steward"]
+
+    order.clear()
+    monkeypatch.setattr(serve, "_mine_is_due", lambda *a, **k: True)
+    monkeypatch.setattr(
+        serve,
+        "_run_mine_job",
+        lambda home: order.append("mine") or miner.MineResult(status="ok", landed=["c1"]),
+    )
+    monkeypatch.setattr(
+        serve,
+        "_run_worker_job",
+        lambda home: order.append("worker") or worker.RunResult(status="ok"),
+    )
+    serve._run_tick(
+        tmp_path / "home", cache_dir, now=time.time(), pid=os.getpid(), tick_secs=60.0
+    )
+    assert order == ["mine", "worker", "steward"]
+
+
+def test_u10_steward_due_requires_fresh_proposal_cooldown_and_no_stop(
+    monkeypatch, tmp_path
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    entry = object()
+    proposal = home / "proposals" / "lrn-deadbeef.yaml"
+    proposal.parent.mkdir()
+    proposal.write_text("version: 1\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "steward:\n  enabled: true\n  cooldown_secs: 50\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(serve.steward, "_eligible_proposals", lambda actual: [(entry, {})])
+    monkeypatch.setattr(serve, "_proposal_commit_epoch", lambda actual, path: 200.0)
+    monkeypatch.setattr(serve, "_eligible_proposal_paths", lambda actual: [proposal])
+    monkeypatch.setattr(serve.steward, "last_run_iso", lambda actual: "1970-01-01T00:01:40+00:00")
+    clear = type("IntentState", (), {"stopped": []})()
+    stopped = type("IntentState", (), {"stopped": [object()]})()
+    monkeypatch.setattr(serve.intents, "classify_status", lambda actual: clear)
+
+    assert serve._steward_is_due(home, cache_dir, 151.0) is True
+    assert serve._steward_is_due(home, cache_dir, 149.0) is False
+    monkeypatch.setattr(serve.intents, "classify_status", lambda actual: stopped)
+    assert serve._steward_is_due(home, cache_dir, 151.0) is False
+    monkeypatch.setattr(serve.intents, "classify_status", lambda actual: clear)
+    monkeypatch.setattr(serve, "_proposal_commit_epoch", lambda actual, path: 99.0)
+    assert serve._steward_is_due(home, cache_dir, 151.0) is False
+
+    (home / "config.yaml").write_text(
+        "steward:\n  enabled: false\n  cooldown_secs: 50\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(serve, "_proposal_commit_epoch", lambda actual, path: 200.0)
+    assert serve._steward_is_due(home, cache_dir, 151.0) is False
+
+    (home / "config.yaml").write_text(
+        "steward:\n  enabled: true\n  cooldown_secs: 50\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(serve, "_eligible_proposal_paths", lambda actual: [])
+    monkeypatch.setattr(serve.steward, "last_run_iso", lambda actual: None)
+    assert serve._steward_is_due(home, cache_dir, 151.0) is False
+
+
+def test_u10_describe_next_names_the_steward(monkeypatch, tmp_path):
+    monkeypatch.setattr(serve, "_today_mine_target", lambda cache, now: now + 60)
+    assert "steward" in serve._describe_next(tmp_path / "home", tmp_path, 100.0)
+
+
+def test_u10_steward_due_for_committed_unfinished_work_without_proposals(
+    monkeypatch, tmp_path
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "steward:\n  enabled: true\n  cooldown_secs: 50\n", encoding="utf-8"
+    )
+    clear = type("IntentState", (), {"stopped": []})()
+    monkeypatch.setattr(serve.intents, "classify_status", lambda actual: clear)
+    monkeypatch.setattr(serve.steward, "committed_manifests", lambda actual: [{
+        "run_id": "run-pending", "status": "unfinished",
+        "last_attempt_at": "1970-01-01T00:01:40+00:00",
+    }])
+    monkeypatch.setattr(serve.steward, "_reconsider_proposals", lambda actual: ([], {}))
+    monkeypatch.setattr(serve, "_eligible_proposal_paths", lambda actual: [])
+
+    assert serve._steward_is_due(home, tmp_path / "cache", 151.0) is True
+    assert serve._steward_is_due(home, tmp_path / "cache", 149.0) is False
+
+
+def test_u10_run_forever_gates_steward_on_its_threaded_home(
+    monkeypatch, tmp_path
+):
+    home_a = tmp_path / "home-a"
+    home_b = tmp_path / "home-b"
+    home_a.mkdir()
+    home_b.mkdir()
+    (home_a / "config.yaml").write_text(
+        "steward:\n  enabled: false\n", encoding="utf-8"
+    )
+    (home_b / "config.yaml").write_text(
+        "steward:\n  enabled: true\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home_b))
+    monkeypatch.setattr(serve, "_mine_is_due", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        serve, "_eligible_proposal_paths", lambda actual: [actual / "proposal.yaml"]
+    )
+    monkeypatch.setattr(serve.steward, "last_run_iso", lambda actual: None)
+    calls = []
+    monkeypatch.setattr(
+        serve,
+        "_run_steward_job",
+        lambda actual: calls.append(actual) or steward.RunResult("applied"),
+    )
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    assert serve.run_forever(
+        home_a, cache_dir=cache_dir, tick_secs=0.01, max_ticks=1
+    ) == 0
+    assert calls == []
+
+
+def _overseer_schedule_home(tmp_path: Path, *, enabled: bool = True) -> Path:
+    home = tmp_path / "overseer-home"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        f"overseer:\n  enabled: {'true' if enabled else 'false'}\n",
+        encoding="utf-8",
+    )
+    return home
+
+
+def test_o4_overseer_due_calendar_cooldown_unfinished_enabled_and_stop(
+    monkeypatch, tmp_path
+):
+    """Breaks if calendar, cooldown, unfinished-work, opt-in, or STOP is ignored."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    home = _overseer_schedule_home(tmp_path)
+    clear = type("IntentState", (), {"stopped": []})()
+    stopped = type("IntentState", (), {"stopped": [object()]})()
+    monkeypatch.setattr(serve.intents, "classify_status", lambda actual: clear)
+    monkeypatch.setattr(overseer_package, "has_unfinished_work", lambda actual: False)
+    monkeypatch.setattr(overseer_run, "last_run_iso", lambda actual: None)
+    monkeypatch.setattr(serve, "_overseer_recently_attempted", lambda actual, now: False)
+
+    target = time.mktime((2026, 9, 13, 4, 15, 0, 0, 0, -1))  # Sunday
+    assert serve._overseer_is_due(home, cache_dir, target - 24 * 60 * 60) is False
+    assert serve._overseer_is_due(home, cache_dir, target + 1) is True
+    monkeypatch.setattr(serve, "_overseer_recently_attempted", lambda actual, now: True)
+    assert serve._overseer_is_due(home, cache_dir, target + 1) is False
+
+    monday = target + 24 * 60 * 60
+    monkeypatch.setattr(serve, "_overseer_recently_attempted", lambda actual, now: False)
+    monkeypatch.setattr(overseer_package, "has_unfinished_work", lambda actual: True)
+    assert serve._overseer_is_due(home, cache_dir, monday) is True
+
+    disabled = _overseer_schedule_home(tmp_path / "disabled", enabled=False)
+    assert serve._overseer_is_due(disabled, cache_dir, monday) is False
+    monkeypatch.setattr(serve.intents, "classify_status", lambda actual: stopped)
+    assert serve._overseer_is_due(home, cache_dir, monday) is False
+
+
+def test_o4_overseer_attempt_cooldown_reads_the_threaded_cache(tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    now = time.time()
+    recent = datetime.fromtimestamp(now - 1).astimezone().isoformat()
+    (cache_dir / "overseer.journal").write_text(
+        json.dumps({"at": recent, "status": "refused"}) + "\n",
+        encoding="utf-8",
+    )
+    assert serve._overseer_recently_attempted(cache_dir, now) is True
+    assert (
+        serve._overseer_recently_attempted(
+            cache_dir, now + miner.ATTEMPT_COOLDOWN_SECS + 1
+        )
+        is False
+    )
+
+
+def test_o4_tick_order_is_mine_worker_steward_overseer(monkeypatch, tmp_path):
+    """Breaks if the fourth job moves ahead of any earlier producer."""
+    home = _overseer_schedule_home(tmp_path)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    order: list[str] = []
+    monkeypatch.setattr(serve, "_mine_is_due", lambda *args, **kwargs: True)
+    monkeypatch.setattr(serve, "_steward_is_due", lambda *args, **kwargs: True)
+    monkeypatch.setattr(serve, "_overseer_is_due", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        serve, "_run_mine_job",
+        lambda actual: order.append("mine") or miner.MineResult(status="ok", landed=["c1"]),
+    )
+    monkeypatch.setattr(
+        serve, "_run_worker_job",
+        lambda actual: order.append("worker") or worker.RunResult(status="ok"),
+    )
+    monkeypatch.setattr(
+        serve, "_run_steward_job",
+        lambda actual: order.append("steward") or steward.RunResult("idle"),
+    )
+    monkeypatch.setattr(
+        serve, "_run_overseer_job",
+        lambda actual: order.append("overseer") or overseer_run.RunResult("applied", 0, "run"),
+    )
+
+    records = serve._run_tick(
+        home, cache_dir, now=time.time(), pid=os.getpid(), tick_secs=60.0
+    )
+    assert [record.name for record in records] == [
+        "mine", "worker", "steward", "overseer"
+    ]
+    assert order == ["mine", "worker", "steward", "overseer"]
+
+
+def test_o4_disabled_overseer_never_creates_a_job_record(monkeypatch, tmp_path):
+    """Breaks if _run_tick bypasses the enabled-aware due predicate."""
+    home = _overseer_schedule_home(tmp_path, enabled=False)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    monkeypatch.setattr(serve, "_mine_is_due", lambda *args, **kwargs: False)
+    monkeypatch.setattr(serve, "_steward_is_due", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        serve, "_run_overseer_job",
+        lambda actual: pytest.fail("disabled overseer reached the job runner"),
+    )
+    assert serve._run_tick(
+        home, cache_dir, now=time.time(), pid=os.getpid(), tick_secs=60.0
+    ) == []
+
+
+def test_o4_describe_next_names_the_fourth_job(monkeypatch, tmp_path):
+    monkeypatch.setattr(serve, "_today_mine_target", lambda cache, now: now + 60)
+    monkeypatch.setattr(serve, "_overseer_target_for", lambda now: now + 120)
+    text = serve._describe_next(tmp_path / "home", tmp_path, 100.0)
+    assert f"overseer at {datetime.fromtimestamp(220).isoformat(timespec='seconds')}" in text
 
 
 # ===================================================================== #
@@ -190,6 +453,25 @@ def test_hp4_landed_mine_job_triggers_an_in_process_worker_follow_on_no_popen(mo
 
     assert [r.name for r in records] == ["mine", "worker"]
     assert len(worker_run_calls) == 1
+
+
+def test_fw85_run_mine_job_returns_the_mine_result_object_untranslated(monkeypatch):
+    """FW-85 (U0) acceptance #3: `_run_mine_job` is a plain call to
+    `miner.run` and hands its caller the `MineResult` object BACK
+    UNCHANGED -- `serve.py` consumes result objects, never an exit
+    code, so `_cmd_mine`'s new `_MINE_RUN_EXIT` mapping (`cli.py`) has
+    nothing to do with this path. `status="held-gate"` is deliberately
+    a status whose CLI exit code changed under FW-85 (0 -> EXIT_HELD)
+    -- proving the serve scheduling path never even looks at it."""
+    sentinel = miner.MineResult(status="held-gate", run_id="run-fw85")
+
+    def fake_miner_run(home, **kwargs):
+        assert kwargs.get("trigger") == "serve"
+        return sentinel
+
+    monkeypatch.setattr(miner, "run", fake_miner_run)
+    result = serve._run_mine_job(Path("/irrelevant-home"))
+    assert result is sentinel
 
 
 def test_hp4_m2_real_worker_run_never_opens_a_followon_window_from_a_serve_tick(

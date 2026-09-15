@@ -249,6 +249,11 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
         "(FW-159, atomic-append primitive) -- not this atomic-REPLACE one",
         "keep",
     ),
+    ("cli", "steward.py", "_journal"): (
+        "steward recovery journal, XDG-cache-only and append-only; run.json "
+        "declares NOT_REPO_TRUTH and ledger commits remain authoritative",
+        "keep",
+    ),
     # -------------------------------------------------------- wave 4:
     # legitimate atomic-write candidates outside the ledger tree itself
     # (an external tool's file, a UI-side derived/regenerable cache) --
@@ -321,6 +326,10 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
         "fcntl.flock) -- never carries content",
         "keep",
     ),
+    ("cli", "steward.py", "run"): (
+        "flock lock file only (steward.lock) -- never carries content",
+        "keep",
+    ),
     ("cli", "sentinel.py", "_lock_section"): (
         "flock lock file only (open 'a+' so it can be created and locked) -- "
         "never carries content",
@@ -328,6 +337,13 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
     ),
     ("cli", "worker.py", "_open_window"): (
         "flock lock file only (worker.spawn.lock) -- never carries content",
+        "keep",
+    ),
+    ("cli", "cases.py", "_index_lock"): (
+        "flock lock file only (cases/index.lock, cache-dir-scoped, same "
+        "fcntl.flock pattern as gitops._flock_lock/worker._open_window) -- "
+        "never carries content; U2 fold r1, item 5 (Astra6 stale-index "
+        "rebuild)",
         "keep",
     ),
     ("cli", "worker.py", "run"): (
@@ -357,6 +373,11 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
         "keep",
     ),
     ("cli", "miner.py", "_journal"): (
+        "append-only XDG cache run journal (JSONL); NOT_REPO_TRUTH",
+        "keep",
+    ),
+    # O-3 (2026-09-14): same cache-only journal class as miner._journal.
+    ("cli", "overseer/run.py", "_journal"): (
         "append-only XDG cache run journal (JSONL); NOT_REPO_TRUTH",
         "keep",
     ),

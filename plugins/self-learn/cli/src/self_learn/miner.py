@@ -734,7 +734,7 @@ JSON, this shape:
   ],
   "fires": [
     {{"record": "lrn-…", "session": "<id>", "line": <n>,
-      "outcome": "complied" | "violated"}}
+      "outcome": "suspected-compliance" | "suspected-violation" | "cannot-tell"}}
   ]
 }}
 
@@ -748,6 +748,11 @@ correct and common answer. `episode_brief` is optional narrative prose
 (100-200 words) reconstructing the episode so a human can recognize it
 again after the transcript is gone — plain words, no jargon, a retelling
 never a quotation; leave it out rather than pad it to reach the floor.
+A fire is a suspicion, never a verdict: `suspected-compliance` — the
+session's own text reads as following the rule; `suspected-violation` —
+it reads as breaking it; `cannot-tell` — the digest does not show enough
+to say either way, so emit this rather than guessing. The steward, not
+you, decides whether a `suspected-violation` is a real recurrence.
 
 === MINING RUBRIC ===
 {rubric}
@@ -1088,10 +1093,17 @@ def _valid_ref(cand: dict) -> tuple[str, int] | None:
 #: U-recur spec §4 decision 1: a literal distinct from the candidate
 #: path's "miner-match" (:1183) and from the worker's origin-match /
 #: title-token-overlap (worker.py:1001-1006) — it labels the SOURCE of
-#: suspicion, not a similarity metric. One constant, not a literal typed
-#: twice: THE CROSSOVER and THE BACKFILL share it, so they can never
-#: drift apart on the label.
-_FIRE_VIOLATED_BASIS = "fire-violated"
+#: suspicion, not a similarity metric. *Amended 2026-09-13 (steward
+#: build, U6):* THE CROSSOVER is removed — a miner-observed
+#: `suspected-violation` is never auto-decided into a recurrence-suspect
+#: (11 §4.3, `12-transcript-miner.md` §7 M-1). THE BACKFILL below is the
+#: only remaining caller: a one-way migration net for rows already
+#: sitting in the tracked plane with the pre-U6 raw `violated` value,
+#: never for anything reported under the new vocabulary. The label moves
+#: with the rename `commands/review.md` already applies on read (a basis
+#: recorded before it still reads `fire-violated`; the CLI accepts both
+#: spellings).
+_FIRE_VIOLATED_BASIS = "fire-suspected-violation"
 
 
 def _event_seen(
@@ -1102,16 +1114,28 @@ def _event_seen(
     duplicated both classes; nonces make byte-dedup useless).
 
     Also returns ``violated_fires`` — ``(record, origin)`` pairs drawn
-    from tracked ``fire`` events with ``outcome == "violated"``, in
-    ``read_events`` (ts-ordered) order. This is THE BACKFILL's source
-    list (U-recur spec §4 decision 4): one ``read_events`` pass serves
-    both purposes, no second read. Telemetry lines are untrusted input
-    (11 §4.2): a row whose ``record``/``origin`` is not a string is
-    skipped, and ``record`` is re-validated against :data:`RECORD_ID_RE`
-    — never a crash, never a guessed id."""
+    from tracked ``fire`` events with the RAW (pre-mapping) outcome
+    ``"violated"``, in ``read_events`` (ts-ordered) order. *Amended
+    2026-09-13 (steward build, U6):* this is now a LEGACY-ONLY list —
+    every `fire` event spooled going forward carries one of the three
+    new outcome values (the acceptance check in `_reconcile_and_land`
+    refuses the raw model output otherwise), so a row with the literal
+    string `"violated"` can only be one written before this change
+    shipped. ``read_events(..., map_legacy_outcome=False)`` is used
+    deliberately here: the mapped view (every other caller's default)
+    would show `"suspected-violation"` for these same rows and erase the
+    one signal that proves a row is legacy rather than newly-reported —
+    which is exactly what THE BACKFILL (the comment block below, grep `THE BACKFILL`) needs to stay a bounded
+    migration net instead of reopening the crossover one run late. This
+    is still THE BACKFILL's source list (U-recur spec §4 decision 4):
+    one ``read_events`` pass serves both purposes, no second read.
+    Telemetry lines are untrusted input (11 §4.2): a row whose
+    ``record``/``origin`` is not a string is skipped, and ``record`` is
+    re-validated against :data:`RECORD_ID_RE` — never a crash, never a
+    guessed id."""
     seen: set[tuple[str, str, str]] = set()
     violated_fires: list[tuple[str, str]] = []
-    for e in telemetry.read_events(home):
+    for e in telemetry.read_events(home, map_legacy_outcome=False):
         kind = e.get("kind")
         if kind not in ("fire", "recurrence-suspect"):
             continue
@@ -1140,11 +1164,12 @@ def _raise_recurrence_suspect(
     suspect, checks/updates THE SUSPECT KEY
     (``("recurrence-suspect", rid, origin)``) against ``seen_events``,
     appends to ``result.recurrences``, and writes the
-    ``recurrence-from-fire`` journal row. THE CROSSOVER (in the fires
-    loop) and THE BACKFILL (below) both call this — two copies of this
-    dedupe logic is how the two rules drift apart. A no-op when the key
-    is already present; that is the whole dedupe contract, live or
-    backfilled."""
+    ``recurrence-from-fire`` journal row. *Amended 2026-09-13 (steward
+    build, U6):* THE CROSSOVER is gone (11 §4.3, `12-transcript-miner.md`
+    §7 M-1 — a fire is never auto-decided into a recurrence by the
+    miner); THE BACKFILL (below) is now the only caller, kept as one
+    emission point on principle even with a single call site. A no-op
+    when the key is already present; that is the whole dedupe contract."""
     key = ("recurrence-suspect", rid, origin)
     if key in seen_events:
         return
@@ -1540,7 +1565,9 @@ def _reconcile_and_land(
             if (
                 ref is None
                 or not RECORD_ID_RE.match(rid)
-                or outcome not in ("complied", "violated")
+                or outcome not in (
+                    "suspected-compliance", "suspected-violation", "cannot-tell",
+                )
             ):
                 continue
             found = _find_record(home, rid)
@@ -1555,26 +1582,31 @@ def _reconcile_and_land(
             )
             seen_events.add(key)
             result.fires += 1
-            # THE CROSSOVER (U-recur spec §2 / §4 decision 9): placement
-            # is load-bearing — AFTER the fire's own dedupe key is added
-            # and the counter incremented, never before the dedupe
-            # `continue` above. That placement is exactly what makes THE
-            # BACKFILL below structurally necessary (spec §2.2): a fire
-            # already in the tracked plane never reaches this line again.
-            if outcome == "violated":
-                _raise_recurrence_suspect(
-                    result, seen_events, rid, origin, _FIRE_VIOLATED_BASIS
-                )
+            # *Amended 2026-09-13 (steward build, U6):* THE CROSSOVER that
+            # used to sit here — an immediate `_raise_recurrence_suspect`
+            # call when `outcome == "violated"` — is removed. A
+            # `suspected-violation` fire is spooled above and nothing
+            # else: the steward reads it as evidence against the
+            # transcript line and decides recurrence itself (11 §4.3,
+            # `12-transcript-miner.md` §7 M-1, mining-rubric.md "Fire
+            # observations"). This loop no longer calls
+            # `_raise_recurrence_suspect` at all.
 
-    # THE BACKFILL (U-recur spec §2.2): structurally forced, not a
-    # nicety. THE CROSSOVER above can only ever reach a `violated` fire
-    # reported by THIS run's reader — a fire already sitting in the
-    # tracked plane is deduped out by the `key in seen_events` check
-    # before reaching the crossover, so a forward-only build ships
-    # green and leaves `recurrence-suspect` at zero on the real ledger
-    # forever. This mirrors the live crossover's `routed` guard EXACTLY,
-    # including its `found is None` half (AC7): an unbounded pass over
-    # an append-only telemetry plane must never raise on one
+    # THE BACKFILL (U-recur spec §2.2, scope narrowed 2026-09-13 steward
+    # build U6): a one-way migration net, not a live decision path. It
+    # exists only because rows already sitting in the tracked plane with
+    # the pre-U6 raw `outcome: "violated"` predate both the vocabulary
+    # change and the acceptance check that now refuses that value from
+    # the model — those rows were captured back when the (now-removed)
+    # crossover was the live mechanism meant to promote them, and this
+    # is the only remaining path that finishes that promotion. It can
+    # never fire for anything reported under the new vocabulary:
+    # `violated_fires` (`_event_seen`, read with `map_legacy_outcome=
+    # False`) only ever contains rows whose RAW on-disk outcome is the
+    # literal string `"violated"`, which nothing written after this
+    # build can produce. This mirrors the old crossover's `routed` guard
+    # EXACTLY, including its `found is None` half (AC7): an unbounded
+    # pass over an append-only telemetry plane must never raise on one
     # unresolvable row — run()'s outer handler would turn that into
     # `status: failed` and the offending row would never go away,
     # wedging every future nightly run.

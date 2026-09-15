@@ -21,8 +21,11 @@ Mutation rules (02 §2) are enforced in code paths, not by convention:
   ``deferred_until``/``deferred_count``, ``superseded_by`` (corrective
   supersession targets already-routed records by design).
 - ``resolution_note`` is write-ONCE: a second write raises.
-- ``superseded_by`` accepts only ``None``, a ``lrn-xxxxxxxx`` id, or the
-  literal ``"canon"`` (graduation).
+- ``superseded_by`` accepts ``None``, a ``lrn-xxxxxxxx`` id (a **replacement**
+  — a rewritten successor record), a ``covered_by:<kind>:<name>`` reference
+  (a **retirement** — S-67; *kind* is one of :data:`COVERAGE_KINDS`), or the
+  legacy literal ``"canon"`` (read as a retirement whose covering surface is
+  unrecorded — never written by new code).
 
 One lesson per record: a duplicated required section heading (two Triggers,
 two Facts) is a validation error — a two-lesson capture becomes two records.
@@ -75,7 +78,19 @@ REQUIRED_SECTIONS = {"behavior": ("Trigger", "Instruction"), "knowledge": ("Fact
 #: verb correcting a wrong routing destination displaces a routing
 #: block the same way. A future third displacement is a decision,
 #: not a silent widening.
-HISTORY_EVENTS = frozenset({"resolution", "routing"})
+#: *Widened 2026-09-13 (the overseer build, O-0, `02-schema.md` §2 as
+#: amended):* `hook-activated`/`hook-deactivated` record
+#: `13-hosting-and-separation.md` §7.4's activation verb applying or
+#: reversing a hook route, for either caller — the human's `hook
+#: activate` or the overseer's own runner call — each entry's `note`
+#: carrying the settings-file backup path. `reconsidered` completes the
+#: five-kind set the amendment describes: U5's own kind, the successor-
+#: case pointer a `self-learn reconsider` call appends to the record it
+#: revisits (payload carries `case`/`supersedes`, never a status/note —
+#: `reconsider` does not itself change the record's status).
+HISTORY_EVENTS = frozenset(
+    {"resolution", "routing", "hook-activated", "hook-deactivated", "reconsidered"}
+)
 #: "Episode brief" (02 §1 amendment, 10 §3 U18): a miner-only, optional
 #: body section for BOTH types — no ``required`` weight, duplicate-guarded
 #: by ``_validate_body`` once registered here like any other optional
@@ -156,6 +171,79 @@ def _now_iso() -> str:
 
 def _is_record_id(value: object) -> bool:
     return isinstance(value, str) and bool(RECORD_ID_RE.match(value))
+
+
+#: S-67: the permitted coverage kinds for a `covered_by:<kind>:<name>`
+#: `superseded_by` value (a retirement's covering surface).
+COVERAGE_KINDS = frozenset({"claude-md", "skill-md", "reference", "output-style"})
+
+
+def parse_covered_by(value: object) -> tuple[str, str] | None:
+    """``(kind, name)`` for a well-formed ``covered_by:<kind>:<name>``
+    *value*, else ``None`` — never raises. *name* may itself contain
+    colons (a path, a `claude-md:rules:<topic>`-shaped surface, …): only
+    the FIRST colon after the ``covered_by:`` prefix separates kind from
+    name."""
+    if not isinstance(value, str) or not value.startswith("covered_by:"):
+        return None
+    kind, sep, name = value[len("covered_by:"):].partition(":")
+    if sep != ":" or kind not in COVERAGE_KINDS or not name:
+        return None
+    return (kind, name)
+
+
+def format_covered_by(kind: str, name: str) -> str:
+    """Build a ``covered_by:<kind>:<name>`` `superseded_by` value (S-67),
+    refusing an unknown *kind* or empty *name* BY NAME — the one place
+    ``retire``'s ``--covered-by``/sheet parsing and the CLI both route
+    through, so the refusal wording never drifts between callers."""
+    if kind not in COVERAGE_KINDS:
+        raise ValidationError(
+            f"unknown coverage kind {kind!r}; must be one of "
+            f"{sorted(COVERAGE_KINDS)}"
+        )
+    if not name or not name.strip():
+        raise ValidationError("covered_by needs a non-empty surface name")
+    return f"covered_by:{kind}:{name}"
+
+
+def build_covered_by(surface: str) -> str:
+    """Parse a raw ``<kind>:<name>`` argument — the CLI's
+    ``--covered-by``, a sheet's ``covered_by:`` key, or the UI's
+    covering-surface field — into the stored ``covered_by:<kind>:<name>``
+    `superseded_by` value (S-67). The ONE parser every caller routes
+    through ("the same parser as the CLI"), so the refusal wording for a
+    malformed surface, an unknown kind, or an empty name never drifts
+    between the CLI, the batch sheet, and the UI. Raises
+    :class:`ValidationError`."""
+    kind, sep, name = (surface or "").partition(":")
+    if sep != ":":
+        raise ValidationError(
+            f"covered_by must be <kind>:<name> (one of "
+            f"{sorted(COVERAGE_KINDS)}), got {surface!r}"
+        )
+    return format_covered_by(kind, name)
+
+
+def is_replacement(value: object) -> bool:
+    """True iff *value* is a `superseded_by` naming a REPLACEMENT — a
+    live successor record (S-67's opposite of :func:`is_retirement`)."""
+    return _is_record_id(value)
+
+
+def is_retirement(value: object) -> bool:
+    """True iff *value* is a `superseded_by` naming a RETIREMENT — a
+    `covered_by:<kind>:<name>` reference, or the legacy literal
+    ``"canon"`` (covering surface unrecorded). S-67's opposite of
+    :func:`is_replacement`."""
+    return value == "canon" or parse_covered_by(value) is not None
+
+
+def _is_superseded_by_shape(value: object) -> bool:
+    """The full `superseded_by` domain: ``None`` (checked by callers,
+    not here), a record id, a `covered_by:` reference, or legacy
+    ``"canon"``."""
+    return is_replacement(value) or is_retirement(value)
 
 
 class Record:
@@ -522,12 +610,15 @@ class Record:
         self._fm["supersedes"] = record_id
 
     def set_superseded_by(self, value: str | None) -> None:
-        """Domain: None | lrn-xxxxxxxx | the literal "canon" (graduation).
-        Mutable in every status — corrective supersession marks records
-        that are already routed (02 §2)."""
-        if value is not None and value != "canon" and not _is_record_id(value):
+        """Domain (S-67): None | lrn-xxxxxxxx (replacement) |
+        covered_by:<kind>:<name> (retirement) | the legacy literal
+        "canon" (retirement, covering surface unrecorded — never written
+        by new code). Mutable in every status — corrective supersession
+        marks records that are already routed (02 §2)."""
+        if value is not None and not _is_superseded_by_shape(value):
             raise ValidationError(
-                f"superseded_by must be null, a record id, or 'canon', got {value!r}"
+                f"superseded_by must be null, a record id, 'canon', or "
+                f"covered_by:<kind>:<name>, got {value!r}"
             )
         self._fm["superseded_by"] = value
 
@@ -828,13 +919,10 @@ class Record:
         if supersedes is not None and not _is_record_id(supersedes):
             raise ValidationError(f"supersedes must be null or a record id, got {supersedes!r}")
         superseded_by = fm.get("superseded_by")
-        if (
-            superseded_by is not None
-            and superseded_by != "canon"
-            and not _is_record_id(superseded_by)
-        ):
+        if superseded_by is not None and not _is_superseded_by_shape(superseded_by):
             raise ValidationError(
-                f"superseded_by must be null, a record id, or 'canon', got {superseded_by!r}"
+                f"superseded_by must be null, a record id, 'canon', or "
+                f"covered_by:<kind>:<name>, got {superseded_by!r}"
             )
         note = fm.get("resolution_note")
         if note is not None and not isinstance(note, str):
@@ -907,6 +995,35 @@ class Record:
     @staticmethod
     def _validate_body(type: str, body: str) -> None:
         validate_body(type, body)
+
+
+def supersession_display(record: "Record") -> str:
+    """S-67: the ONE display helper for a `superseded` record's
+    `superseded_by` — ``status``, ``report``, ``show``, the review card,
+    and the UI detail page all render through this; no module builds
+    either phrase on its own (grep-tested, `test_rename_retire.py`).
+
+    - a record id → "replaced by lrn-…" (a rewritten successor exists).
+    - a `covered_by:<kind>:<name>` reference → "retired, covered by
+      <kind>:<name>" (something already loaded covers the lesson).
+    - the legacy literal "canon" → "retired, covering surface unrecorded"
+      (never invented — a pre-rename record simply never named one).
+
+    Any other value (a record not yet superseded, or one that somehow
+    carries something outside the validated domain) renders as an empty
+    string — callers only call this once ``status == "superseded"``."""
+    value = record.superseded_by
+    if value is None:
+        return ""
+    if _is_record_id(value):
+        return f"replaced by {value}"
+    kind_name = parse_covered_by(value)
+    if kind_name is not None:
+        kind, name = kind_name
+        return f"retired, covered by {kind}:{name}"
+    if value == "canon":
+        return "retired, covering surface unrecorded"
+    return ""  # pragma: no cover — validation refuses every other shape
 
 
 def _validate_follow_up(fu: object) -> None:

@@ -1179,8 +1179,14 @@ def test_rg1_five_rung_precedence_resolves_in_isolation(tmp_path, monkeypatch, s
     home.mkdir()
     for surface in invocation.SURFACES:
         selector = invocation.SELECTOR_FOR_SURFACE[surface]
+        # U8 (17-invocation-runbook.md §1): `_clear_backend_env`'s own
+        # hardcoded var list predates `steward`/`overseer` and is an
+        # EXPORTED name (`test_u_sdka.py:45` imports it by name) --
+        # this loop clears the surface's OWN selector var itself,
+        # alongside it, rather than widening that shared helper.
 
         _clear_backend_env(monkeypatch)
+        monkeypatch.delenv(f"SELF_LEARN_BACKEND_{selector}", raising=False)
         _clear_config(home)
         monkeypatch.setenv(f"SELF_LEARN_BACKEND_{selector}", "cli")
         with pytest.raises(invocation.BackendUnavailable) as exc:
@@ -1188,12 +1194,14 @@ def test_rg1_five_rung_precedence_resolves_in_isolation(tmp_path, monkeypatch, s
         assert "removed in U-cleanup" in str(exc.value)
 
         _clear_backend_env(monkeypatch)
+        monkeypatch.delenv(f"SELF_LEARN_BACKEND_{selector}", raising=False)
         monkeypatch.setenv("SELF_LEARN_BACKEND", "cli")
         with pytest.raises(invocation.BackendUnavailable) as exc:
             invocation.backend_for(surface, home=home)
         assert "removed in U-cleanup" in str(exc.value)
 
         _clear_backend_env(monkeypatch)
+        monkeypatch.delenv(f"SELF_LEARN_BACKEND_{selector}", raising=False)
         _write_config(home, {f"backend_{surface}": "cli"})
         with pytest.raises(invocation.BackendUnavailable) as exc:
             invocation.backend_for(surface, home=home)
@@ -1933,7 +1941,7 @@ def test_wr7_seam_is_only_called_from_the_three_call_sites():
                 if name in seam_funcs:
                     rel = str(path.relative_to(src_dir))
                     sites.setdefault(rel, []).append((node.lineno, name))
-    assert set(sites) == {"worker.py", "miner.py", "analyst.py"}, sites
+    assert set(sites) == {"worker.py", "miner.py", "analyst.py", "steward.py", "overseer/run.py"}, sites
 
     # O-a/D-24: the exclusion is EXPLICIT, by name -- every non-model
     # subprocess spawn site named in Sec 7.1's table, deliberately outside

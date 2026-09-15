@@ -350,13 +350,23 @@ class TestGraduateEnvelope:
         `_Retirement()` for `status != "routed"`. Builder's verb-aware
         `outcome_state` split: this must read `no_op`, never `drift` —
         applying route's literal predicate here would tell the user to
-        `recompile` canon that was never written in the first place."""
+        `recompile` canon that was never written in the first place.
+
+        S-67 (U13): the CLI's `graduate` here carries no `--covered-by`
+        (the exact pre-rename calling convention) -- `warnings` is no
+        longer empty on THIS leg specifically: `graduate`'s own legacy
+        path appends one deprecation line
+        ("`graduate` is `retire` now; covering surface unrecorded —
+        name it with --covered-by"), printed to stderr under `--json`
+        too (`_finish_verb`'s own contract — `warnings` is never a
+        second success/failure channel, §4's `--json` pin untouched)."""
         seed_skill_record(env)
         code, envelope = run_json(["graduate", RID, "--json"], capsys)
         assert code == 0
         assert envelope["host_commit_sha"] is None
         assert envelope["outcome_state"] == "no_op"
-        assert envelope["warnings"] == []
+        assert len(envelope["warnings"]) == 1
+        assert "--covered-by" in envelope["warnings"][0]
 
 
 # ===================================================================== #

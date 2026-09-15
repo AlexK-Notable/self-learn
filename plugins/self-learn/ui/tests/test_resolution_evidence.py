@@ -367,24 +367,28 @@ class TestBudgetNoteRendering:
 
 
 class TestOtherVerbsEvidenceRendering:
-    def test_graduate_landed(self, tmp_path: Path) -> None:
+    def test_retire_landed(self, tmp_path: Path) -> None:
+        """S-67: was `test_graduate_landed`. `evidence.html`'s current
+        `action == "retire"` branch renders "Retired", never "Graduated"
+        (that word survives only in the deprecated `action == "graduate"`
+        legacy leg's own prose, covered separately)."""
         sb, rec = _seed(tmp_path)
         env_dict = envelope(
-            action="graduate",
+            action="retire",
             record_id=rec.id,
             host_commit_sha="feedface12",
             outcome_state="landed",
-            commit_message=f"self-learn: graduate {rec.id}",
+            commit_message=f"self-learn: retire {rec.id}",
         )
         runner = FakeRunner()
         runner.queue_result(RunResult(0, stdout=json.dumps(env_dict)))
         c, _runner = make_client(sb, runner=runner)
         r = c.post(
             f"/record/{rec.id}/action/confirm",
-            data={"verb": "graduate", "kind": "detail"},
+            data={"verb": "retire", "kind": "detail", "covered_by": "claude-md:rules"},
             headers=HX,
         )
-        assert "Graduated" in r.text
+        assert "Retired" in r.text
         assert "feedfac" in r.text  # host_commit_sha[:7]
 
     def test_defer_shows_the_snooze_date_never_a_path(self, tmp_path: Path) -> None:

@@ -31,6 +31,12 @@ MINER_UNIT = (
 HOST_UNIT = (
     Path(__file__).resolve().parents[4] / "systemd" / "self-learn-host.service"
 )
+OVERSEER_SERVICE = (
+    Path(__file__).resolve().parents[4] / "systemd" / "self-learn-overseer.service"
+)
+OVERSEER_TIMER = (
+    Path(__file__).resolve().parents[4] / "systemd" / "self-learn-overseer.timer"
+)
 
 
 def _section(text: str, name: str) -> str:
@@ -94,6 +100,16 @@ def test_miner_unit_carries_a_path_floor_including_home_local_bin() -> None:
     )
     assert "%h/.local/bin" in path_line
     assert "%h/bin" in path_line
+
+
+def test_miner_unit_success_exit_status_includes_exit_held() -> None:
+    """S1 (code gate r1 fold, U0): `mine run` now exits `EXIT_HELD`
+    (10) for a nothing-due/held outcome, not a failure --
+    `SuccessExitStatus=10` keeps that reading a benign concurrent
+    or no-op timer tick from being recorded as a failed unit
+    (FW-85/FW-134, `14-forward-work-map.md`)."""
+    miner_service = _section(MINER_UNIT.read_text(encoding="utf-8"), "Service")
+    assert _has_directive(miner_service, "SuccessExitStatus=10")
 
 
 # --- pinned fields (10 §1 "Service" row) --------------------------------
@@ -336,6 +352,17 @@ def test_host_unit_carries_a_path_floor_including_home_local_bin() -> None:
     )
     assert "%h/.local/bin" in path_line
     assert "%h/bin" in path_line
+
+
+def test_o4_overseer_service_and_weekly_persistent_timer_are_shipped() -> None:
+    assert OVERSEER_SERVICE.is_file()
+    assert OVERSEER_TIMER.is_file()
+    service = _section(OVERSEER_SERVICE.read_text(encoding="utf-8"), "Service")
+    timer = _section(OVERSEER_TIMER.read_text(encoding="utf-8"), "Timer")
+    assert "ExecStart=%h/bin/self-learn overseer run" in service
+    assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in service
+    assert "OnCalendar=Sun *-*-* 04:15" in timer
+    assert "Persistent=true" in timer
 
 
 # Gate r1 N-6: `test_host_unit_has_a_description` was an exact duplicate

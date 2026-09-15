@@ -57,6 +57,13 @@ additions:
 
 ## 1. Pinned interface contracts (surface-local; shared pins live in 08 §1)
 
+*(2026-09-13: this build plan's `graduate` — the resolution verb, the `g`
+keybinding, and the pane's proposable verb set — is renamed
+`retire`/`covered_by:<kind>:<name>`, `01-architecture.md` §3.5 and
+`02-schema.md` §2 as amended; `graduate` stays a hidden alias for one
+release. The pins below are historical record of what this plan built
+and are not rewritten.)*
+
 | Contract | Pin | Cites |
 |---|---|---|
 | Code layout | UI package: `plugins/self-learn/ui/` — **in the product repo `~/repos/self-learn` (13 §7.3; amended 2026-07-17 — every `plugins/self-learn/…` path in this document resolves there, never in claude-skills)** — a uv project (`pyproject.toml`, `src/self_learn_ui/…`, `templates/`, `static/`, `tests/`). Entry point: `plugins/self-learn/scripts/self-learn-ui` (shebang'd, extensionless): `#!/usr/bin/env bash` + resolves `uv` (`command -v uv` first, falling back through `$HOME/.local/bin/uv` → `/usr/local/bin/uv` → `/usr/bin/uv`, each candidate required to be a regular executable file; a one-line diagnostic + exit 127 if none exist — U-uvpath, 2026-08-29, closing the self-learn-host.service crash-loop measured that day: `exec uv`'s bare PATH lookup does not survive a systemd user manager whose PATH omits `~/.local/bin`) then `exec "$UV_BIN" run --project "$(dirname "$(readlink -f "$0")")/../ui" self-learn-ui "$@"` — **`readlink -f` is load-bearing** (carried, P3-1): install.sh deploys scripts as `~/bin` *symlinks*, so bare `$(dirname "$0")` resolves beside the symlink, not the repo (`home-net-capture` precedent; same rule for sibling-path references in `self-learn-ui-open`/`self-learn-notify`). Subcommands: `self-learn-ui serve` (foreground server — what systemd runs) · `self-learn-ui --help` | 09 §3, §6, §11 Y-1; repo CLAUDE.md |

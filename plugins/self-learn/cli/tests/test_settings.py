@@ -112,12 +112,15 @@ _ALL_NAMES = [s.name for s in settings.REGISTRY]
 _ENABLED_WHEN_NAMES = [s.name for s in settings.REGISTRY if s.enabled_when is not None]
 _ACCEPTS_NAMES = [s.name for s in settings.REGISTRY if s.accepts is not None]
 _ENV_FIRST_NAMES = [s.name for s in settings.REGISTRY if s.direction == "env-first"]
+_NO_ENV_NAMES = [s.name for s in settings.REGISTRY if s.env_var is None]
 
 _GENERIC_DEFAULT_NAMES = [n for n in _ALL_NAMES if n not in _ENABLED_WHEN_NAMES]
 _GENERIC_CONFIG_BEATS_DEFAULT_NAMES = [
     n for n in _ALL_NAMES if n not in _ENABLED_WHEN_NAMES and n not in _ACCEPTS_NAMES
 ]
-_GENERIC_CONFIG_BEATS_ENV_NAMES = [n for n in _ALL_NAMES if n not in _ENV_FIRST_NAMES]
+_GENERIC_CONFIG_BEATS_ENV_NAMES = [
+    n for n in _ALL_NAMES if n not in _ENV_FIRST_NAMES
+]
 _GENERIC_STR_NAMES = [n for n in _STR_NAMES if n not in _ENABLED_WHEN_NAMES]
 
 
@@ -173,6 +176,8 @@ def test_registry_defaults_match_their_source_constants():
     assert by_name["sdk.max_turns.worker"].default == backend_mod._DEFAULT_MAX_TURNS["WORKER"]
     assert by_name["sdk.max_turns.miner"].default == backend_mod._DEFAULT_MAX_TURNS["MINER"]
     assert by_name["sdk.max_turns.analyst"].default == backend_mod._DEFAULT_MAX_TURNS["ANALYST"]
+    assert by_name["sdk.max_turns.steward"].default == backend_mod._DEFAULT_MAX_TURNS["STEWARD"]
+    assert by_name["sdk.max_turns.overseer"].default == backend_mod._DEFAULT_MAX_TURNS["OVERSEER"]
     assert by_name["serve.tick_secs"].default == serve.DEFAULT_TICK_SECS
     assert by_name["ledger.glob_probe_budget_s"].default == ledger_ops_mod.DEFAULT_GLOB_PROBE_BUDGET_S
     # M-S (S-58, BLOCKER-1): `settings._PROVIDERS`/`_DEFAULT_PROVIDER`
@@ -183,6 +188,16 @@ def test_registry_defaults_match_their_source_constants():
     assert settings._PROVIDERS == provider.PROVIDERS
     assert settings._DEFAULT_PROVIDER == provider.DEFAULT_PROVIDER
     assert by_name["provider.name"].default == provider.DEFAULT_PROVIDER
+    # U8: no `steward.py`/`overseer.py` owning module exists yet (a
+    # later unit's scope) -- the "source constant" these two default to
+    # lives in `settings.py` itself (`_DEFAULT_STEWARD_MODEL`/`_DEFAULT_
+    # OVERSEER_MODEL`), so the duplicated-literal risk this test guards
+    # against doesn't apply the same way; this instead proves the
+    # wrapper calls the module-level constant rather than a copy of it.
+    assert by_name["models.steward"].default() == settings._DEFAULT_STEWARD_MODEL
+    assert by_name["models.overseer"].default() == settings._DEFAULT_OVERSEER_MODEL
+    assert settings._DEFAULT_STEWARD_MODEL == "claude-fable-5-1"
+    assert settings._DEFAULT_OVERSEER_MODEL == "claude-fable-5-1"
 
 
 def test_models_star_defaults_are_the_called_shipped_functions_never_copied():
@@ -248,6 +263,10 @@ def test_config_beats_env(name, tmp_path, monkeypatch):
     fail this, not pass it by coincidence."""
     home = tmp_path / "home"
     setting = settings.by_name(name)
+    if setting.env_var is None:
+        pytest.skip(
+            f"{name} has no env rung (env_var=None) -- config-vs-env has no meaning here"
+        )
     default = _default_value(setting)
     if setting.kind == "bool":
         config_value, env_value = (not default), default
@@ -269,6 +288,10 @@ def test_malformed_env_warns_and_falls_back(name, tmp_path, monkeypatch, capsys)
     home = tmp_path / "home"
     home.mkdir()
     setting = settings.by_name(name)
+    if setting.env_var is None:
+        pytest.skip(
+            f"{name} has no env rung (env_var=None) -- malformed env has no meaning here"
+        )
     monkeypatch.setenv(setting.env_var, "not-a-real-value")
     value, source = settings.resolve_setting(home, setting)
     assert value == _default_value(setting)
@@ -307,6 +330,10 @@ def test_malformed_config_falls_through_to_env(name, tmp_path, monkeypatch, caps
     fails, so it never warns)."""
     home = tmp_path / "home"
     setting = settings.by_name(name)
+    if setting.env_var is None:
+        pytest.skip(
+            f"{name} has no env rung (env_var=None) -- config fall-through has no env target"
+        )
     env_value = _valid_override(setting)
     _write_config(home, setting.config_section, setting.config_key, "not-a-real-value")
     monkeypatch.setenv(setting.env_var, _env_string(env_value))
@@ -327,6 +354,10 @@ def test_malformed_config_and_malformed_env_both_warn_then_default(name, tmp_pat
     never a swallowed second failure."""
     home = tmp_path / "home"
     setting = settings.by_name(name)
+    if setting.env_var is None:
+        pytest.skip(
+            f"{name} has no env rung (env_var=None) -- two-rung failure has no meaning here"
+        )
     _write_config(home, setting.config_section, setting.config_key, "not-a-real-config-value")
     monkeypatch.setenv(setting.env_var, "not-a-real-env-value")
     value, source = settings.resolve_setting(home, setting)

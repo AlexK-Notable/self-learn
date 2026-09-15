@@ -93,6 +93,7 @@ import enum
 import json
 import os
 import re
+import shlex
 import sys
 import tempfile
 from pathlib import Path
@@ -977,7 +978,20 @@ def _check_hooks(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
         failures.append(problem)
     registrations = 0
     for cmd in commands:
-        name = Path(cmd).name
+        # Fold r2, item E (Astra 13): an OVERRIDE command is now emitted
+        # as ONE shell argument (`hook_compiler.command_for`'s
+        # `shlex.quote`) whenever its path is not already "shlex-safe" —
+        # `Path(cmd).name` on the QUOTED string would then read the
+        # trailing quote as part of the basename. `shlex.split` undoes
+        # exactly that quoting; a malformed/legacy unquoted value (or one
+        # this parser cannot tokenize) falls back to the raw string, the
+        # same basename `Path(cmd).name` would have produced before this
+        # fold.
+        try:
+            token = shlex.split(cmd)[0] if cmd.strip() else cmd
+        except ValueError:
+            token = cmd
+        name = Path(token).name
         if not name.startswith("self-learn-"):
             continue
         registrations += 1

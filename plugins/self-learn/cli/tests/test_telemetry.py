@@ -435,6 +435,84 @@ def test_read_events_missing_dir(home):
     assert telemetry.read_events(home) == []
 
 
+# ------------------------ steward build U6: legacy fire outcome mapping
+#
+# 11 §4.3's 2026-09-13 amendment: the `fire` kind's `outcome` field went
+# from the two-value `complied|violated` to the three-value
+# `suspected-compliance|suspected-violation|cannot-tell`. `read_events`
+# maps old rows on read so every ordinary caller (report, steward, UI)
+# sees the current vocabulary without a data migration. `_event_seen` in
+# miner.py is the one caller that wants the RAW value instead
+# (`map_legacy_outcome=False`) — covered in test_miner.py's backfill
+# tests, not here; this file only pins `read_events`'s own mapping.
+
+
+def test_read_events_maps_legacy_fire_outcome_values(home):
+    tdir = telemetry.telemetry_dir(home)
+    tdir.mkdir(parents=True, exist_ok=True)
+    (tdir / "2026-07.other.jsonl").write_text(
+        '{"ts":"2026-07-15T11:00:00Z","kind":"fire","record":"lrn-aaaaaaaa",'
+        '"origin":"transcript:s#L1","outcome":"violated"}\n'
+        '{"ts":"2026-07-15T12:00:00Z","kind":"fire","record":"lrn-bbbbbbbb",'
+        '"origin":"transcript:s#L2","outcome":"complied"}\n'
+    )
+    events = telemetry.read_events(home)
+    outcomes = {e["record"]: e["outcome"] for e in events}
+    assert outcomes == {
+        "lrn-aaaaaaaa": "suspected-violation",
+        "lrn-bbbbbbbb": "suspected-compliance",
+    }
+
+
+def test_read_events_maps_absent_fire_outcome_to_cannot_tell(home):
+    """11 §4.3: "a legacy event predates `outcome` entirely ... so any
+    event without an `outcome` field reads as `outcome: cannot-tell`"."""
+    tdir = telemetry.telemetry_dir(home)
+    tdir.mkdir(parents=True, exist_ok=True)
+    (tdir / "2026-07.other.jsonl").write_text(
+        '{"ts":"2026-07-15T11:00:00Z","kind":"fire","record":"lrn-cccccccc",'
+        '"origin":"transcript:s#L3","confidence":"medium"}\n'
+    )
+    events = telemetry.read_events(home)
+    assert events[0]["outcome"] == "cannot-tell"
+    assert events[0]["confidence"] == "medium"  # untouched, per the amendment
+
+
+def test_read_events_new_fire_outcome_passes_through_unchanged(home):
+    tdir = telemetry.telemetry_dir(home)
+    tdir.mkdir(parents=True, exist_ok=True)
+    (tdir / "2026-07.other.jsonl").write_text(
+        '{"ts":"2026-07-15T11:00:00Z","kind":"fire","record":"lrn-dddddddd",'
+        '"origin":"transcript:s#L4","outcome":"suspected-violation"}\n'
+    )
+    events = telemetry.read_events(home)
+    assert events[0]["outcome"] == "suspected-violation"
+
+
+def test_read_events_non_fire_kind_untouched_by_outcome_mapping(home):
+    tdir = telemetry.telemetry_dir(home)
+    tdir.mkdir(parents=True, exist_ok=True)
+    (tdir / "2026-07.other.jsonl").write_text(
+        '{"ts":"2026-07-15T11:00:00Z","kind":"capture","outcome":"violated"}\n'
+    )
+    events = telemetry.read_events(home)
+    assert events[0]["outcome"] == "violated"  # not a fire row — untouched
+
+
+def test_read_events_raw_mode_skips_legacy_mapping(home):
+    """`map_legacy_outcome=False` is `_event_seen`'s escape hatch (miner.py):
+    it needs the literal on-disk value to tell a genuinely legacy row
+    apart from one freshly written with the new vocabulary."""
+    tdir = telemetry.telemetry_dir(home)
+    tdir.mkdir(parents=True, exist_ok=True)
+    (tdir / "2026-07.other.jsonl").write_text(
+        '{"ts":"2026-07-15T11:00:00Z","kind":"fire","record":"lrn-eeeeeeee",'
+        '"origin":"transcript:s#L5","outcome":"violated"}\n'
+    )
+    events = telemetry.read_events(home, map_legacy_outcome=False)
+    assert events[0]["outcome"] == "violated"
+
+
 # ---------------------------------------------- FW-53: decode safety
 #
 # `read_events` and `flush` sit on the miner's `_reconcile_and_land` path

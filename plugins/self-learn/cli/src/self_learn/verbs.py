@@ -1,7 +1,15 @@
-"""Resolution verbs (T7): route / reject / defer / graduate / supersede —
+"""Resolution verbs (T7): route / reject / defer / retire / supersede —
 plus the non-resolution filing moves `rehome` (02 §2, added 2026-07-18)
 and `rescope` (u-rescope, added 2026-08-23 — the `user <-> skill:<name>`
 sibling; `rehome` stays project<->project only).
+
+S-67 (2026-09-14): `graduate` is renamed `retire` — a lesson is retired
+because guidance already loaded elsewhere covers it, and the covering
+surface is named (`--covered-by <kind>:<name>`). `graduate` stays a
+thin, hidden alias for one release (`covered_by` optional; absent, it
+writes the legacy `superseded_by: canon` and prints a deprecation
+line). `supersede` is unchanged in code; its outcome displays as
+`replaced` (:func:`self_learn.records.supersession_display`).
 
 Function layer only — T8 wires these into the CLI. Public signatures:
 
@@ -9,7 +17,8 @@ Function layer only — T8 wires these into the CLI. Public signatures:
           user_claude_md=None) -> VerbResult
     reject(home, record_id, *, note=None, no_push=False) -> VerbResult
     defer(home, record_id, *, until=None, note=None, no_push=False) -> VerbResult
-    graduate(home, record_id, *, note=None, no_push=False) -> VerbResult
+    retire(home, record_id, *, covered_by, note=None, no_push=False) -> VerbResult
+    graduate(home, record_id, *, covered_by=None, note=None, no_push=False) -> VerbResult
     supersede(home, old_id, new_id, *, note=None, no_push=False) -> VerbResult
     rehome(home, record_id, *, to, note=None, no_push=False) -> VerbResult
     rescope(home, record_id, *, to, note=None, no_push=False) -> VerbResult
@@ -45,10 +54,10 @@ Sentinel-scoping pins; 02 §2 commit formats; doc 13 §4 two-phase revision):
     failed push is loud but the commit is kept.
 (g) Release the sentinel iff owned.
 
-Ledger-only verbs (reject, defer, graduate — the managed-section line
-drops at the target's next recompile) stay single-commit in the ledger
-repo. ``supersede`` of a ROUTED record is canon-touching: its entry must
-drop, so the host phase recompiles the target.
+Ledger-only verbs (reject, defer, retire/graduate — the managed-section
+line drops at the target's next recompile) stay single-commit in the
+ledger repo. ``supersede`` of a ROUTED record is canon-touching: its
+entry must drop, so the host phase recompiles the target.
 
 Compile-set note (doc 13): because the ledger op now commits FIRST, the
 compile set is read straight off disk — no shadow copies. skill-md
@@ -70,9 +79,19 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from . import cases
 from . import config as policy_config
-from . import domain, gitops, intents, ledger_ops, sentinel, telemetry
-from .primitives import chrono, fsops
+from . import (
+    domain,
+    execution_evidence,
+    gitops,
+    hook_activation,
+    intents,
+    ledger_ops,
+    sentinel,
+    telemetry,
+)
+from .primitives import chrono, fsops, text as text_mod
 from .hook_compiler import replay_examples, script_name, settings_snippet
 from .normalize import sha_anchor
 from .skill_scaffold import (
@@ -130,6 +149,7 @@ from .ledger_ops import (
     LIVE_STATUSES,
     ProposalError,
     QueueEntry,
+    RECONSIDERABLE_STATUSES,
     REOPENABLE_STATUSES,
     RESOLVABLE_STATUSES,
     ROUTED_ONLY,
@@ -155,6 +175,17 @@ from .ledger_ops import (
     validate_merge_proposal,
     validate_proposal,
 )
+# U4 (revise): reuses ledger_ops.py's own proposal-stamp primitive
+# directly (never reimplemented) -- the same REC7 precedent as the
+# compilers.py private imports above. `_dump_yaml` is the ONE
+# atomic+fsync'd YAML writer `stamp_proposal` itself uses to overwrite
+# a single field without re-validating the whole proposal (a revised
+# body's trace quotes need not still containment-check against the new
+# wording -- that is `validate_proposal`'s job at analysis time, not a
+# wording-fix stamp's). This extends the tree's existing private-import
+# precedent (the compilers names above) deliberately; a public
+# `stamp_proposal_fields` wrapper is the alternative if it spreads.
+from .ledger_ops import _dump_yaml
 from . import records as records_mod
 from .records import RECORD_ID_RE, Record, RecordError, _validate_follow_up
 from .scan import format_refusal
@@ -199,6 +230,7 @@ __all__ = [
     "reroute",
     "rescope",
     "reject",
+    "retire",
     "route",
     "route_direct",
     "route_dry_run",
@@ -263,7 +295,13 @@ SURFACE_FILL_PROBED_DESTINATIONS: tuple[str, ...] = ("skill-md", "claude-md")
 #: it, and 16-ecology-spec.md §10 (FW-65) already warns that constant is
 #: double-booked for an unrelated future bump; this change does not
 #: touch it.
-ROUTING_BY_VALUES = frozenset({"human", "analyst", "agent"})
+#: S-65 (2026-09-13, 02-schema.md §1/§3a.1 rule 5): "steward" and
+#: "overseer" widen the same list — the two new delegated deciders join
+#: the three actors above as values every sheet item's `by:` and a
+#: case's `actor` field also draw from (02-schema.md §1's `by:` comment;
+#: `resolve_record` itself performs no `by` validation of its own — see
+#: ``ledger_ops.py``).
+ROUTING_BY_VALUES = frozenset({"human", "analyst", "agent", "steward", "overseer"})
 
 
 def one_motion_allowed(home: Path | str, destination: str) -> bool:
@@ -444,6 +482,26 @@ class VerbResult:
     #: host.
     #: `None` for ledger-only verbs (reject/defer/graduate).
     mode: str | None = None
+    # Fold r1, D-f (Astra 9 — exact bytes shown): `hook-activate`-only.
+    # The exact PreToolUse entry `hook_activation.activate` wrote (or
+    # found already registered), the ledger-side script path, and its
+    # sha256 — carried into BOTH the human CLI's post_notes text and
+    # the `--json` envelope (`cli._verb_envelope`), never the full
+    # script body (that stays the route/Apply step's and the
+    # overseer's O-5 display's job). `None` for every other verb, and
+    # for a delegated (`register=False`) activation.
+    hook_registered_entry: str | None = None
+    hook_script_path: str | None = None
+    hook_script_sha256: str | None = None
+    # Fold r2, item G (Astra 8): the STRUCTURED replay status and the
+    # FW-154 reload caveat, carried separately from `post_notes`'
+    # prose so a `--json` consumer can read them without parsing a
+    # receipt string. `hook-activate`-only; `None` for a delegated
+    # activation (never reached here — this is the human verb) and for
+    # every other verb, `hook-deactivate` included (no replay step
+    # exists there).
+    hook_replay: str | None = None
+    hook_reload_caveat: str | None = None
 
 
 # ------------------------------------------------------------------ helpers
@@ -998,6 +1056,46 @@ def _ledger_write(home: Path, *, earlier_commits: list[str] | None = None):
     ``recompile``'s multi-span loop passes it; every other call site
     keeps the default."""
     return intents.ledger_write(home, earlier_commits=earlier_commits)
+
+
+def _by_trailer(by: str | None) -> str | None:
+    """Fold r1 (F3, U3's own ruling): validates *by* against the SAME
+    closed set `route`/`revise` already enforce at their own call sites
+    (``ROUTING_BY_VALUES``), and renders it as ``By: <actor>`` — its own
+    commit-body PARAGRAPH, git trailer semantics. Returns ``None`` when
+    *by* is ``None`` — every pre-existing single-verb commit body stays
+    byte-identical to before this fold (no trailer paragraph at all)."""
+    if by is None:
+        return None
+    if by not in ROUTING_BY_VALUES:
+        raise VerbError(f"by must be one of {sorted(ROUTING_BY_VALUES)}, got {by!r}")
+    return f"By: {by}"
+
+
+def _body_with_by_trailer(
+    body: str | None,
+    by: str | None,
+    execution: execution_evidence.ExecutionRef | None = None,
+) -> str | None:
+    """Appends :func:`_by_trailer`'s result to *body* as its OWN FINAL
+    paragraph — a blank line always separates it from whatever *body*
+    already was, so a ``--note`` whose own last line already looks
+    trailer-shaped (``Key: value``) can never merge into the ``By:``
+    block: git's trailer scan stops at the first paragraph break
+    scanning up from the end, and the blank line here always puts one
+    between the two (gate-u3-r1.md F3(b))."""
+    if execution is not None:
+        # The delegated runner, not a model-controlled sheet field, owns
+        # execution attribution. Existing ``by`` state/proposal semantics
+        # stay separate; the commit evidence names the actual runner.
+        _by_trailer(by)  # retain the verb's existing by-value refusal
+        return execution_evidence.append_trailers(body, execution)
+    trailer = _by_trailer(by)
+    if trailer is None:
+        return body
+    if body is None or not body.strip():
+        return trailer
+    return f"{body.rstrip()}\n\n{trailer}"
 
 
 def _stage_and_commit(
@@ -2264,6 +2362,15 @@ def _prepare_one_motion_hook(
         "deny_message": hook["deny_message"],
         "script_path": rel,
         "script": data["script"],
+        # Fold r1, D-e (Opus S4 / Astra 8 — swept-proposal gap): the
+        # proposal sibling `data["examples"]` came from never survives
+        # routing (`remove_proposal_siblings` sweeps it), so activation-
+        # time replay would otherwise have nothing to replay for EVERY
+        # one-motion-routed record. Persisted here, same class as
+        # `script` above — `hook_activation._examples_for` reads this
+        # first, falling back to a still-present proposal sibling only
+        # for the narrow case one happens to exist.
+        "examples": data["examples"],
     }
     snippet = settings_snippet(list(hook["tools"]), spec.target.name)
     return _HookRoute(
@@ -2351,6 +2458,13 @@ def _prepare_hook_route(
         "deny_message": hook["deny_message"],
         "script_path": rel,
         "script": script,
+        # Fold r1, D-e (Opus S4 / Astra 8 — the swept-proposal gap):
+        # `route()` sweeps `proposals/<id>.yaml` on every successful
+        # route (`ledger_ops.remove_proposal_siblings`), so without
+        # this, `hook_activation._examples_for` would have nothing to
+        # replay for ANY normally-routed record. Same persistence
+        # class as `script` above — already the full compiled bytes.
+        "examples": data["examples"],
     }
     snippet = settings_snippet(list(hook["tools"]), spec.target.name)
     return _HookRoute(spec=spec, meta=meta, snippet=snippet, script=script)
@@ -2420,6 +2534,278 @@ def _hook_script_location(
         )
     root = _gate_host(home, hosts.skills_root, "skills-root")
     return root, root / rel, rel, host_mode(home, root)
+
+
+def _residual_notes(exc: BaseException) -> list[str]:
+    """Fold r3, S1: every note attached to ``exc`` (e.g. by
+    :func:`hook_activation._undo` via ``add_note``) and to
+    ``exc.__cause__`` — ``str(exc)`` never includes ``__notes__``, so a
+    caller that builds its message from ``str(exc)`` alone silently
+    drops exactly the residual-effect reporting fold r2 built (gate
+    round-3 SHOULD-FIX 1). Order: ``exc``'s own notes first, then its
+    cause's."""
+    notes: list[str] = list(getattr(exc, "__notes__", None) or [])
+    cause = exc.__cause__
+    if cause is not None:
+        notes.extend(getattr(cause, "__notes__", None) or [])
+    return notes
+
+
+def _residual_message(exc: BaseException) -> str:
+    """``str(exc)`` joined with every line :func:`_residual_notes`
+    finds — the single place :func:`hook_activate`/
+    :func:`hook_deactivate` build a ``VerbError`` message from a caught
+    :class:`hook_activation.HookActivationError` so the residual text
+    reaches ``_cmd_hook``'s stderr (and the ``--json`` error envelope,
+    which prints this same string)."""
+    return "\n".join([str(exc), *_residual_notes(exc)])
+
+
+def _hook_commit_or_undo(
+    home: Path,
+    record_id: str,
+    result: "hook_activation.ActivationResult",
+    event: str,
+    message: str,
+    *,
+    by: str | None = None,
+) -> tuple[list[Path], str]:
+    """Fold r1, F2(b): *by* — pre-validated by the caller
+    (:func:`hook_activate`, before any lock) — rides the commit body as
+    its own final ``By: <actor>`` paragraph, through the SAME
+    :func:`_body_with_by_trailer` every other resolution verb already
+    uses; ``None`` (the human path, and :func:`hook_deactivate`'s own
+    call, which passes none) leaves the body exactly as before this
+    fold.
+
+    Fold r2, item B: wraps the ledger-side write
+    (``Record.write``/:func:`_commit_ledger`) around a runtime
+    activation/deactivation that has ALREADY landed. A raise here calls
+    :func:`hook_activation._undo` against ``result.progress`` — exactly
+    what THIS call did — and re-raises the ORIGINAL exception (with any
+    residual-effect notes attached), UNLESS the ledger's own ``HEAD``
+    advanced despite the raise (read via :func:`gitops.head_sha`, once
+    right before the commit attempt and again inside the ``except``):
+    when it did, the commit may have actually landed (e.g. ``git
+    commit`` created the object and moved ``HEAD`` before something in
+    the calling process's OWN bookkeeping raised), so the runtime change
+    is KEPT — an activated hook a ledger record fails to fully describe
+    is a smaller problem than silently deactivating a guard the record
+    says is live — and the uncertain outcome is raised as its own
+    :class:`VerbError` instead of being undone.
+
+    Fold r3, S2: the ``try`` now starts above ``find_record_path`` — a
+    raise from ``find_record_path``/``Record.from_path``/
+    ``append_history`` used to sit OUTSIDE it entirely, so it skipped
+    :func:`hook_activation._undo` altogether and left the runtime change
+    live with no ledger record at all (gate round-3 SHOULD-FIX 2, probe
+    PF). The ``except``-side ``head_sha`` read is now its OWN inner
+    ``try``: if reading the post-failure ``HEAD`` itself raises, this
+    falls through to the undo rather than skip it (probe PH2) — treating
+    an unreadable ``HEAD`` as "uncertain, assume the commit did not
+    land" is the over-cautious direction; treating it as "the commit
+    landed, keep the runtime change" on nothing more than a failed read
+    would be the dangerous one."""
+    commit_body = _body_with_by_trailer("\n".join(result.receipts), by)
+    head_before = gitops.head_sha(home)
+    try:
+        path = ledger_ops.find_record_path(home, record_id)
+        record = Record.from_path(path)
+        record.append_history(event, {"note": result.backup_note})
+        record.write(path)
+        return _commit_ledger(home, [path], message, commit_body)
+    except BaseException as exc:
+        try:
+            head_after = gitops.head_sha(home)
+        except Exception:  # noqa: BLE001 - fold r3, S2: uncertain -> undo
+            head_after = head_before
+        if head_after != head_before:
+            raise VerbError(
+                f"{message}: the ledger commit landed ({head_before[:7]} -> "
+                f"{head_after[:7]}) but a later step failed — KEEPING the "
+                f"runtime change (uncertain receipt, verify by hand): {exc}"
+            ) from exc
+        assert result.progress is not None
+        residual = hook_activation._undo(result.progress)  # noqa: SLF001
+        for line in residual:
+            exc.add_note(line)
+        raise
+
+
+def _prune_hook_backups(
+    claude_dir: Path, result: "hook_activation.ActivationResult"
+) -> str | None:
+    """Fold r2, item A: backup pruning moves OUT of
+    :func:`hook_activation.activate` entirely — run here, in the verb,
+    only AFTER :func:`_commit_ledger` has succeeded (still inside the
+    SAME ``_ledger_write`` span, so ``tests/test_lock_invariant.py``'s
+    walker still sees the removal as lock-reachable, through the one raw
+    writer). A pruning failure is its OWN receipt line, never an
+    activation failure — the activation already committed successfully
+    by the time this runs, and disk cleanup afterward failing must never
+    read as though the activation itself had."""
+    if result.backup_path is None:
+        return None
+    try:
+        # Fold r3, N8: sort by the backup's own INTEGER suffix, not by
+        # the path's string form — a plain `sorted()` only agrees with
+        # numeric order while every `time.time_ns()` suffix has the
+        # same digit count (true until ~2286; gate round-3 NIT 8), after
+        # which "oldest first" silently inverts.
+        existing = sorted(
+            claude_dir.glob("settings.json.self-learn-bak.*"),
+            key=lambda p: int(p.name.rsplit(".", 1)[-1]) if p.name.rsplit(".", 1)[-1].isdigit() else 0,
+        )
+        keep = hook_activation._BACKUP_KEEP  # noqa: SLF001
+        stale = tuple(existing[: max(0, len(existing) - keep)])
+        if not stale:
+            return None
+        hook_activation._write_claude_runtime(prune_backups=stale)  # noqa: SLF001
+        return f"pruned {len(stale)} old settings.json backup(s)"
+    except OSError as exc:
+        return f"backup pruning failed (not an activation failure): {exc}"
+
+
+def hook_activate(
+    home: Path | str,
+    record_id: str,
+    *,
+    register: bool = True,
+    no_push: bool = False,
+    by: str | None = None,
+) -> VerbResult:
+    """13 §7.4 — the human path: ``self-learn hook activate <id>``
+    always performs every step (placed, registered, activation-
+    checked) regardless of ``overseer.hook_activation``; only the
+    overseer's own call (O-2b, ``batch._dispatch``) ever passes
+    ``register=False`` — it reads the ``overseer.hook_activation`` gate
+    itself and forwards it here as this keyword; this verb's own
+    default (``True``) keeps the human path exactly as it was before
+    O-2b, and the CLI's ``self-learn hook activate`` never passes
+    anything but the default either. ``register=False`` performs step 1
+    (placed) only and returns the delegated-and-switched-off receipt —
+    see :func:`hook_activation.activate`'s own docstring for the three
+    steps. Fold r1, D-b (Opus B2 / Astra 3, 5): the runtime-dir write
+    (:func:`hook_activation.activate`) happens INSIDE the ledger lock
+    span, right after :func:`intents.announce_recovered` — exactly
+    where :func:`route` performs its own host writes — so a live STOP
+    refuses BEFORE this call ever runs, never after it has already
+    mutated the user's Claude runtime directory. A concurrent editor
+    that is not self-learn (a human hand-editing settings.json in an
+    editor at the same moment) cannot be serialised by this lock —
+    ``hook_activation``'s own module docstring states that bound
+    plainly. Fold r2: the ledger write itself is now wrapped by
+    :func:`_hook_commit_or_undo` (item B — a later failure undoes the
+    runtime change, unless the commit landed anyway) and backup
+    pruning runs AFTER the commit via :func:`_prune_hook_backups`
+    (item A).
+
+    ``by`` (fold r1, F2(b)): validated against the SAME closed set
+    every other verb's ``by`` uses (:func:`_by_trailer`), BEFORE any
+    lock is taken — the human path (the CLI's own ``hook activate``)
+    passes none and is unaffected; only ``batch._dispatch``'s overseer
+    path ever names one, rendered as the ``hook-activated`` ledger
+    commit's own final ``By:`` paragraph (git trailer semantics) by
+    :func:`_hook_commit_or_undo`."""
+    home = Path(home)
+    from . import selfcheck  # deferred: selfcheck imports verbs at its own top
+
+    _by_trailer(by)  # validates *by*; raises before any lock is taken
+    claude_dir = selfcheck.claude_runtime_dir()
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
+            try:
+                result = hook_activation.activate(
+                    home, record_id, claude_dir=claude_dir, register=register
+                )
+            except hook_activation.HookActivationError as exc:
+                # Fold r3, S1: fold the residual-effect notes in, or a
+                # cleanup that itself failed reads to the person running
+                # this as though nothing happened at all.
+                raise VerbError(_residual_message(exc)) from exc
+            message = f"self-learn: hook activate {record_id}"
+            staged, sha = _hook_commit_or_undo(
+                home, record_id, result, "hook-activated", message, by=by,
+            )
+            prune_note = _prune_hook_backups(claude_dir, result)
+        push = _push_ledger(home, no_push)
+        receipts = list(result.receipts)
+        if prune_note is not None:
+            receipts.append(f"pruned: {prune_note}")
+        return VerbResult(
+            action="hook-activate",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+            post_notes=receipts,
+            hook_registered_entry=result.hook_registered_entry,
+            hook_script_path=result.hook_script_path,
+            hook_script_sha256=result.hook_script_sha256,
+            hook_replay=result.replay,
+            hook_reload_caveat=result.reload_caveat,
+        )
+    finally:
+        hold.release()
+
+
+def hook_deactivate(
+    home: Path | str,
+    record_id: str,
+    *,
+    no_push: bool = False,
+) -> VerbResult:
+    """13 §7.4: reverses :func:`hook_activate` — removes the symlink
+    (only if it points at the expected target) and surgically removes
+    only this hook's own settings.json registration (fold r1, D-a: a
+    whole-file backup restore would silently roll back every OTHER
+    registration made since — never done), then writes
+    ``hook-deactivated``. Unattended-callable under the same §7.2a.5
+    contract as every other ledger-write verb. Fold r1, D-b: the
+    runtime-dir write (:func:`hook_activation.deactivate`) happens
+    INSIDE the ledger lock span, right after
+    :func:`intents.announce_recovered` — exactly like
+    :func:`hook_activate` above — so a live STOP refuses before this
+    call ever runs. Fold r2: the same :func:`_hook_commit_or_undo` wrap
+    as ``hook_activate`` (item B/C)."""
+    home = Path(home)
+    from . import selfcheck  # deferred: selfcheck imports verbs at its own top
+
+    claude_dir = selfcheck.claude_runtime_dir()
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
+            try:
+                result = hook_activation.deactivate(
+                    home, record_id, claude_dir=claude_dir
+                )
+            except hook_activation.HookActivationError as exc:
+                # Fold r3, S1: same join as hook_activate above.
+                raise VerbError(_residual_message(exc)) from exc
+            message = f"self-learn: hook deactivate {record_id}"
+            staged, sha = _hook_commit_or_undo(
+                home, record_id, result, "hook-deactivated", message
+            )
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="hook-deactivate",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+            post_notes=list(result.receipts),
+        )
+    finally:
+        hold.release()
 
 
 def _remove_hook_script(
@@ -3789,6 +4175,15 @@ def show(home: Path | str, record_id: str) -> dict:
         "deferred_until": record.deferred_until,
         "deferred_count": record.deferred_count,
         "superseded_by": record.superseded_by,
+        # S-67: the ONE display helper's rendering of the raw field
+        # above -- "replaced by lrn-…" / "retired, covered by
+        # <kind>:<name>" / "retired, covering surface unrecorded" --
+        # additive (never removes `superseded_by`, so a `--json`
+        # consumer reading the raw field is unaffected). The field is
+        # mutable in every status: a merge-collapse loser can remain
+        # pending while naming its survivor (02-schema §2), so status
+        # must not gate the helper. It already returns "" for None.
+        "supersession": records_mod.supersession_display(record),
         "resolution_note": record.resolution_note,
         "routing": (
             {
@@ -4016,6 +4411,7 @@ def _execute_route(
     follow_up: dict | None = None,
     collapse: "_CollapseCtx | None" = None,
     capture_diff: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """THE pinned route sequence (M-R, lane L7): every step `route`
     (pending-file input, git-mv) and `route_direct` (in-memory record,
@@ -4299,6 +4695,15 @@ def _execute_route(
             intent=intent,
         )
 
+        if intent is not None and execution is not None:
+            # Collapse roll-forward commits use the intent's pinned subject
+            # without a body. Register and mutate the manifest before
+            # ``complete`` so the mutation and its first proof are restored
+            # or committed together by existing intent recovery.
+            proof_path = execution_evidence.write_compound_proof(intent, execution)
+            if proof_path not in touched:
+                touched.append(proof_path)
+
         if intent is not None:
             # M-W (D7): every collapse mutation has now landed on disk —
             # record each step's REAL final state in one pass. A crash
@@ -4315,10 +4720,16 @@ def _execute_route(
                 raise gitops.HalfWrittenError.for_commit(
                     home, message, touched, exc
                 ) from exc
-            _, sha = _commit_ledger(home, touched, message, note)
+            _, sha = _commit_ledger(
+                home, touched, message,
+                _body_with_by_trailer(note, None, execution),
+            )
         else:
             diff_text = None
-            staged, sha = _commit_ledger(home, touched, message, note)
+            staged, sha = _commit_ledger(
+                home, touched, message,
+                _body_with_by_trailer(note, None, execution),
+            )
 
         if intent is not None:
             # The commit landed — this intent's job is done.
@@ -4446,6 +4857,7 @@ def route(
     follow_up: dict | None = None,
     collapse: str | None = None,
     allow_empty_glob: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Route a pending record into canon. See the module docstring for the
     pinned sequence (M-R: the post-preflight half now lives once, in
@@ -4599,6 +5011,7 @@ def route(
             follow_up=follow_up,
             collapse=collapse_ctx,
             capture_diff=False,
+            execution=execution,
         )
     finally:
         hold.release()  # (g) release iff owned
@@ -5027,12 +5440,100 @@ def commit_drift(
             hold.release()
 
 
+#: U5 (`self-learn reconsider`): the ONLY three destinations a routed
+#: record's `reject`/`defer` retirement leg (below) will drop a
+#: compiled entry for — exactly `_retirement_preflight`'s own managed-
+#: doc-target branch (`skill-md`/`claude-md`/`new-skill`). A hook- or
+#: reference-routed record's reconsider correction refuses by name
+#: instead of silently reusing the hook-removal/reference-retirement
+#: legs UNTESTED under a non-graduating resolution — U5's own gate
+#: tested only the managed-target shape (`build-u5.md` test 3).
+_RECONSIDER_RETIREABLE_DESTINATIONS = frozenset({"skill-md", "claude-md", "new-skill"})
+
+
+def _wrap_case_error(exc: cases.CaseError) -> VerbError:
+    """Fold r1 (F5): preserve a :class:`cases.CaseUsageError`'s
+    EX_USAGE exit code (64) across the wrap into :class:`VerbError` —
+    the same discipline `commands/review.md` already promises for an
+    unknown RECORD id ("An unknown record id is 64 (usage), not 1").
+    Before this, both call sites below raised a bare ``VerbError``
+    unconditionally, which discards `CaseUsageError.exit_code` and
+    substitutes `VerbError`'s own default of 1 — an unknown/malformed
+    CASE id came back exit 1 instead of 64, the one thing every other
+    surface's unknown-id refusal promises. A plain
+    :class:`cases.CaseError` (exit_code 1, e.g. a corrupt multi-match)
+    stays an ordinary :class:`VerbError`."""
+    if getattr(exc, "exit_code", VerbError.exit_code) == VerbUsageError.exit_code:
+        return VerbUsageError(str(exc))
+    return VerbError(str(exc))
+
+
+def _reconsider_case_check(
+    home: Path, reconsider_case: str | None, record_id: str
+) -> dict | None:
+    """The one call site `reject`/`defer`/`graduate`/`supersede` each
+    use to validate a caller-supplied `reconsider_case` BEFORE any lock
+    (U5's brief: "when the check fails the verb refuses before any
+    lock, even if the record is live") — a thin wrap of
+    :func:`cases.require_reconsider_case` that turns every
+    :class:`cases.CaseError` into a :class:`VerbError`, the exception
+    type every one of these verbs' callers already catches
+    (:func:`_wrap_case_error`, fold r1 F5, preserves a
+    `CaseUsageError`'s exit_code 64 across the wrap). Returns the
+    reconsider case's own frontmatter (unused by reject/defer/graduate/
+    supersede today — only :func:`reconsider` itself consults
+    `outcome`) or ``None`` when *reconsider_case* is ``None`` (the
+    default, every pre-U5 call site, behaviour unchanged)."""
+    if reconsider_case is None:
+        return None
+    try:
+        case_fm, _old_fm = cases.require_reconsider_case(
+            home, reconsider_case, record_id
+        )
+    except cases.CaseError as exc:
+        raise _wrap_case_error(exc) from exc
+    return case_fm
+
+
+def _reconsider_retirement_preflight(
+    home: Path,
+    record: Record,
+    path: Path,
+    *,
+    verb: str,
+    user_claude_md: Path | str | None = None,
+) -> tuple["_Retirement", list[str]]:
+    """U5: the read-only preflight half of dropping a ROUTED record's
+    compiled entry when `reject`/`defer` admit it only via a validated
+    reconsider case — MUST run before any status-flip mutation
+    (``record.status`` must still be ``"routed"``, the same
+    precondition :func:`_retirement_preflight` itself checks). Reuses
+    that shared preflight verbatim (the same one `graduate`/`supersede`
+    use for their own retirements) rather than a second implementation
+    of "what host presence does this routed record have"."""
+    destination = (record.routing or {}).get("destination")
+    if destination not in _RECONSIDER_RETIREABLE_DESTINATIONS:
+        raise VerbError(
+            f"{verb} {record.id}: a reconsider correction of a routed "
+            f"{destination!r}-destination record is not supported here "
+            "— hook and reference routes are corrected by hand"
+        )
+    warnings: list[str] = []
+    retire = _retirement_preflight(
+        home, record, path.parent.parent, warnings, user_claude_md=user_claude_md
+    )
+    return retire, warnings
+
+
 def reject(
     home: Path | str,
     record_id: str,
     *,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
+    reconsider_case: str | None = None,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Reject a pending (or deferred) record. Commit: ``self-learn:
     reject lrn-…``. FW-51: refuses BEFORE any lock/mutation, naming the
@@ -5040,23 +5541,81 @@ def reject(
     lying "not found" (:func:`require_status`). A genuinely UNKNOWN id
     stays a bare :class:`LedgerOpsError` (exit 64, unwrapped) —
     `find_record_path` runs first, outside the wrap, exactly as
-    `test_unknown_record_id_is_usage_error` pins."""
+    `test_unknown_record_id_is_usage_error` pins.
+
+    Fold r1 (F3): *by*, when given, is validated (:func:`_by_trailer`)
+    and rides the commit body ONLY, as its own trailing ``By:``
+    paragraph — never `resolve_record`'s *note* (the record's own
+    `resolution.note` is unaffected; F3(c) — that is not an attribution
+    slot and adding one is a schema change this fold does not make).
+
+    U5 (`reconsider_case`, default ``None``): when given, validated
+    BEFORE any lock (:func:`_reconsider_case_check`) and widens the
+    admitted status set to include ``routed`` — a wrong route or reject
+    corrected without a reopen (`commands/review.md` ~160-186). A
+    record that WAS routed drops its compiled entry in the SAME locked
+    section the status flips in (the retirement leg every
+    `graduate`/`supersede` retirement already takes, reused here for a
+    resolution that does not graduate the record — it just stops being
+    live canon; `_reconsider_retirement_preflight` scopes this to a
+    managed doc target). The CLI's single-verb parser never gains a
+    `--reconsider-case` flag — only `batch._dispatch` passes this,
+    naming the sheet's own top-level `case:`."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
+    body = _body_with_by_trailer(note, by, execution)  # validates before any lock
+    _reconsider_case_check(home, reconsider_case, record_id)
+    extra_allowed = frozenset({"routed"}) if reconsider_case is not None else None
     try:
-        require_status(home, record_id, LIVE_STATUSES, verb="reject")
+        require_status(
+            home, record_id, LIVE_STATUSES | (extra_allowed or frozenset()),
+            verb="reject",
+        )
     except LedgerOpsError as exc:
         raise VerbError(str(exc)) from exc
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
         message = f"self-learn: reject {record_id}"
-        with _ledger_write(home) as recovered:
+        pre_record = Record.from_path(path)
+        retire: "_Retirement | None" = None
+        warnings: list[str] = []
+        host_lock_cm: object = contextlib.nullcontext()
+        if extra_allowed is not None and pre_record.status == "routed":
+            retire, warnings = _reconsider_retirement_preflight(
+                home, pre_record, path, verb="reject"
+            )
+            assert retire.spec is not None  # the destination allowlist guarantees this
+            host_lock_cm = gitops.host_lock(retire.spec.host_path, retire.spec.mode)
+        with _ledger_write(home) as recovered, host_lock_cm:
             intents.announce_recovered(recovered)
-            touched = resolve_record(home, record_id, "rejected", note=note, verb="reject")
-            staged, sha = _stage_and_commit(home, touched, message, note)
+            observed_hash = _observe_retirement_region(retire) if retire else None
+            touched = resolve_record(
+                home, record_id, "rejected", note=note, verb="reject",
+                extra_allowed_source=extra_allowed,
+            )
+            if retire is not None:
+                record_path = _write_retirement_compile_record(
+                    home, retire, observed_hash, by=f"reject {record_id}"
+                )
+                if record_path is not None:
+                    touched = touched + [record_path]
+            staged, sha = _stage_and_commit(home, touched, message, body)
+            post_notes: list[str] = []
+            host_sha = host_repo = None
+            if retire is not None:
+                host_sha, host_repo = _retirement_host_phase(
+                    home, retire, record_id, note=note, message=message,
+                    warnings=warnings, post_notes=post_notes, user_push=not no_push,
+                )
         push = _push_ledger(home, no_push)
+        host_push = None
+        if (
+            retire is not None and not no_push
+            and host_sha is not None and host_repo is not None
+        ):
+            host_push = gitops.push_if_remote(host_repo)
         return VerbResult(
             action="reject",
             record_id=record_id,
@@ -5065,6 +5624,10 @@ def reject(
             staged=staged,
             push=push,
             sentinel_owned=hold.owned,
+            warnings=warnings,
+            post_notes=post_notes,
+            host_commit_sha=host_sha,
+            host_push=host_push,
         )
     finally:
         hold.release()
@@ -5076,7 +5639,10 @@ def defer(
     *,
     until=None,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
+    reconsider_case: str | None = None,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Defer a pending (or already-deferred) record (default +30 d).
     Commit: ``self-learn: defer lrn-… until <date>``. The note rides the
@@ -5086,21 +5652,51 @@ def defer(
     resolved — never the old lying "not found" (:func:`require_status`).
     A genuinely UNKNOWN id stays a bare :class:`LedgerOpsError` (exit 64,
     unwrapped) — `find_record_path` runs first, outside the wrap, same
-    contract `reject`/`route` pin."""
+    contract `reject`/`route` pin.
+
+    Fold r1 (F3): *by*, when given, rides the commit body as its own
+    trailing ``By:`` paragraph — see :func:`reject`'s docstring.
+
+    U5 (`reconsider_case`, default ``None``): same widening `reject`
+    gains, and the same reasoning — see its docstring. A record admitted
+    here only via a validated reconsider case may currently live in
+    ``resolved/`` (a routed record's own directory); :func:`defer_record`
+    moves it to ``pending/`` as part of the same write (deferred records
+    live there — 02 §2), and its compiled entry drops through the SAME
+    retirement leg `reject` takes, in the SAME locked section."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
+    body = _body_with_by_trailer(note, by, execution)  # validates before any lock
+    _reconsider_case_check(home, reconsider_case, record_id)
+    extra_allowed = frozenset({"routed"}) if reconsider_case is not None else None
     try:
-        require_status(home, record_id, LIVE_STATUSES, verb="defer")
+        require_status(
+            home, record_id, LIVE_STATUSES | (extra_allowed or frozenset()),
+            verb="defer",
+        )
     except LedgerOpsError as exc:
         raise VerbError(str(exc)) from exc
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
-        with _ledger_write(home) as recovered:
+        pre_record = Record.from_path(path)
+        retire: "_Retirement | None" = None
+        warnings: list[str] = []
+        host_lock_cm: object = contextlib.nullcontext()
+        if extra_allowed is not None and pre_record.status == "routed":
+            retire, warnings = _reconsider_retirement_preflight(
+                home, pre_record, path, verb="defer"
+            )
+            assert retire.spec is not None  # the destination allowlist guarantees this
+            host_lock_cm = gitops.host_lock(retire.spec.host_path, retire.spec.mode)
+        with _ledger_write(home) as recovered, host_lock_cm:
             intents.announce_recovered(recovered)
+            observed_hash = _observe_retirement_region(retire) if retire else None
             try:
-                touched = defer_record(home, record_id, until)
+                touched = defer_record(
+                    home, record_id, until, extra_allowed_source=extra_allowed
+                )
             except LedgerOpsError as exc:
                 # U-verbs §4.2: a past `--until` is a REFUSAL (exit 1,
                 # nothing written), never a usage error (64) — the flag
@@ -5108,10 +5704,33 @@ def defer(
                 # makes it illegal (02 §2's own distinction). Nothing has
                 # been written yet at this point.
                 raise VerbError(str(exc)) from exc
-            deferred_until = _date_str(Record.from_path(touched[0]).deferred_until)
+            # `touched[-1]` (not `[0]`): the FINAL/current path -- byte-
+            # identical to `touched[0]` when nothing moved, but a U5
+            # retirement leaves `touched[0]` pointing at the now-vacated
+            # `resolved/` location (`defer_record`'s own mv-first order).
+            deferred_until = _date_str(Record.from_path(touched[-1]).deferred_until)
             message = f"self-learn: defer {record_id} until {deferred_until}"
-            staged, sha = _stage_and_commit(home, touched, message, note)
+            if retire is not None:
+                record_path = _write_retirement_compile_record(
+                    home, retire, observed_hash, by=f"defer {record_id}"
+                )
+                if record_path is not None:
+                    touched = touched + [record_path]
+            staged, sha = _stage_and_commit(home, touched, message, body)
+            post_notes: list[str] = []
+            host_sha = host_repo = None
+            if retire is not None:
+                host_sha, host_repo = _retirement_host_phase(
+                    home, retire, record_id, note=note, message=message,
+                    warnings=warnings, post_notes=post_notes, user_push=not no_push,
+                )
         push = _push_ledger(home, no_push)
+        host_push = None
+        if (
+            retire is not None and not no_push
+            and host_sha is not None and host_repo is not None
+        ):
+            host_push = gitops.push_if_remote(host_repo)
         return VerbResult(
             action="defer",
             record_id=record_id,
@@ -5121,6 +5740,10 @@ def defer(
             push=push,
             sentinel_owned=hold.owned,
             deferred_until=deferred_until,
+            warnings=warnings,
+            post_notes=post_notes,
+            host_commit_sha=host_sha,
+            host_push=host_push,
         )
     finally:
         hold.release()
@@ -5249,7 +5872,9 @@ def _move(
     to: str,
     verb: str,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """The ONE verb body behind both ``rehome`` and ``rescope`` (U-verbs
     §4.1, ruling R1 / criterion ``MOVE10``): neither entry point may
@@ -5271,6 +5896,9 @@ def _move(
     # note (P2-7): `rescope`/project legs genuinely rewrite the file
     # (`scope:` changes), so this is load-bearing, not a formality.
     _scan_or_refuse([path], note)
+    # Fold r1 (F3): validates `by` before any lock/mutation, same as
+    # every other refusal in this function.
+    _by_trailer(by)
 
     try:
         require_status(home, record_id, LIVE_STATUSES, verb=verb)
@@ -5322,6 +5950,7 @@ def _move(
                 p.relative_to(home) if p.is_relative_to(home) else p for p in swept
             ]
             body = _rescope_commit_body(note, relswept)  # R-DISCLOSE-2
+            body = _body_with_by_trailer(body, by, execution)
             staged, sha = _commit_ledger(home, touched, message, body)
         push = _push_ledger(home, no_push)
         return VerbResult(
@@ -5346,7 +5975,9 @@ def rehome(
     *,
     to: str,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Move a PENDING (or ``deferred``) record to any registered scope —
     ``user`` | ``skill:<name>`` | a registered project (02 §2 verb pin;
@@ -5364,7 +5995,10 @@ def rehome(
 
     All work is delegated to :func:`_move` — this function contains no
     file-op of its own (``MOVE10``)."""
-    return _move(home, record_id, to=to, verb="rehome", note=note, no_push=no_push)
+    return _move(
+        home, record_id, to=to, verb="rehome", note=note, by=by,
+        no_push=no_push, execution=execution,
+    )
 
 
 def rescope(
@@ -5373,7 +6007,9 @@ def rescope(
     *,
     to: str,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Move a PENDING (or ``deferred``) record to any registered scope —
     ``user`` | ``skill:<name>`` | a registered project (u-rescope spec
@@ -5390,7 +6026,10 @@ def rescope(
 
     All work is delegated to :func:`_move` — this function contains no
     file-op of its own (``MOVE10``)."""
-    return _move(home, record_id, to=to, verb="rescope", note=note, no_push=no_push)
+    return _move(
+        home, record_id, to=to, verb="rescope", note=note, by=by,
+        no_push=no_push, execution=execution,
+    )
 
 
 def undefer(
@@ -5398,7 +6037,9 @@ def undefer(
     record_id: str,
     *,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Bring a deferred record back to the queue NOW (U-verbs §4.2) — the
     exact inverse of `defer`'s own write: `status: pending`, clears
@@ -5409,10 +6050,12 @@ def undefer(
     `git mv`. Ledger-only, one commit `self-learn: undefer lrn-…`;
     `--note` rides the commit body only (`resolution_note` untouched —
     an un-defer is not a resolution). Re-running it refuses naming
-    'pending' (GUARD3/GUARD4)."""
+    'pending' (GUARD3/GUARD4). Fold r1 (F3): *by*, when given, rides the
+    commit body as its own trailing ``By:`` paragraph."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
+    body = _body_with_by_trailer(note, by, execution)  # validates before any lock
     try:
         require_status(home, record_id, DEFERRED_ONLY, verb="undefer")
     except LedgerOpsError as exc:
@@ -5428,7 +6071,7 @@ def undefer(
             record.set_status("pending")
             record.set_deferred_until(None)
             record.write(path)
-            staged, sha = _commit_ledger(home, [path], message, note)
+            staged, sha = _commit_ledger(home, [path], message, body)
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="undefer",
@@ -5443,34 +6086,224 @@ def undefer(
         hold.release()
 
 
+#: U5: which record status(es) a reconsider case's `outcome` may
+#: correct — the intersection of :data:`RECONSIDERABLE_STATUSES` with
+#: each outcome's own resolution verb's admitted-status set, AFTER this
+#: build's widening (`reject`/`defer`/`graduate`/`supersede` admit
+#: `routed` only under a validated reconsider case; `route`/`rehome`/
+#: `revise` are NOT widened by this build — a routed record's status is
+#: never applicable through those three here). `no-action`/`parked`
+#: name no correcting verb at all — the steward examined and did
+#: nothing, or handed the record to the overseer — so both are
+#: applicable from any reconsiderable status.
+_RECONSIDER_WIDENED_STATUSES = frozenset({"routed", "deferred"})  # ROUTED_ONLY | DEFERRED_ONLY
+#: Fold r1 (F3, the orchestrator's ruling): a WRONG REJECT is corrected
+#: through `reopen` (already legal on a `rejected` record —
+#: `REOPENABLE_STATUSES`, no reconsider case needed for THAT step) as
+#: the sheet's FIRST item, receipted to the same reconsider case, with
+#: the corrective verb (`route`/`defer`/`graduate`/…) AFTER it — by the
+#: time the corrective verb runs, `reopen` has already moved the record
+#: to `pending`, so the verb itself needs no widening at all (`route`'s
+#: own unwidened gate already admits `pending`). This is NOT a new
+#: widening of `route`/`rehome`/`revise` to admit `rejected` directly —
+#: none of the three ever gain it. What DOES need to admit `rejected`
+#: is `reconsider` itself: the verb that records the "this was wrong"
+#: history entry is called BEFORE that corrective sheet ever runs,
+#: while the record is STILL `rejected` — so the corresponding outcome
+#: must already be applicable to a `rejected` record for that call to
+#: succeed at all. `reject`'s own outcome is deliberately excluded
+#: (correcting a reject into ANOTHER reject is not a correction).
+#: `REOPENABLE_STATUSES` (`ledger_ops.py` — the rejected-only set) is
+#: reused below rather than a fresh inline set literal — it names
+#: EXACTLY what this fold means (GUARD2, `test_guard2_new_status_sets_
+#: are_constants`, pins that `verbs.py` never re-derives that constant
+#: — or `DEFERRED_ONLY`'s — own literal by hand).
+_RECONSIDER_WIDENED_STATUSES_INCL_REJECTED = (
+    _RECONSIDER_WIDENED_STATUSES | REOPENABLE_STATUSES
+)
+_OUTCOME_APPLICABLE_STATUSES: dict[str, frozenset[str]] = {
+    "route": DEFERRED_ONLY | REOPENABLE_STATUSES,
+    "reject": _RECONSIDER_WIDENED_STATUSES,
+    "defer": _RECONSIDER_WIDENED_STATUSES_INCL_REJECTED,
+    "retire": _RECONSIDER_WIDENED_STATUSES_INCL_REJECTED,
+    "replaced": _RECONSIDER_WIDENED_STATUSES_INCL_REJECTED,
+    "rehome": DEFERRED_ONLY,
+    "revise": DEFERRED_ONLY,
+    "no-action": RECONSIDERABLE_STATUSES,
+    "parked": RECONSIDERABLE_STATUSES,
+}
+
+
+def reconsider(
+    home: Path | str,
+    record_id: str,
+    *,
+    case: str,
+    by: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """U5 (`commands/review.md` ~160-186, `02-schema.md` §2/§3a): record
+    a successor decision against a record whose prior resolution (route,
+    reject, or defer) turned out wrong — never a reset. Requires an
+    EXISTING case whose ``kind`` is ``reconsider`` and whose
+    ``supersedes`` names a case that already covers *record_id*
+    (:func:`cases.require_reconsider_case` — the SAME check
+    `reject`/`defer`/`graduate`/`supersede`'s own ``reconsider_case``
+    widening performs).
+
+    This verb does NOT itself change the record's status, and does NOT
+    write the old case's ``superseded_by`` — :func:`cases.record`
+    already wrote that link atomically when *case* itself was created
+    (naming the predecessor in ``supersedes``; a second write through
+    that same path is refused outright — a case is superseded once).
+    What lands here is the record's own ``reconsidered`` history entry —
+    the pointer FROM the record TO the case that reconsidered it
+    (``02-schema.md`` §2's five-kind ``history`` set). The actual
+    correction is an ordinary sheet item run afterwards, naming *case*
+    at the sheet's own top level — THAT is what makes a resolution verb
+    legal again on an already-routed record (``batch._dispatch``'s own
+    widening, beside this verb, never duplicated here).
+
+    Refuses, nothing written, when: *case* fails
+    :func:`cases.require_reconsider_case`'s checks (no case / wrong kind
+    / wrong record / tampered / predecessor link broken); *record_id*'s
+    current status is not one of ``routed``/``rejected``/``deferred``
+    (:data:`RECONSIDERABLE_STATUSES` — nothing to reconsider about a
+    pending record, and a superseded one already has a live successor);
+    or the case's own ``outcome`` does not apply to the record's current
+    status (:data:`_OUTCOME_APPLICABLE_STATUSES`). A genuinely UNKNOWN
+    id stays a bare :class:`LedgerOpsError` (exit 64, unwrapped) —
+    `find_record_path` runs first, outside every wrap, the same
+    contract `reject`/`defer`/`reopen` pin."""
+    home = Path(home)
+    path = find_record_path(home, record_id)  # pending OR resolved
+    _by_trailer(by)  # validates `by` before any lock/mutation
+    if not cases.CASE_ID_RE.match(case or ""):
+        raise VerbError(f"reconsider: not a case id: {case!r}")
+    try:
+        case_fm, _old_fm = cases.require_reconsider_case(home, case, record_id)
+    except cases.CaseError as exc:
+        raise _wrap_case_error(exc) from exc  # fold r1 (F5): preserve exit 64
+    existing_record = Record.from_path(path)
+    if any(
+        event.get("event") == "reconsidered" and event.get("case") == case
+        for event in existing_record.history
+    ):
+        return VerbResult(
+            action="reconsider", record_id=record_id,
+            commit_message=f"self-learn: reconsider {record_id} (case {case})",
+            commit_sha=gitops.head_sha(home), staged=[], push=None,
+        )
+    try:
+        _, record = require_status(
+            home, record_id, RECONSIDERABLE_STATUSES, verb="reconsider"
+        )
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+    outcome = str(case_fm.get("outcome") or "")
+    applicable = _OUTCOME_APPLICABLE_STATUSES.get(outcome, frozenset())
+    if record.status not in applicable:
+        raise VerbError(
+            f"reconsider {record_id}: {case}'s outcome {outcome!r} does not "
+            f"apply to a {record.status!r} record"
+        )
+
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        message = f"self-learn: reconsider {record_id} (case {case})"
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
+            record.append_history(
+                "reconsidered",
+                {"case": case, "supersedes": case_fm.get("supersedes")},
+            )
+            record.write(path)
+            staged, sha = _commit_ledger(
+                home, [path], message, _body_with_by_trailer(None, by)
+            )
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="reconsider",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()
+
+
+#: S-67: `reopen`'s own widened admission — a mistaken RETIREMENT joins
+#: the always-admitted REJECTED record. Deliberately NOT folded into the
+#: shared `REOPENABLE_STATUSES` constant (`ledger_ops.py`): that name is
+#: reused verbatim elsewhere (`batch._STATUS_GATE`'s own dry-run mirror,
+#: separately widened below) and, unlike here, a "superseded" status
+#: alone is not sufficient there either — a REPLACED record (a record-id
+#: `superseded_by`) must stay refused, checked one level down once the
+#: record is in hand (`is_replacement`), never by widening the status
+#: set itself.
+_REOPEN_ADMITTED_STATUSES = REOPENABLE_STATUSES | frozenset({"superseded"})
+
+
 def reopen(
     home: Path | str,
     record_id: str,
     *,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
-    """Return a REJECTED record to the draft plane (U-verbs §4.2) — the
-    inverse motion 02 §2's freeze-at-routing pin never had to give a
-    rejected record: the old resolution is DISPLACED into `history`
-    (never destroyed — :meth:`Record.clear_resolution_note` refuses
-    unless the note is already there), the record moves resolved/ →
-    pending/ (mv-first, §6.4), and any stale proposal sibling is swept
-    and the sweep DISCLOSED, same shape as the move verbs. `--note`
-    rides the commit body only.
+    """Return a REJECTED record, or a wrongly RETIRED one, to the draft
+    plane (U-verbs §4.2; retirement admitted S-67) — the inverse motion
+    02 §2's freeze-at-routing pin never had to give a rejected record:
+    the old resolution is DISPLACED into `history` (never destroyed —
+    :meth:`Record.clear_resolution_note` refuses unless the note is
+    already there), `superseded_by` is cleared when the record was
+    retired (S-67), the record moves resolved/ → pending/ (mv-first,
+    §6.4), and any stale proposal sibling is swept and the sweep
+    DISCLOSED, same shape as the move verbs. `--note` rides the commit
+    body only.
 
-    Refused, each naming the status AND the reason: `superseded` (a live
-    successor, or a merge-collapse evidence merge, would be orphaned)
-    and `routed` (un-writing canon is FW-133 — deliberately out of this
+    Refused, each naming the status AND the reason: a REPLACED record —
+    `superseded` with a record-id `superseded_by` (a live successor
+    exists; correcting it is `reconsider`'s territory, U5) — and
+    `routed` (un-writing canon is FW-133 — deliberately out of this
     unit's scope; correcting a wrong DESTINATION on an already-routed
-    record is separate, dated work)."""
+    record is separate, dated work). A RETIRED record — `superseded`
+    with a `covered_by:` reference or the legacy literal `"canon"` — is
+    now ADMITTED (S-67): the covering surface named at retirement time
+    never actually covered the lesson, so there is nothing to supersede,
+    unlike a replacement's live successor.
+
+    Fold r1 (F3): *by*, when given, rides the commit body as its own
+    trailing ``By:`` paragraph."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
+    _by_trailer(by)  # validates `by` before any lock/mutation
     try:
-        require_status(home, record_id, REOPENABLE_STATUSES, verb="reopen")
+        _, record = require_status(
+            home, record_id, _REOPEN_ADMITTED_STATUSES, verb="reopen"
+        )
     except LedgerOpsError as exc:
         raise VerbError(str(exc)) from exc
+    if record.status == "superseded" and records_mod.is_replacement(
+        record.superseded_by
+    ):
+        # Same "record X is 'status' — reason" shape `require_status`
+        # itself uses (ledger_ops.py) — this refusal is a SECOND gate,
+        # one level below the status check above (which now admits
+        # `superseded` unconditionally), so it has to build that shape
+        # by hand rather than get it from `require_status` for free.
+        raise VerbError(
+            f"record {record_id} is {record.status!r} — superseded by "
+            f"a replacement ({record.superseded_by}); a live successor "
+            f"exists, use reconsider instead of reopen"
+        )
 
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -5483,6 +6316,7 @@ def reopen(
                 p.relative_to(home) if p.is_relative_to(home) else p for p in swept
             ]
             body = _rescope_commit_body(note, relswept)
+            body = _body_with_by_trailer(body, by, execution)
             staged, sha = _commit_ledger(home, touched, message, body)
         push = _push_ledger(home, no_push)
         post_notes = ["re-entering the queue — this record will be re-analyzed"]
@@ -5509,6 +6343,7 @@ def note(
     append: str,
     key: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Append one commentary entry to a record's `notes[]` (U-verbs
     §4.2) — ANY status, and NEVER touches `resolution_note`: `notes`
@@ -5548,7 +6383,10 @@ def note(
             record = Record.from_path(path)
             record.append_note(append, key=key)
             record.write(path)
-            staged, sha = _commit_ledger(home, [path], message, append)
+            staged, sha = _commit_ledger(
+                home, [path], message,
+                _body_with_by_trailer(append, None, execution),
+            )
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="note",
@@ -5865,35 +6703,164 @@ def reroute(
         hold.release()
 
 
+def retire(
+    home: Path | str,
+    record_id: str,
+    *,
+    covered_by: str,
+    note: str | None = None,
+    by: str | None = None,
+    no_push: bool = False,
+    user_claude_md: Path | str | None = None,
+    reconsider_case: str | None = None,
+    execution: execution_evidence.ExecutionRef | None = None,
+) -> VerbResult:
+    """Retire a lesson: guidance already loaded elsewhere covers it, and
+    *covered_by* NAMES that covering surface — ``<kind>:<name>``, *kind*
+    one of :data:`self_learn.records.COVERAGE_KINDS`
+    (``claude-md``/``skill-md``/``reference``/``output-style``), parsed
+    and validated by :func:`self_learn.records.build_covered_by` (S-67 —
+    "the same parser as the CLI" the UI's own surface field routes
+    through). The stored ``superseded_by`` becomes
+    ``covered_by:<kind>:<name>``, replacing the old bare literal
+    ``"canon"`` new writes never produce again. Delegates to
+    :func:`_retire_impl` — see its docstring for the mechanics (host
+    cleanup, locking, the retirement compile record); this function only
+    owns parsing *covered_by* and refusing an unknown kind or empty name
+    BY NAME before any lock. ``graduate`` (below) is a thin, hidden-alias
+    entry point onto the SAME implementation."""
+    try:
+        surface = records_mod.build_covered_by(covered_by)
+    except records_mod.ValidationError as exc:
+        raise VerbError(str(exc)) from exc
+    return _retire_impl(
+        home,
+        record_id,
+        superseded_by=surface,
+        verb_word="retire",
+        note=note,
+        by=by,
+        no_push=no_push,
+        user_claude_md=user_claude_md,
+        reconsider_case=reconsider_case,
+        execution=execution,
+    )
+
+
 def graduate(
     home: Path | str,
     record_id: str,
     *,
+    covered_by: str | None = None,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
+    reconsider_case: str | None = None,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
-    """Graduate a lesson into authored canon: ``superseded_by: canon``
-    (02 §2/§4). Works on a routed record (the hand-weave) or a pending
-    already-canon one (the bulk-acknowledge door). Commit: ``self-learn:
-    graduate lrn-…``. A ROUTED record's host presence is cleaned in the
-    same motion — its managed-section entry drops (or its hook script is
-    removed, M3-4) via the shared retirement host phase. It used to be
-    metadata-only for doc targets ("drops at the next compile"), which
-    stranded the line forever when the graduated record was the target's
-    LAST — recompile enumerates targets off routed records, so an
-    all-retired target was never revisited (found live 2026-07-16)."""
+    """Deprecated alias for :func:`retire` (S-67), kept for one release
+    so a pre-rename `graduate` sheet or script still applies unchanged.
+    *covered_by*, when given, makes this call BYTE-IDENTICAL to calling
+    :func:`retire` directly (same commit subject, same
+    ``action="retire"`` result) — a caller may adopt the new surface
+    argument without renaming the verb yet. Omitted (the exact
+    pre-rename calling convention), the record is retired against the
+    LEGACY literal ``superseded_by: canon`` exactly as ``graduate``
+    always did — same commit subject (``self-learn: graduate <id>``),
+    same ``action="graduate"`` — plus ONE new deprecation line appended
+    to the result's ``warnings`` (never ``post_notes``: `_finish_verb`
+    prints ``warnings`` to stderr under BOTH ``--json`` and plain text,
+    so the notice surfaces either way without disturbing §4's
+    stdout-is-the-envelope pin for `--json`)."""
+    if covered_by is not None:
+        return retire(
+            home,
+            record_id,
+            covered_by=covered_by,
+            note=note,
+            by=by,
+            no_push=no_push,
+            user_claude_md=user_claude_md,
+            reconsider_case=reconsider_case,
+            execution=execution,
+        )
+    result = _retire_impl(
+        home,
+        record_id,
+        superseded_by="canon",
+        verb_word="graduate",
+        note=note,
+        by=by,
+        no_push=no_push,
+        user_claude_md=user_claude_md,
+        reconsider_case=reconsider_case,
+        execution=execution,
+    )
+    result.warnings = result.warnings + [
+        "`graduate` is `retire` now; covering surface unrecorded — "
+        "name it with --covered-by"
+    ]
+    return result
+
+
+def _retire_impl(
+    home: Path | str,
+    record_id: str,
+    *,
+    superseded_by: str,
+    verb_word: str,
+    note: str | None = None,
+    by: str | None = None,
+    no_push: bool = False,
+    user_claude_md: Path | str | None = None,
+    reconsider_case: str | None = None,
+    execution: execution_evidence.ExecutionRef | None = None,
+) -> VerbResult:
+    """Shared mechanics for :func:`retire` and the pre-rename-shaped leg
+    of :func:`graduate` (S-67 — one operation on one record;
+    `batch.classify`/`_dispatch` treat both verb names identically).
+    *verb_word* (``"retire"`` or ``"graduate"``) names the commit
+    subject, the `VerbResult.action`, and `require_status`'s refusal
+    message — the two entry points differ ONLY in *superseded_by* (a
+    `covered_by:` surface vs the legacy ``"canon"``) and *verb_word*;
+    everything below is byte-identical to what ``graduate`` alone used
+    to do (02 §2/§4). Works on a routed record (the hand-weave) or a
+    pending already-canon one (the bulk-acknowledge door). A ROUTED
+    record's host presence is cleaned in the same motion — its
+    managed-section entry drops (or its hook script is removed, M3-4)
+    via the shared retirement host phase. It used to be metadata-only
+    for doc targets ("drops at the next compile"), which stranded the
+    line forever when the retired record was the target's LAST —
+    recompile enumerates targets off routed records, so an all-retired
+    target was never revisited (found live 2026-07-16).
+
+    Fold r1 (F3): *by*, when given, rides the LEDGER commit's body as
+    its own trailing ``By:`` paragraph -- the separate HOST-repo commit
+    (`_retirement_host_phase`, a different repo entirely) keeps taking
+    the raw *note*, unchanged.
+
+    U5 (`reconsider_case`, default ``None``): ``RESOLVABLE_STATUSES``
+    already admits ``routed`` unconditionally — the hand-weave retire
+    above IS that path, no case ever needed. When a caller passes this
+    anyway (``batch._dispatch``, uniformly, for every resolution verb a
+    sheet item names), it is still validated
+    (:func:`_reconsider_case_check`) before any lock: a sheet naming a
+    bad case still refuses, even though retire's own admitted-status
+    set does not change."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
+    _by_trailer(by)  # validates `by` before any lock/mutation
+    _reconsider_case_check(home, reconsider_case, record_id)
     warnings = _orphaned_followup_warning(path, record_id)
     # FW-51: refuses BEFORE any lock/mutation, naming the record's actual
     # status, when it is already terminal (rejected, or already
-    # superseded/graduated) — the reject-then-graduate inversion this
-    # unit closes.
+    # superseded/retired) — the reject-then-retire inversion this unit
+    # closes.
     try:
         _, record = require_status(
-            home, record_id, RESOLVABLE_STATUSES, verb="graduate"
+            home, record_id, RESOLVABLE_STATUSES, verb=verb_word
         )
     except LedgerOpsError as exc:
         raise VerbError(str(exc)) from exc
@@ -5902,7 +6869,7 @@ def graduate(
     try:
         # Pre-flight the host-side cleanup BEFORE the ledger commit
         # (doc-target recompile or M3-4 hook-script removal).
-        retire = _retirement_preflight(
+        retirement = _retirement_preflight(
             home,
             record,
             path.parent.parent,
@@ -5918,48 +6885,48 @@ def graduate(
         # (`gitops._held_locks`), never a self-deadlock. A record with no
         # host presence to retire (pending, reference-routed) takes no
         # host lock at all.
-        if retire.spec is not None:
-            _graduate_host_lock = gitops.host_lock(retire.spec.host_path, retire.spec.mode)
-        elif retire.removal is not None:
-            _graduate_host_lock = gitops.host_lock(retire.removal[0], retire.removal[3])
-        elif retire.reference is not None:
-            _graduate_host_lock = gitops.host_lock(
-                retire.reference[1].host_path, retire.reference[1].mode
+        if retirement.spec is not None:
+            _retire_host_lock = gitops.host_lock(retirement.spec.host_path, retirement.spec.mode)
+        elif retirement.removal is not None:
+            _retire_host_lock = gitops.host_lock(retirement.removal[0], retirement.removal[3])
+        elif retirement.reference is not None:
+            _retire_host_lock = gitops.host_lock(
+                retirement.reference[1].host_path, retirement.reference[1].mode
             )
         else:
-            _graduate_host_lock = contextlib.nullcontext()
+            _retire_host_lock = contextlib.nullcontext()
 
-        with _ledger_write(home) as recovered, _graduate_host_lock:
+        with _ledger_write(home) as recovered, _retire_host_lock:
             intents.announce_recovered(recovered)
-            observed_hash = _observe_retirement_region(retire)
+            observed_hash = _observe_retirement_region(retirement)
 
-            message = f"self-learn: graduate {record_id}"
+            message = f"self-learn: {verb_word} {record_id}"
             touched = resolve_record(
                 home,
                 record_id,
                 "superseded",
-                superseded_by="canon",
+                superseded_by=superseded_by,
                 note=note,
-                verb="graduate",
+                verb=verb_word,
             )
-            # U-hostmode REC1/REC9: the graduated record's own doc-target
+            # U-hostmode REC1/REC9: the retired record's own doc-target
             # entry drops out of the compile at the host phase below — the
             # compile record must be kept in sync with that rewrite (see
             # `_write_retirement_compile_record`'s docstring for the bug
             # this closes), inside this SAME ledger commit.
             record_path = _write_retirement_compile_record(
-                home, retire, observed_hash, by=f"graduate {record_id}"
+                home, retirement, observed_hash, by=f"{verb_word} {record_id}"
             )
             if record_path is not None:
                 touched = touched + [record_path]
-            elif retire.reference is not None:
+            elif retirement.reference is not None:
                 # U-verbs S-54 (RER6/RER7): same same-commit-prediction
                 # shape as the managed branch above — `_write_retirement_
-                # compile_record` only ever covers `retire.spec`, so a
+                # compile_record` only ever covers `retirement.spec`, so a
                 # reference retirement's compile-record entry is resynced
                 # here, predicted via the SAME pure text transform the
                 # real removal (host phase, below) applies.
-                ref_path, ref_spec = retire.reference
+                ref_path, ref_spec = retirement.reference
                 ref_observed = _observe_region_hash_at(ref_path, "reference")
                 ref_expected = _predicted_retired_reference_region(ref_path, record_id)
                 ref_record_path = _resync_region_entry(
@@ -5971,21 +6938,21 @@ def graduate(
                     region_kind="reference",
                     expected=ref_expected,
                     observed_hash=ref_observed,
-                    by=f"graduate {record_id}",
+                    by=f"{verb_word} {record_id}",
                 )
                 if ref_record_path is not None:
                     touched = touched + [ref_record_path]
-            elif retire.removal is not None:
+            elif retirement.removal is not None:
                 # D-3 completion (code gate r1 fold, coordinator
                 # ruling 2026-08-28): same shape as `supersede`'s
                 # own hook-removal leg — `_write_retirement_compile_
-                # record` only ever covers `retire.spec` (a managed
+                # record` only ever covers `retirement.spec` (a managed
                 # drop); a hook-routed record's script disappearing
                 # at the host phase below needs its record entry
                 # predictively DELETED here too, or a stale WRITE
                 # entry misreads the next legitimate route to this
                 # same script path as `edited`.
-                host_repo, script_abs, _rel, removal_mode = retire.removal
+                host_repo, script_abs, _rel, removal_mode = retirement.removal
                 removal_record_path = _resync_region_entry(
                     home,
                     host_path=host_repo,
@@ -5996,16 +6963,18 @@ def graduate(
                     expected=None,
                     observed_hash=None,
                     delete=True,
-                    by=f"graduate {record_id}",
+                    by=f"{verb_word} {record_id}",
                 )
                 if removal_record_path is not None:
                     touched = touched + [removal_record_path]
-            staged, sha = _stage_and_commit(home, touched, message, note)
+            staged, sha = _stage_and_commit(
+                home, touched, message, _body_with_by_trailer(note, by, execution)
+            )
 
             post_notes: list[str] = []
             host_sha, host_repo = _retirement_host_phase(
                 home,
-                retire,
+                retirement,
                 record_id,
                 note=note,
                 message=message,
@@ -6019,7 +6988,7 @@ def graduate(
         if not no_push and host_sha is not None and host_repo is not None:
             host_push = gitops.push_if_remote(host_repo)
         return VerbResult(
-            action="graduate",
+            action=verb_word,
             record_id=record_id,
             commit_message=message,
             commit_sha=sha,
@@ -6041,8 +7010,11 @@ def supersede(
     new_id: str,
     *,
     note: str | None = None,
+    by: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
+    reconsider_case: str | None = None,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Corrective supersession (08 §1 pin): mark ``old`` superseded by
     ``new`` (which must exist). Commit: ``self-learn: supersede lrn-old →
@@ -6051,13 +7023,25 @@ def supersede(
     ledger commit the host phase recompiles the target and commits the
     host. A pending old record stays a single ledger commit. A
     reference-routed old record's entry drops too (U-verbs S-54 —
-    references are no longer append-only for their own lifetime)."""
+    references are no longer append-only for their own lifetime).
+
+    Fold r1 (F3): *by*, when given, rides the LEDGER commit's body as
+    its own trailing ``By:`` paragraph -- the separate HOST-repo commits
+    (`_host_phase`/`_remove_hook_script`/`_retire_reference_host_phase`,
+    a different repo entirely) keep taking the raw *note*, unchanged.
+
+    U5 (`reconsider_case`, default ``None``): same non-widening
+    validation-only addition `graduate` gains, over ``old_id`` — see its
+    docstring; ``RESOLVABLE_STATUSES`` already admits a routed
+    ``old_id`` unconditionally."""
     home = Path(home)
     if old_id == new_id:
         raise VerbError("a record cannot supersede itself")
     old_path = find_record_path(home, old_id)  # pending OR routed flavor
     find_record_path(home, new_id)  # the replacement must exist
     _scan_or_refuse([old_path], note)
+    _by_trailer(by)  # validates `by` before any lock/mutation
+    _reconsider_case_check(home, reconsider_case, old_id)
     warnings = _orphaned_followup_warning(old_path, old_id)
     # FW-51: status/cycle refusals — BEFORE any lock/mutation, naming the
     # record's actual status. Existence of both ids is already confirmed
@@ -6213,7 +7197,9 @@ def supersede(
                 )
                 if removal_record_path is not None:
                     touched = touched + [removal_record_path]
-            staged, sha = _commit_ledger(home, touched, message, note)
+            staged, sha = _commit_ledger(
+                home, touched, message, _body_with_by_trailer(note, by, execution)
+            )
 
             # (e) HOST phase: recompile the target — the entry drops out. For
             # hooks: git rm the script in the host repo (M3-4 rollback pin)
@@ -6277,6 +7263,7 @@ def followup_done(
     *,
     note: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Clear a routed record's open follow-up (11 §2.5): move
     ``routing.follow_up`` to a dated ``follow_up_done`` block. Standard
@@ -6316,7 +7303,10 @@ def followup_done(
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
             record.write(path)
-            staged, sha = _stage_and_commit(home, [path], message, note)
+            staged, sha = _stage_and_commit(
+                home, [path], message,
+                _body_with_by_trailer(note, None, execution),
+            )
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="followup-done",
@@ -6339,6 +7329,7 @@ def confirm_recurrence(
     tolerate: bool = False,
     note: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """Human confirmation of a recurrence suspect (11 §2.2/§2.5): append
     to the record's append-only ``recurrences:`` list, copying the minimal
@@ -6409,7 +7400,10 @@ def confirm_recurrence(
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
             record.write(path)
-            staged, sha = _stage_and_commit(home, [path], message, note)
+            staged, sha = _stage_and_commit(
+                home, [path], message,
+                _body_with_by_trailer(note, None, execution),
+            )
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="confirm-recurrence",
@@ -6430,6 +7424,7 @@ def confirm_held(
     *,
     note: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """A human observed the rule working (11 §2.2): write
     ``last_confirmed`` (today). Age-since-confirmation, not
@@ -6456,7 +7451,10 @@ def confirm_held(
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
             record.write(path)
-            staged, sha = _stage_and_commit(home, [path], message, note)
+            staged, sha = _stage_and_commit(
+                home, [path], message,
+                _body_with_by_trailer(note, None, execution),
+            )
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="confirm-held",
@@ -6496,6 +7494,7 @@ def dismiss_suspect(
     why: str,
     note: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """The third door out of ``recurrence_suspects`` (11 §2.2, U-dismiss
     §1): a human judged a recurrence-suspect telemetry claim to be a
@@ -6571,7 +7570,10 @@ def dismiss_suspect(
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
             record.write(path)
-            staged, sha = _stage_and_commit(home, [path], message, note)
+            staged, sha = _stage_and_commit(
+                home, [path], message,
+                _body_with_by_trailer(note, None, execution),
+            )
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="dismiss-suspect",
@@ -6593,6 +7595,7 @@ def link_contradicts(
     *,
     note: str | None = None,
     no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """First-class contradiction edge (11 §2.4): append ``target`` (a
     record id or canon anchor) to ``links.contradicts``. Commit:
@@ -6621,7 +7624,10 @@ def link_contradicts(
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
             record.write(path)
-            staged, sha = _stage_and_commit(home, [path], message, note)
+            staged, sha = _stage_and_commit(
+                home, [path], message,
+                _body_with_by_trailer(note, None, execution),
+            )
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="link-contradicts",
@@ -7924,6 +8930,209 @@ def reclassify(
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="reclassify",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()
+
+
+def _revise_body(record: Record, section: str, text: str) -> str:
+    """Splice *text* into the ONE named heading's content, leaving every
+    other section's bytes byte-for-byte untouched (02 §2 as amended,
+    S-54: ``self-learn revise`` -- a wording fix, never a substance
+    change). Never writes to disk; :func:`revise` calls this once
+    pre-lock (fail-closed) and once more fresh-under-the-lock (the SAME
+    fresh-read-and-reapply shape :func:`_reclassify_apply`'s callers
+    use, in case the body changed between the two reads).
+
+    *section* must already be a heading in *record*'s body -- an
+    unrecognized name refuses rather than growing the body (a revise
+    edits what is already claimed; it never adds a claim). *text* may
+    not itself contain a ``## `` heading line -- the same boundary from
+    the other direction: smuggling a second heading through the
+    free-text field would let a wording-fix verb add a whole section no
+    resolution verb ever validated as intentional (found empirically --
+    :func:`records.validate_body` only counts KNOWN headings, so this
+    is not caught anywhere else).
+
+    Replacement preserves the ORIGINAL section's surrounding whitespace
+    verbatim (its own leading/trailing blank-line shape, whatever a
+    hand-edited or captured record happens to carry) and substitutes
+    only the trimmed text in between -- never reformats to
+    :meth:`Record.create`'s own convention, which would risk touching
+    bytes this verb has no claim to touch."""
+    # Strip ONCE, before the guard, and splice the same value: the guard
+    # is line-anchored, so checking the raw text and splicing a stripped
+    # one let a single leading space or tab put a smuggled heading back
+    # at the start of a line (gate r1 F1, 2026-09-14).
+    text = text.strip()
+    if text_mod.HEADING_RE.search(text):
+        raise VerbError(
+            "revise --text may not itself contain a '## ' heading line "
+            "— a wording fix replaces one section's text, never adds a "
+            "section (02 §2 as amended, S-54)"
+        )
+    body = record.body
+    matches = list(text_mod.HEADING_RE.finditer(body))
+    headings = [m.group(1) for m in matches]
+    if section not in headings:
+        raise VerbError(
+            f"record {record.id} has no {section!r} section to revise "
+            f"— has {', '.join(headings) if headings else '(no sections)'}"
+        )
+    if headings.count(section) > 1:
+        raise VerbError(
+            f"record {record.id} has {headings.count(section)} "
+            f"{section!r} sections — ambiguous, fix by hand first"
+        )
+    idx = headings.index(section)
+    m = matches[idx]
+    start = m.end()
+    end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
+    segment = body[start:end]
+    leading = segment[: len(segment) - len(segment.lstrip())] or "\n"
+    trailing = segment[len(segment.rstrip()) :] or (
+        "\n" if idx + 1 == len(matches) else "\n\n"
+    )
+    return body[:start] + leading + text + trailing + body[end:]
+
+
+def revise(
+    home: Path | str,
+    record_id: str,
+    *,
+    section: str,
+    text: str,
+    because: str,
+    by: str | None = None,
+    no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
+) -> VerbResult:
+    """``self-learn revise`` (02 §2 as amended 2026-09-13 / S-54 as
+    amended / S-65; `commands/review.md` ~:154-160): the ONE sanctioned
+    pending-or-deferred BODY edit through a scanned verb -- a wording
+    fix on exactly one named section, never a substance change. The
+    steward may not write outside its own stage (`01-architecture.md`
+    §3.3 as amended), so refining a lesson's sentence at decision time
+    needs a verb rather than a hand edit.
+
+    Admits exactly ``records.DRAFT_STATUSES`` (pending/deferred) via
+    :func:`require_status` -- everything else, including ``routed``,
+    is refused BEFORE any lock (a routed record's substance is frozen;
+    correcting it is a new record with ``supersedes:``, never an edit).
+    ``section`` must already be a heading in the body (:func:`_revise_body`
+    refuses an unknown name, and a ``text`` that smuggles its own
+    heading). ``because`` is REQUIRED (unlike every other verb's
+    optional ``--note``) and plays that verb's exact role: it never
+    touches the record (no ``history`` entry -- ``history``'s closed
+    set has no wording-edit kind, and the steward's own reason for a
+    revise is recorded in its decision case, U10's surface, not here)
+    -- it becomes the commit body only. ``by`` (02-schema.md
+    §1/§3a.1 rule 5, the same ``ROUTING_BY_VALUES`` every sheet item's
+    ``by:`` draws from) is optional and, when given, rides the proposal
+    stamp below alongside ``revised_at`` -- never the record. That stamp
+    is informational only: the proposal is stale by construction after a
+    revise (``record_sha`` is not re-stamped), so the next worker run
+    re-analyses the record and overwrites the file, stamp included. A
+    steward's durable account of a revise lives in its decision case
+    (S-65, U10), not here.
+
+    The record's sibling PROPOSAL, if one exists, is kept (never swept
+    -- the record never leaves ``pending/``, so
+    ``worker._still_pending``'s orphan sweep, keyed on "no matching
+    pending record", cannot reach it) and stamped ``revised_at`` (plus
+    ``revised_by`` when ``by`` is given) through the SAME atomic YAML
+    writer :func:`ledger_ops.stamp_proposal` itself uses
+    (:func:`ledger_ops._dump_yaml`) -- deliberately NOT
+    :func:`ledger_ops.write_proposal`, which re-validates the whole
+    proposal including containment-checking its trace's record-sourced
+    quotes against the CURRENT body (`validate_proposal`'s §3.4); a
+    revised section's old quote would then refuse its own stamp.
+    ``record_sha`` is deliberately left UNTOUCHED -- the analyst never
+    saw the new wording, so re-stamping it fresh would misreport the
+    proposal as re-validated against text it was not."""
+    home = Path(home)
+    if not isinstance(section, str) or not section.strip():
+        raise VerbUsageError("revise needs --section")
+    if not isinstance(text, str) or not text.strip():
+        raise VerbUsageError("revise needs --text")
+    if not isinstance(because, str) or not because.strip():
+        raise VerbUsageError("revise needs --because")
+    if by is not None and by not in ROUTING_BY_VALUES:
+        raise VerbUsageError(
+            f"by must be one of {sorted(ROUTING_BY_VALUES)}, got {by!r}"
+        )
+
+    path = find_record_path(home, record_id)  # pending OR resolved --
+    # require_status below needs the ACTUAL status to refuse BY NAME,
+    # never a lying "not found" for an existing but wrongly-staged id.
+    _scan_or_refuse([path], text)
+    _scan_or_refuse([], because)  # P2-7: `because` rides the commit body
+    record = Record.from_path(path)
+    try:
+        require_status(home, record_id, records_mod.DRAFT_STATUSES, verb="revise")
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+
+    new_body = _revise_body(record, section, text)
+    if new_body == record.body:
+        raise VerbError(
+            f"record {record_id}: --text already matches the current "
+            f"{section!r} section — nothing to revise"
+        )
+
+    # Fail-closed pre-lock simulation (the same B-1 shape reclassify
+    # uses): `Record.set_body` re-validates the resulting body shape
+    # (`records._validate_body`) on a disposable copy before any lock
+    # or write.
+    sim = records_mod.Record.from_text(record.to_text())
+    try:
+        sim.set_body(new_body)
+    except RecordError as exc:
+        raise VerbError(
+            f"record {record_id} cannot revise {section!r}: {exc}"
+        ) from exc
+
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        message = f"self-learn: revise {record_id}"
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
+            record = Record.from_path(path)  # fresh read under the lock
+            fresh_body = _revise_body(record, section, text)
+            try:
+                record.set_body(fresh_body)
+            except records_mod.MutationError as exc:
+                # A genuine race: status left DRAFT_STATUSES between the
+                # pre-lock require_status check and this fresh read --
+                # the pre-lock simulation above already covers every
+                # OTHER failure mode on the SAME transform (gate r2
+                # M-A's lesson, applied here too: never a blanket
+                # `except RecordError`).
+                raise VerbError(str(exc)) from exc
+            record.write(path)
+            touched = [path]
+            proposal_path = path.parent.parent / "proposals" / f"{record_id}.yaml"
+            if proposal_path.is_file():
+                data = read_proposal(proposal_path)
+                data["revised_at"] = _now_iso()
+                if by is not None:
+                    data["revised_by"] = by
+                _dump_yaml(data, proposal_path)
+                touched.append(proposal_path)
+            staged, sha = _commit_ledger(
+                home, touched, message,
+                _body_with_by_trailer(because, None, execution),
+            )
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="revise",
             record_id=record_id,
             commit_message=message,
             commit_sha=sha,

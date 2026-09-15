@@ -1,11 +1,19 @@
 # self-learn host process (U-engine Phase 2, spec Sec 5) -- the
-# long-lived scheduler: it starts `miner.run`/`worker.run` as jobs
-# (SERIALLY, spec Sec 5.2a), replacing self-learn-miner.timer's nightly
-# fire, the miner-to-worker handoff's setsid Popen (register item #11,
-# closed by construction -- there is no detached child for a cgroup to
-# reap), and the covert any-verb watchdog (reduced, not retired: spec
-# Sec 5.3 -- a verb pokes this daemon instead of spawning its own run
-# once a fresh heartbeat proves it is alive).
+# long-lived scheduler: it starts `miner.run`/`worker.run`/`steward.run`
+# (S-29 as amended, nightly, third job) and `overseer.run` (S-66, weekly,
+# fourth job) as jobs (SERIALLY, spec Sec 5.2a; 17-invocation-runbook.md §10),
+# replacing self-learn-miner.timer's nightly fire, the miner-to-worker
+# handoff's setsid Popen (register item #11, closed by construction --
+# there is no detached child for a cgroup to reap), and the covert
+# any-verb watchdog (reduced, not retired: spec Sec 5.3 -- a verb pokes
+# this daemon instead of spawning its own run once a fresh heartbeat
+# proves it is alive). The steward and the overseer are both inert until
+# `steward.enabled` / `overseer.enabled` are set true in `config.yaml` --
+# the human sets the setting true and starts that agent's maiden run by
+# hand, watching it; there is no later switch from a supervised phase to
+# an unattended one, and the same setting is afterwards the human's own
+# rollback switch. Landing the code that adds them does not turn either
+# on by itself.
 #
 # Conventions mirror self-learn-ui.service (comment header, %h-relative
 # paths, explicit env pin, Restart=on-failure/RestartSec=5).

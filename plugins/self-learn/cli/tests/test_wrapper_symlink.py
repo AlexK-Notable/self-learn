@@ -354,12 +354,16 @@ def test_wrapper_runs_through_symlink(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
+    assert payload.pop("overseer_last_run") is None
+    assert isinstance(payload.pop("overseer_next"), str)
     assert payload == {
         "buckets": [],
         "total_pending": 0,
         "total_unreadable": 0,
         "open_followups": 0,
         "worker_last_run": None,
+        "steward_last_run_at": None,
+        "steward_cases_since_overseer": 0,
         # T19 blocks (zero-state: empty mix, null medians — never fake 0s)
         "supply_mix": {},
         "metrics": {

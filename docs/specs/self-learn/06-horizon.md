@@ -155,6 +155,9 @@ regular human user") fires on day one of a team pilot. The plan of record:
 - **Per-rule helpful/harmful bookkeeping** (ACE's pattern) becomes worth
   its cost once six people's sessions exercise the same rules — it is the
   input the graduation/supersession cards want.
+  *(2026-09-13: "graduation" here is the pre-rename display word — `01-architecture.md`
+  §3.5 as amended now calls it retirement; the card this bullet describes is
+  unaffected.)*
 
 ### 3.5 Staleness at team velocity (G-6)
 

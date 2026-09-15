@@ -89,7 +89,10 @@ from self_learn import cli, gitops
 from support import commit_all, git, init_repo, make_env
 
 SRC = Path(gitops.__file__).parent
-MODULES = {p.stem for p in SRC.glob("*.py")}
+# Parse the nested package and root modules.  `_Analysis` keys them by their
+# path relative to SRC, so same-basename modules remain distinct.
+SOURCE_ROOTS = (SRC / "overseer", SRC)
+MODULES = {p.stem for root in SOURCE_ROOTS for p in root.glob("*.py")}
 CLI_SRC = str(Path(__file__).resolve().parents[1] / "src")
 
 
@@ -164,6 +167,11 @@ NOT_REPO_TRUTH = {
     "worker._write_failure_count": "XDG cache: the follow-on backoff counter",
     "worker._increment_failure_count": "XDG cache: the follow-on backoff counter",
     "worker._reset_failure_count": "XDG cache: the follow-on backoff counter",
+    # 2026-09-14, O-3: `_journal` computes its own cache-only path;
+    # `_write_stage` rejects any path outside its supplied nested stage.
+    "overseer/run._journal": "XDG cache: the overseer JSONL run journal",
+    "overseer/run._write_stage": "XDG cache: the overseer's exclusive nested stage",
+    "overseer/population.write_blind_views": "XDG cache: blind case views in the overseer's exclusive nested stage; the function refuses a ledger-contained target",
     # …/miner/ — cursors, journal, the model's spool. The reader is pointed
     # at the spool precisely so the model cannot touch the repo (M-5).
     "miner.miner_dir": "XDG cache: the miner cache dir itself",
@@ -227,6 +235,30 @@ NOT_REPO_TRUTH = {
     "serve.request_poke": "XDG cache: cache_dir()/serve.poke (Sec 5.3's verb-to-daemon poke request)",
     "serve._consume_poke": "XDG cache: cache_dir()/serve.poke, unlinked once the tick has read it",
     "serve._today_mine_target": "XDG cache: cache_dir()/serve.schedule (the day's jittered mine-pass target, Sec 5.2/5.8.1 Persistent=true parity)",
+    "steward._journal": "XDG cache: steward/journal.jsonl, never ledger truth",
+    "steward._write_json": "XDG cache: steward run recovery records and batch-result replay files",
+    "steward._dump_yaml": "XDG cache: model stage normalization below steward/runs/<run_id>",
+    "steward.run": "XDG cache: steward run directory and last-run marker; ledger writes delegate to lock-owning cases/batch/user-model/statements verbs",
+    "overseer/run._write_last_run_marker": "XDG cache: overseer/overseer.last-run, a disposable fast-status marker; never ledger truth",
+    # U2 (S-65, 02-schema.md §3a.2 §1.8): <cache>/cases/index.json is a
+    # NOT_REPO_TRUTH index over the case files -- rebuildable from them,
+    # never itself the ledger's truth. `cases._write_index` is the one
+    # function whose write reaches `fsops.atomic_write`; every caller
+    # (`_update_index`, `rebuild_index`, `list_cases`) is the SAME cache
+    # write, exempted here once rather than at each wrapper.
+    # N3 (fold-u2-r1): was mis-cited "S-65 §1.8" — S-65 is a decisions-
+    # table row with no subsections; §1.8 is the interface draft's own.
+    "cases._write_index": "cache-only, rebuildable (interface draft §1.8): <cache>/cases/index.json, never the ledger",
+    # S-66 / 13 §7.4 (O-2a): `hook_activation._write_claude_runtime` had
+    # an entry here through the build and fold r1 (its raw writes sat
+    # OUTSIDE `verbs.hook_activate`/`hook_deactivate`'s ledger lock).
+    # Fold r1, D-b moved both callers' writes INSIDE `_ledger_write`, and
+    # this file's own walker (below) independently confirmed the
+    # function is now lock-REACHABLE from both entrypoints (fold r2
+    # gate's own dump: `verbs.hook_activate @L… -> hook_activation.
+    # activate -> hook_activation._write_claude_runtime -> Path.unlink`)
+    # -- so the entry was removed rather than left stale, and no
+    # replacement is needed (N5, fold r2 nit).
 }
 
 
@@ -459,40 +491,54 @@ def _append_mutation_calls(node) -> set[int]:
 
 
 class _Analysis:
-    """The whole package, parsed once. ``root`` is the source dir — a
-    parameter, not a constant, so the planted-violation test can point it
-    at a deliberately-broken COPY of the tree."""
+    """The whole package, parsed once from injectable source roots."""
 
-    def __init__(self, root: Path | None = None) -> None:
-        root = SRC if root is None else root
+    def __init__(self, roots: tuple[Path, ...] | Path = SOURCE_ROOTS) -> None:
         self.funcs: dict[str, ast.AST] = {}
         self.aliases: dict[str, dict[str, str]] = {}
         self.imported: dict[str, dict[str, str]] = {}
-        for path in sorted(root.glob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            collector = _Collector(path.stem)
-            collector.visit(tree)
-            self.funcs.update(collector.funcs)
-            # `from . import gitops` → module alias; `from .compilers
-            # import compile_reference` → a bare NAME that must still
-            # resolve to compilers.compile_reference (teach and verbs call
-            # create_record / compile_reference exactly that way, and the
-            # planted-violation test proves the analysis would be blind
-            # without this).
-            alias: dict[str, str] = {}
-            imported: dict[str, str] = {}
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.ImportFrom) or (node.level or 0) < 1:
-                    continue
-                for name in node.names:
-                    if node.module is None and name.name in MODULES:
-                        alias[name.asname or name.name] = name.name
-                    elif node.module in MODULES:
-                        imported[name.asname or name.name] = (
-                            f"{node.module}.{name.name}"
-                        )
-            self.aliases[path.stem] = alias
-            self.imported[path.stem] = imported
+        if isinstance(roots, Path):
+            roots = (roots,)
+        module_root = roots[-1]
+        known_modules = {
+            path.relative_to(module_root).with_suffix("").as_posix()
+            for source_root in roots
+            for path in source_root.glob("*.py")
+        }
+        for source_root in roots:
+            for path in sorted(source_root.glob("*.py")):
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                module = path.relative_to(module_root).with_suffix("").as_posix()
+                collector = _Collector(module)
+                collector.visit(tree)
+                self.funcs.update(collector.funcs)
+                # `from . import gitops` → module alias; `from .compilers
+                # import compile_reference` → a bare NAME that must still
+                # resolve to compilers.compile_reference (teach and verbs call
+                # create_record / compile_reference exactly that way, and the
+                # planted-violation test proves the analysis would be blind
+                # without this).
+                alias: dict[str, str] = {}
+                imported: dict[str, str] = {}
+                for node in ast.walk(tree):
+                    if not isinstance(node, ast.ImportFrom) or (node.level or 0) < 1:
+                        continue
+                    package = module.split("/")[:-1]
+                    base = package[:len(package) - (node.level - 1)]
+                    imported_module = "/".join(
+                        base + (node.module.split(".") if node.module else [])
+                    )
+                    for name in node.names:
+                        if node.module is None:
+                            target = "/".join([*base, name.name])
+                            if target in known_modules:
+                                alias[name.asname or name.name] = target
+                        elif imported_module in known_modules:
+                            imported[name.asname or name.name] = (
+                                f"{imported_module}.{name.name}"
+                            )
+                self.aliases[module] = alias
+                self.imported[module] = imported
         self._guarded = {q: self._guarded_lines(n) for q, n in self.funcs.items()}
         self._appends = {q: _append_mutation_calls(n) for q, n in self.funcs.items()}
 
@@ -677,6 +723,21 @@ class TestNoMutationPrecedesItsLock:
         assert {"verbs.route", "hosts.host_rebind", "miner._run_locked"} <= set(
             analysis.funcs
         )
+        overseer_modules = {
+            path.relative_to(SRC).with_suffix("").as_posix()
+            for path in (SRC / "overseer").glob("*.py")
+        }
+        assert overseer_modules <= set(analysis.aliases), (
+            "every nested overseer module needs its own alias table"
+        )
+        assert overseer_modules <= set(analysis.imported), (
+            "every nested overseer module needs its own imported-name table"
+        )
+        assert {"overseer/cli.add_parser", "cli._build_parser"} <= set(analysis.funcs)
+        assert analysis.aliases["overseer/cli"]["runner"] == "overseer/run"
+        assert analysis._resolve(
+            ast.parse("runner.run(None)").body[0].value, "overseer/cli"  # type: ignore[attr-defined]
+        ) == ["overseer/run.run"]
         requires = analysis.requires_lock()
         # the leaves REALLY are classified as needing a lock — if these
         # ever come out clean, the primitive detector has gone blind and
@@ -698,6 +759,23 @@ class TestNoMutationPrecedesItsLock:
             "telemetry.flush's tracked-plane append reads as unguarded — "
             "the M-M commit_lock around Phase 2 came out or moved"
         )
+
+    def test_nested_same_basename_write_is_not_hidden(self, tmp_path):
+        """A nested ``cli.py`` must not overwrite root ``cli.py`` analysis."""
+        (tmp_path / "overseer").mkdir()
+        (tmp_path / "cli.py").write_text(
+            "def _build_parser():\n    return None\n", encoding="utf-8"
+        )
+        (tmp_path / "overseer" / "cli.py").write_text(
+            "from pathlib import Path\n\n"
+            "def _build_parser():\n"
+            "    Path('unlocked').write_text('write')\n",
+            encoding="utf-8",
+        )
+        synthetic = _Analysis((tmp_path / "overseer", tmp_path))
+        nested = synthetic.requires_lock().get("overseer/cli._build_parser")
+        assert nested is not None
+        assert nested[1] == "Path.write_text"
 
     def test_the_exemption_list_cannot_rot(self, analysis):
         """Every NOT_REPO_TRUTH entry must still name a real function.
@@ -785,6 +863,16 @@ _ARGV_FOR = {
     # --dry-run so this held-lock probe never depends on there being an
     # actual empty bucket to remove in the fixture.
     "_cmd_canary": None,  # writes canaries.json (cache-local), not the ledger
+    "_cmd_case": [["case", "record", "{stage}", "--actor", "human"]],  # U2
+    "_cmd_statement": [
+        ["statement", "add", "--verbatim", "held-lock statement",
+         "--ref", "transcript:heldlock#L1", "--recorded-by", "human"],
+    ],  # U2
+    "_cmd_user_model": [
+        ["user-model", "add", "--container", "A", "--title", "held lock title",
+         "--because", "held lock because", "--source", "own-words",
+         "--by", "human", "--ref", "stmt-11112222"],
+    ],  # U2
     "_cmd_config": [
         # U-settings Phase 2: `get` never mutates (ungated, like `doctor`);
         # `set`/`unset` ARE ledger-mutating and must take the lock -- the
@@ -813,6 +901,10 @@ _ARGV_FOR = {
         ["host", "remove", "{host}"],
     ],
     "_cmd_host_inner": None,  # driven through _cmd_host
+    "_cmd_hook": [
+        ["hook", "activate", "lrn-eeee0001"],
+        ["hook", "deactivate", "lrn-eeee0001"],
+    ],
     "_cmd_import": [["import", "--backlog", "{empty}"]],
     "_cmd_init": [["init"]],
     "_cmd_link": [["link", "contradicts", "lrn-eeee0001", "lrn-eeee0002"]],
@@ -836,6 +928,7 @@ _ARGV_FOR = {
     "_cmd_sentinel": [["sentinel", "hold"]],
     "_cmd_status": [["status"]],
     "_cmd_status_fast": [["status", "--fast"]],
+    "_cmd_steward": [["steward", "run"]],
     "_cmd_telemetry": [["telemetry", "flush"]],
     "_cmd_telemetry_read_observed": None,  # U-readref: spools via
     # `spool_quiet` (cache-only spool write), never touches the ledger's
@@ -963,6 +1056,26 @@ class TestEveryCommandSurvivesAHeldLock:
             '  - {id: lrn-eeee0001, verb: reject, note: "held-lock invariant sheet"}\n',
             encoding="utf-8",
         )
+        # U2 (S-65): `case record`'s stage-file input — the six-part
+        # shape `cases.record` validates (this module's own contract;
+        # 02-schema.md §3a.2 fixes the CASE FILE it produces, not this
+        # input format). Content only needs to be valid enough to reach
+        # the ledger lock; the held-lock probe never checks what landed.
+        stage_path = tmp_path / "held-lock-stage.yaml"
+        stage_path.write_text(
+            "kind: resolution\n"
+            "trigger: human\n"
+            "outcome: reject\n"
+            "records: [lrn-eeee0001]\n"
+            "scope: user\n"
+            "question: held-lock invariant probe\n"
+            "evidence:\n"
+            '  - {ref: "transcript:heldlock#L1", quote: "probe evidence"}\n'
+            "decision:\n"
+            "  because: held-lock invariant probe\n"
+            "  confidence: settled\n",
+            encoding="utf-8",
+        )
 
         argv = [
             a.format(
@@ -971,6 +1084,7 @@ class TestEveryCommandSurvivesAHeldLock:
                 empty=str(tmp_path / "empty"),
                 project_slug=str(env.host),
                 sheet=str(sheet_path),
+                stage=str(stage_path),
             )
             for a in argv
         ]
