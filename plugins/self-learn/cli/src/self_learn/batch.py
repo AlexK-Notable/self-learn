@@ -2063,6 +2063,14 @@ def write_receipt(
         "actor": result.actor,
         "prefix": prefix,
     }
+    if prefix and result.items and not batch_result["items"]:
+        # Every ordinal already carries its committed Application line (the
+        # ordered checkpoint receipted each one as it landed), so the final
+        # prefix receipt has nothing to append. Returning here matters: an
+        # empty item list is also the shape `cases.receipt` renders as a
+        # whole-sheet "refused before item 1" line, and a completed sheet
+        # must never gain that line (observed by hand 2026-09-14, O-3).
+        return {"state": "ok", "pushed": None}
     try:
         cases.receipt(home, result.case, batch_result)
     except (cases.CaseError, gitops.GitOpsError) as exc:

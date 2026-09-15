@@ -1074,6 +1074,54 @@ def test_prefix_receipt_preserves_previously_committed_lines_byte_for_byte(tmp_p
     assert sum("item=2" in line for line in lines) == 1
 
 
+def test_final_prefix_receipt_after_full_checkpointing_appends_nothing(tmp_path):
+    """The runners call ``write_receipt(prefix=True)`` once more after
+    ``batch.run`` returns; when the ordered checkpoint already receipted
+    every ordinal, that call must write no line and no commit -- in
+    particular never the whole-sheet ``refused before item 1`` line that
+    an empty item list otherwise renders as."""
+    home = make_home(tmp_path)
+    rid = "lrn-acde1234"
+    _seed_pending(home, rid)
+    case_id = cases.record(
+        home, _case_stage(tmp_path), actor="steward", reserved_id="case-acde1234"
+    )
+    items = batch.Sheet(
+        [batch.SheetItem(n=1, id=rid, verb="reject", fields={})],
+        case=case_id,
+        sheet_sha="12ab34cd",
+        sheet_digest="a" * 64,
+    )
+    result = batch.run(
+        home,
+        items,
+        no_push=True,
+        actor="steward",
+        continuation=batch.BatchContinuation(
+            run_id="run-u14-01", case_id=case_id, sheet_digest="a" * 64, completed={}
+        ),
+        checkpoint=lambda partial: batch.write_receipt(
+            home, partial, "u14.yaml", no_push=True, prefix=True
+        ),
+    )
+    assert result.process_code == 0 and [i.state for i in result.items] == ["applied"]
+    head_before = gitops.head_sha(home)
+    lines_before = cases.show(home, case_id, evidence_only=False).sections[
+        "Application"
+    ].splitlines()
+    assert sum("item=1" in line for line in lines_before) == 1
+
+    receipt = batch.write_receipt(home, result, "u14.yaml", no_push=True, prefix=True)
+
+    assert receipt == {"state": "ok", "pushed": None}
+    assert gitops.head_sha(home) == head_before
+    lines_after = cases.show(home, case_id, evidence_only=False).sections[
+        "Application"
+    ].splitlines()
+    assert lines_after == lines_before
+    assert not any("refused before item" in line for line in lines_after)
+
+
 @pytest.mark.parametrize("operation", ["record", "receipt", "observe"])
 @pytest.mark.parametrize(
     "kill_after", ["before-complete", "after-complete", "after-commit"]
