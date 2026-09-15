@@ -43,7 +43,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, cast
 
-from . import gitops, intents, miner, settings, steward, worker
+from . import gitops, intents, miner, overseer, settings, steward, worker
+from .overseer import run as overseer_run
 from .primitives import fsops
 from .ledger import resolve_home
 
@@ -85,6 +86,8 @@ DEFAULT_TICK_SECS = 60.0
 #: `RandomizedDelaySec=15m` (both measured, spec §5.2/§8.1).
 MINE_HOUR, MINE_MINUTE = 3, 30
 MINE_JITTER_SECS = 15 * 60
+# Shipped timer parity: Sunday at 04:15 local time.
+OVERSEER_WEEKDAY, OVERSEER_HOUR, OVERSEER_MINUTE = 6, 4, 15
 
 HEARTBEAT_FILENAME = "serve.heartbeat"
 _SCHEDULE_STATE_FILENAME = "serve.schedule"
@@ -442,7 +445,14 @@ def _describe_next(home: Path, cache_dir: Path, now: float) -> str:
     steward_when = datetime.fromtimestamp(max(now, last_epoch + float(cooldown))).isoformat(
         timespec="seconds"
     )
-    return f"mine at {when}; steward at {steward_when} when committed obligations exist"
+    # Heartbeats stay cache-only and never walk committed case manifests.
+    overseer_when = datetime.fromtimestamp(
+        _overseer_target_for(now)
+    ).isoformat(timespec="seconds")
+    return (
+        f"mine at {when}; steward at {steward_when} when committed obligations exist; "
+        f"overseer at {overseer_when}"
+    )
 
 
 def _eligible_proposal_paths(home: Path) -> list[Path]:
@@ -491,6 +501,86 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     if unfinished or reconsider:
         return True
     return any(_proposal_commit_epoch(home, path) > last_epoch for path in proposal_paths)
+
+
+def _overseer_target_for(now: float) -> float:
+    """Return the next Sunday 04:15 local target at or after ``now``."""
+    local = time.localtime(now)
+    days = (OVERSEER_WEEKDAY - local.tm_wday) % 7
+    target = time.mktime(
+        (
+            local.tm_year,
+            local.tm_mon,
+            local.tm_mday + days,
+            OVERSEER_HOUR,
+            OVERSEER_MINUTE,
+            0,
+            0,
+            0,
+            -1,
+        )
+    )
+    if target < now:
+        target += 7 * 24 * 60 * 60
+    return target
+
+
+def overseer_next_iso(home: Path | str, *, now: float | None = None) -> str:
+    """The next calendar target; committed unfinished work is reported as now."""
+    resolved = Path(home)
+    current = time.time() if now is None else now
+    target = current if overseer.has_unfinished_work(resolved) else _overseer_target_for(current)
+    return datetime.fromtimestamp(target).isoformat(timespec="seconds")
+
+
+def _overseer_recently_attempted(cache_dir: Path, now: float) -> bool:
+    """Apply the miner's bounded retry interval to every overseer attempt."""
+    journal = cache_dir / "overseer.journal"
+    try:
+        lines = journal.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+            attempted = row.get("at")
+            if not isinstance(attempted, str):
+                continue
+            epoch = datetime.fromisoformat(attempted.replace("Z", "+00:00")).timestamp()
+            return now - epoch < miner.ATTEMPT_COOLDOWN_SECS
+        except (ValueError, AttributeError):
+            continue
+    return False
+
+
+def _overseer_is_due(home: Path, cache_dir: Path, now: float) -> bool:
+    """Weekly opt-in predicate, with committed unfinished work taking priority."""
+    enabled, _source = settings.resolve_setting(home, settings.by_name("overseer.enabled"))
+    if not enabled or intents.classify_status(home).stopped:
+        return False
+    if _overseer_recently_attempted(cache_dir, now):
+        return False
+    if overseer.has_unfinished_work(home):
+        return True
+    local = time.localtime(now)
+    if local.tm_wday != OVERSEER_WEEKDAY:
+        return False
+    target = time.mktime(
+        (
+            local.tm_year, local.tm_mon, local.tm_mday,
+            OVERSEER_HOUR, OVERSEER_MINUTE, 0, 0, 0, -1,
+        )
+    )
+    if now < target:
+        return False
+    last_iso = overseer_run.last_run_iso(home)
+    if last_iso is None:
+        return True
+    try:
+        last_epoch = datetime.fromisoformat(last_iso.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return True
+    return last_epoch < target
 
 
 # ------------------------------------------------------------------- jobs
@@ -583,6 +673,10 @@ def _run_steward_job(home: Path) -> "steward.RunResult":
     return steward.run(home)
 
 
+def _run_overseer_job(home: Path) -> "overseer_run.RunResult":
+    return overseer_run.run(home)
+
+
 def _log_stopped_refusal(job_name: str, stopped: list[str]) -> None:
     """§7.2a.7 (REQUIRED): "a job refused by the guard logs the refusal
     on its own line naming the intent id ... a refusal that reaches
@@ -651,6 +745,17 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
             ran.append(steward_record)
             _log_stopped_refusal(
                 "steward", getattr(steward_record.result, "stopped", None) or []
+            )
+        if _overseer_is_due(home, cache_dir, now):
+            overseer_record = run_one_job(
+                cache_dir,
+                Job("overseer", "overseer", lambda: _run_overseer_job(home)),
+                pid=pid,
+                tick_secs=tick_secs,
+            )
+            ran.append(overseer_record)
+            _log_stopped_refusal(
+                "overseer", getattr(overseer_record.result, "stopped", None) or []
             )
     # Gate r1 N-1: `run_one_job`'s own heartbeat write (inside the `with`
     # block above, when a job ran) records the job it just RAN as

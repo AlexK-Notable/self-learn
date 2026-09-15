@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from self_learn import cli
+from self_learn import cli, provider
 
 
 @pytest.fixture
@@ -32,7 +32,8 @@ def test_status_zero_state_human(sandbox_home, capsys):
     assert capsys.readouterr().out.strip() == "self-learn: no buckets, 0 pending"
 
 
-def test_status_zero_state_json_exact_shape(sandbox_home, capsys):
+def test_status_zero_state_json_exact_shape(sandbox_home, capsys, monkeypatch):
+    monkeypatch.setattr(cli.serve, "overseer_next_iso", lambda *args, **kwargs: "2026-09-20T04:15:00")
     rc = cli.main(["status", "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
@@ -44,6 +45,8 @@ def test_status_zero_state_json_exact_shape(sandbox_home, capsys):
         "worker_last_run": None,
         "steward_last_run_at": None,
         "steward_cases_since_overseer": 0,
+        "overseer_last_run": None,
+        "overseer_next": "2026-09-20T04:15:00",
         # T19: supply mix + 04 success-metrics counters ride full status;
         # zero-state is honest — empty mix, null medians, never fake zeros.
         "supply_mix": {},
@@ -158,6 +161,39 @@ def test_status_fast_reads_only_the_cached_steward_marker(
     payload = json.loads(capsys.readouterr().out)
     assert payload["steward_last_run_at"] == "2026-09-14T12:00:00Z"
     assert "steward_cases_since_overseer" not in payload
+
+
+def test_o4_status_fast_reads_only_both_cached_markers(monkeypatch, tmp_path, capsys):
+    home = _seed_valid_plus_corrupt(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli.cases,
+        "list_cases",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("status --fast walked the case store")
+        ),
+    )
+    cache = cli.serve.cache_dir_readonly(home)
+    marker = cache / "overseer" / "overseer.last-run"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("2026-09-14T16:00:00Z\n", encoding="utf-8")
+
+    assert cli.main(["status", "--json", "--fast"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["overseer_last_run"] == "2026-09-14T16:00:00Z"
+    assert "overseer_next" not in payload
+    assert "overseer_open_questions" not in payload
+
+
+def test_o4_doctor_serve_reads_cached_overseer_marker(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    cache = cli.serve.cache_dir_readonly(home)
+    marker = cache / "overseer" / "overseer.last-run"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("2026-09-14T16:00:00Z\n", encoding="utf-8")
+    monkeypatch.setattr(cli.serve, "is_configured", lambda *args, **kwargs: False)
+    row = provider._serve_row(home)
+    assert "overseer_last_run=2026-09-14T16:00:00Z" in row.detail
 
 
 def test_status_fast_does_not_crash_on_undecodable_bytes(

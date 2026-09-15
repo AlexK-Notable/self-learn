@@ -453,6 +453,7 @@ _LITERAL_CONFIG_FIRST_NAMES = frozenset(
         "overseer.timeout_secs",  # U8
         "overseer.max_model_calls",  # U8
         "overseer.enabled",  # O-3
+        "overseer.broad_removal_threshold",  # O-6
         "sdk.max_budget_usd",
         "sdk.event_logs",
         "sdk.max_turns.worker",
@@ -493,7 +494,7 @@ def test_major2_config_first_literal_complement_27_names_match_the_registry_exac
     still knows the ORIGINAL 16/21 split to compare against."""
     actual = frozenset(s.name for s in settings.REGISTRY if s.direction == "config-first")
     assert actual == _LITERAL_CONFIG_FIRST_NAMES
-    assert len(_LITERAL_CONFIG_FIRST_NAMES) == 30  # U8: 21 -> 26; U10: +3; O-3: +1
+    assert len(_LITERAL_CONFIG_FIRST_NAMES) == 31  # U8: 21 -> 26; U10: +3; O-3: +1; O-6: +1
     assert _LITERAL_ENV_FIRST_NAMES | _LITERAL_CONFIG_FIRST_NAMES == frozenset(
         s.name for s in settings.REGISTRY
     )

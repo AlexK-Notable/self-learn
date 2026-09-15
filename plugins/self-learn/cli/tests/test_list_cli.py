@@ -196,6 +196,8 @@ def test_status_json_pinned_shape_with_unanalyzed(home, capsys):
     rc = cli.main(["status", "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
+    assert payload.pop("overseer_last_run") is None
+    assert isinstance(payload.pop("overseer_next"), str)
     assert payload == {
         "buckets": [
             {

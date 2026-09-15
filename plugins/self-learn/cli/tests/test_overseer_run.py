@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from ruamel.yaml import YAML
 
-from self_learn import batch, cases, execution_evidence, gitops, intents, settings, verbs
+from self_learn import batch, cases, execution_evidence, gitops, intents, settings, verbs, worker
 from self_learn import overseer as overseer_package
 from self_learn.invocation import Outcome
 from self_learn.ledger_ops import create_record, find_record_path, stamp_proposal, write_proposal
@@ -60,6 +60,7 @@ def _fake_two_phase(monkeypatch, *, a_turns=2, b_turns=3, secret=False):
                 ("sheet.yaml", {"version": 1, "items": []}),
                 ("findings.yaml", {"findings": []}),
                 ("questions.yaml", {"questions": []}),
+                ("user-model-delta.yaml", {"updates": []}),
             ):
                 with (stage / name).open("w", encoding="utf-8") as fh:
                     yaml.dump(data, fh)
@@ -118,7 +119,9 @@ def _seed_parked_hook(home, tmp_path):
     return rid, cases.record(home, path, actor="steward")
 
 
-def _fake_hook_phases(monkeypatch, rid, parked, *, extra_refusal=False):
+def _fake_hook_phases(
+    monkeypatch, rid, parked, *, extra_refusal=False, close_call=False
+):
     calls = []
 
     def invoke(spec):
@@ -138,6 +141,7 @@ def _fake_hook_phases(monkeypatch, rid, parked, *, extra_refusal=False):
             )
             _dump(stage / "findings.yaml", {"findings": []})
             _dump(stage / "questions.yaml", {"questions": []})
+            _dump(stage / "user-model-delta.yaml", {"updates": []})
             _dump(stage / "case-hook.yaml", {
                 "kind": "resolution", "trigger": "nightly", "outcome": "route",
                 "records": [rid], "scope": "skill:s", "question": "activate this hook?",
@@ -145,7 +149,14 @@ def _fake_hook_phases(monkeypatch, rid, parked, *, extra_refusal=False):
                 "evidence": [{"ref": f"record:{rid}", "quote": "status: pending"}],
                 "decision": {"verb": "route", "because": "guard is specific", "confidence": "settled"},
             })
-            items = [{"id": rid, "verb": "route", "dest": "hook"}]
+            items = [
+                {
+                    "id": rid,
+                    "verb": "route",
+                    "dest": "hook",
+                    **({"close_call": True} if close_call else {}),
+                }
+            ]
             if extra_refusal:
                 items.append({"id": rid, "verb": "undefer"})
             _dump(stage / "sheet-hook.yaml", {"version": 1, "items": items})
@@ -194,6 +205,7 @@ def _fake_selected_phases(monkeypatch, case_id):
             _dump(stage / "sheet.yaml", {"version": 1, "items": []})
             _dump(stage / "findings.yaml", {"findings": [{"case": case_id, "kind": "examined", "text": "decision held"}]})
             _dump(stage / "questions.yaml", {"questions": []})
+            _dump(stage / "user-model-delta.yaml", {"updates": []})
         return type("SdkLike", (), {
             "ok": True, "rc": 0, "stdout": "", "detail": "", "failure": None, "turns": 1,
         })()
@@ -218,6 +230,7 @@ def _fake_reference_reconsider_phases(monkeypatch, rid, parked):
             )
             _dump(stage / "findings.yaml", {"findings": []})
             _dump(stage / "questions.yaml", {"questions": []})
+            _dump(stage / "user-model-delta.yaml", {"updates": []})
             _dump(stage / "case-reconsider.yaml", {
                 "kind": "reconsider", "trigger": "reconsider", "outcome": "reject",
                 "records": [rid], "scope": "skill:s", "question": "correct reference route?",
@@ -366,6 +379,14 @@ def test_hook_route_obeys_current_gate_and_writes_case_receipt(tmp_path, monkeyp
     settings_path = claude_dir / "settings.json"
     original_settings = b'{"existing": true}\n'
     settings_path.write_bytes(original_settings)
+    notices = []
+    monkeypatch.setattr(
+        overseer_run.notify,
+        "send",
+        lambda actual_home, cue, summary, ids: notices.append(
+            (actual_home, cue, summary, ids)
+        ),
+    )
     if gate:
         (home / "config.yaml").write_text("overseer:\n  hook_activation: true\n", encoding="utf-8")
         commit_all(home, "enable hook activation")
@@ -374,6 +395,9 @@ def test_hook_route_obeys_current_gate_and_writes_case_receipt(tmp_path, monkeyp
 
     assert result.status == "applied"
     assert result.applied == 1
+    assert len(notices) == 1
+    assert notices[0][1] == ("hook-activated" if gate else "routine")
+    assert notices[0][3][0] == rid
     if not gate:
         assert settings_path.read_bytes() == original_settings
     else:
@@ -399,6 +423,22 @@ def test_hook_route_obeys_current_gate_and_writes_case_receipt(tmp_path, monkeyp
     ).stdout
 
 
+def test_close_call_sheet_metadata_raises_the_coalesced_cue(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    rid, parked = _seed_parked_hook(home, tmp_path)
+    _enabled(monkeypatch)
+    _fake_hook_phases(monkeypatch, rid, parked, close_call=True)
+    notices = []
+    monkeypatch.setattr(
+        overseer_run.notify,
+        "send",
+        lambda actual_home, cue, summary, ids: notices.append((cue, ids)),
+    )
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+    assert result.status == "applied"
+    assert notices == [("close-call", [rid])]
+
+
 def test_dry_run_preview_reports_sheet_apply_and_refusal_counts(tmp_path, monkeypatch):
     home = make_home(tmp_path)
     rid, parked = _seed_parked_hook(home, tmp_path)
@@ -418,11 +458,11 @@ def test_secret_scan_names_files_and_applies_nothing(tmp_path, monkeypatch):
     notice_lock_states = []
     monkeypatch.setattr(overseer_run.batch, "run", lambda *a, **kw: applied.append((a, kw)))
 
-    def notified(message, ids):
-        notices.append((message, ids))
+    def notified(actual_home, cue, summary, ids):
+        notices.append((actual_home, cue, summary, ids))
         notice_lock_states.append(str(gitops.commit_lock_path(home)) in gitops._held_locks)
 
-    monkeypatch.setattr(overseer_run.worker, "_notify_with_ids", notified)
+    monkeypatch.setattr(overseer_run.notify, "send", notified)
     result = overseer_run.run(home, dry_run=False, no_push=True)
     assert result.status == "refused"
     assert result.code == 1
@@ -431,7 +471,9 @@ def test_secret_scan_names_files_and_applies_nothing(tmp_path, monkeypatch):
     report = Path(result.report).read_text(encoding="utf-8")
     assert "report.md" in report
     assert "ghp_" not in report
-    assert notices == [("overseer refused: secret-hit report.md", [])]
+    assert notices == [
+        (home, "routine", "overseer refused: secret-hit report.md", [result.run])
+    ]
     assert notice_lock_states == [False]
     assert overseer_run.read_journal(home)[-1]["reason"] == "secret-hit report.md"
 
@@ -442,14 +484,23 @@ def test_report_is_written_before_notification(tmp_path, monkeypatch):
     _fake_two_phase(monkeypatch)
     observed = []
 
-    def notify(message, ids):
-        observed.append((home / "overseer" / "latest-report.md").is_file())
+    def send(actual_home, cue, summary, ids):
+        observed.append(
+            (
+                actual_home == home,
+                cue,
+                (home / "overseer" / "latest-report.md").is_file(),
+                str(gitops.commit_lock_path(home)) in gitops._held_locks,
+            )
+        )
 
-    monkeypatch.setattr(overseer_run.worker, "_notify_with_ids", notify)
+    monkeypatch.setattr(overseer_run.notify, "send", send)
     result = overseer_run.run(home, dry_run=False, no_push=True)
     assert result.status == "applied"
-    assert observed == [True]
+    assert observed == [(True, "routine", True, False)]
     assert not os.path.islink(home / "overseer" / "latest-report.md")
+    cached = overseer_run.last_run_iso_from_cache(worker.cache_dir(home))
+    assert cached == overseer_run.status(home)["last_run_at"]
 
 
 def test_report_names_sample_and_examined_observation_lands(tmp_path, monkeypatch):
@@ -463,7 +514,7 @@ def test_report_names_sample_and_examined_observation_lands(tmp_path, monkeypatc
     assert case_id in text
     view = cases.show(home, case_id, evidence_only=False)
     assert "examined" in view.sections["Later observations"]
-    assert "- not examined this run (the user-model delta leg lands in a later unit)" in text
+    assert "the user-model delta leg lands in a later unit" not in text
 
 
 def test_disabled_is_success_without_invocation(tmp_path, monkeypatch):
@@ -499,6 +550,22 @@ def test_status_reads_jsonl_journal(tmp_path):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"status": "applied", "run": "12345678"}) + "\n")
     assert overseer_run.status(home)["last"]["run"] == "12345678"
+
+
+def test_o4_text_status_falls_back_to_committed_coverage_last_run(
+    tmp_path, monkeypatch, capsys
+):
+    home = make_home(tmp_path)
+    coverage = home / "overseer" / "coverage.yaml"
+    coverage.parent.mkdir(parents=True, exist_ok=True)
+    _dump(coverage, {"version": 1, "last_run_at": "2026-09-14T16:00:00Z"})
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="verb", required=True)
+    overseer_cli.add_parser(sub)
+    args = parser.parse_args(["overseer", "status"])
+    monkeypatch.setattr(overseer_cli, "resolve_home", lambda: home)
+    assert overseer_cli.dispatch(args) == 0
+    assert "last run 2026-09-14T16:00:00Z" in capsys.readouterr().out
 
 
 def test_report_lookup_by_date(tmp_path):
@@ -643,6 +710,28 @@ def test_model_report_owned_facts_truncate_model_prose_not_the_run(tmp_path):
     assert "- model report truncated:" in text
 
 
+def test_runner_added_lines_remove_bare_none_placeholders(tmp_path):
+    path = tmp_path / "report.md"
+    headings = [
+        "Examined", "Decided in the user's stead", "Hooks", "User model",
+        "Catalogue health", "Questions for you", "Refused / could not do",
+    ]
+    path.write_text(
+        "# draft\n" + "\n".join(f"## {heading}\n- none" for heading in headings) + "\n",
+        encoding="utf-8",
+    )
+    text = overseer_run._finalize_model_report(
+        path, date="2026-09-14", run_id="12345678", model="m", selected=(),
+        population_count=0, excluded=0, model_calls=2, guard=50,
+        refusals=[], hooks=["lrn-0123abcd: route applied"],
+        user_model_lines=["um-abcd: add applied"],
+    )
+    hooks = text.split("## Hooks\n", 1)[1].split("\n## User model", 1)[0]
+    model = text.split("## User model\n", 1)[1].split("\n## Catalogue health", 1)[0]
+    assert hooks == "- lrn-0123abcd: route applied"
+    assert model == "- um-abcd: add applied"
+
+
 def test_late_finalize_failure_after_apply_is_partial_and_finishes_intent(tmp_path, monkeypatch):
     home = make_home(tmp_path)
     rid, parked = _seed_parked_hook(home, tmp_path)
@@ -734,7 +823,9 @@ def test_committed_recipe_precedes_reserved_successor_and_binds_exact_sheet(
             digest = hashlib.sha256(recipe["sheet"].encode("utf-8")).hexdigest()
             assert recipe["sheet_sha"] == digest[:8]
             assert recipe["sheet_digest"] == digest
-            assert recipe["items"] == [{"n": 1, "id": rid, "verb": "route"}]
+            assert recipe["items"] == [
+                {"n": 1, "id": rid, "verb": "route", "close_call": False}
+            ]
             observed.append((run_id, reserved_id))
         return real_record(
             given_home, stage_file, actor=actor, reserved_id=reserved_id

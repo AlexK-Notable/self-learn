@@ -31,6 +31,12 @@ MINER_UNIT = (
 HOST_UNIT = (
     Path(__file__).resolve().parents[4] / "systemd" / "self-learn-host.service"
 )
+OVERSEER_SERVICE = (
+    Path(__file__).resolve().parents[4] / "systemd" / "self-learn-overseer.service"
+)
+OVERSEER_TIMER = (
+    Path(__file__).resolve().parents[4] / "systemd" / "self-learn-overseer.timer"
+)
 
 
 def _section(text: str, name: str) -> str:
@@ -346,6 +352,17 @@ def test_host_unit_carries_a_path_floor_including_home_local_bin() -> None:
     )
     assert "%h/.local/bin" in path_line
     assert "%h/bin" in path_line
+
+
+def test_o4_overseer_service_and_weekly_persistent_timer_are_shipped() -> None:
+    assert OVERSEER_SERVICE.is_file()
+    assert OVERSEER_TIMER.is_file()
+    service = _section(OVERSEER_SERVICE.read_text(encoding="utf-8"), "Service")
+    timer = _section(OVERSEER_TIMER.read_text(encoding="utf-8"), "Timer")
+    assert "ExecStart=%h/bin/self-learn overseer run" in service
+    assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in service
+    assert "OnCalendar=Sun *-*-* 04:15" in timer
+    assert "Persistent=true" in timer
 
 
 # Gate r1 N-6: `test_host_unit_has_a_description` was an exact duplicate
