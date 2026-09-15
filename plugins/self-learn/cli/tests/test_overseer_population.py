@@ -30,6 +30,46 @@ from self_learn.overseer import population as pop
 from self_learn.records import Record
 from support import make_env, make_behavior, make_knowledge
 
+
+def test_coverage_top_level_run_dates_are_forward_only(tmp_path):
+    prior = pop._empty_coverage()
+    prior["last_run_at"] = "2026-09-15T00:00:00Z"
+    prior["last_examined_at"] = "2026-09-14T00:00:00Z"
+    result = pop.coverage_update(
+        prior,
+        {"cases": []},
+        [],
+        [],
+        now=datetime(2026, 9, 13, tzinfo=timezone.utc),
+    )
+    assert result["last_run_at"] == "2026-09-15T00:00:00Z"
+    assert result["last_examined_at"] == "2026-09-14T00:00:00Z"
+    text = pop.render_coverage(result)
+    path = tmp_path / "coverage.yaml"
+    path.write_text(text, encoding="utf-8")
+    assert pop.load_coverage(path)["last_run_at"] == "2026-09-15T00:00:00Z"
+
+
+def test_population_consumers_request_only_freeze_verified_cases(monkeypatch, tmp_path):
+    calls = []
+
+    def listed(home, **kwargs):
+        calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr(pop.cases_mod, "list_cases", listed)
+    pop.population(tmp_path, "2026-09-01T00:00:00Z")
+    monkeypatch.setattr(
+        pop.user_model_mod,
+        "show",
+        lambda home: {"containers": {"B": [{"id": "um-00000001"}], "C": []}},
+    )
+    pop._untouched_system_reading_nudges(tmp_path)
+    assert calls == [
+        {"since": "2026-09-01T00:00:00Z", "only_ok": True},
+        {"only_ok": True},
+    ]
+
 # ------------------------------------------------------------- fixtures
 
 

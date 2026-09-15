@@ -194,16 +194,12 @@ def population(home: Path | str, since: str) -> list[BlindCase]:
     rendered: it exists only for `coverage_update`, downstream, once the
     outcome is no longer being withheld.
 
-    A case whose freeze hash fails `cases.show`'s own re-verification is
-    STILL listed (S6: "one corrupt case must never hide the whole
-    population" — `cases.show` raises `CaseError`, caught here) but with
-    `scope: None`: its section text cannot be trusted without a
-    successful re-hash, so this function never reads the index row's own
-    `frozen_ok` flag directly — the degrade comes from `cases.show`
-    refusing, not from a docstring's claim about a field this function
-    never touches."""
+    Only freeze-verified index rows are consumed (`only_ok=True`, O-3
+    carried item 2). The runner separately compares the full and verified
+    index counts and reports how many were excluded, so a corrupt case is
+    visible as a count but its untrusted fields never enter this view."""
     home = Path(home)
-    rows = cases_mod.list_cases(home, since=since)
+    rows = cases_mod.list_cases(home, since=since, only_ok=True)
     out: list[BlindCase] = []
     for row in rows:
         case_id = row["case"]
@@ -378,7 +374,7 @@ def _untouched_system_reading_nudges(home: Path) -> list[dict]:
         if not readings:
             return []
         cited: set[str] = set()
-        for row in cases_mod.list_cases(home):
+        for row in cases_mod.list_cases(home, only_ok=True):
             for ref in row.get("dependency_refs") or []:
                 if isinstance(ref, str) and ref.startswith("um-"):
                     cited.add(ref)
@@ -458,6 +454,8 @@ def _empty_strata() -> dict[str, dict]:
 
 def _empty_coverage() -> dict:
     return {
+        "last_run_at": None,
+        "last_examined_at": None,
         "strata": _empty_strata(),
         "nudges_offered": [],
         "nudges_taken": [],
@@ -470,7 +468,10 @@ def _empty_coverage() -> dict:
 #: refuses anything outside this set (B2's discipline extended to the
 #: dict's own keys, not just to a nudge entry's fields).
 _COVERAGE_ALLOWED_KEYS = frozenset(
-    {"strata", "nudges_offered", "nudges_taken", "examined_count", "population_count"}
+    {
+        "last_run_at", "last_examined_at", "strata", "nudges_offered",
+        "nudges_taken", "examined_count", "population_count",
+    }
 )
 
 
@@ -494,6 +495,8 @@ def load_coverage(path: Path | str) -> dict:
     for key, default in _empty_strata().items():
         strata.setdefault(key, default)
     return {
+        "last_run_at": data.get("last_run_at"),
+        "last_examined_at": data.get("last_examined_at"),
         "strata": strata,
         "nudges_offered": list(data.get("nudges_offered") or []),
         "nudges_taken": list(data.get("nudges_taken") or []),
@@ -519,6 +522,8 @@ def render_coverage(data: dict) -> str:
     if unknown:
         raise CoverageError(f"render_coverage: unknown key(s) {sorted(unknown)!r}")
     ordered = {
+        "last_run_at": data.get("last_run_at"),
+        "last_examined_at": data.get("last_examined_at"),
         "strata": {key: data.get("strata", {}).get(key, default) for key, default in _empty_strata().items()},
         "nudges_offered": list(data.get("nudges_offered") or []),
         "nudges_taken": list(data.get("nudges_taken") or []),
@@ -765,10 +770,19 @@ def coverage_update(
                 taken.append(nudge)
 
     population_ids = {row.get("case") for row in cases}
+    previous_last_run = prev.get("last_run_at")
+    previous_last_examined = prev.get("last_examined_at")
+    selected_count = len(selected_ids & population_ids)
     return {
+        "last_run_at": _forward_only(previous_last_run, now_iso, now_dt),
+        "last_examined_at": (
+            _forward_only(previous_last_examined, now_iso, now_dt)
+            if selected_count
+            else previous_last_examined
+        ),
         "strata": new_strata,
         "nudges_offered": offered_valid,
         "nudges_taken": taken,
-        "examined_count": len(selected_ids & population_ids),
+        "examined_count": selected_count,
         "population_count": len(cases),
     }

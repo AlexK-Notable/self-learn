@@ -73,6 +73,7 @@ from .import_backlog import import_backlog
 from .import_common import ImporterError
 from .import_memory import import_memory, prune_memory
 from .gitops import EXIT_GIT_FAILED
+from .overseer import cli as overseer_cli
 from .ledger import (
     EXIT_NO_HOME,
     InitError,
@@ -925,6 +926,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="U-verbs §3.7/§4.8: one outcome object on stdout; exit "
         "status unchanged",
     )
+
+    overseer_cli.add_parser(sub)
 
     steward_p = sub.add_parser(
         "steward", help="autonomous decision runner: run"
@@ -4266,6 +4269,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "steward":
         return _cmd_steward(args)
+
+    if args.command == "overseer":
+        return args._overseer_dispatch(args)
 
     if args.command == "serve":
         return _cmd_serve(args)

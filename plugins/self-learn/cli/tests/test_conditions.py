@@ -276,7 +276,7 @@ def test_negative_control_declared_prefix_stripping_matters(tmp_path, monkeypatc
     assert "declared.some.key" not in mutated_by_key  # RED: the correct key vanished
 
 
-# ------------------------------------ fold r1: S4 (overseer stratum max)
+# ------------------------------------------- O-3: overseer run timestamps
 
 
 def _write_coverage_with_two_stamped_strata(home) -> tuple[list[str], dict]:
@@ -286,26 +286,23 @@ def _write_coverage_with_two_stamped_strata(home) -> tuple[list[str], dict]:
     assert len(keys) >= 2, "O-1's fixed strata set is smaller than expected"
     data["strata"][keys[0]]["last_examined_at"] = "2026-09-01T00:00:00Z"
     data["strata"][keys[1]]["last_examined_at"] = "2026-09-08T00:00:00Z"
+    data["last_run_at"] = "2026-09-14T00:00:00Z"
+    data["last_examined_at"] = "2026-09-12T00:00:00Z"
     coverage_path.parent.mkdir(parents=True, exist_ok=True)
     coverage_path.write_text(population.render_coverage(data), encoding="utf-8")
     return keys, data
 
 
-def test_overseer_last_examined_at_is_the_max_over_a_real_coverage_yaml(tmp_path):
+def test_overseer_run_dates_are_direct_top_level_coverage_facts(tmp_path):
     home = make_home(tmp_path)
     _write_coverage_with_two_stamped_strata(home)
     by_key = _item_map(conditions.feed(home))
-    assert by_key["overseer.last_examined_at"].value == "2026-09-08T00:00:00Z"
-    # the genuine schema gap (build-u9.md): no top-level field exists for
-    # this at all, so it stays unavailable even with a populated file.
-    assert by_key["overseer.last_run_at"].value == "unavailable"
+    assert by_key["overseer.last_examined_at"].value == "2026-09-12T00:00:00Z"
+    assert by_key["overseer.last_run_at"].value == "2026-09-14T00:00:00Z"
 
 
-def test_negative_control_overseer_examined_at_min_instead_of_max_is_caught(tmp_path, monkeypatch):
-    """Mutation for S4: a min-over-strata reading (the bug shape gate
-    mutation G4 introduces) would report the OLDER stamp instead of the
-    newer one -- confirm the previous test's positive value assertion
-    now fails under that reading."""
+def test_negative_control_overseer_dates_derived_from_strata_are_caught(tmp_path, monkeypatch):
+    """A reader deriving dates from strata reports different facts."""
     home = make_home(tmp_path)
     _write_coverage_with_two_stamped_strata(home)
 
@@ -329,7 +326,7 @@ def test_negative_control_overseer_examined_at_min_instead_of_max_is_caught(tmp_
 
     monkeypatch.setattr(conditions, "_overseer_run_items", _min_instead_of_max)
     by_key = _item_map(conditions.feed(home))
-    assert by_key["overseer.last_examined_at"].value == "2026-09-01T00:00:00Z"  # RED: min, not max
+    assert by_key["overseer.last_examined_at"].value == "2026-09-01T00:00:00Z"  # RED: derived, not top-level
 
 
 # ---------------------------------------- fold r1: S8 (happy-path values)

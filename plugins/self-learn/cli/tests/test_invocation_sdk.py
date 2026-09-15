@@ -437,7 +437,7 @@ def test_pl5_no_other_module_calls_write_session_or_text_session():
                 if name in seam_funcs:
                     rel = str(path.relative_to(src_dir))
                     sites.setdefault(rel, []).append((node.lineno, name))
-    assert set(sites) == {"worker.py", "miner.py", "analyst.py", "steward.py"}, sites
+    assert set(sites) == {"worker.py", "miner.py", "analyst.py", "steward.py", "overseer/run.py"}, sites
 
 
 def test_pl6_fresh_interpreter_import_order_both_ways():

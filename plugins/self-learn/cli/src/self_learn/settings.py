@@ -977,6 +977,15 @@ REGISTRY: tuple[Setting, ...] = (
     # Same not-yet-consumed note as `steward.timeout_secs` above -- the
     # overseer runner is a later unit.
     Setting(
+        name="overseer.enabled",
+        env_var=None,
+        config_section="overseer",
+        config_key="enabled",
+        kind="bool",
+        default=False,
+        description="whether the scheduled overseer may run (config-only opt-in)",
+    ),
+    Setting(
         name="overseer.timeout_secs",
         env_var="SELF_LEARN_OVERSEER_TIMEOUT",
         config_section="overseer",
