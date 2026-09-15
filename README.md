@@ -29,7 +29,8 @@ plugins/self-learn/
                         the user-statement store, and the model of the user (S-65)
                         steward.py + steward_prompt.py — the nightly steward runner (S-29 as amended)
                         overseer/ — the weekly overseer runner, population sampler,
-                        hook-activation path, and catalogue-health checks (S-66)
+                        hook-activation path, question conversation, and catalogue-health
+                        checks (S-66)
   ui/                    the G-3 web adjudication surface (uv project; localhost, systemd service)
   skills/self-learn/    SKILL.md + references (routing doctrine, card registry, steward method)
   commands/             /self-learn:review, /self-learn:teach, /self-learn:overseer
@@ -207,9 +208,8 @@ documented no-op-with-explanation, not a silent fallback.
 
 ### Invocation backend and settings (CLI surfaces)
 
-The three CLI surfaces that invoke a model — the pre-analysis worker
-(and its repair round), the transcript miner's reader, and the
-`teach --route` analyst — run behind one seam as in-process
+The six CLI surfaces that invoke a model — worker, miner, analyst,
+steward, overseer, and the adjudication pane — run behind one seam as in-process
 `claude_agent_sdk` sessions. `sdk` is the only backend
 (`invocation/registry.py`, `KNOWN_BACKENDS`); the former `cli` backend (a
 `claude -p` subprocess) was removed in U-cleanup, and a stale `cli` setting

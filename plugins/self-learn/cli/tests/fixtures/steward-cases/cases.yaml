@@ -1,0 +1,118 @@
+fixtures:
+  - id: instruction-corrected
+    inputs: 1
+    kind: resolution
+    outcome: route
+    evidence:
+      - {ref: "record:$RID1#instruction-before", quote: "delegate any subagent"}
+      - {ref: "record:$RID1#instruction-after", quote: "delegate a matching subagent"}
+    dependencies: {statements: [], user_model: [], conditions: ["cond:host.demo.mode@now"], capabilities: []}
+    sheet:
+      - {id: "$RID1", verb: revise, section: lesson, text: "delegate a matching subagent", because: "the old wording was overbroad"}
+      - {id: "$RID1", verb: route, dest: skill-md}
+    expect: {verbs: [revise, route], advised_verb: route, destinations: [skill-md], evidence_count: 2, conditions: ["cond:host.demo.mode@now"]}
+    mutation: drop-first-sheet-item
+
+  - id: capability-before-declared
+    inputs: 1
+    kind: resolution
+    outcome: route
+    evidence: [{ref: "condition:declared.host.demo.claude-md", quote: "declared local"}]
+    dependencies: {statements: [], user_model: [], conditions: ["declared.host.demo.claude-md"], capabilities: []}
+    sheet: [{id: "$RID1", verb: route, dest: "claude-md:local"}]
+    expect: {verbs: [route], destinations: ["claude-md:local"], conditions: ["declared.host.demo.claude-md"]}
+    mutation: replace-declared-with-observed
+
+  - id: capability-after-observed
+    inputs: 1
+    kind: resolution
+    outcome: route
+    evidence: [{ref: "condition:host.demo.claude-md", quote: "observed local"}]
+    dependencies: {statements: [], user_model: [], conditions: ["host.demo.claude-md"], capabilities: []}
+    sheet: [{id: "$RID1", verb: route, dest: "claude-md:local"}]
+    expect: {verbs: [route], destinations: ["claude-md:local"], conditions: ["host.demo.claude-md"], forbidden_conditions: ["declared.host.demo.claude-md"]}
+    mutation: add-declared-condition
+
+  - id: new-host-restriction
+    inputs: 1
+    kind: resolution
+    outcome: route
+    supersedes: case-deadbeef
+    evidence:
+      - {ref: "condition:host.demo.mode", quote: "plain"}
+      - {ref: "case:case-deadbeef", quote: "parked pending the host restriction"}
+    dependencies: {statements: [], user_model: [], conditions: ["host.demo.mode"], capabilities: []}
+    sheet: [{id: "$RID1", verb: route, dest: "claude-md:local"}]
+    expect: {verbs: [route], destinations: ["claude-md:local"], conditions: ["host.demo.mode"], supersedes: case-deadbeef}
+    mutation: drop-host-condition
+
+  - id: redundant-looking-gap
+    inputs: 1
+    kind: resolution
+    outcome: route
+    evidence:
+      - {ref: "claude-md:user#push-hypr", quote: "push the configs"}
+      - {ref: "transcript:gap#L12", quote: "the outer repository has no remote"}
+    dependencies: {statements: [stmt-gap0001], user_model: [], conditions: ["declared.config-outer-repo-has-no-remote"], capabilities: []}
+    sheet: [{id: "$RID1", verb: route, dest: reference}]
+    expect: {verbs: [route], destinations: [reference], evidence_refs: ["claude-md:user#push-hypr", "transcript:gap#L12"]}
+    mutation: drop-transcript-evidence
+
+  - id: false-recurrence
+    inputs: 1
+    kind: maintenance
+    outcome: no-action
+    evidence:
+      - {ref: "telemetry:fire-0001", quote: "suspected-compliance after transcript check"}
+    dependencies: {statements: [], user_model: [], conditions: [], capabilities: []}
+    sheet: [{id: "$RID1", verb: note, append: "fire checked: suspected-compliance"}]
+    expect: {verbs: [note], evidence_refs: ["telemetry:fire-0001"], forbidden_verbs: [confirm-recurrence]}
+    mutation: add-recurrence
+
+  - id: coherent-cluster-not-skill
+    inputs: 2
+    kind: resolution
+    outcome: route
+    evidence:
+      - {ref: "record:$RID1", quote: "same worktree mechanism"}
+      - {ref: "record:$RID2", quote: "same worktree mechanism"}
+    dependencies: {statements: [], user_model: [], conditions: [], capabilities: []}
+    sheet:
+      - {id: "$RID1", verb: route, dest: reference}
+      - {id: "$RID2", verb: route, dest: reference}
+    expect: {verbs: [route, route], destinations: [reference, reference], record_count: 2, forbidden_destinations: [new-skill]}
+    mutation: force-skill-destination
+
+  - id: widening-system-reading
+    inputs: 1
+    kind: maintenance
+    outcome: no-action
+    evidence: [{ref: "transcript:widening#L8", quote: "push the configs in this repository"}]
+    dependencies: {statements: [stmt-wide0001], user_model: [], conditions: ["host.demo.mode"], capabilities: []}
+    sheet: [{id: "$RID1", verb: note, append: "provisional reading recorded separately"}]
+    model_updates:
+      - action: add
+        container: C
+        title: "push configs may apply beyond the observed repository"
+        because: "the episode suggests a broader pattern that remains unconfirmed"
+        source: system-reading
+        ref: "transcript:widening#L8"
+        statements: [stmt-wide0001]
+        held_since: "2026-09-14"
+        conditions: [host.demo.mode]
+    expect: {verbs: [note], model_source: system-reading, model_container: C, model_held_since: "2026-09-14", model_conditions: [host.demo.mode]}
+    mutation: make-own-words
+
+  - id: rollback-after-condition-flip
+    inputs: 1
+    kind: reconsider
+    trigger: reconsider
+    outcome: reject
+    supersedes: case-feedface
+    evidence:
+      - {ref: "condition:host.demo.mode", quote: "changed from git to plain"}
+      - {ref: "observation:obs-feedface", quote: "dependency moved"}
+    dependencies: {statements: [], user_model: [], conditions: ["host.demo.mode"], capabilities: []}
+    sheet: [{id: "$RID1", verb: reject}]
+    expect: {verbs: [reject], conditions: ["host.demo.mode"], supersedes: case-feedface, runner_recompile: true}
+    mutation: remove-supersedes

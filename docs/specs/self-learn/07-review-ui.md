@@ -192,7 +192,7 @@ Design rules:
 8. **Every overseer write is a verb, same as every other write this
    contract already requires** (overseer build, O-3/O-5): `hook activate`/
    `hook deactivate` (`13-hosting-and-separation.md` §7.4), `overseer
-   respond` (the conversation surface), and the successor-case verbs a
+   open` / `overseer respond` (the conversation surface), and the successor-case verbs a
    parked-item resolution uses are ordinary CLI verbs behind a thin caller,
    never UI-side mutation logic — contract 1's own rule extended to the
    overseer's surfaces before any UI page for them exists.

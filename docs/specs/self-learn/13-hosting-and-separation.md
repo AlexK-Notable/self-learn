@@ -1115,10 +1115,10 @@ section.
 same visibility discipline this section states for a STOP applies to the
 overseer's own cadence — `status --fast` and `doctor serve` gain
 `overseer_last_run`, `overseer_next` (the next due weekly tick), and
-`overseer_open_questions` (a count: the last report's open questions and
-whether each received a statement — the same content `S-66`'s report
-distinguishes, `misc/audit-2026-09-02/steward-design/plan-overseer-
-2026-09-12.md` item 6 of its report contents). These are additive JSON fields on an existing read-only surface,
+`overseer_open_questions`. The open-question count comes only from the
+committed `overseer/open-questions.yaml` machine index (at most three
+entries, each an id and affected case ids), never by parsing the report's
+prose or walking the case store. These are additive JSON fields on an existing read-only surface,
 not a new command; a `status`/`doctor` run that omits them is not this
 section's fault, but a build that never wires them through is.
 

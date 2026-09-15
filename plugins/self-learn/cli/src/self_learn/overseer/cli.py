@@ -7,6 +7,7 @@ import json
 import sys
 
 from ..ledger import resolve_home
+from . import conversation
 from . import run as runner
 
 
@@ -20,6 +21,14 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
     status_parser.add_argument("--json", action="store_true")
     report_parser = commands.add_parser("report", help="print an overseer report")
     report_parser.add_argument("--date")
+    commands.add_parser("open", help="show the latest interpretation questions")
+    respond_parser = commands.add_parser("respond", help="answer or decline a displayed question")
+    respond_parser.add_argument("--proposition", required=True)
+    reply = respond_parser.add_mutually_exclusive_group(required=True)
+    reply.add_argument("--text")
+    reply.add_argument("--decline", action="store_true")
+    respond_parser.add_argument("--scope")
+    respond_parser.add_argument("--as-asked")
     parser.set_defaults(_overseer_dispatch=dispatch)
     return parser
 
@@ -50,8 +59,30 @@ def dispatch(args) -> int:
                 row = payload["last"]
                 print(f"self-learn overseer: {row.get('status', 'unknown')} at {row.get('at', 'unknown')}")
             return 0
+        if command == "open":
+            conversation.open_questions(home)
+            return 0
+        if command == "respond":
+            if args.decline:
+                conversation.decline(home, proposition=args.proposition)
+                print(f"self-learn overseer: declined {args.proposition}")
+            else:
+                result = conversation.respond(
+                    home,
+                    proposition=args.proposition,
+                    scope=args.scope or "",
+                    text=args.text,
+                    as_asked=args.as_asked,
+                )
+                print(
+                    f"self-learn overseer: recorded {result.statement_id}; "
+                    f"reconsidered={len(result.observed_cases)}"
+                )
+            return 0
         print(runner.report(home, date=args.date), end="")
         return 0
-    except runner.OverseerError as exc:
+    except (runner.OverseerError, conversation.ConversationError) as exc:
         print(f"self-learn: {exc}", file=sys.stderr)
+        return 1
+    except BrokenPipeError:
         return 1

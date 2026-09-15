@@ -29,8 +29,10 @@ section alone (step 2), never a recitation of the whole document.
 ## 2. Open it (displays the questions, records exactly that)
 
 Run `self-learn overseer open`. It prints the report's `Questions for
-you` section — relay it to the user verbatim, and nothing else from the
-report unless they ask. That display is what this step records as a
+you` section and, when the committed machine index contains a proposition
+the prose omitted, a fallback line naming that proposition and its cases.
+Relay the output to the user verbatim, and nothing else from the report
+unless they ask. That display is what this step records as a
 **presentation** — its `covering` value says whether the decision, its
 dependencies, or all of it was shown. It never records a presentation
 for a case a question merely cites as supporting evidence, or for
@@ -42,11 +44,14 @@ ever means (never assent).
 
 ## 3. Discuss what is actually material, not a checklist
 
-If `Questions for you` in the report is empty, or says "none", stop here
-and say so plainly — there is nothing to ask.
+If the command output has no indexed proposition — the machine index is
+empty and the report block says "none" — stop here and say so plainly.
+When the prose says "none" but the command prints indexed fallback lines,
+those lines are the questions: do not discard them because the report and
+its committed index disagreed.
 
-Do not walk through every listed question as a compulsory drill. Pick the
-one or two that are materially significant this week — new evidence that
+Do not walk through every listed question as a compulsory drill. Discuss at
+most the first three materially significant questions this week — new evidence that
 changed the picture, a reading that would visibly change a future
 decision, or something the user would clearly want to weigh in on — and
 discuss those. A minor or routine reading is already carried by the
@@ -98,7 +103,8 @@ request for clarification, not an explicit decline — call:
 
 ```
 self-learn overseer respond --proposition <um-id@r> \
-  --scope "<user|project:<host>>" --text "<verbatim>"
+  --scope "<user|project:<host>>" --text "<verbatim>" \
+  [--as-asked "<question as narrowed in conversation>"]
 ```
 
 Store the user's words **verbatim** — never paraphrase, never tidy the
@@ -107,10 +113,11 @@ scope is exactly what they said, typed as they said it (or the closest
 `user`/`project:<host>` value that matches what they said — ask them to
 be specific if it is genuinely ambiguous, never guess a scope for them).
 
-A request for explanation ("what does that mean?") or an explicit decline
-("I'd rather not say") is not an answer to the proposition — do not call
-`overseer respond` for either against *this* proposition. Answer the
-question if asked, or acknowledge the decline, and move on. If the
+A request for explanation ("what does that mean?") is not an answer to the
+proposition: explain it and store nothing. An explicit decline ("I'd rather
+not say") is also not an answer; record only that disposition with
+`self-learn overseer respond --proposition <um-id@r> --decline`, which stores
+no statement. If the
 decline also says something about future conversation ("don't ask me
 this again"), that is worth keeping — record it as a statement against
 that future-conversation preference, not against the proposition it was
@@ -140,7 +147,7 @@ never an automatic expiry.
   yet (the overseer has not had a maiden run, or has not run since) —
   say so plainly; this is not an error to work around, it is the honest
   state.
-- `overseer open` / `overseer respond` — `0` recorded; `1` refused (an
+- `overseer open` / `overseer respond` — `0` displayed/recorded; `1` refused (an
   empty scope, a proposition id that does not resolve, a secret-scan
   hit on the verbatim text — show the CLI's own message, never guess at
   the reason yourself).

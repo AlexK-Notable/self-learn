@@ -74,6 +74,7 @@ from .import_common import ImporterError
 from .import_memory import import_memory, prune_memory
 from .gitops import EXIT_GIT_FAILED
 from .overseer import cli as overseer_cli
+from .overseer import conversation as overseer_conversation
 from .ledger import (
     EXIT_NO_HOME,
     InitError,
@@ -1425,6 +1426,9 @@ def _cmd_status_fast() -> int:
     data["steward_last_run_at"] = steward.last_run_iso_from_cache(
         serve.cache_dir_readonly(home)
     )
+    overseer_open_questions = overseer_conversation.open_question_count(home)
+    if overseer_open_questions is not None:
+        data["overseer_open_questions"] = overseer_open_questions
     # S-62 (§7.2a.7): additive fields only, so the fact survives
     # `2>/dev/null` by the route the hook already reads on stdout —
     # this is what closes the gap the pending hook's own discard used

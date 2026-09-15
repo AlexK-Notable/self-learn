@@ -160,6 +160,32 @@ def test_status_fast_reads_only_the_cached_steward_marker(
     assert "steward_cases_since_overseer" not in payload
 
 
+def test_status_fast_counts_machine_index_questions_not_report_prose(
+    sandbox_home, capsys
+):
+    overseer = sandbox_home / "overseer"
+    overseer.mkdir()
+    (overseer / "latest-report.md").write_text(
+        "# Overseer\n\n## Questions for you\n\n- none\n", encoding="utf-8"
+    )
+    (overseer / "open-questions.yaml").write_text(
+        "questions:\n  - id: um-0001@1\n    cases: [case-0001]\n",
+        encoding="utf-8",
+    )
+
+    assert cli.main(["status", "--json", "--fast"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["overseer_open_questions"] == 1
+
+
+def test_status_fast_omits_question_field_before_machine_index_exists(
+    sandbox_home, capsys
+):
+    assert cli.main(["status", "--json", "--fast"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "overseer_open_questions" not in payload
+
+
 def test_status_fast_does_not_crash_on_undecodable_bytes(
     monkeypatch, tmp_path, capsys
 ):
