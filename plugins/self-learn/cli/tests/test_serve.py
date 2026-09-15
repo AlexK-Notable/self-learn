@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import miner, provider, serve, worker
+from self_learn import miner, provider, serve, steward, worker
 from self_learn.invocation_sdk import events as events_mod
 from self_learn.invocation_sdk import lifecycle as lifecycle_mod
 from self_learn.sdksession import events as sdk_events_mod
@@ -44,6 +44,149 @@ from datetime import datetime, timezone
 from test_worker import env, sdk_fake_worker, seed_pending, shim_writes  # noqa: F401
 
 _SRC_DIR = Path(serve.__file__).resolve().parent
+
+
+def test_u10_steward_runs_after_worker_and_on_a_tick_where_mine_is_not_due(
+    monkeypatch, tmp_path
+):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    order = []
+    monkeypatch.setattr(serve, "_mine_is_due", lambda *a, **k: False)
+    monkeypatch.setattr(serve, "_steward_is_due", lambda *a, **k: True)
+    monkeypatch.setattr(
+        serve,
+        "_run_steward_job",
+        lambda home: order.append("steward") or steward.RunResult("idle"),
+    )
+
+    records = serve._run_tick(
+        tmp_path / "home", cache_dir, now=time.time(), pid=os.getpid(), tick_secs=60.0
+    )
+
+    assert [record.name for record in records] == ["steward"]
+    assert order == ["steward"]
+
+    order.clear()
+    monkeypatch.setattr(serve, "_mine_is_due", lambda *a, **k: True)
+    monkeypatch.setattr(
+        serve,
+        "_run_mine_job",
+        lambda home: order.append("mine") or miner.MineResult(status="ok", landed=["c1"]),
+    )
+    monkeypatch.setattr(
+        serve,
+        "_run_worker_job",
+        lambda home: order.append("worker") or worker.RunResult(status="ok"),
+    )
+    serve._run_tick(
+        tmp_path / "home", cache_dir, now=time.time(), pid=os.getpid(), tick_secs=60.0
+    )
+    assert order == ["mine", "worker", "steward"]
+
+
+def test_u10_steward_due_requires_fresh_proposal_cooldown_and_no_stop(
+    monkeypatch, tmp_path
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    entry = object()
+    proposal = home / "proposals" / "lrn-deadbeef.yaml"
+    proposal.parent.mkdir()
+    proposal.write_text("version: 1\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "steward:\n  enabled: true\n  cooldown_secs: 50\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(serve.steward, "_eligible_proposals", lambda actual: [(entry, {})])
+    monkeypatch.setattr(serve, "_proposal_commit_epoch", lambda actual, path: 200.0)
+    monkeypatch.setattr(serve, "_eligible_proposal_paths", lambda actual: [proposal])
+    monkeypatch.setattr(serve.steward, "last_run_iso", lambda actual: "1970-01-01T00:01:40+00:00")
+    clear = type("IntentState", (), {"stopped": []})()
+    stopped = type("IntentState", (), {"stopped": [object()]})()
+    monkeypatch.setattr(serve.intents, "classify_status", lambda actual: clear)
+
+    assert serve._steward_is_due(home, cache_dir, 151.0) is True
+    assert serve._steward_is_due(home, cache_dir, 149.0) is False
+    monkeypatch.setattr(serve.intents, "classify_status", lambda actual: stopped)
+    assert serve._steward_is_due(home, cache_dir, 151.0) is False
+    monkeypatch.setattr(serve.intents, "classify_status", lambda actual: clear)
+    monkeypatch.setattr(serve, "_proposal_commit_epoch", lambda actual, path: 99.0)
+    assert serve._steward_is_due(home, cache_dir, 151.0) is False
+
+    (home / "config.yaml").write_text(
+        "steward:\n  enabled: false\n  cooldown_secs: 50\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(serve, "_proposal_commit_epoch", lambda actual, path: 200.0)
+    assert serve._steward_is_due(home, cache_dir, 151.0) is False
+
+    (home / "config.yaml").write_text(
+        "steward:\n  enabled: true\n  cooldown_secs: 50\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(serve, "_eligible_proposal_paths", lambda actual: [])
+    monkeypatch.setattr(serve.steward, "last_run_iso", lambda actual: None)
+    assert serve._steward_is_due(home, cache_dir, 151.0) is False
+
+
+def test_u10_describe_next_names_the_steward(monkeypatch, tmp_path):
+    monkeypatch.setattr(serve, "_today_mine_target", lambda cache, now: now + 60)
+    assert "steward" in serve._describe_next(tmp_path / "home", tmp_path, 100.0)
+
+
+def test_u10_steward_due_for_committed_unfinished_work_without_proposals(
+    monkeypatch, tmp_path
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "steward:\n  enabled: true\n  cooldown_secs: 50\n", encoding="utf-8"
+    )
+    clear = type("IntentState", (), {"stopped": []})()
+    monkeypatch.setattr(serve.intents, "classify_status", lambda actual: clear)
+    monkeypatch.setattr(serve.steward, "committed_manifests", lambda actual: [{
+        "run_id": "run-pending", "status": "unfinished",
+        "last_attempt_at": "1970-01-01T00:01:40+00:00",
+    }])
+    monkeypatch.setattr(serve.steward, "_reconsider_proposals", lambda actual: ([], {}))
+    monkeypatch.setattr(serve, "_eligible_proposal_paths", lambda actual: [])
+
+    assert serve._steward_is_due(home, tmp_path / "cache", 151.0) is True
+    assert serve._steward_is_due(home, tmp_path / "cache", 149.0) is False
+
+
+def test_u10_run_forever_gates_steward_on_its_threaded_home(
+    monkeypatch, tmp_path
+):
+    home_a = tmp_path / "home-a"
+    home_b = tmp_path / "home-b"
+    home_a.mkdir()
+    home_b.mkdir()
+    (home_a / "config.yaml").write_text(
+        "steward:\n  enabled: false\n", encoding="utf-8"
+    )
+    (home_b / "config.yaml").write_text(
+        "steward:\n  enabled: true\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home_b))
+    monkeypatch.setattr(serve, "_mine_is_due", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        serve, "_eligible_proposal_paths", lambda actual: [actual / "proposal.yaml"]
+    )
+    monkeypatch.setattr(serve.steward, "last_run_iso", lambda actual: None)
+    calls = []
+    monkeypatch.setattr(
+        serve,
+        "_run_steward_job",
+        lambda actual: calls.append(actual) or steward.RunResult("applied"),
+    )
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    assert serve.run_forever(
+        home_a, cache_dir=cache_dir, tick_secs=0.01, max_ticks=1
+    ) == 0
+    assert calls == []
 
 
 # ===================================================================== #

@@ -142,6 +142,7 @@ class TestConfigGet:
         assert c_names == {
             "worker.autokick",
             "miner.autokick",
+            "steward.enabled",
             "provider.name",
             "invocation.backend",
             "invocation.backend_worker",

@@ -43,7 +43,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, cast
 
-from . import miner, settings, worker
+from . import gitops, intents, miner, settings, steward, worker
 from .primitives import fsops
 from .ledger import resolve_home
 
@@ -236,7 +236,7 @@ def _consume_poke(cache_dir: Path) -> bool:
 # --------------------------------------------------------- systemd surface
 
 
-def cache_dir_readonly() -> Path:
+def cache_dir_readonly(home: Path | str | None = None) -> Path:
     """The SAME path `worker.cache_dir()` resolves, WITHOUT its
     `mkdir`/migration side effects -- so a read-only check (`doctor`'s
     `serve` row, `Doc-0`'s own "computes no verdict, PRINTS NOTHING but
@@ -246,11 +246,12 @@ def cache_dir_readonly() -> Path:
     path formula exactly; if the directory does not exist yet, callers
     read that as "no heartbeat" (`read_heartbeat` already treats a
     missing file as `None`), which is the correct answer regardless.
-    (U-settings Phase 1: `resolve_home` moved to a module-level import --
-    `tick_secs_from_env` below needs it too.)"""
+    An explicit `home` selects that ledger's namespace; without one the
+    ambient resolved home is preserved for existing callers."""
     cache = os.environ.get("XDG_CACHE_HOME")
     base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
-    digest = hashlib.sha256(str(resolve_home()).encode("utf-8")).hexdigest()[:8]
+    resolved_home = Path(home).expanduser() if home is not None else resolve_home()
+    digest = hashlib.sha256(str(resolved_home).encode("utf-8")).hexdigest()[:8]
     return base / "self-learn" / f"home-{digest}"
 
 
@@ -413,7 +414,7 @@ def _mine_is_due(cache_dir: Path, now: float, *, ignore_schedule: bool = False) 
     return True
 
 
-def _describe_next(cache_dir: Path, now: float) -> str:
+def _describe_next(home: Path, cache_dir: Path, now: float) -> str:
     """Gate r2 N-7': once today's target has passed, "next" must mean
     TOMORROW's occurrence, not restate a target that is now in the past
     for the rest of the day (measured: `next: mine at
@@ -426,7 +427,70 @@ def _describe_next(cache_dir: Path, now: float) -> str:
     if now >= target:
         target = _target_for(now + 24 * 60 * 60)
     when = datetime.fromtimestamp(target).isoformat(timespec="seconds")
-    return f"mine at {when}"
+    # This heartbeat preview reads one small cached marker, never the case store.
+    last_iso = steward.last_run_iso(home)
+    last_epoch = 0.0
+    if last_iso is not None:
+        try:
+            last_epoch = datetime.fromisoformat(last_iso.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            last_epoch = 0.0
+    cooldown_value, _source = settings.resolve_setting(
+        home, settings.by_name("steward.cooldown_secs")
+    )
+    cooldown = cast(int | float | str, cooldown_value)
+    steward_when = datetime.fromtimestamp(max(now, last_epoch + float(cooldown))).isoformat(
+        timespec="seconds"
+    )
+    return f"mine at {when}; steward at {steward_when} when committed obligations exist"
+
+
+def _eligible_proposal_paths(home: Path) -> list[Path]:
+    return [entry.proposal_path for entry, _proposal in steward._eligible_proposals(home)]
+
+
+def _proposal_commit_epoch(home: Path, path: Path) -> float:
+    try:
+        rel = path.resolve().relative_to(home.resolve())
+    except ValueError:
+        return 0.0
+    proc = gitops._git(home, "log", "-1", "--format=%ct", "--", str(rel))
+    if proc.returncode != 0:
+        return 0.0
+    try:
+        return float(proc.stdout.strip())
+    except ValueError:
+        return 0.0
+
+
+def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
+    """Apply the committed-obligation OR predicate outside cooldown and STOP."""
+    enabled, _source = settings.resolve_setting(home, settings.by_name("steward.enabled"))
+    if not enabled or intents.classify_status(home).stopped:
+        return False
+    manifests = steward.committed_manifests(home)
+    unfinished = [row for row in manifests if row.get("status") != "complete"]
+    reconsider, _predecessors = steward._reconsider_proposals(home)
+    proposal_paths = _eligible_proposal_paths(home)
+    if not unfinished and not reconsider and not proposal_paths:
+        return False
+    attempts = [str(row.get("last_attempt_at")) for row in unfinished if row.get("last_attempt_at")]
+    last_iso = max(attempts) if attempts else steward.last_run_iso(home)
+    if last_iso is None:
+        return True
+    try:
+        last_epoch = datetime.fromisoformat(last_iso.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        last_epoch = 0.0
+    cooldown_value, _source = settings.resolve_setting(
+        home, settings.by_name("steward.cooldown_secs")
+    )
+    cooldown = cast(int | float | str, cooldown_value)
+    if now - last_epoch < float(cooldown):
+        return False
+    if unfinished or reconsider:
+        return True
+    return any(_proposal_commit_epoch(home, path) > last_epoch for path in proposal_paths)
 
 
 # ------------------------------------------------------------------- jobs
@@ -515,6 +579,10 @@ def _run_worker_job(home: Path) -> "worker.RunResult":
     return worker.run(home, coalesce=True, no_push=False)
 
 
+def _run_steward_job(home: Path) -> "steward.RunResult":
+    return steward.run(home)
+
+
 def _log_stopped_refusal(job_name: str, stopped: list[str]) -> None:
     """§7.2a.7 (REQUIRED): "a job refused by the guard logs the refusal
     on its own line naming the intent id ... a refusal that reaches
@@ -559,8 +627,8 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
     passes with `serve` alive."""
     ran: list[JobRecord] = []
     poked = _consume_poke(cache_dir)
-    if (poked and _mine_is_due(cache_dir, now, ignore_schedule=True)) or _mine_is_due(cache_dir, now):
-        with _worker_autokick_disabled():
+    with _worker_autokick_disabled():
+        if (poked and _mine_is_due(cache_dir, now, ignore_schedule=True)) or _mine_is_due(cache_dir, now):
             mine_record = run_one_job(
                 cache_dir, Job("mine", "miner-reader", lambda: _run_mine_job(home)), pid=pid, tick_secs=tick_secs
             )
@@ -573,6 +641,17 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
                 )
                 ran.append(worker_record)
                 _log_stopped_refusal("worker", getattr(worker_record.result, "stopped", None) or [])
+        if _steward_is_due(home, cache_dir, now):
+            steward_record = run_one_job(
+                cache_dir,
+                Job("steward", "steward", lambda: _run_steward_job(home)),
+                pid=pid,
+                tick_secs=tick_secs,
+            )
+            ran.append(steward_record)
+            _log_stopped_refusal(
+                "steward", getattr(steward_record.result, "stopped", None) or []
+            )
     # Gate r1 N-1: `run_one_job`'s own heartbeat write (inside the `with`
     # block above, when a job ran) records the job it just RAN as
     # `next_job` -- correct the instant that job finishes, but stale
@@ -580,7 +659,12 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
     # right after mine already ran). Overwrite once more, unconditionally,
     # with what `SUP1` actually promises -- "the next scheduled job" --
     # now that this tick's due-check has already run and can describe it.
-    write_heartbeat(cache_dir, pid=pid, next_job=_describe_next(cache_dir, now), tick_secs=tick_secs)
+    write_heartbeat(
+        cache_dir,
+        pid=pid,
+        next_job=_describe_next(home, cache_dir, now),
+        tick_secs=tick_secs,
+    )
     return ran
 
 
@@ -622,13 +706,8 @@ def run_forever(
     READ side and now thread THEIR OWN `home` too (`maybe_kick` already
     holds one).
 
-    M-P fold r2 (M2): two ambient readers remain, both deliberately,
-    neither touched by this move:
-    (1) `provider.preflight`'s `serve` doctor row (`_serve_row`) calls
-    `cache_dir_readonly()` bare -- `_serve_row` takes no `home` param,
-    and adding one would change `preflight`'s signature in
-    `provider.py`, another lane's file.
-    (2) THIS function's own daemon tick jobs -- `_run_mine_job(home)` ->
+    M-P fold r2 (M2): one ambient reader remains deliberately: THIS
+    function's own daemon tick jobs -- `_run_mine_job(home)` ->
     `miner.run(home, ...)` and `_run_worker_job(home)` -> `worker.run(
     home, ...)` -- DO thread `home` into `miner.run`/`worker.run`
     themselves, but those two functions' OWN internal housekeeping
@@ -638,11 +717,9 @@ def run_forever(
     bare too, not threaded.
     So a `run_forever(A)`/`maybe_kick(A)` pair with `SELF_LEARN_HOME=B`
     writes and reads its OWN `serve.heartbeat`/`serve.poke` consistently
-    under A, but `self-learn doctor`'s serve row still reads B's
-    `cache_dir_readonly()`/`read_heartbeat()`, and this same daemon's own
+    under A, and `self-learn doctor` reads A when passed A; this daemon's
     tick-driven `miner.run`/`worker.run` calls still lock/log under B's
-    `miner_dir()`/`_p()` -- two documented, accepted residuals, not
-    regressions."""
+    `miner_dir()`/`_p()` -- the one documented, accepted residual."""
     home = Path(home)
     cd = cache_dir if cache_dir is not None else worker.cache_dir(home)
     secs = tick_secs if tick_secs is not None else tick_secs_from_env(home=home)

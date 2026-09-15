@@ -42,6 +42,8 @@ def test_status_zero_state_json_exact_shape(sandbox_home, capsys):
         "total_unreadable": 0,
         "open_followups": 0,
         "worker_last_run": None,
+        "steward_last_run_at": None,
+        "steward_cases_since_overseer": 0,
         # T19: supply mix + 04 success-metrics counters ride full status;
         # zero-state is honest — empty mix, null medians, never fake zeros.
         "supply_mix": {},
@@ -135,6 +137,27 @@ def test_status_fast_omits_the_unreadable_field(monkeypatch, tmp_path, capsys):
     assert "total_unreadable" not in payload
     for b in payload.get("buckets", []):
         assert "unreadable" not in b
+
+
+def test_status_fast_reads_only_the_cached_steward_marker(
+    monkeypatch, tmp_path, capsys
+):
+    home = _seed_valid_plus_corrupt(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli.cases,
+        "list_cases",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("status --fast walked the case store")
+        ),
+    )
+    marker = cli.serve.cache_dir_readonly(home) / "steward" / "steward.last-run"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("2026-09-14T12:00:00Z\n", encoding="utf-8")
+
+    assert cli.main(["status", "--json", "--fast"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["steward_last_run_at"] == "2026-09-14T12:00:00Z"
+    assert "steward_cases_since_overseer" not in payload
 
 
 def test_status_fast_does_not_crash_on_undecodable_bytes(

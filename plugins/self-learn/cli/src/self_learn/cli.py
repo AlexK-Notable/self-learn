@@ -62,6 +62,7 @@ from . import (
     serve,
     settings,
     statements,
+    steward,
     telemetry,
     user_model,
     verbs,
@@ -925,6 +926,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "status unchanged",
     )
 
+    steward_p = sub.add_parser(
+        "steward", help="autonomous decision runner: run"
+    )
+    steward_sub = steward_p.add_subparsers(dest="steward_command", metavar="<verb>")
+    steward_run = steward_sub.add_parser("run", help="decide every queued proposed lesson")
+    steward_run.add_argument("--dry-run", action="store_true", dest="dry_run")
+    steward_run.add_argument("--json", action="store_true", dest="as_json")
+
     mine_p = sub.add_parser(
         "mine", help="transcript miner: run | status (doc 12)"
     )
@@ -1398,6 +1407,9 @@ def _cmd_status_fast() -> int:
                     "escalate": False,
                     "miner_last_run": None,
                     "miner_stale": False,
+                    "steward_last_run_at": steward.last_run_iso_from_cache(
+                        serve.cache_dir_readonly(home)
+                    ),
                 }
             )
         )
@@ -1407,6 +1419,9 @@ def _cmd_status_fast() -> int:
     data["home_state"] = state
     data["miner_last_run"] = miner.last_run_iso()
     data["miner_stale"] = miner.stale()
+    data["steward_last_run_at"] = steward.last_run_iso_from_cache(
+        serve.cache_dir_readonly(home)
+    )
     # S-62 (§7.2a.7): additive fields only, so the fact survives
     # `2>/dev/null` by the route the hook already reads on stdout —
     # this is what closes the gap the pending hook's own discard used
@@ -1460,6 +1475,41 @@ _WORKER_RUN_EXIT = {
     "idle": EXIT_HELD,
     "failed": 1,
 }
+
+#: FW-85 (U10 fold r1a): `stopped` is handled before this map because it
+#: also emits the unattended-run STOP refusal. `idle` (including a held
+#: lock) and `disabled` are held/no-work outcomes, while a dry run and an
+#: applied run did real work. Unknown statuses fail loudly.
+_STEWARD_RUN_EXIT = {
+    "idle": EXIT_HELD,
+    "disabled": EXIT_HELD,
+    "dry-run": EXIT_OK,
+    "applied": EXIT_OK,
+    "partial": EXIT_BATCH_PARTIAL,
+    "refused": 1,
+}
+
+
+def _print_unattended_stop(surface: str, stopped: list[str]) -> None:
+    """Print the shared worker/steward recover-or-refuse STOP detail."""
+    if not stopped:
+        print(
+            f"self-learn {surface}: refused — a live intent STOP froze this "
+            "run before it did anything. Recovery could neither roll it "
+            "forward nor restore it. Run `self-learn reconcile --clear-intent "
+            "<id>` after inspecting it, or `self-learn status` to see it.",
+            file=sys.stderr,
+        )
+        return
+    for line in stopped:
+        intent_id = line.split(":", 1)[0]
+        print(
+            f"self-learn {surface}: refused — live intent {line}. Recovery "
+            "could neither roll it forward nor restore it; every ledger write "
+            "refuses until it is cleared. Run `self-learn reconcile "
+            f"--clear-intent {intent_id}` after inspecting the offender.",
+            file=sys.stderr,
+        )
 
 
 def _cmd_mine(args: argparse.Namespace) -> int:
@@ -1682,13 +1732,7 @@ def _cmd_worker(args: argparse.Namespace) -> int:
             # intent it could neither roll forward nor restore, and
             # ended the run there — exit 6, "nothing was written" by
             # THIS run.
-            print(
-                "self-learn worker: refused — a live intent STOP froze this "
-                "run before it did anything. Run `self-learn reconcile "
-                "--clear-intent <id>` after inspecting it, or `self-learn "
-                "status` to see it.",
-                file=sys.stderr,
-            )
+            _print_unattended_stop("worker", getattr(result, "stopped", []) or [])
             return gitops.EXIT_GIT_FAILED
         try:
             return _WORKER_RUN_EXIT[result.status]
@@ -1700,6 +1744,49 @@ def _cmd_worker(args: argparse.Namespace) -> int:
             ) from None
     print("usage: self-learn worker kick | worker run [--coalesce]", file=sys.stderr)
     return EXIT_USAGE
+
+
+def _cmd_steward(args: argparse.Namespace) -> int:
+    if args.steward_command != "run":
+        print("usage: self-learn steward run [--dry-run] [--json]", file=sys.stderr)
+        return EXIT_USAGE
+    result = steward.run(resolve_home(), dry_run=args.dry_run)
+    ok = result.status in ("idle", "disabled", "dry-run", "applied")
+    if args.as_json:
+        print(
+            json.dumps(
+                {
+                    "command": "steward run",
+                    "outcome": result.status,
+                    "ok": ok,
+                    "run_id": result.run_id,
+                    "decided": result.decided,
+                    "calls": result.calls,
+                    "refused": result.refused,
+                    "unfinished": result.unfinished,
+                    "coverage": result.coverage,
+                    "stopped": result.stopped,
+                }
+            )
+        )
+    else:
+        print(
+            f"steward run: {result.status} — {len(result.decided)} decided, "
+            f"{result.refused} refused, {len(result.unfinished)} unfinished, "
+            f"{result.calls} model call(s); coverage "
+            + ", ".join(f"{key}={value}" for key, value in sorted(result.coverage.items()))
+        )
+    if result.status == "stopped":
+        _print_unattended_stop("steward", result.stopped)
+        return gitops.EXIT_GIT_FAILED
+    try:
+        return _STEWARD_RUN_EXIT[result.status]
+    except KeyError:
+        raise ValueError(
+            f"self-learn steward run: unmapped RunResult.status "
+            f"{result.status!r} — FW-85's exit-code map "
+            "(cli.py:_STEWARD_RUN_EXIT) has no entry for it"
+        ) from None
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
@@ -1945,6 +2032,8 @@ def _cmd_status(as_json: bool) -> int:
             "open_followups": followups,
             # 08 §7.1 amendment: iso8601 | null (null = never ran here)
             "worker_last_run": worker.last_run_iso(),
+            "steward_last_run_at": steward.last_run_iso(home),
+            "steward_cases_since_overseer": steward.cases_since_overseer(home),
             # T19 (08 §8.1 O-3/O-7-revisit row): supply mix + the 04
             # success-metrics counters — FULL status only; the --fast
             # SessionStart path stays a pending/-only scan, no git.
@@ -4174,6 +4263,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "worker":
         return _cmd_worker(args)
+
+    if args.command == "steward":
+        return _cmd_steward(args)
 
     if args.command == "serve":
         return _cmd_serve(args)

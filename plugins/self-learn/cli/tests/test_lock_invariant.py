@@ -227,6 +227,10 @@ NOT_REPO_TRUTH = {
     "serve.request_poke": "XDG cache: cache_dir()/serve.poke (Sec 5.3's verb-to-daemon poke request)",
     "serve._consume_poke": "XDG cache: cache_dir()/serve.poke, unlinked once the tick has read it",
     "serve._today_mine_target": "XDG cache: cache_dir()/serve.schedule (the day's jittered mine-pass target, Sec 5.2/5.8.1 Persistent=true parity)",
+    "steward._journal": "XDG cache: steward/journal.jsonl, never ledger truth",
+    "steward._write_json": "XDG cache: steward run recovery records and batch-result replay files",
+    "steward._dump_yaml": "XDG cache: model stage normalization below steward/runs/<run_id>",
+    "steward.run": "XDG cache: steward run directory and last-run marker; ledger writes delegate to lock-owning cases/batch/user-model/statements verbs",
     # U2 (S-65, 02-schema.md §3a.2 §1.8): <cache>/cases/index.json is a
     # NOT_REPO_TRUTH index over the case files -- rebuildable from them,
     # never itself the ledger's truth. `cases._write_index` is the one
@@ -869,6 +873,7 @@ _ARGV_FOR = {
     "_cmd_sentinel": [["sentinel", "hold"]],
     "_cmd_status": [["status"]],
     "_cmd_status_fast": [["status", "--fast"]],
+    "_cmd_steward": [["steward", "run"]],
     "_cmd_telemetry": [["telemetry", "flush"]],
     "_cmd_telemetry_read_observed": None,  # U-readref: spools via
     # `spool_quiet` (cache-only spool write), never touches the ledger's
