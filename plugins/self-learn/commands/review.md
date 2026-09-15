@@ -479,9 +479,13 @@ nightly `serve` job runs, on demand. It is the manual path for the
 maiden run and for a human who wants a run right now rather than waiting
 for the schedule; it never has a smaller authority than the automatic
 run — it applies its own decisions immediately, the same as the nightly
-job does, unless `--dry-run` is given.
+job does, unless `--dry-run` is given. A normal run first resumes every
+obligation discoverable from a committed `cases/runs/<run_id>.json`
+manifest; cache `run.json`, result JSON, the journal, and the last-run
+marker are projections and never recovery authority.
 
-- `--dry-run` writes its stage files and no ledger commit — a fixture and
+- `--dry-run` writes its stage files and no ledger commit or completed-run
+  watermark — a fixture and
   inspection flag, never a rollout step. Use it to see what the steward
   would do before trusting it unattended, the same way you would inspect
   a batch sheet with `--dry-run` first.
@@ -497,6 +501,11 @@ job does, unless `--dry-run` is given.
   in one run, across as many model calls as it needs; the run record
   prints calls, turns, and duration per call so an unusually long run is
   visible the morning after, never silent.
+- `partial` output names both the committed results already established
+  and the original record obligations still unfinished. A failed packet
+  does not erase a committed prefix or prevent a later independent packet
+  from being decided; a STOP or bookkeeping halt does stop every later
+  packet and maintenance operation.
 - The run's report names its coverage across the nine case outcomes
   (route, reject, defer, retire, replaced, rehome, revise, no-action,
   parked — the outcome set in `02-schema.md` §3a) crossed with the three

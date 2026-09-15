@@ -134,6 +134,27 @@ def test_u10_describe_next_names_the_steward(monkeypatch, tmp_path):
     assert "steward" in serve._describe_next(tmp_path / "home", tmp_path, 100.0)
 
 
+def test_u10_steward_due_for_committed_unfinished_work_without_proposals(
+    monkeypatch, tmp_path
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "steward:\n  enabled: true\n  cooldown_secs: 50\n", encoding="utf-8"
+    )
+    clear = type("IntentState", (), {"stopped": []})()
+    monkeypatch.setattr(serve.intents, "classify_status", lambda actual: clear)
+    monkeypatch.setattr(serve.steward, "committed_manifests", lambda actual: [{
+        "run_id": "run-pending", "status": "unfinished",
+        "last_attempt_at": "1970-01-01T00:01:40+00:00",
+    }])
+    monkeypatch.setattr(serve.steward, "_reconsider_proposals", lambda actual: ([], {}))
+    monkeypatch.setattr(serve, "_eligible_proposal_paths", lambda actual: [])
+
+    assert serve._steward_is_due(home, tmp_path / "cache", 151.0) is True
+    assert serve._steward_is_due(home, tmp_path / "cache", 149.0) is False
+
+
 def test_u10_run_forever_gates_steward_on_its_threaded_home(
     monkeypatch, tmp_path
 ):

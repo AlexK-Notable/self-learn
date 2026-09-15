@@ -442,7 +442,7 @@ def _describe_next(home: Path, cache_dir: Path, now: float) -> str:
     steward_when = datetime.fromtimestamp(max(now, last_epoch + float(cooldown))).isoformat(
         timespec="seconds"
     )
-    return f"mine at {when}; steward at {steward_when} when fresh proposals exist"
+    return f"mine at {when}; steward at {steward_when} when committed obligations exist"
 
 
 def _eligible_proposal_paths(home: Path) -> list[Path]:
@@ -464,14 +464,18 @@ def _proposal_commit_epoch(home: Path, path: Path) -> float:
 
 
 def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
-    """True only for fresh queued proposals outside cooldown and STOP."""
+    """Apply the committed-obligation OR predicate outside cooldown and STOP."""
     enabled, _source = settings.resolve_setting(home, settings.by_name("steward.enabled"))
     if not enabled or intents.classify_status(home).stopped:
         return False
+    manifests = steward.committed_manifests(home)
+    unfinished = [row for row in manifests if row.get("status") != "complete"]
+    reconsider, _predecessors = steward._reconsider_proposals(home)
     proposal_paths = _eligible_proposal_paths(home)
-    if not proposal_paths:
+    if not unfinished and not reconsider and not proposal_paths:
         return False
-    last_iso = steward.last_run_iso(home)
+    attempts = [str(row.get("last_attempt_at")) for row in unfinished if row.get("last_attempt_at")]
+    last_iso = max(attempts) if attempts else steward.last_run_iso(home)
     if last_iso is None:
         return True
     try:
@@ -484,6 +488,8 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     cooldown = cast(int | float | str, cooldown_value)
     if now - last_epoch < float(cooldown):
         return False
+    if unfinished or reconsider:
+        return True
     return any(_proposal_commit_epoch(home, path) > last_epoch for path in proposal_paths)
 
 

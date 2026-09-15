@@ -6,6 +6,7 @@ import fcntl
 import io
 import json
 import re
+import shutil
 from pathlib import Path
 
 from ruamel.yaml import YAML
@@ -47,6 +48,14 @@ def _seed_fresh_proposals(home: Path, count: int) -> list[str]:
 def _enable_steward(home: Path) -> None:
     (home / "config.yaml").write_text("steward:\n  enabled: true\n", encoding="utf-8")
     commit_all(home, "enable steward")
+
+
+def _configure_steward(home: Path, *, packet_size: int = 10) -> None:
+    (home / "config.yaml").write_text(
+        f"steward:\n  enabled: true\n  packet_size: {packet_size}\n",
+        encoding="utf-8",
+    )
+    commit_all(home, "configure steward")
 
 
 def _dump_yaml(path: Path, data: dict) -> None:
@@ -345,6 +354,8 @@ def test_dry_run_writes_stage_files_without_a_ledger_commit(tmp_path, monkeypatc
     assert len(ledger_ops.list_items(home)) == 1
     record = next((steward.cache_dir(home) / "steward" / "runs").glob("*/run.json"))
     assert json.loads(record.read_text(encoding="utf-8"))["NOT_REPO_TRUTH"]["value"] is True
+    assert steward.last_run_iso(home) is None
+    assert not (home / "cases" / "runs").exists()
 
 
 def test_turn_bound_leaves_that_packet_queued_and_records_the_bound(tmp_path, monkeypatch):
@@ -366,6 +377,190 @@ def test_turn_bound_leaves_that_packet_queued_and_records_the_bound(tmp_path, mo
     assert json.loads(record.read_text(encoding="utf-8"))["packets"][0]["bound"] == "turns"
 
 
+def test_bound_ends_only_its_packet_and_later_packet_still_applies(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    ids = _seed_fresh_proposals(home, 2)
+    _configure_steward(home, packet_size=1)
+    calls = 0
+
+    def invoke(spec):
+        nonlocal calls
+        calls += 1
+        return _write_decision_stage(spec, turns=80 if calls == 1 else 1)
+
+    monkeypatch.setattr(steward.invocation, "write_session", invoke)
+
+    result = steward.run(home)
+
+    assert calls == 2
+    assert result.status == "partial"
+    assert result.decided == [ids[1]]
+    assert [row["id"] for row in ledger_ops.list_items(home)] == [ids[0]]
+    record = next((steward.cache_dir(home) / "steward" / "runs").glob("*/run.json"))
+    packets = json.loads(record.read_text(encoding="utf-8"))["packets"]
+    assert [packet["bound"] for packet in packets] == ["turns", None]
+
+
+@pytest.mark.parametrize("code", [5, 6, 7, 8])
+def test_sheet_stop_or_aggregate_halts_later_packets_and_maintenance(
+    code, tmp_path, monkeypatch
+):
+    home = make_home(tmp_path)
+    ids = _seed_fresh_proposals(home, 2)
+    _configure_steward(home, packet_size=1)
+    calls = 0
+
+    def write_stage(spec):
+        nonlocal calls
+        calls += 1
+        outcome = _write_decision_stage(spec)
+        match = re.search(r"^stage directory \(the only place you may write\): (.+)$", spec.prompt, re.M)
+        assert match is not None
+        _dump_yaml(Path(match.group(1)) / "statements.yaml", {"items": [{
+            "verbatim": "Must never land after a halted sheet.",
+            "source": {"message_ref": "transcript:halt#L1"},
+        }]})
+        return outcome
+
+    def halt_batch(actual_home, items, **kwargs):
+        item = items[0]
+        return steward.batch.BatchResult(
+            items=[steward.batch.ItemResult(
+                n=item.n, id=item.id, verb=item.verb, rc=code,
+                state="stopped" if code in {5, 6, 7} else "refused",
+            )], process_code=code, stopped_at=item.n if code in {5, 6, 7} else None,
+            case=items.case, sheet_sha=items.sheet_sha, actor="steward",
+        )
+
+    monkeypatch.setattr(steward.invocation, "write_session", write_stage)
+    monkeypatch.setattr(steward.batch, "run", halt_batch)
+
+    result = steward.run(home)
+
+    assert calls == 1
+    assert result.status == ("stopped" if code == 6 else "partial")
+    assert result.unfinished == ids
+    assert not any(
+        row["verbatim"] == "Must never land after a halted sheet."
+        for row in statements.list_statements(home)
+    )
+
+
+def test_mixed_refused_and_applied_packets_report_partial(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    ids = _seed_fresh_proposals(home, 2)
+    _configure_steward(home, packet_size=1)
+    calls = 0
+
+    def invoke(spec):
+        nonlocal calls
+        calls += 1
+        outcome = _write_decision_stage(spec)
+        if calls == 1:
+            match = re.search(
+                r"^stage directory \(the only place you may write\): (.+)$",
+                spec.prompt,
+                re.M,
+            )
+            assert match is not None
+            case = next((Path(match.group(1)) / "cases").glob("*.yaml"))
+            data = YAML(typ="safe").load(case.read_text(encoding="utf-8"))
+            data["decision"]["because"] = "token ghp_" + "Ab1" * 12
+            _dump_yaml(case, data)
+        return outcome
+
+    monkeypatch.setattr(steward.invocation, "write_session", invoke)
+
+    result = steward.run(home)
+
+    assert result.status == "partial"
+    assert result.decided == [ids[1]]
+    assert result.refused == 1
+    assert [row["id"] for row in ledger_ops.list_items(home)] == [ids[0]]
+
+
+def test_run_manifest_is_committed_truth_and_cache_lies_do_not_drive_recovery(
+    tmp_path, monkeypatch
+):
+    home = make_home(tmp_path)
+    _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+    monkeypatch.setattr(steward.invocation, "write_session", _write_decision_stage)
+
+    result = steward.run(home)
+
+    assert result.status == "applied" and result.run_id is not None
+    manifest_rel = f"cases/runs/{result.run_id}.json"
+    committed = json.loads(git(home, "show", f"HEAD:{manifest_rel}").stdout)
+    assert committed["run_id"] == result.run_id
+    assert committed["status"] == "complete"
+    assert committed["cases"]
+    recipe = next(iter(committed["cases"].values()))
+    assert recipe["sheet"]
+    assert recipe["sheet_digest"] and recipe["items"]
+
+    run_json = next((steward.cache_dir(home) / "steward" / "runs").glob("*/run.json"))
+    run_json.write_text('{"status":"case-recorded","active_case":"case-deadbeef"}\n')
+    for result_json in run_json.parent.glob("batch-result-*.json"):
+        result_json.write_text("not json\n", encoding="utf-8")
+
+    again = steward.run(home)
+
+    assert again.status == "idle"
+    assert len(cases.list_cases(home, only_ok=True)) == 1
+
+
+def test_unexplained_dirty_truth_path_refuses_before_batch_dispatch(
+    tmp_path, monkeypatch
+):
+    home = make_home(tmp_path)
+    rid = _seed_fresh_proposals(home, 1)[0]
+    _enable_steward(home)
+    monkeypatch.setattr(steward.invocation, "write_session", _write_decision_stage)
+    real_preview = steward.batch.dry_run
+    previews = 0
+
+    def dirty_after_case(*args, **kwargs):
+        nonlocal previews
+        previews += 1
+        result = real_preview(*args, **kwargs)
+        if previews == 2:
+            (home / "unexplained.txt").write_text("foreign write\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(steward.batch, "dry_run", dirty_after_case)
+    monkeypatch.setattr(
+        steward.batch, "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("dirty state reached dispatch")),
+    )
+
+    result = steward.run(home)
+
+    assert result.status == "partial" and result.unfinished == [rid]
+    journal = steward.journal_path(home).read_text(encoding="utf-8")
+    assert "dirty-refused" in journal and "unexplained.txt" in journal
+    assert Record.from_path(ledger_ops.find_record_path(home, rid)).status == "pending"
+
+
+def test_run_record_has_call_durations_and_all_twenty_seven_coverage_cells(
+    tmp_path, monkeypatch
+):
+    home = make_home(tmp_path)
+    _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+    monkeypatch.setattr(steward.invocation, "write_session", _write_decision_stage)
+
+    result = steward.run(home)
+
+    assert len(result.coverage) == 27
+    assert result.coverage["reject:skill"] == 1
+    assert result.coverage["route:user"] == 0
+    record = next((steward.cache_dir(home) / "steward" / "runs").glob("*/run.json"))
+    data = json.loads(record.read_text(encoding="utf-8"))
+    assert isinstance(data["packets"][0]["duration_secs"], float)
+    assert data["coverage"] == result.coverage
+
+
 class SimulatedKill(BaseException):
     pass
 
@@ -374,7 +569,7 @@ def _case_path(home: Path, case_id: str) -> Path:
     return next((home / "cases").glob(f"*/{case_id}.md"))
 
 
-def test_crash_after_batch_before_receipt_replays_once_on_next_run(tmp_path, monkeypatch):
+def test_crash_after_mutation_before_receipt_recovers_from_commit_evidence(tmp_path, monkeypatch):
     home = make_home(tmp_path)
     _seed_fresh_proposals(home, 1)
     _enable_steward(home)
@@ -393,10 +588,14 @@ def test_crash_after_batch_before_receipt_replays_once_on_next_run(tmp_path, mon
     with pytest.raises(SimulatedKill):
         steward.run(home)
 
-    run_record = next((steward.cache_dir(home) / "steward" / "runs").glob("*/run.json"))
-    crashed = json.loads(run_record.read_text(encoding="utf-8"))
-    case_id = next(iter(crashed["case_ids"].values()))
+    manifest_rel = next(
+        line for line in git(home, "ls-tree", "-r", "--name-only", "HEAD", "--", "cases/runs").stdout.splitlines()
+        if line.endswith(".json")
+    )
+    crashed = json.loads(git(home, "show", f"HEAD:{manifest_rel}").stdout)
+    case_id = next(iter(crashed["cases"]))
     assert "sheet=" not in _case_path(home, case_id).read_text(encoding="utf-8")
+    shutil.rmtree(steward.cache_dir(home))
 
     steward.run(home)
     steward.run(home)
@@ -410,7 +609,7 @@ def test_crash_after_batch_before_receipt_replays_once_on_next_run(tmp_path, mon
     assert "item=1" in lines[0] and "reject" in lines[0]
 
 
-def test_crash_after_case_before_batch_records_abandonment_and_successor(tmp_path, monkeypatch):
+def test_crash_after_case_before_batch_resumes_same_reserved_case_and_sheet(tmp_path, monkeypatch):
     home = make_home(tmp_path)
     rid = _seed_fresh_proposals(home, 1)[0]
     _enable_steward(home)
@@ -429,50 +628,55 @@ def test_crash_after_case_before_batch_records_abandonment_and_successor(tmp_pat
     with pytest.raises(SimulatedKill):
         steward.run(home)
 
-    crashed_record = next((steward.cache_dir(home) / "steward" / "runs").glob("*/run.json"))
-    crashed = json.loads(crashed_record.read_text(encoding="utf-8"))
-    abandoned_id = next(iter(crashed["case_ids"].values()))
+    manifest_rel = next(
+        line for line in git(home, "ls-tree", "-r", "--name-only", "HEAD", "--", "cases/runs").stdout.splitlines()
+        if line.endswith(".json")
+    )
+    crashed = json.loads(git(home, "show", f"HEAD:{manifest_rel}").stdout)
+    case_id = next(iter(crashed["cases"]))
+    original_sheet = crashed["cases"][case_id]["sheet"]
+    shutil.rmtree(steward.cache_dir(home))
 
     result = steward.run(home)
 
     assert result.status == "applied"
-    successor = [row for row in steward.cases.list_cases(home, record_id=rid) if row["case"] != abandoned_id]
-    assert len(successor) == 1
-    assert successor[0]["supersedes"] == abandoned_id
-    abandoned_text = _case_path(home, abandoned_id).read_text(encoding="utf-8")
-    assert f"steward abandoned: run {crashed['run_id']} crashed before apply" in abandoned_text
+    recorded = steward.cases.list_cases(home, record_id=rid)
+    assert [row["case"] for row in recorded] == [case_id]
+    finished = json.loads(git(home, "show", f"HEAD:{manifest_rel}").stdout)
+    assert finished["cases"][case_id]["sheet"] == original_sheet
+    assert "steward abandoned" not in _case_path(home, case_id).read_text(encoding="utf-8")
 
 
-def test_crash_after_maintenance_rewrites_the_run_record_on_next_start(
+def test_crash_after_final_manifest_rebuilds_cache_projection_on_next_start(
     tmp_path, monkeypatch
 ):
     home = make_home(tmp_path)
     _seed_fresh_proposals(home, 1)
     _enable_steward(home)
     monkeypatch.setattr(steward.invocation, "write_session", _write_decision_stage)
-    real_write = steward._write_json
+    real_project = steward._project_manifest
     killed = False
 
-    def kill_before_final_record(path, data):
+    def kill_before_final_projection(actual_home, data):
         nonlocal killed
-        if not killed and data.get("finished_at") and data.get("status") == "applied":
+        if not killed and data.get("status") == "complete":
             killed = True
             raise SimulatedKill()
-        return real_write(path, data)
+        return real_project(actual_home, data)
 
-    monkeypatch.setattr(steward, "_write_json", kill_before_final_record)
+    monkeypatch.setattr(steward, "_project_manifest", kill_before_final_projection)
     with pytest.raises(SimulatedKill):
         steward.run(home)
 
-    record_path = next((steward.cache_dir(home) / "steward" / "runs").glob("*/run.json"))
-    assert json.loads(record_path.read_text(encoding="utf-8"))["status"] == "maintenance-complete"
+    shutil.rmtree(steward.cache_dir(home))
 
     result = steward.run(home)
 
     assert result.status == "idle"
+    record_path = next((steward.cache_dir(home) / "steward" / "runs").glob("*/run.json"))
     recovered = json.loads(record_path.read_text(encoding="utf-8"))
-    assert recovered["status"] == "applied"
-    assert recovered["last_run_outcome"] == "applied"
+    assert recovered["status"] == "complete"
+    assert recovered["outcome"] == "applied"
     assert recovered["decided"]
 
 
@@ -524,6 +728,15 @@ def test_second_schema_failure_stops_after_the_one_repair_turn(tmp_path, monkeyp
     packet = json.loads(record.read_text(encoding="utf-8"))["packets"][0]
     assert packet["bound"] == "schema-repair" and "unexpected" in packet["error"]
 
+    shutil.rmtree(steward.cache_dir(home))
+    calls_before = len(prompts)
+    again = steward.run(home)
+    assert again.status == "partial"
+    assert len(prompts) == calls_before
+    committed = steward.committed_manifests(home)[0]
+    assert committed["packets"][0]["repair_remaining"] == 0
+    assert committed["completed_at"] is None
+
 
 def test_hook_route_is_parked_for_overseer_and_never_dispatched(tmp_path, monkeypatch):
     home = make_home(tmp_path)
@@ -573,10 +786,37 @@ def test_plain_host_route_to_a_committed_file_is_parked(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(steward.batch, "dry_run", lambda *a, **k: preview)
 
-    assert steward._forced_parking_reason(home, sheet) == "always-loaded-user-scope"
+    assert steward._forced_parking_reason(home, sheet) == "plain-host-committed-file"
 
     git(host, "rm", "--cached", "-q", "CLAUDE.md")
     assert steward._forced_parking_reason(home, sheet) is None
+
+
+def test_parked_proposal_version_is_terminal_and_not_decided_again(
+    tmp_path, monkeypatch
+):
+    home = make_home(tmp_path)
+    rid = _seed_fresh_proposals(home, 1)[0]
+    _enable_steward(home)
+    calls = 0
+
+    def invoke(spec):
+        nonlocal calls
+        calls += 1
+        return _write_hook_stage(spec)
+
+    monkeypatch.setattr(steward.invocation, "write_session", invoke)
+
+    first = steward.run(home)
+    second = steward.run(home)
+    third = steward.run(home)
+
+    assert first.status == "applied"
+    assert first.decided == []
+    assert second.status == third.status == "idle"
+    assert calls == 1
+    parked = cases.list_cases(home, record_id=rid, parked_for="overseer")
+    assert len(parked) == 1
 
 
 def test_secret_scan_hit_is_refused_never_parked(tmp_path, monkeypatch):
@@ -719,6 +959,71 @@ def test_malformed_maintenance_entries_are_refused_and_later_entries_apply(
     assert journal.count('"status":"model-update-refused"') == 1
 
 
+@pytest.mark.parametrize("owner", ["statement", "model-add", "model-lapse"])
+def test_kill_after_maintenance_owner_commit_recovers_without_duplicate(
+    owner, tmp_path, monkeypatch
+):
+    home = make_home(tmp_path)
+    _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+    statement_id = statements.add(
+        home, verbatim="Evidence for model maintenance.",
+        source={"message_ref": "transcript:seed#L1"}, recorded_by="human",
+    )
+    lapse_id = user_model.add_entry(
+        home, container="C", title="old reading", because="the old condition held",
+        source="system-reading", statements=[statement_id], ref="transcript:seed#L1",
+        by="steward",
+    )
+
+    def write_stage(spec):
+        outcome = _write_decision_stage(spec)
+        match = re.search(r"^stage directory \(the only place you may write\): (.+)$", spec.prompt, re.M)
+        assert match is not None
+        stage = Path(match.group(1))
+        if owner == "statement":
+            _dump_yaml(stage / "statements.yaml", {"items": [{
+                "verbatim": "A recovered statement.",
+                "source": {"message_ref": "transcript:run#L2"},
+            }]})
+        elif owner == "model-add":
+            _dump_yaml(stage / "model-updates.yaml", {"items": [{
+                "action": "add", "container": "C", "title": "new reading",
+                "because": "the new condition was observed", "source": "system-reading",
+                "statements": [statement_id], "ref": "transcript:run#L3",
+            }]})
+        else:
+            _dump_yaml(stage / "model-updates.yaml", {"items": [{
+                "action": "lapse", "id": lapse_id,
+                "changed_condition": "the old condition no longer holds",
+            }]})
+        return outcome
+
+    real_update = steward._update_manifest
+    killed = False
+
+    def kill_after_owner(actual_home, run_id, *, reason, update):
+        nonlocal killed
+        if not killed and reason.startswith("maintenance result"):
+            killed = True
+            raise SimulatedKill()
+        return real_update(actual_home, run_id, reason=reason, update=update)
+
+    monkeypatch.setattr(steward.invocation, "write_session", write_stage)
+    monkeypatch.setattr(steward, "_update_manifest", kill_after_owner)
+    with pytest.raises(SimulatedKill):
+        steward.run(home)
+    shutil.rmtree(steward.cache_dir(home))
+
+    assert steward.run(home).status == "applied"
+    if owner == "statement":
+        assert sum(row["verbatim"] == "A recovered statement." for row in statements.list_statements(home)) == 1
+    elif owner == "model-add":
+        assert sum(row["title"] == "new reading" for row in steward._model_entries(home)) == 1
+    else:
+        assert next(row for row in steward._model_entries(home) if row["id"] == lapse_id)["status"] == "LAPSED"
+
+
 def test_dependency_observation_is_mechanically_reconsidered(tmp_path, monkeypatch):
     home = make_home(tmp_path)
     rid = _seed_fresh_proposals(home, 1)[0]
@@ -789,6 +1094,63 @@ def test_dependency_observation_is_mechanically_reconsidered(tmp_path, monkeypat
     assert any(event.get("event") == "reconsidered" for event in record.history)
 
 
+def test_kill_after_reconsider_marker_reuses_successor_and_marker(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    rid = _seed_fresh_proposals(home, 1)[0]
+    statement_id = statements.add(home, verbatim="Changed dependency.",
+        source={"message_ref": "transcript:reconsider#L1"}, recorded_by="human")
+    original_stage = tmp_path / "original.yaml"
+    _dump_yaml(original_stage, {
+        "kind": "resolution", "trigger": "human", "outcome": "reject", "records": [rid],
+        "scope": "skill:s", "question": "retain?",
+        "evidence": [{"ref": "transcript:reconsider#L1", "quote": "old"}],
+        "decision": {"verb": "reject", "because": "old condition", "confidence": "settled"},
+        "dependencies": {"statements": [statement_id], "user_model": [], "conditions": [], "capabilities": []},
+    })
+    predecessor = cases.record(home, original_stage, actor="human")
+    verbs.reject(home, rid, by="human", no_push=True)
+    cases.observe(home, predecessor, "statement", text="changed", ref=statement_id, by="steward")
+    _enable_steward(home)
+
+    def write_stage(spec):
+        match = re.search(r"^stage directory \(the only place you may write\): (.+)$", spec.prompt, re.M)
+        assert match is not None
+        stage = Path(match.group(1))
+        _dump_yaml(stage / "cases" / f"{rid}.yaml", {
+            "kind": "reconsider", "trigger": "reconsider", "outcome": "defer", "records": [rid],
+            "scope": "skill:s", "question": "does the dependency change the decision?",
+            "evidence": [{"ref": statement_id, "quote": "changed"}],
+            "decision": {"verb": "defer", "because": "re-evaluate later", "confidence": "settled"},
+            "dependencies": {"statements": [statement_id], "user_model": [], "conditions": [], "capabilities": []},
+        })
+        _dump_yaml(stage / "sheets" / f"{rid}.yaml", {"version": 1, "case": "$CASE_ID",
+            "items": [{"id": rid, "verb": "reopen"}, {"id": rid, "verb": "defer"}]})
+        return Outcome(ok=True, rc=0, stdout="", detail="", failure=None)
+
+    real_reconsider = steward.verbs.reconsider
+    killed = False
+
+    def kill_after_marker(*args, **kwargs):
+        nonlocal killed
+        outcome = real_reconsider(*args, **kwargs)
+        if not killed:
+            killed = True
+            raise SimulatedKill()
+        return outcome
+
+    monkeypatch.setattr(steward.invocation, "write_session", write_stage)
+    monkeypatch.setattr(steward.verbs, "reconsider", kill_after_marker)
+    with pytest.raises(SimulatedKill):
+        steward.run(home)
+    shutil.rmtree(steward.cache_dir(home))
+
+    assert steward.run(home).status == "applied"
+    successors = [row for row in cases.list_cases(home, record_id=rid) if row["kind"] == "reconsider"]
+    assert len(successors) == 1
+    record = Record.from_path(ledger_ops.find_record_path(home, rid))
+    assert sum(event.get("event") == "reconsidered" for event in record.history) == 1
+
+
 def test_cli_steward_run_exit_codes_and_json(monkeypatch, capsys, tmp_path):
     home = make_home(tmp_path)
     monkeypatch.setattr(cli_mod, "resolve_home", lambda: home)
@@ -811,6 +1173,8 @@ def test_cli_steward_run_exit_codes_and_json(monkeypatch, capsys, tmp_path):
         "decided": ["lrn-deadbeef"],
         "calls": 2,
         "refused": 1,
+        "unfinished": [],
+        "coverage": {},
         "stopped": [],
     }
 

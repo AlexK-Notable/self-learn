@@ -1732,7 +1732,7 @@ def _cmd_worker(args: argparse.Namespace) -> int:
             # intent it could neither roll forward nor restore, and
             # ended the run there — exit 6, "nothing was written" by
             # THIS run.
-            _print_unattended_stop("worker", result.stopped)
+            _print_unattended_stop("worker", getattr(result, "stopped", []) or [])
             return gitops.EXIT_GIT_FAILED
         try:
             return _WORKER_RUN_EXIT[result.status]
@@ -1763,6 +1763,8 @@ def _cmd_steward(args: argparse.Namespace) -> int:
                     "decided": result.decided,
                     "calls": result.calls,
                     "refused": result.refused,
+                    "unfinished": result.unfinished,
+                    "coverage": result.coverage,
                     "stopped": result.stopped,
                 }
             )
@@ -1770,7 +1772,9 @@ def _cmd_steward(args: argparse.Namespace) -> int:
     else:
         print(
             f"steward run: {result.status} — {len(result.decided)} decided, "
-            f"{result.refused} refused, {result.calls} model call(s)"
+            f"{result.refused} refused, {len(result.unfinished)} unfinished, "
+            f"{result.calls} model call(s); coverage "
+            + ", ".join(f"{key}={value}" for key, value in sorted(result.coverage.items()))
         )
     if result.status == "stopped":
         _print_unattended_stop("steward", result.stopped)

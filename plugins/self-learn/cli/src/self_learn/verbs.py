@@ -6184,6 +6184,16 @@ def reconsider(
         case_fm, _old_fm = cases.require_reconsider_case(home, case, record_id)
     except cases.CaseError as exc:
         raise _wrap_case_error(exc) from exc  # fold r1 (F5): preserve exit 64
+    existing_record = Record.from_path(path)
+    if any(
+        event.get("event") == "reconsidered" and event.get("case") == case
+        for event in existing_record.history
+    ):
+        return VerbResult(
+            action="reconsider", record_id=record_id,
+            commit_message=f"self-learn: reconsider {record_id} (case {case})",
+            commit_sha=gitops.head_sha(home), staged=[], push=None,
+        )
     try:
         _, record = require_status(
             home, record_id, RECONSIDERABLE_STATUSES, verb="reconsider"
