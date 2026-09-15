@@ -119,6 +119,7 @@ def _fake_caseless_phases(monkeypatch, record_id: str) -> None:
             for name, data in (
                 ("findings.yaml", {"findings": []}),
                 ("questions.yaml", {"questions": []}),
+                ("user-model-delta.yaml", {"updates": []}),  # O-3b's fifth phase-B file
                 (
                     "sheet.yaml",
                     {"version": 1, "items": [{"id": record_id, "verb": "note", "append": "catalogue change"}]},
