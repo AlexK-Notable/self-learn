@@ -147,6 +147,12 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
     "revise": frozenset({"section", "text", "because", "by"}),
 }
 PERMITTED_VERBS = frozenset(PERMITTED_KEYS)
+#: Verbs that are only a second spelling of another verb (S-67:
+#: `graduate` is `retire`'s pre-rename alias). Still accepted on a sheet;
+#: named here, in the module that owns the alias, so a reader that lists
+#: the verbs for a model (`steward_prompt._sheet_verb_lines`) can leave
+#: the second spelling out without spelling it itself.
+SHEET_VERB_ALIASES = frozenset({"graduate"})
 
 #: The subset of each verb's permitted keys that must actually be PRESENT
 #: on a sheet item -- caught at BAT1's whole-sheet validation, same as an

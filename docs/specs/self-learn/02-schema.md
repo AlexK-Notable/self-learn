@@ -999,10 +999,13 @@ week — not on the run as a whole. Each such unit carries, in the manifest:
 - `failure` is the kind, and it reuses the literals the runner already writes
   rather than a second vocabulary: a `FAILURE_KINDS` member (`exit`,
   `timeout`, `not-found`, `os-error`, `unavailable`), `invocation` (a failed
-  call that named no kind), `turns` (Claude Code itself stopped the session
-  at its turn limit and said so — result subtype `error_max_turns`; never
-  inferred from a reported turn count, which counts something else:
-  revision log, 2026-09-20), `schema-repair` (a
+  call that named no kind), `turns` (the turn bound. In the steward's
+  record it means Claude Code itself stopped the session at its turn limit
+  and said so — result subtype `error_max_turns` — and is never inferred
+  from a reported turn count, which counts something else: revision log,
+  2026-09-20. In the overseer's record it is still the overseer's own
+  guard over the reported count, `overseer.max_model_calls`, unchanged),
+  `schema-repair` (a
   second staged-output validation failure), and one genuinely new value,
   `no-progress`, for an attempt that ran and moved nothing. A ledger stop
   keeps riding the run record's own numeric halt code — the overseer's run

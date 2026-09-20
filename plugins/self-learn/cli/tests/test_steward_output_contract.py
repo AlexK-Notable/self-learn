@@ -75,7 +75,8 @@ def test_every_member_of_a_checkers_closed_set_is_in_the_brief(label, members):
 
 def test_every_sheet_verb_is_listed_with_exactly_the_keys_the_checker_allows():
     lines = {line.split()[0]: line for line in steward_prompt._sheet_verb_lines()}
-    listed = set(batch.PERMITTED_KEYS) - {"graduate"}  # `retire`'s pre-rename alias
+    assert batch.SHEET_VERB_ALIASES and batch.SHEET_VERB_ALIASES < set(batch.PERMITTED_KEYS)  # the control
+    listed = set(batch.PERMITTED_KEYS) - batch.SHEET_VERB_ALIASES  # `retire`'s pre-rename alias (S-67)
     assert set(lines) == listed
     for verb in listed:
         for key in batch.PERMITTED_KEYS[verb] - {"by"}:

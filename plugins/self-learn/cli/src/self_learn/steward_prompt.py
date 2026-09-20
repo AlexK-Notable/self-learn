@@ -146,9 +146,11 @@ OUTPUT_CONTRACT: dict[str, str] = {
 #: staged case). Lives here so the brief and the checker share one set.
 RUNNER_ONLY_PARKED_REASONS = frozenset({"attempts-exhausted", "plain-host-committed-file"})
 
-#: Sheet verbs the brief does not list: `graduate` is `retire`'s
-#: pre-rename alias (S-67) and only adds a second spelling to get wrong.
-_UNLISTED_SHEET_VERBS = frozenset({"graduate"})
+#: Sheet verbs the brief does not list: a pre-rename alias (S-67) only
+#: adds a second spelling to get wrong. The set lives in `batch`, which
+#: owns the alias -- `tests/test_rename_retire.py` confines the old word
+#: to an allowlist of modules, and this one is rightly not on it.
+_UNLISTED_SHEET_VERBS = batch.SHEET_VERB_ALIASES
 
 #: Worked examples: two cases with their sheets, a revision, a statement
 #: and a user-model update. `parked.yaml` has none on purpose -- how a
