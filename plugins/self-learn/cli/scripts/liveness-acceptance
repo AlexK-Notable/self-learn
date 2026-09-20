@@ -41,6 +41,15 @@
 # plain real overseer run to completion followed by a second run, which
 # proves the same-week guard rather than a retry. Arming that hook is the
 # obvious next extension once a human has watched this script run once.
+#
+# THIS SCRIPT HAS NEVER BEEN RUN END TO END. Only its refusal paths and its
+# `init` + `teach` seeding lines have ever been executed; nothing here has
+# made a model call. So a FAIL of steps 2, 3 or 4 may just as well be a
+# defect of this script — a wrong JSON key, a path that moved, an assertion
+# about a status the runner does not actually emit — as a defect of the
+# product. Re-run with `--keep` and read `<scratch>/stderr.log` and the
+# committed run records under `<scratch>/ledger/cases/runs/` before
+# concluding anything about the steward or the overseer.
 set -u
 
 PROGRAM=$(basename "$0")
@@ -145,6 +154,30 @@ case "$(basename "$SCRATCH")" in
     exit 2
     ;;
 esac
+
+# Fold r1, item 1. This script ends by DELETING its scratch directory, so it
+# must only ever own one it made itself. A `--scratch` naming somebody's
+# existing directory is refused here, BEFORE anything runs and therefore
+# before any model call — the ordering is the point, and it is what makes
+# this refusal testable without spending a single call. An existing EMPTY
+# directory is accepted (that is what `mkdir -p` in a wrapper script leaves)
+# but is still not deleted at the end, because this run did not create it.
+CREATED_SCRATCH=0
+if [ -e "$SCRATCH" ]; then
+  if [ ! -d "$SCRATCH" ]; then
+    echo "$PROGRAM: REFUSED — the scratch path exists and is not a directory: $SCRATCH" >&2
+    exit 2
+  fi
+  if [ -n "$(ls -A "$SCRATCH" 2>/dev/null)" ]; then
+    echo "$PROGRAM: REFUSED — the scratch directory already exists and is not empty:" >&2
+    echo "  $SCRATCH" >&2
+    echo "  This script deletes its scratch directory when it finishes; it will not" >&2
+    echo "  take ownership of a directory it did not create. Name an unused path." >&2
+    exit 2
+  fi
+else
+  CREATED_SCRATCH=1
+fi
 
 mkdir -p "$SCRATCH/ledger" "$SCRATCH/cache"
 export SELF_LEARN_HOME="$SCRATCH/ledger"
@@ -327,6 +360,13 @@ except Exception:
     print(0)
 ' "$STEWARD_2")))
   printf '  steward run 2: %s\n' "$STEWARD_2"
+  # Fold r1, item 2. What this step proves is S-68 rule 1: the packets were
+  # RE-ATTEMPTED and the run FINISHED. Both facts live in the committed run
+  # record, not in the outcome word. Three seeded lessons may legitimately
+  # end `refused` or `partial` — the steward is entitled to refuse or park a
+  # decision on its merits — with the run perfectly complete, so judging by
+  # the word would fail a healthy run. The word is printed for the human and
+  # plays no part in the verdict.
   VERDICT=$(py '
 import json, pathlib, sys
 raw, home = sys.argv[1], pathlib.Path(sys.argv[2])
@@ -334,19 +374,24 @@ try:
     result = json.loads(raw)
 except ValueError:
     print("BAD-JSON"); raise SystemExit
-runs = sorted((home / "cases" / "runs").glob("run-*.json"))
-if not runs:
-    print("NO-RUN-RECORD"); raise SystemExit
-data = json.loads(runs[-1].read_text(encoding="utf-8"))
+run_id = str(result.get("run_id") or "")
+path = home / "cases" / "runs" / f"{run_id}.json"
+if not run_id or not path.is_file():
+    print(f"NO-RUN-RECORD (run_id={run_id!r})"); raise SystemExit
+data = json.loads(path.read_text(encoding="utf-8"))
 attempts = max([int(p.get("attempt_count") or 0) for p in (data.get("packets") or [])] or [0])
-if attempts < 2:
-    print(f"NOT-REATTEMPTED (highest attempt_count={attempts})"); raise SystemExit
+status = data.get("status")
 outcome = result.get("outcome")
-if outcome not in ("applied", "idle"):
-    print(f"NOT-COMPLETED (outcome={outcome})"); raise SystemExit
-print("OK")
+if status != "complete":
+    print(f"RUN-NOT-COMPLETE (record status={status}, reported outcome={outcome})")
+    raise SystemExit
+if attempts < 2:
+    print(f"NOT-RE-ATTEMPTED (highest packet attempt_count={attempts}, expected >= 2)")
+    raise SystemExit
+print(f"OK (status=complete, highest attempt_count={attempts}, reported outcome={outcome})")
 ' "$STEWARD_2" "$SELF_LEARN_HOME")
-  if [ "$VERDICT" = "OK" ]; then ok; else bad "$VERDICT"; fi
+  printf '  committed truth: %s\n' "$VERDICT"
+  case "$VERDICT" in OK*) ok ;; *) bad "$VERDICT" ;; esac
 fi
 
 # ===================================================================== 4
@@ -365,21 +410,53 @@ except Exception:
     print(0)
 ' "$OVERSEER_1")
   MODEL_CALLS=$((MODEL_CALLS + CALLS))
+  # Fold r1, item 3. A deny-list of bad statuses passed everything it had
+  # not thought of — `partial`, `timed-out`, `closed` and any status a later
+  # unit adds all read as success. This is a POSITIVE assertion on committed
+  # truth instead: the run record the first run names must exist and say
+  # `complete`.
+  #
+  # There is no "nothing to apply, so no run record" case to exempt. Read
+  # `overseer/run.py`'s `run()`: every leg that returns WITHOUT writing a
+  # manifest is a HOLD taken before the run owns the week — `stopped` (a
+  # STOP intent), `disabled` (the switch, which this scratch config sets
+  # true), `held-week-done` (the same-week guard) — plus the pending
+  # close-out. Past those gates it always reaches the phase A model call and
+  # always writes a manifest; an empty population is NOT an early return
+  # (`run()` builds the population, calls the model, and finalizes). So a
+  # missing record on the first run is a genuine FAIL, not a special case.
   VERDICT=$(py '
-import json, sys
+import json, pathlib, sys
 try:
     first = json.loads(sys.argv[1]); second = json.loads(sys.argv[2])
 except ValueError:
     print("BAD-JSON"); raise SystemExit
+home = pathlib.Path(sys.argv[3])
 first_status = first.get("status")
 second_status = second.get("status")
-if first_status in ("refused", "stopped", "runaway"):
-    print(f"FIRST-RUN-DID-NOT-COMPLETE (status={first_status})"); raise SystemExit
-if second_status not in ("held-week-done", "idle"):
-    print(f"SECOND-RUN-REDID-THE-WEEK (status={second_status})"); raise SystemExit
-print("OK")
-' "$OVERSEER_1" "$OVERSEER_2")
-  if [ "$VERDICT" = "OK" ]; then ok; else bad "$VERDICT"; fi
+run_id = str(first.get("run") or "")
+path = home / "cases" / "runs" / f"{run_id}.json"
+if not run_id or not path.is_file():
+    print(f"FIRST-RUN-WROTE-NO-RECORD (status={first_status}, run={run_id!r})")
+    raise SystemExit
+record = json.loads(path.read_text(encoding="utf-8"))
+record_status = record.get("status")
+actor = record.get("actor")
+if actor != "overseer":
+    print(f"WRONG-RECORD (actor={actor}, expected overseer)")
+    raise SystemExit
+if record_status != "complete":
+    print(f"FIRST-RUN-DID-NOT-COMPLETE (record status={record_status}, reported {first_status})")
+    raise SystemExit
+# The second run must be the same-week guard holding, not a second week of
+# work. `held-week-done` is the guard by name (`overseer/run.py`).
+if second_status != "held-week-done":
+    print(f"SECOND-RUN-DID-NOT-HOLD (status={second_status}, expected held-week-done)")
+    raise SystemExit
+print(f"OK (record status=complete, second run held: {second_status})")
+' "$OVERSEER_1" "$OVERSEER_2" "$SELF_LEARN_HOME")
+  printf '  committed truth: %s\n' "$VERDICT"
+  case "$VERDICT" in OK*) ok ;; *) bad "$VERDICT" ;; esac
 fi
 
 # ===================================================================== 5
@@ -392,9 +469,14 @@ printf 'stderr from every child is in %s/stderr.log\n' "$SCRATCH"
 # not measured.
 if [ "$KEEP" -eq 1 ]; then
   printf 'scratch ledger kept at %s (--keep)\n' "$SCRATCH"
-else
+elif [ "$CREATED_SCRATCH" -eq 1 ]; then
   rm -rf "$SCRATCH"
   printf 'scratch ledger deleted; re-run with --keep to inspect it\n'
+else
+  # Fold r1, item 1: the directory existed (empty) before this run, so it is
+  # not ours to remove. Clear out only what we put in it.
+  rm -rf "$SCRATCH/ledger" "$SCRATCH/cache" "$SCRATCH/stderr.log"
+  printf 'scratch CONTENTS deleted; %s existed before this run and is left in place\n' "$SCRATCH"
 fi
 
 if [ "$FAILURES" -gt 0 ]; then
