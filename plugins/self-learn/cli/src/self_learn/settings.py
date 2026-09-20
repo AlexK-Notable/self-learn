@@ -972,8 +972,7 @@ REGISTRY: tuple[Setting, ...] = (
         config_section="steward",
         config_key="turns_per_lesson",
         kind="int",
-        # The user's number, 2026-09-19: "we first increase teh limit to
-        # 200 per lesson". A steward session's turn limit is this times
+        # The user's number, 2026-09-19: "200 per lesson". A steward session's turn limit is this times
         # the lessons in its batch. Crash protection against a runaway
         # session, not a ration (S-29): the three real sessions of
         # 2026-09-19 used 51-61 model responses for 9-10 lessons each.

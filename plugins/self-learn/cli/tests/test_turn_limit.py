@@ -47,8 +47,7 @@ def test_a_session_that_ended_normally_carries_no_such_reason(tmp_path, sdk_cli_
 
 # --------------------------------------------------------------------- #
 # The limit itself: `steward.turns_per_lesson` for each lesson in the
-# batch (the user's instruction, 2026-09-19: "we first increase teh limit
-# to 200 per lesson").
+# batch (the user's instruction, 2026-09-19: "200 per lesson").
 # --------------------------------------------------------------------- #
 
 
