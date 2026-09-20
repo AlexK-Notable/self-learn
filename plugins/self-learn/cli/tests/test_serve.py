@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import miner, provider, serve, steward, worker
+from self_learn import gitops, miner, provider, serve, steward, worker
 from self_learn import overseer as overseer_package
 from self_learn.overseer import run as overseer_run
 from self_learn.invocation_sdk import events as events_mod
@@ -45,6 +45,7 @@ from datetime import datetime, timezone
 # edits `test_worker.py`; pytest resolves an imported fixture by name
 # exactly as if it were declared locally).
 from test_worker import env, sdk_fake_worker, seed_pending, shim_writes  # noqa: F401
+from support import commit_all, make_home
 
 _SRC_DIR = Path(serve.__file__).resolve().parent
 
@@ -1522,3 +1523,280 @@ def test_ms1_seq_positive_control_reverted_run_id_fix_collides_under_frozen_cloc
         "the pre-fix code, or MS1-seq's real path no longer reaches "
         "`new_run_id` the way this control assumes"
     )
+
+
+# ===================================================================== #
+# U1 -- scheduler safety (A13, A16, A19, A22, B10; S-68)
+#
+# The audit of 2026-09-19 found that NO test drove `_run_tick` against a
+# real ledger. These do: `support.make_home` builds the doc-13 layout in
+# a real git repo, and the cache is the one `worker.cache_dir(home)`
+# resolves for that home -- the same pairing `run_forever` itself uses,
+# so a test cannot pass by handing the predicate a cache directory the
+# runner would never write into.
+# ===================================================================== #
+
+
+def _u1_home(tmp_path: Path, monkeypatch, *, steward_on=True, overseer_on=True) -> tuple[Path, Path]:
+    """A real ledger plus ITS cache dir, both under `tmp_path`."""
+    home = make_home(tmp_path)
+    (home / "config.yaml").write_text(
+        f"steward:\n  enabled: {'true' if steward_on else 'false'}\n"
+        f"overseer:\n  enabled: {'true' if overseer_on else 'false'}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    return home, worker.cache_dir(home)
+
+
+def _u1_journal_statuses(path: Path) -> list[str]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and isinstance(row.get("status"), str):
+            out.append(row["status"])
+    return out
+
+
+def test_u1_a13_a_raising_due_check_holds_only_that_job(monkeypatch, tmp_path):
+    """A13: a due predicate that raises does not escape `_run_tick`, does
+    not stop the later jobs in the same tick, records a `due-check-error`
+    HOLD line, and -- inside its cooldown -- is not re-entered on the next
+    tick. Before U1 the raise propagated out of `_run_tick` and (through
+    `run_forever`) ended the whole daemon."""
+    home, cache_dir = _u1_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(serve, "_mine_is_due", lambda *a, **k: False)
+    seen = {"manifests": 0, "overseer": 0}
+
+    def _wedged(actual):
+        seen["manifests"] += 1
+        raise gitops.GitOpsError("git ls-tree failed: wedged repository")
+
+    def _overseer_predicate(*args, **kwargs):
+        seen["overseer"] += 1
+        return False
+
+    monkeypatch.setattr(serve.steward, "committed_manifests", _wedged)
+    monkeypatch.setattr(serve, "_overseer_is_due", _overseer_predicate)
+
+    now = time.time()
+    ran = serve._run_tick(home, cache_dir, now=now, pid=4321, tick_secs=60.0)
+
+    # Positive controls first: the raising read really ran, and the later
+    # job really was evaluated -- otherwise the counts below prove nothing.
+    assert seen["manifests"] == 1
+    assert seen["overseer"] == 1
+    assert ran == []
+    assert "due-check-error" in _u1_journal_statuses(steward.journal_path(home))
+    assert "wedged repository" in serve._held_cause(cache_dir, "steward", now)
+
+    serve._run_tick(home, cache_dir, now=now + 60.0, pid=4321, tick_secs=60.0)
+    assert seen["manifests"] == 1, "the held predicate was re-entered inside its cooldown"
+    assert seen["overseer"] == 2, "the hold on one job silenced another job's due check"
+
+    # The heartbeat -- and so `doctor`'s serve row, which prints it -- names
+    # the held job and its cause while the hold lasts.
+    record = serve.read_heartbeat(cache_dir)
+    assert "holding: steward" in record["next_job"]
+
+
+def test_u1_a13_run_forever_survives_a_tick_that_raises(monkeypatch, tmp_path):
+    """A13(b): an exception escaping `_run_tick` costs one tick, not the
+    daemon. `max_ticks` behaviour is unchanged -- the second tick runs."""
+    home, cache_dir = _u1_home(tmp_path, monkeypatch)
+    ticks = {"n": 0}
+
+    def _tick(*args, **kwargs):
+        ticks["n"] += 1
+        if ticks["n"] == 1:
+            raise RuntimeError("tick blew up")
+        return []
+
+    monkeypatch.setattr(serve, "_run_tick", _tick)
+    assert serve.run_forever(home, cache_dir=cache_dir, tick_secs=0.01, max_ticks=2) == 0
+    assert ticks["n"] == 2
+
+
+def test_u1_a19_a_zero_call_steward_run_arms_the_cooldown(monkeypatch, tmp_path):
+    """A19/A22: a run that takes ownership and then dies before its first
+    model call still leaves an `attempt-start` line, so the scheduler is
+    not due again until the cooldown expires. A run that HOLDS (disabled)
+    leaves none and arms nothing."""
+    home, cache_dir = _u1_home(tmp_path, monkeypatch)
+    proposal_path = home / "proposals" / "lrn-deadbeef.yaml"
+    proposal_path.parent.mkdir(parents=True, exist_ok=True)
+    proposal_path.write_text("version: 1\n", encoding="utf-8")
+    commit_all(home, "u1 proposal")
+    entry = type(
+        "Entry",
+        (),
+        {"record": type("R", (), {"id": "lrn-deadbeef"})(), "proposal_path": proposal_path},
+    )()
+    monkeypatch.setattr(steward, "_reconcile_runs", lambda actual: [])
+    monkeypatch.setattr(steward, "_reconsider_proposals", lambda actual: ([], {}))
+    monkeypatch.setattr(steward, "_eligible_proposals", lambda actual: [(entry, {})])
+
+    def _no_prompt(*args, **kwargs):
+        raise RuntimeError("no model in this test")
+
+    monkeypatch.setattr(steward.steward_prompt, "assemble", _no_prompt)
+    with pytest.raises(RuntimeError):
+        steward.run(home)
+
+    statuses = _u1_journal_statuses(steward.journal_path(home))
+    assert "attempt-start" in statuses  # positive control: ownership was taken
+    now = time.time()
+    assert serve._steward_recently_attempted(cache_dir, now) is True
+    assert serve._steward_is_due(home, cache_dir, now) is False
+    assert (
+        serve._steward_recently_attempted(cache_dir, now + miner.ATTEMPT_COOLDOWN_SECS + 1)
+        is False
+    )
+
+    # The hold half: a disabled run journals, but never as an attempt.
+    held_home, held_cache = _u1_home(tmp_path / "held", monkeypatch, steward_on=False)
+    assert steward.run(held_home).status == "disabled"
+    held_statuses = _u1_journal_statuses(steward.journal_path(held_home))
+    assert held_statuses == ["disabled"]  # positive control: the run really ran
+    assert serve._steward_recently_attempted(held_cache, time.time()) is False
+
+
+def test_u1_s68_steward_cooldown_is_tested_before_any_git_read(monkeypatch, tmp_path):
+    """S-68's ordering rule. Before U1 `_steward_is_due` walked committed
+    manifests FIRST, so a wedged git read was re-entered on every tick
+    with no cooldown able to stop it."""
+    home, cache_dir = _u1_home(tmp_path, monkeypatch)
+    seen = {"n": 0}
+
+    def _counting(actual):
+        seen["n"] += 1
+        return []
+
+    monkeypatch.setattr(serve.steward, "committed_manifests", _counting)
+    monkeypatch.setattr(serve.steward, "_reconsider_proposals", lambda actual: ([], {}))
+    monkeypatch.setattr(serve, "_eligible_proposal_paths", lambda actual: [])
+    journal = steward.journal_path(home)
+    now = time.time()
+
+    # Positive control: an OLD attempt does not suppress the git read.
+    stale = datetime.fromtimestamp(now - miner.ATTEMPT_COOLDOWN_SECS - 10).astimezone().isoformat()
+    journal.write_text(json.dumps({"ts": stale, "status": "attempt-start"}) + "\n", encoding="utf-8")
+    assert serve._steward_is_due(home, cache_dir, now) is False  # nothing eligible
+    assert seen["n"] == 1
+
+    fresh = datetime.fromtimestamp(now - 5).astimezone().isoformat()
+    journal.write_text(json.dumps({"ts": fresh, "status": "attempt-start"}) + "\n", encoding="utf-8")
+    assert serve._steward_is_due(home, cache_dir, now) is False
+    assert seen["n"] == 1, "a git read ran ahead of the cache cooldown test"
+
+
+def test_u1_s68_unparseable_and_future_attempt_stamps_read_as_now(monkeypatch, tmp_path):
+    """S-68: an unparseable stamp used to parse to epoch 0 (due on every
+    tick) and a future stamp made a job due never."""
+    assert serve._attempt_epoch("not-a-timestamp", 1000.0) == 1000.0
+    assert serve._attempt_epoch("2099-01-01T00:00:00+00:00", 1000.0) == 1000.0
+    assert serve._attempt_epoch("1970-01-01T00:00:10+00:00", 1000.0) == 10.0
+
+    home, cache_dir = _u1_home(tmp_path, monkeypatch)
+    clear = type("IntentState", (), {"stopped": []})()
+    monkeypatch.setattr(serve.intents, "classify_status", lambda actual: clear)
+    monkeypatch.setattr(serve.steward, "committed_manifests", lambda actual: [
+        {"run_id": "run-pending", "status": "unfinished", "last_attempt_at": "banana"}
+    ])
+    monkeypatch.setattr(serve.steward, "_reconsider_proposals", lambda actual: ([], {}))
+    monkeypatch.setattr(serve, "_eligible_proposal_paths", lambda actual: [])
+    now = time.time()
+    assert serve._steward_is_due(home, cache_dir, now) is False
+
+    # The heartbeat preview reads its stamp through the same rule, so it
+    # cannot promise a steward run in 2099.
+    monkeypatch.setattr(serve.steward, "last_run_iso", lambda actual: "2099-01-01T00:00:00+00:00")
+    monkeypatch.setattr(serve, "_today_mine_target", lambda cache, when: when + 60)
+    preview = serve._describe_next(home, cache_dir, now)
+    steward_at = preview.split("steward at ", 1)[1].split(" ", 1)[0]
+    assert datetime.fromisoformat(steward_at).timestamp() < now + 100000.0
+
+
+def _u1_sunday(year: int, month: int, day: int) -> float:
+    """A local-time Sunday 04:15 boundary, built the way the shipped
+    predicate builds it -- so this test says the same thing in every
+    timezone the machine might be in."""
+    return time.mktime((year, month, day, serve.OVERSEER_HOUR, serve.OVERSEER_MINUTE, 0, 0, 0, -1))
+
+
+def test_u1_a16_overseer_catch_up_needs_a_previous_run(monkeypatch, tmp_path):
+    """A16: after a Sunday the machine was down, the missed week runs on
+    the next tick whatever the weekday -- but only once the overseer has
+    run before. Never-run stays on the calendar rule, so flipping the
+    switch on midweek cannot start an unattended first run."""
+    home, cache_dir = _u1_home(tmp_path, monkeypatch)
+    clear = type("IntentState", (), {"stopped": []})()
+    monkeypatch.setattr(serve.intents, "classify_status", lambda actual: clear)
+    monkeypatch.setattr(overseer_package, "has_unfinished_work", lambda actual: False)
+    monkeypatch.setattr(serve, "_overseer_recently_attempted", lambda cache, now: False)
+    monkeypatch.setattr(overseer_run, "_committed_overseer_manifests", lambda actual: [])
+
+    boundary = _u1_sunday(2026, 9, 13)  # Sunday
+    monday = boundary + 30 * 60 * 60  # Monday ~10:15 local
+    coverage = home / "overseer" / "coverage.yaml"
+    coverage.parent.mkdir(parents=True, exist_ok=True)
+
+    # Never run: Monday is NOT due, the calendar Sunday still is.
+    assert overseer_run.previous_run_exists(home) is False
+    assert serve._overseer_is_due(home, cache_dir, monday) is False
+    assert serve._overseer_is_due(home, cache_dir, boundary + 1) is True
+
+    # Ran last week, missed this Sunday: due on Monday (the catch-up).
+    last_week = datetime.fromtimestamp(boundary - 6 * 24 * 60 * 60).astimezone().isoformat()
+    coverage.write_text(f"last_run_at: '{last_week}'\n", encoding="utf-8")
+    assert overseer_run.previous_run_exists(home) is True
+    assert overseer_run.week_done(home, overseer_run.week_boundary(monday)) is False
+    assert serve._overseer_is_due(home, cache_dir, monday) is True
+
+    # Already ran this week: not due again, whatever the weekday.
+    this_week = datetime.fromtimestamp(boundary + 60).astimezone().isoformat()
+    coverage.write_text(f"last_run_at: '{this_week}'\n", encoding="utf-8")
+    assert overseer_run.week_done(home, overseer_run.week_boundary(monday)) is True
+    assert serve._overseer_is_due(home, cache_dir, monday) is False
+
+    # ... and the boundary itself is the most recent Sunday 04:15 at or
+    # before `now`, whatever weekday `now` is.
+    assert overseer_run.week_boundary(monday) == boundary
+    assert overseer_run.week_boundary(boundary + 1) == boundary
+    assert overseer_run.week_boundary(boundary - 1) == boundary - 7 * 24 * 60 * 60
+
+
+def test_u1_b10_same_week_guard_holds_and_writes_nothing(monkeypatch, tmp_path):
+    """B10: the guard lives in the RUNNER, so the `serve` job, a typed
+    `overseer run` and the (unenabled) timer cannot between them run one
+    week twice. A held run touches neither HEAD nor the working tree."""
+    home, _cache_dir = _u1_home(tmp_path, monkeypatch)
+    coverage = home / "overseer" / "coverage.yaml"
+    coverage.parent.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    coverage.write_text(
+        f"last_run_at: '{datetime.fromtimestamp(now - 60).astimezone().isoformat()}'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(overseer_run, "_committed_overseer_manifests", lambda actual: [])
+
+    # Positive control FIRST: the precondition this test rests on.
+    assert overseer_run.week_done(home, overseer_run.week_boundary(now)) is True
+
+    head_before = gitops.head_sha(home)
+    tree_before = gitops._git(home, "status", "--porcelain").stdout
+
+    result = overseer_run.run(home)
+
+    assert result.status == "held-week-done"
+    assert result.code == 0
+    assert gitops.head_sha(home) == head_before
+    assert gitops._git(home, "status", "--porcelain").stdout == tree_before
+    assert "held-week-done" in _u1_journal_statuses(overseer_run.journal_path(home))

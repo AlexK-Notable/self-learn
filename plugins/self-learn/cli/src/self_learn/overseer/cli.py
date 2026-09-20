@@ -43,6 +43,8 @@ def dispatch(args) -> int:
                 print(json.dumps(result.to_json(), sort_keys=True))
             elif result.status == "disabled":
                 print("self-learn overseer: disabled")
+            elif result.status == "held-week-done":
+                print("self-learn overseer: held — this week is already done")
             else:
                 print(
                     f"self-learn overseer: {result.status}; "

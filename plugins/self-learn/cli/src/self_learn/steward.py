@@ -1257,6 +1257,18 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
             _journal(home, {"ts": chrono.now_iso(), "status": result.status})
             return result
 
+        # A19/A22 (S-68): this run has taken ownership — every hold
+        # (`stopped`, `disabled`, a lock another process holds, nothing
+        # eligible) has already returned above. The attempt is recorded
+        # HERE, before anything that can raise, so the scheduler's
+        # cooldown arms even for a run that then makes zero model calls or
+        # dies. Before this, a run that failed before its first commit
+        # left `last_attempt_at` untouched and was due again on the very
+        # next 60-second tick. A dry run writes no attempt: it is a
+        # rehearsal, and must not suppress the real run behind it.
+        if not dry_run:
+            _journal(home, {"ts": chrono.now_iso(), "status": "attempt-start"})
+
         packet_size_value, _source = settings.resolve_setting(
             home, settings.by_name("steward.packet_size")
         )

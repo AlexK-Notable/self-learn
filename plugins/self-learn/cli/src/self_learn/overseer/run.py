@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -799,6 +800,91 @@ def has_unfinished_work(home: Path | str) -> bool:
     return _unfinished_manifest(Path(home)) is not None
 
 
+#: The shipped timer's calendar, and the boundary that opens an overseer
+#: WEEK: Sunday 04:15 local (`systemd/self-learn-overseer.timer`). Defined
+#: here, not in `serve`, because the runner's own same-week guard and the
+#: scheduler's catch-up rule must read one definition (`serve` imports
+#: these; nothing here imports `serve`).
+WEEK_WEEKDAY, WEEK_HOUR, WEEK_MINUTE = 6, 4, 15
+
+
+def week_boundary(now: float) -> float:
+    """The most recent Sunday 04:15 local at or before ``now`` — the
+    boundary that opened the week ``now`` falls in (S-68, THE OVERSEER'S
+    WEEK). Only the most recent boundary defines the current week: after a
+    longer outage, older undone weeks are subsumed by one catch-up run
+    rather than replayed one per week."""
+    local = time.localtime(now)
+    days_since = (local.tm_wday - WEEK_WEEKDAY) % 7
+    fields = (WEEK_HOUR, WEEK_MINUTE, 0, 0, 0, -1)
+    target = time.mktime(
+        (local.tm_year, local.tm_mon, local.tm_mday - days_since) + fields
+    )
+    if target > now:
+        # `now` is earlier in the day than 04:15 on a Sunday: step a whole
+        # week back through `mktime` (never by 7*86400, which is an hour
+        # wrong across a DST change).
+        target = time.mktime(
+            (local.tm_year, local.tm_mon, local.tm_mday - days_since - 7) + fields
+        )
+    return target
+
+
+def _coverage_last_run_at(home: Path) -> str | None:
+    value = population_mod.load_coverage(home / "overseer" / "coverage.yaml").get(
+        "last_run_at"
+    )
+    return value if isinstance(value, str) and value else None
+
+
+def previous_run_exists(home: Path | str) -> bool:
+    """Whether the overseer has ever completed a run here — coverage's
+    `last_run_at` is not null. The catch-up rule (A16) applies only once
+    this is true (orchestrator ruling 2026-09-19): an overseer that has
+    never run stays on the plain calendar rule, so turning
+    `overseer.enabled` on midweek cannot start an unattended first run."""
+    return _coverage_last_run_at(Path(home)) is not None
+
+
+def _iso_epoch(value: str) -> float | None:
+    """`None` when the stamp does not parse — `chrono.to_dt` is lenient and
+    never raises, it just answers `None`."""
+    parsed = chrono.to_dt(value)
+    return None if parsed is None else parsed.timestamp()
+
+
+def week_done(home: Path | str, boundary_epoch: float) -> bool:
+    """Whether the overseer week that opened at ``boundary_epoch`` is DONE
+    (S-68): a run for that week completed, or its attempts reached the
+    cap. Read from committed evidence only — the cache is a projection any
+    restart can lose.
+
+    Today's evidence is a completed run: coverage's `last_run_at` at or
+    after the boundary, or a committed overseer run record that started at
+    or after it and is `complete`. U3 extends this for a week closed at
+    `runs.attempt_cap` and for the committed failure notes an attempt
+    leaves behind.
+
+    An unreadable timestamp never claims the week is done: the safe
+    direction is to attempt the work, which the attempt cap bounds."""
+    resolved = Path(home)
+    last_run_at = _coverage_last_run_at(resolved)
+    if last_run_at is not None:
+        epoch = _iso_epoch(last_run_at)
+        if epoch is not None and epoch >= boundary_epoch:
+            return True
+    for manifest in _committed_overseer_manifests(resolved):
+        if manifest.get("status") != "complete":
+            continue
+        started = manifest.get("started")
+        if not isinstance(started, str):
+            continue
+        epoch = _iso_epoch(started)
+        if epoch is not None and epoch >= boundary_epoch:
+            return True
+    return False
+
+
 def _scan_manifest_or_refuse(manifest: dict[str, Any]) -> None:
     """Scan prepared free text while excluding code-owned content hashes."""
     hits: list[str] = []
@@ -1558,11 +1644,43 @@ def run(home: Path | str | None = None, *, dry_run: bool = False, no_push: bool 
         _journal(home, {"at": started, "run": run_id, "status": "disabled"})
         return RunResult("disabled", EXIT_OK, run_id)
     if not dry_run:
-        unfinished = _unfinished_manifest(home)
+        # B10 (S-68, `13-hosting-and-separation.md` §5): the same-week
+        # guard lives HERE, in the runner, not in the scheduler — so the
+        # `serve` job, a hand-typed `overseer run`, and the systemd timer
+        # (if a human ever enables it) cannot between them run one week
+        # twice. Committed unfinished work is still due regardless of the
+        # calendar, so it is checked first.
+        #
+        # A19: deciding ownership reads git, and a raise here would leave
+        # no journal line at all — so the cooldown would never arm and the
+        # job would be re-entered on the next tick. The attempt is
+        # recorded before the exception leaves.
+        try:
+            unfinished = _unfinished_manifest(home)
+            held = unfinished is None and week_done(home, week_boundary(time.time()))
+        except Exception as exc:  # noqa: BLE001 — recorded, then re-raised unchanged
+            _journal(home, {
+                "at": chrono.now_iso(), "run": run_id, "status": "attempt-start",
+                "reason": f"ownership check failed: {exc}"[:300],
+            })
+            raise
+        if held:
+            _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "held-week-done"})
+            return RunResult("held-week-done", EXIT_OK, run_id)
         if unfinished is not None:
+            _journal(home, {
+                "at": chrono.now_iso(), "run": run_id,
+                "status": "attempt-start", "resume": str(unfinished.get("run_id") or ""),
+            })
             return _execute_manifest(
                 home, unfinished, boundary_no_push=boundary_no_push
             )
+        # A19: every attempt arms the cooldown, including one that then
+        # makes zero model calls or raises. This is the first line the run
+        # writes after it has taken ownership and before anything that can
+        # fail; the first journal line used to be `population`, several
+        # git and stage calls later.
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "attempt-start"})
     timeout, _ = settings.resolve_setting(home, settings.by_name("overseer.timeout_secs"))
     guard, _ = settings.resolve_setting(home, settings.by_name("overseer.max_model_calls"))
     model = provider.model_for("overseer", home=home)

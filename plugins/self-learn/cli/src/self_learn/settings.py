@@ -970,6 +970,23 @@ REGISTRY: tuple[Setting, ...] = (
         description="enable the steward's applying runner after its watched maiden run",
         tier="C",
     ),
+    # ---------------------------------------------------------- runs
+    # U1 (S-68, `03-decisions.md`): ONE cap shared by both delegated
+    # runners and by the overseer's week -- a run left unfinished either
+    # makes progress on its next attempt or is closed out after this many.
+    # Registered here now, consumed by U2 (the steward's close-out) and U3
+    # (the overseer's), per this module's own scope-discipline docstring.
+    Setting(
+        name="runs.attempt_cap",
+        env_var="SELF_LEARN_RUNS_ATTEMPT_CAP",
+        config_section="runs",
+        config_key="attempt_cap",
+        kind="int",
+        default=3,  # user ruling 2026-09-19: "after 3 failed attempts the run is closed"
+        validate=lambda v: v if cast(int, v) > 0 else None,  # a cap of 0 would close every run before its first attempt
+        validate_hint="must be > 0",
+        description="failed attempts on one unit of delegated work before the run is closed out",
+    ),
     # ------------------------------------------------------ overseer
     # U8 (17-invocation-runbook.md §1; plan-overseer-2026-09-12.md §5.4
     # "overseer.timeout_secs per invocation (default 900 s)"; §5.4/O-3

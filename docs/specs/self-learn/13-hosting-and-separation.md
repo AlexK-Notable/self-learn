@@ -387,7 +387,12 @@ replayed one per week — the overseer's population is everything since its
 last run, so the single run covers them, and nothing is run retroactively.
 "Not done" is S-68's own test: a run for that week completed, or its attempts
 reached `runs.attempt_cap` — read from committed run records, never from the
-cache marker alone. The same test is the **same-week guard, and it lives in
+cache marker alone. **The catch-up applies only once a previous run exists**
+(coverage's `last_run_at` is not null; orchestrator ruling 2026-09-19): an
+overseer that has NEVER run stays on the plain calendar rule, due at the next
+Sunday 04:15 local, so turning `overseer.enabled` on midweek cannot trigger an
+immediate unattended first run. `self-learn overseer run` remains the way to
+start the first one by hand, watched. The same test is the **same-week guard, and it lives in
 the runner, not in the scheduler**: whoever starts an overseer run — the
 `serve` job, a hand-typed `self-learn overseer run`, or the systemd timer if
 a human ever enables it — re-checks it inside the run and holds without
