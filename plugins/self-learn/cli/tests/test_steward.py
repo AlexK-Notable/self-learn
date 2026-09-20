@@ -1248,6 +1248,7 @@ def test_cli_steward_run_exit_codes_and_json(monkeypatch, capsys, tmp_path):
         "refused": 1,
         "unfinished": [],
         "abandoned": [],
+        "abandoned_units": [],
         "close_out_error": None,
         "coverage": {},
         "stopped": [],
@@ -1272,6 +1273,7 @@ def test_cli_steward_run_exit_codes_and_json(monkeypatch, capsys, tmp_path):
         "refused": 0,
         "unfinished": [],
         "abandoned": ["lrn-deadbeef"],
+        "abandoned_units": [],
         "close_out_error": None,
         "coverage": {},
         "stopped": [],
@@ -2363,3 +2365,127 @@ def test_a_model_written_runner_only_parked_reason_is_a_schema_failure(
     rows = cases.list_cases(home, parked_for="overseer", parked_reason="hook")
     assert len(rows) == 1 and rows[0]["records"] == ids
     assert cases.list_cases(home, parked_reason="attempts-exhausted") == []
+
+
+# -------------------------------- U3 carry-over: the close-out is not silent
+#
+# Both tests drive the one state the U2 review found untested: every INPUT of
+# the packet has a terminal disposition (the hook route is `parked`), but the
+# packet is still open because its CASE RECIPE never reached a terminal phase
+# (`batch.write_receipt` reports a failed write by RETURNING, so the receipt
+# never landed).  The packet therefore reaches `runs.attempt_cap` with nothing
+# to park.
+
+
+def _packet_at_the_cap_with_an_unfinished_case(home, monkeypatch):
+    """Two runs, leaving the packet one attempt short of the cap."""
+    _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+    monkeypatch.setattr(steward.invocation, "write_session", _write_hook_stage)
+    monkeypatch.setattr(steward.batch, "write_receipt", _failing_receipt)
+    first = steward.run(home)
+    second = steward.run(home)
+    assert first.run_id is not None
+    manifest = _head_manifest(home, first.run_id)
+    packet = manifest["packets"][0]
+    # positive controls: the state really is the one under test
+    assert packet["dispositions"][packet["records"][0]]["state"] == "parked"
+    assert manifest["cases"][packet["case_ids"][0]]["phase"] == "unfinished"
+    assert packet["attempt_count"] == 2
+    assert (first.status, second.status) == ("applied", "applied")
+    return first.run_id
+
+
+def test_a_close_out_that_cannot_write_never_reports_success(tmp_path, monkeypatch):
+    """The U2 review found `has_unfinished`'s `close_out_error` term untested:
+    removing it was caught by nothing.  Here the close-out's own
+    `_update_manifest` fails, so nothing is parked, nothing is abandoned and
+    every disposition is already terminal -- that term is the ONLY thing
+    standing between this run and `applied` / exit 0."""
+    home = make_home(tmp_path)
+    monkeypatch.setattr(overseer_notify, "send", lambda *a, **k: None)
+    run_id = _packet_at_the_cap_with_an_unfinished_case(home, monkeypatch)
+    real_update = steward._update_manifest
+
+    def refuse_the_close_out(actual_home, given_run_id, *, reason, update):
+        if "abandoned" in reason:
+            raise steward.gitops.GitOpsError("simulated close-out write failure")
+        return real_update(actual_home, given_run_id, reason=reason, update=update)
+
+    monkeypatch.setattr(steward, "_update_manifest", refuse_the_close_out)
+
+    third = steward.run(home)
+
+    assert third.close_out_error and "simulated close-out write failure" in third.close_out_error
+    # positive controls: nothing ELSE could make this run look unfinished —
+    # every disposition is terminal, nothing refused, nothing abandoned, and
+    # no unit was dropped. `close_out_error` is the only term left.
+    assert third.unfinished == [] and third.refused == 0 and third.abandoned == []
+    assert third.abandoned_units == []
+    assert third.status != "applied", "a close-out the runner could not write is not success"
+    assert third.status == "partial"
+    manifest = _head_manifest(home, run_id)
+    assert manifest["packets"][0]["phase"] != "abandoned"
+    assert manifest["status"] == "unfinished"
+
+
+def test_a_close_out_that_drops_a_case_recipe_says_so(tmp_path, monkeypatch):
+    """The same state with the close-out SUCCEEDING.  The packet is stamped
+    `abandoned` with zero abandoned RECORDS, so `_notify_abandoned` never
+    fired and the run reported `applied` / exit 0 although the case recipe
+    was dropped.  The dropped unit is now named in the result, in the run's
+    text and `--json` output, and in the notification, and the status is not
+    `applied`."""
+    home = make_home(tmp_path)
+    notifications = []
+    monkeypatch.setattr(
+        overseer_notify, "send",
+        lambda home_, cue, summary, ids: notifications.append((cue, summary, list(ids))),
+    )
+    run_id = _packet_at_the_cap_with_an_unfinished_case(home, monkeypatch)
+    manifest = _head_manifest(home, run_id)
+    case_id = manifest["packets"][0]["case_ids"][0]
+    notifications.clear()
+
+    third = steward.run(home)
+
+    manifest = _head_manifest(home, run_id)
+    packet = manifest["packets"][0]
+    # positive controls: the close-out landed, and it parked no record at all
+    assert packet["phase"] == "abandoned" and manifest["status"] == "complete"
+    assert third.abandoned == []
+    assert cases.list_cases(home, parked_reason="attempts-exhausted") == []
+    # the dropped unit, named
+    assert third.abandoned_units == [f"case {case_id} (unfinished)"]
+    assert packet["abandoned_units"] == [f"case {case_id} (unfinished)"]
+    assert third.status != "applied"
+    assert third.status == "refused"
+    assert len(notifications) == 1, notifications
+    assert "dropped without a successor" in notifications[0][1]
+    assert case_id in notifications[0][1]
+
+
+def test_cli_names_a_dropped_unit_in_text_and_json(monkeypatch, capsys, tmp_path):
+    """The run's own output is the only place a dropped case recipe or
+    maintenance operation can be named: it has no parked successor case to
+    point at, unlike an abandoned record."""
+    home = make_home(tmp_path)
+    monkeypatch.setattr(cli_mod, "resolve_home", lambda: home)
+    monkeypatch.setattr(
+        cli_mod.steward,
+        "run",
+        lambda actual, dry_run=False: steward.RunResult(
+            "refused", run_id="run-abc", calls=0,
+            abandoned_units=["case case-0badc0de (unfinished)"],
+        ),
+    )
+
+    assert cli_mod.main(["steward", "run", "--json"]) == 1
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["abandoned_units"] == ["case case-0badc0de (unfinished)"]
+    assert envelope["ok"] is False
+
+    assert cli_mod.main(["steward", "run"]) == 1
+    text = capsys.readouterr().out
+    assert "steward run: refused" in text, "positive control: the summary line printed"
+    assert "dropped without a successor — case case-0badc0de (unfinished)" in text

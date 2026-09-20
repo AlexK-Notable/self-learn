@@ -58,6 +58,13 @@ class RunResult:
     #: S-68 ruling 2: the records this run closed out at `runs.attempt_cap`,
     #: each carrying a parked successor case the overseer will decide.
     abandoned: list[str] = field(default_factory=list)
+    #: The non-record units a close-out DROPPED — a case recipe left in a
+    #: non-terminal phase, or a maintenance operation never settled. A packet
+    #: can reach the cap with every input already disposed and still be open
+    #: because of one of these; the close-out then stamps it `abandoned` with
+    #: zero abandoned RECORDS, which used to leave the run reporting
+    #: `applied` and exit 0 over work that was silently dropped.
+    abandoned_units: list[str] = field(default_factory=list)
     #: The short cause when this run could NOT write its close-out, `None`
     #: when there was nothing to close or it landed. A close-out is retried
     #: without a count, so nothing caps it; this field, the text line, the
@@ -1484,6 +1491,28 @@ def _notify_close_out_failure(
             "status": "notify-failed", "error": _short_cause(exc)})
 
 
+def _dropped_units(manifest: dict, packet: dict) -> list[str]:
+    """The packet's non-record units a close-out would abandon: a case recipe
+    still in a non-terminal phase, and a maintenance operation never settled.
+
+    `_packet_units_terminal` already counts these as reasons a packet is not
+    complete; this names them, so a close-out that drops one can say so
+    instead of stamping `abandoned` with nothing to show.
+    """
+    recipes = manifest.get("cases") or {}
+    dropped = [
+        f"case {case_id} ({(recipes.get(case_id) or {}).get('phase') or 'unknown'})"
+        for case_id in packet.get("case_ids") or []
+        if (recipes.get(case_id) or {}).get("phase") not in _TERMINAL_CASE_PHASES
+    ]
+    dropped.extend(
+        f"maintenance {operation.get('id')} ({operation.get('state') or 'pending'})"
+        for operation in packet.get("maintenance") or []
+        if operation.get("state") not in {"applied", "refused"}
+    )
+    return dropped
+
+
 def _apply_close_out(
     manifest: dict,
     packet_index: int,
@@ -1492,11 +1521,14 @@ def _apply_close_out(
     kind: str,
     detail: str,
     complete: bool,
+    dropped: list[str] | None = None,
 ) -> None:
     packet = manifest["packets"][packet_index - 1]
     packet["failure"] = kind
     packet["failure_detail"] = detail
     packet.setdefault("dispositions", {}).update(dispositions)
+    if dropped:
+        packet["abandoned_units"] = list(dropped)
     if complete:
         packet["phase"] = "abandoned"
 
@@ -1526,6 +1558,7 @@ def _close_out_packet(home: Path, run_id: str, packet_index: int) -> list[str]:
     closed: list[str] = []
     errors: list[str] = []
     waiting = _non_terminal_records(packet)
+    dropped = _dropped_units(manifest, packet)
     for record_id in waiting:
         try:
             successor = _close_out_record(
@@ -1548,7 +1581,7 @@ def _close_out_packet(home: Path, run_id: str, packet_index: int) -> list[str]:
     _journal(home, {
         "ts": chrono.now_iso(), "run_id": run_id, "status": "abandoned",
         "packet": packet_index, "attempts": attempts, "failure": kind,
-        "records": closed, "errors": errors,
+        "records": closed, "units": dropped, "errors": errors,
     })
     complete = not errors
     if dispositions or complete:
@@ -1560,7 +1593,7 @@ def _close_out_packet(home: Path, run_id: str, packet_index: int) -> list[str]:
             home, run_id, reason=f"packet {packet_index} abandoned",
             update=lambda current: _apply_close_out(
                 current, packet_index, dispositions=dispositions, kind=kind,
-                detail=detail, complete=complete,
+                detail=detail, complete=complete, dropped=dropped,
             ),
         )
     if errors:
@@ -1643,7 +1676,10 @@ def _close_out_exhausted(home: Path, run_id: str, attempt_cap: int) -> list[str]
     return closed
 
 
-def _notify_abandoned(home: Path, run_id: str, manifest: dict, abandoned: list[str]) -> None:
+def _notify_abandoned(
+    home: Path, run_id: str, manifest: dict, abandoned: list[str],
+    units: list[str] | None = None,
+) -> None:
     """Ruling 2's "the user is notified", ONCE per closed-out run (not once
     per record), through the shipped notification helper unchanged — this
     module never calls `notify-send` itself."""
@@ -1652,13 +1688,15 @@ def _notify_abandoned(home: Path, run_id: str, manifest: dict, abandoned: list[s
         for packet in manifest.get("packets") or []
         if packet.get("phase") == "abandoned"
     })
+    dropped = list(units or [])
+    tail = f"; dropped without a successor: {', '.join(dropped)}" if dropped else ""
     summary = (
         f"self-learn steward: {len(abandoned)} lesson(s) parked for the overseer "
         f"— run {run_id} reached the attempt cap and decided none of them "
-        f"({', '.join(kinds) or 'unknown failure'})"
+        f"({', '.join(kinds) or 'unknown failure'}){tail}"
     )
     try:
-        overseer_notify.send(home, "routine", summary, list(abandoned))
+        overseer_notify.send(home, "routine", summary, list(abandoned) or [run_id])
     except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
         _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
             "status": "notify-failed", "error": str(exc)})
@@ -2249,6 +2287,15 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
             for rid, value in packet.get("dispositions", {}).items()
             if value.get("state") == "abandoned"
         ))
+        # A close-out can abandon a packet whose every INPUT was already
+        # disposed, because a case recipe or a maintenance operation was not
+        # terminal. That packet is stamped `abandoned` with zero abandoned
+        # records, so `result.abandoned` stays empty and the run used to
+        # report `applied` and exit 0 over the dropped unit.
+        result.abandoned_units = list(dict.fromkeys(
+            unit for packet in manifest["packets"]
+            for unit in packet.get("abandoned_units") or []
+        ))
         coverage = _coverage_empty()
         for recipe in manifest.get("cases", {}).values():
             case_data = YAML(typ="safe").load(recipe["case"])
@@ -2270,7 +2317,11 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
         # `partial` beside applied work) is FW-85's "an actual failure", and
         # the text line below names the count so it can never again read
         # "0 decided, 0 refused, 0 unfinished" beside a non-zero exit.
-        has_refused = result.refused > 0 or bool(result.abandoned)
+        has_refused = (
+            result.refused > 0
+            or bool(result.abandoned)
+            or bool(result.abandoned_units)
+        )
         if halt_code == gitops.EXIT_GIT_FAILED:
             result.status = "partial" if has_applied else "stopped"
         elif has_unfinished or (has_applied and has_refused):
@@ -2308,13 +2359,18 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
                 "refused": result.refused,
                 "unfinished": result.unfinished,
                 "abandoned": result.abandoned,
+                "abandoned_units": result.abandoned_units,
                 "close_out_error": result.close_out_error,
                 "coverage": result.coverage,
             },
         )
         # Ruling 2's notification, ONCE per closed-out run and never once
         # per record: a run transitions to `complete` exactly once and is
-        # never re-driven afterwards, so this is that one moment.
-        if complete and result.abandoned:
-            _notify_abandoned(home, run_id, manifest, result.abandoned)
+        # never re-driven afterwards, so this is that one moment. A close-out
+        # that abandoned only NON-record units is told too — it is still work
+        # the runner gave up on, and it was previously silent.
+        if complete and (result.abandoned or result.abandoned_units):
+            _notify_abandoned(
+                home, run_id, manifest, result.abandoned, result.abandoned_units
+            )
         return result

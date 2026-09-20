@@ -1779,6 +1779,7 @@ def _cmd_steward(args: argparse.Namespace) -> int:
                     "refused": result.refused,
                     "unfinished": result.unfinished,
                     "abandoned": result.abandoned,
+                    "abandoned_units": result.abandoned_units,
                     "close_out_error": result.close_out_error,
                     "coverage": result.coverage,
                     "stopped": result.stopped,
@@ -1793,6 +1794,15 @@ def _cmd_steward(args: argparse.Namespace) -> int:
             f"{result.calls} model call(s); coverage "
             + ", ".join(f"{key}={value}" for key, value in sorted(result.coverage.items()))
         )
+        if result.abandoned_units:
+            # A close-out can abandon a packet with zero abandoned RECORDS,
+            # because what was left open was a case recipe or a maintenance
+            # operation. Those have no parked successor to point at, so the
+            # run's own output is the only place they can be named.
+            print(
+                "steward run: dropped without a successor — "
+                + ", ".join(result.abandoned_units)
+            )
         if result.close_out_error:
             # S-68: a close-out is retried with no count of its own, so a
             # human running this by hand has to be able to SEE that it is

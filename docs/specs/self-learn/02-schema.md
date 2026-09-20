@@ -1014,7 +1014,14 @@ week — not on the run as a whole. Each such unit carries, in the manifest:
   04:15 boundary that opened it — and, when the cap closed it,
   `status: closed` with `outcome: attempts-exhausted`. The week is done
   because the run record says so; coverage cannot say it, since coverage does
-  not advance on a failed attempt.
+  not advance on a failed attempt. An overseer attempt that fails before it
+  has a run record — every failure of the first model call, and every phase-B
+  refusal — has nowhere else to put its trace, so it commits one note per
+  attempt under `overseer/failures/<week>/`, and the close-out's own note is
+  `overseer/failures/<week>/closed.md`. The week's attempt count is those
+  notes plus the run record's `attempt_count`; the two sources are disjoint,
+  because an attempt that reaches the run record writes its reason into the
+  record's `failure`/`failure_detail` instead of a note.
 
 A run record written before this rule has no `attempt_count`, and one is
 never invented for it: its count is DERIVED from the evidence the record
