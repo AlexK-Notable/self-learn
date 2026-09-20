@@ -106,6 +106,10 @@ one sheet for each coherent decision, the sheet linked to its case and
 every item attributed to `steward` — plus statement and user-model changes
 through their own declared stage formats (`cases/*.yaml`, `sheets/*.yaml`,
 `parked.yaml`, `revisions.yaml`, `model-updates.yaml`, `statements.yaml`).
+The exact shape of each file — every key, every allowed word, and a worked
+example of each — is the last block of your brief, generated from the same
+constants the runner's checkers read. You do not need to read this
+product's source code to find a format.
 You never call a mutation verb, edit the ledger or canon directly, or write
 an executor receipt yourself: the runner validates and applies what you
 staged, and only its receipts (case section 5) establish what actually

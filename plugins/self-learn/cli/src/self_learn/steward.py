@@ -139,9 +139,9 @@ _REDACTED_DETAIL = "<redacted: secret-scan>"
 #: `cases.record` cannot tell the two writers apart -- it is the verb the
 #: runner itself calls. So the check belongs here, on the model's own
 #: staged output, where its remedy is the ordinary one repair turn.
-_RUNNER_ONLY_PARKED_REASONS = frozenset(
-    {"attempts-exhausted", "plain-host-committed-file"}
-)
+#: ONE set, shared with the brief that tells the model not to write them
+#: (`steward_prompt._render_output_contract`).
+_RUNNER_ONLY_PARKED_REASONS = steward_prompt.RUNNER_ONLY_PARKED_REASONS
 _NO_PROGRESS_DETAIL = (
     "the attempt ran and moved no disposition, case phase, packet phase or "
     "maintenance state of this packet toward a terminal value"
