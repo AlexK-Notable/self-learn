@@ -136,6 +136,9 @@ unset SELF_LEARN_ANALYST_MODEL
 unset SELF_LEARN_ANALYST_TIMEOUT
 unset SELF_LEARN_SDK_CLI_PATH
 unset SELF_LEARN_SDK_MODEL_CLI_FLOORS
+# U4c: step 0 reports what a DEFAULT configuration chooses, so the operator's
+# own opt-out must not be inherited into this run.
+unset SELF_LEARN_SDK_PREFER_INSTALLED_CLI
 
 # ------------------------------------------------ the scratch ledger path
 REAL_LEDGER=$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd)/.self-learn
@@ -250,7 +253,33 @@ printf '\nbundled claude: %s (%s)\nworking claude: %s (%s)\nscratch ledger: %s\n
   "${BUNDLED:-<none>}" "$BUNDLED_VERSION" "${WORKING:-<none on PATH>}" "$WORKING_VERSION" \
   "$SELF_LEARN_HOME"
 
+# ===================================================================== 0
+# U4c (S-70). Informational, never a PASS or a FAIL: which binary a DEFAULT
+# configuration picks, and by which rule. Nothing is set in the scratch
+# ledger yet and every `SELF_LEARN_SDK_*` variable was unset above, so this
+# is the resolution a fresh install gets. Filesystem checks only — no model
+# call, and no binary is executed.
+printf 'STEP 0 (informational, no model call): what a DEFAULT configuration chooses\n'
+py '
+import sys
+try:
+    from self_learn import provider
+except ImportError:
+    print("  claude_agent_sdk / self_learn not importable; nothing to report")
+    sys.exit(0)
+choice = provider.resolve_cli_choice(sys.argv[1])
+nothing = "<nothing passed — the SDK chooses>"
+print(f"  cli_path passed to the SDK: {choice.path or nothing}")
+print(f"  rule:                       {choice.rule}")
+print(f"  the SDK would have chosen:  {choice.sdk_default or choice.sdk_reason}")
+' "$SELF_LEARN_HOME"
+printf '\n'
+
 # ===================================================================== 1
+# The binary here is pinned with SELF_LEARN_SDK_CLI_PATH deliberately: this
+# step needs the too-old bundled binary to be OPERATIVE, and since U4c an
+# unset setting would pick the installed Claude Code instead and the control
+# would never trip. Reaching it by the strongest rung is the point here.
 step 1 "positive control — the doctor's sdk row must FAIL against the bundled binary"
 if [ -z "$BUNDLED" ]; then
   skip "the SDK ships no _bundled/claude in this venv; there is no too-old binary to point at"

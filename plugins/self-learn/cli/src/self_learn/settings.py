@@ -1367,6 +1367,34 @@ REGISTRY: tuple[Setting, ...] = (
     # config.yaml. This entry has no such history: a floor is a fact
     # about the installed software that belongs in the ledger's own
     # config, with the env var reserved for a one-off probe.
+    # U4c (S-70): the opt-out for "use the Claude Code this machine has
+    # installed when `sdk.cli_path` is unset". Default TRUE, so a default
+    # install runs the binary the person keeps up to date rather than the
+    # one the wheel happened to bundle -- which on 2026-09-14 was 2.1.226,
+    # too old for `claude-fable-5-1`, so the steward and the overseer
+    # could not run at all. `false` restores the SDK's own order (bundled
+    # copy first). The reason to keep an off switch: an installed binary
+    # UPDATES ITSELF, while the SDK was built and tested against the
+    # bundled one, so a Claude Code update can change behaviour with no
+    # self-learn change at all. `doctor invocation`'s `sdk` row prints
+    # both versions and names the rule that chose the binary, so the
+    # trade is visible rather than silent. `direction` is left at the
+    # default `config-first` for the same reason `sdk.model_cli_floors`
+    # is: this key has no pre-registry history of callers relying on an
+    # environment variable (unlike `sdk.cli_path`, which is `env-first`
+    # only because `SELF_LEARN_SDK_CLI_PATH` predates the registry).
+    Setting(
+        name="sdk.prefer_installed_cli",
+        env_var="SELF_LEARN_SDK_PREFER_INSTALLED_CLI",
+        config_section="sdk",
+        config_key="prefer_installed_cli",
+        kind="bool",
+        default=True,
+        description=(
+            "when `sdk.cli_path` is unset, use the Claude Code installed on this machine "
+            "(PATH, then the SDK's own install locations) instead of the SDK's bundled copy"
+        ),
+    ),
     Setting(
         name="sdk.model_cli_floors",
         env_var="SELF_LEARN_SDK_MODEL_CLI_FLOORS",

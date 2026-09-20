@@ -293,11 +293,21 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
         # ledger home -- reported the 2.1.278 binary `config.yaml`
         # names. The two faces agree again only because both now read
         # the ledger home.
-        "cli_path": cast(
-            "str | None",
-            settings.resolve_setting(spec.settings_home, settings.by_name("sdk.cli_path"))[0],
-        )
-        or None,
+        #
+        # 2026-09-19 (U4c, S-70): and the same reasoning one step
+        # further. An UNSET `sdk.cli_path` used to mean "pass nothing",
+        # which handed the choice to the SDK -- and the SDK picks its
+        # own BUNDLED Claude Code first, 2.1.226 in the pinned wheel,
+        # too old for `claude-fable-5-1`. So a default install could not
+        # run the steward or the overseer at all. `provider.
+        # resolve_cli_choice` is that decision, made in ONE place and
+        # read by BOTH this launcher and `doctor invocation`'s `sdk`
+        # row: explicit setting, else the binary the person has
+        # installed, else nothing (and the SDK's bundled copy, exactly
+        # as before). It reads the registry entry itself, so the "one
+        # reader for `sdk.cli_path`" property the paragraphs above are
+        # about is unchanged.
+        "cli_path": provider.resolve_cli_choice(spec.settings_home).path,
         # `POL3` -- the three keys measured identical in §2.3
         # (`allowed_tools`, `setting_sources`, `strict_mcp_config`), a
         # FRESH dict every call, from the ONE shared definition both

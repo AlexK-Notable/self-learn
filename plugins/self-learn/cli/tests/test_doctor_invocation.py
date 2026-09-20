@@ -276,39 +276,35 @@ def test_dc4_sdk_row_injected_importer(monkeypatch):
     assert row4.verdict in provider.VERDICTS
 
 
-def test_dc4b_operative_probe_executes_the_sdk_resolved_path_not_path_claude(monkeypatch, tmp_path):
+def test_dc4b_operative_probe_executes_the_binary_a_session_would_launch(monkeypatch, tmp_path):
     """B-5 MAJOR (gate r1 on M-L): every assertion in `test_dc4` above
-    stubs `_operative_cli_version` itself -- one seam above
-    `_resolve_sdk_cli_path` and the real `subprocess.run` call -- so none
-    of them ever exercise the SDK integration or observe WHICH binary
-    actually gets executed. A regression that guts `_resolve_sdk_cli_path`
-    back to `shutil.which("claude")` (the pre-M-L, host-vs-bundled
-    resolution B-5 was written to retire) would sail through all of
-    `test_dc4` undetected, because `_operative_cli_version` is never
-    called for real there.
+    stubs `_operative_cli_version` itself -- one seam above the real
+    resolution and the real `subprocess.run` call -- so none of them ever
+    exercise the SDK integration or observe WHICH binary actually gets
+    executed. This test instead fakes only the SDK's own `_find_cli`
+    (`tests/conftest.py` otherwise blocks it for the whole session) and
+    `shutil.which("claude")`, lets `resolve_cli_choice`,
+    `_operative_cli_version` and `_sdk_row` all run for real, and spies
+    on `subprocess.run` to pin the literal argv executed.
 
-    This test instead fakes only the SDK's own `_find_cli` (the resolver
-    `_resolve_sdk_cli_path` calls, one level below the seam `test_dc4`
-    stubs) and `shutil.which("claude")` (the PATH lookup
-    `_host_cli_context` calls) -- letting `_resolve_sdk_cli_path`,
-    `_operative_cli_version`, and `_sdk_row` all run for real -- then
-    spies on the real `subprocess.run` (the same
-    `monkeypatch.setattr(subprocess, "run", ...)` seam `test_dc10` uses
-    in this file, but wrapping the real call rather than replacing it)
-    to pin the literal argv actually executed.
+    **The rule this pins changed on 2026-09-19 (U4c, S-70), and the
+    change is the point of that unit.** B-5's original rule was "the
+    operative binary is what `_find_cli` resolves, NEVER whatever
+    `claude` is on PATH" -- correct while an unset `sdk.cli_path` meant
+    the SDK chose, bundled copy first. With the installed binary now
+    preferred by default, the PATH `claude` IS what a session launches,
+    so the doctor must probe exactly that; probing the SDK's bundled
+    copy instead would recreate the disagreement B-5 exists to prevent,
+    pointing the other way. The invariant is unchanged and is what both
+    halves below assert: **the doctor probes the binary a session would
+    launch.** Case 3 keeps the ORIGINAL expectation under the opt-out,
+    where the SDK's order is restored and B-5's literal wording again
+    describes the behaviour.
 
-    MUTATION that turns this red: revert `_resolve_sdk_cli_path`'s body
-    to `return shutil.which("claude"), ""` (the old PATH-based
-    resolution). Case 1 below would then execute the PATH-`claude` fake
-    script (reporting "9.9.9", never seen by the real fix) instead of the
-    SDK-resolved one ("1.0.0") -- the argv assertion fails; Case 2's WARN
-    would name the wrong pair, or PASS wrongly, depending on what the
-    fake PATH script happens to report.
-
-    ALSO catches the gate's own ML1 mutation: `_operative_cli_version`
-    calling `shutil.which("claude")` directly instead of going through
-    `_resolve_sdk_cli_path` at all -- `_fake_which` below answers that
-    call too, so the same argv assertion fails the same way."""
+    MUTATION that turns this red: make `_operative_cli_version` resolve
+    anything other than `resolve_cli_choice`'s answer -- model
+    `_find_cli` directly again (cases 1 and 2 execute the wrong script),
+    or read `shutil.which("claude")` unconditionally (case 3 does)."""
     import claude_agent_sdk._internal.transport.subprocess_cli as subprocess_cli_mod
 
     def _make_fake_cli(name: str, version_line: str) -> Path:
@@ -339,35 +335,50 @@ def test_dc4b_operative_probe_executes_the_sdk_resolved_path_not_path_claude(mon
 
     fake = types.SimpleNamespace(
         __version__="0.2.999",
-        _cli_version=types.SimpleNamespace(__cli_version__="1.0.0"),
+        _cli_version=types.SimpleNamespace(__cli_version__="9.9.9"),
     )
 
-    # -- Case 1: operative pair agrees (bundled == sdk-resolved "1.0.0");
-    # PATH claude differs wildly ("9.9.9") -- must PASS, and the executed
-    # argv must be the sdk-resolved script, never the PATH one.
+    # -- Case 1 (U4c): nothing pins the binary, so the INSTALLED one --
+    # the PATH `claude`, "9.9.9" -- is what a session launches and what
+    # the probe must execute. The bundled requirement is "9.9.9" here,
+    # so the pair matches and the row PASSes.
     monkeypatch.setattr(
         subprocess_cli_mod.SubprocessCLITransport, "_find_cli", lambda self: str(sdk_script_x)
     )
     row = provider._sdk_row(importer=lambda: fake)
     assert row.verdict == "PASS", row.detail
-    assert calls == [[str(sdk_script_x), "--version"]], calls
-    # host-cli-path is a PATH only (B-5: never executed, never a version) --
-    # the PATH script's location is surfaced as context, its "9.9.9" content
-    # is never read because it is never run.
+    assert calls == [[str(path_script_y), "--version"]], calls
+    assert "installed (PATH)" in row.detail
     assert str(path_script_y) in row.detail
 
-    # -- Case 2: operative pair disagrees ("1.0.0" bundled, "2.0.0"
-    # sdk-resolved) -- INFO naming both (U4 (S-68) downgraded plain
-    # inequality from WARN); PATH claude ("9.9.9") still never touched.
+    # -- Case 2 (U4c): an EXPLICIT `sdk.cli_path` still outranks the
+    # installed binary, and the probe follows it -- "1.0.0" against a
+    # "9.9.9" bundled requirement, so the row is INFO naming both.
     calls.clear()
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(sdk_script_x))
+    row2 = provider._sdk_row(importer=lambda: fake)
+    assert row2.verdict == "INFO", row2.detail
+    assert "1.0.0" in row2.detail and "9.9.9" in row2.detail
+    assert calls == [[str(sdk_script_x), "--version"]], calls
+    assert "explicit sdk.cli_path" in row2.detail
+    monkeypatch.delenv("SELF_LEARN_SDK_CLI_PATH")
+
+    # -- Case 3: B-5's ORIGINAL expectation, preserved where it still
+    # applies. With `sdk.prefer_installed_cli` off the SDK's own order is
+    # restored, so the SDK-resolved script runs and the PATH `claude`
+    # ("9.9.9") is never touched even though `shutil.which` answers for
+    # it -- the row surfaces it as context only.
+    calls.clear()
+    monkeypatch.setenv("SELF_LEARN_SDK_PREFER_INSTALLED_CLI", "0")
     sdk_script_z = _make_fake_cli("sdk-claude-z", "2.0.0 (Claude Code)")
     monkeypatch.setattr(
         subprocess_cli_mod.SubprocessCLITransport, "_find_cli", lambda self: str(sdk_script_z)
     )
-    row2 = provider._sdk_row(importer=lambda: fake)
-    assert row2.verdict == "INFO", row2.detail
-    assert "1.0.0" in row2.detail and "2.0.0" in row2.detail
+    row3 = provider._sdk_row(importer=lambda: fake)
+    assert row3.verdict == "INFO", row3.detail
+    assert "2.0.0" in row3.detail and "9.9.9" in row3.detail
     assert calls == [[str(sdk_script_z), "--version"]], calls
+    assert str(path_script_y) in row3.detail  # context, never executed
 
 
 # ------------------------------------------------------------------ U4
