@@ -1778,6 +1778,7 @@ def _cmd_steward(args: argparse.Namespace) -> int:
                     "calls": result.calls,
                     "refused": result.refused,
                     "unfinished": result.unfinished,
+                    "abandoned": result.abandoned,
                     "coverage": result.coverage,
                     "stopped": result.stopped,
                 }
@@ -1787,6 +1788,7 @@ def _cmd_steward(args: argparse.Namespace) -> int:
         print(
             f"steward run: {result.status} — {len(result.decided)} decided, "
             f"{result.refused} refused, {len(result.unfinished)} unfinished, "
+            f"{len(result.abandoned)} abandoned, "
             f"{result.calls} model call(s); coverage "
             + ", ".join(f"{key}={value}" for key, value in sorted(result.coverage.items()))
         )

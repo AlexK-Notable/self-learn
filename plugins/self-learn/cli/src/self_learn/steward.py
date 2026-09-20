@@ -12,6 +12,7 @@ import io
 import json
 import math
 import re
+import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -37,6 +38,7 @@ from . import (
     worker,
 )
 from .ledger import discover_buckets
+from .overseer import notify as overseer_notify
 from .records import Record, RecordError
 from .primitives import chrono
 from .primitives import fsops
@@ -53,6 +55,9 @@ class RunResult:
     calls: int = 0
     refused: int = 0
     unfinished: list[str] = field(default_factory=list)
+    #: S-68 ruling 2: the records this run closed out at `runs.attempt_cap`,
+    #: each carrying a parked successor case the overseer will decide.
+    abandoned: list[str] = field(default_factory=list)
     coverage: dict[str, int] = field(default_factory=dict)
 
 
@@ -86,6 +91,239 @@ _CASE_OUTCOMES = (
 _CASE_SCOPES = ("user", "project", "skill")
 _TERMINAL_DISPOSITIONS = frozenset({"applied", "parked", "refused", "abandoned"})
 _SUCCESS_RECEIPT_STATES = frozenset({"applied", "already-applied"})
+
+#: A case recipe nothing will ever re-drive — exactly the set
+#: :func:`_apply_packet` skips when it resumes a packet.
+_TERMINAL_CASE_PHASES = frozenset({"complete", "parked", "refused"})
+#: A packet a later run must never pick up again (A20/A21, S-68). `complete`
+#: is in here, which is precisely why it is now stamped ONLY when every one
+#: of the packet's units is itself terminal: before that gate, a failed
+#: receipt write stamped the packet `complete` over a case left `unfinished`,
+#: later runs skipped it, and the run stayed unfinished forever.
+_TERMINAL_PACKET_PHASES = frozenset({"complete", "refused", "abandoned"})
+#: Phases meaning "the model has already produced this packet's frozen
+#: recipe". Resuming one of these re-drives the ledger work with NO model
+#: call; any other phase (`pending`, `invoking` from a killed run,
+#: `unfinished` from a failed one) gets a fresh session.
+_MODEL_DONE_PHASES = frozenset({"prepared", "applying", "maintenance"})
+#: Ordered so a comparison can answer S-68's PROGRESS question — "did this
+#: unit move TOWARD a terminal value", never "did HEAD move".
+_PACKET_PHASE_RANK = {
+    "pending": 0, "invoking": 0, "unfinished": 0,
+    "prepared": 1, "applying": 2, "maintenance": 3,
+    "complete": 4, "refused": 4, "abandoned": 4,
+}
+#: 02-schema §3a: `failure_detail` is at most 2,000 characters, truncated
+#: with a trailing ellipsis, and secret-scanned on write.
+_FAILURE_DETAIL_MAX = 2000
+_REDACTED_DETAIL = "<redacted: secret-scan>"
+_NO_PROGRESS_DETAIL = (
+    "the attempt ran and moved no disposition, case phase, packet phase or "
+    "maintenance state of this packet toward a terminal value"
+)
+
+
+def _failure_detail(text: object) -> str | None:
+    """The message the transport or the validator actually returned.
+
+    02-schema §3a: bounded at :data:`_FAILURE_DETAIL_MAX`, secret-scanned
+    on write, and a scan hit REDACTS rather than suppresses — "a trace is
+    never suppressed by its own content, because a failure whose reason
+    lives only in the git-ignored cache journal is the state this field
+    exists to end" (A23: the 2026-09-14 outage committed `exit` and kept
+    the API's own sentence in the cache). Newlines are folded to spaces so
+    one committed field stays one readable line and can never present a
+    heading-shaped line to `cases.record`'s free-text checks.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    if secret_scan(raw):
+        return _REDACTED_DETAIL
+    # A leading '#' would render as a heading-shaped line in the parked
+    # case the close-out writes from this text, which `cases.record`
+    # refuses outright -- and a refused close-out is the very state S-68
+    # exists to end.
+    flat = " ".join(raw.split()).lstrip("#").strip()
+    if not flat:
+        return None
+    if len(flat) > _FAILURE_DETAIL_MAX:
+        return flat[: _FAILURE_DETAIL_MAX - 1] + "…"
+    return flat
+
+
+def _attempt_count(packet: dict) -> int:
+    """How many attempts this packet has had (02-schema §3a).
+
+    "A run record written before this rule has no `attempt_count`, and one
+    is never invented for it: its count is DERIVED from the evidence the
+    record already carries — for a steward packet, the number of rows of
+    kind `decision` in that packet's own `attempts` list." The run left
+    stuck on 2026-09-14 is exactly that shape.
+    """
+    value = packet.get("attempt_count")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return sum(
+        1
+        for row in packet.get("attempts") or []
+        if isinstance(row, dict) and row.get("kind") == "decision"
+    )
+
+
+def _non_terminal_records(packet: dict) -> list[str]:
+    dispositions = packet.get("dispositions") or {}
+    return [
+        row["record"]
+        for row in packet.get("inputs") or []
+        if (dispositions.get(row["record"]) or {}).get("state") not in _TERMINAL_DISPOSITIONS
+    ]
+
+
+def _packet_units_terminal(manifest: dict, packet: dict) -> bool:
+    """A20/A21: every input disposed, every case recipe finished, every
+    maintenance operation settled. Anything less and the packet is NOT
+    stamped `complete`, so the next run re-drives it (the receipt write is
+    idempotent by `(sheet_sha, item)` key, so re-driving it is safe)."""
+    dispositions = packet.get("dispositions") or {}
+    for row in packet.get("inputs") or []:
+        if (dispositions.get(row["record"]) or {}).get("state") not in _TERMINAL_DISPOSITIONS:
+            return False
+    recipes = manifest.get("cases") or {}
+    for case_id in packet.get("case_ids") or []:
+        if (recipes.get(case_id) or {}).get("phase") not in _TERMINAL_CASE_PHASES:
+            return False
+    for operation in packet.get("maintenance") or []:
+        if operation.get("state") not in {"applied", "refused"}:
+            return False
+    return True
+
+
+def _progress_signature(manifest: dict, packet_index: int) -> dict[str, int]:
+    """S-68 PROGRESS, as a per-unit rank the caller can compare.
+
+    A key absent from the "before" reading counts as 0, so a unit that did
+    not exist at the start of the attempt and exists now IS progress. This
+    is deliberately not "HEAD moved": the steward's stall leaves HEAD
+    perfectly still (a byte-identical publish returns early) while the
+    overseer's moves it on every run.
+    """
+    packet = manifest["packets"][packet_index - 1]
+    recipes = manifest.get("cases") or {}
+    signature = {"packet": _PACKET_PHASE_RANK.get(str(packet.get("phase")), 0)}
+    for record_id, value in (packet.get("dispositions") or {}).items():
+        state = (value or {}).get("state") if isinstance(value, dict) else None
+        signature[f"disposition:{record_id}"] = 2 if state in _TERMINAL_DISPOSITIONS else 1
+    for case_id in packet.get("case_ids") or []:
+        phase = (recipes.get(case_id) or {}).get("phase")
+        signature[f"case:{case_id}"] = 2 if phase in _TERMINAL_CASE_PHASES else 1
+    for operation in packet.get("maintenance") or []:
+        state = operation.get("state")
+        signature[f"maintenance:{operation.get('id')}"] = (
+            2 if state in {"applied", "refused"} else 1
+        )
+    return signature
+
+
+def _made_progress(before: dict[str, int], after: dict[str, int]) -> bool:
+    return any(value > before.get(key, 0) for key, value in after.items())
+
+
+def _reattempt_packet(packet: dict) -> None:
+    """S-68 ruling 1: a later run re-attempts a bound packet "as a FRESH
+    attempt with its OWN single repair turn". The reset is committed with
+    the attempt-start increment, so a crash cannot leave a packet claiming
+    a repair turn it already spent. Dispositions that already reached a
+    terminal state are KEPT — only the unfinished ones are cleared."""
+    packet.update(
+        phase="invoking",
+        bound=None,
+        failure=None,
+        failure_detail=None,
+        repair_remaining=1,
+    )
+    packet.pop("error", None)
+    dispositions = packet.get("dispositions") or {}
+    packet["dispositions"] = {
+        record_id: value
+        for record_id, value in dispositions.items()
+        if isinstance(value, dict) and value.get("state") in _TERMINAL_DISPOSITIONS
+    }
+
+
+def _start_attempt(
+    manifest: dict, packet_index: int, *, attempt: int, at: str, fresh: bool
+) -> None:
+    """02-schema §3a: `attempt_count` increments ONCE at the START of every
+    attempt, committed with `last_attempt_at` BEFORE the first model call,
+    "so an attempt that makes zero calls, raises, or is killed still
+    counts". The run-level stamp is what `serve._steward_is_due` reads."""
+    manifest["last_attempt_at"] = at
+    packet = manifest["packets"][packet_index - 1]
+    packet["attempt_count"] = attempt
+    packet["last_attempt_at"] = at
+    if fresh:
+        _reattempt_packet(packet)
+
+
+def _record_failure(
+    manifest: dict,
+    packet_index: int,
+    *,
+    attempts: list,
+    phase: str,
+    failure: str,
+    detail: str | None,
+    duration: float | None,
+    dispositions: dict,
+    error: str | None = None,
+) -> None:
+    """A2: every failure path changes NAMED fields on the record just read
+    from HEAD. The publish it replaces wrote a whole pre-invocation copy
+    back over HEAD, which rewound `last_attempt_at` to null and made the
+    scheduler think the run was due again on the very next tick."""
+    packet = manifest["packets"][packet_index - 1]
+    packet["attempts"] = list(attempts)
+    packet["phase"] = phase
+    packet["bound"] = failure
+    packet["failure"] = failure
+    packet["failure_detail"] = detail
+    if duration is not None:
+        packet["duration_secs"] = duration
+    if error is not None:
+        packet["error"] = error
+    packet.setdefault("dispositions", {}).update(dispositions)
+
+
+def _finish_packet_attempt(
+    manifest: dict, packet_index: int, *, terminal: bool, progressed: bool, at: str
+) -> None:
+    """Close one attempt on the record: stamp `progress_at`, stamp
+    `complete` only when every unit of the packet is terminal (A20/A21),
+    and otherwise record S-68's generic guard — an attempt that ran and
+    moved nothing is a failed attempt, so a trap nobody thought of still
+    reaches the cap instead of spinning."""
+    packet = manifest["packets"][packet_index - 1]
+    if progressed:
+        packet["progress_at"] = at
+    if terminal:
+        packet["phase"] = "complete"
+        return
+    if progressed:
+        return
+    packet["failure"] = "no-progress"
+    packet["failure_detail"] = _NO_PROGRESS_DETAIL
+    dispositions = packet.setdefault("dispositions", {})
+    for row in packet.get("inputs") or []:
+        record_id = row["record"]
+        value = dispositions.get(record_id)
+        if isinstance(value, dict) and value.get("state") in _TERMINAL_DISPOSITIONS:
+            continue
+        updated = dict(value) if isinstance(value, dict) else {}
+        updated.update(
+            state="unfinished", input_version=row["version"], reason="no-progress"
+        )
+        dispositions[record_id] = updated
 
 
 def cache_dir(home: Path | str | None = None) -> Path:
@@ -1043,6 +1281,216 @@ def _reconcile_runs(home: Path) -> list[dict]:
     return [row for row in manifests if row.get("status") != "complete"]
 
 
+# ------------------------------------------- close-out (S-68 ruling 2)
+#
+# Deliberately module-level functions, not closures inside `run`: the lock
+# invariant's walker treats a nested closure as its own node, and these
+# reach the ledger only through the lock-owning `cases.record` /
+# `cases.observe` verbs and `_update_manifest`.
+
+
+def _packet_line_span(text: str, packet_index: int) -> tuple[int, int]:
+    """The 1-based line span of one packet object inside the committed
+    manifest, for the `#L<a>-<b>` half of the parked case's evidence
+    reference. This module writes that file itself
+    (`json.dumps(..., indent=2, sort_keys=True)`), so a packet object
+    always opens on a line of exactly four spaces and a brace."""
+    lines = text.splitlines()
+    inside = False
+    seen = 0
+    start: int | None = None
+    for number, line in enumerate(lines, start=1):
+        if not inside:
+            if line.strip() == '"packets": [':
+                inside = True
+            continue
+        if line.startswith("  ]"):
+            break
+        if line.startswith("    {"):
+            seen += 1
+            start = number
+        elif line.startswith("    }") and start is not None:
+            if seen == packet_index:
+                return start, number
+            start = None
+    return 1, max(1, len(lines))
+
+
+def _record_scope(home: Path, record_id: str) -> str:
+    """The abandoned record's own scope, for the parked case's section 1."""
+    try:
+        path = ledger_ops.find_record_path(home, record_id)
+        scope = Record.from_text(path.read_text(encoding="utf-8")).scope
+    except (ledger_ops.LedgerOpsError, RecordError, OSError):
+        return "unknown"
+    return str(scope or "unknown")
+
+
+def _successor_case_for(home: Path, run_id: str, record_id: str) -> str | None:
+    """02-schema §3a: "a successor that already exists is reused, never
+    duplicated". Looked up from committed cases rather than matched on
+    content, because the evidence reference names HEAD and HEAD moves."""
+    for row in cases.list_cases(
+        home, only_ok=True, record_id=record_id, parked_reason="attempts-exhausted"
+    ):
+        if row.get("actor") != "steward" or list(row.get("records") or []) != [record_id]:
+            continue
+        case_id = str(row.get("case") or "")
+        try:
+            view = cases.show(home, case_id, evidence_only=False)
+        except cases.CaseError:
+            continue
+        if view.frontmatter.get("run_id") == run_id:
+            return case_id
+    return None
+
+
+def _observe_abandonment(home: Path, case_id: str, record_id: str, successor: str) -> None:
+    """When the abandoned item already belongs to a case, §3a.2 section 6
+    gets an `abandoned` later observation naming the successor. The
+    reserved id and the fixed text make a retry idempotent."""
+    reserved = "obs-" + hashlib.sha256(
+        f"{case_id}:{record_id}:{successor}".encode("utf-8")
+    ).hexdigest()[:8]
+    cases.observe(
+        home,
+        case_id,
+        "abandoned",
+        text=(
+            f"{record_id} reached the steward's attempt cap without being "
+            f"decided; parked for the overseer as {successor}"
+        ),
+        by="steward",
+        reserved_id=reserved,
+    )
+
+
+def _close_out_packet(home: Path, run_id: str, packet_index: int) -> list[str]:
+    """Close one exhausted packet: a parked case per undecided record, the
+    `abandoned` disposition naming it, and the packet phase.
+
+    Ruling 2, and 02-schema §3a's shape for it. The packet becomes
+    `abandoned` — and so the run can complete and a NEW run can start —
+    only once every abandoned item's `successor_case` actually exists, so
+    a close-out whose ledger write fails is simply retried by the next
+    run, with no count of its own.
+    """
+    manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
+    packet = manifest["packets"][packet_index - 1]
+    attempts = _attempt_count(packet)
+    kind = str(packet.get("failure") or packet.get("bound") or "no-progress")
+    detail = str(packet.get("failure_detail") or kind)
+    versions = {row["record"]: row["version"] for row in packet.get("inputs") or []}
+    relative = f"cases/runs/{run_id}.json"
+    committed = gitops._git(home, "show", f"HEAD:{relative}")  # noqa: SLF001
+    first, last = _packet_line_span(committed.stdout, packet_index)
+    reference = f"ledger@{gitops.head_sha(home)}:{relative}#L{first}-{last}"
+    run_dir = _project_manifest(home, manifest)
+    dispositions: dict[str, dict] = {}
+    closed: list[str] = []
+    for record_id in _non_terminal_records(packet):
+        successor = _successor_case_for(home, run_id, record_id)
+        if successor is None:
+            stage_path = run_dir / f"close-out-{packet_index:04d}-{record_id}.yaml"
+            _dump_yaml(stage_path, {
+                "kind": "parked",
+                "trigger": "nightly",
+                "outcome": "parked",
+                "parked_for": "overseer",
+                "parked_reason": "attempts-exhausted",
+                "run_id": run_id,
+                "records": [record_id],
+                "scope": _record_scope(home, record_id),
+                "question": (
+                    f"the steward's decision for {record_id} reached the attempt "
+                    f"cap after {attempts} attempts without ever being decided; "
+                    "decide this lesson itself, using the recorded failure reason "
+                    "as evidence"
+                ),
+                "evidence": [{"ref": reference, "quote": detail}],
+                "decision": {
+                    "because": (
+                        "what stopped the steward was the machinery, not the "
+                        f"merits: every attempt ended with {kind}"
+                    ),
+                    "confidence": "provisional",
+                    "what_would_change": [
+                        "the overseer decides this lesson itself on the record's "
+                        "own evidence",
+                    ],
+                },
+                "dependencies": {
+                    "statements": [], "user_model": [], "conditions": [], "capabilities": [],
+                },
+            })
+            successor = cases.record(home, stage_path, actor="steward")
+        previous = (packet.get("dispositions") or {}).get(record_id) or {}
+        owning_case = previous.get("case")
+        if isinstance(owning_case, str) and owning_case != successor:
+            _observe_abandonment(home, owning_case, record_id, successor)
+        dispositions[record_id] = {
+            "state": "abandoned",
+            "input_version": versions.get(record_id),
+            "attempts": attempts,
+            "reason": detail,
+            "successor_case": successor,
+        }
+        closed.append(record_id)
+    _journal(home, {
+        "ts": chrono.now_iso(), "run_id": run_id, "status": "abandoned",
+        "packet": packet_index, "attempts": attempts, "failure": kind,
+        "records": closed,
+    })
+    _update_manifest(
+        home, run_id, reason=f"packet {packet_index} abandoned",
+        update=lambda current: (
+            current["packets"][packet_index - 1].update(
+                phase="abandoned", failure=kind, failure_detail=detail
+            ),
+            current["packets"][packet_index - 1].setdefault("dispositions", {}).update(
+                dispositions
+            ),
+        ),
+    )
+    return closed
+
+
+def _close_out_exhausted(home: Path, run_id: str, attempt_cap: int) -> list[str]:
+    """Every packet at the cap that is still not terminal, closed by the
+    RUNNER — never by the model, which by definition never produced
+    anything for these records."""
+    manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
+    closed: list[str] = []
+    for packet in manifest.get("packets") or []:
+        if packet.get("phase") in _TERMINAL_PACKET_PHASES:
+            continue
+        if _attempt_count(packet) < attempt_cap:
+            continue
+        closed.extend(_close_out_packet(home, run_id, int(packet["index"])))
+    return closed
+
+
+def _notify_abandoned(home: Path, run_id: str, manifest: dict, abandoned: list[str]) -> None:
+    """Ruling 2's "the user is notified", ONCE per closed-out run (not once
+    per record), through the shipped notification helper unchanged — this
+    module never calls `notify-send` itself."""
+    kinds = sorted({
+        str(packet.get("failure") or packet.get("bound") or "no-progress")
+        for packet in manifest.get("packets") or []
+        if packet.get("phase") == "abandoned"
+    })
+    summary = (
+        f"self-learn steward: {len(abandoned)} lesson(s) parked for the overseer "
+        f"— run {run_id} reached the attempt cap and decided none of them "
+        f"({', '.join(kinds) or 'unknown failure'})"
+    )
+    try:
+        overseer_notify.send(home, "routine", summary, list(abandoned))
+    except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
+        _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+            "status": "notify-failed", "error": str(exc)})
+
+
 def _apply_packet(home: Path, run_id: str, packet_index: int) -> tuple[list[str], int, int | None]:
     """Continue one prepared packet using its immutable committed recipes."""
     decided: list[str] = []
@@ -1053,7 +1501,11 @@ def _apply_packet(home: Path, run_id: str, packet_index: int) -> tuple[list[str]
     if dirty:
         _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "dirty-refused",
             "paths": dirty, "error": "unexplained ledger paths refuse continuation"})
-        return [], 0, 8
+        # A25: `gitops.EXIT_GIT_FAILED`, not 8. `8` is `EXIT_BATCH_PARTIAL`,
+        # which means "the ledger DID change"; nothing was written here, and
+        # `run`'s own early return tests for EXIT_GIT_FAILED — so the literal
+        # 8 meant the "git failed" branch almost never fired.
+        return [], 0, gitops.EXIT_GIT_FAILED
     run_dir = _project_manifest(home, manifest)
     packet = manifest["packets"][packet_index - 1]
     inputs = {row["record"]: row["version"] for row in packet["inputs"]}
@@ -1131,7 +1583,7 @@ def _apply_packet(home: Path, run_id: str, packet_index: int) -> tuple[list[str]
                     _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
                         "status": "dirty-refused", "paths": dirty,
                         "error": "unexplained ledger paths before batch dispatch"})
-                    return list(dict.fromkeys(decided)), refused, 8
+                    return list(dict.fromkeys(decided)), refused, gitops.EXIT_GIT_FAILED
                 continuation = batch.BatchContinuation(
                     run_id=run_id, case_id=case_id, sheet_digest=str(recipe["sheet_digest"]),
                     completed=_recovered_items(home, manifest, case_id, recipe, items),
@@ -1177,7 +1629,7 @@ def _apply_packet(home: Path, run_id: str, packet_index: int) -> tuple[list[str]
         except gitops.GitOpsError as exc:
             _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "dirty-refused",
                 "paths": _dirty_truth_paths(home), "error": str(exc)})
-            return list(dict.fromkeys(decided)), refused, 8
+            return list(dict.fromkeys(decided)), refused, gitops.EXIT_GIT_FAILED
         if result.process_code in {5, 6, 7, 8} or result.stopped_at is not None or halt_code is not None:
             halt_code = result.process_code or halt_code or 8
             break
@@ -1275,8 +1727,12 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
         max_turns_value, _source = settings.resolve_setting(
             home, settings.by_name("sdk.max_turns.steward")
         )
+        attempt_cap_value, _source = settings.resolve_setting(
+            home, settings.by_name("runs.attempt_cap")
+        )
         packet_size = cast(int | str, packet_size_value)
         max_turns = cast(int | str, max_turns_value)
+        attempt_cap = int(cast(int | str, attempt_cap_value))
         if unfinished_runs:
             manifest = unfinished_runs[0]
             run_id = str(manifest["run_id"])
@@ -1308,6 +1764,9 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
                     "predecessors": predecessors, "phase": "pending", "attempts": [],
                     "repair_remaining": 1, "case_ids": [], "maintenance": [],
                     "dispositions": {}, "bound": None, "failure": None,
+                    # 02-schema §3a, the attempt-counting fields.
+                    "attempt_count": 0, "last_attempt_at": None,
+                    "progress_at": None, "failure_detail": None,
                 })
             manifest = {
                 "version": 1, "actor": "steward", "run_id": run_id,
@@ -1334,12 +1793,51 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
             if not dry_run:
                 manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
             packet_record = manifest["packets"][packet_index - 1]
-            if packet_record.get("phase") in {"complete", "refused", "unfinished"}:
+            phase = str(packet_record.get("phase") or "")
+            # A1 (S-68 ruling 1): `unfinished` has LEFT this skip set. A
+            # packet whose model call failed, whose turn bound was hit, or
+            # whose second schema validation failed is re-attempted here by
+            # a LATER run; only a terminal phase is skipped. Before this,
+            # `unfinished` was both "never retried" and "keeps the run
+            # open", which is the exact state S-68 forbids.
+            if phase in _TERMINAL_PACKET_PHASES:
                 continue
-            proposals = [row["proposal"] for row in packet_record["inputs"]]
+            # S-68 ruling 2: at `runs.attempt_cap` the runner stops
+            # attempting and `_close_out_exhausted` below the loop writes
+            # the parked successor cases. Counting another attempt here
+            # would also mean a close-out whose ledger write failed could
+            # never be retried "with no count of its own" (02-schema §3a).
+            attempts_made = _attempt_count(packet_record)
+            if attempts_made >= attempt_cap:
+                if dry_run:
+                    result.abandoned.extend(_non_terminal_records(packet_record))
+                continue
+            needs_model = phase not in _MODEL_DONE_PHASES
             stage = run_dir / "steward" / f"packet-{packet_index:04d}"
+            if needs_model:
+                # A24: empty the stage before a fresh session. A re-attempt
+                # used to validate the new session's files BESIDE the failed
+                # session's leftovers.
+                shutil.rmtree(stage, ignore_errors=True)
             stage.mkdir(parents=True, exist_ok=True)
-            if packet_record.get("phase") not in {"prepared", "applying", "maintenance"}:
+            attempt_at = chrono.now_iso()
+            attempt_no = attempts_made + 1
+            if dry_run:
+                if needs_model:
+                    _reattempt_packet(packet_record)
+            else:
+                _update_manifest(
+                    home, run_id, reason=f"packet {packet_index} attempt {attempt_no}",
+                    update=lambda current: _start_attempt(
+                        current, packet_index, attempt=attempt_no, at=attempt_at,
+                        fresh=needs_model,
+                    ),
+                )
+                manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
+                packet_record = manifest["packets"][packet_index - 1]
+            before = _progress_signature(manifest, packet_index)
+            proposals = [row["proposal"] for row in packet_record["inputs"]]
+            if needs_model:
                 context = steward_prompt.RunContext(
                     run_id=run_id, stage_dir=stage, packet_index=packet_index,
                     packet_count=packet_count, last_run_at=_completed_manifest_time(home),
@@ -1350,34 +1848,51 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
                 fsops.atomic_write(run_dir / f"packet-{packet_index:04d}.md", prompt.text, fsync=True)
                 spec = _session_spec(home, run_dir, prompt.text, label=f"steward-{run_id}-{packet_index}")
                 started = time.monotonic()
-                if not dry_run:
-                    _update_manifest(home, run_id, reason=f"packet {packet_index} invocation", update=lambda current: (
-                        current.update(last_attempt_at=chrono.now_iso()),
-                        current["packets"][packet_index - 1].update(phase="invoking"),
-                    ))
                 outcome = invocation.write_session(spec)
                 duration = float(time.monotonic() - started)
                 result.calls += 1
-                attempt = {"kind": "decision", "turns": getattr(outcome, "turns", None),
+                turns = getattr(outcome, "turns", None)
+                attempt = {"kind": "decision", "turns": turns,
                     "failure": outcome.failure, "duration_secs": duration}
                 packet_record.setdefault("attempts", []).append(attempt)
                 packet_record["duration_secs"] = duration
-                if not outcome.ok or (
-                    getattr(outcome, "turns", None) is not None
-                    and getattr(outcome, "turns") >= int(max_turns)
-                ):
-                    packet_record["bound"] = "turns" if outcome.ok else outcome.failure or "invocation"
-                    packet_record["phase"] = "unfinished"
-                    packet_record["failure"] = packet_record["bound"]
-                    for row in packet_record["inputs"]:
-                        packet_record["dispositions"][row["record"]] = {
+                if not outcome.ok or (turns is not None and turns >= int(max_turns)):
+                    bound = "turns" if outcome.ok else outcome.failure or "invocation"
+                    # A23: the message the transport actually returned, not
+                    # just its kind. `exit` alone is what made the
+                    # 2026-09-14 outage unreadable from the ledger.
+                    detail = _failure_detail(
+                        f"the session reached the {max_turns}-turn bound at {turns} turns"
+                        if outcome.ok
+                        else outcome.detail
+                    )
+                    bound_dispositions = {
+                        row["record"]: {
                             "state": "unfinished", "input_version": row["version"],
-                            "reason": packet_record["bound"],
+                            "reason": bound,
                         }
-                    if not dry_run:
-                        _publish_manifest(home, manifest if manifest["packets"][packet_index - 1] is packet_record else execution_evidence.read_manifest(home, run_id, at="HEAD"), reason=f"packet {packet_index} unfinished")
-                        # Reapply the local outcome when invocation-start was committed first.
-                        _update_manifest(home, run_id, reason=f"packet {packet_index} bound", update=lambda current: current["packets"][packet_index - 1].update(packet_record))
+                        for row in packet_record["inputs"]
+                    }
+                    failure_fields = {
+                        "attempts": packet_record.get("attempts") or [],
+                        "phase": "unfinished", "failure": bound, "detail": detail,
+                        "duration": duration, "dispositions": bound_dispositions,
+                    }
+                    if dry_run:
+                        _record_failure(manifest, packet_index, **failure_fields)
+                    else:
+                        # A2: ONE update over the record read from HEAD,
+                        # changing named fields. The publish this replaces
+                        # wrote the whole pre-invocation copy back, erasing
+                        # the `last_attempt_at` the attempt-start just
+                        # committed — the scheduler then saw "due now" on
+                        # every 60-second tick, forever, making zero calls.
+                        _update_manifest(
+                            home, run_id, reason=f"packet {packet_index} {bound}",
+                            update=lambda current: _record_failure(
+                                current, packet_index, **failure_fields
+                            ),
+                        )
                     continue
                 try:
                     _validate_and_prepare_stage(stage, set(packet_record["records"]))
@@ -1401,19 +1916,44 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
                         except ValueError as exc:
                             second_error = exc
                     if second_error is not None:
-                        packet_record.update(phase="unfinished", bound="schema-repair", error=str(second_error))
-                        for row in packet_record["inputs"]:
-                            packet_record["dispositions"][row["record"]] = {
-                                "state": "unfinished", "input_version": row["version"], "reason": str(second_error)}
-                        if not dry_run:
-                            _update_manifest(home, run_id, reason=f"packet {packet_index} schema unfinished", update=lambda current: current["packets"][packet_index - 1].update(packet_record))
+                        schema_dispositions = {
+                            row["record"]: {
+                                "state": "unfinished", "input_version": row["version"],
+                                "reason": "schema-repair",
+                            }
+                            for row in packet_record["inputs"]
+                        }
+                        schema_fields = {
+                            "attempts": packet_record.get("attempts") or [],
+                            "phase": "unfinished", "failure": "schema-repair",
+                            "detail": _failure_detail(second_error), "duration": duration,
+                            "dispositions": schema_dispositions,
+                            "error": str(second_error),
+                        }
+                        if dry_run:
+                            _record_failure(manifest, packet_index, **schema_fields)
+                        else:
+                            # A2, latent site: named fields over HEAD. The
+                            # splat it replaces wrote a whole local packet
+                            # copy back, the same shape as the failure above.
+                            _update_manifest(
+                                home, run_id,
+                                reason=f"packet {packet_index} schema unfinished",
+                                update=lambda current: _record_failure(
+                                    current, packet_index, **schema_fields
+                                ),
+                            )
                         continue
                 if dry_run:
                     packet_record["phase"] = "complete"
                     continue
                 manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
                 manifest_packet = manifest["packets"][packet_index - 1]
-                manifest_packet.update(packet_record)
+                manifest_packet.update(
+                    attempts=list(packet_record.get("attempts") or []),
+                    repair_remaining=packet_record.get("repair_remaining", 1),
+                    duration_secs=packet_record.get("duration_secs"),
+                )
                 try:
                     _prepared_recipe(home, stage, manifest, manifest_packet)
                 except ValueError as exc:
@@ -1444,7 +1984,43 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
             if maintenance_halt:
                 halt_code = gitops.EXIT_GIT_FAILED
                 break
-            _update_manifest(home, run_id, reason=f"packet {packet_index} complete", update=lambda current: current["packets"][packet_index - 1].update(phase="complete"))
+            # A20/A21 + S-68's PROGRESS guard, in one committed update.
+            # `complete` is stamped ONLY when every input has a terminal
+            # disposition, every case recipe is finished and every
+            # maintenance operation is settled; anything less and the next
+            # run re-drives this packet (the receipt write is idempotent by
+            # `(sheet_sha, item)` key). An attempt that moved nothing is
+            # recorded as `no-progress` so the generic guard still reaches
+            # the cap on a trap nobody thought of.
+            current_manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
+            terminal = _packet_units_terminal(
+                current_manifest, current_manifest["packets"][packet_index - 1]
+            )
+            progressed = _made_progress(
+                before, _progress_signature(current_manifest, packet_index)
+            )
+            finished_at = chrono.now_iso()
+            _update_manifest(
+                home, run_id,
+                reason=f"packet {packet_index} "
+                + ("complete" if terminal else "attempted" if progressed else "no progress"),
+                update=lambda current: _finish_packet_attempt(
+                    current, packet_index, terminal=terminal, progressed=progressed,
+                    at=finished_at,
+                ),
+            )
+
+        if not dry_run:
+            # Ruling 2, retried not raised: a close-out that cannot write
+            # increments nothing and is picked up by the next run, so a
+            # wedged ledger never turns into a lost run. It runs even after
+            # a halt, because a packet that halts identically every time is
+            # precisely the shape that must still reach the cap.
+            try:
+                _close_out_exhausted(home, run_id, attempt_cap)
+            except Exception as exc:  # noqa: BLE001 -- retried by the next run
+                _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+                    "status": "close-out-failed", "error": str(exc)})
 
         if dry_run:
             run_record = dict(manifest)
@@ -1481,6 +2057,11 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
             1 for packet in manifest["packets"] for op in packet.get("maintenance", []) if op.get("state") == "refused"
         )
         result.refused = sum(1 for value in dispositions if value.get("state") == "refused") + maintenance_refused_total
+        result.abandoned = list(dict.fromkeys(
+            rid for packet in manifest["packets"]
+            for rid, value in packet.get("dispositions", {}).items()
+            if value.get("state") == "abandoned"
+        ))
         coverage = _coverage_empty()
         for recipe in manifest.get("cases", {}).values():
             case_data = YAML(typ="safe").load(recipe["case"])
@@ -1491,7 +2072,11 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
         result.coverage = coverage
         has_applied = bool(result.decided)
         has_unfinished = bool(result.unfinished) or halt_code is not None
-        has_refused = result.refused > 0
+        # A run that closed lessons out never reports success: `refused` (or
+        # `partial` beside applied work) is FW-85's "an actual failure", and
+        # the text line below names the count so it can never again read
+        # "0 decided, 0 refused, 0 unfinished" beside a non-zero exit.
+        has_refused = result.refused > 0 or bool(result.abandoned)
         if halt_code == gitops.EXIT_GIT_FAILED:
             result.status = "partial" if has_applied else "stopped"
         elif has_unfinished or (has_applied and has_refused):
@@ -1500,7 +2085,9 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
             result.status = "refused"
         else:
             result.status = "applied"
-        complete = not has_unfinished and all(packet.get("phase") in {"complete", "refused"} for packet in manifest["packets"])
+        complete = not has_unfinished and all(
+            packet.get("phase") in _TERMINAL_PACKET_PHASES for packet in manifest["packets"]
+        )
         finished = chrono.now_iso()
         if halt_code == gitops.EXIT_GIT_FAILED:
             _project_manifest(home, manifest)
@@ -1526,7 +2113,13 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
                 "decided": len(result.decided),
                 "refused": result.refused,
                 "unfinished": result.unfinished,
+                "abandoned": result.abandoned,
                 "coverage": result.coverage,
             },
         )
+        # Ruling 2's notification, ONCE per closed-out run and never once
+        # per record: a run transitions to `complete` exactly once and is
+        # never re-driven afterwards, so this is that one moment.
+        if complete and result.abandoned:
+            _notify_abandoned(home, run_id, manifest, result.abandoned)
         return result

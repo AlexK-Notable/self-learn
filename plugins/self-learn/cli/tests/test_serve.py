@@ -1800,3 +1800,37 @@ def test_u1_b10_same_week_guard_holds_and_writes_nothing(monkeypatch, tmp_path):
     assert gitops.head_sha(home) == head_before
     assert gitops._git(home, "status", "--porcelain").stdout == tree_before
     assert "held-week-done" in _u1_journal_statuses(overseer_run.journal_path(home))
+
+
+def test_u2_a_hold_that_cannot_be_recorded_still_only_costs_one_job(monkeypatch, tmp_path):
+    """U2's nit on U1: `_hold_due_check` is itself I/O (a cache write, a
+    journal append, a notification) and can raise. That raise used to
+    escape `_due_or_hold` and skip every REMAINING job of the tick --
+    A13's whole-daemon blast radius, one level in. A failure to RECORD a
+    hold still means "not due", and the later jobs still run."""
+    home, cache_dir = _u1_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(serve, "_mine_is_due", lambda *a, **k: False)
+    seen = {"overseer": 0}
+
+    def _overseer_predicate(*args, **kwargs):
+        seen["overseer"] += 1
+        return False
+
+    monkeypatch.setattr(
+        serve.steward, "committed_manifests",
+        lambda actual: (_ for _ in ()).throw(gitops.GitOpsError("wedged repository")),
+    )
+    monkeypatch.setattr(serve, "_overseer_is_due", _overseer_predicate)
+    monkeypatch.setattr(
+        serve, "_write_holds",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("read-only cache")),
+    )
+
+    now = time.time()
+    ran = serve._run_tick(home, cache_dir, now=now, pid=4321, tick_secs=60.0)
+
+    assert ran == []
+    # positive control: the later job in the SAME tick was still evaluated
+    assert seen["overseer"] == 1
+    # and no hold was recorded, so the next tick re-enters the predicate
+    assert serve._held_cause(cache_dir, "steward", now) is None

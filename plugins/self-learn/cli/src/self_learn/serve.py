@@ -450,7 +450,20 @@ def _due_or_hold(
     try:
         due = bool(predicate())
     except Exception as exc:  # noqa: BLE001 — that is this function's whole job
-        _hold_due_check(home, cache_dir, job, now, _short_cause(exc))
+        # U2 nit on U1: recording the hold is itself I/O (a cache write, a
+        # journal append, a notification) and can raise. If it did, the
+        # raise escaped this seam and skipped every REMAINING job of the
+        # tick — the exact whole-daemon blast radius A13 exists to stop,
+        # one level in. A failure to RECORD a hold still means "not due".
+        try:
+            _hold_due_check(home, cache_dir, job, now, _short_cause(exc))
+        except Exception as record_exc:  # noqa: BLE001 — never widen a hold
+            print(
+                f"serve: {job} due check failed and its hold could not be "
+                f"recorded — {_short_cause(record_exc)}; treating that job as "
+                "not due this tick. Every other job is unaffected.",
+                file=sys.stderr,
+            )
         return False
     holds = _read_holds(cache_dir)
     if job in holds:
