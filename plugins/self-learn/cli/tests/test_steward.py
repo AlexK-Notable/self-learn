@@ -2461,8 +2461,14 @@ def test_a_close_out_that_drops_a_case_recipe_says_so(tmp_path, monkeypatch):
     assert third.status != "applied"
     assert third.status == "refused"
     assert len(notifications) == 1, notifications
-    assert "dropped without a successor" in notifications[0][1]
-    assert case_id in notifications[0][1]
+    # Fold r1 item 7: the shared sentence ("0 lesson(s) parked ... decided
+    # none of them") is false here -- every lesson WAS decided and what the
+    # cap dropped is bookkeeping. The units-only case has its own wording.
+    summary = notifications[0][1]
+    assert "every lesson already decided" in summary, summary
+    assert "dropped 1 piece(s) of bookkeeping without a successor" in summary
+    assert case_id in summary
+    assert "decided none of them" not in summary
 
 
 def test_cli_names_a_dropped_unit_in_text_and_json(monkeypatch, capsys, tmp_path):
@@ -2489,3 +2495,52 @@ def test_cli_names_a_dropped_unit_in_text_and_json(monkeypatch, capsys, tmp_path
     text = capsys.readouterr().out
     assert "steward run: refused" in text, "positive control: the summary line printed"
     assert "dropped without a successor — case case-0badc0de (unfinished)" in text
+
+
+def test_the_dry_run_at_the_cap_names_the_units_it_would_drop(tmp_path, monkeypatch):
+    """Fold r1 item 8.  The rehearsal reported the records a close-out would
+    park but not the case recipes or maintenance operations it would drop —
+    and in this state there are no records to park at all, so the dry run
+    said the real run would give up nothing.
+
+    Reaching the cap with the close-out still owed takes a third run whose
+    close-out write fails: the attempt counts, the packet stays open, and the
+    NEXT night's rehearsal is the one that must name what is about to go."""
+    home = make_home(tmp_path)
+    monkeypatch.setattr(overseer_notify, "send", lambda *a, **k: None)
+    run_id = _packet_at_the_cap_with_an_unfinished_case(home, monkeypatch)
+    cap, _source = settings.resolve_setting(home, settings.by_name("runs.attempt_cap"))
+    real_update = steward._update_manifest
+
+    def refuse_the_close_out(actual_home, given_run_id, *, reason, update):
+        if "abandoned" in reason:
+            raise steward.gitops.GitOpsError("simulated close-out write failure")
+        return real_update(actual_home, given_run_id, reason=reason, update=update)
+
+    monkeypatch.setattr(steward, "_update_manifest", refuse_the_close_out)
+    third = steward.run(home)
+
+    manifest = _head_manifest(home, run_id)
+    packet = manifest["packets"][0]
+    case_id = packet["case_ids"][0]
+    # positive controls: the packet really is AT the cap, still open, with the
+    # case recipe unfinished and the close-out still owed
+    assert packet["attempt_count"] == cap == 3
+    assert packet["phase"] not in steward._TERMINAL_PACKET_PHASES
+    assert manifest["cases"][case_id]["phase"] == "unfinished"
+    assert third.close_out_error
+    head_before = git(home, "rev-parse", "HEAD").stdout.strip()
+    monkeypatch.setattr(
+        steward.invocation, "write_session",
+        lambda spec: pytest.fail("a dry run at the cap makes no model call"),
+    )
+
+    rehearsal = steward.run(home, dry_run=True)
+
+    # positive control: the rehearsal really did reach the capped packet
+    assert rehearsal.status == "dry-run" and rehearsal.calls == 0
+    assert rehearsal.abandoned == [], "every lesson here is already decided"
+    assert rehearsal.abandoned_units == [f"case {case_id} (unfinished)"]
+    # and it wrote nothing
+    assert git(home, "rev-parse", "HEAD").stdout.strip() == head_before
+    assert git(home, "status", "--porcelain").stdout == ""

@@ -1689,12 +1689,23 @@ def _notify_abandoned(
         if packet.get("phase") == "abandoned"
     })
     dropped = list(units or [])
-    tail = f"; dropped without a successor: {', '.join(dropped)}" if dropped else ""
-    summary = (
-        f"self-learn steward: {len(abandoned)} lesson(s) parked for the overseer "
-        f"— run {run_id} reached the attempt cap and decided none of them "
-        f"({', '.join(kinds) or 'unknown failure'}){tail}"
-    )
+    if not abandoned:
+        # Every lesson WAS decided; what the cap dropped is bookkeeping. The
+        # shared sentence ("0 lesson(s) parked ... decided none of them") is
+        # simply false here, and this is the one line the user reads.
+        summary = (
+            f"self-learn steward: run {run_id} reached the attempt cap with "
+            f"every lesson already decided, but dropped {len(dropped)} piece(s) "
+            f"of bookkeeping without a successor: {', '.join(dropped)} "
+            f"({', '.join(kinds) or 'unknown failure'})"
+        )
+    else:
+        tail = f"; also dropped without a successor: {', '.join(dropped)}" if dropped else ""
+        summary = (
+            f"self-learn steward: {len(abandoned)} lesson(s) parked for the overseer "
+            f"— run {run_id} reached the attempt cap and decided none of them "
+            f"({', '.join(kinds) or 'unknown failure'}){tail}"
+        )
     try:
         overseer_notify.send(home, "routine", summary, list(abandoned) or [run_id])
     except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
@@ -2021,7 +2032,14 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
             attempts_made = _attempt_count(packet_record)
             if attempts_made >= attempt_cap:
                 if dry_run:
+                    # The rehearsal reports everything the real close-out
+                    # would give up, not just the records: a packet can reach
+                    # the cap with every lesson decided and only a case
+                    # recipe or a maintenance operation left open.
                     result.abandoned.extend(_non_terminal_records(packet_record))
+                    result.abandoned_units.extend(
+                        _dropped_units(manifest, packet_record)
+                    )
                 continue
             needs_model = phase not in _MODEL_DONE_PHASES
             stage = run_dir / "steward" / f"packet-{packet_index:04d}"

@@ -66,6 +66,11 @@ _NO_PROGRESS_DETAIL = (
 #: (rc 5/6/7) and `not-attempted` are deliberately NOT here — those are the
 #: retryable states A4 exists for.
 _TERMINAL_ITEM_STATES = frozenset({"applied", "already-applied", "refused"})
+#: 02-schema §3a: "A ledger stop keeps riding the run record's own numeric
+#: halt code (5, 6, 7, 8); a code is never folded into this field." These are
+#: the codes that ride `halt_code`; `failure` never carries one, and never
+#: carries a literal outside §3a's closed set either.
+_LEDGER_HALT_CODES = frozenset({3, 4, 5, 6, 7, 8})
 
 
 def _failure_detail(text: object) -> str | None:
@@ -1272,9 +1277,40 @@ def _note_text(
     ]) + "\n"
 
 
+def _failure_kind_text(manifest: dict[str, Any]) -> str:
+    """One display string for the close-out's evidence.
+
+    `failure` when §3a's closed set has a literal for it; otherwise the
+    numeric halt code the ledger stop rides, spelled out as prose — the
+    code is never folded INTO `failure`, but the close-out's question has
+    to be able to say what stopped the run.
+    """
+    failure = manifest.get("failure")
+    if isinstance(failure, str) and failure:
+        return failure
+    code = manifest.get("halt_code")
+    if isinstance(code, int) and not isinstance(code, bool):
+        return f"ledger halt, exit {code}"
+    return "no-progress"
+
+
+def _decided_clause(applied: int) -> str:
+    """What this run actually did, rather than a blanket "nothing was
+    decided" — earlier sheets of the SAME run may have applied before a
+    later one stuck, and saying otherwise in the close-out is a false
+    statement in the one place the user is asked to act on it."""
+    if applied <= 0:
+        return "nothing of this week was decided"
+    noun = "item" if applied == 1 else "items"
+    return (
+        f"{applied} {noun} of this run applied before it stuck; the rest was "
+        "not decided"
+    )
+
+
 def _closed_note_text(
     *, week: str, attempts: int, kind: str, detail: str | None,
-    unfinished: list[str],
+    unfinished: list[str], applied: int = 0,
 ) -> str:
     """The committed close-out note.  02-schema §3a: "The overseer's own
     abandonment has no lesson of its own to park: its durable obligation is
@@ -1287,7 +1323,8 @@ def _closed_note_text(
         f"- attempts: {attempts}",
         f"- failure: {kind}",
         f"- detail: {detail or 'no detail was returned'}",
-        "- the next week's run may start; nothing of this week was decided",
+        f"- applied: {applied}",
+        f"- the next week's run may start; {_decided_clause(applied)}",
     ]
     lines.extend(f"- unfinished: {item}" for item in unfinished)
     return "\n".join(lines) + "\n"
@@ -1302,7 +1339,7 @@ def _short(text: str | None, limit: int = 200) -> str:
 
 def _close_out_questions(
     *, week: str, attempts: int, kind: str, detail: str | None,
-    unfinished: list[str],
+    unfinished: list[str], applied: int = 0,
 ) -> list[str]:
     """Ruling 2's equivalent for the overseer's own stuck work: "a question
     put to the user in its report".
@@ -1317,9 +1354,9 @@ def _close_out_questions(
     tail = f" Unfinished: {', '.join(unfinished)}." if unfinished else ""
     return [
         f"the week that opened {week} was closed after {attempts} failed "
-        f"attempts ({kind}: {_short(detail)}); nothing was decided and the "
-        f"machinery, not the merits, is what stopped it.{tail} Should these "
-        "be looked at by hand, or left to the next week's run?"
+        f"attempts ({kind}: {_short(detail)}); {_decided_clause(applied)}, "
+        f"and the machinery, not the merits, is what stopped it.{tail} "
+        "Should these be looked at by hand, or left to the next week's run?"
     ]
 
 
@@ -1380,11 +1417,16 @@ def _close_out_pending_week(
     its own").
     """
     kind, detail = _last_failure(home, week)
+    # Nothing of this run landed — it took ownership of nothing and made no
+    # model call — so `applied` is 0 and FW-85's producer space gives
+    # `EXIT_REFUSED`, the same rule `_execute_manifest`'s close-out follows.
     closed_text = _closed_note_text(
         week=week, attempts=attempts, kind=kind, detail=detail, unfinished=[],
+        applied=0,
     )
     questions = _close_out_questions(
         week=week, attempts=attempts, kind=kind, detail=detail, unfinished=[],
+        applied=0,
     )
     started = chrono.now_iso()
     text = _report_text(
@@ -1471,8 +1513,16 @@ def _progress_signature(manifest: dict[str, Any]) -> dict[str, int]:
         for row in recipe.get("items") or []:
             n = int(row["n"])
             state = states.get(n)
+            # `not-attempted` ranks 0, exactly like having no disposition at
+            # all: it is the record of something that did NOT happen. Ranking
+            # it 1 made the first resume of a sheet frozen behind a committed
+            # refusal read as progress, because the runner had newly written
+            # down that item 2 was never dispatched. Naming a non-event is
+            # not movement toward a terminal value.
             signature[f"item:{case_id}:{n}"] = (
-                2 if state in _TERMINAL_ITEM_STATES else 1 if state else 0
+                2 if state in _TERMINAL_ITEM_STATES
+                else 0 if state in (None, "not-attempted")
+                else 1
             )
     for operation in manifest.get("maintenance") or []:
         signature[f"maintenance:{operation.get('id')}"] = (
@@ -1870,7 +1920,7 @@ def _observation_id(run_id: str, index: int) -> str:
 #: a stale in-memory copy back over committed truth.
 _FINALIZE_OWNED_FIELDS = (
     "cases", "remaining", "attempt_count", "last_attempt_at", "progress_at",
-    "failure", "failure_detail", "week", "outcome",
+    "failure", "failure_detail", "halt_code", "week", "outcome",
 )
 
 
@@ -2268,7 +2318,8 @@ def _execute_manifest(
             halt_reason = f"run ended early: {exc}"
             manifest["remaining"] = ["observations/questions/report finalization"]
 
-    decision = _worst_code(codes, any_applied=application_count > 0)
+    item_code = _worst_code(codes, any_applied=application_count > 0)
+    decision = item_code
     if halted:
         decision = EXIT_PARTIAL
         remaining = ", ".join(cast(list[str], manifest.get("remaining") or []))
@@ -2289,15 +2340,21 @@ def _execute_manifest(
     progressed = _made_progress(before, _progress_signature(manifest))
     if progressed:
         manifest["progress_at"] = chrono.now_iso()
-    if halted and not progressed:
-        manifest["failure"] = "no-progress"
+    if halted:
+        # 02-schema §3a's CLOSED set for `failure`, and nothing else: the
+        # literals the runner already writes, plus `no-progress`. A ledger
+        # stop is not one of them — it "keeps riding the run record's own
+        # numeric halt code (5, 6, 7, 8); a code is never folded into this
+        # field" — so the code goes in `halt_code` and `failure` stays null
+        # for a halt that DID move something. An earlier draft invented
+        # `halted` here, which is a second vocabulary §3a forbids.
+        manifest["halt_code"] = item_code if item_code in _LEDGER_HALT_CODES else None
         manifest["failure_detail"] = _failure_detail(
             f"{_NO_PROGRESS_DETAIL}; last reason: {halt_reason}"
-            if halt_reason else _NO_PROGRESS_DETAIL
+            if halt_reason and not progressed
+            else (halt_reason or _NO_PROGRESS_DETAIL)
         )
-    elif halted:
-        manifest["failure"] = "halted"
-        manifest["failure_detail"] = _failure_detail(halt_reason)
+        manifest["failure"] = None if progressed else "no-progress"
 
     # Ruling 2. At the cap the run CLOSES — so the next week's run can
     # start — each stuck item becomes a question put to the user in the
@@ -2320,21 +2377,30 @@ def _execute_manifest(
                 for row in recipe.get("items") or []
                 if int(row["n"]) not in settled
             )
-        kind = str(manifest.get("failure") or "no-progress")
+        kind = _failure_kind_text(manifest)
         detail = manifest.get("failure_detail")
         questions = _close_out_questions(
             week=week, attempts=attempts, kind=kind,
             detail=cast(str | None, detail), unfinished=unfinished_units,
+            applied=application_count,
         )
         closed_text = _closed_note_text(
             week=week, attempts=attempts, kind=kind,
             detail=cast(str | None, detail), unfinished=unfinished_units,
+            applied=application_count,
         )
         manifest["outcome"] = "attempts-exhausted"
         status_name = "closed"
+        # FW-85's producer space, the same rule the steward already follows
+        # for a run that abandoned units: `1` when nothing of this run
+        # landed ("refused, nothing written"), `8` (`EXIT_BATCH_PARTIAL`,
+        # "the ledger DID change") when something did. Both close-out paths
+        # go through this rule, so they cannot drift apart.
+        decision = EXIT_PARTIAL if application_count else EXIT_REFUSED
         _journal(home, {
             "at": chrono.now_iso(), "run": run_id, "status": "week-closed",
             "week": week, "attempts": attempts, "failure": kind,
+            "applied": application_count,
         })
     try:
         text = _finalize_model_report(
@@ -2352,7 +2418,7 @@ def _execute_manifest(
             week=week, closed_text=closed_text,
         )
         if closed:
-            _notify_week_closed(home, week, attempts, str(manifest.get("failure") or "unknown"), [run_id])
+            _notify_week_closed(home, week, attempts, _failure_kind_text(manifest), [run_id])
         if not halted:
             completed_at = status(home).get("last_run_at") or chrono.now_iso()
             _write_last_run_marker(home, cast(str, completed_at))
@@ -2384,8 +2450,7 @@ def _execute_manifest(
             )
             if closed:
                 _notify_week_closed(
-                    home, week, attempts,
-                    str(manifest.get("failure") or "unknown"), [run_id],
+                    home, week, attempts, _failure_kind_text(manifest), [run_id],
                 )
         except Exception as handler_exc:
             _journal(home, {
@@ -2422,12 +2487,17 @@ def _execute_manifest(
     cue = notify.classify(
         cue_outcomes, broad_removal_threshold=cast(int, threshold)
     )
-    notify.send(
-        home,
-        cue,
-        f"overseer {status_name}: {len(selected)} examined",
-        list(dict.fromkeys([*hook_ids, *notice_ids])) or [run_id],
-    )
+    if not closed:
+        # Ruling 2: at the cap "the user is notified" — once. A closing run
+        # has already sent the close-out notification, which says strictly
+        # more than the ordinary per-run cue would; sending both is two
+        # notifications for one event.
+        notify.send(
+            home,
+            cue,
+            f"overseer {status_name}: {len(selected)} examined",
+            list(dict.fromkeys([*hook_ids, *notice_ids])) or [run_id],
+        )
     journal_entry: dict[str, Any] = {
         "at": chrono.now_iso(), "run": run_id, "status": status_name,
         "code": decision, "model_calls": model_calls,

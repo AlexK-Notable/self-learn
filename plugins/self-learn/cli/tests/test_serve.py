@@ -30,6 +30,7 @@ import pytest
 from self_learn import gitops, miner, provider, serve, steward, worker
 from self_learn import overseer as overseer_package
 from self_learn.overseer import run as overseer_run
+from self_learn.invocation.contract import Outcome
 from self_learn.invocation_sdk import events as events_mod
 from self_learn.invocation_sdk import lifecycle as lifecycle_mod
 from self_learn.sdksession import events as sdk_events_mod
@@ -1834,3 +1835,61 @@ def test_u2_a_hold_that_cannot_be_recorded_still_only_costs_one_job(monkeypatch,
     assert seen["overseer"] == 1
     # and no hold was recorded, so the next tick re-enters the predicate
     assert serve._held_cause(cache_dir, "steward", now) is None
+
+
+def test_a_cap_closed_week_is_not_due_all_sunday_for_a_never_run_overseer(
+    tmp_path, monkeypatch
+):
+    """S-68 / fold r1 item 6: a DONE week is never due, on the calendar
+    branch too.
+
+    An overseer that has never completed a run stays on the plain calendar
+    rule, because `previous_run_exists` is false — so the catch-up branch
+    that consults `week_done` is skipped entirely. Once such a week was
+    closed at `runs.attempt_cap`, the calendar branch still answered "due"
+    for the rest of Sunday; `run` then replied `held-week-done`, which is a
+    HOLD and therefore arms no cooldown, so the job was re-entered on every
+    60-second tick until Monday.
+
+    A REAL scratch ledger and REAL `overseer_run.run` calls: the failures
+    are transport failures of the first model call, the shape that leaves no
+    run record at all and counts through its committed failure note. The
+    cache-side cooldown is stubbed off throughout so this asserts the
+    git-side branch and nothing else.
+    """
+    home = make_home(tmp_path)
+    (home / "config.yaml").write_text("overseer:\n  enabled: true\n", encoding="utf-8")
+    commit_all(home, "enable overseer")
+    cache_dir = worker.cache_dir(home)
+    monkeypatch.setattr(serve, "_overseer_recently_attempted", lambda actual, now: False)
+    monkeypatch.setattr(overseer_run.notify, "send", lambda *a, **k: None)
+    monkeypatch.setattr(
+        overseer_run.invocation, "write_session",
+        lambda spec: Outcome(
+            ok=False, rc=1, stdout="",
+            detail="API Error: 400 this build does not support the selected model",
+            failure="exit",
+        ),
+    )
+    # Sunday 04:25 of the week the failure notes will belong to.
+    sunday = overseer_run.week_boundary(time.time()) + 600
+    assert time.localtime(sunday).tm_wday == 6
+
+    # positive control: with the week not yet done, the calendar branch is
+    # due — and stays due after the first two failed attempts.
+    assert serve._overseer_is_due(home, cache_dir, sunday) is True
+    for expected in (1, 2):
+        assert overseer_run.run(home, no_push=True).status == "refused"
+        assert overseer_run.week_attempts(home, overseer_run.week_key(sunday)) == expected
+        assert overseer_run.previous_run_exists(home) is False
+        assert serve._overseer_is_due(home, cache_dir, sunday) is True
+
+    assert overseer_run.run(home, no_push=True).status == "refused"
+
+    week = overseer_run.week_key(sunday)
+    assert overseer_run.week_attempts(home, week) == 3
+    assert overseer_run.week_closed(home, week)
+    assert overseer_run.previous_run_exists(home) is False
+    assert serve._overseer_is_due(home, cache_dir, sunday) is False
+    # ...and it stays not-due for the rest of the day, which is the loop.
+    assert serve._overseer_is_due(home, cache_dir, sunday + 6 * 3600) is False

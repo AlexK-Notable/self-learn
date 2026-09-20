@@ -828,6 +828,15 @@ def _overseer_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     )
     if now < target:
         return False
+    # S-68: a week that is DONE is never due, on the calendar branch too.
+    # Without this, an overseer that has never completed a run and whose
+    # week was closed at `runs.attempt_cap` answered "due" for the rest of
+    # Sunday: `run` replies `held-week-done`, which is a HOLD and therefore
+    # arms no cooldown, so the job was re-entered on every 60-second tick.
+    # `previous_run_exists` is false in exactly that state, so the branch
+    # above never got the chance to say so.
+    if overseer_run.week_done(home, overseer_run.week_boundary(now)):
+        return False
     last_iso = overseer_run.last_run_iso(home)
     if last_iso is None:
         return True

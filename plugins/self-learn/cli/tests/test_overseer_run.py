@@ -1243,7 +1243,13 @@ def test_one_transient_exit_6_is_retried_and_the_next_run_completes(tmp_path, mo
     assert dispatched == [1, 1], "the stopped item is re-dispatched, not frozen"
     assert (second.run, second.status) == (first.run, "applied")
     assert not overseer_run.has_unfinished_work(home)
-    assert execution_evidence.read_manifest(home, first.run)["status"] == "complete"
+    record = execution_evidence.read_manifest(home, first.run)
+    assert record["status"] == "complete"
+    # The other half of the PROGRESS pair (the A12 test is the negative):
+    # a resume that DID move an item toward a terminal value stamps
+    # `progress_at` and records no failure.
+    assert record.get("progress_at"), record.get("progress_at")
+    assert record.get("failure") is None, record.get("failure")
 
     before_third = _git(home, "rev-parse", "HEAD").strip()
     third = overseer_run.run(home, dry_run=False, no_push=True)
@@ -1318,6 +1324,10 @@ def test_a_sheets_tail_behind_a_refused_host_verb_is_never_lost(tmp_path, monkey
     first = overseer_run.run(home, dry_run=False, no_push=True)
     assert first.status == "partial"
     assert dispatched == [1], "positive control: item 2 was never dispatched"
+    # positive control for the PROGRESS pair: run 1 DID move item 1 to a
+    # terminal disposition, so it stamped `progress_at`.
+    after_first = execution_evidence.read_manifest(home, first.run)
+    assert after_first.get("progress_at"), after_first.get("progress_at")
 
     monkeypatch.setattr(
         overseer_run.invocation, "write_session",
@@ -1327,10 +1337,25 @@ def test_a_sheets_tail_behind_a_refused_host_verb_is_never_lost(tmp_path, monkey
 
     assert dispatched == [1], "a committed refusal is never dispatched again"
     assert second.status == "partial"
-    assert execution_evidence.read_manifest(home, first.run)["status"] == "unfinished"
+    record = execution_evidence.read_manifest(home, first.run)
+    assert record["status"] == "unfinished"
     report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
     refused = report.split("## Refused / could not do\n", 1)[1]
     assert "item(s) 2 not attempted" in refused, refused
+    # S-68 PROGRESS. Run 2 moved nothing: it only wrote down that item 2 was
+    # never dispatched, which is the record of a non-event. Ranking
+    # `not-attempted` as movement made this resume read as progress, so the
+    # generic guard would never have fired on a sheet nobody can finish.
+    assert record["failure"] == "no-progress", record.get("failure")
+    assert record["failure_detail"] and "toward a terminal value" in record["failure_detail"]
+    # `progress_at` is "the time of the last attempt that made progress"
+    # (02-schema §3a), so run 1's stamp stays — but run 2 must not ADVANCE
+    # it, which is what ranking `not-attempted` as movement used to do.
+    assert record["progress_at"] == after_first["progress_at"], record["progress_at"]
+    # ...and nothing invents a second vocabulary for the halt: this one is
+    # not a ledger stop (no process exited 5/6/7/8 -- the item was simply
+    # never dispatched), so there is no numeric code to ride either.
+    assert record.get("halt_code") is None, record.get("halt_code")
 
 
 def test_a_failed_attempt_never_blanks_last_weeks_open_questions(tmp_path, monkeypatch):
@@ -1606,6 +1631,11 @@ def test_a_close_out_the_cap_earned_but_no_run_wrote_is_written_before_the_hold(
     result = overseer_run.run(home, dry_run=False, no_push=True)
 
     assert result.status == "closed", result.status
+    # Fold r1 item 5, the second close-out path. Both paths now pick the
+    # producer code by the same FW-85 rule: this one took ownership of
+    # nothing and wrote no ledger change, so it is `EXIT_REFUSED`
+    # ("refused, nothing written"), not `EXIT_BATCH_PARTIAL`.
+    assert result.code == overseer_run.EXIT_REFUSED == 1, result.code
     assert overseer_run.week_closed(home, week)
     report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
     block = report.split("## Questions for you\n", 1)[1].split("\n## ", 1)[0]
@@ -1614,3 +1644,285 @@ def test_a_close_out_the_cap_earned_but_no_run_wrote_is_written_before_the_hold(
     # It counted nothing of its own, and the next tick simply holds.
     assert overseer_run.week_attempts(home, week) == 3
     assert overseer_run.run(home, dry_run=False, no_push=True).status == "held-week-done"
+
+
+# ------------------------------------------------------- U3 fold r1 (S-68)
+
+
+def _seed_second_parked(home, tmp_path, rid="lrn-0b0c0d0e"):
+    """A second parked case, so a run can carry TWO sheets: one that
+    applies and one that sticks behind it."""
+    create_record(home, make_behavior(record_id=rid))
+    commit_all(home, "second parked seed")
+    path = tmp_path / "parked-second.yaml"
+    _dump(path, {
+        "kind": "parked", "trigger": "nightly", "outcome": "parked",
+        "records": [rid], "scope": "skill:s", "question": "reject this one?",
+        "parked_for": "overseer", "parked_reason": "authority-unclear",
+        "evidence": [{"ref": f"record:{rid}", "quote": "status: pending"}],
+        "decision": {"verb": "parked", "because": "delegated", "confidence": "provisional"},
+    })
+    return rid, cases.record(home, path, actor="steward")
+
+
+def _fake_two_sheet_phases(monkeypatch, first_rid, first_parked, second_rid, second_parked):
+    """Phase B writes two paired case/sheet files.  `_sheet_pairs` globs
+    `sheet-*.yaml` sorted, so `sheet-a` is driven before `sheet-b`."""
+    def invoke(spec):
+        stage = spec.cwd
+        if spec.label == "phase-a":
+            _dump(stage / "selection.yaml", {"cases": [], "why_these": "parked intake", "why_stopped": "none blind"})
+            _dump(stage / "initial-views.yaml", {"cases": []})
+        else:
+            headings = [
+                "Examined", "Decided in the user's stead", "Hooks", "User model",
+                "Catalogue health", "Questions for you", "Refused / could not do",
+            ]
+            (stage / "report.md").write_text(
+                "# draft\n" + "\n".join(f"## {h}\n- none" for h in headings) + "\n",
+                encoding="utf-8",
+            )
+            _dump(stage / "findings.yaml", {"findings": []})
+            _dump(stage / "questions.yaml", {"questions": []})
+            _dump(stage / "user-model-delta.yaml", {"updates": []})
+            for name, rid, parked, verb in (
+                ("a", first_rid, first_parked, "reject"),
+                ("b", second_rid, second_parked, "reject"),
+            ):
+                _dump(stage / f"case-{name}.yaml", {
+                    "kind": "resolution", "trigger": "nightly", "outcome": "reject",
+                    "records": [rid], "scope": "skill:s", "question": "reject it?",
+                    "supersedes": parked,
+                    "evidence": [{"ref": f"record:{rid}", "quote": "status: pending"}],
+                    "decision": {"verb": "reject", "because": "too narrow", "confidence": "settled"},
+                })
+                _dump(stage / f"sheet-{name}.yaml", {
+                    "version": 1, "items": [{"id": rid, "verb": verb}],
+                })
+        return type("SdkLike", (), {
+            "ok": True, "rc": 0, "stdout": "", "detail": "", "failure": None, "turns": 1,
+        })()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+
+
+def _seed_parked_reject(home, tmp_path, rid="lrn-0c0d0e0f"):
+    create_record(home, make_behavior(record_id=rid))
+    commit_all(home, "first parked seed")
+    path = tmp_path / "parked-first.yaml"
+    _dump(path, {
+        "kind": "parked", "trigger": "nightly", "outcome": "parked",
+        "records": [rid], "scope": "skill:s", "question": "reject this one?",
+        "parked_for": "overseer", "parked_reason": "authority-unclear",
+        "evidence": [{"ref": f"record:{rid}", "quote": "status: pending"}],
+        "decision": {"verb": "parked", "because": "delegated", "confidence": "provisional"},
+    })
+    return rid, cases.record(home, path, actor="steward")
+
+
+def test_a_close_out_never_claims_nothing_was_decided_when_a_sheet_applied(
+    tmp_path, monkeypatch
+):
+    """Fold r1 item 3.  The close-out's note and its question are also used
+    by `_execute_manifest`, where an EARLIER sheet of the same run may have
+    applied before a later one stuck.  "Nothing was decided" is then a false
+    statement in the one place the user is asked to act on it.  The fixed
+    phrase "was closed after N failed attempts" is kept; the claim about
+    what happened is made true."""
+    home = make_home(tmp_path)
+    first_rid, first_parked = _seed_parked_reject(home, tmp_path)
+    second_rid, second_parked = _seed_second_parked(home, tmp_path)
+    _enabled(monkeypatch)
+    _fake_two_sheet_phases(
+        monkeypatch, first_rid, first_parked, second_rid, second_parked
+    )
+    notices = _silence_notifications(monkeypatch)
+    # sheet-a applies; sheet-b's only item stops with a retryable exit 6
+    real_dispatch = batch._dispatch
+    applied_ids = []
+
+    def fail_only_the_second(given_home, item, **kwargs):
+        if item.id == second_rid:
+            return batch.ItemResult(
+                n=item.n, id=item.id, verb=item.verb, rc=6, state="refused",
+                detail="simulated git failure on the second sheet",
+            )
+        applied_ids.append(item.id)
+        return real_dispatch(given_home, item, **kwargs)
+
+    monkeypatch.setattr(batch, "_dispatch", fail_only_the_second)
+
+    first = overseer_run.run(home, dry_run=False, no_push=True)
+    assert first.status == "partial" and first.applied == 1, (first.status, first.applied)
+    monkeypatch.setattr(
+        overseer_run.invocation, "write_session",
+        lambda spec: pytest.fail("a resume must not invoke the model"),
+    )
+    overseer_run.run(home, dry_run=False, no_push=True)
+    notices.clear()
+    third = overseer_run.run(home, dry_run=False, no_push=True)
+
+    week = _this_week()
+    assert overseer_run.week_closed(home, week)
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    block = report.split("## Questions for you\n", 1)[1].split("\n## ", 1)[0]
+    # positive control: this IS the close-out question
+    assert "was closed after 3 failed attempts" in block, block
+    # the claim under test
+    assert "nothing of this week was decided" not in block, block
+    assert "applied before it stuck" in block, block
+    closed_note = _git(home, "show", f"HEAD:overseer/failures/{week}/closed.md")
+    assert "- applied: 1" in closed_note, closed_note
+    assert "nothing of this week was decided" not in closed_note
+    # FW-85's producer space: something landed, so the run reports 8
+    # (`EXIT_BATCH_PARTIAL`, "the ledger DID change"), not 1.
+    assert third.code == 8, third.code
+    # sheet-a's item is dispatched ONCE and is thereafter a proven
+    # completion the continuation replays, which is why `applied` stays 1
+    # on every attempt rather than growing.
+    assert applied_ids == [first_rid], applied_ids
+
+
+def test_a_closing_run_sends_exactly_one_notification(tmp_path, monkeypatch):
+    """Fold r1 item 4.  Ruling 2 says the user is notified; once.  The
+    closing run used to send the close-out notice AND `_execute_manifest`'s
+    ordinary per-run cue, which is two notifications for one event."""
+    home = make_home(tmp_path)
+    rid, parked = _seed_parked_hook(home, tmp_path)
+    _enabled(monkeypatch)
+    _fake_hook_phases(monkeypatch, rid, parked)
+    notices = _silence_notifications(monkeypatch)
+    _dispatch_returning(monkeypatch, 6)
+
+    first = overseer_run.run(home, dry_run=False, no_push=True)
+    assert len(notices) == 1, "positive control: an ordinary run notifies once"
+    # Fold r1 item 2, in situ.  Run 1 is a ledger stop that DID move
+    # something (the item reached `refused`), so 02-schema §3a's `failure`
+    # stays null instead of carrying the invented literal `halted`, and the
+    # stop rides the run record's own numeric halt code -- which has to
+    # survive the finalize write to be worth anything.
+    after_first = execution_evidence.read_manifest(home, first.run)
+    assert after_first.get("progress_at"), "positive control: run 1 progressed"
+    assert after_first.get("failure") is None, after_first.get("failure")
+    assert after_first.get("halt_code") == 6, after_first.get("halt_code")
+    monkeypatch.setattr(
+        overseer_run.invocation, "write_session",
+        lambda spec: pytest.fail("a resume must not invoke the model"),
+    )
+    overseer_run.run(home, dry_run=False, no_push=True)
+    notices.clear()
+
+    closing = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert overseer_run.week_closed(home, _this_week())
+    assert len(notices) == 1, notices
+    assert "was closed after 3 failed attempts" in notices[0][1]
+    # FW-85: nothing of this run landed, so "refused, nothing written".
+    assert closing.code == 1, closing.code
+
+
+def test_the_finalize_write_keeps_a_committed_field_it_does_not_own(
+    tmp_path, monkeypatch
+):
+    """A17.  The finalize write re-reads the run record from HEAD and
+    changes NAMED fields.  Replacing that with `current = dict(manifest)` --
+    publishing the in-memory copy wholesale -- left every other overseer
+    test green, which is exactly the shape of the steward's A2 stale re-save:
+    it does not bite until some other writer has advanced a key AFTER this
+    process last loaded the record.
+
+    The window is narrow and real: the run's last read from HEAD is the
+    refresh at the end of sheet execution, and the finalize write happens
+    after it.  The plant is therefore made from `_finalize_model_report`,
+    the last call before `_write_manifest_truth` -- not from anywhere
+    earlier, because an earlier plant is simply re-read into the in-memory
+    copy and then the wholesale republish preserves it by accident."""
+    home = make_home(tmp_path)
+    rid, parked = _seed_parked_hook(home, tmp_path)
+    _enabled(monkeypatch)
+    _fake_hook_phases(monkeypatch, rid, parked)
+    _silence_notifications(monkeypatch)
+    real_finalize = overseer_run._finalize_model_report
+    planted: dict[str, object] = {"done": False}
+    proof = {
+        "case": "case-0badc0de", "sheet_sha": "01234567",
+        "sheet_digest": "0" * 64, "item": 1, "record": rid, "verb": "route",
+    }
+
+    def advance_the_committed_record(path, **kwargs):
+        """Stand in for another writer advancing `ledger_effects` in its own
+        mutation commit, after this process last read the record."""
+        text = real_finalize(path, **kwargs)
+        if not planted["done"]:
+            planted["done"] = True
+            record_path = execution_evidence.manifest_path(home, kwargs["run_id"])
+            data = json.loads(record_path.read_text(encoding="utf-8"))
+            data["ledger_effects"] = [proof]
+            data["compound_proof_marker"] = "written by another writer"
+            record_path.write_text(
+                json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            commit_all(home, "compound proof lands during the run")
+            planted["head"] = execution_evidence.read_manifest(
+                home, kwargs["run_id"], at="HEAD"
+            )
+        return text
+
+    monkeypatch.setattr(overseer_run, "_finalize_model_report", advance_the_committed_record)
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert result.status == "applied", result.status
+    # positive control: the other writer's fields really were at HEAD, and
+    # the in-memory copy this process holds does NOT carry them
+    assert planted["done"]
+    at_head = planted["head"]
+    assert isinstance(at_head, dict)
+    assert at_head["ledger_effects"] == [proof]
+    assert at_head["compound_proof_marker"] == "written by another writer"
+    record = execution_evidence.read_manifest(home, result.run)
+    assert record["status"] == "complete"
+    assert record["ledger_effects"] == [proof], record["ledger_effects"]
+    assert record["compound_proof_marker"] == "written by another writer"
+
+
+def test_the_phase_b_prompt_explains_an_attempts_exhausted_parked_case(
+    tmp_path, monkeypatch
+):
+    """The prompt sentence S-68 requires.  Without it the overseer reads a
+    parked case whose `parked_reason` is `attempts-exhausted` as a doubtful
+    lesson, when what it means is that the steward's machinery failed three
+    times and the overseer must decide the lesson itself."""
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    _silence_notifications(monkeypatch)
+
+    overseer_run.run(home, dry_run=True, no_push=True)
+
+    prompt = (overseer_run.worker.stage_dir() / "overseer" / "prompt-b.md").read_text(
+        encoding="utf-8"
+    )
+    # positive control: this is the phase-B prompt and it rendered
+    assert "The evidence-first view is complete" in prompt
+    assert "attempts-exhausted" in prompt, prompt
+    assert "decide that lesson yourself" in prompt
+    assert "the steward's machinery failed three" in prompt
+    # the prompt wraps, so match a phrase that cannot straddle a newline
+    assert "another route has since" in prompt
+
+
+def test_a_ledger_stop_is_named_by_its_code_never_by_an_invented_kind():
+    """Fold r1 item 2, the mapping itself.  02-schema §3a's `failure` is a
+    CLOSED set, and "a ledger stop keeps riding the run record's own numeric
+    halt code (5, 6, 7, 8); a code is never folded into this field" — so the
+    close-out's evidence line has to read the code out of `halt_code`
+    instead of inventing a literal such as `halted` to put in `failure`."""
+    # a kind §3a names is used as it stands
+    assert overseer_run._failure_kind_text({"failure": "timeout"}) == "timeout"
+    # a ledger stop has no literal: the code is spelled out as prose
+    assert overseer_run._failure_kind_text(
+        {"failure": None, "halt_code": 6}
+    ) == "ledger halt, exit 6"
+    # and a halt with neither falls back to the one §3a does provide
+    assert overseer_run._failure_kind_text({}) == "no-progress"
+    assert overseer_run._failure_kind_text({"failure": None, "halt_code": None}) == "no-progress"
