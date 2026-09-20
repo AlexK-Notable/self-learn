@@ -150,6 +150,28 @@ def test_parking_fields_on_a_case_that_is_not_parked_get_the_repair_turn(tmp_pat
     assert [_status(home, rid) for rid in ids] == ["pending", "pending"]
 
 
+def test_when_the_runner_would_park_the_case_anyway_its_reason_is_the_one_recorded(tmp_path, monkeypatch):
+    """The model parks a lesson for its own reason, and the tentative
+    answer on its sheet is a route to a hook -- which the runner parks on
+    its own account. The overseer's hook intake sorts on `hook`, so that
+    is the reason that must reach the ledger."""
+    home = make_home(tmp_path)
+    ids = _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+
+    def park_a_hook_route(stage: Path) -> None:
+        _edit_yaml(stage / "cases" / f"{ids[0]}.yaml", kind="parked", outcome="parked",
+                   parked_for="overseer", parked_reason="authority-unclear")
+        _edit_yaml(stage / "sheets" / f"{ids[0]}.yaml",
+                   items=[{"id": ids[0], "verb": "route", "dest": "hook"}])
+
+    _run_with(home, monkeypatch, park_a_hook_route)
+
+    (parked,) = cases.list_cases(home, parked_for="overseer")
+    assert parked["parked_reason"] == "hook"
+    assert _status(home, ids[0]) == "pending"
+
+
 # ------------------------------------------------- a lesson with no sheet item
 
 
