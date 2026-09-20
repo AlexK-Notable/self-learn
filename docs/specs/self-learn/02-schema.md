@@ -1002,7 +1002,14 @@ week — not on the run as a whole. Each such unit carries, in the manifest:
   call that named no kind), `turns` (the turn bound), `schema-repair` (a
   second staged-output validation failure), and one genuinely new value,
   `no-progress`, for an attempt that ran and moved nothing. A ledger stop
-  keeps riding the run record's own numeric halt code (5, 6, 7, 8); a code is
+  keeps riding the run record's own numeric halt code — the overseer's run
+  record names it `halt_code` *(field named here 2026-09-19, U4; written by
+  `overseer/run.py` since U3)*, an integer drawn from the closed set the
+  runner accepts, `3` (push failed, the commit landed), `4` (rebase
+  conflict), `5` (no ledger home), `6` (git failed before any mutation —
+  nothing was written), `7` (half-written — the write landed, its commit did
+  not), `8` (batch partial — some items applied), and `null` for a stop
+  whose code falls outside that set; a code is
   never folded into this field. `failure_detail` is the message the transport or
   the validator actually returned, at most 2,000 characters (truncated with a
   trailing ellipsis) and secret-scanned on write. A scan hit REDACTS the

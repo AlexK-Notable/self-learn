@@ -37,6 +37,13 @@ _PROVIDER_ENV_VARS = (
     "SELF_LEARN_BACKEND_WORKER",
     "SELF_LEARN_BACKEND_MINER",
     "SELF_LEARN_BACKEND_ANALYST",
+    # U4 (S-68): the floor setting's own env rung, plus the two model
+    # selectors whose default (`claude-fable-5-1`) is the ONE model with
+    # a shipped floor — a host that exports either would silently change
+    # which surfaces this file's floor assertions are about.
+    "SELF_LEARN_SDK_MODEL_CLI_FLOORS",
+    "SELF_LEARN_STEWARD_MODEL",
+    "SELF_LEARN_OVERSEER_MODEL",
 )
 
 
@@ -234,7 +241,12 @@ def test_dc4_sdk_row_injected_importer(monkeypatch):
 
     monkeypatch.setattr(provider, "_operative_cli_version", _operative_differ)
     row2 = provider._sdk_row(importer=_match_importer)
-    assert row2.verdict == "WARN"
+    # U4 (S-68): bundled-vs-operative inequality ALONE is INFO now, not
+    # WARN — pointing `sdk.cli_path` at a newer system binary than the
+    # wheel bundles is the normal state on a machine that updates Claude
+    # Code independently. The loud verdicts belong to the version FLOOR
+    # (see the `test_u4_*` tests below).
+    assert row2.verdict == "INFO"
 
     def _raises_import_error():
         raise ImportError("no sdk")
@@ -345,17 +357,267 @@ def test_dc4b_operative_probe_executes_the_sdk_resolved_path_not_path_claude(mon
     assert str(path_script_y) in row.detail
 
     # -- Case 2: operative pair disagrees ("1.0.0" bundled, "2.0.0"
-    # sdk-resolved) -- WARN naming both; PATH claude ("9.9.9") still
-    # never touched.
+    # sdk-resolved) -- INFO naming both (U4 (S-68) downgraded plain
+    # inequality from WARN); PATH claude ("9.9.9") still never touched.
     calls.clear()
     sdk_script_z = _make_fake_cli("sdk-claude-z", "2.0.0 (Claude Code)")
     monkeypatch.setattr(
         subprocess_cli_mod.SubprocessCLITransport, "_find_cli", lambda self: str(sdk_script_z)
     )
     row2 = provider._sdk_row(importer=lambda: fake)
-    assert row2.verdict == "WARN", row2.detail
+    assert row2.verdict == "INFO", row2.detail
     assert "1.0.0" in row2.detail and "2.0.0" in row2.detail
     assert calls == [[str(sdk_script_z), "--version"]], calls
+
+
+# ------------------------------------------------------------------ U4
+# (S-68): the `sdk` row knows what Claude Code version the SELECTED model
+# needs. On 2026-09-14 this row said PASS while the steward could not run
+# at all: the SDK launched its bundled 2.1.226 and `claude-fable-5-1`
+# needs 2.1.251 ("API Error: 400 Claude Code 2.1.226 does not support
+# this model"). Nothing compared the operative binary against what the
+# model needs; equality with the bundled copy was the only test.
+#
+# No test below spawns a real `claude`: every one stubs
+# `provider._operative_cli_version`, the same seam `test_dc4` uses.
+
+_U4_SDK = types.SimpleNamespace(
+    __version__="0.2.999",
+    _cli_version=types.SimpleNamespace(__cli_version__="2.1.226"),
+)
+
+
+def _u4_importer():
+    return _U4_SDK
+
+
+def _u4_operative(monkeypatch, version, reason=""):
+    """Pin what the operative binary reports, without running one."""
+    monkeypatch.setattr(
+        provider, "_operative_cli_version", lambda home=None: (version, reason)
+    )
+
+
+def _write_yaml(home: Path, text: str) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(text, encoding="utf-8")
+
+
+def test_u4_floor_fail_names_surface_model_operative_version_and_the_fix(monkeypatch, _home):
+    """The 2026-09-14 state, reproduced: a pristine home selects
+    `claude-fable-5-1` for the steward and overseer surfaces, and the
+    operative binary is the SDK's bundled 2.1.226.
+
+    MUTATION that turns this red: drop the floor comparison from
+    `_sdk_row` (or compare `bundled` instead of `resolved`) — the row
+    reads PASS, exactly as it did on the day the steward could not run."""
+    _u4_operative(monkeypatch, "2.1.226")
+    row = provider._sdk_row(_home, importer=_u4_importer)
+
+    assert row.verdict == "FAIL", row.detail
+    assert "steward" in row.detail
+    assert "overseer" in row.detail
+    assert "claude-fable-5-1" in row.detail
+    assert "2.1.226" in row.detail  # the operative version
+    assert "2.1.251" in row.detail  # the floor
+    assert "sdk.cli_path" in row.detail  # the fix
+
+
+def test_u4_operative_at_or_above_the_floor_is_not_a_fail(monkeypatch, _home):
+    """The state on this machine once `sdk.cli_path` points at the system
+    binary: floor satisfied, bundled still older — INFO, never FAIL and
+    never WARN."""
+    _u4_operative(monkeypatch, "2.1.278")
+    row = provider._sdk_row(_home, importer=_u4_importer)
+    assert row.verdict == "INFO", row.detail
+    assert "2.1.278" in row.detail
+
+    # exactly AT the floor is satisfied, not violated
+    _u4_operative(monkeypatch, "2.1.251")
+    at_floor = provider._sdk_row(_home, importer=_u4_importer)
+    assert at_floor.verdict == "INFO", at_floor.detail
+
+
+def test_u4_version_comparison_is_numeric_per_component_not_lexicographic(monkeypatch, _home):
+    """`2.1.30 < 2.1.251` numerically, but `"2.1.30" > "2.1.251"` as
+    strings — a string compare reports the broken binary as fine.
+
+    MUTATION that turns this red: compare the raw strings (`resolved <
+    floor`) instead of the parsed tuples — the first leg below reads
+    INFO instead of FAIL."""
+    _u4_operative(monkeypatch, "2.1.30")
+    older = provider._sdk_row(_home, importer=_u4_importer)
+    assert older.verdict == "FAIL", older.detail
+
+    # a bigger MINOR component wins over a bigger patch component
+    _write_yaml(_home, "sdk:\n  model_cli_floors: claude-fable-5-1=2.9.9\n")
+    _u4_operative(monkeypatch, "2.10.0")
+    newer = provider._sdk_row(_home, importer=_u4_importer)
+    assert newer.verdict == "INFO", newer.detail
+
+    # the helper's own boundary cases, including zero padding
+    assert provider._parse_cli_version("2.1.251") == (2, 1, 251)
+    assert provider._parse_cli_version("2.1.251-rc1") is None
+    assert provider._parse_cli_version("") is None
+    assert provider._version_older((2, 1, 30), (2, 1, 251)) is True
+    assert provider._version_older((2, 1, 251), (2, 1, 226)) is False
+    assert provider._version_older((2, 10, 0), (2, 9, 9)) is False
+    assert provider._version_older((2, 1), (2, 1, 0)) is False
+    assert provider._version_older((2, 1, 0), (2, 1)) is False
+
+
+def test_u4_a_model_with_no_registered_floor_never_fails_and_never_warns(monkeypatch, _home):
+    """The Sonnet/Opus surfaces today. "No floor is registered" is a
+    different fact from "the floor is satisfied", and it must not become
+    loud in either direction.
+
+    MUTATION that turns this red: treat a missing floor as `"0"`-and-
+    compare, or make any unregistered model WARN — this reads WARN or
+    FAIL instead of PASS."""
+    _write_yaml(
+        _home,
+        "models:\n  steward: claude-sonnet-5\n  overseer: claude-sonnet-5\n",
+    )
+    _u4_operative(monkeypatch, "2.1.226")  # equal to bundled
+    row = provider._sdk_row(_home, importer=_u4_importer)
+    assert row.verdict == "PASS", row.detail
+    assert "claude-fable-5-1" not in row.detail
+
+    # and an ancient operative binary with no floor in play is still not
+    # a FAIL — there is nothing registered to compare it against
+    _u4_operative(monkeypatch, "1.0.0")
+    ancient = provider._sdk_row(_home, importer=_u4_importer)
+    assert ancient.verdict == "INFO", ancient.detail
+
+
+def test_u4_bundled_vs_operative_difference_alone_is_info_not_warn(monkeypatch, _home):
+    """Nothing but the two versions differing, with no floor in play.
+
+    MUTATION that turns this red: restore the old `if resolved !=
+    bundled: WARN` — this reads WARN."""
+    _write_yaml(
+        _home,
+        "models:\n  steward: claude-sonnet-5\n  overseer: claude-sonnet-5\n",
+    )
+    _u4_operative(monkeypatch, "2.1.278")
+    row = provider._sdk_row(_home, importer=_u4_importer)
+    assert row.verdict == "INFO", row.detail
+    assert "differ" in row.detail
+
+
+def test_u4_unprobed_operative_with_a_floor_warns_and_never_passes(monkeypatch, _home):
+    """The probe could not run. A floor that was not checked is not a
+    floor that was met.
+
+    MUTATION that turns this red: keep the old unconditional SKIP for an
+    unprobed operative version — this reads SKIP, which (unlike WARN)
+    says nothing about the floor at all."""
+    _u4_operative(monkeypatch, None, "resolved cli binary not found")
+    row = provider._sdk_row(_home, importer=_u4_importer)
+    assert row.verdict == "WARN", row.detail
+    assert "NOT be verified" in row.detail
+    assert "2.1.251" in row.detail
+    assert "resolved cli binary not found" in row.detail
+
+    # with no floor registered there is nothing to verify: still SKIP
+    _write_yaml(
+        _home,
+        "models:\n  steward: claude-sonnet-5\n  overseer: claude-sonnet-5\n",
+    )
+    no_floor = provider._sdk_row(_home, importer=_u4_importer)
+    assert no_floor.verdict == "SKIP", no_floor.detail
+
+
+def test_u4_unparseable_operative_version_warns_and_never_passes(monkeypatch, _home):
+    """A `--version` that prints something this code cannot read is
+    "could not be verified", never PASS.
+
+    MUTATION that turns this red: fall through to the equality compare
+    when `_parse_cli_version` returns `None` — this reads INFO."""
+    _u4_operative(monkeypatch, "banana")
+    row = provider._sdk_row(_home, importer=_u4_importer)
+    assert row.verdict == "WARN", row.detail
+    assert "NOT be verified" in row.detail
+
+
+def test_u4_the_floor_map_is_user_editable_in_config_yaml(monkeypatch, _home):
+    """S-58's rung order for this entry: config.yaml over the env var
+    over the code default. The number 2.1.251 came from one API error
+    string, so an operator who learns better must be able to correct it
+    without a code change.
+
+    MUTATION that turns this red: hardcode the floor map in
+    `provider.py` instead of reading `sdk.model_cli_floors` — the
+    config-set floor below is ignored and the row reads PASS."""
+    _write_yaml(_home, "sdk:\n  model_cli_floors: claude-sonnet-5=9.9.9\n")
+    _u4_operative(monkeypatch, "2.1.226")
+    row = provider._sdk_row(_home, importer=_u4_importer)
+    assert row.verdict == "FAIL", row.detail
+    assert "claude-sonnet-5" in row.detail
+    assert "9.9.9" in row.detail
+    # the shipped fable floor is REPLACED by the config value, not merged
+    assert "claude-fable-5-1" not in row.detail
+
+    # the env rung answers when config.yaml has no `sdk:` section
+    _write_yaml(_home, "provider:\n  name: anthropic\n")
+    monkeypatch.setenv("SELF_LEARN_SDK_MODEL_CLI_FLOORS", "claude-sonnet-5=9.9.9")
+    env_row = provider._sdk_row(_home, importer=_u4_importer)
+    assert env_row.verdict == "FAIL", env_row.detail
+    assert "claude-sonnet-5" in env_row.detail
+
+
+def test_u4_a_malformed_floor_entry_warns_rather_than_reading_as_no_floor(monkeypatch, _home):
+    """A typo in the setting must not fail open into silence.
+
+    MUTATION that turns this red: drop the malformed fragment silently in
+    `_parse_model_cli_floors` — the row reads PASS with no mention of
+    the unreadable entry."""
+    _write_yaml(_home, "sdk:\n  model_cli_floors: claude-fable-5-1 2.1.251\n")
+    _u4_operative(monkeypatch, "2.1.226")
+    row = provider._sdk_row(_home, importer=_u4_importer)
+    assert row.verdict == "WARN", row.detail
+    assert "unreadable entries" in row.detail
+    assert "claude-fable-5-1 2.1.251" in row.detail
+
+    # a floor whose VERSION is unreadable is the same class of problem
+    _write_yaml(_home, "sdk:\n  model_cli_floors: claude-fable-5-1=two.one\n")
+    bad_version = provider._sdk_row(_home, importer=_u4_importer)
+    assert bad_version.verdict == "WARN", bad_version.detail
+    assert "NOT be verified" in bad_version.detail
+
+
+def test_u4_the_handoff_parser_still_reads_every_new_row_shape(monkeypatch, capsys, _home):
+    """`_handoff_sdk_fields` parses the `key=value` tokens ahead of the
+    first `" — "`. Every new verdict must keep that prefix intact, or
+    `doctor invocation`'s handoff block silently degrades to its
+    "(not probed…)" placeholders.
+
+    MUTATION that turns this red: move `sdk=`/`bundled-cli=`/
+    `operative-cli=` after the em-dash separator in any branch below."""
+    for version, expected_verdict in (
+        ("2.1.226", "FAIL"),
+        ("2.1.278", "INFO"),
+        ("banana", "WARN"),
+    ):
+        _u4_operative(monkeypatch, version)
+        row = provider._sdk_row(_home, importer=_u4_importer)
+        assert row.verdict == expected_verdict, row.detail
+        sdk_version, bundled, _host = provider._handoff_sdk_fields([row])
+        assert sdk_version == "0.2.999", row.detail
+        assert bundled == "2.1.226", row.detail
+
+    # and the end-to-end printed handoff block, through the real verb.
+    # `_default_sdk_importer` calls `importlib.import_module`, so the
+    # substitution goes through `sys.modules` (the seam `test_dc9` uses)
+    # rather than through the default argument, which binds at def time.
+    _u4_operative(monkeypatch, "2.1.226")
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _U4_SDK)
+    rc = cli_mod.main(["doctor", "invocation"])
+    out = capsys.readouterr().out
+    assert rc == 1, out  # a FAIL row makes the verb exit 1
+    assert "doctor: FAIL sdk —" in out
+    assert "handoff: sdk-version = 0.2.999" in out
+    assert "handoff: cli-version.bundled = 2.1.226" in out
 
 
 def test_dc5_region_row(monkeypatch, capsys, _home):
@@ -732,7 +994,11 @@ def test_dc13_argv_byte_pinned_and_degrades_to_skip(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", _recording_run)
     row3 = provider._sdk_row(importer=_importer)
-    assert row3.verdict in ("PASS", "WARN")
+    # U4 (S-68) widened this tuple: `fake_sdk` declares no bundled
+    # version ("?"), so the operative "2.1.999" differs from it, and a
+    # plain difference is INFO now rather than WARN. This test is about
+    # the argv and the SKIP legs, not the verdict vocabulary.
+    assert row3.verdict in ("PASS", "WARN", "INFO")
     assert recorded
 
 

@@ -119,33 +119,109 @@ The rows, in the order they print:
 | `switches` | **The one you came for.** One INFO line naming every surface's resolved backend *and the rung that decided it*. |
 | `provider` | Resolved provider and its source. |
 | `config` | Whether `config.yaml`'s `provider:` section contains keys the software does not know. |
-| `sdk` | Whether `claude_agent_sdk` is importable, its version, and the bundled vs host `claude` CLI versions. WARN when they diverge. |
+| `sdk` | Whether `claude_agent_sdk` is importable, its version, the bundled vs **operative** `claude` CLI versions, and — since 2026-09-19 (U4) — whether the operative binary is new enough for the models the surfaces actually select. **FAIL** when it is older than the floor for any selected model; **INFO** when the two versions merely differ; **WARN** when a floor exists but could not be checked. See §3a. |
 | `rollout` | SKIP under `anthropic`. Under `bedrock`: FAIL only if **every surface has been explicitly pinned to `cli` and is therefore refused** (`backend=REFUSED (cli retired)`) — the Bedrock configuration then does nothing, because there is no un-refused surface left for it to reach. PASS if no surface is refused, per-surface INFO for the normal mixed state. *(2026-08-25: this state is now RARE rather than the default — every surface's own default is already `sdk`, so hitting it requires actively refusing every one of the four, not simply "not having flipped anything yet.")* |
 | `consistency` | Emitted **only** when something is wrong: a `bedrock` surface with no region, or one whose model id is an Anthropic alias. No row means no problem. |
 | `region` / `credentials` / `models` / `env` | Bedrock-side checks; SKIP wholesale under `anthropic`. `credentials` is **presence-only** and reports WARN, never FAIL, when it finds nothing — it cannot see an EC2 instance role (`FW-90`). |
 | `orphans` | Today always SKIP. It is a reserved extension point, **not** an orphan census — see §5.3. |
 
-A healthy all-defaults machine looks like this (*re-captured 2026-08-25,
-post-U-cleanup, `anthropic` install — the `switches` row is the part
-that changed; every surface now resolves `sdk` because there is nothing
-else left to resolve*):
+A healthy machine looks like this (*captured 2026-08-25, post-U-cleanup,
+`anthropic` install — the `switches` row is the part that changed then;
+every surface now resolves `sdk` because there is nothing else left to
+resolve. The `sdk` line was **replaced 2026-09-19 (U4)** and is RENDERED,
+not captured: it shows the row for a machine whose `sdk.cli_path` points
+at a current Claude Code. **On a genuinely all-defaults machine, where
+the operative binary is whatever the installed SDK wheel bundles, that
+row now reads FAIL** whenever the bundled copy is older than a selected
+model's floor — which is the state this host was in on 2026-09-14. See
+§3a.*):
 
 ```
 doctor: INFO switches — worker: backend=sdk (default); worker-repair: backend=sdk (default); miner-reader: backend=sdk (default); analyst: backend=sdk (default)
 doctor: INFO provider — provider=anthropic (default)
 doctor: PASS config — no unknown provider config keys
-doctor: WARN sdk — sdk=0.2.134 bundled-cli=2.1.226 host-cli=2.1.235 — versions differ
+doctor: INFO sdk — sdk=0.2.134 bundled-cli=2.1.226 operative-cli=2.1.278 — versions differ; the operative binary is what runs (checked: steward needs Claude Code >= 2.1.251 for model claude-fable-5-1; overseer needs Claude Code >= 2.1.251 for model claude-fable-5-1); host-cli-path=/usr/bin/claude (context, not compared)
 doctor: SKIP rollout — provider=anthropic — rollout state not applicable
 ...
 doctor: SKIP orphans — no orphan report hook exported by the sdk backend
 ```
 
-That `WARN sdk` row example (bundled-vs-host `claude` CLI version drift)
-predates this rewrite and is kept because the shape is still accurate —
-it is normal on a machine that updates its Claude Code install
-independently of the SDK's bundled copy, and does not block anything.
-There is no `cli` session left to compare a divergent one against; a
-large gap is worth investigating on its own terms now.
+That `INFO sdk` row is the healthy shape: the operative binary differs
+from the copy the SDK wheel bundles, which is normal — and on a machine
+running Fable, required — because Claude Code is updated independently
+of the SDK. The row used to read `WARN` for exactly this, and used to
+print a `host-cli=` field holding the PATH `claude`'s version; both are
+gone. **The field renames and the verdict change are the same
+correction**: a row that cried WARN on the normal state, and compared
+the wrong pair, trained its reader to skip it.
+
+### 3a. The version floor — what the SELECTED model needs
+
+*(added 2026-09-19, U4; `03-decisions.md` S-68.)*
+
+Two versions being equal never meant the system worked. On 2026-09-14
+the steward's first real run died on
+`API Error: 400 Claude Code 2.1.226 does not support this model` — the
+SDK had launched its own bundled 2.1.226 and the selected model,
+`claude-fable-5-1`, needs 2.1.251 or later. The row said **PASS**,
+because the bundled and operative versions were the same binary. Sameness
+was never the question; sufficiency was.
+
+The `sdk` row now resolves each surface's model through the same
+`model_for` the runners use, looks that model up in the registry setting
+`sdk.model_cli_floors`, and compares the **operative** binary against it:
+
+| State | Verdict |
+|---|---|
+| Operative binary older than the floor for **any** surface's selected model | **FAIL**, naming the surface, the model, the operative version, the floor, and the fix (`set sdk.cli_path to a newer claude binary`) |
+| Selected model has **no** registered floor (every Sonnet and Opus surface today) | contributes nothing — never FAIL, never WARN |
+| Floors met, bundled and operative versions merely differ | **INFO** |
+| Floors met, versions identical | **PASS** |
+| Operative version unprobed or unreadable, and some selected model has a floor | **WARN**, saying the floor could **not** be verified — never PASS |
+| A `sdk.model_cli_floors` entry is unreadable | **WARN** naming the fragment — a typo must not read as "no floor" |
+
+Versions compare numerically per dotted component, never as strings:
+`2.1.251 > 2.1.226`, `2.1.30 < 2.1.251` (a string compare gets that one
+exactly backwards), `2.10.0 > 2.9.9`, and `2.1` equals `2.1.0`. Anything
+that is not digits-and-dots — a `-rc1` suffix included — is "could not be
+verified", never PASS.
+
+**The setting.** `sdk.model_cli_floors` resolves like every other S-58
+setting, `config.yaml` (`sdk:` / `model_cli_floors:`) over
+`SELF_LEARN_SDK_MODEL_CLI_FLOORS` over the code default. The registry's
+kinds are `str`/`int`/`float`/`bool` and have no map, so the map is
+encoded as one comma-separated `<model id>=<version>` string:
+
+```yaml
+sdk:
+  model_cli_floors: claude-fable-5-1=2.1.251
+```
+
+A value set here **replaces** the shipped default rather than merging
+with it.
+
+> **Where 2.1.251 comes from, and where it does not.** The only source
+> for this number is the API error string quoted above, recorded on
+> 2026-09-14, read together with the operative version that later worked.
+> It is **not** from vendor documentation — there is no published table
+> of per-model Claude Code minimums — and nothing re-verifies it. If the
+> real floor is lower this over-reports; if the vendor raises it this
+> under-reports until a human edits the setting. That is the whole reason
+> the value lives in `config.yaml` instead of in code.
+
+**Proving it end to end.** No test crosses the real SDK → Claude Code →
+model boundary; `tests/conftest.py` blocks real spawns for the whole
+session, deliberately. `plugins/self-learn/cli/scripts/liveness-acceptance`
+is the opt-in, human-run script that does: it reproduces the 2026-09-14
+failure against the bundled binary in a scratch ledger and then proves
+the recovery. It refuses to do anything without
+`--i-understand-this-calls-the-real-model`, and it never touches
+`~/.self-learn`.
+
+### 3b. Reading the `switches` row
+
+*(this section's text is unchanged; it gained a heading of its own in
+2026-09-19's U4 only because §3a was inserted above it.)*
 
 **Reading the `switches` row is a skill; here is the whole of it.** Each
 surface prints `backend=<value> (<source>)`, where `<value>` is `sdk` or

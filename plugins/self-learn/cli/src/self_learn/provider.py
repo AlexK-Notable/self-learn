@@ -683,6 +683,92 @@ def _host_cli_context() -> str:
     return shutil.which("claude") or "not found on PATH"
 
 
+# ------------------------------------------- U4 (S-68): per-model floors
+
+
+def _parse_cli_version(text: str) -> tuple[int, ...] | None:
+    """A dotted Claude Code version as a tuple of integers, or `None` when
+    the string is not one.
+
+    Comparison is NUMERIC per component, never lexicographic: `2.1.251 >
+    2.1.226`, `2.1.30 < 2.1.251` (a string compare gets this one exactly
+    backwards), `2.10.0 > 2.9.9`. Every component must be digits only --
+    a pre-release or build suffix (`2.1.251-rc1`) is deliberately NOT
+    parsed into something guessable, because guessing wrong here means
+    reporting PASS on a binary that cannot run the selected model. An
+    unparseable string is "could not be verified", never PASS."""
+    parts = text.strip().split(".")
+    if not parts or any((not part.isdigit()) for part in parts):
+        return None
+    return tuple(int(part) for part in parts)
+
+
+def _version_older(left: tuple[int, ...], right: tuple[int, ...]) -> bool:
+    """`left < right`, padding the shorter one with zeros first so `2.1`
+    and `2.1.0` compare equal rather than by length."""
+    width = max(len(left), len(right))
+    padded_left = left + (0,) * (width - len(left))
+    padded_right = right + (0,) * (width - len(right))
+    return padded_left < padded_right
+
+
+def _parse_model_cli_floors(raw: str) -> tuple[dict[str, str], list[str]]:
+    """`sdk.model_cli_floors`'s string encoding -> `({model: floor},
+    [malformed fragments])`. The registry's `kind` vocabulary has no map,
+    so the map rides one comma-separated `<model>=<version>` string
+    (`settings._DEFAULT_MODEL_CLI_FLOORS` carries the 2.1.251 source
+    caveat). A malformed fragment is REPORTED, never silently dropped:
+    a typo in a floor the operator meant to enforce must not read as
+    "no floor"."""
+    floors: dict[str, str] = {}
+    malformed: list[str] = []
+    for fragment in (raw or "").split(","):
+        text = fragment.strip()
+        if not text:
+            continue
+        model, sep, version = text.partition("=")
+        model = model.strip()
+        version = version.strip()
+        if not sep or not model or not version:
+            malformed.append(text)
+            continue
+        floors[model] = version
+    return floors, malformed
+
+
+def _selected_model_floors(
+    home: Path | str,
+) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """Every `(surface, model, floor)` triple this ledger's SELECTED
+    models actually have a registered floor for, plus any malformed
+    fragments of the setting.
+
+    Surfaces whose model has no registered floor (`claude-sonnet-5` and
+    every Opus id today) contribute NOTHING -- they are not a WARN and
+    not a FAIL, because an unregistered model means "no floor is known",
+    which is a different fact from "the floor is satisfied"."""
+    raw, _source = _resolve_registry_str(home, "sdk.model_cli_floors")
+    floors, malformed = _parse_model_cli_floors(raw or "")
+    selected: list[tuple[str, str, str]] = []
+    if floors:
+        for surface in SURFACES:
+            model = model_for(surface, home=home)
+            floor = floors.get(model)
+            if floor is not None:
+                selected.append((surface, model, floor))
+    return selected, malformed
+
+
+def _floor_requirements_text(rows: list[tuple[str, str, str]]) -> str:
+    """One readable clause per `(surface, model, floor)` triple, so the
+    row names the surface, the model AND the floor rather than leaving a
+    reader to work out which of six surfaces is the problem."""
+    return "; ".join(
+        f"{surface} needs Claude Code >= {floor} for model {model}"
+        for surface, model, floor in rows
+    )
+
+
 def _sdk_row(
     home: Path | str | None = None, *, importer: Callable[[], Any] = _default_sdk_importer
 ) -> Row:
@@ -703,7 +789,42 @@ def _sdk_row(
     # `test_dc10_no_network_no_extra_spawn`'s "ONE permitted spawn"
     # invariant).
     host_context = f"host-cli-path={_host_cli_context()} (context, not compared)"
+
+    # U4 (S-68). `home=None` -- this function's own unit tests, and any
+    # caller with no ledger home in hand -- skips the floor check
+    # entirely, for the same reason `_operative_cli_version` falls back
+    # to a bare env read there: `model_for` and `settings.resolve_
+    # setting` are not `None`-home-safe, and there is no config.yaml to
+    # read a floor from. `preflight` always passes a real home, so the
+    # live doctor row always checks.
+    floors: list[tuple[str, str, str]] = []
+    malformed: list[str] = []
+    if home is not None:
+        floors, malformed = _selected_model_floors(home)
+
+    malformed_note = (
+        f"; `sdk.model_cli_floors` has unreadable entries ({', '.join(malformed)}) "
+        "— expected comma-separated <model>=<version>"
+        if malformed
+        else ""
+    )
+
     if resolved is None:
+        # Never PASS with a floor in play: an unprobed operative binary
+        # means the floor was NOT checked, which is not the same fact as
+        # the floor being met (2026-09-14: the row said PASS while the
+        # selected model could not run at all).
+        if floors or malformed:
+            return Row(
+                name="sdk",
+                verdict="WARN",
+                detail=(
+                    f"sdk={sdk_version} bundled-cli={bundled} — operative cli version not probed "
+                    f"({skip_reason}), so a selected model's minimum Claude Code version could "
+                    f"NOT be verified: {_floor_requirements_text(floors)}"
+                    f"{malformed_note}; {host_context}"
+                ),
+            )
         return Row(
             name="sdk",
             verdict="SKIP",
@@ -712,21 +833,75 @@ def _sdk_row(
                 f"({skip_reason}); {host_context}"
             ),
         )
-    if resolved != bundled:
+
+    operative = _parse_cli_version(resolved)
+    unreadable_floors = [row for row in floors if _parse_cli_version(row[2]) is None]
+    violations = [
+        row
+        for row in floors
+        if operative is not None
+        and (parsed := _parse_cli_version(row[2])) is not None
+        and _version_older(operative, parsed)
+    ]
+
+    if violations:
+        return Row(
+            name="sdk",
+            verdict="FAIL",
+            detail=(
+                f"sdk={sdk_version} bundled-cli={bundled} operative-cli={resolved} — the "
+                f"operative Claude Code binary ({resolved}) is OLDER than a selected model's "
+                f"minimum: {_floor_requirements_text(violations)} — FIX: set `sdk.cli_path` to a "
+                f"newer claude binary (config.yaml `sdk: cli_path:`, or SELF_LEARN_SDK_CLI_PATH)"
+                f"{malformed_note}; {host_context}"
+            ),
+        )
+
+    if operative is None and (floors or malformed):
         return Row(
             name="sdk",
             verdict="WARN",
             detail=(
+                f"sdk={sdk_version} bundled-cli={bundled} operative-cli={resolved} — that is not "
+                f"a dotted numeric version, so a selected model's minimum Claude Code version "
+                f"could NOT be verified: {_floor_requirements_text(floors)}"
+                f"{malformed_note}; {host_context}"
+            ),
+        )
+
+    if unreadable_floors or malformed:
+        return Row(
+            name="sdk",
+            verdict="WARN",
+            detail=(
+                f"sdk={sdk_version} bundled-cli={bundled} operative-cli={resolved} — a registered "
+                f"minimum is not a dotted numeric version, so it could NOT be verified: "
+                f"{_floor_requirements_text(unreadable_floors)}"
+                f"{malformed_note}; {host_context}"
+            ),
+        )
+
+    floors_text = f" (checked: {_floor_requirements_text(floors)})" if floors else ""
+    if resolved != bundled:
+        # U4: bundled-vs-operative inequality ALONE is INFO, not WARN.
+        # Pointing `sdk.cli_path` at a newer system binary than the wheel
+        # bundles is the NORMAL, and on this machine the REQUIRED, state
+        # -- a WARN here trained the reader to ignore the one row that
+        # should have been loud on 2026-09-14.
+        return Row(
+            name="sdk",
+            verdict="INFO",
+            detail=(
                 f"sdk={sdk_version} bundled-cli={bundled} operative-cli={resolved} — versions "
-                f"differ; {host_context}"
+                f"differ; the operative binary is what runs{floors_text}; {host_context}"
             ),
         )
     return Row(
         name="sdk",
         verdict="PASS",
         detail=(
-            f"sdk={sdk_version} bundled-cli={bundled} operative-cli={resolved} — versions match; "
-            f"{host_context}"
+            f"sdk={sdk_version} bundled-cli={bundled} operative-cli={resolved} — versions match"
+            f"{floors_text}; {host_context}"
         ),
     )
 

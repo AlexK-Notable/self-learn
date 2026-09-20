@@ -757,6 +757,23 @@ def _default_analyst_model() -> str:
 _DEFAULT_STEWARD_MODEL = "claude-fable-5-1"
 _DEFAULT_OVERSEER_MODEL = "claude-fable-5-1"
 
+#: U4 (S-68): the minimum Claude Code version each model needs, as
+#: comma-separated ``<model id>=<version>`` pairs -- the registry's `kind`
+#: vocabulary is `str`/`int`/`float`/`bool`, so a map is encoded as one
+#: string rather than given a sixth kind for a single entry. Seeded with
+#: exactly one pair, and editable in `config.yaml` (`sdk:` /
+#: `model_cli_floors:`) without a code change.
+#:
+#: **Where 2.1.251 comes from, and where it does NOT.** The ONLY source
+#: for this number is the API error string the steward's first real run
+#: received on 2026-09-14 -- `API Error: 400 Claude Code 2.1.226 does not
+#: support this model...` -- read together with the operative version
+#: that later worked. It is NOT from vendor documentation, there is no
+#: published table of per-model Claude Code minimums, and nothing
+#: re-verifies it: if the real floor is lower, this over-reports; if the
+#: vendor raises it, this under-reports until a human edits it.
+_DEFAULT_MODEL_CLI_FLOORS = "claude-fable-5-1=2.1.251"
+
 
 def _default_steward_model() -> str:
     return _DEFAULT_STEWARD_MODEL
@@ -1341,6 +1358,25 @@ REGISTRY: tuple[Setting, ...] = (
         default=None,
         description="the CLI path `SELF_LEARN_SDK_CLI_PATH` used to set directly, bypassing config",
         direction="env-first",
+    ),
+    # U4 (S-68): the per-model Claude Code floor the `sdk` doctor row
+    # checks the OPERATIVE binary against. `direction` is left at the
+    # default `config-first` -- unlike `sdk.cli_path` right above, which
+    # is `env-first` only because `SELF_LEARN_SDK_CLI_PATH` predates the
+    # registry and callers already relied on the env var outranking
+    # config.yaml. This entry has no such history: a floor is a fact
+    # about the installed software that belongs in the ledger's own
+    # config, with the env var reserved for a one-off probe.
+    Setting(
+        name="sdk.model_cli_floors",
+        env_var="SELF_LEARN_SDK_MODEL_CLI_FLOORS",
+        config_section="sdk",
+        config_key="model_cli_floors",
+        kind="str",
+        default=_DEFAULT_MODEL_CLI_FLOORS,  # see that constant for the 2.1.251 source caveat
+        description=(
+            "minimum Claude Code version per model id, comma-separated <model>=<version> pairs"
+        ),
     ),
     # -------------------------------------------------------- models
     # M-S (BLOCKER-1): corrects `settings-surface-spec.md` §1.2's

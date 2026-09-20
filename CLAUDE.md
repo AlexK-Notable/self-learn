@@ -56,6 +56,13 @@ ledger on a given host) belong in `CLAUDE.local.md`, which is git-ignored.
   count must not grow; compare before and after on the same machine.
 - `self-learn --selftest`, `self-learn doctor invocation`, and `self-learn doctor
   settings` are the read-only health views.
+- `plugins/self-learn/cli/scripts/liveness-acceptance` is the opt-in acceptance
+  script a HUMAN runs by hand: it makes REAL model calls, so it refuses to do
+  anything without `--i-understand-this-calls-the-real-model`, and it works only
+  in a scratch ledger it creates itself — never `~/.self-learn`. It exists
+  because no test may cross the real SDK → Claude Code → model boundary
+  (`tests/conftest.py` blocks real spawns for the whole session, deliberately).
+  It is never part of the suite, and an agent never runs its real-model path.
 - Every ad-hoc run of the CLI or its tests points at a scratch ledger: set
   `SELF_LEARN_HOME` and `XDG_CACHE_HOME` to temporary directories. The default
   ledger is the user's real data.

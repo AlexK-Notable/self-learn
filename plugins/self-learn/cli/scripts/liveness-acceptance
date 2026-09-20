@@ -1,0 +1,403 @@
+#!/usr/bin/env bash
+# self-learn liveness acceptance — OPT-IN, HUMAN-RUN, MAKES REAL MODEL CALLS.
+#
+#   plugins/self-learn/cli/scripts/liveness-acceptance                 # refuses, explains, exits 2
+#   plugins/self-learn/cli/scripts/liveness-acceptance --i-understand-this-calls-the-real-model
+#   … --scratch /run/user/1000/sl-acceptance-1   # name the scratch ledger yourself
+#   … --keep                                      # do not delete the scratch ledger at the end
+#
+# WHY THIS EXISTS. Nothing in the test suite ever crosses the real
+# SDK -> Claude Code -> model boundary; `tests/conftest.py` hard-blocks
+# `claude_agent_sdk._find_cli()` for the whole session, correctly, because a
+# stray real spawn once ran an uncapped, credentialed session. So the one
+# failure that actually stopped the steward on 2026-09-14 — the SDK launching
+# its BUNDLED Claude Code 2.1.226 against `claude-fable-5-1`, which needs
+# 2.1.251 or later, answered by `API Error: 400 Claude Code 2.1.226 does not
+# support this model` — is by construction invisible to every test. This
+# script is the deliberate, human-supervised exception: it reproduces that
+# failure on purpose and then proves the product recovers from it.
+#
+# NEVER part of the suite. `scripts/suite` runs `pytest`; this file is not
+# collected by it, is not imported by anything, and does nothing at all
+# without the explicit flag above.
+#
+# THE REAL LEDGER IS NEVER TOUCHED. Everything happens in a fresh scratch
+# ledger created by this script. It refuses to start if `SELF_LEARN_HOME`
+# resolves to the real one, and it clears every `SELF_LEARN_OVERRIDE_*` plus
+# `SELF_LEARN_ANALYST_MODEL` / `SELF_LEARN_ANALYST_TIMEOUT` for its children.
+#
+# THE LIVE SWITCHES STAY OFF. `steward.enabled` and `overseer.enabled` are
+# set to true inside the SCRATCH `config.yaml` only. That is this run's own
+# configuration, not the live switch: the real ledger's `config.yaml` is
+# never read and never written, and turning the real switches on remains the
+# human's own deliberate act, watched, exactly as `CLAUDE.md` requires.
+#
+# WHAT IT DOES NOT DO. Step 4 does not inject a ledger fault. An
+# environment-variable fault hook does not exist and must not be added to
+# product code, and the one clean alternative — arming a one-shot failing
+# `pre-commit` hook in the scratch repo, which works because `gitops` never
+# passes `--no-verify` — could not be verified by the builder without making
+# the real model calls this script exists to make. Step 4 is therefore a
+# plain real overseer run to completion followed by a second run, which
+# proves the same-week guard rather than a retry. Arming that hook is the
+# obvious next extension once a human has watched this script run once.
+set -u
+
+PROGRAM=$(basename "$0")
+ROOT=$(cd "$(dirname "$0")/../../../.." && pwd)
+PROJECT=plugins/self-learn/cli
+cd "$ROOT" || exit 2
+
+CONSENT=0
+KEEP=0
+SCRATCH=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --i-understand-this-calls-the-real-model) CONSENT=1 ;;
+    --keep) KEEP=1 ;;
+    --scratch) shift; SCRATCH=${1:-} ;;
+    --scratch=*) SCRATCH=${1#--scratch=} ;;
+    -h|--help)
+      sed -n '2,10p' "$0"
+      exit 0
+      ;;
+    *) echo "$PROGRAM: unknown argument: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+# --------------------------------------------------------------- the plan
+# Printed BEFORE anything runs, consent or not, so the refusal below is
+# informative rather than merely obstructive.
+cat <<PLAN
+$PROGRAM — real-model acceptance for the steward and the overseer.
+
+What it will do, in order:
+  1. Point sdk.cli_path at the SDK's BUNDLED claude and assert the doctor's
+     sdk row FAILS on the version floor.            (0 model calls)
+  2. Seed a few lessons in a scratch ledger, analyze them, then run the
+     steward against that same too-old binary and assert the committed run
+     record carries the REAL failure reason.        (about 2-3 model calls)
+  3. Point sdk.cli_path at a working claude, run the steward again, and
+     assert the packets are re-attempted and the run completes.
+                                                    (about 1-3 model calls)
+  4. Run the overseer to completion, then again to prove the same-week
+     guard holds.                                   (up to 10 model calls)
+  5. Print counts of PASS / FAIL / SKIPPED, the model calls made, and the
+     scratch path.
+
+Honest estimate: roughly 3 to 16 real model calls. The scratch config caps
+the overseer's runaway guard (overseer.max_model_calls) at 10, so that step
+cannot exceed it. Costs are billed to whatever credentials the operative
+claude binary uses.
+PLAN
+
+if [ "$CONSENT" -ne 1 ]; then
+  cat >&2 <<REFUSE
+
+$PROGRAM: REFUSED — nothing has run.
+This script makes REAL model calls against REAL credentials. Re-run it with
+  --i-understand-this-calls-the-real-model
+if that is what you want.
+REFUSE
+  exit 2
+fi
+
+# ------------------------------------------------- scrub the child's env
+for _var in $(env | sed -n 's/^\(SELF_LEARN_OVERRIDE_[A-Za-z0-9_]*\)=.*/\1/p'); do
+  unset "$_var"
+done
+unset SELF_LEARN_ANALYST_MODEL
+unset SELF_LEARN_ANALYST_TIMEOUT
+unset SELF_LEARN_SDK_CLI_PATH
+unset SELF_LEARN_SDK_MODEL_CLI_FLOORS
+
+# ------------------------------------------------ the scratch ledger path
+REAL_LEDGER=$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd)/.self-learn
+if [ -n "${SELF_LEARN_HOME:-}" ]; then
+  INHERITED=$(cd "$SELF_LEARN_HOME" 2>/dev/null && pwd || echo "$SELF_LEARN_HOME")
+  if [ "$INHERITED" = "$REAL_LEDGER" ]; then
+    echo "$PROGRAM: REFUSED — SELF_LEARN_HOME points at the real ledger ($REAL_LEDGER)." >&2
+    exit 2
+  fi
+fi
+
+if [ -z "$SCRATCH" ]; then
+  # The path deliberately carries hyphens in its own leaf: a long
+  # slash-only path of random-looking segments trips the ledger's
+  # high-entropy secret scan, and a refused write is not a test result.
+  SCRATCH="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/self-learn-acceptance-$(date +%Y%m%d-%H%M%S)-$$"
+fi
+case "$SCRATCH" in
+  /*) ;;
+  *) SCRATCH="$PWD/$SCRATCH" ;;
+esac
+if [ "$SCRATCH" = "$REAL_LEDGER" ]; then
+  echo "$PROGRAM: REFUSED — the scratch path IS the real ledger." >&2
+  exit 2
+fi
+case "$(basename "$SCRATCH")" in
+  *-*|*.*) ;;
+  *)
+    echo "$PROGRAM: REFUSED — the scratch directory name must contain a hyphen or a dot" >&2
+    echo "  (a slash-only path of opaque segments trips the ledger's secret scan)." >&2
+    exit 2
+    ;;
+esac
+
+mkdir -p "$SCRATCH/ledger" "$SCRATCH/cache"
+export SELF_LEARN_HOME="$SCRATCH/ledger"
+export XDG_CACHE_HOME="$SCRATCH/cache"
+export SELF_LEARN_WORKER_AUTOKICK=0
+export SELF_LEARN_MINER_AUTOKICK=0
+export SELF_LEARN_NO_NOTIFY=1
+
+sl() { uv run --no-sync --project "$PROJECT" self-learn "$@"; }
+py() { uv run --no-sync --project "$PROJECT" python -c "$1" "${@:2}"; }
+
+#: `sl … --json` on STDOUT only. `settings._warn` and friends write to
+#: stderr, and a `2>&1 | tail -1` would hand a warning line to `json.loads`
+#: and make every downstream check read BAD-JSON. Stderr is kept, in a file,
+#: because the human running this needs it when a step fails.
+sl_json() { sl "$@" 2>>"$SCRATCH/stderr.log" | tail -1; }
+
+TOTAL_STEPS=5
+PASSES=0
+FAILURES=0
+SKIPS=0
+MODEL_CALLS=0
+
+step() { printf 'STEP %s/%s: %s\n' "$1" "$TOTAL_STEPS" "$2"; }
+ok()   { printf 'PASS\n'; PASSES=$((PASSES + 1)); }
+bad()  { printf 'FAIL: %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
+skip() { printf 'SKIPPED: %s\n' "$1"; SKIPS=$((SKIPS + 1)); }
+
+# --------------------------------------------------- the two claude binaries
+BUNDLED=$(py '
+import pathlib, sys
+try:
+    import claude_agent_sdk
+except ImportError:
+    print(""); sys.exit(0)
+path = pathlib.Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude"
+print(path if path.exists() else "")
+')
+BUNDLED_VERSION=$(py '
+import sys
+try:
+    import claude_agent_sdk
+    from self_learn import provider
+except ImportError:
+    print("?"); sys.exit(0)
+print(provider._bundled_cli_version(claude_agent_sdk))
+')
+WORKING=$(command -v claude || true)
+WORKING_VERSION="?"
+if [ -n "$WORKING" ]; then
+  WORKING_VERSION=$("$WORKING" --version 2>/dev/null | awk '{print $1}')
+fi
+
+printf '\nbundled claude: %s (%s)\nworking claude: %s (%s)\nscratch ledger: %s\n\n' \
+  "${BUNDLED:-<none>}" "$BUNDLED_VERSION" "${WORKING:-<none on PATH>}" "$WORKING_VERSION" \
+  "$SELF_LEARN_HOME"
+
+# ===================================================================== 1
+step 1 "positive control — the doctor's sdk row must FAIL against the bundled binary"
+if [ -z "$BUNDLED" ]; then
+  skip "the SDK ships no _bundled/claude in this venv; there is no too-old binary to point at"
+else
+  DOCTOR_OUT=$(SELF_LEARN_SDK_CLI_PATH="$BUNDLED" sl doctor invocation 2>&1)
+  if printf '%s' "$DOCTOR_OUT" | grep -q 'doctor: FAIL sdk —'; then
+    printf '%s\n' "$DOCTOR_OUT" | grep 'doctor: FAIL sdk —'
+    ok
+  elif printf '%s' "$DOCTOR_OUT" | grep -qE 'doctor: (PASS|INFO) sdk —'; then
+    # Not a failure of the product: this machine's wheel simply bundles a
+    # binary that already clears every registered floor. Say so with the
+    # versions rather than claiming a pass the run did not earn.
+    skip "the bundled binary ($BUNDLED_VERSION) already clears every registered floor; nothing to trip"
+  else
+    bad "the sdk row neither FAILed nor cleared the floor: $(printf '%s' "$DOCTOR_OUT" | grep 'sdk —')"
+  fi
+fi
+
+# ===================================================================== 2
+step 2 "reproduce 2026-09-14 — a steward run against the too-old binary records the REAL reason"
+SEED_ERROR=""
+sl init >>"$SCRATCH/stderr.log" 2>&1 || SEED_ERROR="self-learn init failed"
+git -C "$SELF_LEARN_HOME" config user.name "self-learn acceptance" >/dev/null 2>&1 \
+  || SEED_ERROR="${SEED_ERROR:-git config user.name failed}"
+git -C "$SELF_LEARN_HOME" config user.email "acceptance@example.invalid" >/dev/null 2>&1 \
+  || SEED_ERROR="${SEED_ERROR:-git config user.email failed}"
+
+# The scratch ledger's OWN configuration. Not the live switches: this file
+# is inside the scratch ledger and is deleted with it. `cooldown_secs: 0` is
+# belt and braces — `self-learn steward run` invoked directly is NOT
+# cooldown-gated (the cooldown is the `serve` scheduler's), so it is not
+# what makes run 2 below eligible; it only keeps this scratch config honest
+# about intent.
+cat > "$SELF_LEARN_HOME/config.yaml" <<'SCRATCHCONFIG'
+steward:
+  enabled: true
+  cooldown_secs: 0
+overseer:
+  enabled: true
+  max_model_calls: 10
+SCRATCHCONFIG
+
+# No `--no-push`: `teach` refuses it without `--route` ("--no-push needs
+# --route"), and a scratch ledger has no remote to push to anyway.
+seed() {
+  sl teach --user --type knowledge --fact "$1" --context "$2" \
+    >>"$SCRATCH/stderr.log" 2>&1 || SEED_ERROR="${SEED_ERROR:-teach failed: $2}"
+}
+seed "The acceptance ledger is scratch; nothing here is a real lesson." "liveness-acceptance seed 1"
+seed "A second scratch fact, so the steward has more than one packet input." "liveness-acceptance seed 2"
+seed "A third scratch fact, for the same reason as the second." "liveness-acceptance seed 3"
+
+# `teach --user` files a pending record at `user/pending/lrn-<8hex>.md`
+# (verified on a scratch ledger 2026-09-19).
+SEEDED=$(py '
+import pathlib, sys
+pending = pathlib.Path(sys.argv[1]) / "user" / "pending"
+print(len(list(pending.glob("lrn-*.md"))) if pending.is_dir() else 0)
+' "$SELF_LEARN_HOME")
+
+if [ -n "$SEED_ERROR" ]; then
+  bad "$SEED_ERROR (see $SCRATCH/stderr.log)"
+elif [ "$SEEDED" -lt 3 ]; then
+  bad "seeding produced $SEEDED records, expected 3 (see $SCRATCH/stderr.log)"
+elif [ -z "$BUNDLED" ]; then
+  skip "no bundled binary to reproduce the failure against"
+elif [ -z "$WORKING" ]; then
+  skip "no working claude on PATH, so the analysis the steward needs cannot be produced"
+else
+  # The steward only sees ANALYZED records, so the worker runs first,
+  # against the WORKING binary — the reproduction is of the steward's
+  # failure, not of a missing analysis.
+  SELF_LEARN_SDK_CLI_PATH="$WORKING" sl worker run >>"$SCRATCH/stderr.log" 2>&1 || true
+  MODEL_CALLS=$((MODEL_CALLS + 1))  # the worker reports no count; one batch, one call
+
+  STEWARD_1=$(SELF_LEARN_SDK_CLI_PATH="$BUNDLED" sl_json steward run --json)
+  MODEL_CALLS=$((MODEL_CALLS + $(py '
+import json, sys
+try:
+    print(int(json.loads(sys.argv[1]).get("calls") or 0))
+except Exception:
+    print(0)
+' "$STEWARD_1")))
+  REASON=$(py '
+import json, pathlib, sys
+home = pathlib.Path(sys.argv[1])
+runs = sorted((home / "cases" / "runs").glob("run-*.json"))
+if not runs:
+    print("NO-RUN-RECORD"); raise SystemExit
+data = json.loads(runs[-1].read_text(encoding="utf-8"))
+details = []
+for packet in data.get("packets") or []:
+    detail = packet.get("failure_detail")
+    if detail:
+        details.append(str(detail))
+print(" | ".join(details) or "NO-FAILURE-DETAIL")
+' "$SELF_LEARN_HOME")
+  printf '  steward run 1: %s\n  committed reason: %s\n' "$STEWARD_1" "$REASON"
+  # A POSITIVE assertion, not merely "it is not one of these three words":
+  # the whole point of the step is that the committed trace carries the
+  # API's own message. Anything else — including a secret-scan redaction —
+  # FAILs and prints what was actually found.
+  case "$REASON" in
+    *"API Error"*|*"does not support this model"*) ok ;;
+    NO-RUN-RECORD) bad "the steward committed no run record at all" ;;
+    NO-FAILURE-DETAIL) bad "a packet failed but the run record carries no failure_detail" ;;
+    *) bad "the committed reason is not the API message: $REASON" ;;
+  esac
+fi
+
+# ===================================================================== 3
+step 3 "recovery — a second steward run against a working binary re-attempts and completes"
+if [ -z "$WORKING" ]; then
+  skip "no working claude on PATH"
+else
+  STEWARD_2=$(SELF_LEARN_SDK_CLI_PATH="$WORKING" sl_json steward run --json)
+  MODEL_CALLS=$((MODEL_CALLS + $(py '
+import json, sys
+try:
+    print(int(json.loads(sys.argv[1]).get("calls") or 0))
+except Exception:
+    print(0)
+' "$STEWARD_2")))
+  printf '  steward run 2: %s\n' "$STEWARD_2"
+  VERDICT=$(py '
+import json, pathlib, sys
+raw, home = sys.argv[1], pathlib.Path(sys.argv[2])
+try:
+    result = json.loads(raw)
+except ValueError:
+    print("BAD-JSON"); raise SystemExit
+runs = sorted((home / "cases" / "runs").glob("run-*.json"))
+if not runs:
+    print("NO-RUN-RECORD"); raise SystemExit
+data = json.loads(runs[-1].read_text(encoding="utf-8"))
+attempts = max([int(p.get("attempt_count") or 0) for p in (data.get("packets") or [])] or [0])
+if attempts < 2:
+    print(f"NOT-REATTEMPTED (highest attempt_count={attempts})"); raise SystemExit
+outcome = result.get("outcome")
+if outcome not in ("applied", "idle"):
+    print(f"NOT-COMPLETED (outcome={outcome})"); raise SystemExit
+print("OK")
+' "$STEWARD_2" "$SELF_LEARN_HOME")
+  if [ "$VERDICT" = "OK" ]; then ok; else bad "$VERDICT"; fi
+fi
+
+# ===================================================================== 4
+step 4 "the overseer — one real run to completion, then the same-week guard"
+if [ -z "$WORKING" ]; then
+  skip "no working claude on PATH"
+else
+  OVERSEER_1=$(SELF_LEARN_SDK_CLI_PATH="$WORKING" sl_json overseer run --json)
+  OVERSEER_2=$(SELF_LEARN_SDK_CLI_PATH="$WORKING" sl_json overseer run --json)
+  printf '  overseer run 1: %s\n  overseer run 2: %s\n' "$OVERSEER_1" "$OVERSEER_2"
+  CALLS=$(py '
+import json, sys
+try:
+    print(int(json.loads(sys.argv[1]).get("model_calls") or 0))
+except Exception:
+    print(0)
+' "$OVERSEER_1")
+  MODEL_CALLS=$((MODEL_CALLS + CALLS))
+  VERDICT=$(py '
+import json, sys
+try:
+    first = json.loads(sys.argv[1]); second = json.loads(sys.argv[2])
+except ValueError:
+    print("BAD-JSON"); raise SystemExit
+first_status = first.get("status")
+second_status = second.get("status")
+if first_status in ("refused", "stopped", "runaway"):
+    print(f"FIRST-RUN-DID-NOT-COMPLETE (status={first_status})"); raise SystemExit
+if second_status not in ("held-week-done", "idle"):
+    print(f"SECOND-RUN-REDID-THE-WEEK (status={second_status})"); raise SystemExit
+print("OK")
+' "$OVERSEER_1" "$OVERSEER_2")
+  if [ "$VERDICT" = "OK" ]; then ok; else bad "$VERDICT"; fi
+fi
+
+# ===================================================================== 5
+step 5 "summary"
+printf 'PASS=%s FAIL=%s SKIPPED=%s  model calls made: ~%s  scratch: %s\n' \
+  "$PASSES" "$FAILURES" "$SKIPS" "$MODEL_CALLS" "$SCRATCH"
+printf 'stderr from every child is in %s/stderr.log\n' "$SCRATCH"
+# "~" because only the two runners report a count of their own
+# (`calls` / `model_calls`); the worker's single analysis call is assumed,
+# not measured.
+if [ "$KEEP" -eq 1 ]; then
+  printf 'scratch ledger kept at %s (--keep)\n' "$SCRATCH"
+else
+  rm -rf "$SCRATCH"
+  printf 'scratch ledger deleted; re-run with --keep to inspect it\n'
+fi
+
+if [ "$FAILURES" -gt 0 ]; then
+  exit 1
+fi
+exit 0
