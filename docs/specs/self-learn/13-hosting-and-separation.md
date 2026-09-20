@@ -397,15 +397,28 @@ unattended-run contract (`FW-85`), not a failure. Committed unfinished work
 stays due regardless of the calendar, unchanged from O-4: a failed attempt is
 retried after the existing two-hour attempt cooldown
 (`miner.ATTEMPT_COOLDOWN_SECS`), on any day, until the week is done or the
-cap closes it. A raise inside either due-check is logged and treated as
-not-due for that tick, and it arms the cooldown so the tick loop cannot spin
-on it; it counts as an attempt against the unfinished unit the check was
-looking at when there is one — which is how a resume-time exception that
-recurs identically every two hours reaches the cap and closes out instead of
-recurring forever — and against nothing when there is not. It never
-escapes into `_run_tick`, where one exception ends the whole `serve` process
-— miner, worker, steward and overseer together — and ends it again on every
-restart while the cause persists.
+cap closes it.
+
+**A raise inside either due-check is a HOLD, not an attempt** *(Added
+2026-09-19, S-68)*. It is logged, it increments no attempt count, and the job
+is not due this tick. It arms that job's cache-side cooldown so the tick loop
+cannot spin on it; while the cause persists it is shown in the `doctor` serve
+row and the heartbeat as the reason that job is not running, and the user is
+notified once per distinct cause, never once per tick. It never escapes into
+`_run_tick`, where one exception ends the whole `serve` process — miner,
+worker, steward and overseer together — and ends it again on every restart
+while the cause persists. **Ordering, for both jobs: the cooldown test reads
+only the cache attempt journal, and is evaluated BEFORE any git read.** Today
+`_steward_is_due` reads committed manifests before it looks at a cooldown at
+all (`serve.py:481-488`), so a wedged git would be re-entered on every 60-second
+tick; with the order above it cannot be retried faster than the cooldown.
+Counting a due-check failure as an attempt is explicitly NOT the rule: a check
+that could not even read the state took ownership of nothing, and three ticks
+against a broken git would otherwise exhaust a cap of 3 and park lessons
+nobody examined. The case that motivated counting — an exception that recurs
+identically on every resume — needs no help from the due-check: that attempt
+is counted at its start, inside the run (`02-schema.md` §3a), so it reaches
+the cap and closes out on its own.
 
 ## 6. Cache namespacing
 

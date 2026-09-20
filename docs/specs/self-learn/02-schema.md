@@ -985,17 +985,25 @@ week — not on the run as a whole. Each such unit carries, in the manifest:
   definition) counts exactly like one that failed.
 - **A run that HOLDS before taking ownership of a unit is not an attempt**
   and increments nothing: a disabled switch, a STOP refusal, a lock another
-  process holds, and a week the same-week guard finds already done all leave
-  every count untouched, so a wedged lock can never exhaust a cap and park
-  work nobody examined. Whether such a hold arms the scheduler's own cooldown
-  is the runner's call, not a fact this schema fixes.
+  process holds, a week the same-week guard finds already done, and a raise
+  inside an "is it due?" check all leave every count untouched, so neither a
+  wedged lock nor a wedged git can exhaust a cap and park work nobody
+  examined. Such a hold may still arm the scheduler's cache-side cooldown —
+  a raised due-check does, so the tick loop cannot spin on it (S-68) — but it
+  never touches a count in this record.
 - `last_attempt_at` is written by that same increment and is what the
   scheduler's cooldown reads; a value that is unparseable or in the future
   reads as "attempted now", never as "due every tick" or "never due".
 - `progress_at` is the time of the last attempt that made progress, and is
   what a later run compares against to tell a retry apart from a loop.
-- `failure` is the kind — a `FAILURE_KINDS` member, a stop code, `turn-bound`,
-  `schema`, or `no-progress`. `failure_detail` is the message the transport or
+- `failure` is the kind, and it reuses the literals the runner already writes
+  rather than a second vocabulary: a `FAILURE_KINDS` member (`exit`,
+  `timeout`, `not-found`, `os-error`, `unavailable`), `invocation` (a failed
+  call that named no kind), `turns` (the turn bound), `schema-repair` (a
+  second staged-output validation failure), and one genuinely new value,
+  `no-progress`, for an attempt that ran and moved nothing. A ledger stop
+  keeps riding the run record's own numeric halt code (5, 6, 7, 8); a code is
+  never folded into this field. `failure_detail` is the message the transport or
   the validator actually returned, at most 2,000 characters (truncated with a
   trailing ellipsis) and secret-scanned on write. A scan hit REDACTS the
   detail to `<redacted: secret-scan>` and the attempt record still commits
@@ -1007,6 +1015,23 @@ week — not on the run as a whole. Each such unit carries, in the manifest:
   `status: closed` with `outcome: attempts-exhausted`. The week is done
   because the run record says so; coverage cannot say it, since coverage does
   not advance on a failed attempt.
+
+A run record written before this rule has no `attempt_count`, and one is
+never invented for it: its count is DERIVED from the evidence the record
+already carries — for a steward packet, the number of rows of kind
+`decision` in that packet's own `attempts` list — and the first attempt made
+under this rule writes the explicit field. This is not a migration nicety:
+the run left stuck on 2026-09-14 is exactly this shape (three packets, one
+`decision` attempt each, `last_attempt_at` null), and it has to be
+re-attempted and counted by the product itself, never carried to a terminal
+state by hand-editing committed JSON.
+
+Writing the close-out is itself an ordinary ledger write and can fail like
+one. A close-out that fails — the steward's parked successor case, or the
+overseer's close-out note and question — is retried by the next run, is
+idempotent (a successor that already exists is reused, never duplicated), and
+increments no count of its own. A unit becomes `abandoned`, and the run
+closes, only once every abandoned item's `successor_case` actually exists.
 
 The `abandoned` disposition named above has this shape, and is written only
 by a runner reaching the cap, never by a model:

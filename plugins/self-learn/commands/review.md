@@ -431,7 +431,9 @@ what an unattended run decided, and how you correct it:
   index; use it to find what ran overnight or what is waiting on the
   overseer. `--parked-reason` filters on the closed set (`hook`,
   `always-loaded-user-scope`, `broad-removal`, `authority-unclear`,
-  `scope-conflict`).
+  `scope-conflict` — the five the steward chooses — plus
+  `plain-host-committed-file` and `attempts-exhausted`, which its runner
+  writes for it).
 - `self-learn case observe <id> --kind
   examined|presented|statement|corrected|dependency-moved --text …
   [--ref …] [--presented-outcome agreed|corrected|noted]` — appends a Later
