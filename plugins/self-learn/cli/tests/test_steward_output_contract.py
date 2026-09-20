@@ -167,6 +167,19 @@ def test_every_example_lesson_has_its_own_sheet_item():
         assert {item["id"] for item in sheet["items"]} == set(case["records"]), name
 
 
+def test_the_example_revision_names_a_section_a_lesson_really_has():
+    """`revise` refuses a section the lesson does not already have, but
+    only at apply time and against a real record -- the stage check
+    cannot see it. So the example is held to the one list there is."""
+    real_sections = {name for names in records.REQUIRED_SECTIONS.values() for name in names}
+    entries = _load("revisions.yaml")["entries"]
+    assert entries  # the control: there is an example to check
+    for entry in entries:
+        assert entry["section"] in real_sections
+        assert set(entry) == {"case", "id"} | set(batch.REQUIRED_KEYS["revise"])
+        assert f"cases/{entry['case']}.yaml" in steward_prompt.STAGE_EXAMPLES
+
+
 @pytest.mark.parametrize("name", ["cases/shell-quoting.yaml", "cases/two-duplicates.yaml"])
 def test_each_example_case_is_accepted_by_the_real_case_writer(name, tmp_path):
     home = make_home(tmp_path)
