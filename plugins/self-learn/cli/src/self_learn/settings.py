@@ -226,7 +226,8 @@ class Setting:
     #: `worker.coalesce_secs`'s "clamp to 0, never fall back" and
     #: `worker.invoke_timeout_secs`'s "fall back below or at 0" both ride
     #: the one resolver despite opposite policies for an out-of-range
-    #: number (E4's asymmetry, carried over from `worker._timeout_secs`).
+    #: number (E4's asymmetry, carried over from the env-only timeout reader
+    #: the worker had before the registry).
     validate: Callable[[SettingValue], SettingValue | None] | None = None
     #: U-settings Phase 2 (code-gate MAJOR/NIT fold, review r1 2026-09-01
     #: NIT-1): a human-readable description of `validate`'s own bound,
@@ -308,6 +309,49 @@ class Setting:
     #: backend")`) is unaffected -- it has no `general_name` of its
     #: own, so it always resolves through the ordinary sequence.
     general_name: str | None = None
+
+
+def sizing_knob(
+    name: str,
+    *,
+    default: int | float,
+    description: str,
+    env_var: str | None = None,
+) -> Setting:
+    """One tuning knob that says HOW MUCH one step takes on -- a batch
+    size, an input budget, a time limit. Adding one is this call in
+    `REGISTRY` plus `resolve_int`/`resolve_float` at the use site; nothing
+    else has to be written.
+
+    Everything a knob of this family shares is decided here, once:
+
+    - `section.key` in `config.yaml` IS the dotted name (`miner.digest_chars`
+      -> `miner:` / `digest_chars:`), and the env var is derived from it
+      (`SELF_LEARN_MINER_DIGEST_CHARS`) unless an older name must be kept;
+    - an int default makes an int knob, a float default a float knob;
+    - config.yaml outranks the env var (S-58), like every throughput knob;
+    - it must be greater than zero. A zero or negative value is refused
+      by `config set` and, hand-edited into `config.yaml`, falls back to
+      the default: a batch of zero or a zero-second limit stops the step.
+
+    The user's instruction, 2026-09-20: the numbers that size a step
+    "can't be constants we just leave hardcoded in the code"."""
+    section, _, key = name.partition(".")
+    if not section or not key:
+        raise ValueError(f"sizing_knob: {name!r} must be <section>.<key>")
+    if isinstance(default, bool) or default <= 0:
+        raise ValueError(f"sizing_knob: {name!r} needs a default greater than zero")
+    return Setting(
+        name=name,
+        env_var=env_var or "SELF_LEARN_" + name.upper().replace(".", "_").replace("-", "_"),
+        config_section=section,
+        config_key=key,
+        kind="int" if isinstance(default, int) else "float",
+        default=default,
+        description=description,
+        validate=lambda v: v if cast("int | float", v) > 0 else None,
+        validate_hint="must be > 0",
+    )
 
 
 def _default_value(setting: Setting) -> SettingValue:
@@ -821,6 +865,11 @@ REGISTRY: tuple[Setting, ...] = (
         validate=lambda v: v if cast(float, v) > 0 else None,
         validate_hint="must be > 0",
     ),
+    sizing_knob(
+        "worker.batch_cap",
+        default=15,  # worker.BATCH_CAP; 857 s measured at 15 (worker.py, U-repair section 3.9)
+        description="lessons the worker prepares in one model call",
+    ),
     Setting(
         name="worker.repair",
         env_var="SELF_LEARN_REPAIR",
@@ -884,6 +933,33 @@ REGISTRY: tuple[Setting, ...] = (
         description="pending-queue size that gates a mining run",
         validate=lambda v: max(0, cast(int, v)),
     ),
+    # The miner reader's input budget (`miner.DigestLimits`) and its time
+    # limit. All four were constants or env-only until 2026-09-20. The
+    # three budgets are counted in CHARACTERS because that is what the
+    # code counted when they were moved here, unchanged; the unit itself
+    # is an open question with the user, and `miner.DigestLimits` is the
+    # one place a different measure would be introduced.
+    sizing_knob(
+        "miner.message_chars",
+        default=2_000,  # miner.MAX_TEXT_CHARS reads this
+        description="characters kept from one message of a scanned session",
+    ),
+    sizing_knob(
+        "miner.session_chars",
+        default=60_000,  # miner.MAX_DIGEST_CHARS reads this
+        description="characters kept from one scanned session; the rest of that session is clipped",
+    ),
+    sizing_knob(
+        "miner.run_chars",
+        default=400_000,  # miner.MAX_PROMPT_DIGESTS_CHARS reads this
+        description="characters of session digests in one mining run's model call; sessions over it wait for the next run",
+    ),
+    sizing_knob(
+        "miner.reader_timeout_secs",
+        default=900.0,  # miner.INVOKE_TIMEOUT_SECS reads this
+        description="subprocess timeout (seconds) for the miner's one reader model call",
+        env_var="SELF_LEARN_READER_TIMEOUT_SECS",  # the name it already had
+    ),
     Setting(
         name="miner.enabled",
         env_var="SELF_LEARN_MINER",
@@ -905,17 +981,6 @@ REGISTRY: tuple[Setting, ...] = (
         # immediately above.
         tier="C",
     ),
-    # NOTE: `SELF_LEARN_READER_TIMEOUT_SECS` (the miner reader's own
-    # timeout) is deliberately NOT registered here. `miner.reader_
-    # timeout_secs()` calls `worker._timeout_secs(env_var, default)`
-    # directly, and `test_u_fw100.py::test_shares_worker_helper_not_a_
-    # reimplementation` monkeypatches `worker._timeout_secs` itself to
-    # PROVE that sharing (a prior unit's "guard the build decision, do
-    # not re-open" test). Routing this setting through the registry
-    # instead would break that guard for no operator-facing gain over
-    # `worker.invoke_timeout_secs`/`repair_timeout_secs` (already
-    # registered below) sharing the exact same parsing/validation. Left
-    # as a known Phase 1 gap — see the build report.
     Setting(
         name="miner.transcripts_dir",
         env_var="SELF_LEARN_TRANSCRIPTS_DIR",
@@ -1540,6 +1605,26 @@ def by_name(name: str) -> Setting:
     """The one registry entry named `name`. Raises `KeyError` for a name
     outside `REGISTRY` (a programming error, never operator input)."""
     return _BY_NAME[name]
+
+
+def resolve_int(home: Path | str, name: str) -> int:
+    """The resolved value of the int setting `name` -- the whole use site
+    of an int knob. Raises `KeyError` for an unregistered name and
+    `TypeError` for a setting of another kind (both programming errors)."""
+    setting = by_name(name)
+    if setting.kind != "int":
+        raise TypeError(f"settings.resolve_int: {name} is a {setting.kind} setting")
+    value, _source = resolve_setting(home, setting)
+    return int(cast(int, value))
+
+
+def resolve_float(home: Path | str, name: str) -> float:
+    """The resolved value of the float (or int) setting `name`, as a float."""
+    setting = by_name(name)
+    if setting.kind not in ("float", "int"):
+        raise TypeError(f"settings.resolve_float: {name} is a {setting.kind} setting")
+    value, _source = resolve_setting(home, setting)
+    return float(cast("int | float", value))
 
 
 @contextlib.contextmanager

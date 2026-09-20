@@ -63,7 +63,10 @@ BACKEND_VAR = "SELF_LEARN_BACKEND_MINER"
 ARTIFACT = miner.OUTPUT_BASENAME
 EARLY_RETURN = {"timeout", "not-found", "os-error", "unavailable"}
 FALL_THROUGH = {"exit", None}
-TIMEOUT_PATCH = 1.0  # the ONE value monkeypatched into miner.INVOKE_TIMEOUT_SECS
+#: The ONE timeout the TO tests set. Set through the reader's env var: since
+#: 2026-09-20 the timeout is the registry setting `miner.reader_timeout_secs`
+#: and `miner.INVOKE_TIMEOUT_SECS` is only a copy of its default.
+TIMEOUT_PATCH = 1.0
 
 _DEFAULT_BODY = '{"candidates": [], "fires": []}'
 _DEFAULT_STDOUT = "READER-STDOUT-SENTINEL"
@@ -715,13 +718,13 @@ def test_rc7_prompt_reaches_the_model_on_stdin_never_argv(monkeypatch, tmp_path)
 
 
 def test_to1_transport_timeout_is_the_patched_value(reader_leg, monkeypatch):
-    monkeypatch.setattr(miner, "INVOKE_TIMEOUT_SECS", TIMEOUT_PATCH)
+    monkeypatch.setenv("SELF_LEARN_READER_TIMEOUT_SECS", str(TIMEOUT_PATCH))
     run = reader_leg.drive()
     assert run.spec.timeout == TIMEOUT_PATCH
 
 
 def test_to2_rendered_log_line_carries_the_patched_value(reader_leg, monkeypatch):
-    monkeypatch.setattr(miner, "INVOKE_TIMEOUT_SECS", TIMEOUT_PATCH)
+    monkeypatch.setenv("SELF_LEARN_READER_TIMEOUT_SECS", str(TIMEOUT_PATCH))
     before = _log_text(reader_leg.home)
     reader_leg.arm_timeout()
     run = reader_leg.invoke()
@@ -732,7 +735,7 @@ def test_to2_rendered_log_line_carries_the_patched_value(reader_leg, monkeypatch
 
 
 def test_to3_timeout_log_line_byte_identical_across_backends(reader_leg, monkeypatch):
-    monkeypatch.setattr(miner, "INVOKE_TIMEOUT_SECS", TIMEOUT_PATCH)
+    monkeypatch.setenv("SELF_LEARN_READER_TIMEOUT_SECS", str(TIMEOUT_PATCH))
     before = _log_text(reader_leg.home)
     reader_leg.arm_timeout()
     run = reader_leg.invoke()

@@ -498,6 +498,9 @@ Plan text: *"miner = 5 clean nightly cycles + 0 orphans at 09:00
 - **The reader session's timeout is env-overridable too** (added
   2026-08-26, U-fw100): `SELF_LEARN_READER_TIMEOUT_SECS`, default 900s,
   same parsing as the worker's `SELF_LEARN_INVOKE_TIMEOUT_SECS` (§5.1).
+  Since 2026-09-20 it is also the registry setting
+  `miner.reader_timeout_secs`: a value in the ledger's `config.yaml`
+  outranks the env var, as for the worker's two timeouts (S-58).
 
 ### 5.3 How to measure "0 orphans" today, since the doctor cannot
 

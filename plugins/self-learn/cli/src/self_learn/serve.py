@@ -76,8 +76,8 @@ __all__ = [
 #: interval") fires within a human-noticeable bound, and cheap enough
 #: that a daemon idling between the nightly mine pass costs nothing
 #: measurable. Env-overridable (`SELF_LEARN_SERVE_TICK_SECS`) the same
-#: way every other interval in this codebase is (`worker._timeout_secs`'s
-#: convention) — the ACTUAL value used is carried inside the heartbeat
+#: way every other interval in this codebase is (a value that does not
+#: parse, or is not above zero, falls back to the default) — the ACTUAL value used is carried inside the heartbeat
 #: itself (`tick_secs`), so `doctor` and `maybe_kick` compare against
 #: what THIS daemon is really doing, never a second hardcoded guess that
 #: could drift out of sync with an operator's override.
