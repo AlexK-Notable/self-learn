@@ -31,7 +31,8 @@ from self_learn import batch, cases, records, statements, steward, steward_promp
 
 from support import make_home
 
-_EXAMPLE_LESSONS = {"lrn-0a1b2c3d", "lrn-1b2c3d4e", "lrn-2c3d4e5f"}
+_EXAMPLE_LESSONS = {"lrn-0a1b2c3d", "lrn-1b2c3d4e", "lrn-2c3d4e5f", "lrn-3d4e5f6a"}
+_EXAMPLE_CASES = sorted(name for name in steward_prompt.STAGE_EXAMPLES if name.startswith("cases/"))
 
 
 def _text() -> str:
@@ -181,7 +182,19 @@ def test_the_example_revision_names_a_section_a_lesson_really_has():
         assert f"cases/{entry['case']}.yaml" in steward_prompt.STAGE_EXAMPLES
 
 
-@pytest.mark.parametrize("name", ["cases/shell-quoting.yaml", "cases/two-duplicates.yaml"])
+def test_the_examples_include_a_parked_case_and_the_brief_says_its_sheet_is_not_applied():
+    parked = [name for name in _EXAMPLE_CASES if _load(name)["kind"] == "parked"]
+    assert len(_EXAMPLE_CASES) == 3 and len(parked) == 1  # the control for the parametrized test below
+    case = _load(parked[0])
+    assert case["parked_for"] == "overseer"
+    assert case["parked_reason"] in cases.PARKED_REASONS - steward_prompt.RUNNER_ONLY_PARKED_REASONS
+    text = _text()
+    assert "PARKING A LESSON" in text
+    assert "applies none of them" in text
+    assert "never the way to park a lesson of" in text  # parked.yaml is named as NOT the way
+
+
+@pytest.mark.parametrize("name", _EXAMPLE_CASES)
 def test_each_example_case_is_accepted_by_the_real_case_writer(name, tmp_path):
     home = make_home(tmp_path)
     stage_file = tmp_path / "example-case.yaml"

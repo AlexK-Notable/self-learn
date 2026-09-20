@@ -142,6 +142,8 @@ _REDACTED_DETAIL = "<redacted: secret-scan>"
 #: ONE set, shared with the brief that tells the model not to write them
 #: (`steward_prompt._render_output_contract`).
 _RUNNER_ONLY_PARKED_REASONS = steward_prompt.RUNNER_ONLY_PARKED_REASONS
+#: ... and the reasons the model MAY park a lesson with: every other one.
+_MODEL_PARKED_REASONS = cases.PARKED_REASONS - _RUNNER_ONLY_PARKED_REASONS
 _NO_PROGRESS_DETAIL = (
     "the attempt ran and moved no disposition, case phase, packet phase or "
     "maintenance state of this packet toward a terminal value"
@@ -671,6 +673,21 @@ def _validate_declared_stage(stage: Path) -> None:
                 "runner, never chosen here -- park with the reason that names "
                 "the values question this case raises for the overseer"
             )
+        # A case the model parks is honoured by `_prepared_recipe` (its
+        # sheet is recorded, never applied), so what makes it a parked
+        # case is checked HERE, where the remedy is the one repair turn --
+        # `cases.record` would refuse the same things only at apply time.
+        parks = case_data.get("kind") == "parked"
+        if parks and reason not in _MODEL_PARKED_REASONS:
+            raise ValueError(
+                f"{case_path.name}: a parked case needs parked_reason, one of "
+                f"{sorted(_MODEL_PARKED_REASONS)}; got {reason!r}"
+            )
+        if not parks and (reason is not None or case_data.get("parked_for") is not None):
+            raise ValueError(
+                f"{case_path.name}: parked_reason/parked_for are only for a case "
+                "whose kind is parked"
+            )
     for sheet_path in sheet_files:
         raw = _read_yaml(sheet_path)
         if not isinstance(raw, dict):
@@ -689,6 +706,31 @@ def _validate_declared_stage(stage: Path) -> None:
             raise ValueError(str(exc)) from exc
         finally:
             validation_path.unlink(missing_ok=True)
+    # Only now that every sheet has passed its own shape check (so a
+    # malformed sheet gets `load_sheet`'s precise error, not this one):
+    for case_path in case_files:
+        case_data = _read_yaml(case_path)
+        if not isinstance(case_data, dict):
+            continue
+        # Every lesson a case covers needs its own item on that case's
+        # sheet. The runner dispositions every lesson of a finished case
+        # `applied`, so a lesson with no item was recorded as handled with
+        # nothing done to it (seen in the real run of 2026-09-19: a
+        # two-lesson case, one item).
+        sheet_data = _read_yaml(stage / "sheets" / case_path.name)
+        items = sheet_data.get("items") if isinstance(sheet_data, dict) else None
+        item_ids = {
+            item.get("id") for item in (items if isinstance(items, list) else [])
+            if isinstance(item, dict)
+        }
+        without_item = [
+            str(rid) for rid in (case_data.get("records") or []) if rid not in item_ids
+        ]
+        if without_item:
+            raise ValueError(
+                f"{case_path.name}: every lesson in a case needs its own item in "
+                f"sheets/{case_path.name}; no item for {without_item}"
+            )
 
 
 def _session_spec(
@@ -933,6 +975,20 @@ def _prepared_recipe(
         if predecessor_ids and not case_data.get("supersedes"):
             case_data["supersedes"] = next(iter(predecessor_ids))
         parking_reason = _forced_parking_reason(home, sheet_path)
+        if parking_reason is None and case_data.get("kind") == "parked":
+            # The MODEL parked this case (method section 12): it could not
+            # decide alone. Until 2026-09-20 only the runner's own two
+            # checks above set a parking reason, so a case the model
+            # parked was recorded as a question for the overseer AND had
+            # its sheet applied in the same run. Its sheet now takes the
+            # path every parked case takes: each item is receipted
+            # `parked`, nothing is dispatched, and the lesson stays
+            # pending for the overseer. The sheet is the model's
+            # tentative answer, on record and not acted on. The reason
+            # was checked by `_validate_declared_stage`. When the runner's
+            # own check fires too (a hook route), its reason wins: that is
+            # the one the overseer's hook intake sorts on.
+            parking_reason = str(case_data.get("parked_reason"))
         if parking_reason is not None:
             case_data["kind"] = "parked"
             case_data["outcome"] = "parked"

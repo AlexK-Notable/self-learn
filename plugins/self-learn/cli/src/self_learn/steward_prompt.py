@@ -152,10 +152,10 @@ RUNNER_ONLY_PARKED_REASONS = frozenset({"attempts-exhausted", "plain-host-commit
 #: to an allowlist of modules, and this one is rightly not on it.
 _UNLISTED_SHEET_VERBS = batch.SHEET_VERB_ALIASES
 
-#: Worked examples: two cases with their sheets, a revision, a statement
-#: and a user-model update. `parked.yaml` has none on purpose -- how a
-#: lesson is parked is an open defect (revision log, 2026-09-20), and an
-#: example would teach a shape whose effect is not settled.
+#: Worked examples: two decided cases and one parked case, each with its
+#: sheet, plus a revision, a statement and a user-model update.
+#: `parked.yaml` has none on purpose: it is never how a lesson of the
+#: packet is parked, and an example would invite exactly that.
 #: Every one is fed through the REAL
 #: checker in `tests/test_steward_output_contract.py` -- the stage
 #: validator, `cases.record`, `statements.add`, `user_model.add_entry` --
@@ -231,6 +231,42 @@ items:
   - id: lrn-2c3d4e5f
     verb: reject
     note: the same one-off observation as lrn-1b2c3d4e
+""",
+    "cases/whose-call.yaml": """\
+kind: parked
+trigger: nightly
+outcome: parked
+parked_for: overseer
+parked_reason: authority-unclear
+records: [lrn-3d4e5f6a]
+scope: "project:/srv/example-repo"
+question: >-
+  May a lesson learned in one project change guidance that every project loads?
+evidence:
+  - ref: "ledger@4f2a9c1:projects/example-repo/lrn-3d4e5f6a.yaml#L3-6"
+    quote: "always run the formatter before committing"
+decision:
+  verb: defer
+  because: >-
+    The lesson is sound for this project. Widening it to every project is a call about the
+    user's other work that nothing in the evidence lets me make. Tentative answer, held
+    loosely: keep it here and look again once a second project shows the same need.
+  confidence: provisional
+  what_would_change:
+    - "the user says the formatter rule is meant for every project"
+dependencies:
+  statements: []
+  user_model: []
+  conditions: []
+  capabilities: []
+""",
+    "sheets/whose-call.yaml": """\
+version: 1
+case: $CASE_ID
+items:
+  - id: lrn-3d4e5f6a
+    verb: defer
+    note: tentative only; parked for the overseer, so this is recorded and not applied
 """,
     "revisions.yaml": """\
 entries:
@@ -510,9 +546,8 @@ def _render_output_contract() -> str:
         "  - At least one case. Every case has a sheet with the SAME file name, and the reverse.",
         "  - Every lesson in this packet appears in the `records:` of EXACTLY ONE case --",
         "    not zero, not two. Lessons that share one decision may share one case.",
-        "  - Give every lesson in a case its own item in that case's sheet. The checker does",
-        "    not count items per lesson, so a lesson you leave without an item is recorded as",
-        "    handled while nothing is done to it.",
+        "  - Every lesson in a case has its own item in that case's sheet. A lesson the case",
+        "    covers and the sheet forgets is refused.",
         "  - File names are yours to choose (`<lesson id>.yaml` is fine).",
         "",
         "cases/<name>.yaml -- a YAML mapping with exactly these keys:",
@@ -585,7 +620,19 @@ def _render_output_contract() -> str:
         "  lapse: `id` (um- plus 4 hex digits) and EXACTLY ONE of `changed_condition`, `contrary`,",
         "         `consolidated_into`.",
         "",
-        "parked.yaml -- `entries:` list. Each entry is a case mapping with the keys above, minus",
+        "PARKING A LESSON (method section 12) -- when you cannot decide it alone:",
+        "  Write its case like any other, with `kind: parked`, `outcome: parked`,",
+        "  `parked_for: overseer`, and the `parked_reason` that actually stopped you. `question`",
+        "  is the question for the overseer; `decision.because` says what stopped you and what",
+        "  fact or value is missing; `decision.confidence` is `provisional`.",
+        "  Its sheet is your TENTATIVE ANSWER: the items you would have written had you decided.",
+        "  The runner records them as parked and applies none of them, so the lesson stays",
+        "  pending until the overseer decides. A sheet cannot be empty, so give a tentative",
+        "  answer even when you hold it loosely, and say how loosely in `because`.",
+        "  A parked case still counts toward the every-lesson-in-one-case rule.",
+        "",
+        "parked.yaml -- a FURTHER question for the overseer, never the way to park a lesson of",
+        "  this packet. `entries:` list. Each entry is a case mapping with the keys above, minus",
         "  kind, outcome and parked_for (the runner sets them), plus a `parked_reason` you may",
         "  choose. An entry here does NOT count toward the every-lesson-in-one-case rule.",
         "",

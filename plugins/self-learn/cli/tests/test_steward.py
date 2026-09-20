@@ -2425,8 +2425,13 @@ def test_a_model_written_runner_only_parked_reason_is_a_schema_failure(
     assert result.calls == 2
     assert "attempts-exhausted" in prompts[1] and "Repair them in place" in prompts[1]
     # positive control: an ordinary parked reason the MODEL may choose is
-    # accepted by the same validation, in the same run
-    assert result.status == "applied" and result.decided == ids
+    # accepted by the same validation, in the same run. Rewritten
+    # 2026-09-20: this line used to read `result.decided == ids` -- it
+    # pinned the defect `test_steward_parking.py` describes, a parked
+    # lesson whose sheet (`reject`) was applied anyway. A parked lesson is
+    # handed to the overseer and nothing is done to it.
+    assert result.status == "applied" and result.decided == []
+    assert [row["id"] for row in ledger_ops.list_items(home)] == ids  # still pending
     rows = cases.list_cases(home, parked_for="overseer", parked_reason="hook")
     assert len(rows) == 1 and rows[0]["records"] == ids
     assert cases.list_cases(home, parked_reason="attempts-exhausted") == []

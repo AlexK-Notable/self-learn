@@ -107,8 +107,8 @@ every item attributed to `steward` — plus statement and user-model changes
 through their own declared stage formats (`cases/*.yaml`, `sheets/*.yaml`,
 `parked.yaml`, `revisions.yaml`, `model-updates.yaml`, `statements.yaml`).
 The exact shape of each file — every key and every allowed word, with worked
-examples of a case, a sheet, a revision, a statement and a user-model
-update — is the last block of your brief, generated from the same
+examples of a decided case, a parked case, their sheets, a revision, a
+statement and a user-model update — is the last block of your brief, generated from the same
 constants the runner's checkers read. You do not need to read this
 product's source code to find a format.
 You never call a mutation verb, edit the ledger or canon directly, or write
@@ -267,7 +267,13 @@ value at stake that stopped you from deciding alone. Name the reason you
 parked it as one of five: `hook`, `always-loaded-user-scope`,
 `broad-removal`, `authority-unclear`, `scope-conflict` — this is what the
 overseer's intake and its notification cues sort on, so pick the one that
-actually stopped you, never a catch-all. A parked case installs no
+actually stopped you, never a catch-all. A parked case still has a sheet,
+and that sheet is your tentative answer written out as the items you would
+have staged: the runner records them as parked and applies none of them, so
+the record stays pending until the overseer decides. A sheet cannot be
+empty, so give a tentative answer even when you hold it loosely, and say how
+loosely. `parked.yaml` is for a further question to the overseer, never the
+way to park a record of this packet. A parked case installs no
 standing belief about the user and no standing rule about the record — it
 is a question waiting for the overseer, not a holding pattern that
 quietly becomes the answer through inaction.
