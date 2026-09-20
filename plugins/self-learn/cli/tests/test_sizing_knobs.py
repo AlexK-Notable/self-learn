@@ -44,6 +44,16 @@ def home(tmp_path, monkeypatch):
     return h
 
 
+@pytest.fixture()
+def elsewhere(tmp_path, monkeypatch):
+    """Point SELF_LEARN_HOME at an empty directory, so the ledger a test
+    passes by argument is the only way its config.yaml can be reached."""
+    other = tmp_path / "elsewhere.d"
+    other.mkdir()
+    monkeypatch.setenv("SELF_LEARN_HOME", str(other))
+    return other
+
+
 def configure(home, section: str, **values) -> None:
     """Write `section`'s keys into the ledger's config.yaml and commit it."""
     lines = [f"{section}:"] + [f"  {key}: {value}" for key, value in values.items()]
@@ -115,7 +125,7 @@ def test_the_typed_readers_refuse_a_setting_of_another_kind(home):
 # ------------------------------------------- each knob reaches its use site
 
 
-def test_the_worker_takes_as_many_lessons_per_call_as_config_says(home):
+def test_the_worker_takes_as_many_lessons_per_call_as_config_says(home, elsewhere):
     for i in range(6):
         create_record(
             home,
@@ -135,7 +145,7 @@ def test_every_digest_limit_is_a_registered_miner_setting_with_the_same_default(
         assert settings.by_name(f"miner.{f.name}").default == f.default, f.name
 
 
-def test_the_miner_reads_all_three_input_sizes_from_config(home):
+def test_the_miner_reads_all_three_input_sizes_from_config(home, elsewhere):
     assert miner.digest_limits(home) == miner.DigestLimits(2_000, 60_000, 400_000)
     configure(home, "miner", message_chars=300, session_chars=5_000, run_chars=90_000)
     assert miner.digest_limits(home) == miner.DigestLimits(300, 5_000, 90_000)
@@ -171,13 +181,14 @@ def test_a_session_is_clipped_at_the_session_limit(tmp_path):
     assert len(body) == 500 + len("\n…[session digest clipped]")
 
 
-def test_a_run_stops_adding_sessions_at_the_run_limit(home, tmp_path, monkeypatch):
+@pytest.fixture()
+def mining(home, tmp_path, monkeypatch):
+    """A transcripts root the miner will scan and a stand-in for the model
+    call that records each prompt. Returns (write_session, prompts)."""
     root = tmp_path / "transcripts"
     (root / "-home-u-proj").mkdir(parents=True)
     monkeypatch.setenv("SELF_LEARN_TRANSCRIPTS_DIR", str(root))
     miner._save_cursors({"__initialized__": "test-fixture"})
-    for name in ("sess-one", "sess-two", "sess-three"):
-        (root / "-home-u-proj" / f"{name}.jsonl").write_text(_user(f"{name} says " + "r" * 400) + "\n", encoding="utf-8")
     prompts: list[str] = []
 
     def reader(h, prompt):
@@ -187,6 +198,37 @@ def test_a_run_stops_adding_sessions_at_the_run_limit(home, tmp_path, monkeypatc
         return out
 
     monkeypatch.setattr(miner, "_invoke_reader", reader)
+
+    def write_session(name: str, lines: list[str]) -> None:
+        (root / "-home-u-proj" / f"{name}.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    return write_session, prompts
+
+
+def test_a_real_run_clips_messages_and_sessions_at_the_sizes_in_config(home, mining):
+    """The two sizes `run` does not apply itself: it hands them to
+    `digest_transcript`. Without that hand-off a config value would be read
+    and then used by nothing."""
+    write_session, prompts = mining
+    write_session("sess-long-message", [_user("HEAD" + "m" * 1_000 + "TAIL")])
+    write_session("sess-many-messages", [_user(f"message number {i} " + "s" * 80) for i in range(40)])
+    assert miner.run(home).status == "ok"
+    assert "sess-long-message" in prompts[0] and "sess-many-messages" in prompts[0]
+    assert "[clipped]" not in prompts[0] and "session digest clipped" not in prompts[0]  # positive control: defaults clip neither
+
+    write_session("sess-long-message-2", [_user("HEAD" + "m" * 1_000 + "TAIL")])
+    write_session("sess-many-messages-2", [_user(f"message number {i} " + "s" * 80) for i in range(40)])
+    configure(home, "miner", message_chars=200, session_chars=1_500)
+    assert miner.run(home).status == "ok"
+    assert "sess-long-message-2" in prompts[1] and "sess-many-messages-2" in prompts[1]
+    assert "m …[clipped]… m" in prompts[1]  # the 1,008-character message, cut to 200
+    assert "…[session digest clipped]" in prompts[1]  # the ~4,000-character session, cut to 1,500
+
+
+def test_a_run_stops_adding_sessions_at_the_run_limit(home, mining):
+    write_session, prompts = mining
+    for name in ("sess-one", "sess-two", "sess-three"):
+        write_session(name, [_user(f"{name} says " + "r" * 400)])
     configure(home, "miner", run_chars=1_000)  # each digest is ~460 characters: two fit, the third waits
     assert miner.run(home).status == "ok"
     entry = miner.read_journal(limit=1)[-1]
@@ -198,7 +240,7 @@ def test_a_run_stops_adding_sessions_at_the_run_limit(home, tmp_path, monkeypatc
     assert (entry["sessions_scanned"], entry["deferred_files"]) == (1, 0)
 
 
-def test_the_reader_timeout_is_read_from_config(home, monkeypatch):
+def test_the_reader_timeout_is_read_from_config(home, elsewhere, monkeypatch):
     assert miner.reader_timeout_secs(home) == 900.0
     monkeypatch.setenv("SELF_LEARN_READER_TIMEOUT_SECS", "120")
     assert miner.reader_timeout_secs(home) == 120.0
