@@ -7,6 +7,7 @@ import io
 import json
 import re
 import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -1247,6 +1248,7 @@ def test_cli_steward_run_exit_codes_and_json(monkeypatch, capsys, tmp_path):
         "refused": 1,
         "unfinished": [],
         "abandoned": [],
+        "close_out_error": None,
         "coverage": {},
         "stopped": [],
     }
@@ -1270,6 +1272,7 @@ def test_cli_steward_run_exit_codes_and_json(monkeypatch, capsys, tmp_path):
         "refused": 0,
         "unfinished": [],
         "abandoned": ["lrn-deadbeef"],
+        "close_out_error": None,
         "coverage": {},
         "stopped": [],
     }
@@ -1277,6 +1280,26 @@ def test_cli_steward_run_exit_codes_and_json(monkeypatch, capsys, tmp_path):
     assert cli_mod.main(["steward", "run"]) == 1
     text = capsys.readouterr().out
     assert "0 decided, 0 refused, 0 unfinished, 1 abandoned" in text
+    # positive control: a run with no close-out trouble says nothing about one
+    assert "close-out FAILED" not in text
+
+    monkeypatch.setattr(
+        cli_mod.steward,
+        "run",
+        lambda actual, dry_run=False: steward.RunResult(
+            "partial", run_id="run-abc", calls=0, unfinished=["lrn-deadbeef"],
+            close_out_error="case record: simulated ledger write failure",
+        ),
+    )
+
+    assert cli_mod.main(["steward", "run", "--json"]) == cli_mod.EXIT_BATCH_PARTIAL
+    assert json.loads(capsys.readouterr().out)["close_out_error"] == (
+        "case record: simulated ledger write failure"
+    )
+    assert cli_mod.main(["steward", "run"]) == cli_mod.EXIT_BATCH_PARTIAL
+    assert "close-out FAILED — case record: simulated ledger write failure" in (
+        capsys.readouterr().out
+    )
 
 
 @pytest.mark.parametrize(
@@ -1996,3 +2019,347 @@ def test_dry_run_reattempts_a_stuck_packet_and_writes_nothing(tmp_path, monkeypa
     assert before_manifest["packets"][0]["attempt_count"] == 1
     journal = steward.journal_path(home).read_text(encoding="utf-8").splitlines()
     assert sum(1 for line in journal if '"status":"attempt-start"' in line) == 1
+
+
+# ================================================== U2 fold r1 (S-68)
+
+
+def _dirt_inside_apply_packet(occurrence: int):
+    """Make `_dirty_truth_paths` report dirt at exactly the Nth call made
+    from inside `_apply_packet`, and nowhere else. The frame check is what
+    keeps `_publish_manifest`'s own identical guard out of it — the subject
+    here is the HALT CODE the refusal returns, not the detection."""
+    real = steward._dirty_truth_paths
+    seen = {"n": 0}
+
+    def fake(home):
+        if sys._getframe(1).f_code.co_name == "_apply_packet":
+            seen["n"] += 1
+            if seen["n"] == occurrence:
+                return ["unexplained.txt"]
+        return real(home)
+
+    return fake
+
+
+def _forget_the_dirt(home: Path):
+    """The refusal journals `dirty-refused` on its way out; clearing the
+    injected dirt there leaves the ledger clean by finalization, so the run
+    reaches the `halt_code == EXIT_GIT_FAILED` branch instead of the
+    separate dirty guard that returns `partial` in front of it."""
+    real = steward._journal
+    cleared = []
+
+    def fake(actual_home, entry):
+        real(actual_home, entry)
+        if entry.get("status") == "dirty-refused":
+            cleared.append(entry)
+            steward._dirty_truth_paths = _dirt_inside_apply_packet(0)
+
+    return fake, cleared
+
+
+@pytest.mark.parametrize("site", ["entry", "dispatch", "update"])
+def test_a25_a_git_failure_inside_apply_packet_halts_with_exit_git_failed(
+    site, tmp_path, monkeypatch, capsys
+):
+    """A25: `_apply_packet` returned a literal `8` where `run` tests for
+    `gitops.EXIT_GIT_FAILED` (6), so the "git failed" early return almost
+    never fired. `8` is `EXIT_BATCH_PARTIAL`, documented as "the ledger DID
+    change"; these three sites wrote nothing. With 6 the run takes the
+    early return: status `stopped` (nothing was applied), the run record is
+    NOT rewritten by the fall-through, and FW-85 gives exit 6."""
+    home = make_home(tmp_path)
+    _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+    monkeypatch.setattr(steward.invocation, "write_session", _write_decision_stage)
+    real_dirty = steward._dirty_truth_paths
+    real_update = steward._update_manifest
+    real_journal = steward._journal
+    monkeypatch.setattr(
+        steward, "_dirty_truth_paths", real_dirty, raising=True
+    )  # restored by monkeypatch even though we rebind it by hand below
+
+    if site == "update":
+        def refuse_the_case_update(actual_home, run_id, *, reason, update):
+            if reason.startswith("case "):
+                raise steward.gitops.GitOpsError("simulated git failure")
+            return real_update(actual_home, run_id, reason=reason, update=update)
+
+        monkeypatch.setattr(steward, "_update_manifest", refuse_the_case_update)
+    else:
+        journal, cleared = _forget_the_dirt(home)
+        monkeypatch.setattr(steward, "_journal", journal)
+        steward._dirty_truth_paths = _dirt_inside_apply_packet(
+            1 if site == "entry" else 2
+        )
+
+    try:
+        result = steward.run(home)
+    finally:
+        steward._dirty_truth_paths = real_dirty
+        steward._journal = real_journal
+
+    assert result.run_id is not None
+    # positive control: the refusal really fired inside `_apply_packet`
+    assert "dirty-refused" in steward.journal_path(home).read_text(encoding="utf-8")
+    assert result.status == "stopped" and result.decided == []
+    manifest = _head_manifest(home, result.run_id)
+    # with `8` the run falls through and rewrites all three of these
+    assert manifest["status"] == "running"
+    assert manifest["outcome"] is None
+    assert manifest["completed_at"] is None
+
+    monkeypatch.setattr(cli_mod, "resolve_home", lambda: home)
+    monkeypatch.setattr(cli_mod.steward, "run", lambda actual, dry_run=False: result)
+    assert cli_mod.main(["steward", "run"]) == gitops.EXIT_GIT_FAILED == 6
+    capsys.readouterr()
+
+
+def test_a_close_out_that_keeps_failing_notifies_once_per_distinct_cause(
+    tmp_path, monkeypatch
+):
+    """02-schema §3a (U2 fold r1): a close-out is retried with NO count of
+    its own, so no cap will ever stop one that fails the same way every
+    time. It is reported to the user once per distinct cause — not once
+    per run, not once per record — and a later success clears that."""
+    home = make_home(tmp_path)
+    ids = _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+    monkeypatch.setattr(steward.invocation, "write_session", _transport_failure)
+    notifications = []
+    monkeypatch.setattr(
+        overseer_notify, "send",
+        lambda home_, cue, summary, sent: notifications.append((cue, summary, sent)),
+    )
+    real_record = steward.cases.record
+    message = ["case record: the ledger is read-only"]
+
+    def refuse(*args, **kwargs):
+        if message[0] is not None:
+            raise steward.cases.CaseError(message[0])
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(steward.cases, "record", refuse)
+
+    third = None
+    for _ in range(3):
+        third = steward.run(home)
+    assert third is not None and third.run_id is not None
+    run_id = third.run_id
+
+    # positive control: the spy saw the FIRST notification
+    assert len(notifications) == 1
+    cue, summary, sent = notifications[0]
+    assert cue == "routine" and sent == ids
+    assert run_id in summary and "1 lesson(s) are waiting" in summary
+    assert "the ledger is read-only" in summary
+    assert third.close_out_error and "read-only" in third.close_out_error
+    assert third.status == "partial"
+    manifest = _head_manifest(home, run_id)
+    assert manifest["status"] == "unfinished"
+    assert manifest["packets"][0]["attempt_count"] == 3
+
+    fourth = steward.run(home)
+
+    # same cause, second run: no new notification, no new count
+    assert len(notifications) == 1
+    assert fourth.close_out_error is not None and fourth.calls == 0
+    manifest = _head_manifest(home, run_id)
+    assert manifest["packets"][0]["attempt_count"] == 3
+    assert manifest["packets"][0]["phase"] != "abandoned"
+
+    message[0] = "case record: the month directory is missing"
+    fifth = steward.run(home)
+
+    # a DIFFERENT cause is a different thing to say
+    assert len(notifications) == 2
+    assert "month directory" in notifications[1][1]
+    assert fifth.close_out_error is not None
+
+    message[0] = None
+    sixth = steward.run(home)
+
+    assert sixth.close_out_error is None
+    assert sixth.abandoned == ids
+    manifest = _head_manifest(home, run_id)
+    assert manifest["packets"][0]["phase"] == "abandoned"
+    assert manifest["status"] == "complete"
+    assert manifest["packets"][0]["attempt_count"] == 3
+    # the dedupe state is cleared, and the run's own success notification
+    # is the third and last one
+    assert not steward._close_out_hold_path(home).exists()
+    assert len(notifications) == 3
+    assert "parked for the overseer" in notifications[2][1]
+
+
+def test_one_unwritable_parked_case_does_not_hold_the_others_hostage(
+    tmp_path, monkeypatch
+):
+    """U2 fold r1: the close-out is per record. One record whose parked
+    case cannot be written must not stop the packet's OTHER records from
+    getting theirs, and the packet still becomes `abandoned` only when
+    every waiting record has a `successor_case`."""
+    home = make_home(tmp_path)
+    ids = _seed_fresh_proposals(home, 2)
+    _enable_steward(home)
+    monkeypatch.setattr(steward.invocation, "write_session", _transport_failure)
+    monkeypatch.setattr(overseer_notify, "send", lambda *a, **k: None)
+    real_record = steward.cases.record
+    blocked = [ids[1]]
+
+    def refuse_one_record(actual_home, stage_file, *, actor, reserved_id=None):
+        data = YAML(typ="safe").load(Path(stage_file).read_text(encoding="utf-8"))
+        if blocked[0] is not None and blocked[0] in (data.get("records") or []):
+            raise steward.cases.CaseError(f"case record: {blocked[0]} is unwritable")
+        return real_record(actual_home, stage_file, actor=actor, reserved_id=reserved_id)
+
+    monkeypatch.setattr(steward.cases, "record", refuse_one_record)
+
+    third = None
+    for _ in range(3):
+        third = steward.run(home)
+    assert third is not None and third.run_id is not None
+    run_id = third.run_id
+
+    manifest = _head_manifest(home, run_id)
+    packet = manifest["packets"][0]
+    rows = cases.list_cases(home, parked_reason="attempts-exhausted")
+    # the healthy record got its successor, the blocked one did not
+    assert [row["records"][0] for row in rows] == [ids[0]]
+    assert packet["dispositions"][ids[0]]["state"] == "abandoned"
+    assert packet["dispositions"][ids[1]]["state"] == "unfinished"
+    assert packet["phase"] != "abandoned" and manifest["status"] == "unfinished"
+    assert third.close_out_error and ids[1] in third.close_out_error
+
+    blocked[0] = None
+    fourth = steward.run(home)
+
+    assert fourth.close_out_error is None
+    rows = cases.list_cases(home, parked_reason="attempts-exhausted")
+    assert sorted(row["records"][0] for row in rows) == sorted(ids)
+    manifest = _head_manifest(home, run_id)
+    packet = manifest["packets"][0]
+    assert packet["phase"] == "abandoned" and manifest["status"] == "complete"
+    # the first record's successor was REUSED, not written a second time
+    assert packet["dispositions"][ids[0]]["successor_case"] == rows[0]["case"] or (
+        packet["dispositions"][ids[0]]["successor_case"]
+        in {row["case"] for row in rows}
+    )
+    assert len(rows) == 2
+    assert packet["attempt_count"] == 3
+
+
+def test_dry_run_at_the_cap_makes_no_call_and_writes_nothing(tmp_path, monkeypatch):
+    """A rehearsal of a run that is already out of attempts: it reports
+    what the real run would park and touches nothing — no model call, no
+    commit, no working-tree change, no attempt line, no parked case."""
+    home = make_home(tmp_path)
+    ids = _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+    cap, _source = settings.resolve_setting(home, settings.by_name("runs.attempt_cap"))
+    run_id = "run-cafef00dbeef"
+    entry, proposal = steward._eligible_proposals(home)[0]
+    identity = steward._input_identity(home, entry.proposal_path, entry.record.id, proposal)
+    steward._publish_manifest(home, {
+        "version": 1, "actor": "steward", "run_id": run_id,
+        "started_at": steward.chrono.now_iso(),
+        "last_attempt_at": steward.chrono.now_iso(),
+        "completed_at": None, "status": "unfinished", "outcome": "partial",
+        "start_head": steward.gitops.head_sha(home), "cases": {},
+        "packets": [{
+            "index": 1, "inputs": [identity], "records": [entry.record.id],
+            "predecessors": {}, "phase": "unfinished",
+            "attempts": [], "attempt_count": int(cap), "repair_remaining": 1,
+            "case_ids": [], "maintenance": [],
+            "dispositions": {entry.record.id: {
+                "state": "unfinished", "input_version": identity["version"],
+                "reason": "exit",
+            }},
+            "bound": "exit", "failure": "exit",
+            "failure_detail": "API Error: 400 the model is unavailable",
+            "last_attempt_at": steward.chrono.now_iso(), "progress_at": None,
+        }],
+        "inputs": [identity], "reconsider_observations": [],
+        "coverage": steward._coverage_empty(), "ledger_effects": [],
+    }, reason="a packet already at the cap")
+
+    # positive control: the fixture really is at the cap
+    assert _head_manifest(home, run_id)["packets"][0]["attempt_count"] == cap == 3
+
+    before_head = git(home, "rev-parse", "HEAD").stdout.strip()
+    before_manifest = _head_manifest(home, run_id)
+    monkeypatch.setattr(
+        steward.invocation, "write_session",
+        lambda spec: (_ for _ in ()).throw(AssertionError("a capped packet called the model")),
+    )
+    monkeypatch.setattr(
+        overseer_notify, "send",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("a dry run notified")),
+    )
+
+    rehearsal = steward.run(home, dry_run=True)
+
+    assert rehearsal.status == "dry-run" and rehearsal.calls == 0
+    assert rehearsal.abandoned == ids and rehearsal.close_out_error is None
+    assert git(home, "rev-parse", "HEAD").stdout.strip() == before_head
+    assert git(home, "status", "--porcelain").stdout == ""
+    assert _head_manifest(home, run_id) == before_manifest
+    assert cases.list_cases(home, parked_reason="attempts-exhausted") == []
+    journal_path = steward.steward_dir(home) / "journal.jsonl"
+    journal = journal_path.read_text(encoding="utf-8") if journal_path.is_file() else ""
+    assert '"status":"attempt-start"' not in journal
+
+    monkeypatch.setattr(overseer_notify, "send", lambda *a, **k: None)
+    real = steward.run(home)
+
+    assert real.calls == 0 and real.abandoned == ids
+    manifest = _head_manifest(home, run_id)
+    assert manifest["packets"][0]["phase"] == "abandoned"
+    assert manifest["status"] == "complete"
+    assert len(cases.list_cases(home, parked_reason="attempts-exhausted")) == 1
+
+
+def test_a_model_written_runner_only_parked_reason_is_a_schema_failure(
+    tmp_path, monkeypatch
+):
+    """`attempts-exhausted` and `plain-host-committed-file` are written by
+    the RUNNER. `cases.record` cannot refuse them — it is the verb the
+    runner itself calls — so the steward refuses them in its own staged-
+    output validation, where the remedy is the ordinary one repair turn.
+    A model that got away with `attempts-exhausted` would be telling the
+    overseer the machinery had failed on a lesson it actually decided."""
+    home = make_home(tmp_path)
+    ids = _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+    prompts = []
+
+    def park_with(reason: str):
+        def session(spec):
+            outcome = _write_decision_stage(spec)
+            case_path = next((_stage_dir(spec) / "cases").glob("*.yaml"))
+            data = YAML(typ="safe").load(case_path.read_text(encoding="utf-8"))
+            data.update(kind="parked", outcome="parked", parked_for="overseer",
+                        parked_reason=reason)
+            data["decision"]["verb"] = "reject"
+            _dump_yaml(case_path, data)
+            return outcome
+        return session
+
+    def first_cheats_then_repairs(spec):
+        prompts.append(spec.prompt)
+        if len(prompts) == 1:
+            return park_with("attempts-exhausted")(spec)
+        return park_with("hook")(spec)
+
+    monkeypatch.setattr(steward.invocation, "write_session", first_cheats_then_repairs)
+    result = steward.run(home)
+
+    assert result.calls == 2
+    assert "attempts-exhausted" in prompts[1] and "Repair them in place" in prompts[1]
+    # positive control: an ordinary parked reason the MODEL may choose is
+    # accepted by the same validation, in the same run
+    assert result.status == "applied" and result.decided == ids
+    rows = cases.list_cases(home, parked_for="overseer", parked_reason="hook")
+    assert len(rows) == 1 and rows[0]["records"] == ids
+    assert cases.list_cases(home, parked_reason="attempts-exhausted") == []

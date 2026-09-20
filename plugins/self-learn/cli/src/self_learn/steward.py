@@ -58,6 +58,12 @@ class RunResult:
     #: S-68 ruling 2: the records this run closed out at `runs.attempt_cap`,
     #: each carrying a parked successor case the overseer will decide.
     abandoned: list[str] = field(default_factory=list)
+    #: The short cause when this run could NOT write its close-out, `None`
+    #: when there was nothing to close or it landed. A close-out is retried
+    #: without a count, so nothing caps it; this field, the text line, the
+    #: `--json` envelope and one notification per distinct cause are what
+    #: keep a permanently failing close-out from becoming a silent loop.
+    close_out_error: str | None = None
     coverage: dict[str, int] = field(default_factory=dict)
 
 
@@ -117,6 +123,18 @@ _PACKET_PHASE_RANK = {
 #: with a trailing ellipsis, and secret-scanned on write.
 _FAILURE_DETAIL_MAX = 2000
 _REDACTED_DETAIL = "<redacted: secret-scan>"
+#: 02-schema §3a: two `parked_reason` values are written by a RUNNER and
+#: are never the model's to choose -- `plain-host-committed-file`, which
+#: `_forced_parking_reason` assigns AFTER the model's output is validated,
+#: and `attempts-exhausted`, which only the close-out writes. A model that
+#: wrote either would be telling the overseer "the machinery stopped me,
+#: decide this yourself" about a decision it had in fact made, and
+#: `cases.record` cannot tell the two writers apart -- it is the verb the
+#: runner itself calls. So the check belongs here, on the model's own
+#: staged output, where its remedy is the ordinary one repair turn.
+_RUNNER_ONLY_PARKED_REASONS = frozenset(
+    {"attempts-exhausted", "plain-host-committed-file"}
+)
 _NO_PROGRESS_DETAIL = (
     "the attempt ran and moved no disposition, case phase, packet phase or "
     "maintenance state of this packet toward a terminal value"
@@ -632,6 +650,20 @@ def _validate_declared_stage(stage: Path) -> None:
         raise ValueError("cases/*.yaml: at least one decision case is required")
     if {p.stem for p in case_files} != {p.stem for p in sheet_files}:
         raise ValueError("cases/*.yaml and sheets/*.yaml must have matching stems")
+    for case_path in case_files:
+        case_data = _read_yaml(case_path)
+        if not isinstance(case_data, dict):
+            continue
+        reason = case_data.get("parked_reason")
+        if reason in _RUNNER_ONLY_PARKED_REASONS:
+            # Validated on what the MODEL wrote: `_forced_parking_reason`
+            # assigns `plain-host-committed-file` later, in
+            # `_prepared_recipe`, and is untouched by this.
+            raise ValueError(
+                f"{case_path.name}: parked_reason {reason!r} is written by the "
+                "runner, never chosen here -- park with the reason that names "
+                "the values question this case raises for the overseer"
+            )
     for sheet_path in sheet_files:
         raw = _read_yaml(sheet_path)
         if not isinstance(raw, dict):
@@ -1365,6 +1397,110 @@ def _observe_abandonment(home: Path, case_id: str, record_id: str, successor: st
     )
 
 
+class CloseOutIncomplete(Exception):
+    """A close-out that could not give every waiting record its successor.
+
+    Raised AFTER whatever did land has been committed, so the next run
+    retries only the remainder (S-68 / 02-schema §3a: retried, idempotent,
+    and counting nothing of its own).
+    """
+
+
+def _short_cause(exc: BaseException) -> str:
+    """One bounded line naming a failure, stable enough across runs to be
+    the key the once-per-distinct-cause notification dedupes on."""
+    text = " ".join(str(exc).split()) or type(exc).__name__
+    return text if len(text) <= 240 else text[:239] + "…"
+
+
+def _close_out_hold_path(home: Path) -> Path:
+    return steward_dir(home) / "close-out-hold.json"
+
+
+def _read_close_out_hold(home: Path) -> str | None:
+    """The cause the user was last told about. Cache-side on purpose: it
+    governs only whether to repeat a notification, never what the ledger
+    says, and losing it costs one duplicate notification, not a lesson."""
+    try:
+        data = json.loads(_close_out_hold_path(home).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    cause = data.get("cause") if isinstance(data, dict) else None
+    return cause if isinstance(cause, str) else None
+
+
+def _write_close_out_hold(home: Path, cause: str | None) -> None:
+    path = _close_out_hold_path(home)
+    if cause is None:
+        path.unlink(missing_ok=True)
+        return
+    _write_json(path, {
+        "NOT_REPO_TRUTH": {
+            "value": True,
+            "disposition": (
+                "XDG cache: the last close-out cause the user was notified "
+                "about; never recovery authority"
+            ),
+        },
+        "cause": cause,
+        "at": chrono.now_iso(),
+    })
+
+
+def _records_waiting_for_close_out(
+    home: Path, run_id: str, attempt_cap: int
+) -> list[str]:
+    """Every record a failing close-out is holding, for the notification."""
+    try:
+        manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
+    except Exception:  # noqa: BLE001 -- a count for a message, never a decision
+        return []
+    waiting: list[str] = []
+    for packet in manifest.get("packets") or []:
+        if packet.get("phase") in _TERMINAL_PACKET_PHASES:
+            continue
+        if _attempt_count(packet) < attempt_cap:
+            continue
+        waiting.extend(_non_terminal_records(packet))
+    return list(dict.fromkeys(waiting))
+
+
+def _notify_close_out_failure(
+    home: Path, run_id: str, waiting: list[str], cause: str
+) -> None:
+    """Once per DISTINCT cause. A close-out is retried with no count of its
+    own, so a deterministic failure would otherwise repeat forever with a
+    git-ignored cache line as its only trace -- the silent loop S-68
+    exists to end, one step further on."""
+    summary = (
+        f"self-learn steward: run {run_id} cannot close itself out — "
+        f"{len(waiting)} lesson(s) are waiting for a parked case and the "
+        f"write keeps failing: {cause}"
+    )
+    try:
+        overseer_notify.send(home, "routine", summary, list(waiting))
+    except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
+        _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+            "status": "notify-failed", "error": _short_cause(exc)})
+
+
+def _apply_close_out(
+    manifest: dict,
+    packet_index: int,
+    *,
+    dispositions: dict,
+    kind: str,
+    detail: str,
+    complete: bool,
+) -> None:
+    packet = manifest["packets"][packet_index - 1]
+    packet["failure"] = kind
+    packet["failure_detail"] = detail
+    packet.setdefault("dispositions", {}).update(dispositions)
+    if complete:
+        packet["phase"] = "abandoned"
+
+
 def _close_out_packet(home: Path, run_id: str, packet_index: int) -> list[str]:
     """Close one exhausted packet: a parked case per undecided record, the
     `abandoned` disposition naming it, and the packet phase.
@@ -1388,46 +1524,19 @@ def _close_out_packet(home: Path, run_id: str, packet_index: int) -> list[str]:
     run_dir = _project_manifest(home, manifest)
     dispositions: dict[str, dict] = {}
     closed: list[str] = []
-    for record_id in _non_terminal_records(packet):
-        successor = _successor_case_for(home, run_id, record_id)
-        if successor is None:
-            stage_path = run_dir / f"close-out-{packet_index:04d}-{record_id}.yaml"
-            _dump_yaml(stage_path, {
-                "kind": "parked",
-                "trigger": "nightly",
-                "outcome": "parked",
-                "parked_for": "overseer",
-                "parked_reason": "attempts-exhausted",
-                "run_id": run_id,
-                "records": [record_id],
-                "scope": _record_scope(home, record_id),
-                "question": (
-                    f"the steward's decision for {record_id} reached the attempt "
-                    f"cap after {attempts} attempts without ever being decided; "
-                    "decide this lesson itself, using the recorded failure reason "
-                    "as evidence"
-                ),
-                "evidence": [{"ref": reference, "quote": detail}],
-                "decision": {
-                    "because": (
-                        "what stopped the steward was the machinery, not the "
-                        f"merits: every attempt ended with {kind}"
-                    ),
-                    "confidence": "provisional",
-                    "what_would_change": [
-                        "the overseer decides this lesson itself on the record's "
-                        "own evidence",
-                    ],
-                },
-                "dependencies": {
-                    "statements": [], "user_model": [], "conditions": [], "capabilities": [],
-                },
-            })
-            successor = cases.record(home, stage_path, actor="steward")
-        previous = (packet.get("dispositions") or {}).get(record_id) or {}
-        owning_case = previous.get("case")
-        if isinstance(owning_case, str) and owning_case != successor:
-            _observe_abandonment(home, owning_case, record_id, successor)
+    errors: list[str] = []
+    waiting = _non_terminal_records(packet)
+    for record_id in waiting:
+        try:
+            successor = _close_out_record(
+                home, run_dir, run_id, packet, packet_index, record_id,
+                attempts=attempts, kind=kind, detail=detail, reference=reference,
+            )
+        except Exception as exc:  # noqa: BLE001 -- one record never blocks the rest
+            # Per-record, so a single unwritable parked case cannot hold
+            # every OTHER lesson of the same packet hostage for ever.
+            errors.append(f"{record_id}: {_short_cause(exc)}")
+            continue
         dispositions[record_id] = {
             "state": "abandoned",
             "input_version": versions.get(record_id),
@@ -1439,20 +1548,84 @@ def _close_out_packet(home: Path, run_id: str, packet_index: int) -> list[str]:
     _journal(home, {
         "ts": chrono.now_iso(), "run_id": run_id, "status": "abandoned",
         "packet": packet_index, "attempts": attempts, "failure": kind,
-        "records": closed,
+        "records": closed, "errors": errors,
     })
-    _update_manifest(
-        home, run_id, reason=f"packet {packet_index} abandoned",
-        update=lambda current: (
-            current["packets"][packet_index - 1].update(
-                phase="abandoned", failure=kind, failure_detail=detail
+    complete = not errors
+    if dispositions or complete:
+        # Whatever landed is committed even when part of the packet did
+        # not, so the next run retries only the remainder. The packet
+        # becomes `abandoned` only when every waiting record has its
+        # `successor_case` (02-schema §3a).
+        _update_manifest(
+            home, run_id, reason=f"packet {packet_index} abandoned",
+            update=lambda current: _apply_close_out(
+                current, packet_index, dispositions=dispositions, kind=kind,
+                detail=detail, complete=complete,
             ),
-            current["packets"][packet_index - 1].setdefault("dispositions", {}).update(
-                dispositions
-            ),
-        ),
-    )
+        )
+    if errors:
+        raise CloseOutIncomplete(
+            f"packet {packet_index}: {len(errors)} of {len(waiting)} record(s) "
+            f"could not be parked — " + "; ".join(errors)
+        )
     return closed
+
+
+def _close_out_record(
+    home: Path,
+    run_dir: Path,
+    run_id: str,
+    packet: dict,
+    packet_index: int,
+    record_id: str,
+    *,
+    attempts: int,
+    kind: str,
+    detail: str,
+    reference: str,
+) -> str:
+    """Reuse or write one record's parked successor case, and name it on
+    the case the record already belonged to. Returns the successor id."""
+    successor = _successor_case_for(home, run_id, record_id)
+    if successor is None:
+        stage_path = run_dir / f"close-out-{packet_index:04d}-{record_id}.yaml"
+        _dump_yaml(stage_path, {
+            "kind": "parked",
+            "trigger": "nightly",
+            "outcome": "parked",
+            "parked_for": "overseer",
+            "parked_reason": "attempts-exhausted",
+            "run_id": run_id,
+            "records": [record_id],
+            "scope": _record_scope(home, record_id),
+            "question": (
+                f"the steward's decision for {record_id} reached the attempt "
+                f"cap after {attempts} attempts without ever being decided; "
+                "decide this lesson itself, using the recorded failure reason "
+                "as evidence"
+            ),
+            "evidence": [{"ref": reference, "quote": detail}],
+            "decision": {
+                "because": (
+                    "what stopped the steward was the machinery, not the "
+                    f"merits: every attempt ended with {kind}"
+                ),
+                "confidence": "provisional",
+                "what_would_change": [
+                    "the overseer decides this lesson itself on the record's "
+                    "own evidence",
+                ],
+            },
+            "dependencies": {
+                "statements": [], "user_model": [], "conditions": [], "capabilities": [],
+            },
+        })
+        successor = cases.record(home, stage_path, actor="steward")
+    previous = (packet.get("dispositions") or {}).get(record_id) or {}
+    owning_case = previous.get("case")
+    if isinstance(owning_case, str) and owning_case != successor:
+        _observe_abandonment(home, owning_case, record_id, successor)
+    return successor
 
 
 def _close_out_exhausted(home: Path, run_id: str, attempt_cap: int) -> list[str]:
@@ -2019,8 +2192,22 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
             try:
                 _close_out_exhausted(home, run_id, attempt_cap)
             except Exception as exc:  # noqa: BLE001 -- retried by the next run
+                # ...but "retried with no count" means NOTHING caps it, so a
+                # deterministic failure would repeat for ever with only a
+                # git-ignored journal line to show for it. The user hears
+                # about it once per distinct cause, and the run says so.
+                result.close_out_error = _short_cause(exc)
+                waiting = _records_waiting_for_close_out(home, run_id, attempt_cap)
                 _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
-                    "status": "close-out-failed", "error": str(exc)})
+                    "status": "close-out-failed", "error": result.close_out_error,
+                    "waiting": waiting})
+                if _read_close_out_hold(home) != result.close_out_error:
+                    _notify_close_out_failure(
+                        home, run_id, waiting, result.close_out_error
+                    )
+                    _write_close_out_hold(home, result.close_out_error)
+            else:
+                _write_close_out_hold(home, None)
 
         if dry_run:
             run_record = dict(manifest)
@@ -2071,7 +2258,14 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
                     coverage[key] += 1
         result.coverage = coverage
         has_applied = bool(result.decided)
-        has_unfinished = bool(result.unfinished) or halt_code is not None
+        # A close-out the runner could not write is unfinished business by
+        # definition, and must never let the run report success: FW-85's
+        # whole point is that automation reads the code, not the prose.
+        has_unfinished = (
+            bool(result.unfinished)
+            or halt_code is not None
+            or result.close_out_error is not None
+        )
         # A run that closed lessons out never reports success: `refused` (or
         # `partial` beside applied work) is FW-85's "an actual failure", and
         # the text line below names the count so it can never again read
@@ -2114,6 +2308,7 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
                 "refused": result.refused,
                 "unfinished": result.unfinished,
                 "abandoned": result.abandoned,
+                "close_out_error": result.close_out_error,
                 "coverage": result.coverage,
             },
         )

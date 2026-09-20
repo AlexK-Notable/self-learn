@@ -1032,6 +1032,11 @@ overseer's close-out note and question — is retried by the next run, is
 idempotent (a successor that already exists is reused, never duplicated), and
 increments no count of its own. A unit becomes `abandoned`, and the run
 closes, only once every abandoned item's `successor_case` actually exists.
+Because it is retried without a count, no cap will ever stop a close-out
+that fails the same way every time, and nothing else would surface it: so
+a failed close-out is reported to the user **once per distinct cause** —
+not once per run and not once per record — and the run's own report names
+it beside the count of lessons still waiting for a successor.
 
 The `abandoned` disposition named above has this shape, and is written only
 by a runner reaching the cap, never by a model:

@@ -1779,6 +1779,7 @@ def _cmd_steward(args: argparse.Namespace) -> int:
                     "refused": result.refused,
                     "unfinished": result.unfinished,
                     "abandoned": result.abandoned,
+                    "close_out_error": result.close_out_error,
                     "coverage": result.coverage,
                     "stopped": result.stopped,
                 }
@@ -1792,6 +1793,11 @@ def _cmd_steward(args: argparse.Namespace) -> int:
             f"{result.calls} model call(s); coverage "
             + ", ".join(f"{key}={value}" for key, value in sorted(result.coverage.items()))
         )
+        if result.close_out_error:
+            # S-68: a close-out is retried with no count of its own, so a
+            # human running this by hand has to be able to SEE that it is
+            # the thing that keeps failing.
+            print(f"steward run: close-out FAILED — {result.close_out_error}")
     if result.status == "stopped":
         _print_unattended_stop("steward", result.stopped)
         return gitops.EXIT_GIT_FAILED
