@@ -243,6 +243,15 @@ class SessionSpec:
     #: surfaces. Keyword, defaulted and LAST so every existing
     #: construction stays valid.
     ledger_home: Path | str | None = None
+    #: The turn limit THIS session asks for, when its producer can size
+    #: it better than a per-surface constant can -- the steward sets it
+    #: to `steward.turns_per_lesson` x the lessons in the batch
+    #: (2026-09-20). `None` (every other producer) keeps the seam's own
+    #: `sdk.max_turns.<surface>` lookup. What it limits is what Claude
+    #: Code's `--max-turns` limits: model responses, not tool calls
+    #: (measured 2026-09-19; `docs/specs/self-learn/README.md` revision
+    #: log). Keyword, defaulted and LAST, like `ledger_home`.
+    max_turns: int | None = None
 
     @property
     def settings_home(self) -> Path | str:

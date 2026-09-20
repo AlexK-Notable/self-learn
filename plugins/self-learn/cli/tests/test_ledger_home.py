@@ -49,6 +49,7 @@ _ENV_VARS = (
     "SELF_LEARN_SDK_CLI_PATH",
     "SELF_LEARN_SDK_MAX_BUDGET_USD",
     "SELF_LEARN_SDK_MAX_TURNS_STEWARD",
+    "SELF_LEARN_STEWARD_TURNS_PER_LESSON",
     "SELF_LEARN_SDK_MAX_TURNS_OVERSEER",
     "SELF_LEARN_SDK_MAX_TURNS_WORKER",
     "SELF_LEARN_WORKER_MODEL",
@@ -195,7 +196,14 @@ def test_a_steward_session_reads_its_settings_from_the_ledger_not_the_stage(tmp_
     run_dir.mkdir()
     cli = tmp_path / "u4b-claude"
     cli.write_text("#!/bin/sh\n", encoding="utf-8")
-    _write_config(home, _anthropic_settings(home, "steward", cli))
+    config = _anthropic_settings(home, "steward", cli)
+    # 2026-09-20: the steward sizes its own turn limit from
+    # `steward.turns_per_lesson` (times the lessons in the batch; this
+    # spec has one), so THAT is the ledger setting whose value must
+    # arrive. `sdk.max_turns.steward` stays 7 in the same file and is
+    # now only the fallback for a session that names no limit.
+    config["steward"] = {"turns_per_lesson": 9}
+    _write_config(home, config)
 
     spec = _steward_spec(home, run_dir)
     kwargs = backend_mod.options_kwargs(spec)
@@ -212,7 +220,7 @@ def test_a_steward_session_reads_its_settings_from_the_ledger_not_the_stage(tmp_
     # disagreed on 2026-09-19 and the doctor called the machine healthy.
     assert kwargs["cli_path"] == provider.resolve(home, "steward").cli_path
     assert kwargs["model"] == "u4b-steward-model"
-    assert kwargs["max_turns"] == 7
+    assert kwargs["max_turns"] == 9
     assert kwargs["max_budget_usd"] == 1.25
 
 

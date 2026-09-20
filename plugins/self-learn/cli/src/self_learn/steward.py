@@ -692,12 +692,16 @@ def _validate_declared_stage(stage: Path) -> None:
 
 
 def _session_spec(
-    home: Path, run_dir: Path, prompt: str, *, label: str
+    home: Path, run_dir: Path, prompt: str, *, label: str, lessons: int = 1
 ) -> invocation.SessionSpec:
     timeout_value, _source = settings.resolve_setting(
         home, settings.by_name("steward.timeout_secs")
     )
     timeout = cast(int | float | str, timeout_value)
+    per_lesson_value, _source = settings.resolve_setting(
+        home, settings.by_name("steward.turns_per_lesson")
+    )
+    per_lesson = int(cast(int | str, per_lesson_value))
     containment = invocation.containment_for(
         "steward",
         allowed_tools=_ALLOWED_TOOLS,
@@ -718,6 +722,11 @@ def _session_spec(
         # Claude Code binary, the model, the turn bound, the spend
         # bound, the provider, the backend) from THIS field instead.
         ledger_home=home,
+        # The turn limit grows with the batch: `steward.turns_per_lesson`
+        # for each lesson in it (the user's instruction, 2026-09-19). It
+        # stops a runaway session; it is never a reason to discard one
+        # that finished.
+        max_turns=per_lesson * max(lessons, 1),
     )
 
 
@@ -739,6 +748,9 @@ def _repair_spec(spec: invocation.SessionSpec, error: str) -> invocation.Session
         # this would send the repair round -- the SECOND call of the
         # same packet -- back to the SDK's bundled binary (U4b).
         ledger_home=spec.ledger_home,
+        # Carried for the same reason: dropped, the repair round would
+        # fall back to the per-surface limit instead of the batch's own.
+        max_turns=spec.max_turns,
     )
 
 
@@ -2081,7 +2093,10 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
                 )
                 prompt = steward_prompt.assemble(home, cache_dir(home), context, proposals)
                 fsops.atomic_write(run_dir / f"packet-{packet_index:04d}.md", prompt.text, fsync=True)
-                spec = _session_spec(home, run_dir, prompt.text, label=f"steward-{run_id}-{packet_index}")
+                spec = _session_spec(
+                    home, run_dir, prompt.text,
+                    label=f"steward-{run_id}-{packet_index}", lessons=len(proposals),
+                )
                 started = time.monotonic()
                 outcome = invocation.write_session(spec)
                 duration = float(time.monotonic() - started)

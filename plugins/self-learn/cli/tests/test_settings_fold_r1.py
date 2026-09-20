@@ -448,6 +448,7 @@ _LITERAL_CONFIG_FIRST_NAMES = frozenset(
         "analyst.timeout_secs",
         "steward.timeout_secs",  # U8
         "steward.packet_size",  # U10
+        "steward.turns_per_lesson",  # 2026-09-20: the batch-sized turn limit
         "steward.cooldown_secs",  # U10
         "steward.enabled",  # U10, config-only rollback switch
         "runs.attempt_cap",  # U1 (S-68), shared by both delegated runners
@@ -497,7 +498,7 @@ def test_major2_config_first_literal_complement_27_names_match_the_registry_exac
     still knows the ORIGINAL 16/21 split to compare against."""
     actual = frozenset(s.name for s in settings.REGISTRY if s.direction == "config-first")
     assert actual == _LITERAL_CONFIG_FIRST_NAMES
-    assert len(_LITERAL_CONFIG_FIRST_NAMES) == 34  # U8: 21 -> 26; U10: +3; O-3: +1; O-6: +1; U1: +1; U4: +1; U4c: +1
+    assert len(_LITERAL_CONFIG_FIRST_NAMES) == 35  # U8: 21 -> 26; U10: +3; O-3: +1; O-6: +1; U1: +1; U4: +1; U4c: +1; turns_per_lesson: +1
     assert _LITERAL_ENV_FIRST_NAMES | _LITERAL_CONFIG_FIRST_NAMES == frozenset(
         s.name for s in settings.REGISTRY
     )

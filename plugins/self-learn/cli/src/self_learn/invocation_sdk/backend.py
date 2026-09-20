@@ -326,7 +326,13 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
     }
 
     if "max_turns" in supported:
-        kwargs["max_turns"] = _max_turns_for(selector, home=spec.settings_home)
+        # A session that names its own limit (the steward sizes it to its
+        # batch) gets that limit; every other session gets its surface's.
+        kwargs["max_turns"] = (
+            spec.max_turns
+            if spec.max_turns is not None
+            else _max_turns_for(selector, home=spec.settings_home)
+        )
     else:
         spec.log("run: sdk backend could not apply max_turns on this claude-agent-sdk version")
 

@@ -967,6 +967,25 @@ REGISTRY: tuple[Setting, ...] = (
         description="briefs in one steward model call (the run itself has no record cap)",
     ),
     Setting(
+        name="steward.turns_per_lesson",
+        env_var="SELF_LEARN_STEWARD_TURNS_PER_LESSON",
+        config_section="steward",
+        config_key="turns_per_lesson",
+        kind="int",
+        # The user's number, 2026-09-19: "we first increase teh limit to
+        # 200 per lesson". A steward session's turn limit is this times
+        # the lessons in its batch. Crash protection against a runaway
+        # session, not a ration (S-29): the three real sessions of
+        # 2026-09-19 used 51-61 model responses for 9-10 lessons each.
+        default=200,
+        validate=lambda v: v if cast(int, v) > 0 else None,
+        validate_hint="must be > 0",
+        description=(
+            "turn limit per lesson for a steward session: the session's limit "
+            "is this times the lessons in its batch"
+        ),
+    ),
+    Setting(
         name="steward.cooldown_secs",
         env_var="SELF_LEARN_STEWARD_COOLDOWN_SECS",
         config_section="steward",
@@ -1104,7 +1123,10 @@ REGISTRY: tuple[Setting, ...] = (
         config_key="max_turns.steward",
         kind="int",
         default=80,  # invocation_sdk.backend._DEFAULT_MAX_TURNS["STEWARD"]; plan-steward-2026-09-12.md §5.4 "SDK turns per call"
-        description="max agentic turns for a steward SDK session",
+        description=(
+            "max agentic turns for a steward SDK session that names no limit of "
+            "its own; the steward's runs size theirs from steward.turns_per_lesson"
+        ),
     ),
     Setting(
         name="sdk.max_turns.overseer",
