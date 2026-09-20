@@ -99,6 +99,16 @@ class SdkOutcome(Outcome):
     turns: int | None = None
     session_id: str | None = None
     child_pid: int | None = None
+    #: Why Claude Code itself ended an ERRORED session -- the result
+    #: message's own `subtype` (`error_max_turns`, `error_max_budget_usd`,
+    #: `error_during_execution`, ...); `None` on a session that ended
+    #: normally. A caller that must tell "stopped at the turn limit" from
+    #: any other failure reads THIS, never `turns`: `turns` is
+    #: `num_turns`, which counts roughly one per tool result, while
+    #: `--max-turns` stops on model responses (measured 2026-09-19 on
+    #: three real steward sessions: 61/51/58 responses, `num_turns`
+    #: 104/117/115, limit 80, none stopped).
+    result_subtype: str | None = None
 
 
 # --------------------------------------------------------------- Sync-1
@@ -382,6 +392,7 @@ def _outcome(
     turns: int | None = None,
     session_id: str | None = None,
     exc: BaseException | None = None,
+    result_subtype: str | None = None,
 ) -> SdkOutcome:
     return SdkOutcome(
         ok=ok,
@@ -395,6 +406,7 @@ def _outcome(
         cost_usd=cost_usd,
         turns=turns,
         session_id=session_id,
+        result_subtype=result_subtype,
     )
 
 
@@ -424,6 +436,7 @@ def _map_result_message(
         # §2.2a's skeleton-identical (1.000) pair -- the ONE mechanism
         # this unit found written twice, now moved verbatim.
         detail = sdk_result.reduce_result_error(result_message)
+        subtype = getattr(result_message, "subtype", None)
         assert templates.exited is not None  # T-c: worker/miner/analyst all carry this leg
         spec.log(
             _format(templates.exited, spec, rc=1, detail=_render_exit_detail(templates, detail))
@@ -438,6 +451,7 @@ def _map_result_message(
             cost_usd=cost_usd,
             turns=turns,
             session_id=session_id,
+            result_subtype=subtype if isinstance(subtype, str) else None,
         )
 
     return _outcome(

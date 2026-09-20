@@ -416,15 +416,55 @@ def test_dry_run_writes_stage_files_without_a_ledger_commit(tmp_path, monkeypatc
     assert not (home / "cases" / "runs").exists()
 
 
-def test_turn_bound_leaves_that_packet_queued_and_records_the_bound(tmp_path, monkeypatch):
+_LIMIT_MESSAGE = "Reached maximum number of turns (3)"
+
+
+def _stopped_at_the_turn_limit(spec):
+    """What a session Claude Code itself stopped at `--max-turns` looks
+    like to the runner. Copied from a real one (2026-09-19, limit 3):
+    `is_error` true, `subtype` `error_max_turns`, `errors`
+    `['Reached maximum number of turns (3)']` -- which the seam maps to
+    a failed outcome whose detail is that message. It may well have
+    written files before it was stopped, so this writes them too: the
+    runner must not apply a stopped session's half-finished stage."""
+    _write_decision_stage(spec)
+    return SdkOutcome(
+        ok=False, rc=1, stdout="", detail=_LIMIT_MESSAGE, failure="exit",
+        turns=4, result_subtype="error_max_turns",
+    )
+
+
+def test_a_finished_session_is_kept_whatever_turn_count_it_reports(tmp_path, monkeypatch):
+    """The 2026-09-19 dry run: three sessions ended normally with all 29
+    lessons decided, reported 104/117/115 turns against a limit of 80,
+    and the runner threw every one away. `num_turns` counts roughly one
+    per tool result; the limit stops on model responses; comparing them
+    proves nothing. A session that ended normally is judged on its
+    files."""
     home = make_home(tmp_path)
     ids = _seed_fresh_proposals(home, 2)
     _enable_steward(home)
     monkeypatch.setattr(
         steward.invocation,
         "write_session",
-        lambda spec: _write_decision_stage(spec, turns=80),
+        lambda spec: _write_decision_stage(spec, turns=5000),
     )
+
+    result = steward.run(home, dry_run=False)
+
+    assert result.decided == ids
+    assert ledger_ops.list_items(home) == []
+    record = next((steward.cache_dir(home) / "steward" / "runs").glob("*/run.json"))
+    packet = json.loads(record.read_text(encoding="utf-8"))["packets"][0]
+    assert packet["bound"] is None
+    assert packet["attempts"][0]["turns"] == 5000  # still recorded, as a fact
+
+
+def test_turn_bound_leaves_that_packet_queued_and_records_the_bound(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    ids = _seed_fresh_proposals(home, 2)
+    _enable_steward(home)
+    monkeypatch.setattr(steward.invocation, "write_session", _stopped_at_the_turn_limit)
 
     result = steward.run(home, dry_run=False)
 
@@ -432,7 +472,30 @@ def test_turn_bound_leaves_that_packet_queued_and_records_the_bound(tmp_path, mo
     assert result.decided == []
     assert [row["id"] for row in ledger_ops.list_items(home)] == ids
     record = next((steward.cache_dir(home) / "steward" / "runs").glob("*/run.json"))
-    assert json.loads(record.read_text(encoding="utf-8"))["packets"][0]["bound"] == "turns"
+    packet = json.loads(record.read_text(encoding="utf-8"))["packets"][0]
+    assert packet["bound"] == "turns"
+    assert packet["failure_detail"] == _LIMIT_MESSAGE
+
+
+def test_a_failure_that_is_not_the_turn_limit_is_not_called_one(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _seed_fresh_proposals(home, 2)
+    _enable_steward(home)
+    monkeypatch.setattr(
+        steward.invocation,
+        "write_session",
+        lambda spec: SdkOutcome(
+            ok=False, rc=1, stdout="", detail="API Error: 400", failure="exit",
+            turns=5000, result_subtype="error_during_execution",
+        ),
+    )
+
+    steward.run(home, dry_run=False)
+
+    record = next((steward.cache_dir(home) / "steward" / "runs").glob("*/run.json"))
+    packet = json.loads(record.read_text(encoding="utf-8"))["packets"][0]
+    assert packet["bound"] == "exit"
+    assert packet["failure_detail"] == "API Error: 400"
 
 
 def test_bound_ends_only_its_packet_and_later_packet_still_applies(tmp_path, monkeypatch):
@@ -444,7 +507,9 @@ def test_bound_ends_only_its_packet_and_later_packet_still_applies(tmp_path, mon
     def invoke(spec):
         nonlocal calls
         calls += 1
-        return _write_decision_stage(spec, turns=80 if calls == 1 else 1)
+        if calls == 1:
+            return _stopped_at_the_turn_limit(spec)
+        return _write_decision_stage(spec, turns=1)
 
     monkeypatch.setattr(steward.invocation, "write_session", invoke)
 

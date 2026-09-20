@@ -1956,14 +1956,10 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
         packet_size_value, _source = settings.resolve_setting(
             home, settings.by_name("steward.packet_size")
         )
-        max_turns_value, _source = settings.resolve_setting(
-            home, settings.by_name("sdk.max_turns.steward")
-        )
         attempt_cap_value, _source = settings.resolve_setting(
             home, settings.by_name("runs.attempt_cap")
         )
         packet_size = cast(int | str, packet_size_value)
-        max_turns = cast(int | str, max_turns_value)
         attempt_cap = int(cast(int | str, attempt_cap_value))
         if unfinished_runs:
             manifest = unfinished_runs[0]
@@ -2095,16 +2091,27 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
                     "failure": outcome.failure, "duration_secs": duration}
                 packet_record.setdefault("attempts", []).append(attempt)
                 packet_record["duration_secs"] = duration
-                if not outcome.ok or (turns is not None and turns >= int(max_turns)):
-                    bound = "turns" if outcome.ok else outcome.failure or "invocation"
+                # A session that ended normally is judged on the files it
+                # wrote, never on its turn count. The clause that used to
+                # sit here (`turns >= max_turns`) compared two different
+                # counters: `turns` is Claude Code's `num_turns`, roughly
+                # one per tool result, while the limit handed to Claude
+                # Code stops on model responses. The 2026-09-19 dry run
+                # lost all 29 decided lessons to it: three sessions of
+                # 61/51/58 responses, none stopped by the limit of 80,
+                # each reporting 104/117/115 and each thrown away. A
+                # session Claude Code really stopped at the limit arrives
+                # here already failed (`error_max_turns`), with the reason
+                # Claude Code gave.
+                if not outcome.ok:
+                    stopped_at_limit = (
+                        getattr(outcome, "result_subtype", None) == "error_max_turns"
+                    )
+                    bound = "turns" if stopped_at_limit else outcome.failure or "invocation"
                     # A23: the message the transport actually returned, not
                     # just its kind. `exit` alone is what made the
                     # 2026-09-14 outage unreadable from the ledger.
-                    detail = _failure_detail(
-                        f"the session reached the {max_turns}-turn bound at {turns} turns"
-                        if outcome.ok
-                        else outcome.detail
-                    )
+                    detail = _failure_detail(outcome.detail)
                     bound_dispositions = {
                         row["record"]: {
                             "state": "unfinished", "input_version": row["version"],
