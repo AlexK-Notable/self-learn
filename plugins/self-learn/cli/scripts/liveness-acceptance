@@ -21,6 +21,20 @@
 # collected by it, is not imported by anything, and does nothing at all
 # without the explicit flag above.
 #
+# WHICH ROUTE SETS THE BINARY, AND WHY IT MATTERS. `sdk.cli_path` is
+# env-first: `SELF_LEARN_SDK_CLI_PATH` outranks `config.yaml`. Production sets
+# it in the ledger's `config.yaml`, and until 2026-09-19 that route did not
+# reach the steward or the overseer at all — their sessions run inside a cache
+# stage directory, and the seam read the session's working directory as if it
+# were the ledger, so every ledger setting resolved to its default for exactly
+# those two surfaces. An earlier version of this script switched binaries with
+# the environment variable in every step, which bypasses that path entirely and
+# would have PASSED over the defect. Steps 3 and 4 now write
+# `sdk: cli_path:` into the SCRATCH `config.yaml` and leave the environment
+# variable unset, so the run crosses the route production actually uses. Steps
+# 1 and 2 still use the environment variable: they need the too-old binary, and
+# reaching it by the strongest rung is the point there.
+#
 # THE REAL LEDGER IS NEVER TOUCHED. Everything happens in a fresh scratch
 # ledger created by this script. It refuses to start if `SELF_LEARN_HOME`
 # resolves to the real one, and it clears every `SELF_LEARN_OVERRIDE_*` plus
@@ -88,11 +102,12 @@ What it will do, in order:
   2. Seed a few lessons in a scratch ledger, analyze them, then run the
      steward against that same too-old binary and assert the committed run
      record carries the REAL failure reason.        (about 2-3 model calls)
-  3. Point sdk.cli_path at a working claude, run the steward again, and
-     assert the packets are re-attempted and the run completes.
+  3. Set sdk.cli_path to a working claude in the SCRATCH config.yaml — the
+     route production uses, with no environment override — run the steward
+     again, and assert the packets are re-attempted and the run completes.
                                                     (about 1-3 model calls)
-  4. Run the overseer to completion, then again to prove the same-week
-     guard holds.                                   (up to 10 model calls)
+  4. Run the overseer to completion against that same config.yaml binary,
+     then again to prove the same-week guard holds. (up to 10 model calls)
   5. Print counts of PASS / FAIL / SKIPPED, the model calls made, and the
      scratch path.
 
@@ -351,7 +366,19 @@ step 3 "recovery — a second steward run against a working binary re-attempts a
 if [ -z "$WORKING" ]; then
   skip "no working claude on PATH"
 else
-  STEWARD_2=$(SELF_LEARN_SDK_CLI_PATH="$WORKING" sl_json steward run --json)
+  # THE ROUTE UNDER TEST. The binary is set in the scratch ledger's own
+  # `config.yaml`, not in the environment, and the environment variable is
+  # left unset for this step and step 4 — that is the path production takes,
+  # and the one the steward and the overseer could not read until 2026-09-19.
+  # It is COMMITTED because the steward refuses to continue past an
+  # unexplained dirty ledger path, and `config.yaml` is a tracked ledger file.
+  printf 'sdk:\n  cli_path: %s\n' "$WORKING" >> "$SELF_LEARN_HOME/config.yaml"
+  git -C "$SELF_LEARN_HOME" add config.yaml >>"$SCRATCH/stderr.log" 2>&1
+  git -C "$SELF_LEARN_HOME" commit -m "acceptance: sdk.cli_path -> working claude" \
+    >>"$SCRATCH/stderr.log" 2>&1
+  printf '  config.yaml now names: %s\n' "$WORKING"
+
+  STEWARD_2=$(sl_json steward run --json)
   MODEL_CALLS=$((MODEL_CALLS + $(py '
 import json, sys
 try:
@@ -399,8 +426,10 @@ step 4 "the overseer — one real run to completion, then the same-week guard"
 if [ -z "$WORKING" ]; then
   skip "no working claude on PATH"
 else
-  OVERSEER_1=$(SELF_LEARN_SDK_CLI_PATH="$WORKING" sl_json overseer run --json)
-  OVERSEER_2=$(SELF_LEARN_SDK_CLI_PATH="$WORKING" sl_json overseer run --json)
+  # Same route as step 3: the binary comes from the scratch `config.yaml`
+  # step 3 committed, with no environment override.
+  OVERSEER_1=$(sl_json overseer run --json)
+  OVERSEER_2=$(sl_json overseer run --json)
   printf '  overseer run 1: %s\n  overseer run 2: %s\n' "$OVERSEER_1" "$OVERSEER_2"
   CALLS=$(py '
 import json, sys

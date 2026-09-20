@@ -712,6 +712,12 @@ def _session_spec(
         containment=containment,
         log=lambda message: _journal(home, {"ts": chrono.now_iso(), "status": "model-log", "message": message}),
         label=label,
+        # U4b (2026-09-19): `cwd` is the packet's stage directory --
+        # where the session runs and the only place it may write -- and
+        # carries no `config.yaml`. The seam reads its settings (the
+        # Claude Code binary, the model, the turn bound, the spend
+        # bound, the provider, the backend) from THIS field instead.
+        ledger_home=home,
     )
 
 
@@ -729,6 +735,10 @@ def _repair_spec(spec: invocation.SessionSpec, error: str) -> invocation.Session
         containment=spec.containment,
         log=spec.log,
         label=f"{spec.label}-repair",
+        # Carried, not re-derived: a field-by-field rebuild that dropped
+        # this would send the repair round -- the SECOND call of the
+        # same packet -- back to the SDK's bundled binary (U4b).
+        ledger_home=spec.ledger_home,
     )
 
 

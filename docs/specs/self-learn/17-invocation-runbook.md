@@ -244,6 +244,36 @@ An **empty** value is different again: it means "no answer" and falls
 through to the next rung, silently and legitimately. With one trap, in
 §7.
 
+### 3c. Which ledger a session's settings come from
+
+*(added 2026-09-19, U4b.)*
+
+`sdk.cli_path` — and the model, the turn bound, the spend bound, the
+provider and the backend with it — is read from **the ledger home**, the
+directory holding `config.yaml`. It is **not** read from the directory
+the session runs in. The two are the same thing for the worker, the
+miner-reader and the analyst, whose sessions run in the ledger; they are
+not the same thing for the steward and the overseer, whose sessions run
+inside a cache stage directory that holds no `config.yaml` at all.
+
+Until 2026-09-19 the seam read the session's working directory as if it
+were the ledger. The worker, the miner and the analyst were unaffected.
+The steward and the overseer, added 2026-09-14, were not: every one of
+those six settings resolved to its default for them, silently. That is
+why a steward run on 2026-09-19 launched the SDK's bundled Claude Code
+2.1.226 while `doctor invocation` — which reads the ledger home, and
+therefore read the setting correctly — reported the 2.1.278 binary
+`config.yaml` names, and called the machine healthy. A session and the
+doctor now read the same place, so they cannot disagree.
+
+**What this means when you set the binary.** `sdk.cli_path` is
+env-first: `SELF_LEARN_SDK_CLI_PATH` outranks `config.yaml`. The
+environment variable reaches a session by a different route from
+`config.yaml` and was never affected by the defect above, so **an
+environment variable is not a test of the config route.**
+`scripts/liveness-acceptance` sets the binary in the scratch ledger's
+own `config.yaml` for its recovery steps precisely for that reason.
+
 ## 4. The provider switch, if you are going to Bedrock
 
 *§§4.1–4.3 retired 2026-08-25 (U-cleanup, `S-49`).* This section used to

@@ -400,6 +400,10 @@ def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, ru
             log=lambda message: _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "model-log", "phase": label, "message": message[:300]}),
             label=label,
             doctrine=None,
+            # U4b (2026-09-19): `cwd` is this week's cache stage -- where
+            # the session runs and writes -- and holds no `config.yaml`.
+            # The seam reads its settings from THIS field instead.
+            ledger_home=home,
         )
     )
 

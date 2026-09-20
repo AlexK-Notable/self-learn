@@ -260,7 +260,10 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
     kwargs: dict[str, object] = {
         "cwd": str(spec.cwd),
         "system_prompt": system_prompt,
-        "model": provider.model_for(spec.surface, home=spec.cwd),  # `IN3`/`Int-1`
+        # `IN3`/`Int-1`, corrected 2026-09-19 (U4b): the home is
+        # `spec.settings_home`, not `spec.cwd`. See the `cli_path` note
+        # below for what reading `cwd` here cost.
+        "model": provider.model_for(spec.surface, home=spec.settings_home),
         "disallowed_tools": disallowed,
         "can_use_tool": can_use_tool,
         "permission_mode": "default",  # `O-2` -- unconditionally
@@ -280,8 +283,19 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
         # invocation`'s own report named another). `IN3`'s "holds by
         # construction" claim now depends on THIS call, not env-var
         # coincidence.
+        #
+        # 2026-09-19 (U4b): and on reading `spec.settings_home`, NOT
+        # `spec.cwd`. Reading `cwd` reopened exactly the disagreement
+        # the paragraph above closed, for the two surfaces whose `cwd`
+        # is a cache stage rather than the ledger: a real steward run
+        # launched the SDK's bundled Claude Code 2.1.226 against a model
+        # needing 2.1.251, while `doctor invocation` -- which reads the
+        # ledger home -- reported the 2.1.278 binary `config.yaml`
+        # names. The two faces agree again only because both now read
+        # the ledger home.
         "cli_path": cast(
-            "str | None", settings.resolve_setting(spec.cwd, settings.by_name("sdk.cli_path"))[0]
+            "str | None",
+            settings.resolve_setting(spec.settings_home, settings.by_name("sdk.cli_path"))[0],
         )
         or None,
         # `POL3` -- the three keys measured identical in §2.3
@@ -292,12 +306,12 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
     }
 
     if "max_turns" in supported:
-        kwargs["max_turns"] = _max_turns_for(selector, home=spec.cwd)
+        kwargs["max_turns"] = _max_turns_for(selector, home=spec.settings_home)
     else:
         spec.log("run: sdk backend could not apply max_turns on this claude-agent-sdk version")
 
     if "max_budget_usd" in supported:
-        kwargs["max_budget_usd"] = _max_budget_usd(home=spec.cwd)
+        kwargs["max_budget_usd"] = _max_budget_usd(home=spec.settings_home)
     else:
         spec.log(
             "run: sdk backend could not apply max_budget_usd on this claude-agent-sdk version"
