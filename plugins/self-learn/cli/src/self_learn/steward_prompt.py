@@ -150,7 +150,11 @@ RUNNER_ONLY_PARKED_REASONS = frozenset({"attempts-exhausted", "plain-host-commit
 #: pre-rename alias (S-67) and only adds a second spelling to get wrong.
 _UNLISTED_SHEET_VERBS = frozenset({"graduate"})
 
-#: Worked examples, one per file. Every one is fed through the REAL
+#: Worked examples: two cases with their sheets, a revision, a statement
+#: and a user-model update. `parked.yaml` has none on purpose -- how a
+#: lesson is parked is an open defect (revision log, 2026-09-20), and an
+#: example would teach a shape whose effect is not settled.
+#: Every one is fed through the REAL
 #: checker in `tests/test_steward_output_contract.py` -- the stage
 #: validator, `cases.record`, `statements.add`, `user_model.add_entry` --
 #: so an example that stops being valid fails the suite instead of
