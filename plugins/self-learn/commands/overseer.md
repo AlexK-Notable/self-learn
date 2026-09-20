@@ -18,6 +18,21 @@ an attempt and its result — its existence alone is never proof that the
 change landed. This conversation is about how the system is reading the
 user, never about clearing a queue.
 
+**When a week could not finish.** A failure that is not a judgment on the
+merits — the model call failed, timed out, hit the turn bound, produced
+output that would not validate, or a git write failed or half-landed — is
+retried by a later run as a fresh attempt, on any day, until the week is
+done; a decision refused on its merits is never retried. After
+`runs.attempt_cap` (default 3) failed attempts the week is closed so the
+next one can start, and what the overseer could not settle arrives here as
+a question in its report, carrying the real failure reason
+(`03-decisions.md` S-68). Relay such a question as what it is — work the
+system could not complete, a system concern in the sense of step 3, never
+a decision waiting on your approval. A parked case whose reason was
+`attempts-exhausted` is the same shape one level down: nothing was wrong
+with the lesson, the machinery failed three times, and the overseer decides
+the lesson itself with the recorded failure reason as its evidence.
+
 ## 1. Get the report
 
 Run `self-learn overseer report`. This is the full document; its text is

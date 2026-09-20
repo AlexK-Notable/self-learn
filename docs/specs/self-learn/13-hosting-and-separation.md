@@ -375,6 +375,38 @@ line (full field list: §7.2a.7 as amended).
 never enables them, unchanged from every other unit this repo ships
 (`CLAUDE.md` § Layout).
 
+**The overseer's catch-up rule and the same-week guard** *(Added 2026-09-19,
+`03-decisions.md` S-68)*. The weekly job is due on the first tick at or after
+**Sunday 04:15 local for which that week is not done — whatever the weekday**.
+A machine that was off all Sunday therefore runs the missed week on Monday
+instead of skipping it in silence, and the product does not depend on
+`Persistent=true` on a timer that is linked but never enabled to do it. **Only
+the most recent Sunday boundary defines the current week**: after a longer
+outage, older undone weeks are subsumed by that one catch-up run rather than
+replayed one per week — the overseer's population is everything since its
+last run, so the single run covers them, and nothing is run retroactively.
+"Not done" is S-68's own test: a run for that week completed, or its attempts
+reached `runs.attempt_cap` — read from committed run records, never from the
+cache marker alone. The same test is the **same-week guard, and it lives in
+the runner, not in the scheduler**: whoever starts an overseer run — the
+`serve` job, a hand-typed `self-learn overseer run`, or the systemd timer if
+a human ever enables it — re-checks it inside the run and holds without
+writing when the week is already done, so two entry points cannot double-run
+one week even with both enabled. A held run is a held outcome under the
+unattended-run contract (`FW-85`), not a failure. Committed unfinished work
+stays due regardless of the calendar, unchanged from O-4: a failed attempt is
+retried after the existing two-hour attempt cooldown
+(`miner.ATTEMPT_COOLDOWN_SECS`), on any day, until the week is done or the
+cap closes it. A raise inside either due-check is logged and treated as
+not-due for that tick, and it arms the cooldown so the tick loop cannot spin
+on it; it counts as an attempt against the unfinished unit the check was
+looking at when there is one — which is how a resume-time exception that
+recurs identically every two hours reaches the cap and closes out instead of
+recurring forever — and against nothing when there is not. It never
+escapes into `_run_tick`, where one exception ends the whole `serve` process
+— miner, worker, steward and overseer together — and ends it again on every
+restart while the cause persists.
+
 ## 6. Cache namespacing
 
 `~/.cache/claude-skills/self-learn/` → `~/.cache/self-learn/` in the

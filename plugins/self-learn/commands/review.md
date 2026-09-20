@@ -460,7 +460,14 @@ what an unattended run decided, and how you correct it:
 A parked case (`kind: parked`, `parked_for: overseer`) is a question the
 steward could not settle alone — its `parked_reason` names which of the
 five kinds stopped it, and section 3 holds its tentative answer, if it
-has one, and its reason for stopping there. Deciding a parked item
+has one, and its reason for stopping there. Two further reasons are
+written by the runner rather than chosen by the steward, and
+`--parked-reason` accepts them too: `plain-host-committed-file`, and
+`attempts-exhausted`, which means the decision on that record failed
+`runs.attempt_cap` times (default 3) for reasons that were never about
+the lesson — the machinery, not the merits. Such a case asks the overseer
+to decide the lesson itself, with the recorded failure reason as its
+evidence (`03-decisions.md` S-68). Deciding a parked item
 yourself in a human session still needs the successor case: write the
 stage file, `self-learn case record <stage-file>` to get its id (naming
 `supersedes: <parked case>`), put that id in the sheet's top-level
@@ -506,6 +513,19 @@ marker are projections and never recovery authority.
   does not erase a committed prefix or prevent a later independent packet
   from being decided; a STOP or bookkeeping halt does stop every later
   packet and maintenance operation.
+- A failure that is not a judgment on the merits — the model call failed,
+  timed out, hit the turn bound, staged output that would not validate, or
+  a git write failed or half-landed — is retried by a LATER run as a fresh
+  attempt with its own single repair turn, never re-driven inside the same
+  run. A decision the steward refused on its merits is never retried, and
+  neither is anything a secret scan blocked. After `runs.attempt_cap`
+  (default 3) failed attempts the run is CLOSED so a new run can start:
+  every record it could not decide gets a parked case for the overseer
+  carrying the real failure reason, that record's disposition records
+  `abandoned` with the successor case's id, and you are notified
+  (`03-decisions.md` S-68). An attempt that runs and changes nothing counts
+  toward the cap exactly like one that failed, so nothing can spin
+  unnoticed.
 - The run's report names its coverage across the nine case outcomes
   (route, reject, defer, retire, replaced, rehome, revise, no-action,
   parked — the outcome set in `02-schema.md` §3a) crossed with the three
