@@ -119,33 +119,109 @@ The rows, in the order they print:
 | `switches` | **The one you came for.** One INFO line naming every surface's resolved backend *and the rung that decided it*. |
 | `provider` | Resolved provider and its source. |
 | `config` | Whether `config.yaml`'s `provider:` section contains keys the software does not know. |
-| `sdk` | Whether `claude_agent_sdk` is importable, its version, and the bundled vs host `claude` CLI versions. WARN when they diverge. |
+| `sdk` | Whether `claude_agent_sdk` is importable, its version, the bundled vs **operative** `claude` CLI versions, and — since 2026-09-19 (U4) — whether the operative binary is new enough for the models the surfaces actually select. **FAIL** when it is older than the floor for any selected model; **INFO** when the two versions merely differ; **WARN** when a floor exists but could not be checked. See §3a. |
 | `rollout` | SKIP under `anthropic`. Under `bedrock`: FAIL only if **every surface has been explicitly pinned to `cli` and is therefore refused** (`backend=REFUSED (cli retired)`) — the Bedrock configuration then does nothing, because there is no un-refused surface left for it to reach. PASS if no surface is refused, per-surface INFO for the normal mixed state. *(2026-08-25: this state is now RARE rather than the default — every surface's own default is already `sdk`, so hitting it requires actively refusing every one of the four, not simply "not having flipped anything yet.")* |
 | `consistency` | Emitted **only** when something is wrong: a `bedrock` surface with no region, or one whose model id is an Anthropic alias. No row means no problem. |
 | `region` / `credentials` / `models` / `env` | Bedrock-side checks; SKIP wholesale under `anthropic`. `credentials` is **presence-only** and reports WARN, never FAIL, when it finds nothing — it cannot see an EC2 instance role (`FW-90`). |
 | `orphans` | Today always SKIP. It is a reserved extension point, **not** an orphan census — see §5.3. |
 
-A healthy all-defaults machine looks like this (*re-captured 2026-08-25,
-post-U-cleanup, `anthropic` install — the `switches` row is the part
-that changed; every surface now resolves `sdk` because there is nothing
-else left to resolve*):
+A healthy machine looks like this (*captured 2026-08-25, post-U-cleanup,
+`anthropic` install — the `switches` row is the part that changed then;
+every surface now resolves `sdk` because there is nothing else left to
+resolve. The `sdk` line was **replaced 2026-09-19 (U4)** and is RENDERED,
+not captured: it shows the row for a machine whose `sdk.cli_path` points
+at a current Claude Code. **On a genuinely all-defaults machine, where
+the operative binary is whatever the installed SDK wheel bundles, that
+row now reads FAIL** whenever the bundled copy is older than a selected
+model's floor — which is the state this host was in on 2026-09-14. See
+§3a.*):
 
 ```
 doctor: INFO switches — worker: backend=sdk (default); worker-repair: backend=sdk (default); miner-reader: backend=sdk (default); analyst: backend=sdk (default)
 doctor: INFO provider — provider=anthropic (default)
 doctor: PASS config — no unknown provider config keys
-doctor: WARN sdk — sdk=0.2.134 bundled-cli=2.1.226 host-cli=2.1.235 — versions differ
+doctor: INFO sdk — sdk=0.2.134 bundled-cli=2.1.226 operative-cli=2.1.278 — versions differ; the operative binary is what runs (checked: steward needs Claude Code >= 2.1.251 for model claude-fable-5-1; overseer needs Claude Code >= 2.1.251 for model claude-fable-5-1); host-cli-path=/usr/bin/claude (context, not compared)
 doctor: SKIP rollout — provider=anthropic — rollout state not applicable
 ...
 doctor: SKIP orphans — no orphan report hook exported by the sdk backend
 ```
 
-That `WARN sdk` row example (bundled-vs-host `claude` CLI version drift)
-predates this rewrite and is kept because the shape is still accurate —
-it is normal on a machine that updates its Claude Code install
-independently of the SDK's bundled copy, and does not block anything.
-There is no `cli` session left to compare a divergent one against; a
-large gap is worth investigating on its own terms now.
+That `INFO sdk` row is the healthy shape: the operative binary differs
+from the copy the SDK wheel bundles, which is normal — and on a machine
+running Fable, required — because Claude Code is updated independently
+of the SDK. The row used to read `WARN` for exactly this, and used to
+print a `host-cli=` field holding the PATH `claude`'s version; both are
+gone. **The field renames and the verdict change are the same
+correction**: a row that cried WARN on the normal state, and compared
+the wrong pair, trained its reader to skip it.
+
+### 3a. The version floor — what the SELECTED model needs
+
+*(added 2026-09-19, U4; `03-decisions.md` S-68.)*
+
+Two versions being equal never meant the system worked. On 2026-09-14
+the steward's first real run died on
+`API Error: 400 Claude Code 2.1.226 does not support this model` — the
+SDK had launched its own bundled 2.1.226 and the selected model,
+`claude-fable-5-1`, needs 2.1.251 or later. The row said **PASS**,
+because the bundled and operative versions were the same binary. Sameness
+was never the question; sufficiency was.
+
+The `sdk` row now resolves each surface's model through the same
+`model_for` the runners use, looks that model up in the registry setting
+`sdk.model_cli_floors`, and compares the **operative** binary against it:
+
+| State | Verdict |
+|---|---|
+| Operative binary older than the floor for **any** surface's selected model | **FAIL**, naming the surface, the model, the operative version, the floor, and the fix (`set sdk.cli_path to a newer claude binary`) |
+| Selected model has **no** registered floor (every Sonnet and Opus surface today) | contributes nothing — never FAIL, never WARN |
+| Floors met, bundled and operative versions merely differ | **INFO** |
+| Floors met, versions identical | **PASS** |
+| Operative version unprobed or unreadable, and some selected model has a floor | **WARN**, saying the floor could **not** be verified — never PASS |
+| A `sdk.model_cli_floors` entry is unreadable | **WARN** naming the fragment — a typo must not read as "no floor" |
+
+Versions compare numerically per dotted component, never as strings:
+`2.1.251 > 2.1.226`, `2.1.30 < 2.1.251` (a string compare gets that one
+exactly backwards), `2.10.0 > 2.9.9`, and `2.1` equals `2.1.0`. Anything
+that is not digits-and-dots — a `-rc1` suffix included — is "could not be
+verified", never PASS.
+
+**The setting.** `sdk.model_cli_floors` resolves like every other S-58
+setting, `config.yaml` (`sdk:` / `model_cli_floors:`) over
+`SELF_LEARN_SDK_MODEL_CLI_FLOORS` over the code default. The registry's
+kinds are `str`/`int`/`float`/`bool` and have no map, so the map is
+encoded as one comma-separated `<model id>=<version>` string:
+
+```yaml
+sdk:
+  model_cli_floors: claude-fable-5-1=2.1.251
+```
+
+A value set here **replaces** the shipped default rather than merging
+with it.
+
+> **Where 2.1.251 comes from, and where it does not.** The only source
+> for this number is the API error string quoted above, recorded on
+> 2026-09-14, read together with the operative version that later worked.
+> It is **not** from vendor documentation — there is no published table
+> of per-model Claude Code minimums — and nothing re-verifies it. If the
+> real floor is lower this over-reports; if the vendor raises it this
+> under-reports until a human edits the setting. That is the whole reason
+> the value lives in `config.yaml` instead of in code.
+
+**Proving it end to end.** No test crosses the real SDK → Claude Code →
+model boundary; `tests/conftest.py` blocks real spawns for the whole
+session, deliberately. `plugins/self-learn/cli/scripts/liveness-acceptance`
+is the opt-in, human-run script that does: it reproduces the 2026-09-14
+failure against the bundled binary in a scratch ledger and then proves
+the recovery. It refuses to do anything without
+`--i-understand-this-calls-the-real-model`, and it never touches
+`~/.self-learn`.
+
+### 3b. Reading the `switches` row
+
+*(this section's text is unchanged; it gained a heading of its own in
+2026-09-19's U4 only because §3a was inserted above it.)*
 
 **Reading the `switches` row is a skill; here is the whole of it.** Each
 surface prints `backend=<value> (<source>)`, where `<value>` is `sdk` or
@@ -167,6 +243,136 @@ source is the rung that answered: `env:SELF_LEARN_BACKEND_ANALYST`,
 An **empty** value is different again: it means "no answer" and falls
 through to the next rung, silently and legitimately. With one trap, in
 §7.
+
+### 3c. Which ledger a session's settings come from
+
+*(added 2026-09-19, U4b.)*
+
+`sdk.cli_path` — and the model, the turn bound, the spend bound, the
+provider and the backend with it — is read from **the ledger home**, the
+directory holding `config.yaml`. It is **not** read from the directory
+the session runs in. The two are the same thing for the worker, the
+miner-reader and the analyst, whose sessions run in the ledger; they are
+not the same thing for the steward and the overseer, whose sessions run
+inside a cache stage directory that holds no `config.yaml` at all.
+
+Until 2026-09-19 the seam read the session's working directory as if it
+were the ledger. The worker, the miner and the analyst were unaffected.
+The steward and the overseer, added 2026-09-14, were not: every one of
+those six settings resolved to its default for them, silently. That is
+why a steward run on 2026-09-19 launched the SDK's bundled Claude Code
+2.1.226 while `doctor invocation` — which reads the ledger home, and
+therefore read the setting correctly — reported the 2.1.278 binary
+`config.yaml` names, and called the machine healthy. A session and the
+doctor now read the same place, so they cannot disagree.
+
+**What this means when you set the binary.** `sdk.cli_path` is
+env-first: `SELF_LEARN_SDK_CLI_PATH` outranks `config.yaml`. The
+environment variable reaches a session by a different route from
+`config.yaml` and was never affected by the defect above, so **an
+environment variable is not a test of the config route.**
+`scripts/liveness-acceptance` sets the binary in the scratch ledger's
+own `config.yaml` for its recovery steps precisely for that reason.
+
+### 3d. Which Claude Code binary runs, and who chose it
+
+*(added 2026-09-19, U4c; `03-decisions.md` S-70. A question from the
+user — whether self-learn could just use the Claude Code they already
+have installed — answered with a recommendation from the orchestrator,
+which the user accepted.)*
+
+With `sdk.cli_path` unset, self-learn used to pass no binary at all and
+let `claude_agent_sdk` decide. The SDK's own `_find_cli` takes its
+**bundled** copy first — 2.1.226 in the pinned wheel — and
+`claude-fable-5-1`, the steward's and the overseer's model, needs
+2.1.251 or later. So a default install could not run either of them.
+That is the 2026-09-14 outage, and it needed a hand-written setting to
+work around.
+
+**The order now**, decided once in `provider.resolve_cli_choice`:
+
+| # | Rule | What runs |
+|---|---|---|
+| 1 | `sdk.cli_path` is set (`config.yaml` or `SELF_LEARN_SDK_CLI_PATH`) | that binary — an explicit pin always wins |
+| 2 | `sdk.prefer_installed_cli` is `false` | nothing is passed; the SDK's own order, bundled copy first |
+| 3 | `claude` is on `PATH` | that binary — **`installed (PATH)`** |
+| 4 | `claude` is at one of the SDK's own install locations | that binary — **`installed (<location>)`** |
+| 5 | none of the above | nothing is passed; the SDK falls back to its bundled copy — **`bundled fallback (no installed claude found)`** |
+
+The locations in rule 4 are the ones `claude_agent_sdk` itself falls
+back to after `PATH`: `~/.npm-global/bin/claude`,
+`/usr/local/bin/claude`, `~/.local/bin/claude`,
+`~/node_modules/.bin/claude`, `~/.yarn/bin/claude`,
+`~/.claude/local/claude`. They are mirrored in `provider.py`, with a
+comment naming the SDK file and the version they were copied from,
+because this resolver has to **label** its answer and because the SDK's
+own method is bundled-copy-first by construction — the one step being
+skipped. If a later SDK adds a location, self-learn will not look there
+and will fall through to rule 5, which is today's behaviour, never a
+wrong binary.
+
+Finding a binary is filesystem checks only — `shutil.which` and
+`Path.exists`. Nothing is executed. `doctor invocation`'s single
+`<operative claude> --version` call remains the only subprocess this
+area ever spawns.
+
+**POSIX only.** On Windows the SDK's resolver has `.cmd`-shim and
+`claude.exe` handling that is not reproduced here, so Windows keeps
+today's behaviour: pass nothing, let the SDK decide.
+
+**One resolver, two faces.** The session launcher
+(`invocation_sdk/backend.py`'s `cli_path` option) and `doctor
+invocation`'s `sdk` row call the same function, so the doctor can never
+report one binary while a session launches another — §3c's defect, one
+layer up. The row says which rule chose, in the vocabulary of the table
+above, and names the path:
+
+```
+INFO sdk — sdk=0.2.134 bundled-cli=2.1.226 operative-cli=2.1.278 — versions differ;
+the operative binary is what runs (checked: steward needs Claude Code >= 2.1.251 for
+model claude-fable-5-1; overseer needs Claude Code >= 2.1.251 for model
+claude-fable-5-1); cli=<home>/.local/bin/claude chosen by installed (PATH);
+host-cli-path=<home>/.local/bin/claude (context, not compared)
+```
+
+*(Rendered from the real row on 2026-09-19 with the `--version` probe
+stubbed, wrapped for width, with the home directory replaced by
+`<home>`; nothing else is edited.)*
+
+The version floor of §3a is unchanged, and now usually passes on a
+default install. The bundled-fallback case with a floor still in play
+still **FAILs**, and its fix text now leads with *install or update
+Claude Code* — because with the installed binary preferred, the ordinary
+cause of that FAIL is that there is no installed Claude Code to find.
+
+**The setting.** `sdk.prefer_installed_cli` is a boolean, default
+`true`, resolving `config.yaml` (`sdk:` / `prefer_installed_cli:`) over
+`SELF_LEARN_SDK_PREFER_INSTALLED_CLI` (`1`/`0`) over the code default:
+
+```yaml
+sdk:
+  prefer_installed_cli: false
+```
+
+> **Why an off switch exists at all.** An installed Claude Code
+> **updates itself**, while the SDK was built and tested against the
+> copy it bundles. So the default trades a binary that is certainly new
+> enough for one that can change under you with no self-learn change at
+> all. `false` restores the SDK's own order; an explicit `sdk.cli_path`
+> is the other way to pin a binary and take the question off the table.
+> The `sdk` row prints both versions and the rule, so the trade is
+> visible rather than silent.
+
+**One deliberate interlock.** Before self-learn substitutes its own
+choice it consults the SDK's own resolver. In production that changes
+nothing — the wheel ships a bundled binary, so the resolver always
+answers. Where it cannot answer, self-learn passes nothing and lets the
+SDK raise its own error with its own remediation, rather than
+substituting a path the SDK never sanctioned. The same leg is what keeps
+the test suite safe: `tests/conftest.py` hard-blocks that resolver for
+the whole session (after a stray real spawn once ran an uncapped,
+credentialed session), so no test can be handed the developer's own real
+`claude` by accident.
 
 ## 4. The provider switch, if you are going to Bedrock
 
@@ -292,6 +498,9 @@ Plan text: *"miner = 5 clean nightly cycles + 0 orphans at 09:00
 - **The reader session's timeout is env-overridable too** (added
   2026-08-26, U-fw100): `SELF_LEARN_READER_TIMEOUT_SECS`, default 900s,
   same parsing as the worker's `SELF_LEARN_INVOKE_TIMEOUT_SECS` (§5.1).
+  Since 2026-09-20 it is also the registry setting
+  `miner.reader_timeout_secs`: a value in the ledger's `config.yaml`
+  outranks the env var, as for the worker's two timeouts (S-58).
 
 ### 5.3 How to measure "0 orphans" today, since the doctor cannot
 

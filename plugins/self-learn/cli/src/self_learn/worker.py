@@ -126,7 +126,9 @@ __all__ = [
 
 DEFAULT_COALESCE_SECS = 600
 DEFAULT_WORKER_MODEL = "claude-sonnet-5"
-BATCH_CAP = 15
+#: The default of the registry's `worker.batch_cap` (one number, kept
+#: there); :func:`batch_cap` returns the operative value.
+BATCH_CAP = cast(int, settings.by_name("worker.batch_cap").default)
 #: U-ancestry §5.2 BR-3 — the already-canon scan's byte budget. Chosen
 #: from §3.4's measured surfaces: 32768 covers 8 of 9 hosts' whole
 #: CLAUDE.md untouched (`~/.config` truncates from 72,467 B); the ancestor
@@ -866,34 +868,12 @@ def worker_model() -> str:
     return os.environ.get("SELF_LEARN_WORKER_MODEL") or DEFAULT_WORKER_MODEL
 
 
-def batch_cap() -> int:
-    return BATCH_CAP
-
-
-def _timeout_secs(env_var: str, default: float) -> float:
-    """Env-only reader for :func:`miner.reader_timeout_secs` (§3.9): a
-    value <= 0 or unparseable falls back to the default rather than
-    being clamped to 0 — a zero coalesce is meaningful (see
-    :func:`coalesce_secs`), but a zero ``subprocess.run(timeout=...)``
-    expires instantly and would kill every run (E4).
-
-    U-settings Phase 1: :func:`invoke_timeout_secs` and :func:`repair_
-    timeout_secs` below no longer call this — they resolve through the
-    settings registry, which gives them a config.yaml rung this helper
-    does not have. This function stays env-only DELIBERATELY: `miner.
-    reader_timeout_secs()` calling through it is a pinned build decision
-    (``test_u_fw100.py::test_shares_worker_helper_not_a_reimplementation``
-    monkeypatches this exact function) — see `settings.py`'s registry
-    comment at ``miner.transcripts_dir`` for why that setting was left
-    out of Phase 1's registry rather than reopening it."""
-    raw = os.environ.get(env_var)
-    if not raw:
-        return float(default)
-    try:
-        value = float(raw)
-    except ValueError:
-        return float(default)
-    return value if value > 0 else float(default)
+def batch_cap(home: Path | str | None = None) -> int:
+    """Lessons prepared in one model call: the registry's
+    ``worker.batch_cap`` (config.yaml > env > :data:`BATCH_CAP`). A bare
+    constant until 2026-09-20. `home` defaults to :func:`resolve_home`,
+    so the zero-arg call shape is unaffected."""
+    return settings.resolve_int(home if home is not None else resolve_home(), "worker.batch_cap")
 
 
 def invoke_timeout_secs(home: Path | str | None = None) -> float:
@@ -1547,7 +1527,7 @@ def _enumerate(home: Path) -> tuple[list, int, int, list[dict]]:
             if is_unanalyzed(entry):
                 needing.append(entry)
     needing.sort(key=_sort_key)
-    batch = needing[: batch_cap()]
+    batch = needing[: batch_cap(home)]
     return batch, len(needing) - len(batch), total_pending, per_bucket
 
 

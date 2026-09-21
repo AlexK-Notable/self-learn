@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -623,40 +624,219 @@ def _resolve_sdk_cli_path() -> tuple[str | None, str]:
         return None, f"sdk could not resolve a cli path ({exc})"
 
 
+def _installed_cli_locations() -> tuple[Path, ...]:
+    """U4c (S-70). The install locations `claude_agent_sdk` falls back to
+    after PATH -- the ONE place this list is written down.
+
+    MIRRORED from `claude_agent_sdk/_internal/transport/
+    subprocess_cli.py` (`SubprocessCLITransport._find_cli`, the
+    non-Windows branch) at claude_agent_sdk **0.2.134**, read
+    2026-09-19. Mirrored rather than reached through the SDK's own
+    private method for two reasons: this resolver has to LABEL its
+    answer (`doctor invocation` names the rule and the location that
+    chose the binary), and the SDK's method is bundled-copy-first by
+    construction -- which is the one step this resolution deliberately
+    skips. The cost is drift: a location a later SDK adds is one
+    self-learn will not look in, and the answer then falls through to
+    the SDK's own search, which still will. That degrades to today's
+    behaviour, never to a wrong binary.
+
+    Built per call, not frozen at import: `Path.home()` reads `HOME`,
+    and the SDK rebuilds its own list per call for the same reason."""
+    home = Path.home()
+    return (
+        home / ".npm-global/bin/claude",
+        Path("/usr/local/bin/claude"),
+        home / ".local/bin/claude",
+        home / "node_modules/.bin/claude",
+        home / ".yarn/bin/claude",
+        home / ".claude/local/claude",
+    )
+
+
+def _installed_cli_path() -> tuple[str | None, str]:
+    """The Claude Code this machine has INSTALLED, and the rule that
+    found it: PATH first, then the locations above. Filesystem checks
+    only -- `shutil.which` and `Path.exists`; nothing is executed here,
+    and nothing may ever be (`17-invocation-runbook.md` §3d).
+
+    `(None, "")` when there is none."""
+    hit = shutil.which("claude")
+    if hit:
+        return hit, "installed (PATH)"
+    for path in _installed_cli_locations():
+        if path.exists() and path.is_file():
+            return str(path), f"installed ({path})"
+    return None, ""
+
+
+@dataclass(frozen=True)
+class CliChoice:
+    """U4c (S-70). WHICH Claude Code binary self-learn hands the SDK, and
+    WHY -- the one answer both faces read, so `doctor invocation` can
+    never name a binary different from the one a session launches (the
+    2026-09-19 defect, one layer up from U4b's)."""
+
+    #: What self-learn passes as `ClaudeAgentOptions.cli_path`. `None`
+    #: means "pass nothing", and the SDK then resolves its own way --
+    #: bundled copy first, exactly as before this unit existed.
+    path: str | None
+    #: The rule that decided, in the vocabulary `doctor invocation`
+    #: prints: `explicit sdk.cli_path`, `installed (PATH)`,
+    #: `installed (<location>)`, `bundled fallback (no installed claude
+    #: found)`, or one of the `sdk default order (...)` reasons.
+    rule: str
+    #: What `claude_agent_sdk`'s own resolver answered, carried so the
+    #: doctor's `--version` probe can reach the binary that WOULD run in
+    #: the pass-nothing case without resolving a second time.
+    sdk_default: str | None
+    #: Why `sdk_default` is `None`, when it is.
+    sdk_reason: str
+
+
+def _prefer_installed_cli(home: Path | str | None) -> bool:
+    """`sdk.prefer_installed_cli`, with the same `home=None` fallback
+    `_operative_cli_version` has always used for `sdk.cli_path`: a bare
+    env read, because `settings.resolve_setting` is not `None`-home-safe
+    and there is no `config.yaml` to consult without a ledger. `"0"`
+    is the only value that turns it off, matching the registry's own
+    `1`/`0` env-boolean convention; anything else (including a typo)
+    falls through to the shipped default, exactly as `resolve_setting`
+    would."""
+    if home is None:
+        return os.environ.get("SELF_LEARN_SDK_PREFER_INSTALLED_CLI") != "0"
+    value, _source = settings.resolve_setting(
+        home, settings.by_name("sdk.prefer_installed_cli")
+    )
+    return bool(value)
+
+
+def resolve_cli_choice(home: Path | str | None = None) -> CliChoice:
+    """U4c (S-70). The ONE resolver for "which Claude Code binary", used
+    by the session launcher (`invocation_sdk/backend.py`'s `cli_path`
+    option) AND by `doctor invocation`'s `sdk` row. Two callers, one
+    function, so the doctor cannot report one binary while a session
+    launches another.
+
+    The order, when `sdk.cli_path` is NOT set: the binary the PERSON has
+    installed -- `shutil.which("claude")`, then the SDK's own install
+    locations -- and only if there is none, nothing at all, leaving the
+    SDK to fall back to its BUNDLED copy exactly as before. The bundled
+    copy was 2.1.226 in the pinned SDK and `claude-fable-5-1` needs
+    2.1.251, so before this unit a default install could not run the
+    steward or the overseer at all: that is the 2026-09-14 outage.
+
+    An explicit `sdk.cli_path` still wins, from `config.yaml` or
+    `SELF_LEARN_SDK_CLI_PATH`, and `sdk.prefer_installed_cli: false`
+    restores the SDK's own order.
+
+    **Why the SDK's own resolver is consulted before self-learn
+    substitutes its choice.** Two reasons, both true.
+
+    1. In production it changes nothing: the wheel ships
+       `claude_agent_sdk/_bundled/claude`, which `_find_cli` finds
+       first, so it always answers. It can only fail to answer where the
+       SDK's resolution is itself unavailable -- a wheel without the
+       bundled copy AND no `claude` installed (in which case this
+       function would find nothing either), or an SDK whose internals
+       moved. Passing nothing there is the honest answer: the SDK then
+       raises its own `CLINotFoundError`, with its own remediation, in
+       place of a path it never sanctioned.
+
+    2. `tests/conftest.py` hard-blocks that resolver for the whole test
+       session, after a stray real spawn once ran an uncapped,
+       credentialed session. Routing through it means this function
+       inherits that block: no test can be handed the developer's own
+       real, credentialed `claude` by accident. Without this leg every
+       fake session in the suite would silently receive it, and the
+       armored `test_invocation_sdk.py::test_op15_cli_path_from_env`
+       (which asserts `cli_path is None` for an unset setting) would go
+       red. That test is the mutation control for this leg: delete the
+       leg and it fails.
+
+    POSIX only. On Windows the SDK's `_find_cli` has shim/`.exe`
+    handling this resolver deliberately does not reproduce, so Windows
+    keeps today's behaviour: pass nothing, let the SDK decide."""
+    if home is not None:
+        explicit, _source = _resolve_registry_str(home, "sdk.cli_path")
+    else:
+        explicit = os.environ.get("SELF_LEARN_SDK_CLI_PATH")
+    if explicit:
+        return CliChoice(explicit, "explicit sdk.cli_path", None, "")
+
+    sdk_default, sdk_reason = _resolve_sdk_cli_path()
+
+    if not _prefer_installed_cli(home):
+        return CliChoice(
+            None,
+            "sdk default order (sdk.prefer_installed_cli is false)",
+            sdk_default,
+            sdk_reason,
+        )
+    if platform.system() == "Windows":
+        return CliChoice(
+            None,
+            "sdk default order (not POSIX — Windows keeps the sdk's own resolution)",
+            sdk_default,
+            sdk_reason,
+        )
+    if sdk_default is None:
+        return CliChoice(
+            None,
+            f"sdk default order (the sdk's own resolver did not answer: {sdk_reason})",
+            None,
+            sdk_reason,
+        )
+
+    installed, rule = _installed_cli_path()
+    if installed:
+        return CliChoice(installed, rule, sdk_default, sdk_reason)
+    return CliChoice(
+        None, "bundled fallback (no installed claude found)", sdk_default, sdk_reason
+    )
+
+
+def _cli_choice_text(choice: CliChoice) -> str:
+    """The `sdk` row's account of WHICH binary and WHY. Deliberately
+    placed after the row's `" — "` separator: `_parse_sdk_prefix` reads
+    only the `key=value` tokens BEFORE it, so `sdk=`, `bundled-cli=` and
+    `operative-cli=` stay exactly as parseable as they were."""
+    if choice.path:
+        return f"cli={choice.path} chosen by {choice.rule}"
+    return f"cli=<none passed; the sdk chooses>: {choice.rule}"
+
+
 def _operative_cli_version(home: Path | str | None = None) -> tuple[str | None, str]:
     """`Doc-a`'s ONE permitted subprocess: `[<operative claude>,
     "--version"]`, argv byte-pinned to two elements, `timeout=10`, every
     failure leg -> SKIP (never FAIL, never a traceback).
 
-    `B-5`: the OPERATIVE cli path is `sdk.cli_path` (the registry entry
-    `SELF_LEARN_SDK_CLI_PATH` now resolves through, M-S minor-2: this
-    used to read the env var directly, a SECOND, independent reader of
-    the same var the registry ALSO governs -- `doctor invocation`'s own
-    probe would otherwise report a version for a different binary than
-    `ProviderResolution.cli_path` actually uses) if set, else whatever
-    `_find_cli` itself would resolve (`_resolve_sdk_cli_path`) -- NOT
-    whatever `claude` happens to be on PATH. That PATH lookup is a
-    different, unrelated tool most of the time (this SDK ships its own
-    bundled binary, found first by `_find_cli`), so comparing IT against
-    the declared bundled-cli requirement produced false WARNs; see
-    `_host_cli_context` below for where that PATH lookup now lives
-    (context only, never compared).
+    `B-5`, as amended by U4c: the OPERATIVE cli path is whatever
+    `resolve_cli_choice` decided -- the SAME function the session
+    launcher calls, so this probe reports the version of the binary a
+    session will actually launch, and cannot name a different one. When
+    that choice is "pass nothing" (no installed binary, or the opt-out,
+    or Windows), the binary that WOULD run is the SDK's own
+    `_find_cli` answer, carried on the choice as `sdk_default`, so the
+    bundled copy is still probed and a version floor below it still
+    FAILs. It is never merely "whatever `claude` happens to be on PATH":
+    that PATH lookup is a labeled context line only, in
+    `_host_cli_context` below, never compared.
+
+    (Before U4c this read `sdk.cli_path` and otherwise modelled
+    `_find_cli` directly. The difference now is that the unset case
+    prefers the installed binary, which is exactly what a session does.)
 
     `home=None` (this function's own tests, and any caller with no
     ledger home in hand) falls back to a bare env-var read, matching
     this function's behaviour before the registry existed -- the
     registry's config rung has nothing to add without a real ledger
     home to read `config.yaml` from, and `settings.resolve_setting`
-    itself is not `None`-home-safe."""
-    if home is not None:
-        override, _ = _resolve_registry_str(home, "sdk.cli_path")
-    else:
-        override = os.environ.get("SELF_LEARN_SDK_CLI_PATH")
-    if override:
-        cli_path: str | None = override
-        skip_reason = ""
-    else:
-        cli_path, skip_reason = _resolve_sdk_cli_path()
+    itself is not `None`-home-safe. `resolve_cli_choice` carries that
+    same fallback for both settings it reads."""
+    choice = resolve_cli_choice(home)
+    cli_path = choice.path or choice.sdk_default
+    skip_reason = "" if cli_path else choice.sdk_reason
     if not cli_path:
         return None, skip_reason or "sdk cli path not resolved"
     argv = [cli_path, "--version"]
@@ -683,6 +863,92 @@ def _host_cli_context() -> str:
     return shutil.which("claude") or "not found on PATH"
 
 
+# ------------------------------------------- U4 (S-68): per-model floors
+
+
+def _parse_cli_version(text: str) -> tuple[int, ...] | None:
+    """A dotted Claude Code version as a tuple of integers, or `None` when
+    the string is not one.
+
+    Comparison is NUMERIC per component, never lexicographic: `2.1.251 >
+    2.1.226`, `2.1.30 < 2.1.251` (a string compare gets this one exactly
+    backwards), `2.10.0 > 2.9.9`. Every component must be digits only --
+    a pre-release or build suffix (`2.1.251-rc1`) is deliberately NOT
+    parsed into something guessable, because guessing wrong here means
+    reporting PASS on a binary that cannot run the selected model. An
+    unparseable string is "could not be verified", never PASS."""
+    parts = text.strip().split(".")
+    if not parts or any((not part.isdigit()) for part in parts):
+        return None
+    return tuple(int(part) for part in parts)
+
+
+def _version_older(left: tuple[int, ...], right: tuple[int, ...]) -> bool:
+    """`left < right`, padding the shorter one with zeros first so `2.1`
+    and `2.1.0` compare equal rather than by length."""
+    width = max(len(left), len(right))
+    padded_left = left + (0,) * (width - len(left))
+    padded_right = right + (0,) * (width - len(right))
+    return padded_left < padded_right
+
+
+def _parse_model_cli_floors(raw: str) -> tuple[dict[str, str], list[str]]:
+    """`sdk.model_cli_floors`'s string encoding -> `({model: floor},
+    [malformed fragments])`. The registry's `kind` vocabulary has no map,
+    so the map rides one comma-separated `<model>=<version>` string
+    (`settings._DEFAULT_MODEL_CLI_FLOORS` carries the 2.1.251 source
+    caveat). A malformed fragment is REPORTED, never silently dropped:
+    a typo in a floor the operator meant to enforce must not read as
+    "no floor"."""
+    floors: dict[str, str] = {}
+    malformed: list[str] = []
+    for fragment in (raw or "").split(","):
+        text = fragment.strip()
+        if not text:
+            continue
+        model, sep, version = text.partition("=")
+        model = model.strip()
+        version = version.strip()
+        if not sep or not model or not version:
+            malformed.append(text)
+            continue
+        floors[model] = version
+    return floors, malformed
+
+
+def _selected_model_floors(
+    home: Path | str,
+) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """Every `(surface, model, floor)` triple this ledger's SELECTED
+    models actually have a registered floor for, plus any malformed
+    fragments of the setting.
+
+    Surfaces whose model has no registered floor (`claude-sonnet-5` and
+    every Opus id today) contribute NOTHING -- they are not a WARN and
+    not a FAIL, because an unregistered model means "no floor is known",
+    which is a different fact from "the floor is satisfied"."""
+    raw, _source = _resolve_registry_str(home, "sdk.model_cli_floors")
+    floors, malformed = _parse_model_cli_floors(raw or "")
+    selected: list[tuple[str, str, str]] = []
+    if floors:
+        for surface in SURFACES:
+            model = model_for(surface, home=home)
+            floor = floors.get(model)
+            if floor is not None:
+                selected.append((surface, model, floor))
+    return selected, malformed
+
+
+def _floor_requirements_text(rows: list[tuple[str, str, str]]) -> str:
+    """One readable clause per `(surface, model, floor)` triple, so the
+    row names the surface, the model AND the floor rather than leaving a
+    reader to work out which of six surfaces is the problem."""
+    return "; ".join(
+        f"{surface} needs Claude Code >= {floor} for model {model}"
+        for surface, model, floor in rows
+    )
+
+
 def _sdk_row(
     home: Path | str | None = None, *, importer: Callable[[], Any] = _default_sdk_importer
 ) -> Row:
@@ -703,30 +969,137 @@ def _sdk_row(
     # `test_dc10_no_network_no_extra_spawn`'s "ONE permitted spawn"
     # invariant).
     host_context = f"host-cli-path={_host_cli_context()} (context, not compared)"
+
+    # U4c (S-70): the row says WHICH binary and by WHICH rule, so a
+    # reader can tell an explicit pin from an installed binary from the
+    # SDK's bundled fallback without guessing. Resolved here rather than
+    # returned by `_operative_cli_version` so that function keeps the
+    # `(version, reason)` shape every doctor test stubs; both calls are
+    # pure filesystem reads and produce the same answer by construction
+    # (one resolver, no cached state).
+    choice = resolve_cli_choice(home)
+    context = f"{_cli_choice_text(choice)}; {host_context}"
+
+    # U4 (S-68). `home=None` -- this function's own unit tests, and any
+    # caller with no ledger home in hand -- skips the floor check
+    # entirely, for the same reason `_operative_cli_version` falls back
+    # to a bare env read there: `model_for` and `settings.resolve_
+    # setting` are not `None`-home-safe, and there is no config.yaml to
+    # read a floor from. `preflight` always passes a real home, so the
+    # live doctor row always checks.
+    floors: list[tuple[str, str, str]] = []
+    malformed: list[str] = []
+    if home is not None:
+        floors, malformed = _selected_model_floors(home)
+
+    malformed_note = (
+        f"; `sdk.model_cli_floors` has unreadable entries ({', '.join(malformed)}) "
+        "— expected comma-separated <model>=<version>"
+        if malformed
+        else ""
+    )
+
     if resolved is None:
+        # Never PASS with a floor in play: an unprobed operative binary
+        # means the floor was NOT checked, which is not the same fact as
+        # the floor being met (2026-09-14: the row said PASS while the
+        # selected model could not run at all).
+        if floors or malformed:
+            return Row(
+                name="sdk",
+                verdict="WARN",
+                detail=(
+                    f"sdk={sdk_version} bundled-cli={bundled} — operative cli version not probed "
+                    f"({skip_reason}), so a selected model's minimum Claude Code version could "
+                    f"NOT be verified: {_floor_requirements_text(floors)}"
+                    f"{malformed_note}; {context}"
+                ),
+            )
         return Row(
             name="sdk",
             verdict="SKIP",
             detail=(
                 f"sdk={sdk_version} bundled-cli={bundled} — operative cli version not probed "
-                f"({skip_reason}); {host_context}"
+                f"({skip_reason}); {context}"
             ),
         )
-    if resolved != bundled:
+
+    operative = _parse_cli_version(resolved)
+    unreadable_floors = [row for row in floors if _parse_cli_version(row[2]) is None]
+    violations = [
+        row
+        for row in floors
+        if operative is not None
+        and (parsed := _parse_cli_version(row[2])) is not None
+        and _version_older(operative, parsed)
+    ]
+
+    if violations:
+        return Row(
+            name="sdk",
+            verdict="FAIL",
+            detail=(
+                f"sdk={sdk_version} bundled-cli={bundled} operative-cli={resolved} — the "
+                f"operative Claude Code binary ({resolved}) is OLDER than a selected model's "
+                # U4c (S-70): "install or update Claude Code" comes
+                # FIRST now. With the installed binary preferred by
+                # default, the ordinary cause of this FAIL is that the
+                # machine has no Claude Code installed (or an old one)
+                # and the SDK's bundled copy is carrying the session --
+                # pinning `sdk.cli_path` is the answer only when a
+                # specific binary is wanted.
+                f"minimum: {_floor_requirements_text(violations)} — FIX: install or update "
+                f"Claude Code, or set `sdk.cli_path` to a newer claude binary "
+                f"(config.yaml `sdk: cli_path:`, or SELF_LEARN_SDK_CLI_PATH)"
+                f"{malformed_note}; {context}"
+            ),
+        )
+
+    if operative is None and (floors or malformed):
         return Row(
             name="sdk",
             verdict="WARN",
             detail=(
+                f"sdk={sdk_version} bundled-cli={bundled} operative-cli={resolved} — that is not "
+                f"a dotted numeric version, so a selected model's minimum Claude Code version "
+                f"could NOT be verified: {_floor_requirements_text(floors)}"
+                f"{malformed_note}; {context}"
+            ),
+        )
+
+    if unreadable_floors or malformed:
+        return Row(
+            name="sdk",
+            verdict="WARN",
+            detail=(
+                f"sdk={sdk_version} bundled-cli={bundled} operative-cli={resolved} — a registered "
+                f"minimum is not a dotted numeric version, so it could NOT be verified: "
+                f"{_floor_requirements_text(unreadable_floors)}"
+                f"{malformed_note}; {context}"
+            ),
+        )
+
+    floors_text = f" (checked: {_floor_requirements_text(floors)})" if floors else ""
+    if resolved != bundled:
+        # U4: bundled-vs-operative inequality ALONE is INFO, not WARN.
+        # Pointing `sdk.cli_path` at a newer system binary than the wheel
+        # bundles is the NORMAL, and on this machine the REQUIRED, state
+        # -- a WARN here trained the reader to ignore the one row that
+        # should have been loud on 2026-09-14.
+        return Row(
+            name="sdk",
+            verdict="INFO",
+            detail=(
                 f"sdk={sdk_version} bundled-cli={bundled} operative-cli={resolved} — versions "
-                f"differ; {host_context}"
+                f"differ; the operative binary is what runs{floors_text}; {context}"
             ),
         )
     return Row(
         name="sdk",
         verdict="PASS",
         detail=(
-            f"sdk={sdk_version} bundled-cli={bundled} operative-cli={resolved} — versions match; "
-            f"{host_context}"
+            f"sdk={sdk_version} bundled-cli={bundled} operative-cli={resolved} — versions match"
+            f"{floors_text}; {context}"
         ),
     )
 

@@ -226,7 +226,8 @@ class Setting:
     #: `worker.coalesce_secs`'s "clamp to 0, never fall back" and
     #: `worker.invoke_timeout_secs`'s "fall back below or at 0" both ride
     #: the one resolver despite opposite policies for an out-of-range
-    #: number (E4's asymmetry, carried over from `worker._timeout_secs`).
+    #: number (E4's asymmetry, carried over from the env-only timeout reader
+    #: the worker had before the registry).
     validate: Callable[[SettingValue], SettingValue | None] | None = None
     #: U-settings Phase 2 (code-gate MAJOR/NIT fold, review r1 2026-09-01
     #: NIT-1): a human-readable description of `validate`'s own bound,
@@ -308,6 +309,49 @@ class Setting:
     #: backend")`) is unaffected -- it has no `general_name` of its
     #: own, so it always resolves through the ordinary sequence.
     general_name: str | None = None
+
+
+def sizing_knob(
+    name: str,
+    *,
+    default: int | float,
+    description: str,
+    env_var: str | None = None,
+) -> Setting:
+    """One tuning knob that says HOW MUCH one step takes on -- a batch
+    size, an input budget, a time limit. Adding one is this call in
+    `REGISTRY` plus `resolve_int`/`resolve_float` at the use site; nothing
+    else has to be written.
+
+    Everything a knob of this family shares is decided here, once:
+
+    - `section.key` in `config.yaml` IS the dotted name (`miner.digest_chars`
+      -> `miner:` / `digest_chars:`), and the env var is derived from it
+      (`SELF_LEARN_MINER_DIGEST_CHARS`) unless an older name must be kept;
+    - an int default makes an int knob, a float default a float knob;
+    - config.yaml outranks the env var (S-58), like every throughput knob;
+    - it must be greater than zero. A zero or negative value is refused
+      by `config set` and, hand-edited into `config.yaml`, falls back to
+      the default: a batch of zero or a zero-second limit stops the step.
+
+    The user's instruction, 2026-09-20: the numbers that size a step
+    "can't be constants we just leave hardcoded in the code"."""
+    section, _, key = name.partition(".")
+    if not section or not key:
+        raise ValueError(f"sizing_knob: {name!r} must be <section>.<key>")
+    if isinstance(default, bool) or default <= 0:
+        raise ValueError(f"sizing_knob: {name!r} needs a default greater than zero")
+    return Setting(
+        name=name,
+        env_var=env_var or "SELF_LEARN_" + name.upper().replace(".", "_").replace("-", "_"),
+        config_section=section,
+        config_key=key,
+        kind="int" if isinstance(default, int) else "float",
+        default=default,
+        description=description,
+        validate=lambda v: v if cast("int | float", v) > 0 else None,
+        validate_hint="must be > 0",
+    )
 
 
 def _default_value(setting: Setting) -> SettingValue:
@@ -757,6 +801,23 @@ def _default_analyst_model() -> str:
 _DEFAULT_STEWARD_MODEL = "claude-fable-5-1"
 _DEFAULT_OVERSEER_MODEL = "claude-fable-5-1"
 
+#: U4 (S-68): the minimum Claude Code version each model needs, as
+#: comma-separated ``<model id>=<version>`` pairs -- the registry's `kind`
+#: vocabulary is `str`/`int`/`float`/`bool`, so a map is encoded as one
+#: string rather than given a sixth kind for a single entry. Seeded with
+#: exactly one pair, and editable in `config.yaml` (`sdk:` /
+#: `model_cli_floors:`) without a code change.
+#:
+#: **Where 2.1.251 comes from, and where it does NOT.** The ONLY source
+#: for this number is the API error string the steward's first real run
+#: received on 2026-09-14 -- `API Error: 400 Claude Code 2.1.226 does not
+#: support this model...` -- read together with the operative version
+#: that later worked. It is NOT from vendor documentation, there is no
+#: published table of per-model Claude Code minimums, and nothing
+#: re-verifies it: if the real floor is lower, this over-reports; if the
+#: vendor raises it, this under-reports until a human edits it.
+_DEFAULT_MODEL_CLI_FLOORS = "claude-fable-5-1=2.1.251"
+
 
 def _default_steward_model() -> str:
     return _DEFAULT_STEWARD_MODEL
@@ -803,6 +864,11 @@ REGISTRY: tuple[Setting, ...] = (
         description="subprocess timeout (seconds) for the worker's repair round",
         validate=lambda v: v if cast(float, v) > 0 else None,
         validate_hint="must be > 0",
+    ),
+    sizing_knob(
+        "worker.batch_cap",
+        default=15,  # worker.BATCH_CAP; 857 s measured at 15 (worker.py, U-repair section 3.9)
+        description="lessons the worker prepares in one model call",
     ),
     Setting(
         name="worker.repair",
@@ -867,6 +933,33 @@ REGISTRY: tuple[Setting, ...] = (
         description="pending-queue size that gates a mining run",
         validate=lambda v: max(0, cast(int, v)),
     ),
+    # The miner reader's input budget (`miner.DigestLimits`) and its time
+    # limit. All four were constants or env-only until 2026-09-20. The
+    # three budgets are counted in CHARACTERS because that is what the
+    # code counted when they were moved here, unchanged; the unit itself
+    # is an open question with the user, and `miner.DigestLimits` is the
+    # one place a different measure would be introduced.
+    sizing_knob(
+        "miner.message_chars",
+        default=2_000,  # miner.MAX_TEXT_CHARS reads this
+        description="characters kept from one message of a scanned session",
+    ),
+    sizing_knob(
+        "miner.session_chars",
+        default=60_000,  # miner.MAX_DIGEST_CHARS reads this
+        description="characters kept from one scanned session; the rest of that session is clipped",
+    ),
+    sizing_knob(
+        "miner.run_chars",
+        default=400_000,  # miner.MAX_PROMPT_DIGESTS_CHARS reads this
+        description="characters of session digests in one mining run's model call; sessions over it wait for the next run",
+    ),
+    sizing_knob(
+        "miner.reader_timeout_secs",
+        default=900.0,  # miner.INVOKE_TIMEOUT_SECS reads this
+        description="subprocess timeout (seconds) for the miner's one reader model call",
+        env_var="SELF_LEARN_READER_TIMEOUT_SECS",  # the name it already had
+    ),
     Setting(
         name="miner.enabled",
         env_var="SELF_LEARN_MINER",
@@ -888,17 +981,6 @@ REGISTRY: tuple[Setting, ...] = (
         # immediately above.
         tier="C",
     ),
-    # NOTE: `SELF_LEARN_READER_TIMEOUT_SECS` (the miner reader's own
-    # timeout) is deliberately NOT registered here. `miner.reader_
-    # timeout_secs()` calls `worker._timeout_secs(env_var, default)`
-    # directly, and `test_u_fw100.py::test_shares_worker_helper_not_a_
-    # reimplementation` monkeypatches `worker._timeout_secs` itself to
-    # PROVE that sharing (a prior unit's "guard the build decision, do
-    # not re-open" test). Routing this setting through the registry
-    # instead would break that guard for no operator-facing gain over
-    # `worker.invoke_timeout_secs`/`repair_timeout_secs` (already
-    # registered below) sharing the exact same parsing/validation. Left
-    # as a known Phase 1 gap — see the build report.
     Setting(
         name="miner.transcripts_dir",
         env_var="SELF_LEARN_TRANSCRIPTS_DIR",
@@ -950,6 +1032,27 @@ REGISTRY: tuple[Setting, ...] = (
         description="briefs in one steward model call (the run itself has no record cap)",
     ),
     Setting(
+        name="steward.turns_per_lesson",
+        env_var="SELF_LEARN_STEWARD_TURNS_PER_LESSON",
+        config_section="steward",
+        config_key="turns_per_lesson",
+        kind="int",
+        # The user's number. 2026-09-19: "200 per lesson", chosen when a turn was
+        # believed to be one tool call; 2026-09-20, once it was measured that the
+        # limit counts model RESPONSES: "bring the number down to 100 for now. still
+        # maybe a bit too generous, but definitely more sane than 200." A steward
+        # session's turn limit is this times the lessons in its batch. Crash
+        # protection against a runaway session, not a ration (S-29): the three real
+        # sessions of 2026-09-19 used 51-61 model responses for 9-10 lessons each.
+        default=100,
+        validate=lambda v: v if cast(int, v) > 0 else None,
+        validate_hint="must be > 0",
+        description=(
+            "turn limit per lesson for a steward session: the session's limit "
+            "is this times the lessons in its batch"
+        ),
+    ),
+    Setting(
         name="steward.cooldown_secs",
         env_var="SELF_LEARN_STEWARD_COOLDOWN_SECS",
         config_section="steward",
@@ -969,6 +1072,23 @@ REGISTRY: tuple[Setting, ...] = (
         default=False,
         description="enable the steward's applying runner after its watched maiden run",
         tier="C",
+    ),
+    # ---------------------------------------------------------- runs
+    # U1 (S-68, `03-decisions.md`): ONE cap shared by both delegated
+    # runners and by the overseer's week -- a run left unfinished either
+    # makes progress on its next attempt or is closed out after this many.
+    # Registered here now, consumed by U2 (the steward's close-out) and U3
+    # (the overseer's), per this module's own scope-discipline docstring.
+    Setting(
+        name="runs.attempt_cap",
+        env_var="SELF_LEARN_RUNS_ATTEMPT_CAP",
+        config_section="runs",
+        config_key="attempt_cap",
+        kind="int",
+        default=3,  # S-68 rule 2: after 3 failed attempts the run is closed (decided 2026-09-19)
+        validate=lambda v: v if cast(int, v) > 0 else None,  # a cap of 0 would close every run before its first attempt
+        validate_hint="must be > 0",
+        description="failed attempts on one unit of delegated work before the run is closed out",
     ),
     # ------------------------------------------------------ overseer
     # U8 (17-invocation-runbook.md §1; plan-overseer-2026-09-12.md §5.4
@@ -1070,7 +1190,10 @@ REGISTRY: tuple[Setting, ...] = (
         config_key="max_turns.steward",
         kind="int",
         default=80,  # invocation_sdk.backend._DEFAULT_MAX_TURNS["STEWARD"]; plan-steward-2026-09-12.md §5.4 "SDK turns per call"
-        description="max agentic turns for a steward SDK session",
+        description=(
+            "max agentic turns for a steward SDK session that names no limit of "
+            "its own; the steward's runs size theirs from steward.turns_per_lesson"
+        ),
     ),
     Setting(
         name="sdk.max_turns.overseer",
@@ -1325,6 +1448,53 @@ REGISTRY: tuple[Setting, ...] = (
         description="the CLI path `SELF_LEARN_SDK_CLI_PATH` used to set directly, bypassing config",
         direction="env-first",
     ),
+    # U4 (S-68): the per-model Claude Code floor the `sdk` doctor row
+    # checks the OPERATIVE binary against. `direction` is left at the
+    # default `config-first` -- unlike `sdk.cli_path` right above, which
+    # is `env-first` only because `SELF_LEARN_SDK_CLI_PATH` predates the
+    # registry and callers already relied on the env var outranking
+    # config.yaml. This entry has no such history: a floor is a fact
+    # about the installed software that belongs in the ledger's own
+    # config, with the env var reserved for a one-off probe.
+    # U4c (S-70): the opt-out for "use the Claude Code this machine has
+    # installed when `sdk.cli_path` is unset". Default TRUE, so a default
+    # install runs the binary the person keeps up to date rather than the
+    # one the wheel happened to bundle -- which on 2026-09-14 was 2.1.226,
+    # too old for `claude-fable-5-1`, so the steward and the overseer
+    # could not run at all. `false` restores the SDK's own order (bundled
+    # copy first). The reason to keep an off switch: an installed binary
+    # UPDATES ITSELF, while the SDK was built and tested against the
+    # bundled one, so a Claude Code update can change behaviour with no
+    # self-learn change at all. `doctor invocation`'s `sdk` row prints
+    # both versions and names the rule that chose the binary, so the
+    # trade is visible rather than silent. `direction` is left at the
+    # default `config-first` for the same reason `sdk.model_cli_floors`
+    # is: this key has no pre-registry history of callers relying on an
+    # environment variable (unlike `sdk.cli_path`, which is `env-first`
+    # only because `SELF_LEARN_SDK_CLI_PATH` predates the registry).
+    Setting(
+        name="sdk.prefer_installed_cli",
+        env_var="SELF_LEARN_SDK_PREFER_INSTALLED_CLI",
+        config_section="sdk",
+        config_key="prefer_installed_cli",
+        kind="bool",
+        default=True,
+        description=(
+            "when `sdk.cli_path` is unset, use the Claude Code installed on this machine "
+            "(PATH, then the SDK's own install locations) instead of the SDK's bundled copy"
+        ),
+    ),
+    Setting(
+        name="sdk.model_cli_floors",
+        env_var="SELF_LEARN_SDK_MODEL_CLI_FLOORS",
+        config_section="sdk",
+        config_key="model_cli_floors",
+        kind="str",
+        default=_DEFAULT_MODEL_CLI_FLOORS,  # see that constant for the 2.1.251 source caveat
+        description=(
+            "minimum Claude Code version per model id, comma-separated <model>=<version> pairs"
+        ),
+    ),
     # -------------------------------------------------------- models
     # M-S (BLOCKER-1): corrects `settings-surface-spec.md` §1.2's
     # config-first ruling for exactly these three keys, which never
@@ -1438,6 +1608,26 @@ def by_name(name: str) -> Setting:
     """The one registry entry named `name`. Raises `KeyError` for a name
     outside `REGISTRY` (a programming error, never operator input)."""
     return _BY_NAME[name]
+
+
+def resolve_int(home: Path | str, name: str) -> int:
+    """The resolved value of the int setting `name` -- the whole use site
+    of an int knob. Raises `KeyError` for an unregistered name and
+    `TypeError` for a setting of another kind (both programming errors)."""
+    setting = by_name(name)
+    if setting.kind != "int":
+        raise TypeError(f"settings.resolve_int: {name} is a {setting.kind} setting")
+    value, _source = resolve_setting(home, setting)
+    return int(cast(int, value))
+
+
+def resolve_float(home: Path | str, name: str) -> float:
+    """The resolved value of the float (or int) setting `name`, as a float."""
+    setting = by_name(name)
+    if setting.kind not in ("float", "int"):
+        raise TypeError(f"settings.resolve_float: {name} is a {setting.kind} setting")
+    value, _source = resolve_setting(home, setting)
+    return float(cast("int | float", value))
 
 
 @contextlib.contextmanager

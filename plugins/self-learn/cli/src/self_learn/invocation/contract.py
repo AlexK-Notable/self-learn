@@ -228,6 +228,40 @@ class SessionSpec:
     label: str = ""
     timeout_display: object | None = None
     doctrine: str | None = None  # appended to the claude_code system-prompt preset (§7)
+    #: The LEDGER this session's settings come from -- the directory that
+    #: holds `config.yaml`. Distinct from `cwd`, which is where the
+    #: session RUNS. They coincide on the worker, the miner-reader and
+    #: the analyst (all three pass `cwd=home`), which is why this field
+    #: defaults to `None` and the seam then falls back to `cwd`: those
+    #: three producers need no change and behave exactly as before.
+    #: They do NOT coincide on the steward or the overseer, whose
+    #: sessions run inside a cache stage directory that has no
+    #: `config.yaml` at all -- before this field existed, every ledger
+    #: setting the seam reads (the Claude Code binary, the model, the
+    #: turn bound, the spend bound, the provider resolution and the
+    #: backend choice) silently resolved to its default for those two
+    #: surfaces. Keyword, defaulted and LAST so every existing
+    #: construction stays valid.
+    ledger_home: Path | str | None = None
+    #: The turn limit THIS session asks for, when its producer can size
+    #: it better than a per-surface constant can -- the steward sets it
+    #: to `steward.turns_per_lesson` x the lessons in the batch
+    #: (2026-09-20). `None` (every other producer) keeps the seam's own
+    #: `sdk.max_turns.<surface>` lookup. What it limits is what Claude
+    #: Code's `--max-turns` limits: model responses, not tool calls
+    #: (measured 2026-09-19; `docs/specs/self-learn/README.md` revision
+    #: log). Keyword, defaulted and LAST, like `ledger_home`.
+    max_turns: int | None = None
+
+    @property
+    def settings_home(self) -> Path | str:
+        """The ONE answer to "which ledger do this session's settings come
+        from": `ledger_home` when the producer named one, else `cwd`.
+        Every settings/provider/backend lookup in the seam
+        (`invocation_sdk/backend.py`, `invocation_sdk/provider_env.py`,
+        `invocation/registry.py`) reads THIS, never `spec.cwd` -- so a
+        surface cannot launch one binary while reporting another."""
+        return self.cwd if self.ledger_home is None else self.ledger_home
 
 
 FAILURE_KINDS = ("exit", "timeout", "not-found", "os-error", "unavailable")

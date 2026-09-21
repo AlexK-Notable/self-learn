@@ -44,8 +44,9 @@ from pathlib import Path
 from typing import Any, Callable, cast
 
 from . import gitops, intents, miner, overseer, settings, steward, worker
+from .overseer import notify as overseer_notify
 from .overseer import run as overseer_run
-from .primitives import fsops
+from .primitives import chrono, fsops
 from .ledger import resolve_home
 
 __all__ = [
@@ -75,8 +76,8 @@ __all__ = [
 #: interval") fires within a human-noticeable bound, and cheap enough
 #: that a daemon idling between the nightly mine pass costs nothing
 #: measurable. Env-overridable (`SELF_LEARN_SERVE_TICK_SECS`) the same
-#: way every other interval in this codebase is (`worker._timeout_secs`'s
-#: convention) — the ACTUAL value used is carried inside the heartbeat
+#: way every other interval in this codebase is (a value that does not
+#: parse, or is not above zero, falls back to the default) — the ACTUAL value used is carried inside the heartbeat
 #: itself (`tick_secs`), so `doctor` and `maybe_kick` compare against
 #: what THIS daemon is really doing, never a second hardcoded guess that
 #: could drift out of sync with an operator's override.
@@ -86,12 +87,32 @@ DEFAULT_TICK_SECS = 60.0
 #: `RandomizedDelaySec=15m` (both measured, spec §5.2/§8.1).
 MINE_HOUR, MINE_MINUTE = 3, 30
 MINE_JITTER_SECS = 15 * 60
-# Shipped timer parity: Sunday at 04:15 local time.
-OVERSEER_WEEKDAY, OVERSEER_HOUR, OVERSEER_MINUTE = 6, 4, 15
+# Shipped timer parity: Sunday at 04:15 local time. ONE definition now
+# (U1, S-68): `overseer_run` owns the week boundary the catch-up rule and
+# the runner's own same-week guard both read, so a second copy here could
+# not drift away from it.
+OVERSEER_WEEKDAY = overseer_run.WEEK_WEEKDAY
+OVERSEER_HOUR = overseer_run.WEEK_HOUR
+OVERSEER_MINUTE = overseer_run.WEEK_MINUTE
 
 HEARTBEAT_FILENAME = "serve.heartbeat"
 _SCHEDULE_STATE_FILENAME = "serve.schedule"
 _POKE_FILENAME = "serve.poke"
+#: U1/A13: one cache-only file recording, per job, the due-check failure
+#: that is currently holding it — read by the heartbeat preview (and so by
+#: `doctor`'s serve row) and by the once-per-cause notification. Cache, so
+#: `NOT_REPO_TRUTH` by the same rule as every other write this module makes.
+_HOLDS_FILENAME = "serve.holds.json"
+
+#: S-68: a journal status that means the run HELD before it took ownership
+#: of any unit of work. A hold is not an attempt, so it must not arm an
+#: attempt cooldown. Deliberately a DENY list: an unrecognised status errs
+#: toward "an attempt happened" (at worst one cooldown of extra delay)
+#: rather than toward the hot loop an allow-list would produce the day a
+#: runner gains a status nobody remembered to add here.
+_HOLD_STATUSES = frozenset(
+    {"disabled", "idle", "stopped", "dry-run", "held-gate", "held-week-done"}
+)
 
 
 @dataclass(frozen=True)
@@ -313,6 +334,202 @@ def _schedule_state_path(cache_dir: Path) -> Path:
     return cache_dir / _SCHEDULE_STATE_FILENAME
 
 
+# ------------------------------------------- due-check holds (A13, S-68)
+
+
+def _short_cause(exc: BaseException) -> str:
+    """One line, bounded: `doctor`'s serve row and a notification both
+    carry this, and a traceback's worth of text in either is unreadable."""
+    return " ".join(f"{type(exc).__name__}: {exc}".split())[:200]
+
+
+def _holds_path(cache_dir: Path) -> Path:
+    return cache_dir / _HOLDS_FILENAME
+
+
+def _read_holds(cache_dir: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(_holds_path(cache_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_holds(cache_dir: Path, holds: dict[str, Any]) -> None:
+    path = _holds_path(cache_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fsops.atomic_write(
+        path, json.dumps(holds, sort_keys=True), fsync=False, preserve_mode=False
+    )
+
+
+def _held_cause(cache_dir: Path, job: str, now: float) -> str | None:
+    """The cause currently holding `job`, or `None` — a hold expires with
+    its cooldown, so a stale entry never keeps naming a job as held."""
+    row = _read_holds(cache_dir).get(job)
+    if not isinstance(row, dict):
+        return None
+    at = row.get("at")
+    if not isinstance(at, (int, float)):
+        return None
+    if now - float(at) >= miner.ATTEMPT_COOLDOWN_SECS:
+        return None
+    cause = row.get("cause")
+    return cause if isinstance(cause, str) else "unknown cause"
+
+
+def _journal_due_check_error(home: Path, job: str, cause: str) -> None:
+    """Record the HOLD in that job's OWN cache journal, in that journal's
+    own timestamp key (`ts` for the steward, `at` for the overseer), so
+    the same reader that finds its attempts finds this too. The mine job
+    has no JSON journal of this shape; the holds file above is its
+    record."""
+    entry = {"status": "due-check-error", "job": job, "reason": cause}
+    try:
+        if job == "steward":
+            steward._journal(home, {"ts": chrono.now_iso(), **entry})
+        elif job == "overseer":
+            overseer_run._journal(Path(home), {"at": chrono.now_iso(), **entry})
+    except Exception:  # noqa: BLE001 — a journal write must never widen the failure
+        pass
+
+
+def _notify_due_hold(home: Path, job: str, cause: str) -> None:
+    """Once per DISTINCT cause, never once per tick. Goes through the
+    shipped notification path unchanged (its detached helper owns the
+    action wait and its own `timeout(1)` bound); this module never calls
+    `notify-send` itself."""
+    try:
+        overseer_notify.send(
+            Path(home),
+            "routine",
+            f"self-learn serve: the {job} job is not running — its due check "
+            f"failed: {cause}",
+            [],
+        )
+    except Exception:  # noqa: BLE001 — a notification must never widen the failure
+        pass
+
+
+def _hold_due_check(
+    home: Path, cache_dir: Path, job: str, now: float, cause: str
+) -> None:
+    holds = _read_holds(cache_dir)
+    previous = holds.get(job)
+    notified = previous.get("notified_cause") if isinstance(previous, dict) else None
+    holds[job] = {"at": now, "cause": cause, "notified_cause": notified}
+    _write_holds(cache_dir, holds)
+    _journal_due_check_error(home, job, cause)
+    print(
+        f"serve: {job} due check failed — {cause}; holding that job for "
+        f"{int(miner.ATTEMPT_COOLDOWN_SECS)}s. Every other job is unaffected.",
+        file=sys.stderr,
+    )
+    if notified != cause:
+        _notify_due_hold(home, job, cause)
+        holds[job]["notified_cause"] = cause
+        _write_holds(cache_dir, holds)
+
+
+def _due_or_hold(
+    job: str, home: Path, cache_dir: Path, now: float, predicate: Callable[[], bool]
+) -> bool:
+    """A13: the ONE seam every due check in `_run_tick` is evaluated
+    through. A raise is logged, recorded as a HOLD, and read as "not due
+    this tick" — it never escapes into the tick loop, where one exception
+    ends the whole daemon and ends it again on every restart while the
+    cause persists (and, S-68, it is never counted as an attempt: a check
+    that could not read the state took ownership of nothing).
+
+    While a hold is inside its cooldown the predicate is not called at
+    ALL, so a wedged git read is retried once every
+    `miner.ATTEMPT_COOLDOWN_SECS`, not once every tick. A predicate that
+    succeeds clears its job's hold."""
+    if _held_cause(cache_dir, job, now) is not None:
+        return False
+    try:
+        due = bool(predicate())
+    except Exception as exc:  # noqa: BLE001 — that is this function's whole job
+        # U2 nit on U1: recording the hold is itself I/O (a cache write, a
+        # journal append, a notification) and can raise. If it did, the
+        # raise escaped this seam and skipped every REMAINING job of the
+        # tick — the exact whole-daemon blast radius A13 exists to stop,
+        # one level in. A failure to RECORD a hold still means "not due".
+        try:
+            _hold_due_check(home, cache_dir, job, now, _short_cause(exc))
+        except Exception as record_exc:  # noqa: BLE001 — never widen a hold
+            print(
+                f"serve: {job} due check failed and its hold could not be "
+                f"recorded — {_short_cause(record_exc)}; treating that job as "
+                "not due this tick. Every other job is unaffected.",
+                file=sys.stderr,
+            )
+        return False
+    holds = _read_holds(cache_dir)
+    if job in holds:
+        holds.pop(job, None)
+        _write_holds(cache_dir, holds)
+    return due
+
+
+def _holds_text(cache_dir: Path, now: float) -> str:
+    """The heartbeat's (and so `doctor`'s serve row's) rendering of every
+    job currently held by a failing due check."""
+    held = [
+        f"{job} ({_held_cause(cache_dir, job, now)})"
+        for job in ("mine", "steward", "overseer")
+        if _held_cause(cache_dir, job, now) is not None
+    ]
+    return f"; holding: {', '.join(held)}" if held else ""
+
+
+# ------------------------------------------ attempt journals (A19, A22)
+
+
+def _attempt_epoch(stamp: str, now: float) -> float:
+    """S-68: an unparseable or future-dated attempt timestamp reads as
+    "attempted NOW". The two failure modes it replaces are the ones
+    measured on this scheduler: a bad value parsed to epoch 0 made the
+    job due on every single tick, and a future value made it due never."""
+    try:
+        epoch = datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+    except (ValueError, AttributeError, TypeError):
+        return now
+    return now if epoch > now else epoch
+
+
+def _journal_attempt_epoch(path: Path, now: float) -> float | None:
+    """The time of the most recent line in a runner's cache journal that
+    records an ATTEMPT — the newest line whose status is not a hold
+    (`_HOLD_STATUSES`). `None` when the journal holds no attempt at all."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        status = row.get("status")
+        if isinstance(status, str) and status in _HOLD_STATUSES:
+            continue
+        stamp = row.get("at") or row.get("ts")
+        if not isinstance(stamp, str):
+            continue
+        return _attempt_epoch(stamp, now)
+    return None
+
+
+def _steward_recently_attempted(cache_dir: Path, now: float) -> bool:
+    """S-68's ordering rule: the steward's cooldown test reads the cache
+    attempt journal ONLY, so it can be evaluated before any git read."""
+    epoch = _journal_attempt_epoch(cache_dir / "steward" / "journal.jsonl", now)
+    return epoch is not None and now - epoch < miner.ATTEMPT_COOLDOWN_SECS
+
+
 def _target_for(now: float) -> float:
     """Pure: the jittered mine-pass target for whatever calendar day
     `now` falls in -- `MINE_HOUR:MINE_MINUTE` local, plus 0..
@@ -425,33 +642,46 @@ def _describe_next(home: Path, cache_dir: Path, now: float) -> str:
     earlier, misleading after). Tomorrow's preview uses the pure
     `_target_for` (no file I/O -- a preview, not a commitment; the
     schedule file is only ever written for TODAY, by
-    `_today_mine_target` itself, when today's tick actually runs)."""
-    target = _today_mine_target(cache_dir, now)
-    if now >= target:
-        target = _target_for(now + 24 * 60 * 60)
-    when = datetime.fromtimestamp(target).isoformat(timespec="seconds")
-    # This heartbeat preview reads one small cached marker, never the case store.
-    last_iso = steward.last_run_iso(home)
-    last_epoch = 0.0
-    if last_iso is not None:
-        try:
-            last_epoch = datetime.fromisoformat(last_iso.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            last_epoch = 0.0
-    cooldown_value, _source = settings.resolve_setting(
-        home, settings.by_name("steward.cooldown_secs")
-    )
-    cooldown = cast(int | float | str, cooldown_value)
-    steward_when = datetime.fromtimestamp(max(now, last_epoch + float(cooldown))).isoformat(
-        timespec="seconds"
-    )
-    # Heartbeats stay cache-only and never walk committed case manifests.
-    overseer_when = datetime.fromtimestamp(
-        _overseer_target_for(now)
-    ).isoformat(timespec="seconds")
+    `_today_mine_target` itself, when today's tick actually runs).
+
+    A13/U1: this text is the heartbeat's `next_job`, which is also what
+    `doctor`'s serve row prints, so it must never raise and it must name
+    a job that a failing due check is currently holding — otherwise the
+    only operator-visible surface says "next: steward at ..." about a job
+    that has not been evaluated for hours. Each leg is guarded
+    separately: one broken preview never blanks the other two."""
+    try:
+        target = _today_mine_target(cache_dir, now)
+        if now >= target:
+            target = _target_for(now + 24 * 60 * 60)
+        when = datetime.fromtimestamp(target).isoformat(timespec="seconds")
+    except Exception as exc:  # noqa: BLE001 — a preview must never raise
+        when = f"held: {_short_cause(exc)}"
+    try:
+        # This heartbeat preview reads one small cached marker, never the case store.
+        last_iso = steward.last_run_iso(home)
+        # S-68: the preview reads its timestamp through the SAME rule the
+        # real predicate uses, so "steward at ..." cannot disagree with it.
+        last_epoch = _attempt_epoch(last_iso, now) if last_iso is not None else 0.0
+        cooldown_value, _source = settings.resolve_setting(
+            home, settings.by_name("steward.cooldown_secs")
+        )
+        cooldown = cast(int | float | str, cooldown_value)
+        steward_when = datetime.fromtimestamp(
+            max(now, last_epoch + float(cooldown))
+        ).isoformat(timespec="seconds")
+    except Exception as exc:  # noqa: BLE001 — a preview must never raise
+        steward_when = f"held: {_short_cause(exc)}"
+    try:
+        # Heartbeats stay cache-only and never walk committed case manifests.
+        overseer_when = datetime.fromtimestamp(
+            _overseer_target_for(now)
+        ).isoformat(timespec="seconds")
+    except Exception as exc:  # noqa: BLE001 — a preview must never raise
+        overseer_when = f"held: {_short_cause(exc)}"
     return (
         f"mine at {when}; steward at {steward_when} when committed obligations exist; "
-        f"overseer at {overseer_when}"
+        f"overseer at {overseer_when}" + _holds_text(cache_dir, now)
     )
 
 
@@ -474,9 +704,21 @@ def _proposal_commit_epoch(home: Path, path: Path) -> float:
 
 
 def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
-    """Apply the committed-obligation OR predicate outside cooldown and STOP."""
+    """Apply the committed-obligation OR predicate outside cooldown and STOP.
+
+    S-68 ordering (U1): the CACHE attempt-journal cooldown is evaluated
+    first, before anything that reads git. Before this, the first thing
+    this predicate did was walk committed manifests, so a wedged git read
+    was re-entered on every 60-second tick with no cooldown able to stop
+    it. The committed `last_attempt_at` / last-run-marker test below is
+    kept as the SECOND check, because the cache is not durable and the
+    committed timestamp is."""
     enabled, _source = settings.resolve_setting(home, settings.by_name("steward.enabled"))
-    if not enabled or intents.classify_status(home).stopped:
+    if not enabled:
+        return False
+    if _steward_recently_attempted(cache_dir, now):
+        return False
+    if intents.classify_status(home).stopped:
         return False
     manifests = steward.committed_manifests(home)
     unfinished = [row for row in manifests if row.get("status") != "complete"]
@@ -488,10 +730,7 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     last_iso = max(attempts) if attempts else steward.last_run_iso(home)
     if last_iso is None:
         return True
-    try:
-        last_epoch = datetime.fromisoformat(last_iso.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        last_epoch = 0.0
+    last_epoch = _attempt_epoch(last_iso, now)
     cooldown_value, _source = settings.resolve_setting(
         home, settings.by_name("steward.cooldown_secs")
     )
@@ -526,42 +765,58 @@ def _overseer_target_for(now: float) -> float:
 
 
 def overseer_next_iso(home: Path | str, *, now: float | None = None) -> str:
-    """The next calendar target; committed unfinished work is reported as now."""
+    """The next calendar target; committed unfinished work is reported as
+    now. A13: this reads git, so it must not raise either — a failure is
+    reported as a held job naming its cause, never propagated into the
+    caller (`status --json`, the heartbeat preview)."""
     resolved = Path(home)
     current = time.time() if now is None else now
-    target = current if overseer.has_unfinished_work(resolved) else _overseer_target_for(current)
+    try:
+        unfinished = overseer.has_unfinished_work(resolved)
+    except Exception as exc:  # noqa: BLE001 — a preview must never raise
+        return f"held: {_short_cause(exc)}"
+    target = current if unfinished else _overseer_target_for(current)
     return datetime.fromtimestamp(target).isoformat(timespec="seconds")
 
 
 def _overseer_recently_attempted(cache_dir: Path, now: float) -> bool:
-    """Apply the miner's bounded retry interval to every overseer attempt."""
-    journal = cache_dir / "overseer.journal"
-    try:
-        lines = journal.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return False
-    for line in reversed(lines):
-        try:
-            row = json.loads(line)
-            attempted = row.get("at")
-            if not isinstance(attempted, str):
-                continue
-            epoch = datetime.fromisoformat(attempted.replace("Z", "+00:00")).timestamp()
-            return now - epoch < miner.ATTEMPT_COOLDOWN_SECS
-        except (ValueError, AttributeError):
-            continue
-    return False
+    """Apply the miner's bounded retry interval to every overseer attempt.
+
+    U1: reads the newest line that records an ATTEMPT, skipping holds —
+    before this, a `disabled` or `stopped` line (a run that did nothing at
+    all) armed the cooldown exactly like a real attempt."""
+    epoch = _journal_attempt_epoch(cache_dir / "overseer.journal", now)
+    return epoch is not None and now - epoch < miner.ATTEMPT_COOLDOWN_SECS
 
 
 def _overseer_is_due(home: Path, cache_dir: Path, now: float) -> bool:
-    """Weekly opt-in predicate, with committed unfinished work taking priority."""
+    """Weekly opt-in predicate, with committed unfinished work taking
+    priority, and the A16 catch-up rule (S-68,
+    `13-hosting-and-separation.md` §5): due on the first tick at or after
+    the most recent Sunday 04:15 local for which that week is not done,
+    whatever the weekday, so a machine that was off all Sunday runs the
+    missed week on Monday instead of skipping it in silence.
+
+    The catch-up applies only once a previous run exists (coverage's
+    `last_run_at` is not null; orchestrator ruling 2026-09-19). An
+    overseer that has NEVER run stays on the calendar rule — due at the
+    next Sunday 04:15 — so flipping `overseer.enabled` on a Wednesday
+    cannot trigger an immediate unattended first run; `self-learn overseer
+    run` remains the way to start it by hand.
+
+    S-68 ordering: the cache attempt-journal cooldown is evaluated before
+    any git read."""
     enabled, _source = settings.resolve_setting(home, settings.by_name("overseer.enabled"))
-    if not enabled or intents.classify_status(home).stopped:
+    if not enabled:
         return False
     if _overseer_recently_attempted(cache_dir, now):
         return False
+    if intents.classify_status(home).stopped:
+        return False
     if overseer.has_unfinished_work(home):
         return True
+    if overseer_run.previous_run_exists(home):
+        return not overseer_run.week_done(home, overseer_run.week_boundary(now))
     local = time.localtime(now)
     if local.tm_wday != OVERSEER_WEEKDAY:
         return False
@@ -573,14 +828,19 @@ def _overseer_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     )
     if now < target:
         return False
+    # S-68: a week that is DONE is never due, on the calendar branch too.
+    # Without this, an overseer that has never completed a run and whose
+    # week was closed at `runs.attempt_cap` answered "due" for the rest of
+    # Sunday: `run` replies `held-week-done`, which is a HOLD and therefore
+    # arms no cooldown, so the job was re-entered on every 60-second tick.
+    # `previous_run_exists` is false in exactly that state, so the branch
+    # above never got the chance to say so.
+    if overseer_run.week_done(home, overseer_run.week_boundary(now)):
+        return False
     last_iso = overseer_run.last_run_iso(home)
     if last_iso is None:
         return True
-    try:
-        last_epoch = datetime.fromisoformat(last_iso.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return True
-    return last_epoch < target
+    return _attempt_epoch(last_iso, now) < target
 
 
 # ------------------------------------------------------------------- jobs
@@ -722,7 +982,14 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
     ran: list[JobRecord] = []
     poked = _consume_poke(cache_dir)
     with _worker_autokick_disabled():
-        if (poked and _mine_is_due(cache_dir, now, ignore_schedule=True)) or _mine_is_due(cache_dir, now):
+        if _due_or_hold(
+            "mine",
+            home,
+            cache_dir,
+            now,
+            lambda: (poked and _mine_is_due(cache_dir, now, ignore_schedule=True))
+            or _mine_is_due(cache_dir, now),
+        ):
             mine_record = run_one_job(
                 cache_dir, Job("mine", "miner-reader", lambda: _run_mine_job(home)), pid=pid, tick_secs=tick_secs
             )
@@ -735,7 +1002,9 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
                 )
                 ran.append(worker_record)
                 _log_stopped_refusal("worker", getattr(worker_record.result, "stopped", None) or [])
-        if _steward_is_due(home, cache_dir, now):
+        if _due_or_hold(
+            "steward", home, cache_dir, now, lambda: _steward_is_due(home, cache_dir, now)
+        ):
             steward_record = run_one_job(
                 cache_dir,
                 Job("steward", "steward", lambda: _run_steward_job(home)),
@@ -746,7 +1015,9 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
             _log_stopped_refusal(
                 "steward", getattr(steward_record.result, "stopped", None) or []
             )
-        if _overseer_is_due(home, cache_dir, now):
+        if _due_or_hold(
+            "overseer", home, cache_dir, now, lambda: _overseer_is_due(home, cache_dir, now)
+        ):
             overseer_record = run_one_job(
                 cache_dir,
                 Job("overseer", "overseer", lambda: _run_overseer_job(home)),
@@ -839,7 +1110,22 @@ def run_forever(
     try:
         ticks = 0
         while not stop.is_set():
-            _run_tick(home, cd, now=time.time(), pid=pid, tick_secs=secs)
+            # A13 backstop: `_due_or_hold` already contains every due
+            # check, and `run_one_job` already contains every job, so
+            # nothing is EXPECTED to reach here -- but an exception that
+            # does must cost one tick, not the daemon. Before this, a
+            # raise here ended the whole process (miner, worker, steward
+            # and overseer together) and ended it again on every restart
+            # while its cause persisted. SIGTERM/SIGINT and `max_ticks`
+            # are untouched: the counter below advances either way.
+            try:
+                _run_tick(home, cd, now=time.time(), pid=pid, tick_secs=secs)
+            except Exception as exc:  # noqa: BLE001 — a tick must never end the daemon
+                print(
+                    f"serve: tick failed — {_short_cause(exc)}; continuing "
+                    "with the next tick.",
+                    file=sys.stderr,
+                )
             ticks += 1
             if max_ticks is not None and ticks >= max_ticks:
                 break

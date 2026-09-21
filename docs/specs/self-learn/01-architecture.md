@@ -294,7 +294,9 @@ readings enter the user model as PROVISIONAL, meaning only that the user has
 not yet seen them. Apply a hook route or a values call it cannot ground in
 evidence — those park for the overseer, always, never for a human directly
 (`parked_reason` ∈ `hook | always-loaded-user-scope | broad-removal |
-authority-unclear | scope-conflict`, `02-schema.md` §3a.2). **A secret-scan
+authority-unclear | scope-conflict`, the five the steward itself chooses, plus
+`plain-host-committed-file` and `attempts-exhausted`, which its runner writes
+for it — `02-schema.md` §3a.2). **A secret-scan
 block is never parked — it is refused outright**, same as it is for every
 other verb-gated write today; the scan is the one mechanical floor, and a
 floor that stops a write cannot also queue that write for later approval.

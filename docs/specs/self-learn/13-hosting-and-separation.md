@@ -375,6 +375,56 @@ line (full field list: §7.2a.7 as amended).
 never enables them, unchanged from every other unit this repo ships
 (`CLAUDE.md` § Layout).
 
+**The overseer's catch-up rule and the same-week guard** *(Added 2026-09-19,
+`03-decisions.md` S-68)*. The weekly job is due on the first tick at or after
+**Sunday 04:15 local for which that week is not done — whatever the weekday**.
+A machine that was off all Sunday therefore runs the missed week on Monday
+instead of skipping it in silence, and the product does not depend on
+`Persistent=true` on a timer that is linked but never enabled to do it. **Only
+the most recent Sunday boundary defines the current week**: after a longer
+outage, older undone weeks are subsumed by that one catch-up run rather than
+replayed one per week — the overseer's population is everything since its
+last run, so the single run covers them, and nothing is run retroactively.
+"Not done" is S-68's own test: a run for that week completed, or its attempts
+reached `runs.attempt_cap` — read from committed run records, never from the
+cache marker alone. **The catch-up applies only once a previous run exists**
+(coverage's `last_run_at` is not null; orchestrator ruling 2026-09-19): an
+overseer that has NEVER run stays on the plain calendar rule, due at the next
+Sunday 04:15 local, so turning `overseer.enabled` on midweek cannot trigger an
+immediate unattended first run. `self-learn overseer run` remains the way to
+start the first one by hand, watched. The same test is the **same-week guard, and it lives in
+the runner, not in the scheduler**: whoever starts an overseer run — the
+`serve` job, a hand-typed `self-learn overseer run`, or the systemd timer if
+a human ever enables it — re-checks it inside the run and holds without
+writing when the week is already done, so two entry points cannot double-run
+one week even with both enabled. A held run is a held outcome under the
+unattended-run contract (`FW-85`), not a failure. Committed unfinished work
+stays due regardless of the calendar, unchanged from O-4: a failed attempt is
+retried after the existing two-hour attempt cooldown
+(`miner.ATTEMPT_COOLDOWN_SECS`), on any day, until the week is done or the
+cap closes it.
+
+**A raise inside either due-check is a HOLD, not an attempt** *(Added
+2026-09-19, S-68)*. It is logged, it increments no attempt count, and the job
+is not due this tick. It arms that job's cache-side cooldown so the tick loop
+cannot spin on it; while the cause persists it is shown in the `doctor` serve
+row and the heartbeat as the reason that job is not running, and the user is
+notified once per distinct cause, never once per tick. It never escapes into
+`_run_tick`, where one exception ends the whole `serve` process — miner,
+worker, steward and overseer together — and ends it again on every restart
+while the cause persists. **Ordering, for both jobs: the cooldown test reads
+only the cache attempt journal, and is evaluated BEFORE any git read.** Today
+`_steward_is_due` reads committed manifests before it looks at a cooldown at
+all (`serve.py:481-488`), so a wedged git would be re-entered on every 60-second
+tick; with the order above it cannot be retried faster than the cooldown.
+Counting a due-check failure as an attempt is explicitly NOT the rule: a check
+that could not even read the state took ownership of nothing, and three ticks
+against a broken git would otherwise exhaust a cap of 3 and park lessons
+nobody examined. The case that motivated counting — an exception that recurs
+identically on every resume — needs no help from the due-check: that attempt
+is counted at its start, inside the run (`02-schema.md` §3a), so it reaches
+the cap and closes out on its own.
+
 ## 6. Cache namespacing
 
 `~/.cache/claude-skills/self-learn/` → `~/.cache/self-learn/` in the

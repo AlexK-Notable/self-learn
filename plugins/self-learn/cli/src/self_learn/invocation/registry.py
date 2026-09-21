@@ -189,7 +189,12 @@ def _dispatch(spec: SessionSpec, backend: Backend | None, method: str) -> Outcom
         )
     if backend is None:
         try:
-            backend = backend_for(spec.surface, home=spec.cwd)
+            # U4b (2026-09-19): the ledger the settings come from, not
+            # the directory the session runs in -- `spec.settings_home`
+            # falls back to `cwd` for the three producers that pass
+            # `cwd=home`, and is the stage-free ledger path for the
+            # steward and the overseer, whose `cwd` holds no config.yaml.
+            backend = backend_for(spec.surface, home=spec.settings_home)
         except BackendUnavailable as exc:
             templates = LOG_TEMPLATES[spec.surface]
             spec.log(templates.unavailable.format(label=spec.label, exc=exc))

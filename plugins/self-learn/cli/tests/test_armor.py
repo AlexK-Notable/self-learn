@@ -116,7 +116,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "715e1ee"
+ANCHOR = "1a0220b"
 
 
 # ===================================================================== #
@@ -244,22 +244,10 @@ class Behaviour:
     edited_exports: Mapping[str, str] = field(default_factory=dict)
 
 
-#: U8 (17-invocation-runbook.md §1, S-18 as amended): shared reason
-#: string for the six `test_invocation_sdk.py` OP-series tests whose
-#: only edit is the same one-line literal-to-constant swap, so one
-#: reason covers all six (`EXM1`'s grammar check runs per key, but the
-#: STRING is identical on purpose -- these six ARE one edit, repeated).
-_U8_FOUR_SURFACES_REASON = (
-    "2026-09-13 U8 (17-invocation-runbook.md §1): the six inline literal "
-    '`("worker", "worker-repair", "miner-reader", "analyst")` tuples this '
-    "OP-series loop over collapsed into one module constant, "
-    "`_FOUR_SURFACES` (a NEW node, free) -- left at the original four "
-    "rather than widened to steward/overseer, since `_containment`/`_spec` "
-    "are EXPORTED names (test_u_engine.py imports them by name, BEH5-"
-    "pinned) this build does not edit; steward/overseer's own containment "
-    "is exercised instead by the new `test_ch14_...` test below, via "
-    "`containment_for(...)` directly."
-)
+#: 2026-09-20, ANCHOR 1a0220b (liveness landing): the shared U8 reason
+#: string that lived here covered six `test_invocation_sdk.py` OP-series
+#: `edited` doors; all six went VACUOUS at this anchor and were dropped, and
+#: the string went with them.
 
 
 ARMOR: dict[str, Fixture | Additive | Behaviour] = {
@@ -295,64 +283,31 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         },
     ),
     # --- BEHAVIOUR: every top-level node (section 4.5) -----------------
+    # 2026-09-20, ANCHOR 1a0220b (liveness landing): this row's two `edited` doors (WR7's fourth and
+    # fifth write_session callers; RG1's steward/overseer selector clearing)
+    # were dropped as VACUOUS by this landing's own refusal -- the
+    # steward-overseer landing is the anchor itself now, so those edits are
+    # anchor-side content and nothing is owed (section 4.7 FW-140).
     "test_invocation.py": Behaviour(
-        nodes=94, dump_sha="eb90005324f7f1483dcd618a80501d03a11e2f0ebb2541b5af696d31b48644fe",
-        edited={
-            "func:test_wr7_seam_is_only_called_from_the_three_call_sites": (
-                "2026-09-14 U10 (S-29 as amended) + O-3 (S-66; 17-invocation-runbook.md "
-                "§10): the steward runner and the overseer runner are the fourth and "
-                "fifth authorized invocation.write_session callers; each model session "
-                "writes only declared stage files and never calls a verb; the census "
-                "still refuses every unlisted caller."
-            ),
-            "func:test_rg1_five_rung_precedence_resolves_in_isolation": (
-                "2026-09-13 U8 (17-invocation-runbook.md §1): SURFACES gained "
-                "steward/overseer, so this test's per-surface loop now sets "
-                "SELF_LEARN_BACKEND_STEWARD/_OVERSEER too -- the shared, "
-                "EXPORTED `_clear_backend_env` helper (test_u_sdka.py:45 "
-                "imports it by name) predates those two selectors and is left "
-                "untouched (BEH5); this test clears its own surface's "
-                "selector var directly instead, alongside every existing "
-                "`_clear_backend_env(monkeypatch)` call in its loop."
-            ),
-        },
+        nodes=94, dump_sha="21ac729b38c2304637bc6e4412c75dd39b37fa405b2ce7377f6142b34f5e7448",
     ),
     # 2026-08-30, ANCHOR ee62df0: RS8's `edited` exemption was dropped as
     # VACUOUS by this landing's refusal -- U-xdist landed, so the widened
     # lockfile bound IS the anchor content and nothing is owed.
+    # 2026-09-20, ANCHOR 1a0220b (liveness landing): this row's seven `edited` doors (PL5's call-site
+    # census, and the six OP-series tests that shared one reason string,
+    # `_U8_FOUR_SURFACES_REASON`, removed with them) were dropped as VACUOUS
+    # by this landing's own refusal, for the same reason as the row above.
     "test_invocation_sdk.py": Behaviour(
-        nodes=137, dump_sha="f43ed618ce773521da88c2cacd89f3559f0e27cdef51388de2b1af856a990b6a",
-        edited={
-            "func:test_pl5_no_other_module_calls_write_session_or_text_session": (
-                "2026-09-14 U10 (S-29 as amended) + O-3 (S-66; 17-invocation-runbook.md "
-                "§10): the steward runner and the overseer runner are the fourth and "
-                "fifth authorized invocation.write_session callers; this independent "
-                "call-site census admits steward.py and overseer/run.py only."
-            ),
-            "func:test_op2_allowed_tools_always_empty": _U8_FOUR_SURFACES_REASON,
-            "func:test_op3_setting_sources_explicit_empty_list": _U8_FOUR_SURFACES_REASON,
-            "func:test_op4_settings_always_none": _U8_FOUR_SURFACES_REASON,
-            "func:test_op5_permission_mode_always_default": _U8_FOUR_SURFACES_REASON,
-            "func:test_op6_strict_mcp_config_always_true": _U8_FOUR_SURFACES_REASON,
-            "func:test_op17_options_env_is_empty_leak_test": _U8_FOUR_SURFACES_REASON,
-        },
+        nodes=141, dump_sha="05fe6a2bb6f605cb8032c96b65ca4278c3679c5ae84750c0df037ae1399d9c6f",
     ),
     "test_worker.py": Behaviour(
-        nodes=80, dump_sha="16e45a867ecebd6471586640f1f52417427c235d04777e74ec4f34c14506627c"
+        nodes=83, dump_sha="0d4ac5f2300dc2f265566bc14b258c0086d7d6b23fd16b0c421d3d995d8e7a46"
     ),
+    # 2026-09-20, ANCHOR 1a0220b (liveness landing): H1's `edited` door (FW-85's EXIT_HELD) was dropped
+    # as VACUOUS by this landing's own refusal; FW-85 is behind the anchor.
     "test_repair.py": Behaviour(
-        nodes=85, dump_sha="6bd9c4787b4d5a2f2887548228694edf88d76f82596ce4f4c2ed9d2598e1730d",
-        edited={
-            "func:test_h1_the_exit_code_contract": (
-                "2026-09-13 FW-85 (U0): `worker run`'s `idle` status now "
-                "returns the new `EXIT_HELD` (10), not `0` -- this test's "
-                "second assertion pinned the old fail-open contract this "
-                "build retires for the run-command surface (`commands/"
-                "review.md`'s exit-code table: nothing due and held is "
-                "NOT `0`, distinguishable from an actual run; before "
-                "FW-85 the two were indistinguishable)."
-            ),
-        },
+        nodes=85, dump_sha="15cee52b616e8722eb9cef7e629bcbc56c1356c30dfeaea9aca0d3a2c829530a",
     ),
     "test_attrib.py": Behaviour(
         nodes=68, dump_sha="9ebb1c1e42628b325b968bc8df082891f3d79946dd8a115b5b28e8f6898831c7",
@@ -360,24 +315,11 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     "test_route_cli.py": Behaviour(
         nodes=59, dump_sha="c61c80a0b91bc6e10dfc53e81e91549f6c7642f32b3c4a9ea91cbe9bbbd3eaa6",
     ),
+    # 2026-09-20, ANCHOR 1a0220b (liveness landing): A12's `edited` door (U7's cases block in the
+    # batch prompt) was dropped as VACUOUS by this landing's own refusal; U7
+    # is behind the anchor.
     "test_composer.py": Behaviour(
-        nodes=58, dump_sha="3c920c0066c5f9db54b2a243a4714d331822cba6e82c6e029d8add6c6f4c7a5f",
-        edited={
-            "func:test_a12_worker_prompt_ingredients_and_to_text_containment": (
-                "2026-09-14 U7 (`01-architecture.md` §3.3 as amended; "
-                "`03-decisions.md` S-26 as amended, steward build): the M2 "
-                "batch prompt's rejected-proposal digest is replaced by a "
-                "cases-as-evidence block (case ids + one-line outcomes from "
-                "`cases.list_cases`) -- the analyst cites prior decisions "
-                "rather than obeying a 'never re-propose' instruction. This "
-                "test's digest-survives assertion, '(no rejected proposals "
-                "yet)' in prompt, becomes the cases block's own empty-index "
-                "form, 'none yet' in prompt, under the new heading 'Prior "
-                "decisions on this record's class, as cases:'. `_digest` "
-                "itself is untouched and still exercised directly by its "
-                "own two pinned tests in test_worker.py."
-            ),
-        },
+        nodes=63, dump_sha="95bbfe93d6c00409bee5da686990c40a28cc9e80db6a9f8ed27d32a31a2c702d",
     ),
     "test_u_fake.py": Behaviour(
         nodes=31, dump_sha="4fbcee5f5481c7a339d32fe303760e5ea8a024e647cb2c1a82795da70c942f46",
@@ -835,9 +777,13 @@ class Measured:
 
 MEASURED: dict[str, Measured] = {
     "BEH7.node_counts": Measured(
-        value=(94, 137, 80, 85, 68, 59, 58, 31),
+        value=(94, 141, 83, 85, 68, 59, 63, 31),
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-09-20 §4.5/§2.10, transcribed at ANCHOR 1a0220b from this module's "
+            "own STALE refusal (liveness landing): test_invocation_sdk.py 137 -> 141, "
+            "test_worker.py 80 -> 83, test_composer.py 58 -> 63 -- the top-level nodes "
+            "the steward-overseer landing added are now anchor-side. Previous entry: "
             "2026-09-11 §4.5/§2.10, transcribed at ANCHOR a41ddb3 from this "
             "module's own STALE refusal (Sprint 3 landing): per-file top-level "
             "node counts, in BEHAVIOUR_KEYS order. test_invocation_sdk.py 139 -> "
@@ -850,11 +796,16 @@ MEASURED: dict[str, Measured] = {
     ),
     "BEH7.dump_prefixes": Measured(
         value=(
-            "eb90005324f7", "f43ed618ce77", "16e45a867ece", "6bd9c4787b4d",
-            "9ebb1c1e4262", "c61c80a0b91b", "3c920c0066c5", "4fbcee5f5481",
+            "21ac729b38c2", "05fe6a2bb6f6", "0d4ac5f2300d", "15cee52b616e",
+            "9ebb1c1e4262", "c61c80a0b91b", "95bbfe93d6c0", "4fbcee5f5481",
         ),
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-09-20 §4.5/§2.10, transcribed at ANCHOR 1a0220b from this module's "
+            "own STALE refusal (liveness landing): five files moved (test_invocation.py, "
+            "test_invocation_sdk.py, test_worker.py, test_repair.py, test_composer.py) "
+            "because the steward-overseer landing's edits to them are now at the anchor. "
+            "Previous entry: "
             "2026-09-11 §4.5/§2.10, transcribed at ANCHOR a41ddb3 from this "
             "module's own STALE refusal (Sprint 3 landing): the first 12 "
             "characters of each file's normalized-dump sha256, in BEHAVIOUR_KEYS "
@@ -865,9 +816,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_dump_prefixes,
     ),
     "BEH7.node_total": Measured(
-        value=612,
+        value=624,
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-09-20 §4.5/§2.10, transcribed at ANCHOR 1a0220b from this module's "
+            "own STALE refusal (liveness landing): 612 -> 624 (137 -> 141, 80 -> 83 and "
+            "58 -> 63 above). Previous entry: "
             "2026-09-11 §4.5/§2.10, transcribed at ANCHOR a41ddb3 from this "
             "module's own STALE refusal (Sprint 3 landing): the sum of "
             "BEH7.node_counts, carried separately so a transcription that drops or "
@@ -913,9 +867,13 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=11,
+        value=0,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-09-20, transcribed at ANCHOR 1a0220b from this module's own STALE "
+            "refusal (liveness landing): 11 -> 0. All eleven `edited` doors belonged to "
+            "the steward-overseer landing, which IS the anchor now, so each went VACUOUS "
+            "and was dropped in the same motion. Previous entry: "
             "2026-09-13 steward-overseer integration (U0 + U8 merged), "
             "transcribed at ANCHOR a41ddb3: 0 -> 8. FW-85 (U0): one door, "
             "`test_repair.py: func:test_h1_the_exit_code_contract` (`worker run`'s "

@@ -830,7 +830,8 @@ superseded_by: null            # filled by the CLI when a successor lands
 parked_for: null               # overseer, always (only when kind: parked)
 parked_reason: null            # hook | always-loaded-user-scope |
                                 #   broad-removal | authority-unclear |
-                                #   scope-conflict | plain-host-committed-file
+                                #   scope-conflict | plain-host-committed-file |
+                                #   attempts-exhausted
                                 #   (closed set; only when
                                 #   kind: parked)
 decided_sha256: "a3c1…"        # hash of sections 1-4 as committed
@@ -963,6 +964,132 @@ maintenance/packet remains unfinished. A legacy case without a committed
 recipe is reported as an unknown execution-evidence gap; no sheet, success,
 or receipt is invented from cache.
 
+**Attempt counting, close-out, and the failure detail** *(added 2026-09-19,
+`03-decisions.md` S-68).* Attempts are counted on the unit of work that can
+actually be retried — a steward packet, an overseer sheet item, an overseer
+week — not on the run as a whole. Each such unit carries, in the manifest:
+
+```json
+{
+  "attempt_count": 2,
+  "last_attempt_at": "2026-09-19T04:15:07Z",
+  "progress_at": "2026-09-18T03:41:22Z",
+  "failure": "exit",
+  "failure_detail": "API Error: 400 …"
+}
+```
+
+- `attempt_count` increments once at the START of every attempt, before the
+  first model call, so an attempt that makes zero calls, raises, or is killed
+  still counts. An attempt that finishes without PROGRESS (S-68's first
+  definition) counts exactly like one that failed.
+- **A run that HOLDS before taking ownership of a unit is not an attempt**
+  and increments nothing: a disabled switch, a STOP refusal, a lock another
+  process holds, a week the same-week guard finds already done, and a raise
+  inside an "is it due?" check all leave every count untouched, so neither a
+  wedged lock nor a wedged git can exhaust a cap and park work nobody
+  examined. Such a hold may still arm the scheduler's cache-side cooldown —
+  a raised due-check does, so the tick loop cannot spin on it (S-68) — but it
+  never touches a count in this record.
+- `last_attempt_at` is written by that same increment and is what the
+  scheduler's cooldown reads; a value that is unparseable or in the future
+  reads as "attempted now", never as "due every tick" or "never due".
+- `progress_at` is the time of the last attempt that made progress, and is
+  what a later run compares against to tell a retry apart from a loop.
+- `failure` is the kind, and it reuses the literals the runner already writes
+  rather than a second vocabulary: a `FAILURE_KINDS` member (`exit`,
+  `timeout`, `not-found`, `os-error`, `unavailable`), `invocation` (a failed
+  call that named no kind), `turns` (the turn bound. In the steward's
+  record it means Claude Code itself stopped the session at its turn limit
+  and said so — result subtype `error_max_turns` — and is never inferred
+  from a reported turn count, which counts something else: revision log,
+  2026-09-20. In the overseer's record it is still the overseer's own
+  guard over the reported count, `overseer.max_model_calls`, unchanged),
+  `schema-repair` (a
+  second staged-output validation failure), and one genuinely new value,
+  `no-progress`, for an attempt that ran and moved nothing. A ledger stop
+  keeps riding the run record's own numeric halt code — the overseer's run
+  record names it `halt_code` *(field named here 2026-09-19, U4; written by
+  `overseer/run.py` since U3)*, an integer drawn from the closed set the
+  runner accepts, `3` (push failed, the commit landed), `4` (rebase
+  conflict), `5` (no ledger home), `6` (git failed before any mutation —
+  nothing was written), `7` (half-written — the write landed, its commit did
+  not), `8` (batch partial — some items applied), and `null` for a stop
+  whose code falls outside that set; a code is
+  never folded into this field. `failure_detail` is the message the transport or
+  the validator actually returned, at most 2,000 characters (truncated with a
+  trailing ellipsis) and secret-scanned on write. A scan hit REDACTS the
+  detail to `<redacted: secret-scan>` and the attempt record still commits
+  with its kind and counts: a trace is never suppressed by its own content,
+  because a failure whose reason lives only in the git-ignored cache journal
+  is the state this field exists to end.
+- An overseer run additionally carries `week` — the local date of the Sunday
+  04:15 boundary that opened it — and, when the cap closed it,
+  `status: closed` with `outcome: attempts-exhausted`. The week is done
+  because the run record says so; coverage cannot say it, since coverage does
+  not advance on a failed attempt. An overseer attempt that fails before it
+  has a run record — every failure of the first model call, and every phase-B
+  refusal — has nowhere else to put its trace, so it commits one note per
+  attempt under `overseer/failures/<week>/`, and the close-out's own note is
+  `overseer/failures/<week>/closed.md`. The week's attempt count is those
+  notes plus the run record's `attempt_count`; the two sources are disjoint,
+  because an attempt that reaches the run record writes its reason into the
+  record's `failure`/`failure_detail` instead of a note.
+
+A run record written before this rule has no `attempt_count`, and one is
+never invented for it: its count is DERIVED from the evidence the record
+already carries — for a steward packet, the number of rows of kind
+`decision` in that packet's own `attempts` list — and the first attempt made
+under this rule writes the explicit field. This is not a migration nicety:
+the run left stuck on 2026-09-14 is exactly this shape (three packets, one
+`decision` attempt each, `last_attempt_at` null), and it has to be
+re-attempted and counted by the product itself, never carried to a terminal
+state by hand-editing committed JSON.
+
+Writing the close-out is itself an ordinary ledger write and can fail like
+one. A close-out that fails — the steward's parked successor case, or the
+overseer's close-out note and question — is retried by the next run, is
+idempotent (a successor that already exists is reused, never duplicated), and
+increments no count of its own. A unit becomes `abandoned`, and the run
+closes, only once every abandoned item's `successor_case` actually exists.
+Because it is retried without a count, no cap will ever stop a close-out
+that fails the same way every time, and nothing else would surface it: so
+a failed close-out is reported to the user **once per distinct cause** —
+not once per run and not once per record — and the run's own report names
+it beside the count of lessons still waiting for a successor.
+
+The `abandoned` disposition named above has this shape, and is written only
+by a runner reaching the cap, never by a model:
+
+```json
+{
+  "state": "abandoned",
+  "input_version": "<source version>",
+  "attempts": 3,
+  "reason": "<the real failure reason, the same text as failure_detail>",
+  "successor_case": "case-<8hex>"
+}
+```
+
+`successor_case` is the durable successor/redecision obligation this section
+already requires, and it is never null for a steward abandonment: it is a
+parked case (`kind: parked`, `parked_for: overseer`, `parked_reason:
+attempts-exhausted`) that the runner writes, whose section 2 cites the
+committed run record — `ledger@<commit>:cases/runs/<run_id>.json#L<a>-<b>` —
+and quotes the failure detail as its evidence, and whose section 1 question
+the runner writes mechanically: this record's decision reached the attempt
+cap, so decide the lesson itself, using the recorded failure reason as
+evidence. When the abandoned item already belongs to a case, the runner also
+appends an `abandoned` later observation (§3a.2, section 6) to that case,
+naming the successor. The overseer's own abandonment has no lesson of its own
+to park: its durable obligation is a committed close-out note and the question
+its report puts to the user, beside the closed run record above. **The runner
+writes both, mechanically** — the cap is reached exactly when the model never
+produced a report or a question of its own, so neither can be a model output;
+how that runner-written question joins the proposition-keyed index
+`overseer open` reads is the runner's own design problem, not a schema
+question.
+
 For an opted-in ordinary ledger mutation, the item's own mutation commit has
 one canonical final trailer block: `By: <runner>`, `Case: <case-id>`,
 `Sheet: <sheet_sha>`, `Item: <original-n>`. The manifest's full digest binds
@@ -1057,6 +1184,14 @@ filled, and section 3 holding the question and the steward's tentative
 answer if any. The overseer decides it in the user's stead as a **successor
 case** (`actor: overseer`, `supersedes: <parked case>`); the parked case
 gets `superseded_by`. Parking never installs a standing belief.
+
+Two reasons in that closed set are written by a runner rather than chosen by
+the steward: `plain-host-committed-file`, and `attempts-exhausted` *(added
+2026-09-19, S-68)*, which a runner writes when a record's decision reached
+`runs.attempt_cap` attempts without ever being decided. Such a case asks the
+overseer the same thing any other parked case does — decide the lesson
+itself — with the recorded failure reason as its evidence rather than a
+values question; what stopped the steward was the machinery, not the merits.
 
 **The index**, `<cache>/cases/index.json`, is rebuildable, not truth (a
 `NOT_REPO_TRUTH` disposition): `case, opened_at, actor, kind, trigger,

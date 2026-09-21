@@ -1171,3 +1171,35 @@ def test_verbs_glob_probe_budget_display_agrees_with_the_probe(tmp_path):
     _write_config(home, "ledger", "glob_probe_budget_s", 5.0)
     assert verbs_mod._glob_probe_budget_display(home) == "5"
     assert ledger_ops_mod._glob_probe_budget_s(home) == 5.0
+
+
+def test_runs_attempt_cap_default_config_and_env(tmp_path, monkeypatch):
+    """U1 (S-68): ONE cap, shared by both delegated runners and by the
+    overseer's week. Nothing reads it yet -- U2 and U3 do -- so this
+    pins the registry entry itself: its default, both rungs, and the
+    refusal that keeps a cap of 0 (which would close every run before its
+    first attempt) out of the resolved value."""
+    setting = settings.by_name("runs.attempt_cap")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.delenv("SELF_LEARN_RUNS_ATTEMPT_CAP", raising=False)
+    assert settings.resolve_setting(home, setting)[0] == 3
+
+    monkeypatch.setenv("SELF_LEARN_RUNS_ATTEMPT_CAP", "5")
+    assert settings.resolve_setting(home, setting)[0] == 5
+    monkeypatch.delenv("SELF_LEARN_RUNS_ATTEMPT_CAP")
+
+    _write_config(home, "runs", "attempt_cap", 7)
+    assert settings.resolve_setting(home, setting)[0] == 7
+
+    # config.yaml outranks the env var (S-58), and a non-positive cap
+    # falls through to the default rather than closing every run.
+    monkeypatch.setenv("SELF_LEARN_RUNS_ATTEMPT_CAP", "5")
+    assert settings.resolve_setting(home, setting)[0] == 7
+    monkeypatch.delenv("SELF_LEARN_RUNS_ATTEMPT_CAP")
+    for rejected in (0, -1):
+        _write_config(home, "runs", "attempt_cap", rejected)
+        assert settings.resolve_setting(home, setting)[0] == 3
+    monkeypatch.setenv("SELF_LEARN_RUNS_ATTEMPT_CAP", "0")
+    _write_config(home, "runs", "attempt_cap", 7)
+    assert settings.resolve_setting(home, setting)[0] == 7

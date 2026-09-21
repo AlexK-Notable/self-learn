@@ -46,7 +46,7 @@ import sys
 import time
 import traceback
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
@@ -95,9 +95,10 @@ ATTEMPT_COOLDOWN_SECS = 2 * 60 * 60  # audit 2026-07-15: failure backoff —
 # without it a persistently failing reader converts every CLI invocation
 # into a full walk+digest+15-min model attempt
 STALE_AFTER_SECS = 36 * 60 * 60  # R1 layer 3: SessionStart alarm
-#: FW-100 (U-fw100): the reader session's timeout, env-overridable via
-#: SELF_LEARN_READER_TIMEOUT_SECS (:func:`reader_timeout_secs`).
-INVOKE_TIMEOUT_SECS = 15 * 60
+#: The reader session's timeout: the default of the registry's
+#: `miner.reader_timeout_secs` (:func:`reader_timeout_secs` returns the
+#: operative value; env name SELF_LEARN_READER_TIMEOUT_SECS, FW-100).
+INVOKE_TIMEOUT_SECS = float(cast(float, settings.by_name("miner.reader_timeout_secs").default))
 JOURNAL_CAP_BYTES = 2_000_000
 DEFAULT_MINER_MODEL = "claude-sonnet-5"
 
@@ -127,9 +128,34 @@ _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{3,63}$")
 _SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 #: Digest limits — a runaway session must not blow the reader's context.
-MAX_TEXT_CHARS = 2_000  # per kept turn
-MAX_DIGEST_CHARS = 60_000  # per session digest
-MAX_PROMPT_DIGESTS_CHARS = 400_000  # per run; overflow waits for next run
+#: Each is the DEFAULT of a registry setting (the number lives there);
+#: a run reads the operative values once, into a :class:`DigestLimits`.
+MAX_TEXT_CHARS = cast(int, settings.by_name("miner.message_chars").default)  # per kept turn
+MAX_DIGEST_CHARS = cast(int, settings.by_name("miner.session_chars").default)  # per session digest
+#: per run; overflow waits for the next run
+MAX_PROMPT_DIGESTS_CHARS = cast(int, settings.by_name("miner.run_chars").default)
+
+
+@dataclass(frozen=True)
+class DigestLimits:
+    """How much of the scanned sessions one mining run hands its reader.
+
+    Every field is the registry setting ``miner.<field name>``;
+    :func:`digest_limits` resolves them by walking the fields, so a new
+    limit is one field here plus one ``settings.sizing_knob`` line and
+    nothing else. All three are character counts today. This object is
+    the one thing :func:`digest_transcript` and :func:`run` size
+    against, so a different measure would be introduced here."""
+
+    message_chars: int = MAX_TEXT_CHARS
+    session_chars: int = MAX_DIGEST_CHARS
+    run_chars: int = MAX_PROMPT_DIGESTS_CHARS
+
+
+def digest_limits(home: Path | str | None = None) -> DigestLimits:
+    """The operative :class:`DigestLimits` (config.yaml > env > default)."""
+    root = home if home is not None else resolve_home()
+    return DigestLimits(**{f.name: settings.resolve_int(root, f"miner.{f.name}") for f in fields(DigestLimits)})
 
 #: Sessions whose FIRST user turn opens with one of these are the
 #: system's own machinery — never mined (M-5).
@@ -193,14 +219,15 @@ def miner_model() -> str:
     return os.environ.get("SELF_LEARN_MINER_MODEL") or DEFAULT_MINER_MODEL
 
 
-def reader_timeout_secs() -> float:
-    """The reader session's timeout (doc 12 §2 Phase 2), default
-    :data:`INVOKE_TIMEOUT_SECS`, env-overridable via
-    ``SELF_LEARN_READER_TIMEOUT_SECS``. Shares :func:`worker._timeout_secs`
-    with the worker's own :func:`worker.invoke_timeout_secs` /
-    :func:`worker.repair_timeout_secs` — identical parsing, validation,
-    and fallback semantics (FW-100)."""
-    return worker._timeout_secs("SELF_LEARN_READER_TIMEOUT_SECS", INVOKE_TIMEOUT_SECS)
+def reader_timeout_secs(home: Path | str | None = None) -> float:
+    """The reader session's timeout (doc 12 §2 Phase 2): the registry's
+    ``miner.reader_timeout_secs`` (config.yaml > env
+    ``SELF_LEARN_READER_TIMEOUT_SECS`` > :data:`INVOKE_TIMEOUT_SECS`).
+    It resolves exactly as :func:`worker.invoke_timeout_secs` and
+    :func:`worker.repair_timeout_secs` do — one resolver, the same
+    parsing, validation, and fallback (FW-100's point; until 2026-09-20
+    this was an env-only reader with no config.yaml rung)."""
+    return settings.resolve_float(home if home is not None else resolve_home(), "miner.reader_timeout_secs")
 
 
 def transcripts_root(home: Path | str | None = None) -> Path:
@@ -510,8 +537,9 @@ def _slice_cwd(s: SessionSlice) -> str | None:
     return None
 
 
-def digest_transcript(s: SessionSlice) -> tuple[str | None, bool]:
-    """(digest-or-None, halt) for one session slice.
+def digest_transcript(s: SessionSlice, limits: DigestLimits | None = None) -> tuple[str | None, bool]:
+    """(digest-or-None, halt) for one session slice, sized against
+    `limits` (the built-in defaults when omitted).
 
     Kept: user text turns (verbatim, clipped), assistant text turns,
     tool-use name + command shape, tool-result status + first/last lines.
@@ -527,6 +555,7 @@ def digest_transcript(s: SessionSlice) -> tuple[str | None, bool]:
     the miner as fake sightings. Recall loss from over-exclusion is cheap;
     evidence corruption is not.
     """
+    limits = limits if limits is not None else DigestLimits()
     out: list[str] = []
     halt = False
     first_user_seen = False
@@ -565,7 +594,7 @@ def digest_transcript(s: SessionSlice) -> tuple[str | None, bool]:
                 if _COMMAND_SPAN_RE.search(user_text):
                     halt = True
                     break  # everything after the tag is off-limits
-                out.append(f"[user L{lineno}] {_clip(user_text)}")
+                out.append(f"[user L{lineno}] {_clip(user_text, limits.message_chars)}")
             for block in results:
                 is_err = bool(block.get("is_error"))
                 tid = str(block.get("tool_use_id"))
@@ -584,7 +613,7 @@ def digest_transcript(s: SessionSlice) -> tuple[str | None, bool]:
                 if btype == "text":
                     text = str(block.get("text", ""))
                     if text.strip():
-                        out.append(f"[assistant L{lineno}] {_clip(text)}")
+                        out.append(f"[assistant L{lineno}] {_clip(text, limits.message_chars)}")
                 elif btype == "tool_use":
                     name = str(block.get("name", "?"))
                     inputs = block.get("input") or {}
@@ -606,8 +635,8 @@ def digest_transcript(s: SessionSlice) -> tuple[str | None, bool]:
     ]
     header = f"=== session {s.session_id} project {s.project} ==="
     body = "\n".join(clusters + out)
-    if len(body) > MAX_DIGEST_CHARS:
-        body = body[:MAX_DIGEST_CHARS] + "\n…[session digest clipped]"
+    if len(body) > limits.session_chars:
+        body = body[: limits.session_chars] + "\n…[session digest clipped]"
     return f"{header}\n{body}", halt
 
 
@@ -812,7 +841,7 @@ def _invoke_reader(home: Path, prompt: str) -> Path | None:
     # N-2a (U-fw100 gate r1): bind once -- enforced and displayed must be
     # the SAME env read, not two independent calls straddling
     # containment_for(), so they cannot diverge by construction.
-    timeout_secs = reader_timeout_secs()
+    timeout_secs = reader_timeout_secs(home)
     spec = invocation.SessionSpec(
         surface="miner-reader",
         prompt=prompt,
@@ -2087,13 +2116,14 @@ def _run_locked(
     excluded = 0
     total_chars = 0
     deferred_files = 0
+    limits = digest_limits(home)  # read once: one run, one set of limits
     for s in slices:
-        digest, halt = digest_transcript(s)
+        digest, halt = digest_transcript(s, limits)
         if digest is None:
             excluded += 1
             processed.append((s, halt))  # nothing minable — cursor advances
             continue
-        if total_chars + len(digest) > MAX_PROMPT_DIGESTS_CHARS:
+        if total_chars + len(digest) > limits.run_chars:
             deferred_files += 1  # stays behind the cursor for next run
             continue
         total_chars += len(digest)

@@ -3,9 +3,11 @@ timeout (`miner.INVOKE_TIMEOUT_SECS`, historically a bare module
 constant with no override) gains `miner.reader_timeout_secs()`,
 env-overridable via `SELF_LEARN_READER_TIMEOUT_SECS` with parsing,
 validation, and fallback semantics IDENTICAL to the worker's own
-`worker.invoke_timeout_secs()` / `worker.repair_timeout_secs()` — all
-three now share one helper, `worker._timeout_secs`. The `max_turns=60`
-reconciliation half of FW-100 is untouched here (out of scope).
+`worker.invoke_timeout_secs()` / `worker.repair_timeout_secs()`. Since
+2026-09-20 all three are settings-registry entries resolved by the one
+`settings.resolve_setting` (before that they shared an env-only helper,
+`worker._timeout_secs`, now removed). The `max_turns=60` reconciliation
+half of FW-100 is untouched here (out of scope).
 
 Every test below fails against the pre-change code; each docstring
 names the specific line of the change it depends on. `test_reader_
@@ -52,30 +54,49 @@ def test_invalid_values_fall_back_to_default(monkeypatch):
     falls_back` EXACTLY (same three raw values, same fallback -- never
     clamped to 0): 0, -5, and 'banana' each yield the default. Fails
     pre-change (AttributeError) -- depends on `reader_timeout_secs()`
-    sharing `worker._timeout_secs`'s `value if value > 0 else default`
-    branch rather than a from-scratch (and possibly weaker) parse."""
+    rejecting a value that is not above zero the way the worker's
+    timeouts do, rather than a from-scratch (and possibly weaker) parse."""
     for raw in ("0", "-5", "banana"):
         monkeypatch.setenv("SELF_LEARN_READER_TIMEOUT_SECS", raw)
         assert miner.reader_timeout_secs() == miner.INVOKE_TIMEOUT_SECS, raw
 
 
-def test_shares_worker_helper_not_a_reimplementation(monkeypatch):
-    """Guards the build decision (do not re-open): `reader_timeout_
-    secs()` must call through `worker._timeout_secs`, not a parallel
-    copy that could silently drift from the worker's semantics. Patches
-    `worker._timeout_secs` itself and confirms `miner.reader_timeout_
-    secs()` is a thin wrapper around it, called with the reader's own
-    env var name and default. Fails pre-change: no such call exists
-    (the function itself is absent)."""
-    calls = []
+def test_resolves_the_way_the_worker_timeouts_do(tmp_path, monkeypatch):
+    """The point of the test this replaces (`test_shares_worker_helper_
+    not_a_reimplementation`) was that the reader's timeout must not be
+    parsed by a parallel copy that could drift from the worker's. It
+    proved that by patching `worker._timeout_secs`, an env-only helper.
+    On 2026-09-20 the timeout became the registry setting `miner.
+    reader_timeout_secs` (the user's instruction: sizing parameters
+    "can't be constants we just leave hardcoded in the code"), so all
+    three timeouts now go through `settings.resolve_setting` and the
+    helper is gone. What is checked here is the same property, stated
+    for the new arrangement: the reader's timeout and the worker's two
+    behave identically on every rung -- default, env, config.yaml over
+    env, and a bad config value falling through to env."""
+    from self_learn import settings
 
-    def fake(env_var, default):
-        calls.append((env_var, default))
-        return 12345.0
-
-    monkeypatch.setattr(worker, "_timeout_secs", fake)
-    assert miner.reader_timeout_secs() == 12345.0
-    assert calls == [("SELF_LEARN_READER_TIMEOUT_SECS", miner.INVOKE_TIMEOUT_SECS)]
+    home = tmp_path / "home.d"
+    home.mkdir()
+    readers = {
+        "miner.reader_timeout_secs": miner.reader_timeout_secs,
+        "worker.invoke_timeout_secs": worker.invoke_timeout_secs,
+        "worker.repair_timeout_secs": worker.repair_timeout_secs,
+    }
+    for name, read in readers.items():
+        setting = settings.by_name(name)
+        section, key = setting.config_section, setting.config_key
+        monkeypatch.delenv(setting.env_var, raising=False)
+        (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+        assert read(home) == float(setting.default), name
+        monkeypatch.setenv(setting.env_var, "41")
+        assert read(home) == 41.0, name
+        (home / "config.yaml").write_text(f"{section}:\n  {key}: 77\n", encoding="utf-8")
+        assert read(home) == 77.0, name  # config.yaml outranks env (S-58)
+        (home / "config.yaml").write_text(f"{section}:\n  {key}: -3\n", encoding="utf-8")
+        assert read(home) == 41.0, name  # a bad config value falls through to env
+        monkeypatch.setenv(setting.env_var, "banana")
+        assert read(home) == float(setting.default), name
 
 
 # ===================================================================== #

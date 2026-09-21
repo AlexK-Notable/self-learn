@@ -135,6 +135,13 @@ PARKED_REASONS = frozenset(
     {
         "hook", "always-loaded-user-scope", "broad-removal",
         "authority-unclear", "scope-conflict", "plain-host-committed-file",
+        # 02-schema §3a (S-68, 2026-09-19): written by a RUNNER, never
+        # chosen by the steward's model -- a record whose decision reached
+        # `runs.attempt_cap` attempts without ever being decided. It asks
+        # the overseer the same thing every parked case does (decide the
+        # lesson itself) with the recorded failure reason as its evidence:
+        # what stopped the steward was the machinery, not the merits.
+        "attempts-exhausted",
     }
 )
 CONFIDENCE_VALUES = frozenset({"settled", "provisional"})

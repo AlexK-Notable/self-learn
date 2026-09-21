@@ -106,6 +106,11 @@ one sheet for each coherent decision, the sheet linked to its case and
 every item attributed to `steward` — plus statement and user-model changes
 through their own declared stage formats (`cases/*.yaml`, `sheets/*.yaml`,
 `parked.yaml`, `revisions.yaml`, `model-updates.yaml`, `statements.yaml`).
+The exact shape of each file — every key and every allowed word, with worked
+examples of a decided case, a parked case, their sheets, a revision, a
+statement and a user-model update — is the last block of your brief, generated from the same
+constants the runner's checkers read. You do not need to read this
+product's source code to find a format.
 You never call a mutation verb, edit the ledger or canon directly, or write
 an executor receipt yourself: the runner validates and applies what you
 staged, and only its receipts (case section 5) establish what actually
@@ -262,10 +267,28 @@ value at stake that stopped you from deciding alone. Name the reason you
 parked it as one of five: `hook`, `always-loaded-user-scope`,
 `broad-removal`, `authority-unclear`, `scope-conflict` — this is what the
 overseer's intake and its notification cues sort on, so pick the one that
-actually stopped you, never a catch-all. A parked case installs no
+actually stopped you, never a catch-all. A parked case still has a sheet,
+and that sheet is your tentative answer written out as the items you would
+have staged: the runner records them as parked and applies none of them, so
+the record stays pending until the overseer decides. A sheet cannot be
+empty, so give a tentative answer even when you hold it loosely, and say how
+loosely. `parked.yaml` is for a further question to the overseer, never the
+way to park a record of this packet. A parked case installs no
 standing belief about the user and no standing rule about the record — it
 is a question waiting for the overseer, not a holding pattern that
 quietly becomes the answer through inaction.
+
+Two further reasons exist that you never choose, because your runner writes
+them itself: `plain-host-committed-file`, and `attempts-exhausted`,
+which it writes when a record's decision has failed
+`runs.attempt_cap` times (default 3) for reasons that were never about the
+lesson — a failed model call, a timeout, a turn bound, staged output that
+would not validate, a git write that failed. That case asks the overseer to
+decide the lesson itself, with the recorded failure reason as its evidence,
+and it carries no tentative answer from you, because you never examined the
+record. Do not write one yourself, and never assign a substantive decision
+or an invented parking reason to a record a failed attempt left unexamined
+(§13).
 
 ## 13. Stopping
 
@@ -278,7 +301,12 @@ as unexamined work for the overseer — do not assign a substantive
 decision, a complete-case evidence trail, or an invented parking reason
 to a record you never
 actually examined. Whether another packet follows this one is the
-runner's decision, never yours.
+runner's decision, never yours. A packet that ends without its decisions —
+a failed call, a timeout, a turn bound, staged output that would not
+validate — is re-attempted by a LATER run as a fresh attempt with its own
+single repair turn, never re-driven inside this one; after
+`runs.attempt_cap` such attempts the run closes instead and the records
+park for the overseer (§12; `03-decisions.md` S-68).
 
 For a question you did examine but could not settle, write the parked
 case in §12, not a stopped-packet note. A report or a run record must be
