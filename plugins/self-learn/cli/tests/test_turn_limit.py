@@ -47,7 +47,8 @@ def test_a_session_that_ended_normally_carries_no_such_reason(tmp_path, sdk_cli_
 
 # --------------------------------------------------------------------- #
 # The limit itself: `steward.turns_per_lesson` for each lesson in the
-# batch (the user's instruction, 2026-09-19: "200 per lesson").
+# batch. The user's number: "200 per lesson" on 2026-09-19, then on
+# 2026-09-20 "bring the number down to 100 for now".
 # --------------------------------------------------------------------- #
 
 
@@ -70,14 +71,14 @@ def _write_steward_config(home, body: str) -> None:
     commit_all(home, "configure steward")
 
 
-def test_a_steward_session_gets_200_turns_for_each_lesson_in_its_batch(tmp_path, monkeypatch):
+def test_a_steward_session_gets_100_turns_for_each_lesson_in_its_batch(tmp_path, monkeypatch):
     home = make_home(tmp_path)
     _seed_fresh_proposals(home, 3)
     _write_steward_config(home, "")
 
     specs = _steward_specs(home, monkeypatch)
 
-    assert [spec.max_turns for spec in specs] == [600]
+    assert [spec.max_turns for spec in specs] == [300]
 
 
 def test_the_limit_follows_each_batchs_own_size_and_the_setting(tmp_path, monkeypatch):
@@ -95,9 +96,9 @@ def test_the_repair_round_keeps_the_batchs_limit(tmp_path):
     run_dir = tmp_path / "limit-stage"
     run_dir.mkdir()
     spec = steward._session_spec(home, run_dir, "PROMPT", label="limit", lessons=4)
-    assert spec.max_turns == 800  # the control: the first round has one
+    assert spec.max_turns == 400  # the control: the first round has one
 
-    assert steward._repair_spec(spec, "bad stage").max_turns == 800
+    assert steward._repair_spec(spec, "bad stage").max_turns == 400
 
 
 def test_claude_code_is_handed_the_sessions_own_limit(tmp_path):
@@ -106,7 +107,7 @@ def test_claude_code_is_handed_the_sessions_own_limit(tmp_path):
     run_dir.mkdir()
     spec = steward._session_spec(home, run_dir, "PROMPT", label="limit", lessons=4)
 
-    assert backend_mod.options_kwargs(spec)["max_turns"] == 800
+    assert backend_mod.options_kwargs(spec)["max_turns"] == 400
 
 
 def test_a_session_that_names_no_limit_still_gets_its_surfaces(tmp_path):
