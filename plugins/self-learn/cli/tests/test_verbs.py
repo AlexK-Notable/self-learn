@@ -481,6 +481,86 @@ class TestRouteSupersedes:
         assert not env.resolved(NEW).exists()
         assert git(env.home, "rev-parse", "HEAD").stdout.strip() == before_head
 
+    def test_completion_at_route_after_a_standalone_supersede_is_done_not_refused(self, env):
+        """2026-09-21, the steward's first real run (case-0f95cb50): its
+        sheet ran `supersede OLD → NEW` and then `route NEW`, where NEW
+        already names OLD in `supersedes:`. Route's own completion
+        preflight then found OLD 'superseded' and refused — the same
+        supersession, done one line earlier, read as an illegal status.
+        A predecessor already superseded BY THIS RECORD is a completed
+        obligation: the route goes through with no supersede leg, and
+        the preview agrees with the verb."""
+        seed(env, rid=OLD)
+        seed(env, rid=NEW, supersedes=OLD)
+        verbs.supersede(env.home, OLD, NEW)
+        old_before = env.resolved(OLD).read_bytes()
+
+        preview = verbs.route_dry_run(env.home, NEW, dest="skill-md")
+        assert preview.would_refuse == []
+
+        result = verbs.route(env.home, NEW, dest="skill-md")
+
+        # a plain route commit: the supersession was the earlier commit's
+        assert result.commit_message == f"self-learn: route {NEW} → skill-md"
+        assert env.resolved(NEW).exists()
+        assert Record.from_path(env.resolved(NEW)).status == "routed"
+        # OLD is untouched by the route — still superseded by NEW, same bytes
+        assert env.resolved(OLD).read_bytes() == old_before
+        assert f"skills/s/resolved/{OLD}.md" not in env.committed_files()
+        skill = env.skill_md.read_text(encoding="utf-8")
+        assert NEW in skill and OLD not in skill
+
+    def test_completion_at_route_still_refuses_old_superseded_by_another(self, env):
+        """The other half of the rule above: OLD superseded by a THIRD
+        record is not this record's completed obligation. The verb
+        refuses naming OLD's real status, nothing is committed, and the
+        preview reports the same refusal instead of `would-apply`."""
+        third = "lrn-33333333"
+        seed(env, rid=OLD)
+        seed(env, rid=third)
+        seed(env, rid=NEW, supersedes=OLD)
+        verbs.supersede(env.home, OLD, third)
+        before_head = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        preview = verbs.route_dry_run(env.home, NEW, dest="skill-md")
+        assert any("'superseded'" in line for line in preview.would_refuse), preview.would_refuse
+
+        with pytest.raises(verbs.VerbError) as excinfo:
+            verbs.route(env.home, NEW, dest="skill-md")
+        assert "'superseded'" in str(excinfo.value)
+        assert env.pending(NEW).exists()
+        assert git(env.home, "rev-parse", "HEAD").stdout.strip() == before_head
+
+    def test_the_stewards_supersede_then_route_sheet_applies_end_to_end(self, env, tmp_path):
+        """The exact two-item sheet the steward wrote on 2026-09-21,
+        driven through the one batch executor: the preview says both
+        would apply, and the real run applies both with exit 0 — no
+        halt, no `refused` item 2."""
+        from self_learn import batch
+
+        seed(env, rid=OLD)
+        seed(env, rid=NEW, supersedes=OLD)
+        sheet = tmp_path / "sheet.yaml"
+        sheet.write_text(
+            "version: 1\nitems:\n"
+            f"- id: {OLD}\n  verb: supersede\n  new_id: {NEW}\n"
+            f"- id: {NEW}\n  verb: route\n  dest: skill-md\n",
+            encoding="utf-8",
+        )
+        items = batch.load_sheet(sheet, home=env.home)
+        preview = batch.dry_run(env.home, items)
+        assert [i.state for i in preview.items] == ["would-apply", "would-apply"], preview.items
+
+        result = batch.run(env.home, items, no_push=True)
+
+        assert [(i.verb, i.state, i.rc) for i in result.items] == [
+            ("supersede", "applied", 0),
+            ("route", "applied", 0),
+        ], result.items
+        assert result.process_code == 0
+        assert Record.from_path(env.resolved(OLD)).superseded_by == NEW
+        assert Record.from_path(env.resolved(NEW)).status == "routed"
+
     def test_route_direct_supersedes_refuses_terminal_old(self, env):
         """FW-51 M-1 (code gate r1): `teach --route --supersedes
         <rejected-id>` drives `route_direct`'s OWN `--supersedes`

@@ -315,6 +315,32 @@ class TestT6GlobReachesUnitBehaviour:
         (nested / "f.md").write_text("f", encoding="utf-8")
         assert glob_reaches((tmp_path,), "**/x/*.md") == "match"
 
+    def test_floating_literal_file_tail_matches_a_file_below_the_root(self, tmp_path):
+        """2026-09-21: `**/.gitignore` — a floating pattern whose whole
+        tail is one literal FILE name — matched only at the root's own
+        zero-directory expansion, because the DFS tested the literal
+        against directory entries alone. The steward's first real run
+        had a `.gitignore` rule route refused as "matches nothing under
+        $HOME" while three such files sat two levels down."""
+        (tmp_path / "proj").mkdir()
+        (tmp_path / "proj" / ".gitignore").write_text("x", encoding="utf-8")
+        deep = tmp_path / "a" / "b"
+        deep.mkdir(parents=True)
+        (deep / "notes.md").write_text("x", encoding="utf-8")
+        assert glob_reaches((tmp_path,), "**/.gitignore") == "match"
+        assert glob_reaches((tmp_path,), "**/notes.md") == "match"
+        # positive control for the negative: the same shape with no such
+        # file anywhere is still `none`, not a blanket pass
+        assert glob_reaches((tmp_path,), "**/.hgignore") == "none"
+
+    def test_floating_literal_file_tail_ignores_a_symlink(self, tmp_path):
+        """The DFS is symlink-refusing (§4.3 step 5); the file-tail test
+        added beside it keeps that: a symlink named like the tail is not
+        a hit, and its target's absence is never followed."""
+        (tmp_path / "proj").mkdir()
+        (tmp_path / "proj" / ".gitignore").symlink_to(tmp_path / "elsewhere")
+        assert glob_reaches((tmp_path,), "**/.gitignore") == "none"
+
     def test_non_floating_pattern(self, tmp_path):
         (tmp_path / "docs").mkdir()
         (tmp_path / "docs" / "f.md").write_text("f", encoding="utf-8")

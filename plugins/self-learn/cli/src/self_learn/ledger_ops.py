@@ -1042,19 +1042,32 @@ def glob_reaches(
             for entry in entries:
                 try:
                     is_dir = entry.is_dir(follow_symlinks=False)
+                    is_symlink = entry.is_symlink()
                 except OSError:
                     is_dir = False
-                if not is_dir:
-                    continue
+                    is_symlink = True
                 entry_path = Path(entry.path)
-                if not literal:
-                    if _first_hit(entry_path, rem):
-                        return "match"
-                elif entry.name == literal[0]:
+                # The literal tail is tested against EVERY entry, files
+                # included, BEFORE the directory filter below: a
+                # one-segment literal tail with nothing after it
+                # (`**/.gitignore`, `**/notes.md`) is satisfied by a FILE
+                # of that name at any depth. Until 2026-09-21 only
+                # directory entries reached this test, so such a pattern
+                # matched only at the root's own zero-directory expansion
+                # and reported `none` for every real file below it — the
+                # steward's first real run had a `.gitignore` rule route
+                # refused for a pattern that matched three files under
+                # $HOME. A longer tail still needs a directory here.
+                if literal and entry.name == literal[0] and not is_symlink:
                     cand = entry_path.joinpath(*literal[1:])
                     if len(literal) == 1 or cand.is_dir():
                         if _first_hit(cand, rem):
                             return "match"
+                if not is_dir:
+                    continue
+                if not literal:
+                    if _first_hit(entry_path, rem):
+                        return "match"
                 stack.append(entry_path)
     return "none"
 

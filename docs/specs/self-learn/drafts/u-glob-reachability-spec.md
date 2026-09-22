@@ -340,7 +340,13 @@ one of `"match"`, `"none"`, `"budget"`.
      `"match"` on a hit. Then walk directories under `r` with
      `os.scandir`, testing `entry.is_dir(follow_symlinks=False)` so
      symlinked directories are never descended (no cycles). At each
-     directory entry whose name equals `literal[0]`, form
+     entry — **file or directory, never a symlink** *(amended 2026-09-21,
+     see the README revision log: the original text said "directory
+     entry", and the code followed it, so a one-part literal tail naming
+     a FILE, `**/.gitignore`, could match only at the root's own
+     zero-directory expansion; the first real steward run had such a
+     rule refused as matching nothing while three such files sat under
+     `$HOME`)* — whose name equals `literal[0]`, form
      `cand = entry.path / *literal[1:]`; if `cand.is_dir()` (or `literal`
      has a single part), return `"match"` on `_first_hit(cand, rem)`.
      When `literal` is empty, test `_first_hit(d, rem)` at every visited
