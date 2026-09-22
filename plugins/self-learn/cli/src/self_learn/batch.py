@@ -1914,10 +1914,21 @@ def run(
                         hook_activation=hook_activation,
                         execution=execution,
                     )
+                    # Read HEAD right after the dispatch, before anything
+                    # else can move it: the evidence line below and the
+                    # host-outcome halt further down both turn on whether
+                    # this ONE dispatch committed anything.
+                    no_mutation = (
+                        head_before == gitops.head_sha(home)
+                        if checkpoint_required
+                        else False
+                    )
                     if continuation is not None and item.verb in _HOST_OUTCOME_VERBS:
                         item_result.evidence = (
                             f"host result returned by {item.verb}"
                             if item_result.rc == 0
+                            else f"refused by {item.verb} before its ledger commit; nothing written"
+                            if no_mutation
                             else f"host failure returned by {item.verb}"
                         )
                     if item_result.rc in _STOP_CODES:
@@ -1933,8 +1944,6 @@ def run(
                     result.items.append(item_result)
                     if checkpoint_required:
                         assert checkpoint is not None
-                        head_after = gitops.head_sha(home)
-                        no_mutation = head_before == head_after
                         if (
                             no_mutation
                             or item_result.rc != 0

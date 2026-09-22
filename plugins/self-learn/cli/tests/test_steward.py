@@ -2735,6 +2735,8 @@ def test_a_ledger_refusal_is_retried_and_parked_with_its_reason_at_the_cap(
     evidence = view.sections["Evidence"]
     assert evidence.strip(), "positive control: the evidence section rendered"
     assert "simulated ledger refusal" in evidence, evidence
+    # the question tells the overseer the steward DID decide and the ledger refused
+    assert "the ledger refused the decision's items" in view.sections["Identity and scope"]
     # the record was NOT dropped as a bookkeeping unit beside its own parking
     assert third.abandoned_units == []
 
@@ -2816,3 +2818,47 @@ def test_the_conditions_feed_is_built_once_per_run_not_once_per_packet(tmp_path,
 
     assert result.status == "applied" and result.decided == ids and result.calls == 2
     assert feeds == 1
+
+
+def test_a_ledger_stop_mid_sheet_is_re_driven_by_the_next_run(tmp_path, monkeypatch):
+    """S-68 ruling 1: exit 6 is "a pre-mutation ledger-level failure --
+    nothing written, safe to retry". The steward never retried it: the
+    stopped sheet was receipted and its case stamped `complete`, which every
+    later run skips, so the record sat `unfinished` until the cap parked it.
+    The case is `unfinished` now, and the next run dispatches the item again."""
+    home = make_home(tmp_path)
+    rid = _seed_fresh_proposals(home, 1)[0]
+    _enable_steward(home)
+    monkeypatch.setattr(steward.invocation, "write_session", _write_decision_stage)
+    real_dispatch = steward.batch._dispatch
+    dispatched: list[str] = []
+
+    def stop_once(actual_home, item, **kwargs):
+        dispatched.append(item.verb)
+        if len(dispatched) == 1:
+            return steward.batch.ItemResult(
+                n=item.n, id=item.id, verb=item.verb, rc=6, state="stopped",
+                detail="simulated one-off ledger stop",
+            )
+        return real_dispatch(actual_home, item, **kwargs)
+
+    monkeypatch.setattr(steward.batch, "_dispatch", stop_once)
+
+    first = steward.run(home)
+
+    assert first.status == "stopped" and first.unfinished == [rid] and first.decided == []
+    assert first.run_id is not None
+    manifest = _head_manifest(home, first.run_id)
+    assert manifest["cases"][manifest["packets"][0]["case_ids"][0]]["phase"] == "unfinished"
+    assert [row["id"] for row in ledger_ops.list_items(home)] == [rid], "nothing was written"
+
+    monkeypatch.setattr(
+        steward.invocation, "write_session",
+        lambda spec: pytest.fail("a retry re-drives the committed case; it never asks the model again"),
+    )
+    second = steward.run(home)
+
+    assert dispatched == ["reject", "reject"], "the stopped item was dispatched again"
+    assert second.status == "applied" and second.decided == [rid]
+    assert ledger_ops.list_items(home) == []
+    assert _head_manifest(home, first.run_id)["status"] == "complete"

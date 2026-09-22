@@ -1749,6 +1749,30 @@ def _close_out_record(
     successor = _successor_case_for(home, run_id, record_id)
     if successor is None:
         stage_path = run_dir / f"close-out-{packet_index:04d}-{record_id}.yaml"
+        ledger_refused = "; the ledger refused: " in detail
+        if ledger_refused:
+            # The steward DID decide; the ledger would not take the items.
+            question = (
+                f"the steward decided {record_id} but the ledger refused the "
+                f"decision's items on each of {attempts} attempts; decide this "
+                "lesson yourself, using the recorded refusal as evidence (the "
+                "steward's own case and sheet are on record beside it)"
+            )
+            because = (
+                "what stopped the steward was the ledger, not the merits: "
+                f"every attempt ended with {kind}, the item refused"
+            )
+        else:
+            question = (
+                f"the steward's decision for {record_id} reached the attempt "
+                f"cap after {attempts} attempts without ever being decided; "
+                "decide this lesson itself, using the recorded failure reason "
+                "as evidence"
+            )
+            because = (
+                "what stopped the steward was the machinery, not the "
+                f"merits: every attempt ended with {kind}"
+            )
         _dump_yaml(stage_path, {
             "kind": "parked",
             "trigger": "nightly",
@@ -1758,18 +1782,10 @@ def _close_out_record(
             "run_id": run_id,
             "records": [record_id],
             "scope": _record_scope(home, record_id),
-            "question": (
-                f"the steward's decision for {record_id} reached the attempt "
-                f"cap after {attempts} attempts without ever being decided; "
-                "decide this lesson itself, using the recorded failure reason "
-                "as evidence"
-            ),
+            "question": question,
             "evidence": [{"ref": reference, "quote": detail}],
             "decision": {
-                "because": (
-                    "what stopped the steward was the machinery, not the "
-                    f"merits: every attempt ended with {kind}"
-                ),
+                "because": because,
                 "confidence": "provisional",
                 "what_would_change": [
                     "the overseer decides this lesson itself on the record's "

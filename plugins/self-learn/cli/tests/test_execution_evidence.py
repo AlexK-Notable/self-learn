@@ -1302,6 +1302,9 @@ def test_a_host_outcome_refusal_that_wrote_nothing_does_not_halt_the_sheet(
 
     assert seen == [1, 2], "item 2 was dispatched after item 1's refusal"
     assert [(item.n, item.state) for item in result.items] == [(1, "refused"), (2, "applied")]
+    # the receipt says what happened: a refusal before the ledger commit,
+    # not the "host failure" wording reserved for a failure after it.
+    assert result.items[0].evidence == "refused by route before its ledger commit; nothing written"
     assert result.stopped_at is None
     assert result.process_code == 8  # something refused, something landed
     assert receipts[0] == [1], "positive control: the refusal was receipted before item 2 ran"
