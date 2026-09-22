@@ -1230,3 +1230,112 @@ def test_case_publications_survive_real_kill_and_retry_repeat_safely(
     # Before-complete restores and the retry publishes once. The two
     # roll-forward shapes publish during recovery; retry is a no-op.
     assert after_retry == before_count + 1
+
+
+# ------------------------------------------------- the host-outcome halt
+
+
+def _refusing_dispatch(monkeypatch, *, item_n: int, before_refusing=None):
+    """Replace ONE item's ledger operation with a refusal (rc 1, HEAD left
+    where it was), or -- with `before_refusing` -- with a refusal that lands
+    a ledger commit first, the shape a host-phase failure after the ledger
+    leg has. Every other item runs for real."""
+    real = batch._dispatch
+    seen: list[int] = []
+
+    def patched(given_home, item, **kwargs):
+        seen.append(item.n)
+        if item.n != item_n:
+            return real(given_home, item, **kwargs)
+        if before_refusing is not None:
+            before_refusing()
+        return batch.ItemResult(
+            n=item.n, id=item.id, verb=item.verb, rc=1, state="refused",
+            detail="simulated refusal",
+        )
+
+    monkeypatch.setattr(batch, "_dispatch", patched)
+    return seen
+
+
+def _route_then_reject(rid: str) -> batch.Sheet:
+    return batch.Sheet(
+        [
+            batch.SheetItem(n=1, id=rid, verb="route", fields={"dest": "skill-md"}),
+            batch.SheetItem(n=2, id=rid, verb="reject", fields={}),
+        ],
+        case="case-acde1234",
+        sheet_sha="12ab34cd",
+        sheet_digest="a" * 64,
+    )
+
+
+def _fresh_continuation() -> batch.BatchContinuation:
+    return batch.BatchContinuation(
+        run_id="run-u14-01", case_id="case-acde1234", sheet_digest="a" * 64, completed={}
+    )
+
+
+def test_a_host_outcome_refusal_that_wrote_nothing_does_not_halt_the_sheet(
+    tmp_path, monkeypatch
+):
+    """A `route` turned away at preflight has written nothing: every
+    host-outcome verb commits its ledger leg before its host leg, so an
+    unchanged HEAD proves the host was never reached. That is an ordinary
+    refusal -- receipted, then the rest of the sheet runs -- not the
+    half-state the host-outcome halt exists for. (The steward's first real
+    run, 2026-09-21, lost five prepared cases to this halt.)"""
+    home = make_home(tmp_path)
+    rid = "lrn-acde1234"
+    _seed_pending(home, rid)
+    seen = _refusing_dispatch(monkeypatch, item_n=1)
+    receipts: list[list[int]] = []
+
+    def checkpoint(partial):
+        receipts.append([item.n for item in partial.items])
+        return {"state": "ok"}
+
+    result = batch.run(
+        home, _route_then_reject(rid), no_push=True, actor="steward",
+        continuation=_fresh_continuation(), checkpoint=checkpoint,
+    )
+
+    assert seen == [1, 2], "item 2 was dispatched after item 1's refusal"
+    assert [(item.n, item.state) for item in result.items] == [(1, "refused"), (2, "applied")]
+    # the receipt says what happened: a refusal before the ledger commit,
+    # not the "host failure" wording reserved for a failure after it.
+    assert result.items[0].evidence == "refused by route before its ledger commit; nothing written"
+    assert result.stopped_at is None
+    assert result.process_code == 8  # something refused, something landed
+    assert receipts[0] == [1], "positive control: the refusal was receipted before item 2 ran"
+    assert Record.from_path(find_record_path(home, rid)).status == "rejected"
+
+
+def test_a_host_outcome_failure_after_its_ledger_commit_still_halts(tmp_path, monkeypatch):
+    """The other leg of the same rule: when the ledger leg DID commit and the
+    verb still failed, the host obligation is outstanding, and only a runner
+    can report it -- the sheet halts with the untouched tail exactly as
+    before."""
+    home = make_home(tmp_path)
+    rid = "lrn-acde1234"
+    _seed_pending(home, rid)
+    before = gitops.head_sha(home)
+
+    def land_the_ledger_leg():
+        (home / "marker").write_text("ledger leg landed, host leg failed\n", encoding="utf-8")
+        commit_all(home, "simulated ledger leg of a host verb whose host leg failed")
+
+    seen = _refusing_dispatch(monkeypatch, item_n=1, before_refusing=land_the_ledger_leg)
+
+    with pytest.raises(batch.BookkeepingHalt) as info:
+        batch.run(
+            home, _route_then_reject(rid), no_push=True, actor="steward",
+            continuation=_fresh_continuation(), checkpoint=lambda partial: {"state": "ok"},
+        )
+
+    assert gitops.head_sha(home) != before, "positive control: HEAD really moved"
+    assert seen == [1], "item 2 was never dispatched"
+    assert [item.n for item in info.value.untouched_tail] == [2]
+    assert "after its ledger commit landed" in str(info.value)
+    assert [(item.n, item.state) for item in info.value.result.items] == [(1, "refused")]
+    assert Record.from_path(find_record_path(home, rid)).status == "pending"

@@ -60,7 +60,9 @@ from pathlib import Path
 from . import batch
 from . import cases
 from . import conditions
+from . import ledger_ops
 from . import records
+from . import verbs
 from . import statements
 from . import user_model
 from . import worker
@@ -339,9 +341,40 @@ def _render_containment(run: RunContext) -> str:
     return "\n".join(lines)
 
 
+#: Rulings the steward's first real run (2026-09-21) went to the repository
+#: to find -- five greps of the spec tree for "always-loaded" before it
+#: decided a user-scope route. Each headline is QUOTED, not paraphrased,
+#: and `tests/test_steward_prompt.py` checks the quote against the spec.
+STANDING_RULINGS = (
+    ("S-23", "The cheap tier is PATHED, not DEMAND — at every scope."),
+    ("SA-1", "Q1 HELD for the trial — no new escalation to always-loaded lines or to guards."),
+)
+
+
+def _render_standing_rulings() -> str:
+    lines = [
+        "STANDING RULINGS YOU WOULD OTHERWISE GO LOOKING FOR",
+        "Whether a user-scope lesson may land on an always-loaded line (the managed section",
+        "of the user's CLAUDE.md) is settled by two decisions in the design authority,",
+        "docs/specs/self-learn/03-decisions.md, and by the routing doctrine's gate",
+        "(routing-doctrine.md sections 2-3), which the analyst ran to produce each proposal's",
+        "destination and decision trace. You need not open any of them; their headlines:",
+    ]
+    for number, headline in STANDING_RULINGS:
+        note = " (user ruling 2026-09-11)" if number == "SA-1" else ""
+        lines.append(f'  {number}{note}: "{headline}"')
+    lines += [
+        "When the proposal's trace and these rulings leave you unsure whether an always-loaded",
+        "destination is yours to apply, park the case as `always-loaded-user-scope` (section 12).",
+        "`report.context_budget` in the conditions block shows that file's growth against its",
+        "threshold.",
+    ]
+    return "\n".join(lines)
+
+
 def _render_method() -> str:
     path = worker.package_skill_refs() / "steward-method.md"
-    return path.read_bytes().decode("utf-8")
+    return path.read_bytes().decode("utf-8").rstrip("\n") + "\n\n" + _render_standing_rulings()
 
 
 def _render_user_model_entry(container: str, entry: dict) -> str:
@@ -593,7 +626,28 @@ def _render_output_contract() -> str:
     out += _sheet_verb_lines()
     out += [
         "  `defer`'s `until` is a date, YYYY-MM-DD, today (UTC) or later; left out, it is 30 days.",
-        "  `route`'s `dest` may be left out, and the lesson's own proposal then supplies it.",
+        "  `route`'s `dest` may be left out, and the lesson's own proposal then supplies it. The",
+        "  rest of WHERE a route lands comes from the proposal too -- the destination's variant,",
+        "  and `rules_topic` and `rules_paths` for a path-scoped rule -- and the runner applies",
+        "  them from there; no sheet key sets or overrides them. `follow_up` (with `unblocks_on`,",
+        "  a gate label, and `follow_up_note`) records that this routing is a known-partial form",
+        "  and names the planned stronger one; `allow_empty_glob` routes a path-scoped rule whose",
+        "  glob matches nothing on this machine; `collapse` folds a merge cluster into this",
+        "  lesson as its survivor.",
+        f"  `retire`'s `covered_by` is `<kind>:<name>`, kind one of {_words(records.COVERAGE_KINDS)}:",
+        "  `claude-md:<path of the file>`, `skill-md:<skill name>`, `reference:<file name>`,",
+        "  `output-style:<style name>` -- the surface whose text already covers the lesson",
+        "  (method section 9). `supersede` marks the item's `id` (the OLD lesson) replaced by",
+        "  `new_id`, which must already exist as a record; the successor is routed by its own",
+        "  item. `rehome` and `rescope` both move a pending or deferred lesson to another",
+        "  registered scope (`to`: `user`, `skill:<name>`, or a project path). `reopen` returns a",
+        "  rejected or superseded lesson to pending.",
+        "  WHAT EACH VERB NEEDS THE LESSON'S STATUS TO BE (the verbs' own checks; a mismatch is",
+        "  a refusal naming the real status -- the runner re-drives the case on a later night",
+        "  and parks it for the overseer after the attempt cap):",
+        f"    route, reject, defer, rehome, rescope, revise:  {_words(ledger_ops.LIVE_STATUSES)}",
+        f"    retire, supersede (the old and the new lesson):  {_words(ledger_ops.RESOLVABLE_STATUSES)}",
+        f"    undefer:  {_words(ledger_ops.DEFERRED_ONLY)}      reopen:  {_words(verbs.REOPEN_ADMITTED_STATUSES)}",
         f"  These are never sheet verbs and are refused: {', '.join(sorted(batch.REFUSED_VERBS_LITERAL))}, and",
         "  anything starting `host `. A route to `dest: hook` is not applied: the runner parks",
         "  that case for the overseer.",
@@ -670,14 +724,19 @@ def assemble(
     cache_dir: Path | str,
     run: RunContext,
     proposals: list[dict],
+    *,
+    conditions_items: list[Item] | None = None,
 ) -> Packet:
     """Interface §4.1: the seven blocks, in order, evidence before advice.
     Never mutates the ledger, never reads a transcript, and never reads
     `hosts.yaml` or `settings.json` itself -- only through
-    :func:`conditions.feed`."""
+    :func:`conditions.feed`. A caller assembling several packets of ONE
+    run passes the feed it built once as ``conditions_items`` (the feed
+    is one snapshot "as of this run", plan §4.4); left out, the feed is
+    built here."""
     home = Path(home)
     cache_dir = Path(cache_dir)
-    items = conditions.feed(home, cache_dir)
+    items = conditions.feed(home, cache_dir) if conditions_items is None else list(conditions_items)
     blocks = _ordered_blocks(home, run, proposals, items)
     text = "\n\n".join(f"=== {name} ===\n{body}" for name, body in blocks)
     return Packet(blocks=blocks, text=text, withheld=withheld())

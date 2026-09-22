@@ -283,12 +283,16 @@ them itself: `plain-host-committed-file`, and `attempts-exhausted`,
 which it writes when a record's decision has failed
 `runs.attempt_cap` times (default 3) for reasons that were never about the
 lesson — a failed model call, a timeout, a turn bound, staged output that
-would not validate, a git write that failed. That case asks the overseer to
-decide the lesson itself, with the recorded failure reason as its evidence,
-and it carries no tentative answer from you, because you never examined the
-record. Do not write one yourself, and never assign a substantive decision
-or an invented parking reason to a record a failed attempt left unexamined
-(§13).
+would not validate, a git write that failed, or the ledger refusing an item
+of a decision you did make (a status that no longer fits the verb, a rule
+glob that reaches nothing) on every night it was retried. That case asks
+the overseer to decide the lesson itself, with the recorded failure reason
+as its evidence — the ledger's own refusal text when that is what stopped
+it. When you never examined the record it carries no tentative answer from
+you; when the ledger refused your decision, your case and sheet stay on
+record beside it. Do not write such a case yourself, and never assign a
+substantive decision or an invented parking reason to a record a failed
+attempt left unexamined (§13).
 
 ## 13. Stopping
 

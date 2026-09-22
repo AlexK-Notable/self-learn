@@ -1914,10 +1914,21 @@ def run(
                         hook_activation=hook_activation,
                         execution=execution,
                     )
+                    # Read HEAD right after the dispatch, before anything
+                    # else can move it: the evidence line below and the
+                    # host-outcome halt further down both turn on whether
+                    # this ONE dispatch committed anything.
+                    no_mutation = (
+                        head_before == gitops.head_sha(home)
+                        if checkpoint_required
+                        else False
+                    )
                     if continuation is not None and item.verb in _HOST_OUTCOME_VERBS:
                         item_result.evidence = (
                             f"host result returned by {item.verb}"
                             if item_result.rc == 0
+                            else f"refused by {item.verb} before its ledger commit; nothing written"
+                            if no_mutation
                             else f"host failure returned by {item.verb}"
                         )
                     if item_result.rc in _STOP_CODES:
@@ -1933,8 +1944,6 @@ def run(
                     result.items.append(item_result)
                     if checkpoint_required:
                         assert checkpoint is not None
-                        head_after = gitops.head_sha(home)
-                        no_mutation = head_before == head_after
                         if (
                             no_mutation
                             or item_result.rc != 0
@@ -1943,10 +1952,29 @@ def run(
                             _checkpoint_or_halt(
                                 checkpoint, result, list(items[idx + 1:])
                             )
-                        if item.verb in _HOST_OUTCOME_VERBS and item_result.rc != 0:
+                        # A host-outcome verb that failed AFTER its ledger
+                        # leg committed leaves a real half-state (the ledger
+                        # says routed, the host file may not), and only a
+                        # runner can report that obligation -- so the sheet
+                        # halts. One that failed with HEAD still where it was
+                        # wrote nothing at all: every one of these five verbs
+                        # commits the ledger before it touches a host file
+                        # (`_execute_route`, `reject`, `_retire_impl`,
+                        # `supersede`), so an unchanged HEAD proves the host
+                        # was never reached. That is an ordinary refusal, and
+                        # it is already receipted above; the rest of the sheet
+                        # runs. (The steward's first real run, 2026-09-21,
+                        # lost five prepared cases to a halt over a route
+                        # that had refused at preflight.)
+                        if (
+                            item.verb in _HOST_OUTCOME_VERBS
+                            and item_result.rc != 0
+                            and not no_mutation
+                        ):
                             result.process_code = decision_code(result.items)
                             raise BookkeepingHalt(
-                                f"host outcome failed for item {item.n} ({item.verb})",
+                                f"host outcome failed for item {item.n} ({item.verb}) "
+                                "after its ledger commit landed",
                                 result,
                                 list(items[idx + 1:]),
                             )

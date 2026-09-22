@@ -47,12 +47,14 @@ so a future entry whose author omits the prefix in `title` still lands
 on the same key shape.
 
 **``steward.*`` / ``overseer.*`` run records.**
-``steward.last_run_at`` / ``.last_run_outcome`` / ``.cases_since_overseer``
-read the newest ``<cache_dir>/steward/runs/<run_id>/run.json`` by file
-mtime (U10 not yet built — no run_id naming convention exists to sort by
-instead); its top-level keys are read as exactly those three suffixes.
-Absent (no runs directory yet, the expected pre-U10 state) →
-``"unavailable"`` for all three, never a missing key.
+``steward.last_run_at`` / ``.last_run_outcome`` read the newest COMPLETED
+committed run record (``cases/runs/<run_id>.json`` at HEAD, via
+:func:`steward.committed_manifests`) — its ``completed_at`` and
+``outcome``; ``.cases_since_overseer`` is :func:`steward.cases_since_overseer`.
+Until 2026-09-22 these read a cache projection whose keys never carried
+those names, so all three were "unavailable" on every real run. No
+completed run yet → ``"unavailable"`` for the first two, never a missing
+key; the count is real from the first case.
 
 O-3 adds top-level ``last_run_at`` / ``last_examined_at`` to
 ``<ledger>/overseer/coverage.yaml``. The feed reads those two persisted
@@ -193,6 +195,14 @@ def _host_items(home: Path, observed_at: str) -> list[Item]:
         resolved = str(p.resolve())
         mode = parsed.project_modes.get(resolved, "git")
         entries.append((resolved, mode))
+    # One row per host, even when the same path is registered as the skills
+    # root AND as a project (the live ledger's shape): the first registration
+    # wins, as `hosts.load_hosts` itself resolves that path.
+    seen: set[str] = set()
+    entries = [
+        entry for entry in entries
+        if not (entry[0] in seen or seen.add(entry[0]))  # type: ignore[func-returns-value]
+    ]
 
     items: list[Item] = []
     for path_str, mode in entries:
@@ -293,50 +303,40 @@ def _declared_items(home: Path, observed_at: str) -> list[Item]:
     return items
 
 
-def _newest_by_mtime(paths: list[Path]) -> Path | None:
-    best: tuple[float, Path] | None = None
-    for p in paths:
-        try:
-            mtime = p.stat().st_mtime
-        except OSError:
-            continue
-        if best is None or mtime > best[0]:
-            best = (mtime, p)
-    return best[1] if best is not None else None
-
-
-def _steward_run_items(cache_dir: Path, observed_at: str) -> list[Item]:
-    runs_dir = cache_dir / "steward" / "runs"
-    fallback_source = f"{runs_dir}/<run_id>/run.json"
-    if not runs_dir.is_dir():
-        return [
-            Item(f"steward.{k}", "unavailable", observed_at, fallback_source)
-            for k in _STEWARD_RUN_KEYS
-        ]
-    candidates = [p for p in runs_dir.glob("*/run.json") if p.is_file()]
-    newest = _newest_by_mtime(candidates)
-    if newest is None:
-        return [
-            Item(f"steward.{k}", "unavailable", observed_at, fallback_source)
-            for k in _STEWARD_RUN_KEYS
-        ]
+def _steward_run_items(home: Path, observed_at: str) -> list[Item]:
+    """The steward's own last run, from the COMMITTED run records
+    (`cases/runs/<run_id>.json` at HEAD, the same source the runner and the
+    scheduler read) -- not the cache projection, whose keys never carried
+    these three names, so every steward row read "unavailable" through
+    the first real runs (2026-09-21). `last_run_at` / `last_run_outcome`
+    are the newest COMPLETED run's `completed_at` and `outcome` (the
+    definition the brief's containment line already uses);
+    `cases_since_overseer` is the count the status view prints."""
+    source = "cases/runs/<run_id>.json at HEAD (newest complete run)"
     try:
-        data = json.loads(newest.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        source = f"{newest} failed: {exc}"
-        return [
-            Item(f"steward.{k}", "unavailable", observed_at, source)
-            for k in _STEWARD_RUN_KEYS
+        from . import steward  # deferred: steward imports the prompt, which imports this
+
+        manifests = [
+            row for row in steward.committed_manifests(home)
+            if row.get("status") == "complete" and row.get("completed_at")
         ]
-    if not isinstance(data, dict):
-        source = f"{newest}: not a JSON object"
+        since = steward.cases_since_overseer(home)
+    except Exception as exc:  # noqa: BLE001 — fail-closed, never propagate
+        failed = f"{source} failed: {exc}"
+        return [Item(f"steward.{k}", "unavailable", observed_at, failed) for k in _STEWARD_RUN_KEYS]
+    if not manifests:
         return [
-            Item(f"steward.{k}", "unavailable", observed_at, source)
-            for k in _STEWARD_RUN_KEYS
+            Item("steward.last_run_at", "unavailable", observed_at, source),
+            Item("steward.last_run_outcome", "unavailable", observed_at, source),
+            Item("steward.cases_since_overseer", since, observed_at, "steward.cases_since_overseer(home)"),
         ]
+    newest = max(manifests, key=lambda row: str(row.get("completed_at")))
+    run_source = f"cases/runs/{newest.get('run_id')}.json at HEAD"
     return [
-        Item(f"steward.{k}", data.get(k, "unavailable"), observed_at, str(newest))
-        for k in _STEWARD_RUN_KEYS
+        Item("steward.last_run_at", str(newest.get("completed_at")), observed_at, run_source),
+        Item("steward.last_run_outcome", newest.get("outcome") or newest.get("status") or "unavailable",
+             observed_at, run_source),
+        Item("steward.cases_since_overseer", since, observed_at, "steward.cases_since_overseer(home)"),
     ]
 
 
@@ -386,20 +386,10 @@ def feed(home: Path | str, cache_dir: Path | str | None = None) -> list[Item]:
     timestamp is computed once and shared by every item — the whole feed
     is one snapshot "as of this run" (plan §4.4)."""
     home = Path(home)
-    if cache_dir is None:
-        try:
-            from . import worker  # deferred: same-family reuse convention
-
-            cache_dir = worker.cache_dir(home)
-        except Exception:  # noqa: BLE001 — fail-closed; feed() never raises
-            # No readable cache dir: `_steward_run_items` below already
-            # degrades a missing/unreadable runs directory to
-            # "unavailable" for all three `steward.*` keys, so handing it
-            # a path that provably does not exist reaches the same
-            # fail-closed shape without a second code path.
-            cache_dir = home / ".self-learn-cache-unavailable"
-    else:
-        cache_dir = Path(cache_dir)
+    # `cache_dir` is accepted for the callers that pass it and no longer
+    # read: since 2026-09-22 the steward rows come from the committed run
+    # records (`_steward_run_items`), not the cache projection.
+    del cache_dir
     observed_at = chrono.now_iso()
 
     items: list[Item] = []
@@ -419,7 +409,7 @@ def feed(home: Path | str, cache_dir: Path | str | None = None) -> list[Item]:
             )
         )
     items.extend(_declared_items(home, observed_at))
-    items.extend(_steward_run_items(cache_dir, observed_at))
+    items.extend(_steward_run_items(home, observed_at))
     items.extend(_overseer_run_items(home, observed_at))
     items.append(_ledger_head_item(home, observed_at))
     return items

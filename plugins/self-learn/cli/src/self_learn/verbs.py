@@ -6277,7 +6277,9 @@ def reconsider(
 #: `superseded_by`) must stay refused, checked one level down once the
 #: record is in hand (`is_replacement`), never by widening the status
 #: set itself.
-_REOPEN_ADMITTED_STATUSES = REOPENABLE_STATUSES | frozenset({"superseded"})
+REOPEN_ADMITTED_STATUSES = REOPENABLE_STATUSES | frozenset({"superseded"})
+#: The pre-2026-09-22 private name, kept for any caller that bound it.
+_REOPEN_ADMITTED_STATUSES = REOPEN_ADMITTED_STATUSES
 
 
 def reopen(

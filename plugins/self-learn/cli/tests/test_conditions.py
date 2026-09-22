@@ -21,10 +21,10 @@ import json
 
 import pytest
 
-from self_learn import conditions, gitops, hosts, user_model, worker
+from self_learn import cases, conditions, gitops, hosts, user_model, worker
 from self_learn.ledger_ops import create_record
 from self_learn.overseer import population
-from support import make_behavior, make_home
+from support import commit_all, make_behavior, make_home
 
 # The real-~/.claude positive control (fold r1, D-h) — reused verbatim
 # from test_hook_activation.py rather than re-derived, same convention
@@ -97,10 +97,11 @@ def test_steward_and_overseer_run_records_absent_are_unavailable(tmp_path):
     by_key = _item_map(conditions.feed(home))
     for key in (
         "steward.last_run_at", "steward.last_run_outcome",
-        "steward.cases_since_overseer", "overseer.last_run_at",
-        "overseer.last_examined_at",
+        "overseer.last_run_at", "overseer.last_examined_at",
     ):
         assert by_key[key].value == "unavailable", key
+    # the count is a real reading from the first case on, never a placeholder
+    assert by_key["steward.cases_since_overseer"].value == 0
 
 
 def test_declared_items_split_key_and_value_from_title(tmp_path):
@@ -359,29 +360,28 @@ def test_report_models_and_output_style_values_are_not_unavailable_on_a_healthy_
     assert by_key["surface.output-style.active"].value == "fold-r1-happy-path-style"
 
 
-def test_steward_run_record_present_yields_real_timestamp_and_outcome(tmp_path):
-    """S8's third fail-closed group: `steward.*` only has an
-    absent-leg test (`test_steward_and_overseer_run_records_absent_are_
-    unavailable`). Write a real `run.json` and confirm the newest one
-    (by mtime) supplies real values, not "unavailable"."""
+def test_a_cache_run_projection_no_longer_feeds_the_steward_rows(tmp_path):
+    """Until 2026-09-22 the steward rows read the newest
+    `<cache_dir>/steward/runs/<run_id>/run.json`, expecting keys the
+    projection never carried. That file is now ignored entirely: the rows
+    read the committed run records (see the tests at the end of this
+    file), so a cache file spelling the old keys changes nothing."""
     home = make_home(tmp_path)
     cache_dir = tmp_path / "cache"
     runs_dir = cache_dir / "steward" / "runs" / "run-s8"
     runs_dir.mkdir(parents=True)
     (runs_dir / "run.json").write_text(
-        json.dumps(
-            {
-                "last_run_at": "2026-09-12T03:30:00Z",
-                "last_run_outcome": "completed",
-                "cases_since_overseer": 3,
-            }
-        ),
+        json.dumps({
+            "last_run_at": "2026-09-12T03:30:00Z",
+            "last_run_outcome": "completed",
+            "cases_since_overseer": 3,
+        }),
         encoding="utf-8",
     )
     by_key = _item_map(conditions.feed(home, cache_dir))
-    assert by_key["steward.last_run_at"].value == "2026-09-12T03:30:00Z"
-    assert by_key["steward.last_run_outcome"].value == "completed"
-    assert by_key["steward.cases_since_overseer"].value == 3
+    assert by_key["steward.last_run_at"].value == "unavailable"
+    assert by_key["steward.last_run_outcome"].value == "unavailable"
+    assert by_key["steward.cases_since_overseer"].value == 0
 
 
 # --------------------------------------------------------- fold r1: N1
@@ -473,7 +473,9 @@ def test_feed_survives_output_style_and_cache_dir_producer_failures(tmp_path, mo
     items = conditions.feed(home)  # must not raise -- this is the whole point
     by_key = _item_map(items)
     assert by_key["surface.output-style.active"].value == "unavailable"
-    assert by_key["steward.last_run_at"].value == "unavailable"
+    # (the steward rows used to be asserted here too; since 2026-09-22 they
+    # read the committed run records, not the cache, and have their own
+    # broken-source test at the end of this file.)
     # a group with no cache_dir/output-style dependency stays real.
     assert by_key["ledger.head"].value != "unavailable"
 
@@ -495,3 +497,84 @@ def test_negative_control_unguarded_output_style_raises_through_feed(tmp_path, m
     monkeypatch.setattr(conditions, "_output_style_item", _broken_output_style_item)
     with pytest.raises(RuntimeError):
         _unguarded_feed(home)  # RED: proves the guard, not the plumbing, is what saves feed()
+
+
+# ------------------------ 2026-09-22: the steward rows read the committed run
+
+
+def _commit_completed_steward_run(home, run_id: str, completed_at: str, outcome: str) -> None:
+    runs = home / "cases" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / f"{run_id}.json").write_text(json.dumps({
+        "run_id": run_id, "actor": "steward", "status": "complete", "outcome": outcome,
+        "started_at": completed_at, "completed_at": completed_at, "packets": [], "cases": {},
+    }, indent=2) + "\n", encoding="utf-8")
+    commit_all(home, f"steward manifest {run_id} (complete)")
+
+
+def test_steward_rows_read_the_newest_completed_committed_run(tmp_path):
+    """Until 2026-09-22 these three rows read a cache projection whose keys
+    never carried their names, so every real run's brief said
+    "unavailable" for the steward's own last run. They now read the
+    committed run records: the newest COMPLETED run's `completed_at` and
+    `outcome`, and the live count of steward cases since the overseer."""
+    home = make_home(tmp_path)
+    _commit_completed_steward_run(home, "run-0000000a", "2026-09-12T03:30:00Z", "applied")
+    _commit_completed_steward_run(home, "run-0000000b", "2026-09-20T03:30:00Z", "partial")
+    # an UNFINISHED run, newer still: never the "last run"
+    (home / "cases" / "runs" / "run-0000000c.json").write_text(json.dumps({
+        "run_id": "run-0000000c", "actor": "steward", "status": "unfinished", "outcome": None,
+        "started_at": "2026-09-21T03:30:00Z", "completed_at": None, "packets": [], "cases": {},
+    }) + "\n", encoding="utf-8")
+    commit_all(home, "steward manifest run-0000000c (unfinished)")
+    rid = "lrn-0c0d0e0f"
+    create_record(home, make_behavior(record_id=rid))
+    commit_all(home, "record seed")
+    stage = tmp_path / "steward-case.yaml"
+    stage.write_text(json.dumps({
+        "kind": "resolution", "trigger": "nightly", "outcome": "reject", "records": [rid],
+        "scope": "skill:s", "question": "keep this lesson?",
+        "evidence": [{"ref": f"record:{rid}", "quote": "status: pending"}],
+        "decision": {"verb": "reject", "because": "too narrow", "confidence": "settled"},
+    }), encoding="utf-8")
+    cases.record(home, stage, actor="steward")
+
+    by_key = _item_map(conditions.feed(home))
+
+    assert by_key["steward.last_run_at"].value == "2026-09-20T03:30:00Z"
+    assert by_key["steward.last_run_outcome"].value == "partial"
+    assert "run-0000000b" in by_key["steward.last_run_at"].source
+    assert by_key["steward.cases_since_overseer"].value == 1
+
+
+def test_steward_rows_are_unavailable_when_the_run_records_cannot_be_read(tmp_path, monkeypatch):
+    from self_learn import steward
+
+    home = make_home(tmp_path)
+
+    def _broken(home_):
+        raise RuntimeError("run records broken on purpose")
+
+    monkeypatch.setattr(steward, "committed_manifests", _broken)
+
+    by_key = _item_map(conditions.feed(home))  # must not raise
+
+    for key in ("steward.last_run_at", "steward.last_run_outcome", "steward.cases_since_overseer"):
+        assert by_key[key].value == "unavailable", key
+        assert "broken on purpose" in by_key[key].source
+    assert by_key["ledger.head"].value != "unavailable"
+
+
+def test_host_rows_are_not_doubled_when_the_skills_root_is_also_a_project(tmp_path):
+    """make_home() registers the paired host repo as BOTH the skills root
+    and a project, exactly the live ledger's shape; the feed used to emit
+    that host's mode and head rows twice."""
+    home = make_home(tmp_path)
+    parsed = hosts.load_hosts(home)
+    resolved = str(parsed.skills_root.resolve())
+    assert any(str(p.resolve()) == resolved for p in parsed.projects), "positive control: doubled registration"
+
+    items = conditions.feed(home)
+
+    assert [it.key for it in items].count(f"host.{resolved}.mode") == 1
+    assert [it.key for it in items].count(f"host.{resolved}.head") == 1

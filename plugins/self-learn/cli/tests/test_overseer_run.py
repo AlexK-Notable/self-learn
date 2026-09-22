@@ -659,7 +659,13 @@ def test_reference_reconsider_refusal_is_committed_and_not_retried(tmp_path, mon
         "record is not supported here"
     )
     text = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
-    assert result.status == "partial"
+    # The reject wrote nothing (HEAD unchanged), so it is an ordinary
+    # receipted refusal, not a bookkeeping halt: the one-item sheet is fully
+    # receipted and the run completes tonight as `refused`. (Until 2026-09-22
+    # the same refusal halted the sheet, left the run unfinished, and needed
+    # a resume to reach the same end state.)
+    assert result.status == "refused"
+    assert execution_evidence.read_manifest(home, result.run)["status"] == "complete"
     assert message in text.partition("## Refused / could not do")[2]
     assert len(calls) == 1
     assert record_path.read_bytes() == before
@@ -676,7 +682,7 @@ def test_reference_reconsider_refusal_is_committed_and_not_retried(tmp_path, mon
         lambda spec: pytest.fail("refusal recovery must not invoke the model"),
     )
     recovered = overseer_run.run(home, dry_run=False, no_push=True)
-    assert recovered.status == "refused"
+    assert recovered.status == "held-week-done", "nothing left to resume, nothing re-dispatched"
     assert len(calls) == 1
     assert execution_evidence.read_manifest(home, result.run)["status"] == "complete"
 
@@ -1306,20 +1312,82 @@ def test_a_permanent_failure_reaches_the_cap_and_closes_the_week(tmp_path, monke
     assert not overseer_run.week_done(home, next_boundary)
 
 
-def test_a_sheets_tail_behind_a_refused_host_verb_is_never_lost(tmp_path, monkeypatch):
-    """A12.  A refused host verb raises `BookkeepingHalt` with no receipt for
-    the later items.  On resume the committed refusal is final -- it is never
-    dispatched again -- but the items it left undispatched are reported as
-    "not attempted" and the run stays UNFINISHED, instead of being stamped
-    `complete` over a tail nobody will ever apply and nobody was ever told
-    about (02-schema.md: "Completion is checked against every expected
-    original `(sheet_sha, item)` key")."""
+def _dispatch_failing_after_its_ledger_commit(monkeypatch, home, *, item_n):
+    """One host-outcome verb that failed AFTER its ledger leg committed: the
+    only refusal shape that still halts a sheet (`batch.run`'s host-outcome
+    halt fires on a non-zero rc with HEAD moved; a refusal that wrote
+    nothing is an ordinary receipted refusal and the sheet continues)."""
+    real_dispatch = batch._dispatch
+    dispatched = []
+
+    def patched(given_home, item, **kwargs):
+        dispatched.append(item.n)
+        if item.n != item_n:
+            return real_dispatch(given_home, item, **kwargs)
+        (home / "marker").write_text("ledger leg landed, host leg failed\n", encoding="utf-8")
+        commit_all(home, "simulated ledger leg of a host verb whose host leg failed")
+        return batch.ItemResult(
+            n=item.n, id=item.id, verb=item.verb, rc=1, state="refused",
+            detail="simulated host-phase failure after the ledger commit",
+        )
+
+    monkeypatch.setattr(batch, "_dispatch", patched)
+    return dispatched
+
+
+def test_a_refused_host_verb_that_wrote_nothing_lets_the_rest_of_the_sheet_run(
+    tmp_path, monkeypatch
+):
+    """A host verb turned away with HEAD unchanged wrote nothing (every one
+    commits its ledger leg before its host leg), so it is an ordinary
+    receipted refusal: the later items of the same sheet are dispatched in
+    the SAME run instead of being left "not attempted" behind a halt. Here
+    item 2 (`undefer` on a record that is pending, not deferred) then
+    refuses for real, so the sheet ends fully refused and complete."""
     home = make_home(tmp_path)
     rid, parked = _seed_parked_hook(home, tmp_path)
     _enabled(monkeypatch)
     _fake_hook_phases(monkeypatch, rid, parked, extra_refusal=True)
     _silence_notifications(monkeypatch)
     dispatched = _dispatch_returning(monkeypatch, 1, item_n=1)
+
+    first = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert dispatched == [1, 2], "item 2 was dispatched in the same run"
+    assert first.status == "refused", "both items refused, nothing landed, no halt"
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    refused = report.split("## Refused / could not do\n", 1)[1]
+    assert "simulated one-off git failure" in refused, refused
+    assert "not attempted" not in refused, refused
+    # every `(sheet_sha, item)` key is receipted, so the run is complete
+    # tonight -- no unfinished tail for a resume to carry.
+    assert execution_evidence.read_manifest(home, first.run)["status"] == "complete"
+
+    monkeypatch.setattr(
+        overseer_run.invocation, "write_session",
+        lambda spec: pytest.fail("a resume must not invoke the model"),
+    )
+    second = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert dispatched == [1, 2], "committed refusals are never dispatched again"
+    assert second.status == "held-week-done"
+
+
+def test_a_sheets_tail_behind_a_refused_host_verb_is_never_lost(tmp_path, monkeypatch):
+    """A12.  A host verb that failed AFTER its ledger commit landed raises
+    `BookkeepingHalt` with no receipt for the later items.  On resume the
+    committed refusal is final -- it is never dispatched again -- but the
+    items it left undispatched are reported as "not attempted" and the run
+    stays UNFINISHED, instead of being stamped `complete` over a tail nobody
+    will ever apply and nobody was ever told about (02-schema.md:
+    "Completion is checked against every expected original `(sheet_sha,
+    item)` key")."""
+    home = make_home(tmp_path)
+    rid, parked = _seed_parked_hook(home, tmp_path)
+    _enabled(monkeypatch)
+    _fake_hook_phases(monkeypatch, rid, parked, extra_refusal=True)
+    _silence_notifications(monkeypatch)
+    dispatched = _dispatch_failing_after_its_ledger_commit(monkeypatch, home, item_n=1)
 
     first = overseer_run.run(home, dry_run=False, no_push=True)
     assert first.status == "partial"
