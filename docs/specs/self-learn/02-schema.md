@@ -1361,7 +1361,7 @@ value, observed_at, source)`.
 | settings | `models.worker`, `models.miner`, `models.analyst`, `models.steward`, `models.overseer`, `sdk.max_turns.*` |
 | `~/.claude/settings.json` `outputStyle` | `surface.output-style.active` — output styles are a canon surface that can already contain a lesson; self-learn reads them and never writes to them |
 | user-model container E | `declared.<key>` |
-| the steward's own last run | `steward.last_run_at`, `steward.last_run_outcome`, `steward.cases_since_overseer` |
+| the steward's own last run — the newest COMPLETED committed run record (`cases/runs/<run_id>.json` at HEAD: its `completed_at` and `outcome`) and the live count of steward cases opened since the overseer's last run (never the cache projection, since 2026-09-22) | `steward.last_run_at`, `steward.last_run_outcome`, `steward.cases_since_overseer` |
 | the overseer's own last run | `overseer.last_run_at`, `overseer.last_examined_at` |
 | git | `ledger.head`, `repo.head` |
 

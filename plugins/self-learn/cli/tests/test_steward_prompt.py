@@ -624,3 +624,71 @@ def test_render_briefs_preserves_the_callers_proposal_order(tmp_path):
     briefs = dict(packet.blocks)["briefs"]
     # caller order (bb before aa), never re-sorted (e.g. alphabetically).
     assert briefs.index("### brief: lrn-bb00beef") < briefs.index("### brief: lrn-aa00beef")
+
+
+# ---------------- 2026-09-22: what the first real run went looking for
+
+
+def test_output_contract_states_the_formats_the_first_real_run_went_looking_for():
+    """The 2026-09-21 run grepped the source tree for the `covered_by`
+    grammar, where a route's rules keys come from, and which status each
+    verb needs. The contract now states them, from the same constants the
+    verbs read."""
+    from self_learn import ledger_ops, records, verbs
+
+    text = steward_prompt._render_output_contract()
+    assert "`covered_by` is `<kind>:<name>`" in text
+    for kind in records.COVERAGE_KINDS:
+        assert f"`{kind}:" in text, kind
+    assert "`rules_topic` and `rules_paths`" in text
+    assert "no sheet key sets or overrides them" in text
+    assert "WHAT EACH VERB NEEDS THE LESSON'S STATUS TO BE" in text
+    for status in ledger_ops.RESOLVABLE_STATUSES:
+        assert status in text
+    assert "reopen:" in text and all(s in text for s in verbs.REOPEN_ADMITTED_STATUSES)
+    # a negative control on the generator: an invented status is not there
+    assert "frobnicated" not in text
+
+
+def test_method_block_quotes_the_standing_rulings_verbatim_from_the_spec():
+    """The same run grepped `docs/specs` five times for "always-loaded".
+    The method block now quotes the two rulings' headlines; this checks the
+    quotes against the design authority so they can never drift."""
+    spec = Path(__file__).resolve().parents[4] / "docs" / "specs" / "self-learn" / "03-decisions.md"
+    if not spec.is_file():
+        pytest.skip("spec corpus not beside this checkout")
+    spec_text = spec.read_text(encoding="utf-8")
+    rendered = steward_prompt._render_method()
+    assert "STANDING RULINGS YOU WOULD OTHERWISE GO LOOKING FOR" in rendered
+    for number, headline in steward_prompt.STANDING_RULINGS:
+        assert headline in spec_text, (number, headline)
+        assert f"| {number} |" in spec_text, number
+        assert headline in rendered, number
+    assert "always-loaded-user-scope" in rendered
+
+
+def test_assemble_uses_the_conditions_items_it_is_given(tmp_path, monkeypatch):
+    """A run of several packets builds the feed once and hands it to every
+    `assemble`; left out, `assemble` still builds its own."""
+    home = make_home(tmp_path)
+    run = steward_prompt.RunContext(
+        run_id="run-feed0001", stage_dir=tmp_path / "stage", packet_index=1,
+        packet_count=2, last_run_at=None, verbs_the_runner_executes=("batch",),
+    )
+    calls = []
+    real_feed = conditions.feed
+
+    def counted(home_, cache_dir=None):
+        calls.append(home_)
+        return real_feed(home_, cache_dir)
+
+    monkeypatch.setattr(steward_prompt.conditions, "feed", counted)
+    given = [conditions.Item("ledger.head", "deadbeefcafe", "2026-09-22T00:00:00Z", "handed in")]
+
+    packet = steward_prompt.assemble(home, tmp_path / "cache", run, [], conditions_items=given)
+
+    assert calls == [], "the feed was not rebuilt"
+    assert "deadbeefcafe" in dict(packet.blocks)["conditions"]
+
+    steward_prompt.assemble(home, tmp_path / "cache", run, [])
+    assert calls == [home], "positive control: without the argument, assemble builds the feed"

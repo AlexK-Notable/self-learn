@@ -25,6 +25,7 @@ from ruamel.yaml import YAML
 from . import (
     batch,
     cases,
+    conditions,
     execution_evidence,
     gitops,
     intents,
@@ -2123,6 +2124,7 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
         )
         packet_size = cast(int | str, packet_size_value)
         attempt_cap = int(cast(int | str, attempt_cap_value))
+        feed_items: list[conditions.Item] | None = None  # built once, on the first model call
         if unfinished_runs:
             manifest = unfinished_runs[0]
             run_id = str(manifest["run_id"])
@@ -2241,7 +2243,15 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
                     verbs_the_runner_executes=("case record", "batch --dry-run", "batch", "case receipt",
                         "user-model", "statement add", "reconsider"),
                 )
-                prompt = steward_prompt.assemble(home, cache_dir(home), context, proposals)
+                if feed_items is None:
+                    # One conditions snapshot per run (plan §4.4), not one
+                    # per packet: the feed gathers the report, the status
+                    # probe and every host's HEAD, and a 29-lesson run
+                    # rebuilt it three times for the same night.
+                    feed_items = conditions.feed(home, cache_dir(home))
+                prompt = steward_prompt.assemble(
+                    home, cache_dir(home), context, proposals, conditions_items=feed_items,
+                )
                 fsops.atomic_write(run_dir / f"packet-{packet_index:04d}.md", prompt.text, fsync=True)
                 spec = _session_spec(
                     home, run_dir, prompt.text,

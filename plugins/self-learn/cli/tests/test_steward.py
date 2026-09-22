@@ -2791,3 +2791,28 @@ def test_a_preview_refusal_leaves_the_lesson_unfinished_and_the_next_run_applies
     assert second.status == "applied" and second.decided == [rid]
     assert ledger_ops.list_items(home) == []
     assert _head_manifest(home, first.run_id)["status"] == "complete"
+
+
+def test_the_conditions_feed_is_built_once_per_run_not_once_per_packet(tmp_path, monkeypatch):
+    """The feed gathers the report, the status probe and every host's HEAD;
+    a 29-lesson run rebuilt it for each of its three packets. It is one
+    snapshot "as of this run" (plan §4.4), built on the first model call
+    and handed to every packet's brief."""
+    home = make_home(tmp_path)
+    ids = _seed_fresh_proposals(home, 2)
+    _configure_steward(home, packet_size=1)  # two packets, two model calls
+    monkeypatch.setattr(steward.invocation, "write_session", _write_decision_stage)
+    feeds = 0
+    real_feed = steward.conditions.feed
+
+    def counted(*args, **kwargs):
+        nonlocal feeds
+        feeds += 1
+        return real_feed(*args, **kwargs)
+
+    monkeypatch.setattr(steward.conditions, "feed", counted)
+
+    result = steward.run(home)
+
+    assert result.status == "applied" and result.decided == ids and result.calls == 2
+    assert feeds == 1
