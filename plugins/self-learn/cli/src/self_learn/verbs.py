@@ -3875,6 +3875,45 @@ def _unified_diff_stats(before: bytes, after: bytes) -> tuple[str, int, int]:
     return "\n".join(diff), added, removed
 
 
+def _supersede_completion_preflight(
+    home: Path, record_id: str, record: Record
+) -> tuple[str | None, Record | None, Path | None]:
+    """The `teach --supersedes` completion-at-route preflight, shared by
+    :func:`route`, :func:`route_direct` and :func:`route_dry_run` (one
+    implementation, so the preview cannot disagree with the real verb —
+    it did on 2026-09-21, see below). Returns ``(old_id, old_record,
+    old_path)`` for :func:`_execute_route` to complete the supersession
+    in the SAME commit, or ``(None, None, None)`` when the record names
+    no predecessor.
+
+    A predecessor that is ALREADY superseded BY THIS RECORD is a
+    completed obligation, not a refusal, and also returns the ``None``
+    triple: the standalone `supersede` verb ran first and left nothing
+    for the route to do. The steward's first real run (2026-09-21,
+    `run-3dfa8bebd36b`, case-0f95cb50) wrote exactly that sheet —
+    `supersede old → new`, then `route new` — and item 2 was refused
+    with *"record old is 'superseded' — route needs status
+    pending/deferred/routed"*, halting the packet with five other
+    prepared cases behind it. A predecessor superseded by any OTHER
+    record still refuses, naming its real status (FW-51), as does a
+    rejected one."""
+    old_id = record.supersedes
+    if old_id is None:
+        return None, None, None
+    old_path = find_record_path(home, old_id)
+    _scan_or_refuse([old_path], None)  # this call rewrites it too (P2-7)
+    old_record = Record.from_path(old_path)
+    if old_record.status == "superseded" and old_record.superseded_by == record_id:
+        return None, None, None
+    try:
+        _, old_record = require_status(
+            home, old_id, RESOLVABLE_STATUSES, verb="route"
+        )
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+    return old_id, old_record, old_path
+
+
 def route_dry_run(
     home: Path | str,
     record_id: str,
@@ -3913,6 +3952,17 @@ def route_dry_run(
     except LedgerOpsError as exc:
         would_refuse.append(str(exc))
         record = Record.from_path(path)  # still needed below (scope)
+
+    # The predecessor preflight the real `route` runs — previewed through
+    # the SAME helper, so a `teach --supersedes` record whose predecessor
+    # is rejected, or already superseded by a third record, reports
+    # `would-refuse` here instead of `would-apply` followed by a real
+    # refusal (that gap is what let the steward's 2026-09-21 sheet past
+    # `batch --dry-run`).
+    try:
+        _supersede_completion_preflight(home, record_id, record)
+    except (VerbError, LedgerOpsError) as exc:
+        would_refuse.append(str(exc))
 
     bucket_dir = path.parent.parent
     resolved_dest: _Destination | None = None
@@ -4911,18 +4961,9 @@ def route(
     # takes the three results as parameters rather than re-deriving them
     # post-hold (see its own docstring for why that split is load-bearing,
     # not cosmetic).
-    old_id = record.supersedes
-    old_record: Record | None = None
-    old_path: Path | None = None
-    if old_id is not None:
-        old_path = find_record_path(home, old_id)
-        _scan_or_refuse([old_path], None)  # this call rewrites it too (P2-7)
-        try:
-            _, old_record = require_status(
-                home, old_id, RESOLVABLE_STATUSES, verb="route"
-            )
-        except LedgerOpsError as exc:
-            raise VerbError(str(exc)) from exc
+    old_id, old_record, old_path = _supersede_completion_preflight(
+        home, record_id, record
+    )
 
     # Collapse preflight is disk-shape-specific (reads the proposal +
     # every member's pending file) and stays HERE — `route_direct` has no
@@ -5121,18 +5162,9 @@ def route_direct(
     # takes the three results as parameters rather than re-deriving them
     # post-hold (see its own docstring for why that split is load-bearing,
     # not cosmetic).
-    old_id = record.supersedes
-    old_record: Record | None = None
-    old_path: Path | None = None
-    if old_id is not None:
-        old_path = find_record_path(home, old_id)
-        _scan_or_refuse([old_path], None)  # this call rewrites it too (P2-7)
-        try:
-            _, old_record = require_status(
-                home, old_id, RESOLVABLE_STATUSES, verb="route"
-            )
-        except LedgerOpsError as exc:
-            raise VerbError(str(exc)) from exc
+    old_id, old_record, old_path = _supersede_completion_preflight(
+        home, record.id, record
+    )
 
     # (b) sentinel self-hold + heartbeat.
     hold = sentinel.hold()
