@@ -513,13 +513,23 @@ marker are projections and never recovery authority.
 - `partial` output names both the committed results already established
   and the original record obligations still unfinished. A failed packet
   does not erase a committed prefix or prevent a later independent packet
-  from being decided; a STOP or bookkeeping halt does stop every later
-  packet and maintenance operation.
+  from being decided; a ledger STOP (exit 5, 6 or 7) or a bookkeeping halt
+  does stop every later case, packet and maintenance operation. A sheet item
+  the ledger refused with nothing written — a route, reject, retire,
+  graduate or supersede turned away at preflight included — is receipted
+  `refused` and the rest of the sheet, the later cases and maintenance carry
+  on; only a host-outcome verb that failed AFTER its ledger commit landed
+  halts, because that is a real half-state with a host obligation
+  outstanding. A case the ledger refused (at preview or at dispatch) stays
+  `unfinished`: a later run re-drives it, and at the cap the record is parked
+  for the overseer with the ledger's refusal text as the reason. `refused`
+  is reserved for the steward's own refusals.
 - A failure that is not a judgment on the merits — the model call failed,
   timed out, hit the turn bound, staged output that would not validate, or
-  a git write failed or half-landed — is retried by a LATER run as a fresh
-  attempt with its own single repair turn, never re-driven inside the same
-  run. A decision the steward refused on its merits is never retried, and
+  a git write failed or half-landed, or the ledger refused an item of an
+  accepted decision — is retried by a LATER run as a fresh attempt with its
+  own single repair turn, never re-driven inside the same run. A decision
+  the steward refused on its merits is never retried, and
   neither is anything a secret scan blocked. After `runs.attempt_cap`
   (default 3) failed attempts the run is CLOSED so a new run can start:
   every record it could not decide gets a parked case for the overseer

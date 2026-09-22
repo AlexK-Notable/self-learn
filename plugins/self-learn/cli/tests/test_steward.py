@@ -524,10 +524,12 @@ def test_bound_ends_only_its_packet_and_later_packet_still_applies(tmp_path, mon
     assert [packet["bound"] for packet in packets] == ["turns", None]
 
 
-@pytest.mark.parametrize("code", [5, 6, 7, 8])
-def test_sheet_stop_or_aggregate_halts_later_packets_and_maintenance(
-    code, tmp_path, monkeypatch
-):
+@pytest.mark.parametrize("code", [5, 6, 7])
+def test_sheet_stop_halts_later_packets_and_maintenance(code, tmp_path, monkeypatch):
+    """A ledger STOP (5/6/7: "nothing written, safe to retry") stops every
+    later packet and the maintenance behind it. Exit 8 used to be in this
+    list; it is a finished sheet with a mixed result, not a stop, and has
+    its own test below (`..._does_not_halt_later_cases_or_maintenance`)."""
     home = make_home(tmp_path)
     ids = _seed_fresh_proposals(home, 2)
     _configure_steward(home, packet_size=1)
@@ -549,9 +551,8 @@ def test_sheet_stop_or_aggregate_halts_later_packets_and_maintenance(
         item = items[0]
         return steward.batch.BatchResult(
             items=[steward.batch.ItemResult(
-                n=item.n, id=item.id, verb=item.verb, rc=code,
-                state="stopped" if code in {5, 6, 7} else "refused",
-            )], process_code=code, stopped_at=item.n if code in {5, 6, 7} else None,
+                n=item.n, id=item.id, verb=item.verb, rc=code, state="stopped",
+            )], process_code=code, stopped_at=item.n,
             case=items.case, sheet_sha=items.sheet_sha, actor="steward",
         )
 
@@ -2614,3 +2615,179 @@ def test_the_dry_run_at_the_cap_names_the_units_it_would_drop(tmp_path, monkeypa
     # and it wrote nothing
     assert git(home, "rev-parse", "HEAD").stdout.strip() == head_before
     assert git(home, "status", "--porcelain").stdout == ""
+
+
+# ------------------------------------------- ledger refusals are not halts
+
+
+def test_a_sheet_that_applied_and_refused_does_not_halt_later_cases_or_maintenance(
+    tmp_path, monkeypatch
+):
+    """Exit 8 is a finished sheet with a known mixed result ("some items
+    applied, some refused"), not a half-state. `_apply_packet` used to break
+    on it like a STOP, leaving every later case of the packet undecided and
+    skipping maintenance -- five prepared cases in the first real run
+    (2026-09-21). Now only 5/6/7 or a bookkeeping halt stops the loop."""
+    home = make_home(tmp_path)
+    ids = _seed_fresh_proposals(home, 2)
+    _configure_steward(home, packet_size=2)  # one packet, one case per record
+    calls = 0
+
+    def write_stage(spec):
+        nonlocal calls
+        calls += 1
+        outcome = _write_decision_stage(spec)
+        match = re.search(r"^stage directory \(the only place you may write\): (.+)$", spec.prompt, re.M)
+        assert match is not None
+        _dump_yaml(Path(match.group(1)) / "statements.yaml", {"items": [{
+            "verbatim": "Lands even though one sheet was partial.",
+            "source": {"message_ref": "transcript:partial#L1"},
+        }]})
+        return outcome
+
+    real_run = steward.batch.run
+    partial_ids: list[str] = []
+
+    def partial_first(actual_home, items, **kwargs):
+        if partial_ids:
+            return real_run(actual_home, items, **kwargs)
+        item = items[0]
+        partial_ids.append(item.id)
+        return steward.batch.BatchResult(
+            items=[steward.batch.ItemResult(
+                n=item.n, id=item.id, verb=item.verb, rc=1, state="refused",
+                detail="simulated ledger refusal of one item",
+            )], process_code=8, stopped_at=None,
+            case=items.case, sheet_sha=items.sheet_sha, actor="steward",
+        )
+
+    monkeypatch.setattr(steward.invocation, "write_session", write_stage)
+    monkeypatch.setattr(steward.batch, "run", partial_first)
+
+    result = steward.run(home)
+
+    assert calls == 1
+    refused_id = partial_ids[0]
+    other_id = next(rid for rid in ids if rid != refused_id)
+    assert result.status == "partial"
+    assert result.decided == [other_id], "the case behind the partial sheet was still decided"
+    assert result.unfinished == [refused_id]
+    assert any(
+        row["verbatim"] == "Lands even though one sheet was partial."
+        for row in statements.list_statements(home)
+    ), "maintenance ran after the partial sheet"
+    assert result.run_id is not None
+    dispositions = _head_manifest(home, result.run_id)["packets"][0]["dispositions"]
+    assert dispositions[refused_id]["state"] == "unfinished"
+    assert dispositions[other_id]["state"] == "applied"
+
+
+def test_a_ledger_refusal_is_retried_and_parked_with_its_reason_at_the_cap(
+    tmp_path, monkeypatch
+):
+    """The ledger refuses an item of an accepted decision at dispatch, every
+    night. That is not the steward's judgment, so the record is not stamped
+    `refused` (terminal: it would drop out of every later run while still
+    pending -- lrn-351ba705, 2026-09-21). S-68: the case stays `unfinished`,
+    each run re-drives it with no new model call, and at the cap the record
+    is parked for the overseer carrying the LEDGER'S refusal text."""
+    home = make_home(tmp_path)
+    rid = _seed_fresh_proposals(home, 1)[0]
+    _enable_steward(home)
+    monkeypatch.setattr(overseer_notify, "send", lambda *a, **k: None)
+    calls = 0
+
+    def invoke(spec):
+        nonlocal calls
+        calls += 1
+        return _write_decision_stage(spec)
+
+    dispatched: list[str] = []
+
+    def refuse(actual_home, item, **kwargs):
+        dispatched.append(item.verb)
+        return steward.batch.ItemResult(
+            n=item.n, id=item.id, verb=item.verb, rc=1, state="refused",
+            detail=f"simulated ledger refusal: record {rid} is 'routed' — reject needs status pending",
+        )
+
+    monkeypatch.setattr(steward.invocation, "write_session", invoke)
+    monkeypatch.setattr(steward.batch, "_dispatch", refuse)
+
+    first = steward.run(home)
+    second = steward.run(home)
+    third = steward.run(home)
+
+    assert calls == 1, "the decision stands; no run asked the model again"
+    assert dispatched == ["reject", "reject", "reject"], "every run re-drove the refused item"
+    assert first.status == "partial" and first.unfinished == [rid] and first.decided == []
+    assert second.unfinished == [rid] and second.abandoned == []
+    assert third.abandoned == [rid]
+    assert [row["id"] for row in ledger_ops.list_items(home)] == [rid], "nothing was written"
+    rows = cases.list_cases(home, record_id=rid, parked_for="overseer", parked_reason="attempts-exhausted")
+    assert len(rows) == 1
+    assert first.run_id is not None
+    disposition = _head_manifest(home, first.run_id)["packets"][0]["dispositions"][rid]
+    assert disposition["state"] == "abandoned" and disposition["attempts"] == 3
+    assert "simulated ledger refusal" in disposition["reason"], disposition["reason"]
+    assert f"reject {rid}:" in disposition["reason"]
+    view = cases.show(home, rows[0]["case"], evidence_only=False)
+    evidence = view.sections["Evidence"]
+    assert evidence.strip(), "positive control: the evidence section rendered"
+    assert "simulated ledger refusal" in evidence, evidence
+    # the record was NOT dropped as a bookkeeping unit beside its own parking
+    assert third.abandoned_units == []
+
+
+def test_a_preview_refusal_leaves_the_lesson_unfinished_and_the_next_run_applies_it(
+    tmp_path, monkeypatch
+):
+    """The preview says `would-refuse` tonight (the ledger as it stands),
+    so nothing is dispatched. That used to stamp the case `refused` --
+    terminal. Now it is `unfinished`: the next run re-drives the same case
+    without a model call, and when the preview is clean the sheet applies."""
+    home = make_home(tmp_path)
+    rid = _seed_fresh_proposals(home, 1)[0]
+    _enable_steward(home)
+    monkeypatch.setattr(steward.invocation, "write_session", _write_decision_stage)
+    real_preview = steward.batch.dry_run
+    previews = 0
+
+    # The runner previews twice per fresh packet: once while validating the
+    # staged sheet, once in `_apply_packet` right before dispatch. The
+    # second is the one whose verdict decides the case.
+    def refuse_the_apply_time_preview(*args, **kwargs):
+        nonlocal previews
+        previews += 1
+        result = real_preview(*args, **kwargs)
+        if previews == 2:
+            for item in result.items:
+                item.state = "would-refuse"
+                item.detail = "simulated: the ledger would refuse this tonight"
+        return result
+
+    monkeypatch.setattr(steward.batch, "dry_run", refuse_the_apply_time_preview)
+
+    first = steward.run(home)
+
+    assert previews == 2, "positive control: the apply-time preview ran"
+    assert first.status == "partial" and first.unfinished == [rid] and first.decided == []
+    assert [row["id"] for row in ledger_ops.list_items(home)] == [rid], "nothing was dispatched"
+    assert first.run_id is not None
+    manifest = _head_manifest(home, first.run_id)
+    packet = manifest["packets"][0]
+    assert packet["dispositions"][rid]["state"] == "unfinished"
+    case_id = packet["case_ids"][0]
+    assert manifest["cases"][case_id]["phase"] == "unfinished"
+    assert "simulated: the ledger would refuse" in json.dumps(manifest["cases"][case_id]["result"])
+
+    monkeypatch.setattr(
+        steward.invocation, "write_session",
+        lambda spec: pytest.fail("a retry re-drives the committed case; it never asks the model again"),
+    )
+    second = steward.run(home)
+
+    assert previews == 3, "the re-drive previewed once more, against tonight's ledger"
+    assert second.status == "applied" and second.decided == [rid]
+    assert ledger_ops.list_items(home) == []
+    assert _head_manifest(home, first.run_id)["status"] == "complete"

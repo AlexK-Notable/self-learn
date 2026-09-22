@@ -1118,7 +1118,13 @@ unproven suffix; it never reserializes or renumbers a remainder. Proven
 successful items are skipped. A no-op, refusal, or owner-returned host
 outcome is written to Application before the next dependent item dispatches;
 failure of that ordered receipt checkpoint halts with the actual partial
-batch result and untouched tail. A host result reconstructed after an
+batch result and untouched tail. A host-outcome verb (`route`, `reject`,
+`retire`, `graduate`, `supersede`) that returned non-zero with the ledger's
+HEAD unchanged wrote nothing — each commits its ledger leg before its host
+leg — and is an ordinary refusal: receipted, and the sheet continues. One
+that failed after its ledger commit landed halts the same way, with the
+partial result and untouched tail, because its host obligation is
+outstanding. A host result reconstructed after an
 interruption names `recompile` as its source. A trailer proves only the ledger
 leg and never authorizes repeating that leg or inventing a host exit code. If
 `recompile` refuses an implicated target, the continuation carries that
