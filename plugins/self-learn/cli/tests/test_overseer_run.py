@@ -36,7 +36,7 @@ def _enabled(monkeypatch):
     monkeypatch.setattr(settings, "resolve_setting", resolve)
 
 
-def _fake_two_phase(monkeypatch, *, a_turns=2, b_turns=3, secret=False):
+def _fake_two_phase(monkeypatch, *, a_turns=2, b_turns=3, secret=False, b_limit=False):
     calls = []
 
     def invoke(spec):
@@ -68,6 +68,8 @@ def _fake_two_phase(monkeypatch, *, a_turns=2, b_turns=3, secret=False):
                 with (stage / name).open("w", encoding="utf-8") as fh:
                     yaml.dump(data, fh)
             turns = b_turns
+            if b_limit:
+                return _turn_limited()
         return type("SdkLike", (), {
             "ok": True, "rc": 0, "stdout": "", "detail": "",
             "failure": None, "turns": turns,
@@ -319,16 +321,88 @@ def test_phase_a_timeout_never_starts_b(tmp_path, monkeypatch):
     assert not (home / "overseer").exists()
 
 
-def test_runaway_after_a_never_starts_b(tmp_path, monkeypatch):
+@pytest.mark.parametrize("guard", [0, 1])
+def test_a_guard_below_the_two_model_calls_a_run_makes_holds_before_any_call(
+    tmp_path, monkeypatch, guard
+):
+    """S-66: "About 50 model calls per run is a runaway guard." A run makes
+    two (phase A, then phase B); a guard that cannot admit both holds the
+    run before the first, so no call is spent on output that could never
+    be applied, and nothing is committed."""
     home = make_home(tmp_path)
-    calls = _fake_two_phase(monkeypatch, a_turns=50)
+    monkeypatch.setenv("SELF_LEARN_OVERSEER_MAX_MODEL_CALLS", str(guard))
+    calls = _fake_two_phase(monkeypatch)
     result = overseer_run.run(home, dry_run=True, no_push=True)
     assert result.status == "runaway"
     assert result.code == 1
-    assert result.model_calls == 50
-    assert len(calls) == 1
-    assert "runaway" in Path(result.report).read_text(encoding="utf-8").lower()
+    assert result.model_calls == 0
+    assert calls == []
     assert not (home / "overseer").exists()
+
+
+def test_a_guard_of_exactly_two_admits_a_complete_run(tmp_path, monkeypatch):
+    """Positive control for the hold above: the boundary value runs both phases."""
+    home = make_home(tmp_path)
+    monkeypatch.setenv("SELF_LEARN_OVERSEER_MAX_MODEL_CALLS", "2")
+    calls = _fake_two_phase(monkeypatch)
+    result = overseer_run.run(home, dry_run=True, no_push=True)
+    assert result.status == "dry-run"
+    assert result.model_calls == 2
+    assert len(calls) == 2
+
+
+def test_a_phase_a_that_called_many_tools_goes_on_to_phase_b(tmp_path, monkeypatch):
+    """The first real overseer run (2026-09-24, run 70938b8e): phase A read
+    its 46 blind cases in eight model responses, reported `num_turns` 53 --
+    Claude Code's count advances once per tool result -- and was discarded
+    as a runaway against the guard of 50 before phase B. A session that
+    ended normally is judged on its files; the guard counts model calls."""
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    calls = _fake_two_phase(monkeypatch, a_turns=53, b_turns=500)
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+    assert result.status == "applied", result
+    assert result.model_calls == 2
+    assert len(calls) == 2
+    assert overseer_run._committed_failure_notes(home, _this_week()) == []
+
+
+def _turn_limited(detail="Reached maximum number of turns (80)", subtype="error_max_turns"):
+    """A session Claude Code itself stopped: a FAILED call whose result
+    subtype says so (the shape `SdkOutcome` carries since 5ea7df8)."""
+    return type("SdkLike", (), {
+        "ok": False, "rc": 1, "stdout": "", "detail": detail,
+        "failure": "exit", "turns": 81, "result_subtype": subtype,
+    })()
+
+
+@pytest.mark.parametrize(
+    ("subtype", "kind"), [("error_max_turns", "turns"), (None, "exit")],
+)
+def test_phase_a_stopped_at_claude_codes_turn_limit_is_a_turns_failure(
+    tmp_path, monkeypatch, subtype, kind
+):
+    """`turns` means Claude Code stopped the session at its own limit and
+    said so; any other failed call keeps its transport kind."""
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    calls = []
+
+    def invoke(spec):
+        calls.append(spec)
+        return _turn_limited(subtype=subtype)
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+    assert result.status == "refused"
+    assert len(calls) == 1
+    notes = overseer_run._committed_failure_notes(home, _this_week())
+    assert len(notes) == 1
+    text = (home / notes[0]).read_text(encoding="utf-8")
+    assert f"- failure: {kind}\n" in text, text
+    assert "Reached maximum number of turns (80)" in text, text
 
 
 def test_coverage_precedes_uncapped_parked_intake(tmp_path, monkeypatch):
@@ -385,16 +459,27 @@ def test_failed_activation_hook_line_names_the_record_once(tmp_path, monkeypatch
     assert f"{rid}: {rid}:" not in hooks
 
 
-def test_phase_b_runaway_applies_nothing(tmp_path, monkeypatch):
+def test_phase_b_stopped_at_claude_codes_turn_limit_applies_nothing(tmp_path, monkeypatch):
     home = make_home(tmp_path)
-    _fake_two_phase(monkeypatch, a_turns=2, b_turns=48)
+    _fake_two_phase(monkeypatch)
+    real = overseer_run.invocation.write_session
+
+    def invoke(spec):
+        outcome = real(spec)
+        return _turn_limited() if spec.label == "phase-b" else outcome
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
     applied = []
     monkeypatch.setattr(overseer_run.batch, "run", lambda *a, **kw: applied.append((a, kw)))
     _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
     result = overseer_run.run(home, dry_run=False, no_push=True)
-    assert result.status == "runaway"
-    assert result.model_calls == 50
+    assert result.status == "refused"
+    assert result.model_calls == 2
     assert applied == []
+    notes = overseer_run._committed_failure_notes(home, _this_week())
+    assert len(notes) == 1
+    assert "- failure: turns\n" in (home / notes[0]).read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("gate", [False, True])
@@ -1165,7 +1250,7 @@ def _silence_notifications(monkeypatch):
     return notices
 
 
-def _fake_phases_by_label(monkeypatch, *, a_turns=2, b_turns=3):
+def _fake_phases_by_label(monkeypatch, *, a_turns=2, b_turns=3, b_limit=False):
     """`_fake_two_phase` keyed on `spec.label` instead of a call counter, so
     a test can drive the overseer more than once in one process."""
     def invoke(spec):
@@ -1188,6 +1273,8 @@ def _fake_phases_by_label(monkeypatch, *, a_turns=2, b_turns=3):
             _dump(stage / "questions.yaml", {"questions": []})
             _dump(stage / "user-model-delta.yaml", {"updates": []})
             turns = b_turns
+            if b_limit:
+                return _turn_limited()
         return type("SdkLike", (), {
             "ok": True, "rc": 0, "stdout": "", "detail": "", "failure": None, "turns": turns,
         })()
@@ -1440,12 +1527,12 @@ def test_a_failed_attempt_never_blanks_last_weeks_open_questions(tmp_path, monke
     assert b"um-1a2b@r1" in before, "positive control: the index is there to lose"
 
     _enabled(monkeypatch)
-    _fake_two_phase(monkeypatch, a_turns=2, b_turns=48)  # runaway after phase B
+    _fake_two_phase(monkeypatch, b_limit=True)  # phase B stopped at its turn limit
     _silence_notifications(monkeypatch)
 
     result = overseer_run.run(home, dry_run=False, no_push=True)
 
-    assert result.status == "runaway", "positive control: the attempt really failed"
+    assert result.status == "refused", "positive control: the attempt really failed"
     assert questions.read_bytes() == before
     assert _git(home, "status", "--porcelain") == ""
 
@@ -1463,12 +1550,12 @@ def test_coverage_does_not_advance_when_the_second_call_fails(tmp_path, monkeypa
     assert b"2026-09-01T04:15:00Z" in before, "positive control: coverage is there to move"
 
     _enabled(monkeypatch)
-    _fake_two_phase(monkeypatch, a_turns=2, b_turns=48)
+    _fake_two_phase(monkeypatch, b_limit=True)
     _silence_notifications(monkeypatch)
 
     result = overseer_run.run(home, dry_run=False, no_push=True)
 
-    assert result.status == "runaway", "positive control: the second call really failed"
+    assert result.status == "refused", "positive control: the second call really failed"
     assert coverage.read_bytes() == before
     assert _git(home, "status", "--porcelain") == ""
 
@@ -1480,14 +1567,14 @@ def test_a_second_report_on_the_same_day_does_not_overwrite_the_first(tmp_path, 
     _enabled(monkeypatch)
     # Keyed on the phase LABEL, not on a call counter: this test runs the
     # overseer twice, so the second run's phase A is the third call.
-    _fake_phases_by_label(monkeypatch, a_turns=2, b_turns=48)
+    _fake_phases_by_label(monkeypatch, b_limit=True)
     _silence_notifications(monkeypatch)
 
     first = overseer_run.run(home, dry_run=False, no_push=True)
     second = overseer_run.run(home, dry_run=False, no_push=True)
 
     assert first.run != second.run
-    assert (first.status, second.status) == ("runaway", "runaway")
+    assert (first.status, second.status) == ("refused", "refused")
     dated = sorted(
         p.name for p in (home / "overseer").glob("*-report*.md")
         if p.name != "latest-report.md"
@@ -1503,12 +1590,12 @@ def test_a_second_report_on_the_same_day_does_not_overwrite_the_first(tmp_path, 
     assert f"run {second.run}" in latest
 
 
-def test_an_unreported_turn_count_fails_the_runaway_guard_closed(tmp_path, monkeypatch):
-    """A10.  `int(getattr(outcome, "turns", 0) or 0)` read a missing turn
-    count as ZERO -- the one value that can never trip the guard.
-    `invocation.Outcome` carries no `turns` attribute at all and
-    `invocation_sdk.SdkOutcome.turns` is `int | None`, so this is the shape a
-    real session presents when it reports no count."""
+def test_an_unreported_turn_count_does_not_stop_the_run(tmp_path, monkeypatch):
+    """Was A10: the guard read `num_turns` and failed closed on a missing
+    one. The guard now counts model calls (S-66) and never reads that
+    number, so a session that reports none -- `invocation.Outcome` carries
+    no `turns` at all; `SdkOutcome.turns` is `int | None` -- is judged on
+    its files like any other."""
     home = make_home(tmp_path)
     _enabled(monkeypatch)
     _fake_two_phase(monkeypatch)
@@ -1527,10 +1614,9 @@ def test_an_unreported_turn_count_fails_the_runaway_guard_closed(tmp_path, monke
     monkeypatch.setattr(overseer_run.invocation, "write_session", countless)
     result = overseer_run.run(home, dry_run=False, no_push=True)
 
-    assert result.status == "runaway"
-    text = Path(result.report).read_text(encoding="utf-8")
-    assert "reported no turn count" in text, text
-    assert len(overseer_run._committed_failure_notes(home, _this_week())) == 1
+    assert result.status == "applied", result
+    assert result.model_calls == 2
+    assert overseer_run._committed_failure_notes(home, _this_week()) == []
 
 
 def _fake_caseless_phases(monkeypatch, rid, *, case_kind):
@@ -1627,23 +1713,23 @@ def test_three_failed_phase_b_attempts_close_the_week_with_a_published_question(
     it from -- and the user is notified once."""
     home = make_home(tmp_path)
     _enabled(monkeypatch)
-    _fake_phases_by_label(monkeypatch, a_turns=2, b_turns=48)
+    _fake_phases_by_label(monkeypatch, b_limit=True)
     notices = _silence_notifications(monkeypatch)
     week = _this_week()
 
     first = overseer_run.run(home, dry_run=False, no_push=True)
-    assert first.status == "runaway"
+    assert first.status == "refused"
     assert len(overseer_run._committed_failure_notes(home, week)) == 1
     assert not overseer_run.week_closed(home, week), "positive control: not yet at the cap"
 
     second = overseer_run.run(home, dry_run=False, no_push=True)
-    assert second.status == "runaway"
+    assert second.status == "refused"
     assert overseer_run.week_attempts(home, week) == 2
     notices.clear()
 
     third = overseer_run.run(home, dry_run=False, no_push=True)
 
-    assert third.status == "runaway"
+    assert third.status == "refused"
     assert overseer_run.week_closed(home, week)
     report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
     block = report.split("## Questions for you\n", 1)[1].split("\n## ", 1)[0]
@@ -1674,7 +1760,7 @@ def test_a_close_out_the_cap_earned_but_no_run_wrote_is_written_before_the_hold(
     close-out is retried, counts nothing of its own, and is idempotent."""
     home = make_home(tmp_path)
     _enabled(monkeypatch)
-    _fake_phases_by_label(monkeypatch, a_turns=2, b_turns=48)
+    _fake_phases_by_label(monkeypatch, b_limit=True)
     notices = _silence_notifications(monkeypatch)
     week = _this_week()
     real_close_out = overseer_run._close_out_if_exhausted

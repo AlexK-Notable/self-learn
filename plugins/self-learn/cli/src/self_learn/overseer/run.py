@@ -100,27 +100,36 @@ def _failure_detail(text: object) -> str | None:
     return flat
 
 
-def _turns(outcome: Any, guard: int) -> tuple[int, bool]:
-    """A10: the runaway guard fails CLOSED.  Returns (count, reported).
+#: S-66: "About 50 model calls per run is a runaway guard, not a ration."
+#: A run makes exactly this many: phase A, then phase B. A resumed run makes
+#: none. `overseer.max_model_calls` is compared with THIS count.
+_MODEL_CALLS_PER_RUN = 2
 
-    ``int(getattr(outcome, "turns", 0) or 0)`` read a missing, ``None`` or
-    non-integer turn count as ZERO — the one value that can never trip the
-    guard.  A count we cannot read is treated as being AT the bound instead:
-    the guard exists to stop a runaway, and "the session did not say how many
-    turns it took" is exactly the shape a runaway can present.
 
-    ``reported`` is False for such a count, so the refusal can say that the
-    session reported no count rather than claiming an observed runaway.  It
-    matters because a failed attempt is now retried and, at
-    ``runs.attempt_cap``, becomes a question put to the user: that question
-    has to name the real reason.  ``invocation.Outcome`` carries no ``turns``
-    attribute at all and ``invocation_sdk``'s ``SdkOutcome.turns`` is
-    ``int | None``, so both shapes reach here in practice.
-    """
+def _reported_turns(outcome: Any) -> int | None:
+    """The session's own `num_turns`, for the journal only -- never the
+    runaway guard's count.
+
+    Claude Code advances `num_turns` once per tool result (measured
+    2026-09-19; revision log 2026-09-20), so it counts files read, not model
+    calls. The guard used to compare it with `overseer.max_model_calls`: the
+    first real overseer run (2026-09-24, run 70938b8e) read its 46 blind
+    cases in eight model responses, reported 53, and was discarded as a
+    runaway before phase B. A session Claude Code itself stops at its turn
+    limit arrives as a failed call instead (:func:`_failure_kind`)."""
     value = getattr(outcome, "turns", None)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return guard, False
-    return value, True
+        return None
+    return value
+
+
+def _failure_kind(outcome: Any) -> str:
+    """A failed call's kind: `turns` when Claude Code stopped the session at
+    its own turn limit and said so (result subtype `error_max_turns`, the
+    steward's rule since 2026-09-20), else the transport's own kind."""
+    if getattr(outcome, "result_subtype", None) == "error_max_turns":
+        return "turns"
+    return getattr(outcome, "failure", None) or "invocation"
 
 
 @dataclass(frozen=True)
@@ -2644,6 +2653,18 @@ def run(home: Path | str | None = None, *, dry_run: bool = False, no_push: bool 
     model = provider.model_for("overseer", home=home)
     guard = cast(int, guard)
     timeout_seconds = cast(float, timeout)
+    if guard < _MODEL_CALLS_PER_RUN:
+        # A guard below the calls every run makes admits no complete run:
+        # hold before the first call rather than spend one whose output
+        # could never be applied. The attempt-start line above has already
+        # armed the scheduler's cooldown, so this cannot re-run every tick,
+        # and no failure note is written: no model call was made.
+        reason = (
+            f"runaway guard {guard} is below the {_MODEL_CALLS_PER_RUN} model "
+            "calls a run makes; no model call was started"
+        )
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "runaway", "reason": reason})
+        return RunResult("runaway", EXIT_REFUSED, run_id)
 
     worker.stage_reset(home)
     stage = worker.stage_dir() / "overseer"
@@ -2664,44 +2685,29 @@ def run(home: Path | str | None = None, *, dry_run: bool = False, no_push: bool 
     _journal(home, {"at": started, "run": run_id, "status": "population", "count": len(blind), "excluded": excluded})
 
     outcome_a = _invoke(home, stage, prompt_a, timeout_seconds, "phase-a", run_id)
-    turns_a, turns_a_reported = _turns(outcome_a, guard)
+    model_calls = 1
+    _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-a-returned",
+        "ok": bool(outcome_a.ok), "tool_turns": _reported_turns(outcome_a)})
     # A15: a failure of the FIRST model call leaves a committed trace with
     # its real reason. It happens before any `intents.begin` here, so the
     # note opens its own `intents.ledger_write` span. A dry run writes
     # none — a rehearsal must not suppress the real run behind it.
+    # A session that ENDED NORMALLY is judged on the files it wrote, never on
+    # how many tools it called (`_reported_turns`); one Claude Code stopped
+    # at its own turn limit arrives here already failed, labelled `turns`.
     if not outcome_a.ok:
         state = "timed-out" if outcome_a.failure == "timeout" else "refused"
-        kind = outcome_a.failure or "invocation"
+        kind = _failure_kind(outcome_a)
         detail = _failure_detail(outcome_a.detail)
         reason = f"phase A {state}; no phase A output was used"
         _commit_phase_a_failure(
             home, dry_run=dry_run, week=week, attempt=attempt, cap=cap,
             run_id=run_id, started=started, kind=kind, detail=detail,
             model=str(model), population_count=len(week_rows), excluded=excluded,
-            model_calls=turns_a, guard=guard, reason=reason,
+            model_calls=model_calls, guard=guard, reason=reason,
         )
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": state, "phase": "a", "reason": (detail or kind)[:300]})
-        return RunResult(state, EXIT_REFUSED, run_id, turns_a, excluded=excluded)
-    if turns_a >= guard:
-        observed = (
-            f"runaway guard reached after phase A at {turns_a} calls"
-            if turns_a_reported
-            else "phase A reported no turn count; the runaway guard fails closed"
-        )
-        reason = f"{observed}; phase B was not started"
-        detail = _failure_detail(reason)
-        published = _commit_phase_a_failure(
-            home, dry_run=dry_run, week=week, attempt=attempt, cap=cap,
-            run_id=run_id, started=started, kind="turns", detail=detail,
-            model=str(model), population_count=len(week_rows), excluded=excluded,
-            model_calls=turns_a, guard=guard, reason=reason,
-        )
-        report_path = published or _write_report_only(
-            stage,
-            _report_text(date=started[:10], run_id=run_id, model=str(model), selected=(), population_count=len(week_rows), excluded=excluded, model_calls=turns_a, guard=guard, reason=reason),
-        )
-        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "runaway", "phase": "a", "turns": turns_a})
-        return RunResult("runaway", EXIT_REFUSED, run_id, turns_a, excluded=excluded, report=str(report_path))
+        return RunResult(state, EXIT_REFUSED, run_id, model_calls, excluded=excluded)
 
     try:
         selection = _yaml_mapping(stage / "selection.yaml")
@@ -2713,10 +2719,10 @@ def run(home: Path | str | None = None, *, dry_run: bool = False, no_push: bool 
             home, dry_run=dry_run, week=week, attempt=attempt, cap=cap,
             run_id=run_id, started=started, kind="schema-repair", detail=detail,
             model=str(model), population_count=len(week_rows), excluded=excluded,
-            model_calls=turns_a, guard=guard, reason=str(exc),
+            model_calls=model_calls, guard=guard, reason=str(exc),
         )
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "a-incomplete", "reason": str(exc)[:300]})
-        return RunResult("refused", EXIT_REFUSED, run_id, turns_a, excluded=excluded)
+        return RunResult("refused", EXIT_REFUSED, run_id, model_calls, excluded=excluded)
 
     now_dt = datetime.now(timezone.utc)
     coverage = population_mod.coverage_update(previous, selection, week_rows, offered, now=now_dt)
@@ -2744,20 +2750,17 @@ def run(home: Path | str | None = None, *, dry_run: bool = False, no_push: bool 
         prompt_b = _phase_b_prompt(stage, selected, tuple(row["case"] for row in parked_rows))
         _write_stage(stage, stage / "prompt-b.md", prompt_b)
         outcome_b = _invoke(home, stage, prompt_b, timeout_seconds, "phase-b", run_id)
-        turns_b, turns_b_reported = _turns(outcome_b, guard)
-        model_calls = turns_a + turns_b
-        if not outcome_b.ok or model_calls >= guard:
-            state = "runaway" if model_calls >= guard else ("timed-out" if outcome_b.failure == "timeout" else "refused")
-            if state == "runaway":
-                reason = (
-                    f"runaway guard reached after phase B at {model_calls} calls"
-                    if turns_b_reported
-                    else "phase B reported no turn count; the runaway guard fails closed"
-                ) + "; phase B output was not applied"
-                kind = "turns"
-            else:
-                reason = f"phase B {state}; no phase B output was applied"
-                kind = outcome_b.failure or "invocation"
+        model_calls = _MODEL_CALLS_PER_RUN
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-b-returned",
+            "ok": bool(outcome_b.ok), "tool_turns": _reported_turns(outcome_b)})
+        # As for phase A: a phase B that ended normally is judged on its
+        # files; the guard was settled before phase A (`guard <
+        # _MODEL_CALLS_PER_RUN` holds the run), so a complete answer is never
+        # discarded here for the number of tools it called.
+        if not outcome_b.ok:
+            state = "timed-out" if outcome_b.failure == "timeout" else "refused"
+            reason = f"phase B {state}; no phase B output was applied"
+            kind = _failure_kind(outcome_b)
             detail = _failure_detail(f"{reason} ({outcome_b.detail})" if outcome_b.detail else reason)
             closed_text, close_questions = (None, [])
             if not dry_run:
@@ -2776,7 +2779,7 @@ def run(home: Path | str | None = None, *, dry_run: bool = False, no_push: bool 
                 )
                 if closed_text is not None:
                     _queue_week_closed(deferred_notice, home, week, attempt, kind, [run_id])
-            _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": state, "phase": "b", "turns": model_calls})
+            _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": state, "phase": "b", "model_calls": model_calls})
             return RunResult(state, EXIT_REFUSED, run_id, model_calls, selected, excluded, report=str(report_path))
 
         required = [
