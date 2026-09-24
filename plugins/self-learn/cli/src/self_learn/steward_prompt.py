@@ -196,8 +196,7 @@ case: $CASE_ID
 items:
   - id: lrn-0a1b2c3d
     verb: route
-    dest: claude-md
-    note: recurred twice; nothing existing covers it
+    note: recurred twice; nothing existing covers it; the proposal's destination stands
 """,
     "cases/two-duplicates.yaml": """\
 kind: resolution
@@ -626,10 +625,17 @@ def _render_output_contract() -> str:
     out += _sheet_verb_lines()
     out += [
         "  `defer`'s `until` is a date, YYYY-MM-DD, today (UTC) or later; left out, it is 30 days.",
-        "  `route`'s `dest` may be left out, and the lesson's own proposal then supplies it. The",
-        "  rest of WHERE a route lands comes from the proposal too -- the destination's variant,",
-        "  and `rules_topic` and `rules_paths` for a path-scoped rule -- and the runner applies",
-        "  them from there; no sheet key sets or overrides them. `follow_up` (with `unblocks_on`,",
+        "  WHERE A ROUTE LANDS. Leave `route`'s `dest` out to take the lesson's proposal exactly",
+        "  as written: its destination AND its variant -- `local` (the host's git-ignored",
+        "  CLAUDE.local.md) or `rules` (a path-scoped file under .claude/rules/, with the",
+        "  proposal's `rules_topic` and `rules_paths`). Writing `dest` REPLACES the proposal's",
+        "  whole destination, variant included: a bare `dest: claude-md` is the host's plain",
+        "  CLAUDE.md, which on a project host is usually a committed file. Write `dest` only to",
+        "  choose somewhere other than the proposal; to keep a variant while writing it, spell",
+        "  the variant: `claude-md:local`, or `claude-md:rules:<topic>` (the proposal's",
+        "  `rules_paths` carry over only when it names the same topic). `dest` is one of",
+        f"  {_words(ledger_ops.PROPOSAL_DESTINATIONS)}, or `reference:<file name>`,",
+        "  `claude-md:local`, `claude-md:rules:<topic>`. `follow_up` (with `unblocks_on`,",
         "  a gate label, and `follow_up_note`) records that this routing is a known-partial form",
         "  and names the planned stronger one; `allow_empty_glob` routes a path-scoped rule whose",
         "  glob matches nothing on this machine; `collapse` folds a merge cluster into this",
