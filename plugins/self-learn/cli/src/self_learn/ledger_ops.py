@@ -57,6 +57,9 @@ __all__ = [
     "ProposalError",
     "PROPOSAL_DESTINATIONS",
     "QueueEntry",
+    "RecordNotFound",
+    "SheetLineRefusal",
+    "StatusRefusal",
     "TRACE_FLAGS",
     "TRACE_FS_VERDICTS",
     "TRACE_OUTCOMES",
@@ -238,6 +241,46 @@ class LedgerOpsError(Exception):
 
 class ProposalError(LedgerOpsError):
     """A proposal sibling is unparseable or violates the 02 §1 schema."""
+
+
+# S-71: typed refusals, so a runner can tell WHY the ledger refused a
+# decision without reading the message. `batch.refusal_kind` is the one
+# place these map to a kind; the messages are unchanged.
+
+
+class RecordNotFound(LedgerOpsError):
+    """No record with this id exists in any bucket (S-71 kind ``status``:
+    a selected lesson that no longer exists has moved on)."""
+
+    def __init__(self, message: str, *, record_id: str) -> None:
+        super().__init__(message)
+        self.record_id = record_id
+
+
+class StatusRefusal(LedgerOpsError):
+    """:func:`require_status` refused: the record's status does not fit the
+    verb (S-71 kind ``status``). Carries what a runner needs to tell a lesson
+    that moved on from its own wrong verb, without parsing the message."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        record_id: str,
+        current_status: str | None,
+        allowed: frozenset[str],
+    ) -> None:
+        super().__init__(message)
+        self.record_id = record_id
+        self.current_status = current_status
+        self.allowed = frozenset(allowed)
+
+
+class SheetLineRefusal(LedgerOpsError):
+    """The request itself is wrong and fails the same way every time (S-71
+    kind ``bad-line``): a defer date in the past, a supersession onto itself
+    or into a cycle, a link to a record that does not exist. A
+    :class:`LedgerOpsError` so every existing exit code is unchanged."""
 
 
 # --------------------------------------------------------------------- yaml
@@ -517,7 +560,9 @@ def find_record_path(
             p = bucket.path / sub / f"{record_id}.md"
             if p.is_file():
                 return p
-    raise LedgerOpsError(f"record {record_id} not found under {home}")
+    raise RecordNotFound(
+        f"record {record_id} not found under {home}", record_id=record_id
+    )
 
 
 #: Preferred human-facing order for a status list in a refusal message —
@@ -571,7 +616,12 @@ def require_status(
             if reason is not None
             else f"{verb} needs status {_status_phrase(allowed)} (02 §2)"
         )
-        raise LedgerOpsError(f"record {record_id} is {record.status!r} — {detail}")
+        raise StatusRefusal(
+            f"record {record_id} is {record.status!r} — {detail}",
+            record_id=record_id,
+            current_status=record.status,
+            allowed=allowed,
+        )
     return path, record
 
 
@@ -2765,7 +2815,7 @@ def supersede_cycle_check(home: Path, old_id: str, new_id: str) -> None:
             # always was — never a hop to another record.
             return
         if nxt == old_id:
-            raise LedgerOpsError(
+            raise SheetLineRefusal(
                 f"supersede {old_id} → {new_id} would create a cycle: "
                 f"{new_id} already (transitively) traces back to "
                 f"{old_id} via superseded_by"
@@ -2794,7 +2844,7 @@ def supersede_record(
     (the walk finds nothing to hop to and returns clean) — then refuses
     a longer cycle, see :func:`supersede_cycle_check`."""
     if old_id == superseded_by:
-        raise LedgerOpsError(f"record {old_id} cannot supersede itself")
+        raise SheetLineRefusal(f"record {old_id} cannot supersede itself")
     if superseded_by != "canon":  # legacy retirement sentinel; current callers pass ids
         supersede_cycle_check(home, old_id, superseded_by)
     return resolve_record(
@@ -2900,7 +2950,7 @@ def defer_record(
             until_date = date.fromisoformat(str(until))
         today = clock.date()
         if until_date < today:
-            raise LedgerOpsError(
+            raise SheetLineRefusal(
                 f"defer {record_id}: --until {until_date.isoformat()} is in "
                 f"the past (today is {today.isoformat()} UTC) — a defer must "
                 f"name a future date; `self-learn undefer {record_id}` is "

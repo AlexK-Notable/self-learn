@@ -50,6 +50,10 @@ from .ledger_ops import (
     RESOLVABLE_STATUSES,
     ROUTED_ONLY,
     LedgerOpsError,
+    ProposalError,
+    RecordNotFound,
+    SheetLineRefusal,
+    StatusRefusal,
     find_record_path,
 )
 from .records import (
@@ -65,6 +69,7 @@ from .records import (
 __all__ = [
     "PERMITTED_KEYS",
     "PERMITTED_VERBS",
+    "REFUSAL_KINDS",
     "REFUSED_HOOK_DESTINATION",
     "BatchError",
     "BatchContinuation",
@@ -79,6 +84,7 @@ __all__ = [
     "decision_code",
     "dry_run",
     "load_sheet",
+    "refusal_kind",
     "run",
     "write_receipt",
 ]
@@ -208,6 +214,93 @@ def _hook_refused_detail(record_id: str) -> str:
     )
 
 
+#: S-71 (`03-decisions.md`; the table is `02-schema.md` §3a): the closed set
+#: of refusal KINDS. Every failed item carries exactly one, decided by
+#: :func:`refusal_kind` from the exception type at the raise site — never by
+#: reading the refusal's text.
+REFUSAL_KINDS = frozenset(
+    {
+        "git", "target-busy", "status", "destination-unavailable",
+        "needs-person", "bad-line", "secret-record", "unclassified",
+    }
+)
+
+#: The same kinds, most severe first — the steward's action precedence
+#: (S-71). Used where ONE item carries several refusals at once (a route
+#: preview reports every failed preflight, not only the first) and still
+#: needs a single kind.
+_KIND_PRECEDENCE = (
+    "secret-record", "git", "target-busy", "needs-person", "unclassified",
+    "bad-line", "destination-unavailable", "status",
+)
+
+
+def _typed_kind(exc: BaseException) -> str | None:
+    """The kind ONE exception's own type names, or ``None`` when its type
+    names none. Most specific first."""
+    if isinstance(exc, verbs.SecretRefusal):
+        # S-68: a hit in the record itself is refused and never parked; a
+        # hit only in the line's own text is the line's mistake.
+        return "secret-record" if exc.where == "record" else "bad-line"
+    if isinstance(exc, verbs.DirtyTargetError):
+        return "needs-person" if exc.cause == "region" else "target-busy"
+    if isinstance(exc, gitops.GitOpsError):  # HalfWrittenError, LedgerStoppedError
+        return "git"
+    if isinstance(exc, verbs.NeedsPerson):
+        return "needs-person"
+    if isinstance(exc, verbs.DestinationUnavailable):
+        return "destination-unavailable"
+    if isinstance(exc, (verbs.SheetLineError, SheetLineRefusal)):
+        return "bad-line"
+    if isinstance(exc, ProposalError):
+        return "needs-person"
+    if isinstance(exc, (StatusRefusal, RecordNotFound)):
+        return "status"
+    return None
+
+
+def refusal_kind(exc: BaseException | None, *, rc: int, state: str) -> str:
+    """S-71: the ONE place a refusal is given its kind (the table lives here
+    and nowhere else). A ``stopped`` item, or any ledger stop code
+    (5/6/7), is ``git``. Otherwise the exception is read by TYPE: the
+    exception itself first, then the exception it was raised from
+    (``raise … from exc``), and so on — because most verbs re-raise the
+    ledger's typed refusal as a plain :class:`verbs.VerbError` for the CLI's
+    exit code, and the type that says what happened is the one underneath.
+    A raise site no type names is ``unclassified``: that parks, it is never
+    silent."""
+    if state == "stopped" or rc in _STOP_CODES:
+        return "git"
+    seen: set[int] = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        kind = _typed_kind(current)
+        if kind is not None:
+            return kind
+        current = current.__cause__
+    return "unclassified"
+
+
+def _most_severe_kind(kinds) -> str:
+    """One kind for an item that carries several (see
+    :data:`_KIND_PRECEDENCE`)."""
+    present = set(kinds)
+    for kind in _KIND_PRECEDENCE:
+        if kind in present:
+            return kind
+    return "unclassified"
+
+
+def _preview_kind(errors) -> str:
+    """The kind a ``would-refuse`` preview item carries: each refusal the
+    preview found is classified exactly as the real run would classify it
+    (a refused item, not a stop), and the most severe wins."""
+    return _most_severe_kind(
+        refusal_kind(exc, rc=1, state="refused") for exc in errors
+    )
+
+
 class BatchError(Exception):
     """Whole-sheet validation failure (BAT1) — exit 64, nothing runs."""
 
@@ -292,6 +385,10 @@ class ItemResult:
     #: Trusted provenance for an established outcome whose source matters
     #: on recovery (for example, a host result established by recompile).
     evidence: str | None = None
+    #: S-71: the refusal's kind (:data:`REFUSAL_KINDS`, from
+    #: :func:`refusal_kind`), set only when the item failed; ``None`` for an
+    #: applied, already-applied or not-attempted item.
+    kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -405,6 +502,7 @@ class BatchResult:
                     "sha": i.sha, "state": i.state, "detail": i.detail,
                     "warnings": list(i.warnings),
                     **({"evidence": i.evidence} if i.evidence is not None else {}),
+                    **({"kind": i.kind} if i.kind is not None else {}),
                 }
                 for i in self.items
             ],
@@ -891,6 +989,7 @@ def _dispatch_hook_activation(
             sha=route_result.commit_sha if route_result is not None else None,
             detail=detail,
             warnings=(list(route_result.warnings) if route_result is not None else []),
+            kind=refusal_kind(exc, rc=1, state="refused"),
         )
     if route_result is None:
         notes = list(hook_result.post_notes)
@@ -1224,13 +1323,16 @@ def _dispatch(
             raise AssertionError(f"unreachable: unpermitted verb {verb!r}")
     except verbs.VerbError as exc:  # incl. SecretRefusal
         return ItemResult(n=item.n, id=item.id, verb=verb, rc=exc.exit_code,
-                           state="refused", detail=str(exc))
+                           state="refused", detail=str(exc),
+                           kind=refusal_kind(exc, rc=exc.exit_code, state="refused"))
     except LedgerOpsError as exc:
         return ItemResult(n=item.n, id=item.id, verb=verb, rc=64,
-                           state="refused", detail=str(exc))
+                           state="refused", detail=str(exc),
+                           kind=refusal_kind(exc, rc=64, state="refused"))
     except CompileError as exc:
         return ItemResult(n=item.n, id=item.id, verb=verb, rc=1,
-                           state="refused", detail=str(exc))
+                           state="refused", detail=str(exc),
+                           kind=refusal_kind(exc, rc=1, state="refused"))
     except MutationError as exc:
         # U5 fold r1 (F2 leg i): a resolution verb's own write-once
         # field collision (`resolve_record`'s `resolution_note`, e.g.
@@ -1245,23 +1347,34 @@ def _dispatch(
         # `CompileError`'s — the record itself is provably untouched
         # (the raise happens before any `record.write`, gate probe Q1).
         return ItemResult(n=item.n, id=item.id, verb=verb, rc=1,
-                           state="refused", detail=str(exc))
+                           state="refused", detail=str(exc),
+                           kind=refusal_kind(exc, rc=1, state="refused"))
     except gitops.HalfWrittenError as exc:
         return ItemResult(n=item.n, id=item.id, verb=verb,
                            rc=gitops.EXIT_HALF_WRITTEN, state="refused",
-                           detail=str(exc))
+                           detail=str(exc),
+                           kind=refusal_kind(
+                               exc, rc=gitops.EXIT_HALF_WRITTEN, state="refused"
+                           ))
     except gitops.GitOpsError as exc:
         return ItemResult(n=item.n, id=item.id, verb=verb,
                            rc=gitops.EXIT_GIT_FAILED, state="refused",
-                           detail=str(exc))
+                           detail=str(exc),
+                           kind=refusal_kind(
+                               exc, rc=gitops.EXIT_GIT_FAILED, state="refused"
+                           ))
     return ItemResult(
         n=item.n, id=item.id, verb=verb, rc=0, sha=result.commit_sha,
         state="applied", warnings=list(result.warnings),
     )
 
 
-#: A pre-mutation ledger-level failure — nothing written, safe to retry
-#: (§3.3: "the ledger is unsafe to keep writing into").
+#: A ledger-level failure that stops the sheet (§3.3: "the ledger is unsafe
+#: to keep writing into"). 5 (no ledger home) and 6 (git failed before any
+#: mutation) wrote nothing. 7 (`gitops.EXIT_HALF_WRITTEN`) left a write
+#: uncommitted; a later attempt is safe only because every ledger write
+#: first runs intent recovery (`intents.ledger_write`, S-62), which rolls
+#: that write forward, restores it, or stops.
 _STOP_CODES = frozenset({5, 6, 7})
 
 # These verbs can return only after a ledger commit and one or more host
@@ -1356,6 +1469,7 @@ def _record_ledger_stop(
             rc=gitops.EXIT_GIT_FAILED,
             state="stopped",
             detail=str(exc),
+            kind=refusal_kind(exc, rc=gitops.EXIT_GIT_FAILED, state="stopped"),
         )
     )
     for remaining in tail:
@@ -1449,6 +1563,9 @@ class DryRunItem:
     state: str  # "already-applied" | "would-apply" | "would-refuse"
     detail: str | None = None
     route_preview: dict | None = None
+    #: S-71: the refusal's kind, set only on a ``would-refuse`` item — the
+    #: kind the real run would give the same refusal.
+    kind: str | None = None
 
 
 @dataclass
@@ -1477,6 +1594,7 @@ class DryRunResult:
                 {
                     "n": i.n, "id": i.id, "verb": i.verb, "state": i.state,
                     "detail": i.detail, "route_preview": i.route_preview,
+                    **({"kind": i.kind} if i.kind is not None else {}),
                 }
                 for i in self.items
             ],
@@ -1540,7 +1658,8 @@ def dry_run(
             except LedgerOpsError as exc:
                 result.items.append(
                     DryRunItem(n=item.n, id=item.id, verb=item.verb,
-                               state="would-refuse", detail=str(exc))
+                               state="would-refuse", detail=str(exc),
+                               kind=_preview_kind([exc]))
                 )
                 continue
             resolved = _resolved_route_dest(home, path, item)
@@ -1550,12 +1669,16 @@ def dry_run(
                 if actor != "overseer":
                     # Fold r1 (F8): the SAME shared sentence `_dispatch`
                     # raises for real — previewed here, nothing touched,
-                    # never a second hand-copied literal to drift.
+                    # never a second hand-copied literal to drift. S-71:
+                    # the kind is the one `_dispatch`'s plain `VerbError`
+                    # gets.
+                    hook_detail = _hook_refused_detail(item.id)
                     result.items.append(
                         DryRunItem(
                             n=item.n, id=item.id, verb=item.verb,
                             state="would-refuse",
-                            detail=_hook_refused_detail(item.id),
+                            detail=hook_detail,
+                            kind=_preview_kind([verbs.VerbError(hook_detail)]),
                         )
                     )
                     continue
@@ -1573,6 +1696,7 @@ def dry_run(
                             state="would-refuse",
                             detail="; ".join(dr.would_refuse),
                             route_preview=dr.to_json(),
+                            kind=_preview_kind(dr.refusal_errors),
                         )
                     )
                     continue
@@ -1590,7 +1714,9 @@ def dry_run(
             result.items.append(
                 DryRunItem(n=item.n, id=item.id, verb=item.verb, state=state,
                            detail="; ".join(dr.would_refuse) or None,
-                           route_preview=dr.to_json())
+                           route_preview=dr.to_json(),
+                           kind=(_preview_kind(dr.refusal_errors)
+                                 if dr.would_refuse else None))
             )
             continue
         try:
@@ -1598,7 +1724,8 @@ def dry_run(
         except LedgerOpsError as exc:
             result.items.append(
                 DryRunItem(n=item.n, id=item.id, verb=item.verb,
-                           state="would-refuse", detail=str(exc))
+                           state="would-refuse", detail=str(exc),
+                           kind=_preview_kind([exc]))
             )
             continue
         if item.verb in ("rehome", "rescope"):
@@ -1607,7 +1734,8 @@ def dry_run(
             except verbs.VerbError as exc:
                 result.items.append(
                     DryRunItem(n=item.n, id=item.id, verb=item.verb,
-                               state="would-refuse", detail=str(exc))
+                               state="would-refuse", detail=str(exc),
+                               kind=_preview_kind([exc]))
                 )
                 continue
         record = Record.from_path(path)
@@ -1620,10 +1748,15 @@ def dry_run(
             # `would-refuse` naming a status the real run would admit.
             and _reconsider_case_for(home, item.id, sheet_case, item.verb) is None
         ):
+            status_detail = f"record {item.id} is {record.status!r}"
             result.items.append(
                 DryRunItem(n=item.n, id=item.id, verb=item.verb,
                            state="would-refuse",
-                           detail=f"record {item.id} is {record.status!r}")
+                           detail=status_detail,
+                           kind=_preview_kind([StatusRefusal(
+                               status_detail, record_id=item.id,
+                               current_status=record.status, allowed=gate,
+                           )]))
             )
             continue
         # S-67: `_STATUS_GATE["reopen"]` admits `superseded` for BOTH a
@@ -1636,14 +1769,16 @@ def dry_run(
             and record.status == "superseded"
             and is_replacement(record.superseded_by)
         ):
+            reopen_detail = (
+                f"record {item.id} is superseded by a replacement "
+                f"({record.superseded_by}) — use reconsider"
+            )
             result.items.append(
                 DryRunItem(
                     n=item.n, id=item.id, verb=item.verb,
                     state="would-refuse",
-                    detail=(
-                        f"record {item.id} is superseded by a replacement "
-                        f"({record.superseded_by}) — use reconsider"
-                    ),
+                    detail=reopen_detail,
+                    kind=_preview_kind([verbs.SheetLineError(reopen_detail)]),
                 )
             )
             continue
@@ -1941,6 +2076,9 @@ def run(
                         # DOES know) overrides here, before the item ever joins
                         # `result.items`.
                         item_result.state = "stopped"
+                        item_result.kind = refusal_kind(
+                            None, rc=item_result.rc, state="stopped"
+                        )
                     result.items.append(item_result)
                     if checkpoint_required:
                         assert checkpoint is not None

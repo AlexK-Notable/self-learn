@@ -201,13 +201,17 @@ __all__ = [
     "ROUTING_BY_VALUES",
     "SURFACE_FILL_PROBED_DESTINATIONS",
     "CommitDriftResult",
+    "DestinationUnavailable",
     "DirtyTargetError",
+    "NeedsPerson",
     "NoProposalError",
     "PushReport",
     "RecompileEntry",
     "RecompileResult",
     "RouteDryRunResult",
     "SecretRefusal",
+    "SheetLineError",
+    "SheetLineUsageError",
     "TargetSpec",
     "VerbError",
     "VerbResult",
@@ -333,12 +337,51 @@ class VerbUsageError(VerbError):
     exit_code = 64
 
 
-class SecretRefusal(VerbError):
-    """P2-7: the full-record-file scan hit — nothing written, no bypass."""
+# S-71: typed refusals. The raise site says what KIND of refusal it is by
+# the class it raises; `batch.refusal_kind` is the one place a class maps to
+# a kind. Each is a plain `VerbError` in every other respect — same message,
+# same exit code — so nothing that catches `VerbError` changes.
 
-    def __init__(self, message: str, hits: list) -> None:
+
+class DestinationUnavailable(VerbError):
+    """The chosen destination cannot take this lesson on this machine (no
+    SKILL.md, no skills root, no marketplace, a rules glob that matches
+    nothing, a `CLAUDE.local.md` that is not git-ignored); another
+    destination might (S-71 kind ``destination-unavailable``)."""
+
+
+class NeedsPerson(VerbError):
+    """Only a person can fix this: an unsound or unregistered host, an
+    unreadable `hosts.yaml`, a pointer surface that is not UTF-8, a hook
+    proposal that no longer matches its record (S-71 kind
+    ``needs-person``)."""
+
+
+class SheetLineError(VerbError):
+    """The request itself is wrong and fails the same way every time — a
+    malformed destination, a verb the scope does not allow, a revise that
+    names no such section (S-71 kind ``bad-line``)."""
+
+
+class SheetLineUsageError(SheetLineError, VerbUsageError):
+    """A :class:`SheetLineError` whose raise site was a usage error (exit
+    64) before S-71 gave it a kind; the exit code is kept."""
+
+
+class SecretRefusal(VerbError):
+    """P2-7: the full-record-file scan hit — nothing written, no bypass.
+
+    ``where`` (S-71): ``"record"`` when any hit is in a file the verb would
+    rewrite or publish (the lesson's record, or a proposal), ``"item"`` only
+    when every hit is in text the caller supplied (a note, a revise text, a
+    link target). The default is ``"record"``: a secret-scan block is never
+    retried or parked (S-68), so an unknown location reads as the one that
+    is refused outright."""
+
+    def __init__(self, message: str, hits: list, *, where: str = "record") -> None:
         super().__init__(message)
         self.hits = hits
+        self.where = where
 
 
 #: U20 gate R1 (F5-5 guided commit-first): the pinned, stable substring of
@@ -350,7 +393,20 @@ GITOPS_DIRTY_MARKER = "has unrelated uncommitted changes"
 
 
 class DirtyTargetError(VerbError):
-    """The compile target has unrelated uncommitted changes."""
+    """The compile target has unrelated uncommitted changes.
+
+    ``cause`` (S-71): ``"dirty"`` — uncommitted edits in the host repo,
+    which often clear on their own (kind ``target-busy``); ``"region"`` —
+    the managed region was hand-edited outside self-learn, which only a
+    person can settle (kind ``needs-person``). The region predicate's raise
+    passes ``cause="region"``; :func:`_abort_if_dirty`'s raise takes the
+    default, ``"dirty"``, because that function's body is pinned byte-for-
+    byte (UN2, ``tests/test_hostmode.py``) — as does the settings writer's
+    own dirty check."""
+
+    def __init__(self, message: str, *, cause: str = "dirty") -> None:
+        super().__init__(message)
+        self.cause = cause
 
 
 #: The stable substring self-learn-ui's action_confirm matches on to
@@ -533,10 +589,15 @@ def _scan_or_refuse(paths: list[Path], note: str | None) -> None:
         return
     parts = [f"{label}:\n{format_refusal(hits)}" for label, hits in findings]
     all_hits = [h for _, hits in findings for h in hits]
+    # S-71: a hit in ANY file is a hit in the record (refused, never
+    # parked); only when the caller's own text is the sole source is it
+    # the item's.
+    in_file = any(label != "--note" for label, _ in findings)
     raise SecretRefusal(
         "secret scan hit — refusing this verb (P2-7; no bypass):\n"
         + "\n".join(parts),
         all_hits,
+        where="record" if in_file else "item",
     )
 
 
@@ -654,7 +715,8 @@ def _abort_if_region_unsound(
             "— the managed region no longer matches what self-learn last "
             f"wrote; run `self-learn recompile --adopt {target}` to accept "
             "the on-disk region as authoritative, or restore self-learn's "
-            "last write"
+            "last write",
+            cause="region",
         )
 
 
@@ -1196,14 +1258,14 @@ def _parse_dest(dest: str) -> tuple[str, str | None]:
     if dest.startswith("reference:"):
         name = dest.split(":", 1)[1]
         if not name:
-            raise VerbError("reference:<file> needs a file name")
+            raise SheetLineError("reference:<file> needs a file name")
         return "reference", name
     if dest.startswith("new-skill:"):
         name = dest.split(":", 1)[1]
         try:
             return "new-skill", validate_skill_name(name)
         except SkillScaffoldError as exc:
-            raise VerbError(str(exc)) from exc
+            raise SheetLineError(str(exc)) from exc
     if dest.startswith("claude-md:"):
         qualifier = dest[len("claude-md:") :]
         if qualifier == "local":
@@ -1211,7 +1273,7 @@ def _parse_dest(dest: str) -> tuple[str, str | None]:
         if qualifier.startswith("rules:"):
             topic = qualifier[len("rules:") :]
             if not topic:
-                raise VerbError(
+                raise SheetLineError(
                     "claude-md:rules:<topic> needs a topic — "
                     "claude-md:rules:<topic-slug>"
                 )
@@ -1223,18 +1285,18 @@ def _parse_dest(dest: str) -> tuple[str, str | None]:
                 # "new-skill name … must be kebab-case" — that misnames
                 # what the user got wrong (it names a rules file, not a
                 # skill).
-                raise VerbError(
+                raise SheetLineError(
                     f"rules topic {topic!r} must be kebab-case "
                     "([a-z0-9-], starting alphanumeric) — it names the "
                     "rules file"
                 ) from exc
             return "claude-md", f"rules:{topic}"
-        raise VerbError(
+        raise SheetLineError(
             f"claude-md qualifier {qualifier!r} not recognized — use "
             "claude-md:local or claude-md:rules:<topic>"
         )
     if dest not in PROPOSAL_DESTINATIONS:
-        raise VerbError(
+        raise SheetLineError(
             f"--dest must be one of {list(PROPOSAL_DESTINATIONS)} "
             f"(or reference:<file> / new-skill:<name> / claude-md:local / "
             f"claude-md:rules:<topic>), got {dest!r}"
@@ -1451,7 +1513,9 @@ def _gate_host(home: Path, path: Path | str, kind: str) -> Path:
     try:
         return validate_host_path(home, path, kind)
     except HostsError as exc:
-        raise VerbError(str(exc)) from exc
+        # S-71: a host that moved, lost its marker, is not a repo, or IS
+        # the ledger — only a person can re-point it.
+        raise NeedsPerson(str(exc)) from exc
 
 
 def _hosts_skill_dir(home: Path, name: str) -> tuple[Path, Path]:
@@ -1459,6 +1523,13 @@ def _hosts_skill_dir(home: Path, name: str) -> tuple[Path, Path]:
     VerbError. The root is gate-validated (MAJOR 6: a typo'd
     ``skills_root`` must never reach a compiler)."""
     hosts = load_hosts(home)
+    if hosts.skills_root is None:
+        # S-71: the same sentence `skill_dir_for` raises for this case,
+        # raised here with its kind — no skills root on this machine means
+        # a skill destination cannot take the lesson; another might.
+        raise DestinationUnavailable(
+            "no skills root registered — self-learn host add <path> --skills-root"
+        )
     try:
         skill_dir = skill_dir_for(hosts, name)
     except HostsError as exc:
@@ -1485,12 +1556,12 @@ def _project_host_or_refuse(
     command)."""
     host = project_path if project_path is not None else bucket_project_path(bucket_dir)
     if host is None:
-        raise VerbError(
+        raise NeedsPerson(
             f"project bucket {bucket_dir} has no meta.yaml — its project "
             "path is unknown; re-capture, or write meta.yaml by hand"
         )
     if not is_project_host(load_hosts(home), host):
-        raise VerbError(f"host not registered — self-learn host add {host}")
+        raise NeedsPerson(f"host not registered — self-learn host add {host}")
     return _gate_host(home, host, "project")
 
 
@@ -1509,7 +1580,7 @@ def _decode_claude_md_qualifier(qualifier: str) -> tuple[str, str | None]:
         return "local", None
     if qualifier.startswith("rules:"):
         return "rules", qualifier[len("rules:") :]
-    raise VerbError(f"unrecognized claude-md qualifier {qualifier!r}")
+    raise SheetLineError(f"unrecognized claude-md qualifier {qualifier!r}")
 
 
 def _user_rules_dir(user_claude_md_target: Path) -> Path:
@@ -1712,7 +1783,14 @@ def _validate_rules_globs(
             "(e.g. '**/<dir>/...'), raise SELF_LEARN_GLOB_PROBE_BUDGET_S, "
             "or pass --allow-empty-glob to route unverified"
         )
-    raise VerbError(" ... and ".join(messages))
+    # S-71: a pattern that matches nothing is this destination failing for
+    # this lesson (another destination, or another pattern, might work); a
+    # probe that ran out of time is the machine's budget, which only a
+    # person changes. When both are present the zero-match reading wins,
+    # the same order the bypass reason above uses.
+    if dead:
+        raise DestinationUnavailable(" ... and ".join(messages))
+    raise NeedsPerson(" ... and ".join(messages))
 
 
 def _resolve_local_target(
@@ -1728,7 +1806,7 @@ def _resolve_local_target(
     gitignore-verified (P-A3, the privacy guard) before it is ever routed
     into."""
     if scope != "project":
-        raise VerbError(
+        raise SheetLineError(
             "CLAUDE.local.md exists only per project — route to project "
             "scope, or use claude-md/rules"
         )
@@ -1749,7 +1827,7 @@ def _resolve_local_target(
         # published by being tracked; the hazard cannot occur. Skipped
         # for plain, unchanged (and still refusing) for git.
         if mode == "git" and not gitops.check_ignore(host, target):
-            raise VerbError(
+            raise DestinationUnavailable(
                 f"{target} is not gitignored in {host} — add "
                 "`CLAUDE.local.md` to .gitignore, then re-route (routing "
                 "a personal lesson into a tracked file publishes it to "
@@ -1777,11 +1855,11 @@ def _resolve_rules_target(
     never the unguarded ``claude-md`` ``else`` this replaces for the
     rules case."""
     if rules_topic is None:
-        raise VerbError(
+        raise SheetLineError(
             "a rules route needs a topic — claude-md:rules:<topic>"
         )
     if scope not in ("user", "project"):
-        raise VerbError(
+        raise SheetLineError(
             f"claude-md:rules:{rules_topic} is not available for scope "
             f"{scope!r} yet — plugin-shipped rules is an unresolved "
             "documentation gap (P-A13); route to user or project scope"
@@ -1801,7 +1879,7 @@ def _resolve_rules_target(
         ]
         if _bad_globs:
             _listed = ", ".join(repr(p) for p in _bad_globs)
-            raise VerbError(
+            raise SheetLineError(
                 f"rules_paths pattern(s) are absolute or home-relative, "
                 f"which never fire as a glob against a project/user tree: "
                 f"{_listed} — make the pattern(s) relative"
@@ -1889,14 +1967,14 @@ def _resolve_target(
     resolution byte-identically (P-A6)."""
     if destination == "skill-md":
         if not scope.startswith("skill:"):
-            raise VerbError(
+            raise SheetLineError(
                 "skill-md destination needs skill:<name> scope, "
                 f"got {scope!r} — use claude-md or reference"
             )
         root, skill_dir = _hosts_skill_dir(home, scope.partition(":")[2])
         target = skill_dir / "SKILL.md"
         if not target.is_file():
-            raise VerbError(
+            raise DestinationUnavailable(
                 f"no SKILL.md at {target} — the compiler never creates "
                 "target files, only the section inside an existing one"
             )
@@ -1957,7 +2035,7 @@ def _resolve_target(
         # CLAUDE.md; the old <home>/CLAUDE.md target maps here).
         hosts = load_hosts(home)
         if hosts.skills_root is None:
-            raise VerbError(
+            raise DestinationUnavailable(
                 "no skills root registered — self-learn host add <path> --skills-root"
             )
         root = _gate_host(home, hosts.skills_root, "skills-root")
@@ -1979,14 +2057,14 @@ def _resolve_target(
         name = validate_skill_name(ref_name)
         hosts = load_hosts(home)
         if hosts.skills_root is None:
-            raise VerbError(
+            raise DestinationUnavailable(
                 "no skills root registered — the scaffold lands under it; "
                 "self-learn host add <path> --skills-root"
             )
         root = _gate_host(home, hosts.skills_root, "skills-root")
         marketplace = root / ".claude-plugin" / "marketplace.json"
         if not marketplace.is_file():
-            raise VerbError(
+            raise DestinationUnavailable(
                 f"skills root {root} has no .claude-plugin/marketplace.json "
                 "— the scaffold appends an entry to an EXISTING marketplace "
                 "(08 §8.1); it never creates one"
@@ -2040,7 +2118,7 @@ def _resolve_target(
             # would steer a non-file-scoped lesson to an UNPATHED rules
             # file — ALWAYS-tier cost under a different filename, the
             # silent upgrade D4 forbids.
-            raise VerbError(
+            raise SheetLineError(
                 "reference destination needs skill:<name> or project "
                 "scope — user scope has no references dir. S-23 (2): a "
                 "user-level reference file would have no SKILL.md to "
@@ -2071,7 +2149,7 @@ def _resolve_target(
                 # hang a pointer off would write unreachable canon — the
                 # exact defect FW-40 exists to close. Refuse before the
                 # ledger commit rather than create it.
-                raise VerbError(
+                raise DestinationUnavailable(
                     f"no SKILL.md at {pointer_surface} — self-learn cannot "
                     "write a reference route with nowhere to point a "
                     "pointer at; run `self-learn host rebind` or repair "
@@ -2087,7 +2165,7 @@ def _resolve_target(
                 try:
                     pointer_surface.read_text(encoding="utf-8")
                 except UnicodeDecodeError as exc:
-                    raise VerbError(
+                    raise NeedsPerson(
                         f"pointer surface {pointer_surface} is not valid "
                         f"UTF-8 ({exc}) — refusing before the ledger commit"
                     ) from exc
@@ -2145,7 +2223,7 @@ def _hooks_dir_for(home: Path, scope: str) -> tuple[Path, Path]:
         return root, skill_dir.parent.parent / "hooks"
     hosts = load_hosts(home)
     if hosts.skills_root is None:
-        raise VerbError(
+        raise DestinationUnavailable(
             "no skills root registered — hook scripts land under it; "
             "self-learn host add <path> --skills-root"
         )
@@ -2163,7 +2241,7 @@ def _resolve_hook_target(home: Path, record: Record, bucket_dir: Path) -> Target
         raise VerbError(str(exc)) from exc
     target = hooks_dir / name
     if target.exists():
-        raise VerbError(
+        raise NeedsPerson(
             f"hook script already exists at {target} — refusing to "
             "overwrite; supersede the record that owns it first"
         )
@@ -2386,7 +2464,7 @@ def _prepare_hook_route(
     refusal lands before any commit."""
     proposal_path = bucket_dir / "proposals" / f"{record.id}.yaml"
     if not proposal_path.is_file():
-        raise VerbError(
+        raise NeedsPerson(
             f"hook routes apply a proposal-carried, approved script — no "
             f"proposal for {record.id}; author proposals/{record.id}.yaml "
             "with the hook block (routing-doctrine §5.1), then "
@@ -2399,22 +2477,22 @@ def _prepare_hook_route(
     try:
         validate_proposal(data)
     except ProposalError as exc:
-        raise VerbError(f"hook proposal invalid: {exc}") from exc
+        raise NeedsPerson(f"hook proposal invalid: {exc}") from exc
     if data.get("destination") != "hook":
-        raise VerbError(
+        raise NeedsPerson(
             f"proposal for {record.id} proposes "
             f"{data.get('destination')!r}, not hook — a hook route needs "
             "the §5.1 compile input; re-analyze or author a hook proposal"
         )
     script = data.get("script")
     if not script:
-        raise VerbError(
+        raise NeedsPerson(
             f"hook proposal for {record.id} has no stamped script — run "
             f"`self-learn proposal validate {record.id}` (the CLI "
             "generates the bytes; they are never model-authored)"
         )
     if data.get("record_sha") != sha_anchor(record.body):
-        raise VerbError(
+        raise NeedsPerson(
             f"record {record.id} changed since analysis (record_sha "
             "mismatch) — aborting (M3-2: re-analysis + fresh approval, "
             "never silent regeneration); re-review the proposal, then "
@@ -2430,9 +2508,9 @@ def _prepare_hook_route(
     try:
         rederived = _generate_hook_script(record, data)
     except ProposalError as exc:
-        raise VerbError(str(exc)) from exc
+        raise NeedsPerson(str(exc)) from exc
     if rederived != script:
-        raise VerbError(
+        raise NeedsPerson(
             f"stamped script for {record.id} does not match its "
             "re-derived bytes — the proposal's script or hook block "
             "changed after validation; re-review the hook block, then "
@@ -3787,18 +3865,18 @@ def _load_cluster(
     invalidated — the worker sweeps it; refuse here)."""
     merge_path = bucket_dir / "proposals" / f"{cluster_id}.yaml"
     if not merge_path.is_file():
-        raise VerbError(f"no merge proposal {cluster_id} in {bucket_dir}")
+        raise SheetLineError(f"no merge proposal {cluster_id} in {bucket_dir}")
     data = read_proposal(merge_path)
     validate_merge_proposal(data)
     members = list(data["records"])
     if record_id not in members:
-        raise VerbError(
+        raise SheetLineError(
             f"survivor {record_id} is not a member of {cluster_id} "
             f"({', '.join(members)})"
         )
     for rid in members:
         if not (bucket_dir / "pending" / f"{rid}.md").is_file():
-            raise VerbError(
+            raise SheetLineError(
                 f"cluster {cluster_id} is invalidated: member {rid} is no "
                 "longer pending — the worker sweeps it; nothing to collapse"
             )
@@ -3826,6 +3904,12 @@ class RouteDryRunResult:
     managed_share: float | None = None
     budget_flagged: bool = False
     would_refuse: list[str] = field(default_factory=list)
+    #: S-71: the exceptions behind ``would_refuse``, in the same order, so
+    #: ``batch.dry_run`` can give the preview item its refusal KIND from the
+    #: exception type. Never serialized (``to_json`` is unchanged).
+    refusal_errors: list[BaseException] = field(
+        default_factory=list, repr=False, compare=False
+    )
 
     @property
     def ok(self) -> bool:
@@ -3940,17 +4024,20 @@ def route_dry_run(
     # record that both trips the secret scan and names an unregistered
     # host reports two entries.
     would_refuse: list[str] = []
+    errors: list[BaseException] = []
 
     try:
         _scan_or_refuse([path], None)
     except VerbError as exc:
         would_refuse.append(str(exc))
+        errors.append(exc)
 
     record: Record | None = None
     try:
         _, record = require_status(home, record_id, LIVE_STATUSES, verb="route")
     except LedgerOpsError as exc:
         would_refuse.append(str(exc))
+        errors.append(exc)
         record = Record.from_path(path)  # still needed below (scope)
 
     # The predecessor preflight the real `route` runs — previewed through
@@ -3963,6 +4050,7 @@ def route_dry_run(
         _supersede_completion_preflight(home, record_id, record)
     except (VerbError, LedgerOpsError) as exc:
         would_refuse.append(str(exc))
+        errors.append(exc)
 
     bucket_dir = path.parent.parent
     resolved_dest: _Destination | None = None
@@ -3970,10 +4058,12 @@ def route_dry_run(
         resolved_dest = _resolve_destination(bucket_dir, record_id, dest)
     except (VerbError, LedgerOpsError, ProposalError) as exc:
         would_refuse.append(str(exc))
+        errors.append(exc)
 
     if resolved_dest is None:
         return RouteDryRunResult(
-            id=record_id, scope=record.scope, would_refuse=would_refuse
+            id=record_id, scope=record.scope, would_refuse=would_refuse,
+            refusal_errors=errors,
         )
     destination = resolved_dest.destination
     ref_name = resolved_dest.ref_name
@@ -3986,7 +4076,7 @@ def route_dry_run(
         # already collected (the ALWAYS gate still applies to a hook).
         return RouteDryRunResult(
             id=record_id, destination=destination, scope=record.scope,
-            would_refuse=would_refuse,
+            would_refuse=would_refuse, refusal_errors=errors,
         )
 
     spec: TargetSpec | None = None
@@ -4005,11 +4095,12 @@ def route_dry_run(
         )
     except VerbError as exc:
         would_refuse.append(str(exc))
+        errors.append(exc)
 
     if spec is None:
         return RouteDryRunResult(
             id=record_id, destination=destination, scope=record.scope,
-            would_refuse=would_refuse,
+            would_refuse=would_refuse, refusal_errors=errors,
         )
 
     # The AS-IF-ROUTED record the byte prediction is computed from — a
@@ -4075,7 +4166,7 @@ def route_dry_run(
         added_lines=added,
         removed_lines=removed,
         unified_diff=unified,
-        would_refuse=would_refuse,
+        would_refuse=would_refuse, refusal_errors=errors,
     )
 
 
@@ -4942,7 +5033,7 @@ def route(
         try:
             _validate_follow_up(follow_up)
         except RecordError as exc:
-            raise VerbError(str(exc)) from exc
+            raise SheetLineError(str(exc)) from exc
     # pending OR resolved (FW-51: no longer lies "not found" for a
     # resolved record whose status makes `route` illegal).
     path = find_record_path(home, record_id)
@@ -5545,7 +5636,7 @@ def _reconsider_retirement_preflight(
     of "what host presence does this routed record have"."""
     destination = (record.routing or {}).get("destination")
     if destination not in _RECONSIDER_RETIREABLE_DESTINATIONS:
-        raise VerbError(
+        raise SheetLineError(
             f"{verb} {record.id}: a reconsider correction of a routed "
             f"{destination!r}-destination record is not supported here "
             "— hook and reference routes are corrected by hand"
@@ -5957,7 +6048,7 @@ def _move(
     # never to merge into.
     for sub in ("pending", "resolved"):
         if (target_bucket / sub / f"{record_id}.md").exists():
-            raise VerbError(
+            raise NeedsPerson(
                 f"record {record_id} already exists in {target_bucket} — "
                 "a duplicated id is corruption to surface, never to merge "
                 "into; inspect both files by hand"
@@ -6333,7 +6424,7 @@ def reopen(
         # one level below the status check above (which now admits
         # `superseded` unconditionally), so it has to build that shape
         # by hand rather than get it from `require_status` for free.
-        raise VerbError(
+        raise SheetLineError(
             f"record {record_id} is {record.status!r} — superseded by "
             f"a replacement ({record.superseded_by}); a live successor "
             f"exists, use reconsider instead of reopen"
@@ -6766,7 +6857,7 @@ def retire(
     try:
         surface = records_mod.build_covered_by(covered_by)
     except records_mod.ValidationError as exc:
-        raise VerbError(str(exc)) from exc
+        raise SheetLineError(str(exc)) from exc
     return _retire_impl(
         home,
         record_id,
@@ -7070,7 +7161,7 @@ def supersede(
     ``old_id`` unconditionally."""
     home = Path(home)
     if old_id == new_id:
-        raise VerbError("a record cannot supersede itself")
+        raise SheetLineError("a record cannot supersede itself")
     old_path = find_record_path(home, old_id)  # pending OR routed flavor
     find_record_path(home, new_id)  # the replacement must exist
     _scan_or_refuse([old_path], note)
@@ -7323,7 +7414,7 @@ def followup_done(
     except LedgerOpsError as exc:
         raise VerbError(str(exc)) from exc
     if record.follow_up is None:
-        raise VerbError(
+        raise SheetLineError(
             f"record {record_id} has no open follow-up — nothing to clear"
         )
     hold = sentinel.hold()
@@ -7374,7 +7465,7 @@ def confirm_recurrence(
     Commit: ``self-learn: recurrence confirmed on lrn-…``."""
     home = Path(home)
     if tolerate and not note:
-        raise VerbError(
+        raise SheetLineError(
             "--tolerate needs --note: 'the rule stays' without the why is "
             "exactly the dead-letter 11 §2.2 exists to prevent"
         )
@@ -7388,13 +7479,13 @@ def confirm_recurrence(
         None,
     )
     if event is None:
-        raise VerbError(
+        raise SheetLineError(
             f"no recurrence-suspect event with nonce {event_ref!r} in the "
             "tracked telemetry — flush first (`self-learn telemetry flush`) "
             "or check `self-learn report`"
         )
     if event.get("record") != record_id:
-        raise VerbError(
+        raise SheetLineError(
             f"event {event_ref} was raised against {event.get('record')!r}, "
             f"not {record_id!r} — confirm it against the record it names"
         )
@@ -7551,13 +7642,13 @@ def dismiss_suspect(
         None,
     )
     if event is None:
-        raise VerbError(
+        raise SheetLineError(
             f"no recurrence-suspect event with nonce {event_ref!r} in the "
             "tracked telemetry — flush first (`self-learn telemetry flush`) "
             "or check `self-learn report`"
         )
     if event.get("record") != record_id:
-        raise VerbError(
+        raise SheetLineError(
             f"event {event_ref} was raised against {event.get('record')!r}, "
             f"not {record_id!r} — dismiss it against the record it names"
         )
@@ -7574,7 +7665,7 @@ def dismiss_suspect(
     except LedgerOpsError as exc:
         raise VerbError(str(exc)) from exc
     if any(r.get("ref") == event_ref for r in record.recurrences):
-        raise VerbError(
+        raise SheetLineError(
             f"event {event_ref} is already confirmed on {record_id} — "
             "cannot dismiss a suspect that was confirmed as a real "
             "recurrence"
@@ -7636,15 +7727,21 @@ def link_contradicts(
     ``self-learn: link lrn-… contradicts <target>``."""
     home = Path(home)
     if target == record_id:
-        raise VerbError("a record cannot contradict itself")
+        raise SheetLineError("a record cannot contradict itself")
     if RECORD_ID_RE.match(target):
-        find_record_path(home, target)  # record-id targets must exist
+        try:
+            find_record_path(home, target)  # record-id targets must exist
+        except ledger_ops.RecordNotFound as exc:
+            # S-71: the TARGET not existing is the line's own mistake, not
+            # the lesson moving on — same message, same exit code (64).
+            raise ledger_ops.SheetLineRefusal(str(exc)) from exc
     path = find_record_path(home, record_id)
     _scan_or_refuse([path], note)
     if secret_scan(target):
         raise SecretRefusal(
             "secret scan hit in the contradicts target — refusing (P2-7)",
             secret_scan(target),
+            where="item",
         )
     record = Record.from_path(path)
     hold = sentinel.hold()
@@ -9006,7 +9103,7 @@ def _revise_body(record: Record, section: str, text: str) -> str:
     # at the start of a line (gate r1 F1, 2026-09-14).
     text = text.strip()
     if text_mod.HEADING_RE.search(text):
-        raise VerbError(
+        raise SheetLineError(
             "revise --text may not itself contain a '## ' heading line "
             "— a wording fix replaces one section's text, never adds a "
             "section (02 §2 as amended, S-54)"
@@ -9015,12 +9112,12 @@ def _revise_body(record: Record, section: str, text: str) -> str:
     matches = list(text_mod.HEADING_RE.finditer(body))
     headings = [m.group(1) for m in matches]
     if section not in headings:
-        raise VerbError(
+        raise SheetLineError(
             f"record {record.id} has no {section!r} section to revise "
             f"— has {', '.join(headings) if headings else '(no sections)'}"
         )
     if headings.count(section) > 1:
-        raise VerbError(
+        raise SheetLineError(
             f"record {record.id} has {headings.count(section)} "
             f"{section!r} sections — ambiguous, fix by hand first"
         )
@@ -9092,11 +9189,11 @@ def revise(
     proposal as re-validated against text it was not."""
     home = Path(home)
     if not isinstance(section, str) or not section.strip():
-        raise VerbUsageError("revise needs --section")
+        raise SheetLineUsageError("revise needs --section")
     if not isinstance(text, str) or not text.strip():
-        raise VerbUsageError("revise needs --text")
+        raise SheetLineUsageError("revise needs --text")
     if not isinstance(because, str) or not because.strip():
-        raise VerbUsageError("revise needs --because")
+        raise SheetLineUsageError("revise needs --because")
     if by is not None and by not in ROUTING_BY_VALUES:
         raise VerbUsageError(
             f"by must be one of {sorted(ROUTING_BY_VALUES)}, got {by!r}"
@@ -9128,7 +9225,7 @@ def revise(
     try:
         sim.set_body(new_body)
     except RecordError as exc:
-        raise VerbError(
+        raise SheetLineError(
             f"record {record_id} cannot revise {section!r}: {exc}"
         ) from exc
 
