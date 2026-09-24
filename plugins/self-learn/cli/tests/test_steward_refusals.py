@@ -15,7 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import batch, cases, execution_evidence, gitops, ledger_ops, steward, verbs
+from self_learn import (
+    batch, cases, execution_evidence, gitops, ledger_ops, steward, steward_prompt, verbs,
+)
 from self_learn.hosts import MARKER_FILENAME, host_add
 from self_learn.invocation.contract import Outcome
 from self_learn.ledger_ops import create_record
@@ -72,17 +74,27 @@ def _case(records: list[str], outcome: str, verb: str, scope: str = "skill:s") -
     }
 
 
-def _writer(groups, *, before=None, calls=None):
+_REPAIR_HEADER = "=== repair ==="
+
+
+def _writer(groups, *, before=None, calls=None, prompts=None):
     """A fake session. `groups(ids)` returns `(name, records, items,
     outcome, verb)` tuples, one case/sheet pair each; `before(ids)` runs
     first, between the run's selection and its apply (a person acting on
-    the ledger while the steward decides)."""
+    the ledger while the steward decides). A REPAIR session (the prompt
+    carries the repair section) writes the same files again -- the model
+    insisting on its lines -- and does not act as the person again.
+    `calls` gets the lesson ids of each decision session; `prompts` gets
+    every session's prompt, repair sessions included."""
 
     def write(spec):
         ids = re.findall(r"^### brief: (lrn-[0-9a-f]{8})$", spec.prompt, re.M)
-        if calls is not None:
+        repair = _REPAIR_HEADER in spec.prompt
+        if prompts is not None:
+            prompts.append(spec.prompt)
+        if calls is not None and not repair:
             calls.append(list(ids))
-        if before is not None:
+        if before is not None and not repair:
             before(ids)
         stage = _stage_dir(spec)
         for name, records, items, outcome, verb in groups(ids):
@@ -234,23 +246,32 @@ def test_an_own_mistake_is_sent_back_once_then_parked_ledger_refused(
     tmp_path, monkeypatch
 ):
     """`undefer` on a pending lesson: the lesson's status is the one it was
-    selected with, so the line is the steward's own mistake. Run 1 sends it
-    back (`returned`); run 2 selects it again WITH a model call; the same
-    input version refused a second time is parked `ledger-refused` at once,
-    with one notification."""
+    selected with, so the line is the steward's own mistake. The repair turn
+    shows it to the model (§5), which writes the same line again. Run 1 then
+    sends it back (`returned`); run 2 selects it again WITH a model call and
+    a brief naming what the ledger said (§4.6); the same input version
+    refused a second time is parked `ledger-refused` at once, with one
+    notification."""
     env = make_env(tmp_path)
     home = env.ledger
     rid = _seed(home, "lrn-b0000005")
     _enable_steward(home)
     sent = _notifications(monkeypatch)
     calls: list = []
+    prompts: list = []
     monkeypatch.setattr(
         steward.invocation, "write_session",
-        _writer(_one_line_each("undefer", "defer"), calls=calls),
+        _writer(_one_line_each("undefer", "defer"), calls=calls, prompts=prompts),
     )
 
     first = steward.run(home)
 
+    assert len(prompts) == 2 and _REPAIR_HEADER in prompts[1], "one repair turn"
+    repair = prompts[1].split(_REPAIR_HEADER, 1)[1]
+    assert "The ledger would refuse these lines of your sheets as written:" in repair
+    assert f"- sheets/{rid}.yaml: item 1 (undefer {rid}): " in repair
+    assert "'pending'" in repair
+    assert steward_prompt.SENT_BACK_TITLE not in prompts[0], "nothing was sent back yet"
     row = _dispositions(home, first.run_id)[rid]
     assert row["state"] == "returned", row
     assert row["kind"] == "status"
@@ -266,6 +287,13 @@ def test_an_own_mistake_is_sent_back_once_then_parked_ledger_refused(
 
     assert second.run_id != first.run_id
     assert calls == [[rid], [rid]], "the next run decided the lesson again"
+    brief = prompts[2]
+    assert _REPAIR_HEADER not in brief
+    sent_back = brief.split("=== sent_back ===", 1)[1].split("=== open_cases ===", 1)[0]
+    assert sent_back.lstrip().startswith(steward_prompt.SENT_BACK_TITLE)
+    assert f"- {rid} (earlier case {row['case']}):" in sent_back
+    assert f"the ledger said: {row['reason']}" in sent_back
+    assert sent_back.rstrip().endswith(steward_prompt.SENT_BACK_INSTRUCTION)
     again = _dispositions(home, second.run_id)[rid]
     assert again["state"] == "abandoned", again
     assert again["kind"] == "status"

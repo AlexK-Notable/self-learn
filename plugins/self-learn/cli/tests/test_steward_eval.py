@@ -81,8 +81,9 @@ def _case_document(fixture: dict[str, Any], ids: list[str]) -> dict[str, Any]:
     return _substitute(case, ids)
 
 
-def _backend(fixture: dict[str, Any], ids: list[str], captured: dict[str, Path]):
+def _backend(fixture: dict[str, Any], ids: list[str], captured: dict[str, Any]):
     def write(spec):
+        captured.setdefault("prompts", []).append(spec.prompt)
         match = re.search(
             r"^stage directory \(the only place you may write\): (.+)$",
             spec.prompt,
@@ -176,13 +177,23 @@ def _mutate(fixture: dict[str, Any], case: dict[str, Any], sheet: dict[str, Any]
 def test_steward_decision_shape_and_named_mutation(fixture, tmp_path, monkeypatch) -> None:
     home = make_home(tmp_path)
     ids = _seed(home, fixture)
-    captured: dict[str, Path] = {}
+    captured: dict[str, Any] = {}
     monkeypatch.setattr(steward.invocation, "write_session", _backend(fixture, ids, captured))
 
     result = steward.run(home, dry_run=True)
 
     assert result.status == "dry-run"
-    assert result.calls == 1
+    # One decision session whose files pass the format check first time. A
+    # second session is only ever S-71 §5's LEDGER repair turn: several of
+    # these fixtures are decision shapes whose lines this sandbox ledger
+    # would refuse (a `local` route of a skill-scope lesson, a revise of a
+    # section it does not have), and the repair session rewrites the same
+    # files. Never a format repair.
+    prompts = captured["prompts"]
+    assert result.calls == len(prompts) and result.calls in (1, 2)
+    if result.calls == 2:
+        repair = prompts[1].split("=== repair ===", 1)[1]
+        assert "The ledger would refuse these lines of your sheets as written:" in repair
     stage = captured["stage"]
     run_dir = stage.parents[1]
     projected = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))

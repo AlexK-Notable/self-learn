@@ -825,8 +825,8 @@ def _repair_spec(spec: invocation.SessionSpec, error: str) -> invocation.Session
         surface=spec.surface,
         prompt=(
             spec.prompt
-            + "\n\n=== repair ===\nThe declared stage files failed validation once. "
-            + "Repair them in place and do nothing else. Error: "
+            + "\n\n=== repair ===\nA check of the stage files you wrote failed. "
+            + "Repair them in place and do nothing else. What failed:\n"
             + error
         ),
         cwd=spec.cwd,
@@ -905,6 +905,104 @@ def _forced_parking_reason(home: Path, sheet_path: Path) -> str | None:
         if gitops.is_tracked(host, rel):
             return "plain-host-committed-file"
     return None
+
+
+#: S-71 §5: the kinds the repair turn hands back to the model -- the line
+#: itself is wrong, or its destination cannot take it here. `status` is
+#: added per line, only when the lesson's status is still the one the run
+#: selected it with (the steward's own mistake, not a lesson that moved on).
+_REPAIRABLE_KINDS = frozenset({"bad-line", "destination-unavailable"})
+
+
+def _status_unchanged(home: Path, record_id: str, selected_status: object) -> bool:
+    """True only when the lesson's status is known to be the one the run
+    selected it with."""
+    if not isinstance(selected_status, str):
+        return False
+    try:
+        path = ledger_ops.find_record_path(home, record_id)
+        return ledger_ops.read_record_or_refuse(path).status == selected_status
+    except ledger_ops.LedgerOpsError:
+        return False
+
+
+def _ledger_repair_message(home: Path, stage: Path, selected: dict[str, object]) -> str | None:
+    """S-71 §5: the lines of the staged sheets the ledger would refuse as
+    written, when the refusal is the model's to fix -- or `None`.
+
+    A case the model parked, or one the runner will park
+    (`_forced_parking_reason`), is skipped: none of its lines is applied.
+    Each other sheet is previewed exactly as apply time will (the same
+    `[reopen, verb]` sequence rule). A `status` refusal is collected only
+    when the lesson's status is unchanged since selection, and never for a
+    lesson a staged `kind: reconsider` case of the same pair covers: this
+    preview runs without the case (it is not in the ledger yet), so the
+    reconsider widening -- which lets reject/defer/revise act on a routed
+    lesson -- cannot apply here, while apply time previews with the real
+    case (`_apply_packet`)."""
+    found: list[str] = []
+    for case_path in sorted((stage / "cases").glob("*.yaml")):
+        sheet_path = stage / "sheets" / case_path.name
+        case_data = _read_yaml(case_path)
+        if not isinstance(case_data, dict) or case_data.get("kind") == "parked":
+            continue
+        if _forced_parking_reason(home, sheet_path) is not None:
+            continue
+        reconsidered = (
+            {str(rid) for rid in case_data.get("records") or []}
+            if case_data.get("kind") == "reconsider"
+            else set()
+        )
+        sheet = _sheet_without_case(sheet_path)
+        preview = batch.dry_run(home, sheet, actor="steward")
+        for line in _held_refusals(preview, sheet):
+            kind = line.get("kind")
+            record_id = str(line.get("id"))
+            if kind == "status":
+                if record_id in reconsidered:
+                    continue
+                if not _status_unchanged(home, record_id, selected.get(record_id)):
+                    continue
+            elif kind not in _REPAIRABLE_KINDS:
+                continue
+            found.append(
+                f"- sheets/{sheet_path.name}: item {line.get('n')} "
+                f"({line.get('verb')} {record_id}): {line.get('detail') or kind}"
+            )
+    if not found:
+        return None
+    return "\n".join([
+        "The ledger would refuse these lines of your sheets as written:",
+        *found,
+        "Fix each one: rewrite the line, choose a different destination or verb, or park the case",
+        "with the reason that names its question. Leave every other file as it is.",
+    ])
+
+
+def _returned_for(home: Path, inputs: list[dict]) -> dict[str, dict]:
+    """S-71 §4.6: for each input of this packet that a committed run record
+    sent back at its CURRENT input version, the case that decided it and
+    the ledger's words -- what the brief's sent-back block shows."""
+    wanted = {
+        row["record"]: row.get("version")
+        for row in inputs
+        if isinstance(row, dict) and isinstance(row.get("record"), str)
+    }
+    out: dict[str, dict] = {}
+    for manifest in committed_manifests(home):
+        for packet in manifest.get("packets") or []:
+            for record_id, row in (packet.get("dispositions") or {}).items():
+                if (
+                    record_id in wanted
+                    and isinstance(row, dict)
+                    and row.get("state") == "returned"
+                    and row.get("input_version") == wanted[record_id]
+                ):
+                    out[record_id] = {
+                        "case": row.get("case"),
+                        "lines": [str(row.get("reason") or row.get("kind") or "")],
+                    }
+    return out
 
 
 def _make_parked_case(case_path: Path, reason: str) -> None:
@@ -2751,6 +2849,7 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
                     feed_items = conditions.feed(home, cache_dir(home))
                 prompt = steward_prompt.assemble(
                     home, cache_dir(home), context, proposals, conditions_items=feed_items,
+                    returned=_returned_for(home, packet_record["inputs"]),
                 )
                 fsops.atomic_write(run_dir / f"packet-{packet_index:04d}.md", prompt.text, fsync=True)
                 spec = _session_spec(
@@ -2815,56 +2914,71 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
                             ),
                         )
                     continue
+                # One repair turn per attempt (S-68 ruling 1), spent on
+                # whichever comes first: a stage file that fails its format
+                # check, or -- only when the format passed on the first try
+                # -- S-71 §5's lines the ledger would refuse as written that
+                # are the model's to fix. Ledger refusals left after the
+                # repair never fail the stage: they flow to apply time.
+                second_error: ValueError | None = None
+                repair_message: str | None = None
                 try:
                     _validate_and_prepare_stage(stage, set(packet_record["records"]))
                 except ValueError as first_error:
                     if packet_record.get("repair_remaining", 0) <= 0:
                         second_error = first_error
                     else:
-                        packet_record["repair_remaining"] = 0
-                        if not dry_run:
-                            _update_manifest(home, run_id, reason=f"packet {packet_index} repair allowance", update=lambda current: current["packets"][packet_index - 1].update(repair_remaining=0))
-                        repair_started = time.monotonic()
-                        repair = invocation.write_session(_repair_spec(spec, str(first_error)))
-                        result.calls += 1
-                        packet_record["attempts"].append({"kind": "repair", "failure": repair.failure,
-                            "duration_secs": float(time.monotonic() - repair_started)})
-                        try:
-                            if not repair.ok:
-                                raise ValueError(repair.detail or repair.failure or "repair invocation failed")
-                            _validate_and_prepare_stage(stage, set(packet_record["records"]))
-                            second_error = None
-                        except ValueError as exc:
-                            second_error = exc
-                    if second_error is not None:
-                        schema_dispositions = {
-                            row["record"]: {
-                                "state": "unfinished", "input_version": row["version"],
-                                "reason": "schema-repair",
-                            }
+                        repair_message = str(first_error)
+                else:
+                    if packet_record.get("repair_remaining", 0) > 0:
+                        repair_message = _ledger_repair_message(home, stage, {
+                            row["record"]: row.get("record_status")
                             for row in packet_record["inputs"]
+                        })
+                if repair_message is not None:
+                    packet_record["repair_remaining"] = 0
+                    if not dry_run:
+                        _update_manifest(home, run_id, reason=f"packet {packet_index} repair allowance", update=lambda current: current["packets"][packet_index - 1].update(repair_remaining=0))
+                    repair_started = time.monotonic()
+                    repair = invocation.write_session(_repair_spec(spec, repair_message))
+                    result.calls += 1
+                    packet_record["attempts"].append({"kind": "repair", "failure": repair.failure,
+                        "duration_secs": float(time.monotonic() - repair_started)})
+                    try:
+                        if not repair.ok:
+                            raise ValueError(repair.detail or repair.failure or "repair invocation failed")
+                        _validate_and_prepare_stage(stage, set(packet_record["records"]))
+                    except ValueError as exc:
+                        second_error = exc
+                if second_error is not None:
+                    schema_dispositions = {
+                        row["record"]: {
+                            "state": "unfinished", "input_version": row["version"],
+                            "reason": "schema-repair",
                         }
-                        schema_fields = {
-                            "attempts": packet_record.get("attempts") or [],
-                            "phase": "unfinished", "failure": "schema-repair",
-                            "detail": _failure_detail(second_error), "duration": duration,
-                            "dispositions": schema_dispositions,
-                            "error": str(second_error),
-                        }
-                        if dry_run:
-                            _record_failure(manifest, packet_index, **schema_fields)
-                        else:
-                            # A2, latent site: named fields over HEAD. The
-                            # splat it replaces wrote a whole local packet
-                            # copy back, the same shape as the failure above.
-                            _update_manifest(
-                                home, run_id,
-                                reason=f"packet {packet_index} schema unfinished",
-                                update=lambda current: _record_failure(
-                                    current, packet_index, **schema_fields
-                                ),
-                            )
-                        continue
+                        for row in packet_record["inputs"]
+                    }
+                    schema_fields = {
+                        "attempts": packet_record.get("attempts") or [],
+                        "phase": "unfinished", "failure": "schema-repair",
+                        "detail": _failure_detail(second_error), "duration": duration,
+                        "dispositions": schema_dispositions,
+                        "error": str(second_error),
+                    }
+                    if dry_run:
+                        _record_failure(manifest, packet_index, **schema_fields)
+                    else:
+                        # A2, latent site: named fields over HEAD. The
+                        # splat it replaces wrote a whole local packet
+                        # copy back, the same shape as the failure above.
+                        _update_manifest(
+                            home, run_id,
+                            reason=f"packet {packet_index} schema unfinished",
+                            update=lambda current: _record_failure(
+                                current, packet_index, **schema_fields
+                            ),
+                        )
+                    continue
                 if dry_run:
                     packet_record["phase"] = "complete"
                     continue

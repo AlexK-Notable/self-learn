@@ -644,11 +644,13 @@ def test_unexplained_dirty_truth_path_refuses_before_batch_dispatch(
     real_preview = steward.batch.dry_run
     previews = 0
 
+    # The apply-time preview is picked by its caller, not by its ordinal:
+    # S-71 §5's repair feed previews the staged sheets before apply time too.
     def dirty_after_case(*args, **kwargs):
         nonlocal previews
-        previews += 1
         result = real_preview(*args, **kwargs)
-        if previews == 2:
+        if sys._getframe(1).f_code.co_name == "_apply_packet":
+            previews += 1
             (home / "unexplained.txt").write_text("foreign write\n", encoding="utf-8")
         return result
 
@@ -2766,14 +2768,17 @@ def test_a_preview_refusal_leaves_the_lesson_unfinished_and_the_next_run_applies
     real_preview = steward.batch.dry_run
     previews = 0
 
-    # The runner previews twice per fresh packet: once while validating the
-    # staged sheet, once in `_apply_packet` right before dispatch. The
-    # second is the one whose verdict decides the case.
+    # The runner previews a fresh packet's sheets more than once before
+    # apply time (the repair feed, S-71 §5; the forced-parking check); the
+    # one whose verdict decides the case is `_apply_packet`'s, right before
+    # dispatch, picked here by its caller. `previews` counts only that one.
     def refuse_the_apply_time_preview(*args, **kwargs):
         nonlocal previews
-        previews += 1
         result = real_preview(*args, **kwargs)
-        if previews == 2:
+        if sys._getframe(1).f_code.co_name != "_apply_packet":
+            return result
+        previews += 1
+        if previews == 1:
             for item in result.items:
                 item.state = "would-refuse"
                 item.detail = "simulated: the ledger would refuse this tonight"
@@ -2784,7 +2789,7 @@ def test_a_preview_refusal_leaves_the_lesson_unfinished_and_the_next_run_applies
 
     first = steward.run(home)
 
-    assert previews == 2, "positive control: the apply-time preview ran"
+    assert previews == 1, "positive control: the apply-time preview ran"
     assert first.status == "partial" and first.unfinished == [rid] and first.decided == []
     assert [row["id"] for row in ledger_ops.list_items(home)] == [rid], "nothing was dispatched"
     assert first.run_id is not None
@@ -2801,7 +2806,7 @@ def test_a_preview_refusal_leaves_the_lesson_unfinished_and_the_next_run_applies
     )
     second = steward.run(home)
 
-    assert previews == 3, "the re-drive previewed once more, against tonight's ledger"
+    assert previews == 2, "the re-drive previewed once more, against tonight's ledger"
     assert second.status == "applied" and second.decided == [rid]
     assert ledger_ops.list_items(home) == []
     assert _head_manifest(home, first.run_id)["status"] == "complete"
