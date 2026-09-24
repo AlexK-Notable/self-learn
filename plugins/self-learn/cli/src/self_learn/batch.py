@@ -45,16 +45,13 @@ from . import cases, execution_evidence, gitops, intents, sentinel, verbs
 from .cases import CASE_ID_RE
 from .compilers import CompileError
 from .ledger_ops import (
-    DEFERRED_ONLY,
     LIVE_STATUSES,
-    REOPENABLE_STATUSES,
-    RESOLVABLE_STATUSES,
-    ROUTED_ONLY,
     LedgerOpsError,
     ProposalError,
     RecordNotFound,
     SheetLineRefusal,
     StatusRefusal,
+    defer_until,
     find_record_path,
 )
 from .records import (
@@ -64,7 +61,6 @@ from .records import (
     RecordError,
     ValidationError as RecordValidationError,
     build_covered_by,
-    is_replacement,
 )
 
 __all__ = [
@@ -150,7 +146,8 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
     # U4 (revise) -- S-54 as amended, 2026-09-13: "the one verb this
     # build adds to the sheet grammar, and PERMITTED_KEYS gains it
     # together with the by: key" (03-decisions.md S-54). Dispatch
-    # wiring (`_dispatch`/`classify`/`_STATUS_GATE`) is U3's own
+    # wiring (`_dispatch`/`classify`/`_STATUS_GATE` -- the last replaced
+    # by S-71 §6's `_PREVIEW_CHECKS`) is U3's own
     # (lane so-batch, this build).
     "revise": frozenset({"section", "text", "because", "by"}),
 }
@@ -913,8 +910,9 @@ def _classify_or_refuse(
 
 #: U5 fold r1 (F1): the ONLY verbs `_dispatch` ever forwards
 #: `reconsider_case` to — one set, consulted by BOTH
-#: `_reconsider_case_for` (below) and `dry_run`'s own status-gate
-#: preview, so the two can never drift apart again. Before this fix
+#: `_reconsider_case_for` (below), which `_dispatch` and `dry_run`'s
+#: preview (`_preview_checks`) both call, so the two can never drift
+#: apart again. Before this fix
 #: `_reconsider_case_for` decided purely on the RECORD's status, never
 #: the VERB — `dry_run` previewed `would-apply` for `revise`/`rescope`/
 #: `rehome` against a routed record under a valid reconsider case even
@@ -1565,36 +1563,178 @@ def decision_code(results: list[ItemResult]) -> int:
     return 1
 
 
-#: Status precondition each non-`route` verb needs — mirrors the guard
-#: vocabulary each verb itself consults (§3.1), so `--dry-run` can name a
-#: status refusal without calling the verb or writing anything. `note`
-#: and `link-contradicts` take no status gate (any status).
-_STATUS_GATE: dict[str, frozenset[str]] = {
-    "reject": LIVE_STATUSES,
-    "defer": LIVE_STATUSES,
-    "undefer": DEFERRED_ONLY,
-    # S-67: mirrors `verbs._REOPEN_ADMITTED_STATUSES` — the status half
-    # of `reopen`'s widened admission. The REPLACED-vs-RETIRED distinction
-    # (a record-id `superseded_by` stays refused) is not a status-set
-    # question and is previewed separately below, in `dry_run` itself.
-    "reopen": REOPENABLE_STATUSES | frozenset({"superseded"}),
-    "retire": RESOLVABLE_STATUSES,
-    "graduate": RESOLVABLE_STATUSES,
-    "supersede": RESOLVABLE_STATUSES,
-    "rehome": LIVE_STATUSES,
-    "rescope": LIVE_STATUSES,
-    "confirm-recurrence": ROUTED_ONLY,
-    "dismiss-suspect": ROUTED_ONLY,
-    "confirm-held": ROUTED_ONLY,
-    "followup-done": ROUTED_ONLY,
-    # U3 (carried from the U4 gate): `verbs.revise` admits only
-    # LIVE_STATUSES (`records.DRAFT_STATUSES` under this module's own
-    # import name -- the same two values, pending/deferred) — without
-    # this entry `dry_run`'s generic status-gate check (below) fell
-    # through to `gate is None` and reported "would-apply" for a
-    # revise item against a routed/rejected/superseded record.
-    "revise": LIVE_STATUSES,
+#: S-71 §6: what `dry_run` checks for each non-`route` verb — the verb's
+#: OWN pre-lock checks (``verbs._preflight_*``), plus the checks the verb
+#: runs later from the same functions (``defer``'s date, a retirement's
+#: host-side preflight). Never a second implementation: a check that
+#: changes in the verb changes here too. Each entry takes (home, item,
+#: by, reconsider_case) — computed exactly as `_dispatch` computes them —
+#: and raises the verb's own refusal, or returns.
+
+
+def _preview_reject(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_reject_or_defer(
+        home, item.id, verb="reject", note=item.fields.get("note"), by=by,
+        reconsider_case=rc,
+    )
+
+
+def _preview_defer(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_reject_or_defer(
+        home, item.id, verb="defer", note=item.fields.get("note"), by=by,
+        reconsider_case=rc,
+    )
+    # `defer_record` runs this under the lock, after the status check above.
+    defer_until(item.id, item.fields.get("until"))
+
+
+def _preview_undefer(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_undefer(home, item.id, note=item.fields.get("note"), by=by)
+
+
+def _preview_reopen(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_reopen(home, item.id, note=item.fields.get("note"), by=by)
+
+
+def _preview_retire(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    # `retire` always names `covered_by`; `graduate` may omit it (the
+    # legacy alias), and is `retire` itself when it names one.
+    covered_by = item.fields.get("covered_by")
+    verb_word = "graduate"
+    if covered_by is not None:
+        verbs._covered_by_surface(covered_by)
+        verb_word = "retire"
+    path, record, warnings = verbs._preflight_retire(
+        home, item.id, verb_word=verb_word, note=item.fields.get("note"),
+        by=by, reconsider_case=rc,
+    )
+    verbs._retirement_preflight(home, record, path.parent.parent, warnings)
+
+
+def _preview_supersede(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    old_path, old_record, warnings = verbs._preflight_supersede(
+        home, item.id, item.fields["new_id"], note=item.fields.get("note"),
+        by=by, reconsider_case=rc,
+    )
+    # `supersede` resolves the same host-side cleanup inline (a duplicate
+    # of this helper its own comment names); the helper is the shared one.
+    verbs._retirement_preflight(home, old_record, old_path.parent.parent, warnings)
+
+
+def _preview_move(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_move(
+        home, item.id, to=item.fields["to"], verb=item.verb,
+        note=item.fields.get("note"), by=by,
+    )
+
+
+def _preview_note(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_note(home, item.id, append=item.fields["append"])
+
+
+def _preview_confirm_recurrence(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_confirm_recurrence(
+        home, item.id, event_ref=item.fields["event"],
+        tolerate=bool(item.fields.get("tolerate", False)),
+        note=item.fields.get("note"),
+    )
+
+
+def _preview_dismiss_suspect(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_dismiss_suspect(
+        home, item.id, event_ref=item.fields["event"], note=item.fields.get("note")
+    )
+
+
+def _preview_confirm_held(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_confirm_held(home, item.id, note=item.fields.get("note"))
+
+
+def _preview_link_contradicts(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_link_contradicts(
+        home, item.id, item.fields["target"], note=item.fields.get("note")
+    )
+
+
+def _preview_followup_done(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_followup_done(home, item.id, note=item.fields.get("note"))
+
+
+def _preview_revise(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_revise(
+        home, item.id, section=item.fields["section"], text=item.fields["text"],
+        because=item.fields["because"], by=by,
+    )
+
+
+_PreviewCheck = Callable[[Path, SheetItem, str | None, str | None], None]
+
+_PREVIEW_CHECKS: dict[str, _PreviewCheck] = {
+    "reject": _preview_reject,
+    "defer": _preview_defer,
+    "undefer": _preview_undefer,
+    "reopen": _preview_reopen,
+    "retire": _preview_retire,
+    "graduate": _preview_retire,
+    "supersede": _preview_supersede,
+    "rehome": _preview_move,
+    "rescope": _preview_move,
+    "note": _preview_note,
+    "confirm-recurrence": _preview_confirm_recurrence,
+    "dismiss-suspect": _preview_dismiss_suspect,
+    "confirm-held": _preview_confirm_held,
+    "link-contradicts": _preview_link_contradicts,
+    "followup-done": _preview_followup_done,
+    "revise": _preview_revise,
 }
+
+#: What `_dispatch` turns into a refused item — a preview check raising one
+#: of these is a `would-refuse`. Anything else escapes, as it would at apply.
+_PREVIEW_REFUSALS = (
+    verbs.VerbError, LedgerOpsError, CompileError, MutationError, gitops.GitOpsError,
+)
+
+
+def _preview_checks(
+    home: Path, item: SheetItem, *, actor: str, sheet_case: str | None
+) -> None:
+    """Run the checks the verb would run for a non-`route` *item*, with
+    the same `by` and `reconsider_case` `_dispatch` would pass it."""
+    f = item.fields
+    if item.verb == "revise":
+        by = f.get("by") or (actor if actor != "human" else None)
+    else:
+        by = f.get("by") or actor
+    reconsider_case = _reconsider_case_for(home, item.id, sheet_case, item.verb)
+    _PREVIEW_CHECKS[item.verb](home, item, by, reconsider_case)
 
 
 @dataclass
@@ -1661,7 +1801,7 @@ def dry_run(
     :func:`_dispatch` WOULD do). For a `route` item this is EXACTLY
     `route --dry-run`'s own payload, called as a function (the
     delegation leg) — no second preflight implementation. Every other
-    verb reports its own status precondition (:data:`_STATUS_GATE`)
+    verb runs that verb's own pre-lock checks (:data:`_PREVIEW_CHECKS`, S-71 §6)
     with nothing written. `hook_items` names the sheet-level
     prerequisite the two hand scripts (§2.4) had to sequence by hand: a
     route item whose resolved destination is `hook` — populated
@@ -1740,7 +1880,10 @@ def dry_run(
                 # preflight (`route_dry_run`) still clears, and without
                 # ever calling `hook_activation.activate` (BAT9: a dry
                 # run writes nothing at all, ledger AND hosts).
-                dr = verbs.route_dry_run(home, item.id, dest=item.fields.get("dest"))
+                dr = verbs.route_dry_run(
+                    home, item.id, dest=item.fields.get("dest"),
+                    note=item.fields.get("note"),
+                )
                 if dr.would_refuse:
                     result.items.append(
                         DryRunItem(
@@ -1761,7 +1904,10 @@ def dry_run(
                     )
                 )
                 continue
-            dr = verbs.route_dry_run(home, item.id, dest=item.fields.get("dest"))
+            dr = verbs.route_dry_run(
+                home, item.id, dest=item.fields.get("dest"),
+                note=item.fields.get("note"),
+            )
             state = "would-refuse" if dr.would_refuse else "would-apply"
             result.items.append(
                 DryRunItem(n=item.n, id=item.id, verb=item.verb, state=state,
@@ -1772,66 +1918,12 @@ def dry_run(
             )
             continue
         try:
-            path = find_record_path(home, item.id)
-        except LedgerOpsError as exc:
+            _preview_checks(home, item, actor=actor, sheet_case=sheet_case)
+        except _PREVIEW_REFUSALS as exc:
             result.items.append(
                 DryRunItem(n=item.n, id=item.id, verb=item.verb,
                            state="would-refuse", detail=str(exc),
                            kind=_preview_kind([exc]))
-            )
-            continue
-        if item.verb in ("rehome", "rescope"):
-            try:
-                verbs._resolve_move_target(home, item.fields["to"])
-            except verbs.VerbError as exc:
-                result.items.append(
-                    DryRunItem(n=item.n, id=item.id, verb=item.verb,
-                               state="would-refuse", detail=str(exc),
-                               kind=_preview_kind([exc]))
-                )
-                continue
-        record = Record.from_path(path)
-        gate = _STATUS_GATE.get(item.verb)
-        if (
-            gate is not None and record.status not in gate
-            # U5: the same per-item widening `_dispatch` would apply at
-            # apply time — a validated `kind: reconsider` case over a
-            # routed record's item previews `would-apply`, not a stale
-            # `would-refuse` naming a status the real run would admit.
-            and _reconsider_case_for(home, item.id, sheet_case, item.verb) is None
-        ):
-            status_detail = f"record {item.id} is {record.status!r}"
-            result.items.append(
-                DryRunItem(n=item.n, id=item.id, verb=item.verb,
-                           state="would-refuse",
-                           detail=status_detail,
-                           kind=_preview_kind([StatusRefusal(
-                               status_detail, record_id=item.id,
-                               current_status=record.status, allowed=gate,
-                           )]))
-            )
-            continue
-        # S-67: `_STATUS_GATE["reopen"]` admits `superseded` for BOTH a
-        # retirement and a replacement — the same distinction
-        # `verbs.reopen` itself draws one level down, once the record is
-        # in hand, previewed here rather than left to look like
-        # `would-apply` and then refuse for real.
-        if (
-            item.verb == "reopen"
-            and record.status == "superseded"
-            and is_replacement(record.superseded_by)
-        ):
-            reopen_detail = (
-                f"record {item.id} is superseded by a replacement "
-                f"({record.superseded_by}) — use reconsider"
-            )
-            result.items.append(
-                DryRunItem(
-                    n=item.n, id=item.id, verb=item.verb,
-                    state="would-refuse",
-                    detail=reopen_detail,
-                    kind=_preview_kind([verbs.SheetLineError(reopen_detail)]),
-                )
             )
             continue
         result.items.append(

@@ -70,6 +70,7 @@ __all__ = [
     "create_record",
     "ensure_project_meta",
     "defer_record",
+    "defer_until",
     "find_record_path",
     "glob_reaches",
     "globs_may_intersect",
@@ -2897,6 +2898,42 @@ def open_followups(home: Path) -> list[dict]:
     return out
 
 
+def defer_until(record_id: str, until=None, *, now: datetime | None = None) -> str:
+    """The date a ``defer`` of *record_id* would write, as ``YYYY-MM-DD`` —
+    the default (+:data:`DEFAULT_DEFER_DAYS`) when *until* is ``None`` —
+    or a :class:`SheetLineRefusal` when an explicit *until* is in the past
+    or is not a date. :func:`defer_record` calls it under the lock and
+    ``batch.dry_run`` calls it for its preview (S-71 §6), so the two can
+    never disagree. A value that is not a date used to raise a bare
+    ``ValueError`` out of ``defer_record`` (and out of a whole ``batch``
+    run); it is the line's own mistake, so it refuses like the past date
+    does (2026-09-23)."""
+    clock = _now(now)
+    if until is None:
+        return (clock + timedelta(days=DEFAULT_DEFER_DAYS)).strftime("%Y-%m-%d")
+    if isinstance(until, datetime):
+        until_date = until.date()
+    elif isinstance(until, date):
+        until_date = until
+    else:
+        try:
+            until_date = date.fromisoformat(str(until))
+        except ValueError as exc:
+            raise SheetLineRefusal(
+                f"defer {record_id}: --until {until!r} is not a date "
+                f"(YYYY-MM-DD): {exc}"
+            ) from exc
+    today = clock.date()
+    if until_date < today:
+        raise SheetLineRefusal(
+            f"defer {record_id}: --until {until_date.isoformat()} is in "
+            f"the past (today is {today.isoformat()} UTC) — a defer must "
+            f"name a future date; `self-learn undefer {record_id}` is "
+            "the verb for bringing a deferred record back now"
+        )
+    return until_date.strftime("%Y-%m-%d")
+
+
 def defer_record(
     home: Path,
     record_id: str,
@@ -2949,25 +2986,7 @@ def defer_record(
     # note to set afterward, only the old one to clear.
     if extra_allowed_source and record.resolution_note is not None:
         _displace_resolution_note(record)
-    clock = _now(now)
-    if until is None:
-        until = (clock + timedelta(days=DEFAULT_DEFER_DAYS)).strftime("%Y-%m-%d")
-    else:
-        if isinstance(until, datetime):
-            until_date = until.date()
-        elif isinstance(until, date):
-            until_date = until
-        else:
-            until_date = date.fromisoformat(str(until))
-        today = clock.date()
-        if until_date < today:
-            raise SheetLineRefusal(
-                f"defer {record_id}: --until {until_date.isoformat()} is in "
-                f"the past (today is {today.isoformat()} UTC) — a defer must "
-                f"name a future date; `self-learn undefer {record_id}` is "
-                "the verb for bringing a deferred record back now"
-            )
-        until = until_date.strftime("%Y-%m-%d")
+    until = defer_until(record_id, until, now=now)
     record.set_status("deferred")
     record.set_deferred_until(until)
     record.set_deferred_count((record.deferred_count or 0) + 1)

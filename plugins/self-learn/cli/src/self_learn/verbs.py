@@ -4019,6 +4019,7 @@ def route_dry_run(
     by: str | None = None,
     user_claude_md: Path | str | None = None,
     allow_empty_glob: bool = False,
+    note: str | None = None,
 ) -> RouteDryRunResult:
     """U-verbs §4.3: runs every preflight the real `route` runs, in the
     SAME order, and computes the bytes the compiler would write instead
@@ -4040,7 +4041,9 @@ def route_dry_run(
     errors: list[BaseException] = []
 
     try:
-        _scan_or_refuse([path], None)
+        # S-71 §6: the line's own `note:` is scanned exactly as `route`
+        # scans it (`batch.dry_run` passes it; the CLI preview has none).
+        _scan_or_refuse([path], note)
     except VerbError as exc:
         would_refuse.append(str(exc))
         errors.append(exc)
@@ -5661,6 +5664,34 @@ def _reconsider_retirement_preflight(
     return retire, warnings
 
 
+def _preflight_reject_or_defer(
+    home: Path,
+    record_id: str,
+    *,
+    verb: str,
+    note: str | None,
+    by: str | None,
+    reconsider_case: str | None,
+    execution: execution_evidence.ExecutionRef | None = None,
+) -> tuple[Path, str | None, frozenset[str] | None]:
+    """S-71 §6: `reject`'s and `defer`'s checks before any lock (the two were
+    identical) — moved here verbatim so the verb and `batch.dry_run` run the
+    SAME checks, in the same order."""
+    path = find_record_path(home, record_id)  # pending OR resolved
+    _scan_or_refuse([path], note)
+    body = _body_with_by_trailer(note, by, execution)  # validates before any lock
+    _reconsider_case_check(home, reconsider_case, record_id)
+    extra_allowed = frozenset({"routed"}) if reconsider_case is not None else None
+    try:
+        require_status(
+            home, record_id, LIVE_STATUSES | (extra_allowed or frozenset()),
+            verb=verb,
+        )
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+    return path, body, extra_allowed
+
+
 def reject(
     home: Path | str,
     record_id: str,
@@ -5698,18 +5729,10 @@ def reject(
     `--reconsider-case` flag — only `batch._dispatch` passes this,
     naming the sheet's own top-level `case:`."""
     home = Path(home)
-    path = find_record_path(home, record_id)  # pending OR resolved
-    _scan_or_refuse([path], note)
-    body = _body_with_by_trailer(note, by, execution)  # validates before any lock
-    _reconsider_case_check(home, reconsider_case, record_id)
-    extra_allowed = frozenset({"routed"}) if reconsider_case is not None else None
-    try:
-        require_status(
-            home, record_id, LIVE_STATUSES | (extra_allowed or frozenset()),
-            verb="reject",
-        )
-    except LedgerOpsError as exc:
-        raise VerbError(str(exc)) from exc
+    path, body, extra_allowed = _preflight_reject_or_defer(
+        home, record_id, verb="reject", note=note, by=by,
+        reconsider_case=reconsider_case, execution=execution,
+    )
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -5801,18 +5824,10 @@ def defer(
     live there — 02 §2), and its compiled entry drops through the SAME
     retirement leg `reject` takes, in the SAME locked section."""
     home = Path(home)
-    path = find_record_path(home, record_id)  # pending OR resolved
-    _scan_or_refuse([path], note)
-    body = _body_with_by_trailer(note, by, execution)  # validates before any lock
-    _reconsider_case_check(home, reconsider_case, record_id)
-    extra_allowed = frozenset({"routed"}) if reconsider_case is not None else None
-    try:
-        require_status(
-            home, record_id, LIVE_STATUSES | (extra_allowed or frozenset()),
-            verb="defer",
-        )
-    except LedgerOpsError as exc:
-        raise VerbError(str(exc)) from exc
+    path, body, extra_allowed = _preflight_reject_or_defer(
+        home, record_id, verb="defer", note=note, by=by,
+        reconsider_case=reconsider_case, execution=execution,
+    )
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -6001,31 +6016,18 @@ def _rescope_commit_body(note: str | None, swept: list[Path]) -> str | None:
     return "\n\n".join(parts) if parts else None
 
 
-def _move(
-    home: Path | str,
+def _preflight_move(
+    home: Path,
     record_id: str,
     *,
     to: str,
     verb: str,
-    note: str | None = None,
-    by: str | None = None,
-    no_push: bool = False,
-    execution: execution_evidence.ExecutionRef | None = None,
-) -> VerbResult:
-    """The ONE verb body behind both ``rehome`` and ``rescope`` (U-verbs
-    §4.1, ruling R1 / criterion ``MOVE10``): neither entry point may
-    contain a file-op of its own — every byte reaches disk only through
-    :func:`ledger_ops.move_record`, called from HERE. Step order is
-    ``rescope``'s, the stricter of the two predecessor orderings.
-
-    Refusals — each on STATUS, never mere existence (``find_record_path``
-    also sees ``resolved/``), all BEFORE any commit or dir creation:
-    unknown id (64, bare ``LedgerOpsError``) · not pending/deferred (1,
-    :func:`require_status`) · ``--to`` unparseable / unregistered project
-    / unknown skill (1, named repair) · same bucket (1) · id already
-    present in the target bucket, ``pending/`` OR ``resolved/`` (1, the
-    F4 create-record collision precedent)."""
-    home = Path(home)
+    note: str | None,
+    by: str | None,
+) -> tuple[str, Path, Path | None, str]:
+    """S-71 §6: `rehome`'s and `rescope`'s checks before any lock — moved here
+    verbatim so the verb and `batch.dry_run` run the SAME checks, in the
+    same order."""
     path = find_record_path(home, record_id)  # pending OR resolved
 
     # (a) scan the record file BEFORE trusting its contents — plus the
@@ -6068,6 +6070,37 @@ def _move(
             )
 
     dest_label = _move_dest_label(target_scope, target_bucket)
+    return target_scope, target_bucket, project_path, dest_label
+
+
+def _move(
+    home: Path | str,
+    record_id: str,
+    *,
+    to: str,
+    verb: str,
+    note: str | None = None,
+    by: str | None = None,
+    no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
+) -> VerbResult:
+    """The ONE verb body behind both ``rehome`` and ``rescope`` (U-verbs
+    §4.1, ruling R1 / criterion ``MOVE10``): neither entry point may
+    contain a file-op of its own — every byte reaches disk only through
+    :func:`ledger_ops.move_record`, called from HERE. Step order is
+    ``rescope``'s, the stricter of the two predecessor orderings.
+
+    Refusals — each on STATUS, never mere existence (``find_record_path``
+    also sees ``resolved/``), all BEFORE any commit or dir creation:
+    unknown id (64, bare ``LedgerOpsError``) · not pending/deferred (1,
+    :func:`require_status`) · ``--to`` unparseable / unregistered project
+    / unknown skill (1, named repair) · same bucket (1) · id already
+    present in the target bucket, ``pending/`` OR ``resolved/`` (1, the
+    F4 create-record collision precedent)."""
+    home = Path(home)
+    target_scope, target_bucket, project_path, dest_label = _preflight_move(
+        home, record_id, to=to, verb=verb, note=note, by=by
+    )
 
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -6168,6 +6201,26 @@ def rescope(
     )
 
 
+def _preflight_undefer(
+    home: Path,
+    record_id: str,
+    *,
+    note: str | None,
+    by: str | None,
+    execution: execution_evidence.ExecutionRef | None = None,
+) -> tuple[Path, str | None]:
+    """S-71 §6: `undefer`'s checks before any lock — moved here verbatim so the
+    verb and `batch.dry_run` run the SAME checks, in the same order."""
+    path = find_record_path(home, record_id)  # pending OR resolved
+    _scan_or_refuse([path], note)
+    body = _body_with_by_trailer(note, by, execution)  # validates before any lock
+    try:
+        require_status(home, record_id, DEFERRED_ONLY, verb="undefer")
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+    return path, body
+
+
 def undefer(
     home: Path | str,
     record_id: str,
@@ -6189,13 +6242,9 @@ def undefer(
     'pending' (GUARD3/GUARD4). Fold r1 (F3): *by*, when given, rides the
     commit body as its own trailing ``By:`` paragraph."""
     home = Path(home)
-    path = find_record_path(home, record_id)  # pending OR resolved
-    _scan_or_refuse([path], note)
-    body = _body_with_by_trailer(note, by, execution)  # validates before any lock
-    try:
-        require_status(home, record_id, DEFERRED_ONLY, verb="undefer")
-    except LedgerOpsError as exc:
-        raise VerbError(str(exc)) from exc
+    path, body = _preflight_undefer(
+        home, record_id, note=note, by=by, execution=execution
+    )
 
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -6375,8 +6424,9 @@ def reconsider(
 #: S-67: `reopen`'s own widened admission — a mistaken RETIREMENT joins
 #: the always-admitted REJECTED record. Deliberately NOT folded into the
 #: shared `REOPENABLE_STATUSES` constant (`ledger_ops.py`): that name is
-#: reused verbatim elsewhere (`batch._STATUS_GATE`'s own dry-run mirror,
-#: separately widened below) and, unlike here, a "superseded" status
+#: reused verbatim elsewhere (it was also `batch._STATUS_GATE`'s dry-run
+#: mirror until S-71 §6 replaced that mirror with the verbs' own checks)
+#: and, unlike here, a "superseded" status
 #: alone is not sufficient there either — a REPLACED record (a record-id
 #: `superseded_by`) must stay refused, checked one level down once the
 #: record is in hand (`is_replacement`), never by widening the status
@@ -6384,6 +6434,40 @@ def reconsider(
 REOPEN_ADMITTED_STATUSES = REOPENABLE_STATUSES | frozenset({"superseded"})
 #: The pre-2026-09-22 private name, kept for any caller that bound it.
 _REOPEN_ADMITTED_STATUSES = REOPEN_ADMITTED_STATUSES
+
+
+def _preflight_reopen(
+    home: Path,
+    record_id: str,
+    *,
+    note: str | None,
+    by: str | None,
+) -> None:
+    """S-71 §6: `reopen`'s checks before any lock (status, then the replacement
+    gate) — moved here verbatim so the verb and `batch.dry_run` run the SAME
+    checks, in the same order."""
+    path = find_record_path(home, record_id)  # pending OR resolved
+    _scan_or_refuse([path], note)
+    _by_trailer(by)  # validates `by` before any lock/mutation
+    try:
+        _, record = require_status(
+            home, record_id, _REOPEN_ADMITTED_STATUSES, verb="reopen"
+        )
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+    if record.status == "superseded" and records_mod.is_replacement(
+        record.superseded_by
+    ):
+        # Same "record X is 'status' — reason" shape `require_status`
+        # itself uses (ledger_ops.py) — this refusal is a SECOND gate,
+        # one level below the status check above (which now admits
+        # `superseded` unconditionally), so it has to build that shape
+        # by hand rather than get it from `require_status` for free.
+        raise SheetLineError(
+            f"record {record_id} is {record.status!r} — superseded by "
+            f"a replacement ({record.superseded_by}); a live successor "
+            f"exists, use reconsider instead of reopen"
+        )
 
 
 def reopen(
@@ -6420,28 +6504,7 @@ def reopen(
     Fold r1 (F3): *by*, when given, rides the commit body as its own
     trailing ``By:`` paragraph."""
     home = Path(home)
-    path = find_record_path(home, record_id)  # pending OR resolved
-    _scan_or_refuse([path], note)
-    _by_trailer(by)  # validates `by` before any lock/mutation
-    try:
-        _, record = require_status(
-            home, record_id, _REOPEN_ADMITTED_STATUSES, verb="reopen"
-        )
-    except LedgerOpsError as exc:
-        raise VerbError(str(exc)) from exc
-    if record.status == "superseded" and records_mod.is_replacement(
-        record.superseded_by
-    ):
-        # Same "record X is 'status' — reason" shape `require_status`
-        # itself uses (ledger_ops.py) — this refusal is a SECOND gate,
-        # one level below the status check above (which now admits
-        # `superseded` unconditionally), so it has to build that shape
-        # by hand rather than get it from `require_status` for free.
-        raise SheetLineError(
-            f"record {record_id} is {record.status!r} — superseded by "
-            f"a replacement ({record.superseded_by}); a live successor "
-            f"exists, use reconsider instead of reopen"
-        )
+    _preflight_reopen(home, record_id, note=note, by=by)
 
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -6474,6 +6537,15 @@ def reopen(
         hold.release()
 
 
+def _preflight_note(home: Path, record_id: str, *, append: str) -> Path:
+    """S-71 §6: `note`'s check before any lock (the scan of `append`) — moved
+    here verbatim so the verb and `batch.dry_run` run the SAME checks, in
+    the same order."""
+    path = find_record_path(home, record_id)  # pending OR resolved
+    _scan_or_refuse([path], append)
+    return path
+
+
 def note(
     home: Path | str,
     record_id: str,
@@ -6496,8 +6568,7 @@ def note(
     message. A human call at a terminal omits `key` and every call
     appends (two identical observations on two days are two facts)."""
     home = Path(home)
-    path = find_record_path(home, record_id)  # pending OR resolved
-    _scan_or_refuse([path], append)
+    path = _preflight_note(home, record_id, append=append)
 
     if key is not None and Record.from_path(path).note_has_key(key):
         # already-applied (§3.3b row 10): SKIPPED — nothing written, no
@@ -6841,6 +6912,16 @@ def reroute(
         hold.release()
 
 
+def _covered_by_surface(covered_by: str) -> str:
+    """S-71 §6: `retire`'s `covered_by` parse — moved here verbatim so the verb
+    and `batch.dry_run` run the SAME checks, in the same order."""
+    try:
+        surface = records_mod.build_covered_by(covered_by)
+    except records_mod.ValidationError as exc:
+        raise SheetLineError(str(exc)) from exc
+    return surface
+
+
 def retire(
     home: Path | str,
     record_id: str,
@@ -6867,10 +6948,7 @@ def retire(
     owns parsing *covered_by* and refusing an unknown kind or empty name
     BY NAME before any lock. ``graduate`` (below) is a thin, hidden-alias
     entry point onto the SAME implementation."""
-    try:
-        surface = records_mod.build_covered_by(covered_by)
-    except records_mod.ValidationError as exc:
-        raise SheetLineError(str(exc)) from exc
+    surface = _covered_by_surface(covered_by)
     return _retire_impl(
         home,
         record_id,
@@ -6942,6 +7020,36 @@ def graduate(
     return result
 
 
+def _preflight_retire(
+    home: Path,
+    record_id: str,
+    *,
+    verb_word: str,
+    note: str | None,
+    by: str | None,
+    reconsider_case: str | None,
+) -> tuple[Path, Record, list[str]]:
+    """S-71 §6: `retire`'s and `graduate`'s checks before any lock — moved here
+    verbatim so the verb and `batch.dry_run` run the SAME checks, in the
+    same order."""
+    path = find_record_path(home, record_id)  # pending OR resolved
+    _scan_or_refuse([path], note)
+    _by_trailer(by)  # validates `by` before any lock/mutation
+    _reconsider_case_check(home, reconsider_case, record_id)
+    warnings = _orphaned_followup_warning(path, record_id)
+    # FW-51: refuses BEFORE any lock/mutation, naming the record's actual
+    # status, when it is already terminal (rejected, or already
+    # superseded/retired) — the reject-then-retire inversion this unit
+    # closes.
+    try:
+        _, record = require_status(
+            home, record_id, RESOLVABLE_STATUSES, verb=verb_word
+        )
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+    return path, record, warnings
+
+
 def _retire_impl(
     home: Path | str,
     record_id: str,
@@ -6987,21 +7095,10 @@ def _retire_impl(
     bad case still refuses, even though retire's own admitted-status
     set does not change."""
     home = Path(home)
-    path = find_record_path(home, record_id)  # pending OR resolved
-    _scan_or_refuse([path], note)
-    _by_trailer(by)  # validates `by` before any lock/mutation
-    _reconsider_case_check(home, reconsider_case, record_id)
-    warnings = _orphaned_followup_warning(path, record_id)
-    # FW-51: refuses BEFORE any lock/mutation, naming the record's actual
-    # status, when it is already terminal (rejected, or already
-    # superseded/retired) — the reject-then-retire inversion this unit
-    # closes.
-    try:
-        _, record = require_status(
-            home, record_id, RESOLVABLE_STATUSES, verb=verb_word
-        )
-    except LedgerOpsError as exc:
-        raise VerbError(str(exc)) from exc
+    path, record, warnings = _preflight_retire(
+        home, record_id, verb_word=verb_word, note=note, by=by,
+        reconsider_case=reconsider_case,
+    )
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -7142,6 +7239,42 @@ def _retire_impl(
         hold.release()
 
 
+def _preflight_supersede(
+    home: Path,
+    old_id: str,
+    new_id: str,
+    *,
+    note: str | None,
+    by: str | None,
+    reconsider_case: str | None,
+) -> tuple[Path, Record, list[str]]:
+    """S-71 §6: `supersede`'s checks before any lock — moved here verbatim so
+    the verb and `batch.dry_run` run the SAME checks, in the same order."""
+    if old_id == new_id:
+        raise SheetLineError("a record cannot supersede itself")
+    old_path = find_record_path(home, old_id)  # pending OR routed flavor
+    find_record_path(home, new_id)  # the replacement must exist
+    _scan_or_refuse([old_path], note)
+    _by_trailer(by)  # validates `by` before any lock/mutation
+    _reconsider_case_check(home, reconsider_case, old_id)
+    warnings = _orphaned_followup_warning(old_path, old_id)
+    # FW-51: status/cycle refusals — BEFORE any lock/mutation, naming the
+    # record's actual status. Existence of both ids is already confirmed
+    # above (a genuinely missing id stays LedgerOpsError/64, unwrapped —
+    # test_replacement_must_exist pins this); from here the only failure
+    # mode is a STATUS or CYCLE refusal, exit 1 like every other
+    # resolution-verb refusal.
+    try:
+        _, old_record = require_status(
+            home, old_id, RESOLVABLE_STATUSES, verb="supersede"
+        )
+        require_status(home, new_id, RESOLVABLE_STATUSES, verb="supersede")
+        supersede_cycle_check(home, old_id, new_id)
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+    return old_path, old_record, warnings
+
+
 def supersede(
     home: Path | str,
     old_id: str,
@@ -7173,28 +7306,9 @@ def supersede(
     docstring; ``RESOLVABLE_STATUSES`` already admits a routed
     ``old_id`` unconditionally."""
     home = Path(home)
-    if old_id == new_id:
-        raise SheetLineError("a record cannot supersede itself")
-    old_path = find_record_path(home, old_id)  # pending OR routed flavor
-    find_record_path(home, new_id)  # the replacement must exist
-    _scan_or_refuse([old_path], note)
-    _by_trailer(by)  # validates `by` before any lock/mutation
-    _reconsider_case_check(home, reconsider_case, old_id)
-    warnings = _orphaned_followup_warning(old_path, old_id)
-    # FW-51: status/cycle refusals — BEFORE any lock/mutation, naming the
-    # record's actual status. Existence of both ids is already confirmed
-    # above (a genuinely missing id stays LedgerOpsError/64, unwrapped —
-    # test_replacement_must_exist pins this); from here the only failure
-    # mode is a STATUS or CYCLE refusal, exit 1 like every other
-    # resolution-verb refusal.
-    try:
-        _, old_record = require_status(
-            home, old_id, RESOLVABLE_STATUSES, verb="supersede"
-        )
-        require_status(home, new_id, RESOLVABLE_STATUSES, verb="supersede")
-        supersede_cycle_check(home, old_id, new_id)
-    except LedgerOpsError as exc:
-        raise VerbError(str(exc)) from exc
+    old_path, old_record, warnings = _preflight_supersede(
+        home, old_id, new_id, note=note, by=by, reconsider_case=reconsider_case
+    )
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -7395,20 +7509,14 @@ def supersede(
         hold.release()
 
 
-def followup_done(
-    home: Path | str,
+def _preflight_followup_done(
+    home: Path,
     record_id: str,
     *,
-    note: str | None = None,
-    no_push: bool = False,
-    execution: execution_evidence.ExecutionRef | None = None,
-) -> VerbResult:
-    """Clear a routed record's open follow-up (11 §2.5): move
-    ``routing.follow_up`` to a dated ``follow_up_done`` block. Standard
-    resolution-verb sequence; commit ``self-learn: follow-up done on
-    lrn-…``; the note lands in ``follow_up_done.done_note`` + the commit
-    body — ``resolution_note`` stays write-once and untouched (02 §2)."""
-    home = Path(home)
+    note: str | None,
+) -> tuple[Path, Record]:
+    """S-71 §6: `followup-done`'s checks before any lock — moved here verbatim
+    so the verb and `batch.dry_run` run the SAME checks, in the same order."""
     path = find_record_path(home, record_id)
     _scan_or_refuse([path], note)
     # FW-51 M-3 (code gate r1): followup_done's own docstring already
@@ -7430,6 +7538,24 @@ def followup_done(
         raise SheetLineError(
             f"record {record_id} has no open follow-up — nothing to clear"
         )
+    return path, record
+
+
+def followup_done(
+    home: Path | str,
+    record_id: str,
+    *,
+    note: str | None = None,
+    no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
+) -> VerbResult:
+    """Clear a routed record's open follow-up (11 §2.5): move
+    ``routing.follow_up`` to a dated ``follow_up_done`` block. Standard
+    resolution-verb sequence; commit ``self-learn: follow-up done on
+    lrn-…``; the note lands in ``follow_up_done.done_note`` + the commit
+    body — ``resolution_note`` stays write-once and untouched (02 §2)."""
+    home = Path(home)
+    path, record = _preflight_followup_done(home, record_id, note=note)
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -7459,24 +7585,17 @@ def followup_done(
         hold.release()
 
 
-def confirm_recurrence(
-    home: Path | str,
+def _preflight_confirm_recurrence(
+    home: Path,
     record_id: str,
     *,
     event_ref: str,
-    tolerate: bool = False,
-    note: str | None = None,
-    no_push: bool = False,
-    execution: execution_evidence.ExecutionRef | None = None,
-) -> VerbResult:
-    """Human confirmation of a recurrence suspect (11 §2.2/§2.5): append
-    to the record's append-only ``recurrences:`` list, copying the minimal
-    facts (ts, origin) OUT of the telemetry event named by ``event_ref``
-    (the event's ``nonce``); the ref stays a courtesy pointer. Tolerate
-    (``--tolerate --note "<why the rule stays>"``) records the why in
-    ``recurrences[].note`` — NEVER ``resolution_note`` (write-once, 02 §2).
-    Commit: ``self-learn: recurrence confirmed on lrn-…``."""
-    home = Path(home)
+    tolerate: bool,
+    note: str | None,
+) -> tuple[dict, Path, Record]:
+    """S-71 §6: `confirm-recurrence`'s checks before any lock — moved here
+    verbatim so the verb and `batch.dry_run` run the SAME checks, in the
+    same order."""
     if tolerate and not note:
         raise SheetLineError(
             "--tolerate needs --note: 'the rule stays' without the why is "
@@ -7520,6 +7639,30 @@ def confirm_recurrence(
             "double-confirming would overstate recurrence pressure, the "
             "exact signal this verb keeps honest (audit 2026-07-15)"
         )
+    return event, path, record
+
+
+def confirm_recurrence(
+    home: Path | str,
+    record_id: str,
+    *,
+    event_ref: str,
+    tolerate: bool = False,
+    note: str | None = None,
+    no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
+) -> VerbResult:
+    """Human confirmation of a recurrence suspect (11 §2.2/§2.5): append
+    to the record's append-only ``recurrences:`` list, copying the minimal
+    facts (ts, origin) OUT of the telemetry event named by ``event_ref``
+    (the event's ``nonce``); the ref stays a courtesy pointer. Tolerate
+    (``--tolerate --note "<why the rule stays>"``) records the why in
+    ``recurrences[].note`` — NEVER ``resolution_note`` (write-once, 02 §2).
+    Commit: ``self-learn: recurrence confirmed on lrn-…``."""
+    home = Path(home)
+    event, path, record = _preflight_confirm_recurrence(
+        home, record_id, event_ref=event_ref, tolerate=tolerate, note=note
+    )
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -7556,6 +7699,29 @@ def confirm_recurrence(
         hold.release()
 
 
+def _preflight_confirm_held(
+    home: Path,
+    record_id: str,
+    *,
+    note: str | None,
+) -> tuple[Path, Record]:
+    """S-71 §6: `confirm-held`'s checks before any lock — moved here verbatim
+    so the verb and `batch.dry_run` run the SAME checks, in the same order."""
+    path = find_record_path(home, record_id)
+    _scan_or_refuse([path], note)
+    try:
+        _, record = require_status(
+            home,
+            record_id,
+            ROUTED_ONLY,
+            verb="confirm-held",
+            reason="only live routed rules can be confirmed as holding",
+        )
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+    return path, record
+
+
 def confirm_held(
     home: Path | str,
     record_id: str,
@@ -7569,18 +7735,7 @@ def confirm_held(
     age-since-capture, is the staleness metric. Commit:
     ``self-learn: confirmed holding lrn-…``."""
     home = Path(home)
-    path = find_record_path(home, record_id)
-    _scan_or_refuse([path], note)
-    try:
-        _, record = require_status(
-            home,
-            record_id,
-            ROUTED_ONLY,
-            verb="confirm-held",
-            reason="only live routed rules can be confirmed as holding",
-        )
-    except LedgerOpsError as exc:
-        raise VerbError(str(exc)) from exc
+    path, record = _preflight_confirm_held(home, record_id, note=note)
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -7624,27 +7779,16 @@ DISMISS_REASONS = (
 )
 
 
-def dismiss_suspect(
-    home: Path | str,
+def _preflight_dismiss_suspect(
+    home: Path,
     record_id: str,
     *,
     event_ref: str,
-    why: str,
-    note: str | None = None,
-    no_push: bool = False,
-    execution: execution_evidence.ExecutionRef | None = None,
-) -> VerbResult:
-    """The third door out of ``recurrence_suspects`` (11 §2.2, U-dismiss
-    §1): a human judged a recurrence-suspect telemetry claim to be a
-    matcher false-positive, not a recurrence. Append to the record's
-    append-only ``dismissed_suspects:`` list, copying the minimal facts
-    (ts, origin, basis) OUT of the telemetry event named by ``event_ref``
-    (the event's ``nonce``) — unlike ``recurrences[]``, ``ref`` is
-    REQUIRED here (§4.3): without the nonce the entry clears nothing and
-    means nothing. The suspect event itself is never touched — append-only
-    telemetry, preserved as analyst fuel. Commit:
-    ``self-learn: suspect dismissed on lrn-…``."""
-    home = Path(home)
+    note: str | None,
+) -> tuple[dict, Path, Record]:
+    """S-71 §6: `dismiss-suspect`'s checks before any lock — moved here
+    verbatim so the verb and `batch.dry_run` run the SAME checks, in the
+    same order."""
     event = next(
         (
             e
@@ -7687,6 +7831,33 @@ def dismiss_suspect(
         raise VerbError(
             f"event {event_ref} is already dismissed on {record_id}"
         )
+    return event, path, record
+
+
+def dismiss_suspect(
+    home: Path | str,
+    record_id: str,
+    *,
+    event_ref: str,
+    why: str,
+    note: str | None = None,
+    no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
+) -> VerbResult:
+    """The third door out of ``recurrence_suspects`` (11 §2.2, U-dismiss
+    §1): a human judged a recurrence-suspect telemetry claim to be a
+    matcher false-positive, not a recurrence. Append to the record's
+    append-only ``dismissed_suspects:`` list, copying the minimal facts
+    (ts, origin, basis) OUT of the telemetry event named by ``event_ref``
+    (the event's ``nonce``) — unlike ``recurrences[]``, ``ref`` is
+    REQUIRED here (§4.3): without the nonce the entry clears nothing and
+    means nothing. The suspect event itself is never touched — append-only
+    telemetry, preserved as analyst fuel. Commit:
+    ``self-learn: suspect dismissed on lrn-…``."""
+    home = Path(home)
+    event, path, record = _preflight_dismiss_suspect(
+        home, record_id, event_ref=event_ref, note=note
+    )
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -7726,19 +7897,16 @@ def dismiss_suspect(
         hold.release()
 
 
-def link_contradicts(
-    home: Path | str,
+def _preflight_link_contradicts(
+    home: Path,
     record_id: str,
     target: str,
     *,
-    note: str | None = None,
-    no_push: bool = False,
-    execution: execution_evidence.ExecutionRef | None = None,
-) -> VerbResult:
-    """First-class contradiction edge (11 §2.4): append ``target`` (a
-    record id or canon anchor) to ``links.contradicts``. Commit:
-    ``self-learn: link lrn-… contradicts <target>``."""
-    home = Path(home)
+    note: str | None,
+) -> tuple[Path, Record]:
+    """S-71 §6: `link-contradicts`'s checks before any lock — moved here
+    verbatim so the verb and `batch.dry_run` run the SAME checks, in the
+    same order."""
     if target == record_id:
         raise SheetLineError("a record cannot contradict itself")
     if RECORD_ID_RE.match(target):
@@ -7757,6 +7925,23 @@ def link_contradicts(
             where="item",
         )
     record = Record.from_path(path)
+    return path, record
+
+
+def link_contradicts(
+    home: Path | str,
+    record_id: str,
+    target: str,
+    *,
+    note: str | None = None,
+    no_push: bool = False,
+    execution: execution_evidence.ExecutionRef | None = None,
+) -> VerbResult:
+    """First-class contradiction edge (11 §2.4): append ``target`` (a
+    record id or canon anchor) to ``links.contradicts``. Commit:
+    ``self-learn: link lrn-… contradicts <target>``."""
+    home = Path(home)
+    path, record = _preflight_link_contradicts(home, record_id, target, note=note)
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -9146,6 +9331,61 @@ def _revise_body(record: Record, section: str, text: str) -> str:
     return body[:start] + leading + text + trailing + body[end:]
 
 
+def _preflight_revise(
+    home: Path,
+    record_id: str,
+    *,
+    section: str,
+    text: str,
+    because: str,
+    by: str | None,
+) -> Path:
+    """S-71 §6: `revise`'s checks before any lock (fields, scans, status, the
+    splice, the simulated body) — moved here verbatim so the verb and
+    `batch.dry_run` run the SAME checks, in the same order."""
+    if not isinstance(section, str) or not section.strip():
+        raise SheetLineUsageError("revise needs --section")
+    if not isinstance(text, str) or not text.strip():
+        raise SheetLineUsageError("revise needs --text")
+    if not isinstance(because, str) or not because.strip():
+        raise SheetLineUsageError("revise needs --because")
+    if by is not None and by not in ROUTING_BY_VALUES:
+        raise VerbUsageError(
+            f"by must be one of {sorted(ROUTING_BY_VALUES)}, got {by!r}"
+        )
+
+    path = find_record_path(home, record_id)  # pending OR resolved --
+    # require_status below needs the ACTUAL status to refuse BY NAME,
+    # never a lying "not found" for an existing but wrongly-staged id.
+    _scan_or_refuse([path], text)
+    _scan_or_refuse([], because)  # P2-7: `because` rides the commit body
+    record = Record.from_path(path)
+    try:
+        require_status(home, record_id, records_mod.DRAFT_STATUSES, verb="revise")
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+
+    new_body = _revise_body(record, section, text)
+    if new_body == record.body:
+        raise VerbError(
+            f"record {record_id}: --text already matches the current "
+            f"{section!r} section — nothing to revise"
+        )
+
+    # Fail-closed pre-lock simulation (the same B-1 shape reclassify
+    # uses): `Record.set_body` re-validates the resulting body shape
+    # (`records._validate_body`) on a disposable copy before any lock
+    # or write.
+    sim = records_mod.Record.from_text(record.to_text())
+    try:
+        sim.set_body(new_body)
+    except RecordError as exc:
+        raise SheetLineError(
+            f"record {record_id} cannot revise {section!r}: {exc}"
+        ) from exc
+    return path
+
+
 def revise(
     home: Path | str,
     record_id: str,
@@ -9201,46 +9441,9 @@ def revise(
     saw the new wording, so re-stamping it fresh would misreport the
     proposal as re-validated against text it was not."""
     home = Path(home)
-    if not isinstance(section, str) or not section.strip():
-        raise SheetLineUsageError("revise needs --section")
-    if not isinstance(text, str) or not text.strip():
-        raise SheetLineUsageError("revise needs --text")
-    if not isinstance(because, str) or not because.strip():
-        raise SheetLineUsageError("revise needs --because")
-    if by is not None and by not in ROUTING_BY_VALUES:
-        raise VerbUsageError(
-            f"by must be one of {sorted(ROUTING_BY_VALUES)}, got {by!r}"
-        )
-
-    path = find_record_path(home, record_id)  # pending OR resolved --
-    # require_status below needs the ACTUAL status to refuse BY NAME,
-    # never a lying "not found" for an existing but wrongly-staged id.
-    _scan_or_refuse([path], text)
-    _scan_or_refuse([], because)  # P2-7: `because` rides the commit body
-    record = Record.from_path(path)
-    try:
-        require_status(home, record_id, records_mod.DRAFT_STATUSES, verb="revise")
-    except LedgerOpsError as exc:
-        raise VerbError(str(exc)) from exc
-
-    new_body = _revise_body(record, section, text)
-    if new_body == record.body:
-        raise VerbError(
-            f"record {record_id}: --text already matches the current "
-            f"{section!r} section — nothing to revise"
-        )
-
-    # Fail-closed pre-lock simulation (the same B-1 shape reclassify
-    # uses): `Record.set_body` re-validates the resulting body shape
-    # (`records._validate_body`) on a disposable copy before any lock
-    # or write.
-    sim = records_mod.Record.from_text(record.to_text())
-    try:
-        sim.set_body(new_body)
-    except RecordError as exc:
-        raise SheetLineError(
-            f"record {record_id} cannot revise {section!r}: {exc}"
-        ) from exc
+    path = _preflight_revise(
+        home, record_id, section=section, text=text, because=because, by=by
+    )
 
     hold = sentinel.hold()
     sentinel.heartbeat()
