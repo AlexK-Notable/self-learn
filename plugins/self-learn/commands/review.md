@@ -432,8 +432,8 @@ what an unattended run decided, and how you correct it:
   overseer. `--parked-reason` filters on the closed set (`hook`,
   `always-loaded-user-scope`, `broad-removal`, `authority-unclear`,
   `scope-conflict` — the five the steward chooses — plus
-  `plain-host-committed-file` and `attempts-exhausted`, which its runner
-  writes for it).
+  `plain-host-committed-file`, `attempts-exhausted` and `ledger-refused`,
+  which its runner writes for it).
 - `self-learn case observe <id> --kind
   examined|presented|statement|corrected|dependency-moved --text …
   [--ref …] [--presented-outcome agreed|corrected|noted]` — appends a Later
@@ -462,14 +462,18 @@ what an unattended run decided, and how you correct it:
 A parked case (`kind: parked`, `parked_for: overseer`) is a question the
 steward could not settle alone — its `parked_reason` names which of the
 five kinds stopped it, and section 3 holds its tentative answer, if it
-has one, and its reason for stopping there. Two further reasons are
+has one, and its reason for stopping there. Three further reasons are
 written by the runner rather than chosen by the steward, and
-`--parked-reason` accepts them too: `plain-host-committed-file`, and
+`--parked-reason` accepts them too: `plain-host-committed-file`;
 `attempts-exhausted`, which means the decision on that record failed
 `runs.attempt_cap` times (default 3) for reasons that were never about
-the lesson — the machinery, not the merits. Such a case asks the overseer
-to decide the lesson itself, with the recorded failure reason as its
-evidence (`03-decisions.md` S-68). Deciding a parked item
+the lesson — the machinery, not the merits; and `ledger-refused`, which
+means the steward decided the lesson and the ledger refused the
+decision's line for a reason neither a retry nor a fresh decision can
+fix — something only a person can put right, or a lesson already sent
+back once. Such a case asks the overseer to decide the lesson itself,
+with the recorded failure reason — for `ledger-refused`, the ledger's own
+words — as its evidence (`03-decisions.md` S-68, S-71). Deciding a parked item
 yourself in a human session still needs the successor case: write the
 stage file, `self-learn case record <stage-file>` to get its id (naming
 `supersedes: <parked case>`), put that id in the sheet's top-level
@@ -520,15 +524,26 @@ marker are projections and never recovery authority.
   `refused` and the rest of the sheet, the later cases and maintenance carry
   on; only a host-outcome verb that failed AFTER its ledger commit landed
   halts, because that is a real half-state with a host obligation
-  outstanding. A case the ledger refused (at preview or at dispatch) stays
-  `unfinished`: a later run re-drives it, and at the cap the record is parked
-  for the overseer with the ledger's refusal text as the reason. `refused`
-  is reserved for the steward's own refusals.
+  outstanding. What becomes of a lesson whose line the ledger refused (at
+  preview or at dispatch) follows the refusal's kind (`03-decisions.md`
+  S-71): only git trouble (`git`) and a target file with uncommitted edits
+  (`target-busy`) leave it `unfinished` for a later run to re-drive up to
+  the cap, while a lesson whose status changed since the run selected it is
+  closed as `overtaken`, the steward's own bad line (`bad-line`,
+  `destination-unavailable`, or a status that does not fit the verb) is
+  `returned` for the next run to decide again, once per input version, and
+  anything only a person can fix (`needs-person`, `unclassified`, or a
+  second refusal of a lesson already sent back) is parked for the overseer
+  at once with `parked_reason: ledger-refused`, and you are notified. A
+  secret-scan hit in the lesson's own record is `refused` and never parked,
+  and a `returned` lesson counts in the run's refused count, so a run that
+  sent a lesson back never reports plain success.
 - A failure that is not a judgment on the merits — the model call failed,
   timed out, hit the turn bound, staged output that would not validate, or
-  a git write failed or half-landed, or the ledger refused an item of an
-  accepted decision — is retried by a LATER run as a fresh attempt with its
-  own single repair turn, never re-driven inside the same run. A decision
+  a git write failed or half-landed, or the ledger refused an item for git
+  trouble or a target file with uncommitted edits — is retried by a LATER
+  run as a fresh attempt with its own single repair turn, never re-driven
+  inside the same run. A decision
   the steward refused on its merits is never retried, and
   neither is anything a secret scan blocked. After `runs.attempt_cap`
   (default 3) failed attempts the run is CLOSED so a new run can start:

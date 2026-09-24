@@ -271,7 +271,10 @@ def test_an_own_mistake_is_sent_back_once_then_parked_ledger_refused(
     assert "The ledger would refuse these lines of your sheets as written:" in repair
     assert f"- sheets/{rid}.yaml: item 1 (undefer {rid}): " in repair
     assert "'pending'" in repair
-    assert steward_prompt.SENT_BACK_TITLE not in prompts[0], "nothing was sent back yet"
+    # The block, not its title: steward-method.md §12 (in every brief's method
+    # block) names the title so the model knows what the block is.
+    assert "=== sent_back ===" not in prompts[0], "nothing was sent back yet"
+    assert "=== open_cases ===" in prompts[0], "positive control: the brief rendered"
     row = _dispositions(home, first.run_id)[rid]
     assert row["state"] == "returned", row
     assert row["kind"] == "status"

@@ -1132,9 +1132,34 @@ line's format (`… → <state> (exit N)`) is unchanged. Concretely:
   the same record and input version, a second refusal parks the lesson
   instead (`parked_reason: ledger-refused`). **`overtaken`** is terminal: the
   lesson changed status since the run selected it (or no longer exists), so
-  nothing is left to decide.
+  nothing is left to decide. A run's `refused` count includes its
+  `returned` dispositions — a lesson sent back is a line the ledger refused
+  — so a run that sent a lesson back never reports plain success;
+  `overtaken` counts as neither decided nor refused.
 - An overseer recipe's `dispositions` rows may carry `kind` when an item
-  failed.
+  failed. A resumed overseer run reads it: a receipted refusal of kind `git`
+  or `target-busy` is dispatched again, as a `stopped` item is; a refusal of
+  any other kind, or one whose row names no kind, stays final.
+
+**The steward's repair turn sees the ledger's refusals** *(added
+2026-09-23, S-71)*. When a packet's staged files pass their format check on
+the first try and its one repair turn is unspent, the runner previews each
+staged sheet the way apply time will — skipping a case the model parked and
+a case the runner will park — and collects the lines the ledger would
+refuse that are the model's to fix: kind `bad-line`, kind
+`destination-unavailable`, and kind `status` when the lesson's status is
+still the one the run selected it with. One exception: this preview runs
+without the staged case, which is not in the ledger yet, so a `reject`,
+`defer` or `revise` of a routed lesson under a staged `kind: reconsider`
+case previews as a `status` refusal that the case itself widens at apply
+time; such a refusal is not collected for a lesson that a reconsider case
+of the same staged case/sheet pair covers. If any line is collected, the
+repair turn is spent on those lines exactly as on a format failure (the
+spent allowance committed first), with a message naming each sheet, item,
+verb, lesson and the ledger's words. Refusals left after the repair never
+fail the stage; apply time handles them by kind, as above. A repair turn
+already spent on a format error is not spent again. A dry run does the
+same, writing only to the cache.
 
 For an opted-in ordinary ledger mutation, the item's own mutation commit has
 one canonical final trailer block: `By: <runner>`, `Case: <case-id>`,
