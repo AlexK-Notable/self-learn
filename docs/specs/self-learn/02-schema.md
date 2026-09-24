@@ -1139,7 +1139,9 @@ line's format (`… → <state> (exit N)`) is unchanged. Concretely:
 - An overseer recipe's `dispositions` rows may carry `kind` when an item
   failed. A resumed overseer run reads it: a receipted refusal of kind `git`
   or `target-busy` is dispatched again, as a `stopped` item is; a refusal of
-  any other kind, or one whose row names no kind, stays final.
+  any other kind, or one whose row names no kind, stays final. Such a
+  refusal does not by itself keep the run unfinished: a run whose only
+  failure is one completes, and its report names the refusal's kind.
 
 **The steward's repair turn sees the ledger's refusals** *(added
 2026-09-23, S-71)*. When a packet's staged files pass their format check on
