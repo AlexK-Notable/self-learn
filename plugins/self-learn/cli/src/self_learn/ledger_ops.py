@@ -2566,7 +2566,18 @@ def resolve_record(
     # comment); no *note* given here silently kept the STALE note from
     # the resolution being corrected (leg ii). Every pre-U5 caller
     # passes `extra_allowed_source=None` and is unaffected.
-    if extra_allowed_source and record.resolution_note is not None:
+    #
+    # 2026-09-23 (the refusal catalogue behind S-71): the SAME displacement
+    # when a later resolution brings a note of its own to a record that
+    # already carries one — a `retire` or `supersede` of a routed record,
+    # written with `note:` as the steward writes every line. Before this,
+    # `set_resolution_note` below refused every such resolution (write-once),
+    # retried three nights for nothing. The old note lands in `history`
+    # (`event: "resolution"`, with the status it was written under); the
+    # field stays write-once per resolution.
+    if record.resolution_note is not None and (
+        extra_allowed_source or note is not None
+    ):
         _displace_resolution_note(record)
     record.set_status(new_status)
     if note is not None:

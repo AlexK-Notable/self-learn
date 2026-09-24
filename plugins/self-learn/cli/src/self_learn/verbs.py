@@ -1518,11 +1518,24 @@ def _gate_host(home: Path, path: Path | str, kind: str) -> Path:
         raise NeedsPerson(str(exc)) from exc
 
 
+def _load_hosts_or_refuse(home: Path):
+    """``load_hosts`` for a route-time gate: a malformed ``hosts.yaml``
+    refuses THIS item (S-71 kind ``needs-person``) instead of escaping
+    ``batch._dispatch`` and ending the whole sheet — the same wrap
+    ``_resolve_rehome_target`` has always applied to its own read."""
+    try:
+        return load_hosts(home)
+    except HostsError as exc:
+        raise NeedsPerson(
+            f"hosts.yaml cannot be read — fix the host registry by hand: {exc}"
+        ) from exc
+
+
 def _hosts_skill_dir(home: Path, name: str) -> tuple[Path, Path]:
     """(skills_root, host skill dir) via the registry — HostsError →
     VerbError. The root is gate-validated (MAJOR 6: a typo'd
     ``skills_root`` must never reach a compiler)."""
-    hosts = load_hosts(home)
+    hosts = _load_hosts_or_refuse(home)
     if hosts.skills_root is None:
         # S-71: the same sentence `skill_dir_for` raises for this case,
         # raised here with its kind — no skills root on this machine means
@@ -1560,7 +1573,7 @@ def _project_host_or_refuse(
             f"project bucket {bucket_dir} has no meta.yaml — its project "
             "path is unknown; re-capture, or write meta.yaml by hand"
         )
-    if not is_project_host(load_hosts(home), host):
+    if not is_project_host(_load_hosts_or_refuse(home), host):
         raise NeedsPerson(f"host not registered — self-learn host add {host}")
     return _gate_host(home, host, "project")
 
@@ -2033,7 +2046,7 @@ def _resolve_target(
         # skill:<name> scope → the skills-root host's own CLAUDE.md
         # (doc 13 §2: claude-skills hosts SKILL.md sections + its own
         # CLAUDE.md; the old <home>/CLAUDE.md target maps here).
-        hosts = load_hosts(home)
+        hosts = _load_hosts_or_refuse(home)
         if hosts.skills_root is None:
             raise DestinationUnavailable(
                 "no skills root registered — self-learn host add <path> --skills-root"
@@ -2055,7 +2068,7 @@ def _resolve_target(
                 "call (08 §8.1): route --dest new-skill:<name>"
             )
         name = validate_skill_name(ref_name)
-        hosts = load_hosts(home)
+        hosts = _load_hosts_or_refuse(home)
         if hosts.skills_root is None:
             raise DestinationUnavailable(
                 "no skills root registered — the scaffold lands under it; "

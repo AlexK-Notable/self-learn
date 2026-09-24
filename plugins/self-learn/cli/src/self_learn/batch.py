@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
 from . import cases, execution_evidence, gitops, intents, sentinel, verbs
 from .cases import CASE_ID_RE
@@ -80,6 +81,7 @@ __all__ = [
     "ItemResult",
     "Sheet",
     "SheetItem",
+    "UnreadableRecord",
     "classify",
     "decision_code",
     "dry_run",
@@ -682,6 +684,21 @@ def _hook_activation_registered(record: Record) -> bool | None:
     return "delegated" not in note
 
 
+class UnreadableRecord(verbs.NeedsPerson):
+    """S-71 §8.2: the item's record file exists but does not read back
+    as a record. :func:`classify` raises this instead of letting the
+    parse error escape :func:`run` / :func:`dry_run` and end the whole
+    sheet; both turn it into that item's own refused (would-refuse)
+    line, kind ``needs-person``, and the sheet continues. Only a person
+    can repair the file."""
+
+
+#: What a record read raises when the file is not a readable record --
+#: the same tuple ``ledger_ops`` uses when it scans record files. Not a
+#: catch-all: anything else still escapes.
+_UNREADABLE_RECORD_ERRORS = (RecordError, OSError, UnicodeDecodeError, YAMLError)
+
+
 def classify(
     home: Path, item: SheetItem, *, actor: str = "human",
     hook_activation: bool = False,
@@ -689,6 +706,8 @@ def classify(
     """True iff *item* is ALREADY-APPLIED (§3.3b) — a STATE READ, never
     a parse of a refusal message. An unresolvable record id is never
     already-applied — it surfaces as the item's own refusal at dispatch.
+    A record file that exists but does not read back raises
+    :class:`UnreadableRecord` (S-71 §8.2).
 
     ``actor``/``hook_activation`` (fold r1, F4): read ONLY for a
     ``route`` item resolving to the ``hook`` destination under
@@ -699,7 +718,13 @@ def classify(
         path = find_record_path(home, item.id)
     except LedgerOpsError:
         return False
-    record = Record.from_path(path)
+    try:
+        record = Record.from_path(path)
+    except _UNREADABLE_RECORD_ERRORS as exc:
+        raise UnreadableRecord(
+            f"record file {path} cannot be read as a record — a person must "
+            f"repair it by hand: {exc}"
+        ) from exc
     verb = item.verb
     f = item.fields
 
@@ -867,6 +892,23 @@ def classify(
     # member has its own branch above (revise included, U3) — load_sheet
     # already gated the verb set to PERMITTED_VERBS, so no OTHER value
     # can reach this function at all.
+
+
+def _classify_or_refuse(
+    home: Path, item: SheetItem, *, actor: str, hook_activation: bool
+) -> tuple[bool, ItemResult | None]:
+    """:func:`classify`, or -- when the item's record file does not read
+    back (S-71 §8.2) -- ``(False, <that item's refused result>)``, so the
+    caller receipts it and moves on to the next item."""
+    try:
+        applied = classify(home, item, actor=actor, hook_activation=hook_activation)
+    except UnreadableRecord as exc:
+        return False, ItemResult(
+            n=item.n, id=item.id, verb=item.verb, rc=exc.exit_code,
+            state="refused", detail=str(exc),
+            kind=refusal_kind(exc, rc=exc.exit_code, state="refused"),
+        )
+    return applied, None
 
 
 #: U5 fold r1 (F1): the ONLY verbs `_dispatch` ever forwards
@@ -1646,7 +1688,17 @@ def dry_run(
         actor=actor,
     )
     for item in items:
-        if classify(home, item, actor=actor, hook_activation=hook_activation):
+        applied, unreadable = _classify_or_refuse(
+            home, item, actor=actor, hook_activation=hook_activation
+        )
+        if unreadable is not None:
+            result.items.append(
+                DryRunItem(n=item.n, id=item.id, verb=item.verb,
+                           state="would-refuse", detail=unreadable.detail,
+                           kind=unreadable.kind)
+            )
+            continue
+        if applied:
             result.items.append(
                 DryRunItem(n=item.n, id=item.id, verb=item.verb,
                            state="already-applied")
@@ -1932,6 +1984,7 @@ def run(
                     )
                 continue
             already_applied = False
+            unreadable: ItemResult | None = None
             if continuation is not None:
                 # Bind present-state classification and its ordered receipt to
                 # one ledger span. Otherwise a manual/intervening edit could
@@ -1959,12 +2012,20 @@ def run(
                                 result,
                                 list(items[idx:]),
                             )
-                        already_applied = classify(
+                        already_applied, unreadable = _classify_or_refuse(
                             home,
                             item,
                             actor=actor,
                             hook_activation=hook_activation,
                         )
+                        if unreadable is not None:
+                            # S-71 §8.2: receipted like any other refusal,
+                            # inside the same span, before the next item.
+                            result.items.append(unreadable)
+                            assert checkpoint is not None
+                            _checkpoint_or_halt(
+                                checkpoint, result, list(items[idx + 1:])
+                            )
                         if already_applied:
                             result.items.append(
                                 ItemResult(
@@ -1983,9 +2044,13 @@ def run(
                     _record_ledger_stop(result, item, list(items[idx + 1:]), exc)
                     break
             else:
-                already_applied = classify(
+                already_applied, unreadable = _classify_or_refuse(
                     home, item, actor=actor, hook_activation=hook_activation
                 )
+                if unreadable is not None:
+                    result.items.append(unreadable)
+            if unreadable is not None:
+                continue
             if already_applied:
                 if continuation is None:
                     result.items.append(
