@@ -21,6 +21,7 @@ from self_learn.invocation import Outcome
 from self_learn.ledger_ops import create_record, find_record_path, stamp_proposal, write_proposal
 from self_learn.overseer import cli as overseer_cli
 from self_learn.overseer import run as overseer_run
+from self_learn.records import Record
 from support import commit_all, make_behavior, make_home, proposal_dict
 
 
@@ -2019,3 +2020,124 @@ def test_a_ledger_stop_is_named_by_its_code_never_by_an_invented_kind():
     # and a halt with neither falls back to the one §3a does provide
     assert overseer_run._failure_kind_text({}) == "no-progress"
     assert overseer_run._failure_kind_text({"failure": None, "halt_code": None}) == "no-progress"
+
+
+# --- S-71 §7: the overseer's resume follows the refusal's kind (test 10.6) ---
+
+
+def _dispatch_scripted(monkeypatch, outcomes):
+    """The FIRST dispatch of item ``n`` returns ``outcomes[n]`` -- an
+    ``(rc, kind)`` refusal that wrote nothing -- and every later dispatch
+    is the real one. rc 6 is a ledger stop code, so ``batch.run`` itself
+    turns that item into ``stopped`` (kind ``git``) and halts the sheet,
+    which is what leaves the run unfinished for a resume."""
+    real_dispatch = batch._dispatch
+    dispatched = []
+    pending = dict(outcomes)
+
+    def patched(given_home, item, **kwargs):
+        dispatched.append(item.n)
+        if item.n not in pending:
+            return real_dispatch(given_home, item, **kwargs)
+        rc, kind = pending.pop(item.n)
+        return batch.ItemResult(
+            n=item.n, id=item.id, verb=item.verb, rc=rc, state="refused",
+            detail=f"simulated {kind or 'kindless'} refusal of item {item.n}", kind=kind,
+        )
+
+    monkeypatch.setattr(batch, "_dispatch", patched)
+    return dispatched
+
+
+def _refused_block(home):
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    return report.split("## Refused / could not do\n", 1)[1].split("\n## ", 1)[0]
+
+
+def _halted_run_with_item_1_refused(tmp_path, monkeypatch, kind):
+    """Run 1 of a two-item sheet: item 1 refused with ``kind``, item 2
+    stopped, so the run halts unfinished."""
+    home = make_home(tmp_path)
+    rid, parked = _seed_parked_hook(home, tmp_path)
+    _enabled(monkeypatch)
+    _fake_hook_phases(monkeypatch, rid, parked, extra_refusal=True)
+    _silence_notifications(monkeypatch)
+    dispatched = _dispatch_scripted(monkeypatch, {1: (1, kind), 2: (6, None)})
+    first = overseer_run.run(home, dry_run=False, no_push=True)
+    assert first.status == "partial", "positive control: run 1 halted on item 2"
+    assert dispatched == [1, 2]
+    assert overseer_run.has_unfinished_work(home)
+    monkeypatch.setattr(
+        overseer_run.invocation, "write_session",
+        lambda spec: pytest.fail("a resume must not invoke the model"),
+    )
+    return home, first, dispatched
+
+
+def test_a_target_busy_refusal_is_dispatched_again_when_the_run_resumes(tmp_path, monkeypatch):
+    """S-71 §7.2. A target file with uncommitted edits unrelated to
+    self-learn says nothing about the decision and often clears on its own,
+    so a receipted refusal of kind `target-busy` is not final: the resume
+    dispatches it again, exactly as it does the stopped item beside it."""
+    home, first, dispatched = _halted_run_with_item_1_refused(
+        tmp_path, monkeypatch, "target-busy"
+    )
+    # §7.1: the kind is committed in the disposition row, since the receipt
+    # line that the resume reads carries none.
+    manifest = execution_evidence.read_manifest(home, first.run)
+    (recipe,) = manifest["cases"].values()
+    kinds = {row["n"]: row.get("kind") for row in recipe["dispositions"]}
+    assert kinds == {1: "target-busy", 2: "git"}, recipe["dispositions"]
+    # §7.3: each "Refused / could not do" line names its kind.
+    block = _refused_block(home)
+    assert "simulated target-busy refusal of item 1 [target-busy]" in block, block
+    assert "simulated kindless refusal of item 2 [git]" in block, block
+
+    second = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert dispatched == [1, 2, 1, 2], "the target-busy refusal is dispatched again"
+    assert second.run == first.run
+    # ...and this time the real route lands (item 2, an undefer of a lesson
+    # that is not deferred, refuses for real).
+    manifest = execution_evidence.read_manifest(home, first.run)
+    (recipe,) = manifest["cases"].values()
+    states = {row["n"]: row["state"] for row in recipe["dispositions"]}
+    assert states == {1: "applied", 2: "refused"}, recipe["dispositions"]
+    rid = recipe["items"][0]["id"]
+    assert Record.from_path(find_record_path(home, rid)).status == "routed"
+
+
+def test_a_bad_line_refusal_stays_final_when_the_run_resumes(tmp_path, monkeypatch):
+    """S-71 §7.2: a refusal of any kind other than `git` or `target-busy`
+    is a judgment on the line and stays final -- the resume dispatches
+    nothing of that sheet again."""
+    home, first, dispatched = _halted_run_with_item_1_refused(
+        tmp_path, monkeypatch, "bad-line"
+    )
+    manifest = execution_evidence.read_manifest(home, first.run)
+    (recipe,) = manifest["cases"].values()
+    assert recipe["dispositions"][0].get("kind") == "bad-line", recipe["dispositions"]
+    assert "simulated bad-line refusal of item 1 [bad-line]" in _refused_block(home)
+
+    overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert dispatched == [1, 2], "a bad-line refusal is never dispatched again"
+
+
+def test_a_refusal_committed_without_a_kind_stays_final_when_the_run_resumes(
+    tmp_path, monkeypatch
+):
+    """S-71 §7.2: a disposition row that names no kind (every row written
+    before S-71) stays final exactly as before, and its report line gains
+    no kind suffix."""
+    home, first, dispatched = _halted_run_with_item_1_refused(tmp_path, monkeypatch, None)
+    manifest = execution_evidence.read_manifest(home, first.run)
+    (recipe,) = manifest["cases"].values()
+    assert "kind" not in recipe["dispositions"][0], recipe["dispositions"]
+    block = _refused_block(home)
+    assert "simulated kindless refusal of item 1\n" in block + "\n", block
+    assert "simulated kindless refusal of item 1 [" not in block, block
+
+    overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert dispatched == [1, 2], "a refusal with no recorded kind is never dispatched again"

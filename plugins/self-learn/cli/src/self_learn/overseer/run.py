@@ -66,6 +66,9 @@ _NO_PROGRESS_DETAIL = (
 #: (rc 5/6/7) and `not-attempted` are deliberately NOT here — those are the
 #: retryable states A4 exists for.
 _TERMINAL_ITEM_STATES = frozenset({"applied", "already-applied", "refused"})
+#: S-71 §7: the refusal kinds a resumed run dispatches again (the steward
+#: retries the same two). Every other kind, and a row with no kind, is final.
+_RETRIED_REFUSAL_KINDS = frozenset({"git", "target-busy"})
 #: 02-schema §3a: "A ledger stop keeps riding the run record's own numeric
 #: halt code (5, 6, 7, 8); a code is never folded into this field." These are
 #: the codes that ride `halt_code`; `failure` never carries one, and never
@@ -2042,12 +2045,29 @@ def _run_manifest_sheet(
     ):
         raise OverseerError(f"committed sheet identity changed for {case_id}")
     receipted = _receipt_results(home, case_id, recipe)
-    # A4 (S-68 ruling 1). Retryability follows the failure's KIND, never the
-    # word the receipt happens to carry:
+    # The receipt line carries no kind (S-71 leaves its format alone); the
+    # committed disposition row of the attempt that receipted it does.
+    prior_kinds = {
+        int(row["n"]): row["kind"]
+        for row in recipe.get("dispositions") or []
+        if isinstance(row, dict) and isinstance(row.get("kind"), str)
+    }
+    for n, item in receipted.items():
+        if item.state not in ("applied", "already-applied") and item.kind is None:
+            item.kind = prior_kinds.get(n)
+    # A4 (S-68 ruling 1), with S-71's kinds. Retryability follows the
+    # failure's KIND, never the word the receipt happens to carry:
     #
-    #   * a receipted `refused` item is a judgment on the merits and is
-    #     FINAL — it is never dispatched again (in particular, never retry
-    #     U5's refused reference reconsideration);
+    #   * a receipted `refused` item is FINAL — never dispatched again (in
+    #     particular, never retry U5's refused reference reconsideration) —
+    #     UNLESS its committed disposition row names kind `git` or
+    #     `target-busy`: git or lock trouble, or a target file with
+    #     uncommitted edits unrelated to self-learn, neither of which says
+    #     anything about the decision and both of which often clear on
+    #     their own. Such an item is left out here and out of `completed`,
+    #     so it is re-dispatched exactly as a `stopped` one is. A refusal of
+    #     any other kind, or one whose row names no kind (written before
+    #     S-71), stays final;
     #   * a receipted `stopped` item is a stop code 5/6/7, which `batch.py`
     #     itself calls "a pre-mutation ledger-level failure — nothing
     #     written, safe to retry", and the never-attempted tail of the sheet
@@ -2060,7 +2080,8 @@ def _run_manifest_sheet(
     # exit 6 left the item never retried and the run never finished — the
     # stall reproduced on a scratch ledger 2026-09-19.
     refused_final = {
-        n: item for n, item in receipted.items() if item.state == "refused"
+        n: item for n, item in receipted.items()
+        if item.state == "refused" and item.kind not in _RETRIED_REFUSAL_KINDS
     }
     completed = _receipt_completed(home, case_id, recipe)
     completed = _mutation_proven_completed(
@@ -2202,13 +2223,18 @@ def _execute_manifest(
                 "n": item.n,
                 "state": item.state,
                 **({"detail": item.detail} if item.detail else {}),
+                # S-71 §7: the refusal's kind, which the next resume reads
+                # to tell a retried refusal from a final one.
+                **({"kind": item.kind} if item.kind else {}),
             }
             for item in result.items
         ]
         application_count += result.summary.get("applied", 0)
         for item in result.items:
             if item.state in ("refused", "stopped", "unresolved-host") and item.detail:
-                refusals.append(item.detail)
+                # "Refused / could not do" is the report's question to the
+                # user (S-68 ruling 2); the kind says what kind of question.
+                refusals.append(f"{item.detail} [{item.kind}]" if item.kind else item.detail)
         by_n = {item.n: item for item in result.items}
         for sheet_item in effective:
             item_result = by_n.get(sheet_item.n)
