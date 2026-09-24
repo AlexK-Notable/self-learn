@@ -1014,8 +1014,10 @@ week — not on the run as a whole. Each such unit carries, in the manifest:
   record it means Claude Code itself stopped the session at its turn limit
   and said so — result subtype `error_max_turns` — and is never inferred
   from a reported turn count, which counts something else: revision log,
-  2026-09-20. In the overseer's record it is still the overseer's own
-  guard over the reported count, `overseer.max_model_calls`, unchanged),
+  2026-09-20. The overseer's record uses it the same way since
+  2026-09-24: its runaway guard, `overseer.max_model_calls`, counts
+  MODEL CALLS, two per run, as S-66 says, and a guard below two holds
+  the run before its first call; revision log, 2026-09-24),
   `schema-repair` (a
   second staged-output validation failure), and one genuinely new value,
   `no-progress`, for an attempt that ran and moved nothing. A ledger stop
