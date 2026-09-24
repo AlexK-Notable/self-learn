@@ -302,6 +302,17 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
 > *destroyed* outright. Neither key exists at all on a record no verb in
 > this set has ever touched — the schema addition is **absent**, not an
 > empty list.
+>
+> *Added 2026-09-23 (the refusal catalogue behind `03-decisions.md`
+> S-71):* a later resolution of a record that already carries a note — a
+> `retire` or `supersede` of a routed record, given a note of its own —
+> displaces the earlier note into `history` (`event: "resolution"`, with
+> the status it was written under) before writing its own, as `reopen`
+> and a reconsider correction already do. The field stays write-once per
+> resolution: `Record.set_resolution_note` still refuses a second write,
+> and nothing is lost, because the displaced note is in `history`. Before
+> this, every such resolution was refused, because the steward writes a
+> note on every line.
 
 - **`history`'s closed set widens to five kinds** *(2026-09-13 — the
   overseer build, O-0; note text amended 2026-09-14 — O-2a fold r2,
@@ -831,7 +842,7 @@ parked_for: null               # overseer, always (only when kind: parked)
 parked_reason: null            # hook | always-loaded-user-scope |
                                 #   broad-removal | authority-unclear |
                                 #   scope-conflict | plain-host-committed-file |
-                                #   attempts-exhausted
+                                #   attempts-exhausted | ledger-refused
                                 #   (closed set; only when
                                 #   kind: parked)
 decided_sha256: "a3c1…"        # hash of sections 1-4 as committed
@@ -1090,6 +1101,41 @@ how that runner-written question joins the proposition-keyed index
 `overseer open` reads is the runner's own design problem, not a schema
 question.
 
+**Refusal kinds, and the two dispositions they add** *(added 2026-09-23,
+`03-decisions.md` S-71).* When the ledger refuses a sheet item, the refusal
+carries one KIND from this closed set — the one place it is named:
+
+| Kind | Meaning |
+|---|---|
+| `git` | git or lock trouble; nothing about the decision is wrong |
+| `target-busy` | the target file has uncommitted edits unrelated to self-learn |
+| `status` | the lesson's status does not fit the verb, or the record no longer exists |
+| `destination-unavailable` | the chosen destination cannot take this lesson on this machine; another might |
+| `needs-person` | only a person can fix it (an unsound host, a hand-edited managed region, an unreadable `hosts.yaml` or record file, …) |
+| `bad-line` | the sheet line itself is wrong; the same line fails every time |
+| `secret-record` | a secret-scan hit in the lesson's record itself |
+| `unclassified` | any refusal no exception type above names |
+
+The kind is decided by the exception type at the raise site, never by the
+refusal's text. It rides the run record, never the receipt: the Application
+line's format (`… → <state> (exit N)`) is unchanged. Concretely:
+
+- An item result (the `items[]` of a batch result, and of a batch preview)
+  may carry `kind`, present only when the item failed.
+- A steward packet's `inputs` rows may carry `record_status` — the lesson's
+  status when the run selected it. A row without it (written before this
+  rule) reads as "unknown".
+- A steward disposition row may carry `kind` and `reason` when its record
+  failed. The steward's disposition set gains two states. **`returned`** is
+  terminal for the run, but the input version stays eligible for a new
+  decision — once: when a committed run record already holds `returned` for
+  the same record and input version, a second refusal parks the lesson
+  instead (`parked_reason: ledger-refused`). **`overtaken`** is terminal: the
+  lesson changed status since the run selected it (or no longer exists), so
+  nothing is left to decide.
+- An overseer recipe's `dispositions` rows may carry `kind` when an item
+  failed.
+
 For an opted-in ordinary ledger mutation, the item's own mutation commit has
 one canonical final trailer block: `By: <runner>`, `Case: <case-id>`,
 `Sheet: <sheet_sha>`, `Item: <original-n>`. The manifest's full digest binds
@@ -1198,6 +1244,12 @@ the steward: `plain-host-committed-file`, and `attempts-exhausted` *(added
 overseer the same thing any other parked case does — decide the lesson
 itself — with the recorded failure reason as its evidence rather than a
 values question; what stopped the steward was the machinery, not the merits.
+A third runner-only reason, `ledger-refused` *(added 2026-09-23, S-71)*, is
+written when the steward decided a lesson and the ledger refused the
+decision's line for a reason neither a retry nor a fresh decision can fix —
+a refusal of kind `needs-person` or `unclassified`, or a second refusal of a
+lesson already sent back once. The steward's model may never choose any of
+the three.
 
 **The index**, `<cache>/cases/index.json`, is rebuildable, not truth (a
 `NOT_REPO_TRUTH` disposition): `case, opened_at, actor, kind, trigger,
