@@ -367,6 +367,9 @@ A parked case whose parked_reason is attempts-exhausted means the steward's mach
 times, not that the lesson is doubtful: decide that lesson yourself, using the recorded failure
 reason as evidence, and note that such a case may point at a record another route has since
 resolved -- say so and move on rather than treating it as an error.
+A parked case whose parked_reason is ledger-refused means the steward decided the lesson and the
+ledger refused its line for a reason only a person or a different decision can fix; the case
+quotes the ledger's words.
 Write report.md, findings.yaml, questions.yaml, user-model-delta.yaml, and either sheet.yaml or paired
 case-<name>.yaml plus sheet-<name>.yaml files. One successor case must supersede each parked
 case you decide. The runner alone records cases and applies sheets. Never run a verb.

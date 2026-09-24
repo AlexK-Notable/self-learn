@@ -1979,6 +1979,31 @@ def test_the_phase_b_prompt_explains_an_attempts_exhausted_parked_case(
     assert "another route has since" in prompt
 
 
+def test_the_phase_b_prompt_explains_a_ledger_refused_parked_case(
+    tmp_path, monkeypatch
+):
+    """S-71 §4.5's one sentence: a `ledger-refused` parked case means the
+    steward decided and the ledger refused its line for a reason only a
+    person or a different decision can fix, and the case quotes the
+    ledger's words."""
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    _silence_notifications(monkeypatch)
+
+    overseer_run.run(home, dry_run=True, no_push=True)
+
+    prompt = (overseer_run.worker.stage_dir() / "overseer" / "prompt-b.md").read_text(
+        encoding="utf-8"
+    )
+    # positive control: this is the phase-B prompt and it rendered
+    assert "The evidence-first view is complete" in prompt
+    flat = " ".join(prompt.split())
+    assert "parked_reason is ledger-refused means the steward decided the lesson" in flat
+    assert "only a person or a different decision can fix" in flat
+    assert "quotes the ledger's words" in flat
+
+
 def test_a_ledger_stop_is_named_by_its_code_never_by_an_invented_kind():
     """Fold r1 item 2, the mapping itself.  02-schema §3a's `failure` is a
     CLOSED set, and "a ledger stop keeps riding the run record's own numeric

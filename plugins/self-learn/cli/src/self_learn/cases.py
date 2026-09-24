@@ -142,6 +142,10 @@ PARKED_REASONS = frozenset(
         # lesson itself) with the recorded failure reason as its evidence:
         # what stopped the steward was the machinery, not the merits.
         "attempts-exhausted",
+        # 02-schema §3a (S-71, 2026-09-23): also written by a RUNNER only --
+        # the steward decided and the ledger refused the decision's line for
+        # a reason neither a retry nor a fresh decision can fix.
+        "ledger-refused",
     }
 )
 CONFIDENCE_VALUES = frozenset({"settled", "provisional"})

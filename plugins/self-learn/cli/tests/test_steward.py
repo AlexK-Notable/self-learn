@@ -2653,10 +2653,13 @@ def test_a_sheet_that_applied_and_refused_does_not_halt_later_cases_or_maintenan
             return real_run(actual_home, items, **kwargs)
         item = items[0]
         partial_ids.append(item.id)
+        # S-71: a refusal of kind `target-busy` is the one a run retries,
+        # which is what this test's `unfinished` assertions describe; the
+        # halt question it asks does not depend on the kind.
         return steward.batch.BatchResult(
             items=[steward.batch.ItemResult(
                 n=item.n, id=item.id, verb=item.verb, rc=1, state="refused",
-                detail="simulated ledger refusal of one item",
+                detail="simulated ledger refusal of one item", kind="target-busy",
             )], process_code=8, stopped_at=None,
             case=items.case, sheet_sha=items.sheet_sha, actor="steward",
         )
@@ -2686,11 +2689,13 @@ def test_a_ledger_refusal_is_retried_and_parked_with_its_reason_at_the_cap(
     tmp_path, monkeypatch
 ):
     """The ledger refuses an item of an accepted decision at dispatch, every
-    night. That is not the steward's judgment, so the record is not stamped
-    `refused` (terminal: it would drop out of every later run while still
-    pending -- lrn-351ba705, 2026-09-21). S-68: the case stays `unfinished`,
-    each run re-drives it with no new model call, and at the cap the record
-    is parked for the overseer carrying the LEDGER'S refusal text."""
+    night, because the target file has uncommitted edits (S-71 kind
+    `target-busy`, which often clears on its own). That is not the
+    steward's judgment, so the record is not stamped `refused` (terminal:
+    it would drop out of every later run while still pending --
+    lrn-351ba705, 2026-09-21). S-68: the case stays `unfinished`, each run
+    re-drives it with no new model call, and at the cap the record is
+    parked for the overseer carrying the LEDGER'S refusal text."""
     home = make_home(tmp_path)
     rid = _seed_fresh_proposals(home, 1)[0]
     _enable_steward(home)
@@ -2708,7 +2713,11 @@ def test_a_ledger_refusal_is_retried_and_parked_with_its_reason_at_the_cap(
         dispatched.append(item.verb)
         return steward.batch.ItemResult(
             n=item.n, id=item.id, verb=item.verb, rc=1, state="refused",
-            detail=f"simulated ledger refusal: record {rid} is 'routed' — reject needs status pending",
+            detail=(
+                "simulated ledger refusal: the target file has uncommitted "
+                "edits unrelated to self-learn"
+            ),
+            kind="target-busy",
         )
 
     monkeypatch.setattr(steward.invocation, "write_session", invoke)
@@ -2747,7 +2756,9 @@ def test_a_preview_refusal_leaves_the_lesson_unfinished_and_the_next_run_applies
     """The preview says `would-refuse` tonight (the ledger as it stands),
     so nothing is dispatched. That used to stamp the case `refused` --
     terminal. Now it is `unfinished`: the next run re-drives the same case
-    without a model call, and when the preview is clean the sheet applies."""
+    without a model call, and when the preview is clean the sheet applies.
+    (S-71: that is the rule for a refusal of kind `git` or `target-busy`;
+    the simulated refusal here is the latter.)"""
     home = make_home(tmp_path)
     rid = _seed_fresh_proposals(home, 1)[0]
     _enable_steward(home)
@@ -2766,6 +2777,7 @@ def test_a_preview_refusal_leaves_the_lesson_unfinished_and_the_next_run_applies
             for item in result.items:
                 item.state = "would-refuse"
                 item.detail = "simulated: the ledger would refuse this tonight"
+                item.kind = "target-busy"
         return result
 
     monkeypatch.setattr(steward.batch, "dry_run", refuse_the_apply_time_preview)

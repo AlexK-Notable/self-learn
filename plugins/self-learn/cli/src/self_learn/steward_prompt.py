@@ -146,7 +146,9 @@ OUTPUT_CONTRACT: dict[str, str] = {
 #: `parked_reason` values a RUNNER writes and a model never chooses
 #: (02-schema §3a; `steward._validate_declared_stage` refuses them in a
 #: staged case). Lives here so the brief and the checker share one set.
-RUNNER_ONLY_PARKED_REASONS = frozenset({"attempts-exhausted", "plain-host-committed-file"})
+RUNNER_ONLY_PARKED_REASONS = frozenset(
+    {"attempts-exhausted", "ledger-refused", "plain-host-committed-file"}
+)
 
 #: Sheet verbs the brief does not list: a pre-rename alias (S-67) only
 #: adds a second spelling to get wrong. The set lives in `batch`, which
