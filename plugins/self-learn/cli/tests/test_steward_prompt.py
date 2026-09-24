@@ -641,7 +641,7 @@ def test_output_contract_states_the_formats_the_first_real_run_went_looking_for(
     for kind in records.COVERAGE_KINDS:
         assert f"`{kind}:" in text, kind
     assert "`rules_topic` and `rules_paths`" in text
-    assert "no sheet key sets or overrides them" in text
+    assert "WHERE A ROUTE LANDS." in text
     assert "WHAT EACH VERB NEEDS THE LESSON'S STATUS TO BE" in text
     for status in ledger_ops.RESOLVABLE_STATUSES:
         assert status in text
@@ -692,3 +692,47 @@ def test_assemble_uses_the_conditions_items_it_is_given(tmp_path, monkeypatch):
 
     steward_prompt.assemble(home, tmp_path / "cache", run, [])
     assert calls == [home], "positive control: without the argument, assemble builds the feed"
+
+
+def test_where_a_route_lands_is_what_the_route_verb_really_does(tmp_path, monkeypatch):
+    """2026-09-23: the brief said a route's variant comes from the proposal
+    and "no sheet key sets or overrides" it, and its example sheet wrote
+    `dest: claude-md`. Two real steward sheets then wrote a bare `dest`
+    meaning to keep a `local` / `rules` proposal, and both resolved to the
+    committed CLAUDE.md (parked only because the host was plain). Each
+    sentence the brief now states is checked here against `route` itself,
+    so the text cannot drift from the verb again."""
+    from self_learn import ledger_ops, verbs
+    from support import make_behavior, make_env, proposal_dict
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    sandbox = make_env(tmp_path)
+    home, host = sandbox.ledger, sandbox.host
+    (host / ".gitignore").write_text("CLAUDE.local.md\n", encoding="utf-8")
+    record_id = "lrn-0000de57"
+    ledger_ops.create_record(
+        home, make_behavior(scope="project", record_id=record_id), project_path=host
+    )
+    ledger_ops.write_proposal(
+        home, record_id,
+        proposal_dict(scope="project", destination="claude-md", variant="local"),
+    )
+
+    left_out = verbs.route_dry_run(home, record_id)
+    bare = verbs.route_dry_run(home, record_id, dest="claude-md")
+    spelled = verbs.route_dry_run(home, record_id, dest="claude-md:local")
+    # positive control first: the proposal's variant is live at all
+    assert (left_out.variant, left_out.target) == ("local", str(host / "CLAUDE.local.md"))
+    assert (bare.variant, bare.target) == (None, str(host / "CLAUDE.md"))
+    assert spelled.target == str(host / "CLAUDE.local.md")  # the preview reports only the proposal's variant
+
+    text = " ".join(steward_prompt._render_output_contract().split())
+    assert "Leave `route`'s `dest` out to take the lesson's proposal exactly as written" in text
+    assert "Writing `dest` REPLACES the proposal's whole destination, variant included" in text
+    assert "a bare `dest: claude-md` is the host's plain CLAUDE.md" in text
+    assert "`claude-md:local`, or `claude-md:rules:<topic>`" in text
+    assert "no sheet key sets or overrides them" not in text
+    for destination in ledger_ops.PROPOSAL_DESTINATIONS:
+        assert destination in text, destination
+    # the worked example no longer teaches a bare dest on a route
+    assert "dest:" not in steward_prompt.STAGE_EXAMPLES["sheets/shell-quoting.yaml"]
