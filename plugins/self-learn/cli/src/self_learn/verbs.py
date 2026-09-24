@@ -142,6 +142,7 @@ from .hosts import (
 )
 from .ledger import Bucket, discover_buckets, resolve_home
 from .ledger_ops import (
+    read_record_or_refuse,
     PROPOSAL_DESTINATIONS,
     ROSTER_UNAVAILABLE,
     DEFERRED_ONLY,
@@ -1518,17 +1519,24 @@ def _gate_host(home: Path, path: Path | str, kind: str) -> Path:
         raise NeedsPerson(str(exc)) from exc
 
 
+def _hosts_unreadable(exc: HostsError) -> NeedsPerson:
+    """The one refusal for a ``hosts.yaml`` a sheet verb cannot read (S-71:
+    only a person can fix the registry, so kind ``needs-person``)."""
+    return NeedsPerson(
+        f"hosts.yaml cannot be read — fix the host registry by hand: {exc}"
+    )
+
+
 def _load_hosts_or_refuse(home: Path):
     """``load_hosts`` for a route-time gate: a malformed ``hosts.yaml``
     refuses THIS item (S-71 kind ``needs-person``) instead of escaping
-    ``batch._dispatch`` and ending the whole sheet — the same wrap
-    ``_resolve_rehome_target`` has always applied to its own read."""
+    ``batch._dispatch`` and ending the whole sheet. ``load_hosts`` itself
+    is unchanged — serve, doctor, report and selfcheck rely on its
+    ``HostsError``."""
     try:
         return load_hosts(home)
     except HostsError as exc:
-        raise NeedsPerson(
-            f"hosts.yaml cannot be read — fix the host registry by hand: {exc}"
-        ) from exc
+        raise _hosts_unreadable(exc) from exc
 
 
 def _hosts_skill_dir(home: Path, name: str) -> tuple[Path, Path]:
@@ -2234,7 +2242,7 @@ def _hooks_dir_for(home: Path, scope: str) -> tuple[Path, Path]:
     if scope.startswith("skill:"):
         root, skill_dir = _hosts_skill_dir(home, scope.partition(":")[2])
         return root, skill_dir.parent.parent / "hooks"
-    hosts = load_hosts(home)
+    hosts = _load_hosts_or_refuse(home)
     if hosts.skills_root is None:
         raise DestinationUnavailable(
             "no skills root registered — hook scripts land under it; "
@@ -3388,9 +3396,14 @@ def _retirement_preflight(
             )
         )
     if destination == "hook":
-        return _Retirement(
-            removal=_hook_script_location(home, record, warnings)
-        )
+        # S-71 fold: the first hosts.yaml read on this path. Wrapped HERE,
+        # not inside `_hook_script_location`, whose other callers (hook
+        # activation, recompile) handle its `HostsError` themselves.
+        try:
+            removal = _hook_script_location(home, record, warnings)
+        except HostsError as exc:
+            raise _hosts_unreadable(exc) from exc
+        return _Retirement(removal=removal)
     if destination == "reference":
         ref_spec = _resolve_target(
             home,
@@ -3999,7 +4012,9 @@ def _supersede_completion_preflight(
         return None, None, None
     old_path = find_record_path(home, old_id)
     _scan_or_refuse([old_path], None)  # this call rewrites it too (P2-7)
-    old_record = Record.from_path(old_path)
+    # S-71 fold: the predecessor is a SECOND record this route reads; a
+    # file that does not read back refuses this item, naming the file.
+    old_record = read_record_or_refuse(old_path)
     if old_record.status == "superseded" and old_record.superseded_by == record_id:
         return None, None, None
     try:
@@ -5692,6 +5707,20 @@ def _preflight_reject_or_defer(
     return path, body, extra_allowed
 
 
+def _reconsider_retirement_if_routed(
+    home: Path, path: Path, extra_allowed: frozenset[str] | None, *, verb: str
+) -> tuple["_Retirement | None", list[str]]:
+    """`reject`'s and `defer`'s retirement leg: only a ROUTED lesson admitted
+    by a reconsider case has one (its compiled entry drops in the same
+    locked section). The verbs run it under their hold; `batch.dry_run`
+    calls it too (S-71 fold), so a hook- or reference-routed lesson, which
+    `_reconsider_retirement_preflight` refuses, previews as refused."""
+    pre_record = Record.from_path(path)
+    if extra_allowed is not None and pre_record.status == "routed":
+        return _reconsider_retirement_preflight(home, pre_record, path, verb=verb)
+    return None, []
+
+
 def reject(
     home: Path | str,
     record_id: str,
@@ -5737,14 +5766,11 @@ def reject(
     sentinel.heartbeat()
     try:
         message = f"self-learn: reject {record_id}"
-        pre_record = Record.from_path(path)
-        retire: "_Retirement | None" = None
-        warnings: list[str] = []
+        retire, warnings = _reconsider_retirement_if_routed(
+            home, path, extra_allowed, verb="reject"
+        )
         host_lock_cm: object = contextlib.nullcontext()
-        if extra_allowed is not None and pre_record.status == "routed":
-            retire, warnings = _reconsider_retirement_preflight(
-                home, pre_record, path, verb="reject"
-            )
+        if retire is not None:
             assert retire.spec is not None  # the destination allowlist guarantees this
             host_lock_cm = gitops.host_lock(retire.spec.host_path, retire.spec.mode)
         with _ledger_write(home) as recovered, host_lock_cm:
@@ -5831,14 +5857,11 @@ def defer(
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
-        pre_record = Record.from_path(path)
-        retire: "_Retirement | None" = None
-        warnings: list[str] = []
+        retire, warnings = _reconsider_retirement_if_routed(
+            home, path, extra_allowed, verb="defer"
+        )
         host_lock_cm: object = contextlib.nullcontext()
-        if extra_allowed is not None and pre_record.status == "routed":
-            retire, warnings = _reconsider_retirement_preflight(
-                home, pre_record, path, verb="defer"
-            )
+        if retire is not None:
             assert retire.spec is not None  # the destination allowlist guarantees this
             host_lock_cm = gitops.host_lock(retire.spec.host_path, retire.spec.mode)
         with _ledger_write(home) as recovered, host_lock_cm:
@@ -5906,10 +5929,7 @@ def _resolve_rehome_target(home: Path, to: str) -> Path:
     say). hosts.yaml is the only authority (H-3); an unregistered target
     refuses with ``host add`` named as the human's repair (02 §2 —
     the verb registers nothing)."""
-    try:
-        hosts = load_hosts(home)
-    except HostsError as exc:
-        raise VerbError(str(exc)) from exc
+    hosts = _load_hosts_or_refuse(home)
     candidate = Path(to).expanduser()
     for project in hosts.projects:
         registered = Path(project).expanduser()
@@ -5945,8 +5965,9 @@ def _resolve_move_target(home: Path, to: str) -> tuple[str, Path, Path | None]:
         return "user", home / "user", None
     if isinstance(to, str) and to.startswith("skill:") and len(to) > len("skill:"):
         name = to[len("skill:") :]
+        hosts = _load_hosts_or_refuse(home)
         try:
-            skill_dir_for(load_hosts(home), name)  # validity gate only
+            skill_dir_for(hosts, name)  # validity gate only
         except HostsError as exc:
             raise VerbError(str(exc)) from exc
         return f"skill:{name}", home / "skills" / name, None
@@ -7253,7 +7274,7 @@ def _preflight_supersede(
     if old_id == new_id:
         raise SheetLineError("a record cannot supersede itself")
     old_path = find_record_path(home, old_id)  # pending OR routed flavor
-    find_record_path(home, new_id)  # the replacement must exist
+    new_path = find_record_path(home, new_id)  # the replacement must exist
     _scan_or_refuse([old_path], note)
     _by_trailer(by)  # validates `by` before any lock/mutation
     _reconsider_case_check(home, reconsider_case, old_id)
@@ -7268,6 +7289,11 @@ def _preflight_supersede(
         _, old_record = require_status(
             home, old_id, RESOLVABLE_STATUSES, verb="supersede"
         )
+        # S-71 fold: the replacement is a SECOND record this verb reads; a
+        # file that does not read back refuses this item, naming the file
+        # (`UnreadableRecord`, a LedgerOpsError, re-raised below as the
+        # verb's VerbError with the typed error underneath).
+        read_record_or_refuse(new_path)
         require_status(home, new_id, RESOLVABLE_STATUSES, verb="supersede")
         supersede_cycle_check(home, old_id, new_id)
     except LedgerOpsError as exc:
@@ -7313,54 +7339,18 @@ def supersede(
     sentinel.heartbeat()
     try:
         # (c) PRE-FLIGHT the recompile target when this drops a live entry
-        # — or the hook script this retires (M3-4).
-        spec: TargetSpec | None = None
-        removal: tuple[Path, Path, str, str] | None = None
-        reference: tuple[Path, TargetSpec] | None = None
-        if old_record.status == "routed":
-            routing = old_record.routing or {}
-            destination = routing.get("destination")
-            if destination in ("skill-md", "claude-md", "new-skill"):
-                spec = _resolve_target(
-                    home,
-                    old_path.parent.parent,
-                    old_record.scope,
-                    destination,
-                    routing.get("new_skill") if destination == "new-skill" else None,
-                    user_claude_md=user_claude_md,
-                    # A2 §4.4B note: variant/rules_topic only — see the
-                    # matching comment in _retirement_preflight.
-                    variant=routing.get("variant"),
-                    rules_topic=routing.get("rules_topic"),
-                )
-            elif destination == "hook":
-                removal = _hook_script_location(home, old_record, warnings)
-            elif destination == "reference":
-                # U-verbs S-54 (RER6): the same reference-retirement
-                # preflight `_retirement_preflight` runs for `graduate` —
-                # `supersede` pre-flights its own doc-target/hook cleanup
-                # by hand rather than through that shared dataclass (a
-                # pre-existing duplication this unit does not collapse),
-                # so the third leg is added here in the SAME shape.
-                ref_spec = _resolve_target(
-                    home,
-                    old_path.parent.parent,
-                    old_record.scope,
-                    "reference",
-                    routing.get("reference_file"),
-                    user_claude_md=user_claude_md,
-                    variant=routing.get("variant"),
-                    rules_topic=routing.get("rules_topic"),
-                )
-                # Same invariant as `_retirement_preflight`'s reference
-                # branch: `_resolve_target`'s `destination == "reference"`
-                # arm always resolves a concrete `refs_dir` before
-                # returning -- never None here.
-                assert ref_spec.refs_dir is not None
-                reference = (
-                    reference_target_path(ref_spec.refs_dir, ref_spec.ref_name),
-                    ref_spec,
-                )
+        # — or the hook script this retires (M3-4), or the references
+        # block (U-verbs S-54, RER6). S-71 fold (2026-09-23): through the
+        # shared `_retirement_preflight` — the same three branches, with
+        # the same arguments, that this verb used to copy inline — so
+        # `batch.dry_run`'s preview runs exactly what the verb runs.
+        retirement = _retirement_preflight(
+            home, old_record, old_path.parent.parent, warnings,
+            user_claude_md=user_claude_md,
+        )
+        spec = retirement.spec
+        removal = retirement.removal
+        reference = retirement.reference
 
         # U-hostmode M-3 (code gate r1 fold, REC12c): one lock discipline,
         # no exceptions — the host lock opens HERE, before the region

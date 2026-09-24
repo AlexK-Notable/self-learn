@@ -39,7 +39,6 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from ruamel.yaml import YAML
-from ruamel.yaml.error import YAMLError
 
 from . import cases, execution_evidence, gitops, intents, sentinel, verbs
 from .cases import CASE_ID_RE
@@ -51,8 +50,10 @@ from .ledger_ops import (
     RecordNotFound,
     SheetLineRefusal,
     StatusRefusal,
+    UnreadableRecord,
     defer_until,
     find_record_path,
+    read_record_or_refuse,
 )
 from .records import (
     RECORD_ID_RE,
@@ -251,6 +252,8 @@ def _typed_kind(exc: BaseException) -> str | None:
         return "destination-unavailable"
     if isinstance(exc, (verbs.SheetLineError, SheetLineRefusal)):
         return "bad-line"
+    if isinstance(exc, UnreadableRecord):
+        return "needs-person"
     if isinstance(exc, ProposalError):
         return "needs-person"
     if isinstance(exc, (StatusRefusal, RecordNotFound)):
@@ -681,21 +684,6 @@ def _hook_activation_registered(record: Record) -> bool | None:
     return "delegated" not in note
 
 
-class UnreadableRecord(verbs.NeedsPerson):
-    """S-71 §8.2: the item's record file exists but does not read back
-    as a record. :func:`classify` raises this instead of letting the
-    parse error escape :func:`run` / :func:`dry_run` and end the whole
-    sheet; both turn it into that item's own refused (would-refuse)
-    line, kind ``needs-person``, and the sheet continues. Only a person
-    can repair the file."""
-
-
-#: What a record read raises when the file is not a readable record --
-#: the same tuple ``ledger_ops`` uses when it scans record files. Not a
-#: catch-all: anything else still escapes.
-_UNREADABLE_RECORD_ERRORS = (RecordError, OSError, UnicodeDecodeError, YAMLError)
-
-
 def classify(
     home: Path, item: SheetItem, *, actor: str = "human",
     hook_activation: bool = False,
@@ -704,7 +692,7 @@ def classify(
     a parse of a refusal message. An unresolvable record id is never
     already-applied — it surfaces as the item's own refusal at dispatch.
     A record file that exists but does not read back raises
-    :class:`UnreadableRecord` (S-71 §8.2).
+    :class:`ledger_ops.UnreadableRecord` (S-71 §8.2; re-exported here).
 
     ``actor``/``hook_activation`` (fold r1, F4): read ONLY for a
     ``route`` item resolving to the ``hook`` destination under
@@ -715,13 +703,7 @@ def classify(
         path = find_record_path(home, item.id)
     except LedgerOpsError:
         return False
-    try:
-        record = Record.from_path(path)
-    except _UNREADABLE_RECORD_ERRORS as exc:
-        raise UnreadableRecord(
-            f"record file {path} cannot be read as a record — a person must "
-            f"repair it by hand: {exc}"
-        ) from exc
+    record = read_record_or_refuse(path)
     verb = item.verb
     f = item.fields
 
@@ -900,10 +882,11 @@ def _classify_or_refuse(
     try:
         applied = classify(home, item, actor=actor, hook_activation=hook_activation)
     except UnreadableRecord as exc:
+        # rc 64: the code `_dispatch` gives every LedgerOpsError refusal.
         return False, ItemResult(
-            n=item.n, id=item.id, verb=item.verb, rc=exc.exit_code,
+            n=item.n, id=item.id, verb=item.verb, rc=64,
             state="refused", detail=str(exc),
-            kind=refusal_kind(exc, rc=exc.exit_code, state="refused"),
+            kind=refusal_kind(exc, rc=64, state="refused"),
         )
     return applied, None
 
@@ -1575,20 +1558,23 @@ def decision_code(results: list[ItemResult]) -> int:
 def _preview_reject(
     home: Path, item: SheetItem, by: str | None, rc: str | None
 ) -> None:
-    verbs._preflight_reject_or_defer(
+    path, _body, extra_allowed = verbs._preflight_reject_or_defer(
         home, item.id, verb="reject", note=item.fields.get("note"), by=by,
         reconsider_case=rc,
     )
+    # The verb runs this under its hold (a routed lesson under a reconsider case).
+    verbs._reconsider_retirement_if_routed(home, path, extra_allowed, verb="reject")
 
 
 def _preview_defer(
     home: Path, item: SheetItem, by: str | None, rc: str | None
 ) -> None:
-    verbs._preflight_reject_or_defer(
+    path, _body, extra_allowed = verbs._preflight_reject_or_defer(
         home, item.id, verb="defer", note=item.fields.get("note"), by=by,
         reconsider_case=rc,
     )
-    # `defer_record` runs this under the lock, after the status check above.
+    # The verb runs these under its hold, in this order.
+    verbs._reconsider_retirement_if_routed(home, path, extra_allowed, verb="defer")
     defer_until(item.id, item.fields.get("until"))
 
 

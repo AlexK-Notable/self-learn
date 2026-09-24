@@ -23,9 +23,16 @@ import pytest
 from ruamel.yaml import YAML
 
 from self_learn import batch, cases, telemetry, verbs
-from self_learn.ledger_ops import create_record, find_record_path, write_proposal
+from self_learn.ledger_ops import (
+    create_record,
+    find_record_path,
+    stamp_proposal,
+    write_proposal,
+)
 from self_learn.records import Record
 from support import commit_all, make_behavior, make_env, proposal_dict
+
+from test_route_hook import TRIGGER, hook_proposal
 
 
 @pytest.fixture(autouse=True)
@@ -264,6 +271,27 @@ def _other_rows():
         return {"id": A, "verb": "dismiss-suspect", "event": nonce,
                 "why": "rule-followed"}
 
+    def hook_routed_under_reconsider(verb):
+        """A reconsider case admits a reject/defer of a ROUTED lesson, but
+        the verb's retirement leg (run under its hold) refuses a hook- or
+        reference-routed one: those are corrected by hand."""
+        def setup(e):
+            create_record(
+                e.ledger, make_behavior(scope="skill:s", record_id=A, trigger=TRIGGER)
+            )
+            write_proposal(e.ledger, A, hook_proposal())
+            stamp_proposal(e.ledger, A)
+            commit_all(e.ledger, "seed hook")
+            verbs.route(e.ledger, A, no_push=True)
+            tmp = e.ledger.parent
+            old_case = _seed_case(e, tmp, records=[A], outcome="route")
+            reconsider = _seed_case(
+                e, tmp, records=[A], outcome=verb, kind="reconsider",
+                supersedes=old_case,
+            )
+            return {"id": A, "verb": verb, "__case__": reconsider}
+        return setup
+
     def reopen_replaced(e):
         _pending(e, A)
         _pending(e, B)
@@ -304,6 +332,14 @@ def _other_rows():
             "was raised against", "bad-line"),
         Row("dismiss-suspect-already-confirmed", dismiss_confirmed,
             "cannot dismiss a suspect that was confirmed", "bad-line"),
+        Row("reject-under-reconsider-of-a-hook-routed-lesson",
+            hook_routed_under_reconsider("reject"),
+            "a reconsider correction of a routed 'hook'-destination record "
+            "is not supported here", "bad-line"),
+        Row("defer-under-reconsider-of-a-hook-routed-lesson",
+            hook_routed_under_reconsider("defer"),
+            "a reconsider correction of a routed 'hook'-destination record "
+            "is not supported here", "bad-line"),
         Row("reopen-a-replaced-lesson", reopen_replaced,
             "use reconsider instead of reopen", "bad-line"),
         Row("undefer-a-pending-lesson",
@@ -341,7 +377,8 @@ def _tree_bytes(root):
 def test_the_preview_refuses_what_the_verb_refuses(tmp_path, monkeypatch, row):
     env = make_env(tmp_path)
     monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
-    items = _sheet(tmp_path, row.setup(env))
+    item = row.setup(env)
+    items = _sheet(tmp_path, item, case=item.pop("__case__", None))
 
     before = (_tree_bytes(env.ledger), _tree_bytes(env.host))
     preview = batch.dry_run(env.ledger, items)

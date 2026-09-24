@@ -60,6 +60,8 @@ __all__ = [
     "RecordNotFound",
     "SheetLineRefusal",
     "StatusRefusal",
+    "UNREADABLE_RECORD_ERRORS",
+    "UnreadableRecord",
     "TRACE_FLAGS",
     "TRACE_FS_VERDICTS",
     "TRACE_OUTCOMES",
@@ -82,6 +84,7 @@ __all__ = [
     "queue",
     "read_proposal",
     "record_title",
+    "read_record_or_refuse",
     "reopen_record",
     "reroute_record",
     "move_record",
@@ -275,6 +278,31 @@ class StatusRefusal(LedgerOpsError):
         self.record_id = record_id
         self.current_status = current_status
         self.allowed = frozenset(allowed)
+
+
+class UnreadableRecord(LedgerOpsError):
+    """S-71: a record file that exists but does not read back as a record.
+    Only a person can repair it, so a sheet item that needs it is refused
+    (kind ``needs-person``) and the rest of the sheet goes on."""
+
+
+#: What a record read raises when the file is not a readable record — the
+#: same four types the ledger scan below treats as "not a record". Not a
+#: catch-all: anything else still escapes.
+UNREADABLE_RECORD_ERRORS = (RecordError, OSError, UnicodeDecodeError, YAMLError)
+
+
+def read_record_or_refuse(path: Path) -> Record:
+    """:meth:`Record.from_path`, or :class:`UnreadableRecord` naming the file
+    when it does not read back (S-71 §8.2 and its fold: the item's own file
+    in ``batch.classify``, and every SECOND record a sheet verb reads)."""
+    try:
+        return Record.from_path(path)
+    except UNREADABLE_RECORD_ERRORS as exc:
+        raise UnreadableRecord(
+            f"record file {path} cannot be read as a record — a person must "
+            f"repair it by hand: {exc}"
+        ) from exc
 
 
 class SheetLineRefusal(LedgerOpsError):
@@ -2819,7 +2847,9 @@ def supersede_cycle_check(home: Path, old_id: str, new_id: str) -> None:
             path = find_record_path(home, current)
         except LedgerOpsError:
             return  # dangling id: not this check's problem
-        record = Record.from_path(path)
+        # S-71 fold: a record on the chain that does not read back refuses
+        # this supersede by name instead of raising out of the whole sheet.
+        record = read_record_or_refuse(path)
         nxt = record.superseded_by
         if not nxt or is_retirement(nxt):
             # S-67: a retirement (`covered_by:<kind>:<name>`, or the
