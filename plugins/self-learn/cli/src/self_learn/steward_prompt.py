@@ -54,6 +54,7 @@ adds."""
 from __future__ import annotations
 
 import re
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -146,7 +147,27 @@ OUTPUT_CONTRACT: dict[str, str] = {
 #: `parked_reason` values a RUNNER writes and a model never chooses
 #: (02-schema §3a; `steward._validate_declared_stage` refuses them in a
 #: staged case). Lives here so the brief and the checker share one set.
-RUNNER_ONLY_PARKED_REASONS = frozenset({"attempts-exhausted", "plain-host-committed-file"})
+RUNNER_ONLY_PARKED_REASONS = frozenset(
+    {"attempts-exhausted", "ledger-refused", "plain-host-committed-file"}
+)
+
+#: S-71 §4.6: the output contract's one sentence on what becomes of a line
+#: the ledger refuses.
+_REFUSED_LINE_SENTENCE = (
+    "A lesson whose line the ledger refuses is either sent back to you on a later night "
+    "(once) or parked for the overseer; a refusal is never retried unchanged unless it "
+    "was git trouble or a target file with uncommitted edits."
+)
+
+#: S-71 §4.6: the block a lesson sent back comes with, and the instruction
+#: that closes it, exactly.
+SENT_BACK_TITLE = "LESSONS SENT BACK TO YOU"
+SENT_BACK_INSTRUCTION = (
+    "Your earlier decision for these lessons could not be applied as written. Decide "
+    "again: you may write a different line, choose a different destination or verb, or "
+    "park the case with the reason that names its question. Do not write the same line "
+    "again."
+)
 
 #: Sheet verbs the brief does not list: a pre-rename alias (S-67) only
 #: adds a second spelling to get wrong. The set lives in `batch`, which
@@ -649,14 +670,16 @@ def _render_output_contract() -> str:
         "  registered scope (`to`: `user`, `skill:<name>`, or a project path). `reopen` returns a",
         "  rejected or superseded lesson to pending.",
         "  WHAT EACH VERB NEEDS THE LESSON'S STATUS TO BE (the verbs' own checks; a mismatch is",
-        "  a refusal naming the real status -- the runner re-drives the case on a later night",
-        "  and parks it for the overseer after the attempt cap):",
+        "  a refusal naming the real status, and the lesson comes back to you as below):",
         f"    route, reject, defer, rehome, rescope, revise:  {_words(ledger_ops.LIVE_STATUSES)}",
         f"    retire, supersede (the old and the new lesson):  {_words(ledger_ops.RESOLVABLE_STATUSES)}",
         f"    undefer:  {_words(ledger_ops.DEFERRED_ONLY)}      reopen:  {_words(verbs.REOPEN_ADMITTED_STATUSES)}",
         f"  These are never sheet verbs and are refused: {', '.join(sorted(batch.REFUSED_VERBS_LITERAL))}, and",
         "  anything starting `host `. A route to `dest: hook` is not applied: the runner parks",
         "  that case for the overseer.",
+        *textwrap.wrap(
+            _REFUSED_LINE_SENTENCE, width=90, initial_indent="  ", subsequent_indent="  "
+        ),
         "",
         "revisions.yaml -- `entries:` list. Each entry: `case` (the FILE NAME of the case whose",
         "  sheet it belongs to, without .yaml), `id`, `section`, `text`, `because` -- all required.",
@@ -725,6 +748,21 @@ def _ordered_blocks(
     )
 
 
+def _render_sent_back(returned: dict[str, dict]) -> str:
+    """S-71 §4.6: each lesson a ledger refusal sent back, with the case that
+    decided it before and the ledger's words, then the one instruction."""
+    lines = [SENT_BACK_TITLE, ""]
+    for record_id in sorted(returned):
+        entry = returned[record_id] or {}
+        lines.append(f"- {record_id} (earlier case {entry.get('case') or 'unknown'}):")
+        words = [str(line) for line in entry.get("lines") or [] if str(line).strip()]
+        lines += [f"    the ledger said: {line}" for line in words] or [
+            "    the ledger said: (no words recorded)"
+        ]
+    lines += ["", SENT_BACK_INSTRUCTION]
+    return "\n".join(lines)
+
+
 def assemble(
     home: Path | str,
     cache_dir: Path | str,
@@ -732,6 +770,7 @@ def assemble(
     proposals: list[dict],
     *,
     conditions_items: list[Item] | None = None,
+    returned: dict[str, dict] | None = None,
 ) -> Packet:
     """Interface §4.1: the seven blocks, in order, evidence before advice.
     Never mutates the ledger, never reads a transcript, and never reads
@@ -739,10 +778,21 @@ def assemble(
     :func:`conditions.feed`. A caller assembling several packets of ONE
     run passes the feed it built once as ``conditions_items`` (the feed
     is one snapshot "as of this run", plan §4.4); left out, the feed is
-    built here."""
+    built here.
+
+    ``returned`` (S-71 §4.6) maps a lesson of this packet the ledger sent
+    back to ``{"case": <the case that decided it>, "lines": [<the ledger's
+    words>]}``; when it names any, a `sent_back` block titled
+    :data:`SENT_BACK_TITLE` goes in just before the open-cases block."""
     home = Path(home)
     cache_dir = Path(cache_dir)
     items = conditions.feed(home, cache_dir) if conditions_items is None else list(conditions_items)
     blocks = _ordered_blocks(home, run, proposals, items)
+    if returned:
+        at = next(
+            (index for index, (name, _body) in enumerate(blocks) if name == "open_cases"),
+            len(blocks),
+        )
+        blocks = (*blocks[:at], ("sent_back", _render_sent_back(returned)), *blocks[at:])
     text = "\n\n".join(f"=== {name} ===\n{body}" for name, body in blocks)
     return Packet(blocks=blocks, text=text, withheld=withheld())

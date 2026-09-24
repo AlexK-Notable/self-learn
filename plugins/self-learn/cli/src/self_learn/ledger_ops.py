@@ -57,6 +57,11 @@ __all__ = [
     "ProposalError",
     "PROPOSAL_DESTINATIONS",
     "QueueEntry",
+    "RecordNotFound",
+    "SheetLineRefusal",
+    "StatusRefusal",
+    "UNREADABLE_RECORD_ERRORS",
+    "UnreadableRecord",
     "TRACE_FLAGS",
     "TRACE_FS_VERDICTS",
     "TRACE_OUTCOMES",
@@ -67,6 +72,7 @@ __all__ = [
     "create_record",
     "ensure_project_meta",
     "defer_record",
+    "defer_until",
     "find_record_path",
     "glob_reaches",
     "globs_may_intersect",
@@ -78,6 +84,7 @@ __all__ = [
     "queue",
     "read_proposal",
     "record_title",
+    "read_record_or_refuse",
     "reopen_record",
     "reroute_record",
     "move_record",
@@ -238,6 +245,71 @@ class LedgerOpsError(Exception):
 
 class ProposalError(LedgerOpsError):
     """A proposal sibling is unparseable or violates the 02 §1 schema."""
+
+
+# S-71: typed refusals, so a runner can tell WHY the ledger refused a
+# decision without reading the message. `batch.refusal_kind` is the one
+# place these map to a kind; the messages are unchanged.
+
+
+class RecordNotFound(LedgerOpsError):
+    """No record with this id exists in any bucket (S-71 kind ``status``:
+    a selected lesson that no longer exists has moved on)."""
+
+    def __init__(self, message: str, *, record_id: str) -> None:
+        super().__init__(message)
+        self.record_id = record_id
+
+
+class StatusRefusal(LedgerOpsError):
+    """:func:`require_status` refused: the record's status does not fit the
+    verb (S-71 kind ``status``). Carries what a runner needs to tell a lesson
+    that moved on from its own wrong verb, without parsing the message."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        record_id: str,
+        current_status: str | None,
+        allowed: frozenset[str],
+    ) -> None:
+        super().__init__(message)
+        self.record_id = record_id
+        self.current_status = current_status
+        self.allowed = frozenset(allowed)
+
+
+class UnreadableRecord(LedgerOpsError):
+    """S-71: a record file that exists but does not read back as a record.
+    Only a person can repair it, so a sheet item that needs it is refused
+    (kind ``needs-person``) and the rest of the sheet goes on."""
+
+
+#: What a record read raises when the file is not a readable record — the
+#: same four types the ledger scan below treats as "not a record". Not a
+#: catch-all: anything else still escapes.
+UNREADABLE_RECORD_ERRORS = (RecordError, OSError, UnicodeDecodeError, YAMLError)
+
+
+def read_record_or_refuse(path: Path) -> Record:
+    """:meth:`Record.from_path`, or :class:`UnreadableRecord` naming the file
+    when it does not read back (S-71 §8.2 and its fold: the item's own file
+    in ``batch.classify``, and every SECOND record a sheet verb reads)."""
+    try:
+        return Record.from_path(path)
+    except UNREADABLE_RECORD_ERRORS as exc:
+        raise UnreadableRecord(
+            f"record file {path} cannot be read as a record — a person must "
+            f"repair it by hand: {exc}"
+        ) from exc
+
+
+class SheetLineRefusal(LedgerOpsError):
+    """The request itself is wrong and fails the same way every time (S-71
+    kind ``bad-line``): a defer date in the past, a supersession onto itself
+    or into a cycle, a link to a record that does not exist. A
+    :class:`LedgerOpsError` so every existing exit code is unchanged."""
 
 
 # --------------------------------------------------------------------- yaml
@@ -517,7 +589,9 @@ def find_record_path(
             p = bucket.path / sub / f"{record_id}.md"
             if p.is_file():
                 return p
-    raise LedgerOpsError(f"record {record_id} not found under {home}")
+    raise RecordNotFound(
+        f"record {record_id} not found under {home}", record_id=record_id
+    )
 
 
 #: Preferred human-facing order for a status list in a refusal message —
@@ -571,7 +645,12 @@ def require_status(
             if reason is not None
             else f"{verb} needs status {_status_phrase(allowed)} (02 §2)"
         )
-        raise LedgerOpsError(f"record {record_id} is {record.status!r} — {detail}")
+        raise StatusRefusal(
+            f"record {record_id} is {record.status!r} — {detail}",
+            record_id=record_id,
+            current_status=record.status,
+            allowed=allowed,
+        )
     return path, record
 
 
@@ -2516,7 +2595,18 @@ def resolve_record(
     # comment); no *note* given here silently kept the STALE note from
     # the resolution being corrected (leg ii). Every pre-U5 caller
     # passes `extra_allowed_source=None` and is unaffected.
-    if extra_allowed_source and record.resolution_note is not None:
+    #
+    # 2026-09-23 (the refusal catalogue behind S-71): the SAME displacement
+    # when a later resolution brings a note of its own to a record that
+    # already carries one — a `retire` or `supersede` of a routed record,
+    # written with `note:` as the steward writes every line. Before this,
+    # `set_resolution_note` below refused every such resolution (write-once),
+    # retried three nights for nothing. The old note lands in `history`
+    # (`event: "resolution"`, with the status it was written under); the
+    # field stays write-once per resolution.
+    if record.resolution_note is not None and (
+        extra_allowed_source or note is not None
+    ):
         _displace_resolution_note(record)
     record.set_status(new_status)
     if note is not None:
@@ -2757,7 +2847,9 @@ def supersede_cycle_check(home: Path, old_id: str, new_id: str) -> None:
             path = find_record_path(home, current)
         except LedgerOpsError:
             return  # dangling id: not this check's problem
-        record = Record.from_path(path)
+        # S-71 fold: a record on the chain that does not read back refuses
+        # this supersede by name instead of raising out of the whole sheet.
+        record = read_record_or_refuse(path)
         nxt = record.superseded_by
         if not nxt or is_retirement(nxt):
             # S-67: a retirement (`covered_by:<kind>:<name>`, or the
@@ -2765,7 +2857,7 @@ def supersede_cycle_check(home: Path, old_id: str, new_id: str) -> None:
             # always was — never a hop to another record.
             return
         if nxt == old_id:
-            raise LedgerOpsError(
+            raise SheetLineRefusal(
                 f"supersede {old_id} → {new_id} would create a cycle: "
                 f"{new_id} already (transitively) traces back to "
                 f"{old_id} via superseded_by"
@@ -2794,7 +2886,7 @@ def supersede_record(
     (the walk finds nothing to hop to and returns clean) — then refuses
     a longer cycle, see :func:`supersede_cycle_check`."""
     if old_id == superseded_by:
-        raise LedgerOpsError(f"record {old_id} cannot supersede itself")
+        raise SheetLineRefusal(f"record {old_id} cannot supersede itself")
     if superseded_by != "canon":  # legacy retirement sentinel; current callers pass ids
         supersede_cycle_check(home, old_id, superseded_by)
     return resolve_record(
@@ -2834,6 +2926,42 @@ def open_followups(home: Path) -> list[dict]:
                 }
             )
     return out
+
+
+def defer_until(record_id: str, until=None, *, now: datetime | None = None) -> str:
+    """The date a ``defer`` of *record_id* would write, as ``YYYY-MM-DD`` —
+    the default (+:data:`DEFAULT_DEFER_DAYS`) when *until* is ``None`` —
+    or a :class:`SheetLineRefusal` when an explicit *until* is in the past
+    or is not a date. :func:`defer_record` calls it under the lock and
+    ``batch.dry_run`` calls it for its preview (S-71 §6), so the two can
+    never disagree. A value that is not a date used to raise a bare
+    ``ValueError`` out of ``defer_record`` (and out of a whole ``batch``
+    run); it is the line's own mistake, so it refuses like the past date
+    does (2026-09-23)."""
+    clock = _now(now)
+    if until is None:
+        return (clock + timedelta(days=DEFAULT_DEFER_DAYS)).strftime("%Y-%m-%d")
+    if isinstance(until, datetime):
+        until_date = until.date()
+    elif isinstance(until, date):
+        until_date = until
+    else:
+        try:
+            until_date = date.fromisoformat(str(until))
+        except ValueError as exc:
+            raise SheetLineRefusal(
+                f"defer {record_id}: --until {until!r} is not a date "
+                f"(YYYY-MM-DD): {exc}"
+            ) from exc
+    today = clock.date()
+    if until_date < today:
+        raise SheetLineRefusal(
+            f"defer {record_id}: --until {until_date.isoformat()} is in "
+            f"the past (today is {today.isoformat()} UTC) — a defer must "
+            f"name a future date; `self-learn undefer {record_id}` is "
+            "the verb for bringing a deferred record back now"
+        )
+    return until_date.strftime("%Y-%m-%d")
 
 
 def defer_record(
@@ -2888,25 +3016,7 @@ def defer_record(
     # note to set afterward, only the old one to clear.
     if extra_allowed_source and record.resolution_note is not None:
         _displace_resolution_note(record)
-    clock = _now(now)
-    if until is None:
-        until = (clock + timedelta(days=DEFAULT_DEFER_DAYS)).strftime("%Y-%m-%d")
-    else:
-        if isinstance(until, datetime):
-            until_date = until.date()
-        elif isinstance(until, date):
-            until_date = until
-        else:
-            until_date = date.fromisoformat(str(until))
-        today = clock.date()
-        if until_date < today:
-            raise LedgerOpsError(
-                f"defer {record_id}: --until {until_date.isoformat()} is in "
-                f"the past (today is {today.isoformat()} UTC) — a defer must "
-                f"name a future date; `self-learn undefer {record_id}` is "
-                "the verb for bringing a deferred record back now"
-            )
-        until = until_date.strftime("%Y-%m-%d")
+    until = defer_until(record_id, until, now=now)
     record.set_status("deferred")
     record.set_deferred_until(until)
     record.set_deferred_count((record.deferred_count or 0) + 1)

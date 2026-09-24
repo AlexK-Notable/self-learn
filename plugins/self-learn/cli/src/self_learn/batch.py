@@ -44,13 +44,16 @@ from . import cases, execution_evidence, gitops, intents, sentinel, verbs
 from .cases import CASE_ID_RE
 from .compilers import CompileError
 from .ledger_ops import (
-    DEFERRED_ONLY,
     LIVE_STATUSES,
-    REOPENABLE_STATUSES,
-    RESOLVABLE_STATUSES,
-    ROUTED_ONLY,
     LedgerOpsError,
+    ProposalError,
+    RecordNotFound,
+    SheetLineRefusal,
+    StatusRefusal,
+    UnreadableRecord,
+    defer_until,
     find_record_path,
+    read_record_or_refuse,
 )
 from .records import (
     RECORD_ID_RE,
@@ -59,12 +62,12 @@ from .records import (
     RecordError,
     ValidationError as RecordValidationError,
     build_covered_by,
-    is_replacement,
 )
 
 __all__ = [
     "PERMITTED_KEYS",
     "PERMITTED_VERBS",
+    "REFUSAL_KINDS",
     "REFUSED_HOOK_DESTINATION",
     "BatchError",
     "BatchContinuation",
@@ -75,10 +78,12 @@ __all__ = [
     "ItemResult",
     "Sheet",
     "SheetItem",
+    "UnreadableRecord",
     "classify",
     "decision_code",
     "dry_run",
     "load_sheet",
+    "refusal_kind",
     "run",
     "write_receipt",
 ]
@@ -142,7 +147,8 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
     # U4 (revise) -- S-54 as amended, 2026-09-13: "the one verb this
     # build adds to the sheet grammar, and PERMITTED_KEYS gains it
     # together with the by: key" (03-decisions.md S-54). Dispatch
-    # wiring (`_dispatch`/`classify`/`_STATUS_GATE`) is U3's own
+    # wiring (`_dispatch`/`classify`/`_STATUS_GATE` -- the last replaced
+    # by S-71 §6's `_PREVIEW_CHECKS`) is U3's own
     # (lane so-batch, this build).
     "revise": frozenset({"section", "text", "because", "by"}),
 }
@@ -205,6 +211,95 @@ def _hook_refused_detail(record_id: str) -> str:
     return (
         f"{record_id}: a hook route is refused inside a batch (S-29) — "
         "route it by hand"
+    )
+
+
+#: S-71 (`03-decisions.md`; the table is `02-schema.md` §3a): the closed set
+#: of refusal KINDS. Every failed item carries exactly one, decided by
+#: :func:`refusal_kind` from the exception type at the raise site — never by
+#: reading the refusal's text.
+REFUSAL_KINDS = frozenset(
+    {
+        "git", "target-busy", "status", "destination-unavailable",
+        "needs-person", "bad-line", "secret-record", "unclassified",
+    }
+)
+
+#: The same kinds, most severe first — the steward's action precedence
+#: (S-71). Used where ONE item carries several refusals at once (a route
+#: preview reports every failed preflight, not only the first) and still
+#: needs a single kind.
+_KIND_PRECEDENCE = (
+    "secret-record", "git", "target-busy", "needs-person", "unclassified",
+    "bad-line", "destination-unavailable", "status",
+)
+
+
+def _typed_kind(exc: BaseException) -> str | None:
+    """The kind ONE exception's own type names, or ``None`` when its type
+    names none. Most specific first."""
+    if isinstance(exc, verbs.SecretRefusal):
+        # S-68: a hit in the record itself is refused and never parked; a
+        # hit only in the line's own text is the line's mistake.
+        return "secret-record" if exc.where == "record" else "bad-line"
+    if isinstance(exc, verbs.DirtyTargetError):
+        return "needs-person" if exc.cause == "region" else "target-busy"
+    if isinstance(exc, gitops.GitOpsError):  # HalfWrittenError, LedgerStoppedError
+        return "git"
+    if isinstance(exc, verbs.NeedsPerson):
+        return "needs-person"
+    if isinstance(exc, verbs.DestinationUnavailable):
+        return "destination-unavailable"
+    if isinstance(exc, (verbs.SheetLineError, SheetLineRefusal)):
+        return "bad-line"
+    if isinstance(exc, UnreadableRecord):
+        return "needs-person"
+    if isinstance(exc, ProposalError):
+        return "needs-person"
+    if isinstance(exc, (StatusRefusal, RecordNotFound)):
+        return "status"
+    return None
+
+
+def refusal_kind(exc: BaseException | None, *, rc: int, state: str) -> str:
+    """S-71: the ONE place a refusal is given its kind (the table lives here
+    and nowhere else). A ``stopped`` item, or any ledger stop code
+    (5/6/7), is ``git``. Otherwise the exception is read by TYPE: the
+    exception itself first, then the exception it was raised from
+    (``raise … from exc``), and so on — because most verbs re-raise the
+    ledger's typed refusal as a plain :class:`verbs.VerbError` for the CLI's
+    exit code, and the type that says what happened is the one underneath.
+    A raise site no type names is ``unclassified``: that parks, it is never
+    silent."""
+    if state == "stopped" or rc in _STOP_CODES:
+        return "git"
+    seen: set[int] = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        kind = _typed_kind(current)
+        if kind is not None:
+            return kind
+        current = current.__cause__
+    return "unclassified"
+
+
+def _most_severe_kind(kinds) -> str:
+    """One kind for an item that carries several (see
+    :data:`_KIND_PRECEDENCE`)."""
+    present = set(kinds)
+    for kind in _KIND_PRECEDENCE:
+        if kind in present:
+            return kind
+    return "unclassified"
+
+
+def _preview_kind(errors) -> str:
+    """The kind a ``would-refuse`` preview item carries: each refusal the
+    preview found is classified exactly as the real run would classify it
+    (a refused item, not a stop), and the most severe wins."""
+    return _most_severe_kind(
+        refusal_kind(exc, rc=1, state="refused") for exc in errors
     )
 
 
@@ -292,6 +387,10 @@ class ItemResult:
     #: Trusted provenance for an established outcome whose source matters
     #: on recovery (for example, a host result established by recompile).
     evidence: str | None = None
+    #: S-71: the refusal's kind (:data:`REFUSAL_KINDS`, from
+    #: :func:`refusal_kind`), set only when the item failed; ``None`` for an
+    #: applied, already-applied or not-attempted item.
+    kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -405,6 +504,7 @@ class BatchResult:
                     "sha": i.sha, "state": i.state, "detail": i.detail,
                     "warnings": list(i.warnings),
                     **({"evidence": i.evidence} if i.evidence is not None else {}),
+                    **({"kind": i.kind} if i.kind is not None else {}),
                 }
                 for i in self.items
             ],
@@ -591,6 +691,8 @@ def classify(
     """True iff *item* is ALREADY-APPLIED (§3.3b) — a STATE READ, never
     a parse of a refusal message. An unresolvable record id is never
     already-applied — it surfaces as the item's own refusal at dispatch.
+    A record file that exists but does not read back raises
+    :class:`ledger_ops.UnreadableRecord` (S-71 §8.2; re-exported here).
 
     ``actor``/``hook_activation`` (fold r1, F4): read ONLY for a
     ``route`` item resolving to the ``hook`` destination under
@@ -601,7 +703,7 @@ def classify(
         path = find_record_path(home, item.id)
     except LedgerOpsError:
         return False
-    record = Record.from_path(path)
+    record = read_record_or_refuse(path)
     verb = item.verb
     f = item.fields
 
@@ -771,10 +873,29 @@ def classify(
     # can reach this function at all.
 
 
+def _classify_or_refuse(
+    home: Path, item: SheetItem, *, actor: str, hook_activation: bool
+) -> tuple[bool, ItemResult | None]:
+    """:func:`classify`, or -- when the item's record file does not read
+    back (S-71 §8.2) -- ``(False, <that item's refused result>)``, so the
+    caller receipts it and moves on to the next item."""
+    try:
+        applied = classify(home, item, actor=actor, hook_activation=hook_activation)
+    except UnreadableRecord as exc:
+        # rc 64: the code `_dispatch` gives every LedgerOpsError refusal.
+        return False, ItemResult(
+            n=item.n, id=item.id, verb=item.verb, rc=64,
+            state="refused", detail=str(exc),
+            kind=refusal_kind(exc, rc=64, state="refused"),
+        )
+    return applied, None
+
+
 #: U5 fold r1 (F1): the ONLY verbs `_dispatch` ever forwards
 #: `reconsider_case` to — one set, consulted by BOTH
-#: `_reconsider_case_for` (below) and `dry_run`'s own status-gate
-#: preview, so the two can never drift apart again. Before this fix
+#: `_reconsider_case_for` (below), which `_dispatch` and `dry_run`'s
+#: preview (`_preview_checks`) both call, so the two can never drift
+#: apart again. Before this fix
 #: `_reconsider_case_for` decided purely on the RECORD's status, never
 #: the VERB — `dry_run` previewed `would-apply` for `revise`/`rescope`/
 #: `rehome` against a routed record under a valid reconsider case even
@@ -891,6 +1012,7 @@ def _dispatch_hook_activation(
             sha=route_result.commit_sha if route_result is not None else None,
             detail=detail,
             warnings=(list(route_result.warnings) if route_result is not None else []),
+            kind=refusal_kind(exc, rc=1, state="refused"),
         )
     if route_result is None:
         notes = list(hook_result.post_notes)
@@ -1224,13 +1346,16 @@ def _dispatch(
             raise AssertionError(f"unreachable: unpermitted verb {verb!r}")
     except verbs.VerbError as exc:  # incl. SecretRefusal
         return ItemResult(n=item.n, id=item.id, verb=verb, rc=exc.exit_code,
-                           state="refused", detail=str(exc))
+                           state="refused", detail=str(exc),
+                           kind=refusal_kind(exc, rc=exc.exit_code, state="refused"))
     except LedgerOpsError as exc:
         return ItemResult(n=item.n, id=item.id, verb=verb, rc=64,
-                           state="refused", detail=str(exc))
+                           state="refused", detail=str(exc),
+                           kind=refusal_kind(exc, rc=64, state="refused"))
     except CompileError as exc:
         return ItemResult(n=item.n, id=item.id, verb=verb, rc=1,
-                           state="refused", detail=str(exc))
+                           state="refused", detail=str(exc),
+                           kind=refusal_kind(exc, rc=1, state="refused"))
     except MutationError as exc:
         # U5 fold r1 (F2 leg i): a resolution verb's own write-once
         # field collision (`resolve_record`'s `resolution_note`, e.g.
@@ -1245,23 +1370,34 @@ def _dispatch(
         # `CompileError`'s — the record itself is provably untouched
         # (the raise happens before any `record.write`, gate probe Q1).
         return ItemResult(n=item.n, id=item.id, verb=verb, rc=1,
-                           state="refused", detail=str(exc))
+                           state="refused", detail=str(exc),
+                           kind=refusal_kind(exc, rc=1, state="refused"))
     except gitops.HalfWrittenError as exc:
         return ItemResult(n=item.n, id=item.id, verb=verb,
                            rc=gitops.EXIT_HALF_WRITTEN, state="refused",
-                           detail=str(exc))
+                           detail=str(exc),
+                           kind=refusal_kind(
+                               exc, rc=gitops.EXIT_HALF_WRITTEN, state="refused"
+                           ))
     except gitops.GitOpsError as exc:
         return ItemResult(n=item.n, id=item.id, verb=verb,
                            rc=gitops.EXIT_GIT_FAILED, state="refused",
-                           detail=str(exc))
+                           detail=str(exc),
+                           kind=refusal_kind(
+                               exc, rc=gitops.EXIT_GIT_FAILED, state="refused"
+                           ))
     return ItemResult(
         n=item.n, id=item.id, verb=verb, rc=0, sha=result.commit_sha,
         state="applied", warnings=list(result.warnings),
     )
 
 
-#: A pre-mutation ledger-level failure — nothing written, safe to retry
-#: (§3.3: "the ledger is unsafe to keep writing into").
+#: A ledger-level failure that stops the sheet (§3.3: "the ledger is unsafe
+#: to keep writing into"). 5 (no ledger home) and 6 (git failed before any
+#: mutation) wrote nothing. 7 (`gitops.EXIT_HALF_WRITTEN`) left a write
+#: uncommitted; a later attempt is safe only because every ledger write
+#: first runs intent recovery (`intents.ledger_write`, S-62), which rolls
+#: that write forward, restores it, or stops.
 _STOP_CODES = frozenset({5, 6, 7})
 
 # These verbs can return only after a ledger commit and one or more host
@@ -1356,6 +1492,7 @@ def _record_ledger_stop(
             rc=gitops.EXIT_GIT_FAILED,
             state="stopped",
             detail=str(exc),
+            kind=refusal_kind(exc, rc=gitops.EXIT_GIT_FAILED, state="stopped"),
         )
     )
     for remaining in tail:
@@ -1409,36 +1546,181 @@ def decision_code(results: list[ItemResult]) -> int:
     return 1
 
 
-#: Status precondition each non-`route` verb needs — mirrors the guard
-#: vocabulary each verb itself consults (§3.1), so `--dry-run` can name a
-#: status refusal without calling the verb or writing anything. `note`
-#: and `link-contradicts` take no status gate (any status).
-_STATUS_GATE: dict[str, frozenset[str]] = {
-    "reject": LIVE_STATUSES,
-    "defer": LIVE_STATUSES,
-    "undefer": DEFERRED_ONLY,
-    # S-67: mirrors `verbs._REOPEN_ADMITTED_STATUSES` — the status half
-    # of `reopen`'s widened admission. The REPLACED-vs-RETIRED distinction
-    # (a record-id `superseded_by` stays refused) is not a status-set
-    # question and is previewed separately below, in `dry_run` itself.
-    "reopen": REOPENABLE_STATUSES | frozenset({"superseded"}),
-    "retire": RESOLVABLE_STATUSES,
-    "graduate": RESOLVABLE_STATUSES,
-    "supersede": RESOLVABLE_STATUSES,
-    "rehome": LIVE_STATUSES,
-    "rescope": LIVE_STATUSES,
-    "confirm-recurrence": ROUTED_ONLY,
-    "dismiss-suspect": ROUTED_ONLY,
-    "confirm-held": ROUTED_ONLY,
-    "followup-done": ROUTED_ONLY,
-    # U3 (carried from the U4 gate): `verbs.revise` admits only
-    # LIVE_STATUSES (`records.DRAFT_STATUSES` under this module's own
-    # import name -- the same two values, pending/deferred) — without
-    # this entry `dry_run`'s generic status-gate check (below) fell
-    # through to `gate is None` and reported "would-apply" for a
-    # revise item against a routed/rejected/superseded record.
-    "revise": LIVE_STATUSES,
+#: S-71 §6: what `dry_run` checks for each non-`route` verb — the verb's
+#: OWN pre-lock checks (``verbs._preflight_*``), plus the checks the verb
+#: runs later from the same functions (``defer``'s date, a retirement's
+#: host-side preflight). Never a second implementation: a check that
+#: changes in the verb changes here too. Each entry takes (home, item,
+#: by, reconsider_case) — computed exactly as `_dispatch` computes them —
+#: and raises the verb's own refusal, or returns.
+
+
+def _preview_reject(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    path, _body, extra_allowed = verbs._preflight_reject_or_defer(
+        home, item.id, verb="reject", note=item.fields.get("note"), by=by,
+        reconsider_case=rc,
+    )
+    # The verb runs this under its hold (a routed lesson under a reconsider case).
+    verbs._reconsider_retirement_if_routed(home, path, extra_allowed, verb="reject")
+
+
+def _preview_defer(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    path, _body, extra_allowed = verbs._preflight_reject_or_defer(
+        home, item.id, verb="defer", note=item.fields.get("note"), by=by,
+        reconsider_case=rc,
+    )
+    # The verb runs these under its hold, in this order.
+    verbs._reconsider_retirement_if_routed(home, path, extra_allowed, verb="defer")
+    defer_until(item.id, item.fields.get("until"))
+
+
+def _preview_undefer(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_undefer(home, item.id, note=item.fields.get("note"), by=by)
+
+
+def _preview_reopen(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_reopen(home, item.id, note=item.fields.get("note"), by=by)
+
+
+def _preview_retire(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    # `retire` always names `covered_by`; `graduate` may omit it (the
+    # legacy alias), and is `retire` itself when it names one.
+    covered_by = item.fields.get("covered_by")
+    verb_word = "graduate"
+    if covered_by is not None:
+        verbs._covered_by_surface(covered_by)
+        verb_word = "retire"
+    path, record, warnings = verbs._preflight_retire(
+        home, item.id, verb_word=verb_word, note=item.fields.get("note"),
+        by=by, reconsider_case=rc,
+    )
+    verbs._retirement_preflight(home, record, path.parent.parent, warnings)
+
+
+def _preview_supersede(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    old_path, old_record, warnings = verbs._preflight_supersede(
+        home, item.id, item.fields["new_id"], note=item.fields.get("note"),
+        by=by, reconsider_case=rc,
+    )
+    # `supersede` resolves the same host-side cleanup inline (a duplicate
+    # of this helper its own comment names); the helper is the shared one.
+    verbs._retirement_preflight(home, old_record, old_path.parent.parent, warnings)
+
+
+def _preview_move(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_move(
+        home, item.id, to=item.fields["to"], verb=item.verb,
+        note=item.fields.get("note"), by=by,
+    )
+
+
+def _preview_note(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_note(home, item.id, append=item.fields["append"])
+
+
+def _preview_confirm_recurrence(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_confirm_recurrence(
+        home, item.id, event_ref=item.fields["event"],
+        tolerate=bool(item.fields.get("tolerate", False)),
+        note=item.fields.get("note"),
+    )
+
+
+def _preview_dismiss_suspect(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_dismiss_suspect(
+        home, item.id, event_ref=item.fields["event"], note=item.fields.get("note")
+    )
+
+
+def _preview_confirm_held(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_confirm_held(home, item.id, note=item.fields.get("note"))
+
+
+def _preview_link_contradicts(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_link_contradicts(
+        home, item.id, item.fields["target"], note=item.fields.get("note")
+    )
+
+
+def _preview_followup_done(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_followup_done(home, item.id, note=item.fields.get("note"))
+
+
+def _preview_revise(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    verbs._preflight_revise(
+        home, item.id, section=item.fields["section"], text=item.fields["text"],
+        because=item.fields["because"], by=by,
+    )
+
+
+_PreviewCheck = Callable[[Path, SheetItem, str | None, str | None], None]
+
+_PREVIEW_CHECKS: dict[str, _PreviewCheck] = {
+    "reject": _preview_reject,
+    "defer": _preview_defer,
+    "undefer": _preview_undefer,
+    "reopen": _preview_reopen,
+    "retire": _preview_retire,
+    "graduate": _preview_retire,
+    "supersede": _preview_supersede,
+    "rehome": _preview_move,
+    "rescope": _preview_move,
+    "note": _preview_note,
+    "confirm-recurrence": _preview_confirm_recurrence,
+    "dismiss-suspect": _preview_dismiss_suspect,
+    "confirm-held": _preview_confirm_held,
+    "link-contradicts": _preview_link_contradicts,
+    "followup-done": _preview_followup_done,
+    "revise": _preview_revise,
 }
+
+#: What `_dispatch` turns into a refused item — a preview check raising one
+#: of these is a `would-refuse`. Anything else escapes, as it would at apply.
+_PREVIEW_REFUSALS = (
+    verbs.VerbError, LedgerOpsError, CompileError, MutationError, gitops.GitOpsError,
+)
+
+
+def _preview_checks(
+    home: Path, item: SheetItem, *, actor: str, sheet_case: str | None
+) -> None:
+    """Run the checks the verb would run for a non-`route` *item*, with
+    the same `by` and `reconsider_case` `_dispatch` would pass it."""
+    f = item.fields
+    if item.verb == "revise":
+        by = f.get("by") or (actor if actor != "human" else None)
+    else:
+        by = f.get("by") or actor
+    reconsider_case = _reconsider_case_for(home, item.id, sheet_case, item.verb)
+    _PREVIEW_CHECKS[item.verb](home, item, by, reconsider_case)
 
 
 @dataclass
@@ -1449,6 +1731,9 @@ class DryRunItem:
     state: str  # "already-applied" | "would-apply" | "would-refuse"
     detail: str | None = None
     route_preview: dict | None = None
+    #: S-71: the refusal's kind, set only on a ``would-refuse`` item — the
+    #: kind the real run would give the same refusal.
+    kind: str | None = None
 
 
 @dataclass
@@ -1477,6 +1762,7 @@ class DryRunResult:
                 {
                     "n": i.n, "id": i.id, "verb": i.verb, "state": i.state,
                     "detail": i.detail, "route_preview": i.route_preview,
+                    **({"kind": i.kind} if i.kind is not None else {}),
                 }
                 for i in self.items
             ],
@@ -1501,7 +1787,7 @@ def dry_run(
     :func:`_dispatch` WOULD do). For a `route` item this is EXACTLY
     `route --dry-run`'s own payload, called as a function (the
     delegation leg) — no second preflight implementation. Every other
-    verb reports its own status precondition (:data:`_STATUS_GATE`)
+    verb runs that verb's own pre-lock checks (:data:`_PREVIEW_CHECKS`, S-71 §6)
     with nothing written. `hook_items` names the sheet-level
     prerequisite the two hand scripts (§2.4) had to sequence by hand: a
     route item whose resolved destination is `hook` — populated
@@ -1528,7 +1814,17 @@ def dry_run(
         actor=actor,
     )
     for item in items:
-        if classify(home, item, actor=actor, hook_activation=hook_activation):
+        applied, unreadable = _classify_or_refuse(
+            home, item, actor=actor, hook_activation=hook_activation
+        )
+        if unreadable is not None:
+            result.items.append(
+                DryRunItem(n=item.n, id=item.id, verb=item.verb,
+                           state="would-refuse", detail=unreadable.detail,
+                           kind=unreadable.kind)
+            )
+            continue
+        if applied:
             result.items.append(
                 DryRunItem(n=item.n, id=item.id, verb=item.verb,
                            state="already-applied")
@@ -1540,7 +1836,8 @@ def dry_run(
             except LedgerOpsError as exc:
                 result.items.append(
                     DryRunItem(n=item.n, id=item.id, verb=item.verb,
-                               state="would-refuse", detail=str(exc))
+                               state="would-refuse", detail=str(exc),
+                               kind=_preview_kind([exc]))
                 )
                 continue
             resolved = _resolved_route_dest(home, path, item)
@@ -1550,12 +1847,16 @@ def dry_run(
                 if actor != "overseer":
                     # Fold r1 (F8): the SAME shared sentence `_dispatch`
                     # raises for real — previewed here, nothing touched,
-                    # never a second hand-copied literal to drift.
+                    # never a second hand-copied literal to drift. S-71:
+                    # the kind is the one `_dispatch`'s plain `VerbError`
+                    # gets.
+                    hook_detail = _hook_refused_detail(item.id)
                     result.items.append(
                         DryRunItem(
                             n=item.n, id=item.id, verb=item.verb,
                             state="would-refuse",
-                            detail=_hook_refused_detail(item.id),
+                            detail=hook_detail,
+                            kind=_preview_kind([verbs.VerbError(hook_detail)]),
                         )
                     )
                     continue
@@ -1565,7 +1866,10 @@ def dry_run(
                 # preflight (`route_dry_run`) still clears, and without
                 # ever calling `hook_activation.activate` (BAT9: a dry
                 # run writes nothing at all, ledger AND hosts).
-                dr = verbs.route_dry_run(home, item.id, dest=item.fields.get("dest"))
+                dr = verbs.route_dry_run(
+                    home, item.id, dest=item.fields.get("dest"),
+                    note=item.fields.get("note"),
+                )
                 if dr.would_refuse:
                     result.items.append(
                         DryRunItem(
@@ -1573,6 +1877,7 @@ def dry_run(
                             state="would-refuse",
                             detail="; ".join(dr.would_refuse),
                             route_preview=dr.to_json(),
+                            kind=_preview_kind(dr.refusal_errors),
                         )
                     )
                     continue
@@ -1585,66 +1890,26 @@ def dry_run(
                     )
                 )
                 continue
-            dr = verbs.route_dry_run(home, item.id, dest=item.fields.get("dest"))
+            dr = verbs.route_dry_run(
+                home, item.id, dest=item.fields.get("dest"),
+                note=item.fields.get("note"),
+            )
             state = "would-refuse" if dr.would_refuse else "would-apply"
             result.items.append(
                 DryRunItem(n=item.n, id=item.id, verb=item.verb, state=state,
                            detail="; ".join(dr.would_refuse) or None,
-                           route_preview=dr.to_json())
+                           route_preview=dr.to_json(),
+                           kind=(_preview_kind(dr.refusal_errors)
+                                 if dr.would_refuse else None))
             )
             continue
         try:
-            path = find_record_path(home, item.id)
-        except LedgerOpsError as exc:
+            _preview_checks(home, item, actor=actor, sheet_case=sheet_case)
+        except _PREVIEW_REFUSALS as exc:
             result.items.append(
                 DryRunItem(n=item.n, id=item.id, verb=item.verb,
-                           state="would-refuse", detail=str(exc))
-            )
-            continue
-        if item.verb in ("rehome", "rescope"):
-            try:
-                verbs._resolve_move_target(home, item.fields["to"])
-            except verbs.VerbError as exc:
-                result.items.append(
-                    DryRunItem(n=item.n, id=item.id, verb=item.verb,
-                               state="would-refuse", detail=str(exc))
-                )
-                continue
-        record = Record.from_path(path)
-        gate = _STATUS_GATE.get(item.verb)
-        if (
-            gate is not None and record.status not in gate
-            # U5: the same per-item widening `_dispatch` would apply at
-            # apply time — a validated `kind: reconsider` case over a
-            # routed record's item previews `would-apply`, not a stale
-            # `would-refuse` naming a status the real run would admit.
-            and _reconsider_case_for(home, item.id, sheet_case, item.verb) is None
-        ):
-            result.items.append(
-                DryRunItem(n=item.n, id=item.id, verb=item.verb,
-                           state="would-refuse",
-                           detail=f"record {item.id} is {record.status!r}")
-            )
-            continue
-        # S-67: `_STATUS_GATE["reopen"]` admits `superseded` for BOTH a
-        # retirement and a replacement — the same distinction
-        # `verbs.reopen` itself draws one level down, once the record is
-        # in hand, previewed here rather than left to look like
-        # `would-apply` and then refuse for real.
-        if (
-            item.verb == "reopen"
-            and record.status == "superseded"
-            and is_replacement(record.superseded_by)
-        ):
-            result.items.append(
-                DryRunItem(
-                    n=item.n, id=item.id, verb=item.verb,
-                    state="would-refuse",
-                    detail=(
-                        f"record {item.id} is superseded by a replacement "
-                        f"({record.superseded_by}) — use reconsider"
-                    ),
-                )
+                           state="would-refuse", detail=str(exc),
+                           kind=_preview_kind([exc]))
             )
             continue
         result.items.append(
@@ -1797,6 +2062,7 @@ def run(
                     )
                 continue
             already_applied = False
+            unreadable: ItemResult | None = None
             if continuation is not None:
                 # Bind present-state classification and its ordered receipt to
                 # one ledger span. Otherwise a manual/intervening edit could
@@ -1824,12 +2090,20 @@ def run(
                                 result,
                                 list(items[idx:]),
                             )
-                        already_applied = classify(
+                        already_applied, unreadable = _classify_or_refuse(
                             home,
                             item,
                             actor=actor,
                             hook_activation=hook_activation,
                         )
+                        if unreadable is not None:
+                            # S-71 §8.2: receipted like any other refusal,
+                            # inside the same span, before the next item.
+                            result.items.append(unreadable)
+                            assert checkpoint is not None
+                            _checkpoint_or_halt(
+                                checkpoint, result, list(items[idx + 1:])
+                            )
                         if already_applied:
                             result.items.append(
                                 ItemResult(
@@ -1848,9 +2122,13 @@ def run(
                     _record_ledger_stop(result, item, list(items[idx + 1:]), exc)
                     break
             else:
-                already_applied = classify(
+                already_applied, unreadable = _classify_or_refuse(
                     home, item, actor=actor, hook_activation=hook_activation
                 )
+                if unreadable is not None:
+                    result.items.append(unreadable)
+            if unreadable is not None:
+                continue
             if already_applied:
                 if continuation is None:
                     result.items.append(
@@ -1941,6 +2219,9 @@ def run(
                         # DOES know) overrides here, before the item ever joins
                         # `result.items`.
                         item_result.state = "stopped"
+                        item_result.kind = refusal_kind(
+                            None, rc=item_result.rc, state="stopped"
+                        )
                     result.items.append(item_result)
                     if checkpoint_required:
                         assert checkpoint is not None

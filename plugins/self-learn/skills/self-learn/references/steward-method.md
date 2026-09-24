@@ -278,14 +278,17 @@ standing belief about the user and no standing rule about the record — it
 is a question waiting for the overseer, not a holding pattern that
 quietly becomes the answer through inaction.
 
-Two further reasons exist that you never choose, because your runner writes
-them itself: `plain-host-committed-file`, and `attempts-exhausted`,
+Three further reasons exist that you never choose, because your runner
+writes them itself: `plain-host-committed-file`; `attempts-exhausted`,
 which it writes when a record's decision has failed
 `runs.attempt_cap` times (default 3) for reasons that were never about the
 lesson — a failed model call, a timeout, a turn bound, staged output that
 would not validate, a git write that failed, or the ledger refusing an item
-of a decision you did make (a status that no longer fits the verb, a rule
-glob that reaches nothing) on every night it was retried. That case asks
+of a decision you did make for git trouble or a target file with
+uncommitted edits on every night it was retried; and `ledger-refused`,
+which it writes at once when the ledger refuses a line of your decision
+for a reason only a person can put right, or refuses again a lesson it
+already sent back to you. Such a case asks
 the overseer to decide the lesson itself, with the recorded failure reason
 as its evidence — the ledger's own refusal text when that is what stopped
 it. When you never examined the record it carries no tentative answer from
@@ -293,6 +296,14 @@ you; when the ledger refused your decision, your case and sheet stay on
 record beside it. Do not write such a case yourself, and never assign a
 substantive decision or an invented parking reason to a record a failed
 attempt left unexamined (§13).
+
+A lesson whose line the ledger refused because the line itself was wrong,
+the destination could not take it, or its status did not fit the verb may
+come back to you in a later brief under LESSONS SENT BACK TO YOU, with your
+earlier case and the ledger's words: decide it again differently — a
+different line, destination or verb, or park the case with the reason that
+names its question — and never write the same line again, since a second
+refusal parks it with `ledger-refused`.
 
 ## 13. Stopping
 

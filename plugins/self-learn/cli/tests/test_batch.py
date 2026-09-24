@@ -1042,11 +1042,21 @@ class TestU5MutationErrorRefusedNotRaised:
     for other exception types (whatever landed before it stayed
     committed, the rest got no receipt). `_dispatch`'s except-set now
     catches it too: the item that hits it is REFUSED and the sheet
-    continues per the ordinary stop rules."""
+    continues per the ordinary stop rules.
+
+    2026-09-23 (refusal-kinds unit, §8.1): that natural trigger is gone —
+    `resolve_record` now displaces the routing note into `history` when a
+    later resolution brings its own note, so this exact sheet applies
+    (`test_refusal_defects.py` pins that). The write-once raise is forced
+    here at its own raise site instead, so the `_dispatch` branch this
+    class exists for — a `MutationError` refused, not raised — stays
+    covered."""
 
     def test_mid_sheet_mutation_error_is_refused_not_a_crash(
         self, tmp_path, monkeypatch
     ):
+        from self_learn.records import MutationError
+
         home = _env(tmp_path, monkeypatch)
         routed_id = _seed_pending(home, "lrn-f2000001")
         verbs.route(
@@ -1056,6 +1066,13 @@ class TestU5MutationErrorRefusedNotRaised:
             Record.from_path(find_record_path(home, routed_id)).resolution_note
             == "the first why"
         )
+
+        def write_once(self, note):
+            raise MutationError(
+                f"resolution_note is write-once and already set on {self.id} (02 §2)"
+            )
+
+        monkeypatch.setattr(Record, "set_resolution_note", write_once)
 
         other_id = _seed_pending(home, "lrn-f2000002")
 

@@ -1638,7 +1638,10 @@ def test_u1_a19_a_zero_call_steward_run_arms_the_cooldown(monkeypatch, tmp_path)
     entry = type(
         "Entry",
         (),
-        {"record": type("R", (), {"id": "lrn-deadbeef"})(), "proposal_path": proposal_path},
+        # S-71: a queued record carries its status (the run records it as
+        # the input's selection-time `record_status`).
+        {"record": type("R", (), {"id": "lrn-deadbeef", "status": "pending"})(),
+         "proposal_path": proposal_path},
     )()
     monkeypatch.setattr(steward, "_reconcile_runs", lambda actual: [])
     monkeypatch.setattr(steward, "_reconsider_proposals", lambda actual: ([], {}))
