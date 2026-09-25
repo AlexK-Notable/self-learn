@@ -454,6 +454,9 @@ quotes the ledger's words.
 Write report.md, findings.yaml, questions.yaml, user-model-delta.yaml, and either sheet.yaml or paired
 case-<name>.yaml plus sheet-<name>.yaml files. One successor case must supersede each parked
 case you decide. The runner alone records cases and applies sheets. Never run a verb.
+In a case file no line of any text field may start with `## `. To quote a heading line, quote
+it from after the `## ` (for `## 2026-08-19 — lrn-b197d06b` quote `2026-08-19 — lrn-b197d06b`):
+an evidence item with such a line is dropped, and any other field with one refuses the case.
 findings.yaml is {{findings: [{{case, kind: examined|dependency-moved, text, ref?}}]}}.
 questions.yaml is where you ask the user what only the user can settle. There is no limit on
 how many you ask: ask every question that clears this bar and none that does not.
@@ -1993,12 +1996,21 @@ def _prepare_manifest(
     existing = {row["case"] for row in cases.list_cases(home, only_ok=True)}
     recipes: dict[str, Any] = {}
     order: list[str] = []
+    notes = list(runner_notes or [])
     for case_file, sheet_file, loaded in prepared:
         if case_file is None:
             continue
         case_id = _reserved_case_id(existing | set(recipes))
         case_data = _yaml_mapping(case_file)
         case_data["run_id"] = run_id
+        # 2026-09-25: an evidence item quoting a heading line is dropped
+        # before the case text is frozen into the committed run record, and
+        # said in the report; the rest of the case records.
+        case_data, dropped_evidence = cases.split_heading_evidence(case_data)
+        notes.extend(
+            f"case {case_id}: evidence from {row['ref']} dropped — {row['reason']}"
+            for row in dropped_evidence
+        )
         case_text = _yaml_text(case_data)
         sheet_data = _yaml_mapping(sheet_file)
         sheet_data["case"] = case_id
@@ -2030,6 +2042,7 @@ def _prepare_manifest(
             ],
             "maintenance": [],
             "dispositions": [],
+            "dropped_evidence": dropped_evidence,
         }
         order.append(case_id)
     manifest: dict[str, Any] = {
@@ -2067,7 +2080,7 @@ def _prepare_manifest(
         "questions": questions,
         # Runner lines for "Refused / could not do" that refuse no decision
         # (a dropped question). Carried here so a resume's report has them.
-        "runner_notes": list(runner_notes or []),
+        "runner_notes": notes,
         # The run's journal, already secret-scanned (a hit is the stub), so
         # a resume can put it back in the rebuilt stage the way the report
         # is put back. `None` when it holds only its header line.
