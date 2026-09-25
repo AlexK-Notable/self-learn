@@ -919,6 +919,17 @@ few lines at most); no paraphrase-only evidence. The reference is one of:
 | telemetry | `telemetry:<event-id>` |
 | a prior case | `case-<8hex>` |
 
+No line of any free-text field of a case may start with `## ` (heading
+injection, D-i): `self-learn case record` refuses the whole case, and never
+escapes the text. *(Added 2026-09-25.)* The steward's and the overseer's
+runners drop an evidence item whose quote or reference has such a line
+before the case is frozen into their run record — the item's reference and
+the reason are kept in that record (the steward also journals it, the
+overseer names it under "Refused / could not do"), its quote is not — and
+the case records with the rest of its evidence; if no evidence would remain,
+or the line is in any other field, the case is refused as before. A person's
+`case record` stays strict.
+
 **Section 3, Decision** — free text, with these labelled lines first:
 
 ```

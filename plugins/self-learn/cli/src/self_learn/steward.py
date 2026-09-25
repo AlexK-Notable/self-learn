@@ -1107,6 +1107,7 @@ def _prepared_recipe(
     recipes = manifest.setdefault("cases", {})
     packet_case_ids: list[str] = []
     prepared_texts: list[str] = []
+    dropped_rows: list[dict] = []
     for case_path in sorted((stage / "cases").glob("*.yaml")):
         stem = case_path.stem
         sheet_path = stage / "sheets" / f"{stem}.yaml"
@@ -1115,6 +1116,11 @@ def _prepared_recipe(
             raise ValueError(f"{case_path.name}: case must be a mapping")
         case_data = dict(case_data)
         case_data["run_id"] = run_id
+        # 2026-09-25 (run-d8f5e198ff4f): an evidence item quoting a heading
+        # line is dropped HERE, before the case text is frozen into the
+        # committed run record, so the quote never reaches the ledger; the
+        # decision records with the rest of its evidence.
+        case_data, dropped_evidence = cases.split_heading_evidence(case_data)
         predecessor_ids = {
             predecessors[rid]
             for rid in case_data.get("records") or []
@@ -1152,6 +1158,10 @@ def _prepared_recipe(
         sheet = _prepare_sheet(sheet_path, case_id)
         sheet_text = sheet_path.read_text(encoding="utf-8")
         prepared_texts.extend([case_text, sheet_text])
+        prepared_texts.extend(row["ref"] for row in dropped_evidence)
+        dropped_rows.extend(
+            {"case": case_id, "stage_file": case_path.name, **row} for row in dropped_evidence
+        )
         recipes[case_id] = {
             "case": case_text,
             "sheet": sheet_text,
@@ -1167,6 +1177,7 @@ def _prepared_recipe(
             "packet": packet["index"],
             "phase": "prepared",
             "parking_reason": parking_reason,
+            "dropped_evidence": dropped_evidence,
         }
         packet_case_ids.append(case_id)
 
@@ -1178,6 +1189,12 @@ def _prepared_recipe(
     ):
         for item in _stage_entries(stage / filename):
             payload = dict(item)
+            parked_dropped: list[dict] = []
+            if kind == "parked-case":
+                # 2026-09-25: as for a decided case above -- dropped before
+                # the payload is frozen into the committed run record.
+                payload, parked_dropped = cases.split_heading_evidence(payload)
+                prepared_texts.extend(row["ref"] for row in parked_dropped)
             prepared_texts.append(_yaml_text(payload))
             ordinal = len(maintenance) + 1
             identity_bytes = json.dumps(
@@ -1200,11 +1217,19 @@ def _prepared_recipe(
             }
             if kind == "parked-case":
                 operation["reserved_case_id"] = _new_case_id()
+                operation["dropped_evidence"] = parked_dropped
+                dropped_rows.extend(
+                    {"case": operation["reserved_case_id"], "stage_file": filename, **row}
+                    for row in parked_dropped
+                )
             maintenance.append(operation)
 
     hits = [hit for text in prepared_texts for hit in secret_scan(text)]
     if hits:
         raise ValueError(format_refusal(hits))
+    for row in dropped_rows:
+        _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+            "status": "evidence-dropped", **row})
     packet["case_ids"] = packet_case_ids
     packet["maintenance"] = maintenance
     packet["phase"] = "prepared"

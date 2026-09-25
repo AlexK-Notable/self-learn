@@ -376,6 +376,40 @@ def _refuse_headings(texts: list[str]) -> None:
             )
 
 
+#: Why a runner dropped an evidence item (2026-09-25, run-d8f5e198ff4f).
+HEADING_EVIDENCE_REASON = 'a quoted line starts with "## "'
+
+
+def split_heading_evidence(data: dict) -> tuple[dict, list[dict]]:
+    """The steward's and overseer's runners only (2026-09-25): drop each
+    evidence item whose `quote` or `ref` has a heading-shaped line, before
+    the case is frozen into a run record, instead of letting `record`
+    refuse the whole case. The quote is never escaped or rewritten (D-i):
+    the item goes whole. Returns ``(data, dropped)``; each dropped row is
+    ``{"ref", "reason"}`` (the ref flattened to one line) and never carries
+    the quote. When dropping would leave no evidence, nothing is dropped,
+    so `record` refuses exactly as it does for a person's `case record`,
+    which never calls this."""
+    evidence = data.get("evidence")
+    if not isinstance(evidence, list):
+        return data, []
+    kept: list = []
+    dropped: list[dict] = []
+    for item in evidence:
+        if isinstance(item, dict) and any(
+            _HEADING_LINE_RE.search(str(item.get(key) or "")) for key in ("quote", "ref")
+        ):
+            dropped.append({
+                "ref": " ".join(str(item.get("ref") or "").split()),
+                "reason": HEADING_EVIDENCE_REASON,
+            })
+        else:
+            kept.append(item)
+    if not dropped or not kept:
+        return data, []
+    return {**data, "evidence": kept}, dropped
+
+
 def _new_case_id(home: Path) -> str:
     for _ in range(64):
         candidate = "case-" + uuid.uuid4().hex[:8]
