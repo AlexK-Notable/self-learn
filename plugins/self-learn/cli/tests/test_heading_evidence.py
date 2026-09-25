@@ -143,6 +143,52 @@ def test_steward_drops_a_heading_quote_and_the_decision_still_applies(tmp_path, 
     assert _ledger_files_with(home, "lrn-b197d06b") == []
 
 
+def test_steward_drops_a_heading_quote_from_a_parked_yaml_case(tmp_path, monkeypatch):
+    """The same drop for a further question in parked.yaml (recorded by the
+    maintenance step, not the case loop)."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    rid = _seed(home, "lrn-e0000004")
+    _enable_steward(home)
+    _notifications(monkeypatch)
+    decide = _steward_writer(_case(rid, [KEPT_ITEM]))
+    further = {k: v for k, v in _case(rid, [KEPT_ITEM, HEADING_ITEM]).items()
+               if k not in ("kind", "outcome")}
+    further.update(question="should the shelf keep dated headings?",
+                   parked_reason="authority-unclear")
+
+    def write(spec):
+        outcome = decide(spec)
+        _dump_yaml(_stage_dir(spec) / "parked.yaml", {"entries": [further]})
+        return outcome
+
+    monkeypatch.setattr(steward.invocation, "write_session", write)
+
+    result = steward.run(home)
+
+    manifest = _head_manifest(home, result.run_id)
+    (operation,) = [
+        op for op in manifest["packets"][0]["maintenance"] if op["kind"] == "parked-case"
+    ]
+    assert operation["state"] == "applied", operation
+    parked_id = operation["reserved_case_id"]
+    assert parked_id in [c["case"] for c in cases.list_cases(home, record_id=rid, parked_for="overseer")]
+    view = json.dumps(cases.show(home, parked_id, evidence_only=False).to_json()["sections"])
+    assert KEPT_QUOTE in view  # positive control
+    assert "lrn-b197d06b" not in view
+    assert operation["dropped_evidence"] == [
+        {"ref": HEADING_REF, "reason": 'a quoted line starts with "## "'}
+    ]
+    dropped = [r for r in _journal_rows(home) if r.get("status") == "evidence-dropped"]
+    assert [(r["case"], r["stage_file"], r["ref"]) for r in dropped] == [
+        (parked_id, "parked.yaml", HEADING_REF)
+    ]
+    assert f"cases/runs/{result.run_id}.json" in [
+        p.partition(":")[2] for p in _ledger_files_with(home, HEADING_REF)
+    ]
+    assert _ledger_files_with(home, "lrn-b197d06b") == []
+
+
 @pytest.mark.parametrize(
     "field, evidence",
     [

@@ -1189,6 +1189,12 @@ def _prepared_recipe(
     ):
         for item in _stage_entries(stage / filename):
             payload = dict(item)
+            parked_dropped: list[dict] = []
+            if kind == "parked-case":
+                # 2026-09-25: as for a decided case above -- dropped before
+                # the payload is frozen into the committed run record.
+                payload, parked_dropped = cases.split_heading_evidence(payload)
+                prepared_texts.extend(row["ref"] for row in parked_dropped)
             prepared_texts.append(_yaml_text(payload))
             ordinal = len(maintenance) + 1
             identity_bytes = json.dumps(
@@ -1211,6 +1217,11 @@ def _prepared_recipe(
             }
             if kind == "parked-case":
                 operation["reserved_case_id"] = _new_case_id()
+                operation["dropped_evidence"] = parked_dropped
+                dropped_rows.extend(
+                    {"case": operation["reserved_case_id"], "stage_file": filename, **row}
+                    for row in parked_dropped
+                )
             maintenance.append(operation)
 
     hits = [hit for text in prepared_texts for hit in secret_scan(text)]
