@@ -2864,3 +2864,27 @@ def test_a_manual_run_resumes_committed_work_without_counting_an_attempt(tmp_pat
     assert dispatched == [1, 1], "the manual run resumed the committed work"
     assert execution_evidence.read_manifest(home, first.run)["attempt_count"] == 1
     assert overseer_run.week_attempts(home, week) == 1
+
+
+def test_both_overseer_phases_run_with_auto_memory_off(tmp_path, monkeypatch):
+    """2026-09-24: phase-B session 94505169 (run 02227dc1) wrote three notes
+    into Claude Code's memory folder for the stage path, which never
+    changes, so every later overseer session -- the blind phase A included
+    -- would have loaded them. Both phases carry the switch into the
+    environment the SDK hands Claude Code."""
+    from self_learn.invocation_sdk.backend import CliSessionPolicy
+
+    home = make_home(tmp_path)
+    _fake_two_phase(monkeypatch)
+    seen: list[object] = []
+    inner = overseer_run.invocation.write_session
+
+    def capture(spec):
+        seen.append(spec)
+        return inner(spec)
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", capture)
+    assert overseer_run.run(home, dry_run=True, no_push=True).status == "dry-run"
+    assert [spec.label for spec in seen] == ["phase-a", "phase-b"]
+    for spec in seen:
+        assert CliSessionPolicy(spec).env().get("CLAUDE_CODE_DISABLE_AUTO_MEMORY") == "1", spec.label

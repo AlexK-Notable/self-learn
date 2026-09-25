@@ -2972,3 +2972,26 @@ def test_a_run_that_commits_nothing_publishes_nothing(tmp_path, monkeypatch):
     assert result.status == "idle"
     assert gitops.unpushed_commits(home) == 1
     assert not _published(home, remote)
+
+
+def test_steward_sessions_and_their_repair_round_run_with_auto_memory_off(tmp_path, monkeypatch):
+    """2026-09-24: Claude Code keys its auto-memory folder to the session's
+    working directory; a note one delegated session wrote there reached
+    later sessions (the overseer's run 02227dc1). Every steward session and
+    its repair round carries `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` into the
+    environment the SDK hands Claude Code."""
+    from self_learn.invocation_sdk.backend import CliSessionPolicy
+
+    home = make_home(tmp_path)
+    _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+    captured = []
+
+    def capture(spec):
+        captured.append(spec)
+        return _write_decision_stage(spec)
+
+    monkeypatch.setattr(steward.invocation, "write_session", capture)
+    assert steward.run(home).status == "applied", "positive control: a packet session ran"
+    for spec in (captured[0], steward._repair_spec(captured[0], "a check failed")):
+        assert CliSessionPolicy(spec).env().get("CLAUDE_CODE_DISABLE_AUTO_MEMORY") == "1", spec.label

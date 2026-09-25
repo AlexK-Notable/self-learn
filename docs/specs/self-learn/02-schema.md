@@ -725,7 +725,12 @@ partial finalize, a failed attempt's note, a close-out, a push-failure
 record), carried back into the stage on a resume, never committed when it
 holds only its header line, never validated for content, never read by a
 later run, and — on a secret-scan hit — committed as a one-line stub naming
-the rule and line instead. It never changes a run's outcome.
+the rule and line instead. It never changes a run's outcome. Nothing else
+carries a session's notes forward either: every overseer and steward
+session runs with Claude Code's auto-memory off
+(`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, passed through `SessionSpec.extra_env`),
+because that memory is keyed to the session's working directory and the
+overseer's stage path never changes.
 
 (Full shape of the `overseer/` subtree — this fence names only the files —
 is the same list `13-hosting-and-separation.md` §3's own K1 delta carries;

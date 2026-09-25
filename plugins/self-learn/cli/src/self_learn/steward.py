@@ -812,6 +812,10 @@ def _session_spec(
         # Claude Code binary, the model, the turn bound, the spend
         # bound, the provider, the backend) from THIS field instead.
         ledger_home=home,
+        # Claude Code's auto-memory off (2026-09-24): a note one session
+        # wrote under the stage-keyed memory folder would reach later
+        # sessions (`invocation.NO_AUTO_MEMORY_ENV`).
+        extra_env=invocation.NO_AUTO_MEMORY_ENV,
         # The turn limit grows with the batch: `steward.turns_per_lesson`
         # for each lesson in it (the user's instruction, 2026-09-19). It
         # stops a runaway session; it is never a reason to discard one
@@ -841,6 +845,8 @@ def _repair_spec(spec: invocation.SessionSpec, error: str) -> invocation.Session
         # Carried for the same reason: dropped, the repair round would
         # fall back to the per-surface limit instead of the batch's own.
         max_turns=spec.max_turns,
+        # Carried: the repair round runs with auto-memory off too.
+        extra_env=spec.extra_env,
     )
 
 

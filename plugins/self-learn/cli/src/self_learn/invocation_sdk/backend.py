@@ -220,7 +220,11 @@ class CliSessionPolicy:
         return lifecycle.CLI_SHUTDOWN_MESSAGES
 
     def env(self) -> dict[str, str]:
-        return provider_env(self._spec)
+        # The producer's own variables (`SessionSpec.extra_env`, 2026-09-24:
+        # the steward's and the overseer's auto-memory switch), then the
+        # provider's, which win on a clash. `provider_env` is still called
+        # exactly once (`OP16`).
+        return {**dict(self._spec.extra_env), **provider_env(self._spec)}
 
     def cache_dir(self) -> Path:
         return worker.cache_dir()
@@ -280,7 +284,7 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
         "settings": None,  # `A-2` -- the charter is the only authority
         "mcp_servers": {},
         "include_partial_messages": False,
-        "env": policy.env(),  # `PS-a` -- called exactly once, no merge
+        "env": policy.env(),  # `PS-a` -- called exactly once; the host environment is not merged in here
         # `O-4`/`IN3` (M-S, S-58, minor-2): reads THROUGH the `sdk.
         # cli_path` registry entry now, the same one `provider.resolve(
         # home, surface).cli_path` uses -- a bare `os.environ.get(

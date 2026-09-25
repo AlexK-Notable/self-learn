@@ -518,6 +518,11 @@ def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, ru
             # the session runs and writes -- and holds no `config.yaml`.
             # The seam reads its settings from THIS field instead.
             ledger_home=home,
+            # Auto-memory off (2026-09-24): the stage path never changes,
+            # so Claude Code's memory folder for it is shared by every
+            # overseer session -- a phase-B note reached the next blind
+            # phase A. It would also make the journal readable across runs.
+            extra_env=invocation.NO_AUTO_MEMORY_ENV,
         )
     )
 
