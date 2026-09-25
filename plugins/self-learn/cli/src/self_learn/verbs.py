@@ -8042,6 +8042,36 @@ def push_pending(home: Path | str) -> PushReport:
     return PushReport(entries)
 
 
+def ledger_head(home: Path | str) -> str | None:
+    """The ledger's ``HEAD`` before a delegated run, or None when it cannot
+    be read (a fresh ledger with no commit yet) — :func:`publish_after_run`
+    then publishes nothing rather than guessing."""
+    try:
+        return gitops.head_sha(Path(home))
+    except Exception:
+        return None
+
+
+def publish_after_run(home: Path | str, head_before: str | None) -> PushReport | None:
+    """Doc 13 §5 (H-5) for the steward and the overseer: a delegated run
+    publishes what it committed, once, when it ends — however it ends
+    (complete, partial, failed attempt, or an exception). Each write inside
+    the run keeps ``no_push=True``; this is the one push per run.
+
+    Returns None when there is nothing to publish: the ledger ``HEAD`` did
+    not move during the run, or every commit is already on the remote (the
+    overseer's completed path has pushed by then). Otherwise the result of
+    the bare ``self-learn push`` verb, which also publishes any host the
+    run's routes committed into."""
+    home = Path(home)
+    after = ledger_head(home)
+    if head_before is None or after is None or after == head_before:
+        return None
+    if not gitops.unpushed_commits(home):
+        return None
+    return push_pending(home)
+
+
 # --------------------------------------------------------------- recompile
 
 
