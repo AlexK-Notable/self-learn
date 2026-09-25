@@ -1,10 +1,14 @@
 ---
-description: Open the overseer's latest report and its interpretation questions, and record your replies.
+description: Open the overseer's latest report and its questions, and record your replies.
 argument-hint: (no arguments — always opens the latest report)
 ---
 
-Open the **overseer's** latest weekly report and, where it raises a
-genuinely material interpretation question, talk it through. You are a
+Open the **overseer's** latest weekly report and talk through the
+questions it puts to the user. There are two kinds: a **reading** asks the
+user to confirm or correct one of the overseer's readings of them (its id
+is a user-model proposition, `um-<4 hex>@r<revision>`), and an **ask** puts
+a decision or fact only the user has (its id is `q-<slug>`, and it comes
+with its own text and a line saying what the answer changes). You are a
 **thin caller**: every write is a `self-learn` CLI verb (`overseer open`,
 `overseer respond`) — you never edit the ledger, a case, or the user
 model yourself, and you never paraphrase what the user says back into
@@ -44,8 +48,10 @@ section alone (step 2), never a recitation of the whole document.
 ## 2. Open it (displays the questions, records exactly that)
 
 Run `self-learn overseer open`. It prints the report's `Questions for
-you` section and, when the committed machine index contains a proposition
-the prose omitted, a fallback line naming that proposition and its cases.
+you` section with EVERY indexed question — there is no count limit — and,
+when the committed machine index contains a proposition the prose omitted,
+a fallback line naming that proposition and its cases. An ask is printed
+from the index as `- <q-id>: <text>` followed by `  why: <why>`.
 Relay the output to the user verbatim, and nothing else from the report
 unless they ask. That display is what this step records as a
 **presentation** — its `covering` value says whether the decision, its
@@ -57,24 +63,28 @@ and nothing about the report's other sections clears `provisional`. This
 step does not ask the user anything yet — "shown" is the only thing it
 ever means (never assent).
 
-## 3. Discuss what is actually material, not a checklist
+## 3. Discuss them in order of consequence, for as long as the user wants
 
-If the command output has no indexed proposition — the machine index is
+If the command output has no indexed question — the machine index is
 empty and the report block says "none" — stop here and say so plainly.
 When the prose says "none" but the command prints indexed fallback lines,
 those lines are the questions: do not discard them because the report and
 its committed index disagreed.
 
-Do not walk through every listed question as a compulsory drill. Discuss at
-most the first three materially significant questions this week — new evidence that
-changed the picture, a reading that would visibly change a future
-decision, or something the user would clearly want to weigh in on — and
-discuss those. A minor or routine reading is already carried by the
-questions you just relayed; it does not need a separate conversational
-turn.
+Every question was shown in step 2. Discuss them most consequential first
+(the overseer already ordered them that way; follow its order unless the
+user asks otherwise), one at a time, with no fixed number: the user may
+stop whenever they like, and whatever was not discussed stays shown and
+unanswered — nothing more.
 
-For each question you do raise, cover these parts, in your own words but
-never skipping one:
+**For an ask**, relay its text as the question, say in one sentence what
+the answer changes (its `why`), and name the cases it came from. Do not
+restate it as a reading of the user or ask for approval of anything; it
+is a decision or fact only the user has. If they answer, record it with
+step 4's command using the ask's `q-` id.
+
+**For a reading**, cover these parts, in your own words but never skipping
+one:
 
 1. **What this reading actually is, and its real presentation history.**
    Say what is actually true — do not open with a fixed line. A reading
@@ -113,14 +123,18 @@ alongside the answer, so what was asked and what was said stay attached
 to each other — the presentation observation from step 2 already carries
 the displayed text, and `overseer respond` references the same
 proposition, so the two stay linked without anything extra to type. If
-the user replies with an actual answer to the proposition — not a
+the user replies with an actual answer to the question — not a
 request for clarification, not an explicit decline — call:
 
 ```
-self-learn overseer respond --proposition <um-id@r> \
+self-learn overseer respond --proposition <um-id@r | q-id> \
   --scope "<user|project:<host>>" --text "<verbatim>" \
   [--as-asked "<question as narrowed in conversation>"]
 ```
+
+`--proposition` takes either kind's id exactly as `overseer open` printed
+it. An answer to an ask is stored as a statement answering that question
+(`answers.kind: question`), and the overseer reads it on its next run.
 
 Store the user's words **verbatim** — never paraphrase, never tidy the
 grammar, never compress "everywhere, forever" into "user scope". The
@@ -131,7 +145,7 @@ be specific if it is genuinely ambiguous, never guess a scope for them).
 A request for explanation ("what does that mean?") is not an answer to the
 proposition: explain it and store nothing. An explicit decline ("I'd rather
 not say") is also not an answer; record only that disposition with
-`self-learn overseer respond --proposition <um-id@r> --decline`, which stores
+`self-learn overseer respond --proposition <um-id@r | q-id> --decline`, which stores
 no statement. If the
 decline also says something about future conversation ("don't ask me
 this again"), that is worth keeping — record it as a statement against

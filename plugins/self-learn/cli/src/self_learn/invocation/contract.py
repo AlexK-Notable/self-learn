@@ -26,6 +26,7 @@ __all__ = [
     "containment_for",
     "DEGRADED_WORKER_CONTAINMENT",
     "SessionSpec",
+    "NO_AUTO_MEMORY_ENV",
     "FAILURE_KINDS",
     "Outcome",
     "Backend",
@@ -252,6 +253,14 @@ class SessionSpec:
     #: (measured 2026-09-19; `docs/specs/self-learn/README.md` revision
     #: log). Keyword, defaulted and LAST, like `ledger_home`.
     max_turns: int | None = None
+    #: Environment variables THIS producer adds to its session, as
+    #: `(name, value)` pairs (2026-09-24). Empty -- every producer but the
+    #: steward and the overseer -- leaves the session environment exactly
+    #: what `provider_env` returns. A provider variable wins over one of
+    #: these on a clash (`invocation_sdk/backend.py`,
+    #: `CliSessionPolicy.env`). Keyword, defaulted and LAST, like the two
+    #: fields above.
+    extra_env: tuple[tuple[str, str], ...] = ()
 
     @property
     def settings_home(self) -> Path | str:
@@ -263,6 +272,18 @@ class SessionSpec:
         surface cannot launch one binary while reporting another."""
         return self.cwd if self.ledger_home is None else self.ledger_home
 
+
+#: 2026-09-24: Claude Code's auto-memory OFF for a session. Claude Code
+#: keys its memory folder to the session's working directory; the
+#: overseer's stage path never changes, so a note one overseer session
+#: wrote there (run 02227dc1's phase B wrote three, one a "User-demand
+#: policy ruling") was loaded into every later overseer session, the blind
+#: phase A included, and would have made the journal readable across runs.
+#: The installed Claude Code reads this variable (a truthy value turns
+#: auto-memory off). The steward and the overseer pass it as `extra_env`.
+NO_AUTO_MEMORY_ENV: tuple[tuple[str, str], ...] = (
+    ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
+)
 
 FAILURE_KINDS = ("exit", "timeout", "not-found", "os-error", "unavailable")
 

@@ -408,7 +408,11 @@ unattended-run contract (`FW-85`), not a failure. Committed unfinished work
 stays due regardless of the calendar, unchanged from O-4: a failed attempt is
 retried after the existing two-hour attempt cooldown
 (`miner.ATTEMPT_COOLDOWN_SECS`), on any day, until the week is done or the
-cap closes it.
+cap closes it. *(Amended 2026-09-24, S-68: a hand-typed `self-learn overseer
+run` is a manual run and is exempt from this guard — the user's words, "user
+initiated runs don't count toward the weekly limit" — and, by the user's choice
+of "No, Sunday still runs", its completion does not make the week done, so the
+scheduled run still happens.)*
 
 **A raise inside either due-check is a HOLD, not an attempt** *(Added
 2026-09-19, S-68)*. It is logged, it increments no attempt count, and the job
@@ -1172,8 +1176,9 @@ same visibility discipline this section states for a STOP applies to the
 overseer's own cadence — `status --fast` and `doctor serve` gain
 `overseer_last_run`, `overseer_next` (the next due weekly tick), and
 `overseer_open_questions`. The open-question count comes only from the
-committed `overseer/open-questions.yaml` machine index (at most three
-entries, each an id and affected case ids), never by parsing the report's
+committed `overseer/open-questions.yaml` machine index (one entry per
+question — its id, kind and affected case ids, plus an ask's text and why;
+no count limit since 2026-09-24), never by parsing the report's
 prose or walking the case store. These are additive JSON fields on an existing read-only surface,
 not a new command; a `status`/`doctor` run that omits them is not this
 section's fault, but a build that never wires them through is.

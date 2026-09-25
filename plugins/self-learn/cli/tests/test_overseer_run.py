@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from ruamel.yaml import YAML
 
-from self_learn import batch, cases, execution_evidence, gitops, intents, settings, verbs, worker
+from self_learn import batch, cases, execution_evidence, gitops, intents, settings, user_model, verbs, worker
 from self_learn import overseer as overseer_package
 from self_learn.invocation import Outcome
 from self_learn.ledger_ops import create_record, find_record_path, stamp_proposal, write_proposal
@@ -284,7 +284,7 @@ def test_two_invocations_are_blind_then_full(tmp_path, monkeypatch):
     assert "steward rationale" in calls[1].prompt.lower()
     assert calls[0].surface == calls[1].surface == "overseer"
     assert calls[0].cwd.name == "overseer"
-    assert calls[0].containment.allowed_tools == "Read,Grep,Glob,Write"
+    assert calls[0].containment.allowed_tools == "Read,Grep,Glob,Write,Edit"
     assert calls[0].containment.disallowed_tools == "Bash"
     blind_view = calls[0].cwd / "blind" / f"{case_id}.md"
     assert "## Decision" not in blind_view.read_text(encoding="utf-8")
@@ -425,7 +425,7 @@ def test_coverage_precedes_uncapped_parked_intake(tmp_path, monkeypatch):
     monkeypatch.setattr(
         overseer_run,
         "_full_inputs",
-        lambda home, stage, selected, parked_rows: captured.extend(parked_rows),
+        lambda home, stage, selected, parked_rows: captured.extend(parked_rows) or {},
     )
     result = overseer_run.run(home, dry_run=False, no_push=True)
     assert result.status == "applied"
@@ -811,7 +811,10 @@ def test_failed_boundary_push_keeps_applied_status_and_records_failure(tmp_path,
     assert overseer_run.read_journal(home)[-1]["push"] == "push: failed (3)"
 
 
-def test_model_report_owned_facts_truncate_model_prose_not_the_run(tmp_path):
+def test_a_long_model_report_is_kept_whole_and_the_runner_says_how_long(tmp_path):
+    """2026-09-24: the 60-line figure is guidance, not a limit. The model's
+    prose is never truncated to fit (it used to be), and a report that ran
+    over the guide gets one runner line saying so."""
     path = tmp_path / "report.md"
     headings = [
         "Examined", "Decided in the user's stead", "Hooks", "User model",
@@ -820,15 +823,27 @@ def test_model_report_owned_facts_truncate_model_prose_not_the_run(tmp_path):
     lines = ["# draft"]
     for heading in headings:
         lines.extend([f"## {heading}", "- model prose"])
-    lines.extend("- more model prose" for _ in range(57 - len(lines)))
+    lines.extend(f"- more model prose {n}" for n in range(70 - len(lines)))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     text = overseer_run._finalize_model_report(
         path, date="2026-09-14", run_id="12345678", model="m", selected=(),
         population_count=0, excluded=0, model_calls=2, guard=50,
         refusals=["first refusal", "second refusal"],
     )
-    assert len(text.splitlines()) <= 60
-    assert "- model report truncated:" in text
+    for line in lines[1:]:
+        assert line in text.splitlines(), line
+    assert "truncated" not in text
+    refused = text.split("## Refused / could not do\n", 1)[1]
+    assert "- report: ran to 70 lines (guide is 60)" in refused
+    assert "- first refusal" in refused and "- second refusal" in refused
+
+    # Positive control: a report inside the guide gets no such line.
+    path.write_text("\n".join(lines[:15]) + "\n", encoding="utf-8")
+    short = overseer_run._finalize_model_report(
+        path, date="2026-09-14", run_id="12345678", model="m", selected=(),
+        population_count=0, excluded=0, model_calls=2, guard=50, refusals=[],
+    )
+    assert "ran to" not in short
 
 
 def test_runner_added_lines_remove_bare_none_placeholders(tmp_path):
@@ -958,14 +973,19 @@ def test_invalid_raw_report_refuses_before_any_decision_and_leaves_a_trace(
     _fake_two_phase(monkeypatch)
     real_invoke = overseer_run.invocation.write_session
 
-    def oversized(spec):
+    def headless(spec):
+        # 2026-09-24: length no longer refuses; a MISSING heading still does
+        # (that is structure, not size).
         outcome = real_invoke(spec)
         if spec.label == "phase-b":
-            with (spec.cwd / "report.md").open("a", encoding="utf-8") as fh:
-                fh.write("- excess model prose\n" * 50)
+            report = spec.cwd / "report.md"
+            report.write_text(
+                report.read_text(encoding="utf-8").replace("## Hooks\n", ""),
+                encoding="utf-8",
+            )
         return outcome
 
-    monkeypatch.setattr(overseer_run.invocation, "write_session", oversized)
+    monkeypatch.setattr(overseer_run.invocation, "write_session", headless)
     result = overseer_run.run(home, dry_run=False, no_push=True)
     assert (result.status, result.code) == ("refused", 1)
     # The trace A15 asks for, committed, naming the real reason.
@@ -977,7 +997,7 @@ def test_invalid_raw_report_refuses_before_any_decision_and_leaves_a_trace(
         check=True, capture_output=True, text=True,
     ).stdout
     assert "- failure: schema-repair" in note
-    assert "60-line limit" in note
+    assert "section headings are missing or out of order" in note
     # What the old assertion was really protecting: nothing was decided,
     # coverage did not advance (A5), no report was published, tree clean.
     assert not (home / "overseer" / "coverage.yaml").exists()
@@ -2301,3 +2321,570 @@ def test_a_completed_run_is_published_by_its_own_push_only(tmp_path, monkeypatch
     assert _published(home, remote)
     assert len(pushes) == 1
     assert all(row.get("status") != "push" for row in overseer_run.read_journal(home))
+
+
+# ------------------------------------ questions, journal, manual runs (2026-09-24)
+#
+# The second real overseer run (02227dc1, 2026-09-24) wrote ten questions and
+# was refused whole by "at most three questions are permitted". The user's
+# words: "i think we uncap the number of questions, but make damn well sure
+# it's being prompted well and using its questions well" and "user initiated
+# runs don't count toward the weekly limit."
+
+
+def _wrap_phases(monkeypatch, *, a_entry=None, b_entry=None, questions=None,
+                 raw_questions=None, report_extra=0, a_fail=False, b_fail=False):
+    """Wrap whatever fake is installed: record each phase's stage as the
+    model found it, append a journal entry the way the model would, and
+    optionally replace questions.yaml / lengthen the report / fail."""
+    seen: dict[str, object] = {}
+    inner = overseer_run.invocation.write_session
+
+    def stage_texts(stage):
+        return {
+            path.relative_to(stage).as_posix(): path.read_text(encoding="utf-8", errors="replace")
+            for path in sorted(stage.rglob("*")) if path.is_file()
+        }
+
+    def invoke(spec):
+        phase = "a" if spec.label == "phase-a" else "b"
+        stage = spec.cwd
+        seen[f"{phase}_stage"] = stage_texts(stage)
+        seen[f"{phase}_prompt"] = spec.prompt
+        seen[f"{phase}_containment"] = spec.containment
+        outcome = inner(spec)
+        entry = a_entry if phase == "a" else b_entry
+        if entry is not None:
+            with (stage / "journal.md").open("a", encoding="utf-8") as fh:
+                fh.write(entry)
+        if phase == "b":
+            if raw_questions is not None:
+                (stage / "questions.yaml").write_text(raw_questions, encoding="utf-8")
+            elif questions is not None:
+                _dump(stage / "questions.yaml", {"questions": questions})
+            if report_extra:
+                report = stage / "report.md"
+                report.write_text(
+                    report.read_text(encoding="utf-8")
+                    + "".join(f"- extra model prose {n}\n" for n in range(report_extra)),
+                    encoding="utf-8",
+                )
+        if (phase == "a" and a_fail) or (phase == "b" and b_fail):
+            return _turn_limited()
+        return outcome
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    return seen
+
+
+def _ask(qid, case_id, n=1):
+    return {
+        "id": qid, "kind": "ask", "cases": [case_id],
+        "text": f"Should lesson {n} become a skill? Yes scaffolds it; no parks it.",
+        "why": f"decides where lesson {n} is routed",
+    }
+
+
+def _refused_section(home):
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    return report.split("## Refused / could not do\n", 1)[1]
+
+
+def _index(home):
+    return YAML(typ="safe").load(
+        (home / "overseer" / "open-questions.yaml").read_text(encoding="utf-8")
+    )["questions"]
+
+
+def test_ten_valid_questions_apply_and_are_all_indexed(tmp_path, monkeypatch):
+    """The 02227dc1 shape: ten questions. Before, "at most three" refused it."""
+    home = make_home(tmp_path)
+    _rid, case_id = _seed_decided_case(home, tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    asked = [_ask(f"q-question-{n}", case_id, n) for n in range(10)]
+    _wrap_phases(monkeypatch, questions=asked)
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert (result.status, result.code, result.refused) == ("applied", 0, 0), result
+    index = _index(home)
+    assert [row["id"] for row in index] == [row["id"] for row in asked]
+    assert index[3] == {**asked[3]}
+    assert "dropped" not in _refused_section(home)
+
+
+def test_a_mixed_questions_file_keeps_the_valid_and_names_the_dropped(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _rid, case_id = _seed_decided_case(home, tmp_path)
+    reading = user_model.add_entry(
+        home, container="C", title="prefers plain words", because="said so",
+        source="system-reading", by="overseer", statements=["stmt-00000001"], ref=case_id,
+    )
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    valid_ask = _ask("q-diagram-skill", case_id)
+    _wrap_phases(monkeypatch, questions=[
+        {"id": f"{reading}@r1", "kind": "reading", "cases": [case_id]},
+        valid_ask,
+        {"id": f"{reading}@r2", "kind": "reading", "cases": [case_id]},
+        {"id": "q-no-text", "kind": "ask", "cases": [case_id], "why": "matters"},
+        {**valid_ask, "text": "A second question under the same id?"},
+    ])
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert (result.status, result.code, result.refused) == ("applied", 0, 0), result
+    assert [row["id"] for row in _index(home)] == [f"{reading}@r1", "q-diagram-skill"]
+    refused = _refused_section(home)
+    assert f"- question {reading}@r2: dropped — {reading} at revision 2 is not a current reading" in refused
+    assert "- question q-no-text: dropped — an ask needs non-empty text" in refused
+    assert "- question q-diagram-skill: dropped — duplicate id" in refused
+    assert refused.count("dropped") == 3
+
+
+def test_a_malformed_questions_file_is_zero_questions_and_one_line(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    _wrap_phases(monkeypatch, raw_questions="- just\n- a list\n")
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert (result.status, result.code) == ("applied", 0), result
+    assert _index(home) == []
+    refused = _refused_section(home)
+    assert "- question questions.yaml: dropped — not a mapping with a questions list" in refused
+    assert refused.count("dropped") == 1
+
+
+def test_a_secret_in_one_ask_drops_that_ask_not_the_run(tmp_path, monkeypatch):
+    """questions.yaml is left out of the whole-stage secret scan, which would
+    refuse the run; the one ask is scanned and dropped instead."""
+    home = make_home(tmp_path)
+    _rid, case_id = _seed_decided_case(home, tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    leaky = {**_ask("q-leaky", case_id), "text": "Rotate " + "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789?"}
+    _wrap_phases(monkeypatch, questions=[leaky, _ask("q-clean", case_id)])
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert result.status == "applied", result
+    assert [row["id"] for row in _index(home)] == ["q-clean"]
+    assert "- question q-leaky: dropped — text matched the secret scan (github-token)" in _refused_section(home)
+    assert "ghp_" not in _git(home, "log", "-p", "--all")
+
+
+def test_a_long_report_applies_and_is_published_whole(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    _wrap_phases(monkeypatch, report_extra=60)
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert (result.status, result.code) == ("applied", 0), result
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    assert "- extra model prose 0\n" in report and "- extra model prose 59\n" in report
+    assert "- report: ran to 75 lines (guide is 60)" in _refused_section(home)
+
+
+def _journal_file(home, result):
+    date = execution_evidence.read_manifest(home, result.run)["date"] if (
+        home / "cases" / "runs" / f"{result.run}.json"
+    ).exists() else time.strftime("%Y-%m-%d", time.gmtime())
+    return overseer_run.model_journal_ledger_path(home, date, result.run)
+
+
+_ENTRY_A = "## phase A · first look\nids: case-00000001\nthe blind views look thin\n"
+_ENTRY_B = "## phase B · after the rationale\nids: lrn-01020304\nchanged my mind\n"
+
+
+def test_the_journal_exists_before_phase_a_survives_into_b_and_is_committed(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    seen = _wrap_phases(monkeypatch, a_entry=_ENTRY_A, b_entry=_ENTRY_B)
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert result.status == "applied", result
+    header = seen["a_stage"]["journal.md"]
+    assert header.startswith(f"# Overseer journal — run {result.run}, ")
+    assert header.count("\n") == 1, "phase A starts with the header line only"
+    assert seen["b_stage"]["journal.md"] == header + _ENTRY_A, "phase A's entry reaches phase B"
+    path = _journal_file(home, result)
+    assert path.relative_to(home).as_posix().startswith("overseer/journal/")
+    assert _git(home, "show", f"HEAD:{path.relative_to(home).as_posix()}") == header + _ENTRY_A + _ENTRY_B
+    assert _git(home, "status", "--porcelain") == ""
+
+
+def test_a_header_only_journal_is_not_committed(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    _wrap_phases(monkeypatch)
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert result.status == "applied", "positive control: the run committed its finalize"
+    assert (home / "overseer" / "latest-report.md").is_file()
+    assert not (home / "overseer" / "journal").exists()
+
+
+@pytest.mark.parametrize("phase", ["a", "b"])
+def test_a_failed_phase_commits_its_journal_with_the_failure_note(tmp_path, monkeypatch, phase):
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    _wrap_phases(
+        monkeypatch, a_entry=_ENTRY_A, b_entry=_ENTRY_B,
+        a_fail=phase == "a", b_fail=phase == "b",
+    )
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert result.status == "refused", result
+    notes = overseer_run._committed_failure_notes(home, _this_week())
+    assert len(notes) == 1, "positive control: the failure note was committed"
+    rel = _journal_file(home, result).relative_to(home).as_posix()
+    committed = _git(home, "show", f"HEAD:{rel}")
+    assert _ENTRY_A in committed
+    assert (_ENTRY_B in committed) == (phase == "b")
+    changed = _git(home, "show", "--name-only", "--format=", "HEAD").split()
+    assert rel in changed and notes[0] in changed, "one commit carries both"
+
+
+def test_a_secret_in_the_journal_commits_a_stub_and_changes_nothing_else(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    _wrap_phases(
+        monkeypatch, a_entry=_ENTRY_A,
+        b_entry="## phase B · oops\ntoken = ghp_abcdefghijklmnopqrstuvwxyz123456\n",
+    )
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert (result.status, result.code) == ("applied", 0), result
+    rel = _journal_file(home, result).relative_to(home).as_posix()
+    committed = _git(home, "show", f"HEAD:{rel}")
+    assert "journal withheld: secret scan matched credential-assignment at line 6" in committed, committed
+    assert "ghp_" not in _git(home, "log", "-p", "--all")
+    assert any(row.get("status") == "journal-withheld" for row in overseer_run.read_journal(home))
+
+
+def test_no_stage_ever_receives_an_earlier_runs_journal(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    earlier = home / "overseer" / "journal" / "2026-09-01-deadbeef.md"
+    earlier.parent.mkdir(parents=True, exist_ok=True)
+    earlier.write_text("# Overseer journal — run deadbeef\nEARLIER-RUN-MARK\n", encoding="utf-8")
+    commit_all(home, "an earlier run's journal")
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_two_phase(monkeypatch)
+    seen = _wrap_phases(monkeypatch, a_entry=_ENTRY_A)
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert result.status == "applied"
+    assert "journal.md" in seen["a_stage"] and "journal.md" in seen["b_stage"], "positive control"
+    for phase in ("a_stage", "b_stage"):
+        for name, text in seen[phase].items():
+            assert "EARLIER-RUN-MARK" not in text, (phase, name)
+            assert "deadbeef" not in name
+
+
+def test_a_resumed_run_keeps_its_journal(tmp_path, monkeypatch):
+    """A run that halted after its recipe was committed: the journal is in
+    that commit, and the resume carries it back into the rebuilt stage and
+    the finalize commit."""
+    home = make_home(tmp_path)
+    rid, parked = _seed_parked_hook(home, tmp_path)
+    _enabled(monkeypatch)
+    _fake_hook_phases(monkeypatch, rid, parked)
+    _wrap_phases(monkeypatch, a_entry=_ENTRY_A, b_entry=_ENTRY_B)
+    _silence_notifications(monkeypatch)
+    _dispatch_returning(monkeypatch, 6, only_first=True)
+
+    first = overseer_run.run(home, dry_run=False, no_push=True)
+    assert first.status == "partial", "positive control: run 1 really did stall"
+    rel = _journal_file(home, first).relative_to(home).as_posix()
+    expected = _git(home, "show", f"HEAD:{rel}")
+    assert _ENTRY_A in expected and _ENTRY_B in expected
+
+    monkeypatch.setattr(
+        overseer_run.invocation, "write_session",
+        lambda spec: pytest.fail("a resume must not invoke the model"),
+    )
+    second = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert (second.run, second.status) == (first.run, "applied")
+    assert (overseer_run.worker.stage_dir() / "overseer" / "journal.md").read_text(encoding="utf-8") == expected
+    assert _git(home, "show", f"HEAD:{rel}") == expected
+
+
+def test_phase_sessions_get_edit_confined_exactly_as_write(tmp_path, monkeypatch):
+    import asyncio
+
+    from self_learn.invocation_sdk import charter
+
+    home = make_home(tmp_path)
+    _fake_two_phase(monkeypatch)
+    seen = _wrap_phases(monkeypatch)
+    result = overseer_run.run(home, dry_run=True, no_push=True)
+    assert result.status == "dry-run"
+    stage = overseer_run.worker.stage_dir() / "overseer"
+    for phase in ("a_containment", "b_containment"):
+        containment = seen[phase]
+        assert containment.allowed_tools.split(",") == ["Read", "Grep", "Glob", "Write", "Edit"]
+        assert containment.write_globs == (f"{overseer_run.worker.stage_dir()}/overseer/**",)
+        decide = charter.build_can_use_tool(containment)
+        for target, allowed in (
+            (stage / "journal.md", True),
+            (stage.parent / "steward" / "x.md", False),
+            (home / "overseer" / "latest-report.md", False),
+        ):
+            verdicts = {
+                tool: type(asyncio.run(decide(tool, {"file_path": str(target)}, None))).__name__
+                for tool in ("Write", "Edit")
+            }
+            assert verdicts["Write"] == verdicts["Edit"], (target, verdicts)
+            assert (verdicts["Edit"] == "PermissionResultAllow") is allowed, (target, verdicts)
+
+
+def test_both_prompts_carry_the_journal_and_phase_b_the_question_bar(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _fake_two_phase(monkeypatch)
+    seen = _wrap_phases(monkeypatch)
+    overseer_run.run(home, dry_run=True, no_push=True)
+    a, b = str(seen["a_prompt"]), str(seen["b_prompt"])
+    for prompt, phase in ((a, "A"), (b, "B")):
+        assert "Your journal is journal.md in this stage." in prompt
+        assert "No later run reads it." in prompt
+        assert "## phase <A|B> · <a few words>" in prompt
+        assert f"You are in phase {phase} now." in prompt
+        assert "at most" not in prompt.lower()
+        assert "three questions" not in prompt.lower()
+    assert "Nothing in the journal may guess at the steward's decisions" in a
+    assert "Nothing in the journal may guess" not in b
+    assert "There is no limit on\nhow many you ask" in b
+    assert "A question clears the bar only when all three hold" in b
+    assert "clears the bar" not in a
+    assert "- kind: reading asks the user to confirm or correct" in b
+    assert "- kind: ask is a decision or fact only the user has" in b
+    assert "structured ids and affected case ids only" not in b
+    assert "answers.yaml" in b
+
+
+def test_phase_b_sees_the_users_answers_to_earlier_asks(tmp_path, monkeypatch):
+    from self_learn import statements
+
+    home = make_home(tmp_path)
+    statements.add(
+        home, verbatim="Yes, build it.", recorded_by="human",
+        source={"message_ref": "conversation:obs-0000abcd", "surface": "conversation"},
+        answers={"kind": "question", "ref": "q-diagram-skill", "text": "- q-diagram-skill: build it?"},
+    )
+    statements.add(
+        home, verbatim="Not a question answer.", recorded_by="human",
+        source={"message_ref": "conversation:obs-0000abce", "surface": "conversation"},
+        answers={"kind": "proposition", "ref": "um-1a2b@r1", "text": "- um-1a2b@r1"},
+    )
+    _fake_two_phase(monkeypatch)
+    seen = _wrap_phases(monkeypatch)
+    overseer_run.run(home, dry_run=True, no_push=True)
+    answers = YAML(typ="safe").load(seen["b_stage"]["answers.yaml"])["answers"]
+    assert [row["ref"] for row in answers] == ["q-diagram-skill"]
+    assert answers[0]["verbatim"] == "Yes, build it."
+    assert answers[0]["asked"] == "- q-diagram-skill: build it?"
+    assert answers[0]["scope"] == {"level": "user", "host": None}
+    assert "answers.yaml" not in seen["a_stage"]
+
+
+# --- manual runs (section 6)
+
+
+def _counted_note(home, week, name, text):
+    path = home / "overseer" / "failures" / week / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    commit_all(home, f"seed note {name}")
+
+
+def _week_notes(home, week):
+    return _git(
+        home, "ls-tree", "-r", "--name-only", "HEAD", "--", f"overseer/failures/{week}"
+    ).split()
+
+
+def test_a_manual_failed_run_adds_nothing_to_the_week(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_phases_by_label(monkeypatch, b_limit=True)
+    week = _this_week()
+
+    result = overseer_run.run(home, dry_run=False, no_push=True, manual=True)
+
+    assert result.status == "refused"
+    rows = _week_notes(home, week)
+    assert len(rows) == 1, "positive control: the manual note IS committed"
+    assert "- trigger: manual" in _git(home, "show", f"HEAD:{rows[0]}")
+    assert overseer_run.week_attempts(home, week) == 0
+    starts = [row for row in overseer_run.read_journal(home) if row.get("status") == "attempt-start"]
+    assert starts[-1].get("trigger") == "manual"
+
+
+def test_a_scheduled_note_and_a_legacy_note_still_count(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_phases_by_label(monkeypatch, b_limit=True)
+    week = _this_week()
+
+    assert overseer_run.run(home, dry_run=False, no_push=True).status == "refused"
+    rows = _week_notes(home, week)
+    assert "- trigger: scheduled" in _git(home, "show", f"HEAD:{rows[0]}")
+    assert overseer_run.week_attempts(home, week) == 1
+    _counted_note(home, week, "2026-01-01T00-00-00Z-legacy00.md", "# old note\n\n- failure: exit\n")
+    assert overseer_run.week_attempts(home, week) == 2
+    starts = [row for row in overseer_run.read_journal(home) if row.get("status") == "attempt-start"]
+    assert "trigger" not in starts[-1]
+
+
+def test_three_manual_failures_do_not_close_the_week(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    notices = _silence_notifications(monkeypatch)
+    _fake_phases_by_label(monkeypatch, b_limit=True)
+    week = _this_week()
+    for _ in range(4):
+        assert overseer_run.run(home, dry_run=False, no_push=True, manual=True).status == "refused"
+    assert len(_week_notes(home, week)) == 4, "positive control: four attempts really ran"
+    assert overseer_run.week_attempts(home, week) == 0
+    assert not overseer_run.week_closed(home, week)
+    assert not overseer_run.week_done(home, overseer_run.week_boundary(time.time()))
+    assert not any("was closed" in summary for _c, summary, _i in notices)
+
+
+def test_a_manual_run_is_not_held_by_a_done_or_closed_week(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_phases_by_label(monkeypatch)
+    assert overseer_run.run(home, dry_run=False, no_push=True).status == "applied"
+    assert overseer_run.run(home, dry_run=False, no_push=True).status == "held-week-done", (
+        "positive control: a scheduled completion holds a later scheduled run"
+    )
+    assert overseer_run.run(home, dry_run=False, no_push=True, manual=True).status == "applied"
+
+    closed = make_home(tmp_path / "closed")
+    _fake_phases_by_label(monkeypatch, b_limit=True)
+    for _ in range(3):
+        overseer_run.run(closed, dry_run=False, no_push=True)
+    assert overseer_run.week_closed(closed, _this_week()), "positive control: the week is closed"
+    _fake_phases_by_label(monkeypatch)
+    assert overseer_run.run(closed, dry_run=False, no_push=True, manual=True).status == "applied"
+
+
+def test_a_manual_completion_does_not_hold_the_scheduled_run(tmp_path, monkeypatch):
+    """The user's choice, "No, Sunday still runs": a manual run that
+    completes is not the week's review."""
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_phases_by_label(monkeypatch)
+
+    manual = overseer_run.run(home, dry_run=False, no_push=True, manual=True)
+    assert manual.status == "applied", "positive control: the manual run completed"
+    assert (home / "overseer" / "latest-report.md").is_file()
+    assert (home / "overseer" / "coverage.yaml").is_file()
+    assert execution_evidence.read_manifest(home, manual.run)["trigger"] == "manual"
+    assert not overseer_run.week_done(home, overseer_run.week_boundary(time.time()))
+    assert not overseer_run.previous_run_exists(home)
+    assert overseer_run.last_run_iso(home) is None
+
+    scheduled = overseer_run.run(home, dry_run=False, no_push=True)
+    assert scheduled.status == "applied", scheduled
+    assert overseer_run.week_done(home, overseer_run.week_boundary(time.time()))
+    assert overseer_run.run(home, dry_run=False, no_push=True).status == "held-week-done"
+
+
+def test_the_cli_run_is_manual_and_serve_is_not(tmp_path, monkeypatch):
+    from self_learn import serve
+
+    calls = []
+
+    def fake_run(home, **kwargs):
+        calls.append(kwargs)
+        return overseer_run.RunResult("disabled", 0, "run00000")
+
+    monkeypatch.setattr(overseer_run, "run", fake_run)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(make_home(tmp_path)))
+    parser = argparse.ArgumentParser()
+    overseer_cli.add_parser(parser.add_subparsers(dest="verb", required=True))
+    assert overseer_cli.dispatch(parser.parse_args(["overseer", "run"])) == 0
+    assert calls[-1].get("manual") is True
+    serve._run_overseer_job(tmp_path)
+    assert len(calls) == 2, "positive control: serve's job called the runner"
+    assert calls[-1].get("manual", False) is False
+
+
+def test_a_manual_run_resumes_committed_work_without_counting_an_attempt(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    rid, parked = _seed_parked_hook(home, tmp_path)
+    _enabled(monkeypatch)
+    _fake_hook_phases(monkeypatch, rid, parked)
+    _silence_notifications(monkeypatch)
+    dispatched = _dispatch_returning(monkeypatch, 6, only_first=True)
+    week = _this_week()
+
+    first = overseer_run.run(home, dry_run=False, no_push=True)
+    assert first.status == "partial", "positive control: the scheduled run stalled"
+    assert overseer_run.week_attempts(home, week) == 1
+    monkeypatch.setattr(
+        overseer_run.invocation, "write_session",
+        lambda spec: pytest.fail("a resume must not invoke the model"),
+    )
+
+    second = overseer_run.run(home, dry_run=False, no_push=True, manual=True)
+
+    assert (second.run, second.status) == (first.run, "applied")
+    assert dispatched == [1, 1], "the manual run resumed the committed work"
+    assert execution_evidence.read_manifest(home, first.run)["attempt_count"] == 1
+    assert overseer_run.week_attempts(home, week) == 1
+
+
+def test_both_overseer_phases_run_with_auto_memory_off(tmp_path, monkeypatch):
+    """2026-09-24: phase-B session 94505169 (run 02227dc1) wrote three notes
+    into Claude Code's memory folder for the stage path, which never
+    changes, so every later overseer session -- the blind phase A included
+    -- would have loaded them. Both phases carry the switch into the
+    environment the SDK hands Claude Code."""
+    from self_learn.invocation_sdk.backend import CliSessionPolicy
+
+    home = make_home(tmp_path)
+    _fake_two_phase(monkeypatch)
+    seen: list[object] = []
+    inner = overseer_run.invocation.write_session
+
+    def capture(spec):
+        seen.append(spec)
+        return inner(spec)
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", capture)
+    assert overseer_run.run(home, dry_run=True, no_push=True).status == "dry-run"
+    assert [spec.label for spec in seen] == ["phase-a", "phase-b"]
+    for spec in seen:
+        assert CliSessionPolicy(spec).env().get("CLAUDE_CODE_DISABLE_AUTO_MEMORY") == "1", spec.label
