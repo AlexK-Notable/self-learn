@@ -77,7 +77,18 @@ def _report_and_index(home: Path, questions: list[dict], block: list[str]) -> No
     commit_all(home, "seed overseer conversation")
 
 
-def test_open_prints_then_presents_only_the_first_three_indexed_propositions(tmp_path):
+def _ask(qid: str, case_ids: list[str], n: int = 1) -> dict:
+    return {
+        "id": qid, "kind": "ask", "cases": case_ids,
+        "text": f"Should the diagram skill be scaffolded now (number {n})? Yes builds it; no parks it.",
+        "why": f"decides whether lesson {n} is routed to a new skill",
+    }
+
+
+def test_open_shows_every_indexed_question_and_presents_each(tmp_path):
+    """2026-09-24: no count limit. Four readings and two asks: every one is
+    displayed and every one records a presentation (the old `[:3]` slice
+    showed three and hid the rest behind "N remain")."""
     home = make_home(tmp_path)
     readings = [_reading(home, n) for n in range(1, 5)]
     propositions = [f"{entry}@r1" for entry in readings]
@@ -85,31 +96,102 @@ def test_open_prints_then_presents_only_the_first_three_indexed_propositions(tmp
         _case(home, tmp_path, f"{n:08x}", {"user_model": [prop]})
         for n, prop in enumerate(propositions, start=1)
     ]
+    ask_cases = [_case(home, tmp_path, f"{n:08x}", {}) for n in (5, 6)]
+    asks = [_ask("q-diagram-skill", [ask_cases[0]], 1), _ask("q-oo7-binding", [ask_cases[1]], 2)]
     _report_and_index(
         home,
-        [{"id": prop, "cases": [case_id]} for prop, case_id in zip(propositions, case_ids)],
-        [f"- {propositions[0]}: Does this apply everywhere?"],
+        [{"id": prop, "kind": "reading", "cases": [case_id]} for prop, case_id in zip(propositions, case_ids)]
+        + asks,
+        [
+            f"- {propositions[0]}: Does this apply everywhere?",
+            "- q-diagram-skill: scaffold the diagram skill",
+        ],
     )
     out = io.StringIO()
 
     shown = conversation.open_questions(home, out=out)
 
     text = out.getvalue()
-    assert shown == 3
+    # Positive control first: the report's own question block rendered.
     assert text.startswith("## Questions for you\n")
-    assert propositions[0] in text
-    assert propositions[1] in text and case_ids[1] in text
-    assert "1 interpretation question remains" in text
-    for case_id in case_ids[:3]:
+    assert f"- {propositions[0]}: Does this apply everywhere?" in text
+    assert shown == 6
+    for prop in propositions:
+        assert prop in text
+    assert "remain" not in text
+    # An ask displays from the index -- its text, then its why -- in place
+    # of the report's short line, and once only.
+    assert f"- q-diagram-skill: {asks[0]['text']}\n  why: {asks[0]['why']}" in text
+    assert f"- q-oo7-binding: {asks[1]['text']}\n  why: {asks[1]['why']}" in text
+    assert "scaffold the diagram skill" not in text
+    assert text.count("q-diagram-skill") == 1
+    for case_id in case_ids:
         view = cases.show(home, case_id, evidence_only=False)
-        assert len(view.frontmatter["presented"]) == 1, "positive control: shown proposition was recorded"
+        assert len(view.frontmatter["presented"]) == 1, case_id
         presentation = view.frontmatter["presented"][0]
         assert presentation["covering"] == "decision"
         assert presentation["via"] == "overseer-conversation"
         assert presentation["outcome"] == "noted"
         assert "overseer presented:" in view.sections["Later observations"]
-    hidden = cases.show(home, case_ids[3], evidence_only=False)
-    assert hidden.frontmatter["presented"] == []
+    for ask, case_id in zip(asks, ask_cases):
+        view = cases.show(home, case_id, evidence_only=False)
+        assert len(view.frontmatter["presented"]) == 1, case_id
+        presentation = view.frontmatter["presented"][0]
+        assert presentation["entries"] == []
+        assert presentation["covering"] == "dependencies"
+        assert presentation["outcome"] == "noted"
+        assert f"overseer presented: - {ask['id']}: {ask['text']} (why: {ask['why']})" in (
+            view.sections["Later observations"]
+        )
+
+
+def test_a_legacy_index_row_without_a_kind_reads_as_a_reading(tmp_path):
+    home = make_home(tmp_path)
+    proposition = f"{_reading(home, 1)}@r1"
+    case_id = _case(home, tmp_path, "1", {"user_model": [proposition]})
+    _report_and_index(home, [{"id": proposition, "cases": [case_id]}], [f"- {proposition}: Apply?"])
+    assert conversation.open_questions(home, out=io.StringIO()) == 1
+    assert cases.show(home, case_id, evidence_only=False).frontmatter["presented"][0]["entries"] == [
+        proposition.split("@")[0]
+    ]
+
+
+def test_respond_to_an_ask_writes_a_question_statement_and_observes_its_cases(tmp_path):
+    home = make_home(tmp_path)
+    cited = _case(home, tmp_path, "1", {})
+    other = _case(home, tmp_path, "2", {})
+    ask = _ask("q-diagram-skill", [cited])
+    _report_and_index(home, [ask], ["- q-diagram-skill: scaffold it?"])
+    conversation.open_questions(home, out=io.StringIO())
+
+    result = conversation.respond(
+        home, proposition="q-diagram-skill", scope="user",
+        text="Yes, build it this week.",
+    )
+
+    stored = next(row for row in statements.list_statements(home) if row["id"] == result.statement_id)
+    assert stored["verbatim"] == "Yes, build it this week."
+    assert stored["answers"] == {
+        "kind": "question",
+        "ref": "q-diagram-skill",
+        "text": f"- q-diagram-skill: {ask['text']} (why: {ask['why']})",
+    }
+    assert stored["scope"] == {"level": "user", "host": None}
+    assert stored["source"]["message_ref"].startswith("conversation:obs-")
+    assert result.observed_cases == (cited,)
+    observations = cases.show(home, cited, evidence_only=False).sections["Later observations"]
+    assert f"overseer statement: user answered q-diagram-skill (ref: {result.statement_id})" in observations
+    assert " statement:" not in cases.show(home, other, evidence_only=False).sections["Later observations"]
+
+
+def test_decline_an_ask_stores_no_statement(tmp_path):
+    home = make_home(tmp_path)
+    cited = _case(home, tmp_path, "1", {})
+    _report_and_index(home, [_ask("q-diagram-skill", [cited])], [])
+    conversation.open_questions(home, out=io.StringIO())
+    conversation.decline(home, proposition="q-diagram-skill")
+    assert statements.list_statements(home) == []
+    assert cases.show(home, cited, evidence_only=False).frontmatter["presented"][-1]["outcome"] == "declined"
 
 
 def test_open_records_nothing_when_the_print_does_not_complete(tmp_path):

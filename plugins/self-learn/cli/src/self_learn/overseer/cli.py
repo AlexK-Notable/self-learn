@@ -21,9 +21,13 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
     status_parser.add_argument("--json", action="store_true")
     report_parser = commands.add_parser("report", help="print an overseer report")
     report_parser.add_argument("--date")
-    commands.add_parser("open", help="show the latest interpretation questions")
+    commands.add_parser("open", help="show every open question from the latest report")
     respond_parser = commands.add_parser("respond", help="answer or decline a displayed question")
-    respond_parser.add_argument("--proposition", required=True)
+    respond_parser.add_argument(
+        "--proposition", required=True,
+        help="the question's id as `overseer open` showed it: a reading's "
+        "um-<4 hex>@r<revision>, or an ask's q-<slug>",
+    )
     reply = respond_parser.add_mutually_exclusive_group(required=True)
     reply.add_argument("--text")
     reply.add_argument("--decline", action="store_true")
@@ -38,7 +42,9 @@ def dispatch(args) -> int:
     command = args.overseer_command
     try:
         if command == "run":
-            result = runner.run(home, dry_run=args.dry_run)
+            # A hand-typed run is MANUAL (2026-09-24, the user's words:
+            # "user initiated runs don't count toward the weekly limit").
+            result = runner.run(home, dry_run=args.dry_run, manual=True)
             if args.json:
                 print(json.dumps(result.to_json(), sort_keys=True))
             elif result.status == "disabled":

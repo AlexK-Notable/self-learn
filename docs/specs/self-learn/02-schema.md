@@ -686,9 +686,46 @@ older home):*
   user-statements.jsonl            # append-only; the user's own words (§3a)
   user-model.md                    # the model of the user (§3a)
   overseer/{<date>-report.md, latest-report.md, coverage.yaml,
-    open-questions.yaml, evaluation-<date>.md}   # the overseer's own
+    open-questions.yaml, evaluation-<date>.md,
+    journal/<date>-<run>.md}        # the overseer's own
                                     # subtree, owned by the overseer plan
 ```
+
+*(Added 2026-09-24.)* **Questions.** Phase B's staged `questions.yaml` and
+the committed index `overseer/open-questions.yaml` share one shape, in the
+model's order and with no count limit:
+
+```yaml
+questions:
+  - id: um-1a2b@r3          # kind reading: a current user-model proposition
+    kind: reading
+    cases: [case-…]
+  - id: q-user-scope-shelf  # kind ask: q-<kebab slug>, unique in the file
+    kind: ask
+    text: "Do you want …?"  # one question, plain words
+    why: "…"                # what the answer changes
+    cases: [case-…]         # an ask needs at least one
+```
+
+An index row written before this date is `{id, cases}` and reads as
+`kind: reading`. The runner validates each entry on its own — a reading's id
+must name an entry at that revision in the user model the run was given, an
+ask's `text` and `why` are non-empty and secret-scanned, ids are unique, and
+cited cases exist — and DROPS an entry that fails, naming it in the report's
+"Refused / could not do" section; nothing about questions refuses a run. A
+reply to an ask is a statement with `answers.kind: question` and `answers.ref`
+the ask's id; phase B receives every such answer, newest first, as the staged
+`answers.yaml`.
+
+**Journal.** `overseer/journal/<date>-<run>.md` is the run's own journal: a
+stage file (`journal.md`) the runner creates before phase A and the model
+writes in throughout both phases. It is committed with every commit the run
+makes after its first model call (the committed recipe, the finalize, a
+partial finalize, a failed attempt's note, a close-out, a push-failure
+record), carried back into the stage on a resume, never committed when it
+holds only its header line, never validated for content, never read by a
+later run, and — on a secret-scan hit — committed as a one-line stub naming
+the rule and line instead. It never changes a run's outcome.
 
 (Full shape of the `overseer/` subtree — this fence names only the files —
 is the same list `13-hosting-and-separation.md` §3's own K1 delta carries;
@@ -769,7 +806,9 @@ own subtree.*
    was examined and decided* — ids, counts, and dates, drawn from cases and
    receipts already committed — never a lesson's body text or a transcript
    span; `coverage.yaml` and `open-questions.yaml` carry no free text at
-   all (structured records only), matching the content discipline
+   all (structured records only) — *amended 2026-09-24:* except an ask's
+   `text` and `why` in `open-questions.yaml`, and the overseer's journal
+   (`overseer/journal/`), both secret-scanned — matching the content discipline
    `11-telemetry-and-lifecycle.md` §4.4 already states for telemetry.
 3. Sections 1–4 of a case are frozen at commit; sections 5–6 are
    append-only; a change of decision is a **successor case**, never an edit.
@@ -1048,6 +1087,14 @@ week — not on the run as a whole. Each such unit carries, in the manifest:
   notes plus the run record's `attempt_count`; the two sources are disjoint,
   because an attempt that reaches the run record writes its reason into the
   record's `failure`/`failure_detail` instead of a note.
+- *(Added 2026-09-24, the user's words: "user initiated runs don't count
+  toward the weekly limit".)* A manual run (`self-learn overseer run`) counts
+  nothing: its failure note carries `- trigger: manual` and is skipped (a note
+  with `- trigger: scheduled`, or with no trigger line, counts), the run record
+  it opens carries `trigger: manual` and starts at `attempt_count: 0`, a manual
+  resume never increments a count, and a manual completion leaves coverage's
+  `last_run_at` unchanged and is skipped by the week-done test (the user's
+  choice, "No, Sunday still runs").
 
 A run record written before this rule has no `attempt_count`, and one is
 never invented for it: its count is DERIVED from the evidence the record

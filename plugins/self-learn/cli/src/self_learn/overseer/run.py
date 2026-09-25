@@ -28,12 +28,13 @@ from typing import Any, cast
 
 from ruamel.yaml import YAML, YAMLError
 
-from .. import batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, provider, scan, settings, user_model, verbs, worker
+from .. import batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, provider, scan, settings, statements, user_model, verbs, worker
 from ..ledger import resolve_home
 from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
 from ..primitives import chrono, fsops
 from ..records import Record, build_covered_by
 from . import health, notify, population as population_mod
+from .conversation import _PROPOSITION_RE
 
 EXIT_OK = 0
 EXIT_REFUSED = 1
@@ -49,6 +50,25 @@ _REPORT_SECTIONS = (
     "Refused / could not do",
 )
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+#: 2026-09-24: the report's length is GUIDANCE, not a refusal (the user
+#: asked "do we need a size limit at all?"; the orchestrator answered no).
+#: A model report longer than this is kept whole and the runner says so.
+_REPORT_LINE_GUIDE = 60
+#: A `kind: ask` question's id (2026-09-24). A `kind: reading`'s id is a
+#: user-model proposition, `conversation._PROPOSITION_RE`.
+_ASK_ID_RE = re.compile(r"^q-[a-z0-9][a-z0-9-]{1,62}$")
+_CASE_ID_RE = re.compile(r"^case-[0-9a-f]{8}$")
+#: The overseer's own journal (2026-09-24, the user's words: "a journal of
+#: sorts the overseer could uuse as a kind of scratch bucket"). One stage
+#: file for the whole run, both phases; committed with every commit the
+#: run makes after its first model call. Not the cache JSONL run journal
+#: (`journal_path`/`_journal`), which is the runner's own and which
+#: `serve` reads for its cooldown.
+MODEL_JOURNAL_NAME = "journal.md"
+#: Stage files the whole-stage secret scan leaves to their own handling:
+#: a secret in the journal commits a stub, and a secret in one question
+#: drops that question -- neither may refuse the run.
+_OWN_SCAN_STAGE_FILES = frozenset({MODEL_JOURNAL_NAME, "questions.yaml"})
 _LEGACY_RETIRE_ALIAS = "grad" + "uate"
 
 #: 02-schema §3a: `failure_detail` is at most 2,000 characters, truncated
@@ -130,6 +150,27 @@ def _failure_kind(outcome: Any) -> str:
     if getattr(outcome, "result_subtype", None) == "error_max_turns":
         return "turns"
     return getattr(outcome, "failure", None) or "invocation"
+
+
+#: 2026-09-24, the user's words: "user initiated runs don't count toward
+#: the weekly limit." `self-learn overseer run` is a MANUAL run; `serve`'s
+#: scheduled job is not. A manual run adds nothing to the week's attempt
+#: count, is never held by a done or closed week, and never closes a week.
+TRIGGER_MANUAL = "manual"
+TRIGGER_SCHEDULED = "scheduled"
+
+
+def _counts_as_week_review(trigger: str | None) -> bool:
+    """THE decision point for whether a COMPLETED run is the week's review.
+
+    The user chose (2026-09-24, selecting "No, Sunday still runs" from the
+    options the orchestrator offered): a manual run that completes does
+    NOT count -- the scheduled run still happens that week. So a manual
+    completion leaves coverage's `last_run_at` and the cache
+    `overseer.last-run` marker where they were, and `week_done` skips a
+    completed run record whose `trigger` is manual. A record with no
+    `trigger` predates the distinction and counts, as before."""
+    return trigger != TRIGGER_MANUAL
 
 
 @dataclass(frozen=True)
@@ -326,6 +367,10 @@ def _stage_files(stage: Path) -> list[Path]:
 def _secret_files(stage: Path) -> list[str]:
     names: list[str] = []
     for path in _stage_files(stage):
+        if path.parent == stage and path.name in _OWN_SCAN_STAGE_FILES:
+            # Scanned by their own handling (`_model_journal_text`,
+            # `_questions`): neither may refuse the whole run.
+            continue
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
@@ -356,23 +401,47 @@ def _yaml_text(data: Any) -> str:
     return stream.getvalue()
 
 
+def _journal_block(phase: str) -> str:
+    """The journal instructions both phase prompts carry (2026-09-24).
+
+    The user's words: "it should be something it has access to throughout
+    the run, not just once per phase or or once at the end. maybe we give
+    it some basic instruction on acceptable formatting so it can carry
+    forward things like lesson ids or other metadata that would be
+    relevant"."""
+    return f"""Your journal is {MODEL_JOURNAL_NAME} in this stage. It is yours for the whole run, both phases, and
+nothing grades it. Write in it as you go, not only at the end: what you notice, what you are
+unsure of, how you are weighing a decision, where you changed your mind, anything that does not
+fit the other files. It is committed to the ledger with this run whatever happens to the run,
+so the user can read how you worked. No later run reads it. Add entries at the end; never
+rewrite an earlier entry. Each entry:
+## phase <A|B> · <a few words>
+ids: <every lesson, case, or reading id the entry is about, comma-separated; omit if none>
+<as much text as it needs>
+Write ids exactly as they appear (lrn-…, case-…, um-…@r…) so they can be found later.
+You are in phase {phase} now.
+"""
+
+
 def _phase_a_prompt(stage: Path, count: int, excluded: int) -> str:
     return f"""You are the self-learn overseer, examining decisions independently.
 Binding rules: provisional is bookkeeping; silence is not agreement; evidence is never authority.
-Read only this stage. Use Read, Grep, and Glob; write only beneath {stage}.
+Read only this stage. Use Read, Grep, and Glob; write (Write, Edit) only beneath {stage}.
 The blind population has {count} cases. {excluded} cases excluded: freeze hash mismatch.
 Do not seek or infer the steward's outcome, verb, decision, receipts, or rationale.
 Read population.txt, nudges.yaml, and blind/*.md. Choose any number of cases; there is no sample cap.
 Write selection.yaml with only cases: [{{id: case-...}}], why_these, and why_stopped.
 Write initial-views.yaml with cases, one per selected id, carrying id, what_i_would_do, why,
 what_evidence_decides_it, and confidence (clear or close-call).
+{_journal_block("A")}Nothing in the journal may guess at the steward's decisions; you have not seen them.
 """
 
 
 def _phase_b_prompt(stage: Path, selected: tuple[str, ...], parked: tuple[str, ...]) -> str:
     return f"""You are the self-learn overseer. The evidence-first view is complete.
 You may now read the steward rationale and full decided account in full/*.md.
-Read selection.yaml, initial-views.yaml, every parked/*.md, user-model.yaml, and health.yaml.
+Read selection.yaml, initial-views.yaml, every parked/*.md, user-model.yaml, health.yaml, and
+answers.yaml (the user's answers to earlier overseer questions, newest first; it may be empty).
 Selected cases: {', '.join(selected) if selected else 'none'}.
 Parked cases (the entire queue, never truncated): {', '.join(parked) if parked else 'none'}.
 A parked case whose parked_reason is attempts-exhausted means the steward's machinery failed three
@@ -386,21 +455,51 @@ Write report.md, findings.yaml, questions.yaml, user-model-delta.yaml, and eithe
 case-<name>.yaml plus sheet-<name>.yaml files. One successor case must supersede each parked
 case you decide. The runner alone records cases and applies sheets. Never run a verb.
 findings.yaml is {{findings: [{{case, kind: examined|dependency-moved, text, ref?}}]}}.
-questions.yaml contains structured ids and affected case ids only, no free text.
+questions.yaml is where you ask the user what only the user can settle. There is no limit on
+how many you ask: ask every question that clears this bar and none that does not.
+A question clears the bar only when all three hold: (1) it turns on the user's own preference,
+plans, or facts about their work that the evidence here cannot show; (2) the answer would change
+a decision you or the steward will make, or what gets built; (3) you could not settle it
+yourself from the evidence. If you can decide it, decide it: that is your job, and asking
+instead hands the work back. Never ask the user to approve a lesson decision you are entitled
+to make; make it and report it under "Decided in the user's stead". A hook you decided belongs
+under Hooks, not here.
+Two kinds, each {{id, kind, cases}}:
+- kind: reading asks the user to confirm or correct one of your readings of them. id is that
+  reading's current proposition exactly as in user-model.yaml, um-<4 hex>@r<revision>. Only a
+  reading that already exists can be asked about; one you add this run can be asked next week.
+- kind: ask is a decision or fact only the user has. id is q-<short-kebab-slug>. Add text: ONE
+  question, answerable in a sentence, written for someone who has not read the cases (say what
+  would be built or changed and what yes and no each lead to), and why: what the answer changes.
+  Never bundle two decisions into one ask. If only the user can do something (it needs their
+  hands, credentials, or a command agents may not run), you may ask whether they will; say
+  exactly what and why.
+cases lists the case-… ids the question comes from, exactly as they appear in this stage; an
+ask needs at least one, because the user's answer is recorded against those cases.
+Order questions most consequential first. An empty list is a good answer when nothing clears
+the bar. A question that breaks these rules is dropped and listed in the report, and the run
+goes on.
 user-model-delta.yaml is {{updates: [...]}}. Each update is either
 {{action: add, container, title, because, source: system-reading, ref, held_since?, conditions?, statements?, basis?}}
 or {{action: lapse, id, changed_condition?|contrary?|consolidated_into?}}. Adds are provisional
 system readings only. A lapse must name exactly one changed condition, contrary item, or consolidation.
-report.md is under 57 lines before the runner adds three factual lines and has these headings,
-in this exact order: Examined; Decided in the user's stead; Hooks; User model;
-Catalogue health; Questions for you; Refused / could not do. Use ``- none`` for an empty section.
-"""
+report.md should stay under about 60 lines: it is the summary, not the record. Its
+"Questions for you" section lists each question as - <id>: <a few words>; the full text lives
+in questions.yaml. It has these headings, in this exact order: Examined; Decided in the user's
+stead; Hooks; User model; Catalogue health; Questions for you; Refused / could not do. Use
+``- none`` for an empty section.
+{_journal_block("B")}"""
 
 
 def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, run_id: str):
     containment = invocation.containment_for(
         "overseer",
-        allowed_tools="Read,Grep,Glob,Write",
+        # `Edit` joins `Write` (2026-09-24, the journal). Both are in the
+        # charter's write family (`invocation_sdk/charter.py` `W`), which
+        # judges every call by path against this surface's ONE write glob
+        # (`{stage_dir}/overseer/**`, `containment_for`) BEFORE this list
+        # is consulted -- so Edit is confined exactly as Write is.
+        allowed_tools="Read,Grep,Glob,Write,Edit",
         disallowed_tools="Bash",
         stage_dir=worker.stage_dir(),
         enforce=worker._enforce_scope(),
@@ -423,7 +522,32 @@ def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, ru
     )
 
 
-def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows: list[dict[str, Any]]) -> None:
+def _question_answers(home: Path) -> list[dict[str, Any]]:
+    """The user's answers to earlier `kind: ask` questions, newest first,
+    for phase B (2026-09-24). Phase B saw no user statement before this:
+    `user-model.yaml` carries statement ids, never their words."""
+    rows = [
+        row for row in statements.list_statements(home)
+        if isinstance(row.get("answers"), dict)
+        and row["answers"].get("kind") == "question"
+    ]
+    rows.sort(key=lambda row: str(row.get("at") or ""), reverse=True)
+    return [
+        {
+            "id": row.get("id"),
+            "ref": row["answers"].get("ref"),
+            "asked": row["answers"].get("text"),
+            "verbatim": row.get("verbatim"),
+            "scope": row.get("scope"),
+            "date": str(row.get("at") or "")[:10] or None,
+        }
+        for row in rows
+    ]
+
+
+def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Write phase B's inputs; answer the user-model document it was given,
+    which is what a `kind: reading` question is validated against."""
     full_dir = stage / "full"
     parked_dir = stage / "parked"
     full_dir.mkdir(parents=True, exist_ok=True)
@@ -433,7 +557,9 @@ def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows
     for row in parked_rows:
         case_id = row["case"]
         _write_stage(stage, parked_dir / f"{case_id}.md", cases.show(home, case_id, evidence_only=False).to_text() + "\n")
-    _write_stage(stage, stage / "user-model.yaml", _yaml_text(user_model.show(home)))
+    model_doc = user_model.show(home)
+    _write_stage(stage, stage / "user-model.yaml", _yaml_text(model_doc))
+    _write_stage(stage, stage / "answers.yaml", _yaml_text({"answers": _question_answers(home)}))
     _write_stage(
         stage,
         stage / "health.yaml",
@@ -444,22 +570,125 @@ def _full_inputs(home: Path, stage: Path, selected: tuple[str, ...], parked_rows
             }
         ),
     )
+    return model_doc
 
 
-def _questions(path: Path) -> dict[str, Any]:
-    data = _yaml_mapping(path)
-    if set(data) != {"questions"} or not isinstance(data["questions"], list):
-        raise OverseerError("questions.yaml: expected only a questions list")
-    if len(data["questions"]) > 3:
-        raise OverseerError("questions.yaml: at most three questions are permitted")
-    clean = []
-    for item in data["questions"]:
-        if not isinstance(item, dict) or set(item) - {"id", "cases"}:
-            raise OverseerError("questions.yaml: each entry permits only id and cases")
-        if not isinstance(item.get("id"), str) or not isinstance(item.get("cases", []), list):
-            raise OverseerError("questions.yaml: each entry needs a string id and cases list")
-        clean.append({"id": item["id"], "cases": list(item.get("cases") or [])})
-    return {"questions": clean}
+def _current_propositions(model_doc: dict[str, Any]) -> set[tuple[str, int]]:
+    found: set[tuple[str, int]] = set()
+    for entries in (model_doc.get("containers") or {}).values():
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                continue
+            entry_id, revision = entry.get("id"), entry.get("r")
+            if isinstance(entry_id, str) and isinstance(revision, int) and not isinstance(revision, bool):
+                found.add((entry_id, revision))
+    return found
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _question_label(value: object, ordinal: int) -> str:
+    """How a dropped question is named in the committed report: its own id
+    when that is a short single-line string the secret scan passes, else
+    its position. A dropped entry's text never reaches the ledger."""
+    if (
+        isinstance(value, str) and value.strip() and len(value) <= 80
+        and "\n" not in value and not scan.scan(value)
+    ):
+        return value.strip()
+    return f"entry {ordinal}"
+
+
+def _question_problem(
+    item: dict[str, Any], kind: str, propositions: set[tuple[str, int]],
+    known_cases: set[str],
+) -> str | None:
+    """Why one questions.yaml entry cannot be indexed, or ``None``."""
+    qid = item.get("id")
+    cited = item.get("cases", [])
+    if not isinstance(cited, list) or not all(isinstance(case_id, str) for case_id in cited):
+        return "cases must be a list of case ids"
+    malformed = [case_id for case_id in cited if not _CASE_ID_RE.fullmatch(case_id)]
+    if malformed:
+        return "cases must be case-<8 hex> ids"
+    unknown = [case_id for case_id in cited if case_id not in known_cases]
+    if unknown:
+        return f"cites unknown case(s) {', '.join(unknown)}"
+    if kind == "reading":
+        match = _PROPOSITION_RE.fullmatch(qid) if isinstance(qid, str) else None
+        if match is None:
+            return "a reading's id must be um-<4 hex>@r<revision>"
+        entry_id, revision = match.group(1), int(match.group(2))
+        if (entry_id, revision) not in propositions:
+            return (
+                f"{entry_id} at revision {revision} is not a current reading in "
+                "the user model this run was given"
+            )
+        return None
+    if not isinstance(qid, str) or not _ASK_ID_RE.fullmatch(qid):
+        return "an ask's id must be q-<short-kebab-slug>"
+    for field_name in ("text", "why"):
+        value = item.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            return f"an ask needs non-empty {field_name}"
+        hits = scan.scan(value)
+        if hits:
+            return f"{field_name} matched the secret scan ({hits[0].rule})"
+    if not cited:
+        return "an ask needs at least one case to record the answer against"
+    return None
+
+
+def _questions(
+    path: Path, model_doc: dict[str, Any], known_cases: set[str]
+) -> tuple[dict[str, Any], list[str]]:
+    """Validate questions.yaml ENTRY BY ENTRY (2026-09-24).
+
+    There is no count limit (the user's words: "i think we uncap the number
+    of questions"), and nothing about questions refuses the run: an entry
+    that fails is dropped and named in one runner line for the report's
+    "Refused / could not do" section; a file that is not a mapping with a
+    `questions` list reads as zero questions plus one such line. Answers
+    ``({"questions": [...]}, dropped_lines)``, the index in the model's
+    order."""
+    try:
+        data = _yaml_mapping(path)
+    except OverseerError:
+        data = None
+    if not isinstance(data, dict) or not isinstance(data.get("questions"), list):
+        return {"questions": []}, [
+            "question questions.yaml: dropped — not a mapping with a questions list"
+        ]
+    propositions = _current_propositions(model_doc)
+    clean: list[dict[str, Any]] = []
+    dropped: list[str] = []
+    seen: set[str] = set()
+    for ordinal, item in enumerate(data["questions"], start=1):
+        if not isinstance(item, dict):
+            dropped.append(f"question entry {ordinal}: dropped — an entry must be a mapping")
+            continue
+        label = _question_label(item.get("id"), ordinal)
+        kind = item.get("kind")
+        if kind is None and isinstance(item.get("id"), str) and item["id"].startswith("um-"):
+            kind = "reading"  # a legacy entry: `{id, cases}` with a proposition id
+        if kind not in ("reading", "ask"):
+            dropped.append(f"question {label}: dropped — kind must be reading or ask")
+            continue
+        problem = _question_problem(item, kind, propositions, known_cases)
+        if problem is None and item["id"] in seen:
+            problem = "duplicate id"
+        if problem is not None:
+            dropped.append(f"question {label}: dropped — {problem}")
+            continue
+        seen.add(item["id"])
+        row: dict[str, Any] = {"id": item["id"], "kind": kind, "cases": list(item.get("cases") or [])}
+        if kind == "ask":
+            row["text"] = _flat(item["text"])
+            row["why"] = _flat(item["why"])
+        clean.append(row)
+    return {"questions": clean}, dropped
 
 
 def _report_text(
@@ -496,11 +725,13 @@ def _report_text(
 
 
 def _validate_model_report(path: Path) -> list[str]:
-    """Refuse malformed raw model output before any decision is applied."""
+    """Refuse malformed raw model output before any decision is applied.
+
+    Structure only: missing or out-of-order headings refuse. Length does
+    not (2026-09-24): a report over `_REPORT_LINE_GUIDE` lines is kept, and
+    `_finalize_model_report` adds one line saying how long it ran."""
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
-    if len(lines) > 60:
-        raise OverseerError("report.md: exceeds the 60-line limit")
     headings = [line[3:].partition(" (")[0] for line in lines if line.startswith("## ")]
     if headings != list(_REPORT_SECTIONS):
         raise OverseerError("report.md: section headings are missing or out of order")
@@ -529,8 +760,19 @@ def _finalize_model_report(
     refusals: list[str], hooks: list[str] | None = None,
     user_model_lines: list[str] | None = None,
     questions: list[str] | None = None,
+    notes: list[str] | None = None,
 ) -> str:
+    """The published report: the model's own text, whole, with the
+    runner's factual lines added. *notes* are runner lines for "Refused /
+    could not do" that are not refusals of any decision (a dropped
+    question, the report's own length); they are not counted as refused."""
     lines = _validate_model_report(path)
+    model_line_count = len(lines)
+    runner_notes = list(notes or [])
+    if model_line_count > _REPORT_LINE_GUIDE:
+        runner_notes.append(
+            f"report: ran to {model_line_count} lines (guide is {_REPORT_LINE_GUIDE})"
+        )
     lines[0] = f"# Overseer report — {date}   run {run_id}   actor overseer   model {model}"
     examined_at = next(i for i, line in enumerate(lines) if line.startswith("## Examined")) + 1
     facts = [
@@ -541,8 +783,8 @@ def _finalize_model_report(
     lines[examined_at:examined_at] = facts
     _drop_bare_none(lines, examined_at)
     refused_at = next(i for i, line in enumerate(lines) if line.startswith("## Refused / could not do")) + 1
-    if refusals:
-        lines[refused_at:refused_at] = [f"- {item}" for item in refusals]
+    if refusals or runner_notes:
+        lines[refused_at:refused_at] = [f"- {item}" for item in [*refusals, *runner_notes]]
         _drop_bare_none(lines, refused_at)
     if hooks:
         hooks_at = next(i for i, line in enumerate(lines) if line.startswith("## Hooks")) + 1
@@ -567,42 +809,36 @@ def _finalize_model_report(
         existing = [line for line in lines[user_model_at:next_heading] if line.strip()]
         replacement = existing or ["- none"]
     lines[user_model_at:next_heading] = replacement
-    if len(lines) > 60:
-        owned = set(facts)
-        owned.update(f"- {item}" for item in user_model_lines or [])
-        owned.update(f"- {item}" for item in refusals)
-        owned.update(f"- {item}" for item in hooks or [])
-        owned.update(f"- {item}" for item in questions or [])
-        needed = len(lines) - 60 + 1  # reserve the truncation marker itself
-        omitted = 0
-        for index in range(len(lines) - 1, 0, -1):
-            line = lines[index]
-            if line.startswith("## ") or line in owned:
-                continue
-            lines.pop(index)
-            omitted += 1
-            if omitted == needed:
-                break
-        lines.append(f"- model report truncated: {omitted} model lines omitted")
+    # No truncation (2026-09-24): the report is kept whole. Before, a report
+    # over 60 lines lost model prose here to fit.
     return "\n".join(lines) + "\n"
 
 
-def _record_push_failure(home: Path, report_path: Path, latest: Path, failure: str) -> None:
-    """Commit the post-boundary push outcome without leaving report files dirty."""
+def _record_push_failure(
+    home: Path, report_path: Path, latest: Path, failure: str,
+    journal: tuple[Path, str] | None = None,
+) -> None:
+    """Commit the post-boundary push outcome without leaving report files
+    dirty. The run's journal (*journal*: its ledger path and text) rides
+    the same commit, as it does every commit of a run (2026-09-24)."""
     lines = report_path.read_text(encoding="utf-8").splitlines()
     lines.insert(1, f"- {failure}")
     updated = "\n".join(lines) + "\n"
+    paths = [report_path, latest] + ([journal[0]] if journal is not None else [])
     with intents.ledger_write(home):
         intent = intents.begin(
-            home, "overseer-push-failure", [report_path, latest],
+            home, "overseer-push-failure", paths,
             f"self-learn: overseer push failure {failure}",
         )
-        intents.add_step(intent, report_path)
-        intents.add_step(intent, latest)
+        for target in paths:
+            intents.add_step(intent, target)
         fsops.atomic_write(report_path, updated, fsync=True)
         fsops.atomic_write(latest, updated, fsync=True)
+        if journal is not None:
+            journal[0].parent.mkdir(parents=True, exist_ok=True)
+            fsops.atomic_write(journal[0], journal[1], fsync=True)
         intents.complete(intent)
-        gitops.stage_and_commit(home, [report_path, latest], intent.commit_subject, None)
+        gitops.stage_and_commit(home, paths, intent.commit_subject, None)
         intents.finish(intent)
 
 
@@ -680,6 +916,63 @@ def _write_report_only(stage: Path, text: str) -> Path:
     return path
 
 
+def model_journal_ledger_path(home: Path | str, date: str, run_id: str) -> Path:
+    """Where a run's journal is committed: `overseer/journal/<date>-<run>.md`."""
+    return Path(home) / "overseer" / "journal" / f"{date}-{run_id}.md"
+
+
+def _model_journal_header(run_id: str, date: str) -> str:
+    return f"# Overseer journal — run {run_id}, {date}"
+
+
+def _start_model_journal(stage: Path, run_id: str, date: str) -> None:
+    """Create the run's journal before phase A. The stage was just reset,
+    so no earlier run's journal can be in it; nothing ever copies a
+    committed journal into a new run's stage (write-only across runs)."""
+    _write_stage(stage, stage / MODEL_JOURNAL_NAME, _model_journal_header(run_id, date) + "\n")
+
+
+def _model_journal_text(home: Path, stage: Path, run_id: str, date: str) -> str | None:
+    """The text to commit for this run's journal, or ``None`` when there is
+    nothing to commit (absent, or only the header line).
+
+    Never validated for content and never fatal: a secret-scan hit commits
+    a stub naming the rule and the line instead, and the runner's own
+    journal records `journal-withheld`. The run's outcome never depends on
+    this file."""
+    header = _model_journal_header(run_id, date)
+    path = stage / MODEL_JOURNAL_NAME
+    try:
+        root = stage.resolve()
+        if path.resolve().parent != root:
+            raise OSError("journal.md resolves outside the overseer stage")
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        _journal(home, {
+            "at": chrono.now_iso(), "run": run_id, "status": "journal-withheld",
+            "reason": str(exc)[:300],
+        })
+        return f"{header}\n\njournal withheld: it could not be read as UTF-8 text inside the stage\n"
+    body = [line.strip() for line in text.splitlines() if line.strip()]
+    if not body or body == [header]:
+        return None
+    hits = scan.scan(text)
+    if hits:
+        first = min(hits, key=lambda hit: hit.start)
+        line_no = text.count("\n", 0, first.start) + 1
+        _journal(home, {
+            "at": chrono.now_iso(), "run": run_id, "status": "journal-withheld",
+            "rule": first.rule, "line": line_no,
+        })
+        return (
+            f"{header}\n\njournal withheld: secret scan matched {first.rule} "
+            f"at line {line_no}\n"
+        )
+    return text if text.endswith("\n") else text + "\n"
+
+
 def _first_line(path: Path) -> str:
     try:
         with open(path, encoding="utf-8") as fh:
@@ -726,6 +1019,8 @@ def _commit_failed_attempt(
     detail: str | None,
     closed_text: str | None,
     write_note: bool = True,
+    journal_text: str | None = None,
+    trigger: str = TRIGGER_SCHEDULED,
 ) -> Path:
     """One commit for one failed attempt: its report, its failure note and,
     when the cap was reached, the close-out note.
@@ -755,6 +1050,12 @@ def _commit_failed_attempt(
         paths.append(closed)
     if report_path is not None:
         paths.extend([report_path, latest])
+    # The run's journal rides the same commit (2026-09-24).
+    journal = (
+        model_journal_ledger_path(home, date, run_id) if journal_text is not None else None
+    )
+    if journal is not None:
+        paths.append(journal)
     subject = f"self-learn: overseer attempt {attempt} failed ({kind})"
     # `intents.ledger_write` is re-entrant: a pass-through when the caller
     # already holds the span, and the outermost acquisition for a failure of
@@ -781,7 +1082,7 @@ def _commit_failed_attempt(
                 note,
                 _note_text(
                     week=week, run_id=run_id, started=started, attempt=attempt,
-                    cap=cap, kind=kind, detail=detail,
+                    cap=cap, kind=kind, detail=detail, trigger=trigger,
                 ),
                 fsync=True,
             )
@@ -791,6 +1092,9 @@ def _commit_failed_attempt(
             report_path.parent.mkdir(parents=True, exist_ok=True)
             fsops.atomic_write(report_path, report_text, fsync=True)
             fsops.atomic_write(latest, report_text, fsync=True)
+        if journal is not None and journal_text is not None:
+            journal.parent.mkdir(parents=True, exist_ok=True)
+            fsops.atomic_write(journal, journal_text, fsync=True)
         intents.complete(owner)
         gitops.stage_and_commit(home, paths, owner.commit_subject, None)
         intents.finish(owner)
@@ -1154,10 +1458,23 @@ def _committed_failure_notes(home: Path, week: str) -> list[str]:
         return []
     # `closed.md` is the close-out's own note, not an attempt: counting it
     # would inflate the week by one the moment the close-out lands.
-    return [
+    notes = [
         row for row in rows
         if row.endswith(".md") and not row.endswith("/closed.md")
     ]
+    # 2026-09-24, the user's words: "user initiated runs don't count toward
+    # the weekly limit." A note carrying `- trigger: manual` is not an
+    # attempt of the week; a note with no trigger line predates the
+    # distinction and counts, as it always did.
+    return [row for row in notes if not _note_is_manual(home, row)]
+
+
+def _note_is_manual(home: Path, relpath: str) -> bool:
+    try:
+        text = gitops._git(home, "show", f"HEAD:{relpath}").stdout  # noqa: SLF001
+    except gitops.GitOpsError:
+        return False
+    return f"- trigger: {TRIGGER_MANUAL}" in text.splitlines()
 
 
 def attempt_cap(home: Path | str) -> int:
@@ -1167,18 +1484,25 @@ def attempt_cap(home: Path | str) -> int:
     return int(cast(int, value))
 
 
-def _run_record_for_week(home: Path, week: str) -> dict[str, Any] | None:
-    """The committed overseer run record belonging to ``week``, if any."""
-    for manifest in _committed_overseer_manifests(home):
-        if _manifest_week(manifest) == week:
-            return manifest
-    return None
+def _run_records_for_week(home: Path, week: str) -> list[dict[str, Any]]:
+    """Every committed overseer run record belonging to ``week``. Before
+    manual runs (2026-09-24) a week had at most one; now a manual run can
+    open a record of its own in a week that also has a scheduled one."""
+    return [
+        manifest for manifest in _committed_overseer_manifests(home)
+        if _manifest_week(manifest) == week
+    ]
 
 
 def _record_attempts(manifest: dict[str, Any] | None) -> int:
     """02-schema §3a: the explicit `attempt_count`, or — for a record
     written before that rule — one attempt for the record's existence,
-    never an invented number."""
+    never an invented number.
+
+    A record a MANUAL run opened starts at 0: its own attempt was the
+    user's and counts nothing. A scheduled resume of it still increments
+    the count, so a manual run's committed work that keeps failing under
+    the scheduler still reaches the cap and closes."""
     if manifest is None:
         return 0
     value = manifest.get("attempt_count")
@@ -1189,6 +1513,11 @@ def _record_attempts(manifest: dict[str, Any] | None) -> int:
 
 def week_attempts(home: Path | str, week: str) -> int:
     """How many attempts this week has had, from committed evidence only.
+
+    Manual runs add nothing (2026-09-24): their failure notes carry
+    `- trigger: manual` and are skipped, the record a manual run opens
+    starts at `attempt_count: 0`, and a manual resume never increments a
+    record's count.
 
     The two sources are DISJOINT by construction, so they sum exactly. An
     attempt either fails before `_prepare_manifest` — no run record exists
@@ -1204,16 +1533,18 @@ def week_attempts(home: Path | str, week: str) -> int:
     commit at the start of every run, including the ones that succeed.
     """
     resolved = Path(home)
-    return len(_committed_failure_notes(resolved, week)) + _record_attempts(
-        _run_record_for_week(resolved, week)
+    return len(_committed_failure_notes(resolved, week)) + sum(
+        _record_attempts(record) for record in _run_records_for_week(resolved, week)
     )
 
 
 def week_closed(home: Path | str, week: str) -> bool:
     """Whether the runner has already written this week's close-out
     (02-schema §3a: `status: closed` with `outcome: attempts-exhausted`)."""
-    record = _run_record_for_week(Path(home), week)
-    if record is not None and record.get("status") == "closed":
+    if any(
+        record.get("status") == "closed"
+        for record in _run_records_for_week(Path(home), week)
+    ):
         return True
     return (failures_dir(home, week) / "closed.md").is_file()
 
@@ -1251,6 +1582,8 @@ def week_done(home: Path | str, boundary_epoch: float) -> bool:
             return True
         if status_name != "complete":
             continue
+        if not _counts_as_week_review(manifest.get("trigger")):
+            continue
         started = manifest.get("started")
         if not isinstance(started, str):
             continue
@@ -1278,21 +1611,28 @@ def _note_path(home: Path, week: str, started: str, run_id: str) -> Path:
 
 def _note_text(
     *, week: str, run_id: str, started: str, attempt: int, cap: int,
-    kind: str, detail: str | None,
+    kind: str, detail: str | None, trigger: str = TRIGGER_SCHEDULED,
 ) -> str:
     """A15's short dated failure note, carrying the REAL reason.
 
     A committed reason of `exit` alone is what made the 2026-09-14 outage
     unreadable from the ledger, so the kind and the message the transport
-    or the validator actually returned are both here.
+    or the validator actually returned are both here. The `- trigger:`
+    line (2026-09-24) is what `_committed_failure_notes` reads: a manual
+    run's note is not an attempt of the week.
     """
+    counted = (
+        f"attempt {attempt} of {cap}" if trigger != TRIGGER_MANUAL
+        else f"manual run, not counted toward the week's {cap}"
+    )
     return "\n".join([
         f"# Overseer attempt failed — {started[:10]}   week {week}   "
-        f"run {run_id}   attempt {attempt} of {cap}",
+        f"run {run_id}   {counted}",
         "",
         f"- failure: {kind}",
         f"- detail: {detail or 'no detail was returned'}",
         f"- at: {started}",
+        f"- trigger: {trigger}",
     ]) + "\n"
 
 
@@ -1382,6 +1722,7 @@ def _close_out_questions(
 def _close_out_if_exhausted(
     home: Path, *, week: str, attempts: int, cap: int, kind: str,
     detail: str | None, unfinished: list[str] | None = None,
+    manual: bool = False,
 ) -> tuple[str | None, list[str]]:
     """Ruling 2, for an attempt that failed before any run record existed.
 
@@ -1389,8 +1730,9 @@ def _close_out_if_exhausted(
     week still has attempts left, or when a previous run already wrote this
     week's close-out (it is idempotent and retried, and counts nothing of
     its own, so a close-out whose write failed is simply re-attempted).
+    A manual run never closes a week (2026-09-24): ``(None, [])`` always.
     """
-    if attempts < cap or week_closed(home, week):
+    if manual or attempts < cap or week_closed(home, week):
         return None, []
     units = list(unfinished or [])
     return (
@@ -1477,7 +1819,8 @@ def _commit_phase_a_failure(
     home: Path, *, dry_run: bool, week: str, attempt: int, cap: int,
     run_id: str, started: str, kind: str, detail: str | None,
     model: str, population_count: int, excluded: int, model_calls: int,
-    guard: int, reason: str,
+    guard: int, reason: str, journal_text: str | None = None,
+    manual: bool = False,
 ) -> Path | None:
     """The committed trace for a failure BEFORE the run's own ledger-write
     span exists — a failed first model call, a runaway after it, an invalid
@@ -1492,6 +1835,7 @@ def _commit_phase_a_failure(
         return None
     closed_text, questions = _close_out_if_exhausted(
         home, week=week, attempts=attempt, cap=cap, kind=kind, detail=detail,
+        manual=manual,
     )
     report_text = None
     if closed_text is not None:
@@ -1505,7 +1849,8 @@ def _commit_phase_a_failure(
         home, None, coverage_path=None, coverage_before=None,
         report_text=report_text, date=started[:10], run_id=run_id, week=week,
         started=started, attempt=attempt, cap=cap, kind=kind, detail=detail,
-        closed_text=closed_text,
+        closed_text=closed_text, journal_text=journal_text,
+        trigger=TRIGGER_MANUAL if manual else TRIGGER_SCHEDULED,
     )
     if closed_text is None:
         return None
@@ -1636,6 +1981,9 @@ def _prepare_manifest(
     findings: list[dict[str, Any]],
     prepared: list[tuple[Path | None, Path, batch.Sheet]],
     model_updates: list[dict[str, Any]] | tuple[()] = (),
+    runner_notes: list[str] | None = None,
+    journal_text: str | None = None,
+    trigger: str = TRIGGER_SCHEDULED,
 ) -> dict[str, Any]:
     existing = {row["case"] for row in cases.list_cases(home, only_ok=True)}
     recipes: dict[str, Any] = {}
@@ -1693,7 +2041,10 @@ def _prepare_manifest(
         # earlier attempt of the same week failed before this point and left
         # a committed failure note instead (see `week_attempts`).
         "week": week_key(week_boundary(time.time())),
-        "attempt_count": 1,
+        # 2026-09-24: a MANUAL run's own attempt counts nothing, so the
+        # record it opens starts at 0; only a scheduled resume adds to it.
+        "trigger": trigger,
+        "attempt_count": 0 if trigger == TRIGGER_MANUAL else 1,
         "last_attempt_at": started,
         "progress_at": None,
         "failure": None,
@@ -1709,6 +2060,13 @@ def _prepare_manifest(
         "reconsider_observations": [],
         "report": (stage / "report.md").read_text(encoding="utf-8"),
         "questions": questions,
+        # Runner lines for "Refused / could not do" that refuse no decision
+        # (a dropped question). Carried here so a resume's report has them.
+        "runner_notes": list(runner_notes or []),
+        # The run's journal, already secret-scanned (a hit is the stub), so
+        # a resume can put it back in the rebuilt stage the way the report
+        # is put back. `None` when it holds only its header line.
+        "journal": journal_text,
         "findings": findings,
         "case_order": order,
         "cases": recipes,
@@ -1727,15 +2085,35 @@ def _publish_manifest(
     home: Path, intent: intents.Intent, manifest: dict[str, Any], coverage_path: Path
 ) -> Path:
     path = execution_evidence.manifest_path(home, cast(str, manifest["run_id"]))
+    paths = [coverage_path, path]
+    journal = _manifest_journal(home, manifest)
     intents.add_step(intent, path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fsops.atomic_write(path, _manifest_text(manifest), fsync=True)
+    if journal is not None:
+        # The run's first commit after phase B carries its journal, so a
+        # crash before finalize cannot lose it (2026-09-24).
+        intents.add_step(intent, journal[0])
+        journal[0].parent.mkdir(parents=True, exist_ok=True)
+        fsops.atomic_write(journal[0], journal[1], fsync=True)
+        paths.append(journal[0])
     intents.complete(intent)
     gitops.stage_and_commit(
-        home, [coverage_path, path], intent.commit_subject, None
+        home, paths, intent.commit_subject, None
     )
     intents.finish(intent)
     return path
+
+
+def _manifest_journal(home: Path, manifest: dict[str, Any]) -> tuple[Path, str] | None:
+    """The journal a run record carries, as (ledger path, text)."""
+    text = manifest.get("journal")
+    if not isinstance(text, str) or not text:
+        return None
+    return (
+        model_journal_ledger_path(home, cast(str, manifest["date"]), cast(str, manifest["run_id"])),
+        text,
+    )
 
 
 _RECEIPT_RESULT_RE = re.compile(
@@ -1992,6 +2370,9 @@ def _write_manifest_truth(
     paths = [path, report_path, latest]
     if complete:
         paths.append(questions_path)
+    journal = _manifest_journal(home, manifest)
+    if journal is not None:
+        paths.append(journal[0])
     closed_note = (
         failures_dir(home, week) / "closed.md"
         if closed_text is not None and week is not None
@@ -2014,6 +2395,9 @@ def _write_manifest_truth(
         if closed_note is not None and closed_text is not None:
             closed_note.parent.mkdir(parents=True, exist_ok=True)
             fsops.atomic_write(closed_note, closed_text, fsync=True)
+        if journal is not None:
+            journal[0].parent.mkdir(parents=True, exist_ok=True)
+            fsops.atomic_write(journal[0], journal[1], fsync=True)
         if complete:
             # A14: only a COMPLETED run publishes questions. No failure path
             # reaches this write, so a failed attempt can never blank last
@@ -2176,8 +2560,13 @@ def _execute_manifest(
     manifest: dict[str, Any],
     *,
     boundary_no_push: bool,
+    manual: bool = False,
 ) -> RunResult:
-    """Resume one committed recipe and finalize only after every sheet."""
+    """Resume one committed recipe and finalize only after every sheet.
+
+    *manual* is the trigger of THIS run (2026-09-24): a manual run never
+    closes the week, even on a scheduled run's record at the cap -- the
+    next scheduled attempt will."""
     run_id = cast(str, manifest["run_id"])
     selected = tuple(cast(list[str], manifest.get("selected") or []))
     excluded = int(manifest.get("excluded") or 0)
@@ -2186,6 +2575,14 @@ def _execute_manifest(
     worker.stage_reset(home)
     stage.mkdir(parents=True, exist_ok=True)
     _write_stage(stage, stage / "report.md", cast(str, manifest["report"]))
+    carried_journal = manifest.get("journal")
+    if isinstance(carried_journal, str) and carried_journal:
+        # Carried exactly as the report is: the rebuilt stage gets the
+        # run's own journal back, never another run's.
+        _write_stage(stage, stage / MODEL_JOURNAL_NAME, carried_journal)
+    runner_notes = [
+        str(line) for line in cast(list[Any], manifest.get("runner_notes") or [])
+    ]
     recipes = cast(dict[str, dict[str, Any]], manifest["cases"])
     order = cast(list[str], manifest["case_order"])
     codes: list[int] = []
@@ -2406,7 +2803,7 @@ def _execute_manifest(
     closed = False
     questions: list[str] = []
     closed_text: str | None = None
-    if halted and attempts >= cap:
+    if halted and attempts >= cap and not manual:
         closed = True
         unfinished_units = list(cast(list[str], manifest.get("remaining") or []))
         for recipe in recipes.values():
@@ -2454,6 +2851,7 @@ def _execute_manifest(
             hooks=hook_lines,
             user_model_lines=user_model_lines,
             questions=questions,
+            notes=runner_notes,
         )
         manifest, report_path, latest = _write_manifest_truth(
             home, manifest, report_text=text, complete=not halted, closed=closed,
@@ -2461,7 +2859,9 @@ def _execute_manifest(
         )
         if closed:
             _notify_week_closed(home, week, attempts, _failure_kind_text(manifest), [run_id])
-        if not halted:
+        if not halted and _counts_as_week_review(manifest.get("trigger")):
+            # A manual completion leaves the cache marker alone: the
+            # scheduler reads it (`last_run_iso`) as "the week's review".
             completed_at = status(home).get("last_run_at") or chrono.now_iso()
             _write_last_run_marker(home, cast(str, completed_at))
     except Exception as exc:
@@ -2481,7 +2881,7 @@ def _execute_manifest(
             population_count=int(manifest.get("population_count") or 0),
             excluded=excluded, model_calls=model_calls,
             guard=int(manifest.get("guard") or 0),
-            parked_decided=application_count, refused=refusals,
+            parked_decided=application_count, refused=[*refusals, *runner_notes],
             hooks=hook_lines, reason=reason,
             user_model_lines=user_model_lines, questions=questions,
         )
@@ -2516,7 +2916,10 @@ def _execute_manifest(
             decision = push.exit_code
             push_failure = f"push: failed ({push.exit_code})"
             try:
-                _record_push_failure(home, report_path, latest, push_failure)
+                _record_push_failure(
+                    home, report_path, latest, push_failure,
+                    _manifest_journal(home, manifest),
+                )
             except Exception as exc:
                 status_name = "partial"
                 _journal(home, {
@@ -2553,18 +2956,28 @@ def _execute_manifest(
     )
 
 
-def run(home: Path | str | None = None, *, dry_run: bool = False, no_push: bool | None = None) -> RunResult:
+def run(
+    home: Path | str | None = None, *, dry_run: bool = False,
+    no_push: bool | None = None, manual: bool = False,
+) -> RunResult:
     """One overseer run, then one push of whatever it committed and has not
     yet published (doc 13 §5, H-5). The completed path pushes inside
     `_execute_manifest`; a failed attempt's note, a partial report, and a
-    withdrawn or closed week used to stay local (found 2026-09-24)."""
+    withdrawn or closed week used to stay local (found 2026-09-24).
+
+    *manual* (2026-09-24): `self-learn overseer run` passes True, `serve`'s
+    scheduled job does not. The user's words: "user initiated runs don't
+    count toward the weekly limit." A manual run adds nothing to the
+    week's attempt count, is never held by a done or closed week, never
+    closes a week, and -- the user's choice, "No, Sunday still runs" --
+    does not count as the week's review when it completes."""
     home = Path(home) if home is not None else resolve_home()
     boundary_no_push = worker.no_push_requested() if no_push is None else no_push
     publish = not dry_run and not boundary_no_push
     head_before = verbs.ledger_head(home) if publish else None
     result: RunResult | None = None
     try:
-        result = _run(home, dry_run=dry_run, no_push=boundary_no_push)
+        result = _run(home, dry_run=dry_run, no_push=boundary_no_push, manual=manual)
         return result
     finally:
         if publish:
@@ -2581,8 +2994,10 @@ def _publish(home: Path, head_before: str | None, run_id: str) -> None:
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "push", "ok": push.ok, "code": push.exit_code})
 
 
-def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
+def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> RunResult:
     run_id = uuid.uuid4().hex[:8]
+    trigger = TRIGGER_MANUAL if manual else TRIGGER_SCHEDULED
+    trigger_field = {"trigger": TRIGGER_MANUAL} if manual else {}
     started = chrono.now_iso()
     recovered = intents.recover(home)
     if recovered.stopped:
@@ -2612,18 +3027,23 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
             cap = attempt_cap(home)
             unfinished = _unfinished_manifest(home)
             attempts_before = week_attempts(home, week)
+            # A manual run is never held by a done or closed week and never
+            # writes a week's close-out (2026-09-24); committed unfinished
+            # work is still resumed first, exactly as for a scheduled run.
             pending_close_out = (
-                unfinished is None
+                not manual
+                and unfinished is None
                 and attempts_before >= cap
                 and not week_closed(home, week)
             )
-            held = unfinished is None and not pending_close_out and week_done(
-                home, boundary
+            held = (
+                not manual and unfinished is None and not pending_close_out
+                and week_done(home, boundary)
             )
         except Exception as exc:  # noqa: BLE001 — recorded, then re-raised unchanged
             _journal(home, {
                 "at": chrono.now_iso(), "run": run_id, "status": "attempt-start",
-                "reason": f"ownership check failed: {exc}"[:300],
+                "reason": f"ownership check failed: {exc}"[:300], **trigger_field,
             })
             raise
         if pending_close_out:
@@ -2648,27 +3068,31 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
             _journal(home, {
                 "at": chrono.now_iso(), "run": run_id,
                 "status": "attempt-start", "resume": str(unfinished.get("run_id") or ""),
+                **trigger_field,
             })
             resume_id = cast(str, unfinished["run_id"])
             resume_week = _manifest_week(unfinished) or week
-            unfinished = _update_manifest(
-                home, resume_id,
-                reason=f"attempt {_record_attempts(unfinished) + 1}",
-                update=lambda current: current.update(
-                    attempt_count=_record_attempts(current) + 1,
-                    last_attempt_at=chrono.now_iso(),
-                    week=current.get("week") or resume_week,
-                ),
-            )
+            if not manual:
+                # A manual resume adds nothing to the week's count
+                # (2026-09-24), so it leaves the record's count alone.
+                unfinished = _update_manifest(
+                    home, resume_id,
+                    reason=f"attempt {_record_attempts(unfinished) + 1}",
+                    update=lambda current: current.update(
+                        attempt_count=_record_attempts(current) + 1,
+                        last_attempt_at=chrono.now_iso(),
+                        week=current.get("week") or resume_week,
+                    ),
+                )
             return _execute_manifest(
-                home, unfinished, boundary_no_push=boundary_no_push
+                home, unfinished, boundary_no_push=boundary_no_push, manual=manual,
             )
         # A19: every attempt arms the cooldown, including one that then
         # makes zero model calls or raises. This is the first line the run
         # writes after it has taken ownership and before anything that can
         # fail; the first journal line used to be `population`, several
         # git and stage calls later.
-        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "attempt-start"})
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "attempt-start", **trigger_field})
     else:
         boundary = week_boundary(time.time())
         week = week_key(boundary)
@@ -2696,6 +3120,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
     worker.stage_reset(home)
     stage = worker.stage_dir() / "overseer"
     stage.mkdir(parents=True, exist_ok=True)
+    # The run's journal exists before phase A and is never truncated: no
+    # stage reset happens between phase A and phase B.
+    _start_model_journal(stage, run_id, started[:10])
     coverage_path = home / "overseer" / "coverage.yaml"
     previous = population_mod.load_coverage(coverage_path)
     since = previous.get("last_run_at") or chrono.now_iso(datetime.now(timezone.utc) - timedelta(days=7))
@@ -2732,6 +3159,8 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
             run_id=run_id, started=started, kind=kind, detail=detail,
             model=str(model), population_count=len(week_rows), excluded=excluded,
             model_calls=model_calls, guard=guard, reason=reason,
+            journal_text=None if dry_run else _model_journal_text(home, stage, run_id, started[:10]),
+            manual=manual,
         )
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": state, "phase": "a", "reason": (detail or kind)[:300]})
         return RunResult(state, EXIT_REFUSED, run_id, model_calls, excluded=excluded)
@@ -2747,12 +3176,21 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
             run_id=run_id, started=started, kind="schema-repair", detail=detail,
             model=str(model), population_count=len(week_rows), excluded=excluded,
             model_calls=model_calls, guard=guard, reason=str(exc),
+            journal_text=None if dry_run else _model_journal_text(home, stage, run_id, started[:10]),
+            manual=manual,
         )
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "a-incomplete", "reason": str(exc)[:300]})
         return RunResult("refused", EXIT_REFUSED, run_id, model_calls, excluded=excluded)
 
     now_dt = datetime.now(timezone.utc)
     coverage = population_mod.coverage_update(previous, selection, week_rows, offered, now=now_dt)
+    if not _counts_as_week_review(trigger):
+        # The user's choice (2026-09-24, "No, Sunday still runs"): a manual
+        # run's coverage of the cases it examined is written as usual, but
+        # `last_run_at` -- the field `week_done`, `previous_run_exists`,
+        # `last_run_iso` and the next population window read as "the
+        # week's review" -- stays where the last counted run left it.
+        coverage["last_run_at"] = previous.get("last_run_at")
     coverage_text = population_mod.render_coverage(coverage)
     coverage_before: bytes | None = None
     intent: intents.Intent | None = None
@@ -2773,13 +3211,16 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
             row for row in cases.list_cases(home, parked_for="overseer", only_ok=True)
             if not row.get("superseded_by")
         ]
-        _full_inputs(home, stage, selected, parked_rows)
+        model_doc = _full_inputs(home, stage, selected, parked_rows)
         prompt_b = _phase_b_prompt(stage, selected, tuple(row["case"] for row in parked_rows))
         _write_stage(stage, stage / "prompt-b.md", prompt_b)
         outcome_b = _invoke(home, stage, prompt_b, timeout_seconds, "phase-b", run_id)
         model_calls = _MODEL_CALLS_PER_RUN
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-b-returned",
             "ok": bool(outcome_b.ok), "tool_turns": _reported_turns(outcome_b)})
+        # Both phases have written to it by now; every commit below carries
+        # it (already secret-scanned; a hit is the stub).
+        journal_text = None if dry_run else _model_journal_text(home, stage, run_id, started[:10])
         # As for phase A: a phase B that ended normally is judged on its
         # files; the guard was settled before phase A (`guard <
         # _MODEL_CALLS_PER_RUN` holds the run), so a complete answer is never
@@ -2793,6 +3234,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
             if not dry_run:
                 closed_text, close_questions = _close_out_if_exhausted(
                     home, week=week, attempts=attempt, cap=cap, kind=kind, detail=detail,
+                    manual=manual,
                 )
             text = _report_text(date=started[:10], run_id=run_id, model=str(model), selected=selected, population_count=len(week_rows), excluded=excluded, model_calls=model_calls, guard=guard, reason=reason, questions=close_questions)
             report_path = _write_report_only(stage, text)
@@ -2803,6 +3245,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
                     date=started[:10], run_id=run_id, week=week, started=started,
                     attempt=attempt, cap=cap, kind=kind, detail=detail,
                     closed_text=closed_text,
+                    journal_text=journal_text, trigger=trigger,
                 )
                 if closed_text is not None:
                     _queue_week_closed(deferred_notice, home, week, attempt, kind, [run_id])
@@ -2834,6 +3277,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
                     closed_text, close_questions = _close_out_if_exhausted(
                         home, week=week, attempts=attempt, cap=cap,
                         kind="schema-repair", detail=detail,
+                        manual=manual,
                     )
                 text = _report_text(
                     date=started[:10], run_id=run_id, model=str(model), selected=selected,
@@ -2854,6 +3298,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
                         started=started, attempt=attempt, cap=cap,
                         kind="schema-repair", detail=detail,
                         closed_text=closed_text,
+                        journal_text=journal_text, trigger=trigger,
                     )
                     if closed_text is not None:
                         report_path = published
@@ -2880,6 +3325,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
                 closed_text, close_questions = _close_out_if_exhausted(
                     home, week=week, attempts=attempt, cap=cap,
                     kind="secret-scan", detail=detail,
+                    manual=manual,
                 )
             text = _report_text(
                 date=started[:10], run_id=run_id, model=str(model), selected=selected,
@@ -2900,6 +3346,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
                     date=started[:10], run_id=run_id, week=week,
                     started=started, attempt=attempt, cap=cap,
                     kind="secret-scan", detail=detail, closed_text=closed_text,
+                    journal_text=journal_text, trigger=trigger,
                 )
                 if closed_text is not None:
                     report_path = published
@@ -2930,6 +3377,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
                 closed_text, close_questions = _close_out_if_exhausted(
                     home, week=week, attempts=attempt, cap=cap,
                     kind="schema-repair", detail=detail,
+                    manual=manual,
                 )
             text = _report_text(date=started[:10], run_id=run_id, model=str(model), selected=selected, population_count=len(week_rows), excluded=excluded, model_calls=model_calls, guard=guard, reason=refusal_reason, questions=close_questions)
             report_path = _write_report_only(stage, text)
@@ -2940,6 +3388,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
                     date=started[:10], run_id=run_id, week=week, started=started,
                     attempt=attempt, cap=cap, kind="schema-repair",
                     detail=detail, closed_text=closed_text,
+                    journal_text=journal_text, trigger=trigger,
                 )
                 if closed_text is not None:
                     _queue_week_closed(
@@ -2953,7 +3402,11 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
             # or sheet can change the ledger.  Runner-owned additions below
             # truncate model prose rather than turning a landed decision into
             # a late refusal.
-            questions = _questions(stage / "questions.yaml")
+            # Never raises: a failed entry is dropped and named (2026-09-24).
+            questions, question_drops = _questions(
+                stage / "questions.yaml", model_doc,
+                {row["case"] for row in cases.list_cases(home, only_ok=True)},
+            )
             findings = _validate_findings(_yaml_mapping(stage / "findings.yaml"), selected)
             model_updates = _model_updates(stage / "user-model-delta.yaml")
             prepared: list[tuple[Path | None, Path, batch.Sheet]] = []
@@ -2994,6 +3447,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
                 closed_text, close_questions = _close_out_if_exhausted(
                     home, week=week, attempts=attempt, cap=cap,
                     kind="schema-repair", detail=detail,
+                    manual=manual,
                 )
             text = _report_text(date=started[:10], run_id=run_id, model=str(model), selected=selected, population_count=len(week_rows), excluded=excluded, model_calls=model_calls, guard=guard, reason=str(exc), questions=close_questions)
             report_path = _write_report_only(stage, text)
@@ -3004,6 +3458,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
                     date=started[:10], run_id=run_id, week=week, started=started,
                     attempt=attempt, cap=cap, kind="schema-repair",
                     detail=detail, closed_text=closed_text,
+                    journal_text=journal_text, trigger=trigger,
                 )
                 if closed_text is not None:
                     _queue_week_closed(
@@ -3024,10 +3479,11 @@ def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
             selected=selected, population_count=len(week_rows), excluded=excluded,
             model_calls=model_calls, guard=guard, coverage_text=coverage_text,
             questions=questions, findings=findings, prepared=prepared,
-            model_updates=model_updates,
+            model_updates=model_updates, runner_notes=question_drops,
+            journal_text=journal_text, trigger=trigger,
         )
         _publish_manifest(home, intent, manifest, coverage_path)
 
     return _execute_manifest(
-        home, manifest, boundary_no_push=boundary_no_push
+        home, manifest, boundary_no_push=boundary_no_push, manual=manual,
     )

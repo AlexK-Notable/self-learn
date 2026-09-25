@@ -24,7 +24,9 @@ brief (build-o1.md §`coverage_update`) asks this function to carry "the
 model's stated reason for the selection and for stopping" in the
 returned dict. `02-schema.md` §3a.1 item 2 states plainly: "`coverage.yaml`
 and `open-questions.yaml` carry no free text at all (structured records
-only)". This module follows the spec: `coverage_update` never copies
+only)" (amended 2026-09-24: an ask's `text` and `why` in
+`open-questions.yaml` are free text now; `coverage.yaml` still carries
+none). This module follows the spec: `coverage_update` never copies
 `why_these`/`why_stopped` prose out of `selection_yaml` into the returned
 dict — those two fields are the ONLY free text `selection.yaml` (the
 model's own file, not `coverage.yaml`) is allowed to carry
