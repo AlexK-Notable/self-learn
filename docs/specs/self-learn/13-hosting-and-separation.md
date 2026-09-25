@@ -359,6 +359,12 @@ steward reads the worker's brief — and an overseer job, weekly, after the
 steward job. Both are ordinary `serve` jobs in exactly this section's sense:
 each takes its own lock, commits under its own pinned subject, and `serve`
 itself never stages, commits, or pushes on their behalf (H-5 unchanged).
+*(Amended 2026-09-24.)* So each publishes its own writes: every write inside
+a steward or overseer run is `no_push`, and the run pushes once when it ends,
+however it ends (complete, partial, a failed attempt, or an exception), if
+the ledger `HEAD` moved during the run and something is still unpushed — the
+bare `self-learn push` verb, so hosts the run committed into go too. A dry
+run and a `no_push` request publish nothing.
 `_steward_is_due`/`_overseer_is_due` follow the existing
 `_mine_is_due`/schedule-state-parity shape; both run inside the same
 `_worker_autokick_disabled()` span the mine and worker jobs already share,

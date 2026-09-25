@@ -2554,7 +2554,34 @@ def _execute_manifest(
 
 
 def run(home: Path | str | None = None, *, dry_run: bool = False, no_push: bool | None = None) -> RunResult:
+    """One overseer run, then one push of whatever it committed and has not
+    yet published (doc 13 §5, H-5). The completed path pushes inside
+    `_execute_manifest`; a failed attempt's note, a partial report, and a
+    withdrawn or closed week used to stay local (found 2026-09-24)."""
     home = Path(home) if home is not None else resolve_home()
+    boundary_no_push = worker.no_push_requested() if no_push is None else no_push
+    publish = not dry_run and not boundary_no_push
+    head_before = verbs.ledger_head(home) if publish else None
+    result: RunResult | None = None
+    try:
+        result = _run(home, dry_run=dry_run, no_push=boundary_no_push)
+        return result
+    finally:
+        if publish:
+            _publish(home, head_before, result.run if result is not None else "?")
+
+
+def _publish(home: Path, head_before: str | None, run_id: str) -> None:
+    try:
+        push = verbs.publish_after_run(home, head_before)
+    except Exception as exc:  # never mask the run's own outcome
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "push-error", "reason": str(exc)[:300]})
+        return
+    if push is not None:
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "push", "ok": push.ok, "code": push.exit_code})
+
+
+def _run(home: Path, *, dry_run: bool, no_push: bool) -> RunResult:
     run_id = uuid.uuid4().hex[:8]
     started = chrono.now_iso()
     recovered = intents.recover(home)
@@ -2562,7 +2589,7 @@ def run(home: Path | str | None = None, *, dry_run: bool = False, no_push: bool 
         _journal(home, {"at": started, "run": run_id, "status": "stopped", "reason": "; ".join(recovered.stopped)[:300]})
         return RunResult("stopped", EXIT_STOPPED, run_id)
 
-    boundary_no_push = worker.no_push_requested() if no_push is None else no_push
+    boundary_no_push = no_push
     enabled, _enabled_source = settings.resolve_setting(home, settings.by_name("overseer.enabled"))
     if not enabled and not dry_run:
         _journal(home, {"at": started, "run": run_id, "status": "disabled"})

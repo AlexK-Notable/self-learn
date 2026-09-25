@@ -2659,7 +2659,31 @@ def cases_since_overseer(home: Path | str) -> int:
 
 
 def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
+    """One steward run, then one push of what it committed (doc 13 §5,
+    H-5). Every write inside the run is ``no_push=True``, so before this
+    wrapper a run's decisions stayed local until some other producer
+    happened to push (found 2026-09-24: 41 ledger commits waiting)."""
     home = Path(home)
+    publish = not dry_run and not worker.no_push_requested()
+    head_before = verbs.ledger_head(home) if publish else None
+    try:
+        return _run(home, dry_run=dry_run)
+    finally:
+        if publish:
+            _publish(home, head_before)
+
+
+def _publish(home: Path, head_before: str | None) -> None:
+    try:
+        push = verbs.publish_after_run(home, head_before)
+    except Exception as exc:  # never mask the run's own outcome
+        _journal(home, {"ts": chrono.now_iso(), "status": "push-error", "reason": str(exc)[:300]})
+        return
+    if push is not None:
+        _journal(home, {"ts": chrono.now_iso(), "status": "push", "ok": push.ok, "code": push.exit_code})
+
+
+def _run(home: Path, *, dry_run: bool) -> RunResult:
     recovered = intents.recover(home)
     if recovered.stopped:
         result = RunResult("stopped", stopped=list(recovered.stopped))

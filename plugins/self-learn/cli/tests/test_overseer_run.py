@@ -2227,3 +2227,77 @@ def test_a_refusal_committed_without_a_kind_stays_final_when_the_run_resumes(
     overseer_run.run(home, dry_run=False, no_push=True)
 
     assert dispatched == [1, 2], "a refusal with no recorded kind is never dispatched again"
+
+
+# --- A run publishes what it committed (doc 13 §5, H-5; found 2026-09-24:
+# the first live run's failure note `dc83ced` stayed local, because only the
+# completed path pushed).
+
+
+def _with_bare_remote(home, tmp_path):
+    remote = tmp_path / "ledger-remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, capture_output=True)
+    _git(home, "remote", "add", "origin", str(remote))
+    _git(home, "push", "-q", "-u", "origin", "HEAD")
+    return remote
+
+
+def _published(home, remote):
+    return _git(home, "rev-parse", "HEAD").strip() in _git(home, "ls-remote", str(remote))
+
+
+def test_a_failed_attempt_publishes_its_failure_note(tmp_path, monkeypatch):
+    monkeypatch.delenv(worker.NO_PUSH_ENV, raising=False)
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    remote = _with_bare_remote(home, tmp_path)
+    before = _git(home, "rev-parse", "HEAD").strip()
+    monkeypatch.setattr(overseer_run.invocation, "write_session", lambda spec: _turn_limited())
+
+    result = overseer_run.run(home, dry_run=False)
+
+    assert result.status == "refused"
+    assert len(overseer_run._committed_failure_notes(home, _this_week())) == 1  # positive control
+    assert _git(home, "rev-parse", "HEAD").strip() != before
+    assert gitops.unpushed_commits(home) == 0
+    assert _published(home, remote)
+    last = overseer_run.read_journal(home)[-1]
+    assert (last["status"], last["ok"], last["run"]) == ("push", True, result.run)
+
+
+def test_a_no_push_request_keeps_a_failed_attempt_local(tmp_path, monkeypatch):
+    monkeypatch.delenv(worker.NO_PUSH_ENV, raising=False)
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    remote = _with_bare_remote(home, tmp_path)
+    monkeypatch.setattr(overseer_run.invocation, "write_session", lambda spec: _turn_limited())
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert result.status == "refused"
+    assert (gitops.unpushed_commits(home) or 0) > 0
+    assert not _published(home, remote)
+    assert all(row.get("status") != "push" for row in overseer_run.read_journal(home))
+
+
+def test_a_completed_run_is_published_by_its_own_push_only(tmp_path, monkeypatch):
+    """The completed path already pushes inside `_execute_manifest`; the
+    run-level publish then finds nothing left and does not push again."""
+    monkeypatch.delenv(worker.NO_PUSH_ENV, raising=False)
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    remote = _with_bare_remote(home, tmp_path)
+    _fake_two_phase(monkeypatch)
+    pushes = []
+    real = overseer_run.verbs.push_pending
+    monkeypatch.setattr(overseer_run.verbs, "push_pending", lambda h: pushes.append(h) or real(h))
+
+    result = overseer_run.run(home, dry_run=False)
+
+    assert result.status == "applied", result
+    assert _published(home, remote)
+    assert len(pushes) == 1
+    assert all(row.get("status") != "push" for row in overseer_run.read_journal(home))

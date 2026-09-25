@@ -27,6 +27,7 @@ from self_learn import (
     steward,
     user_model,
     verbs,
+    worker,
 )
 from self_learn.ledger_ops import create_record
 from self_learn.invocation.contract import Outcome
@@ -2879,3 +2880,95 @@ def test_a_ledger_stop_mid_sheet_is_re_driven_by_the_next_run(tmp_path, monkeypa
     assert second.status == "applied" and second.decided == [rid]
     assert ledger_ops.list_items(home) == []
     assert _head_manifest(home, first.run_id)["status"] == "complete"
+
+
+# --- A run publishes what it committed (doc 13 §5, H-5; found 2026-09-24:
+# every steward write is `no_push=True` and the run had no push of its own,
+# so its decisions waited for some other producer -- 41 commits that day).
+
+
+def _with_bare_remote(home: Path, tmp_path: Path) -> Path:
+    remote = tmp_path / "ledger-remote.git"
+    git(tmp_path, "init", "-q", "--bare", str(remote))
+    git(home, "remote", "add", "origin", str(remote))
+    git(home, "push", "-q", "-u", "origin", "HEAD")
+    return remote
+
+
+def _published(home: Path, remote: Path) -> bool:
+    head = git(home, "rev-parse", "HEAD").stdout.strip()
+    return head in git(home, "ls-remote", str(remote)).stdout
+
+
+def _journal_rows(home: Path) -> list[dict]:
+    return [json.loads(line) for line in steward.journal_path(home).read_text(encoding="utf-8").splitlines()]
+
+
+def test_a_steward_run_publishes_the_commits_it_made(tmp_path, monkeypatch):
+    monkeypatch.delenv(worker.NO_PUSH_ENV, raising=False)
+    home = make_home(tmp_path)
+    _seed_fresh_proposals(home, 2)
+    _enable_steward(home)
+    remote = _with_bare_remote(home, tmp_path)
+    before = git(home, "rev-parse", "HEAD").stdout.strip()
+    monkeypatch.setattr(steward.invocation, "write_session", _write_decision_stage)
+
+    result = steward.run(home, dry_run=False)
+
+    assert result.status == "applied"
+    assert git(home, "rev-parse", "HEAD").stdout.strip() != before  # positive control: it committed
+    assert gitops.unpushed_commits(home) == 0
+    assert _published(home, remote)
+    last = _journal_rows(home)[-1]
+    assert (last["status"], last["ok"], last["code"]) == ("push", True, 0)
+
+
+def test_a_partial_steward_run_still_publishes_what_it_recorded(tmp_path, monkeypatch):
+    """A packet Claude Code stopped at its turn limit commits the bound on
+    the run record; that commit is published too, not left for later."""
+    monkeypatch.delenv(worker.NO_PUSH_ENV, raising=False)
+    home = make_home(tmp_path)
+    _seed_fresh_proposals(home, 2)
+    _enable_steward(home)
+    remote = _with_bare_remote(home, tmp_path)
+    before = git(home, "rev-parse", "HEAD").stdout.strip()
+    monkeypatch.setattr(steward.invocation, "write_session", _stopped_at_the_turn_limit)
+
+    result = steward.run(home, dry_run=False)
+
+    assert result.status == "partial"
+    assert git(home, "rev-parse", "HEAD").stdout.strip() != before
+    assert gitops.unpushed_commits(home) == 0
+    assert _published(home, remote)
+
+
+def test_a_no_push_request_keeps_the_run_local(tmp_path, monkeypatch):
+    monkeypatch.setenv(worker.NO_PUSH_ENV, "1")
+    home = make_home(tmp_path)
+    _seed_fresh_proposals(home, 2)
+    _enable_steward(home)
+    remote = _with_bare_remote(home, tmp_path)
+    monkeypatch.setattr(steward.invocation, "write_session", _write_decision_stage)
+
+    result = steward.run(home, dry_run=False)
+
+    assert result.status == "applied"
+    assert (gitops.unpushed_commits(home) or 0) > 0
+    assert not _published(home, remote)
+    assert all(row.get("status") != "push" for row in _journal_rows(home))
+
+
+def test_a_run_that_commits_nothing_publishes_nothing(tmp_path, monkeypatch):
+    """Only what the run itself committed is its to publish: an idle run
+    leaves another producer's unpushed commit alone."""
+    monkeypatch.delenv(worker.NO_PUSH_ENV, raising=False)
+    home = make_home(tmp_path)
+    _enable_steward(home)
+    remote = _with_bare_remote(home, tmp_path)
+    git(home, "commit", "-q", "--allow-empty", "-m", "someone else's commit")
+
+    result = steward.run(home, dry_run=False)
+
+    assert result.status == "idle"
+    assert gitops.unpushed_commits(home) == 1
+    assert not _published(home, remote)

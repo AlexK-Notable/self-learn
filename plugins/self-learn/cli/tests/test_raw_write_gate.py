@@ -326,7 +326,7 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
         "fcntl.flock) -- never carries content",
         "keep",
     ),
-    ("cli", "steward.py", "run"): (
+    ("cli", "steward.py", "_run"): (
         "flock lock file only (steward.lock) -- never carries content",
         "keep",
     ),
