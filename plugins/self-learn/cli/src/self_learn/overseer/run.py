@@ -2777,6 +2777,10 @@ def _execute_manifest(
     application_count = 0
     halted = False
     halt_reason: str | None = None
+    #: 2026-09-26 (Q19): items refused with a retried kind (`git`,
+    #: `target-busy`) this attempt. They keep the run unfinished, so the
+    #: ordinary resume dispatches them again -- bounded by the attempt cap.
+    retry_pending: list[str] = []
     gate = config.hook_activation_enabled(home)
     # S-68. The PROGRESS reading is taken from the record as it stands at
     # HEAD at the START of this attempt; the count is committed evidence and
@@ -2825,6 +2829,10 @@ def _execute_manifest(
                 # EVERY item not applied is listed, with its state (N11:
                 # a receipted item carries no detail, and was left out).
                 refusals.append(_refusal_line(cast(str, recipe["sheet_name"]), item))
+            if item.state == "refused" and item.kind in _RETRIED_REFUSAL_KINDS:
+                retry_pending.append(
+                    f"{recipe['sheet_name']} item {item.n} ({item.verb} {item.id}) [{item.kind}]"
+                )
         by_n = {item.n: item for item in result.items}
         for sheet_item in effective:
             item_result = by_n.get(sheet_item.n)
@@ -2941,6 +2949,18 @@ def _execute_manifest(
             halt_reason = f"run ended early: {exc}"
             manifest["remaining"] = ["observations/questions/report finalization"]
 
+    if retry_pending and not halted:
+        # 2026-09-26 (Q19): an ordinary refusal never halts a sheet, so a run
+        # whose only failure was a retried-kind refusal used to complete that
+        # night and drop the item for the week. It now stays unfinished --
+        # everything else of this attempt has landed -- and the next resume
+        # dispatches the item again; at `runs.attempt_cap` the close-out
+        # lists it. A FINAL refusal is untouched.
+        halted = True
+        halt_reason = "refused for a reason that often clears on its own; " \
+            "dispatched again when the run resumes"
+        manifest["remaining"] = list(retry_pending)
+
     item_code = _worst_code(codes, any_applied=application_count > 0)
     decision = item_code
     if halted:
@@ -2995,11 +3015,14 @@ def _execute_manifest(
                 int(row["n"]) for row in recipe.get("dispositions") or []
                 if isinstance(row, dict) and _item_settled(row)
             }
-            unfinished_units.extend(
-                f"{recipe['sheet_name']} item {row['n']} ({row['verb']} {row['id']})"
-                for row in recipe.get("items") or []
-                if int(row["n"]) not in settled
-            )
+            for row in recipe.get("items") or []:
+                line = f"{recipe['sheet_name']} item {row['n']} ({row['verb']} {row['id']})"
+                # A retried-kind refusal is already named in `remaining`
+                # with its kind (2026-09-26); never twice.
+                if int(row["n"]) not in settled and not any(
+                    unit.startswith(line) for unit in unfinished_units
+                ):
+                    unfinished_units.append(line)
         kind = _failure_kind_text(manifest)
         detail = manifest.get("failure_detail")
         questions = _close_out_questions(
