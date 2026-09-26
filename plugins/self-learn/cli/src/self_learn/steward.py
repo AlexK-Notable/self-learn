@@ -15,7 +15,7 @@ import re
 import shutil
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
@@ -1119,8 +1119,11 @@ def _prepared_recipe(
         # 2026-09-25 (run-d8f5e198ff4f): an evidence item quoting a heading
         # line is dropped HERE, before the case text is frozen into the
         # committed run record, so the quote never reaches the ledger; the
-        # decision records with the rest of its evidence.
-        case_data, dropped_evidence = cases.split_heading_evidence(case_data)
+        # decision records with the rest of its evidence. 2026-09-26
+        # (run-1ca3de428b35): so is an item whose quote or ref matched the
+        # secret scan -- dropped before the prepared-text scan below, which
+        # would otherwise refuse the whole packet over it.
+        case_data, dropped_evidence = cases.split_runner_evidence(case_data)
         predecessor_ids = {
             predecessors[rid]
             for rid in case_data.get("records") or []
@@ -1191,9 +1194,10 @@ def _prepared_recipe(
             payload = dict(item)
             parked_dropped: list[dict] = []
             if kind == "parked-case":
-                # 2026-09-25: as for a decided case above -- dropped before
-                # the payload is frozen into the committed run record.
-                payload, parked_dropped = cases.split_heading_evidence(payload)
+                # 2026-09-25/26: as for a decided case above -- dropped
+                # before the payload is frozen into the committed run record
+                # and before the prepared-text scan below.
+                payload, parked_dropped = cases.split_runner_evidence(payload)
                 prepared_texts.extend(row["ref"] for row in parked_dropped)
             prepared_texts.append(_yaml_text(payload))
             ordinal = len(maintenance) + 1
@@ -1226,7 +1230,12 @@ def _prepared_recipe(
 
     hits = [hit for text in prepared_texts for hit in secret_scan(text)]
     if hits:
-        raise ValueError(format_refusal(hits))
+        # 2026-09-26: the caller commits this message into the run record
+        # (the packet's `failure` and each disposition's `reason`), so it
+        # names each hit's rule and offsets, never the matched span.
+        raise ValueError(format_refusal(
+            [dataclass_replace(hit, span="[withheld]") for hit in hits]
+        ))
     for row in dropped_rows:
         _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
             "status": "evidence-dropped", **row})
