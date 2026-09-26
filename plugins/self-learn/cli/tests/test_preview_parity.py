@@ -151,6 +151,15 @@ def _secret_rows():
         Row("confirm-held-secret-in-note",
             lambda e: {"id": _routed(e, A), "verb": "confirm-held", "note": SECRET},
             "secret scan hit", "bad-line"),
+        # 2026-09-26 (N6): dismiss-suspect writes `why` into the record.
+        Row("dismiss-suspect-secret-in-why",
+            lambda e: {"id": _routed(e, A), "verb": "dismiss-suspect",
+                       "event": _suspect(e, A), "why": SECRET},
+            "--why:\nsecret scan: 1 hit", "bad-line"),
+        Row("dismiss-suspect-secret-in-note",
+            lambda e: {"id": _routed(e, A), "verb": "dismiss-suspect",
+                       "event": _suspect(e, A), "why": "other", "note": SECRET},
+            "--note:\nsecret scan: 1 hit", "bad-line"),
     ]
 
 

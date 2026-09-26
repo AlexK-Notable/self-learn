@@ -574,18 +574,28 @@ def _date_str(value) -> str:
     return str(value)
 
 
-def _scan_or_refuse(paths: list[Path], note: str | None) -> None:
-    """(a) Full-record-file secret scan (P2-7) + the note text. A hit
-    refuses the verb with span + rule; nothing has been written yet."""
+def _scan_or_refuse(
+    paths: list[Path],
+    note: str | None,
+    *,
+    texts: tuple[tuple[str, str | None], ...] = (),
+) -> None:
+    """(a) Full-record-file secret scan (P2-7) + the note text + any other
+    caller text the verb writes (``texts``: ``(label, text)`` pairs, e.g.
+    dismiss-suspect's ``--why``). A hit refuses the verb with span + rule;
+    nothing has been written yet."""
     findings: list[tuple[str, list]] = []
     for path in paths:
         hits = secret_scan(path.read_text(encoding="utf-8"))
         if hits:
             findings.append((str(path), hits))
-    if note:
-        hits = secret_scan(note)
-        if hits:
-            findings.append(("--note", hits))
+    caller_labels = {"--note"}
+    for label, text in (("--note", note), *texts):
+        caller_labels.add(label)
+        if text:
+            hits = secret_scan(str(text))
+            if hits:
+                findings.append((label, hits))
     if not findings:
         return
     parts = [f"{label}:\n{format_refusal(hits)}" for label, hits in findings]
@@ -593,7 +603,7 @@ def _scan_or_refuse(paths: list[Path], note: str | None) -> None:
     # S-71: a hit in ANY file is a hit in the record (refused, never
     # parked); only when the caller's own text is the sole source is it
     # the item's.
-    in_file = any(label != "--note" for label, _ in findings)
+    in_file = any(label not in caller_labels for label, _ in findings)
     raise SecretRefusal(
         "secret scan hit — refusing this verb (P2-7; no bypass):\n"
         + "\n".join(parts),
@@ -7775,10 +7785,12 @@ def _preflight_dismiss_suspect(
     *,
     event_ref: str,
     note: str | None,
+    why: str | None = None,
 ) -> tuple[dict, Path, Record]:
     """S-71 §6: `dismiss-suspect`'s checks before any lock — moved here
     verbatim so the verb and `batch.dry_run` run the SAME checks, in the
-    same order."""
+    same order. ``why`` is written into the record beside the note, so it
+    is secret-scanned with it (2026-09-26, N6); like the note, no bypass."""
     event = next(
         (
             e
@@ -7800,7 +7812,7 @@ def _preflight_dismiss_suspect(
             f"not {record_id!r} — dismiss it against the record it names"
         )
     path = find_record_path(home, record_id)
-    _scan_or_refuse([path], note)
+    _scan_or_refuse([path], note, texts=(("--why", why),))
     try:
         _, record = require_status(
             home,
@@ -7846,7 +7858,7 @@ def dismiss_suspect(
     ``self-learn: suspect dismissed on lrn-…``."""
     home = Path(home)
     event, path, record = _preflight_dismiss_suspect(
-        home, record_id, event_ref=event_ref, note=note
+        home, record_id, event_ref=event_ref, note=note, why=why
     )
     hold = sentinel.hold()
     sentinel.heartbeat()

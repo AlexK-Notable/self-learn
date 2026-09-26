@@ -1648,7 +1648,8 @@ def _preview_dismiss_suspect(
     home: Path, item: SheetItem, by: str | None, rc: str | None
 ) -> None:
     verbs._preflight_dismiss_suspect(
-        home, item.id, event_ref=item.fields["event"], note=item.fields.get("note")
+        home, item.id, event_ref=item.fields["event"], note=item.fields.get("note"),
+        why=item.fields.get("why"),
     )
 
 
