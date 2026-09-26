@@ -928,7 +928,13 @@ the reason are kept in that record (the steward also journals it, the
 overseer names it under "Refused / could not do"), its quote is not — and
 the case records with the rest of its evidence; if no evidence would remain,
 or the line is in any other field, the case is refused as before. A person's
-`case record` stays strict.
+`case record` stays strict. *(Added 2026-09-26.)* The same runners drop, the
+same way and in the same pass, an evidence item whose quote or reference has
+a secret-scan hit, before any whole-text secret scan that would otherwise
+refuse the case or the run; the trace names the rule, never the matched
+text, and the reference is replaced by `(ref withheld: it matched the secret
+scan)` when it is itself flagged. A hit in any other field (or anywhere else
+in the staged file) still refuses as before.
 
 **Section 3, Decision** — free text, with these labelled lines first:
 

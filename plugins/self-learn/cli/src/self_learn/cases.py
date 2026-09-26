@@ -379,32 +379,55 @@ def _refuse_headings(texts: list[str]) -> None:
 #: Why a runner dropped an evidence item (2026-09-25, run-d8f5e198ff4f).
 HEADING_EVIDENCE_REASON = 'a quoted line starts with "## "'
 
+#: Stands in for a dropped item's ref when the ref itself matched the
+#: secret scan (2026-09-26): the flagged text never reaches a run record.
+WITHHELD_REF = "(ref withheld: it matched the secret scan)"
 
-def split_heading_evidence(data: dict) -> tuple[dict, list[dict]]:
-    """The steward's and overseer's runners only (2026-09-25): drop each
-    evidence item whose `quote` or `ref` has a heading-shaped line, before
-    the case is frozen into a run record, instead of letting `record`
-    refuse the whole case. The quote is never escaped or rewritten (D-i):
-    the item goes whole. Returns ``(data, dropped)``; each dropped row is
-    ``{"ref", "reason"}`` (the ref flattened to one line) and never carries
-    the quote. When dropping would leave no evidence, nothing is dropped,
-    so `record` refuses exactly as it does for a person's `case record`,
-    which never calls this."""
+
+def secret_evidence_reason(rule: str) -> str:
+    """Why a runner dropped an evidence item that matched the secret scan
+    (2026-09-26, run-1ca3de428b35). Names the rule, never the span."""
+    return f"a quoted line matched the secret scan ({rule})"
+
+
+def split_runner_evidence(data: dict) -> tuple[dict, list[dict]]:
+    """The steward's and overseer's runners only: drop each evidence item
+    whose `quote` or `ref` either has a heading-shaped line (2026-09-25) or
+    has a secret-scan hit (2026-09-26), before the case is frozen into a
+    run record, instead of letting the whole case be refused. The quote is
+    never escaped, rewritten or redacted: the item goes whole.
+
+    Returns ``(data, dropped)``. A heading row is ``{"ref", "reason"}``; a
+    secret row is ``{"ref", "reason", "rule"}`` (a secret hit wins when an
+    item has both). The ref is flattened to one line and kept only when it
+    scans clean, else it is :data:`WITHHELD_REF`; a row never carries the
+    quote or a matched span. Both kinds are judged in ONE pass: when
+    dropping would leave no evidence, nothing is dropped, so the case is
+    refused exactly as it is for a person's `case record`, which never
+    calls this."""
     evidence = data.get("evidence")
     if not isinstance(evidence, list):
         return data, []
     kept: list = []
     dropped: list[dict] = []
     for item in evidence:
-        if isinstance(item, dict) and any(
-            _HEADING_LINE_RE.search(str(item.get(key) or "")) for key in ("quote", "ref")
-        ):
-            dropped.append({
-                "ref": " ".join(str(item.get("ref") or "").split()),
-                "reason": HEADING_EVIDENCE_REASON,
-            })
-        else:
+        if not isinstance(item, dict):
             kept.append(item)
+            continue
+        texts = [str(item.get(key) or "") for key in ("quote", "ref")]
+        hits = [hit for text in texts for hit in secret_scan(text)]
+        heading = any(_HEADING_LINE_RE.search(text) for text in texts)
+        if not hits and not heading:
+            kept.append(item)
+            continue
+        ref = " ".join(texts[1].split())
+        if secret_scan(ref):
+            ref = WITHHELD_REF
+        if hits:
+            rule = hits[0].rule
+            dropped.append({"ref": ref, "reason": secret_evidence_reason(rule), "rule": rule})
+        else:
+            dropped.append({"ref": ref, "reason": HEADING_EVIDENCE_REASON})
     if not dropped or not kept:
         return data, []
     return {**data, "evidence": kept}, dropped

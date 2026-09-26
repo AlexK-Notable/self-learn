@@ -11,7 +11,9 @@ built-in regex module — no external tool dependency. Rule classes:
                              signature segment
 - ``credential-assignment``  ``(password|passwd|secret|token|api[_-]?key)``
                              ``\\s*[=:]\\s*\\S{8,}``, case-insensitive
-- ``high-entropy-base64``    runs of ``[A-Za-z0-9+/=]`` length >= 40
+- ``high-entropy-base64``    runs of ``[A-Za-z0-9+/=]`` length >= 40; a
+                             path-shaped run is judged per segment
+                             (segments of length >= 20), see below
 - ``high-entropy-hex``       runs of ``[0-9a-fA-F]`` length >= 48
 
 The hex threshold of **48** is load-bearing (gate-check F2): 40-hex git
@@ -38,6 +40,34 @@ Overlap / dedupe choices (documented per the T4 brief):
   ``credential-assignment`` whose value is itself a token (e.g.
   ``token = ghp_…``) reports once, as ``credential-assignment`` — its
   match starts earlier and contains the token span.
+
+Folder paths (2026-09-26, steward run ``run-1ca3de428b35``): ``/`` is in
+the base64 charset and the base64 rule never measures entropy, so any
+folder path of 40+ characters with no ``.``, ``-``, ``_`` or space read as
+a secret — that run's whole packet was refused over an evidence quote
+holding ``/data/SteamLibrary/steamapps/compatdata/3669870/pfx/drive``.
+Entropy does not separate the two (real paths measured 3.75-4.34
+bits/char, random 40-char base64 as low as 4.28), so the carve-out is
+STRUCTURAL:
+
+- A base64 candidate run (not pure hex) is *path-shaped* when it starts
+  with ``/`` and holds at least 3 ``/``. For a random 40-char base64
+  string both happen roughly 1 time in 2,500, so the carve-out almost
+  never swallows a real random secret whole.
+- A path-shaped run is judged per segment (split on ``/``) instead of as
+  one run: a segment of length >= 20 that is not pure hex fires
+  ``high-entropy-base64`` with THAT SEGMENT's span and offsets, so a
+  token hidden as a path segment (``/api/v1/tokens/<random>``) is still
+  caught. Every other rule (the pattern table and the hex rule) already
+  sweeps the whole text on its own, so a ``ghp_…`` segment or a 48+ hex
+  segment is caught by that rule unchanged; a pure-hex segment keeps its
+  hex behaviour (hex >= 48 fires, shorter passes, as for a git SHA).
+- Why 20 per segment: a random 20-char base64 string carries ~120 bits,
+  and the credential bodies worth catching are that long or longer (AWS
+  secret keys 40, GitHub token bodies 36, most API keys 32+), while an
+  ordinary folder name of 20+ characters with no ``.``, ``-``, ``_`` or
+  space is rare. It is never set below 16 (~96 bits), where ordinary
+  CamelCase folder names begin to fire.
 """
 
 from __future__ import annotations
@@ -95,6 +125,25 @@ _RULE_PRIORITY["high-entropy-base64"] = len(_RULE_PRIORITY)
 _HEX_RUN = re.compile(r"[0-9a-fA-F]{48,}")  # threshold 48 is F2-load-bearing
 _B64_RUN = re.compile(r"[A-Za-z0-9+/=]{40,}")
 _PURE_HEX = re.compile(r"[0-9a-fA-F]+")
+# Path carve-out (2026-09-26): see the module docstring.
+_PATH_MIN_SLASHES = 3
+_PATH_SEGMENT_MIN = 20  # never below 16
+
+
+def _is_path_shaped(run: str) -> bool:
+    return run.startswith("/") and run.count("/") >= _PATH_MIN_SLASHES
+
+
+def _path_segment_hits(run: str, offset: int) -> list[Hit]:
+    """A path-shaped run's own base64 hits: each long non-hex segment."""
+    hits: list[Hit] = []
+    pos = 0
+    for segment in run.split("/"):
+        if len(segment) >= _PATH_SEGMENT_MIN and not _PURE_HEX.fullmatch(segment):
+            start = offset + pos
+            hits.append(Hit("high-entropy-base64", segment, start, start + len(segment)))
+        pos += len(segment) + 1
+    return hits
 
 
 def scan(text: str) -> list[Hit]:
@@ -113,6 +162,10 @@ def scan(text: str) -> list[Hit]:
     for m in _B64_RUN.finditer(text):
         if _PURE_HEX.fullmatch(m.group(0)):
             # Pure-hex run: the hex rule (threshold 48) owns it — F2.
+            continue
+        if _is_path_shaped(m.group(0)):
+            # A folder path is judged per segment (2026-09-26).
+            raw.extend(_path_segment_hits(m.group(0), m.start()))
             continue
         raw.append(Hit("high-entropy-base64", m.group(0), m.start(), m.end()))
 

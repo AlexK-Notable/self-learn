@@ -364,7 +364,46 @@ def _stage_files(stage: Path) -> list[Path]:
     return files
 
 
-def _secret_files(stage: Path) -> list[str]:
+def _hits_only_in_dropped_evidence(text: str) -> bool:
+    """True when a staged successor case's every secret hit lies in evidence
+    the runner will drop (2026-09-26, run-1ca3de428b35).
+
+    `_prepare_manifest` drops each evidence item whose quote or ref matched
+    the secret scan (`cases.split_runner_evidence`) before the case is
+    frozen into the run record, so such an item must not refuse the whole
+    run here first. Fail-closed on both sides: every hit in the RAW file
+    (comments and all) must be accounted for, occurrence by occurrence, by
+    a dropped item's quote or ref, AND the case as it will be serialized after the drop must scan
+    clean -- so a secret anywhere else (decision, question, because, scope,
+    a YAML comment) still refuses exactly as before."""
+    try:
+        data = YAML(typ="safe").load(text)
+    except YAMLError:
+        return False
+    if not isinstance(data, dict):
+        return False
+    kept, dropped = cases.split_runner_evidence(data)
+    if not dropped:
+        return False
+    kept_ids = {id(item) for item in kept.get("evidence") or []}
+    dropped_values = [
+        str(item.get(key) or "")
+        for item in data.get("evidence") or []
+        if isinstance(item, dict) and id(item) not in kept_ids
+        for key in ("quote", "ref")
+    ]
+    for hit in scan.scan(text):
+        # Each occurrence must be accounted for by a dropped value: the same
+        # span once more (in a comment, say) still refuses.
+        if text.count(hit.span) > sum(value.count(hit.span) for value in dropped_values):
+            return False
+    return not scan.scan(_yaml_text(kept))
+
+
+def _secret_files(stage: Path, case_files: frozenset[Path] = frozenset()) -> list[str]:
+    """Stage files with a secret-scan hit. *case_files* are the successor
+    cases the runner will record: in those, a hit that lies only in evidence
+    the runner drops does not refuse the run (2026-09-26)."""
     names: list[str] = []
     for path in _stage_files(stage):
         if path.parent == stage and path.name in _OWN_SCAN_STAGE_FILES:
@@ -376,7 +415,9 @@ def _secret_files(stage: Path) -> list[str]:
         except (OSError, UnicodeDecodeError):
             names.append(path.relative_to(stage).as_posix())
             continue
-        if scan.scan(text):
+        if scan.scan(text) and not (
+            path in case_files and _hits_only_in_dropped_evidence(text)
+        ):
             names.append(path.relative_to(stage).as_posix())
     return names
 
@@ -2005,8 +2046,10 @@ def _prepare_manifest(
         case_data["run_id"] = run_id
         # 2026-09-25: an evidence item quoting a heading line is dropped
         # before the case text is frozen into the committed run record, and
-        # said in the report; the rest of the case records.
-        case_data, dropped_evidence = cases.split_heading_evidence(case_data)
+        # said in the report; the rest of the case records. 2026-09-26: so
+        # is one whose quote or ref matched the secret scan (the whole-stage
+        # scan, `_secret_files`, already let exactly those hits through).
+        case_data, dropped_evidence = cases.split_runner_evidence(case_data)
         notes.extend(
             f"case {case_id}: evidence from {row['ref']} dropped — {row['reason']}"
             for row in dropped_evidence
@@ -3279,7 +3322,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         pairs = _sheet_pairs(stage)
         if not pairs:
             missing.append("sheet.yaml")
-        secret_files = _secret_files(stage)
+        secret_files = _secret_files(
+            stage, frozenset(case for case, _sheet in pairs if case is not None),
+        )
 
         if not missing and not secret_files:
             try:
