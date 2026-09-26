@@ -24,9 +24,14 @@ user, never about clearing a queue.
 
 **When a week could not finish.** A failure that is not a judgment on the
 merits — the model call failed, timed out, hit the turn bound, produced
-output that would not validate, or a git write failed or half-landed — is
-retried by a later run as a fresh attempt, on any day, until the week is
-done; a decision refused on its merits is never retried. After
+output that would not validate, a git write failed or half-landed, or a
+line was refused because its target file had edits self-learn did not make
+(`target-busy`) — is retried by a later run as a fresh attempt, on any day,
+until the week is done; a decision refused on its merits is never retried.
+Each line under "Refused / could not do" ends with its kind in brackets
+(`[git]`, `[target-busy]`, `[bad-line]`, ...): the first two are the
+retried kinds, and a run left with one of them stays unfinished until the
+retry lands or the cap below closes it. After
 `runs.attempt_cap` (default 3) failed attempts the week is closed so the
 next one can start, and what the overseer could not settle arrives here as
 a question in its report, carrying the real failure reason

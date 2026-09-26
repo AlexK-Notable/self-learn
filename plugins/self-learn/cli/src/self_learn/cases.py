@@ -72,7 +72,7 @@ import io
 import json
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 from pathlib import Path
 from typing import Any
 
@@ -351,10 +351,12 @@ def _parse_bracket_list(line: str) -> list[str]:
     return [tok.strip() for tok in inner.split(",") if tok.strip()]
 
 
-def _scan_or_refuse(texts: list[str]) -> None:
+def _scan_or_refuse(texts: list[str], *, withhold_spans: bool = False) -> None:
     for text in texts:
         hits = secret_scan(text)
         if hits:
+            if withhold_spans:
+                hits = [dataclass_replace(hit, span="[withheld]") for hit in hits]
             raise CaseError(format_refusal(hits))
 
 
@@ -522,30 +524,34 @@ def _parse_sections(body: str) -> dict[str, str]:
 # --------------------------------------------------------------- record
 
 
-def record(
-    home: Path | str,
-    stage_file: Path | str,
-    *,
-    actor: str,
-    reserved_id: str | None = None,
-) -> str:
-    """Validate a stage file's six parts + closed sets, assign the id,
-    secret-scan every free-text field, compute the freeze hash, write,
-    commit. Returns the new case id."""
-    home = Path(home)
-    stage = Path(stage_file)
-    if actor not in ACTORS:
-        raise CaseUsageError(f"case record: actor must be one of {sorted(ACTORS)}, got {actor!r}")
-    if reserved_id is not None and CASE_ID_RE.fullmatch(reserved_id) is None:
-        raise CaseUsageError(f"case record: malformed reserved id: {reserved_id!r}")
-    try:
-        text = stage.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise CaseUsageError(f"case record: cannot read {stage}: {exc}") from exc
-    data = YAML(typ="safe").load(text)
-    if not isinstance(data, dict):
-        raise CaseUsageError(f"case record: {stage} must be a mapping")
+@dataclass(frozen=True)
+class CaseFields:
+    """What :func:`check_case_data` validated, for :func:`record` to render."""
 
+    kind: str
+    trigger: str
+    outcome: str
+    records: list[str]
+    scope: str
+    question: str
+    supersedes: Any
+    parked_for: Any
+    parked_reason: Any
+    evidence: list
+    decision: dict
+    deps: dict
+
+
+def check_case_data(data: dict, *, withhold_spans: bool = False) -> CaseFields:
+    """Every rule :func:`record` enforces on a stage's content before it
+    writes anything: the closed sets and required fields, the secret scan of
+    every free-text field, and the heading refusal (D-i). Raises
+    :class:`CaseError` (or :class:`CaseUsageError`) with the same message
+    `record` would. The ONE copy of these rules: the steward's runner also
+    calls it on each staged case, so a violation reaches the model while its
+    repair turn can still fix it (2026-09-26). ``withhold_spans`` replaces a
+    secret hit's matched text with ``[withheld]`` in the message, for a
+    caller that shows or commits it."""
     kind = data.get("kind")
     if kind not in KINDS:
         raise CaseUsageError(f"case record: kind must be one of {sorted(KINDS)}, got {kind!r}")
@@ -644,10 +650,47 @@ def record(
     # (`evidence[].ref`, the dependency id lists).
     if data.get("run_id") is not None:
         free_texts.append(str(data["run_id"]))
-    _scan_or_refuse(free_texts)
+    _scan_or_refuse(free_texts, withhold_spans=withhold_spans)
     # D-i / B3 / S4: refuse a heading-shaped line in ANY of the same
     # free-text fields, before it can ever be rendered into the file.
     _refuse_headings(free_texts)
+    return CaseFields(
+        kind=kind, trigger=trigger, outcome=outcome, records=list(records_field),
+        scope=scope, question=question, supersedes=supersedes,
+        parked_for=parked_for, parked_reason=parked_reason, evidence=evidence,
+        decision=decision, deps=deps,
+    )
+
+
+def record(
+    home: Path | str,
+    stage_file: Path | str,
+    *,
+    actor: str,
+    reserved_id: str | None = None,
+) -> str:
+    """Validate a stage file's six parts + closed sets, assign the id,
+    secret-scan every free-text field, compute the freeze hash, write,
+    commit. Returns the new case id."""
+    home = Path(home)
+    stage = Path(stage_file)
+    if actor not in ACTORS:
+        raise CaseUsageError(f"case record: actor must be one of {sorted(ACTORS)}, got {actor!r}")
+    if reserved_id is not None and CASE_ID_RE.fullmatch(reserved_id) is None:
+        raise CaseUsageError(f"case record: malformed reserved id: {reserved_id!r}")
+    try:
+        text = stage.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise CaseUsageError(f"case record: cannot read {stage}: {exc}") from exc
+    data = YAML(typ="safe").load(text)
+    if not isinstance(data, dict):
+        raise CaseUsageError(f"case record: {stage} must be a mapping")
+
+    fields = check_case_data(data)
+    kind, trigger, outcome = fields.kind, fields.trigger, fields.outcome
+    records_field, scope, question = fields.records, fields.scope, fields.question
+    supersedes, parked_for, parked_reason = fields.supersedes, fields.parked_for, fields.parked_reason
+    evidence, decision, deps = fields.evidence, fields.decision, fields.deps
 
     opened_at = chrono.now_iso()
     case_id = reserved_id or _new_case_id(home)

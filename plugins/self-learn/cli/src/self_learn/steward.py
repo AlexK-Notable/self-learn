@@ -54,6 +54,10 @@ class RunResult:
     decided: list[str] = field(default_factory=list)
     stopped: list[str] = field(default_factory=list)
     calls: int = 0
+    #: How many of `calls` failed (2026-09-26): a dry run discards every
+    #: decision, so without this "every call failed" and "every call
+    #: returned and its work was discarded" read the same.
+    failed_calls: int = 0
     refused: int = 0
     unfinished: list[str] = field(default_factory=list)
     #: S-68 ruling 2: the records this run closed out at `runs.attempt_cap`,
@@ -124,8 +128,9 @@ _SUCCESS_RECEIPT_STATES = frozenset({"applied", "already-applied"})
 #: `bad-line` (the steward's own mistake).
 _KIND_ACTIONS = {
     "secret-record": "refused",
-    "git": "retry",
-    "target-busy": "retry",
+    # The retried kinds are `batch.RETRIED_REFUSAL_KINDS`, the definition
+    # the overseer's resume reads too (2026-09-26, N14).
+    **{kind: "retry" for kind in sorted(batch.RETRIED_REFUSAL_KINDS)},
     "needs-person": "park",
     "unclassified": "park",
     "bad-line": "return",
@@ -782,7 +787,8 @@ def _validate_declared_stage(stage: Path) -> None:
 
 
 def _session_spec(
-    home: Path, run_dir: Path, prompt: str, *, label: str, lessons: int = 1
+    home: Path, run_dir: Path, prompt: str, *, label: str, lessons: int = 1,
+    run_id: str | None = None,
 ) -> invocation.SessionSpec:
     timeout_value, _source = settings.resolve_setting(
         home, settings.by_name("steward.timeout_secs")
@@ -804,7 +810,8 @@ def _session_spec(
         cwd=run_dir,
         timeout=float(timeout),
         containment=containment,
-        log=lambda message: _journal(home, {"ts": chrono.now_iso(), "status": "model-log", "message": message}),
+        log=lambda message: _journal(home, {"ts": chrono.now_iso(),
+            **({"run_id": run_id} if run_id else {}), "status": "model-log", "message": message}),
         label=label,
         # U4b (2026-09-19): `cwd` is the packet's stage directory --
         # where the session runs and the only place it may write -- and
@@ -985,6 +992,59 @@ def _ledger_repair_message(home: Path, stage: Path, selected: dict[str, object])
     ])
 
 
+def _as_recorded(data: dict, *, parked_entry: bool = False) -> dict:
+    """A staged case as the runner will hand it to `cases.record`: the
+    evidence items the runner drops (`cases.split_runner_evidence`) are
+    gone, and a parked case carries the fields the runner sets for it
+    (`_prepared_recipe`; `_maintain_manifest` for a parked.yaml entry)."""
+    data, _dropped = cases.split_runner_evidence(dict(data))
+    if parked_entry:
+        return {**data, "kind": "parked", "outcome": "parked", "parked_for": "overseer"}
+    if data.get("kind") == "parked":
+        return {**data, "outcome": "parked", "parked_for": "overseer"}
+    return data
+
+
+def _case_rule_message(stage: Path) -> str | None:
+    """2026-09-26: the staged cases the case writer would refuse as written
+    -- its schema, its secret scan and its heading refusal, run through
+    `cases.check_case_data`, the writer's own rules -- or `None`.
+
+    Before this, those rules ran only when the case was written, after the
+    one repair turn was gone. A file this cannot read is skipped: the
+    format check names it. A case still refused after the repair turn is
+    refused alone at apply time; the other cases of the packet proceed."""
+    found: list[str] = []
+    for case_path in sorted((stage / "cases").glob("*.yaml")):
+        try:
+            data = _read_yaml(case_path)
+        except ValueError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        try:
+            cases.check_case_data(_as_recorded(data), withhold_spans=True)
+        except cases.CaseError as exc:
+            found.append(f"- cases/{case_path.name}: {exc}")
+    try:
+        entries = _stage_entries(stage / "parked.yaml")
+    except ValueError:
+        entries = []
+    for number, entry in enumerate(entries, start=1):
+        try:
+            cases.check_case_data(_as_recorded(entry, parked_entry=True), withhold_spans=True)
+        except cases.CaseError as exc:
+            found.append(f"- parked.yaml entry {number}: {exc}")
+    if not found:
+        return None
+    return "\n".join([
+        "The case checker would refuse these cases as written:",
+        *found,
+        "Fix each one in place. A case still refused after this turn is refused on its own,",
+        "and its lessons are not decided this run; the other cases go ahead.",
+    ])
+
+
 def _returned_for(home: Path, inputs: list[dict]) -> dict[str, dict]:
     """S-71 §4.6: for each input of this packet that a committed run record
     sent back at its CURRENT input version, the case that decided it and
@@ -1095,6 +1155,16 @@ def _new_case_id() -> str:
     return "case-" + uuid.uuid4().hex[:8]
 
 
+def _withheld_refusal(texts: list[str]) -> str | None:
+    """The secret-scan refusal for *texts*, or `None` when they scan clean.
+    The message is committed into the run record, so it names each hit's
+    rule and offsets, never the matched span (2026-09-26)."""
+    hits = [hit for text in texts for hit in secret_scan(text)]
+    if not hits:
+        return None
+    return format_refusal([dataclass_replace(hit, span="[withheld]") for hit in hits])
+
+
 def _prepared_recipe(
     home: Path,
     stage: Path,
@@ -1106,8 +1176,12 @@ def _prepared_recipe(
     predecessors = packet.get("predecessors") or {}
     recipes = manifest.setdefault("cases", {})
     packet_case_ids: list[str] = []
-    prepared_texts: list[str] = []
     dropped_rows: list[dict] = []
+    #: 2026-09-26: a secret-scan hit costs the case (or maintenance
+    #: operation) it is in, never the packet. Before, one scan over every
+    #: prepared text refused every case of the packet over one of them.
+    refused_rows: dict[str, dict] = {}
+    versions = {row["record"]: row.get("version") for row in packet.get("inputs") or []}
     for case_path in sorted((stage / "cases").glob("*.yaml")):
         stem = case_path.stem
         sheet_path = stage / "sheets" / f"{stem}.yaml"
@@ -1160,8 +1234,22 @@ def _prepared_recipe(
         case_id = _new_case_id()
         sheet = _prepare_sheet(sheet_path, case_id)
         sheet_text = sheet_path.read_text(encoding="utf-8")
-        prepared_texts.extend([case_text, sheet_text])
-        prepared_texts.extend(row["ref"] for row in dropped_evidence)
+        refusal = _withheld_refusal(
+            [case_text, sheet_text, *(row["ref"] for row in dropped_evidence)]
+        )
+        if refusal is not None:
+            # Nothing of this case is frozen into the run record: its text
+            # holds the hit. Its lessons get the refused row a case refused
+            # at apply time gets, with the scan's rule and offsets.
+            _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+                "status": "refused", "stage_file": case_path.name, "error": refusal})
+            refused_rows.update({
+                str(rid): {"state": "refused", "input_version": versions.get(rid),
+                    "reason": refusal}
+                for rid in case_data.get("records") or []
+                if rid in versions
+            })
+            continue
         dropped_rows.extend(
             {"case": case_id, "stage_file": case_path.name, **row} for row in dropped_evidence
         )
@@ -1196,10 +1284,17 @@ def _prepared_recipe(
             if kind == "parked-case":
                 # 2026-09-25/26: as for a decided case above -- dropped
                 # before the payload is frozen into the committed run record
-                # and before the prepared-text scan below.
+                # and before the secret scan below.
                 payload, parked_dropped = cases.split_runner_evidence(payload)
-                prepared_texts.extend(row["ref"] for row in parked_dropped)
-            prepared_texts.append(_yaml_text(payload))
+            refusal = _withheld_refusal(
+                [_yaml_text(payload), *(row["ref"] for row in parked_dropped)]
+            )
+            if refusal is not None:
+                # 2026-09-26: this operation alone is refused, and its
+                # payload (which holds the hit) is never frozen.
+                _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+                    "status": "refused", "stage_file": filename, "error": refusal})
+                payload, parked_dropped = {}, []
             ordinal = len(maintenance) + 1
             identity_bytes = json.dumps(
                 {
@@ -1215,9 +1310,9 @@ def _prepared_recipe(
                 "id": "op-" + hashlib.sha256(identity_bytes).hexdigest()[:12],
                 "kind": kind,
                 "payload": payload,
-                "state": "pending",
+                "state": "pending" if refusal is None else "refused",
                 "baseline": None,
-                "result": None,
+                "result": None if refusal is None else {"state": "refused", "error": refusal},
             }
             if kind == "parked-case":
                 operation["reserved_case_id"] = _new_case_id()
@@ -1228,14 +1323,6 @@ def _prepared_recipe(
                 )
             maintenance.append(operation)
 
-    hits = [hit for text in prepared_texts for hit in secret_scan(text)]
-    if hits:
-        # 2026-09-26: the caller commits this message into the run record
-        # (the packet's `failure` and each disposition's `reason`), so it
-        # names each hit's rule and offsets, never the matched span.
-        raise ValueError(format_refusal(
-            [dataclass_replace(hit, span="[withheld]") for hit in hits]
-        ))
     for row in dropped_rows:
         _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
             "status": "evidence-dropped", **row})
@@ -1244,7 +1331,7 @@ def _prepared_recipe(
     packet["phase"] = "prepared"
     packet["failure"] = None
     packet["bound"] = None
-    packet["dispositions"] = packet.get("dispositions") or {}
+    packet["dispositions"] = {**(packet.get("dispositions") or {}), **refused_rows}
 
 
 _RECEIPT_RE = re.compile(
@@ -2706,21 +2793,27 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
     home = Path(home)
     publish = not dry_run and not worker.no_push_requested()
     head_before = verbs.ledger_head(home) if publish else None
+    result: RunResult | None = None
     try:
-        return _run(home, dry_run=dry_run)
+        result = _run(home, dry_run=dry_run)
+        return result
     finally:
         if publish:
-            _publish(home, head_before)
+            _publish(home, head_before, result.run_id if result is not None else None)
 
 
-def _publish(home: Path, head_before: str | None) -> None:
+def _publish(home: Path, head_before: str | None, run_id: str | None = None) -> None:
+    # The run id rides the push rows too when the run got one (2026-09-26).
+    ident = {"run_id": run_id} if run_id else {}
     try:
         push = verbs.publish_after_run(home, head_before)
     except Exception as exc:  # never mask the run's own outcome
-        _journal(home, {"ts": chrono.now_iso(), "status": "push-error", "reason": str(exc)[:300]})
+        _journal(home, {"ts": chrono.now_iso(), **ident, "status": "push-error",
+            "reason": str(exc)[:300]})
         return
     if push is not None:
-        _journal(home, {"ts": chrono.now_iso(), "status": "push", "ok": push.ok, "code": push.exit_code})
+        _journal(home, {"ts": chrono.now_iso(), **ident, "status": "push", "ok": push.ok,
+            "code": push.exit_code})
 
 
 def _run(home: Path, *, dry_run: bool) -> RunResult:
@@ -2768,8 +2861,15 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
         # left `last_attempt_at` untouched and was due again on the very
         # next 60-second tick. A dry run writes no attempt: it is a
         # rehearsal, and must not suppress the real run behind it.
+        # The run id is known before the attempt is recorded (2026-09-26):
+        # a pure read of the committed manifest, or a fresh id -- nothing
+        # here can raise, so the attempt row still lands first.
+        run_id = (
+            str(unfinished_runs[0]["run_id"]) if unfinished_runs
+            else "run-" + uuid.uuid4().hex[:12]
+        )
         if not dry_run:
-            _journal(home, {"ts": chrono.now_iso(), "status": "attempt-start"})
+            _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "attempt-start"})
 
         packet_size_value, _source = settings.resolve_setting(
             home, settings.by_name("steward.packet_size")
@@ -2782,10 +2882,8 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
         feed_items: list[conditions.Item] | None = None  # built once, on the first model call
         if unfinished_runs:
             manifest = unfinished_runs[0]
-            run_id = str(manifest["run_id"])
             run_dir = _project_manifest(home, manifest)
         else:
-            run_id = "run-" + uuid.uuid4().hex[:12]
             run_dir = steward_dir(home) / "runs" / run_id
             run_dir.mkdir(parents=True)
             packet_count = math.ceil(len(eligible) / int(packet_size))
@@ -2919,11 +3017,14 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 spec = _session_spec(
                     home, run_dir, prompt.text,
                     label=f"steward-{run_id}-{packet_index}", lessons=len(proposals),
+                    run_id=run_id,
                 )
                 started = time.monotonic()
                 outcome = invocation.write_session(spec)
                 duration = float(time.monotonic() - started)
                 result.calls += 1
+                if not outcome.ok:
+                    result.failed_calls += 1
                 turns = getattr(outcome, "turns", None)
                 attempt = {"kind": "decision", "turns": turns,
                     "failure": outcome.failure, "duration_secs": duration}
@@ -2992,13 +3093,20 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     if packet_record.get("repair_remaining", 0) <= 0:
                         second_error = first_error
                     else:
-                        repair_message = str(first_error)
+                        # The case writer's own rules ride along
+                        # (2026-09-26), so one turn can fix both.
+                        repair_message = "\n\n".join(filter(None, [
+                            str(first_error), _case_rule_message(stage),
+                        ]))
                 else:
                     if packet_record.get("repair_remaining", 0) > 0:
-                        repair_message = _ledger_repair_message(home, stage, {
-                            row["record"]: row.get("record_status")
-                            for row in packet_record["inputs"]
-                        })
+                        repair_message = "\n\n".join(filter(None, [
+                            _case_rule_message(stage),
+                            _ledger_repair_message(home, stage, {
+                                row["record"]: row.get("record_status")
+                                for row in packet_record["inputs"]
+                            }),
+                        ])) or None
                 if repair_message is not None:
                     packet_record["repair_remaining"] = 0
                     if not dry_run:
@@ -3006,6 +3114,8 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     repair_started = time.monotonic()
                     repair = invocation.write_session(_repair_spec(spec, repair_message))
                     result.calls += 1
+                    if not repair.ok:
+                        result.failed_calls += 1
                     packet_record["attempts"].append({"kind": "repair", "failure": repair.failure,
                         "duration_secs": float(time.monotonic() - repair_started)})
                     try:
@@ -3053,22 +3163,9 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     repair_remaining=packet_record.get("repair_remaining", 1),
                     duration_secs=packet_record.get("duration_secs"),
                 )
-                try:
-                    _prepared_recipe(home, stage, manifest, manifest_packet)
-                except ValueError as exc:
-                    if "secret scan:" not in str(exc):
-                        raise
-                    refused_dispositions = {
-                        row["record"]: {"state": "refused", "input_version": row["version"],
-                            "reason": str(exc)}
-                        for row in manifest_packet["inputs"]
-                    }
-                    _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
-                        "status": "refused", "error": str(exc)})
-                    _update_manifest(home, run_id, reason=f"packet {packet_index} secret refusal",
-                        update=lambda current: current["packets"][packet_index - 1].update(
-                            phase="refused", failure=str(exc), dispositions=refused_dispositions))
-                    continue
+                # A secret-scan hit refuses only the case or operation it is
+                # in (`_prepared_recipe`); the rest of the packet proceeds.
+                _prepared_recipe(home, stage, manifest, manifest_packet)
                 _publish_manifest(home, manifest, reason=f"packet {packet_index} prepared recipe")
             if dry_run:
                 continue
@@ -3150,6 +3247,12 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
             run_record["coverage"] = _coverage_empty()
             run_record["NOT_REPO_TRUTH"] = {"value": True, "disposition": "dry-run cache projection only"}
             _write_json(run_dir / "run.json", run_record)
+            # 2026-09-26: a rehearsal leaves a journal row too, marked so no
+            # reader takes it for a real run. `dry-run` is a hold status, so
+            # serve's cooldown never reads it as an attempt.
+            _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "dry-run",
+                "dry_run": True, "calls": result.calls, "failed_calls": result.failed_calls,
+                "abandoned": result.abandoned})
             return result
 
         manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
@@ -3256,6 +3359,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 "run_id": run_id,
                 "status": result.status,
                 "calls": result.calls,
+                "failed_calls": result.failed_calls,
                 "decided": len(result.decided),
                 "refused": result.refused,
                 "unfinished": result.unfinished,

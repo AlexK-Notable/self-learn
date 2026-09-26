@@ -162,7 +162,15 @@ def heartbeat_path(cache_dir: Path) -> Path:
     return cache_dir / HEARTBEAT_FILENAME
 
 
-def write_heartbeat(cache_dir: Path, *, pid: int, next_job: str | None, tick_secs: float | None = None) -> None:
+def write_heartbeat(
+    cache_dir: Path,
+    *,
+    pid: int,
+    next_job: str | None,
+    tick_secs: float | None = None,
+    running: str | None = None,
+    running_since: float | None = None,
+) -> None:
     """`SUP1` — written on every scheduler tick, carrying the tick time,
     the pid and the next scheduled job. Lands in `cache_dir()`, which is
     `NOT_REPO_TRUTH` by the same rule as every other cache write
@@ -189,15 +197,65 @@ def write_heartbeat(cache_dir: Path, *, pid: int, next_job: str | None, tick_sec
     regardless of the previous file's mode."""
     path = heartbeat_path(cache_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(
-        {
-            "ts": time.time(),
-            "pid": pid,
-            "next_job": next_job,
-            "tick_secs": tick_secs if tick_secs is not None else DEFAULT_TICK_SECS,
-        }
-    )
-    fsops.atomic_write(path, payload, fsync=False, preserve_mode=False)
+    body: dict[str, Any] = {
+        "ts": time.time(),
+        "pid": pid,
+        "next_job": next_job,
+        "tick_secs": tick_secs if tick_secs is not None else DEFAULT_TICK_SECS,
+    }
+    if running is not None:
+        # 2026-09-26: the job running right now and since when (epoch
+        # seconds). Absent between jobs; every existing key is unchanged.
+        body["running"] = running
+        body["running_since"] = running_since
+    fsops.atomic_write(path, json.dumps(body), fsync=False, preserve_mode=False)
+
+
+class _RunningHeartbeat:
+    """Keeps the heartbeat fresh while one job runs (2026-09-26). Before,
+    it was written only between jobs, so it read stale during every run
+    for as long as the run lasted. A helper thread rewrites it every half
+    tick -- so its age stays inside the one tick `heartbeat_is_fresh`
+    allows -- naming the running job and carrying the last `next_job`
+    unchanged. It only ever writes the cache heartbeat file."""
+
+    def __init__(
+        self, cache_dir: Path, *, pid: int, job: str, tick_secs: float | None
+    ) -> None:
+        self._cache_dir = cache_dir
+        self._pid = pid
+        self._job = job
+        self._tick_secs = tick_secs
+        tick = tick_secs if tick_secs is not None and tick_secs > 0 else DEFAULT_TICK_SECS
+        self._interval = tick / 2
+        self._since = time.time()
+        self._next_job = (read_heartbeat(cache_dir) or {}).get("next_job")
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._loop, name=f"serve-heartbeat-{job}", daemon=True
+        )
+
+    def _beat(self) -> None:
+        try:
+            write_heartbeat(
+                self._cache_dir, pid=self._pid, next_job=self._next_job,
+                tick_secs=self._tick_secs, running=self._job, running_since=self._since,
+            )
+        except OSError:
+            pass  # a missed beat is only a stale reading, never a failed job
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self._interval):
+            self._beat()
+
+    def __enter__(self) -> "_RunningHeartbeat":
+        self._beat()
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self._stop.set()
+        self._thread.join()
 
 
 def read_heartbeat(cache_dir: Path) -> dict[str, Any] | None:
@@ -854,11 +912,13 @@ def run_one_job(cache_dir: Path, job: Job, *, pid: int | None = None, tick_secs:
     through this exact function, so "a real serve scheduler loop" means
     the same code path in both places."""
     started = time.time()
-    try:
-        result = job.run()
-        record = JobRecord(job.name, job.surface, True, started, time.time(), result=result)
-    except Exception as exc:  # noqa: BLE001 — a crashed job must not crash the daemon
-        record = JobRecord(job.name, job.surface, False, started, time.time(), error=f"{exc}")
+    beat_pid = pid if pid is not None else os.getpid()
+    with _RunningHeartbeat(cache_dir, pid=beat_pid, job=job.name, tick_secs=tick_secs):
+        try:
+            result = job.run()
+            record = JobRecord(job.name, job.surface, True, started, time.time(), result=result)
+        except Exception as exc:  # noqa: BLE001 — a crashed job must not crash the daemon
+            record = JobRecord(job.name, job.surface, False, started, time.time(), error=f"{exc}")
     write_heartbeat(
         cache_dir,
         pid=pid if pid is not None else os.getpid(),

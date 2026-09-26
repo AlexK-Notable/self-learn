@@ -1165,9 +1165,11 @@ refusal on its own line naming the intent id (REQUIRED), and
 reports "N stopped intent(s) — last recovery failure at <at, or
 'unknown' for an unreadable file>; ledger writes refuse; run …"
 (REQUIRED). Recording the last failed job and its reason in the
-heartbeat is RECOMMENDED — `serve.write_heartbeat` carries only
-`next_job` today, so that is a new field on its contract, not a
-restatement — and the `doctor` row reads it when present. A refusal
+heartbeat is RECOMMENDED — `serve.write_heartbeat` carries
+`next_job` (and, since 2026-09-26, `running` and `running_since` while a
+job runs, rewritten every half tick so the heartbeat no longer reads stale
+during a run) and no failure field, so that is a new field on its
+contract, not a restatement — and the `doctor` row reads it when present. A refusal
 that reaches only the job record and the journal does not satisfy this
 section.
 

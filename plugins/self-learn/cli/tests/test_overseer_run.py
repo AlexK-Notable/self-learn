@@ -974,13 +974,16 @@ def test_invalid_raw_report_refuses_before_any_decision_and_leaves_a_trace(
     real_invoke = overseer_run.invocation.write_session
 
     def headless(spec):
-        # 2026-09-24: length no longer refuses; a MISSING heading still does
-        # (that is structure, not size).
+        # 2026-09-24: length no longer refuses. 2026-09-26: a MISSING or
+        # misordered heading is repaired (test_report_headings.py); a heading
+        # written twice cannot be, and still refuses (structure, not size).
         outcome = real_invoke(spec)
         if spec.label == "phase-b":
             report = spec.cwd / "report.md"
             report.write_text(
-                report.read_text(encoding="utf-8").replace("## Hooks\n", ""),
+                report.read_text(encoding="utf-8").replace(
+                    "## Hooks\n", "## Hooks\n- one\n## Hooks\n"
+                ),
                 encoding="utf-8",
             )
         return outcome
@@ -2227,7 +2230,8 @@ def test_a_bad_line_refusal_stays_final_when_the_run_resumes(tmp_path, monkeypat
 
     overseer_run.run(home, dry_run=False, no_push=True)
 
-    assert dispatched == [1, 2], "a bad-line refusal is never dispatched again"
+    # Item 2 (stopped) is dispatched again beside it (2026-09-26, N11).
+    assert dispatched == [1, 2, 2], "a bad-line refusal is never dispatched again"
 
 
 def test_a_refusal_committed_without_a_kind_stays_final_when_the_run_resumes(
@@ -2246,7 +2250,8 @@ def test_a_refusal_committed_without_a_kind_stays_final_when_the_run_resumes(
 
     overseer_run.run(home, dry_run=False, no_push=True)
 
-    assert dispatched == [1, 2], "a refusal with no recorded kind is never dispatched again"
+    # Item 2 (stopped) is dispatched again beside it (2026-09-26, N11).
+    assert dispatched == [1, 2, 2], "a refusal with no recorded kind is never dispatched again"
 
 
 # --- A run publishes what it committed (doc 13 §5, H-5; found 2026-09-24:

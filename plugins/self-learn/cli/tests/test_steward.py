@@ -581,13 +581,15 @@ def test_mixed_refused_and_applied_packets_report_partial(tmp_path, monkeypatch)
         nonlocal calls
         calls += 1
         outcome = _write_decision_stage(spec)
-        if calls == 1:
-            match = re.search(
-                r"^stage directory \(the only place you may write\): (.+)$",
-                spec.prompt,
-                re.M,
-            )
-            assert match is not None
+        match = re.search(
+            r"^stage directory \(the only place you may write\): (.+)$",
+            spec.prompt,
+            re.M,
+        )
+        assert match is not None
+        # Packet 1's decision AND its repair turn (2026-09-26: the case
+        # checker's secret scan now reaches the repair turn) keep the hit.
+        if Path(match.group(1)).name == "packet-0001":
             case = next((Path(match.group(1)) / "cases").glob("*.yaml"))
             data = YAML(typ="safe").load(case.read_text(encoding="utf-8"))
             data["decision"]["because"] = "token ghp_" + "Ab1" * 12
@@ -1314,6 +1316,9 @@ def test_cli_steward_run_exit_codes_and_json(monkeypatch, capsys, tmp_path):
         "run_id": "run-abc",
         "decided": ["lrn-deadbeef"],
         "calls": 2,
+        # 2026-09-26: failed calls are counted separately.
+        "failed_calls": 0,
+        "all_calls_failed": False,
         "refused": 1,
         "unfinished": [],
         "abandoned": [],
@@ -1339,6 +1344,8 @@ def test_cli_steward_run_exit_codes_and_json(monkeypatch, capsys, tmp_path):
         "run_id": "run-abc",
         "decided": [],
         "calls": 0,
+        "failed_calls": 0,
+        "all_calls_failed": False,
         "refused": 0,
         "unfinished": [],
         "abandoned": ["lrn-deadbeef"],
