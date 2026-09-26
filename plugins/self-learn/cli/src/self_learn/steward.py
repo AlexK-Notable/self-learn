@@ -783,7 +783,8 @@ def _validate_declared_stage(stage: Path) -> None:
 
 
 def _session_spec(
-    home: Path, run_dir: Path, prompt: str, *, label: str, lessons: int = 1
+    home: Path, run_dir: Path, prompt: str, *, label: str, lessons: int = 1,
+    run_id: str | None = None,
 ) -> invocation.SessionSpec:
     timeout_value, _source = settings.resolve_setting(
         home, settings.by_name("steward.timeout_secs")
@@ -805,7 +806,8 @@ def _session_spec(
         cwd=run_dir,
         timeout=float(timeout),
         containment=containment,
-        log=lambda message: _journal(home, {"ts": chrono.now_iso(), "status": "model-log", "message": message}),
+        log=lambda message: _journal(home, {"ts": chrono.now_iso(),
+            **({"run_id": run_id} if run_id else {}), "status": "model-log", "message": message}),
         label=label,
         # U4b (2026-09-19): `cwd` is the packet's stage directory --
         # where the session runs and the only place it may write -- and
@@ -2787,21 +2789,27 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
     home = Path(home)
     publish = not dry_run and not worker.no_push_requested()
     head_before = verbs.ledger_head(home) if publish else None
+    result: RunResult | None = None
     try:
-        return _run(home, dry_run=dry_run)
+        result = _run(home, dry_run=dry_run)
+        return result
     finally:
         if publish:
-            _publish(home, head_before)
+            _publish(home, head_before, result.run_id if result is not None else None)
 
 
-def _publish(home: Path, head_before: str | None) -> None:
+def _publish(home: Path, head_before: str | None, run_id: str | None = None) -> None:
+    # The run id rides the push rows too when the run got one (2026-09-26).
+    ident = {"run_id": run_id} if run_id else {}
     try:
         push = verbs.publish_after_run(home, head_before)
     except Exception as exc:  # never mask the run's own outcome
-        _journal(home, {"ts": chrono.now_iso(), "status": "push-error", "reason": str(exc)[:300]})
+        _journal(home, {"ts": chrono.now_iso(), **ident, "status": "push-error",
+            "reason": str(exc)[:300]})
         return
     if push is not None:
-        _journal(home, {"ts": chrono.now_iso(), "status": "push", "ok": push.ok, "code": push.exit_code})
+        _journal(home, {"ts": chrono.now_iso(), **ident, "status": "push", "ok": push.ok,
+            "code": push.exit_code})
 
 
 def _run(home: Path, *, dry_run: bool) -> RunResult:
@@ -2849,8 +2857,15 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
         # left `last_attempt_at` untouched and was due again on the very
         # next 60-second tick. A dry run writes no attempt: it is a
         # rehearsal, and must not suppress the real run behind it.
+        # The run id is known before the attempt is recorded (2026-09-26):
+        # a pure read of the committed manifest, or a fresh id -- nothing
+        # here can raise, so the attempt row still lands first.
+        run_id = (
+            str(unfinished_runs[0]["run_id"]) if unfinished_runs
+            else "run-" + uuid.uuid4().hex[:12]
+        )
         if not dry_run:
-            _journal(home, {"ts": chrono.now_iso(), "status": "attempt-start"})
+            _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "attempt-start"})
 
         packet_size_value, _source = settings.resolve_setting(
             home, settings.by_name("steward.packet_size")
@@ -2863,10 +2878,8 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
         feed_items: list[conditions.Item] | None = None  # built once, on the first model call
         if unfinished_runs:
             manifest = unfinished_runs[0]
-            run_id = str(manifest["run_id"])
             run_dir = _project_manifest(home, manifest)
         else:
-            run_id = "run-" + uuid.uuid4().hex[:12]
             run_dir = steward_dir(home) / "runs" / run_id
             run_dir.mkdir(parents=True)
             packet_count = math.ceil(len(eligible) / int(packet_size))
@@ -3000,6 +3013,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 spec = _session_spec(
                     home, run_dir, prompt.text,
                     label=f"steward-{run_id}-{packet_index}", lessons=len(proposals),
+                    run_id=run_id,
                 )
                 started = time.monotonic()
                 outcome = invocation.write_session(spec)
@@ -3225,6 +3239,11 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
             run_record["coverage"] = _coverage_empty()
             run_record["NOT_REPO_TRUTH"] = {"value": True, "disposition": "dry-run cache projection only"}
             _write_json(run_dir / "run.json", run_record)
+            # 2026-09-26: a rehearsal leaves a journal row too, marked so no
+            # reader takes it for a real run. `dry-run` is a hold status, so
+            # serve's cooldown never reads it as an attempt.
+            _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "dry-run",
+                "dry_run": True, "calls": result.calls, "abandoned": result.abandoned})
             return result
 
         manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
