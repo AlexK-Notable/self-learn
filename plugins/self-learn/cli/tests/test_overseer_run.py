@@ -2227,7 +2227,8 @@ def test_a_bad_line_refusal_stays_final_when_the_run_resumes(tmp_path, monkeypat
 
     overseer_run.run(home, dry_run=False, no_push=True)
 
-    assert dispatched == [1, 2], "a bad-line refusal is never dispatched again"
+    # Item 2 (stopped) is dispatched again beside it (2026-09-26, N11).
+    assert dispatched == [1, 2, 2], "a bad-line refusal is never dispatched again"
 
 
 def test_a_refusal_committed_without_a_kind_stays_final_when_the_run_resumes(
@@ -2246,7 +2247,8 @@ def test_a_refusal_committed_without_a_kind_stays_final_when_the_run_resumes(
 
     overseer_run.run(home, dry_run=False, no_push=True)
 
-    assert dispatched == [1, 2], "a refusal with no recorded kind is never dispatched again"
+    # Item 2 (stopped) is dispatched again beside it (2026-09-26, N11).
+    assert dispatched == [1, 2, 2], "a refusal with no recorded kind is never dispatched again"
 
 
 # --- A run publishes what it committed (doc 13 §5, H-5; found 2026-09-24:

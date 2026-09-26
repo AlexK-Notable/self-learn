@@ -225,6 +225,13 @@ REFUSAL_KINDS = frozenset(
     }
 )
 
+#: The refusal kinds a runner dispatches again instead of treating the
+#: refusal as final (S-71 §4.2 / §7): git or lock trouble, and a target
+#: file with uncommitted edits unrelated to self-learn. The ONE definition
+#: the steward (`steward._KIND_ACTIONS`) and the overseer
+#: (`overseer.run._RETRIED_REFUSAL_KINDS`) both read (2026-09-26, N14).
+RETRIED_REFUSAL_KINDS = frozenset({"git", "target-busy"})
+
 #: The same kinds, most severe first — the steward's action precedence
 #: (S-71). Used where ONE item carries several refusals at once (a route
 #: preview reports every failed preflight, not only the first) and still

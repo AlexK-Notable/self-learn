@@ -86,9 +86,10 @@ _NO_PROGRESS_DETAIL = (
 #: (rc 5/6/7) and `not-attempted` are deliberately NOT here — those are the
 #: retryable states A4 exists for.
 _TERMINAL_ITEM_STATES = frozenset({"applied", "already-applied", "refused"})
-#: S-71 §7: the refusal kinds a resumed run dispatches again (the steward
-#: retries the same two). Every other kind, and a row with no kind, is final.
-_RETRIED_REFUSAL_KINDS = frozenset({"git", "target-busy"})
+#: S-71 §7: the refusal kinds a resumed run dispatches again -- the ONE
+#: definition the steward retries too (`batch.RETRIED_REFUSAL_KINDS`,
+#: 2026-09-26, N14). Every other kind, and a row with no kind, is final.
+_RETRIED_REFUSAL_KINDS = batch.RETRIED_REFUSAL_KINDS
 #: 02-schema §3a: "A ledger stop keeps riding the run record's own numeric
 #: halt code (5, 6, 7, 8); a code is never folded into this field." These are
 #: the codes that ride `halt_code`; `failure` never carries one, and never
@@ -2476,6 +2477,28 @@ def _write_manifest_truth(
     return record, report_path, latest
 
 
+def _refusal_line(sheet_name: str, item: batch.ItemResult) -> str:
+    """One "Refused / could not do" line for an item that did not apply:
+    its detail (or which item it is, when it has none), its kind, and its
+    state when that is not a plain refusal."""
+    text = item.detail or f"{sheet_name} item {item.n} ({item.verb} {item.id}): {item.state}"
+    if item.kind:
+        text += f" [{item.kind}]"
+    if item.detail and item.state != "refused":
+        text += f" ({item.state})"
+    return text
+
+
+def _item_settled(row: dict[str, Any]) -> bool:
+    """A committed disposition row nothing will re-drive: landed, or refused
+    with a kind that is final. A refusal of a retried kind is still
+    unfinished business (2026-09-26, N14)."""
+    state = row.get("state")
+    if state not in _TERMINAL_ITEM_STATES:
+        return False
+    return state != "refused" or row.get("kind") not in _RETRIED_REFUSAL_KINDS
+
+
 def _run_manifest_sheet(
     home: Path,
     stage: Path,
@@ -2510,9 +2533,19 @@ def _run_manifest_sheet(
         for row in recipe.get("dispositions") or []
         if isinstance(row, dict) and isinstance(row.get("kind"), str)
     }
+    # ... and so does its detail: a receipted item that is not run again
+    # still names its reason in "Refused / could not do" (2026-09-26, N11).
+    prior_details = {
+        int(row["n"]): row["detail"]
+        for row in recipe.get("dispositions") or []
+        if isinstance(row, dict) and isinstance(row.get("detail"), str)
+    }
     for n, item in receipted.items():
-        if item.state not in ("applied", "already-applied") and item.kind is None:
-            item.kind = prior_kinds.get(n)
+        if item.state not in ("applied", "already-applied"):
+            if item.kind is None:
+                item.kind = prior_kinds.get(n)
+            if item.detail is None:
+                item.detail = prior_details.get(n)
     # A4 (S-68 ruling 1), with S-71's kinds. Retryability follows the
     # failure's KIND, never the word the receipt happens to carry:
     #
@@ -2541,38 +2574,57 @@ def _run_manifest_sheet(
         n: item for n, item in receipted.items()
         if item.state == "refused" and item.kind not in _RETRIED_REFUSAL_KINDS
     }
-    completed = _receipt_completed(home, case_id, recipe)
+    receipted_completed = _receipt_completed(home, case_id, recipe)
     completed = _mutation_proven_completed(
-        home, manifest, case_id, recipe, completed
+        home, manifest, case_id, recipe, receipted_completed
     )
-    expected = {int(row["n"]) for row in recipe["items"]}
+    effective_run: batch.Sheet = effective
     if refused_final:
-        # A committed refusal is the durable disposition, so no ledger leg
-        # of this sheet is attempted again. That necessarily freezes what
-        # sits behind it: `batch._validate_continuation` accepts only "a
+        # A committed refusal is the durable disposition, so it is never
+        # dispatched again. `batch._validate_continuation` accepts only "a
         # proven completion" or "a named unresolved host obligation" in
-        # `continuation.completed`, so a refused item cannot be carried
-        # past, and driving the sheet again would re-dispatch the refusal.
-        # Items the refusal left undispatched therefore stay "not
-        # attempted" — named here rather than dropped, so A12's
-        # expected-key check below keeps the run unfinished and S-68's
-        # attempt cap turns a sheet nobody can finish into a question put
-        # to the user instead of a silent loss.
-        rows = {int(row["n"]): row for row in recipe["items"]}
-        items = [receipted[n] for n in sorted(receipted)]
-        items.extend(
-            batch.ItemResult(
-                n=n, id=cast(str, rows[n]["id"]), verb=cast(str, rows[n]["verb"]),
-                rc=-1, state="not-attempted",
+        # `continuation.completed`, so the refusal cannot be carried past
+        # in the sheet itself (Q20). What IS re-driven (2026-09-26, N11) is
+        # the rest of the sheet that is safe to retry, as a derived sheet:
+        # the same identity (case, sheet sha, digest) and the same item
+        # numbers, without the final refusals. That is a receipted
+        # `stopped` item, a refusal of a retried kind, and the undispatched
+        # tail a STOP left behind -- each dispatched again exactly as on a
+        # sheet with no final refusal (a refused line wrote nothing, and an
+        # ordinary refusal never halts a sheet). Before this, a `stopped`
+        # item beside a final refusal was never retried and never reported.
+        #
+        # An undispatched item whose nearest receipted predecessor is NOT a
+        # stop was left behind by a host failure after its ledger commit
+        # (`batch.run`'s BookkeepingHalt: a real half-state that halts the
+        # dependent tail on purpose). It stays undispatched, so A12's
+        # expected-key check below keeps the run unfinished and names it,
+        # and S-68's attempt cap turns a sheet nobody can finish into a
+        # question put to the user instead of a silent loss.
+        def left_behind(n: int) -> bool:
+            if n in receipted or n in completed:
+                return False
+            before = [m for m in receipted if m < n]
+            return not before or receipted[max(before)].state != "stopped"
+
+        effective_run = batch.Sheet(
+            [
+                item for item in effective
+                if item.n not in refused_final and not left_behind(item.n)
+            ],
+            case=effective.case, sheet_sha=effective.sheet_sha,
+            sheet_digest=effective.sheet_digest,
+        )
+        completed = {n: item for n, item in completed.items() if n not in refused_final}
+        if all(item.n in receipted_completed for item in effective_run):
+            # Nothing left to dispatch or receipt: the outcome stands.
+            items = [receipted[n] for n in sorted(receipted)]
+            result = batch.BatchResult(
+                items=items,
+                process_code=max(item.rc for item in refused_final.values()),
+                case=case_id, sheet_sha=effective.sheet_sha, actor="overseer",
             )
-            for n in sorted(expected - set(receipted))
-        )
-        result = batch.BatchResult(
-            items=items,
-            process_code=max(item.rc for item in refused_final.values()),
-            case=case_id, sheet_sha=effective.sheet_sha, actor="overseer",
-        )
-        return result, {"state": "preserved", "pushed": None}, effective
+            return result, {"state": "preserved", "pushed": None}, effective
     continuation = batch.BatchContinuation(
         run_id=cast(str, manifest["run_id"]), case_id=case_id,
         sheet_digest=cast(str, recipe["sheet_digest"]), completed=completed,
@@ -2586,7 +2638,7 @@ def _run_manifest_sheet(
 
     try:
         result = batch.run(
-            home, effective, no_push=True, actor="overseer",
+            home, effective_run, no_push=True, actor="overseer",
             hook_activation=gate, continuation=continuation,
             checkpoint=checkpoint,
         )
@@ -2595,13 +2647,27 @@ def _run_manifest_sheet(
             no_push=True, prefix=True,
         )
     except batch.BookkeepingHalt as exc:
-        result = exc.result
         receipt = batch.write_receipt(
-            home, result, cast(str, recipe["sheet_name"]),
+            home, exc.result, cast(str, recipe["sheet_name"]),
             no_push=True, prefix=True,
         )
+        result = _with_final_refusals(exc.result, refused_final)
         raise batch.BookkeepingHalt(str(exc), result, exc.untouched_tail) from None
-    return result, receipt, effective
+    return _with_final_refusals(result, refused_final), receipt, effective
+
+
+def _with_final_refusals(
+    result: batch.BatchResult, refused_final: dict[int, batch.ItemResult]
+) -> batch.BatchResult:
+    """The derived sheet's result with the final refusals it left out put
+    back in item order, so the dispositions, the report and A12's
+    expected-key check see the whole sheet (2026-09-26, N11)."""
+    if not refused_final:
+        return result
+    result.items = sorted([*result.items, *refused_final.values()], key=lambda item: item.n)
+    if result.stopped_at is None and result.stop_message is None:
+        result.process_code = batch.decision_code(result.items)
+    return result
 
 
 def _always_loaded_user_scope(home: Path, record_id: str) -> bool:
@@ -2702,10 +2768,12 @@ def _execute_manifest(
         ]
         application_count += result.summary.get("applied", 0)
         for item in result.items:
-            if item.state in ("refused", "stopped", "unresolved-host") and item.detail:
+            if item.state in ("refused", "stopped", "unresolved-host"):
                 # "Refused / could not do" is the report's question to the
                 # user (S-68 ruling 2); the kind says what kind of question.
-                refusals.append(f"{item.detail} [{item.kind}]" if item.kind else item.detail)
+                # EVERY item not applied is listed, with its state (N11:
+                # a receipted item carries no detail, and was left out).
+                refusals.append(_refusal_line(cast(str, recipe["sheet_name"]), item))
         by_n = {item.n: item for item in result.items}
         for sheet_item in effective:
             item_result = by_n.get(sheet_item.n)
@@ -2874,7 +2942,7 @@ def _execute_manifest(
         for recipe in recipes.values():
             settled = {
                 int(row["n"]) for row in recipe.get("dispositions") or []
-                if isinstance(row, dict) and row.get("state") in _TERMINAL_ITEM_STATES
+                if isinstance(row, dict) and _item_settled(row)
             }
             unfinished_units.extend(
                 f"{recipe['sheet_name']} item {row['n']} ({row['verb']} {row['id']})"

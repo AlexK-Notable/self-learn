@@ -124,8 +124,9 @@ _SUCCESS_RECEIPT_STATES = frozenset({"applied", "already-applied"})
 #: `bad-line` (the steward's own mistake).
 _KIND_ACTIONS = {
     "secret-record": "refused",
-    "git": "retry",
-    "target-busy": "retry",
+    # The retried kinds are `batch.RETRIED_REFUSAL_KINDS`, the definition
+    # the overseer's resume reads too (2026-09-26, N14).
+    **{kind: "retry" for kind in sorted(batch.RETRIED_REFUSAL_KINDS)},
     "needs-person": "park",
     "unclassified": "park",
     "bad-line": "return",
