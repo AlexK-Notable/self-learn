@@ -498,6 +498,10 @@ case you decide. The runner alone records cases and applies sheets. Never run a 
 In a case file no line of any text field may start with `## `. To quote a heading line, quote
 it from after the `## ` (for `## 2026-08-19 — lrn-b197d06b` quote `2026-08-19 — lrn-b197d06b`):
 an evidence item with such a line is dropped, and any other field with one refuses the case.
+Every text field is secret-scanned: an evidence item whose quote or ref matches is dropped (with
+a trace) and the case records with its remaining evidence; a hit in any other field refuses the
+case. Quote the part of a line that proves the point and leave out long tokens, hashes or ids
+that are not the point (a folder path is fine).
 findings.yaml is {{findings: [{{case, kind: examined|dependency-moved, text, ref?}}]}}.
 questions.yaml is where you ask the user what only the user can settle. There is no limit on
 how many you ask: ask every question that clears this bar and none that does not.
