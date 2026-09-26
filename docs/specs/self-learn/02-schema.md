@@ -1210,9 +1210,17 @@ line's format (`… → <state> (exit N)`) is unchanged. Concretely:
 - An overseer recipe's `dispositions` rows may carry `kind` when an item
   failed. A resumed overseer run reads it: a receipted refusal of kind `git`
   or `target-busy` is dispatched again, as a `stopped` item is; a refusal of
-  any other kind, or one whose row names no kind, stays final. Such a
-  refusal does not by itself keep the run unfinished: a run whose only
-  failure is one completes, and its report names the refusal's kind.
+  any other kind, or one whose row names no kind, stays final. *(Amended
+  2026-09-26.)* A final refusal no longer freezes the rest of its sheet: the
+  resume re-drives, as a sheet with the same identity and item numbers minus
+  the final refusals, every `stopped` item, every retried-kind refusal, and
+  the tail a stop left undispatched (a tail left behind by a host failure
+  after its ledger commit stays undispatched and keeps the run unfinished,
+  as before). A retried-kind refusal keeps the run unfinished (status
+  `partial`), so the next resume dispatches it again, bounded by
+  `runs.attempt_cap`; the cap's close-out lists it as unfinished. Every item
+  that did not apply is listed under "Refused / could not do" with its kind
+  and, when it is not a plain refusal, its state.
 
 **The steward's repair turn sees the ledger's refusals** *(added
 2026-09-23, S-71)*. When a packet's staged files pass their format check on
@@ -1233,6 +1241,18 @@ verb, lesson and the ledger's words. Refusals left after the repair never
 fail the stage; apply time handles them by kind, as above. A repair turn
 already spent on a format error is not spent again. A dry run does the
 same, writing only to the cache.
+
+*(Added 2026-09-26.)* The same repair turn also carries the case writer's
+own rules, run on every staged case and parked.yaml entry through
+`cases.check_case_data` (the one copy `cases.record` uses): its schema, the
+secret scan of every free-text field (the matched span withheld), and the
+`## ` heading refusal. An evidence item the runner will drop is not a
+violation, and a parked case is checked with the fields the runner sets for
+it. A case still in violation after the turn is refused alone -- its lessons
+get the refused row a case refused at apply time gets -- and every other case
+and maintenance operation of the packet proceeds. The prepared-text secret
+scan runs per case (and per maintenance operation, whose payload is then not
+frozen) instead of once over the packet.
 
 For an opted-in ordinary ledger mutation, the item's own mutation commit has
 one canonical final trailer block: `By: <runner>`, `Case: <case-id>`,
