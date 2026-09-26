@@ -1760,6 +1760,28 @@ def _cmd_worker(args: argparse.Namespace) -> int:
     return EXIT_USAGE
 
 
+def _steward_calls_line(result: "steward.RunResult") -> str | None:
+    """2026-09-26: how the model calls went, said plainly. A dry run keeps
+    no decision either way, so its summary could not tell "every call
+    failed" from "every call returned and its work was discarded"."""
+    calls, failed = result.calls, result.failed_calls
+    if calls == 0:
+        return None
+    if failed == calls:
+        return (
+            f"steward run: every model call FAILED ({failed} of {calls}); "
+            "nothing was decided"
+        )
+    if failed:
+        return f"steward run: {failed} of {calls} model call(s) failed"
+    if result.status == "dry-run":
+        return (
+            f"steward run: every model call returned ({calls}); a dry run "
+            "discards its decisions, so nothing was written"
+        )
+    return None
+
+
 def _cmd_steward(args: argparse.Namespace) -> int:
     if args.steward_command != "run":
         print("usage: self-learn steward run [--dry-run] [--json]", file=sys.stderr)
@@ -1776,6 +1798,9 @@ def _cmd_steward(args: argparse.Namespace) -> int:
                     "run_id": result.run_id,
                     "decided": result.decided,
                     "calls": result.calls,
+                    "failed_calls": result.failed_calls,
+                    "all_calls_failed": result.calls > 0
+                    and result.failed_calls == result.calls,
                     "refused": result.refused,
                     "unfinished": result.unfinished,
                     "abandoned": result.abandoned,
@@ -1794,6 +1819,9 @@ def _cmd_steward(args: argparse.Namespace) -> int:
             f"{result.calls} model call(s); coverage "
             + ", ".join(f"{key}={value}" for key, value in sorted(result.coverage.items()))
         )
+        calls_line = _steward_calls_line(result)
+        if calls_line:
+            print(calls_line)
         if result.abandoned_units:
             # A close-out can abandon a packet with zero abandoned RECORDS,
             # because what was left open was a case recipe or a maintenance

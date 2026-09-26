@@ -1316,6 +1316,9 @@ def test_cli_steward_run_exit_codes_and_json(monkeypatch, capsys, tmp_path):
         "run_id": "run-abc",
         "decided": ["lrn-deadbeef"],
         "calls": 2,
+        # 2026-09-26: failed calls are counted separately.
+        "failed_calls": 0,
+        "all_calls_failed": False,
         "refused": 1,
         "unfinished": [],
         "abandoned": [],
@@ -1341,6 +1344,8 @@ def test_cli_steward_run_exit_codes_and_json(monkeypatch, capsys, tmp_path):
         "run_id": "run-abc",
         "decided": [],
         "calls": 0,
+        "failed_calls": 0,
+        "all_calls_failed": False,
         "refused": 0,
         "unfinished": [],
         "abandoned": ["lrn-deadbeef"],

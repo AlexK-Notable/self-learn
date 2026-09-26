@@ -54,6 +54,10 @@ class RunResult:
     decided: list[str] = field(default_factory=list)
     stopped: list[str] = field(default_factory=list)
     calls: int = 0
+    #: How many of `calls` failed (2026-09-26): a dry run discards every
+    #: decision, so without this "every call failed" and "every call
+    #: returned and its work was discarded" read the same.
+    failed_calls: int = 0
     refused: int = 0
     unfinished: list[str] = field(default_factory=list)
     #: S-68 ruling 2: the records this run closed out at `runs.attempt_cap`,
@@ -3019,6 +3023,8 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 outcome = invocation.write_session(spec)
                 duration = float(time.monotonic() - started)
                 result.calls += 1
+                if not outcome.ok:
+                    result.failed_calls += 1
                 turns = getattr(outcome, "turns", None)
                 attempt = {"kind": "decision", "turns": turns,
                     "failure": outcome.failure, "duration_secs": duration}
@@ -3108,6 +3114,8 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     repair_started = time.monotonic()
                     repair = invocation.write_session(_repair_spec(spec, repair_message))
                     result.calls += 1
+                    if not repair.ok:
+                        result.failed_calls += 1
                     packet_record["attempts"].append({"kind": "repair", "failure": repair.failure,
                         "duration_secs": float(time.monotonic() - repair_started)})
                     try:
@@ -3243,7 +3251,8 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
             # reader takes it for a real run. `dry-run` is a hold status, so
             # serve's cooldown never reads it as an attempt.
             _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "dry-run",
-                "dry_run": True, "calls": result.calls, "abandoned": result.abandoned})
+                "dry_run": True, "calls": result.calls, "failed_calls": result.failed_calls,
+                "abandoned": result.abandoned})
             return result
 
         manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
@@ -3350,6 +3359,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 "run_id": run_id,
                 "status": result.status,
                 "calls": result.calls,
+                "failed_calls": result.failed_calls,
                 "decided": len(result.decided),
                 "refused": result.refused,
                 "unfinished": result.unfinished,
