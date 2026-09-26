@@ -581,13 +581,15 @@ def test_mixed_refused_and_applied_packets_report_partial(tmp_path, monkeypatch)
         nonlocal calls
         calls += 1
         outcome = _write_decision_stage(spec)
-        if calls == 1:
-            match = re.search(
-                r"^stage directory \(the only place you may write\): (.+)$",
-                spec.prompt,
-                re.M,
-            )
-            assert match is not None
+        match = re.search(
+            r"^stage directory \(the only place you may write\): (.+)$",
+            spec.prompt,
+            re.M,
+        )
+        assert match is not None
+        # Packet 1's decision AND its repair turn (2026-09-26: the case
+        # checker's secret scan now reaches the repair turn) keep the hit.
+        if Path(match.group(1)).name == "packet-0001":
             case = next((Path(match.group(1)) / "cases").glob("*.yaml"))
             data = YAML(typ="safe").load(case.read_text(encoding="utf-8"))
             data["decision"]["because"] = "token ghp_" + "Ab1" * 12
