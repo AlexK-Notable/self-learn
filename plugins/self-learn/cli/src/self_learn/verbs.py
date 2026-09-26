@@ -759,9 +759,18 @@ def _abort_if_unsound(
     Restored here, in the ONE place both legs now live."""
     if mode == "git" and target.is_file():
         _abort_if_dirty(host_path, target)
-    _abort_if_region_unsound(
-        home, host_path, mode, target, region_kind, scope_kind=scope_kind, spec=spec
-    )
+    try:
+        _abort_if_region_unsound(
+            home, host_path, mode, target, region_kind, scope_kind=scope_kind, spec=spec
+        )
+    except HostsError as exc:
+        # N8 (2026-09-26): the unknown-provenance adoption check compiles
+        # the expected region, and `managed_target_for` reads hosts.yaml
+        # for every routed skill-scope claude-md lesson it meets -- even on
+        # a USER-scope route. A malformed registry refuses THIS item, like
+        # every other route-time hosts.yaml read, instead of escaping
+        # `batch._dispatch` and ending the whole sheet.
+        raise _hosts_unreadable(exc) from exc
 
 
 def _region_kind_for(spec: TargetSpec) -> str | None:
@@ -1419,8 +1428,10 @@ def _routed_to(
         for path in sorted(resolved.glob("lrn-*.md")):
             try:
                 record = Record.from_path(path)
-            except RecordError:
-                continue  # unparseable resolved file: never a compile input
+            except ledger_ops.UNREADABLE_RECORD_ERRORS:
+                # unparseable resolved file: never a compile input -- incl.
+                # frontmatter that is not YAML at all (N9, 2026-09-26)
+                continue
             if record.id in exclude or record.status != "routed":
                 continue
             routing = record.routing or {}
@@ -3002,8 +3013,10 @@ def _target_matched_records(
         for path in sorted(resolved.glob("lrn-*.md")):
             try:
                 record = Record.from_path(path)
-            except RecordError:
-                continue  # unparseable resolved file: never a compile input
+            except ledger_ops.UNREADABLE_RECORD_ERRORS:
+                # unparseable resolved file: never a compile input -- incl.
+                # frontmatter that is not YAML at all (N9, 2026-09-26)
+                continue
             if record.id in seen or record.status != "routed":
                 continue
             if (record.routing or {}).get("destination") not in destinations:
