@@ -792,6 +792,57 @@ def _validate_model_report(path: Path) -> list[str]:
     return lines
 
 
+#: The body the runner gives a required heading the model left out
+#: (2026-09-26): it says what happened and invents nothing.
+_EMPTY_SECTION = "(the overseer wrote nothing under this heading)"
+
+
+def _heading_name(line: str) -> str:
+    return line[3:].partition(" (")[0]
+
+
+def _repair_report_headings(path: Path) -> list[str]:
+    """Insert a required heading the model's report.md left out (with
+    :data:`_EMPTY_SECTION` as its body) and put misordered ones back in
+    order, rewriting the staged file; return one "Refused / could not do"
+    note per repair. Before 2026-09-26 either refused the whole run.
+
+    Only headings are repaired. A heading that is not one of
+    `_REPORT_SECTIONS`, a heading written twice, or a report with no
+    required heading at all cannot be put right without deciding where the
+    model's words belong, so it refuses exactly as before
+    (:func:`_validate_model_report`). Each section moves whole, with every
+    line under it; the text above the first heading stays first."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith("## ")]
+    names = [_heading_name(lines[i]) for i in starts]
+    if names == list(_REPORT_SECTIONS):
+        return []
+    if (
+        not names
+        or any(name not in _REPORT_SECTIONS for name in names)
+        or len(set(names)) != len(names)
+    ):
+        _validate_model_report(path)  # raises: not a heading-only problem
+    bounds = [*starts, len(lines)]
+    sections = {names[k]: lines[bounds[k]:bounds[k + 1]] for k in range(len(names))}
+    out = lines[: starts[0]]
+    notes: list[str] = []
+    missing = [name for name in _REPORT_SECTIONS if name not in sections]
+    present = [name for name in names if name in _REPORT_SECTIONS]
+    for name in _REPORT_SECTIONS:
+        out.extend(sections.get(name) or [f"## {name}", _EMPTY_SECTION])
+    notes.extend(
+        f"report: the heading \"{name}\" was missing; the runner added it, empty"
+        for name in missing
+    )
+    if present != [name for name in _REPORT_SECTIONS if name in sections]:
+        notes.append("report: the headings were out of order; the runner put them back in order")
+    _write_stage(path.parent, path, "\n".join(out) + "\n")
+    _validate_model_report(path)
+    return notes
+
+
 def _drop_bare_none(lines: list[str], section_start: int) -> None:
     """Remove the model's ``- none`` placeholder from a section the runner has
     just written its own lines into (observed by hand 2026-09-14: "- Model calls
@@ -3398,9 +3449,13 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             stage, frozenset(case for case, _sheet in pairs if case is not None),
         )
 
+        report_notes: list[str] = []
         if not missing and not secret_files:
             try:
-                _validate_model_report(stage / "report.md")
+                # 2026-09-26: a missing or misordered required heading is
+                # repaired and said in "Refused / could not do"; any other
+                # shape still refuses the run here.
+                report_notes = _repair_report_headings(stage / "report.md")
             except OverseerError as exc:
                 # A staged-output schema failure: retryable per ruling 1, so
                 # it commits its trace (A15) and counts. The report stays in
@@ -3614,7 +3669,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             selected=selected, population_count=len(week_rows), excluded=excluded,
             model_calls=model_calls, guard=guard, coverage_text=coverage_text,
             questions=questions, findings=findings, prepared=prepared,
-            model_updates=model_updates, runner_notes=question_drops,
+            model_updates=model_updates, runner_notes=[*report_notes, *question_drops],
             journal_text=journal_text, trigger=trigger,
         )
         _publish_manifest(home, intent, manifest, coverage_path)

@@ -974,13 +974,16 @@ def test_invalid_raw_report_refuses_before_any_decision_and_leaves_a_trace(
     real_invoke = overseer_run.invocation.write_session
 
     def headless(spec):
-        # 2026-09-24: length no longer refuses; a MISSING heading still does
-        # (that is structure, not size).
+        # 2026-09-24: length no longer refuses. 2026-09-26: a MISSING or
+        # misordered heading is repaired (test_report_headings.py); a heading
+        # written twice cannot be, and still refuses (structure, not size).
         outcome = real_invoke(spec)
         if spec.label == "phase-b":
             report = spec.cwd / "report.md"
             report.write_text(
-                report.read_text(encoding="utf-8").replace("## Hooks\n", ""),
+                report.read_text(encoding="utf-8").replace(
+                    "## Hooks\n", "## Hooks\n- one\n## Hooks\n"
+                ),
                 encoding="utf-8",
             )
         return outcome
