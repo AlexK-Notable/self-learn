@@ -232,3 +232,18 @@ def test_a_format_error_and_a_case_violation_share_the_one_repair_turn(tmp_path,
     assert "undeclared stage file: stray.txt" in repair  # the format error
     assert f"- cases/{bad}.yaml: case: a free-text field contains a '## '" in repair
     assert result.run_id is not None
+
+
+def test_the_briefs_own_examples_pass_the_case_pre_check(tmp_path):
+    """Positive control for the pre-check's normalization: every worked
+    example the brief shows the model (a parked one among them) passes, so
+    a stage copied from the brief never spends the repair turn."""
+    from self_learn import steward_prompt
+
+    stage = tmp_path / "stage"
+    for name, body in steward_prompt.STAGE_EXAMPLES.items():
+        path = stage / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    assert len(list((stage / "cases").glob("*.yaml"))) >= 2  # the examples really landed
+    assert steward._case_rule_message(stage) is None
