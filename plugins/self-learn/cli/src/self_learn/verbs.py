@@ -189,7 +189,7 @@ from .ledger_ops import (
 from .ledger_ops import _dump_yaml
 from . import records as records_mod
 from .records import RECORD_ID_RE, Record, RecordError, _validate_follow_up
-from .scan import format_refusal
+from .scan import format_refusal, refusal_text
 from .scan import scan as secret_scan
 
 __all__ = [
@@ -4075,6 +4075,8 @@ def route_dry_run(
     # reads hosts.yaml — none needs a PRIOR check to have passed), so a
     # record that both trips the secret scan and names an unregistered
     # host reports two entries.
+    # Each entry is `scan.refusal_text`: a secret-scan span is withheld,
+    # because a runner's model is shown this preview (2026-09-26).
     would_refuse: list[str] = []
     errors: list[BaseException] = []
 
@@ -4083,14 +4085,14 @@ def route_dry_run(
         # scans it (`batch.dry_run` passes it; the CLI preview has none).
         _scan_or_refuse([path], note)
     except VerbError as exc:
-        would_refuse.append(str(exc))
+        would_refuse.append(refusal_text(exc))
         errors.append(exc)
 
     record: Record | None = None
     try:
         _, record = require_status(home, record_id, LIVE_STATUSES, verb="route")
     except LedgerOpsError as exc:
-        would_refuse.append(str(exc))
+        would_refuse.append(refusal_text(exc))
         errors.append(exc)
         record = Record.from_path(path)  # still needed below (scope)
 
@@ -4103,7 +4105,7 @@ def route_dry_run(
     try:
         _supersede_completion_preflight(home, record_id, record)
     except (VerbError, LedgerOpsError) as exc:
-        would_refuse.append(str(exc))
+        would_refuse.append(refusal_text(exc))
         errors.append(exc)
 
     bucket_dir = path.parent.parent
@@ -4111,7 +4113,7 @@ def route_dry_run(
     try:
         resolved_dest = _resolve_destination(bucket_dir, record_id, dest)
     except (VerbError, LedgerOpsError, ProposalError) as exc:
-        would_refuse.append(str(exc))
+        would_refuse.append(refusal_text(exc))
         errors.append(exc)
 
     if resolved_dest is None:
@@ -4148,7 +4150,7 @@ def route_dry_run(
             allow_empty_glob=allow_empty_glob,
         )
     except VerbError as exc:
-        would_refuse.append(str(exc))
+        would_refuse.append(refusal_text(exc))
         errors.append(exc)
 
     if spec is None:

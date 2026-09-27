@@ -43,7 +43,7 @@ from .overseer import notify as overseer_notify
 from .records import Record, RecordError
 from .primitives import chrono
 from .primitives import fsops
-from .scan import format_refusal
+from .scan import format_refusal, refusal_text
 from .scan import scan as secret_scan
 
 
@@ -1657,11 +1657,14 @@ def _maintain_manifest(home: Path, run_id: str, packet_index: int) -> tuple[int,
             return refused, True
         except (statements.StatementError, user_model.UserModelError, cases.CaseError, TypeError, ValueError) as exc:
             refused += 1
-            recovered = {"state": "refused", "error": str(exc)}
+            # A secret-scan span is withheld: the error is committed into
+            # the run record (2026-09-26).
+            error = refusal_text(exc)
+            recovered = {"state": "refused", "error": error}
             status = {"statement": "statement-refused", "model": "model-update-refused"}.get(
                 operation["kind"], "parked-case-refused"
             )
-            _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": status, "error": str(exc)})
+            _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": status, "error": error})
         operation_id = operation["id"]
         assert recovered is not None
         _update_manifest(
@@ -2575,12 +2578,15 @@ def _apply_packet(
         except cases.CaseError as exc:
             refused_records = case_data.get("records") if isinstance(case_data, dict) else None
             refused += max(1, len(refused_records) if isinstance(refused_records, list) else 1)
+            # The reason is a sent-back row the next brief shows the model:
+            # a secret-scan span is withheld (2026-09-26).
+            error = refusal_text(exc)
             _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "refused",
-                "stage_file": case_path.name, "error": str(exc)})
+                "stage_file": case_path.name, "error": error})
             _update_manifest(home, run_id, reason=f"case {case_id} refused", update=lambda current: (
-                current["cases"][case_id].update(phase="refused", error=str(exc)),
+                current["cases"][case_id].update(phase="refused", error=error),
                 current["packets"][packet_index - 1]["dispositions"].update({
-                    rid: {"state": "refused", "input_version": inputs[rid], "reason": str(exc)}
+                    rid: {"state": "refused", "input_version": inputs[rid], "reason": error}
                     for rid in (refused_records or [])
                 }),
             ))

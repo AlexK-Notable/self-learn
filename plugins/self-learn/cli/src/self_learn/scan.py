@@ -75,7 +75,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-__all__ = ["Hit", "scan", "redact", "format_refusal"]
+__all__ = [
+    "Hit", "scan", "redact", "format_refusal", "WITHHELD", "withhold_spans",
+    "attach_hits", "refusal_text",
+]
 
 
 @dataclass(frozen=True)
@@ -210,3 +213,53 @@ def _merge(raw: list[Hit]) -> list[Hit]:
             continue
         kept.append(hit)
     return kept  # already sorted by start
+
+
+#: What a withheld span reads as (the steward's `_withheld_refusal` and
+#: `cases._scan_or_refuse(withhold_spans=True)` use the same literal).
+WITHHELD = "[withheld]"
+
+
+def withhold_spans(text: str, hits=()) -> str:
+    """*text* with the matched text of every secret-scan hit replaced by
+    :data:`WITHHELD`: first each span of *hits* (the hits a refusal was
+    built from -- a span need not match again on its own, e.g. a path
+    segment), then every span a scan of *text* itself still finds.
+
+    2026-09-26 (agenda item 24): a refusal a model is shown, or a run
+    record keeps, names each hit's rule and offsets, never the secret.
+    Text with no hit comes back unchanged."""
+    for span in sorted({h.span for h in hits if h.span}, key=len, reverse=True):
+        text = text.replace(span, WITHHELD)
+    for h in reversed(scan(text)):
+        text = text[: h.start] + WITHHELD + text[h.end :]
+    return text
+
+
+def attach_hits(exc: BaseException, hits: list[Hit]) -> BaseException:
+    """Record on *exc* the hits its refusal message was built from, for
+    :func:`refusal_text`. Returns *exc*, so a raise site reads
+    ``raise attach_hits(SomeError(format_refusal(hits)), hits)``."""
+    setattr(exc, "hits", list(hits))
+    return exc
+
+
+def refusal_text(exc: BaseException) -> str:
+    """``str(exc)`` fit to show a model or keep in a run record: every
+    secret-scan span withheld (:func:`withhold_spans`), using the hits
+    carried by *exc* and by each exception it was raised from or during
+    (``__cause__`` / ``__context__``) -- `verbs.SecretRefusal.hits`, or
+    hits set by :func:`attach_hits`."""
+    hits: list[Hit] = []
+    seen: set[int] = set()
+    pending: list[BaseException | None] = [exc]
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        carried = getattr(current, "hits", None)
+        if isinstance(carried, list):
+            hits.extend(h for h in carried if isinstance(h, Hit))
+        pending.extend((current.__cause__, current.__context__))
+    return withhold_spans(str(exc), hits)

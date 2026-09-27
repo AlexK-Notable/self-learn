@@ -85,7 +85,7 @@ from .ledger_ops import LedgerOpsError, find_record_path
 from .primitives import chrono, fsops
 from .primitives.yamlio import rt_yaml
 from .records import Record, RecordError
-from .scan import format_refusal
+from .scan import attach_hits, format_refusal
 from .scan import scan as secret_scan
 
 __all__ = [
@@ -357,7 +357,9 @@ def _scan_or_refuse(texts: list[str], *, withhold_spans: bool = False) -> None:
         if hits:
             if withhold_spans:
                 hits = [dataclass_replace(hit, span="[withheld]") for hit in hits]
-            raise CaseError(format_refusal(hits))
+            # The hits ride the error, so a caller that relays the message
+            # to a model withholds the spans (`scan.refusal_text`).
+            raise attach_hits(CaseError(format_refusal(hits)), hits)
 
 
 #: D-i / B3 / S4 / Astra 1: any line that LOOKS like a section heading

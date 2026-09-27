@@ -1417,8 +1417,11 @@ def _maintain_manifest(
             return applied, refused, True, lines
         except (user_model.UserModelError, TypeError, ValueError) as exc:
             refused += 1
-            outcome = {"state": "refused", "error": str(exc)}
-            _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "model-update-refused", "reason": str(exc)[:300]})
+            # Committed into the run record: a secret-scan span is withheld
+            # (2026-09-26).
+            error = scan.refusal_text(exc)
+            outcome = {"state": "refused", "error": error}
+            _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "model-update-refused", "reason": error[:300]})
         else:
             applied += 1
         assert outcome is not None
