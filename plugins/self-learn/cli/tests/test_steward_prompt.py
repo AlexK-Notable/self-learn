@@ -603,11 +603,15 @@ def test_conditions_table_escapes_pipe_and_newline_in_a_cell(tmp_path):
     poisoned = conditions.Item(
         "test.poison", "a|value\nwith a newline", "2026-01-01T00:00:00Z", "src|with|pipes"
     )
-    table = steward_prompt._render_conditions(items + [poisoned])
-    lines = table.splitlines()
+    rendered = steward_prompt._render_conditions(items + [poisoned])
+    # 2026-09-26: the table holds the small rows; `report.*` sections follow
+    # it as sub-blocks of their own, so only the table's lines are counted.
+    lines = [ln for ln in rendered.splitlines() if ln.startswith("|")]
+    table_items = [it for it in items if not it.key.startswith("report.")]
+    assert table_items and len(table_items) < len(items), "positive control: both kinds present"
     # header + separator + one row per item -- the poisoned item's `|`
     # and `\n` must not have split it across rows or columns.
-    assert len(lines) == 2 + len(items) + 1
+    assert len(lines) == 2 + len(table_items) + 1
     assert any("a\\|value\\nwith a newline" in ln and "src\\|with\\|pipes" in ln for ln in lines)
 
 

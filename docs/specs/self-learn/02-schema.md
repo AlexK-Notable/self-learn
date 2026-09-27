@@ -1538,6 +1538,52 @@ value, observed_at, source)`.
 Withheld on purpose: lesson bodies (they arrive through the worker's brief,
 not the feed), telemetry event text (counts and ids only), transcript text.
 
+**The steward's cut (2026-09-26).** The table above is the whole feed, and
+the overseer still reads all of it (`health.yaml`, and its conditions diff
+filtered to `host.*` and the model/capability settings). The steward's
+brief gets `conditions.steward_feed(home, lessons)`, which leaves out every
+row no real case cited, quoted or opened (the 2026-09-20 forensic count over
+26 cases): `report.destinations`, `report.open_followups`,
+`report.recurrence_suspects`, every `host.<path>.head` (the git row is
+emitted per registered host, not as a bare `repo.head`), every `models.*`
+but `models.steward`, `sdk.max_turns.*`, `status.*`, `steward.*` (the
+containment block already says when the steward last ran) and
+`overseer.*`. What the steward reads:
+
+| Rows | Rendered as |
+|---|---|
+| `host.<path>.mode`, `models.steward`, `surface.output-style.active`, `declared.<key>`, `ledger.head` | one table, `key \| value \| observed_at \| source` |
+| `report.buckets`, `report.deferred`, `report.reference_shelf`, `report.context_budget` | each a sub-block after the table, headed `cond:report.<name>@<observed_at>` (the citation), its value as YAML (keys sorted, one scalar-only collection per line, never wrapped) |
+| `report.routed_live` | the same, SLICED to the records in the buckets — `(scope, name)` — of this run's lessons, plus every record a lesson's proposal or record names (any `lrn-` id in the proposal; the record's `supersedes`, `superseded_by`, `contradicts`) |
+| `report.surface_reach` | the same, its `rows` SLICED to the scopes this run's lessons can route to (their own bucket, every project bucket whose host is an ancestor of theirs, the user bucket) plus named records; its counts stay the whole machine's |
+
+A slice states its rule in the sub-block's `# source:` line. The slice is
+computed once per run over EVERY lesson of the run, not one packet's, so
+all of a run's packets read the same block; when the lessons cannot be
+resolved, both sections go whole and the source line says why.
+
+**The brief's two parts (2026-09-26).** The steward's brief is the seven
+blocks of the steward interface §4.1, evidence before advice, sent in two
+parts so that a run's later calls read the first from Claude Code's prompt
+cache (measured 2026-09-20: shared text in the APPENDED system prompt,
+per-call text in the user message, `exclude_dynamic_sections` on).
+
+| §4.1 order | Part | Sent as |
+|---|---|---|
+| 2 `method`, 4 `conditions`, 7 `output_contract` | shared: byte-identical for every packet of one run — no packet number, stage path, run id or per-packet time (`observed_at` is the run's one snapshot) | the appended system prompt, from the file `brief-shared.md` in the run's cache stage (`--append-system-prompt-file`: an argument fails at 131,072 bytes), rewritten from the same bytes before every call |
+| 1 `containment`, 3 `user_model`, (`sent_back`), 5 `open_cases`, 6 `briefs` | per packet | the user message; also written to `packet-NNNN.md` |
+
+The model reads the shared part first (method, conditions, output
+contract), then the packet's own part; each part keeps §4.1's relative
+order, and the analyst's advice (the briefs) is still the last thing read.
+The repair round is a new session with the same file and flag. Each
+`attempts` row of a steward packet (decision and repair) carries `usage`:
+`first_response` and `session`, each with `cache_read_input_tokens`,
+`cache_creation_input_tokens` and `input_tokens` as the SDK reported them —
+the first response's counts say whether the shared part came from cache;
+the session's are Claude Code's totals. The row has no `usage` when the
+backend reported none.
+
 ## 4. Managed sections (the compile targets' contract)
 
 Compilers own exactly the region between their markers, and nothing else:

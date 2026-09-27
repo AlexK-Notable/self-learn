@@ -261,6 +261,21 @@ class SessionSpec:
     #: `CliSessionPolicy.env`). Keyword, defaulted and LAST, like the two
     #: fields above.
     extra_env: tuple[tuple[str, str], ...] = ()
+    #: A FILE whose text is appended to Claude Code's system prompt
+    #: (`--append-system-prompt-file`, 2026-09-26). The steward puts the
+    #: part of its brief shared by every call of a run here, so a later
+    #: call reads it from the prompt cache; passed as a file because a
+    #: command-line argument fails at 131,072 bytes (measured 2026-09-20).
+    #: `None` -- every other producer -- sends no such flag. Exclusive
+    #: with `doctrine`. Keyword, defaulted and LAST, like the fields above.
+    append_system_prompt_file: Path | None = None
+    #: Claude Code's `--exclude-dynamic-system-prompt-sections`, through
+    #: the SDK's `exclude_dynamic_sections` preset key (2026-09-26): the
+    #: working directory and the auto-memory path move out of the system
+    #: prompt into the first user message, so the system prompt is the
+    #: same bytes from one session to the next. `False` -- every producer
+    #: but the steward -- leaves the preset exactly as it was.
+    exclude_dynamic_sections: bool = False
 
     @property
     def settings_home(self) -> Path | str:

@@ -240,6 +240,10 @@ def test_the_example_statement_and_model_updates_are_accepted_by_their_real_writ
     user_model.lapse_entry(home, entry_id, by="steward", **lapse)
 
 
-def test_the_block_is_the_last_thing_in_the_assembled_brief():
-    assert steward_prompt._BLOCK_ORDER[-1] == "output_contract"
+def test_the_block_is_the_last_thing_in_the_shared_part_of_the_brief():
+    """2026-09-26: the brief is two parts; the contract closes the shared
+    one (the appended system prompt), just before each packet's own part."""
+    shared = [name for name in steward_prompt._BLOCK_ORDER if name in steward_prompt.SHARED_BLOCKS]
+    assert shared[-1] == "output_contract"
+    assert steward_prompt._BLOCK_ORDER.index("output_contract") == len(shared) - 1
     assert "EXAMPLES (all ids and text invented)" in _text()

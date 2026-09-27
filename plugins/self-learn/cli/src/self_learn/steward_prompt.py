@@ -5,13 +5,18 @@ runner hands to a Fable session, one per model call.
 
 **Order is the design.** Seven blocks, evidence before advice, so the
 steward's own view forms before it reads anyone's advice (astra-round3
-"two reading views"): ``containment``, ``method``, ``user_model``,
-``conditions``, ``open_cases``, ``briefs``, ``output_contract``, in that
-order and no other.
+"two reading views"). Since 2026-09-26 they come in two parts, so a run's
+later calls read the first from Claude Code's prompt cache: the SHARED part
+-- ``method``, ``conditions``, ``output_contract`` -- identical for every
+packet of one run and sent as the appended system prompt; then the
+PER-PACKET part -- ``containment``, ``user_model``, ``open_cases``,
+``briefs`` -- sent as the user message. Each part keeps §4.1's relative
+order, and the analyst's advice (the briefs) is still the last thing read.
 
 This module never writes the ledger, takes no lock, never reads a
 transcript, and never reads ``hosts.yaml`` or ``settings.json`` itself —
-every fact it renders comes through :func:`conditions.feed` (already
+every fact it renders comes through :func:`conditions.steward_feed` (the
+steward's cut of :func:`conditions.feed`, 2026-09-26; both
 fail-closed to ``"unavailable"``) or through an existing read-only
 function (:func:`worker.render_brief`, :func:`cases.show`,
 :func:`cases.list_cases`, :func:`user_model.show`).
@@ -53,10 +58,13 @@ adds."""
 
 from __future__ import annotations
 
+import io
 import re
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
+
+from ruamel.yaml import YAML
 
 from . import batch
 from . import cases
@@ -82,16 +90,23 @@ __all__ = [
 
 Block = tuple[str, str]
 
-#: The seven block names, in the order §4.1 mandates.
+#: The seven block names, in the order the model reads them (2026-09-26):
+#: the shared part (the appended system prompt) first, then the per-packet
+#: part (the user message). §4.1's order holds within each part.
 _BLOCK_ORDER = (
-    "containment",
     "method",
-    "user_model",
     "conditions",
+    "output_contract",
+    "containment",
+    "user_model",
     "open_cases",
     "briefs",
-    "output_contract",
 )
+
+#: The blocks every packet of one run shares, byte for byte. Nothing in
+#: them may vary by packet: no packet number, no stage path, no per-packet
+#: time (the conditions' `observed_at` is the run's one snapshot).
+SHARED_BLOCKS = frozenset({"method", "conditions", "output_contract"})
 
 #: Container reading order for the user-model block (plan §4.1 item 3):
 #: own words -> seen readings -> declared conditions -> provisional
@@ -117,8 +132,13 @@ class RunContext:
 @dataclass(frozen=True)
 class Packet:
     blocks: tuple[Block, ...]
+    #: Every block, in `blocks`' order -- what the model reads, end to end.
     text: str
     withheld: tuple[str, ...]
+    #: The blocks in `SHARED_BLOCKS`: the appended system prompt.
+    shared: str = ""
+    #: Every other block: the user message.
+    per_packet: str = ""
 
 
 #: The six stage files a steward session may write. The KEYS are the
@@ -451,12 +471,61 @@ def _escape_cell(value: object) -> str:
     )
 
 
+#: 2026-09-26: the conditions block's first line -- how to cite what follows.
+CONDITIONS_CITATION_NOTE = (
+    "Cite a row as cond:<key>@<observed_at>. Each report section after the table is "
+    "headed by its own citation, ready to copy; its text is YAML, and a quote from it "
+    "is a verbatim part of a line."
+)
+
+
+def _plain_tree(value: object) -> object:
+    """A value made safe and deterministic for YAML: mappings with sorted
+    keys, tuples as lists, anything unfamiliar as its `str`."""
+    if isinstance(value, dict):
+        return {str(k): _plain_tree(value[k]) for k in sorted(value, key=str)}
+    if isinstance(value, (list, tuple)):
+        return [_plain_tree(v) for v in value]
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)
+
+
+def _yaml_block(value: object) -> str:
+    """Block-style YAML, one scalar per line: no line wrapping (a wrapped
+    scalar is no longer a verbatim substring), non-ASCII kept as written,
+    keys sorted."""
+    yaml = YAML(typ="safe", pure=True)
+    # Block style for structure; a collection holding only scalars goes on
+    # one line (`{id: lrn-..., state: reachable}`), one row per line.
+    yaml.default_flow_style = None
+    yaml.allow_unicode = True
+    yaml.width = 1_000_000
+    buf = io.StringIO()
+    yaml.dump(_plain_tree(value), buf)
+    text = buf.getvalue()
+    # A bare scalar dumps with a document-end marker; the block does not need it.
+    return text.removesuffix("...\n").rstrip("\n")
+
+
 def _render_conditions(items: list[Item]) -> str:
-    lines = ["| key | value | observed_at | source |", "|---|---|---|---|"]
+    """2026-09-26: the small rows in one table; each `report.*` section in a
+    sub-block of its own after it, headed ``cond:<key>@<observed_at>`` -- the
+    citation the model writes -- as YAML instead of a Python ``repr`` in one
+    escaped table cell."""
+    lines = [CONDITIONS_CITATION_NOTE, "", "| key | value | observed_at | source |", "|---|---|---|---|"]
+    sections: list[str] = []
     for item in items:
+        if item.key.startswith("report."):
+            sections.append(
+                f"cond:{item.key}@{item.observed_at}\n"
+                f"# source: {' '.join(str(item.source).split())}\n"
+                f"{_yaml_block(item.value)}"
+            )
+            continue
         cells = (item.key, item.value, item.observed_at, item.source)
         lines.append("| " + " | ".join(_escape_cell(c) for c in cells) + " |")
-    return "\n".join(lines)
+    return "\n\n".join(["\n".join(lines), *sections])
 
 
 def _later_observations(home: Path, case_id: str, since: str | None) -> list[str]:
@@ -743,19 +812,19 @@ def _ordered_blocks(
     proposals: list[dict],
     items: list[Item],
 ) -> tuple[Block, ...]:
-    """The seven blocks, §4.1's order. Factored out of :func:`assemble`
+    """The seven blocks, in reading order. Factored out of :func:`assemble`
     so a test can monkeypatch this ONE function to prove the offset
     test actually catches a scrambled order (a swap here is a swap in
     `assemble`'s own real return value, not a copy the test built
     itself)."""
     return (
-        ("containment", _render_containment(run)),
         ("method", _render_method()),
-        ("user_model", _render_user_model(home)),
         ("conditions", _render_conditions(items)),
+        ("output_contract", _render_output_contract()),
+        ("containment", _render_containment(run)),
+        ("user_model", _render_user_model(home)),
         ("open_cases", _render_open_cases(home, run)),
         ("briefs", _render_briefs(home, proposals)),
-        ("output_contract", _render_output_contract()),
     )
 
 
@@ -783,7 +852,9 @@ def assemble(
     conditions_items: list[Item] | None = None,
     returned: dict[str, dict] | None = None,
 ) -> Packet:
-    """Interface §4.1: the seven blocks, in order, evidence before advice.
+    """Interface §4.1: the seven blocks, evidence before advice, in two
+    parts (2026-09-26): ``shared`` for the appended system prompt and
+    ``per_packet`` for the user message.
     Never mutates the ledger, never reads a transcript, and never reads
     `hosts.yaml` or `settings.json` itself -- only through
     :func:`conditions.feed`. A caller assembling several packets of ONE
@@ -797,7 +868,11 @@ def assemble(
     :data:`SENT_BACK_TITLE` goes in just before the open-cases block."""
     home = Path(home)
     cache_dir = Path(cache_dir)
-    items = conditions.feed(home, cache_dir) if conditions_items is None else list(conditions_items)
+    items = (
+        conditions.steward_feed(home, [(str(p.get("id")), p) for p in proposals], cache_dir)
+        if conditions_items is None
+        else list(conditions_items)
+    )
     blocks = _ordered_blocks(home, run, proposals, items)
     if returned:
         at = next(
@@ -805,5 +880,13 @@ def assemble(
             len(blocks),
         )
         blocks = (*blocks[:at], ("sent_back", _render_sent_back(returned)), *blocks[at:])
-    text = "\n\n".join(f"=== {name} ===\n{body}" for name, body in blocks)
-    return Packet(blocks=blocks, text=text, withheld=withheld())
+    def joined(rows) -> str:
+        return "\n\n".join(f"=== {name} ===\n{body}" for name, body in rows)
+
+    return Packet(
+        blocks=blocks,
+        text=joined(blocks),
+        withheld=withheld(),
+        shared=joined(row for row in blocks if row[0] in SHARED_BLOCKS),
+        per_packet=joined(row for row in blocks if row[0] not in SHARED_BLOCKS),
+    )

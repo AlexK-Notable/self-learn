@@ -75,7 +75,9 @@ not apply — see this unit's report."""
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import re
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -87,7 +89,18 @@ from . import settings
 from . import user_model
 from .primitives import chrono
 
-__all__ = ["Item", "feed"]
+__all__ = [
+    "Item",
+    "RunLessons",
+    "SLICE_ROUTED_LIVE",
+    "SLICE_SURFACE_REACH",
+    "feed",
+    "run_lessons",
+    "slice_routed_live",
+    "slice_surface_reach",
+    "steward_feed",
+    "steward_keeps",
+]
 
 
 @dataclass(frozen=True)
@@ -413,3 +426,204 @@ def feed(home: Path | str, cache_dir: Path | str | None = None) -> list[Item]:
     items.extend(_overseer_run_items(home, observed_at))
     items.append(_ledger_head_item(home, observed_at))
     return items
+
+
+# ------------------------------------------------ the steward's cut (2026-09-26)
+#
+# The user, 2026-09-26 17:46 PDT, of the steward's conditions block: "cut it
+# down and let me know what we're left with." The rows cut and the two slices
+# below are the orchestrator's choices (build spec, Part A), grounded in the
+# 2026-09-20 forensic count of which rows 26 real cases cited. `feed` above is
+# NOT cut: the overseer reads it whole (`overseer/run.py`, `health.yaml`) and
+# filtered to `host.*` and the model/capability settings (`overseer/health.py`,
+# its conditions diff), and both need rows the steward no longer sees.
+
+#: Report sections no case ever cited, quoted or opened.
+_STEWARD_UNUSED_REPORT_KEYS = frozenset(
+    {"report.destinations", "report.open_followups", "report.recurrence_suspects"}
+)
+
+#: Row families no case ever cited: every other role's model and turn limit,
+#: the status counters, the steward's own last run (the containment block
+#: already says when it was), and the overseer's run dates.
+_STEWARD_UNUSED_PREFIXES = ("status.", "sdk.max_turns.", "steward.", "overseer.")
+
+#: The one-line rule stated at the top of each sliced section, so the model
+#: knows it is reading a slice and not the whole machine.
+SLICE_ROUTED_LIVE = "sliced: records in the buckets of this run's lessons, and records they name"
+SLICE_SURFACE_REACH = (
+    "sliced: rows for the scopes this run's lessons can route to (their own bucket, "
+    "an ancestor project, the user scope), and records they name; the counts are "
+    "the whole machine's"
+)
+
+_RECORD_ID_IN_TEXT = re.compile(r"lrn-[0-9a-f]{8}")
+
+
+def steward_keeps(key: str) -> bool:
+    """Whether a feed row reaches the steward's brief."""
+    if key in _STEWARD_UNUSED_REPORT_KEYS:
+        return False
+    if key.startswith(_STEWARD_UNUSED_PREFIXES):
+        return False
+    if key.startswith("host.") and key.endswith(".head"):
+        return False  # no case cited a host's commit; the ledger's own is `ledger.head`
+    if key.startswith("models.") and key != "models.steward":
+        return False
+    return True
+
+
+def bucket_key(scope: str, name: str) -> str:
+    """A bucket's identity, `(scope, name)`, in the one spelling
+    `report.surface_reach` rows already carry: its path under the ledger
+    (`user`, `skills/<name>`, `projects/<slug>`). Never the name alone: a
+    skill and a project bucket can share one."""
+    if scope == "user":
+        return "user"
+    return f"{'skills' if scope == 'skill' else 'projects'}/{name}"
+
+
+@dataclass(frozen=True)
+class RunLessons:
+    """What one run's selected lessons reach, computed once per run.
+
+    ``own_buckets``: the buckets the lessons live in. ``reach_buckets``: those,
+    every project bucket whose host is an ancestor of a lesson's project host,
+    and the user bucket -- where a lesson can route. ``named``: every record id
+    a lesson's proposal or record names (supersedes, superseded_by,
+    contradicts, a merge cluster, a ``covered_by`` or match target: any
+    ``lrn-`` id in the proposal). ``bucket_of``: record id -> bucket key for
+    every record in the ledger."""
+
+    own_buckets: frozenset[str] = frozenset()
+    reach_buckets: frozenset[str] = frozenset()
+    named: frozenset[str] = frozenset()
+    bucket_of: Mapping[str, str] = field(default_factory=dict)
+
+
+def run_lessons(home: Path | str, lessons: Iterable[tuple[str, Any]]) -> RunLessons:
+    """Resolve ``lessons`` -- ``(record id, proposal)`` pairs, every lesson
+    of the run -- against the ledger. Reads only; may raise (the caller,
+    :func:`steward_feed`, fails open to the unsliced sections)."""
+    from .ledger import discover_buckets  # deferred: same-family reuse convention
+    from .ledger_ops import bucket_project_path
+    from .records import Record
+
+    home = Path(home)
+    bucket_of: dict[str, str] = {}
+    path_of: dict[str, Path] = {}
+    project_paths: dict[str, Path] = {}
+    for bucket in discover_buckets(home):
+        key = bucket_key(bucket.scope, bucket.name)
+        if bucket.scope == "project":
+            recorded = bucket_project_path(bucket.path)
+            if recorded is not None:
+                project_paths[key] = recorded
+        for sub in ("pending", "resolved"):
+            directory = bucket.path / sub
+            if not directory.is_dir():
+                continue
+            for path in sorted(directory.glob("lrn-*.md")):
+                bucket_of.setdefault(path.stem, key)
+                path_of.setdefault(path.stem, path)
+
+    own: set[str] = set()
+    named: set[str] = set()
+    for record_id, proposal in lessons:
+        key = bucket_of.get(record_id)
+        if key is not None:
+            own.add(key)
+        named.update(
+            _RECORD_ID_IN_TEXT.findall(json.dumps(proposal, sort_keys=True, default=str))
+        )
+        path = path_of.get(record_id)
+        if path is not None:
+            record = Record.from_path(path)
+            links = [record.supersedes, record.superseded_by, *record.contradicts]
+            named.update(_RECORD_ID_IN_TEXT.findall(" ".join(str(v) for v in links if v)))
+    named -= {record_id for record_id, _ in lessons}
+
+    reach = set(own) | {"user"}
+    for key in own:
+        lesson_host = project_paths.get(key)
+        if lesson_host is None:
+            continue
+        for other, host in project_paths.items():
+            if lesson_host == host or lesson_host.is_relative_to(host):
+                reach.add(other)
+    return RunLessons(
+        own_buckets=frozenset(own),
+        reach_buckets=frozenset(reach),
+        named=frozenset(named),
+        bucket_of=bucket_of,
+    )
+
+
+def slice_routed_live(
+    rows: Any, *, buckets: Iterable[str], named: Iterable[str], bucket_of: Mapping[str, str],
+) -> Any:
+    """`report.routed_live` cut to the rows whose record lives in one of
+    ``buckets`` (by `(scope, name)`, through ``bucket_of`` -- the row's own
+    ``bucket`` field is the NAME only) or is ``named``. Rows are kept whole
+    and in order; a value that is not a list (``"unavailable"``) passes."""
+    if not isinstance(rows, list):
+        return rows
+    keep_buckets, keep_named = set(buckets), set(named)
+    return [
+        row for row in rows
+        if isinstance(row, dict)
+        and (bucket_of.get(str(row.get("id"))) in keep_buckets or row.get("id") in keep_named)
+    ]
+
+
+def slice_surface_reach(value: Any, *, buckets: Iterable[str], named: Iterable[str]) -> Any:
+    """`report.surface_reach` with its ``rows`` cut to ``buckets`` (each row
+    carries its bucket key) and ``named`` records. The machine-wide counts
+    and every kept row's prose ``detail`` are unchanged."""
+    if not isinstance(value, dict) or not isinstance(value.get("rows"), list):
+        return value
+    keep_buckets, keep_named = set(buckets), set(named)
+    out = dict(value)
+    out["rows"] = [
+        row for row in value["rows"]
+        if isinstance(row, dict)
+        and (row.get("bucket") in keep_buckets or row.get("record_id") in keep_named)
+    ]
+    return out
+
+
+def steward_feed(
+    home: Path | str,
+    lessons: Iterable[tuple[str, Any]],
+    cache_dir: Path | str | None = None,
+) -> list[Item]:
+    """The steward's conditions: :func:`feed`, less the rows no case used
+    (:func:`steward_keeps`), with `report.routed_live` and
+    `report.surface_reach` sliced to ``lessons`` -- EVERY lesson of the run,
+    not one packet's, so the block is identical for all of a run's packets.
+    Never raises, like :func:`feed`: when the slice cannot be computed the two
+    sections go whole, and their ``source`` says why."""
+    lessons = list(lessons)
+    items = [item for item in feed(home, cache_dir) if steward_keeps(item.key)]
+    try:
+        reach = run_lessons(home, lessons)
+    except Exception as exc:  # noqa: BLE001 -- fail open to the whole section, visibly
+        whole = f"not sliced, sent whole: the run's lessons could not be resolved ({exc})"
+        return [
+            Item(item.key, item.value, item.observed_at, f"{item.source}; {whole}")
+            if item.key in ("report.routed_live", "report.surface_reach") else item
+            for item in items
+        ]
+    out: list[Item] = []
+    for item in items:
+        if item.key == "report.routed_live":
+            value = slice_routed_live(
+                item.value, buckets=reach.own_buckets, named=reach.named,
+                bucket_of=reach.bucket_of,
+            )
+            item = Item(item.key, value, item.observed_at, f"{item.source}; {SLICE_ROUTED_LIVE}")
+        elif item.key == "report.surface_reach":
+            value = slice_surface_reach(item.value, buckets=reach.reach_buckets, named=reach.named)
+            item = Item(item.key, value, item.observed_at, f"{item.source}; {SLICE_SURFACE_REACH}")
+        out.append(item)
+    return out
