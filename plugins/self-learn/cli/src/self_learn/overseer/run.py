@@ -1335,14 +1335,68 @@ def _commit_failed_attempt(
     return report_path if report_path is not None else note
 
 
-def _sheet_pairs(stage: Path) -> list[tuple[Path | None, Path]]:
+def _refuse_in_span(
+    home: Path, *, dry_run: bool, manual: bool, deferred_notice: "_DeferredNotice",
+    intent: intents.Intent | None, coverage_path: Path, coverage_before: bytes | None,
+    stage: Path, week: str, attempt: int, cap: int, run_id: str, started: str,
+    model: str, selected: tuple[str, ...], population_count: int, excluded: int,
+    model_calls: int, guard: int, trigger: str, kind: str, reason: str,
+) -> "RunResult":
+    """A failed attempt inside the run's ledger-write span, through the
+    same path every other one takes: close-out at the cap, the report, a
+    committed failure note that counts, coverage put back, the journal.
+    2026-09-27 (fail-state audit finding 5): the steps after phase A that
+    used to raise straight out of the run -- uncounted, unlogged, repeated
+    every two hours -- come here instead."""
+    detail = _failure_detail(reason)
+    closed_text, close_questions = (None, [])
+    if not dry_run:
+        closed_text, close_questions = _close_out_if_exhausted(
+            home, week=week, attempts=attempt, cap=cap, kind=kind, detail=detail,
+            manual=manual,
+        )
+    text = _report_text(
+        date=started[:10], run_id=run_id, model=model, selected=selected,
+        population_count=population_count, excluded=excluded,
+        model_calls=model_calls, guard=guard, reason=reason, questions=close_questions,
+    )
+    report_path = _write_report_only(stage, text)
+    if not dry_run and intent is not None:
+        report_path = _commit_failed_attempt(
+            home, intent, coverage_path=coverage_path, coverage_before=coverage_before,
+            report_text=text, date=started[:10], run_id=run_id, week=week,
+            started=started, attempt=attempt, cap=cap, kind=kind, detail=detail,
+            closed_text=closed_text,
+            journal_text=_model_journal_text(home, stage, run_id, started[:10]),
+            trigger=trigger,
+        )
+        if closed_text is not None:
+            _queue_week_closed(deferred_notice, home, week, attempt, kind, [run_id])
+    _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "refused",
+        "reason": reason[:300]})
+    return RunResult(
+        "refused", EXIT_REFUSED, run_id, model_calls, selected, excluded,
+        report=str(report_path),
+    )
+
+
+def _sheet_pairs(stage: Path, drops: list[str] | None = None) -> list[tuple[Path | None, Path]]:
+    """The staged case/sheet pairs. A `sheet-<name>.yaml` with no
+    `case-<name>.yaml` beside it is dropped and named in *drops* (2026-09-27,
+    fail-state audit finding 5): before, it raised after phase A, outside
+    every handler, so the attempt crashed uncounted and repeated."""
     paired = []
     for sheet in sorted(stage.glob("sheet-*.yaml")):
-        paired.append((stage / sheet.name.replace("sheet-", "case-", 1), sheet))
-    if paired:
-        for case_file, _sheet in paired:
-            if case_file is None or not case_file.is_file():
-                raise OverseerError(f"{case_file.name}: missing successor case paired with sheet")
+        case_file = stage / sheet.name.replace("sheet-", "case-", 1)
+        if not case_file.is_file():
+            if drops is not None:
+                drops.append(
+                    f"{sheet.name}: dropped — no {case_file.name} beside it "
+                    "(a sheet needs its successor case)"
+                )
+            continue
+        paired.append((case_file, sheet))
+    if paired or drops:
         return paired
     sheet = stage / "sheet.yaml"
     if not sheet.is_file():
@@ -3553,10 +3607,29 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": state, "phase": "a", "reason": (detail or kind)[:300], **classified})
         return RunResult(state, EXIT_REFUSED, run_id, model_calls, excluded=excluded)
 
+    # 2026-09-27 (fail-state audit finding 5): a case in the window that
+    # cannot be classified into a coverage stratum (its first cited record
+    # is gone, say) is left out of coverage with a trace; before, it raised
+    # after phase A, outside every handler, on every attempt.
+    coverage_rows: list[dict[str, Any]] = []
+    coverage_drops: list[str] = []
+    for row in week_rows:
+        problem = population_mod.stratum_problem(row)
+        if problem is None:
+            coverage_rows.append(row)
+        else:
+            coverage_drops.append(
+                f"case {row.get('case')}: left out of coverage — no usable scope_kind "
+                "(its first cited record could not be classified)"
+            )
+            _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                "status": "coverage-row-dropped", "case": row.get("case")})
+    now_dt = datetime.now(timezone.utc)
     try:
         selection = _yaml_mapping(stage / "selection.yaml")
         selected = _selected_ids(selection, {row["case"] for row in week_rows})
         _validate_initial(stage / "initial-views.yaml", selected)
+        coverage_text = _coverage_text(previous, selection, coverage_rows, offered, now_dt, trigger)
     except (OverseerError, population_mod.CoverageError) as exc:
         detail = _failure_detail(exc)
         _commit_phase_a_failure(
@@ -3570,8 +3643,6 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "a-incomplete", "reason": str(exc)[:300]})
         return RunResult("refused", EXIT_REFUSED, run_id, model_calls, excluded=excluded)
 
-    now_dt = datetime.now(timezone.utc)
-    coverage_text = _coverage_text(previous, selection, week_rows, offered, now_dt, trigger)
     coverage_before: bytes | None = None
     intent: intents.Intent | None = None
     lock_context = intents.ledger_write(home)
@@ -3591,7 +3662,19 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             row for row in cases.list_cases(home, parked_for="overseer", only_ok=True)
             if not row.get("superseded_by")
         ]
-        model_doc = _full_inputs(home, stage, selected, parked_rows)
+        try:
+            model_doc = _full_inputs(home, stage, selected, parked_rows)
+        except Exception as exc:  # noqa: BLE001 -- counted and traced, never escapes
+            # 2026-09-27 (fail-state audit finding 5).
+            return _refuse_in_span(
+                home, dry_run=dry_run, manual=manual, deferred_notice=deferred_notice,
+                intent=intent, coverage_path=coverage_path, coverage_before=coverage_before,
+                stage=stage, week=week, attempt=attempt, cap=cap, run_id=run_id,
+                started=started, model=str(model), selected=selected,
+                population_count=len(week_rows), excluded=excluded,
+                model_calls=model_calls, guard=guard, trigger=trigger,
+                kind="invocation", reason=f"phase B inputs could not be prepared: {exc}",
+            )
         prompt_b = _phase_b_prompt(stage, selected, tuple(row["case"] for row in parked_rows))
         _write_stage(stage, stage / "prompt-b.md", prompt_b)
         outcome_b = _invoke(home, stage, prompt_b, timeout_seconds, "phase-b", run_id)
@@ -3653,7 +3736,8 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             )
         ]
         missing = [path.name for path in required if not path.is_file()]
-        pairs = _sheet_pairs(stage)
+        pair_drops: list[str] = []
+        pairs = _sheet_pairs(stage, pair_drops)
         if not pairs:
             missing.append("sheet.yaml")
         secret_files = _secret_files(
@@ -3827,7 +3911,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     ],
                 }
                 coverage_text = _coverage_text(
-                    previous, examined_selection, week_rows, offered, now_dt, trigger,
+                    previous, examined_selection, coverage_rows, offered, now_dt, trigger,
                 )
                 if not dry_run:
                     fsops.atomic_write(coverage_path, coverage_text, fsync=True)
@@ -3925,17 +4009,34 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             return RunResult("dry-run", EXIT_OK, run_id, model_calls, selected, excluded, report=str(report_path))
 
         assert intent is not None
-        manifest = _prepare_manifest(
-            home, stage, run_id=run_id, started=started, model=str(model),
-            # The record's `selected` feeds only the report's "Cases
-            # examined" line: it names the validly examined cases.
-            selected=examined_ids, population_count=len(week_rows), excluded=excluded,
-            model_calls=model_calls, guard=guard, coverage_text=coverage_text,
-            questions=questions, findings=findings, prepared=prepared,
-            model_updates=model_updates,
-            runner_notes=[*report_notes, *question_drops, *finding_drops, *case_drops],
-            journal_text=journal_text, trigger=trigger,
-        )
+        try:
+            manifest = _prepare_manifest(
+                home, stage, run_id=run_id, started=started, model=str(model),
+                # The record's `selected` feeds only the report's "Cases
+                # examined" line: it names the validly examined cases.
+                selected=examined_ids, population_count=len(week_rows), excluded=excluded,
+                model_calls=model_calls, guard=guard, coverage_text=coverage_text,
+                questions=questions, findings=findings, prepared=prepared,
+                model_updates=model_updates,
+                runner_notes=[
+                    *report_notes, *question_drops, *finding_drops, *case_drops,
+                    *pair_drops, *coverage_drops,
+                ],
+                journal_text=journal_text, trigger=trigger,
+            )
+        except Exception as exc:  # noqa: BLE001 -- counted and traced, never escapes
+            # 2026-09-27 (fail-state audit finding 5): the run record could
+            # not be prepared (e.g. the manifest's secret-scan backstop).
+            # Nothing of phase B was applied; the attempt counts.
+            return _refuse_in_span(
+                home, dry_run=dry_run, manual=manual, deferred_notice=deferred_notice,
+                intent=intent, coverage_path=coverage_path, coverage_before=coverage_before,
+                stage=stage, week=week, attempt=attempt, cap=cap, run_id=run_id,
+                started=started, model=str(model), selected=examined_ids,
+                population_count=len(week_rows), excluded=excluded,
+                model_calls=model_calls, guard=guard, trigger=trigger,
+                kind="schema-repair", reason=f"the run record could not be prepared: {exc}",
+            )
         _publish_manifest(home, intent, manifest, coverage_path)
 
     return _execute_manifest(

@@ -190,3 +190,137 @@ def test_a_case_the_writer_refuses_at_execute_time_is_refused_alone(tmp_path, mo
     assert rows and all(row["state"] == "refused" for row in rows)
     report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
     assert "case-a.yaml (successor " in report and "refused by the case writer" in report
+
+
+# ------------------------------------------------------------ unit 5
+
+
+def _week():
+    return overseer_run.week_key(overseer_run.week_boundary(time.time()))
+
+
+def test_an_orphan_sheet_is_dropped_and_its_sibling_applies(tmp_path, monkeypatch):
+    """Audit finding 5 (`test_O1_…`): `sheet-x.yaml` with no `case-x.yaml`
+    raised after phase A, outside every handler: uncounted, repeated every
+    two hours. Now that sheet is dropped with a trace and the valid pair
+    beside it applies."""
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    rid_a, parked_a, rid_b, parked_b = _two_parked(home, tmp_path)
+
+    def invoke(spec):
+        stage = spec.cwd
+        if spec.label == "phase-a":
+            _phase_a(stage)
+        else:
+            _stage_two_successors(
+                stage, rid_a, _successor(rid_a, parked_a), rid_b, _successor(rid_b, parked_b),
+            )
+            (stage / "case-a.yaml").unlink()  # sheet-a.yaml is now an orphan
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    result = overseer_run.run(home, no_push=True)
+    assert _status(home, rid_b) != "pending"  # the sibling applied
+    assert _status(home, rid_a) == "pending"
+    assert not overseer_run.has_unfinished_work(home)
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    assert "sheet-a.yaml: dropped — no case-a.yaml beside it" in report
+    assert result.status in {"applied", "partial"}
+
+
+def test_a_stage_holding_only_an_orphan_sheet_is_a_counted_refusal(tmp_path, monkeypatch):
+    """The probe's exact shape: the only sheet is an orphan. The run is
+    refused through the ordinary failure path -- a committed note that
+    counts -- instead of raising uncounted."""
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+
+    def invoke(spec):
+        if spec.label == "phase-a":
+            _phase_a(spec.cwd)
+        else:
+            _phase_b_common(spec.cwd)
+            _dump(spec.cwd / "sheet-x.yaml", {"version": 1, "items": []})
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    before = overseer_run.week_attempts(home, _week())
+    result = overseer_run.run(home, no_push=True)
+    assert result.status == "refused"
+    assert overseer_run.week_attempts(home, _week()) == before + 1
+
+
+def test_a_case_that_cannot_be_classified_is_left_out_of_coverage(tmp_path, monkeypatch):
+    """Audit finding 5 (`test_O3_…`): a case in the window whose first
+    cited record is gone has no usable scope_kind; `coverage_update`
+    raised for it after phase A, uncounted. Now that one row is left out of
+    coverage with a trace and the run completes."""
+    import glob
+    import os
+    import subprocess
+
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    rid = "lrn-0c000003"
+    create_record(home, make_behavior(record_id=rid))
+    commit_all(home, "seed")
+    path = tmp_path / "decided.yaml"
+    _dump(path, {
+        "kind": "resolution", "trigger": "nightly", "outcome": "reject",
+        "records": [rid], "scope": "skill:s", "question": "keep?",
+        "evidence": [{"ref": f"record:{rid}", "quote": "status: pending"}],
+        "decision": {"verb": "reject", "because": "narrow", "confidence": "settled"},
+    })
+    orphaned = cases.record(home, path, actor="steward")
+    subprocess.run(["git", "-C", str(home), "rm", "-q", str(find_record_path(home, rid))], check=True)
+    commit_all(home, "record gone")
+    for idx in glob.glob(os.path.join(os.environ["XDG_CACHE_HOME"], "**", "index.json"), recursive=True):
+        os.unlink(idx)
+    calls = []
+
+    def invoke(spec):
+        calls.append(spec.label)
+        if spec.label == "phase-a":
+            _phase_a(spec.cwd)
+        else:
+            _phase_b_common(spec.cwd)
+            _dump(spec.cwd / "sheet.yaml", {"version": 1, "items": []})
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    result = overseer_run.run(home, no_push=True)
+    assert calls == ["phase-a", "phase-b"]
+    assert result.status == "applied"
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    assert f"case {orphaned}: left out of coverage" in report
+
+
+@pytest.mark.parametrize("step", ["_full_inputs", "_prepare_manifest"])
+def test_a_step_after_phase_a_that_raises_is_a_counted_refusal(tmp_path, monkeypatch, step):
+    """`_full_inputs` and `_prepare_manifest` sat outside every handler: a
+    raise escaped the run with no note and no count. Now it commits a
+    failure note that counts, and coverage is put back."""
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+
+    def invoke(spec):
+        if spec.label == "phase-a":
+            _phase_a(spec.cwd)
+        else:
+            _phase_b_common(spec.cwd)
+            _dump(spec.cwd / "sheet.yaml", {"version": 1, "items": []})
+        return _ok()
+
+    def broken(*args, **kwargs):
+        raise overseer_run.OverseerError("synthetic failure")
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    monkeypatch.setattr(overseer_run, step, broken)
+    before = overseer_run.week_attempts(home, _week())
+    result = overseer_run.run(home, no_push=True)
+    assert result.status == "refused"
+    assert overseer_run.week_attempts(home, _week()) == before + 1
+    assert not (home / "overseer" / "coverage.yaml").exists()
+    (note,) = overseer_run._committed_failure_notes(home, _week())
+    assert "synthetic failure" in (home / note).read_text(encoding="utf-8")
