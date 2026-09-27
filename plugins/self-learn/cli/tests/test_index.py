@@ -149,6 +149,11 @@ def test_a_vector_of_older_text_is_never_current(home):
     old_hash = ix.docs()["lrn-00000001"].text_hash
     assert ix.vectors.current_ids(model, {"lrn-00000001": old_hash}) == {"lrn-00000001"}
     assert ix.vectors.current_ids(model, {"lrn-00000001": "0" * 64}) == set()
+    assert set(ix.record_vectors()) == {"lrn-00000001"}
+    ix.vectors.upsert_many([("lrn-00000001", "0" * 64, [1.0] * ix.vectors.vectors(model)
+                             ["lrn-00000001"].__len__())], model, "t")
+    assert ix.record_vectors() == {}  # a stored vector of other text is not usable
+    ix.build(FakeEmbeddingProvider())
     # a word-only rebuild after an edit drops the edited record's old vector
     put(home, "lrn-00000001", trigger="About to restart podman.")
     ix.build(None)
