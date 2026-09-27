@@ -990,6 +990,19 @@ REGISTRY: tuple[Setting, ...] = (
         default="~/.claude/projects",
         description="root directory the miner scans for Claude Code session transcripts",
     ),
+    # ------------------------------------------------------- refs (U1, 2026-09-26)
+    Setting(
+        name="refs.transcript_roots",
+        env_var="SELF_LEARN_TRANSCRIPT_ROOTS",
+        config_section="refs",
+        config_key="transcript_roots",
+        kind="str",
+        # os.pathsep-joined; each entry `~`-expanded at run time by
+        # refs.transcript_roots(). The archive holds hardlinked copies of
+        # top-level session files that outlive Claude Code's cleanup.
+        default=os.pathsep.join(("~/.claude/projects", "~/.claude/archive/sessions")),
+        description="transcript roots the checked-pointer resolver searches, in order (os.pathsep-separated)",
+    ),
     # ------------------------------------------------------- analyst
     Setting(
         name="analyst.timeout_secs",
