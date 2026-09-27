@@ -955,30 +955,70 @@ def _record_push_failure(
         intents.finish(intent)
 
 
-def _validate_findings(data: dict[str, Any], selected: tuple[str, ...]) -> list[dict[str, Any]]:
+def _validate_findings(
+    data: dict[str, Any], selected: tuple[str, ...]
+) -> tuple[list[dict[str, Any]], tuple[str, ...], list[str]]:
+    """Validate findings.yaml ENTRY BY ENTRY (2026-09-27, run a3c1df7c; the
+    user's words: "Make the fix."): a malformed finding costs that finding,
+    not the run. Each failed entry is dropped and named in one runner line
+    for "Refused / could not do" -- by its ordinal and, when it names a
+    selected case, that case id; never its text. A selected case left with
+    no valid `examined` finding is NOT examined this run: it is named too,
+    and left out of the examined ids the caller advances coverage with.
+    Only a file that is not a mapping holding just a findings list still
+    refuses the run. Answers ``(clean, examined_ids, dropped_lines)``,
+    *examined_ids* in the selection's order."""
     findings = data.get("findings")
     if set(data) != {"findings"} or not isinstance(findings, list):
         raise OverseerError("findings.yaml: expected only a findings list")
     clean: list[dict[str, Any]] = []
     examined: set[str] = set()
-    for finding in findings:
+    dropped: list[str] = []
+    for ordinal, finding in enumerate(findings, start=1):
+        case_id = finding.get("case") if isinstance(finding, dict) else None
+        label = (
+            f"finding {ordinal} (case {case_id})"
+            if isinstance(case_id, str) and case_id in selected
+            else f"finding {ordinal}"
+        )
+        problem: str | None = None
         if not isinstance(finding, dict) or set(finding) - {"case", "kind", "text", "ref"}:
-            raise OverseerError("findings.yaml: each entry permits case, kind, text, and ref only")
-        case_id = finding.get("case")
-        kind = finding.get("kind")
-        if case_id not in selected or kind not in ("examined", "dependency-moved"):
-            raise OverseerError(f"findings.yaml: refused finding for {case_id!r} kind {kind!r}")
-        if not isinstance(finding.get("text"), str) or not finding["text"].strip():
-            raise OverseerError("findings.yaml: every finding needs non-empty text")
-        if kind == "dependency-moved" and not isinstance(finding.get("ref"), str):
-            raise OverseerError("findings.yaml: dependency-moved requires ref")
-        if kind == "examined":
-            examined.add(case_id)
+            problem = "an entry permits case, kind, text, and ref only"
+        elif case_id not in selected:
+            problem = "names a case not selected this run"
+        elif finding.get("kind") not in ("examined", "dependency-moved"):
+            problem = "kind must be examined or dependency-moved"
+        elif not isinstance(finding.get("text"), str) or not finding["text"].strip():
+            problem = "a finding needs non-empty text"
+        elif finding["kind"] == "dependency-moved" and not isinstance(finding.get("ref"), str):
+            problem = "dependency-moved needs a ref"
+        if problem is not None:
+            dropped.append(f"{label}: dropped — {problem}")
+            continue
+        assert isinstance(finding, dict)
+        if finding["kind"] == "examined":
+            examined.add(cast(str, case_id))
         clean.append(dict(finding))
-    missing = [case_id for case_id in selected if case_id not in examined]
-    if missing:
-        raise OverseerError(f"findings.yaml: missing examined finding(s) {missing!r}")
-    return clean
+    dropped.extend(
+        f"case {case_id}: not examined — no valid examined finding; coverage not advanced for it"
+        for case_id in selected if case_id not in examined
+    )
+    return clean, tuple(case_id for case_id in selected if case_id in examined), dropped
+
+
+def _coverage_text(
+    previous: dict[str, Any], selection: dict[str, Any], week_rows: list[dict[str, Any]],
+    offered: list[dict[str, Any]], now_dt: datetime, trigger: str,
+) -> str:
+    coverage = population_mod.coverage_update(previous, selection, week_rows, offered, now=now_dt)
+    if not _counts_as_week_review(trigger):
+        # The user's choice (2026-09-24, "No, Sunday still runs"): a manual
+        # run's coverage of the cases it examined is written as usual, but
+        # `last_run_at` -- the field `week_done`, `previous_run_exists`,
+        # `last_run_iso` and the next population window read as "the
+        # week's review" -- stays where the last counted run left it.
+        coverage["last_run_at"] = previous.get("last_run_at")
+    return population_mod.render_coverage(coverage)
 
 
 def _validate_successor(path: Path, parked: set[str]) -> None:
@@ -3405,15 +3445,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         return RunResult("refused", EXIT_REFUSED, run_id, model_calls, excluded=excluded)
 
     now_dt = datetime.now(timezone.utc)
-    coverage = population_mod.coverage_update(previous, selection, week_rows, offered, now=now_dt)
-    if not _counts_as_week_review(trigger):
-        # The user's choice (2026-09-24, "No, Sunday still runs"): a manual
-        # run's coverage of the cases it examined is written as usual, but
-        # `last_run_at` -- the field `week_done`, `previous_run_exists`,
-        # `last_run_iso` and the next population window read as "the
-        # week's review" -- stays where the last counted run left it.
-        coverage["last_run_at"] = previous.get("last_run_at")
-    coverage_text = population_mod.render_coverage(coverage)
+    coverage_text = _coverage_text(previous, selection, week_rows, offered, now_dt, trigger)
     coverage_before: bytes | None = None
     intent: intents.Intent | None = None
     lock_context = intents.ledger_write(home)
@@ -3635,7 +3667,30 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 stage / "questions.yaml", model_doc,
                 {row["case"] for row in cases.list_cases(home, only_ok=True)},
             )
-            findings = _validate_findings(_yaml_mapping(stage / "findings.yaml"), selected)
+            # 2026-09-27: a bad finding is dropped and named, not a refusal.
+            findings, examined_ids, finding_drops = _validate_findings(
+                _yaml_mapping(stage / "findings.yaml"), selected,
+            )
+            if examined_ids != selected:
+                # Coverage was advanced from phase A's selection before
+                # phase B ran; a selected case with no valid examined
+                # finding was not examined, so it must not count as covered
+                # this week. Recompute from the examined cases only; the
+                # rewrite is inside this run's intent, so every later
+                # failure path still restores `coverage_before`.
+                examined_selection = {
+                    **selection,
+                    "cases": [
+                        entry for entry in selection.get("cases") or []
+                        if isinstance(entry, dict) and entry.get("id") in examined_ids
+                    ],
+                }
+                coverage_text = _coverage_text(
+                    previous, examined_selection, week_rows, offered, now_dt, trigger,
+                )
+                if not dry_run:
+                    fsops.atomic_write(coverage_path, coverage_text, fsync=True)
+                _write_stage(stage, stage / "coverage.yaml", coverage_text)
             model_updates = _model_updates(stage / "user-model-delta.yaml")
             prepared: list[tuple[Path | None, Path, batch.Sheet]] = []
             preview_apply = 0
@@ -3704,10 +3759,13 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         assert intent is not None
         manifest = _prepare_manifest(
             home, stage, run_id=run_id, started=started, model=str(model),
-            selected=selected, population_count=len(week_rows), excluded=excluded,
+            # The record's `selected` feeds only the report's "Cases
+            # examined" line: it names the validly examined cases.
+            selected=examined_ids, population_count=len(week_rows), excluded=excluded,
             model_calls=model_calls, guard=guard, coverage_text=coverage_text,
             questions=questions, findings=findings, prepared=prepared,
-            model_updates=model_updates, runner_notes=[*report_notes, *question_drops],
+            model_updates=model_updates,
+            runner_notes=[*report_notes, *question_drops, *finding_drops],
             journal_text=journal_text, trigger=trigger,
         )
         _publish_manifest(home, intent, manifest, coverage_path)
