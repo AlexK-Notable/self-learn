@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from self_learn import cli
-from self_learn.index import gemini, registry
+from self_learn.index import gemini, hybrid, registry
 from self_learn.index.fake import FakeEmbeddingProvider
 from self_learn.index.related import BUCKET_SIMILAR, SESSION, group_for_steward, related
 from self_learn.index.store import HYBRID, LEXICAL_ONLY, LessonIndex, index_path
@@ -148,6 +148,17 @@ def test_every_status_is_indexed_and_evidence_quotes_are_in_the_text(home):
     docs = ix.docs()
     assert sorted(docs) == ["lrn-0000000a", "lrn-0000000b"]
     assert "zebra" in docs["lrn-0000000a"].text
+
+
+def test_index_text_is_redacted_before_any_provider_sees_it(home):
+    token = "AKIA" + "ABCDEFGHIJKLMNOP"
+    path = put(home, "lrn-0000000c", evidence=[{"session": S1, "quote": "safe words"}])
+    path.write_text(path.read_text().replace("safe words", f"key {token} here"))
+    fake = FakeEmbeddingProvider()
+    ix = built(home, fake)
+    assert "[redacted:aws-key]" in ix.docs()["lrn-0000000c"].text  # positive control
+    assert not any(token in t for t in fake.calls)
+    assert token not in ix.docs()["lrn-0000000c"].text
 
 
 def test_a_model_change_re_embeds_everything_and_never_mixes_models(home):
@@ -320,6 +331,21 @@ def test_a_model_with_no_measured_threshold_falls_back_to_lexical(home):
     assert ix.mode()[0] == HYBRID
     assert related(ix, "lrn-00000001", "lrn-00000002").basis == "lexical"
     assert related(ix, "lrn-00000001", "lrn-00000002", cosine_threshold=0.8).basis == "cosine"
+
+
+def test_nearest_fuses_words_and_meaning_when_hybrid(home):
+    _filler(home)
+    put(home, "lrn-00000001", trigger="About to restart docker.", instruction="Check logs.")
+    put(home, "lrn-00000002", trigger="A container dies.", instruction="Read docker events.")
+    put(home, "lrn-00000003", trigger="About to restart the lights.", instruction="Check logs.")
+    ix = built(home, TopicProvider())
+    near = hybrid.nearest(ix, "lrn-00000001", limit=3)
+    assert near.mode == HYBRID
+    assert near.hits[0].id == "lrn-00000002" and near.hits[0].cosine is not None
+    assert "lrn-00000001" not in [h.id for h in near.hits]
+    # the word ranking alone puts the lights record first; meaning moved docker up
+    profile = ix.lexical_profile("lrn-00000001")
+    assert max(profile, key=lambda k: profile[k]) == "lrn-00000003"
 
 
 # --------------------------------------------------------------- grouping
