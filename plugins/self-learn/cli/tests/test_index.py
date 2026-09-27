@@ -141,6 +141,22 @@ def test_incremental_rebuild_embeds_only_what_changed_and_drops_the_deleted(home
     assert ix.mode() == (HYBRID, "")
 
 
+def test_a_vector_of_older_text_is_never_current(home):
+    put(home, "lrn-00000001", trigger="About to restart docker.")
+    ix = built(home, FakeEmbeddingProvider())
+    model = ix.model_id()
+    assert model is not None
+    old_hash = ix.docs()["lrn-00000001"].text_hash
+    assert ix.vectors.current_ids(model, {"lrn-00000001": old_hash}) == {"lrn-00000001"}
+    assert ix.vectors.current_ids(model, {"lrn-00000001": "0" * 64}) == set()
+    # a word-only rebuild after an edit drops the edited record's old vector
+    put(home, "lrn-00000001", trigger="About to restart podman.")
+    ix.build(None)
+    n = ix.conn.execute("SELECT COUNT(*) FROM lesson_vectors WHERE id = 'lrn-00000001'").fetchone()[0]
+    assert n == 0
+    assert ix.mode()[0] == LEXICAL_ONLY
+
+
 def test_every_status_is_indexed_and_evidence_quotes_are_in_the_text(home):
     put(home, "lrn-0000000a", evidence=[{"session": S1, "quote": "the zebra quote"}])
     put(home, "lrn-0000000b", status_dir="resolved")
