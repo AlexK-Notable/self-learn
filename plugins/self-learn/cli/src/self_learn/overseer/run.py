@@ -1063,6 +1063,49 @@ def _validate_maintenance_case(path: Path) -> None:
         )
 
 
+def _case_rule(exc: BaseException) -> str:
+    """The case writer's refusal as one committed line (2026-09-27, audit
+    finding 1): every secret-scan span withheld, newlines folded, and the
+    model's own value after ``, got`` cut off, so the line names the rule
+    and never the text that broke it."""
+    text = scan.refusal_text(exc)
+    text = text.split(", got ", 1)[0]
+    return " ".join(text.split()).strip() or type(exc).__name__
+
+
+def _case_rule_problem(path: Path, run_id: str) -> str | None:
+    """Run the case writer's own rules (`cases.check_case_data`, never a
+    copy of them) on a staged decided or maintenance case, as
+    `cases.record` will see it at execute time: stamped with the run id,
+    with the evidence items the runner drops already gone
+    (`cases.split_runner_evidence`, as `_prepare_manifest` does). Answers
+    the rule it breaks, or ``None``.
+
+    Before 2026-09-27 phase B checked only that the fields were present; a
+    value the writer refuses (``confidence: high``, a ``## `` line in
+    ``because``) passed here and then ended the run at execute time, with
+    every later case unapplied, on every resume until the week's attempts
+    were gone (audit finding 1)."""
+    data = dict(_yaml_mapping(path))
+    data["run_id"] = run_id
+    data, _dropped = cases.split_runner_evidence(data)
+    try:
+        cases.check_case_data(data, withhold_spans=True)
+    except cases.CaseError as exc:
+        return _case_rule(exc)
+    return None
+
+
+class _CaseRefused(Exception):
+    """`cases.record` refused one case at execute time. Every one of its
+    refusals is raised before anything is written, so the case and its
+    sheet are refused alone and the run carries on with the rest."""
+
+    def __init__(self, cause: cases.CaseError) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+
+
 def _write_report_only(stage: Path, text: str) -> Path:
     path = stage / "report.final.md"
     _write_stage(stage, path, text)
@@ -2614,9 +2657,12 @@ def _run_manifest_sheet(
     sheet_path = stage / f"effective-{recipe['sheet_name']}"
     _write_stage(stage, case_path, cast(str, recipe["case_text"]))
     _write_stage(stage, sheet_path, cast(str, recipe["sheet"]))
-    successor = cases.record(
-        home, case_path, actor="overseer", reserved_id=case_id
-    )
+    try:
+        successor = cases.record(
+            home, case_path, actor="overseer", reserved_id=case_id
+        )
+    except cases.CaseError as exc:
+        raise _CaseRefused(exc) from exc
     if successor != case_id:
         raise OverseerError(
             f"reserved successor {case_id} returned unexpected id {successor}"
@@ -2855,6 +2901,37 @@ def _execute_manifest(
             effective = batch.load_sheet(effective_path, home=home)
             halted = True
             halt_reason = str(exc)
+        except _CaseRefused as exc:
+            # 2026-09-27 (audit finding 1): the case writer refused this
+            # case before writing anything. That case and its sheet are
+            # refused -- each item a final refusal, so no resume re-drives
+            # it and A12's expected-key check below sees every item -- and
+            # the run goes on with the rest. Before, the run halted here
+            # and every later case stayed unapplied on every resume.
+            rule = _case_rule(exc.cause)
+            kind = batch.refusal_kind(exc.cause, rc=1, state="refused")
+            effective_path = stage / f"effective-{recipe['sheet_name']}"
+            effective = batch.load_sheet(effective_path)
+            result = batch.BatchResult(
+                items=[
+                    batch.ItemResult(
+                        n=item.n, id=item.id, verb=item.verb, rc=1,
+                        state="refused", kind=kind,
+                        detail=(
+                            f"{recipe['sheet_name']} item {item.n} ({item.verb} {item.id}): "
+                            f"not applied — its case {recipe['case_name']} was refused"
+                        ),
+                    )
+                    for item in effective
+                ],
+                process_code=EXIT_REFUSED, case=case_id,
+                sheet_sha=effective.sheet_sha, actor="overseer",
+            )
+            receipt = {"state": "case-refused", "reason": rule}
+            refusals.append(
+                f"{recipe['case_name']} (successor {case_id}): refused by the case "
+                f"writer — {rule}; its sheet {recipe['sheet_name']} was not applied"
+            )
         except Exception as exc:
             halted = True
             halt_reason = f"run ended early: {exc}"
@@ -3696,15 +3773,42 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             preview_apply = 0
             preview_refused = 0
             seen_predecessors: set[str] = set()
+            case_drops: list[str] = []
             for case_file, sheet_file in pairs:
                 if case_file is not None and case_file.name == "case.yaml":
                     # A9: the caseless sheet's pair is catalogue maintenance;
                     # it supersedes nothing, so the successor rules below
                     # cannot apply to it and it has rules of its own.
                     _validate_maintenance_case(case_file)
+                    rule = _case_rule_problem(case_file, run_id)
+                    if rule is not None:
+                        # 2026-09-27 (audit finding 1): the same drop as a
+                        # decided case below -- it goes through the same
+                        # `cases.record`.
+                        case_drops.append(
+                            f"{case_file.name} (catalogue change): dropped with "
+                            f"{sheet_file.name} — the case writer refuses it: {rule}"
+                        )
+                        _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                            "status": "case-dropped", "file": case_file.name, "rule": rule})
+                        continue
                 elif case_file is not None:
                     _validate_successor(case_file, {row["case"] for row in parked_rows})
                     predecessor = str(_yaml_mapping(case_file)["supersedes"])
+                    rule = _case_rule_problem(case_file, run_id)
+                    if rule is not None:
+                        # 2026-09-27 (audit finding 1): a decided case the
+                        # case writer would refuse costs that case and its
+                        # sheet, named by file and parked case (never its
+                        # text); the parked case stays open for next week.
+                        case_drops.append(
+                            f"{case_file.name} (successor for {predecessor}): dropped "
+                            f"with {sheet_file.name} — the case writer refuses it: {rule}"
+                        )
+                        _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                            "status": "case-dropped", "file": case_file.name,
+                            "supersedes": predecessor, "rule": rule})
+                        continue
                     if predecessor in seen_predecessors:
                         raise OverseerError(f"{case_file.name}: duplicate successor for {predecessor}")
                     seen_predecessors.add(predecessor)
@@ -3765,7 +3869,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             model_calls=model_calls, guard=guard, coverage_text=coverage_text,
             questions=questions, findings=findings, prepared=prepared,
             model_updates=model_updates,
-            runner_notes=[*report_notes, *question_drops, *finding_drops],
+            runner_notes=[*report_notes, *question_drops, *finding_drops, *case_drops],
             journal_text=journal_text, trigger=trigger,
         )
         _publish_manifest(home, intent, manifest, coverage_path)
