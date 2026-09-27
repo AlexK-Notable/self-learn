@@ -22,6 +22,7 @@ from typing import cast
 from ruamel.yaml import YAML
 
 from . import (
+    model_failures,
     batch,
     cases,
     conditions,
@@ -77,6 +78,10 @@ class RunResult:
     #: keep a permanently failing close-out from becoming a silent loop.
     close_out_error: str | None = None
     coverage: dict[str, int] = field(default_factory=dict)
+    #: 2026-09-27 (fail-state audit finding 4): the cause when this run was
+    #: held because the model or the installed Claude Code could not run a
+    #: call at all (`environment`); that attempt was not counted.
+    held: str | None = None
 
 
 _ALLOWED_TOOLS = "Read,Grep,Glob,Write,Edit"
@@ -347,6 +352,7 @@ def _record_failure(
     duration: float | None,
     dispositions: dict,
     error: str | None = None,
+    classified: dict | None = None,
 ) -> None:
     """A2: every failure path changes NAMED fields on the record just read
     from HEAD. The publish it replaces wrote a whole pre-invocation copy
@@ -362,6 +368,11 @@ def _record_failure(
         packet["duration_secs"] = duration
     if error is not None:
         packet["error"] = error
+    # 2026-09-27 (fail-state audit finding 4): the failed call's class and
+    # the API's tag, or none of either when the failure was not a call's.
+    packet.pop("failure_class", None)
+    packet.pop("failure_tag", None)
+    packet.update(classified or {})
     packet.setdefault("dispositions", {}).update(dispositions)
 
 
@@ -2245,6 +2256,20 @@ def _records_waiting_for_close_out(
     return list(dict.fromkeys(waiting))
 
 
+def _notify_environment_hold(home: Path, run_id: str, cause: str) -> None:
+    """Once per DISTINCT cause (2026-09-27, fail-state audit finding 4):
+    the steward is held, not failing, until the environment is fixed."""
+    summary = (
+        f"self-learn steward: run {run_id} is held — the model call cannot run "
+        f"here: {cause}. Nothing was counted; it retries on its next attempt."
+    )
+    try:
+        overseer_notify.send(home, "routine", summary, [run_id])
+    except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
+        _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+            "status": "notify-failed", "error": _short_cause(exc)})
+
+
 def _notify_close_out_failure(
     home: Path, run_id: str, waiting: list[str], cause: str
 ) -> None:
@@ -3484,13 +3509,32 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 )
                 started = time.monotonic()
                 outcome = invocation.write_session(spec)
-                duration = float(time.monotonic() - started)
                 result.calls += 1
+                # 2026-09-27 (fail-state audit finding 4): a transient
+                # failure (overloaded, 5xx, rate limit, network) is retried
+                # once within this attempt, from an empty stage.
+                transient_retry: dict | None = None
+                if model_failures.should_retry(outcome):
+                    result.failed_calls += 1
+                    transient_retry = {"failure": outcome.failure,
+                        "detail": _failure_detail(outcome.detail),
+                        **model_failures.failure_fields(outcome)}
+                    _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+                        "status": "transient-retry", "packet": packet_index,
+                        "call": "decision", **transient_retry})
+                    shutil.rmtree(stage, ignore_errors=True)
+                    stage.mkdir(parents=True, exist_ok=True)
+                    model_failures.backoff()
+                    outcome = invocation.write_session(spec)
+                    result.calls += 1
+                duration = float(time.monotonic() - started)
                 if not outcome.ok:
                     result.failed_calls += 1
                 turns = getattr(outcome, "turns", None)
                 attempt = {"kind": "decision", "turns": turns,
                     "failure": outcome.failure, "duration_secs": duration,
+                    **model_failures.failure_fields(outcome),
+                    **({"transient_retry": transient_retry} if transient_retry else {}),
                     **_attempt_usage(outcome),
                     # U3a data points: what the brief carried, and how much
                     # the steward still read for itself.
@@ -3519,6 +3563,41 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     # just its kind. `exit` alone is what made the
                     # 2026-09-14 outage unreadable from the ledger.
                     detail = _failure_detail(outcome.detail)
+                    classified = model_failures.failure_fields(outcome)
+                    if classified.get("failure_class") == "environment":
+                        # 2026-09-27 (fail-state audit finding 4): the model
+                        # or the installed Claude Code cannot run the call at
+                        # all (a version, auth or not-found failure). That
+                        # is a HOLD, not an attempt: the count goes back to
+                        # what it was, the lessons stay open, the user is
+                        # told once per distinct cause, and no later packet
+                        # of this run is tried -- each would fail the same.
+                        cause = _failure_detail(model_failures.hold_cause(outcome)) or bound
+                        previous_cause = model_failures.last_hold_cause(journal_path(home))
+                        held_fields = {
+                            "attempts": packet_record.get("attempts") or [],
+                            "phase": "unfinished", "failure": bound, "detail": detail,
+                            "duration": duration, "dispositions": {},
+                        }
+                        if dry_run:
+                            _record_failure(manifest, packet_index, **held_fields)
+                        else:
+                            _update_manifest(
+                                home, run_id, reason=f"packet {packet_index} held: environment",
+                                update=lambda current: (
+                                    _record_failure(current, packet_index, **held_fields),
+                                    current["packets"][packet_index - 1].update(
+                                        attempt_count=attempts_made, **classified,
+                                    ),
+                                ),
+                            )
+                        _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+                            "status": model_failures.HELD_ENVIRONMENT, "packet": packet_index,
+                            "cause": cause, **classified})
+                        result.held = cause
+                        if not dry_run and cause != previous_cause:
+                            _notify_environment_hold(home, run_id, cause)
+                        break
                     bound_dispositions = {
                         row["record"]: {
                             "state": "unfinished", "input_version": row["version"],
@@ -3530,6 +3609,8 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                         "attempts": packet_record.get("attempts") or [],
                         "phase": "unfinished", "failure": bound, "detail": detail,
                         "duration": duration, "dispositions": bound_dispositions,
+                        # 2026-09-27: what kind of failure, and the API's tag.
+                        "classified": classified,
                     }
                     if dry_run:
                         _record_failure(manifest, packet_index, **failure_fields)
@@ -3598,10 +3679,27 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     fsops.atomic_write(shared_brief, prompt.shared, fsync=True)
                     repair = invocation.write_session(_repair_spec(spec, repair_message))
                     result.calls += 1
+                    # 2026-09-27 (fail-state audit finding 4): one retry of
+                    # a transient failure here too; the repair works on the
+                    # files in place, so the stage is left as it is.
+                    repair_retry: dict | None = None
+                    if model_failures.should_retry(repair):
+                        result.failed_calls += 1
+                        repair_retry = {"failure": repair.failure,
+                            "detail": _failure_detail(repair.detail),
+                            **model_failures.failure_fields(repair)}
+                        _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+                            "status": "transient-retry", "packet": packet_index,
+                            "call": "repair", **repair_retry})
+                        model_failures.backoff()
+                        repair = invocation.write_session(_repair_spec(spec, repair_message))
+                        result.calls += 1
                     if not repair.ok:
                         result.failed_calls += 1
                     packet_record["attempts"].append({"kind": "repair", "failure": repair.failure,
                         "duration_secs": float(time.monotonic() - repair_started),
+                        **model_failures.failure_fields(repair),
+                        **({"transient_retry": repair_retry} if repair_retry else {}),
                         **_attempt_usage(repair),
                         "reads": steward_inputs.tool_reads(repair, home)})
                     try:
@@ -3912,6 +4010,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 "abandoned_units": result.abandoned_units,
                 "close_out_error": result.close_out_error,
                 "coverage": result.coverage,
+                **({"held": result.held} if result.held else {}),
             },
         )
         # Ruling 2's notification, ONCE per closed-out run and never once

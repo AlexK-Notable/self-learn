@@ -28,7 +28,7 @@ from typing import Any, cast
 
 from ruamel.yaml import YAML, YAMLError
 
-from .. import batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, provider, scan, settings, statements, user_model, verbs, worker
+from .. import batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, model_failures, provider, scan, settings, statements, user_model, verbs, worker
 from ..ledger import resolve_home
 from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
 from ..primitives import chrono, fsops
@@ -561,7 +561,7 @@ def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, ru
         stage_dir=worker.stage_dir(),
         enforce=worker._enforce_scope(),
     )
-    return invocation.write_session(
+    spec = (
         invocation.SessionSpec(
             surface="overseer",
             prompt=prompt,
@@ -582,6 +582,42 @@ def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, ru
             extra_env=invocation.NO_AUTO_MEMORY_ENV,
         )
     )
+    outcome = invocation.write_session(spec)
+    if model_failures.should_retry(outcome):
+        # 2026-09-27 (fail-state audit finding 4): overloaded, a server
+        # error, a rate limit or the network -- the same call is made once
+        # more within this attempt, after a short wait. The phase's own
+        # files stay in the stage; the retried session continues them.
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "transient-retry",
+            "phase": label, "detail": _failure_detail(outcome.detail),
+            **model_failures.failure_fields(outcome)})
+        model_failures.backoff()
+        outcome = invocation.write_session(spec)
+    return outcome
+
+
+def _environment_hold(home: Path, run_id: str, phase: str, outcome: Any) -> str:
+    """2026-09-27 (fail-state audit finding 4): the model or the installed
+    Claude Code cannot run a call at all. The attempt is a HOLD: no failure
+    note (so the week's count is untouched), a journal line, and one
+    notification per distinct cause. Answers the cause."""
+    cause = _failure_detail(model_failures.hold_cause(outcome)) or "invocation"
+    previous = model_failures.last_hold_cause(journal_path(home))
+    _journal(home, {"at": chrono.now_iso(), "run": run_id,
+        "status": model_failures.HELD_ENVIRONMENT, "phase": phase, "cause": cause,
+        **model_failures.failure_fields(outcome)})
+    if cause != previous:
+        try:
+            notify.send(
+                home, "routine",
+                f"self-learn overseer: held — the model call cannot run here: {cause}. "
+                "Nothing was counted; it retries on its next attempt.",
+                [run_id],
+            )
+        except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
+            _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                "status": "notify-failed", "reason": str(exc)[:300]})
+    return cause
 
 
 def _question_answers(home: Path) -> list[dict[str, Any]]:
@@ -1217,6 +1253,7 @@ def _commit_failed_attempt(
     write_note: bool = True,
     journal_text: str | None = None,
     trigger: str = TRIGGER_SCHEDULED,
+    classified: dict[str, str] | None = None,
 ) -> Path:
     """One commit for one failed attempt: its report, its failure note and,
     when the cap was reached, the close-out note.
@@ -1279,6 +1316,7 @@ def _commit_failed_attempt(
                 _note_text(
                     week=week, run_id=run_id, started=started, attempt=attempt,
                     cap=cap, kind=kind, detail=detail, trigger=trigger,
+                    classified=classified,
                 ),
                 fsync=True,
             )
@@ -1811,6 +1849,7 @@ def _note_path(home: Path, week: str, started: str, run_id: str) -> Path:
 def _note_text(
     *, week: str, run_id: str, started: str, attempt: int, cap: int,
     kind: str, detail: str | None, trigger: str = TRIGGER_SCHEDULED,
+    classified: dict[str, str] | None = None,
 ) -> str:
     """A15's short dated failure note, carrying the REAL reason.
 
@@ -1830,6 +1869,10 @@ def _note_text(
         "",
         f"- failure: {kind}",
         f"- detail: {detail or 'no detail was returned'}",
+        # 2026-09-27 (fail-state audit finding 4): what kind of model-side
+        # failure it was, and the API's own tag for it, when there is one.
+        *([f"- class: {classified['failure_class']}"] if classified and classified.get("failure_class") else []),
+        *([f"- tag: {classified['failure_tag']}"] if classified and classified.get("failure_tag") else []),
         f"- at: {started}",
         f"- trigger: {trigger}",
     ]) + "\n"
@@ -2019,7 +2062,7 @@ def _commit_phase_a_failure(
     run_id: str, started: str, kind: str, detail: str | None,
     model: str, population_count: int, excluded: int, model_calls: int,
     guard: int, reason: str, journal_text: str | None = None,
-    manual: bool = False,
+    manual: bool = False, classified: dict[str, str] | None = None,
 ) -> Path | None:
     """The committed trace for a failure BEFORE the run's own ledger-write
     span exists — a failed first model call, a runaway after it, an invalid
@@ -2050,6 +2093,7 @@ def _commit_phase_a_failure(
         started=started, attempt=attempt, cap=cap, kind=kind, detail=detail,
         closed_text=closed_text, journal_text=journal_text,
         trigger=TRIGGER_MANUAL if manual else TRIGGER_SCHEDULED,
+        classified=classified,
     )
     if closed_text is None:
         return None
@@ -3489,6 +3533,11 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
     # how many tools it called (`_reported_turns`); one Claude Code stopped
     # at its own turn limit arrives here already failed, labelled `turns`.
     if not outcome_a.ok:
+        classified = model_failures.failure_fields(outcome_a)
+        if classified.get("failure_class") == "environment" and not dry_run:
+            _environment_hold(home, run_id, "a", outcome_a)
+            return RunResult(model_failures.HELD_ENVIRONMENT, EXIT_REFUSED, run_id, model_calls,
+                excluded=excluded)
         state = "timed-out" if outcome_a.failure == "timeout" else "refused"
         kind = _failure_kind(outcome_a)
         detail = _failure_detail(outcome_a.detail)
@@ -3499,9 +3548,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             model=str(model), population_count=len(week_rows), excluded=excluded,
             model_calls=model_calls, guard=guard, reason=reason,
             journal_text=None if dry_run else _model_journal_text(home, stage, run_id, started[:10]),
-            manual=manual,
+            manual=manual, classified=classified,
         )
-        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": state, "phase": "a", "reason": (detail or kind)[:300]})
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": state, "phase": "a", "reason": (detail or kind)[:300], **classified})
         return RunResult(state, EXIT_REFUSED, run_id, model_calls, excluded=excluded)
 
     try:
@@ -3556,6 +3605,20 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         # files; the guard was settled before phase A (`guard <
         # _MODEL_CALLS_PER_RUN` holds the run), so a complete answer is never
         # discarded here for the number of tools it called.
+        if not outcome_b.ok and not dry_run and intent is not None and (
+            model_failures.failure_fields(outcome_b).get("failure_class") == "environment"
+        ):
+            # 2026-09-27 (fail-state audit finding 4): a HOLD, not an
+            # attempt. The coverage this attempt wrote is put back and the
+            # run's intent closed with nothing committed, so no note counts.
+            if coverage_before is None:
+                coverage_path.unlink(missing_ok=True)
+            else:
+                fsops.atomic_write(coverage_path, coverage_before, fsync=True)
+            intents.finish(intent)
+            _environment_hold(home, run_id, "b", outcome_b)
+            return RunResult(model_failures.HELD_ENVIRONMENT, EXIT_REFUSED, run_id, model_calls,
+                selected, excluded)
         if not outcome_b.ok:
             state = "timed-out" if outcome_b.failure == "timeout" else "refused"
             reason = f"phase B {state}; no phase B output was applied"
@@ -3577,10 +3640,11 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     attempt=attempt, cap=cap, kind=kind, detail=detail,
                     closed_text=closed_text,
                     journal_text=journal_text, trigger=trigger,
+                    classified=model_failures.failure_fields(outcome_b),
                 )
                 if closed_text is not None:
                     _queue_week_closed(deferred_notice, home, week, attempt, kind, [run_id])
-            _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": state, "phase": "b", "model_calls": model_calls})
+            _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": state, "phase": "b", "model_calls": model_calls, **model_failures.failure_fields(outcome_b)})
             return RunResult(state, EXIT_REFUSED, run_id, model_calls, selected, excluded, report=str(report_path))
 
         required = [
