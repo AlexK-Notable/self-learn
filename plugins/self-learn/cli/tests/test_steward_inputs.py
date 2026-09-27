@@ -658,3 +658,43 @@ def test_a_refusal_under_the_record_identity_stays_final(tmp_path, roots):
 
     _publish_disposition(home, rid, row["version"], "refused", "run-aaaaaaaa0009")
     assert _selected(home) == []
+
+
+def test_the_brief_says_in_words_that_failing_evidence_does_not_check_out(tmp_path, roots):
+    """Orchestrator review, 2026-09-27: pinning the verdict KEY is not
+    enough -- the model reads the explanation. Each failing verdict's
+    rendered words are pinned here literally."""
+    home = make_env(tmp_path).ledger
+    session = "56565656-7878-9090-1212-343434343434"
+    entries = [_asst(f"filler entry number {n}", n) for n in range(1, 61)]
+    entries[4] = _user("the nearby words sit here", 5)
+    entries[59] = _user("the faraway words sit here", 60)
+    entries[10] = _asst("first half of a thought", 11)
+    entries[12] = _asst("second half of a thought", 13)
+    _write_session(roots, session, entries)
+    rid = "lrn-e0000009"
+    ledger_ops.create_record(home, _behavior(rid, evidence=[
+        _ev(session, 2, "the nearby words sit here"),                          # nearby
+        _ev(session, 2, "the faraway words sit here"),                         # elsewhere_in_file
+        _ev(session, 12, "first half of a thought … second half of a thought"),  # stitched
+        _ev(session, 1, "words no one ever wrote down"),                       # not_found
+        _ev(SID, 2, "the kill command matched its own shell"),                 # other_session
+    ]))
+    commit_all(home, "one lesson, five failing items")
+
+    body = steward_inputs.build_briefs(
+        home, [{"id": rid}], find_record_path=ledger_ops.find_record_path)[rid].body
+    items = re.split(r"\n  item \d+: ", body)
+
+    want = {
+        1: ("verdict: nearby -- NOT in the cited entry", "use the corrected ref"),
+        2: ("verdict: elsewhere_in_file -- NOT near the cited line", "use the corrected ref"),
+        3: ("verdict: stitched -- NOT one passage", "no entry says this"),
+        4: ("verdict: not_found -- NOT FOUND", "this evidence does not check out"),
+        5: ("verdict: other_session -- NOT in the cited session", "the record's pointer is wrong"),
+    }
+    for n, phrases in want.items():
+        for phrase in phrases:
+            assert phrase in items[n], (n, phrase)
+    for n in (1, 2, 5):
+        assert "corrected ref:" in items[n], n
