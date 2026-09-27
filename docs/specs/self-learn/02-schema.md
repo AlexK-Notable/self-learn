@@ -1063,6 +1063,12 @@ week — not on the run as a whole. Each such unit carries, in the manifest:
   examined. Such a hold may still arm the scheduler's cache-side cooldown —
   a raised due-check does, so the tick loop cannot spin on it (S-68) — but it
   never touches a count in this record.
+- **A dry run is not an attempt either** *(added 2026-09-26)*. Every row a
+  steward or overseer `--dry-run` writes to its cache journal (its
+  `model-log` lines, a `refused` case, `population`, the final `dry-run`
+  row) carries `"dry_run": true`, and the scheduler's cache-side cooldown
+  skips a marked row, so a rehearsal never holds back the real run. A real
+  run's rows carry no such key and arm the cooldown as before.
 - `last_attempt_at` is written by that same increment and is what the
   scheduler's cooldown reads; a value that is unparseable or in the future
   reads as "attempted now", never as "due every tick" or "never due".

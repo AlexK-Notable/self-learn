@@ -410,7 +410,18 @@ def journal_path(home: Path | str) -> Path:
     return steward_dir(home) / "journal.jsonl"
 
 
+#: 2026-09-26 (agenda item 25): True while a `--dry-run` is in progress.
+#: Every journal row written meanwhile -- `model-log`, a `refused` case,
+#: the final `dry-run` row -- is marked `"dry_run": true`, and serve's
+#: attempt cooldown skips a marked row, so a rehearsal never delays the
+#: real run behind it. A plain module flag, not a ContextVar: the model
+#: log callback may fire from another thread.
+_DRY_RUN_JOURNAL = False
+
+
 def _journal(home: Path | str, entry: dict) -> None:
+    if _DRY_RUN_JOURNAL:
+        entry = {**entry, "dry_run": True}
     path = journal_path(home)
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, separators=(",", ":")) + "\n")
@@ -2817,10 +2828,14 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
     publish = not dry_run and not worker.no_push_requested()
     head_before = verbs.ledger_head(home) if publish else None
     result: RunResult | None = None
+    global _DRY_RUN_JOURNAL
+    marked_before = _DRY_RUN_JOURNAL
+    _DRY_RUN_JOURNAL = dry_run
     try:
         result = _run(home, dry_run=dry_run)
         return result
     finally:
+        _DRY_RUN_JOURNAL = marked_before
         if publish:
             _publish(home, head_before, result.run_id if result is not None else None)
 

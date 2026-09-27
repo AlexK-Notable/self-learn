@@ -559,7 +559,8 @@ def _attempt_epoch(stamp: str, now: float) -> float:
 def _journal_attempt_epoch(path: Path, now: float) -> float | None:
     """The time of the most recent line in a runner's cache journal that
     records an ATTEMPT — the newest line whose status is not a hold
-    (`_HOLD_STATUSES`). `None` when the journal holds no attempt at all."""
+    (`_HOLD_STATUSES`) and that a dry run did not write (`"dry_run":
+    true`). `None` when the journal holds no attempt at all."""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -573,6 +574,10 @@ def _journal_attempt_epoch(path: Path, now: float) -> float | None:
             continue
         status = row.get("status")
         if isinstance(status, str) and status in _HOLD_STATUSES:
+            continue
+        # 2026-09-26 (agenda item 25): a row a `--dry-run` wrote (its
+        # `model-log` lines included) is a rehearsal, never an attempt.
+        if row.get("dry_run") is True:
             continue
         stamp = row.get("at") or row.get("ts")
         if not isinstance(stamp, str):

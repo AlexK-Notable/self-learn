@@ -231,8 +231,16 @@ def journal_path(home: Path | str) -> Path:
     return worker.cache_dir(home) / "overseer.journal"
 
 
+#: 2026-09-26 (agenda item 25): True while a `--dry-run` is in progress;
+#: every journal row written meanwhile is marked `"dry_run": true`, which
+#: serve's attempt cooldown skips (the steward's `_DRY_RUN_JOURNAL` twin).
+_DRY_RUN_JOURNAL = False
+
+
 def _journal(home: Path, entry: dict[str, Any]) -> None:
     """Append one compact JSON object to the cache-only run journal."""
+    if _DRY_RUN_JOURNAL:
+        entry = {**entry, "dry_run": True}
     path = journal_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
@@ -3183,10 +3191,14 @@ def run(
     publish = not dry_run and not boundary_no_push
     head_before = verbs.ledger_head(home) if publish else None
     result: RunResult | None = None
+    global _DRY_RUN_JOURNAL
+    marked_before = _DRY_RUN_JOURNAL
+    _DRY_RUN_JOURNAL = dry_run
     try:
         result = _run(home, dry_run=dry_run, no_push=boundary_no_push, manual=manual)
         return result
     finally:
+        _DRY_RUN_JOURNAL = marked_before
         if publish:
             _publish(home, head_before, result.run if result is not None else "?")
 
