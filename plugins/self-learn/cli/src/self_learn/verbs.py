@@ -7600,6 +7600,30 @@ def followup_done(
         hold.release()
 
 
+#: U3a (2026-09-27): the basis a dismissal records for a `fire` event,
+#: which carries an outcome and no basis of its own -- the same label the
+#: miner's legacy backfill gives a violated fire (`miner._FIRE_VIOLATED_BASIS`).
+FIRE_SUSPECT_BASIS = "fire-suspected-violation"
+
+
+def _suspect_event(home: Path, event_ref: str) -> dict | None:
+    """The telemetry event a recurrence decision names by nonce: a
+    `recurrence-suspect`, or -- U3a, 2026-09-27 -- a `fire` whose outcome
+    is `suspected-violation` (the legacy `violated` reads as it). The
+    steward receives unhandled suspected-violation fires as inputs and
+    decides them with `confirm-recurrence` / `dismiss-suspect`; no new
+    verb, and no `recurrence-suspect` is spooled for them (the miner's
+    crossover stays removed)."""
+    for e in telemetry.read_events(home):
+        if e.get("nonce") != event_ref:
+            continue
+        if e.get("kind") == "recurrence-suspect":
+            return e
+        if e.get("kind") == "fire" and e.get("outcome") == "suspected-violation":
+            return e
+    return None
+
+
 def _preflight_confirm_recurrence(
     home: Path,
     record_id: str,
@@ -7616,18 +7640,11 @@ def _preflight_confirm_recurrence(
             "--tolerate needs --note: 'the rule stays' without the why is "
             "exactly the dead-letter 11 §2.2 exists to prevent"
         )
-    event = next(
-        (
-            e
-            for e in telemetry.read_events(home)
-            if e.get("kind") == "recurrence-suspect"
-            and e.get("nonce") == event_ref
-        ),
-        None,
-    )
+    event = _suspect_event(home, event_ref)
     if event is None:
         raise SheetLineError(
-            f"no recurrence-suspect event with nonce {event_ref!r} in the "
+            f"no recurrence-suspect event, and no fire with outcome "
+            f"suspected-violation, with nonce {event_ref!r} in the "
             "tracked telemetry — flush first (`self-learn telemetry flush`) "
             "or check `self-learn report`"
         )
@@ -7806,18 +7823,11 @@ def _preflight_dismiss_suspect(
     verbatim so the verb and `batch.dry_run` run the SAME checks, in the
     same order. ``why`` is written into the record beside the note, so it
     is secret-scanned with it (2026-09-26, N6); like the note, no bypass."""
-    event = next(
-        (
-            e
-            for e in telemetry.read_events(home)
-            if e.get("kind") == "recurrence-suspect"
-            and e.get("nonce") == event_ref
-        ),
-        None,
-    )
+    event = _suspect_event(home, event_ref)
     if event is None:
         raise SheetLineError(
-            f"no recurrence-suspect event with nonce {event_ref!r} in the "
+            f"no recurrence-suspect event, and no fire with outcome "
+            f"suspected-violation, with nonce {event_ref!r} in the "
             "tracked telemetry — flush first (`self-learn telemetry flush`) "
             "or check `self-learn report`"
         )
@@ -7883,7 +7893,8 @@ def dismiss_suspect(
             "ts": event.get("ts"),
             "why": why,
             "origin": event.get("origin"),
-            "basis": event.get("basis"),
+            "basis": event.get("basis")
+            or (FIRE_SUSPECT_BASIS if event.get("kind") == "fire" else None),
             "dismissed_at": _now_iso()[:10],
         }
         if note is not None:

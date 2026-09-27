@@ -116,11 +116,22 @@ def test_block_order_by_offset(tmp_path):
     ordered = [offsets[n] for n in steward_prompt._BLOCK_ORDER]
     assert ordered == sorted(ordered)
 
-    # For every brief, evidence offset < advice offset.
+    # U3a (2026-09-27): a brief reads the lesson, then the evidence pack
+    # code built for it, then the closest existing lessons, then its links.
+    from self_learn import ledger_ops
+    from support import commit_all, make_behavior
+
+    ledger_ops.create_record(home, make_behavior(record_id="lrn-aa00f00d"))
+    commit_all(home, "seed")
+    packet = steward_prompt.assemble(
+        home, tmp_path / "cache", run, [{"id": "lrn-aa00f00d"}]
+    )
     briefs_text = dict(packet.blocks)["briefs"]
-    ev = briefs_text.index("[evidence]")
-    ad = briefs_text.index("[advice]")
-    assert ev < ad
+    at = [briefs_text.index(mark) for mark in (
+        "### brief: lrn-aa00f00d", "[lesson]", "[evidence pack]",
+        "[closest existing lessons]", "[batched with]",
+    )]
+    assert at == sorted(at)
 
 
 def test_negative_control_swapped_blocks_fails_the_offset_check(tmp_path, monkeypatch):
@@ -132,8 +143,8 @@ def test_negative_control_swapped_blocks_fails_the_offset_check(tmp_path, monkey
 
     real = steward_prompt._ordered_blocks
 
-    def _swapped(home, run, proposals, items):
-        blocks = list(real(home, run, proposals, items))
+    def _swapped(home, run, inputs, items, briefs=None):
+        blocks = list(real(home, run, inputs, items, briefs))
         # swap user_model (idx 2) and conditions (idx 3)
         blocks[2], blocks[3] = blocks[3], blocks[2]
         return tuple(blocks)
@@ -145,38 +156,36 @@ def test_negative_control_swapped_blocks_fails_the_offset_check(tmp_path, monkey
     assert ordered != sorted(ordered)  # RED under the mutation
 
 
-# ------------------------------------------ test 2: registry order wins
+# ------------------------------- test 2: the analyst's card is not read
 
 
-def test_brief_evidence_before_advice_even_if_card_dict_lists_advice_first(tmp_path):
+def test_brief_never_renders_the_analysts_card_or_proposal(tmp_path):
+    """U3a (2026-09-27): the steward reads the lesson and what code checked
+    about it, never the analyst's advice -- neither a card handed in with
+    the input nor the proposal file beside the record."""
+    from self_learn import ledger_ops
+    from support import commit_all, make_behavior, proposal_dict
+
     home = make_home(tmp_path)
-    run = _run(tmp_path)
-    # Dict insertion order: advice BEFORE evidence -- the point is that
-    # render_brief's REGISTRY order wins, never the dict's own order.
-    card = {"advice": "advice text.", "evidence": "evidence text."}
-    proposal = {"id": "lrn-aa00cafe", "recommendation": "route", "card": card}
+    rid = "lrn-aa00cafe"
+    ledger_ops.create_record(home, make_behavior(record_id=rid))
+    proposal = proposal_dict()
+    proposal["rationale"] = "ADVICE-WORDS-FROM-THE-ANALYST"
+    ledger_ops.write_proposal(home, rid, proposal)
+    commit_all(home, "seed")
+    card = {"advice": "CARD-ADVICE-HANDED-IN", "evidence": "CARD-EVIDENCE"}
 
-    packet = steward_prompt.assemble(home, tmp_path / "cache", run, [proposal])
+    packet = steward_prompt.assemble(
+        home, tmp_path / "cache", _run(tmp_path),
+        [{"id": rid, "recommendation": "route", "card": card}],
+    )
     briefs_text = dict(packet.blocks)["briefs"]
-    assert briefs_text.index("[evidence]") < briefs_text.index("[advice]")
-
-
-def test_negative_control_bypassing_render_brief_with_dict_order_fails(tmp_path, monkeypatch):
-    """Mutation for test 2: replace `worker.render_brief` (as
-    `steward_prompt` sees it) with a dict-order-preserving stand-in and
-    confirm the ordering the previous test pins now fails."""
-    home = make_home(tmp_path)
-    run = _run(tmp_path)
-    card = {"advice": "advice text.", "evidence": "evidence text."}
-    proposal = {"id": "lrn-aa00cafe", "recommendation": "route", "card": card}
-
-    def _dict_order_brief(proposal):
-        return list(proposal.get("card", {}).items())
-
-    monkeypatch.setattr(steward_prompt.worker, "render_brief", _dict_order_brief)
-    packet = steward_prompt.assemble(home, tmp_path / "cache", run, [proposal])
-    briefs_text = dict(packet.blocks)["briefs"]
-    assert briefs_text.index("[advice]") < briefs_text.index("[evidence]")  # RED
+    # positive control: the brief rendered, with the record's own lesson
+    assert f"### brief: {rid}" in briefs_text
+    assert "Stop the container first." in briefs_text
+    for text in ("ADVICE-WORDS-FROM-THE-ANALYST", "CARD-ADVICE-HANDED-IN", "CARD-EVIDENCE",
+                 "[advice]", "[evidence]"):
+        assert text not in packet.text, text
 
 
 # --------------------------------------------- test 3: CURRENT/LAPSED
@@ -644,7 +653,7 @@ def test_output_contract_states_the_formats_the_first_real_run_went_looking_for(
     assert "`covered_by` is `<kind>:<name>`" in text
     for kind in records.COVERAGE_KINDS:
         assert f"`{kind}:" in text, kind
-    assert "`rules_topic` and `rules_paths`" in text
+    assert "its path globs come only from an analyst proposal naming the same" in " ".join(text.split())
     assert "WHERE A ROUTE LANDS." in text
     assert "WHAT EACH VERB NEEDS THE LESSON'S STATUS TO BE" in text
     for status in ledger_ops.RESOLVABLE_STATUSES:
@@ -731,12 +740,23 @@ def test_where_a_route_lands_is_what_the_route_verb_really_does(tmp_path, monkey
     assert spelled.target == str(host / "CLAUDE.local.md")  # the preview reports only the proposal's variant
 
     text = " ".join(steward_prompt._render_output_contract().split())
-    assert "Leave `route`'s `dest` out to take the lesson's proposal exactly as written" in text
-    assert "Writing `dest` REPLACES the proposal's whole destination, variant included" in text
-    assert "a bare `dest: claude-md` is the host's plain CLAUDE.md" in text
-    assert "`claude-md:local`, or `claude-md:rules:<topic>`" in text
-    assert "no sheet key sets or overrides them" not in text
+    # U3a (2026-09-27): the brief shows no proposal, so a route without
+    # `dest` would take a destination the steward never saw (`left_out`
+    # above) -- the contract asks for `dest` on every route.
+    assert "Write `dest` on EVERY `route`." in text
+    assert "a route without `dest` takes whatever proposal file the lesson happens to have" in text
+    assert "A bare `dest: claude-md` is the host's plain CLAUDE.md" in text
+    assert "`claude-md:local` (the host's git-ignored CLAUDE.local.md)" in text
+    assert "Leave `route`'s `dest` out" not in text
     for destination in ledger_ops.PROPOSAL_DESTINATIONS:
         assert destination in text, destination
-    # the worked example no longer teaches a bare dest on a route
-    assert "dest:" not in steward_prompt.STAGE_EXAMPLES["sheets/shell-quoting.yaml"]
+    # the worked example writes a dest, and not a bare claude-md
+    example = steward_prompt.STAGE_EXAMPLES["sheets/shell-quoting.yaml"]
+    assert "dest: reference:" in example and "dest: claude-md\n" not in example
+
+    # ... and with no proposal at all, a route without `dest` is refused.
+    bare_id = "lrn-0000de58"
+    ledger_ops.create_record(
+        home, make_behavior(scope="project", record_id=bare_id), project_path=host
+    )
+    assert verbs.route_dry_run(home, bare_id).would_refuse

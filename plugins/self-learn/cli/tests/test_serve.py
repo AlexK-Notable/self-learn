@@ -104,9 +104,9 @@ def test_u10_steward_due_requires_fresh_proposal_cooldown_and_no_stop(
     (home / "config.yaml").write_text(
         "steward:\n  enabled: true\n  cooldown_secs: 50\n", encoding="utf-8"
     )
-    monkeypatch.setattr(serve.steward, "_eligible_proposals", lambda actual: [(entry, {})])
-    monkeypatch.setattr(serve, "_proposal_commit_epoch", lambda actual, path: 200.0)
-    monkeypatch.setattr(serve, "_eligible_proposal_paths", lambda actual: [proposal])
+    monkeypatch.setattr(serve.steward, "_eligible_lessons", lambda actual: [(entry, {})])
+    monkeypatch.setattr(serve, "_input_commit_epoch", lambda actual, path: 200.0)
+    monkeypatch.setattr(serve, "_eligible_input_paths", lambda actual: [proposal])
     monkeypatch.setattr(serve.steward, "last_run_iso", lambda actual: "1970-01-01T00:01:40+00:00")
     clear = type("IntentState", (), {"stopped": []})()
     stopped = type("IntentState", (), {"stopped": [object()]})()
@@ -117,19 +117,19 @@ def test_u10_steward_due_requires_fresh_proposal_cooldown_and_no_stop(
     monkeypatch.setattr(serve.intents, "classify_status", lambda actual: stopped)
     assert serve._steward_is_due(home, cache_dir, 151.0) is False
     monkeypatch.setattr(serve.intents, "classify_status", lambda actual: clear)
-    monkeypatch.setattr(serve, "_proposal_commit_epoch", lambda actual, path: 99.0)
+    monkeypatch.setattr(serve, "_input_commit_epoch", lambda actual, path: 99.0)
     assert serve._steward_is_due(home, cache_dir, 151.0) is False
 
     (home / "config.yaml").write_text(
         "steward:\n  enabled: false\n  cooldown_secs: 50\n", encoding="utf-8"
     )
-    monkeypatch.setattr(serve, "_proposal_commit_epoch", lambda actual, path: 200.0)
+    monkeypatch.setattr(serve, "_input_commit_epoch", lambda actual, path: 200.0)
     assert serve._steward_is_due(home, cache_dir, 151.0) is False
 
     (home / "config.yaml").write_text(
         "steward:\n  enabled: true\n  cooldown_secs: 50\n", encoding="utf-8"
     )
-    monkeypatch.setattr(serve, "_eligible_proposal_paths", lambda actual: [])
+    monkeypatch.setattr(serve, "_eligible_input_paths", lambda actual: [])
     monkeypatch.setattr(serve.steward, "last_run_iso", lambda actual: None)
     assert serve._steward_is_due(home, cache_dir, 151.0) is False
 
@@ -154,7 +154,7 @@ def test_u10_steward_due_for_committed_unfinished_work_without_proposals(
         "last_attempt_at": "1970-01-01T00:01:40+00:00",
     }])
     monkeypatch.setattr(serve.steward, "_reconsider_proposals", lambda actual: ([], {}))
-    monkeypatch.setattr(serve, "_eligible_proposal_paths", lambda actual: [])
+    monkeypatch.setattr(serve, "_eligible_input_paths", lambda actual: [])
 
     assert serve._steward_is_due(home, tmp_path / "cache", 151.0) is True
     assert serve._steward_is_due(home, tmp_path / "cache", 149.0) is False
@@ -176,7 +176,7 @@ def test_u10_run_forever_gates_steward_on_its_threaded_home(
     monkeypatch.setenv("SELF_LEARN_HOME", str(home_b))
     monkeypatch.setattr(serve, "_mine_is_due", lambda *args, **kwargs: False)
     monkeypatch.setattr(
-        serve, "_eligible_proposal_paths", lambda actual: [actual / "proposal.yaml"]
+        serve, "_eligible_input_paths", lambda actual: [actual / "proposal.yaml"]
     )
     monkeypatch.setattr(serve.steward, "last_run_iso", lambda actual: None)
     calls = []
@@ -1645,7 +1645,9 @@ def test_u1_a19_a_zero_call_steward_run_arms_the_cooldown(monkeypatch, tmp_path)
     )()
     monkeypatch.setattr(steward, "_reconcile_runs", lambda actual: [])
     monkeypatch.setattr(steward, "_reconsider_proposals", lambda actual: ([], {}))
-    monkeypatch.setattr(steward, "_eligible_proposals", lambda actual: [(entry, {})])
+    row = {"path": "proposals/lrn-deadbeef.yaml", "blob": "0" * 40, "version": "0" * 40,
+           "record": "lrn-deadbeef", "kind": "lesson", "record_status": "pending"}
+    monkeypatch.setattr(steward, "_eligible_lessons", lambda actual: [(entry, row)])
 
     def _no_prompt(*args, **kwargs):
         raise RuntimeError("no model in this test")
@@ -1685,7 +1687,7 @@ def test_u1_s68_steward_cooldown_is_tested_before_any_git_read(monkeypatch, tmp_
 
     monkeypatch.setattr(serve.steward, "committed_manifests", _counting)
     monkeypatch.setattr(serve.steward, "_reconsider_proposals", lambda actual: ([], {}))
-    monkeypatch.setattr(serve, "_eligible_proposal_paths", lambda actual: [])
+    monkeypatch.setattr(serve, "_eligible_input_paths", lambda actual: [])
     journal = steward.journal_path(home)
     now = time.time()
 
@@ -1715,7 +1717,7 @@ def test_u1_s68_unparseable_and_future_attempt_stamps_read_as_now(monkeypatch, t
         {"run_id": "run-pending", "status": "unfinished", "last_attempt_at": "banana"}
     ])
     monkeypatch.setattr(serve.steward, "_reconsider_proposals", lambda actual: ([], {}))
-    monkeypatch.setattr(serve, "_eligible_proposal_paths", lambda actual: [])
+    monkeypatch.setattr(serve, "_eligible_input_paths", lambda actual: [])
     now = time.time()
     assert serve._steward_is_due(home, cache_dir, now) is False
 

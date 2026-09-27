@@ -10,7 +10,6 @@ import fcntl
 import hashlib
 import io
 import json
-import math
 import re
 import shutil
 import time
@@ -33,6 +32,7 @@ from . import (
     ledger_ops,
     settings,
     statements,
+    steward_inputs,
     steward_prompt,
     user_model,
     verbs,
@@ -116,7 +116,7 @@ _RUN_TERMINAL_DISPOSITIONS = frozenset(
     {"applied", "parked", "refused", "abandoned", "returned", "overtaken"}
 )
 #: "This input version needs no new decision": what `_terminal_versions`,
-#: and therefore `_eligible_proposals`, reads. `returned` is deliberately
+#: and therefore `_eligible_lessons`, reads. `returned` is deliberately
 #: NOT here.
 _DECIDED_DISPOSITIONS = frozenset(
     {"applied", "parked", "refused", "abandoned", "overtaken"}
@@ -569,31 +569,49 @@ def _completed_manifest_time(home: Path) -> str | None:
     return max(values) if values else None
 
 
-def _input_identity(
-    home: Path, path: Path, record_id: str, proposal: dict,
-    *, record_status: str | None = None,
-) -> dict:
+def _committed_blob(home: Path, path: Path) -> tuple[str, str]:
+    """``(ledger-relative path, its blob at HEAD)``; ValueError when the file
+    is outside the ledger or not committed."""
     try:
         rel = path.resolve().relative_to(home.resolve()).as_posix()
     except ValueError as exc:
-        raise ValueError(f"proposal path is outside the ledger: {path}") from exc
+        raise ValueError(f"input path is outside the ledger: {path}") from exc
     blob = gitops._git(home, "rev-parse", f"HEAD:{rel}")  # noqa: SLF001
     if blob.returncode != 0 or not blob.stdout.strip():
-        raise ValueError(f"proposal input is not committed: {rel}")
-    version = blob.stdout.strip()
+        raise ValueError(f"input is not committed: {rel}")
+    return rel, blob.stdout.strip()
+
+
+def _record_identity(home: Path, entry: ledger_ops.QueueEntry) -> dict:
+    """U3a (2026-09-27): a lesson input's identity is the RECORD's committed
+    blob, not the analyst proposal's. A record edited after selection is a
+    new version and needs a new decision; an analyst proposal written or
+    rewritten beside it changes nothing.
+
+    ``legacy_version``: the proposal blob, when the lesson has a committed
+    proposal. Every run record written before this change keyed its
+    dispositions by that blob, so a lesson parked, refused or abandoned
+    then is still decided now (:func:`_eligible_lessons`), and a lesson
+    sent back then still shows as sent back (:func:`_returned_for`)."""
+    rel, version = _committed_blob(home, entry.path)
     row = {
         "path": rel,
         "blob": version,
         "version": version,
-        "record": record_id,
-        "proposal": proposal,
-    }
-    if record_status is not None:
+        "record": entry.record.id,
+        "kind": steward_inputs.INPUT_LESSON,
         # S-71 §4.1: the status the lesson had when this run selected it,
         # so a `status` refusal at apply time can tell "the lesson moved
         # on" from "the steward's own line does not fit". A row without
         # it (written before S-71) reads as "unknown".
-        row["record_status"] = record_status
+        "record_status": entry.record.status,
+    }
+    try:
+        _rel, legacy = _committed_blob(home, entry.proposal_path)
+    except (ValueError, OSError):
+        legacy = None
+    if legacy is not None:
+        row["legacy_version"] = legacy
     return row
 
 
@@ -613,7 +631,13 @@ def _terminal_versions(home: Path) -> set[tuple[str, str]]:
     return terminal
 
 
-def _eligible_proposals(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
+def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
+    """Every queued (pending, not deferred) lesson whose current version no
+    committed run has decided, oldest first, with its input row.
+
+    U3a (2026-09-27): no analyst proposal is needed. The worker still
+    writes proposals for now (U5 retires it); nothing here reads them
+    except to recognise a version a run decided before this change."""
     entries: list[ledger_ops.QueueEntry] = []
     for bucket in discover_buckets(home):
         entries.extend(ledger_ops.queue(bucket))
@@ -627,20 +651,59 @@ def _eligible_proposals(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
     terminal = _terminal_versions(home)
     out: list[tuple[ledger_ops.QueueEntry, dict]] = []
     for entry in entries:
-        if ledger_ops.is_unanalyzed(entry):
-            continue
-        proposal = ledger_ops.read_proposal(entry.proposal_path)
-        proposal = dict(proposal)
-        proposal["id"] = entry.record.id
         try:
-            identity = _input_identity(
-                home, entry.proposal_path, entry.record.id, proposal
-            )
+            identity = _record_identity(home, entry)
         except ValueError:
             continue
-        if (entry.record.id, identity["version"]) in terminal:
+        rid = entry.record.id
+        if (rid, identity["version"]) in terminal:
             continue
-        out.append((entry, proposal))
+        legacy = identity.get("legacy_version")
+        if isinstance(legacy, str) and (rid, legacy) in terminal:
+            continue
+        out.append((entry, identity))
+    return out
+
+
+def _find_record(home: Path, record_id: str) -> Record | None:
+    try:
+        return Record.from_path(ledger_ops.find_record_path(home, record_id))
+    except (ledger_ops.LedgerOpsError, RecordError, OSError):
+        return None
+
+
+def _suspected_violation_inputs(home: Path, exclude: set[str] | None = None) -> list[dict]:
+    """U3a (2026-09-27; the user's (b), 2026-09-26 19:32): one input per
+    ROUTED record that unhandled `suspected-violation` fires name. Its
+    version is its events' nonces (:func:`steward_inputs.fires_version`),
+    so a run that decided those events -- applied, parked, refused or
+    abandoned -- is never offered them again, and a later fire makes a
+    new version. An event a record entry already handled
+    (`confirm-recurrence` / `dismiss-suspect` wrote its nonce) is dropped
+    before the version is taken."""
+    found = steward_inputs.suspected_violations(home, _find_record)
+    if not found:
+        return []
+    terminal = _terminal_versions(home)
+    out: list[dict] = []
+    for rid, events in found.items():
+        if exclude and rid in exclude:
+            continue
+        version = steward_inputs.fires_version(events)
+        if (rid, version) in terminal:
+            continue
+        out.append({
+            "path": f"telemetry:fire/{rid}",
+            "blob": version,
+            "version": version,
+            "record": rid,
+            "kind": steward_inputs.INPUT_SUSPECTED_VIOLATION,
+            "record_status": "routed",
+            "events": [
+                {key: event.get(key) for key in ("nonce", "ts", "outcome", "origin", "record")}
+                for event in events
+            ],
+        })
     return out
 
 
@@ -702,6 +765,55 @@ def _reconsider_proposals(home: Path) -> tuple[list[tuple[_QueuedProposal, dict]
                 )
             )
     return selected, predecessors
+
+
+def _reconsider_row(entry: _QueuedProposal, card: dict) -> dict:
+    """A reconsider input as a run input row: identity is the observation
+    that brought it back, as before U3a."""
+    version = f"observation:{entry.observation_id}"
+    raw = card.get("card")
+    detail: dict = raw if isinstance(raw, dict) else {}
+    reason = " ".join(str(detail.get(key) or "") for key in ("headline", "unresolved")).strip()
+    row = {
+        "path": entry.proposal_path.as_posix(), "blob": version, "version": version,
+        "record": entry.record.id, "kind": steward_inputs.INPUT_RECONSIDER,
+        "record_status": entry.record.status, "reason": reason,
+    }
+    if entry.predecessor:
+        row["predecessor"] = entry.predecessor
+    if entry.observation_id:
+        row["observation_id"] = entry.observation_id
+    return row
+
+
+def _brief_input(row: dict) -> dict:
+    """A manifest input row as :func:`steward_prompt.assemble` reads it. A
+    row written before U3a has no ``kind`` and reads as a lesson; its
+    ``proposal`` is never passed on."""
+    out = {"id": row.get("record"), "kind": row.get("kind") or steward_inputs.INPUT_LESSON}
+    for key in ("reason", "events"):
+        if row.get(key):
+            out[key] = row[key]
+    return out
+
+
+def _packet_briefs(
+    home: Path, manifest: dict, packet: dict, inputs: list[dict]
+) -> dict[str, steward_inputs.LessonBrief]:
+    """The packet's briefs, built against the lesson index the run start
+    refreshed (opened read-only here; absent, the briefs say so)."""
+    index = steward_inputs.open_index(home)
+    try:
+        return steward_inputs.build_briefs(
+            home, inputs,
+            find_record_path=ledger_ops.find_record_path,
+            index=index,
+            links=list((packet.get("group") or {}).get("links") or []),
+            head=str(manifest.get("start_head") or "") or None,
+        )
+    finally:
+        if index is not None:
+            index.close()
 
 
 def _validate_declared_stage(stage: Path) -> None:
@@ -1083,8 +1195,10 @@ def _returned_for(home: Path, inputs: list[dict]) -> dict[str, dict]:
     """S-71 §4.6: for each input of this packet that a committed run record
     sent back at its CURRENT input version, the case that decided it and
     the ledger's words -- what the brief's sent-back block shows."""
+    # U3a: a row selected under the record's blob also matches a
+    # disposition written under its proposal blob before the change.
     wanted = {
-        row["record"]: row.get("version")
+        row["record"]: {row.get("version"), row.get("legacy_version")} - {None}
         for row in inputs
         if isinstance(row, dict) and isinstance(row.get("record"), str)
     }
@@ -1096,7 +1210,7 @@ def _returned_for(home: Path, inputs: list[dict]) -> dict[str, dict]:
                     record_id in wanted
                     and isinstance(row, dict)
                     and row.get("state") == "returned"
-                    and row.get("input_version") == wanted[record_id]
+                    and row.get("input_version") in wanted[record_id]
                 ):
                     out[record_id] = {
                         "case": row.get("case"),
@@ -2888,9 +3002,16 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
         unfinished_runs = _reconcile_runs(home)
         reconsider, _reconsider_successors = _reconsider_proposals(home)
         reconsider_ids = {entry.record.id for entry, _proposal in reconsider}
-        eligible = reconsider + [
-            row for row in _eligible_proposals(home) if row[0].record.id not in reconsider_ids
+        # U3a (2026-09-27): every input is a row carrying its kind --
+        # a reconsider input, a pending lesson (no analyst proposal
+        # needed), a suspected rule violation about a routed lesson.
+        eligible: list[dict] = [_reconsider_row(entry, card) for entry, card in reconsider]
+        eligible += [
+            row for entry, row in _eligible_lessons(home) if entry.record.id not in reconsider_ids
         ]
+        eligible += _suspected_violation_inputs(
+            home, exclude={row["record"] for row in eligible}
+        )
         if not unfinished_runs and not eligible:
             result = RunResult("idle")
             _journal(home, {"ts": chrono.now_iso(), "status": result.status})
@@ -2930,28 +3051,28 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
         else:
             run_dir = steward_dir(home) / "runs" / run_id
             run_dir.mkdir(parents=True)
-            packet_count = math.ceil(len(eligible) / int(packet_size))
+            # U3a: batches are U2's groups -- at most 10, at most 5 of them
+            # unrelated -- over an index brought up to date here, in the
+            # cache. `steward.packet_size` can only lower the 10.
+            index, index_info = steward_inputs.refresh_index(home)
+            try:
+                plans, grouping = steward_inputs.plan_packets(
+                    [row["record"] for row in eligible], index, int(packet_size)
+                )
+            finally:
+                if index is not None:
+                    index.close()
+            by_record = {row["record"]: row for row in eligible}
             packet_rows = []
             observations: list[str] = []
-            for packet_index, start in enumerate(range(0, len(eligible), int(packet_size)), start=1):
-                rows = eligible[start : start + int(packet_size)]
-                inputs = []
+            for packet_index, plan in enumerate(plans, start=1):
+                inputs = [by_record[rid] for rid in plan.members]
                 predecessors: dict[str, str] = {}
-                for entry, proposal in rows:
-                    if isinstance(entry, _QueuedProposal):
-                        version = f"observation:{entry.observation_id}"
-                        inputs.append({"path": entry.proposal_path.as_posix(), "blob": version,
-                            "version": version, "record": entry.record.id, "proposal": proposal,
-                            "record_status": entry.record.status})
-                        if entry.predecessor:
-                            predecessors[entry.record.id] = entry.predecessor
-                        if entry.observation_id:
-                            observations.append(entry.observation_id)
-                    else:
-                        inputs.append(_input_identity(
-                            home, entry.proposal_path, entry.record.id, proposal,
-                            record_status=entry.record.status,
-                        ))
+                for row in inputs:
+                    if row.get("predecessor"):
+                        predecessors[row["record"]] = row["predecessor"]
+                    if row.get("observation_id"):
+                        observations.append(row["observation_id"])
                 packet_rows.append({
                     "index": packet_index, "inputs": inputs, "records": [row["record"] for row in inputs],
                     "predecessors": predecessors, "phase": "pending", "attempts": [],
@@ -2960,6 +3081,8 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     # 02-schema §3a, the attempt-counting fields.
                     "attempt_count": 0, "last_attempt_at": None,
                     "progress_at": None, "failure_detail": None,
+                    # U3a data point: why these lessons share a packet.
+                    "group": plan.to_json(),
                 })
             manifest = {
                 "version": 1, "actor": "steward", "run_id": run_id,
@@ -2969,6 +3092,8 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 "inputs": [row for packet in packet_rows for row in packet["inputs"]],
                 "reconsider_observations": observations, "coverage": _coverage_empty(),
                 "ledger_effects": [],
+                # U3a data point: how the run's inputs were batched.
+                "grouping": {**grouping, "index": index_info},
             }
             if not dry_run:
                 _publish_manifest(home, manifest, reason="selected inputs")
@@ -3039,7 +3164,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
                 packet_record = manifest["packets"][packet_index - 1]
             before = _progress_signature(manifest, packet_index)
-            proposals = [row["proposal"] for row in packet_record["inputs"]]
+            inputs = [_brief_input(row) for row in packet_record["inputs"]]
             if needs_model:
                 context = steward_prompt.RunContext(
                     run_id=run_id, stage_dir=stage, packet_index=packet_index,
@@ -3058,15 +3183,22 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     feed_items = conditions.steward_feed(
                         home,
                         [
-                            (str(row.get("record")), row.get("proposal") or {})
+                            (str(row.get("record")), {})
                             for packet in manifest["packets"]
                             for row in packet.get("inputs") or []
                         ],
                         cache_dir(home),
                     )
+                # U3a: the per-lesson briefs -- the record, its evidence pack,
+                # the closest existing lessons, the packet's links -- built
+                # here, where the index and the packet's group are known.
+                briefs = _packet_briefs(home, manifest, packet_record, inputs)
+                brief_stats = steward_inputs.packet_stats(
+                    briefs.values(), packet_record.get("group")
+                )
                 prompt = steward_prompt.assemble(
-                    home, cache_dir(home), context, proposals, conditions_items=feed_items,
-                    returned=_returned_for(home, packet_record["inputs"]),
+                    home, cache_dir(home), context, inputs, conditions_items=feed_items,
+                    returned=_returned_for(home, packet_record["inputs"]), briefs=briefs,
                 )
                 # 2026-09-26: two files. `brief-shared.md` is the part every
                 # packet of the run shares, appended to the system prompt;
@@ -3080,7 +3212,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 )
                 spec = _session_spec(
                     home, run_dir, prompt.per_packet,
-                    label=f"steward-{run_id}-{packet_index}", lessons=len(proposals),
+                    label=f"steward-{run_id}-{packet_index}", lessons=len(inputs),
                     run_id=run_id, shared_brief=shared_brief,
                 )
                 started = time.monotonic()
@@ -3092,7 +3224,11 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 turns = getattr(outcome, "turns", None)
                 attempt = {"kind": "decision", "turns": turns,
                     "failure": outcome.failure, "duration_secs": duration,
-                    **_attempt_usage(outcome)}
+                    **_attempt_usage(outcome),
+                    # U3a data points: what the brief carried, and how much
+                    # the steward still read for itself.
+                    "brief": brief_stats,
+                    "reads": steward_inputs.tool_reads(outcome, home)}
                 packet_record.setdefault("attempts", []).append(attempt)
                 packet_record["duration_secs"] = duration
                 # A session that ended normally is judged on the files it
@@ -3184,7 +3320,8 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                         result.failed_calls += 1
                     packet_record["attempts"].append({"kind": "repair", "failure": repair.failure,
                         "duration_secs": float(time.monotonic() - repair_started),
-                        **_attempt_usage(repair)})
+                        **_attempt_usage(repair),
+                        "reads": steward_inputs.tool_reads(repair, home)})
                     try:
                         if not repair.ok:
                             raise ValueError(repair.detail or repair.failure or "repair invocation failed")
