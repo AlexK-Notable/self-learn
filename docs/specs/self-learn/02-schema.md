@@ -1702,6 +1702,108 @@ scan's `redact`, then clipped (head and tail kept), and the entries
 farthest from the ref dropped first until the total fits a character
 bound. Every text this module returns passes the secret scan's `redact`.
 
+### 3a.7 The lesson index and related lessons
+
+*(Added 2026-09-26, U2 of the pipeline redesign; code `index/`.)* A search
+index over every record, and the rule that says which lessons are related
+and how the steward's batches are cut. Code only in U2: the steward does
+not read it yet (U3 wires it in).
+
+**Where.** One SQLite file in the cache, `<cache>/index/lessons.sqlite`
+(`13-hosting-and-separation.md` §6) — never in the ledger. Deleting it
+loses nothing a rebuild cannot recreate.
+
+**What.** One row per record, every status (`pending/` and `resolved/`
+under every bucket): its id, its bucket `(scope, name)`, its status, the
+sha256 of its index text, and the session ids and entry uuids its evidence
+names. The **index text** is the record's `Trigger` + `Instruction`
+(behavior) or `Fact` + `Context` (knowledge), then each evidence `quote`,
+one per line, passed through the secret scan's `redact` (the text is sent
+to an outside embedding API). Beside it: an FTS5 word index over the text
+(porter stemming, OR semantics, BM25) and embedding vectors keyed by
+`(id, model)` with the text hash each was made from.
+
+**Incremental.** A build re-embeds only a record whose text hash changed or
+that has no vector from the current model; it drops every row of a record
+that no longer exists. Each vector records its model
+(`gemini-embedding-2@3072/i1` today — width and instruction template are
+part of the name). A model change re-embeds everything, the old model's
+vectors are deleted only once the new model covers every record, and no
+comparison ever mixes two models.
+
+**Degradation.** The key is read from the environment only:
+`SELF_LEARN_GEMINI_API_KEY`, then `GEMINI_API_KEY` (for the host service,
+from its optional environment file, doc 13 §6). With no key, with
+`SELF_LEARN_EMBED_PROVIDER=none`, or with the API failing, a build still
+succeeds: the index is `lexical-only`, and `mode_reason` says why. The
+index is `hybrid` only when every record has a current vector from the
+index's model; a stored vector needs no key to be read.
+
+**Related.** Two records are related when
+
+1. **same session** — their evidence names a session id in common (from a
+   §3a.6 ref, a `session:` field, or a legacy `origin:
+   transcript:<session>#L<n>`), or an entry uuid in common (the same moment
+   copied into a resumed or forked session file, §3a.6); or
+2. **same bucket and close in meaning** — the same bucket `(scope, name)`,
+   never the name alone (skill `x` and project `x` are different buckets),
+   AND a similarity at or above the threshold.
+
+User, 2026-09-26 18:13: "yes, lessons from the same project but different
+sessions count as related. maybe this is where we leverage embeddings to
+get real semantic similarity between lessons." Similarity is the cosine of
+the two stored vectors when the index is `hybrid` and a threshold has been
+measured for its model; otherwise it is **lexical similarity**: how well
+record A's words retrieve record B by BM25, relative to how well they
+retrieve A itself (1.0 = as well), averaged over both directions. *(Our
+reading of the build brief's "the hybrid rank when lexical-only": a score
+per pair, so one threshold decides, rather than a rank position that
+depends on how many records a bucket holds.)* One basis is used for a whole
+grouping; the two scales are never mixed.
+
+**Thresholds, measured 2026-09-26** over the live ledger (212 records,
+22,366 pairs, one embedding pass):
+
+| | cosine (gemini-embedding-2@3072/i1) | lexical |
+|---|---|---|
+| same bucket, no shared session, not a replacement pair (6,875) | median 0.641, p95 0.743, p99 0.795 | median 0.050, p95 0.141, p99 0.225 |
+| replacement pairs, `supersedes`/`superseded_by` (13) | 0.760–0.985, median 0.899 | 0.207–0.905 |
+| same session (295) | median 0.658, p95 0.765 | median 0.057 |
+| different buckets (15,308) | median 0.614, p95 0.689 | median 0.038 |
+| **threshold** | **0.75** | **0.16** |
+
+Cosine 0.75 sits just above the same-bucket 95th percentile, keeps all 13
+replacement pairs, and relates 282 of 7,058 same-bucket pairs (4%). Pairs
+read at 0.75–0.80 shared a concrete subject; pairs at 0.70–0.715 shared
+only a genre. Lexical 0.16 is the value that best reproduces the cosine
+decision on same-bucket pairs (precision 0.70, recall 0.64) and keeps all
+13 replacement pairs. Lessons from one session are not close in meaning
+(median cosine near the background), which is why session is its own rule.
+A model with no measured threshold uses the lexical basis and says so.
+The worktree folders of one repository are separate project buckets today;
+whether they should count as one project is left to U3.
+
+**Groups for the steward.** The user, 2026-09-20: "3-4 lessons that all
+trace back to the same session log can and maybe should be batched
+together for 1 steward. the absolute maximum should be 10 … the maximum
+number of unrelated lessons a given agent should parse is 5." A group
+holds at most 10 records, and at most 5 of them related to no other member.
+Connected pieces of the relatedness graph stay together; a piece over 10 is
+split along its edges (seed with the lowest id, then add the member with the
+most edges into the chunk). Pieces are packed first-fit, largest first;
+the unrelated records then fill groups up to both caps. Same input, same
+groups: ids are de-duplicated and sorted, and every tie breaks on id.
+
+**Inspection.** `self-learn index status|build|related <id>|groups`
+(`--json` on each). `build` writes only the cache (`--no-embed`: word
+index only). `status --json` carries the dashboard's data points:
+`records`, `by_status`, `buckets`, `mode`, `mode_reason`, `model`,
+`vectors` (current, missing), `last_build_at`, `last_build` (the last
+build's counts and error), `stale` (records not indexed, changed or gone
+since the last build) and `key_present` (whether a key is in this
+process's environment — never the key). `groups` groups the queued
+records (pending, deferred hidden) as the steward would read them.
+
 ## 4. Managed sections (the compile targets' contract)
 
 Compilers own exactly the region between their markers, and nothing else:

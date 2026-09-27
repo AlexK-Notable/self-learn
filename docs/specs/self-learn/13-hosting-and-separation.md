@@ -471,6 +471,22 @@ self-learn/cli/scripts/suite`; UI: `cd plugins/self-learn/ui && uv run
 pytest`, explicit `tests/` path) — this has always been true and is not
 something this unit changed.
 
+**The lesson index and the host unit's environment (U2, 2026-09-26).**
+The lesson index (`02-schema.md` §3a.7) lives in this namespace at
+`index/lessons.sqlite` — cache, not ledger; deleting it costs a rebuild.
+It embeds with Gemini only when `GEMINI_API_KEY` (or
+`SELF_LEARN_GEMINI_API_KEY`, read first) is in the process environment.
+The systemd user manager does not inherit the shell's environment (the
+same B-1 fact §7.1 names), so `systemd/self-learn-host.service` reads an
+OPTIONAL environment file, `EnvironmentFile=-%h/.config/self-learn/env`;
+the leading `-` makes a missing file fine. The user fills the key line
+there from Bitwarden Secrets Manager (user, 2026-09-26 19:32: "we use
+bitwarden secrets manager on this machine. don't wire bws into the
+project itself, just know it's what we use") — self-learn never calls a
+secrets manager and never reads a key file itself. Without the file the
+index runs word-search only and its status says why. A unit edit is
+inert until the unit is reloaded and the host restarted.
+
 ## 7. Migration plan (ledger-first; worktree + pre-migration audit)
 
 - **T-H1 · Home bootstrap** — `~/.self-learn` git init, private remote,

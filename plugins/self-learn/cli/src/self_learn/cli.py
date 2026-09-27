@@ -73,6 +73,7 @@ from .import_backlog import import_backlog
 from .import_common import ImporterError
 from .import_memory import import_memory, prune_memory
 from .gitops import EXIT_GIT_FAILED
+from .index import cli as index_cli
 from .overseer import cli as overseer_cli
 from .overseer import conversation as overseer_conversation
 from .overseer import run as overseer_run
@@ -930,6 +931,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     overseer_cli.add_parser(sub)
+    index_cli.add_parser(sub)
 
     steward_p = sub.add_parser(
         "steward", help="autonomous decision runner: run"
@@ -4331,6 +4333,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "overseer":
         return args._overseer_dispatch(args)
+
+    if args.command == "index":
+        return args._index_dispatch(args)
 
     if args.command == "serve":
         return _cmd_serve(args)

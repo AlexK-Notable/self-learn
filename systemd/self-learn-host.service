@@ -88,6 +88,13 @@ Environment=SELF_LEARN_HOME=%h/.self-learn
 # replacement that dropped it would quietly regress a path that
 # previously worked.
 Environment=PATH=%h/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# U2 (2026-09-26, 02-schema.md §3a.7): the lesson index embeds with Gemini
+# when GEMINI_API_KEY (or SELF_LEARN_GEMINI_API_KEY) is in this unit's
+# environment, and is word-search only -- and says so -- when it is not.
+# The user fills that one line in this OPTIONAL file from Bitwarden
+# Secrets Manager (self-learn itself never calls bws and never reads a key
+# file). The leading `-` makes a missing file fine. Keep it mode 600.
+EnvironmentFile=-%h/.config/self-learn/env
 ExecStart=%h/bin/self-learn serve
 Restart=on-failure
 RestartSec=5
