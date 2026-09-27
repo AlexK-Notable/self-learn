@@ -2893,3 +2893,140 @@ def test_both_overseer_phases_run_with_auto_memory_off(tmp_path, monkeypatch):
     assert [spec.label for spec in seen] == ["phase-a", "phase-b"]
     for spec in seen:
         assert CliSessionPolicy(spec).env().get("CLAUDE_CODE_DISABLE_AUTO_MEMORY") == "1", spec.label
+
+
+# --- 2026-09-27: a malformed finding costs that finding, not the run ------
+# Run a3c1df7c examined 52 of 57 cases, then one dependency-moved finding
+# without a ref refused the whole run. The user's words: "Make the fix."
+
+
+def _seed_case(home, tmp_path, rid, outcome):
+    create_record(home, make_behavior(record_id=rid))
+    commit_all(home, f"record seed {rid}")
+    path = tmp_path / f"case-{rid}.yaml"
+    _dump(path, {
+        "kind": "resolution", "trigger": "nightly", "outcome": outcome,
+        "records": [rid], "scope": "skill:s", "question": f"what of {rid}?",
+        "evidence": [{"ref": f"record:{rid}", "quote": "status: pending"}],
+        "decision": {"verb": outcome, "because": "judged", "confidence": "settled"},
+    })
+    return cases.record(home, path, actor="steward")
+
+
+def _fake_cases_phases(monkeypatch, case_ids, findings=None, raw_findings=None):
+    """Phase A selects *case_ids*; phase B writes *findings* (or the raw
+    *raw_findings* text) and a clean everything else."""
+    def invoke(spec):
+        stage = spec.cwd
+        if spec.label == "phase-a":
+            _dump(stage / "selection.yaml", {
+                "cases": [{"id": cid} for cid in case_ids],
+                "why_these": "oldest", "why_stopped": "enough",
+            })
+            _dump(stage / "initial-views.yaml", {"cases": [{
+                "id": cid, "what_i_would_do": "keep", "why": "held",
+                "what_evidence_decides_it": "record evidence", "confidence": "clear",
+            } for cid in case_ids]})
+        else:
+            headings = [
+                "Examined", "Decided in the user's stead", "Hooks", "User model",
+                "Catalogue health", "Questions for you", "Refused / could not do",
+            ]
+            (stage / "report.md").write_text(
+                "# draft\n" + "\n".join(f"## {h}\n- none" for h in headings) + "\n",
+                encoding="utf-8",
+            )
+            _dump(stage / "sheet.yaml", {"version": 1, "items": []})
+            if raw_findings is not None:
+                (stage / "findings.yaml").write_text(raw_findings, encoding="utf-8")
+            else:
+                _dump(stage / "findings.yaml", {"findings": findings or []})
+            _dump(stage / "questions.yaml", {"questions": []})
+            _dump(stage / "user-model-delta.yaml", {"updates": []})
+        return type("SdkLike", (), {
+            "ok": True, "rc": 0, "stdout": "", "detail": "", "failure": None, "turns": 1,
+        })()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+
+
+def test_a_dependency_moved_finding_without_ref_is_dropped_not_the_run(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    kept = _seed_case(home, tmp_path, "lrn-0a000001", "reject")
+    other = _seed_case(home, tmp_path, "lrn-0a000002", "reject")
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_cases_phases(monkeypatch, [kept, other], findings=[
+        {"case": kept, "kind": "examined", "text": "decision held"},
+        {"case": other, "kind": "examined", "text": "also held"},
+        {"case": other, "kind": "dependency-moved", "text": "SECRET-FREE-MARKER moved"},
+        {"case": kept, "kind": "dependency-moved", "text": "the skill moved", "ref": "skill:s"},
+    ])
+    _wrap_phases(monkeypatch, questions=[_ask("q-kept", kept)])
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert (result.status, result.code, result.refused) == ("applied", 0, 0), result
+    refused = _refused_section(home)
+    assert f"- finding 3 (case {other}): dropped — dependency-moved needs a ref" in refused
+    assert refused.count("dropped") == 1
+    assert "SECRET-FREE-MARKER" not in refused, "the finding's text is never quoted"
+    # The rest of the run is kept: the question is indexed, both examined
+    # observations and the valid dependency-moved one landed.
+    assert [row["id"] for row in _index(home)] == ["q-kept"]
+    kept_view = cases.show(home, kept, evidence_only=False).sections["Later observations"]
+    other_view = cases.show(home, other, evidence_only=False).sections["Later observations"]
+    assert "decision held" in kept_view and "the skill moved" in kept_view
+    assert "also held" in other_view and "SECRET-FREE-MARKER" not in other_view
+    record = execution_evidence.read_manifest(home, result.run)
+    assert f"finding 3 (case {other}): dropped — dependency-moved needs a ref" in record["runner_notes"]
+
+
+def test_a_selected_case_with_no_examined_finding_is_not_examined_and_not_covered(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    examined = _seed_case(home, tmp_path, "lrn-0b000001", "reject")
+    skipped = _seed_case(home, tmp_path, "lrn-0b000002", "defer")
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_cases_phases(monkeypatch, [examined, skipped], findings=[
+        {"case": examined, "kind": "examined", "text": "decision held"},
+        {"case": skipped, "kind": "examined", "text": ""},
+    ])
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert (result.status, result.code) == ("applied", 0), result
+    refused = _refused_section(home)
+    assert f"- finding 2 (case {skipped}): dropped — a finding needs non-empty text" in refused
+    assert f"- case {skipped}: not examined — no valid examined finding" in refused
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    assert f"- Cases examined: {examined} (1 of 2)" in report
+    coverage = YAML(typ="safe").load((home / "overseer" / "coverage.yaml").read_text(encoding="utf-8"))
+    strata = coverage["strata"]
+    reject_key = next(key for key in strata if key.startswith("reject/") and strata[key]["status"] != "empty")
+    defer_key = next(key for key in strata if key.startswith("defer/") and strata[key]["status"] != "empty")
+    # Positive control: the validly examined case's stratum advanced.
+    assert strata[reject_key]["status"] == "examined"
+    assert strata[reject_key]["cumulative_count"] == 1
+    assert strata[reject_key]["last_examined_at"] is not None
+    # The case with no valid examined finding did not.
+    assert strata[defer_key]["status"] == "unexamined"
+    assert strata[defer_key]["cumulative_count"] == 0
+    assert strata[defer_key]["last_examined_at"] is None
+    assert coverage["examined_count"] == 1
+    assert _git(home, "status", "--porcelain") == ""
+
+
+def test_a_findings_file_without_a_findings_list_still_refuses_the_run(tmp_path, monkeypatch):
+    """The file-shape error is not one item: it still refuses (a regression
+    guard -- this behaviour did not change on 2026-09-27)."""
+    home = make_home(tmp_path)
+    case_id = _seed_case(home, tmp_path, "lrn-0c000001", "reject")
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_cases_phases(monkeypatch, [case_id], raw_findings="findings: not a list\n")
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert (result.status, result.code) == ("refused", overseer_run.EXIT_REFUSED), result
+    assert not (home / "overseer" / "coverage.yaml").exists(), "coverage restored, not advanced"

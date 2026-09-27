@@ -717,6 +717,16 @@ reply to an ask is a statement with `answers.kind: question` and `answers.ref`
 the ask's id; phase B receives every such answer, newest first, as the staged
 `answers.yaml`.
 
+*(Added 2026-09-27.)* **Findings.** Phase B's staged `findings.yaml` is
+`{findings: [{case, kind: examined|dependency-moved, text, ref?}]}`. The runner
+validates each finding on its own and DROPS one that fails (unknown keys, a case
+not selected this run, an unknown kind, empty text, a `dependency-moved` without
+`ref`), naming it by ordinal and selected case id, never its text, in "Refused /
+could not do" and the run record's `runner_notes`. A selected case left with no
+valid `examined` finding is NOT examined: it is named there too, left out of the
+report's "Cases examined" line, and does not advance `coverage.yaml`. Only a file
+that is not a mapping holding just a `findings` list refuses the run.
+
 **Journal.** `overseer/journal/<date>-<run>.md` is the run's own journal: a
 stage file (`journal.md`) the runner creates before phase A and the model
 writes in throughout both phases. It is committed with every commit the run
