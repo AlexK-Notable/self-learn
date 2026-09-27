@@ -3008,7 +3008,18 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     # per packet: the feed gathers the report, the status
                     # probe and every host's HEAD, and a 29-lesson run
                     # rebuilt it three times for the same night.
-                    feed_items = conditions.feed(home, cache_dir(home))
+                    # 2026-09-26: the steward's cut of the feed, its two
+                    # per-lesson sections sliced to EVERY lesson of the run
+                    # (not this packet's), so each packet reads the same block.
+                    feed_items = conditions.steward_feed(
+                        home,
+                        [
+                            (str(row.get("record")), row.get("proposal") or {})
+                            for packet in manifest["packets"]
+                            for row in packet.get("inputs") or []
+                        ],
+                        cache_dir(home),
+                    )
                 prompt = steward_prompt.assemble(
                     home, cache_dir(home), context, proposals, conditions_items=feed_items,
                     returned=_returned_for(home, packet_record["inputs"]),

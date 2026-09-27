@@ -11,7 +11,8 @@ order and no other.
 
 This module never writes the ledger, takes no lock, never reads a
 transcript, and never reads ``hosts.yaml`` or ``settings.json`` itself —
-every fact it renders comes through :func:`conditions.feed` (already
+every fact it renders comes through :func:`conditions.steward_feed` (the
+steward's cut of :func:`conditions.feed`, 2026-09-26; both
 fail-closed to ``"unavailable"``) or through an existing read-only
 function (:func:`worker.render_brief`, :func:`cases.show`,
 :func:`cases.list_cases`, :func:`user_model.show`).
@@ -53,10 +54,13 @@ adds."""
 
 from __future__ import annotations
 
+import io
 import re
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
+
+from ruamel.yaml import YAML
 
 from . import batch
 from . import cases
@@ -451,12 +455,61 @@ def _escape_cell(value: object) -> str:
     )
 
 
+#: 2026-09-26: the conditions block's first line -- how to cite what follows.
+CONDITIONS_CITATION_NOTE = (
+    "Cite a row as cond:<key>@<observed_at>. Each report section after the table is "
+    "headed by its own citation, ready to copy; its text is YAML, and a quote from it "
+    "is a verbatim part of a line."
+)
+
+
+def _plain_tree(value: object) -> object:
+    """A value made safe and deterministic for YAML: mappings with sorted
+    keys, tuples as lists, anything unfamiliar as its `str`."""
+    if isinstance(value, dict):
+        return {str(k): _plain_tree(value[k]) for k in sorted(value, key=str)}
+    if isinstance(value, (list, tuple)):
+        return [_plain_tree(v) for v in value]
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)
+
+
+def _yaml_block(value: object) -> str:
+    """Block-style YAML, one scalar per line: no line wrapping (a wrapped
+    scalar is no longer a verbatim substring), non-ASCII kept as written,
+    keys sorted."""
+    yaml = YAML(typ="safe", pure=True)
+    # Block style for structure; a collection holding only scalars goes on
+    # one line (`{id: lrn-..., state: reachable}`), one row per line.
+    yaml.default_flow_style = None
+    yaml.allow_unicode = True
+    yaml.width = 1_000_000
+    buf = io.StringIO()
+    yaml.dump(_plain_tree(value), buf)
+    text = buf.getvalue()
+    # A bare scalar dumps with a document-end marker; the block does not need it.
+    return text.removesuffix("...\n").rstrip("\n")
+
+
 def _render_conditions(items: list[Item]) -> str:
-    lines = ["| key | value | observed_at | source |", "|---|---|---|---|"]
+    """2026-09-26: the small rows in one table; each `report.*` section in a
+    sub-block of its own after it, headed ``cond:<key>@<observed_at>`` -- the
+    citation the model writes -- as YAML instead of a Python ``repr`` in one
+    escaped table cell."""
+    lines = [CONDITIONS_CITATION_NOTE, "", "| key | value | observed_at | source |", "|---|---|---|---|"]
+    sections: list[str] = []
     for item in items:
+        if item.key.startswith("report."):
+            sections.append(
+                f"cond:{item.key}@{item.observed_at}\n"
+                f"# source: {' '.join(str(item.source).split())}\n"
+                f"{_yaml_block(item.value)}"
+            )
+            continue
         cells = (item.key, item.value, item.observed_at, item.source)
         lines.append("| " + " | ".join(_escape_cell(c) for c in cells) + " |")
-    return "\n".join(lines)
+    return "\n\n".join(["\n".join(lines), *sections])
 
 
 def _later_observations(home: Path, case_id: str, since: str | None) -> list[str]:
@@ -797,7 +850,11 @@ def assemble(
     :data:`SENT_BACK_TITLE` goes in just before the open-cases block."""
     home = Path(home)
     cache_dir = Path(cache_dir)
-    items = conditions.feed(home, cache_dir) if conditions_items is None else list(conditions_items)
+    items = (
+        conditions.steward_feed(home, [(str(p.get("id")), p) for p in proposals], cache_dir)
+        if conditions_items is None
+        else list(conditions_items)
+    )
     blocks = _ordered_blocks(home, run, proposals, items)
     if returned:
         at = next(
