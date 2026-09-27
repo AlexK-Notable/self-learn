@@ -1063,6 +1063,12 @@ week — not on the run as a whole. Each such unit carries, in the manifest:
   examined. Such a hold may still arm the scheduler's cache-side cooldown —
   a raised due-check does, so the tick loop cannot spin on it (S-68) — but it
   never touches a count in this record.
+- **A dry run is not an attempt either** *(added 2026-09-26)*. Every row a
+  steward or overseer `--dry-run` writes to its cache journal (its
+  `model-log` lines, a `refused` case, `population`, the final `dry-run`
+  row) carries `"dry_run": true`, and the scheduler's cache-side cooldown
+  skips a marked row, so a rehearsal never holds back the real run. A real
+  run's rows carry no such key and arm the cooldown as before.
 - `last_attempt_at` is written by that same increment and is what the
   scheduler's cooldown reads; a value that is unparseable or in the future
   reads as "attempted now", never as "due every tick" or "never due".
@@ -1253,6 +1259,18 @@ get the refused row a case refused at apply time gets -- and every other case
 and maintenance operation of the packet proceeds. The prepared-text secret
 scan runs per case (and per maintenance operation, whose payload is then not
 frozen) instead of once over the packet.
+
+*(Added 2026-09-26, agenda item 24.)* No message a runner shows its model
+or commits into its run record carries the text a secret scan matched: each
+hit is named by its rule and offsets, the span reads `[withheld]`. This
+covers a sheet line's refusal as the repair turn relays it, the sent-back
+rows the next brief shows, the case results and dispositions of the run
+record, the overseer's "Refused / could not do" lines, and the refusals of a
+case, statement or user-model write at apply time. The one seam is
+`scan.refusal_text`, which `batch` uses for every item's `detail` (in `run`
+and `dry_run`) and `route --dry-run` for its `would_refuse` entries; the
+errors of the case, statement and user-model writers carry the hits their
+message was built from. A person running a verb by hand still sees the span.
 
 For an opted-in ordinary ledger mutation, the item's own mutation commit has
 one canonical final trailer block: `By: <runner>`, `Case: <case-id>`,

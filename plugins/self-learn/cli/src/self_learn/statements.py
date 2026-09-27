@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import gitops, intents, sentinel
 from .primitives import chrono, fsops
-from .scan import format_refusal
+from .scan import attach_hits, format_refusal
 from .scan import scan as secret_scan
 
 __all__ = [
@@ -147,7 +147,7 @@ def add(
 
     hits = secret_scan(verbatim)
     if hits:
-        raise StatementError(format_refusal(hits))
+        raise attach_hits(StatementError(format_refusal(hits)), hits)
 
     # Astra 4/10 (item 6): the dedupe check, the amends-existence check,
     # and id allocation are all state-dependent — they must read the

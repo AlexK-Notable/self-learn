@@ -43,6 +43,7 @@ from ruamel.yaml import YAML
 from . import cases, execution_evidence, gitops, intents, sentinel, verbs
 from .cases import CASE_ID_RE
 from .compilers import CompileError
+from .scan import refusal_text
 from .ledger_ops import (
     LIVE_STATUSES,
     LedgerOpsError,
@@ -892,7 +893,7 @@ def _classify_or_refuse(
         # rc 64: the code `_dispatch` gives every LedgerOpsError refusal.
         return False, ItemResult(
             n=item.n, id=item.id, verb=item.verb, rc=64,
-            state="refused", detail=str(exc),
+            state="refused", detail=refusal_text(exc),
             kind=refusal_kind(exc, rc=64, state="refused"),
         )
     return applied, None
@@ -1353,15 +1354,15 @@ def _dispatch(
             raise AssertionError(f"unreachable: unpermitted verb {verb!r}")
     except verbs.VerbError as exc:  # incl. SecretRefusal
         return ItemResult(n=item.n, id=item.id, verb=verb, rc=exc.exit_code,
-                           state="refused", detail=str(exc),
+                           state="refused", detail=refusal_text(exc),
                            kind=refusal_kind(exc, rc=exc.exit_code, state="refused"))
     except LedgerOpsError as exc:
         return ItemResult(n=item.n, id=item.id, verb=verb, rc=64,
-                           state="refused", detail=str(exc),
+                           state="refused", detail=refusal_text(exc),
                            kind=refusal_kind(exc, rc=64, state="refused"))
     except CompileError as exc:
         return ItemResult(n=item.n, id=item.id, verb=verb, rc=1,
-                           state="refused", detail=str(exc),
+                           state="refused", detail=refusal_text(exc),
                            kind=refusal_kind(exc, rc=1, state="refused"))
     except MutationError as exc:
         # U5 fold r1 (F2 leg i): a resolution verb's own write-once
@@ -1377,19 +1378,19 @@ def _dispatch(
         # `CompileError`'s — the record itself is provably untouched
         # (the raise happens before any `record.write`, gate probe Q1).
         return ItemResult(n=item.n, id=item.id, verb=verb, rc=1,
-                           state="refused", detail=str(exc),
+                           state="refused", detail=refusal_text(exc),
                            kind=refusal_kind(exc, rc=1, state="refused"))
     except gitops.HalfWrittenError as exc:
         return ItemResult(n=item.n, id=item.id, verb=verb,
                            rc=gitops.EXIT_HALF_WRITTEN, state="refused",
-                           detail=str(exc),
+                           detail=refusal_text(exc),
                            kind=refusal_kind(
                                exc, rc=gitops.EXIT_HALF_WRITTEN, state="refused"
                            ))
     except gitops.GitOpsError as exc:
         return ItemResult(n=item.n, id=item.id, verb=verb,
                            rc=gitops.EXIT_GIT_FAILED, state="refused",
-                           detail=str(exc),
+                           detail=refusal_text(exc),
                            kind=refusal_kind(
                                exc, rc=gitops.EXIT_GIT_FAILED, state="refused"
                            ))
@@ -1498,7 +1499,7 @@ def _record_ledger_stop(
             verb=item.verb,
             rc=gitops.EXIT_GIT_FAILED,
             state="stopped",
-            detail=str(exc),
+            detail=refusal_text(exc),
             kind=refusal_kind(exc, rc=gitops.EXIT_GIT_FAILED, state="stopped"),
         )
     )
@@ -1844,7 +1845,7 @@ def dry_run(
             except LedgerOpsError as exc:
                 result.items.append(
                     DryRunItem(n=item.n, id=item.id, verb=item.verb,
-                               state="would-refuse", detail=str(exc),
+                               state="would-refuse", detail=refusal_text(exc),
                                kind=_preview_kind([exc]))
                 )
                 continue
@@ -1916,7 +1917,7 @@ def dry_run(
         except _PREVIEW_REFUSALS as exc:
             result.items.append(
                 DryRunItem(n=item.n, id=item.id, verb=item.verb,
-                           state="would-refuse", detail=str(exc),
+                           state="would-refuse", detail=refusal_text(exc),
                            kind=_preview_kind([exc]))
             )
             continue
@@ -2402,8 +2403,8 @@ def write_receipt(
         # rewrite the batch's own documented exit code (S-54: "1 is
         # emitted only when nothing landed"; by the time this can fail,
         # the batch has already decided its own code).
-        print(f"self-learn batch: case receipt: {exc}", file=sys.stderr)
-        return {"state": "failed", "reason": str(exc)}
+        print(f"self-learn batch: case receipt: {refusal_text(exc)}", file=sys.stderr)
+        return {"state": "failed", "reason": refusal_text(exc)}
     pushed = None
     if not no_push:
         # F6: the receipt's own commit rides OUTSIDE `run`'s single

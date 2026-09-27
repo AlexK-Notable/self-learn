@@ -53,7 +53,7 @@ from typing import Any
 from . import gitops, intents, sentinel
 from .primitives import chrono, fsops
 from .primitives.yamlio import rt_yaml
-from .scan import format_refusal
+from .scan import attach_hits, format_refusal
 from .scan import scan as secret_scan
 
 __all__ = [
@@ -384,7 +384,7 @@ def add_entry(
     _check_vocabulary(title, because)
     hits = secret_scan(title) + secret_scan(because)
     if hits:
-        raise UserModelError(format_refusal(hits))
+        raise attach_hits(UserModelError(format_refusal(hits)), hits)
     # Gate r2 B1 / Astra 12: refuse before any write, same as the secret
     # scan just above — `ref` is included because it too is rendered as
     # a raw line (`_render_entry`'s `- ref: …`).
@@ -492,7 +492,7 @@ def lapse_entry(
     # any other — scan it before it can ever reach the committed file.
     hits = secret_scan(changed_text)
     if hits:
-        raise UserModelError(format_refusal(hits))
+        raise attach_hits(UserModelError(format_refusal(hits)), hits)
     # Gate r2 B1 / Astra 12: same structural refusal as `add_entry` — the
     # lapse cause is rendered as `- changed_condition: …`, one more line
     # a newline could turn into forged structure.
