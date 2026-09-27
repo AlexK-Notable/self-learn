@@ -33,6 +33,7 @@ from claude_agent_sdk import (
 )
 
 from .. import provider, settings, worker
+from ..invocation import failure_class as _failure_class
 from ..invocation.contract import (
     LOG_TEMPLATES,
     SELECTOR_FOR_SURFACE,
@@ -118,6 +119,12 @@ class SdkOutcome(Outcome):
     #: ``input_tokens`` when the SDK reports them; ``None`` otherwise.
     usage_first_response: dict[str, int] | None = None
     usage_session: dict[str, int] | None = None
+    #: 2026-09-27 (fail-state audit finding 4): what kind of failure a
+    #: failed call was -- ``transient``, ``safeguard``, ``environment``,
+    #: ``content`` or ``unclassified`` (`invocation.failure_class`); ``None``
+    #: on a call that did not fail. Read by the steward and the overseer,
+    #: and written to the session's event log.
+    failure_class: str | None = None
 
 
 #: The usage keys `SdkOutcome` keeps (2026-09-26).
@@ -455,6 +462,7 @@ def _outcome(
     usage_session: dict[str, int] | None = None,
 ) -> SdkOutcome:
     return SdkOutcome(
+        failure_class=_failure_class.classify(failure, detail, result_subtype),
         ok=ok,
         rc=rc,
         stdout=stdout,
@@ -736,6 +744,8 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
                 "cost_usd": outcome.cost_usd if outcome is not None else None,
                 "turns": outcome.turns if outcome is not None else None,
                 "failure": outcome.failure if outcome is not None else "exit",
+                # 2026-09-27 (fail-state audit finding 4).
+                "failure_class": outcome.failure_class if outcome is not None else None,
                 # 2026-09-26: prompt-cache counts (`SdkOutcome.usage_*`).
                 "usage_first_response": (
                     outcome.usage_first_response if outcome is not None else None

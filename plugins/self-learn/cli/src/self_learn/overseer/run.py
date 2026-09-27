@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+import shutil
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -28,7 +29,7 @@ from typing import Any, cast
 
 from ruamel.yaml import YAML, YAMLError
 
-from .. import batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, provider, scan, settings, statements, user_model, verbs, worker
+from .. import batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, model_failures, provider, scan, settings, statements, user_model, verbs, worker
 from ..ledger import resolve_home
 from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
 from ..primitives import chrono, fsops
@@ -548,6 +549,65 @@ stead; Hooks; User model; Catalogue health; Questions for you; Refused / could n
 {_journal_block("B")}"""
 
 
+#: 2026-09-27 (fail-state audit finding 7): the allowance each case adds to
+#: a phase's time limit. Measured: phase B took 559 s on 54 cases (10.4 s a
+#: case, 2026-09-25) and 810 s on 57 (14.2 s a case, 2026-09-27) against a
+#: flat 900 s. 30 s a case is about twice the worst measured rate, so a
+#: slow week has headroom instead of a 10% margin; `overseer.timeout_secs`
+#: stays the floor for a small week.
+TIMEOUT_PER_CASE_SECS = 30.0
+
+
+def phase_timeout(floor: float, cases_count: int) -> float:
+    """One phase's time limit: ``max(floor, 30 s x cases)``."""
+    return max(float(floor), TIMEOUT_PER_CASE_SECS * max(int(cases_count), 0))
+
+
+#: The files a validated phase A leaves, kept for the week's next attempt.
+_PHASE_A_FILES = ("selection.yaml", "initial-views.yaml")
+
+
+def _phase_a_keep_dir(home: Path, week: str) -> Path:
+    """Where a validated phase A is kept (cache only, never the ledger)."""
+    return worker.cache_dir(home) / "overseer" / "phase-a" / week
+
+
+def _population_key(population_text: str) -> str:
+    return hashlib.sha256(population_text.encode("utf-8")).hexdigest()[:16]
+
+
+def _keep_phase_a(home: Path, stage: Path, week: str, key: str) -> None:
+    """2026-09-27 (fail-state audit finding 7): keep a validated phase A for
+    the same week's next attempt, keyed by the population it saw. Only this
+    week's copy is kept; older weeks' copies are removed."""
+    root = _phase_a_keep_dir(home, week).parent
+    if root.is_dir():
+        for other in root.iterdir():
+            if other.name != week:
+                shutil.rmtree(other, ignore_errors=True)
+    target = _phase_a_keep_dir(home, week)
+    shutil.rmtree(target, ignore_errors=True)
+    target.mkdir(parents=True, exist_ok=True)
+    for name in _PHASE_A_FILES:
+        fsops.atomic_write(target / name, (stage / name).read_bytes(), fsync=False)
+    fsops.atomic_write(target / "population.key", key + "\n", fsync=False)
+
+
+def _reuse_phase_a(home: Path, stage: Path, week: str, key: str) -> bool:
+    """Put a kept phase A back into the stage when it was made for this week
+    from the same population; answers whether it did."""
+    source = _phase_a_keep_dir(home, week)
+    try:
+        kept_key = (source / "population.key").read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    if kept_key != key or not all((source / name).is_file() for name in _PHASE_A_FILES):
+        return False
+    for name in _PHASE_A_FILES:
+        _write_stage(stage, stage / name, (source / name).read_text(encoding="utf-8"))
+    return True
+
+
 def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, run_id: str):
     containment = invocation.containment_for(
         "overseer",
@@ -561,7 +621,7 @@ def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, ru
         stage_dir=worker.stage_dir(),
         enforce=worker._enforce_scope(),
     )
-    return invocation.write_session(
+    spec = (
         invocation.SessionSpec(
             surface="overseer",
             prompt=prompt,
@@ -582,6 +642,42 @@ def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, ru
             extra_env=invocation.NO_AUTO_MEMORY_ENV,
         )
     )
+    outcome = invocation.write_session(spec)
+    if model_failures.should_retry(outcome):
+        # 2026-09-27 (fail-state audit finding 4): overloaded, a server
+        # error, a rate limit or the network -- the same call is made once
+        # more within this attempt, after a short wait. The phase's own
+        # files stay in the stage; the retried session continues them.
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "transient-retry",
+            "phase": label, "detail": _failure_detail(outcome.detail),
+            **model_failures.failure_fields(outcome)})
+        model_failures.backoff()
+        outcome = invocation.write_session(spec)
+    return outcome
+
+
+def _environment_hold(home: Path, run_id: str, phase: str, outcome: Any) -> str:
+    """2026-09-27 (fail-state audit finding 4): the model or the installed
+    Claude Code cannot run a call at all. The attempt is a HOLD: no failure
+    note (so the week's count is untouched), a journal line, and one
+    notification per distinct cause. Answers the cause."""
+    cause = _failure_detail(model_failures.hold_cause(outcome)) or "invocation"
+    previous = model_failures.last_hold_cause(journal_path(home))
+    _journal(home, {"at": chrono.now_iso(), "run": run_id,
+        "status": model_failures.HELD_ENVIRONMENT, "phase": phase, "cause": cause,
+        **model_failures.failure_fields(outcome)})
+    if cause != previous:
+        try:
+            notify.send(
+                home, "routine",
+                f"self-learn overseer: held — the model call cannot run here: {cause}. "
+                "Nothing was counted; it retries on its next attempt.",
+                [run_id],
+            )
+        except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
+            _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                "status": "notify-failed", "reason": str(exc)[:300]})
+    return cause
 
 
 def _question_answers(home: Path) -> list[dict[str, Any]]:
@@ -1063,6 +1159,49 @@ def _validate_maintenance_case(path: Path) -> None:
         )
 
 
+def _case_rule(exc: BaseException) -> str:
+    """The case writer's refusal as one committed line (2026-09-27, audit
+    finding 1): every secret-scan span withheld, newlines folded, and the
+    model's own value after ``, got`` cut off, so the line names the rule
+    and never the text that broke it."""
+    text = scan.refusal_text(exc)
+    text = text.split(", got ", 1)[0]
+    return " ".join(text.split()).strip() or type(exc).__name__
+
+
+def _case_rule_problem(path: Path, run_id: str) -> str | None:
+    """Run the case writer's own rules (`cases.check_case_data`, never a
+    copy of them) on a staged decided or maintenance case, as
+    `cases.record` will see it at execute time: stamped with the run id,
+    with the evidence items the runner drops already gone
+    (`cases.split_runner_evidence`, as `_prepare_manifest` does). Answers
+    the rule it breaks, or ``None``.
+
+    Before 2026-09-27 phase B checked only that the fields were present; a
+    value the writer refuses (``confidence: high``, a ``## `` line in
+    ``because``) passed here and then ended the run at execute time, with
+    every later case unapplied, on every resume until the week's attempts
+    were gone (audit finding 1)."""
+    data = dict(_yaml_mapping(path))
+    data["run_id"] = run_id
+    data, _dropped = cases.split_runner_evidence(data)
+    try:
+        cases.check_case_data(data, withhold_spans=True)
+    except cases.CaseError as exc:
+        return _case_rule(exc)
+    return None
+
+
+class _CaseRefused(Exception):
+    """`cases.record` refused one case at execute time. Every one of its
+    refusals is raised before anything is written, so the case and its
+    sheet are refused alone and the run carries on with the rest."""
+
+    def __init__(self, cause: cases.CaseError) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+
+
 def _write_report_only(stage: Path, text: str) -> Path:
     path = stage / "report.final.md"
     _write_stage(stage, path, text)
@@ -1174,6 +1313,7 @@ def _commit_failed_attempt(
     write_note: bool = True,
     journal_text: str | None = None,
     trigger: str = TRIGGER_SCHEDULED,
+    classified: dict[str, str] | None = None,
 ) -> Path:
     """One commit for one failed attempt: its report, its failure note and,
     when the cap was reached, the close-out note.
@@ -1236,6 +1376,7 @@ def _commit_failed_attempt(
                 _note_text(
                     week=week, run_id=run_id, started=started, attempt=attempt,
                     cap=cap, kind=kind, detail=detail, trigger=trigger,
+                    classified=classified,
                 ),
                 fsync=True,
             )
@@ -1254,14 +1395,77 @@ def _commit_failed_attempt(
     return report_path if report_path is not None else note
 
 
-def _sheet_pairs(stage: Path) -> list[tuple[Path | None, Path]]:
+def _refuse_in_span(
+    home: Path, *, dry_run: bool, manual: bool, deferred_notice: "_DeferredNotice",
+    intent: intents.Intent | None, coverage_path: Path, coverage_before: bytes | None,
+    stage: Path, week: str, attempt: int, cap: int, run_id: str, started: str,
+    model: str, selected: tuple[str, ...], population_count: int, excluded: int,
+    model_calls: int, guard: int, trigger: str, kind: str, reason: str,
+) -> "RunResult":
+    """A failed attempt inside the run's ledger-write span, through the
+    same path every other one takes: close-out at the cap, the report, a
+    committed failure note that counts, coverage put back, the journal.
+    2026-09-27 (fail-state audit finding 5): the steps after phase A that
+    used to raise straight out of the run -- uncounted, unlogged, repeated
+    every two hours -- come here instead."""
+    detail = _failure_detail(reason)
+    closed_text, close_questions = (None, [])
+    if not dry_run:
+        closed_text, close_questions = _close_out_if_exhausted(
+            home, week=week, attempts=attempt, cap=cap, kind=kind, detail=detail,
+            manual=manual,
+        )
+    text = _report_text(
+        date=started[:10], run_id=run_id, model=model, selected=selected,
+        population_count=population_count, excluded=excluded,
+        model_calls=model_calls, guard=guard, reason=reason, questions=close_questions,
+    )
+    report_path = _write_report_only(stage, text)
+    if not dry_run and intent is not None:
+        report_path = _commit_failed_attempt(
+            home, intent, coverage_path=coverage_path, coverage_before=coverage_before,
+            report_text=text, date=started[:10], run_id=run_id, week=week,
+            started=started, attempt=attempt, cap=cap, kind=kind, detail=detail,
+            closed_text=closed_text,
+            journal_text=_model_journal_text(home, stage, run_id, started[:10]),
+            trigger=trigger,
+        )
+        if closed_text is not None:
+            _queue_week_closed(deferred_notice, home, week, attempt, kind, [run_id])
+    _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "refused",
+        "reason": reason[:300]})
+    return RunResult(
+        "refused", EXIT_REFUSED, run_id, model_calls, selected, excluded,
+        report=str(report_path),
+    )
+
+
+def _phase_b_output_present(stage: Path) -> bool:
+    """Whether phase B left every file a run needs -- the four required
+    files and at least one sheet -- whatever state its session ended in."""
+    required = ("report.md", "findings.yaml", "questions.yaml", "user-model-delta.yaml")
+    if not all((stage / name).is_file() for name in required):
+        return False
+    return any(stage.glob("sheet-*.yaml")) or (stage / "sheet.yaml").is_file()
+
+
+def _sheet_pairs(stage: Path, drops: list[str] | None = None) -> list[tuple[Path | None, Path]]:
+    """The staged case/sheet pairs. A `sheet-<name>.yaml` with no
+    `case-<name>.yaml` beside it is dropped and named in *drops* (2026-09-27,
+    fail-state audit finding 5): before, it raised after phase A, outside
+    every handler, so the attempt crashed uncounted and repeated."""
     paired = []
     for sheet in sorted(stage.glob("sheet-*.yaml")):
-        paired.append((stage / sheet.name.replace("sheet-", "case-", 1), sheet))
-    if paired:
-        for case_file, _sheet in paired:
-            if case_file is None or not case_file.is_file():
-                raise OverseerError(f"{case_file.name}: missing successor case paired with sheet")
+        case_file = stage / sheet.name.replace("sheet-", "case-", 1)
+        if not case_file.is_file():
+            if drops is not None:
+                drops.append(
+                    f"{sheet.name}: dropped — no {case_file.name} beside it "
+                    "(a sheet needs its successor case)"
+                )
+            continue
+        paired.append((case_file, sheet))
+    if paired or drops:
         return paired
     sheet = stage / "sheet.yaml"
     if not sheet.is_file():
@@ -1768,6 +1972,7 @@ def _note_path(home: Path, week: str, started: str, run_id: str) -> Path:
 def _note_text(
     *, week: str, run_id: str, started: str, attempt: int, cap: int,
     kind: str, detail: str | None, trigger: str = TRIGGER_SCHEDULED,
+    classified: dict[str, str] | None = None,
 ) -> str:
     """A15's short dated failure note, carrying the REAL reason.
 
@@ -1787,6 +1992,10 @@ def _note_text(
         "",
         f"- failure: {kind}",
         f"- detail: {detail or 'no detail was returned'}",
+        # 2026-09-27 (fail-state audit finding 4): what kind of model-side
+        # failure it was, and the API's own tag for it, when there is one.
+        *([f"- class: {classified['failure_class']}"] if classified and classified.get("failure_class") else []),
+        *([f"- tag: {classified['failure_tag']}"] if classified and classified.get("failure_tag") else []),
         f"- at: {started}",
         f"- trigger: {trigger}",
     ]) + "\n"
@@ -1976,7 +2185,7 @@ def _commit_phase_a_failure(
     run_id: str, started: str, kind: str, detail: str | None,
     model: str, population_count: int, excluded: int, model_calls: int,
     guard: int, reason: str, journal_text: str | None = None,
-    manual: bool = False,
+    manual: bool = False, classified: dict[str, str] | None = None,
 ) -> Path | None:
     """The committed trace for a failure BEFORE the run's own ledger-write
     span exists — a failed first model call, a runaway after it, an invalid
@@ -2007,6 +2216,7 @@ def _commit_phase_a_failure(
         started=started, attempt=attempt, cap=cap, kind=kind, detail=detail,
         closed_text=closed_text, journal_text=journal_text,
         trigger=TRIGGER_MANUAL if manual else TRIGGER_SCHEDULED,
+        classified=classified,
     )
     if closed_text is None:
         return None
@@ -2614,9 +2824,12 @@ def _run_manifest_sheet(
     sheet_path = stage / f"effective-{recipe['sheet_name']}"
     _write_stage(stage, case_path, cast(str, recipe["case_text"]))
     _write_stage(stage, sheet_path, cast(str, recipe["sheet"]))
-    successor = cases.record(
-        home, case_path, actor="overseer", reserved_id=case_id
-    )
+    try:
+        successor = cases.record(
+            home, case_path, actor="overseer", reserved_id=case_id
+        )
+    except cases.CaseError as exc:
+        raise _CaseRefused(exc) from exc
     if successor != case_id:
         raise OverseerError(
             f"reserved successor {case_id} returned unexpected id {successor}"
@@ -2855,6 +3068,37 @@ def _execute_manifest(
             effective = batch.load_sheet(effective_path, home=home)
             halted = True
             halt_reason = str(exc)
+        except _CaseRefused as exc:
+            # 2026-09-27 (audit finding 1): the case writer refused this
+            # case before writing anything. That case and its sheet are
+            # refused -- each item a final refusal, so no resume re-drives
+            # it and A12's expected-key check below sees every item -- and
+            # the run goes on with the rest. Before, the run halted here
+            # and every later case stayed unapplied on every resume.
+            rule = _case_rule(exc.cause)
+            kind = batch.refusal_kind(exc.cause, rc=1, state="refused")
+            effective_path = stage / f"effective-{recipe['sheet_name']}"
+            effective = batch.load_sheet(effective_path)
+            result = batch.BatchResult(
+                items=[
+                    batch.ItemResult(
+                        n=item.n, id=item.id, verb=item.verb, rc=1,
+                        state="refused", kind=kind,
+                        detail=(
+                            f"{recipe['sheet_name']} item {item.n} ({item.verb} {item.id}): "
+                            f"not applied — its case {recipe['case_name']} was refused"
+                        ),
+                    )
+                    for item in effective
+                ],
+                process_code=EXIT_REFUSED, case=case_id,
+                sheet_sha=effective.sheet_sha, actor="overseer",
+            )
+            receipt = {"state": "case-refused", "reason": rule}
+            refusals.append(
+                f"{recipe['case_name']} (successor {case_id}): refused by the case "
+                f"writer — {rule}; its sheet {recipe['sheet_name']} was not applied"
+            )
         except Exception as exc:
             halted = True
             halt_reason = f"run ended early: {exc}"
@@ -3398,12 +3642,29 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
     _write_stage(stage, stage / "nudges.yaml", _yaml_text({"nudges": offered}))
     prompt_a = _phase_a_prompt(stage, len(blind), excluded)
     _write_stage(stage, stage / "prompt-a.md", prompt_a)
-    _journal(home, {"at": started, "run": run_id, "status": "population", "count": len(blind), "excluded": excluded})
+    # 2026-09-27 (fail-state audit finding 7): each phase's time limit grows
+    # with the population, `overseer.timeout_secs` being the floor.
+    timeout_a = phase_timeout(timeout_seconds, len(blind))
+    _journal(home, {"at": started, "run": run_id, "status": "population", "count": len(blind),
+        "excluded": excluded, "timeout_secs": timeout_a})
 
-    outcome_a = _invoke(home, stage, prompt_a, timeout_seconds, "phase-a", run_id)
-    model_calls = 1
-    _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-a-returned",
-        "ok": bool(outcome_a.ok), "tool_turns": _reported_turns(outcome_a)})
+    # The key is the population the model is shown (one line per case,
+    # ids, opening times, headlines), never the window's moving start.
+    population_key = _population_key((stage / "population.txt").read_text(encoding="utf-8"))
+    if not dry_run and _reuse_phase_a(home, stage, week, population_key):
+        # 2026-09-27 (fail-state audit finding 7): this week's phase A was
+        # already made and validated against the same population by an
+        # earlier attempt whose phase B failed; it is used again instead of
+        # spending another phase-A call.
+        outcome_a = invocation.Outcome(ok=True, rc=0, stdout="", detail="", failure=None)
+        model_calls = 0
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-a-reused",
+            "week": week})
+    else:
+        outcome_a = _invoke(home, stage, prompt_a, timeout_a, "phase-a", run_id)
+        model_calls = 1
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-a-returned",
+            "ok": bool(outcome_a.ok), "tool_turns": _reported_turns(outcome_a)})
     # A15: a failure of the FIRST model call leaves a committed trace with
     # its real reason. It happens before any `intents.begin` here, so the
     # note opens its own `intents.ledger_write` span. A dry run writes
@@ -3412,6 +3673,11 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
     # how many tools it called (`_reported_turns`); one Claude Code stopped
     # at its own turn limit arrives here already failed, labelled `turns`.
     if not outcome_a.ok:
+        classified = model_failures.failure_fields(outcome_a)
+        if classified.get("failure_class") == "environment" and not dry_run:
+            _environment_hold(home, run_id, "a", outcome_a)
+            return RunResult(model_failures.HELD_ENVIRONMENT, EXIT_REFUSED, run_id, model_calls,
+                excluded=excluded)
         state = "timed-out" if outcome_a.failure == "timeout" else "refused"
         kind = _failure_kind(outcome_a)
         detail = _failure_detail(outcome_a.detail)
@@ -3422,15 +3688,34 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             model=str(model), population_count=len(week_rows), excluded=excluded,
             model_calls=model_calls, guard=guard, reason=reason,
             journal_text=None if dry_run else _model_journal_text(home, stage, run_id, started[:10]),
-            manual=manual,
+            manual=manual, classified=classified,
         )
-        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": state, "phase": "a", "reason": (detail or kind)[:300]})
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": state, "phase": "a", "reason": (detail or kind)[:300], **classified})
         return RunResult(state, EXIT_REFUSED, run_id, model_calls, excluded=excluded)
 
+    # 2026-09-27 (fail-state audit finding 5): a case in the window that
+    # cannot be classified into a coverage stratum (its first cited record
+    # is gone, say) is left out of coverage with a trace; before, it raised
+    # after phase A, outside every handler, on every attempt.
+    coverage_rows: list[dict[str, Any]] = []
+    coverage_drops: list[str] = []
+    for row in week_rows:
+        problem = population_mod.stratum_problem(row)
+        if problem is None:
+            coverage_rows.append(row)
+        else:
+            coverage_drops.append(
+                f"case {row.get('case')}: left out of coverage — no usable scope_kind "
+                "(its first cited record could not be classified)"
+            )
+            _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                "status": "coverage-row-dropped", "case": row.get("case")})
+    now_dt = datetime.now(timezone.utc)
     try:
         selection = _yaml_mapping(stage / "selection.yaml")
         selected = _selected_ids(selection, {row["case"] for row in week_rows})
         _validate_initial(stage / "initial-views.yaml", selected)
+        coverage_text = _coverage_text(previous, selection, coverage_rows, offered, now_dt, trigger)
     except (OverseerError, population_mod.CoverageError) as exc:
         detail = _failure_detail(exc)
         _commit_phase_a_failure(
@@ -3443,9 +3728,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         )
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "a-incomplete", "reason": str(exc)[:300]})
         return RunResult("refused", EXIT_REFUSED, run_id, model_calls, excluded=excluded)
+    if not dry_run and model_calls:
+        _keep_phase_a(home, stage, week, population_key)
 
-    now_dt = datetime.now(timezone.utc)
-    coverage_text = _coverage_text(previous, selection, week_rows, offered, now_dt, trigger)
     coverage_before: bytes | None = None
     intent: intents.Intent | None = None
     lock_context = intents.ledger_write(home)
@@ -3465,11 +3750,24 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             row for row in cases.list_cases(home, parked_for="overseer", only_ok=True)
             if not row.get("superseded_by")
         ]
-        model_doc = _full_inputs(home, stage, selected, parked_rows)
+        try:
+            model_doc = _full_inputs(home, stage, selected, parked_rows)
+        except Exception as exc:  # noqa: BLE001 -- counted and traced, never escapes
+            # 2026-09-27 (fail-state audit finding 5).
+            return _refuse_in_span(
+                home, dry_run=dry_run, manual=manual, deferred_notice=deferred_notice,
+                intent=intent, coverage_path=coverage_path, coverage_before=coverage_before,
+                stage=stage, week=week, attempt=attempt, cap=cap, run_id=run_id,
+                started=started, model=str(model), selected=selected,
+                population_count=len(week_rows), excluded=excluded,
+                model_calls=model_calls, guard=guard, trigger=trigger,
+                kind="invocation", reason=f"phase B inputs could not be prepared: {exc}",
+            )
         prompt_b = _phase_b_prompt(stage, selected, tuple(row["case"] for row in parked_rows))
         _write_stage(stage, stage / "prompt-b.md", prompt_b)
-        outcome_b = _invoke(home, stage, prompt_b, timeout_seconds, "phase-b", run_id)
-        model_calls = _MODEL_CALLS_PER_RUN
+        timeout_b = phase_timeout(timeout_seconds, len(blind) + len(parked_rows))
+        outcome_b = _invoke(home, stage, prompt_b, timeout_b, "phase-b", run_id)
+        model_calls += 1
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-b-returned",
             "ok": bool(outcome_b.ok), "tool_turns": _reported_turns(outcome_b)})
         # Both phases have written to it by now; every commit below carries
@@ -3479,7 +3777,37 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         # files; the guard was settled before phase A (`guard <
         # _MODEL_CALLS_PER_RUN` holds the run), so a complete answer is never
         # discarded here for the number of tools it called.
-        if not outcome_b.ok:
+        if not outcome_b.ok and not dry_run and intent is not None and (
+            model_failures.failure_fields(outcome_b).get("failure_class") == "environment"
+        ):
+            # 2026-09-27 (fail-state audit finding 4): a HOLD, not an
+            # attempt. The coverage this attempt wrote is put back and the
+            # run's intent closed with nothing committed, so no note counts.
+            if coverage_before is None:
+                coverage_path.unlink(missing_ok=True)
+            else:
+                fsops.atomic_write(coverage_path, coverage_before, fsync=True)
+            intents.finish(intent)
+            _environment_hold(home, run_id, "b", outcome_b)
+            return RunResult(model_failures.HELD_ENVIRONMENT, EXIT_REFUSED, run_id, model_calls,
+                selected, excluded)
+        phase_b_notes: list[str] = []
+        if not outcome_b.ok and outcome_b.failure == "timeout" and _phase_b_output_present(stage):
+            # 2026-09-27 (fail-state audit finding 7): a phase B that TIMED
+            # OUT after writing every file a run needs is not thrown away:
+            # what it wrote goes through the same checks as a finished phase
+            # B, and what passes is applied. A session that failed any other
+            # way (Claude Code's turn limit, an API error) still applies
+            # nothing, as the turn-limit rule of 2026-09-24 says.
+            state = "timed-out"
+            phase_b_notes.append(
+                f"phase B {state} ({_failure_kind(outcome_b)}); what it had written "
+                "was checked like a finished phase B, and what passed was applied"
+            )
+            _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                "status": "phase-b-partial-kept", "failure": _failure_kind(outcome_b),
+                **model_failures.failure_fields(outcome_b)})
+        elif not outcome_b.ok:
             state = "timed-out" if outcome_b.failure == "timeout" else "refused"
             reason = f"phase B {state}; no phase B output was applied"
             kind = _failure_kind(outcome_b)
@@ -3500,10 +3828,11 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     attempt=attempt, cap=cap, kind=kind, detail=detail,
                     closed_text=closed_text,
                     journal_text=journal_text, trigger=trigger,
+                    classified=model_failures.failure_fields(outcome_b),
                 )
                 if closed_text is not None:
                     _queue_week_closed(deferred_notice, home, week, attempt, kind, [run_id])
-            _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": state, "phase": "b", "model_calls": model_calls})
+            _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": state, "phase": "b", "model_calls": model_calls, **model_failures.failure_fields(outcome_b)})
             return RunResult(state, EXIT_REFUSED, run_id, model_calls, selected, excluded, report=str(report_path))
 
         required = [
@@ -3512,7 +3841,8 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             )
         ]
         missing = [path.name for path in required if not path.is_file()]
-        pairs = _sheet_pairs(stage)
+        pair_drops: list[str] = []
+        pairs = _sheet_pairs(stage, pair_drops)
         if not pairs:
             missing.append("sheet.yaml")
         secret_files = _secret_files(
@@ -3686,7 +4016,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     ],
                 }
                 coverage_text = _coverage_text(
-                    previous, examined_selection, week_rows, offered, now_dt, trigger,
+                    previous, examined_selection, coverage_rows, offered, now_dt, trigger,
                 )
                 if not dry_run:
                     fsops.atomic_write(coverage_path, coverage_text, fsync=True)
@@ -3696,15 +4026,42 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             preview_apply = 0
             preview_refused = 0
             seen_predecessors: set[str] = set()
+            case_drops: list[str] = []
             for case_file, sheet_file in pairs:
                 if case_file is not None and case_file.name == "case.yaml":
                     # A9: the caseless sheet's pair is catalogue maintenance;
                     # it supersedes nothing, so the successor rules below
                     # cannot apply to it and it has rules of its own.
                     _validate_maintenance_case(case_file)
+                    rule = _case_rule_problem(case_file, run_id)
+                    if rule is not None:
+                        # 2026-09-27 (audit finding 1): the same drop as a
+                        # decided case below -- it goes through the same
+                        # `cases.record`.
+                        case_drops.append(
+                            f"{case_file.name} (catalogue change): dropped with "
+                            f"{sheet_file.name} — the case writer refuses it: {rule}"
+                        )
+                        _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                            "status": "case-dropped", "file": case_file.name, "rule": rule})
+                        continue
                 elif case_file is not None:
                     _validate_successor(case_file, {row["case"] for row in parked_rows})
                     predecessor = str(_yaml_mapping(case_file)["supersedes"])
+                    rule = _case_rule_problem(case_file, run_id)
+                    if rule is not None:
+                        # 2026-09-27 (audit finding 1): a decided case the
+                        # case writer would refuse costs that case and its
+                        # sheet, named by file and parked case (never its
+                        # text); the parked case stays open for next week.
+                        case_drops.append(
+                            f"{case_file.name} (successor for {predecessor}): dropped "
+                            f"with {sheet_file.name} — the case writer refuses it: {rule}"
+                        )
+                        _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                            "status": "case-dropped", "file": case_file.name,
+                            "supersedes": predecessor, "rule": rule})
+                        continue
                     if predecessor in seen_predecessors:
                         raise OverseerError(f"{case_file.name}: duplicate successor for {predecessor}")
                     seen_predecessors.add(predecessor)
@@ -3757,18 +4114,39 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             return RunResult("dry-run", EXIT_OK, run_id, model_calls, selected, excluded, report=str(report_path))
 
         assert intent is not None
-        manifest = _prepare_manifest(
-            home, stage, run_id=run_id, started=started, model=str(model),
-            # The record's `selected` feeds only the report's "Cases
-            # examined" line: it names the validly examined cases.
-            selected=examined_ids, population_count=len(week_rows), excluded=excluded,
-            model_calls=model_calls, guard=guard, coverage_text=coverage_text,
-            questions=questions, findings=findings, prepared=prepared,
-            model_updates=model_updates,
-            runner_notes=[*report_notes, *question_drops, *finding_drops],
-            journal_text=journal_text, trigger=trigger,
-        )
+        try:
+            manifest = _prepare_manifest(
+                home, stage, run_id=run_id, started=started, model=str(model),
+                # The record's `selected` feeds only the report's "Cases
+                # examined" line: it names the validly examined cases.
+                selected=examined_ids, population_count=len(week_rows), excluded=excluded,
+                model_calls=model_calls, guard=guard, coverage_text=coverage_text,
+                questions=questions, findings=findings, prepared=prepared,
+                model_updates=model_updates,
+                runner_notes=[
+                    *report_notes, *question_drops, *finding_drops, *case_drops,
+                    *pair_drops, *coverage_drops, *phase_b_notes,
+                ],
+                journal_text=journal_text, trigger=trigger,
+            )
+        except Exception as exc:  # noqa: BLE001 -- counted and traced, never escapes
+            # 2026-09-27 (fail-state audit finding 5): the run record could
+            # not be prepared (e.g. the manifest's secret-scan backstop).
+            # Nothing of phase B was applied; the attempt counts.
+            return _refuse_in_span(
+                home, dry_run=dry_run, manual=manual, deferred_notice=deferred_notice,
+                intent=intent, coverage_path=coverage_path, coverage_before=coverage_before,
+                stage=stage, week=week, attempt=attempt, cap=cap, run_id=run_id,
+                started=started, model=str(model), selected=examined_ids,
+                population_count=len(week_rows), excluded=excluded,
+                model_calls=model_calls, guard=guard, trigger=trigger,
+                kind="schema-repair", reason=f"the run record could not be prepared: {exc}",
+            )
         _publish_manifest(home, intent, manifest, coverage_path)
+        # Phase B's output is now committed: the kept phase A has served its
+        # one purpose (a failed phase B's next attempt) and is dropped, so a
+        # later manual run looks at the week afresh.
+        shutil.rmtree(_phase_a_keep_dir(home, week), ignore_errors=True)
 
     return _execute_manifest(
         home, manifest, boundary_no_push=boundary_no_push, manual=manual,

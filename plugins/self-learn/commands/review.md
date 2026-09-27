@@ -543,7 +543,14 @@ marker are projections and never recovery authority.
   a git write failed or half-landed, or the ledger refused an item for git
   trouble or a target file with uncommitted edits — is retried by a LATER
   run as a fresh attempt with its own single repair turn, never re-driven
-  inside the same run. A decision
+  inside the same run. *(2026-09-27)* Three exceptions: an overloaded API,
+  a rate limit, a server or network error is retried once at once, inside
+  the same attempt; a model or Claude Code version the call cannot run with,
+  or an authentication failure, holds the run without counting an attempt
+  and you are told once; and one bad case/sheet pair or one stray file in
+  the stage costs only that pair (its lessons are asked about again on a
+  later attempt), while a stray file elsewhere in the ledger is noted to you
+  and never committed. A decision
   the steward refused on its merits is never retried, and
   neither is anything a secret scan blocked. After `runs.attempt_cap`
   (default 3) failed attempts the run is CLOSED so a new run can start:

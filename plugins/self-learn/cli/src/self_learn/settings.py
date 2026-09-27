@@ -1127,7 +1127,10 @@ REGISTRY: tuple[Setting, ...] = (
         default=900.0,  # plan-overseer-2026-09-12.md §5.4
         validate=lambda v: v if cast(float, v) > 0 else None,  # a <=0 timeout kills every run instantly (E4; U8 fold r1 gate N5)
         validate_hint="must be > 0",
-        description="subprocess timeout (seconds) for one overseer model call",
+        description=(
+            "the floor of one overseer phase's time limit (seconds); the limit is "
+            "max(this, 30 s x the cases that phase reads)"
+        ),
     ),
     Setting(
         name="overseer.max_model_calls",

@@ -38,6 +38,7 @@ import signal
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass, replace as _dataclass_replace
 from datetime import datetime
 from pathlib import Path
@@ -914,7 +915,43 @@ def _overseer_is_due(home: Path, cache_dir: Path, now: float) -> bool:
 # ------------------------------------------------------------------- jobs
 
 
-def run_one_job(cache_dir: Path, job: Job, *, pid: int | None = None, tick_secs: float | None = None) -> JobRecord:
+#: 2026-09-27 (fail-state audit finding 6): where a crashed job is recorded
+#: when it has no journal of its own (the mine and worker jobs, or a caller
+#: that passed no ledger home). Cache only, never ledger truth.
+SERVE_JOURNAL_FILENAME = "serve.journal.jsonl"
+
+
+def _log_job_crash(home: Path | None, cache_dir: Path, job: str, exc: BaseException) -> None:
+    """A job that raised is never swallowed silently (2026-09-27, fail-state
+    audit finding 6): its error and traceback go to stderr (journald, under
+    the service), and one `crashed` row goes to the job's own journal -- the
+    steward's or the overseer's, where the same reader finds its attempts --
+    or else to serve's own journal in the cache. Nothing here may raise."""
+    error = f"{type(exc).__name__}: {exc}"[:500]
+    try:
+        print(f"self-learn serve: the {job} job crashed: {error}", file=sys.stderr)
+        traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001 -- logging a crash must never widen it
+        pass
+    entry = {"status": "crashed", "job": job, "error": error}
+    try:
+        if home is not None and job == "steward":
+            steward._journal(home, {"ts": chrono.now_iso(), **entry})
+        elif home is not None and job == "overseer":
+            overseer_run._journal(Path(home), {"at": chrono.now_iso(), **entry})
+        else:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            with open(cache_dir / SERVE_JOURNAL_FILENAME, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"at": chrono.now_iso(), **entry}, separators=(",", ":")) + "\n")
+    except Exception:  # noqa: BLE001 -- logging a crash must never widen it
+        pass
+
+
+def run_one_job(
+    cache_dir: Path, job: Job, *, pid: int | None = None, tick_secs: float | None = None,
+    home: Path | None = None,
+) -> JobRecord:
     """Executes `job.run()` to completion — never interrupted mid-flight
     (§5.2a: SERIAL) — then advances the heartbeat (`SUP1`) naming this
     job as the one just run. This is THE scheduler primitive: both
@@ -929,6 +966,7 @@ def run_one_job(cache_dir: Path, job: Job, *, pid: int | None = None, tick_secs:
             record = JobRecord(job.name, job.surface, True, started, time.time(), result=result)
         except Exception as exc:  # noqa: BLE001 — a crashed job must not crash the daemon
             record = JobRecord(job.name, job.surface, False, started, time.time(), error=f"{exc}")
+            _log_job_crash(home, cache_dir, job.name, exc)
     write_heartbeat(
         cache_dir,
         pid=pid if pid is not None else os.getpid(),
@@ -1061,14 +1099,14 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
             or _mine_is_due(cache_dir, now),
         ):
             mine_record = run_one_job(
-                cache_dir, Job("mine", "miner-reader", lambda: _run_mine_job(home)), pid=pid, tick_secs=tick_secs
+                cache_dir, Job("mine", "miner-reader", lambda: _run_mine_job(home)), pid=pid, tick_secs=tick_secs, home=home
             )
             ran.append(mine_record)
             _log_stopped_refusal("mine", getattr(mine_record.result, "stopped", None) or [])
             landed = getattr(mine_record.result, "landed", None)
             if landed:
                 worker_record = run_one_job(
-                    cache_dir, Job("worker", "worker", lambda: _run_worker_job(home)), pid=pid, tick_secs=tick_secs
+                    cache_dir, Job("worker", "worker", lambda: _run_worker_job(home)), pid=pid, tick_secs=tick_secs, home=home
                 )
                 ran.append(worker_record)
                 _log_stopped_refusal("worker", getattr(worker_record.result, "stopped", None) or [])
@@ -1080,6 +1118,7 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
                 Job("steward", "steward", lambda: _run_steward_job(home)),
                 pid=pid,
                 tick_secs=tick_secs,
+                home=home,
             )
             ran.append(steward_record)
             _log_stopped_refusal(
@@ -1093,6 +1132,7 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
                 Job("overseer", "overseer", lambda: _run_overseer_job(home)),
                 pid=pid,
                 tick_secs=tick_secs,
+                home=home,
             )
             ran.append(overseer_record)
             _log_stopped_refusal(

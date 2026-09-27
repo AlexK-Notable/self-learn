@@ -22,6 +22,7 @@ from typing import cast
 from ruamel.yaml import YAML
 
 from . import (
+    model_failures,
     batch,
     cases,
     conditions,
@@ -77,6 +78,10 @@ class RunResult:
     #: keep a permanently failing close-out from becoming a silent loop.
     close_out_error: str | None = None
     coverage: dict[str, int] = field(default_factory=dict)
+    #: 2026-09-27 (fail-state audit finding 4): the cause when this run was
+    #: held because the model or the installed Claude Code could not run a
+    #: call at all (`environment`); that attempt was not counted.
+    held: str | None = None
 
 
 _ALLOWED_TOOLS = "Read,Grep,Glob,Write,Edit"
@@ -347,6 +352,7 @@ def _record_failure(
     duration: float | None,
     dispositions: dict,
     error: str | None = None,
+    classified: dict | None = None,
 ) -> None:
     """A2: every failure path changes NAMED fields on the record just read
     from HEAD. The publish it replaces wrote a whole pre-invocation copy
@@ -362,6 +368,11 @@ def _record_failure(
         packet["duration_secs"] = duration
     if error is not None:
         packet["error"] = error
+    # 2026-09-27 (fail-state audit finding 4): the failed call's class and
+    # the API's tag, or none of either when the failure was not a call's.
+    packet.pop("failure_class", None)
+    packet.pop("failure_tag", None)
+    packet.update(classified or {})
     packet.setdefault("dispositions", {}).update(dispositions)
 
 
@@ -379,6 +390,11 @@ def _finish_packet_attempt(
     if terminal:
         packet["phase"] = "complete"
         return
+    if _only_uncovered_open(manifest, packet):
+        # 2026-09-27 (audit finding 3): what is left needs a decision, not
+        # a re-drive, so the next attempt is a fresh model call for the
+        # lessons still open (the attempt cap bounds it as ever).
+        packet["phase"] = "unfinished"
     if progressed:
         return
     packet["failure"] = "no-progress"
@@ -507,6 +523,71 @@ def _dirty_truth_paths(home: Path) -> list[str]:
     return gitops.dirty_paths(home, ".")
 
 
+def _dirty_among(home: Path, paths: list[Path]) -> list[str]:
+    """The uncommitted (modified or untracked) paths among *paths* -- the
+    files the next commit will touch. 2026-09-27 (fail-state audit finding
+    8): only these can refuse a step. Every commit is path-scoped
+    (`gitops.stage_and_commit` stages and commits its own paths only), so
+    a stray file anywhere else can never be committed by it."""
+    found: list[str] = []
+    for path in paths:
+        found.extend(gitops.dirty_paths(home, path))
+    return list(dict.fromkeys(found))
+
+
+def _note_unexplained_paths(home: Path, run_id: str | None) -> None:
+    """2026-09-27 (fail-state audit finding 8): uncommitted paths in the
+    ledger that no step of this run touches are journaled and the user is
+    told -- once per distinct set, never once per check -- and the run goes
+    on. Before, one untracked file anywhere in the ledger stopped every
+    steward run before its first model call, silently. Never raises."""
+    try:
+        dirty = sorted(_dirty_truth_paths(home))
+    except gitops.GitOpsError:
+        return
+    if not dirty:
+        return
+    previous: list[str] | None = None
+    try:
+        for line in reversed(journal_path(home).read_text(encoding="utf-8").splitlines()):
+            if '"unexplained-paths"' not in line:
+                continue
+            row = json.loads(line)
+            if row.get("status") == "unexplained-paths":
+                previous = row.get("paths")
+                break
+    except (OSError, ValueError):
+        previous = None
+    if previous == dirty:
+        return
+    _journal(home, {"ts": chrono.now_iso(), **({"run_id": run_id} if run_id else {}),
+        "status": "unexplained-paths", "paths": dirty})
+    shown = ", ".join(dirty[:5]) + (f" and {len(dirty) - 5} more" if len(dirty) > 5 else "")
+    try:
+        overseer_notify.send(
+            home, "routine",
+            f"self-learn steward: the ledger has uncommitted path(s) nothing of "
+            f"self-learn wrote: {shown}. The steward goes on and never commits "
+            "them; look at them when you can.",
+            [run_id] if run_id else [],
+        )
+    except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
+        _journal(home, {"ts": chrono.now_iso(), "status": "notify-failed",
+            "error": _short_cause(exc)})
+
+
+def _sheet_record_paths(home: Path, items: batch.Sheet) -> list[Path]:
+    """The record files a sheet's dispatch commits -- one per lesson it
+    names that the ledger can still find."""
+    paths: list[Path] = []
+    for item in items:
+        try:
+            paths.append(ledger_ops.find_record_path(home, item.id))
+        except ledger_ops.LedgerOpsError:
+            continue
+    return paths
+
+
 def _publish_manifest(home: Path, manifest: dict, *, reason: str) -> str:
     """Intent-protect and commit one immutable-identity manifest revision."""
     run_id = str(manifest.get("run_id") or "")
@@ -516,12 +597,15 @@ def _publish_manifest(home: Path, manifest: dict, *, reason: str) -> str:
     subject = f"self-learn: steward manifest {run_id} ({reason})"
     with intents.ledger_write(home) as recovered:
         intents.announce_recovered(recovered)
-        dirty = _dirty_truth_paths(home)
+        # 2026-09-27 (fail-state audit finding 8): only the file this commit
+        # touches can refuse it; anything else is noted and never committed.
+        dirty = _dirty_among(home, [path])
         if dirty:
             raise gitops.GitOpsError(
                 "steward refuses unexplained dirty ledger paths before manifest "
                 f"publication: {dirty}"
             )
+        _note_unexplained_paths(home, run_id or None)
         try:
             if path.read_text(encoding="utf-8") == text:
                 return gitops.head_sha(home)
@@ -831,35 +915,36 @@ def _packet_briefs(
             index.close()
 
 
-def _validate_declared_stage(stage: Path) -> None:
+def _declared_stage_file(rel: str) -> bool:
+    """A stage path the output contract names (`steward_prompt.OUTPUT_CONTRACT`)."""
     allowed_names = set(steward_prompt.OUTPUT_CONTRACT)
     allowed_files = {name for name in allowed_names if "*" not in name}
-    for path in sorted(p for p in stage.rglob("*") if p.is_file()):
-        rel = path.relative_to(stage).as_posix()
-        declared = rel in allowed_files or (
-            rel.startswith("cases/") and rel.endswith(".yaml") and "cases/*.yaml" in allowed_names
-        ) or (
-            rel.startswith("sheets/") and rel.endswith(".yaml") and "sheets/*.yaml" in allowed_names
-        )
-        if not declared:
-            raise ValueError(f"undeclared stage file: {rel}")
-        _read_yaml(path)
-    case_files = sorted((stage / "cases").glob("*.yaml")) if (stage / "cases").is_dir() else []
-    sheet_files = sorted((stage / "sheets").glob("*.yaml")) if (stage / "sheets").is_dir() else []
-    if not case_files:
-        raise ValueError("cases/*.yaml: at least one decision case is required")
-    if {p.stem for p in case_files} != {p.stem for p in sheet_files}:
-        raise ValueError("cases/*.yaml and sheets/*.yaml must have matching stems")
-    for case_path in case_files:
+    return rel in allowed_files or (
+        rel.startswith("cases/") and rel.endswith(".yaml") and "cases/*.yaml" in allowed_names
+    ) or (
+        rel.startswith("sheets/") and rel.endswith(".yaml") and "sheets/*.yaml" in allowed_names
+    )
+
+
+def _pair_problem(stage: Path, case_path: Path) -> str | None:
+    """What is wrong with ONE case/sheet pair, judged on its own, or `None`
+    (2026-09-27, audit finding 3): the case's parked-reason rules, the
+    sheet's own schema, and one sheet item for every lesson the case
+    covers. The messages are the ones the whole-stage check always gave."""
+    try:
         case_data = _read_yaml(case_path)
-        if not isinstance(case_data, dict):
-            continue
+    except ValueError as exc:
+        return str(exc)
+    sheet_path = stage / "sheets" / case_path.name
+    if not sheet_path.is_file():
+        return "cases/*.yaml and sheets/*.yaml must have matching stems"
+    if isinstance(case_data, dict):
         reason = case_data.get("parked_reason")
         if reason in _RUNNER_ONLY_PARKED_REASONS:
             # Validated on what the MODEL wrote: `_forced_parking_reason`
             # assigns `plain-host-committed-file` later, in
             # `_prepared_recipe`, and is untouched by this.
-            raise ValueError(
+            return (
                 f"{case_path.name}: parked_reason {reason!r} is written by the "
                 "runner, never chosen here -- park with the reason that names "
                 "the values question this case raises for the overseer"
@@ -870,58 +955,263 @@ def _validate_declared_stage(stage: Path) -> None:
         # `cases.record` would refuse the same things only at apply time.
         parks = case_data.get("kind") == "parked"
         if parks and reason not in _MODEL_PARKED_REASONS:
-            raise ValueError(
+            return (
                 f"{case_path.name}: a parked case needs parked_reason, one of "
                 f"{sorted(_MODEL_PARKED_REASONS)}; got {reason!r}"
             )
         if not parks and (reason is not None or case_data.get("parked_for") is not None):
-            raise ValueError(
+            return (
                 f"{case_path.name}: parked_reason/parked_for are only for a case "
                 "whose kind is parked"
             )
-    for sheet_path in sheet_files:
+    try:
         raw = _read_yaml(sheet_path)
-        if not isinstance(raw, dict):
-            raise ValueError(f"{sheet_path.name}: sheet must be a mapping")
-        raw = dict(raw)
-        # The model cannot know the case id that cases.record will assign.
-        # Validate the otherwise exact owner schema with that one runner-owned
-        # value absent, then validate it again with home= after substitution.
-        if raw.get("case") == "$CASE_ID":
-            raw.pop("case")
-        validation_path = stage.parent / f".validate-{uuid.uuid4().hex}.yaml"
-        try:
-            _dump_yaml(validation_path, raw)
-            batch.load_sheet(validation_path)
-        except batch.BatchError as exc:
-            raise ValueError(str(exc)) from exc
-        finally:
-            validation_path.unlink(missing_ok=True)
-    # Only now that every sheet has passed its own shape check (so a
-    # malformed sheet gets `load_sheet`'s precise error, not this one):
+    except ValueError as exc:
+        return str(exc)
+    if not isinstance(raw, dict):
+        return f"{sheet_path.name}: sheet must be a mapping"
+    raw = dict(raw)
+    # The model cannot know the case id that cases.record will assign.
+    # Validate the otherwise exact owner schema with that one runner-owned
+    # value absent, then validate it again with home= after substitution.
+    if raw.get("case") == "$CASE_ID":
+        raw.pop("case")
+    validation_path = stage.parent / f".validate-{uuid.uuid4().hex}.yaml"
+    try:
+        _dump_yaml(validation_path, raw)
+        batch.load_sheet(validation_path)
+    except batch.BatchError as exc:
+        return str(exc)
+    finally:
+        validation_path.unlink(missing_ok=True)
+    if not isinstance(case_data, dict):
+        return f"{case_path.name}: case must be a mapping"
+    # Every lesson a case covers needs its own item on that case's sheet.
+    # The runner dispositions every lesson of a finished case `applied`, so
+    # a lesson with no item was recorded as handled with nothing done to it
+    # (seen in the real run of 2026-09-19: a two-lesson case, one item).
+    items = raw.get("items")
+    item_ids = {
+        item.get("id") for item in (items if isinstance(items, list) else [])
+        if isinstance(item, dict)
+    }
+    without_item = [
+        str(rid) for rid in (case_data.get("records") or []) if rid not in item_ids
+    ]
+    if without_item:
+        return (
+            f"{case_path.name}: every lesson in a case needs its own item in "
+            f"sheets/{case_path.name}; no item for {without_item}"
+        )
+    return None
+
+
+def _validate_declared_stage(stage: Path) -> None:
+    """The whole-stage check in its STRICT form: every file declared and
+    readable, every case/sheet pair valid. The brief's own examples are
+    held to it; the runner itself applies :func:`_check_stage`, which
+    judges each pair on its own (2026-09-27)."""
+    for path in sorted(p for p in stage.rglob("*") if p.is_file()):
+        rel = path.relative_to(stage).as_posix()
+        if not _declared_stage_file(rel):
+            raise ValueError(f"undeclared stage file: {rel}")
+        _read_yaml(path)
+    case_files = sorted((stage / "cases").glob("*.yaml")) if (stage / "cases").is_dir() else []
+    sheet_files = sorted((stage / "sheets").glob("*.yaml")) if (stage / "sheets").is_dir() else []
+    if not case_files:
+        raise ValueError("cases/*.yaml: at least one decision case is required")
+    if {p.stem for p in case_files} != {p.stem for p in sheet_files}:
+        raise ValueError("cases/*.yaml and sheets/*.yaml must have matching stems")
     for case_path in case_files:
-        case_data = _read_yaml(case_path)
-        if not isinstance(case_data, dict):
+        problem = _pair_problem(stage, case_path)
+        if problem is not None:
+            raise ValueError(problem)
+
+
+@dataclass
+class _StageCheck:
+    """What :func:`_check_stage` found (2026-09-27, audit finding 3)."""
+
+    #: stems whose case/sheet pair passed, in order.
+    valid: list[str]
+    #: stem -> what is wrong with that pair (or with a sheet without a case).
+    problems: dict[str, str]
+    #: selected lessons no valid pair covers.
+    uncovered: list[str]
+    #: stage-relative paths moved to the quarantine directory.
+    quarantined: list[str]
+
+
+def _quarantine_move(stage: Path, path: Path, quarantine: Path) -> str:
+    """Move one stage file into the run-scoped quarantine directory in the
+    cache (never the ledger), keeping its stage-relative path."""
+    rel = path.relative_to(stage).as_posix()
+    target = quarantine / rel
+    n = 1
+    while target.exists():
+        n += 1
+        target = quarantine / f"{rel}.{n}"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(path), str(target))
+    return rel
+
+
+def _check_stage(
+    stage: Path, selected_ids: set[str] | None, quarantine: Path
+) -> _StageCheck:
+    """The runner's stage check, per case/sheet pair (2026-09-27, audit
+    finding 3). Before, one problem anywhere refused the whole packet, and
+    one kind (an undeclared file) could never be repaired, because the
+    session has no tool to delete a file.
+
+    * An undeclared file is moved out of the stage into *quarantine* (a
+      run-scoped cache directory), so it can never reach the ledger, and
+      named in the result; it no longer refuses the packet.
+    * Each case/sheet pair is judged on its own (:func:`_pair_problem`),
+      and so is its coverage: a pair covering a lesson that is not open in
+      this packet, or one another pair covers too, is a problem of that
+      pair. A problem pair is not applied; its lessons stay open.
+    * Only what is not a pair still refuses the packet: an unreadable
+      declared file, a bad `revisions.yaml`, or no valid pair at all."""
+    _incorporate_revisions(stage)
+    quarantined: list[str] = []
+    for path in sorted(p for p in stage.rglob("*") if p.is_file()):
+        rel = path.relative_to(stage).as_posix()
+        if not _declared_stage_file(rel):
+            quarantined.append(_quarantine_move(stage, path, quarantine))
+        elif not rel.startswith(("cases/", "sheets/")):
+            _read_yaml(path)
+    case_stems = {p.stem for p in (stage / "cases").glob("*.yaml")} if (stage / "cases").is_dir() else set()
+    sheet_stems = {p.stem for p in (stage / "sheets").glob("*.yaml")} if (stage / "sheets").is_dir() else set()
+    problems: dict[str, str] = {}
+    records: dict[str, list[str]] = {}
+    for stem in sorted(case_stems | sheet_stems):
+        case_path = stage / "cases" / f"{stem}.yaml"
+        if not case_path.is_file():
+            problems[stem] = "cases/*.yaml and sheets/*.yaml must have matching stems"
             continue
-        # Every lesson a case covers needs its own item on that case's
-        # sheet. The runner dispositions every lesson of a finished case
-        # `applied`, so a lesson with no item was recorded as handled with
-        # nothing done to it (seen in the real run of 2026-09-19: a
-        # two-lesson case, one item).
-        sheet_data = _read_yaml(stage / "sheets" / case_path.name)
-        items = sheet_data.get("items") if isinstance(sheet_data, dict) else None
-        item_ids = {
-            item.get("id") for item in (items if isinstance(items, list) else [])
-            if isinstance(item, dict)
-        }
-        without_item = [
-            str(rid) for rid in (case_data.get("records") or []) if rid not in item_ids
-        ]
-        if without_item:
-            raise ValueError(
-                f"{case_path.name}: every lesson in a case needs its own item in "
-                f"sheets/{case_path.name}; no item for {without_item}"
-            )
+        problem = _pair_problem(stage, case_path)
+        if problem is not None:
+            problems[stem] = problem
+            continue
+        data = _read_yaml(case_path)
+        records[stem] = [str(rid) for rid in (data.get("records") or [])] if isinstance(data, dict) else []
+    if selected_ids is not None:
+        covering: dict[str, list[str]] = {}
+        for stem, rids in records.items():
+            for rid in rids:
+                covering.setdefault(rid, []).append(stem)
+            strange = sorted(set(rids) - selected_ids)
+            if strange:
+                problems[stem] = (
+                    f"{stem}.yaml: covers {strange}, not a lesson of this packet "
+                    "still to decide"
+                )
+        for rid, stems in covering.items():
+            if len(stems) > 1:
+                for stem in stems:
+                    problems.setdefault(
+                        stem, f"{stem}.yaml: {rid} is covered by more than one case ({sorted(stems)})"
+                    )
+    valid = [stem for stem in sorted(records) if stem not in problems]
+    covered = {rid for stem in valid for rid in records[stem]}
+    uncovered = sorted(selected_ids - covered) if selected_ids is not None else []
+    if not valid:
+        if not problems:
+            raise ValueError("cases/*.yaml: at least one decision case is required")
+        raise ValueError("\n".join(
+            ["no case/sheet pair passed the runner's checks:"]
+            + [f"- cases/{stem}.yaml: {problem}" for stem, problem in sorted(problems.items())]
+        ))
+    return _StageCheck(valid, problems, uncovered, quarantined)
+
+
+def _pair_message(check: _StageCheck) -> str | None:
+    """The per-pair problems as a repair-turn section, one ``- `` line
+    each (so :func:`_flag_lines` counts them), or `None`."""
+    lines = [f"- cases/{stem}.yaml: {problem}" for stem, problem in sorted(check.problems.items())]
+    lines += [f"- lesson {rid}: no case that passed the checks covers it" for rid in check.uncovered]
+    if not lines:
+        return None
+    return "\n".join([
+        "These case/sheet pairs fail the runner's checks and will not be applied as written,",
+        "and these lessons are not covered by a case that passes:",
+        *lines,
+        "Fix each one in place. A pair still failing after this turn is left out on its own;",
+        "its lessons stay open for a later attempt, and the other cases go ahead.",
+    ])
+
+
+def _set_aside_pairs(stage: Path, check: _StageCheck, quarantine: Path) -> list[str]:
+    """Move every problem pair's files out of the stage into *quarantine*,
+    so `_prepared_recipe` sees only the pairs that passed. Returns the
+    stage-relative paths moved."""
+    moved: list[str] = []
+    for stem in sorted(check.problems):
+        for sub in ("cases", "sheets"):
+            path = stage / sub / f"{stem}.yaml"
+            if path.is_file():
+                moved.append(_quarantine_move(stage, path, quarantine))
+    return moved
+
+
+#: The disposition reason of a lesson no valid case covered this attempt
+#: (2026-09-27, audit finding 3). It keeps the lesson open; when nothing
+#: else of the packet is, the packet goes back to a fresh model attempt.
+_NOT_COVERED = "not-covered"
+
+
+def _open_inputs(packet: dict) -> list[dict]:
+    """The packet's input rows whose lesson has no terminal disposition --
+    what a fresh attempt still has to decide."""
+    dispositions = packet.get("dispositions") or {}
+    return [
+        row for row in packet.get("inputs") or []
+        if (dispositions.get(row["record"]) or {}).get("state") not in _RUN_TERMINAL_DISPOSITIONS
+    ]
+
+
+def _only_uncovered_open(manifest: dict, packet: dict) -> bool:
+    """True when every case recipe and maintenance operation of the packet
+    is settled and each lesson still open is one no valid case covered:
+    the only way forward is another model attempt for those lessons."""
+    recipes = manifest.get("cases") or {}
+    if any(
+        (recipes.get(case_id) or {}).get("phase") not in _TERMINAL_CASE_PHASES
+        for case_id in packet.get("case_ids") or []
+    ):
+        return False
+    if any(op.get("state") not in {"applied", "refused"} for op in packet.get("maintenance") or []):
+        return False
+    dispositions = packet.get("dispositions") or {}
+    still_open = _open_inputs(packet)
+    return bool(still_open) and all(
+        (dispositions.get(row["record"]) or {}).get("reason") == _NOT_COVERED
+        for row in still_open
+    )
+
+
+def _stage_repair_message(
+    home: Path, stage: Path, check: _StageCheck, selected_status: dict[str, object]
+) -> str | None:
+    """Everything the one repair turn is told about a stage that passed as
+    a whole: its failing pairs and uncovered lessons, the case writer's
+    rules, and the lines the ledger would refuse (pairs that failed are
+    left out of the ledger preview)."""
+    return "\n\n".join(filter(None, [
+        _pair_message(check),
+        _case_rule_message(stage),
+        _ledger_repair_message(home, stage, selected_status, skip=set(check.problems)),
+    ])) or None
+
+
+def _quarantine_dir(home: Path, run_id: str, packet_index: int, attempt: int) -> Path:
+    """The run-scoped quarantine directory for one packet attempt, in the
+    cache and outside the run directory the session may write in."""
+    return (
+        steward_dir(home) / "quarantine" / run_id
+        / f"packet-{packet_index:04d}" / f"attempt-{attempt}"
+    )
 
 
 def _session_spec(
@@ -1100,7 +1390,9 @@ def _status_unchanged(home: Path, record_id: str, selected_status: object) -> bo
         return False
 
 
-def _ledger_repair_message(home: Path, stage: Path, selected: dict[str, object]) -> str | None:
+def _ledger_repair_message(
+    home: Path, stage: Path, selected: dict[str, object], skip: frozenset[str] | set[str] = frozenset(),
+) -> str | None:
     """S-71 §5: the lines of the staged sheets the ledger would refuse as
     written, when the refusal is the model's to fix -- or `None`.
 
@@ -1113,9 +1405,12 @@ def _ledger_repair_message(home: Path, stage: Path, selected: dict[str, object])
     preview runs without the case (it is not in the ledger yet), so the
     reconsider widening -- which lets reject/defer/revise act on a routed
     lesson -- cannot apply here, while apply time previews with the real
-    case (`_apply_packet`)."""
+    case (`_apply_packet`). A pair in *skip* (its stem) failed the
+    runner's own per-pair check and is left out (2026-09-27)."""
     found: list[str] = []
     for case_path in sorted((stage / "cases").glob("*.yaml")):
+        if case_path.stem in skip:
+            continue
         sheet_path = stage / "sheets" / case_path.name
         case_data = _read_yaml(case_path)
         if not isinstance(case_data, dict) or case_data.get("kind") == "parked":
@@ -1204,6 +1499,33 @@ def _case_rule_message(stage: Path) -> str | None:
         "Fix each one in place. A case still refused after this turn is refused on its own,",
         "and its lessons are not decided this run; the other cases go ahead.",
     ])
+
+
+def _first_pass_path(home: Path, run_id: str, packet_index: int) -> Path:
+    """Where a packet's validated first pass is kept while its repair turn
+    runs (2026-09-27, audit finding 2): in the cache, OUTSIDE the run
+    directory the session may write in, so the repair session cannot touch
+    it."""
+    return steward_dir(home) / "first-pass" / run_id / f"packet-{packet_index:04d}"
+
+
+def _flag_lines(message: str | None) -> list[str]:
+    """The flagged lines of a repair message (`_case_rule_message`,
+    `_ledger_repair_message`): one ``- <file>: ...`` line per problem."""
+    return [line for line in (message or "").splitlines() if line.startswith("- ")]
+
+
+def _flag_key(line: str) -> str:
+    """The file (or parked.yaml entry) a flagged line is about."""
+    return line[2:].split(": ", 1)[0]
+
+
+def _repair_made_worse(before: list[str], after: list[str]) -> bool:
+    """A repair turn left the stage worse than the first pass when it
+    flags more lines, or flags a file the first pass had clean."""
+    return len(after) > len(before) or bool(
+        {_flag_key(line) for line in after} - {_flag_key(line) for line in before}
+    )
 
 
 def _returned_for(home: Path, inputs: list[dict]) -> dict[str, dict]:
@@ -1338,7 +1660,11 @@ def _prepared_recipe(
     run_id = str(manifest["run_id"])
     predecessors = packet.get("predecessors") or {}
     recipes = manifest.setdefault("cases", {})
-    packet_case_ids: list[str] = []
+    # 2026-09-27 (audit finding 3): an attempt that decides the lessons an
+    # earlier attempt left uncovered keeps that attempt's (settled) cases
+    # and operations beside its own.
+    packet_case_ids: list[str] = list(packet.get("case_ids") or [])
+    earlier_maintenance: list[dict] = list(packet.get("maintenance") or [])
     dropped_rows: list[dict] = []
     #: 2026-09-26: a secret-scan hit costs the case (or maintenance
     #: operation) it is in, never the packet. Before, one scan over every
@@ -1458,7 +1784,7 @@ def _prepared_recipe(
                 _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
                     "status": "refused", "stage_file": filename, "error": refusal})
                 payload, parked_dropped = {}, []
-            ordinal = len(maintenance) + 1
+            ordinal = len(earlier_maintenance) + len(maintenance) + 1
             identity_bytes = json.dumps(
                 {
                     "packet": packet["index"],
@@ -1490,7 +1816,7 @@ def _prepared_recipe(
         _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
             "status": "evidence-dropped", **row})
     packet["case_ids"] = packet_case_ids
-    packet["maintenance"] = maintenance
+    packet["maintenance"] = [*earlier_maintenance, *maintenance]
     packet["phase"] = "prepared"
     packet["failure"] = None
     packet["bound"] = None
@@ -1996,6 +2322,20 @@ def _records_waiting_for_close_out(
             continue
         waiting.extend(_non_terminal_records(packet))
     return list(dict.fromkeys(waiting))
+
+
+def _notify_environment_hold(home: Path, run_id: str, cause: str) -> None:
+    """Once per DISTINCT cause (2026-09-27, fail-state audit finding 4):
+    the steward is held, not failing, until the environment is fixed."""
+    summary = (
+        f"self-learn steward: run {run_id} is held — the model call cannot run "
+        f"here: {cause}. Nothing was counted; it retries on its next attempt."
+    )
+    try:
+        overseer_notify.send(home, "routine", summary, [run_id])
+    except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
+        _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+            "status": "notify-failed", "error": _short_cause(exc)})
 
 
 def _notify_close_out_failure(
@@ -2683,7 +3023,9 @@ def _apply_packet(
     halt_code: int | None = None
     parked_now: list[tuple[str, str]] = []
     manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
-    dirty = _dirty_truth_paths(home)
+    # 2026-09-27 (fail-state audit finding 8): the run record is the file
+    # every step here commits; a stray path elsewhere is noted, not a halt.
+    dirty = _dirty_among(home, [execution_evidence.manifest_path(home, run_id)])
     if dirty:
         _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "dirty-refused",
             "paths": dirty, "error": "unexplained ledger paths refuse continuation"})
@@ -2780,7 +3122,10 @@ def _apply_packet(
                 receipt_ok = bool(receipt and receipt.get("state") == "ok")
                 phase = "complete" if receipt_ok else "unfinished"
             else:
-                dirty = _dirty_truth_paths(home)
+                # 2026-09-27 (fail-state audit finding 8): the files this
+                # sheet's dispatch commits are its lessons' records; only an
+                # unexplained change to one of those halts the dispatch.
+                dirty = _dirty_among(home, _sheet_record_paths(home, items))
                 if dirty:
                     _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
                         "status": "dirty-refused", "paths": dirty,
@@ -3179,7 +3524,12 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
                 packet_record = manifest["packets"][packet_index - 1]
             before = _progress_signature(manifest, packet_index)
-            inputs = [_brief_input(row) for row in packet_record["inputs"]]
+            # 2026-09-27 (audit finding 3): a fresh attempt decides only the
+            # lessons still open -- a packet re-attempted because some of its
+            # lessons had no valid case keeps the ones already decided.
+            open_inputs = _open_inputs(packet_record)
+            open_records = {row["record"] for row in open_inputs}
+            inputs = [_brief_input(row) for row in open_inputs]
             if needs_model:
                 context = steward_prompt.RunContext(
                     run_id=run_id, stage_dir=stage, packet_index=packet_index,
@@ -3213,7 +3563,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 )
                 prompt = steward_prompt.assemble(
                     home, cache_dir(home), context, inputs, conditions_items=feed_items,
-                    returned=_returned_for(home, packet_record["inputs"]), briefs=briefs,
+                    returned=_returned_for(home, open_inputs), briefs=briefs,
                 )
                 # 2026-09-26: two files. `brief-shared.md` is the part every
                 # packet of the run shares, appended to the system prompt;
@@ -3232,13 +3582,32 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 )
                 started = time.monotonic()
                 outcome = invocation.write_session(spec)
-                duration = float(time.monotonic() - started)
                 result.calls += 1
+                # 2026-09-27 (fail-state audit finding 4): a transient
+                # failure (overloaded, 5xx, rate limit, network) is retried
+                # once within this attempt, from an empty stage.
+                transient_retry: dict | None = None
+                if model_failures.should_retry(outcome):
+                    result.failed_calls += 1
+                    transient_retry = {"failure": outcome.failure,
+                        "detail": _failure_detail(outcome.detail),
+                        **model_failures.failure_fields(outcome)}
+                    _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+                        "status": "transient-retry", "packet": packet_index,
+                        "call": "decision", **transient_retry})
+                    shutil.rmtree(stage, ignore_errors=True)
+                    stage.mkdir(parents=True, exist_ok=True)
+                    model_failures.backoff()
+                    outcome = invocation.write_session(spec)
+                    result.calls += 1
+                duration = float(time.monotonic() - started)
                 if not outcome.ok:
                     result.failed_calls += 1
                 turns = getattr(outcome, "turns", None)
                 attempt = {"kind": "decision", "turns": turns,
                     "failure": outcome.failure, "duration_secs": duration,
+                    **model_failures.failure_fields(outcome),
+                    **({"transient_retry": transient_retry} if transient_retry else {}),
                     **_attempt_usage(outcome),
                     # U3a data points: what the brief carried, and how much
                     # the steward still read for itself.
@@ -3267,17 +3636,54 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     # just its kind. `exit` alone is what made the
                     # 2026-09-14 outage unreadable from the ledger.
                     detail = _failure_detail(outcome.detail)
+                    classified = model_failures.failure_fields(outcome)
+                    if classified.get("failure_class") == "environment":
+                        # 2026-09-27 (fail-state audit finding 4): the model
+                        # or the installed Claude Code cannot run the call at
+                        # all (a version, auth or not-found failure). That
+                        # is a HOLD, not an attempt: the count goes back to
+                        # what it was, the lessons stay open, the user is
+                        # told once per distinct cause, and no later packet
+                        # of this run is tried -- each would fail the same.
+                        cause = _failure_detail(model_failures.hold_cause(outcome)) or bound
+                        previous_cause = model_failures.last_hold_cause(journal_path(home))
+                        held_fields = {
+                            "attempts": packet_record.get("attempts") or [],
+                            "phase": "unfinished", "failure": bound, "detail": detail,
+                            "duration": duration, "dispositions": {},
+                        }
+                        if dry_run:
+                            _record_failure(manifest, packet_index, **held_fields)
+                        else:
+                            _update_manifest(
+                                home, run_id, reason=f"packet {packet_index} held: environment",
+                                update=lambda current: (
+                                    _record_failure(current, packet_index, **held_fields),
+                                    current["packets"][packet_index - 1].update(
+                                        attempt_count=attempts_made, **classified,
+                                    ),
+                                ),
+                            )
+                        _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+                            "status": model_failures.HELD_ENVIRONMENT, "packet": packet_index,
+                            "cause": cause, **classified})
+                        result.held = cause
+                        if not dry_run and cause != previous_cause:
+                            _notify_environment_hold(home, run_id, cause)
+                        break
                     bound_dispositions = {
                         row["record"]: {
                             "state": "unfinished", "input_version": row["version"],
                             "reason": bound,
                         }
-                        for row in packet_record["inputs"]
+                        for row in open_inputs
                     }
                     failure_fields = {
                         "attempts": packet_record.get("attempts") or [],
                         "phase": "unfinished", "failure": bound, "detail": detail,
                         "duration": duration, "dispositions": bound_dispositions,
+                        # 2026-09-27: what kind of failure, and the API's tag.
+                        "classified": classified,
                     }
                     if dry_run:
                         _record_failure(manifest, packet_index, **failure_fields)
@@ -3303,8 +3709,28 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 # repair never fail the stage: they flow to apply time.
                 second_error: ValueError | None = None
                 repair_message: str | None = None
+                #: 2026-09-27 (audit finding 2): the first pass, kept when it
+                #: validated, so a failed or worse repair turn can never
+                #: throw away a packet whose first output was usable.
+                first_pass = _first_pass_path(home, run_id, packet_index)
+                shutil.rmtree(first_pass, ignore_errors=True)
+                first_flags: list[str] = []
+                selected_status: dict[str, object] = {
+                    str(row["record"]): row.get("record_status")
+                    for row in open_inputs
+                }
+                # 2026-09-27 (audit finding 3): judged pair by pair. An
+                # undeclared file is moved to this quarantine directory, a
+                # pair that fails is left out on its own, and only what is
+                # not a pair (or no valid pair at all) fails the stage.
+                quarantine = _quarantine_dir(home, run_id, packet_index, attempt_no)
+                check: _StageCheck | None = None
+                #: every file any of this attempt's checks quarantined -- the
+                #: first pass's too, when a repair turn followed it.
+                quarantined_all: list[str] = []
                 try:
-                    _validate_and_prepare_stage(stage, set(packet_record["records"]))
+                    check = _check_stage(stage, open_records, quarantine)
+                    quarantined_all.extend(check.quarantined)
                 except ValueError as first_error:
                     if packet_record.get("repair_remaining", 0) <= 0:
                         second_error = first_error
@@ -3316,13 +3742,12 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                         ]))
                 else:
                     if packet_record.get("repair_remaining", 0) > 0:
-                        repair_message = "\n\n".join(filter(None, [
-                            _case_rule_message(stage),
-                            _ledger_repair_message(home, stage, {
-                                row["record"]: row.get("record_status")
-                                for row in packet_record["inputs"]
-                            }),
-                        ])) or None
+                        repair_message = _stage_repair_message(
+                            home, stage, check, selected_status,
+                        )
+                        if repair_message is not None:
+                            first_flags = _flag_lines(repair_message)
+                            shutil.copytree(stage, first_pass)
                 if repair_message is not None:
                     packet_record["repair_remaining"] = 0
                     if not dry_run:
@@ -3331,25 +3756,87 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     fsops.atomic_write(shared_brief, prompt.shared, fsync=True)
                     repair = invocation.write_session(_repair_spec(spec, repair_message))
                     result.calls += 1
+                    # 2026-09-27 (fail-state audit finding 4): one retry of
+                    # a transient failure here too; the repair works on the
+                    # files in place, so the stage is left as it is.
+                    repair_retry: dict | None = None
+                    if model_failures.should_retry(repair):
+                        result.failed_calls += 1
+                        repair_retry = {"failure": repair.failure,
+                            "detail": _failure_detail(repair.detail),
+                            **model_failures.failure_fields(repair)}
+                        _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+                            "status": "transient-retry", "packet": packet_index,
+                            "call": "repair", **repair_retry})
+                        model_failures.backoff()
+                        repair = invocation.write_session(_repair_spec(spec, repair_message))
+                        result.calls += 1
                     if not repair.ok:
                         result.failed_calls += 1
                     packet_record["attempts"].append({"kind": "repair", "failure": repair.failure,
                         "duration_secs": float(time.monotonic() - repair_started),
+                        **model_failures.failure_fields(repair),
+                        **({"transient_retry": repair_retry} if repair_retry else {}),
                         **_attempt_usage(repair),
                         "reads": steward_inputs.tool_reads(repair, home)})
                     try:
                         if not repair.ok:
                             raise ValueError(repair.detail or repair.failure or "repair invocation failed")
-                        _validate_and_prepare_stage(stage, set(packet_record["records"]))
+                        check = _check_stage(stage, open_records, quarantine)
+                        quarantined_all.extend(check.quarantined)
                     except ValueError as exc:
                         second_error = exc
+                    if first_pass.is_dir():
+                        # 2026-09-27 (audit finding 2): the first pass
+                        # validated. A repair call that failed, a stage it
+                        # left invalid, or one it left flagging more (or a
+                        # file the first pass had clean) is undone: the
+                        # first pass is put back and goes ahead, and only
+                        # what it still flags is refused, case by case, at
+                        # apply time -- the lessons it decided validly are
+                        # not held back to another attempt.
+                        worse = second_error is not None
+                        why = str(second_error) if second_error is not None else None
+                        if not worse:
+                            assert check is not None
+                            after = _flag_lines(_stage_repair_message(
+                                home, stage, check, selected_status,
+                            ))
+                            worse = _repair_made_worse(first_flags, after)
+                            if worse:
+                                why = (
+                                    "the repair turn left more flagged than the first pass: "
+                                    + ", ".join(sorted(
+                                        {_flag_key(line) for line in after}
+                                        - {_flag_key(line) for line in first_flags}
+                                    ) or ["more lines"])
+                                )
+                        if worse:
+                            shutil.rmtree(stage, ignore_errors=True)
+                            shutil.copytree(first_pass, stage)
+                            second_error = None
+                            try:
+                                check = _check_stage(stage, open_records, quarantine)
+                                quarantined_all.extend(check.quarantined)
+                            except ValueError as exc:  # it passed before; never expected
+                                second_error = exc
+                            packet_record["attempts"][-1]["restored_first_pass"] = True
+                            _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+                                "status": "repair-undone", "packet": packet_index,
+                                "reason": _failure_detail(why)})
+                        shutil.rmtree(first_pass, ignore_errors=True)
                 if second_error is not None:
+                    if quarantined_all:
+                        _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+                            "status": "stage-quarantined", "packet": packet_index,
+                            "undeclared": list(dict.fromkeys(quarantined_all)),
+                            "dir": str(quarantine)})
                     schema_dispositions = {
                         row["record"]: {
                             "state": "unfinished", "input_version": row["version"],
                             "reason": "schema-repair",
                         }
-                        for row in packet_record["inputs"]
+                        for row in open_inputs
                     }
                     schema_fields = {
                         "attempts": packet_record.get("attempts") or [],
@@ -3372,7 +3859,27 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                             ),
                         )
                     continue
+                assert check is not None
+                # 2026-09-27 (audit finding 3): a pair that still fails is
+                # moved out of the stage, so only the pairs that passed are
+                # prepared; the lessons no passing pair covers stay open.
+                set_aside = _set_aside_pairs(stage, check, quarantine)
+                if quarantined_all or set_aside:
+                    _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+                        "status": "stage-quarantined", "packet": packet_index,
+                        "undeclared": list(dict.fromkeys(quarantined_all)), "pairs": set_aside,
+                        "problems": {stem: _failure_detail(problem)
+                                     for stem, problem in sorted(check.problems.items())},
+                        "uncovered": check.uncovered, "dir": str(quarantine)})
+                uncovered_rows = {
+                    row["record"]: {
+                        "state": "unfinished", "input_version": row["version"],
+                        "reason": _NOT_COVERED,
+                    }
+                    for row in open_inputs if row["record"] in check.uncovered
+                }
                 if dry_run:
+                    packet_record.setdefault("dispositions", {}).update(uncovered_rows)
                     packet_record["phase"] = "complete"
                     continue
                 manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
@@ -3382,6 +3889,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     repair_remaining=packet_record.get("repair_remaining", 1),
                     duration_secs=packet_record.get("duration_secs"),
                 )
+                manifest_packet.setdefault("dispositions", {}).update(uncovered_rows)
                 # A secret-scan hit refuses only the case or operation it is
                 # in (`_prepared_recipe`); the rest of the packet proceeds.
                 _prepared_recipe(home, stage, manifest, manifest_packet)
@@ -3475,7 +3983,9 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
             return result
 
         manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
-        dirty = _dirty_truth_paths(home)
+        # 2026-09-27 (fail-state audit finding 8): the finalization commits
+        # the run record only; a stray path elsewhere was noted, not a halt.
+        dirty = _dirty_among(home, [execution_evidence.manifest_path(home, run_id)])
         if dirty:
             result.status = "partial"
             result.unfinished = [
@@ -3586,6 +4096,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 "abandoned_units": result.abandoned_units,
                 "close_out_error": result.close_out_error,
                 "coverage": result.coverage,
+                **({"held": result.held} if result.held else {}),
             },
         )
         # Ruling 2's notification, ONCE per closed-out run and never once

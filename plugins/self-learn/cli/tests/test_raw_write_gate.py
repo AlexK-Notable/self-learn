@@ -422,6 +422,12 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
         "XDG cache scheduler poke-request file; NOT_REPO_TRUTH",
         "keep",
     ),
+    # 2026-09-27 (fail-state audit finding 6): a crashed job with no
+    # journal of its own gets one row in serve's cache journal.
+    ("cli", "serve.py", "_log_job_crash"): (
+        "XDG cache: serve.journal.jsonl crash rows; NOT_REPO_TRUTH",
+        "keep",
+    ),
     ("cli", "serve.py", "_today_mine_target"): (
         "XDG cache scheduler bookkeeping (today's jittered mine target); "
         "NOT_REPO_TRUTH",

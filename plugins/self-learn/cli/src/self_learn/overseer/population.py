@@ -72,6 +72,7 @@ __all__ = [
     "CoverageError",
     "PopulationError",
     "coverage_update",
+    "stratum_problem",
     "load_coverage",
     "nudges",
     "population",
@@ -617,6 +618,19 @@ def _forward_only(prev_iso: str | None, now_iso: str, now_dt: datetime) -> str:
     if prev_dt is None:
         return now_iso
     return now_iso if now_dt >= prev_dt else prev_iso
+
+
+def stratum_problem(row: dict) -> str | None:
+    """Why *row* cannot be classified into a stratum (the refusal
+    :func:`coverage_update` would raise for it), or ``None``. The overseer's
+    runner leaves such a row out of coverage with a trace instead of
+    refusing the whole run over one case (2026-09-27, fail-state audit
+    finding 5); this function's own contract is unchanged."""
+    try:
+        _case_stratum_key(row)
+    except CoverageError as exc:
+        return str(exc)
+    return None
 
 
 def _case_stratum_key(row: dict) -> str | None:

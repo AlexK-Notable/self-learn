@@ -654,7 +654,12 @@ def test_unexplained_dirty_truth_path_refuses_before_batch_dispatch(
         result = real_preview(*args, **kwargs)
         if sys._getframe(1).f_code.co_name == "_apply_packet":
             previews += 1
-            (home / "unexplained.txt").write_text("foreign write\n", encoding="utf-8")
+            # 2026-09-27 (fail-state audit finding 8): only a path the
+            # dispatch commits can refuse it, so the foreign write lands in
+            # the lesson's own record file (a stray file elsewhere is only
+            # noted: test_failstate_steward.py).
+            record = ledger_ops.find_record_path(home, rid)
+            record.write_text(record.read_text(encoding="utf-8") + "\n", encoding="utf-8")
         return result
 
     monkeypatch.setattr(steward.batch, "dry_run", dirty_after_case)
@@ -665,9 +670,12 @@ def test_unexplained_dirty_truth_path_refuses_before_batch_dispatch(
 
     result = steward.run(home)
 
-    assert result.status == "partial" and result.unfinished == [rid]
+    # The dispatch halt (A25: exit 6, nothing written) is what the run
+    # reports now; before, the stray file also tripped the run-end whole-
+    # ledger check, which answered `partial` first.
+    assert result.status == "stopped" and result.decided == []
     journal = steward.journal_path(home).read_text(encoding="utf-8")
-    assert "dirty-refused" in journal and "unexplained.txt" in journal
+    assert "dirty-refused" in journal and rid in journal
     assert Record.from_path(ledger_ops.find_record_path(home, rid)).status == "pending"
 
 
@@ -2100,19 +2108,21 @@ def test_dry_run_reattempts_a_stuck_packet_and_writes_nothing(tmp_path, monkeypa
 
 
 def _dirt_inside_apply_packet(occurrence: int):
-    """Make `_dirty_truth_paths` report dirt at exactly the Nth call made
-    from inside `_apply_packet`, and nowhere else. The frame check is what
-    keeps `_publish_manifest`'s own identical guard out of it — the subject
-    here is the HALT CODE the refusal returns, not the detection."""
-    real = steward._dirty_truth_paths
+    """Make `_dirty_among` report dirt at exactly the Nth call made from
+    inside `_apply_packet`, and nowhere else. The frame check is what keeps
+    `_publish_manifest`'s own identical guard out of it — the subject here
+    is the HALT CODE the refusal returns, not the detection. (2026-09-27,
+    fail-state audit finding 8: the checks moved from the whole ledger,
+    `_dirty_truth_paths`, to the paths each step commits, `_dirty_among`.)"""
+    real = steward._dirty_among
     seen = {"n": 0}
 
-    def fake(home):
+    def fake(home, paths):
         if sys._getframe(1).f_code.co_name == "_apply_packet":
             seen["n"] += 1
             if seen["n"] == occurrence:
                 return ["unexplained.txt"]
-        return real(home)
+        return real(home, paths)
 
     return fake
 
@@ -2129,7 +2139,7 @@ def _forget_the_dirt(home: Path):
         real(actual_home, entry)
         if entry.get("status") == "dirty-refused":
             cleared.append(entry)
-            steward._dirty_truth_paths = _dirt_inside_apply_packet(0)
+            steward._dirty_among = _dirt_inside_apply_packet(0)
 
     return fake, cleared
 
@@ -2148,11 +2158,11 @@ def test_a25_a_git_failure_inside_apply_packet_halts_with_exit_git_failed(
     _seed_fresh_proposals(home, 1)
     _enable_steward(home)
     monkeypatch.setattr(steward.invocation, "write_session", _write_decision_stage)
-    real_dirty = steward._dirty_truth_paths
+    real_dirty = steward._dirty_among
     real_update = steward._update_manifest
     real_journal = steward._journal
     monkeypatch.setattr(
-        steward, "_dirty_truth_paths", real_dirty, raising=True
+        steward, "_dirty_among", real_dirty, raising=True
     )  # restored by monkeypatch even though we rebind it by hand below
 
     if site == "update":
@@ -2165,14 +2175,14 @@ def test_a25_a_git_failure_inside_apply_packet_halts_with_exit_git_failed(
     else:
         journal, cleared = _forget_the_dirt(home)
         monkeypatch.setattr(steward, "_journal", journal)
-        steward._dirty_truth_paths = _dirt_inside_apply_packet(
+        steward._dirty_among = _dirt_inside_apply_packet(
             1 if site == "entry" else 2
         )
 
     try:
         result = steward.run(home)
     finally:
-        steward._dirty_truth_paths = real_dirty
+        steward._dirty_among = real_dirty
         steward._journal = real_journal
 
     assert result.run_id is not None
