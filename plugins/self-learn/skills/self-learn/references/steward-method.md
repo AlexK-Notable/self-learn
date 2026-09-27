@@ -108,7 +108,7 @@ through their own declared stage formats (`cases/*.yaml`, `sheets/*.yaml`,
 `parked.yaml`, `revisions.yaml`, `model-updates.yaml`, `statements.yaml`).
 The exact shape of each file — every key and every allowed word, with worked
 examples of a decided case, a parked case, their sheets, a revision, a
-statement and a user-model update — is the last block of your brief, generated from the same
+statement and a user-model update — is the output contract block, after the conditions, generated from the same
 constants the runner's checkers read. You do not need to read this
 product's source code to find a format.
 You never call a mutation verb, edit the ledger or canon directly, or write

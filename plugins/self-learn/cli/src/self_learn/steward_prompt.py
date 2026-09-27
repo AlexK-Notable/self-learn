@@ -5,9 +5,13 @@ runner hands to a Fable session, one per model call.
 
 **Order is the design.** Seven blocks, evidence before advice, so the
 steward's own view forms before it reads anyone's advice (astra-round3
-"two reading views"): ``containment``, ``method``, ``user_model``,
-``conditions``, ``open_cases``, ``briefs``, ``output_contract``, in that
-order and no other.
+"two reading views"). Since 2026-09-26 they come in two parts, so a run's
+later calls read the first from Claude Code's prompt cache: the SHARED part
+-- ``method``, ``conditions``, ``output_contract`` -- identical for every
+packet of one run and sent as the appended system prompt; then the
+PER-PACKET part -- ``containment``, ``user_model``, ``open_cases``,
+``briefs`` -- sent as the user message. Each part keeps §4.1's relative
+order, and the analyst's advice (the briefs) is still the last thing read.
 
 This module never writes the ledger, takes no lock, never reads a
 transcript, and never reads ``hosts.yaml`` or ``settings.json`` itself —
@@ -86,16 +90,23 @@ __all__ = [
 
 Block = tuple[str, str]
 
-#: The seven block names, in the order §4.1 mandates.
+#: The seven block names, in the order the model reads them (2026-09-26):
+#: the shared part (the appended system prompt) first, then the per-packet
+#: part (the user message). §4.1's order holds within each part.
 _BLOCK_ORDER = (
-    "containment",
     "method",
-    "user_model",
     "conditions",
+    "output_contract",
+    "containment",
+    "user_model",
     "open_cases",
     "briefs",
-    "output_contract",
 )
+
+#: The blocks every packet of one run shares, byte for byte. Nothing in
+#: them may vary by packet: no packet number, no stage path, no per-packet
+#: time (the conditions' `observed_at` is the run's one snapshot).
+SHARED_BLOCKS = frozenset({"method", "conditions", "output_contract"})
 
 #: Container reading order for the user-model block (plan §4.1 item 3):
 #: own words -> seen readings -> declared conditions -> provisional
@@ -121,8 +132,13 @@ class RunContext:
 @dataclass(frozen=True)
 class Packet:
     blocks: tuple[Block, ...]
+    #: Every block, in `blocks`' order -- what the model reads, end to end.
     text: str
     withheld: tuple[str, ...]
+    #: The blocks in `SHARED_BLOCKS`: the appended system prompt.
+    shared: str = ""
+    #: Every other block: the user message.
+    per_packet: str = ""
 
 
 #: The six stage files a steward session may write. The KEYS are the
@@ -796,19 +812,19 @@ def _ordered_blocks(
     proposals: list[dict],
     items: list[Item],
 ) -> tuple[Block, ...]:
-    """The seven blocks, §4.1's order. Factored out of :func:`assemble`
+    """The seven blocks, in reading order. Factored out of :func:`assemble`
     so a test can monkeypatch this ONE function to prove the offset
     test actually catches a scrambled order (a swap here is a swap in
     `assemble`'s own real return value, not a copy the test built
     itself)."""
     return (
-        ("containment", _render_containment(run)),
         ("method", _render_method()),
-        ("user_model", _render_user_model(home)),
         ("conditions", _render_conditions(items)),
+        ("output_contract", _render_output_contract()),
+        ("containment", _render_containment(run)),
+        ("user_model", _render_user_model(home)),
         ("open_cases", _render_open_cases(home, run)),
         ("briefs", _render_briefs(home, proposals)),
-        ("output_contract", _render_output_contract()),
     )
 
 
@@ -836,7 +852,9 @@ def assemble(
     conditions_items: list[Item] | None = None,
     returned: dict[str, dict] | None = None,
 ) -> Packet:
-    """Interface §4.1: the seven blocks, in order, evidence before advice.
+    """Interface §4.1: the seven blocks, evidence before advice, in two
+    parts (2026-09-26): ``shared`` for the appended system prompt and
+    ``per_packet`` for the user message.
     Never mutates the ledger, never reads a transcript, and never reads
     `hosts.yaml` or `settings.json` itself -- only through
     :func:`conditions.feed`. A caller assembling several packets of ONE
@@ -862,5 +880,13 @@ def assemble(
             len(blocks),
         )
         blocks = (*blocks[:at], ("sent_back", _render_sent_back(returned)), *blocks[at:])
-    text = "\n\n".join(f"=== {name} ===\n{body}" for name, body in blocks)
-    return Packet(blocks=blocks, text=text, withheld=withheld())
+    def joined(rows) -> str:
+        return "\n\n".join(f"=== {name} ===\n{body}" for name, body in rows)
+
+    return Packet(
+        blocks=blocks,
+        text=joined(blocks),
+        withheld=withheld(),
+        shared=joined(row for row in blocks if row[0] in SHARED_BLOCKS),
+        per_packet=joined(row for row in blocks if row[0] not in SHARED_BLOCKS),
+    )

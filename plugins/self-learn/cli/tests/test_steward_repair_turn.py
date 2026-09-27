@@ -363,8 +363,11 @@ def test_the_sent_back_block_sits_just_before_the_open_cases(tmp_path, monkeypat
 
     assert [name for name, _ in plain.blocks] == list(steward_prompt._BLOCK_ORDER)
     names = [name for name, _ in packet.blocks]
-    assert names == [*steward_prompt._BLOCK_ORDER[:4], "sent_back",
-                     *steward_prompt._BLOCK_ORDER[4:]]
+    # 2026-09-26: `open_cases` moved with the per-packet part; the sent-back
+    # block still sits just before it.
+    at = steward_prompt._BLOCK_ORDER.index("open_cases")
+    assert names == [*steward_prompt._BLOCK_ORDER[:at], "sent_back",
+                     *steward_prompt._BLOCK_ORDER[at:]]
     body = dict(packet.blocks)["sent_back"]
     assert body.startswith(steward_prompt.SENT_BACK_TITLE)
     assert "- lrn-c000000a (earlier case case-0000abcd):" in body

@@ -1562,6 +1562,28 @@ computed once per run over EVERY lesson of the run, not one packet's, so
 all of a run's packets read the same block; when the lessons cannot be
 resolved, both sections go whole and the source line says why.
 
+**The brief's two parts (2026-09-26).** The steward's brief is the seven
+blocks of the steward interface §4.1, evidence before advice, sent in two
+parts so that a run's later calls read the first from Claude Code's prompt
+cache (measured 2026-09-20: shared text in the APPENDED system prompt,
+per-call text in the user message, `exclude_dynamic_sections` on).
+
+| §4.1 order | Part | Sent as |
+|---|---|---|
+| 2 `method`, 4 `conditions`, 7 `output_contract` | shared: byte-identical for every packet of one run — no packet number, stage path, run id or per-packet time (`observed_at` is the run's one snapshot) | the appended system prompt, from the file `brief-shared.md` in the run's cache stage (`--append-system-prompt-file`: an argument fails at 131,072 bytes), rewritten from the same bytes before every call |
+| 1 `containment`, 3 `user_model`, (`sent_back`), 5 `open_cases`, 6 `briefs` | per packet | the user message; also written to `packet-NNNN.md` |
+
+The model reads the shared part first (method, conditions, output
+contract), then the packet's own part; each part keeps §4.1's relative
+order, and the analyst's advice (the briefs) is still the last thing read.
+The repair round is a new session with the same file and flag. Each
+`attempts` row of a steward packet (decision and repair) carries `usage`:
+`first_response` and `session`, each with `cache_read_input_tokens`,
+`cache_creation_input_tokens` and `input_tokens` as the SDK reported them —
+the first response's counts say whether the shared part came from cache;
+the session's are Claude Code's totals. The row has no `usage` when the
+backend reported none.
+
 ## 4. Managed sections (the compile targets' contract)
 
 Compilers own exactly the region between their markers, and nothing else:

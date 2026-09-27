@@ -83,6 +83,15 @@ class EventLog:
 
     tool_events: list[dict[str, Any]] = field(default_factory=list)
     denials: list[dict[str, Any]] = field(default_factory=list)
+    #: 2026-09-26: the first model response's prompt-cache counts, set once
+    #: by the drain (`note_first_usage`); the session's later responses
+    #: re-read their own growing context, so only the first one says
+    #: whether the system prompt and the brief came from cache.
+    first_usage: dict[str, int] | None = None
+
+    def note_first_usage(self, usage: dict[str, int] | None) -> None:
+        if self.first_usage is None and usage:
+            self.first_usage = dict(usage)
 
     def add_denial(self, tool_name: str, reason: str) -> None:
         self.denials.append({"source": "charter", "tool": tool_name, "reason": reason})

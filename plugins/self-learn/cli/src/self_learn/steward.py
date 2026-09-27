@@ -788,7 +788,7 @@ def _validate_declared_stage(stage: Path) -> None:
 
 def _session_spec(
     home: Path, run_dir: Path, prompt: str, *, label: str, lessons: int = 1,
-    run_id: str | None = None,
+    run_id: str | None = None, shared_brief: Path | None = None,
 ) -> invocation.SessionSpec:
     timeout_value, _source = settings.resolve_setting(
         home, settings.by_name("steward.timeout_secs")
@@ -828,7 +828,25 @@ def _session_spec(
         # stops a runaway session; it is never a reason to discard one
         # that finished.
         max_turns=per_lesson * max(lessons, 1),
+        # 2026-09-26: the brief's shared part (method, conditions, output
+        # contract) is appended to the system prompt from this file, and the
+        # system prompt is kept free of per-session text, so a run's later
+        # calls read it from the prompt cache. `prompt` is the per-packet
+        # part. The doctor's containment probe passes no file.
+        append_system_prompt_file=shared_brief,
+        exclude_dynamic_sections=shared_brief is not None,
     )
+
+
+def _attempt_usage(outcome: object) -> dict:
+    """2026-09-26: a call's prompt-cache counts for its `attempts` row --
+    ``{"usage": {"first_response": {...}, "session": {...}}}`` -- or nothing
+    when the backend reported none (a fake, or an SDK without usage)."""
+    first = getattr(outcome, "usage_first_response", None)
+    session = getattr(outcome, "usage_session", None)
+    if first is None and session is None:
+        return {}
+    return {"usage": {"first_response": first, "session": session}}
 
 
 def _repair_spec(spec: invocation.SessionSpec, error: str) -> invocation.SessionSpec:
@@ -854,6 +872,11 @@ def _repair_spec(spec: invocation.SessionSpec, error: str) -> invocation.Session
         max_turns=spec.max_turns,
         # Carried: the repair round runs with auto-memory off too.
         extra_env=spec.extra_env,
+        # Carried (2026-09-26): the repair round is a NEW session. Without
+        # the file it would run with no method, no output contract and no
+        # conditions; with it, it reads them from the cache as well.
+        append_system_prompt_file=spec.append_system_prompt_file,
+        exclude_dynamic_sections=spec.exclude_dynamic_sections,
     )
 
 
@@ -3024,11 +3047,20 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     home, cache_dir(home), context, proposals, conditions_items=feed_items,
                     returned=_returned_for(home, packet_record["inputs"]),
                 )
-                fsops.atomic_write(run_dir / f"packet-{packet_index:04d}.md", prompt.text, fsync=True)
+                # 2026-09-26: two files. `brief-shared.md` is the part every
+                # packet of the run shares, appended to the system prompt;
+                # it is rewritten before each call from the same bytes, so a
+                # session cannot leave the next one a changed copy.
+                # `packet-NNNN.md` is this packet's part, the user message.
+                shared_brief = run_dir / "brief-shared.md"
+                fsops.atomic_write(shared_brief, prompt.shared, fsync=True)
+                fsops.atomic_write(
+                    run_dir / f"packet-{packet_index:04d}.md", prompt.per_packet, fsync=True
+                )
                 spec = _session_spec(
-                    home, run_dir, prompt.text,
+                    home, run_dir, prompt.per_packet,
                     label=f"steward-{run_id}-{packet_index}", lessons=len(proposals),
-                    run_id=run_id,
+                    run_id=run_id, shared_brief=shared_brief,
                 )
                 started = time.monotonic()
                 outcome = invocation.write_session(spec)
@@ -3038,7 +3070,8 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     result.failed_calls += 1
                 turns = getattr(outcome, "turns", None)
                 attempt = {"kind": "decision", "turns": turns,
-                    "failure": outcome.failure, "duration_secs": duration}
+                    "failure": outcome.failure, "duration_secs": duration,
+                    **_attempt_usage(outcome)}
                 packet_record.setdefault("attempts", []).append(attempt)
                 packet_record["duration_secs"] = duration
                 # A session that ended normally is judged on the files it
@@ -3123,12 +3156,14 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     if not dry_run:
                         _update_manifest(home, run_id, reason=f"packet {packet_index} repair allowance", update=lambda current: current["packets"][packet_index - 1].update(repair_remaining=0))
                     repair_started = time.monotonic()
+                    fsops.atomic_write(shared_brief, prompt.shared, fsync=True)
                     repair = invocation.write_session(_repair_spec(spec, repair_message))
                     result.calls += 1
                     if not repair.ok:
                         result.failed_calls += 1
                     packet_record["attempts"].append({"kind": "repair", "failure": repair.failure,
-                        "duration_secs": float(time.monotonic() - repair_started)})
+                        "duration_secs": float(time.monotonic() - repair_started),
+                        **_attempt_usage(repair)})
                     try:
                         if not repair.ok:
                             raise ValueError(repair.detail or repair.failure or "repair invocation failed")

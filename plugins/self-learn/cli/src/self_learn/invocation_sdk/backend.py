@@ -109,6 +109,31 @@ class SdkOutcome(Outcome):
     #: three real steward sessions: 61/51/58 responses, `num_turns`
     #: 104/117/115, limit 80, none stopped).
     result_subtype: str | None = None
+    #: 2026-09-26: prompt-cache token counts, so a run can show whether its
+    #: later calls read the shared brief from cache. ``usage_first_response``
+    #: is the FIRST model response's (the one that reads the system prompt
+    #: and the brief cold or from cache); ``usage_session`` is the result
+    #: message's total over the session. Each holds
+    #: ``cache_read_input_tokens``, ``cache_creation_input_tokens`` and
+    #: ``input_tokens`` when the SDK reports them; ``None`` otherwise.
+    usage_first_response: dict[str, int] | None = None
+    usage_session: dict[str, int] | None = None
+
+
+#: The usage keys `SdkOutcome` keeps (2026-09-26).
+_USAGE_KEYS = ("cache_read_input_tokens", "cache_creation_input_tokens", "input_tokens")
+
+
+def _cache_usage(usage: object) -> dict[str, int] | None:
+    """The three input-side counts out of an SDK ``usage`` mapping, or
+    ``None`` when it carries none of them."""
+    if not isinstance(usage, dict):
+        return None
+    kept = {
+        key: int(usage[key]) for key in _USAGE_KEYS
+        if isinstance(usage.get(key), int) and not isinstance(usage.get(key), bool)
+    }
+    return kept or None
 
 
 # --------------------------------------------------------------- Sync-1
@@ -257,6 +282,20 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
         system_prompt = {"type": "preset", "preset": "claude_code", "append": doctrine}
     else:
         system_prompt = {"type": "preset", "preset": "claude_code"}
+    # 2026-09-26: the two cache fields (`SessionSpec.append_system_prompt_file`,
+    # `.exclude_dynamic_sections`). Each key is ADDED only when its field is
+    # set, so every producer that sets neither sends exactly what it sent
+    # before -- Claude Code words its system prompt differently when an
+    # append is present at all (cross-call caching report, 2026-09-20).
+    if spec.exclude_dynamic_sections:
+        system_prompt["exclude_dynamic_sections"] = True
+    extra_args: dict[str, str | None] = {}
+    if spec.append_system_prompt_file is not None:
+        if doctrine is not None:
+            raise ValueError(
+                "a session appends either `doctrine` or an append-system-prompt-file, not both"
+            )
+        extra_args["append-system-prompt-file"] = str(spec.append_system_prompt_file)
 
     containment = spec.containment
     disallowed = [t for t in (containment.disallowed_tools or "").split(",") if t]
@@ -328,6 +367,16 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
         # engines splat.
         **policy.option_floor(),
     }
+
+    if extra_args:
+        if "extra_args" not in supported:
+            # Fail closed: a steward session without its shared brief would
+            # decide lessons with no method, no contract and no conditions.
+            raise ValueError(
+                "this claude-agent-sdk has no extra_args; cannot pass "
+                "append-system-prompt-file, refusing the session"
+            )
+        kwargs["extra_args"] = extra_args
 
     if "max_turns" in supported:
         # A session that names its own limit (the steward sizes it to its
@@ -403,6 +452,7 @@ def _outcome(
     session_id: str | None = None,
     exc: BaseException | None = None,
     result_subtype: str | None = None,
+    usage_session: dict[str, int] | None = None,
 ) -> SdkOutcome:
     return SdkOutcome(
         ok=ok,
@@ -417,6 +467,8 @@ def _outcome(
         turns=turns,
         session_id=session_id,
         result_subtype=result_subtype,
+        usage_first_response=events.first_usage,
+        usage_session=usage_session,
     )
 
 
@@ -433,6 +485,7 @@ def _map_result_message(
     turns = turns if isinstance(turns, int) else None
     session_id = session_id if isinstance(session_id, str) else None
     cost_usd = cost_usd if isinstance(cost_usd, (int, float)) else None
+    usage_session = _cache_usage(getattr(result_message, "usage", None))
 
     permission_denials = getattr(result_message, "permission_denials", None)
     if permission_denials:
@@ -462,6 +515,7 @@ def _map_result_message(
             turns=turns,
             session_id=session_id,
             result_subtype=subtype if isinstance(subtype, str) else None,
+            usage_session=usage_session,
         )
 
     return _outcome(
@@ -474,6 +528,7 @@ def _map_result_message(
         cost_usd=cost_usd,
         turns=turns,
         session_id=session_id,
+        usage_session=usage_session,
     )
 
 
@@ -512,6 +567,7 @@ async def _run_session(
     last_assistant_text = ""
     async for message in session.drive():
         if isinstance(message, AssistantMessage):
+            events.note_first_usage(_cache_usage(getattr(message, "usage", None)))
             last_assistant_text = "".join(
                 block.text for block in message.content if isinstance(block, TextBlock)
             )
@@ -680,6 +736,11 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
                 "cost_usd": outcome.cost_usd if outcome is not None else None,
                 "turns": outcome.turns if outcome is not None else None,
                 "failure": outcome.failure if outcome is not None else "exit",
+                # 2026-09-26: prompt-cache counts (`SdkOutcome.usage_*`).
+                "usage_first_response": (
+                    outcome.usage_first_response if outcome is not None else None
+                ),
+                "usage_session": outcome.usage_session if outcome is not None else None,
             },
             events=events,
         )
