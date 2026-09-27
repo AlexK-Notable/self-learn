@@ -473,29 +473,30 @@ def resolve(
 
 def locate(ref: Ref, *, roots: Sequence[Path | str] | None = None) -> Path:
     """The file a ref points into: ``<root>/<project_dir>/<session>.jsonl``
-    (or the subagent file) under the first root where the entry at
-    ``ref.line`` carries ``ref.uuid``; the first existing copy when the
-    ref has no uuid."""
+    (or the subagent file) under any root. Among the copies that have
+    ``ref.line``, ranked as :func:`resolve` ranks: the entry at that line
+    carries ``ref.uuid`` > more lines > larger file > earlier root. A
+    shorter stub copy in an earlier root therefore never wins, with or
+    without a uuid."""
     rs = _roots(roots)
     rel = Path(ref.project_dir) / (
         Path(ref.session) / ref.subagent_file if ref.subagent_file else f"{ref.session}.jsonl"
     )
-    first: Path | None = None
-    for root in rs:
+    best: tuple[tuple, Path] | None = None
+    for ri, root in enumerate(rs):
         p = root / rel
         if not p.is_file():
             continue
         lines = _lines(p)
         if ref.line > len(lines):
             continue
-        if ref.uuid is None:
-            return p
         e = _entry(lines[ref.line - 1])
-        if e is not None and e.get("uuid") == ref.uuid:
-            return p
-        first = first or p
-    if first is not None:
-        return first
+        holds = ref.uuid is not None and e is not None and e.get("uuid") == ref.uuid
+        key = (holds, len(lines), p.stat().st_size, -ri)
+        if best is None or key > best[0]:
+            best = (key, p)
+    if best is not None:
+        return best[1]
     raise RefError(f"no file for {ref.origin} under project folder {ref.project_dir}")
 
 

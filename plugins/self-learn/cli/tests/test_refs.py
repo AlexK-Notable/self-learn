@@ -144,6 +144,26 @@ def test_resolver_prefers_the_copy_holding_the_uuid_then_the_earlier_root(roots)
     assert (ref.project_dir, ref.line) == (REPO, 3)
 
 
+def test_a_stub_holding_the_line_never_beats_the_real_file(roots):
+    # the stub HAS line 1 and sits in the earlier root; only size can decide
+    stub = [{"type": "bridge-session", "sessionId": SID}]
+    real = [{"type": "bridge-session", "sessionId": SID}] + [filler(i) for i in range(2, 11)]
+    write(roots[0], REPO, SID, stub)
+    write(roots[1], WT, SID, real)
+    assert refs.resolve(SID, 1, roots=roots).project_dir == WT
+    assert refs.resolve(SID, roots=roots).project_dir == WT
+
+
+def test_locate_prefers_the_real_copy_for_a_ref_without_uuid(roots):
+    stub = [{"type": "bridge-session", "sessionId": SID}]
+    real = [{"type": "bridge-session", "sessionId": SID}] + [filler(i) for i in range(2, 6)]
+    write(roots[0], REPO, SID, stub)          # stub, earlier root, SAME folder
+    write(roots[1], REPO, SID, real)
+    ref = Ref(SID, REPO, 1, None, None, None, "relay")
+    assert refs.locate(ref, roots=roots).is_relative_to(roots[1])
+    assert [r.line for r, _ in refs.excerpt(ref, 0, 2, roots=roots)] == [1, 2, 3]
+
+
 def test_transcript_roots_is_a_registry_setting(monkeypatch, tmp_path):
     default = refs.transcript_roots(tmp_path)
     assert default == [Path("~/.claude/projects").expanduser(), Path("~/.claude/archive/sessions").expanduser()]
