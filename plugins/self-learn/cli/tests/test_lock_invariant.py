@@ -235,6 +235,7 @@ NOT_REPO_TRUTH = {
     "serve.request_poke": "XDG cache: cache_dir()/serve.poke (Sec 5.3's verb-to-daemon poke request)",
     "serve._consume_poke": "XDG cache: cache_dir()/serve.poke, unlinked once the tick has read it",
     "serve._today_mine_target": "XDG cache: cache_dir()/serve.schedule (the day's jittered mine-pass target, Sec 5.2/5.8.1 Persistent=true parity)",
+    "serve._log_job_crash": "XDG cache: cache_dir()/serve.journal.jsonl, one row per crashed job with no journal of its own (2026-09-27, fail-state audit finding 6)",
     "serve._write_holds": "XDG cache: cache_dir()/serve.holds.json (U1/A13 -- which job a failing due check is currently holding, and its cause, so the heartbeat and `doctor`'s serve row can name it and the notification fires once per cause; no ledger path, no commit)",
     "steward._journal": "XDG cache: steward/journal.jsonl, never ledger truth",
     "steward._write_json": "XDG cache: steward run recovery records and batch-result replay files",
