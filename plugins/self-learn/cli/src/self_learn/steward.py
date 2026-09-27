@@ -1206,6 +1206,33 @@ def _case_rule_message(stage: Path) -> str | None:
     ])
 
 
+def _first_pass_path(home: Path, run_id: str, packet_index: int) -> Path:
+    """Where a packet's validated first pass is kept while its repair turn
+    runs (2026-09-27, audit finding 2): in the cache, OUTSIDE the run
+    directory the session may write in, so the repair session cannot touch
+    it."""
+    return steward_dir(home) / "first-pass" / run_id / f"packet-{packet_index:04d}"
+
+
+def _flag_lines(message: str | None) -> list[str]:
+    """The flagged lines of a repair message (`_case_rule_message`,
+    `_ledger_repair_message`): one ``- <file>: ...`` line per problem."""
+    return [line for line in (message or "").splitlines() if line.startswith("- ")]
+
+
+def _flag_key(line: str) -> str:
+    """The file (or parked.yaml entry) a flagged line is about."""
+    return line[2:].split(": ", 1)[0]
+
+
+def _repair_made_worse(before: list[str], after: list[str]) -> bool:
+    """A repair turn left the stage worse than the first pass when it
+    flags more lines, or flags a file the first pass had clean."""
+    return len(after) > len(before) or bool(
+        {_flag_key(line) for line in after} - {_flag_key(line) for line in before}
+    )
+
+
 def _returned_for(home: Path, inputs: list[dict]) -> dict[str, dict]:
     """S-71 §4.6: for each input of this packet that a committed run record
     sent back at its CURRENT input version, the case that decided it and
@@ -3303,6 +3330,16 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 # repair never fail the stage: they flow to apply time.
                 second_error: ValueError | None = None
                 repair_message: str | None = None
+                #: 2026-09-27 (audit finding 2): the first pass, kept when it
+                #: validated, so a failed or worse repair turn can never
+                #: throw away a packet whose first output was usable.
+                first_pass = _first_pass_path(home, run_id, packet_index)
+                shutil.rmtree(first_pass, ignore_errors=True)
+                first_flags: list[str] = []
+                selected_status = {
+                    row["record"]: row.get("record_status")
+                    for row in packet_record["inputs"]
+                }
                 try:
                     _validate_and_prepare_stage(stage, set(packet_record["records"]))
                 except ValueError as first_error:
@@ -3318,11 +3355,11 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     if packet_record.get("repair_remaining", 0) > 0:
                         repair_message = "\n\n".join(filter(None, [
                             _case_rule_message(stage),
-                            _ledger_repair_message(home, stage, {
-                                row["record"]: row.get("record_status")
-                                for row in packet_record["inputs"]
-                            }),
+                            _ledger_repair_message(home, stage, selected_status),
                         ])) or None
+                        if repair_message is not None:
+                            first_flags = _flag_lines(repair_message)
+                            shutil.copytree(stage, first_pass)
                 if repair_message is not None:
                     packet_record["repair_remaining"] = 0
                     if not dry_run:
@@ -3343,6 +3380,40 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                         _validate_and_prepare_stage(stage, set(packet_record["records"]))
                     except ValueError as exc:
                         second_error = exc
+                    if first_pass.is_dir():
+                        # 2026-09-27 (audit finding 2): the first pass
+                        # validated. A repair call that failed, a stage it
+                        # left invalid, or one it left flagging more (or a
+                        # file the first pass had clean) is undone: the
+                        # first pass is put back and goes ahead, and only
+                        # what it still flags is refused, case by case, at
+                        # apply time -- the lessons it decided validly are
+                        # not held back to another attempt.
+                        worse = second_error is not None
+                        why = str(second_error) if second_error is not None else None
+                        if not worse:
+                            after = _flag_lines("\n\n".join(filter(None, [
+                                _case_rule_message(stage),
+                                _ledger_repair_message(home, stage, selected_status),
+                            ])))
+                            worse = _repair_made_worse(first_flags, after)
+                            if worse:
+                                why = (
+                                    "the repair turn left more flagged than the first pass: "
+                                    + ", ".join(sorted(
+                                        {_flag_key(line) for line in after}
+                                        - {_flag_key(line) for line in first_flags}
+                                    ) or ["more lines"])
+                                )
+                        if worse:
+                            shutil.rmtree(stage, ignore_errors=True)
+                            shutil.copytree(first_pass, stage)
+                            second_error = None
+                            packet_record["attempts"][-1]["restored_first_pass"] = True
+                            _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+                                "status": "repair-undone", "packet": packet_index,
+                                "reason": _failure_detail(why)})
+                        shutil.rmtree(first_pass, ignore_errors=True)
                 if second_error is not None:
                     schema_dispositions = {
                         row["record"]: {
