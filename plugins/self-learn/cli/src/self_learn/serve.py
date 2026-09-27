@@ -748,11 +748,13 @@ def _describe_next(home: Path, cache_dir: Path, now: float) -> str:
     )
 
 
-def _eligible_proposal_paths(home: Path) -> list[Path]:
-    return [entry.proposal_path for entry, _proposal in steward._eligible_proposals(home)]
+def _eligible_input_paths(home: Path) -> list[Path]:
+    """U3a (2026-09-27): the record files of the lessons the steward would
+    select -- a lesson no longer needs a proposal file to be selected."""
+    return [entry.path for entry, _row in steward._eligible_lessons(home)]
 
 
-def _proposal_commit_epoch(home: Path, path: Path) -> float:
+def _input_commit_epoch(home: Path, path: Path) -> float:
     try:
         rel = path.resolve().relative_to(home.resolve())
     except ValueError:
@@ -786,8 +788,11 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     manifests = steward.committed_manifests(home)
     unfinished = [row for row in manifests if row.get("status") != "complete"]
     reconsider, _predecessors = steward._reconsider_proposals(home)
-    proposal_paths = _eligible_proposal_paths(home)
-    if not unfinished and not reconsider and not proposal_paths:
+    input_paths = _eligible_input_paths(home)
+    # U3a: an unhandled suspected rule violation is an input too; like a
+    # reconsider input it is due once the cooldown has passed.
+    violations = steward._suspected_violation_inputs(home)
+    if not unfinished and not reconsider and not input_paths and not violations:
         return False
     attempts = [str(row.get("last_attempt_at")) for row in unfinished if row.get("last_attempt_at")]
     last_iso = max(attempts) if attempts else steward.last_run_iso(home)
@@ -800,9 +805,9 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     cooldown = cast(int | float | str, cooldown_value)
     if now - last_epoch < float(cooldown):
         return False
-    if unfinished or reconsider:
+    if unfinished or reconsider or violations:
         return True
-    return any(_proposal_commit_epoch(home, path) > last_epoch for path in proposal_paths)
+    return any(_input_commit_epoch(home, path) > last_epoch for path in input_paths)
 
 
 def _overseer_target_for(now: float) -> float:

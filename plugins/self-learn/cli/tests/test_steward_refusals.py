@@ -688,7 +688,7 @@ def _publish_row(home: Path, rid: str, state: str) -> None:
     CURRENT input version, the way a finished run would."""
     entry = next(e for bucket in steward.discover_buckets(home)
                  for e in ledger_ops.queue(bucket) if e.record.id == rid)
-    identity = steward._input_identity(home, entry.proposal_path, rid, {"id": rid})
+    identity = steward._record_identity(home, entry)
     run_id = "run-" + state.ljust(12, "0")[:12]
     steward._publish_manifest(home, {
         "version": 1, "actor": "steward", "run_id": run_id,
@@ -718,12 +718,12 @@ def test_a_returned_lesson_is_selected_again_and_an_overtaken_one_is_not(
     home = env.ledger
     rid = _seed(home, "lrn-b000000f")
     other = _seed(home, "lrn-b0000010")
-    before = [entry.record.id for entry, _ in steward._eligible_proposals(home)]
+    before = [entry.record.id for entry, _ in steward._eligible_lessons(home)]
     assert before == [rid, other], "positive control: both are eligible first"
 
     _publish_row(home, rid, state)
 
-    after = [entry.record.id for entry, _ in steward._eligible_proposals(home)]
+    after = [entry.record.id for entry, _ in steward._eligible_lessons(home)]
     assert (rid in after) is selected
     assert other in after
 

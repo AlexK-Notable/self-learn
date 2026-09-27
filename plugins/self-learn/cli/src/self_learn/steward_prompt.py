@@ -1,42 +1,34 @@
-"""steward_prompt.py — the steward's packet (U9; plan-steward §4.1; U10
-not yet built, so this unit's `assemble` is dead code today, same as
-`worker.render_brief` was dead code until this unit — the packet the
-runner hands to a Fable session, one per model call.
+"""steward_prompt.py — the steward's packet (U9; plan-steward §4.1),
+the text the runner hands to a Fable session, one per model call.
 
-**Order is the design.** Seven blocks, evidence before advice, so the
-steward's own view forms before it reads anyone's advice (astra-round3
-"two reading views"). Since 2026-09-26 they come in two parts, so a run's
-later calls read the first from Claude Code's prompt cache: the SHARED part
--- ``method``, ``conditions``, ``output_contract`` -- identical for every
-packet of one run and sent as the appended system prompt; then the
-PER-PACKET part -- ``containment``, ``user_model``, ``open_cases``,
-``briefs`` -- sent as the user message. Each part keeps §4.1's relative
-order, and the analyst's advice (the briefs) is still the last thing read.
+**Order is the design.** Seven blocks, evidence first, so the steward's
+own view forms from the lesson and what code checked about it. Since
+2026-09-26 they come in two parts, so a run's later calls read the first
+from Claude Code's prompt cache: the SHARED part -- ``method``,
+``conditions``, ``output_contract`` -- identical for every packet of one
+run and sent as the appended system prompt; then the PER-PACKET part --
+``containment``, ``user_model``, ``open_cases``, ``briefs`` -- sent as the
+user message. Each part keeps §4.1's relative order.
 
-This module never writes the ledger, takes no lock, never reads a
-transcript, and never reads ``hosts.yaml`` or ``settings.json`` itself —
-every fact it renders comes through :func:`conditions.steward_feed` (the
-steward's cut of :func:`conditions.feed`, 2026-09-26; both
-fail-closed to ``"unavailable"``) or through an existing read-only
-function (:func:`worker.render_brief`, :func:`cases.show`,
-:func:`cases.list_cases`, :func:`user_model.show`).
+**The briefs (U3a, 2026-09-27).** A brief is no longer the analyst's card.
+Each input -- a pending lesson, a reconsider input, or a suspected rule
+violation -- is rendered by :mod:`steward_inputs`: the record's own lesson
+sections, an evidence pack built by code (every quote checked against its
+transcript, a bounded excerpt around it), the closest existing lessons and
+the links that batched it. The runner builds those (it holds the index and
+the packet's group) and passes them as ``briefs``; a caller that passes
+none gets them built here without the index. The analyst's proposal files
+are not read by this module at all. Every transcript read goes through
+:mod:`refs` (redacted excerpts); this module itself never writes the
+ledger, takes no lock, and never reads ``hosts.yaml`` or ``settings.json``
+-- the conditions come through :func:`conditions.steward_feed`.
 
-**Proposal shape — this unit's own convention, not an applied spec.**
-`ledger_ops.validate_proposal` (grepped: no ``id``/``record_id`` field
-anywhere in the schema) confirms a raw proposal dict carries no record
-id; the id lives only in the proposal FILE's name
-(``proposals/<record-id>.yaml``, observed: `worker.py`'s
-``_check_proposal_file``, ``path.stem``). U10, which reads those files,
-does not exist yet, so this unit adopts the simplest convention a future
-caller can meet: each dict in ``proposals`` MAY carry an ``"id"`` key
-(set by whoever read the file) in addition to the fields
-``read_proposal``/``validate_proposal`` already produce. A proposal
-without one still renders — its card, through :func:`worker.render_brief`
-unchanged — just with an "(unknown id)" header and no prior-case lookup.
-**Ordering is the caller's job.** ``assemble`` renders ``proposals`` in
-the exact order the caller passes them — it never sorts or reorders.
-U10 is the one that must hand them over oldest first; this module only
-preserves whatever order it is given.
+**Input shape.** Each dict in ``inputs`` carries ``"id"`` (the record id)
+and optionally ``"kind"`` (:data:`steward_inputs.INPUT_KINDS`, default
+``lesson``), ``"reason"`` (a reconsider input's) and ``"events"`` (a
+suspected violation's fire events). **Ordering is the caller's job.**
+``assemble`` renders ``inputs`` in the exact order the caller passes
+them -- it never sorts or reorders.
 
 **"Later observations", evidence-only view, and the blind default
 (plan §4.1 item 5; this unit's own reading).** `cases.show`'s BLIND
@@ -73,6 +65,7 @@ from . import ledger_ops
 from . import records
 from . import verbs
 from . import statements
+from . import steward_inputs
 from . import user_model
 from . import worker
 from .conditions import Item
@@ -237,7 +230,8 @@ case: $CASE_ID
 items:
   - id: lrn-0a1b2c3d
     verb: route
-    note: recurred twice; nothing existing covers it; the proposal's destination stands
+    dest: reference:shell.md
+    note: recurred twice; nothing existing covers it; a reference file is read when shell work starts
 """,
     "cases/two-duplicates.yaml": """\
 kind: resolution
@@ -361,9 +355,11 @@ def withheld() -> tuple[str, ...]:
         "yet seen -- there is no review_by field and no expiry, "
         "02-schema.md §3a.4)",
         "other pending records outside the batch, except their ids and "
-        "headlines when a brief's 'you may already have this' section "
-        "or the canon index names them",
-        "transcript text beyond the lines a brief cites",
+        "headlines when a brief's 'closest existing lessons' section "
+        "names them",
+        "transcript text beyond the excerpts an evidence pack shows",
+        "the analyst's proposal and card (U3a, 2026-09-27: the steward "
+        "reads the lesson and what code checked about it)",
     )
 
 
@@ -397,14 +393,13 @@ def _render_standing_rulings() -> str:
         "Whether a user-scope lesson may land on an always-loaded line (the managed section",
         "of the user's CLAUDE.md) is settled by two decisions in the design authority,",
         "docs/specs/self-learn/03-decisions.md, and by the routing doctrine's gate",
-        "(routing-doctrine.md sections 2-3), which the analyst ran to produce each proposal's",
-        "destination and decision trace. You need not open any of them; their headlines:",
+        "(routing-doctrine.md sections 2-3). You need not open any of them; their headlines:",
     ]
     for number, headline in STANDING_RULINGS:
         note = " (user ruling 2026-09-11)" if number == "SA-1" else ""
         lines.append(f'  {number}{note}: "{headline}"')
     lines += [
-        "When the proposal's trace and these rulings leave you unsure whether an always-loaded",
+        "When these rulings leave you unsure whether an always-loaded",
         "destination is yours to apply, park the case as `always-loaded-user-scope` (section 12).",
         "`report.context_budget` in the conditions block shows that file's growth against its",
         "threshold.",
@@ -595,12 +590,24 @@ def _existing_cases_for_record(
     return ok_rows, len(all_rows) - len(ok_rows)
 
 
-def _render_briefs(home: Path, proposals: list[dict]) -> str:
-    if not proposals:
+def _render_briefs(
+    home: Path,
+    inputs: list[dict],
+    briefs: dict[str, steward_inputs.LessonBrief] | None = None,
+) -> str:
+    """One brief per input, in the caller's order: any prior case for the
+    record first (blind view), then ``### brief: <id>`` and the body
+    :mod:`steward_inputs` built -- the record, its evidence pack, the
+    closest existing lessons, the links that batched it."""
+    if not inputs:
         return "(no records in this packet)"
+    if briefs is None:
+        briefs = steward_inputs.build_briefs(
+            home, inputs, find_record_path=ledger_ops.find_record_path
+        )
     blocks: list[str] = []
-    for proposal in proposals:
-        record_id = proposal.get("id")
+    for row in inputs:
+        record_id = row.get("id")
         prior_rows, excluded = _existing_cases_for_record(home, record_id)
         for prior_row in prior_rows:
             try:
@@ -611,9 +618,8 @@ def _render_briefs(home: Path, proposals: list[dict]) -> str:
         if excluded:
             blocks.append(f"{excluded} prior cases excluded: freeze hash mismatch")
         header = f"### brief: {record_id or '(unknown id)'}"
-        rows = worker.render_brief(proposal)
-        body = "\n".join(f"[{key}] {text}" for key, text in rows)
-        blocks.append(f"{header}\n{body}" if body else header)
+        brief = briefs.get(str(record_id)) if record_id else None
+        blocks.append(f"{header}\n{brief.body}" if brief is not None else header)
     return "\n\n".join(blocks)
 
 
@@ -726,15 +732,14 @@ def _render_output_contract() -> str:
     out += _sheet_verb_lines()
     out += [
         "  `defer`'s `until` is a date, YYYY-MM-DD, today (UTC) or later; left out, it is 30 days.",
-        "  WHERE A ROUTE LANDS. Leave `route`'s `dest` out to take the lesson's proposal exactly",
-        "  as written: its destination AND its variant -- `local` (the host's git-ignored",
-        "  CLAUDE.local.md) or `rules` (a path-scoped file under .claude/rules/, with the",
-        "  proposal's `rules_topic` and `rules_paths`). Writing `dest` REPLACES the proposal's",
-        "  whole destination, variant included: a bare `dest: claude-md` is the host's plain",
-        "  CLAUDE.md, which on a project host is usually a committed file. Write `dest` only to",
-        "  choose somewhere other than the proposal; to keep a variant while writing it, spell",
-        "  the variant: `claude-md:local`, or `claude-md:rules:<topic>` (the proposal's",
-        "  `rules_paths` carry over only when it names the same topic). `dest` is one of",
+        "  WHERE A ROUTE LANDS. Write `dest` on EVERY `route`. Your brief shows no analyst",
+        "  proposal, and a route without `dest` takes whatever proposal file the lesson happens",
+        "  to have -- a destination you never saw -- or is refused when it has none. A bare",
+        "  `dest: claude-md` is the host's plain CLAUDE.md, which on a project host is usually a",
+        "  committed file; spell a variant to get it: `claude-md:local` (the host's git-ignored",
+        "  CLAUDE.local.md) or `claude-md:rules:<topic>` (a path-scoped file under",
+        "  .claude/rules/; its path globs come only from an analyst proposal naming the same",
+        "  topic, and no sheet key sets them). `dest` is one of",
         f"  {_words(ledger_ops.PROPOSAL_DESTINATIONS)}, or `reference:<file name>`,",
         "  `claude-md:local`, `claude-md:rules:<topic>`. `follow_up` (with `unblocks_on`,",
         "  a gate label, and `follow_up_note`) records that this routing is a known-partial form",
@@ -754,6 +759,12 @@ def _render_output_contract() -> str:
         f"    route, reject, defer, rehome, rescope, revise:  {_words(ledger_ops.LIVE_STATUSES)}",
         f"    retire, supersede (the old and the new lesson):  {_words(ledger_ops.RESOLVABLE_STATUSES)}",
         f"    undefer:  {_words(ledger_ops.DEFERRED_ONLY)}      reopen:  {_words(verbs.REOPEN_ADMITTED_STATUSES)}",
+        "    confirm-recurrence, dismiss-suspect:  routed",
+        "  A SUSPECTED VIOLATION input (method section 10) is decided with these two verbs.",
+        "  `event` is the nonce of one event its brief lists (`event <nonce>: ...`), one item",
+        "  per event you decide. `confirm-recurrence` with `tolerate: true` needs a `note`",
+        "  saying why the rule stays; `dismiss-suspect`'s `why` is one of",
+        f"  {_words(verbs.DISMISS_REASONS)}.",
         f"  These are never sheet verbs and are refused: {', '.join(sorted(batch.REFUSED_VERBS_LITERAL))}, and",
         "  anything starting `host `. A route to `dest: hook` is not applied: the runner parks",
         "  that case for the overseer.",
@@ -809,8 +820,9 @@ def _render_output_contract() -> str:
 def _ordered_blocks(
     home: Path,
     run: RunContext,
-    proposals: list[dict],
+    inputs: list[dict],
     items: list[Item],
+    briefs: dict[str, steward_inputs.LessonBrief] | None = None,
 ) -> tuple[Block, ...]:
     """The seven blocks, in reading order. Factored out of :func:`assemble`
     so a test can monkeypatch this ONE function to prove the offset
@@ -824,7 +836,7 @@ def _ordered_blocks(
         ("containment", _render_containment(run)),
         ("user_model", _render_user_model(home)),
         ("open_cases", _render_open_cases(home, run)),
-        ("briefs", _render_briefs(home, proposals)),
+        ("briefs", _render_briefs(home, inputs, briefs)),
     )
 
 
@@ -847,15 +859,17 @@ def assemble(
     home: Path | str,
     cache_dir: Path | str,
     run: RunContext,
-    proposals: list[dict],
+    inputs: list[dict],
     *,
     conditions_items: list[Item] | None = None,
     returned: dict[str, dict] | None = None,
+    briefs: dict[str, steward_inputs.LessonBrief] | None = None,
 ) -> Packet:
-    """Interface §4.1: the seven blocks, evidence before advice, in two
-    parts (2026-09-26): ``shared`` for the appended system prompt and
-    ``per_packet`` for the user message.
-    Never mutates the ledger, never reads a transcript, and never reads
+    """Interface §4.1: the seven blocks, in two parts (2026-09-26):
+    ``shared`` for the appended system prompt and ``per_packet`` for the
+    user message. ``briefs`` (U3a): the per-input briefs the runner built
+    with :func:`steward_inputs.build_briefs`; left out, they are built here
+    without the lesson index. Never mutates the ledger, and never reads
     `hosts.yaml` or `settings.json` itself -- only through
     :func:`conditions.feed`. A caller assembling several packets of ONE
     run passes the feed it built once as ``conditions_items`` (the feed
@@ -869,11 +883,11 @@ def assemble(
     home = Path(home)
     cache_dir = Path(cache_dir)
     items = (
-        conditions.steward_feed(home, [(str(p.get("id")), p) for p in proposals], cache_dir)
+        conditions.steward_feed(home, [(str(p.get("id")), {}) for p in inputs], cache_dir)
         if conditions_items is None
         else list(conditions_items)
     )
-    blocks = _ordered_blocks(home, run, proposals, items)
+    blocks = _ordered_blocks(home, run, inputs, items, briefs)
     if returned:
         at = next(
             (index for index, (name, _body) in enumerate(blocks) if name == "open_cases"),

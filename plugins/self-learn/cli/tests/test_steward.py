@@ -297,7 +297,7 @@ def test_cross_bucket_queue_is_globally_oldest_first(tmp_path):
         ledger_ops.stamp_proposal(home, rid)
     commit_all(home, "seed interleaved steward queue")
 
-    assert [entry.record.id for entry, _ in steward._eligible_proposals(home)] == [
+    assert [entry.record.id for entry, _ in steward._eligible_lessons(home)] == [
         "lrn-aaaa0001",
         "lrn-bbbb0001",
         "lrn-aaaa0002",
@@ -1779,10 +1779,7 @@ def test_the_live_stuck_run_shape_is_reattempted_and_completes(tmp_path, monkeyp
     _configure_steward(home, packet_size=1)
     run_id = "run-0123456789ab"
     packets = []
-    for index, (entry, proposal) in enumerate(steward._eligible_proposals(home), start=1):
-        identity = steward._input_identity(
-            home, entry.proposal_path, entry.record.id, proposal
-        )
+    for index, (entry, identity) in enumerate(steward._eligible_lessons(home), start=1):
         packets.append({
             "index": index,
             "inputs": [identity],
@@ -2337,8 +2334,7 @@ def test_dry_run_at_the_cap_makes_no_call_and_writes_nothing(tmp_path, monkeypat
     _enable_steward(home)
     cap, _source = settings.resolve_setting(home, settings.by_name("runs.attempt_cap"))
     run_id = "run-cafef00dbeef"
-    entry, proposal = steward._eligible_proposals(home)[0]
-    identity = steward._input_identity(home, entry.proposal_path, entry.record.id, proposal)
+    entry, identity = steward._eligible_lessons(home)[0]
     steward._publish_manifest(home, {
         "version": 1, "actor": "steward", "run_id": run_id,
         "started_at": steward.chrono.now_iso(),

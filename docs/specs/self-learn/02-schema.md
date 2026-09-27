@@ -1553,8 +1553,9 @@ value, observed_at, source)`.
 | the overseer's own last run | `overseer.last_run_at`, `overseer.last_examined_at` |
 | git | `ledger.head`, `repo.head` |
 
-Withheld on purpose: lesson bodies (they arrive through the worker's brief,
-not the feed), telemetry event text (counts and ids only), transcript text.
+Withheld on purpose: lesson bodies (they arrive through the brief, §3a.8,
+not the feed), telemetry event text (counts and ids only), transcript text
+(the brief's evidence packs carry the excerpts).
 
 **The steward's cut (2026-09-26).** The table above is the whole feed, and
 the overseer still reads all of it (`health.yaml`, and its conditions diff
@@ -1572,7 +1573,7 @@ containment block already says when the steward last ran) and
 |---|---|
 | `host.<path>.mode`, `models.steward`, `surface.output-style.active`, `declared.<key>`, `ledger.head` | one table, `key \| value \| observed_at \| source` |
 | `report.buckets`, `report.deferred`, `report.reference_shelf`, `report.context_budget` | each a sub-block after the table, headed `cond:report.<name>@<observed_at>` (the citation), its value as YAML (keys sorted, one scalar-only collection per line, never wrapped) |
-| `report.routed_live` | the same, SLICED to the records in the buckets — `(scope, name)` — of this run's lessons, plus every record a lesson's proposal or record names (any `lrn-` id in the proposal; the record's `supersedes`, `superseded_by`, `contradicts`) |
+| `report.routed_live` | the same, SLICED to the records in the buckets — `(scope, name)` — of this run's lessons, plus every record a lesson's record names (its `supersedes`, `superseded_by`, `contradicts`; since 2026-09-27, §3a.8, no longer any `lrn-` id in an analyst proposal) |
 | `report.surface_reach` | the same, its `rows` SLICED to the scopes this run's lessons can route to (their own bucket, every project bucket whose host is an ancestor of theirs, the user bucket) plus named records; its counts stay the whole machine's |
 
 A slice states its rule in the sub-block's `# source:` line. The slice is
@@ -1581,7 +1582,7 @@ all of a run's packets read the same block; when the lessons cannot be
 resolved, both sections go whole and the source line says why.
 
 **The brief's two parts (2026-09-26).** The steward's brief is the seven
-blocks of the steward interface §4.1, evidence before advice, sent in two
+blocks of the steward interface §4.1, evidence first, sent in two
 parts so that a run's later calls read the first from Claude Code's prompt
 cache (measured 2026-09-20: shared text in the APPENDED system prompt,
 per-call text in the user message, `exclude_dynamic_sections` on).
@@ -1593,7 +1594,9 @@ per-call text in the user message, `exclude_dynamic_sections` on).
 
 The model reads the shared part first (method, conditions, output
 contract), then the packet's own part; each part keeps §4.1's relative
-order, and the analyst's advice (the briefs) is still the last thing read.
+order. Since 2026-09-27 (§3a.8) the briefs carry no analyst advice: each is
+the lesson, its code-built evidence pack, the closest existing lessons and
+its batch links.
 The repair round is a new session with the same file and flag. Each
 `attempts` row of a steward packet (decision and repair) carries `usage`:
 `first_response` and `session`, each with `cache_read_input_tokens`,
@@ -1814,6 +1817,154 @@ process's environment — never the key) and `similarity` (`basis`,
 `cosine_ready` — records with a current vector usable for cosine —
 `lexical_only`, and both thresholds). `groups` groups the queued
 records (pending, deferred hidden) as the steward would read them.
+
+### 3a.8 What the steward reads
+
+*(Added 2026-09-27, U3a of the pipeline redesign; code `steward_inputs.py`,
+`steward.py`, `steward_prompt.py`.)* The user, 2026-09-26: the pipeline is
+"a series of builders … miner finds lesson material > steward builds
+lessons > overseer builds a coherent system out of those lessons"; on
+retiring the analyst, "basically, i think i agree with you"; on the
+audit's two options for suspected violations, "do both a and b", (b) being
+that the suspected rule violations the miner records go to the steward.
+The evidence: `misc/miner-output-audit-2026-09-26/REPORT.md` (untracked) —
+the steward read only the analyst's card, which carried no session or line,
+re-derived what the miner knew (117 record-file reads and 94 transcript
+calls over 9 runs), and approved a lesson on a verification the transcript
+contradicts; `suspected-violation` fires reached no consumer.
+
+**Inputs.** A run selects three kinds of input, each a row of the run
+record's `inputs` with a `kind`:
+
+| `kind` | What | Identity (`version`) |
+|---|---|---|
+| `lesson` | a queued record (pending, not deferred) whose version no committed run has decided — **with or without an analyst proposal** | the record file's committed blob; `legacy_version` carries the proposal file's blob when there is one |
+| `reconsider` | a record a later observation brought back (unchanged) | `observation:<obs-id>` |
+| `suspected-violation` | a ROUTED record that unhandled `fire` events with outcome `suspected-violation` name (a legacy `violated` reads as it, §4.3 of `11-telemetry-and-lifecycle.md`); the row carries the events (`nonce`, `ts`, `outcome`, `origin`) | `fires:<nonce>,<nonce>…`, sorted |
+
+A record edited after selection is a new version. A proposal written or
+rewritten beside it changes nothing. Every run record written before this
+change keyed its dispositions by the proposal blob: a lesson whose
+`legacy_version` a committed run applied, parked or abandoned is still
+decided, and a `returned` row under it still shows the lesson as sent back.
+A `refused` row under the legacy version is NOT carried over: a refusal is
+the machinery refusing a write, not a judgment on the lesson (orchestrator
+review 2026-09-27: two live lessons were refused over the secret-scan false
+positive fixed on 2026-09-26 and could never be offered again). Such a
+lesson gets one fresh attempt under the record identity; a refusal there is
+terminal, as every refusal was before. An event is **handled**
+when a record's `recurrences[]` or `dismissed_suspects[]` holds its nonce;
+handled events are dropped before the version is taken, so a new fire about
+the same record is a new input carrying only itself, and a run that decided
+an input's events (applied, parked, refused, abandoned) is never offered
+them again. A record is in at most one input per run (reconsider first,
+then lesson, then suspected violation).
+
+One observation, one nonce: the miner's legacy backfill spooled a
+`recurrence-suspect` (its own nonce, basis `fire-violated`) for each pre-U6
+`violated` fire, and those are the review's "not holding" cards. A fire
+whose same-`(record, origin)` fire-basis suspect is handled is handled; one
+whose suspect is not is offered under the SUSPECT's nonce (the event row
+keeps the fire's as `fire_nonce`), so one decision clears both. Measured
+2026-09-27 on the live ledger: 6 of 9 unhandled fires had such a suspect,
+4 of them already confirmed or dismissed by the user; the rule leaves 5
+events on 4 records.
+
+The analyst still runs (U5 retires it). What still reads its proposal
+files after this change: the worker (freshness), `status`/`list` (the
+`unanalyzed` count), `route` itself (a route with no `--dest` takes the
+proposal's destination, and a `claude-md:rules:<topic>` route takes its
+path globs from a proposal naming the same topic), the hook route (the
+generated script) and merge proposals (`collapse`), the `/self-learn:review`
+cards, and the web UI. The steward's brief reads none of them; its output
+contract asks for `dest` on every route.
+
+**Packets.** The run's input ids are grouped by §3a.7's
+`group_for_steward` — at most 10 per packet, at most 5 unrelated —
+ordered by each packet's oldest member. `steward.packet_size` can only
+lower the 10 (a value above it would break the user's rule, so it is
+capped); the unrelated cap never exceeds the packet size. The run has no
+record cap, as before. The index is brought up to date (incrementally,
+in the cache) at the start of every run that has inputs; with no
+embedding key it is word search only, and when it cannot be built at all
+the packets are 5 at a time with no relatedness and the run record says so.
+
+**The brief per input** replaces the analyst card in the per-packet part
+(the shared part — method, conditions, output contract — is unchanged and
+byte-identical across a run's packets). Under `### brief: <id>`:
+
+1. `[input]` — the kind; a reconsider input says why it is back.
+2. `[lesson]` / `[routed]` / `[record]` — type, scope, bucket, status,
+   sightings, created; where a routed lesson went; the record's path as
+   `ledger@<run start commit>:<path>`, then its `Trigger`/`Instruction` or
+   `Fact`/`Context` with their file lines (citable as `#L<a>-<b>`), and the
+   miner's `verified_how`, labelled as carrying no ref and unchecked.
+3. `[evidence pack]` — for each evidence item: what the record cites, the
+   resolved ref (§3a.6: session, project folder, line, uuid, the entry's
+   own time, who spoke), the quote, the quote check's verdict with its
+   meaning in words, the corrected ref for `nearby` / `elsewhere_in_file` /
+   `other_session`, and an excerpt (§3a.6 `excerpt`, redacted) of the
+   entries around the verdict's ref — two either side that say something
+   (empty relayed rows and the harness's token notice are skipped), each
+   with its line and role. Beyond §3a.6's seven verdicts the pack can say
+   `no_quote`, `unresolvable` (the transcript is gone) and
+   `not_a_transcript`. `stitched` and `not_found` are shown as such, with
+   the words "this evidence does not check out". A second item at the same
+   entry uuid is marked as one moment and not excerpted again. For a
+   `suspected-violation` input the pack is `[suspected violations]`: each
+   event's nonce (what a sheet item names as `event`), time, outcome,
+   pointer resolved, and an excerpt.
+4. `[closest existing lessons]` — §3a.7 `nearest`, 5 lessons, any status,
+   each with status, destination when routed, bucket, headline and score,
+   and whether the ranking used meaning or word search only.
+5. `[batched with]` — the packet's relatedness links that name this lesson.
+
+Budgets (`steward_inputs.py`): an excerpt entry is clipped at 700
+characters, one item's excerpt at 2,800, one lesson's excerpts at 9,000,
+one packet's at 60,000 (each lesson gets
+`min(9,000, 60,000 / lessons in the packet)`); below 400 characters left an
+item keeps its ref and verdict only. The `other_session` search looks at
+60 files (§3a.6's default is 200). MEASURED 2026-09-27 on the live ledger,
+read-only, word search only (no embedding call;
+`misc/pipeline-design-2026-09-26/u3a-measure/`, untracked): the live queue
+selected 1 lesson and 4 suspected-violation inputs (5 events) — one packet
+of 5, brief 27,292 characters, excerpts 10,221 (at most 2,979 for one
+lesson), 0.8 s to build; over all 17
+pending files (as if every one were selected) 3 packets of 10/5/2, brief
+median 4,169 characters per lesson (max 5,549), excerpts median 1,112 (max
+1,908), packet briefs 40,352 / 22,887 / 8,840; over the 43 records of the
+2026-09-26 audit, 6 packets, excerpts median 1,041 per lesson (max 2,381),
+packet excerpts at most 11,440, the slowest packet 9–10 s (its
+`other_session` searches). No budget bound in any of the three: the same
+runs with the budgets lifted gave the same bytes. The budgets are ceilings
+for a record with many sightings.
+
+**Data points** (the user, 2026-09-26 21:58: "make gathering data points for
+the future screen easy"). The run record gains `grouping` (`basis`,
+`basis_reason`, `thresholds`, `max_size`, `max_unrelated`, `not_indexed`,
+and `index`: the refresh's `mode`, `mode_reason`, model and counts); each
+packet gains `group` (`members`, `unrelated`, `links`, `basis_counts` —
+`cosine` / `lexical` / `none` over every pair of the packet, `none` being a
+pair from two buckets that no similarity compared); each `decision` attempt
+gains `brief` (`lessons`, `kinds`, `brief_chars`, `pack_chars`,
+`pack_chars_max`, `evidence_items`, `excerpted`, `verdicts`,
+`nearest_mode`, `basis_counts`) and `reads` (`tool_uses`,
+`transcript_reads`, `ledger_record_reads`, `by_tool`: from the session's
+tool events, a transcript read being a call whose input names
+`.claude/projects`, `archive/sessions` or a `.jsonl` file other than
+telemetry — the audit's rule); a `repair` attempt gains `reads`. `reads` is
+null when the backend reported no tool events.
+
+**Deciding a suspected violation.** No new verb. `confirm-recurrence`
+(optionally `tolerate: true` with a `note`) and `dismiss-suspect` (with a
+`why`) take the nonce of a `fire` event whose outcome is
+`suspected-violation` as well as a `recurrence-suspect`'s, in the verb and
+in `batch --dry-run` alike; a dismissal of a fire records `basis:
+fire-suspected-violation`. Nothing spools a `recurrence-suspect` for a fire
+(the miner's crossover stays removed). Reconsidering the wording or
+placement is a `kind: reconsider` case whose `supersedes` names the case
+that routed the lesson; with no such case, or when the fix is a stronger
+surface or a hook, the steward parks.
 
 ## 4. Managed sections (the compile targets' contract)
 
