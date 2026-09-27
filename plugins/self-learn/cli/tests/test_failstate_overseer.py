@@ -324,3 +324,122 @@ def test_a_step_after_phase_a_that_raises_is_a_counted_refusal(tmp_path, monkeyp
     assert not (home / "overseer" / "coverage.yaml").exists()
     (note,) = overseer_run._committed_failure_notes(home, _week())
     assert "synthetic failure" in (home / note).read_text(encoding="utf-8")
+
+
+# ------------------------------------------------------------ unit 7
+
+
+def _timed_out():
+    from self_learn.invocation.contract import Outcome
+    return Outcome(ok=False, rc=None, stdout="", detail="", failure="timeout")
+
+
+def test_the_phase_time_limit_grows_with_the_population():
+    """`max(overseer.timeout_secs, 30 s x cases)`: the floor for a small
+    week; for the 57 cases of 2026-09-27 (810 s against a flat 900 s)
+    1710 s."""
+    assert overseer_run.phase_timeout(900.0, 0) == 900.0
+    assert overseer_run.phase_timeout(900.0, 30) == 900.0
+    assert overseer_run.phase_timeout(900.0, 57) == 1710.0
+
+
+def test_each_phase_is_given_the_scaled_limit(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    rid_a, parked_a, rid_b, parked_b = _two_parked(home, tmp_path)
+    monkeypatch.setattr(overseer_run, "TIMEOUT_PER_CASE_SECS", 1000.0)
+    timeouts = {}
+
+    def invoke(spec):
+        timeouts[spec.label] = spec.timeout
+        if spec.label == "phase-a":
+            _phase_a(spec.cwd)
+        else:
+            _phase_b_common(spec.cwd)
+            _dump(spec.cwd / "sheet.yaml", {"version": 1, "items": []})
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    overseer_run.run(home, no_push=True)
+    # The week holds the two parked cases (phase A reads 2); phase B reads
+    # them again as the parked queue (4).
+    assert timeouts == {"phase-a": 2000.0, "phase-b": 4000.0}
+
+
+def test_a_timed_out_phase_b_that_wrote_its_files_is_applied(tmp_path, monkeypatch):
+    """Audit finding 7: a phase B that timed out kept nothing, however much
+    it had written. Now a phase B that wrote every file a run needs is
+    checked like a finished one, and what passes applies."""
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    rid_a, parked_a, rid_b, parked_b = _two_parked(home, tmp_path)
+
+    def invoke(spec):
+        if spec.label == "phase-a":
+            _phase_a(spec.cwd)
+            return _ok()
+        _stage_two_successors(
+            spec.cwd, rid_a, _successor(rid_a, parked_a), rid_b, _successor(rid_b, parked_b),
+        )
+        return _timed_out()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    result = overseer_run.run(home, no_push=True)
+    assert _status(home, rid_a) != "pending" and _status(home, rid_b) != "pending"
+    assert not overseer_run.has_unfinished_work(home)
+    assert result.status in {"applied", "partial"}
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    assert "phase B timed-out (timeout); what it had written was checked" in report
+
+
+def test_a_validated_phase_a_is_kept_for_the_weeks_next_attempt(tmp_path, monkeypatch):
+    """Phase B times out having written nothing usable: that attempt is a
+    counted refusal as before, but its validated phase A is kept, and the
+    week's next attempt -- the population unchanged -- goes straight to
+    phase B."""
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    rid_a, parked_a, rid_b, parked_b = _two_parked(home, tmp_path)
+    labels = []
+
+    def invoke(spec):
+        labels.append(spec.label)
+        if spec.label == "phase-a":
+            _phase_a(spec.cwd)
+            return _ok()
+        if labels.count("phase-b") == 1:
+            return _timed_out()
+        _stage_two_successors(
+            spec.cwd, rid_a, _successor(rid_a, parked_a), rid_b, _successor(rid_b, parked_b),
+        )
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    first = overseer_run.run(home, no_push=True)
+    assert first.status == "timed-out"
+    assert overseer_run.week_attempts(home, _week()) == 1
+    second = overseer_run.run(home, no_push=True)
+    assert labels == ["phase-a", "phase-b", "phase-b"]
+    assert second.status in {"applied", "partial"}
+    assert _status(home, rid_b) != "pending"
+
+
+def test_a_kept_phase_a_is_not_used_for_a_changed_population(tmp_path, monkeypatch):
+    """Control: a case opened between the attempts changes the population,
+    so phase A is made again."""
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    labels = []
+
+    def invoke(spec):
+        labels.append(spec.label)
+        if spec.label == "phase-a":
+            _phase_a(spec.cwd)
+            return _ok()
+        return _timed_out()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    overseer_run.run(home, no_push=True)
+    _seed_parked(home, tmp_path, "lrn-0d000004", "pd")  # a new case in the window
+    overseer_run.run(home, no_push=True)
+    assert labels == ["phase-a", "phase-b", "phase-a", "phase-b"]

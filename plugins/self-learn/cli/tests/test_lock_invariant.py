@@ -246,6 +246,7 @@ NOT_REPO_TRUTH = {
     # examples are held to.
     "steward._pair_problem": "XDG cache: a sheet validation copy beside the stage, below steward/runs/<run_id>, unlinked at once",
     "steward.run": "XDG cache: steward run directory and last-run marker; ledger writes delegate to lock-owning cases/batch/user-model/statements verbs",
+    "overseer/run._keep_phase_a": "XDG cache: overseer/phase-a/<week>/, a validated phase A kept for the same week's next attempt (2026-09-27, fail-state audit finding 7)",
     "overseer/run._write_last_run_marker": "XDG cache: overseer/overseer.last-run, a disposable fast-status marker; never ledger truth",
     # U2 (S-65, 02-schema.md §3a.2 §1.8): <cache>/cases/index.json is a
     # NOT_REPO_TRUTH index over the case files -- rebuildable from them,

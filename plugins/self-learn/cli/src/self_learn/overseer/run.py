@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+import shutil
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -546,6 +547,65 @@ in questions.yaml. It has these headings, in this exact order: Examined; Decided
 stead; Hooks; User model; Catalogue health; Questions for you; Refused / could not do. Use
 ``- none`` for an empty section.
 {_journal_block("B")}"""
+
+
+#: 2026-09-27 (fail-state audit finding 7): the allowance each case adds to
+#: a phase's time limit. Measured: phase B took 559 s on 54 cases (10.4 s a
+#: case, 2026-09-25) and 810 s on 57 (14.2 s a case, 2026-09-27) against a
+#: flat 900 s. 30 s a case is about twice the worst measured rate, so a
+#: slow week has headroom instead of a 10% margin; `overseer.timeout_secs`
+#: stays the floor for a small week.
+TIMEOUT_PER_CASE_SECS = 30.0
+
+
+def phase_timeout(floor: float, cases_count: int) -> float:
+    """One phase's time limit: ``max(floor, 30 s x cases)``."""
+    return max(float(floor), TIMEOUT_PER_CASE_SECS * max(int(cases_count), 0))
+
+
+#: The files a validated phase A leaves, kept for the week's next attempt.
+_PHASE_A_FILES = ("selection.yaml", "initial-views.yaml")
+
+
+def _phase_a_keep_dir(home: Path, week: str) -> Path:
+    """Where a validated phase A is kept (cache only, never the ledger)."""
+    return worker.cache_dir(home) / "overseer" / "phase-a" / week
+
+
+def _population_key(population_text: str) -> str:
+    return hashlib.sha256(population_text.encode("utf-8")).hexdigest()[:16]
+
+
+def _keep_phase_a(home: Path, stage: Path, week: str, key: str) -> None:
+    """2026-09-27 (fail-state audit finding 7): keep a validated phase A for
+    the same week's next attempt, keyed by the population it saw. Only this
+    week's copy is kept; older weeks' copies are removed."""
+    root = _phase_a_keep_dir(home, week).parent
+    if root.is_dir():
+        for other in root.iterdir():
+            if other.name != week:
+                shutil.rmtree(other, ignore_errors=True)
+    target = _phase_a_keep_dir(home, week)
+    shutil.rmtree(target, ignore_errors=True)
+    target.mkdir(parents=True, exist_ok=True)
+    for name in _PHASE_A_FILES:
+        fsops.atomic_write(target / name, (stage / name).read_bytes(), fsync=False)
+    fsops.atomic_write(target / "population.key", key + "\n", fsync=False)
+
+
+def _reuse_phase_a(home: Path, stage: Path, week: str, key: str) -> bool:
+    """Put a kept phase A back into the stage when it was made for this week
+    from the same population; answers whether it did."""
+    source = _phase_a_keep_dir(home, week)
+    try:
+        kept_key = (source / "population.key").read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    if kept_key != key or not all((source / name).is_file() for name in _PHASE_A_FILES):
+        return False
+    for name in _PHASE_A_FILES:
+        _write_stage(stage, stage / name, (source / name).read_text(encoding="utf-8"))
+    return True
 
 
 def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, run_id: str):
@@ -1378,6 +1438,15 @@ def _refuse_in_span(
         "refused", EXIT_REFUSED, run_id, model_calls, selected, excluded,
         report=str(report_path),
     )
+
+
+def _phase_b_output_present(stage: Path) -> bool:
+    """Whether phase B left every file a run needs -- the four required
+    files and at least one sheet -- whatever state its session ended in."""
+    required = ("report.md", "findings.yaml", "questions.yaml", "user-model-delta.yaml")
+    if not all((stage / name).is_file() for name in required):
+        return False
+    return any(stage.glob("sheet-*.yaml")) or (stage / "sheet.yaml").is_file()
 
 
 def _sheet_pairs(stage: Path, drops: list[str] | None = None) -> list[tuple[Path | None, Path]]:
@@ -3573,12 +3642,29 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
     _write_stage(stage, stage / "nudges.yaml", _yaml_text({"nudges": offered}))
     prompt_a = _phase_a_prompt(stage, len(blind), excluded)
     _write_stage(stage, stage / "prompt-a.md", prompt_a)
-    _journal(home, {"at": started, "run": run_id, "status": "population", "count": len(blind), "excluded": excluded})
+    # 2026-09-27 (fail-state audit finding 7): each phase's time limit grows
+    # with the population, `overseer.timeout_secs` being the floor.
+    timeout_a = phase_timeout(timeout_seconds, len(blind))
+    _journal(home, {"at": started, "run": run_id, "status": "population", "count": len(blind),
+        "excluded": excluded, "timeout_secs": timeout_a})
 
-    outcome_a = _invoke(home, stage, prompt_a, timeout_seconds, "phase-a", run_id)
-    model_calls = 1
-    _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-a-returned",
-        "ok": bool(outcome_a.ok), "tool_turns": _reported_turns(outcome_a)})
+    # The key is the population the model is shown (one line per case,
+    # ids, opening times, headlines), never the window's moving start.
+    population_key = _population_key((stage / "population.txt").read_text(encoding="utf-8"))
+    if not dry_run and _reuse_phase_a(home, stage, week, population_key):
+        # 2026-09-27 (fail-state audit finding 7): this week's phase A was
+        # already made and validated against the same population by an
+        # earlier attempt whose phase B failed; it is used again instead of
+        # spending another phase-A call.
+        outcome_a = invocation.Outcome(ok=True, rc=0, stdout="", detail="", failure=None)
+        model_calls = 0
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-a-reused",
+            "week": week})
+    else:
+        outcome_a = _invoke(home, stage, prompt_a, timeout_a, "phase-a", run_id)
+        model_calls = 1
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-a-returned",
+            "ok": bool(outcome_a.ok), "tool_turns": _reported_turns(outcome_a)})
     # A15: a failure of the FIRST model call leaves a committed trace with
     # its real reason. It happens before any `intents.begin` here, so the
     # note opens its own `intents.ledger_write` span. A dry run writes
@@ -3642,6 +3728,8 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         )
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "a-incomplete", "reason": str(exc)[:300]})
         return RunResult("refused", EXIT_REFUSED, run_id, model_calls, excluded=excluded)
+    if not dry_run and model_calls:
+        _keep_phase_a(home, stage, week, population_key)
 
     coverage_before: bytes | None = None
     intent: intents.Intent | None = None
@@ -3677,8 +3765,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             )
         prompt_b = _phase_b_prompt(stage, selected, tuple(row["case"] for row in parked_rows))
         _write_stage(stage, stage / "prompt-b.md", prompt_b)
-        outcome_b = _invoke(home, stage, prompt_b, timeout_seconds, "phase-b", run_id)
-        model_calls = _MODEL_CALLS_PER_RUN
+        timeout_b = phase_timeout(timeout_seconds, len(blind) + len(parked_rows))
+        outcome_b = _invoke(home, stage, prompt_b, timeout_b, "phase-b", run_id)
+        model_calls += 1
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-b-returned",
             "ok": bool(outcome_b.ok), "tool_turns": _reported_turns(outcome_b)})
         # Both phases have written to it by now; every commit below carries
@@ -3702,7 +3791,23 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             _environment_hold(home, run_id, "b", outcome_b)
             return RunResult(model_failures.HELD_ENVIRONMENT, EXIT_REFUSED, run_id, model_calls,
                 selected, excluded)
-        if not outcome_b.ok:
+        phase_b_notes: list[str] = []
+        if not outcome_b.ok and outcome_b.failure == "timeout" and _phase_b_output_present(stage):
+            # 2026-09-27 (fail-state audit finding 7): a phase B that TIMED
+            # OUT after writing every file a run needs is not thrown away:
+            # what it wrote goes through the same checks as a finished phase
+            # B, and what passes is applied. A session that failed any other
+            # way (Claude Code's turn limit, an API error) still applies
+            # nothing, as the turn-limit rule of 2026-09-24 says.
+            state = "timed-out"
+            phase_b_notes.append(
+                f"phase B {state} ({_failure_kind(outcome_b)}); what it had written "
+                "was checked like a finished phase B, and what passed was applied"
+            )
+            _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                "status": "phase-b-partial-kept", "failure": _failure_kind(outcome_b),
+                **model_failures.failure_fields(outcome_b)})
+        elif not outcome_b.ok:
             state = "timed-out" if outcome_b.failure == "timeout" else "refused"
             reason = f"phase B {state}; no phase B output was applied"
             kind = _failure_kind(outcome_b)
@@ -4020,7 +4125,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 model_updates=model_updates,
                 runner_notes=[
                     *report_notes, *question_drops, *finding_drops, *case_drops,
-                    *pair_drops, *coverage_drops,
+                    *pair_drops, *coverage_drops, *phase_b_notes,
                 ],
                 journal_text=journal_text, trigger=trigger,
             )
@@ -4038,6 +4143,10 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 kind="schema-repair", reason=f"the run record could not be prepared: {exc}",
             )
         _publish_manifest(home, intent, manifest, coverage_path)
+        # Phase B's output is now committed: the kept phase A has served its
+        # one purpose (a failed phase B's next attempt) and is dropped, so a
+        # later manual run looks at the week afresh.
+        shutil.rmtree(_phase_a_keep_dir(home, week), ignore_errors=True)
 
     return _execute_manifest(
         home, manifest, boundary_no_push=boundary_no_push, manual=manual,
