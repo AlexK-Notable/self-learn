@@ -3725,8 +3725,12 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 # not a pair (or no valid pair at all) fails the stage.
                 quarantine = _quarantine_dir(home, run_id, packet_index, attempt_no)
                 check: _StageCheck | None = None
+                #: every file any of this attempt's checks quarantined -- the
+                #: first pass's too, when a repair turn followed it.
+                quarantined_all: list[str] = []
                 try:
                     check = _check_stage(stage, open_records, quarantine)
+                    quarantined_all.extend(check.quarantined)
                 except ValueError as first_error:
                     if packet_record.get("repair_remaining", 0) <= 0:
                         second_error = first_error
@@ -3779,6 +3783,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                         if not repair.ok:
                             raise ValueError(repair.detail or repair.failure or "repair invocation failed")
                         check = _check_stage(stage, open_records, quarantine)
+                        quarantined_all.extend(check.quarantined)
                     except ValueError as exc:
                         second_error = exc
                     if first_pass.is_dir():
@@ -3812,6 +3817,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                             second_error = None
                             try:
                                 check = _check_stage(stage, open_records, quarantine)
+                                quarantined_all.extend(check.quarantined)
                             except ValueError as exc:  # it passed before; never expected
                                 second_error = exc
                             packet_record["attempts"][-1]["restored_first_pass"] = True
@@ -3820,6 +3826,11 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                                 "reason": _failure_detail(why)})
                         shutil.rmtree(first_pass, ignore_errors=True)
                 if second_error is not None:
+                    if quarantined_all:
+                        _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+                            "status": "stage-quarantined", "packet": packet_index,
+                            "undeclared": list(dict.fromkeys(quarantined_all)),
+                            "dir": str(quarantine)})
                     schema_dispositions = {
                         row["record"]: {
                             "state": "unfinished", "input_version": row["version"],
@@ -3853,10 +3864,10 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 # moved out of the stage, so only the pairs that passed are
                 # prepared; the lessons no passing pair covers stay open.
                 set_aside = _set_aside_pairs(stage, check, quarantine)
-                if check.quarantined or set_aside:
+                if quarantined_all or set_aside:
                     _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
                         "status": "stage-quarantined", "packet": packet_index,
-                        "undeclared": check.quarantined, "pairs": set_aside,
+                        "undeclared": list(dict.fromkeys(quarantined_all)), "pairs": set_aside,
                         "problems": {stem: _failure_detail(problem)
                                      for stem, problem in sorted(check.problems.items())},
                         "uncovered": check.uncovered, "dir": str(quarantine)})

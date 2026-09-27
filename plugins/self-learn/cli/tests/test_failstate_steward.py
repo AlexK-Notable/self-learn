@@ -297,3 +297,30 @@ def test_an_unexplained_change_to_the_run_record_itself_still_refuses(tmp_path, 
     path.write_text(path.read_text(encoding="utf-8") + " ", encoding="utf-8")
     with pytest.raises(steward.gitops.GitOpsError, match="unexplained dirty ledger paths"):
         steward._publish_manifest(home, {**manifest, "status": "x"}, reason="next")
+
+
+def test_a_file_quarantined_before_a_repair_turn_is_still_traced(tmp_path, monkeypatch):
+    """The first pass's check quarantines a stray file; a case-rule
+    violation then spends the repair turn, whose own check finds nothing
+    to quarantine. The journal still names the file."""
+    import json
+
+    home, bad, good = _two(tmp_path, monkeypatch, "f9")
+    first = {bad: _case(bad, [KEPT_ITEM], because="settled\n## heading"), good: _case(good, [KEPT_ITEM])}
+    fixed = {bad: _case(bad, [KEPT_ITEM]), good: _case(good, [KEPT_ITEM])}
+    calls = []
+
+    def session(spec):
+        calls.append(1)
+        if _REPAIR_HEADER in spec.prompt:
+            return _stage(spec, fixed)
+        return _stage(spec, first, extra_files=("notes.md",))
+
+    monkeypatch.setattr(steward.invocation, "write_session", session)
+    result = steward.run(home)
+    assert len(calls) == 2  # the repair turn really fired
+    assert _states(home, result.run_id) == {bad: "applied", good: "applied"}
+    rows = [json.loads(line) for line in
+            steward.journal_path(home).read_text(encoding="utf-8").splitlines()]
+    traced = [row for row in rows if row.get("status") == "stage-quarantined"]
+    assert len(traced) == 1 and traced[0]["undeclared"] == ["notes.md"]
