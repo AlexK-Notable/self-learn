@@ -127,11 +127,17 @@ def test_a_parked_case_without_a_reason_the_model_may_choose_gets_the_repair_tur
     _result, calls = _run_with(home, monkeypatch, park_with_no_reason)
 
     assert len(calls) == 2  # the one repair turn was spent on it
+    repair = calls[1].prompt
+    assert "a parked case needs parked_reason" in repair
+    assert "authority-unclear" in repair  # the error names what it may be
+    # 2026-09-27 (fail-state audit finding 3): the pair still failing after
+    # the repair turn is left out ON ITS OWN -- its lesson stays open for a
+    # later attempt, nothing of it is applied or parked -- and the other
+    # lesson's valid pair applies. Before, the whole packet was lost.
     packet = _packet(home)
-    assert packet["failure"] == "schema-repair"
-    assert "a parked case needs parked_reason" in packet["failure_detail"]
-    assert "authority-unclear" in packet["failure_detail"]  # the error names what it may be
-    assert [_status(home, rid) for rid in ids] == ["pending", "pending"]  # nothing half-applied
+    row = packet["dispositions"][ids[1]]
+    assert (row["state"], row["reason"]) == ("unfinished", "not-covered")
+    assert [_status(home, rid) for rid in ids] == ["rejected", "pending"]
     assert cases.list_cases(home, parked_for="overseer") == []
 
 
@@ -146,8 +152,10 @@ def test_parking_fields_on_a_case_that_is_not_parked_get_the_repair_turn(tmp_pat
     _result, calls = _run_with(home, monkeypatch, reason_without_parking)
 
     assert len(calls) == 2
-    assert "only for a case whose kind is parked" in _packet(home)["failure_detail"]
-    assert [_status(home, rid) for rid in ids] == ["pending", "pending"]
+    assert "only for a case whose kind is parked" in calls[1].prompt
+    # 2026-09-27 (fail-state audit finding 3): that pair alone is left out.
+    assert _packet(home)["dispositions"][ids[1]]["reason"] == "not-covered"
+    assert [_status(home, rid) for rid in ids] == ["rejected", "pending"]
 
 
 def test_when_the_runner_would_park_the_case_anyway_its_reason_is_the_one_recorded(tmp_path, monkeypatch):

@@ -222,14 +222,21 @@ def test_a_format_error_and_a_case_violation_share_the_one_repair_turn(tmp_path,
         if _REPAIR_HEADER in spec.prompt:
             return _stage(spec, fixed)
         outcome = _stage(spec, first)
-        (_stage_dir(spec) / "stray.txt").write_text("not declared\n", encoding="utf-8")
+        # 2026-09-27 (fail-state audit finding 3): an undeclared file is
+        # quarantined now, never a format error; a sheet item with a key
+        # its verb does not take is the format error of this test.
+        sheet = _stage_dir(spec) / "sheets" / f"{good}.yaml"
+        sheet.write_text(
+            sheet.read_text(encoding="utf-8").replace("verb: reject", "verb: reject\n  zz_key: 1"),
+            encoding="utf-8",
+        )
         return outcome
 
     monkeypatch.setattr(steward.invocation, "write_session", session)
     result = steward.run(home)
 
     repair = _repair_part(prompts)
-    assert "undeclared stage file: stray.txt" in repair  # the format error
+    assert f"- cases/{good}.yaml: " in repair and "zz_key" in repair  # the format error
     assert f"- cases/{bad}.yaml: case: a free-text field contains a '## '" in repair
     assert result.run_id is not None
 
