@@ -340,6 +340,16 @@ class LessonIndex:
         extra = last_error or embedder_reason
         return LEXICAL_ONLY, f"{why}; {extra}" if extra else why
 
+    def record_vectors(self) -> dict[str, list[float]]:
+        """Every record's CURRENT vector from the index's model (made from
+        the record's present text), by id -- whether or not every record
+        has one. Relatedness decides per pair from these."""
+        model = self.model_id()
+        if model is None:
+            return {}
+        current = self.vectors.current_ids(model, self._hashes())
+        return {i: v for i, v in self.vectors.vectors(model).items() if i in current}
+
     def current_vectors(self) -> dict[str, list[float]]:
         """Current-model vectors by id ({} unless the index is hybrid)."""
         if self._vector_cache is None:

@@ -16,13 +16,17 @@ unrelated lessons a given agent should parse is 5."
    moment, 02-schema.md §3a.6); or
 2. **same bucket and close in meaning** -- the same bucket ``(scope,
    name)`` (never the name alone: skill ``x`` and project ``x`` are
-   different buckets) AND similarity at or above the threshold. Similarity
-   is the cosine of the two stored embeddings when the index is ``hybrid``
-   and a threshold has been measured for its model; otherwise the lexical
-   similarity -- the mean, over both directions, of how well one record's
-   text retrieves the other by BM25, relative to how well it retrieves
-   itself (``LessonIndex.lexical_profile``). One basis per call to
-   :func:`group_for_steward`; two scales are never mixed.
+   different buckets) AND similarity at or above that pair's threshold.
+   The basis is decided PER PAIR (orchestrator review, 2026-09-26: one
+   missing vector must not drop a whole grouping to words): when both
+   records have a current vector from the index's model and a cosine
+   threshold is measured for that model, cosine against the cosine
+   threshold; otherwise the lexical similarity -- the mean, over both
+   directions, of how well one record's text retrieves the other by BM25,
+   relative to how well it retrieves itself
+   (``LessonIndex.lexical_profile``) -- against the lexical threshold. Each
+   :class:`Relation` names its basis; a score is only ever compared with
+   its own scale's threshold.
 
 **group_for_steward(ids)**: groups of at most 10 records, in each of which
 at most 5 records are related to no other member. Connected pieces of the
@@ -37,7 +41,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable
 
-from .store import HYBRID, LessonDoc, LessonIndex
+from .store import LessonDoc, LessonIndex
 from .vectors import cosine
 
 MAX_GROUP = 10
@@ -84,7 +88,7 @@ class Relation:
     shared_sessions: tuple[str, ...]
     shared_uuids: tuple[str, ...]
     similarity: float | None
-    basis: str  # "cosine" | "lexical"
+    basis: str | None  # "cosine" | "lexical"; None when no similarity was computed
 
     def to_json(self) -> dict:
         return {
@@ -101,7 +105,7 @@ class Relation:
 
 
 class Relatedness:
-    """Pairwise relatedness over one open index, with one fixed basis."""
+    """Pairwise relatedness over one open index; the basis is per pair."""
 
     def __init__(
         self,
@@ -112,52 +116,67 @@ class Relatedness:
     ) -> None:
         self.index = index
         self.docs: dict[str, LessonDoc] = index.docs()
-        mode, mode_reason = index.mode()
-        model = index.model_id()
+        self.model = index.model_id()
         threshold = cosine_threshold
-        if threshold is None and model is not None:
-            threshold = COSINE_THRESHOLDS.get(model)
-        if mode == HYBRID and threshold is not None:
-            self.basis = "cosine"
-            self.threshold = threshold
-            self.basis_reason = f"cosine over {model} embeddings"
-            self._vectors = index.current_vectors()
-        else:
+        if threshold is None and self.model is not None:
+            threshold = COSINE_THRESHOLDS.get(self.model)
+        self.cosine_threshold: float | None = threshold
+        self.lexical_threshold = LEXICAL_THRESHOLD if lexical_threshold is None else lexical_threshold
+        self._vectors = index.record_vectors() if threshold is not None else {}
+        ready = sum(1 for i in self.docs if i in self._vectors)
+        #: Records whose pairs can use cosine (both ends need one).
+        self.cosine_ready = ready
+        if not self.docs or ready == 0:
             self.basis = "lexical"
-            self.threshold = LEXICAL_THRESHOLD if lexical_threshold is None else lexical_threshold
-            if mode != HYBRID:
-                self.basis_reason = f"lexical: index is lexical-only ({mode_reason})"
-            else:
-                self.basis_reason = f"lexical: no measured cosine threshold for {model}"
-            self._vectors = {}
+        elif ready == len(self.docs):
+            self.basis = "cosine"
+        else:
+            self.basis = "mixed"
+        if threshold is None:
+            why = (f"no measured cosine threshold for {self.model}" if self.model
+                   else "no embeddings in the index")
+            self.basis_reason = f"lexical for every pair: {why}"
+        else:
+            self.basis_reason = (
+                f"per pair: cosine where both records have a current {self.model} vector "
+                f"({ready} of {len(self.docs)} records do), lexical otherwise"
+            )
 
-    def similarity(self, a: str, b: str) -> float | None:
+    def pair_basis(self, a: str, b: str) -> str:
+        return "cosine" if a in self._vectors and b in self._vectors else "lexical"
+
+    def threshold_for(self, basis: str) -> float:
+        if basis == "cosine" and self.cosine_threshold is not None:
+            return self.cosine_threshold
+        return self.lexical_threshold
+
+    def similarity(self, a: str, b: str) -> tuple[float | None, str | None]:
+        """``(score, basis)`` for one pair; ``(None, None)`` for an id the
+        index does not hold."""
         if a not in self.docs or b not in self.docs:
-            return None
-        if self.basis == "cosine":
-            va, vb = self._vectors.get(a), self._vectors.get(b)
-            if va is None or vb is None:
-                return None
-            return cosine(va, vb)
+            return None, None
+        basis = self.pair_basis(a, b)
+        if basis == "cosine":
+            return cosine(self._vectors[a], self._vectors[b]), basis
         ab = self.index.lexical_profile(a).get(b, 0.0)
         ba = self.index.lexical_profile(b).get(a, 0.0)
-        return (ab + ba) / 2.0
+        return (ab + ba) / 2.0, basis
 
     def relation(self, a: str, b: str) -> Relation:
         da, db = self.docs.get(a), self.docs.get(b)
         if da is None or db is None:
-            return Relation(a, b, False, (), False, (), (), None, self.basis)
+            return Relation(a, b, False, (), False, (), (), None, None)
         sessions = tuple(sorted(set(da.sessions) & set(db.sessions)))
         uuids = tuple(sorted(set(da.uuids) & set(db.uuids)))
         same_bucket = da.bucket == db.bucket
-        sim = self.similarity(a, b) if same_bucket else None
+        sim, basis = self.similarity(a, b) if same_bucket else (None, None)
         reasons: list[str] = []
         if sessions or uuids:
             reasons.append(SESSION)
-        if same_bucket and sim is not None and sim >= self.threshold:
+        if same_bucket and sim is not None and basis is not None and sim >= self.threshold_for(basis):
             reasons.append(BUCKET_SIMILAR)
         return Relation(
-            a, b, bool(reasons), tuple(reasons), same_bucket, sessions, uuids, sim, self.basis
+            a, b, bool(reasons), tuple(reasons), same_bucket, sessions, uuids, sim, basis
         )
 
 
@@ -192,17 +211,24 @@ class Group:
 
 @dataclass
 class Grouping:
+    """``basis_counts``: how many same-bucket pairs of the input were
+    compared on each scale. ``basis``: ``cosine`` or ``lexical`` when every
+    compared pair used that scale, ``mixed`` when both occur, ``none`` when
+    no pair shared a bucket."""
+
     groups: list[Group]
     basis: str
     basis_reason: str
-    threshold: float
+    basis_counts: dict[str, int]
+    thresholds: dict[str, float | None]
     not_indexed: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict:
         return {
             "basis": self.basis,
             "basis_reason": self.basis_reason,
-            "threshold": self.threshold,
+            "basis_counts": dict(self.basis_counts),
+            "thresholds": dict(self.thresholds),
             "not_indexed": list(self.not_indexed),
             "groups": [g.to_json() for g in self.groups],
         }
@@ -251,9 +277,12 @@ def group_for_steward(
     ids = sorted(set(record_ids))
     relations: dict[tuple[str, str], Relation] = {}
     adj: dict[str, set[str]] = {i: set() for i in ids}
+    counts = {"cosine": 0, "lexical": 0}
     for x, a in enumerate(ids):
         for b in ids[x + 1:]:
             r = rel.relation(a, b)
+            if r.basis is not None:
+                counts[r.basis] += 1
             if r.related:
                 relations[(a, b)] = r
                 adj[a].add(b)
@@ -318,10 +347,19 @@ def group_for_steward(
             if (a, b) in relations
         )
         out.append(Group(members=members, unrelated=tuple(unrelated_in(g)), links=links))
+    if counts["cosine"] and counts["lexical"]:
+        basis = "mixed"
+    elif counts["cosine"]:
+        basis = "cosine"
+    elif counts["lexical"]:
+        basis = "lexical"
+    else:
+        basis = "none"
     return Grouping(
         groups=out,
-        basis=rel.basis,
+        basis=basis,
         basis_reason=rel.basis_reason,
-        threshold=rel.threshold,
+        basis_counts=counts,
+        thresholds={"cosine": rel.cosine_threshold, "lexical": rel.lexical_threshold},
         not_indexed=[i for i in ids if i not in rel.docs],
     )

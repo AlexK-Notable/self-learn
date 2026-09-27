@@ -1751,15 +1751,20 @@ index's model; a stored vector needs no key to be read.
 
 User, 2026-09-26 18:13: "yes, lessons from the same project but different
 sessions count as related. maybe this is where we leverage embeddings to
-get real semantic similarity between lessons." Similarity is the cosine of
-the two stored vectors when the index is `hybrid` and a threshold has been
-measured for its model; otherwise it is **lexical similarity**: how well
-record A's words retrieve record B by BM25, relative to how well they
-retrieve A itself (1.0 = as well), averaged over both directions. *(Our
-reading of the build brief's "the hybrid rank when lexical-only": a score
-per pair, so one threshold decides, rather than a rank position that
-depends on how many records a bucket holds.)* One basis is used for a whole
-grouping; the two scales are never mixed.
+get real semantic similarity between lessons." **The basis is decided per
+pair** (orchestrator review 2026-09-26: one missing vector must not drop a
+whole grouping to words): when both records have a current vector from the
+index's model (made from their present text) and a cosine threshold is
+measured for that model, the pair's similarity is the cosine of the two
+vectors, compared with the cosine threshold; otherwise it is **lexical
+similarity** — how well record A's words retrieve record B by BM25,
+relative to how well they retrieve A itself (1.0 = as well), averaged over
+both directions — compared with the lexical threshold. A score is never
+compared with the other scale's threshold, and each relation records the
+basis it used. *(Our reading of the build brief's "the hybrid rank when
+lexical-only", accepted by the orchestrator: a score per pair, so one
+threshold decides, rather than a rank position that depends on how many
+records a bucket holds.)*
 
 **Thresholds, measured 2026-09-26** over the live ledger (212 records,
 22,366 pairs, one embedding pass):
@@ -1792,7 +1797,11 @@ Connected pieces of the relatedness graph stay together; a piece over 10 is
 split along its edges (seed with the lowest id, then add the member with the
 most edges into the chunk). Pieces are packed first-fit, largest first;
 the unrelated records then fill groups up to both caps. Same input, same
-groups: ids are de-duplicated and sorted, and every tie breaks on id.
+groups: ids are de-duplicated and sorted, and every tie breaks on id. A
+grouping reports `basis_counts` (how many same-bucket pairs were compared
+on each scale) and `basis`: `cosine` or `lexical` when every compared pair
+used that scale, `mixed` when both occur, `none` when no two records shared
+a bucket.
 
 **Inspection.** `self-learn index status|build|related <id>|groups`
 (`--json` on each). `build` writes only the cache (`--no-embed`: word
@@ -1800,8 +1809,10 @@ index only). `status --json` carries the dashboard's data points:
 `records`, `by_status`, `buckets`, `mode`, `mode_reason`, `model`,
 `vectors` (current, missing), `last_build_at`, `last_build` (the last
 build's counts and error), `stale` (records not indexed, changed or gone
-since the last build) and `key_present` (whether a key is in this
-process's environment — never the key). `groups` groups the queued
+since the last build), `key_present` (whether a key is in this
+process's environment — never the key) and `similarity` (`basis`,
+`cosine_ready` — records with a current vector usable for cosine —
+`lexical_only`, and both thresholds). `groups` groups the queued
 records (pending, deferred hidden) as the steward would read them.
 
 ## 4. Managed sections (the compile targets' contract)

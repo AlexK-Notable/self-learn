@@ -340,6 +340,33 @@ def test_the_same_name_in_two_scopes_is_not_one_bucket(home):
     assert not cross.same_bucket and not cross.related
 
 
+def test_the_basis_is_decided_per_pair_when_one_vector_is_missing(home):
+    _filler(home)
+    put(home, "lrn-00000001", trigger="About to restart docker.", instruction="Check docker logs.")
+    put(home, "lrn-00000002", trigger="A docker container dies.", instruction="Read docker events.")
+    put(home, "lrn-00000003", trigger="About to dim the bedroom lamp with the govee scene.",
+        instruction="Prefer the govee scene.")
+    put(home, "lrn-00000004", trigger="The govee scene dims the bedroom lamp.", instruction="Use it.")
+    ix = built(home, TopicProvider())
+    # an edit with no provider leaves lrn-00000004 without a current vector
+    put(home, "lrn-00000004", trigger="The govee scene dims the bedroom lamp wrongly.",
+        instruction="Use it.")
+    ix.build(None)
+    assert ix.mode()[0] == LEXICAL_ONLY
+    both = related(ix, "lrn-00000001", "lrn-00000002", cosine_threshold=0.8)
+    assert both.basis == "cosine" and both.related and both.reasons == (BUCKET_SIMILAR,)
+    missing = related(ix, "lrn-00000003", "lrn-00000004", cosine_threshold=0.8)
+    assert missing.basis == "lexical" and missing.related
+    g = group_for_steward(
+        ["lrn-00000001", "lrn-00000002", "lrn-00000003", "lrn-00000004"],
+        index=ix, cosine_threshold=0.8,
+    )
+    assert g.basis == "mixed" and g.basis_counts == {"cosine": 3, "lexical": 3}
+    by_pair = {(r.a, r.b): r.basis for grp in g.groups for r in grp.links}
+    assert by_pair[("lrn-00000001", "lrn-00000002")] == "cosine"
+    assert by_pair[("lrn-00000003", "lrn-00000004")] == "lexical"
+
+
 def test_a_model_with_no_measured_threshold_falls_back_to_lexical(home):
     put(home, "lrn-00000001", trigger="About to restart docker.")
     put(home, "lrn-00000002", trigger="About to dim the lights.")
@@ -443,6 +470,8 @@ def test_cli_json_shapes(home, capsys):
     assert status["vectors"] == {"current": 0, "missing": 2}
     assert status["stale"] == {"not_indexed": 0, "changed": 0, "gone": 0}
     assert status["by_status"] == {"pending": 2} and status["buckets"] == 2
+    assert status["similarity"]["basis"] == "lexical"
+    assert (status["similarity"]["cosine_ready"], status["similarity"]["lexical_only"]) == (0, 2)
 
     put(home, "lrn-00000003", trigger="New one.")
     rc, status = _run(capsys, "index", "status", "--json")
@@ -455,7 +484,10 @@ def test_cli_json_shapes(home, capsys):
     assert rel["nearest"]["mode"] == LEXICAL_ONLY
 
     rc, groups = _run(capsys, "index", "groups", "--json")
-    assert rc == 0 and groups["queued"] == 3 and groups["basis"] == "lexical"
+    assert rc == 0 and groups["queued"] == 3
+    # no two indexed queued records share a bucket: no similarity was compared
+    assert groups["basis"] == "none" and groups["basis_counts"] == {"cosine": 0, "lexical": 0}
+    assert groups["thresholds"]["lexical"] is not None
     assert groups["groups"] == [{
         "members": ["lrn-00000001", "lrn-00000002", "lrn-00000003"],
         "unrelated": ["lrn-00000003"],

@@ -94,6 +94,14 @@ def _build(home, args) -> int:
 def _status(index: LessonIndex, home, args) -> int:
     docs, _bad = collect(home)
     data = {"command": "index status", **index.status(ledger_docs=docs)}
+    rel = Relatedness(index)
+    # Dashboard data: how many records can take part in a cosine pair.
+    data["similarity"] = {
+        "basis": rel.basis,
+        "cosine_ready": rel.cosine_ready,
+        "lexical_only": len(rel.docs) - rel.cosine_ready,
+        "thresholds": {"cosine": rel.cosine_threshold, "lexical": rel.lexical_threshold},
+    }
     if args.json:
         print(json.dumps(data, sort_keys=True))
         return EXIT_OK
@@ -103,6 +111,9 @@ def _status(index: LessonIndex, home, args) -> int:
     )
     print(f"  model: {data['model'] or '-'}; vectors current {data['vectors']['current']}, "
           f"missing {data['vectors']['missing']}")
+    sim = data["similarity"]
+    print(f"  similarity: {sim['basis']} ({sim['cosine_ready']} records cosine-ready, "
+          f"{sim['lexical_only']} word-only)")
     print(f"  last build: {data['last_build_at'] or '-'}")
     stale = data["stale"] or {}
     print(f"  stale: {stale.get('not_indexed', 0)} not indexed, {stale.get('changed', 0)} "
@@ -128,7 +139,7 @@ def _related(index: LessonIndex, args) -> int:
             "bucket": {"scope": doc.bucket_scope, "name": doc.bucket_name},
             "basis": rel.basis,
             "basis_reason": rel.basis_reason,
-            "threshold": rel.threshold,
+            "thresholds": {"cosine": rel.cosine_threshold, "lexical": rel.lexical_threshold},
             "related": [r.to_json() for r in related],
             "nearest": {
                 "mode": near.mode,
@@ -142,13 +153,14 @@ def _related(index: LessonIndex, args) -> int:
             },
         }, sort_keys=True))
         return EXIT_OK
-    print(f"{target} ({doc.bucket_scope}:{doc.bucket_name}) -- {rel.basis_reason}, "
-          f"threshold {rel.threshold}")
+    print(f"{target} ({doc.bucket_scope}:{doc.bucket_name}) -- {rel.basis_reason}; "
+          f"thresholds cosine {rel.cosine_threshold}, lexical {rel.lexical_threshold}")
     if not related:
         print("  related: none")
     for r in related:
         sim = "" if r.similarity is None else f" similarity {r.similarity:.3f}"
-        print(f"  related: {r.b}  [{', '.join(r.reasons)}]{sim}")
+        basis = f" ({r.basis})" if r.basis else ""
+        print(f"  related: {r.b}  [{', '.join(r.reasons)}]{sim}{basis}")
     print(f"  nearest ({near.mode}):")
     for h in near.hits:
         print(f"    {h.id}  rrf {h.rrf:.4f}")
@@ -171,7 +183,8 @@ def _groups(index: LessonIndex, home, args) -> int:
                          sort_keys=True))
         return EXIT_OK
     print(f"self-learn index: {len(ids)} queued -> {len(grouping.groups)} group(s); "
-          f"{grouping.basis_reason}, threshold {grouping.threshold}")
+          f"basis {grouping.basis} (pairs compared: cosine {grouping.basis_counts['cosine']}, "
+          f"lexical {grouping.basis_counts['lexical']}); {grouping.basis_reason}")
     for n, g in enumerate(grouping.groups, 1):
         print(f"  group {n}: {' '.join(g.members)}")
         if g.unrelated:
