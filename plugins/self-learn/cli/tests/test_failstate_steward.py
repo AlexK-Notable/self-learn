@@ -20,7 +20,7 @@ from self_learn import steward
 from self_learn.invocation.contract import Outcome
 from support import make_env
 from test_heading_evidence import KEPT_ITEM, _case
-from test_steward import _dump_yaml, _enable_steward, _stage_dir
+from test_steward import _dump_yaml, _enable_steward, _head_manifest, _stage_dir
 from test_steward_refusals import _REPAIR_HEADER, _dispositions, _notifications, _seed
 
 
@@ -74,7 +74,10 @@ def test_a_failed_repair_call_keeps_the_valid_first_pass(tmp_path, monkeypatch):
     def session(spec):
         calls.append(spec.prompt)
         if _REPAIR_HEADER in spec.prompt:
-            return Outcome(ok=False, rc=1, stdout="", detail="API Error: overloaded", failure="exit")
+            # A safeguard flag: counted, never retried (unit 4), so the
+            # repair turn is spent exactly once here.
+            return Outcome(ok=False, rc=1, stdout="",
+                           detail="API Error: safeguards flagged this message", failure="exit")
         return _stage(spec, first)
 
     monkeypatch.setattr(steward.invocation, "write_session", session)
@@ -222,3 +225,75 @@ def test_the_stage_check_judges_each_pair_on_its_own(tmp_path):
     # The strict whole-stage form still refuses the same stage outright.
     with pytest.raises(ValueError):
         steward._validate_and_prepare_stage(stage, {good, bad, spare})
+
+
+# ------------------------------------------------------------ unit 8
+
+
+def _tracked(home):
+    return subprocess.run(
+        ["git", "-C", str(home), "ls-files"], capture_output=True, text=True, check=True
+    ).stdout
+
+
+def test_a_stray_ledger_file_is_noted_once_and_never_stops_the_steward(tmp_path, monkeypatch):
+    """Audit finding 8 (`test_S3_…`): one untracked file anywhere in the
+    ledger made every steward run raise before its first model call,
+    silently. Now the run goes on, the file is journaled and told about
+    once, and it is never committed."""
+    home, a, b = _two(tmp_path, monkeypatch, "e1")
+    sent = _notifications(monkeypatch)
+    (home / "stray-note.txt").write_text("left by hand\n", encoding="utf-8")
+    staged = {a: _case(a, [KEPT_ITEM]), b: _case(b, [KEPT_ITEM])}
+    calls = []
+
+    def session(spec):
+        calls.append(1)
+        return _stage(spec, staged)
+
+    monkeypatch.setattr(steward.invocation, "write_session", session)
+    result = steward.run(home)
+    assert len(calls) == 1
+    assert _states(home, result.run_id) == {a: "applied", b: "applied"}
+    tracked = _tracked(home)
+    assert "cases/" in tracked and "stray-note.txt" not in tracked
+    told = [row for row in sent if "stray-note.txt" in row[1]]
+    assert len(told) == 1
+    rows = steward.journal_path(home).read_text(encoding="utf-8")
+    assert rows.count('"unexplained-paths"') == 1
+
+
+def test_a_file_appearing_mid_session_does_not_lose_the_packet(tmp_path, monkeypatch):
+    """Audit finding 8 (`test_S4_…`): a file that appeared in the ledger
+    while the session ran made the prepared-recipe publish raise, the valid
+    packet was lost and the next run called the model again. Now the packet
+    applies in the same run."""
+    home, a, b = _two(tmp_path, monkeypatch, "e2")
+    staged = {a: _case(a, [KEPT_ITEM]), b: _case(b, [KEPT_ITEM])}
+    calls = []
+
+    def session(spec):
+        calls.append(1)
+        (home / "stray-note.txt").write_text("appeared mid-session\n", encoding="utf-8")
+        return _stage(spec, staged)
+
+    monkeypatch.setattr(steward.invocation, "write_session", session)
+    result = steward.run(home)
+    assert _states(home, result.run_id) == {a: "applied", b: "applied"}
+    manifest = _head_manifest(home, result.run_id)
+    assert manifest["status"] == "complete"
+    assert len(calls) == 1
+    assert "stray-note.txt" not in _tracked(home)
+
+
+def test_an_unexplained_change_to_the_run_record_itself_still_refuses(tmp_path, monkeypatch):
+    """Control: the file a commit touches is still guarded -- an
+    uncommitted change to the run record refuses its next publish."""
+    home, a, b = _two(tmp_path, monkeypatch, "e3")
+    run_id = "run-000000000001"
+    manifest = {"version": 1, "actor": "steward", "run_id": run_id, "packets": []}
+    steward._publish_manifest(home, manifest, reason="seed")
+    path = steward.execution_evidence.manifest_path(home, run_id)
+    path.write_text(path.read_text(encoding="utf-8") + " ", encoding="utf-8")
+    with pytest.raises(steward.gitops.GitOpsError, match="unexplained dirty ledger paths"):
+        steward._publish_manifest(home, {**manifest, "status": "x"}, reason="next")

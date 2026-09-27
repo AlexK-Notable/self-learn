@@ -523,6 +523,71 @@ def _dirty_truth_paths(home: Path) -> list[str]:
     return gitops.dirty_paths(home, ".")
 
 
+def _dirty_among(home: Path, paths: list[Path]) -> list[str]:
+    """The uncommitted (modified or untracked) paths among *paths* -- the
+    files the next commit will touch. 2026-09-27 (fail-state audit finding
+    8): only these can refuse a step. Every commit is path-scoped
+    (`gitops.stage_and_commit` stages and commits its own paths only), so
+    a stray file anywhere else can never be committed by it."""
+    found: list[str] = []
+    for path in paths:
+        found.extend(gitops.dirty_paths(home, path))
+    return list(dict.fromkeys(found))
+
+
+def _note_unexplained_paths(home: Path, run_id: str | None) -> None:
+    """2026-09-27 (fail-state audit finding 8): uncommitted paths in the
+    ledger that no step of this run touches are journaled and the user is
+    told -- once per distinct set, never once per check -- and the run goes
+    on. Before, one untracked file anywhere in the ledger stopped every
+    steward run before its first model call, silently. Never raises."""
+    try:
+        dirty = sorted(_dirty_truth_paths(home))
+    except gitops.GitOpsError:
+        return
+    if not dirty:
+        return
+    previous: list[str] | None = None
+    try:
+        for line in reversed(journal_path(home).read_text(encoding="utf-8").splitlines()):
+            if '"unexplained-paths"' not in line:
+                continue
+            row = json.loads(line)
+            if row.get("status") == "unexplained-paths":
+                previous = row.get("paths")
+                break
+    except (OSError, ValueError):
+        previous = None
+    if previous == dirty:
+        return
+    _journal(home, {"ts": chrono.now_iso(), **({"run_id": run_id} if run_id else {}),
+        "status": "unexplained-paths", "paths": dirty})
+    shown = ", ".join(dirty[:5]) + (f" and {len(dirty) - 5} more" if len(dirty) > 5 else "")
+    try:
+        overseer_notify.send(
+            home, "routine",
+            f"self-learn steward: the ledger has uncommitted path(s) nothing of "
+            f"self-learn wrote: {shown}. The steward goes on and never commits "
+            "them; look at them when you can.",
+            [run_id] if run_id else [],
+        )
+    except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
+        _journal(home, {"ts": chrono.now_iso(), "status": "notify-failed",
+            "error": _short_cause(exc)})
+
+
+def _sheet_record_paths(home: Path, items: batch.Sheet) -> list[Path]:
+    """The record files a sheet's dispatch commits -- one per lesson it
+    names that the ledger can still find."""
+    paths: list[Path] = []
+    for item in items:
+        try:
+            paths.append(ledger_ops.find_record_path(home, item.id))
+        except ledger_ops.LedgerOpsError:
+            continue
+    return paths
+
+
 def _publish_manifest(home: Path, manifest: dict, *, reason: str) -> str:
     """Intent-protect and commit one immutable-identity manifest revision."""
     run_id = str(manifest.get("run_id") or "")
@@ -532,12 +597,15 @@ def _publish_manifest(home: Path, manifest: dict, *, reason: str) -> str:
     subject = f"self-learn: steward manifest {run_id} ({reason})"
     with intents.ledger_write(home) as recovered:
         intents.announce_recovered(recovered)
-        dirty = _dirty_truth_paths(home)
+        # 2026-09-27 (fail-state audit finding 8): only the file this commit
+        # touches can refuse it; anything else is noted and never committed.
+        dirty = _dirty_among(home, [path])
         if dirty:
             raise gitops.GitOpsError(
                 "steward refuses unexplained dirty ledger paths before manifest "
                 f"publication: {dirty}"
             )
+        _note_unexplained_paths(home, run_id or None)
         try:
             if path.read_text(encoding="utf-8") == text:
                 return gitops.head_sha(home)
@@ -2955,7 +3023,9 @@ def _apply_packet(
     halt_code: int | None = None
     parked_now: list[tuple[str, str]] = []
     manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
-    dirty = _dirty_truth_paths(home)
+    # 2026-09-27 (fail-state audit finding 8): the run record is the file
+    # every step here commits; a stray path elsewhere is noted, not a halt.
+    dirty = _dirty_among(home, [execution_evidence.manifest_path(home, run_id)])
     if dirty:
         _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "dirty-refused",
             "paths": dirty, "error": "unexplained ledger paths refuse continuation"})
@@ -3052,7 +3122,10 @@ def _apply_packet(
                 receipt_ok = bool(receipt and receipt.get("state") == "ok")
                 phase = "complete" if receipt_ok else "unfinished"
             else:
-                dirty = _dirty_truth_paths(home)
+                # 2026-09-27 (fail-state audit finding 8): the files this
+                # sheet's dispatch commits are its lessons' records; only an
+                # unexplained change to one of those halts the dispatch.
+                dirty = _dirty_among(home, _sheet_record_paths(home, items))
                 if dirty:
                     _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
                         "status": "dirty-refused", "paths": dirty,
@@ -3899,7 +3972,9 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
             return result
 
         manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
-        dirty = _dirty_truth_paths(home)
+        # 2026-09-27 (fail-state audit finding 8): the finalization commits
+        # the run record only; a stray path elsewhere was noted, not a halt.
+        dirty = _dirty_among(home, [execution_evidence.manifest_path(home, run_id)])
         if dirty:
             result.status = "partial"
             result.unfinished = [
