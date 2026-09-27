@@ -1,0 +1,33 @@
+# gitleaks config for this repository (read by the machine-wide git hooks and by
+# any `gitleaks` run here). Keeps every default rule; allowlists only the
+# deliberate fake secrets the secret-scanner's own tests need.
+title = "self-learn"
+
+[extend]
+useDefault = true
+
+# The alphabet-sequence fake AWS key used as a scanner probe (tests/test_u_verbs.py).
+[[allowlists]]
+description = "scanner-probe fake AWS key"
+regexTarget = "match"
+regexes = ['''AKIAABCDEFGHIJKLMNOP''']
+
+# tests/test_scan.py tests self-learn's own secret scanner, so it is made of
+# fake private keys and credential assignments by design.
+[[allowlists]]
+description = "secret-scanner test fixtures"
+paths = ['''(^|/)plugins/self-learn/cli/tests/test_scan\.py$''']
+
+# A fake "token: abcdefgh12345678" line that tests the scan refusal on import.
+[[allowlists]]
+description = "import-memory scan-refusal fixture"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = ['''token: abcdefgh12345678''']
+
+# Jinja template variable name `bucket_pane_key`, not a key.
+[[allowlists]]
+description = "template variable bucket_pane_key"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = ['''record_id=bucket_pane_key\b''']
