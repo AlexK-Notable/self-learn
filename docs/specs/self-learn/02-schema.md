@@ -1602,6 +1602,106 @@ the first response's counts say whether the shared part came from cache;
 the session's are Claude Code's totals. The row has no `usage` when the
 backend reported none.
 
+### 3a.6 Transcript refs (the checked pointer)
+
+*(Added 2026-09-26, U1 of the pipeline redesign; code `refs.py`.)* The
+contract the new miner and the steward write evidence pointers to. A
+**ref** names one entry of one Claude Code session transcript. It is built
+by code from the transcript, never typed by a model, and every field comes
+from the entry itself.
+
+| Field | Meaning |
+|---|---|
+| `session` | the session id (the file's stem) |
+| `project_dir` | the folder under a transcript root that holds the file (e.g. a worktree folder `<repo folder>--claude-worktrees-<name>`) |
+| `line` | 1-based line of the entry in the session file (or in `subagent_file`) |
+| `uuid` | the entry's own `uuid`; absent on bookkeeping rows |
+| `entry_ts` | the entry's own `timestamp` — never the time a tool read it |
+| `cwd` | the entry's `cwd` |
+| `role` | `user` \| `assistant` \| `tool_result` \| `relay` \| `subagent` (below) |
+| `subagent_file` | optional; `subagents/agent-<id>.jsonl`, relative to `<project_dir>/<session>/` |
+
+A ref serialises to a plain mapping with exactly these keys
+(`subagent_file` only when set). Its legacy form is
+`transcript:<session>#L<line>`.
+
+**Transcript roots.** Registry setting `refs.transcript_roots`
+(`SELF_LEARN_TRANSCRIPT_ROOTS`, `config.yaml` `refs.transcript_roots`),
+`os.pathsep`-separated, each entry `~`-expanded at run time. Default: the
+live projects folder, then the archive of hardlinked top-level session
+files that outlive Claude Code's cleanup (`~/.claude/projects`,
+`~/.claude/archive/sessions`); both use the same folder names.
+
+**Resolving.** From a session id plus a line and/or a uuid, every project
+folder under every root is searched; the same id can sit in several
+folders (a one-line stub beside the real file, hardlinked copies). Ranking:
+holds the uuid at that line > holds the uuid > has that many lines (a
+stub shorter than the line is never chosen) > more lines > larger file >
+earlier root > path. With a uuid the ref is the entry carrying it. A uuid
+no top-level copy holds is looked for in the session's subagent files.
+
+**Entry text** — the one definition every check and excerpt uses: the
+message's text blocks (or string content), each tool result's text, each
+tool call as its name and the string values of its input, an attachment's
+`prompt`/`content`/`stdout`/`stderr`/`snippet`/`text`, a `system` row's
+`content`. Thinking blocks, images and bookkeeping rows carry none.
+
+**Role**, first rule that matches, with the field it reads:
+
+1. file under `<session>/subagents/`, or `isSidechain: true` → `subagent`;
+2. `type: assistant` → `assistant`;
+3. `type: user` with a `tool_result` content block → `tool_result`;
+4. `type: user` with `isMeta` or `isCompactSummary` true → `relay`;
+5. `type: user` with an `origin` object: `origin.kind: human` → `user`; any
+   other kind (`task-notification`, `peer`, `coordinator`, `channel`, …) → `relay`;
+6. `type: user`, no `origin`, `promptSource` `system` or `sdk` → `relay`;
+7. `type: user`, no `origin`, text starting with a harness envelope
+   (`<local-command-stdout>`, `<local-command-stderr>`, `<bash-stdout>`,
+   `<bash-stderr>`, `<task-notification>`, `<system-reminder>`,
+   `[Request interrupted`) → `relay`;
+8. any other `type: user` text row → `user` (the miner's structural rule;
+   older transcripts carry no `origin`, and slash commands and `!` inputs
+   the person typed land here);
+9. `type: attachment` with `attachment.type: queued_command` and
+   `attachment.origin.kind: human` → `user`; every other attachment,
+   `system` row and bookkeeping row → `relay`.
+
+Rules 3 and 8 are the miner's existing split (`miner.digest_transcript`);
+the `origin`/`promptSource` marker (rules 5–6) is new — the miner does not
+read it. **Known limit (measured):** text another agent types into a
+session's terminal carries `origin.kind: human`, `promptSource: typed`,
+field for field the same as the person typing, so it resolves as `user`.
+
+**Quote check outcomes**, tried in this order:
+
+| Outcome | Meaning | Ref returned |
+|---|---|---|
+| `exact` | verbatim substring of the ref's entry text | the ref |
+| `normalised` | substring after folding both sides: curly single quotes and primes → `'`, curly double quotes → `"`, the dash family (U+2010–U+2015, U+2212) → `-`, every backtick and asterisk deleted, whitespace runs → one space, case folded | the ref |
+| `nearby` | in another entry of the same file within 40 lines | corrected (nearest) |
+| `elsewhere_in_file` | in another entry of the same file, farther away | corrected (nearest) |
+| `stitched` | contains `…` or `...`, and every piece between them that has a letter or digit occurs separately in the file | the ref, plus each piece's ref |
+| `other_session` | in a `user` or `assistant` entry of another session file of the ref's project family | that entry |
+| `not_found` | none of the above | the ref |
+
+The project family is the ref's folder name up to `--claude-worktrees-`:
+the repository's folder and all its worktree folders, under every root.
+At most 200 other session files are searched (configurable per call),
+nearest in modification time to `entry_ts` first. Tool results and relays
+in other sessions do not count: a later session that reads a record or a
+transcript back echoes the quote as a tool result. Nothing in a verdict
+carries transcript or quote text.
+
+**Same moment.** A resumed or forked session file copies entries with
+their `uuid`; two refs with the same uuid are one moment and count once.
+Refs without a uuid are never the same moment.
+
+**Excerpt.** The ref's entry and up to K entries with text before and after
+it, in file order, each with its ref; each text redacted by the secret
+scan's `redact`, then clipped (head and tail kept), and the entries
+farthest from the ref dropped first until the total fits a character
+bound. Every text this module returns passes the secret scan's `redact`.
+
 ## 4. Managed sections (the compile targets' contract)
 
 Compilers own exactly the region between their markers, and nothing else:
