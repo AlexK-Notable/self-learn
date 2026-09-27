@@ -1124,7 +1124,10 @@ week — not on the run as a whole. Each such unit carries, in the manifest:
   `overseer/failures/<week>/closed.md`. The week's attempt count is those
   notes plus the run record's `attempt_count`; the two sources are disjoint,
   because an attempt that reaches the run record writes its reason into the
-  record's `failure`/`failure_detail` instead of a note.
+  record's `failure`/`failure_detail` instead of a note. *(2026-09-27.)* A
+  note may carry `- class:` and `- tag:` lines after `- detail:` (the failed
+  call's class and the API's tag); an `environment` hold writes no note and
+  so counts nothing.
 - *(Added 2026-09-24, the user's words: "user initiated runs don't count
   toward the weekly limit".)* A manual run (`self-learn overseer run`) counts
   nothing: its failure note carries `- trigger: manual` and is skipped (a note
@@ -1269,6 +1272,70 @@ get the refused row a case refused at apply time gets -- and every other case
 and maintenance operation of the packet proceeds. The prepared-text secret
 scan runs per case (and per maintenance operation, whose payload is then not
 frozen) instead of once over the packet.
+
+**Fail-state batch 1** *(Added 2026-09-27; the fail-state audit's findings
+1–8, approved by the user: "1. go.")*. A bad item costs that item, not the
+unit around it:
+
+- *Steward stage, pair by pair.* The runner's stage check judges each
+  case/sheet pair on its own (its parked-reason rules, its sheet's schema,
+  one item per covered lesson) and its coverage (a lesson not open in the
+  packet, or covered by two pairs, is that pair's problem). An undeclared
+  file is moved into `steward/quarantine/<run>/packet-NNNN/attempt-N/` in the
+  cache and journaled (`stage-quarantined`); it never reaches the ledger. The
+  repair turn is told the failing pairs and the uncovered lessons; a pair
+  still failing after it is moved to the same directory and not applied. A
+  lesson no passing pair covers is disposed `unfinished` with reason
+  `not-covered`; when every other unit of the packet is settled the packet
+  goes back to `unfinished`, and the next attempt briefs, checks and records
+  only the lessons still open (earlier settled cases and operations stay on
+  the packet). Only an unreadable declared non-pair file, a bad
+  `revisions.yaml`, or no valid pair at all still fails the stage.
+- *The first pass survives its repair turn.* When the first pass validates
+  and a repair turn is due, the stage is copied to
+  `steward/first-pass/<run>/packet-NNNN` (outside the session's writable
+  directory). If the repair call fails, the stage no longer validates, or it
+  flags more lines or a file the first pass had clean, the copy is put back
+  (attempt row `restored_first_pass: true`, journal `repair-undone`) and goes
+  ahead; what it still flags is refused case by case at apply time.
+- *Model-side failures by class* (`invocation.failure_class`): `transient`
+  (overloaded, 5xx, rate limit, network) is retried once within the same
+  attempt after a 30 s backoff (the steward's decision call from an empty
+  stage) and journaled `transient-retry`; `environment` (an unsupported model
+  or Claude Code version, authentication, a model or binary not found, a
+  refused provider) is a HOLD — the steward puts the packet's
+  `attempt_count` back and stops the run, the overseer writes no failure
+  note (phase B also puts coverage back) — journaled `held-environment` and
+  notified once per distinct cause; `safeguard` (the API's safety
+  classifier), `content` (Claude Code's own turn or spend limit) and
+  `unclassified` count exactly as before. The steward's packet and attempt
+  rows carry `failure_class` and, when the API gave one, `failure_tag`; the
+  overseer's failure note carries `- class:` and `- tag:` lines. There is no
+  fallback model: the user will accept one only as a last resort
+  (2026-09-27 13:30).
+- *Stray ledger paths.* The steward refuses a step only for an uncommitted
+  change to a file that step commits: the run record for a manifest publish
+  and for finalization, the lessons' record files for a sheet's dispatch
+  (still a halt, exit 6). Any other uncommitted path is journaled
+  (`unexplained-paths`) and notified once per distinct set, and never
+  committed — every commit is path-scoped.
+- *Overseer.* Phase B runs the case writer's rules (`cases.check_case_data`)
+  on each staged decided and maintenance case as `cases.record` will see it
+  (run id stamped, runner-dropped evidence gone); a failing case is dropped
+  with its sheet and named (file, parked case, rule). At execute time a
+  `cases.CaseError` refuses that case and its sheet as final refusals and the
+  run goes on. An orphan `sheet-<name>.yaml` is dropped and named; a case in
+  the window that cannot be classified into a coverage stratum is left out of
+  coverage and named; a raise while preparing phase B's inputs or the run
+  record is a counted, traced failed attempt. Each phase's time limit is
+  `max(overseer.timeout_secs, 30 s × the cases it reads)` (phase A: the
+  week's population; phase B: that plus the parked queue). A phase B that
+  TIMED OUT after writing every required file and a sheet is checked like a
+  finished one and what passes applies; any other failed phase B applies
+  nothing. A validated phase A is kept in the cache
+  (`overseer/phase-a/<week>/`, keyed by a hash of `population.txt`) and
+  reused by the week's next attempt when that hash is unchanged; it is
+  dropped once a run record is published.
 
 *(Added 2026-09-26, agenda item 24.)* No message a runner shows its model
 or commits into its run record carries the text a secret scan matched: each

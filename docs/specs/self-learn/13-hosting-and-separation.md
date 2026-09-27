@@ -414,6 +414,16 @@ initiated runs don't count toward the weekly limit" — and, by the user's choic
 of "No, Sunday still runs", its completion does not make the week done, so the
 scheduled run still happens.)*
 
+**A job that raises is logged** *(Added 2026-09-27, fail-state audit
+finding 6)*. `run_one_job` still turns a job's exception into a failed job
+record, so one job never ends the process; it now also writes the error and
+its traceback to stderr (the service log, journald under the unit) and one
+`crashed` row to the job's own journal — the steward's or the overseer's,
+where the cooldown reader finds its attempts — or, for a job with no journal
+of its own (mine, worker), to `serve.journal.jsonl` in `cache_dir()`
+(`NOT_REPO_TRUTH`, a fourth cache file beside those named above). Before, the
+exception reached only the job record, which nothing read.
+
 **A raise inside either due-check is a HOLD, not an attempt** *(Added
 2026-09-19, S-68)*. It is logged, it increments no attempt count, and the job
 is not due this tick. It arms that job's cache-side cooldown so the tick loop

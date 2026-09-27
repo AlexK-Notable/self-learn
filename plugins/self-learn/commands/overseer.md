@@ -28,6 +28,15 @@ output that would not validate, a git write failed or half-landed, or a
 line was refused because its target file had edits self-learn did not make
 (`target-busy`) — is retried by a later run as a fresh attempt, on any day,
 until the week is done; a decision refused on its merits is never retried.
+*(2026-09-27)* An overloaded API, a rate limit, a server or network error
+is retried once at once, inside the same attempt; a model or Claude Code
+version the call cannot run with, or an authentication failure, holds the
+run without counting an attempt, and the user is told once. A timed-out
+phase B that had written its files is checked and what passes is applied,
+and the week's next attempt reuses a phase A already made for the same
+cases. One decided case the case writer refuses, or one sheet without its
+case, is refused alone and named under "Refused / could not do"; the rest
+of the run goes on.
 Each line under "Refused / could not do" ends with its kind in brackets
 (`[git]`, `[target-busy]`, `[bad-line]`, ...): the first two are the
 retried kinds, and a run left with one of them stays unfinished until the
