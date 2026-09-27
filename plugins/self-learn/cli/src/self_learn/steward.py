@@ -590,8 +590,10 @@ def _record_identity(home: Path, entry: ledger_ops.QueueEntry) -> dict:
 
     ``legacy_version``: the proposal blob, when the lesson has a committed
     proposal. Every run record written before this change keyed its
-    dispositions by that blob, so a lesson parked, refused or abandoned
-    then is still decided now (:func:`_eligible_lessons`), and a lesson
+    dispositions by that blob, so a lesson applied, parked or abandoned
+    then is still decided now (:func:`_eligible_lessons`) -- but not one
+    REFUSED then, which gets one fresh attempt under this identity
+    (:data:`_LEGACY_DECIDED_DISPOSITIONS`) -- and a lesson
     sent back then still shows as sent back (:func:`_returned_for`)."""
     rel, version = _committed_blob(home, entry.path)
     row = {
@@ -615,7 +617,18 @@ def _record_identity(home: Path, entry: ledger_ops.QueueEntry) -> dict:
     return row
 
 
-def _terminal_versions(home: Path) -> set[tuple[str, str]]:
+#: What the legacy bridge (U3a) carries from a run record written under the
+#: PROPOSAL identity: decided outcomes only. A `refused` disposition is the
+#: machinery refusing a write, not a judgment on the lesson (live 2026-09-27:
+#: two lessons refused over a secret-scan false positive since fixed in
+#: b8e4ef0, stranded for ever) -- under the record identity such a lesson
+#: gets one fresh attempt, and a refusal then is terminal as before.
+_LEGACY_DECIDED_DISPOSITIONS = _DECIDED_DISPOSITIONS - {"refused"}
+
+
+def _terminal_versions(
+    home: Path, states: frozenset[str] = _DECIDED_DISPOSITIONS
+) -> set[tuple[str, str]]:
     terminal: set[tuple[str, str]] = set()
     for manifest in committed_manifests(home):
         for packet in manifest.get("packets") or []:
@@ -624,7 +637,7 @@ def _terminal_versions(home: Path) -> set[tuple[str, str]]:
             for rid, disposition in (packet.get("dispositions") or {}).items():
                 if not isinstance(disposition, dict):
                     continue
-                if disposition.get("state") in _DECIDED_DISPOSITIONS:
+                if disposition.get("state") in states:
                     version = disposition.get("input_version")
                     if isinstance(rid, str) and isinstance(version, str):
                         terminal.add((rid, version))
@@ -649,6 +662,7 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
         )
     )
     terminal = _terminal_versions(home)
+    legacy_terminal = _terminal_versions(home, _LEGACY_DECIDED_DISPOSITIONS)
     out: list[tuple[ledger_ops.QueueEntry, dict]] = []
     for entry in entries:
         try:
@@ -659,7 +673,7 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
         if (rid, identity["version"]) in terminal:
             continue
         legacy = identity.get("legacy_version")
-        if isinstance(legacy, str) and (rid, legacy) in terminal:
+        if isinstance(legacy, str) and (rid, legacy) in legacy_terminal:
             continue
         out.append((entry, identity))
     return out

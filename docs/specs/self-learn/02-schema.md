@@ -1845,8 +1845,14 @@ record's `inputs` with a `kind`:
 A record edited after selection is a new version. A proposal written or
 rewritten beside it changes nothing. Every run record written before this
 change keyed its dispositions by the proposal blob: a lesson whose
-`legacy_version` a committed run decided is still decided, and a `returned`
-row under it still shows the lesson as sent back. An event is **handled**
+`legacy_version` a committed run applied, parked or abandoned is still
+decided, and a `returned` row under it still shows the lesson as sent back.
+A `refused` row under the legacy version is NOT carried over: a refusal is
+the machinery refusing a write, not a judgment on the lesson (orchestrator
+review 2026-09-27: two live lessons were refused over the secret-scan false
+positive fixed on 2026-09-26 and could never be offered again). Such a
+lesson gets one fresh attempt under the record identity; a refusal there is
+terminal, as every refusal was before. An event is **handled**
 when a record's `recurrences[]` or `dismissed_suspects[]` holds its nonce;
 handled events are dropped before the version is taken, so a new fire about
 the same record is a new input carrying only itself, and a run that decided

@@ -624,3 +624,37 @@ def test_a_legacy_fire_is_one_observation_with_its_backfill_suspect(ledger):
 
     verbs.dismiss_suspect(home, rid, event_ref=twin, why="rule-followed", no_push=True)
     assert steward._suspected_violation_inputs(home) == []
+
+
+@pytest.mark.parametrize(
+    ("state", "selected"),
+    [("refused", True), ("applied", False), ("parked", False), ("abandoned", False)],
+)
+def test_the_legacy_bridge_carries_decisions_but_not_refusals(state, selected, tmp_path, roots):
+    """Orchestrator review, 2026-09-27: two live lessons were refused over a
+    secret-scan false positive (fixed since) and stranded for ever. Under
+    the record identity a legacy REFUSAL gets one fresh attempt; a legacy
+    decision stays decided."""
+    home = make_env(tmp_path).ledger
+    rid = "lrn-a0000007"
+    ledger_ops.create_record(home, _behavior(rid))
+    ledger_ops.write_proposal(home, rid, proposal_dict())
+    commit_all(home, "one lesson with a proposal")
+    (_entry, row), = steward._eligible_lessons(home)
+    _publish_disposition(home, rid, row["legacy_version"], state, "run-aaaaaaaa0007")
+
+    assert (rid in _selected(home)) is selected
+
+
+def test_a_refusal_under_the_record_identity_stays_final(tmp_path, roots):
+    home = make_env(tmp_path).ledger
+    rid = "lrn-a0000008"
+    ledger_ops.create_record(home, _behavior(rid))
+    ledger_ops.write_proposal(home, rid, proposal_dict())
+    commit_all(home, "one lesson with a proposal")
+    (_entry, row), = steward._eligible_lessons(home)
+    _publish_disposition(home, rid, row["legacy_version"], "refused", "run-aaaaaaaa0008")
+    assert _selected(home) == [rid], "positive control: the legacy refusal is retried"
+
+    _publish_disposition(home, rid, row["version"], "refused", "run-aaaaaaaa0009")
+    assert _selected(home) == []
