@@ -601,3 +601,26 @@ def test_a_lesson_sent_back_before_the_change_is_still_shown_as_sent_back(tmp_pa
         rid: {"case": "case-0000beef", "lines": ["the line was refused"]}
     }
     assert rid in _selected(home), "returned is not decided: it comes back"
+
+
+def test_a_legacy_fire_is_one_observation_with_its_backfill_suspect(ledger):
+    """The miner's legacy backfill raised a `recurrence-suspect` (own nonce,
+    basis `fire-violated`) for each pre-U6 `violated` fire; measured
+    2026-09-27, 4 of the live queue's fires had a suspect the user had
+    already dismissed or confirmed. A handled twin handles the fire; an
+    unhandled one is offered under the suspect's nonce."""
+    home = ledger
+    rid = "lrn-f0000004"
+    _routed(home, rid)
+    origin = f"transcript:{OTHER}#L2"
+    fire = _fire(home, rid, outcome="violated")
+    telemetry.spool_event("recurrence-suspect", record=rid, origin=origin, basis="fire-violated")
+    telemetry.flush(home)
+    twin = next(e["nonce"] for e in telemetry.read_events(home)
+                if e.get("kind") == "recurrence-suspect" and e.get("record") == rid)
+
+    (row,) = steward._suspected_violation_inputs(home)
+    assert [(e["nonce"], e.get("fire_nonce")) for e in row["events"]] == [(twin, fire)]
+
+    verbs.dismiss_suspect(home, rid, event_ref=twin, why="rule-followed", no_push=True)
+    assert steward._suspected_violation_inputs(home) == []

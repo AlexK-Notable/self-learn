@@ -700,7 +700,8 @@ def _suspected_violation_inputs(home: Path, exclude: set[str] | None = None) -> 
             "kind": steward_inputs.INPUT_SUSPECTED_VIOLATION,
             "record_status": "routed",
             "events": [
-                {key: event.get(key) for key in ("nonce", "ts", "outcome", "origin", "record")}
+                {key: event.get(key) for key in ("nonce", "ts", "outcome", "origin", "record")
+                 if key in event} | ({"fire_nonce": event["fire_nonce"]} if event.get("fire_nonce") else {})
                 for event in events
             ],
         })

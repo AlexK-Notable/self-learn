@@ -276,6 +276,12 @@ def _handled_refs(record: Record) -> set[str]:
     return refs_seen
 
 
+#: The ``basis`` the miner's legacy backfill gives the ``recurrence-suspect``
+#: it spooled for a pre-U6 ``violated`` fire (``miner._FIRE_VIOLATED_BASIS``,
+#: and the older spelling ``fire-violated``).
+FIRE_SUSPECT_BASES = frozenset({"fire-suspected-violation", "fire-violated"})
+
+
 def suspected_violations(
     home: Path, find_record: Any
 ) -> dict[str, list[dict]]:
@@ -285,9 +291,26 @@ def suspected_violations(
     ``dismissed_suspects`` names the event's nonce (what ``confirm-
     recurrence`` and ``dismiss-suspect`` write); a record no longer routed
     has nothing a fire can be against. Whether a run already decided an
-    event is the caller's check (the committed run records)."""
+    event is the caller's check (the committed run records).
+
+    **One observation, one nonce.** The miner's legacy backfill spooled a
+    ``recurrence-suspect`` (its own nonce, basis ``fire-violated``) for each
+    pre-U6 ``violated`` fire, and those suspects are the review's "not
+    holding" cards -- measured 2026-09-27: 6 of the live queue's 9 fire
+    events had one, 4 of them already confirmed or dismissed by the user. A
+    fire whose same-``(record, origin)`` fire-basis suspect is handled is
+    handled; one whose suspect is not yet handled is offered under the
+    SUSPECT's nonce (``fire_nonce`` keeps the fire's), so deciding it clears
+    the review card too."""
+    all_events = telemetry.read_events(home)
+    siblings: dict[tuple[str, str], list[dict]] = {}
+    for event in all_events:
+        if event.get("kind") == "recurrence-suspect" and event.get("basis") in FIRE_SUSPECT_BASES:
+            key = (str(event.get("record")), str(event.get("origin")))
+            if isinstance(event.get("nonce"), str):
+                siblings.setdefault(key, []).append(event)
     events: dict[str, list[dict]] = {}
-    for event in telemetry.read_events(home):
+    for event in all_events:
         if event.get("kind") != "fire" or event.get("outcome") != "suspected-violation":
             continue
         rid, nonce = event.get("record"), event.get("nonce")
@@ -300,7 +323,18 @@ def suspected_violations(
         if record is None or record.status != "routed":
             continue
         handled = _handled_refs(record)
-        fresh = [e for e in events[rid] if str(e.get("nonce")) not in handled]
+        fresh: list[dict] = []
+        for event in events[rid]:
+            if str(event.get("nonce")) in handled:
+                continue
+            twins = siblings.get((rid, str(event.get("origin"))), [])
+            if any(str(t.get("nonce")) in handled for t in twins):
+                continue
+            if twins:
+                twin = min(twins, key=lambda t: (str(t.get("ts") or ""), str(t.get("nonce"))))
+                event = {**event, "nonce": twin["nonce"], "fire_nonce": event.get("nonce"),
+                         "kind": "recurrence-suspect"}
+            fresh.append(event)
         # one event per nonce, oldest first
         seen: set[str] = set()
         unique = []
@@ -604,6 +638,11 @@ def fire_pack(events: list[dict], *, roots: Sequence[Path], budget: int) -> tupl
             f"  event {nonce}: at {event.get('ts')}, outcome {event.get('outcome')}, "
             f"pointer {origin or '(none)'}"
         )
+        if event.get("fire_nonce"):
+            lines.append(
+                f"    (the recurrence-suspect the miner raised for fire {event['fire_nonce']}; "
+                "deciding it also clears the review's card)"
+            )
         m = _ORIGIN_RE.match(origin.strip())
         if not m:
             lines.append("    the pointer is not a transcript line; nothing here checks it")

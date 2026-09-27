@@ -281,7 +281,8 @@ overseer.
 **A suspected-violation input.** Some briefs are not a pending lesson but
 a ROUTED one that the miner reported as possibly broken: its brief lists
 each unhandled event (`event <nonce>`) with its pointer resolved and an
-excerpt. Decide each event, one sheet item per event:
+excerpt. Decide each event, one sheet item per event, in a case whose
+`outcome` is `no-action` (the rule itself is unchanged by this case):
 
 - the rule applied, reached the session, and was acted against — confirm
   the recurrence: `confirm-recurrence` with `event: <nonce>`;

@@ -1854,6 +1854,16 @@ an input's events (applied, parked, refused, abandoned) is never offered
 them again. A record is in at most one input per run (reconsider first,
 then lesson, then suspected violation).
 
+One observation, one nonce: the miner's legacy backfill spooled a
+`recurrence-suspect` (its own nonce, basis `fire-violated`) for each pre-U6
+`violated` fire, and those are the review's "not holding" cards. A fire
+whose same-`(record, origin)` fire-basis suspect is handled is handled; one
+whose suspect is not is offered under the SUSPECT's nonce (the event row
+keeps the fire's as `fire_nonce`), so one decision clears both. Measured
+2026-09-27 on the live ledger: 6 of 9 unhandled fires had such a suspect,
+4 of them already confirmed or dismissed by the user; the rule leaves 5
+events on 4 records.
+
 The analyst still runs (U5 retires it). What still reads its proposal
 files after this change: the worker (freshness), `status`/`list` (the
 `unanalyzed` count), `route` itself (a route with no `--dest` takes the
@@ -1911,8 +1921,9 @@ item keeps its ref and verdict only. The `other_session` search looks at
 60 files (§3a.6's default is 200). MEASURED 2026-09-27 on the live ledger,
 read-only, word search only (no embedding call;
 `misc/pipeline-design-2026-09-26/u3a-measure/`, untracked): the live queue
-selected 1 lesson and 6 suspected-violation inputs (9 events) — one packet
-of 7, brief 35,213 characters, excerpts 10,933, 1.9 s to build; over all 17
+selected 1 lesson and 4 suspected-violation inputs (5 events) — one packet
+of 5, brief 27,292 characters, excerpts 10,221 (at most 2,979 for one
+lesson), 0.8 s to build; over all 17
 pending files (as if every one were selected) 3 packets of 10/5/2, brief
 median 4,169 characters per lesson (max 5,549), excerpts median 1,112 (max
 1,908), packet briefs 40,352 / 22,887 / 8,840; over the 43 records of the
