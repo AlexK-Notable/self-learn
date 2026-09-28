@@ -326,8 +326,11 @@ intent recovery (§7.2a.3): an interrupted multi-file transaction leaves
 a staged rename the scan would otherwise report `blocked` forever, so
 recovery goes first and the scan only ever sees a clean-or-ordinary
 tree. When recovery leaves any intent `stopped`, `reconcile` refuses
-its WHOLE orphan batch — the same all-or-nothing contract `blocked` and
-`invalid` already carry — because the scan can see, and would stage,
+its WHOLE orphan batch — the all-or-nothing contract `blocked` and
+`invalid` also carried until 2026-09-27 (*amended, sweep 2 R1:* an
+invalid orphan now holds back only itself and the orphans that depend on
+it, and a blocked rename only its own record; the rest is committed,
+exit 8. A STOP alone still refuses everything) — because the scan can see, and would stage,
 the very files the stuck transaction half-wrote; the process exit is 6
 with the offender named, and every ordinary orphan under that home,
 the miner's own carried-over records included, stays uncommitted until

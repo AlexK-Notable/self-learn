@@ -145,7 +145,8 @@ that matters in all of them: *was the record written, and is it safe?*
   disk and nothing is half-done: **re-run the same command** once the
   other producer finishes. The lesson is not lost, but it is not captured
   either — do not report it as captured. `reconcile` also returns 6 when
-  it refuses an invalid orphan; there the repair is the one it prints,
+  it held back an invalid orphan and had nothing else to commit (8 when it
+  committed the rest around it); there the repair is the one it prints,
   not a retry.
 - **7** — the record **IS written but its commit FAILED** (a wedged git).
   This is NOT a success with a footnote: nothing else ever commits a

@@ -3047,7 +3047,7 @@ def _cmd_push() -> int:
         # But this is "the one moment the gap is most visible" (module
         # docstring), so name every offender instead of the silence a
         # refused-with-nothing-committed `reconcile()` used to pass through.
-        for line in (*healed.blocked, *healed.invalid, *healed.stopped):
+        for line in (*healed.blocked, *healed.invalid, *healed.held, *healed.stopped):
             print(f"push: NOT reconciled — {line}", file=sys.stderr)
         report = verbs.push_pending(home)
     except gitops.HalfWrittenError as exc:
@@ -3103,6 +3103,7 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
             "stopped": result.stopped,
             "blocked": result.blocked,
             "invalid": result.invalid,
+            "held": result.held,
             "committed": [str(p) for p in result.committed],
             "sha": result.sha,
             "pushed": result.push is not None and result.push.ok,
@@ -3111,7 +3112,7 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
         }
         print(json.dumps(payload))
         if result.refused:
-            return EXIT_GIT_FAILED
+            return EXIT_BATCH_PARTIAL if result.committed else EXIT_GIT_FAILED
         if result.push is not None and not result.push.ok:
             return result.push.exit_code
         return EXIT_OK
@@ -3131,6 +3132,13 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
             "path shape alone is not enough (that is how C09's unparseable "
             "compiled/host.yaml healed as a clean commit). Repair or remove "
             "the file by hand, then re-run reconcile.",
+            file=sys.stderr,
+        )
+    for line in result.held:
+        print(
+            f"reconcile: NOT touched — {line}\n"
+            "  it depends on an orphan named above that was held back; it is "
+            "committed once that one is repaired or removed.",
             file=sys.stderr,
         )
     for line in result.stopped:
@@ -3164,13 +3172,11 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
         )
     for intent_id in result.restored:
         print(f"reconcile: recovered {intent_id} (restored: its mutation was undone)")
-    if result.refused:
-        # M-C (widened M-W/D7): an invalid member, a blocked rename, or an
-        # unresolved intent refuses the WHOLE batch — nothing was staged,
-        # even for orphans that validated fine. That is exactly
-        # EXIT_GIT_FAILED's own promise ("6 means NOTHING WAS WRITTEN"),
-        # reused here rather than minting a ninth exit code for the
-        # identical guarantee.
+    if result.refused and not result.committed:
+        # Nothing was committed: an unresolved intent refuses everything,
+        # and an invalid/blocked orphan held back everything that was
+        # left. EXIT_GIT_FAILED's own promise ("6 means NOTHING WAS
+        # WRITTEN").
         return EXIT_GIT_FAILED
     if not result.committed:
         if result.acted:
@@ -3191,6 +3197,10 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
         print(f"  {path}")
     if result.push is not None and not result.push.ok:
         return result.push.exit_code
+    if result.refused:
+        # Sweep 2, R1: the rest was committed around what was held back —
+        # "the ledger DID change; not everything landed".
+        return EXIT_BATCH_PARTIAL
     return EXIT_OK
 
 

@@ -53,7 +53,7 @@ Those entries are REPORTED as blocked, naming the verb's own printed
 repair. Reconcile heals the shape it understands and refuses to guess at
 the one it does not.
 
-**M-C: content is validated too, all-or-nothing.** Deciding by PATH SHAPE
+**M-C: content is validated too.** Deciding by PATH SHAPE
 alone (what the module did through round 7) is not enough: a producer can
 die after writing GARBAGE bytes just as easily as after writing good ones,
 and a path-shape match commits either one identically. Probed as C09: a
@@ -68,14 +68,44 @@ write_proposal` resolves one) for a proposal sibling, :func:`compiled.
 load_record` plus a schema this module owns for a compile record, and a
 schema this module owns for ``meta.yaml`` (see :func:`_validate_meta` /
 :func:`_validate_compiled` for why those two live here and not beside
-their writers). **Any single invalid member, or any blocked rename,
-refuses the WHOLE batch** — nothing is staged, not even the other orphans
-that were perfectly fine. That generalizes the pre-existing rename
-refusal (a half-committed ``git mv`` beside an otherwise-clean orphan used
-to still get that orphan committed — the "mixed" case now stays fully
-uncommitted too) rather than adding a second, differently-scoped kind of
-refusal next to it. Callers that must not block on this (the miner) log
-every offender and carry on; see ``miner._run_locked``.
+their writers).
+
+**A bad file holds back itself and what depends on it — not the batch.**
+*Amended 2026-09-27 (sweep 2, R1):* M-C as first built refused the WHOLE
+batch on any single invalid member or blocked rename, so one leftover
+``compiled/<slug>.yaml`` holding ``host: [`` kept every record the miner
+had landed but could not commit uncommitted too, run after run (their
+cursors had already moved on; a fresh clone would lose them). The
+orchestrator recommended narrowing that; the user accepted ("yes",
+2026-09-27 18:54). Now an invalid orphan is held back (named in
+``invalid`` exactly as before), together with every orphan that DEPENDS
+on it (named in ``held``), and the rest is committed. "Depends" is taken
+from the writers themselves (:func:`_hold_back`):
+
+- ``proposals/<id>.yaml`` depends on record ``<id>`` (:func:`ledger_ops.
+  write_proposal` resolves and validates against it);
+- ``proposals/merge-*.yaml`` depends on every record in its ``records``;
+- every orphan in a bucket depends on that bucket's ``meta.yaml`` when
+  the ``meta.yaml`` is itself an orphan (:func:`ledger_ops.
+  ensure_project_meta` writes it with the bucket's first record, and a
+  clone without it has a bucket :func:`ledger_ops.bucket_project_path`
+  cannot place);
+- ``compiled/*.yaml``, ``hosts.yaml`` and ``config.yaml`` depend on
+  nothing and nothing depends on them.
+
+A blocked rename/deletion (a half-committed ``git mv``) holds back only
+its OWN record: every orphan with that record id, and what depends on
+those — still reported in ``blocked`` and never completed one half at a
+time. One accepted consequence: a route killed between staging its
+rename and committing leaves a modified ``compiled/<slug>.yaml`` beside
+the blocked rename; that compile record is now committed on its own. It
+is benign — the host region still matches the record's
+``based_on_sha256``, so it reads ``stale`` and ``recompile`` repairs it.
+
+A STOPped intent recovery still refuses EVERYTHING: an intent can name any
+path, so no orphan is known to be independent of it. Callers that must
+not block on a refusal (the miner) log every offender and carry on; see
+``miner._run_locked``.
 """
 
 from __future__ import annotations
@@ -183,7 +213,10 @@ class ReconcileResult:
     porcelain entries reconcile refused to guess at, verbatim, for a
     human (a half-committed ``git mv``). ``invalid`` (M-C) — orphans that
     parsed by path shape but failed their asset-kind content check, one
-    ``"<path>: <reason>"`` string each. ``stopped`` (M-W/D7) — intent ids
+    ``"<path>: <reason>"`` string each. ``held`` (sweep 2, R1) — valid
+    orphans held back because they depend on an invalid or blocked one,
+    ``"<path>: held back — depends on <path or id>"`` each. ``stopped``
+    (M-W/D7) — intent ids
     :func:`intents.recover` could not resolve (neither roll-forward nor
     restore verified), one ``"<intent-id>: <reason>"`` string each; the
     intent file is left in place for a human. ``rolled_forward`` /
@@ -195,6 +228,7 @@ class ReconcileResult:
     sha: str | None = None
     blocked: list[str] = field(default_factory=list)
     invalid: list[str] = field(default_factory=list)
+    held: list[str] = field(default_factory=list)
     stopped: list[str] = field(default_factory=list)
     rolled_forward: list[str] = field(default_factory=list)
     restored: list[str] = field(default_factory=list)
@@ -217,11 +251,13 @@ class ReconcileResult:
 
     @property
     def refused(self) -> bool:
-        """M-C (widened M-W/D7): true iff the batch was refused whole, OR
-        an intent recovery could not resolve — either way ``committed``
-        is not the full picture and a caller must surface the offenders
-        rather than treat this as a quiet no-op."""
-        return bool(self.blocked or self.invalid or self.stopped)
+        """True iff anything was left uncommitted on purpose — an invalid
+        or blocked orphan (and what depends on it), or an unresolved
+        intent. Since sweep 2's R1 this no longer means NOTHING was
+        committed: ``committed`` may hold every orphan that did not
+        depend on an offender. Either way a caller must surface the
+        offenders rather than treat this as a quiet no-op."""
+        return bool(self.blocked or self.invalid or self.held or self.stopped)
 
 
 def _porcelain(home: Path) -> list[tuple[str, Path]]:
@@ -365,12 +401,11 @@ def _validate_proposal(home: Path, path: Path) -> None:
     )
 
 
-def _validate_orphans(home: Path, orphans: list[Path]) -> list[str]:
+def _validate_orphans(home: Path, orphans: list[Path]) -> dict[Path, str]:
     """Dispatch every *orphan* to its asset-kind validator (M-C), BEFORE
-    staging anything. One ``"<path>: <reason>"`` string per orphan that
-    fails; empty when every orphan validates — which is the only case
-    the caller may go on to stage+commit the batch."""
-    invalid: list[str] = []
+    staging anything. ``{path: "<path>: <reason>"}`` for each orphan that
+    fails; empty when every orphan validates."""
+    invalid: dict[Path, str] = {}
     for path in orphans:
         kind = _classify(home, path)
         try:
@@ -397,8 +432,89 @@ def _validate_orphans(home: Path, orphans: list[Path]) -> list[str]:
             # kind is never None here: every `path` came from
             # `find_orphans`, which already filtered by `_is_reconcilable`.
         except _ASSET_ERRORS as exc:
-            invalid.append(f"{path}: {exc}")
+            invalid[path] = f"{path}: {exc}"
     return invalid
+
+
+def _record_id_of(home: Path, path: Path) -> str | None:
+    """The record id *path* belongs to: a record file's own id, a
+    single-record proposal's; ``None`` for anything else."""
+    if not path.stem.startswith("lrn-"):
+        return None
+    return path.stem if _classify(home, path) in {"record", "proposal"} else None
+
+
+def _bucket_of(home: Path, path: Path) -> Path | None:
+    from .ledger import discover_buckets
+
+    for bucket in discover_buckets(home):
+        if path.is_relative_to(bucket.path):
+            return bucket.path
+    return None
+
+
+def _merge_members(path: Path) -> set[str]:
+    try:
+        data = ledger_ops.read_proposal(path)
+    except _ASSET_ERRORS:
+        return set()
+    members = data.get("records") if isinstance(data, dict) else None
+    return {m for m in members if isinstance(m, str)} if isinstance(members, list) else set()
+
+
+def _hold_back(
+    home: Path,
+    orphans: list[Path],
+    invalid: dict[Path, str],
+    blocked: list[str],
+) -> dict[Path, str]:
+    """Sweep 2, R1: every VALID orphan that depends on an invalid orphan
+    or a blocked rename, ``{path: "<path>: held back — depends on <x>"}``
+    (see the module docstring for the dependency rules). Run to a fixed
+    point, so a dependant of a dependant is held too."""
+    held: dict[Path, str] = {}
+    held_ids: dict[str, str] = {}  # record id -> what it is held for
+    held_buckets: dict[Path, str] = {}  # bucket -> its held meta.yaml
+    for line in blocked:
+        rid = Path(line.split(" ", 1)[-1]).stem
+        if rid.startswith("lrn-"):
+            held_ids.setdefault(rid, f"the half-committed rename of {rid}")
+
+    def mark(path: Path) -> None:
+        kind = _classify(home, path)
+        rid = _record_id_of(home, path)
+        if kind == "record" and rid is not None:
+            held_ids.setdefault(rid, str(path))
+        if kind == "meta":
+            bucket = _bucket_of(home, path)
+            if bucket is not None:
+                held_buckets.setdefault(bucket, str(path))
+
+    for path in invalid:
+        mark(path)
+    changed = True
+    while changed:
+        changed = False
+        for path in orphans:
+            if path in invalid or path in held:
+                continue
+            kind = _classify(home, path)
+            reason: str | None = None
+            bucket = _bucket_of(home, path)
+            rid = _record_id_of(home, path)
+            if bucket is not None and bucket in held_buckets:
+                reason = held_buckets[bucket]
+            elif rid is not None and rid in held_ids:
+                reason = held_ids[rid]
+            elif kind == "proposal" and path.stem.startswith("merge-"):
+                members = sorted(_merge_members(path) & set(held_ids))
+                if members:
+                    reason = held_ids[members[0]]
+            if reason is not None:
+                held[path] = f"{path}: held back — depends on {reason}"
+                mark(path)
+                changed = True
+    return held
 
 
 def find_orphans(home: Path) -> tuple[list[Path], list[str]]:
@@ -420,17 +536,19 @@ def find_orphans(home: Path) -> tuple[list[Path], list[str]]:
 
 def reconcile(home: Path, *, no_push: bool = False) -> ReconcileResult:
     """Commit every orphaned ledger write, under the lock, by pathspec —
-    ALL of them, or none (M-C).
+    except an invalid or blocked one and what depends on it (M-C as
+    amended by sweep 2's R1), or none at all while an intent is STOPped.
 
     Idempotent and cheap: on a clean ledger it takes the lock, runs one
     ``git status``, and returns an empty result — which is why the miner
     and ``push`` can call it unconditionally. When ``find_orphans`` did
     find something, every orphan is content-validated by asset kind
-    BEFORE anything is staged; a single invalid member, or any blocked
-    rename found alongside, refuses the WHOLE batch (``ReconcileResult.
-    refused``) — see the module docstring for why a partial heal is not
-    an option here. Callers that must never abort on a refusal (the
-    miner) read ``result.blocked`` / ``result.invalid`` and carry on.
+    BEFORE anything is staged; an invalid member is held back with every
+    orphan that depends on it, a blocked rename holds back its own record
+    (``ReconcileResult.refused``, with ``invalid``/``held``/``blocked``
+    naming each), and the rest is committed — see the module docstring.
+    Callers that must never abort on a refusal (the miner) read those
+    lists and carry on.
 
     S-62 (§7.2a.5(1)): converted onto :func:`intents.ledger_write`, which
     closes the two-acquisition gap this docstring used to describe
@@ -467,23 +585,36 @@ def reconcile(home: Path, *, no_push: bool = False) -> ReconcileResult:
                     rolled_forward=recovered.rolled_forward,
                     restored=recovered.restored,
                 )
-            invalid = _validate_orphans(home, orphans)
-            if blocked or invalid:
+            if recovered.stopped:
+                # An intent can name any path: nothing is independent of
+                # it, so nothing is committed (normally unreachable --
+                # `ledger_write` raises LedgerStoppedError first).
                 return ReconcileResult(
                     blocked=blocked,
-                    invalid=invalid,
                     stopped=recovered.stopped,
                     rolled_forward=recovered.rolled_forward,
                     restored=recovered.restored,
                 )
-            message = RECONCILE_SUBJECT.format(n=len(orphans))
+            invalid = _validate_orphans(home, orphans)
+            held = _hold_back(home, orphans, invalid, blocked)
+            to_commit = [p for p in orphans if p not in invalid and p not in held]
+            if not to_commit:
+                return ReconcileResult(
+                    blocked=blocked,
+                    invalid=list(invalid.values()),
+                    held=list(held.values()),
+                    stopped=recovered.stopped,
+                    rolled_forward=recovered.rolled_forward,
+                    restored=recovered.restored,
+                )
+            message = RECONCILE_SUBJECT.format(n=len(to_commit))
             try:
-                gitops.stage(home, orphans)
-                sha = gitops.commit(home, message, paths=orphans)
+                gitops.stage(home, to_commit)
+                sha = gitops.commit(home, message, paths=to_commit)
             except gitops.GitOpsError as exc:
                 # Post-mutation by construction (the paths are staged now).
                 raise gitops.HalfWrittenError.for_commit(
-                    home, message, orphans, exc
+                    home, message, to_commit, exc
                 ) from exc
     except intents.LedgerStoppedError as exc:
         return ReconcileResult(stopped=exc.result.stopped, rolled_forward=exc.result.rolled_forward,
@@ -492,9 +623,11 @@ def reconcile(home: Path, *, no_push: bool = False) -> ReconcileResult:
     # module docstring for the re-scope).
     push = None if no_push else gitops.push_pending(home)
     return ReconcileResult(
-        committed=orphans,
+        committed=to_commit,
         sha=sha,
         blocked=blocked,
+        invalid=list(invalid.values()),
+        held=list(held.values()),
         stopped=recovered.stopped,
         rolled_forward=recovered.rolled_forward,
         restored=recovered.restored,

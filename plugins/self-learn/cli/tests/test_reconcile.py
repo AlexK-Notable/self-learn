@@ -127,11 +127,12 @@ class TestPositiveControlPerAssetKind:
 # ============================================================ refusal cases
 
 
-def test_reconcile_refuses_the_whole_batch_beside_a_blocked_rename(home):
-    """The behaviour M-C changes: today, a valid orphan gets committed
-    beside a blocked rename (a partial heal). After M-C, the presence of
-    the blocked rename refuses the WHOLE batch — the otherwise-perfectly-
-    valid sibling orphan stays uncommitted too."""
+def test_a_blocked_rename_holds_back_only_its_own_record(home):
+    """M-C first refused the WHOLE batch beside a blocked rename. Sweep 2,
+    R1 (2026-09-27; the orchestrator recommended it, the user accepted:
+    "yes"): the half-committed `git mv` is still never completed and is
+    still reported, but an unrelated, perfectly valid sibling orphan is
+    committed."""
     create_record(home, make_behavior(record_id="lrn-90000005"))
     (home / "skills" / "s" / "resolved").mkdir(parents=True, exist_ok=True)
     commit_all(home, "seed")
@@ -151,14 +152,15 @@ def test_reconcile_refuses_the_whole_batch_beside_a_blocked_rename(home):
 
     result = reconcile_mod.reconcile(home, no_push=True)
 
-    assert not result.healed, "a valid orphan was committed beside a blocked rename"
     assert result.refused
-    assert result.committed == []
+    assert result.committed == [orphan]
     assert any("lrn-90000005" in line for line in result.blocked)
-    assert git(home, "rev-parse", "HEAD").stdout == before, (
-        "the batch was refused, so nothing should have been staged/committed"
-    )
-    assert "skills/s/pending/lrn-90000006.md" not in head_files(home)
+    assert git(home, "rev-parse", "HEAD").stdout != before
+    assert "skills/s/pending/lrn-90000006.md" in head_files(home)
+    # the rename itself is untouched: still staged, never half-committed
+    assert "skills/s/resolved/lrn-90000005.md" not in head_files(home)
+    status = git(home, "status", "--porcelain").stdout
+    assert "R  skills/s/pending/lrn-90000005.md -> skills/s/resolved/lrn-90000005.md" in status
 
 
 def test_reconcile_refuses_the_c09_broken_compiled_record(home):
