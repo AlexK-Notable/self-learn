@@ -1794,6 +1794,19 @@ The repair round is a new session with the same file and flag. Each
 the first response's counts say whether the shared part came from cache;
 the session's are Claude Code's totals. The row has no `usage` when the
 backend reported none.
+Since 2026-09-28 each such row also carries `session`: the copy the seam
+kept of that session's Claude Code transcript (`13-hosting-and-separation.md`
+§6) — `session_id`, `path` (relative to the cache directory), `bytes`,
+`entries` (transcript entries by `type`), `assistant_blocks` (assistant
+content blocks by block `type`) and, when the session ran subagents,
+`subagent_files`/`subagent_bytes`; or `session_id` and an `error` when no
+copy could be made. A transient retry's first call carries its own under
+`transient_retry.session`. The overseer's run record carries the same rows
+as `sessions`, one per model session, each tagged with its `phase`, when the
+run gets as far as writing a run record; an attempt that fails before that
+has them in its journal lines only (`phase-a-returned`, `phase-b-returned`,
+`transient-retry`). Counts only, never text; no row when
+`sdk.capture_sessions` is off.
 
 ### 3a.6 Transcript refs (the checked pointer)
 

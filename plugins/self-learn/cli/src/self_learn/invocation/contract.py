@@ -288,6 +288,13 @@ class SessionSpec:
     #: same bytes from one session to the next. `False` -- every producer
     #: but the steward -- leaves the preset exactly as it was.
     exclude_dynamic_sections: bool = False
+    #: The folder name this session's transcript copy lands under,
+    #: `<cache>/sessions/<surface>/<transcript_group>/` (2026-09-28,
+    #: `session_copies.py`): the steward and the overseer pass their run
+    #: id, so every session of one run sits together. `None` -- every
+    #: other producer -- falls back to the seam's own per-session run id. Keyword, defaulted and LAST, like the fields
+    #: above.
+    transcript_group: str | None = None
 
     @property
     def settings_home(self) -> Path | str:

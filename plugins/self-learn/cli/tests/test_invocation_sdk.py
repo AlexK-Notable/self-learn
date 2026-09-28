@@ -655,6 +655,7 @@ def test_op14_options_kwargs_matches_the_object_the_session_ran_on(tmp_path, sdk
         "cwd", "system_prompt", "model", "allowed_tools", "disallowed_tools", "can_use_tool",
         "permission_mode", "setting_sources", "settings", "strict_mcp_config", "mcp_servers",
         "include_partial_messages", "env", "cli_path", "max_turns", "max_budget_usd",
+        "thinking",
     }
     spec = _spec("worker", home=home, prompt="ok_text")
     kwargs = backend_mod.options_kwargs(spec)

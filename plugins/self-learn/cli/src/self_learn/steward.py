@@ -1288,7 +1288,21 @@ def _session_spec(
         # part. The doctor's containment probe passes no file.
         append_system_prompt_file=shared_brief,
         exclude_dynamic_sections=shared_brief is not None,
+        # 2026-09-28: every session of one run keeps its transcript copy in
+        # one folder, `<cache>/sessions/steward/<run id>/`.
+        transcript_group=run_id,
     )
+
+
+def _attempt_transcript(outcome: object) -> dict:
+    """2026-09-28 (the user's words: "go ahead and just capture
+    everything"): the call's transcript copy for its `attempts` row --
+    ``{"session": {session_id, path, bytes, entries, assistant_blocks}}``
+    or ``{"session": {session_id, error}}`` -- or nothing when no copy was
+    attempted (`sdk.capture_sessions` off, or a fake backend). Counts
+    only; the path is relative to the cache directory."""
+    transcript = getattr(outcome, "transcript", None)
+    return {"session": dict(transcript)} if isinstance(transcript, dict) else {}
 
 
 def _attempt_usage(outcome: object) -> dict:
@@ -1330,6 +1344,9 @@ def _repair_spec(spec: invocation.SessionSpec, error: str) -> invocation.Session
         # conditions; with it, it reads them from the cache as well.
         append_system_prompt_file=spec.append_system_prompt_file,
         exclude_dynamic_sections=spec.exclude_dynamic_sections,
+        # Carried (2026-09-28): the repair turn's transcript copy sits
+        # beside its decision call's.
+        transcript_group=spec.transcript_group,
     )
 
 
@@ -3670,7 +3687,8 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     result.failed_calls += 1
                     transient_retry = {"failure": outcome.failure,
                         "detail": _failure_detail(outcome.detail),
-                        **model_failures.failure_fields(outcome)}
+                        **model_failures.failure_fields(outcome),
+                        **_attempt_transcript(outcome)}
                     _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
                         "status": "transient-retry", "packet": packet_index,
                         "call": "decision", **transient_retry})
@@ -3688,6 +3706,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     **model_failures.failure_fields(outcome),
                     **({"transient_retry": transient_retry} if transient_retry else {}),
                     **_attempt_usage(outcome),
+                    **_attempt_transcript(outcome),
                     # U3a data points: what the brief carried, and how much
                     # the steward still read for itself.
                     "brief": brief_stats,
@@ -3843,7 +3862,8 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                         result.failed_calls += 1
                         repair_retry = {"failure": repair.failure,
                             "detail": _failure_detail(repair.detail),
-                            **model_failures.failure_fields(repair)}
+                            **model_failures.failure_fields(repair),
+                            **_attempt_transcript(repair)}
                         _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
                             "status": "transient-retry", "packet": packet_index,
                             "call": "repair", **repair_retry})
@@ -3857,6 +3877,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                         **model_failures.failure_fields(repair),
                         **({"transient_retry": repair_retry} if repair_retry else {}),
                         **_attempt_usage(repair),
+                        **_attempt_transcript(repair),
                         "reads": steward_inputs.tool_reads(repair, home)})
                     try:
                         if not repair.ok:

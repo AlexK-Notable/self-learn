@@ -499,6 +499,17 @@ self-learn/cli/scripts/suite`; UI: `cd plugins/self-learn/ui && uv run
 pytest`, explicit `tests/` path) — this has always been true and is not
 something this unit changed.
 
+**Session copies (2026-09-28).** The user's words: "go ahead and just
+capture everything." After every model session the seam copies Claude
+Code's own transcript of it (and its `subagents/` files) into this
+namespace at `sessions/<surface>/<run id>/<session id>.jsonl` — cache,
+not ledger, because a transcript holds raw tool output. The ledger and
+the journals get only a record: session id, the copy's cache-relative
+path, its size, and counts of entries and assistant blocks by type
+(`02-schema.md` §3a.5). Nothing self-learn builds for a model reads this
+directory. `sdk.capture_sessions` (default on) turns the copies — and the
+summarized thinking every session asks for — off. Copies are not pruned.
+
 **The lesson index and the host unit's environment (U2, 2026-09-26).**
 The lesson index (`02-schema.md` §3a.7) lives in this namespace at
 `index/lessons.sqlite` — cache, not ledger; deleting it costs a rebuild.

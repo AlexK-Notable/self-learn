@@ -812,7 +812,23 @@ def _carry_kept_journal(source: Path, stage: Path) -> None:
     _write_stage(stage, journal, current.rstrip("\n") + f"\n\n{marker}\n\n{body}\n")
 
 
-def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, run_id: str):
+def _session_record(outcome: Any, phase: str) -> dict[str, Any] | None:
+    """2026-09-28 (the user's words: "go ahead and just capture
+    everything"): what the seam kept of one model session's transcript
+    (`session_copies`) -- session id, the copy's cache-relative path, its
+    size, its entry and block counts, or an ``error`` -- tagged with the
+    phase. ``None`` when no copy was attempted (`sdk.capture_sessions`
+    off, a fake backend, or a reused phase A that made no call)."""
+    transcript = getattr(outcome, "transcript", None)
+    if not isinstance(transcript, dict):
+        return None
+    return {"phase": phase, **transcript}
+
+
+def _invoke(
+    home: Path, stage: Path, prompt: str, timeout: float, label: str, run_id: str,
+    sessions: list[dict[str, Any]] | None = None,
+):
     containment = invocation.containment_for(
         "overseer",
         # `Edit` joins `Write` (2026-09-24, the journal). Both are in the
@@ -844,9 +860,15 @@ def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, ru
             # overseer session -- a phase-B note reached the next blind
             # phase A. It would also make the journal readable across runs.
             extra_env=invocation.NO_AUTO_MEMORY_ENV,
+            # 2026-09-28: the run's transcript copies sit in one folder,
+            # `<cache>/sessions/overseer/<run id>/`.
+            transcript_group=run_id,
         )
     )
     outcome = invocation.write_session(spec)
+    record = _session_record(outcome, label)
+    if record is not None and sessions is not None:
+        sessions.append(record)
     if model_failures.should_retry(outcome):
         # 2026-09-27 (fail-state audit finding 4): overloaded, a server
         # error, a rate limit or the network -- the same call is made once
@@ -854,9 +876,13 @@ def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, ru
         # files stay in the stage; the retried session continues them.
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "transient-retry",
             "phase": label, "detail": _failure_detail(outcome.detail),
-            **model_failures.failure_fields(outcome)})
+            **model_failures.failure_fields(outcome),
+            **({"session": record} if record is not None else {})})
         model_failures.backoff()
         outcome = invocation.write_session(spec)
+        record = _session_record(outcome, label)
+        if record is not None and sessions is not None:
+            sessions.append(record)
     return outcome
 
 
@@ -2595,6 +2621,7 @@ def _prepare_manifest(
     runner_notes: list[str] | None = None,
     journal_text: str | None = None,
     trigger: str = TRIGGER_SCHEDULED,
+    sessions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     existing = {row["case"] for row in cases.list_cases(home, only_ok=True)}
     recipes: dict[str, Any] = {}
@@ -2699,6 +2726,10 @@ def _prepare_manifest(
             _model_operation(payload, ordinal=index)
             for index, payload in enumerate(model_updates, start=1)
         ],
+        # 2026-09-28: one row per model session this run made -- its
+        # transcript copy in the cache (`session_copies`): id, cache-relative
+        # path, size, entry and block counts. Counts only, never text.
+        "sessions": [dict(row) for row in (sessions or [])],
     }
     _scan_manifest_or_refuse(manifest)
     return manifest
@@ -3920,6 +3951,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
     # The key is the population the model is shown (one line per case,
     # ids, opening times, headlines), never the window's moving start.
     population_key = _population_key((stage / "population.txt").read_text(encoding="utf-8"))
+    #: 2026-09-28: every model session this attempt makes, as its transcript
+    #: copy's record (`_session_record`), for the run record.
+    sessions: list[dict[str, Any]] = []
     if not dry_run and _reuse_phase_a(home, stage, week, population_key):
         # 2026-09-27 (fail-state audit finding 7): this week's phase A was
         # already made and validated against the same population by an
@@ -3930,10 +3964,12 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-a-reused",
             "week": week})
     else:
-        outcome_a = _invoke(home, stage, prompt_a, timeout_a, "phase-a", run_id)
+        outcome_a = _invoke(home, stage, prompt_a, timeout_a, "phase-a", run_id, sessions)
         model_calls = 1
+        record_a = _session_record(outcome_a, "phase-a")
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-a-returned",
-            "ok": bool(outcome_a.ok), "tool_turns": _reported_turns(outcome_a)})
+            "ok": bool(outcome_a.ok), "tool_turns": _reported_turns(outcome_a),
+            **({"session": record_a} if record_a is not None else {})})
     # A15: a failure of the FIRST model call leaves a committed trace with
     # its real reason. It happens before any `intents.begin` here, so the
     # note opens its own `intents.ledger_write` span. A dry run writes
@@ -4064,10 +4100,12 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         prompt_b = _phase_b_prompt(stage, selected, tuple(row["case"] for row in parked_rows))
         _write_stage(stage, stage / "prompt-b.md", prompt_b)
         timeout_b = phase_timeout(timeout_seconds, len(blind) + len(parked_rows))
-        outcome_b = _invoke(home, stage, prompt_b, timeout_b, "phase-b", run_id)
+        outcome_b = _invoke(home, stage, prompt_b, timeout_b, "phase-b", run_id, sessions)
         model_calls += 1
+        record_b = _session_record(outcome_b, "phase-b")
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-b-returned",
-            "ok": bool(outcome_b.ok), "tool_turns": _reported_turns(outcome_b)})
+            "ok": bool(outcome_b.ok), "tool_turns": _reported_turns(outcome_b),
+            **({"session": record_b} if record_b is not None else {})})
         # Both phases have written to it by now; every commit below carries
         # it (already secret-scanned; a hit is the stub).
         journal_text = None if dry_run else _model_journal_text(home, stage, run_id, started[:10])
@@ -4489,6 +4527,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 model_calls=model_calls, guard=guard, coverage_text=coverage_text,
                 questions=questions, findings=findings, prepared=prepared,
                 model_updates=model_updates,
+                sessions=sessions,
                 runner_notes=[
                     *phase_a_drops,
                     *report_notes, *question_drops, *finding_drops, *case_drops,

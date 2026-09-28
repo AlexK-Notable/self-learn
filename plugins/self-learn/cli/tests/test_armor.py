@@ -310,6 +310,14 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
                 "legitimate); for the overseer the test asserts a read inside the "
                 "workspace is allowed and one outside is denied."
             ),
+            "func:test_op14_options_kwargs_matches_the_object_the_session_ran_on": (
+                "2026-09-28 batch 0928 part 3 (`13-hosting-and-separation.md` §6, the "
+                "session copies; the user's words: \"go ahead and just capture "
+                "everything\"): every session now also asks for summarized thinking "
+                "(`thinking`, behind `sdk.capture_sessions`, default on), so the "
+                "option set this test pins gains that one key; everything else it "
+                "checks is unchanged."
+            ),
         },
     ),
     "test_worker.py": Behaviour(
@@ -878,9 +886,13 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=1,
+        value=2,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-09-28 batch 0928 part 3 (`13-hosting-and-separation.md` §6): 1 -> 2, "
+            "one door, `test_invocation_sdk.py: func:test_op14_options_kwargs_matches_"
+            "the_object_the_session_ran_on` (the option set gains `thinking`). "
+            "Previous entry: "
             "2026-09-28 batch 0928 unit A (`13-hosting-and-separation.md` §5): 0 -> 1, "
             "one door, `test_invocation_sdk.py: func:test_ch14_steward_and_overseer_"
             "write_stage_only_bash_and_mcp_tools_denied` (the overseer's reads are "
@@ -924,9 +936,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=193,
+        value=194,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-09-28 batch 0928 part 3 (`13-hosting-and-separation.md` §6): "
+            "193 -> 194 -- `test_invocation_sdk.py`'s `test_op14_...` (the option "
+            "set gains `thinking`) now also differs from c3b48e7. Previous entry: "
             "2026-09-13 U8 (17-invocation-runbook.md §1), HEAD-scoped, "
             "re-run after this build's own edits against the RETIRED "
             "control anchor c3b48e7: 186 -> 191, five of this build's seven "
