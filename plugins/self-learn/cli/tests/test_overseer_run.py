@@ -2675,14 +2675,17 @@ def test_both_prompts_carry_the_journal_and_phase_b_the_question_bar(tmp_path, m
     overseer_run.run(home, dry_run=True, no_push=True)
     a, b = str(seen["a_prompt"]), str(seen["b_prompt"])
     for prompt, phase in ((a, "A"), (b, "B")):
-        assert "Your journal is journal.md in this stage." in prompt
+        assert "Keep a work log in journal.md in this stage for the whole run" in prompt
+        assert "what evidence, if it turned up, would change the decision" in prompt
+        assert "the old view, the new view, and the finding that changed it" in prompt
+        assert "options you considered" not in prompt
         assert "No later run reads it." in prompt
         assert "## phase <A|B> · <a few words>" in prompt
         assert f"You are in phase {phase} now." in prompt
         assert "at most" not in prompt.lower()
         assert "three questions" not in prompt.lower()
-    assert "Nothing in the journal may guess at the steward's decisions" in a
-    assert "Nothing in the journal may guess" not in b
+    assert "The log records only what you read in this stage; you have not seen the steward's decisions." in a
+    assert "you have not seen the steward's decisions" not in b
     assert "There is no limit on\nhow many you ask" in b
     assert "A question clears the bar only when all three hold" in b
     assert "clears the bar" not in a
