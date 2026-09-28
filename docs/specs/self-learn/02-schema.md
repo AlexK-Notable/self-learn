@@ -1446,7 +1446,18 @@ PDT: "fix the rest of 3".)*
   the runner's own lines only; "Refused / could not do" names the file
   and the matched rule (`<file>: withheld — the secret scan matched
   <rule>`), never the text, and the journal gets a `file-dropped` row.
-  A hit in any other stage file still refuses the run.
+  A hit in any other stage file still refuses the run. *(2026-09-28,
+  follow-up 4)* A run whose decisions were dropped says so: the run
+  record carries `decisions: {staged, dropped}` (the pairs phase B staged,
+  and how many of them the runner dropped by pairing, the secret scan,
+  parsing, the case writer or validation); when any was dropped, the
+  report's "Decided in the user's stead" gets `- decisions: <kept> of
+  <staged> reached the ledger; <dropped> dropped (named under Refused /
+  could not do)`, and `overseer run`'s text line, its notification and
+  its `--json` `status_text` read e.g. `applied (0 of 3; 3 dropped)`. The
+  machine `status` value (`applied`) and its exit code are unchanged; the
+  JSON also carries `decisions_staged` and `decisions_dropped`. The
+  steward has no such case: a dropped steward case is counted `refused`.
 - *Steward reconsider misfit (audit finding 10).* When `verbs.reconsider`
   refuses a reconsider case the case writer accepted (its outcome does not
   apply to the lesson's status, or the lesson is gone), that case is

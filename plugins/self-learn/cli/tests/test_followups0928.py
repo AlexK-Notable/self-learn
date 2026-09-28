@@ -8,6 +8,7 @@ follow-up:
 1. A moved lesson updates both files.
 2. A host that keeps refusing tells the user once.
 3. A secret hit outside the overseer's pairs costs that file's contents.
+4. An all-dropped run says so.
 
 Sandbox ledger and host repos under pytest's tmpdir; fake model sessions.
 """
@@ -301,3 +302,72 @@ def test_a_secret_in_an_output_file_costs_that_file_not_the_run(tmp_path, monkey
         assert "model-prose-marker" not in report  # the model's text is withheld
     else:
         assert "model-prose-marker" in report  # the model's report is kept whole
+
+
+# ------------------------------------------------- 4. an all-dropped run
+
+
+@pytest.mark.parametrize("leak", [False, True, "invalid"])
+def test_an_overseer_run_whose_decisions_were_all_dropped_says_so(tmp_path, monkeypatch, leak):
+    import argparse
+    import contextlib
+    import io
+
+    from self_learn.overseer import cli as overseer_cli
+    from test_overseer_run import _enabled, _seed_parked_reject, _silence_notifications
+    from test_secret_evidence import _fake_github_token, _overseer_phases
+
+    token = _fake_github_token(41)
+    home = make_env(tmp_path).ledger
+    rid, parked = _seed_parked_reject(home, tmp_path)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    # leak: the one decided case carries a secret in `because` (dropped by
+    # the secret scan) or lacks its required fields ("invalid", dropped by
+    # the pair's own validation); otherwise (the control) it applies.
+    _overseer_phases(
+        monkeypatch, rid, parked, [{"ref": f"record:{rid}", "quote": "status: pending"}],
+        because=f"it leaked {token}" if leak is True else "too narrow",
+        raw_case="kind: resolution\ntrigger: nightly\n" if leak == "invalid" else None,
+    )
+
+    def cli_run(as_json):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = overseer_cli.dispatch(argparse.Namespace(
+                overseer_command="run", dry_run=False, json=as_json,
+            ))
+        return code, out.getvalue()
+
+    code, text = cli_run(True)
+    data = json.loads(text)
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    decided = report.split("## Decided in the user's stead\n", 1)[1].split("\n## ", 1)[0]
+    assert data["status"] == "applied" and code == 0  # the machine value is unchanged
+    if leak:
+        assert data["applied"] == 0
+        assert (data["decisions_staged"], data["decisions_dropped"]) == (1, 1)
+        assert data["status_text"] == "applied (0 of 1; 1 dropped)"
+        assert "- decisions: 0 of 1 reached the ledger; 1 dropped" in decided
+    else:
+        assert data["applied"] == 1  # positive control: the decision landed
+        assert (data["decisions_staged"], data["decisions_dropped"]) == (1, 0)
+        assert data["status_text"] == "applied"
+        assert "decisions:" not in decided
+
+
+def test_the_cli_text_line_carries_the_counts(capsys, monkeypatch):
+    import argparse
+
+    from self_learn.overseer import cli as overseer_cli
+    from self_learn.overseer import run as overseer_run
+
+    result = overseer_run.RunResult(
+        "applied", 0, "r1", decisions_staged=3, decisions_dropped=3,
+    )
+    monkeypatch.setattr(overseer_run, "run", lambda *a, **kw: result)
+    overseer_cli.dispatch(argparse.Namespace(overseer_command="run", dry_run=False, json=False))
+    line = capsys.readouterr().out.splitlines()[0]
+    assert line.startswith("self-learn overseer: applied (0 of 3; 3 dropped); examined=0")
+    assert overseer_run.RunResult("applied", 0, "r").status_text == "applied"

@@ -202,12 +202,31 @@ class RunResult:
     #: 2026-09-28: the targets the post-run recompile skipped
     #: (``"<target>: <reason>"``), one pass, never retried in the run.
     recompile_skipped: tuple[str, ...] = ()
+    #: 2026-09-28 (follow-up 4): the case/sheet pairs (decisions) phase B
+    #: staged, and how many of them the runner dropped before the ledger.
+    decisions_staged: int = 0
+    decisions_dropped: int = 0
+
+    @property
+    def status_text(self) -> str:
+        """The status for a person: ``status`` itself, with the decision
+        counts when any was dropped -- ``applied (0 of 3; 3 dropped)`` --
+        so a run whose every decision was dropped does not read as a plain
+        ``applied``. ``status`` stays the machine value."""
+        return _status_text(self.status, self.decisions_staged, self.decisions_dropped)
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
         data["examined"] = list(self.examined)
         data["recompile_skipped"] = list(self.recompile_skipped)
+        data["status_text"] = self.status_text
         return data
+
+
+def _status_text(status: str, staged: int, dropped: int) -> str:
+    if not dropped:
+        return status
+    return f"{status} ({staged - dropped} of {staged}; {dropped} dropped)"
 
 
 class OverseerError(Exception):
@@ -1212,11 +1231,14 @@ def _finalize_model_report(
     user_model_lines: list[str] | None = None,
     questions: list[str] | None = None,
     notes: list[str] | None = None,
+    decided: list[str] | None = None,
 ) -> str:
     """The published report: the model's own text, whole, with the
     runner's factual lines added. *notes* are runner lines for "Refused /
     could not do" that are not refusals of any decision (a dropped
-    question, the report's own length); they are not counted as refused."""
+    question, the report's own length); they are not counted as refused.
+    *decided* (2026-09-28, follow-up 4) are runner lines for "Decided in
+    the user's stead" (how many staged decisions were dropped)."""
     lines = _validate_model_report(path)
     model_line_count = len(lines)
     runner_notes = list(notes or [])
@@ -1233,6 +1255,12 @@ def _finalize_model_report(
     ]
     lines[examined_at:examined_at] = facts
     _drop_bare_none(lines, examined_at)
+    if decided:
+        decided_at = next(
+            i for i, line in enumerate(lines) if line.startswith("## Decided in the user's stead")
+        ) + 1
+        lines[decided_at:decided_at] = [f"- {item}" for item in decided]
+        _drop_bare_none(lines, decided_at)
     refused_at = next(i for i, line in enumerate(lines) if line.startswith("## Refused / could not do")) + 1
     if refusals or runner_notes:
         lines[refused_at:refused_at] = [f"- {item}" for item in [*refusals, *runner_notes]]
@@ -2672,6 +2700,7 @@ def _prepare_manifest(
     journal_text: str | None = None,
     trigger: str = TRIGGER_SCHEDULED,
     sessions: list[dict[str, Any]] | None = None,
+    decisions: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     existing = {row["case"] for row in cases.list_cases(home, only_ok=True)}
     recipes: dict[str, Any] = {}
@@ -2781,6 +2810,13 @@ def _prepare_manifest(
         # path, size, entry and block counts. Counts only, never text.
         "sessions": [dict(row) for row in (sessions or [])],
     }
+    if decisions:
+        # 2026-09-28 (follow-up 4): the decisions phase B staged and how many
+        # the runner dropped, for the run's status line and report.
+        manifest["decisions"] = {
+            "staged": int(decisions.get("staged") or 0),
+            "dropped": int(decisions.get("dropped") or 0),
+        }
     _scan_manifest_or_refuse(manifest)
     return manifest
 
@@ -3595,6 +3631,19 @@ def _execute_manifest(
         status_name = "partial" if decision == EXIT_PARTIAL else (
             "refused" if decision else "applied"
         )
+    # 2026-09-28 (follow-up 4): a run whose decisions were dropped before
+    # the ledger says so -- "applied" alone read as if they had landed.
+    decision_counts = cast(dict[str, Any], manifest.get("decisions") or {})
+    decisions_staged = int(decision_counts.get("staged") or 0)
+    decisions_dropped = int(decision_counts.get("dropped") or 0)
+    decided_lines = (
+        [
+            f"decisions: {decisions_staged - decisions_dropped} of {decisions_staged} "
+            f"reached the ledger; {decisions_dropped} dropped (named under "
+            "Refused / could not do)"
+        ]
+        if decisions_dropped else []
+    )
 
     # S-68's generic guard. An attempt that ran and moved NOTHING toward a
     # terminal value is a failed attempt and counts exactly like one that
@@ -3679,6 +3728,7 @@ def _execute_manifest(
             user_model_lines=user_model_lines,
             questions=questions,
             notes=runner_notes,
+            decided=decided_lines,
         )
         manifest, report_path, latest = _write_manifest_truth(
             home, manifest, report_text=text, complete=not halted, closed=closed,
@@ -3767,19 +3817,25 @@ def _execute_manifest(
         notify.send(
             home,
             cue,
-            f"overseer {status_name}: {len(selected)} examined",
+            f"overseer {_status_text(status_name, decisions_staged, decisions_dropped)}: "
+            f"{len(selected)} examined",
             list(dict.fromkeys([*hook_ids, *notice_ids])) or [run_id],
         )
     journal_entry: dict[str, Any] = {
         "at": chrono.now_iso(), "run": run_id, "status": status_name,
         "code": decision, "model_calls": model_calls,
     }
+    if decisions_dropped:
+        journal_entry["decisions"] = {
+            "staged": decisions_staged, "dropped": decisions_dropped,
+        }
     if push_failure is not None:
         journal_entry["push"] = push_failure
     _journal(home, journal_entry)
     return RunResult(
         status_name, decision, run_id, model_calls, selected, excluded,
         application_count, len(refusals), str(report_path),
+        decisions_staged=decisions_staged, decisions_dropped=decisions_dropped,
     )
 
 
@@ -4492,6 +4548,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 _journal(home, {"at": chrono.now_iso(), "run": run_id,
                     "status": "file-dropped", "file": "user-model-delta.yaml", "reason": str(exc)})
             prepared: list[tuple[Path | None, Path, batch.Sheet]] = []
+            # 2026-09-28 (follow-up 4): pairs dropped before the ledger --
+            # by pairing or the secret scan (`pair_drops`), and below.
+            pairs_dropped = len(pair_drops)
             preview_apply = 0
             preview_refused = 0
             seen_predecessors: set[str] = set()
@@ -4517,6 +4576,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     )
                     _journal(home, {"at": chrono.now_iso(), "run": run_id,
                         "status": "pair-dropped", "reason": unparsed})
+                    pairs_dropped += 1
                     continue
                 # 2026-09-28 (fail-state audit finding 9): every other check
                 # of one pair -- the successor or maintenance case's fields,
@@ -4546,6 +4606,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                             )
                             _journal(home, {"at": chrono.now_iso(), "run": run_id,
                                 "status": "case-dropped", "file": case_file.name, "rule": rule})
+                            pairs_dropped += 1
                             continue
                     elif case_file is not None:
                         _validate_successor(case_file, {row["case"] for row in parked_rows})
@@ -4563,6 +4624,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                             _journal(home, {"at": chrono.now_iso(), "run": run_id,
                                 "status": "case-dropped", "file": case_file.name,
                                 "supersedes": predecessor, "rule": rule})
+                            pairs_dropped += 1
                             continue
                         if predecessor in seen_predecessors:
                             raise OverseerError(f"{case_file.name}: a second successor for {predecessor}")
@@ -4587,6 +4649,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     )
                     _journal(home, {"at": chrono.now_iso(), "run": run_id,
                         "status": "pair-dropped", "reason": reason})
+                    pairs_dropped += 1
                     continue
                 if predecessor is not None:
                     seen_predecessors.add(predecessor)
@@ -4643,6 +4706,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     *pair_drops, *coverage_drops, *phase_b_notes,
                 ],
                 journal_text=journal_text, trigger=trigger,
+                decisions={
+                    "staged": len(prepared) + pairs_dropped, "dropped": pairs_dropped,
+                },
             )
         except Exception as exc:  # noqa: BLE001 -- counted and traced, never escapes
             # 2026-09-27 (fail-state audit finding 5): the run record could

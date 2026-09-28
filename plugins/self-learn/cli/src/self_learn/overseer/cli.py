@@ -53,7 +53,7 @@ def dispatch(args) -> int:
                 print("self-learn overseer: held — this week is already done")
             else:
                 print(
-                    f"self-learn overseer: {result.status}; "
+                    f"self-learn overseer: {result.status_text}; "
                     f"examined={len(result.examined)} applied={result.applied} refused={result.refused}"
                 )
                 for line in result.recompile_skipped:
