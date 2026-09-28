@@ -729,7 +729,11 @@ that is not a mapping holding just a `findings` list refuses the run.
 
 **Journal.** `overseer/journal/<date>-<run>.md` is the run's own journal: a
 stage file (`journal.md`) the runner creates before phase A and the model
-writes in throughout both phases. It is committed with every commit the run
+writes in throughout both phases. The prompts ask for it as a work log --
+ids, what was found, what is open, what was decided on which evidence, what
+would change it, and a new entry when a later finding overturns an earlier
+one -- never for a narration of the model's own deliberation, which the API
+refuses as `[reasoning_extraction]` (2026-09-27). It is committed with every commit the run
 makes after its first model call (the committed recipe, the finalize, a
 partial finalize, a failed attempt's note, a close-out, a push-failure
 record), carried back into the stage on a resume, never committed when it
