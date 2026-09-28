@@ -202,7 +202,16 @@ revert). Doc 13 promotes that to the general rule:
 2. **Crash between phases = stale canon, never lost truth.** The
    `--selftest` gains a drift check: managed-section entry markers
    (`*(lrn-…)*`) vs the ledger's routed records; drift is repaired by
-   recompile, one command, idempotent.
+   recompile, one command, idempotent. *Amended 2026-09-27 (sweep 2,
+   R3):* a host commit that is **refused** (a pre-commit hook such as a
+   gitleaks guard, a stale `index.lock`) is the same interruption, and
+   costs only that one host write: the files it wrote are put back as
+   they were and unstaged, so the user's repo is left exactly as it was
+   (never a staged self-learn change a later route reads as "dirty", or
+   the user's own next commit would carry); the ledger commit stands and
+   the next `recompile` retries the write. In `recompile` the refused
+   target is skipped with the hook's message and every other target is
+   still repaired. Never `--no-verify`.
 3. **The rejected-proposal digest moves its grep to the ledger repo**
    (resolution commits live there now).
 4. **The sentinel contract SHRINKS.** The ledger repo has no watcher
