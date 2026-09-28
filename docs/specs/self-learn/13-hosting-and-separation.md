@@ -211,7 +211,13 @@ revert). Doc 13 promotes that to the general rule:
    the user's own next commit would carry); the ledger commit stands and
    the next `recompile` retries the write. In `recompile` the refused
    target is skipped with the hook's message and every other target is
-   still repaired. Never `--no-verify`.
+   still repaired. Never `--no-verify`. *Amended 2026-09-28:* the same
+   holds for the removal of a retired hook's guard script (`git rm`, then
+   commit): a refused commit puts the script back and unstages it, so no
+   staged deletion is left in the user's repo, and the removal is owed —
+   a retired hook record whose script is still on disk is what
+   `recompile` removes; until it can commit, `recompile` reports that
+   script as skipped ("hook removal not done — still owed").
 3. **The rejected-proposal digest moves its grep to the ledger repo**
    (resolution commits live there now).
 4. **The sentinel contract SHRINKS.** The ledger repo has no watcher

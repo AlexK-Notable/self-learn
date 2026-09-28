@@ -2968,6 +2968,7 @@ def _remove_hook_script(
             if mode != "git":
                 script.unlink()
                 return None
+            snapshot = _snapshot_host_files([script])
             gitops._git(  # noqa: SLF001 — same module family
                 host_repo, "rm", "-q", "--ignore-unmatch", "--", str(script)
             )
@@ -2976,12 +2977,30 @@ def _remove_hook_script(
                 # so there is nothing to commit
                 script.unlink()
                 return None
-            return gitops.commit(
-                host_repo,
-                f"self-learn: apply {record_id} → {rel} (hook removed)",
-                body=note,
-                paths=[script],
-            )
+            try:
+                return gitops.commit(
+                    host_repo,
+                    f"self-learn: apply {record_id} → {rel} (hook removed)",
+                    body=note,
+                    paths=[script],
+                )
+            except gitops.GitOpsError as exc:
+                # 2026-09-28 (sweep 2 R3's rule, for a removal): a refused
+                # commit (a pre-commit hook, a stale index.lock) must not
+                # leave a staged deletion in the user's repo. The script is
+                # put back and unstaged; the removal stays owed -- a
+                # retired hook record whose script is still on disk is
+                # exactly what `recompile` removes (m-4).
+                undone = _undo_host_write(host_repo, snapshot, [script])
+                warning = (
+                    f"HOOK REMOVAL REFUSED after the ledger commit ({exc}) — "
+                    f"{undone}; the removal of {script} is owed: run "
+                    "`self-learn recompile` once the commit can land "
+                    "(the ledger stays truth, H-2)"
+                )
+                print(f"self-learn: {warning}", file=sys.stderr)
+                warnings.append(warning)
+                return None
     except (gitops.GitOpsError, OSError) as exc:
         warning = (
             f"HOOK REMOVAL FAILED after the ledger commit ({exc}) — remove "
@@ -3909,6 +3928,9 @@ def _undo_host_write(
             data, mode = before
             if path.is_file() and path.read_bytes() == data:
                 continue
+            # `git rm` of a directory's last file removes the directory
+            # too (a refused hook-script removal, 2026-09-28).
+            path.parent.mkdir(parents=True, exist_ok=True)
             fsops.atomic_write(path, data, mode=mode, fsync=True, follow_symlinks=True)
         except OSError as exc:
             problems.append(f"could not put back {path} ({exc})")
@@ -9109,7 +9131,14 @@ def recompile(
                         resync_touched.append(removal_record_path)
             result.entries.append(
                 RecompileEntry(
-                    target=script_abs, changed=sha is not None, commit_sha=sha
+                    target=script_abs, changed=sha is not None, commit_sha=sha,
+                    # 2026-09-28: a removal refused or failed is reported
+                    # as a skip (its warning says why); the script is back
+                    # on disk, so the next recompile retries it.
+                    skipped=(
+                        "hook removal not done — still owed"
+                        if script_abs.is_file() else None
+                    ),
                 )
             )
             if sha is not None and host_repo not in touched_hosts:
