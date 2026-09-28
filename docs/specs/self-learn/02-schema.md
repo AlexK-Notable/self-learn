@@ -1395,9 +1395,17 @@ PDT: "fix the rest of 3".)*
   `recompile-failed`) and never raises out of the run. A target it skips is
   in the run's result (`recompile_skipped`, printed by `steward run` and
   `overseer run`) and is not retried in the run; the next run that touches
-  it, or a person's `recompile`, does. Known limit: a rehome or rescope of
-  a routed lesson recompiles its NEW target only; an entry left in its old
-  target waits for an ordinary `recompile`.
+  it, or a person's `recompile`, does. *A moved lesson updates both files
+  (2026-09-28, follow-up 1):* before a sheet is applied, the runner notes
+  the bucket each of its `rehome`/`rescope` items' records lives in
+  (`verbs.move_origins`); the post-run recompile also compiles the target
+  the record resolved to in the bucket it left (its routing block's
+  destination, resolved from that bucket's scope), even when no record
+  resolves there any more, so a line the lesson left in the old file goes
+  in the same run. Only a `skill-md`, `claude-md` or `new-skill` target:
+  a reference is append-only history and a hook script is not a document
+  target. A move a crash separated from its run's recompile is not
+  remembered; its old target waits for a person's `recompile`.
 - *Overseer phase-A entries (audit finding 9).* An entry of
   `selection.yaml` that is not one string id, carries a key other than
   `id`, names a case outside the week's population or repeats one, and an

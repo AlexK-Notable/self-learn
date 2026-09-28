@@ -25,6 +25,7 @@ import uuid
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any, cast
 
 from ruamel.yaml import YAML, YAMLError
@@ -260,9 +261,20 @@ _DRY_RUN_JOURNAL = False
 _HOST_RESULT_IDS: list[str] | None = None
 
 
+#: 2026-09-28 (follow-up 1): ``(record id, bucket)`` of each rehome or
+#: rescope item, read before its sheet is applied (:func:`verbs.
+#: move_origins`); the post-run recompile compiles the target it left.
+_MOVED_FROM: list[tuple[str, Path]] | None = None
+
+
 def _note_host_results(result: batch.BatchResult) -> None:
     if _HOST_RESULT_IDS is not None:
         _HOST_RESULT_IDS.extend(verbs.host_result_ids(result.items))
+
+
+def _note_move_origins(home: Path, items: Iterable[object]) -> None:
+    if _MOVED_FROM is not None:
+        _MOVED_FROM.extend(verbs.move_origins(home, items))
 
 
 def _journal(home: Path, entry: dict[str, Any]) -> None:
@@ -3226,6 +3238,7 @@ def _run_manifest_sheet(
             no_push=True, prefix=True,
         )
 
+    _note_move_origins(home, effective_run)
     try:
         result = batch.run(
             home, effective_run, no_push=True, actor="overseer",
@@ -3752,33 +3765,39 @@ def run(
     publish = not dry_run and not boundary_no_push
     head_before = verbs.ledger_head(home) if publish else None
     result: RunResult | None = None
-    global _DRY_RUN_JOURNAL, _HOST_RESULT_IDS
+    global _DRY_RUN_JOURNAL, _HOST_RESULT_IDS, _MOVED_FROM
     marked_before = _DRY_RUN_JOURNAL
     host_before = _HOST_RESULT_IDS
+    moved_before = _MOVED_FROM
     _DRY_RUN_JOURNAL = dry_run
     _HOST_RESULT_IDS = []
+    _MOVED_FROM = []
     try:
         result = _run(home, dry_run=dry_run, no_push=boundary_no_push, manual=manual)
         if not dry_run and _HOST_RESULT_IDS:
-            skipped = _post_run_recompile(home, result.run, _HOST_RESULT_IDS)
+            skipped = _post_run_recompile(home, result.run, _HOST_RESULT_IDS, _MOVED_FROM)
             if skipped:
                 result = replace(result, recompile_skipped=tuple(skipped))
         return result
     finally:
         _DRY_RUN_JOURNAL = marked_before
         _HOST_RESULT_IDS = host_before
+        _MOVED_FROM = moved_before
         if publish:
             _publish(home, head_before, result.run if result is not None else "?")
 
 
-def _post_run_recompile(home: Path, run_id: str, record_ids: list[str]) -> list[str]:
+def _post_run_recompile(
+    home: Path, run_id: str, record_ids: list[str],
+    moved_from: list[tuple[str, Path]] | None = None,
+) -> list[str]:
     """2026-09-28: after a run that applied a route, rehome or rescope, one
     recompile of those records' own targets (:func:`verbs.post_run_recompile`)
     -- after `_run` has let go of the commit lock, before the run's push.
     It is journaled and never raises out of the run; a target it skips is
     returned for the run's result and journaled, not retried here."""
     try:
-        outcome = verbs.post_run_recompile(home, record_ids)
+        outcome = verbs.post_run_recompile(home, record_ids, moved_from or ())
     except Exception as exc:  # noqa: BLE001 -- never mask the run's own outcome
         cause = " ".join(str(exc).split()) or type(exc).__name__
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "recompile-failed",
