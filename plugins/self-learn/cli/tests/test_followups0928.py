@@ -7,6 +7,7 @@ follow-up:
 
 1. A moved lesson updates both files.
 2. A host that keeps refusing tells the user once.
+3. A secret hit outside the overseer's pairs costs that file's contents.
 
 Sandbox ledger and host repos under pytest's tmpdir; fake model sessions.
 """
@@ -240,3 +241,63 @@ def test_the_overseer_tells_a_host_refusal_once_too(tmp_path, monkeypatch):
         if overseer_run.HOST_REFUSED_TOLD in line
     ]
     assert [row["run"] for row in rows] == [result.run]
+
+
+# ------------------------- 3. a secret outside the pairs costs that file only
+
+
+def _files_under(root, text):
+    out = []
+    for path in root.rglob("*"):
+        if path.is_file() and ".git" not in path.parts:
+            try:
+                if text in path.read_text(encoding="utf-8", errors="replace"):
+                    out.append(str(path))
+            except OSError:
+                pass
+    return out
+
+
+@pytest.mark.parametrize("where", ["findings.yaml", "user-model-delta.yaml", "report.md"])
+def test_a_secret_in_an_output_file_costs_that_file_not_the_run(tmp_path, monkeypatch, where):
+    from self_learn import cases
+    from self_learn.overseer import run as overseer_run
+    from test_heading_evidence import _ledger_files_with
+    from test_overseer_run import _enabled, _refused_section, _seed_parked_reject, _silence_notifications
+    from test_secret_evidence import _fake_github_token, _overseer_phases
+
+    token = _fake_github_token(31)
+    home = make_env(tmp_path).ledger
+    rid, parked = _seed_parked_reject(home, tmp_path)
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _overseer_phases(
+        monkeypatch, rid, parked, [{"ref": f"record:{rid}", "quote": "status: pending"}],
+        report_extra=" model-prose-marker",
+    )
+    phases = overseer_run.invocation.write_session
+
+    def leaky(spec):
+        outcome = phases(spec)
+        if spec.label != "phase-a":
+            path = spec.cwd / where
+            path.write_text(path.read_text(encoding="utf-8") + f"# {token}\n", encoding="utf-8")
+        return outcome
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", leaky)
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert (result.status, result.applied) == ("applied", 1), result
+    assert [r for r in cases.list_cases(home, record_id=rid) if r["case"] != parked]
+    refused = _refused_section(home)
+    assert refused.strip(), "positive control: the section rendered"
+    assert f"{where}: withheld — the secret scan matched github-token" in refused
+    assert _ledger_files_with(home, "status: pending")  # positive control for the grep
+    assert _ledger_files_with(home, token) == []
+    assert _files_under(tmp_path, token) == []
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    if where == "report.md":
+        assert "model-prose-marker" not in report  # the model's text is withheld
+    else:
+        assert "model-prose-marker" in report  # the model's report is kept whole

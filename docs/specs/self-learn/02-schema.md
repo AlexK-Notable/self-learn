@@ -1436,8 +1436,17 @@ PDT: "fix the rest of 3".)*
   boolean), an empty successor sheet, a caseless non-empty sheet. A pair
   is one decision, so it is dropped whole, never item by item. A
   secret-scan hit in a pair's case or sheet drops that pair — nothing of
-  it reaches the ledger; a hit in `report.md`, `findings.yaml`,
-  `user-model-delta.yaml` or any other file still refuses the run.
+  it reaches the ledger. *(2026-09-28, follow-up 3)* A hit in
+  `findings.yaml`, `user-model-delta.yaml` or `report.md` costs that
+  file's contents, not the run: the runner rewrites the staged file,
+  before anything reads it, to what carries nothing (`findings: []`,
+  `updates: []`, or a report of the seven headings with `- none`), so the
+  run has no findings (as for an unparseable file: no selected case
+  counts as examined), no user-model updates, or a committed report of
+  the runner's own lines only; "Refused / could not do" names the file
+  and the matched rule (`<file>: withheld — the secret scan matched
+  <rule>`), never the text, and the journal gets a `file-dropped` row.
+  A hit in any other stage file still refuses the run.
 - *Steward reconsider misfit (audit finding 10).* When `verbs.reconsider`
   refuses a reconsider case the case writer accepted (its outcome does not
   apply to the lesson's status, or the lesson is gone), that case is

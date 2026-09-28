@@ -375,12 +375,18 @@ def test_overseer_still_refuses_a_secret_it_may_not_drop(tmp_path, monkeypatch, 
 
     result = overseer_run.run(home, dry_run=False, no_push=True)
 
-    # REWRITTEN 2026-09-28 (fail-state audit finding 9): a hit in the
-    # report still refuses the run; a hit the runner may not drop from a
-    # case/sheet pair now drops that pair (named) instead of the run.
-    # Either way no successor is written and the token never lands.
+    # REWRITTEN 2026-09-28 (fail-state audit finding 9): a hit the runner
+    # may not drop from a case/sheet pair now drops that pair (named)
+    # instead of the run. REWRITTEN again 2026-09-28 (follow-up 3): a hit
+    # in the report withholds the report's text (the runner's own lines
+    # and a stub naming the rule are committed) instead of refusing the
+    # run, so the clean pair applies. Either way the token never lands.
     if where == "report":
-        assert result.status != "applied", result
+        assert result.status == "applied", result
+        refused = _refused_section(home)
+        assert "report.md: withheld — the secret scan matched github-token" in refused
+        assert _ledger_files_with(home, token) == []
+        return
     else:
         refused = _refused_section(home)
         assert "case-a.yaml" in refused and "dropped" in refused, refused

@@ -1750,6 +1750,44 @@ def _drop_secret_pairs(
     return [name for name in secret_files if name in flagged], kept
 
 
+#: 2026-09-28 (follow-up 3): the stage files outside the case/sheet pairs
+#: whose secret-scan hit costs that file's contents, not the run. Each is
+#: rewritten in the stage to what carries nothing (the text never leaves
+#: the stage): no findings, no user-model updates, a report of the
+#: runner's own lines only.
+_WITHHELD_ON_SECRET = {
+    "findings.yaml": "findings: []\n",
+    "user-model-delta.yaml": "updates: []\n",
+    "report.md": "# Overseer report\n" + "".join(
+        f"## {name}\n- none\n" for name in _REPORT_SECTIONS
+    ),
+}
+
+
+def _withhold_secret_outputs(
+    stage: Path, secret_files: list[str]
+) -> tuple[list[str], dict[str, str]]:
+    """Rewrite each :data:`_WITHHELD_ON_SECRET` file the secret scan flagged
+    (2026-09-28, follow-up 3), before anything reads it. Returns the scan
+    hits left (any other file, which still refuse the run) and, for each
+    rewritten file, the rule that matched -- its name only, never the text."""
+    withheld: dict[str, str] = {}
+    left: list[str] = []
+    for name in secret_files:
+        blank = _WITHHELD_ON_SECRET.get(name)
+        if blank is None:
+            left.append(name)
+            continue
+        path = stage / name
+        try:
+            hits = scan.scan(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            hits = []
+        withheld[name] = hits[0].rule if hits else "unreadable"
+        _write_stage(stage, path, blank)
+    return left, withheld
+
+
 def _pair_problem_text(exc: BaseException, stage: Path) -> str:
     """What a dropped pair's line says (2026-09-28): the validator's own
     message, with the stage's absolute path taken out (a sheet error
@@ -4236,6 +4274,13 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             if "the secret scan matched" in line:
                 _journal(home, {"at": chrono.now_iso(), "run": run_id,
                     "status": "pair-dropped", "reason": line})
+        # 2026-09-28 (follow-up 3): a hit in findings.yaml, user-model-
+        # delta.yaml or report.md costs that file's contents, not the run.
+        secret_files, withheld = _withhold_secret_outputs(stage, secret_files)
+        for name, rule in withheld.items():
+            _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                "status": "file-dropped", "file": name,
+                "reason": f"the secret scan matched {rule}"})
 
         report_notes: list[str] = []
         if not missing and not secret_files:
@@ -4244,6 +4289,12 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 # repaired and said in "Refused / could not do"; any other
                 # shape still refuses the run here.
                 report_notes = _repair_report_headings(stage / "report.md")
+                if "report.md" in withheld:
+                    report_notes.append(
+                        "report.md: withheld — the secret scan matched "
+                        f"{withheld['report.md']}; this report holds the runner's "
+                        "own lines only"
+                    )
             except OverseerError as exc:
                 # A staged-output schema failure: retryable per ruling 1, so
                 # it commits its trace (A15) and counts. The report stays in
@@ -4400,6 +4451,11 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             findings, examined_ids, finding_drops = _validate_findings(
                 findings_data, selected,
             )
+            if "findings.yaml" in withheld:
+                findings_parse.append(
+                    "findings.yaml: withheld — the secret scan matched "
+                    f"{withheld['findings.yaml']}: every finding dropped"
+                )
             finding_drops = [*findings_parse, *finding_drops]
             if examined_ids != selected:
                 # Coverage was advanced from phase A's selection before
@@ -4422,6 +4478,11 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     fsops.atomic_write(coverage_path, coverage_text, fsync=True)
                 _write_stage(stage, stage / "coverage.yaml", coverage_text)
             case_drops: list[str] = []
+            if "user-model-delta.yaml" in withheld:
+                case_drops.append(
+                    "user-model-delta.yaml: withheld — the secret scan matched "
+                    f"{withheld['user-model-delta.yaml']}: no user-model updates this run"
+                )
             try:
                 model_updates = _model_updates(stage / "user-model-delta.yaml")
             except _YamlParseError as exc:
