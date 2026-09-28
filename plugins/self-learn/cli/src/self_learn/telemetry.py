@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 import secrets
 import sys
 from dataclasses import dataclass, field
@@ -41,7 +42,6 @@ from typing import BinaryIO
 from . import settings
 from .ledger import resolve_home
 from .primitives import chrono
-from .scan import format_refusal
 from .scan import scan as secret_scan
 
 __all__ = [
@@ -124,6 +124,13 @@ def _cache_base() -> Path:
 def spool_dir() -> Path:
     """The spool directory, XDG-resolved at call time (tests redirect it)."""
     return _cache_base() / "spool"
+
+
+def rejected_dir() -> Path:
+    """Cache-only home of spool lines the secret scan refused at flush
+    (2026-09-28, fail-state audit finding 13): never the ledger, never
+    flushed, kept so a person can look at what was held back."""
+    return _cache_base() / "spool-rejected"
 
 
 def telemetry_dir(home: Path | str) -> Path:
@@ -246,6 +253,11 @@ class FlushReport:
     files: list[Path] = field(default_factory=list)
     deferred_reason: str | None = None
     deferred_events: int = 0
+    #: 2026-09-28 (fail-state audit finding 13): spool lines the secret
+    #: scan refused, moved to :func:`rejected_dir` (cache only) so they no
+    #: longer hold back every other line; one ``"<file>:<line>: <rules>"``
+    #: per line, never the line's text.
+    rejected: list[str] = field(default_factory=list)
     #: S-62 (§7.2a.5(3)): the ledger-write wrapper's own outcome at this
     #: flush's acquisition, handed back rather than printed here --
     #: `flush` is called both attended (`self-learn telemetry flush`)
@@ -264,22 +276,51 @@ class FlushReport:
                 f"telemetry flush deferred: {self.deferred_events} "
                 f"event{plural} remain spooled — {self.deferred_reason}"
             )
+        held = (
+            f"; {len(self.rejected)} line(s) held back by the secret scan "
+            f"in {rejected_dir()}"
+            if self.rejected else ""
+        )
         if not self.events:
-            return "telemetry flush: spool empty"
+            return "telemetry flush: spool empty" + held
         names = ", ".join(p.name for p in self.files)
         plural = "s" if self.events != 1 else ""
-        return f"telemetry flush: {self.events} event{plural} → {names}"
+        return f"telemetry flush: {self.events} event{plural} → {names}" + held
+
+
+def _hold_back(spool_path: Path, fh: BinaryIO, kept: list[str], refused: list[str]) -> None:
+    """Move *refused* spool lines to the cache-only rejected file, then
+    rewrite the spool (*fh*, whose flock the caller holds) with *kept*
+    only (2026-09-28, fail-state audit finding 13). Both files live in
+    the XDG cache, never the ledger. Rejected file FIRST: a crash in
+    between leaves a line in both places (held back again next time),
+    never in neither."""
+    target = rejected_dir() / spool_path.name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "a", encoding="utf-8") as out:
+        out.write("\n".join(refused) + "\n")
+        out.flush()
+        os.fsync(out.fileno())
+    fh.seek(0)
+    fh.truncate()
+    if kept:
+        fh.write(("\n".join(kept) + "\n").encode("utf-8"))
+    fh.flush()
 
 
 def flush(home: Path | str, *, push: bool = True) -> FlushReport:
     """Move every spooled event into the tracked plane (11 §4.2).
 
-    ALL-OR-NOTHING (audit 2026-07-15): every spool file is locked and
-    every line scanned BEFORE anything moves — a single scan hit raises
-    :class:`ScanRefusal` and no file is flushed, so "spool intact" is
-    true even across a month-rollover multi-file spool. Locks are taken
-    in sorted-name order; appenders only ever hold one lock at a time,
-    so ordering cannot deadlock.
+    Every spool file is locked and every line scanned BEFORE anything
+    moves. A line the secret scan refuses costs that line (2026-09-28,
+    fail-state audit finding 13 — before, one hit refused the WHOLE flush
+    and, never moved, blocked every later flush for good): it is appended
+    to the same-named file under :func:`rejected_dir` (cache only, never
+    the ledger), the spool file is rewritten without it while its lock is
+    still held, and the hit is named in :attr:`FlushReport.rejected` and
+    on stderr by file, line and rule — never the line's text. The clean
+    lines flush as usual. Locks are taken in sorted-name order; appenders
+    only ever hold one lock at a time, so ordering cannot deadlock.
 
     Crash windows (documented, not fully closed): dying between the
     tracked append and the spool truncate re-flushes those lines next
@@ -353,15 +394,29 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
                 if ln.strip():
                     lines.append(ln)
             opened.append((spool_path, fh, lines))
-        for spool_path, _fh, lines in opened:
+        for index, (spool_path, fh, lines) in enumerate(opened):
+            kept: list[str] = []
+            refused: list[str] = []
             for i, line in enumerate(lines, 1):
                 hits = secret_scan(line)
                 if hits:
-                    raise ScanRefusal(
-                        "secret scan hit at flush — refusing the WHOLE "
-                        f"flush; spool intact ({spool_path}:{i}):\n"
-                        + format_refusal(hits)
-                    )
+                    refused.append(line)
+                    rules = ", ".join(sorted({hit.rule for hit in hits}))
+                    report.rejected.append(f"{spool_path.name}:{i}: {rules}")
+                else:
+                    kept.append(line)
+            if not refused:
+                continue
+            _hold_back(spool_path, fh, kept, refused)
+            opened[index] = (spool_path, fh, kept)
+        if report.rejected:
+            print(
+                "self-learn: telemetry flush held back "
+                f"{len(report.rejected)} line(s) the secret scan refused "
+                f"({'; '.join(report.rejected)}) — moved to {rejected_dir()}; "
+                "the rest flushes",
+                file=sys.stderr,
+            )
 
         # Phase 2: everything scanned clean — move file by file, then
         # stage+commit, all under ONE commit_lock hold (M-M / P7 lock-

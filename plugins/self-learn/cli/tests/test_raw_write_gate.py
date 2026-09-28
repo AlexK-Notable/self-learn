@@ -402,6 +402,12 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
         "(flush -- see wave 3 above -- is what moves it to the tracked plane)",
         "keep",
     ),
+    ("cli", "telemetry.py", "_hold_back"): (
+        "2026-09-28 (fail-state audit finding 13): append-only XDG cache "
+        "spool-rejected/ file for a line the flush's secret scan refused; "
+        "NOT_REPO_TRUTH, never the tracked plane",
+        "keep",
+    ),
     ("cli", "worker.py", "_log_to"): (
         "append-only XDG cache log, silent on OSError by design; NOT_REPO_TRUTH",
         "keep",

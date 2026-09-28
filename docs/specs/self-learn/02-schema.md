@@ -1398,6 +1398,49 @@ PDT: "fix the rest of 3".)*
   it, or a person's `recompile`, does. Known limit: a rehome or rescope of
   a routed lesson recompiles its NEW target only; an entry left in its old
   target waits for an ordinary `recompile`.
+- *Overseer phase-A entries (audit finding 9).* An entry of
+  `selection.yaml` that is not one string id, carries a key other than
+  `id`, names a case outside the week's population or repeats one, and an
+  entry of `initial-views.yaml` without exactly the view's fields, with an
+  empty field, a confidence outside `clear`/`close-call`, a repeat or an
+  unselected case, is dropped and named (entry number and, when it has a
+  case id's shape, the id). A selected case left without a valid initial
+  view is de-selected, so phase A's rule that every selected case has one
+  holds. The kept files are written back to the workspace, so phase B,
+  the kept phase A and coverage see the same selection. A file whose own
+  shape is wrong (not a mapping, `cases` not a list, an unknown top-level
+  key) still refuses the attempt.
+- *Overseer phase-B pairs (audit finding 9).* Every check of one
+  case/sheet pair costs that pair, named in "Refused / could not do" and
+  `runner_notes` with the validator's message (the workspace path taken
+  out, bounded and redacted like a failure note's detail): the successor
+  or maintenance case's fields, a second successor for one parked case,
+  the sheet's schema (an unknown or missing item key, `close_call` not a
+  boolean), an empty successor sheet, a caseless non-empty sheet. A pair
+  is one decision, so it is dropped whole, never item by item. A
+  secret-scan hit in a pair's case or sheet drops that pair — nothing of
+  it reaches the ledger; a hit in `report.md`, `findings.yaml`,
+  `user-model-delta.yaml` or any other file still refuses the run.
+- *Steward reconsider misfit (audit finding 10).* When `verbs.reconsider`
+  refuses a reconsider case the case writer accepted (its outcome does not
+  apply to the lesson's status, or the lesson is gone), that case is
+  refused like one the case writer refuses — its sheet not applied, its
+  lessons `refused` with the reason — and the run goes on; before, the
+  error escaped the run after the case was committed.
+- *The overseer's lock through phase B (audit finding 12) is kept.* The
+  run's intent (coverage written first, put back on every failure) spans
+  the coverage write, the phase-B model call and the apply, and phase B's
+  inputs are read under it; narrowing it would let the ledger move between
+  what the model read and what the run applies. A writer that waits past
+  `gitops.COMMIT_LOCK_TIMEOUT` meanwhile gets a clean refusal, or, for a
+  worker batch, loses that batch's model call (its lessons stay pending
+  and are analysed again) — never a lesson.
+- *A `hosts.yaml` that does not load (audit finding 14)* holds only the
+  mine candidates whose skill scope needs it: each is journaled
+  `dropped-invalid` with its session's cursor held (as a cap drop holds
+  it), so the session is read again once the file loads; the other
+  candidates land. Before, the error escaped the landing loop and failed
+  the whole pass after its reader call.
 
 *(Added 2026-09-26, agenda item 24.)* No message a runner shows its model
 or commits into its run record carries the text a secret scan matched: each

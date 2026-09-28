@@ -1701,9 +1701,14 @@ def test_a_caseless_sheets_paired_case_must_be_maintenance(tmp_path, monkeypatch
 
     result = overseer_run.run(home, dry_run=False, no_push=True)
 
-    assert result.status == "refused"
+    # REWRITTEN 2026-09-28 (fail-state audit finding 9): the misfit pair
+    # is dropped alone and named; the run is no longer refused whole.
+    assert result.status != "refused"
     report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
-    assert f"kind: maintenance, not '{case_kind}'" in report, report
+    refused = report.split("## Refused / could not do", 1)[1]
+    assert f"kind: maintenance, not '{case_kind}'" in refused, report
+    assert "case.yaml: dropped with sheet.yaml" in refused
+    assert result.applied == 0
 
 
 def test_a_maintenance_case_lets_a_caseless_sheet_through(tmp_path, monkeypatch):

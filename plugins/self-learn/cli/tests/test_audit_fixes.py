@@ -96,20 +96,25 @@ NOW = datetime(2026, 7, 15, 12, 0, 0, tzinfo=timezone.utc)
 JUNE = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def test_multi_file_flush_is_all_or_nothing(env):
+def test_multi_file_flush_holds_back_only_the_flagged_line(env):
+    """REWRITTEN 2026-09-28 (fail-state audit finding 13): the flush was
+    all-or-nothing, so one flagged line, never moved, blocked every later
+    flush for good. Now that line alone goes to the cache-only rejected
+    file and every clean line, across both month files, flushes."""
     telemetry.spool_event("offer-made", now=JUNE)  # clean, earlier month
     telemetry.spool_event("offer-made", now=NOW)
     bad = telemetry.spool_dir() / "2026-07.testhost.jsonl"
     with open(bad, "a", encoding="utf-8") as fh:
         fh.write(f'{{"kind":"capture","note":"apikey = {AWS_KEY}"}}\n')
-    with pytest.raises(telemetry.ScanRefusal, match="WHOLE"):
-        telemetry.flush(env.home)
-    # NOTHING moved — including the clean June file (the tracked
-    # telemetry plane is <home>/telemetry/ now; the dir exists but must
-    # hold no flushed lines).
-    assert not list((env.home / "telemetry").glob("*.jsonl"))
-    june = telemetry.spool_dir() / "2026-06.testhost.jsonl"
-    assert len(june.read_text().splitlines()) == 1
+    report = telemetry.flush(env.home)
+    assert report.events == 2
+    assert report.rejected and report.rejected[0].startswith("2026-07.testhost.jsonl:2: ")
+    tracked = "".join(p.read_text() for p in (env.home / "telemetry").glob("*.jsonl"))
+    assert tracked.count("offer-made") == 2  # positive control: both clean lines moved
+    assert AWS_KEY not in tracked
+    assert AWS_KEY not in "".join(report.rejected)
+    assert AWS_KEY in (telemetry.rejected_dir() / "2026-07.testhost.jsonl").read_text()
+    assert not bad.read_text().strip()
 
 
 def test_flush_skips_vanished_spool_file(env):

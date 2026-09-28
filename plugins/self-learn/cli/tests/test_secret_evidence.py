@@ -375,7 +375,16 @@ def test_overseer_still_refuses_a_secret_it_may_not_drop(tmp_path, monkeypatch, 
 
     result = overseer_run.run(home, dry_run=False, no_push=True)
 
-    assert result.status != "applied", result
+    # REWRITTEN 2026-09-28 (fail-state audit finding 9): a hit in the
+    # report still refuses the run; a hit the runner may not drop from a
+    # case/sheet pair now drops that pair (named) instead of the run.
+    # Either way no successor is written and the token never lands.
+    if where == "report":
+        assert result.status != "applied", result
+    else:
+        refused = _refused_section(home)
+        assert "case-a.yaml" in refused and "dropped" in refused, refused
+        assert result.applied == 0
     assert [r for r in cases.list_cases(home, record_id=rid) if r["case"] != parked] == []
     assert _ledger_files_with(home, token) == []
 
@@ -401,7 +410,11 @@ def test_overseer_refuses_a_secret_carried_out_of_a_dropped_quote_by_an_alias(tm
 
     result = overseer_run.run(home, dry_run=False, no_push=True)
 
-    assert result.status != "applied", result
+    # REWRITTEN 2026-09-28 (fail-state audit finding 9): the pair is
+    # dropped by the secret scan, named, instead of the whole run.
+    refused = _refused_section(home)
+    assert "case-a.yaml and sheet-a.yaml: dropped — the secret scan matched case-a.yaml" in refused
+    assert result.applied == 0
     assert [r for r in cases.list_cases(home, record_id=rid) if r["case"] != parked] == []
     assert _ledger_files_with(home, token) == []
 

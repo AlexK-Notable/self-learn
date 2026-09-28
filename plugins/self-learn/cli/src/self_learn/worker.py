@@ -2753,8 +2753,15 @@ def _harvest(
     process where an escaping exception is a stack dump into worker.log and
     a dead run (BLOCKER B), for a condition — "another producer is
     committing right now" — that is not an error. Because the lock is taken
-    BEFORE the first mutation, refusing here costs nothing: the model's
-    output stays on disk untouched and the next run validates it.
+    BEFORE the first mutation, refusing here writes nothing to the ledger.
+    *Corrected 2026-09-28 (fail-state audit finding 12):* it is not free.
+    With the stage on (the default) the next run resets the stage before
+    composing its prompt (:func:`stage_reset` in :func:`run`), so this
+    batch's model output is discarded and its lessons, still pending
+    without a proposal, are analysed again by a later run: the cost is one
+    model call, never a lesson. The longest ordinary holder is the weekly
+    overseer, which keeps the commit lock through its phase-B model call
+    (see ``overseer/run.py``, deliberately; `02-schema.md` §3a).
 
     ``roster`` (U-composer §3.6) is the :class:`Roster` composed for THIS
     run's prompt — threaded through so validation can check the

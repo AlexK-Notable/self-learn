@@ -3093,8 +3093,32 @@ def _apply_packet(
             ))
             continue
         if isinstance(case_data, dict) and case_data.get("kind") == "reconsider":
-            for rid in case_data.get("records") or []:
-                verbs.reconsider(home, rid, case=case_id, by="steward", no_push=True)
+            try:
+                for rid in case_data.get("records") or []:
+                    verbs.reconsider(home, rid, case=case_id, by="steward", no_push=True)
+            except (verbs.VerbError, ledger_ops.LedgerOpsError) as exc:
+                # 2026-09-28 (fail-state audit finding 10): a reconsider
+                # case whose outcome does not fit the record ("outcome
+                # 'rehome' does not apply to a 'rejected' record") raised
+                # out of the run after `cases.record` had committed the
+                # case, so the rest of the packet and every later packet
+                # stopped, run after run, until the cap. It is refused
+                # like a case the case writer refuses: its sheet is not
+                # applied, its lessons are refused with the reason, and
+                # the run goes on.
+                refused_records = case_data.get("records")
+                refused += max(1, len(refused_records) if isinstance(refused_records, list) else 1)
+                error = refusal_text(exc)
+                _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "refused",
+                    "stage_file": case_path.name, "error": error})
+                _update_manifest(home, run_id, reason=f"case {case_id} refused", update=lambda current: (
+                    current["cases"][case_id].update(phase="refused", error=error),
+                    current["packets"][packet_index - 1]["dispositions"].update({
+                        rid: {"state": "refused", "input_version": inputs[rid], "reason": error}
+                        for rid in (refused_records or []) if rid in inputs
+                    }),
+                ))
+                continue
         items = batch.load_sheet(sheet_path, home=home)
         held: list[dict] | None = None
         if recipe.get("parking_reason") is not None:

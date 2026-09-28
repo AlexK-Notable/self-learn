@@ -164,6 +164,10 @@ def test_runner_refuses_caseless_catalogue_sheet_before_batch_run(tmp_path, monk
 
     result = overseer_run.run(home, dry_run=False, no_push=True)
 
-    assert result.status == "refused"
+    # REWRITTEN 2026-09-28 (fail-state audit finding 9): the caseless
+    # sheet is dropped alone and named; the run is no longer refused whole.
+    assert result.status != "refused"
+    assert result.applied == 0
     report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
-    assert "needs a paired successor case" in report
+    refused = report.split("## Refused / could not do", 1)[1]
+    assert "sheet.yaml: dropped — sheet.yaml: a non-empty catalogue-change sheet needs a paired successor case" in refused

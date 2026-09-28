@@ -120,18 +120,30 @@ def test_flush_empty_spool_is_noop(home):
     assert list(telemetry.telemetry_dir(home).iterdir()) == []
 
 
-def test_flush_scan_hit_refuses_and_keeps_spool(home):
+def test_flush_scan_hit_holds_back_that_line_only(home):
+    """REWRITTEN 2026-09-28 (fail-state audit finding 13): a line the scan
+    refuses is moved to the cache-only rejected file, never the tracked
+    plane; the clean line flushes, and a later flush is not blocked."""
     telemetry.spool_event("offer-made", now=NOW)
     # An injected line carrying a credential shape — the exact class the
     # scan-at-flush exists to stop (schema can't block a hand-written line).
     spool = telemetry.spool_dir() / "2026-07.testhost.jsonl"
     with open(spool, "a", encoding="utf-8") as fh:
         fh.write('{"kind":"capture","note":"password = hunter2secret"}\n')
-    with pytest.raises(telemetry.ScanRefusal, match="spool intact"):
-        telemetry.flush(home)
-    # nothing moved, spool intact
-    assert list(telemetry.telemetry_dir(home).iterdir()) == []
-    assert len(spool.read_text().splitlines()) == 2
+    report = telemetry.flush(home)
+    tracked = telemetry.telemetry_dir(home) / "2026-07.testhost.jsonl"
+    assert report.events == 1 and "offer-made" in tracked.read_text()
+    assert "hunter2secret" not in tracked.read_text()
+    assert len(report.rejected) == 1 and "hunter2secret" not in report.rejected[0]
+    assert "held back by the secret scan" in report.summary()
+    rejected = telemetry.rejected_dir() / "2026-07.testhost.jsonl"
+    assert "hunter2secret" in rejected.read_text()
+    assert spool.read_text() == ""
+    # the next flush is not blocked by it
+    telemetry.spool_event("offer-made", now=NOW)
+    again = telemetry.flush(home)
+    assert again.events == 1 and again.rejected == []
+    assert tracked.read_text().count("offer-made") == 2
 
 
 def test_flush_summary_names_files(home):

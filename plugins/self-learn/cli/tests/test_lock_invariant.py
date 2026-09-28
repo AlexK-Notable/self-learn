@@ -200,6 +200,10 @@ NOT_REPO_TRUTH = {
     # same XDG cache namespace, never the tracked plane (flush is the
     # only writer of THAT, and `flush` is deliberately NOT in this list).
     "telemetry.spool_event": "XDG cache: the telemetry spool (flush moves it)",
+    # 2026-09-28 (fail-state audit finding 13): a line the scan refuses at
+    # flush goes to the cache's spool-rejected/ and the spool is rewritten
+    # without it -- both cache files, never the tracked plane.
+    "telemetry._hold_back": "XDG cache: spool-rejected/ and the spool it rewrites",
     # `sentinel hold|release` is the CLI face of the same cache file.
     "cli._cmd_sentinel": "XDG cache: the autosync-pause sentinel",
     # ~/.claude/projects/<slug>/memory/* — Claude Code's auto-memory. Not

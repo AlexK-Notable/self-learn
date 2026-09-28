@@ -55,7 +55,7 @@ from . import gitops, intents, invocation, provider, sentinel, settings, telemet
 from .primitives import chrono
 from . import reconcile as reconcile_mod
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
-from .hosts import load_hosts
+from .hosts import HostsError, load_hosts
 from .import_common import existing_origins
 from .ledger import discover_buckets, home_state, home_state_message, resolve_home
 from .ledger_ops import LedgerOpsError, create_record, record_title
@@ -1538,6 +1538,27 @@ def _reconcile_and_land(
             record = _build_record(home, cand)
         except RecordError as exc:
             _outcome(result, origin, "dropped-invalid", reason=str(exc)[:200])
+            continue
+        except HostsError as exc:
+            # 2026-09-28 (fail-state audit finding 14): a hosts.yaml that
+            # does not load made a skill-scoped candidate's check raise out
+            # of the whole pass. Only this candidate is held: its session's
+            # cursor is held exactly as the cap drop above holds it, so the
+            # session is read again once hosts.yaml loads; every other
+            # candidate goes on. Named by the error's type, never its text.
+            if session_id not in digested:
+                cursor = "advanced-unmatched"
+            elif digested[session_id]:
+                cursor = "advanced-halted"
+            else:
+                cursor = "held"
+                result.held_sessions.add(session_id)
+            _outcome(
+                result, origin, "dropped-invalid", cursor=cursor,
+                reason=f"hosts.yaml does not load ({type(exc).__name__}); "
+                "the skill scope could not be checked",
+            )
+            log(f"run: candidate {origin} held — hosts.yaml does not load ({type(exc).__name__})")
             continue
         hits = _scan_candidate(record, cand, quote)
         if hits:

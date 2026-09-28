@@ -365,46 +365,111 @@ def _yaml_mapping(path: Path) -> dict[str, Any]:
     return data
 
 
-def _selected_ids(selection: dict[str, Any], available: set[str]) -> tuple[str, ...]:
-    # coverage_update owns the strict unknown-key validation.  This read
-    # additionally refuses duplicate, malformed, or non-population ids.
-    population_mod.coverage_update(None, selection, [], [])
+def _case_label(value: object) -> str:
+    """A model-written case id fit for a committed line: the id itself
+    when it has a case id's shape, otherwise nothing (never the model's
+    free text)."""
+    return f" ({value})" if isinstance(value, str) and cases.CASE_ID_RE.match(value) else ""
+
+
+def _kept_selection(
+    selection: dict[str, Any], available: set[str]
+) -> tuple[dict[str, Any], tuple[str, ...], list[str]]:
+    """Phase A's selection, entry by entry (2026-09-28, fail-state audit
+    finding 9): an entry that is not one string id, carries a key other
+    than ``id``, names a case outside this week's population, or repeats
+    one is dropped and named (entry number and, when it has a case id's
+    shape, the id -- never other text). Before, one such entry refused
+    the whole attempt after about nine minutes of phase A. The file's
+    own shape (``cases`` not a list, an unknown top-level key) still
+    refuses: :func:`population.coverage_update` owns that check, run on
+    the kept selection. Returns the kept selection, its ids, the drops."""
+    entries = selection.get("cases")
+    if entries is None:
+        entries = []
+    if not isinstance(entries, list):
+        raise OverseerError("selection.yaml: cases must be a list")
+    allowed = population_mod._SELECTION_CASE_ALLOWED_KEYS  # noqa: SLF001 -- one rule
+    kept: list[dict[str, Any]] = []
     ids: list[str] = []
-    for entry in selection.get("cases") or []:
+    drops: list[str] = []
+    for n, entry in enumerate(entries, start=1):
         if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
-            raise OverseerError("selection.yaml: every case entry needs exactly one string id")
+            drops.append(f"selection.yaml entry {n}: dropped — a case entry needs exactly one string id")
+            continue
         case_id = entry["id"]
-        if case_id not in available:
-            raise OverseerError(f"selection.yaml: unknown case {case_id}")
-        if case_id in ids:
-            raise OverseerError(f"selection.yaml: duplicate case {case_id}")
-        ids.append(case_id)
-    return tuple(ids)
+        label = _case_label(case_id)
+        if set(entry) - allowed:
+            drops.append(f"selection.yaml entry {n}{label}: dropped — a case entry carries only id")
+        elif case_id not in available:
+            drops.append(f"selection.yaml entry {n}{label}: dropped — not a case of this week's population")
+        elif case_id in ids:
+            drops.append(f"selection.yaml entry {n}{label}: dropped — selected twice")
+        else:
+            kept.append(entry)
+            ids.append(case_id)
+    cleaned = {**selection, "cases": kept}
+    # coverage_update owns the strict top-level unknown-key validation.
+    population_mod.coverage_update(None, cleaned, [], [])
+    return cleaned, tuple(ids), drops
 
 
-def _validate_initial(path: Path, selected: tuple[str, ...]) -> None:
+def _selected_ids(selection: dict[str, Any], available: set[str]) -> tuple[str, ...]:
+    """The strict form: every entry valid, or :class:`OverseerError` (the
+    workspace's format examples are checked with it)."""
+    _cleaned, ids, drops = _kept_selection(selection, available)
+    if drops:
+        raise OverseerError(drops[0])
+    return ids
+
+
+def _kept_initial_views(
+    path: Path, selected: tuple[str, ...]
+) -> tuple[dict[str, Any], tuple[str, ...], list[str]]:
+    """Phase A's initial views, entry by entry (2026-09-28, fail-state
+    audit finding 9): an entry without exactly the view's fields, with an
+    empty field, a confidence outside the closed set (``high``), a repeat,
+    or a case that was not selected is dropped and named. Phase A's rule
+    that every selected case has a recorded initial view is kept by
+    DE-SELECTING a selected case left without a valid one (named too), not
+    by refusing the attempt. A file that is not a mapping with a ``cases``
+    list still refuses. Returns the kept file, the still-selected ids (in
+    selection order), the drops."""
     data = _yaml_mapping(path)
     entries = data.get("cases")
     if not isinstance(entries, list):
         raise OverseerError("initial-views.yaml: cases must be a list")
     allowed = set(INITIAL_VIEW_KEYS)
-    found: set[str] = set()
-    for entry in entries:
+    found: dict[str, dict[str, Any]] = {}
+    drops: list[str] = []
+    for n, entry in enumerate(entries, start=1):
+        label = _case_label(entry.get("id")) if isinstance(entry, dict) else ""
+        where = f"initial-views.yaml entry {n}{label}: dropped — "
         if not isinstance(entry, dict) or set(entry) != allowed:
-            raise OverseerError(f"initial-views.yaml: every entry needs exactly {sorted(allowed)!r}")
-        if not all(isinstance(entry.get(key), str) and entry[key].strip() for key in allowed):
-            raise OverseerError("initial-views.yaml: every entry field must be non-empty text")
-        if entry["confidence"] not in INITIAL_CONFIDENCE:
-            raise OverseerError("initial-views.yaml: confidence must be clear or close-call")
-        if entry["id"] in found:
-            raise OverseerError(f"initial-views.yaml: duplicate case {entry['id']}")
-        found.add(entry["id"])
-    unexpected = sorted(found - set(selected))
-    if unexpected:
-        raise OverseerError(f"initial-views.yaml: unselected case(s) {unexpected!r}")
-    missing = [case_id for case_id in selected if case_id not in found]
-    if missing:
-        raise OverseerError(f"initial-views.yaml: missing selected case(s) {missing!r}")
+            drops.append(where + f"an entry needs exactly {sorted(allowed)!r}")
+        elif not all(isinstance(entry.get(key), str) and entry[key].strip() for key in allowed):
+            drops.append(where + "every field must be non-empty text")
+        elif entry["confidence"] not in INITIAL_CONFIDENCE:
+            drops.append(where + "confidence must be clear or close-call")
+        elif entry["id"] in found:
+            drops.append(where + "a second view of the same case")
+        elif entry["id"] not in selected:
+            drops.append(where + "that case was not selected")
+        else:
+            found[entry["id"]] = entry
+    kept = tuple(case_id for case_id in selected if case_id in found)
+    for case_id in selected:
+        if case_id not in found:
+            drops.append(f"{case_id}: de-selected — no valid initial view in initial-views.yaml")
+    return {**data, "cases": [found[case_id] for case_id in kept]}, kept, drops
+
+
+def _validate_initial(path: Path, selected: tuple[str, ...]) -> None:
+    """The strict form: every entry valid and every selected case viewed,
+    or :class:`OverseerError` (the workspace's format examples)."""
+    _data, _kept, drops = _kept_initial_views(path, selected)
+    if drops:
+        raise OverseerError(drops[0])
 
 
 def _stage_files(stage: Path) -> list[Path]:
@@ -1616,6 +1681,47 @@ def _sheet_pairs(stage: Path, drops: list[str] | None = None) -> list[tuple[Path
     # half unenforceable rather than merely unenforced.
     case = stage / "case.yaml"
     return [(case if case.is_file() else None, sheet)]
+
+
+def _drop_secret_pairs(
+    stage: Path,
+    secret_files: list[str],
+    pairs: list[tuple[Path | None, Path]],
+    drops: list[str],
+) -> tuple[list[str], list[tuple[Path | None, Path]]]:
+    """Take out of *pairs* each case/sheet pair a secret-scan hit falls in
+    (2026-09-28, fail-state audit finding 9), naming it in *drops* by file
+    only. A secret never reaches the ledger either way; before, one hit in
+    one pair refused the whole run. Returns the scan hits left (those in
+    any other file, which still refuse the run) and the pairs kept."""
+    flagged = set(secret_files)
+    kept: list[tuple[Path | None, Path]] = []
+    for case_file, sheet_file in pairs:
+        files = [f for f in (case_file, sheet_file) if f is not None]
+        hit = [f.relative_to(stage).as_posix() for f in files
+               if f.relative_to(stage).as_posix() in flagged]
+        if not hit:
+            kept.append((case_file, sheet_file))
+            continue
+        flagged -= {f.relative_to(stage).as_posix() for f in files}
+        drops.append(
+            " and ".join(f.name for f in files)
+            + f": dropped — the secret scan matched {', '.join(hit)}; "
+            "nothing of this pair reaches the ledger"
+        )
+    return [name for name in secret_files if name in flagged], kept
+
+
+def _pair_problem_text(exc: BaseException, stage: Path) -> str:
+    """What a dropped pair's line says (2026-09-28): the validator's own
+    message, with the stage's absolute path taken out (a sheet error
+    names its file by full path) and bounded and secret-scanned like a
+    failure note's detail -- the same text a whole-run refusal committed
+    before, now for one pair."""
+    text = str(exc)
+    for prefix in {str(stage.resolve()) + "/", str(stage) + "/"}:
+        text = text.replace(prefix, "")
+    return _failure_detail(text) or type(exc).__name__
 
 
 def _load_sheet_allow_empty(path: Path, home: Path) -> batch.Sheet | None:
@@ -3875,9 +3981,26 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 "status": "coverage-row-dropped", "case": row.get("case")})
     now_dt = datetime.now(timezone.utc)
     try:
-        selection = _yaml_mapping(stage / "selection.yaml")
-        selected = _selected_ids(selection, {row["case"] for row in week_rows})
-        _validate_initial(stage / "initial-views.yaml", selected)
+        # 2026-09-28 (fail-state audit finding 9): a bad entry in either
+        # phase-A file costs that entry (a selected case left without a
+        # valid initial view is de-selected), named in the run record;
+        # the kept form is written back to the stage, so phase B, the
+        # kept phase A and coverage all see the same selection.
+        selection, selected, phase_a_drops = _kept_selection(
+            _yaml_mapping(stage / "selection.yaml"), {row["case"] for row in week_rows},
+        )
+        views, selected, view_drops = _kept_initial_views(stage / "initial-views.yaml", selected)
+        phase_a_drops += view_drops
+        if phase_a_drops:
+            selection = {
+                **selection,
+                "cases": [entry for entry in selection["cases"] if entry["id"] in selected],
+            }
+            _write_stage(stage, stage / "selection.yaml", _yaml_text(selection))
+            _write_stage(stage, stage / "initial-views.yaml", _yaml_text(views))
+            for line in phase_a_drops:
+                _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                    "status": "phase-a-entry-dropped", "reason": line})
         coverage_text = _coverage_text(previous, selection, coverage_rows, offered, now_dt, trigger)
     except (OverseerError, population_mod.CoverageError) as exc:
         detail = _failure_detail(exc)
@@ -3896,6 +4019,17 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
 
     coverage_before: bytes | None = None
     intent: intents.Intent | None = None
+    # 2026-09-28 (fail-state audit finding 12), kept as it is on purpose:
+    # the commit lock is held from the coverage write through the phase-B
+    # model call to the apply. The run's intent (coverage written first,
+    # put back by every failure path) spans that whole stretch, and phase
+    # B's inputs (the parked queue, the full case files) are read under
+    # it; narrowing the lock would split that intent and let another
+    # writer move the ledger between what the model read and what the run
+    # applies -- a redesign, not a fail-state fix, so it is not done here.
+    # The cost falls on a writer that waits past
+    # `gitops.COMMIT_LOCK_TIMEOUT`: a clean refusal (a person's verb), or
+    # one discarded model call for a worker batch -- never a lesson.
     lock_context = intents.ledger_write(home)
     with _DeferredNotice() as deferred_notice, lock_context:
         if not dry_run:
@@ -4008,6 +4142,14 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         secret_files = _secret_files(
             stage, frozenset(case for case, _sheet in pairs if case is not None),
         )
+        # 2026-09-28 (fail-state audit finding 9): a scan hit in a pair's
+        # case or sheet drops that pair (nothing of it reaches the ledger);
+        # a hit in any other file still refuses the run.
+        secret_files, pairs = _drop_secret_pairs(stage, secret_files, pairs, pair_drops)
+        for line in pair_drops:
+            if "the secret scan matched" in line:
+                _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                    "status": "pair-dropped", "reason": line})
 
         report_notes: list[str] = []
         if not missing and not secret_files:
@@ -4229,55 +4371,78 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     _journal(home, {"at": chrono.now_iso(), "run": run_id,
                         "status": "pair-dropped", "reason": unparsed})
                     continue
-                if case_file is not None and case_file.name == "case.yaml":
-                    # A9: the caseless sheet's pair is catalogue maintenance;
-                    # it supersedes nothing, so the successor rules below
-                    # cannot apply to it and it has rules of its own.
-                    _validate_maintenance_case(case_file)
-                    rule = _case_rule_problem(case_file, run_id)
-                    if rule is not None:
-                        # 2026-09-27 (audit finding 1): the same drop as a
-                        # decided case below -- it goes through the same
-                        # `cases.record`.
-                        case_drops.append(
-                            f"{case_file.name} (catalogue change): dropped with "
-                            f"{sheet_file.name} — the case writer refuses it: {rule}"
-                        )
-                        _journal(home, {"at": chrono.now_iso(), "run": run_id,
-                            "status": "case-dropped", "file": case_file.name, "rule": rule})
+                # 2026-09-28 (fail-state audit finding 9): every other check
+                # of one pair -- the successor or maintenance case's fields,
+                # a second successor for the same parked case, the sheet's
+                # schema (an unknown or missing item key, `close_call` not a
+                # boolean), an empty successor sheet, a caseless non-empty
+                # sheet -- costs that pair, named in "Refused / could not
+                # do" and the run record; before, each refused the whole
+                # run (about 22 minutes of phase B). A pair is one decision,
+                # so it is dropped whole, never item by item: applying part
+                # of a decision is not the decision the model made.
+                try:
+                    predecessor: str | None = None
+                    if case_file is not None and case_file.name == "case.yaml":
+                        # A9: the caseless sheet's pair is catalogue maintenance;
+                        # it supersedes nothing, so the successor rules below
+                        # cannot apply to it and it has rules of its own.
+                        _validate_maintenance_case(case_file)
+                        rule = _case_rule_problem(case_file, run_id)
+                        if rule is not None:
+                            # 2026-09-27 (audit finding 1): the same drop as a
+                            # decided case below -- it goes through the same
+                            # `cases.record`.
+                            case_drops.append(
+                                f"{case_file.name} (catalogue change): dropped with "
+                                f"{sheet_file.name} — the case writer refuses it: {rule}"
+                            )
+                            _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                                "status": "case-dropped", "file": case_file.name, "rule": rule})
+                            continue
+                    elif case_file is not None:
+                        _validate_successor(case_file, {row["case"] for row in parked_rows})
+                        predecessor = str(_yaml_mapping(case_file)["supersedes"])
+                        rule = _case_rule_problem(case_file, run_id)
+                        if rule is not None:
+                            # 2026-09-27 (audit finding 1): a decided case the
+                            # case writer would refuse costs that case and its
+                            # sheet, named by file and parked case (never its
+                            # text); the parked case stays open for next week.
+                            case_drops.append(
+                                f"{case_file.name} (successor for {predecessor}): dropped "
+                                f"with {sheet_file.name} — the case writer refuses it: {rule}"
+                            )
+                            _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                                "status": "case-dropped", "file": case_file.name,
+                                "supersedes": predecessor, "rule": rule})
+                            continue
+                        if predecessor in seen_predecessors:
+                            raise OverseerError(f"{case_file.name}: a second successor for {predecessor}")
+                    sheet = _load_sheet_allow_empty(sheet_file, home)
+                    if sheet is None:
+                        if case_file is not None:
+                            raise OverseerError(f"{sheet_file.name}: a successor case needs a non-empty sheet")
                         continue
-                elif case_file is not None:
-                    _validate_successor(case_file, {row["case"] for row in parked_rows})
-                    predecessor = str(_yaml_mapping(case_file)["supersedes"])
-                    rule = _case_rule_problem(case_file, run_id)
-                    if rule is not None:
-                        # 2026-09-27 (audit finding 1): a decided case the
-                        # case writer would refuse costs that case and its
-                        # sheet, named by file and parked case (never its
-                        # text); the parked case stays open for next week.
-                        case_drops.append(
-                            f"{case_file.name} (successor for {predecessor}): dropped "
-                            f"with {sheet_file.name} — the case writer refuses it: {rule}"
+                    if case_file is None:
+                        raise OverseerError(
+                            "sheet.yaml: a non-empty catalogue-change sheet needs a "
+                            "paired successor case in case.yaml, and that case must "
+                            "be kind: maintenance"
                         )
-                        _journal(home, {"at": chrono.now_iso(), "run": run_id,
-                            "status": "case-dropped", "file": case_file.name,
-                            "supersedes": predecessor, "rule": rule})
-                        continue
-                    if predecessor in seen_predecessors:
-                        raise OverseerError(f"{case_file.name}: duplicate successor for {predecessor}")
-                    seen_predecessors.add(predecessor)
-                sheet = _load_sheet_allow_empty(sheet_file, home)
-                if sheet is None:
-                    if case_file is not None:
-                        raise OverseerError(f"{sheet_file.name}: a successor case needs a non-empty sheet")
-                    continue
-                if case_file is None:
-                    raise OverseerError(
-                        "sheet.yaml: a non-empty catalogue-change sheet needs a "
-                        "paired successor case in case.yaml, and that case must "
-                        "be kind: maintenance"
+                    preview = batch.dry_run(home, sheet, actor="overseer", hook_activation=config.hook_activation_enabled(home))
+                except (OverseerError, batch.BatchError) as exc:
+                    reason = _pair_problem_text(exc, stage)
+                    case_drops.append(
+                        f"{case_file.name if case_file is not None else sheet_file.name}: "
+                        + (f"dropped with {sheet_file.name} — " if case_file is not None else "dropped — ")
+                        + reason
                     )
-                preview = batch.dry_run(home, sheet, actor="overseer", hook_activation=config.hook_activation_enabled(home))
+                    _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                        "status": "pair-dropped", "reason": reason})
+                    continue
+                if predecessor is not None:
+                    seen_predecessors.add(predecessor)
                 preview_apply += sum(item.state == "would-apply" for item in preview.items)
                 preview_refused += sum(item.state == "would-refuse" for item in preview.items)
                 prepared.append((case_file, sheet_file, sheet))
@@ -4325,6 +4490,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 questions=questions, findings=findings, prepared=prepared,
                 model_updates=model_updates,
                 runner_notes=[
+                    *phase_a_drops,
                     *report_notes, *question_drops, *finding_drops, *case_drops,
                     *pair_drops, *coverage_drops, *phase_b_notes,
                 ],
