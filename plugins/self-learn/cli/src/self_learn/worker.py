@@ -82,7 +82,7 @@ from .ledger_ops import (
     validate_proposal,
 )
 from .normalize import sha_anchor
-from .records import Record, RecordError
+from .records import FrontmatterLoadError, Record, RecordError
 
 __all__ = [
     "ALLOWED_TOOLS",
@@ -452,9 +452,8 @@ def cluster_candidates(home: Path, batch: list) -> dict:
         if not resolved_dir.is_dir():
             continue
         for path in sorted(resolved_dir.glob("lrn-*.md")):
-            try:
-                routed = Record.from_path(path)
-            except RecordError:
+            routed = _read_resolved(path)
+            if routed is None:
                 continue
             if routed.status != "routed":
                 continue
@@ -829,6 +828,41 @@ def _log_to(path: Path, message: str) -> None:
 def log(message: str) -> None:
     """Append one timestamped line to worker.log (capped ~1 MB)."""
     _log_to(_p("worker.log"), message)
+
+
+#: (path, mtime_ns) pairs :func:`_read_resolved` has already logged, so a
+#: loop that re-reads the same bad file per pending entry names it once.
+_UNREADABLE_LOGGED: set[tuple[str, int]] = set()
+
+
+def _read_resolved(path: Path) -> Record | None:
+    """A resolved record read by one of the worker's context passes (the
+    candidate pool, the rejected examples, the recurrence suspects), or
+    ``None`` when the file is not a usable record.
+
+    Sweep 2, R4 (2026-09-27): these passes caught ``RecordError`` alone,
+    so one resolved file whose header does not load (or whose bytes are
+    not UTF-8, or which cannot be read) crashed ``worker.run`` before its
+    model call, on every run. A file that does not READ is skipped and
+    named in worker.log (only a person can repair it); a record that
+    reads but breaks the schema is skipped as before."""
+    try:
+        return Record.from_path(path)
+    except (FrontmatterLoadError, UnicodeDecodeError, OSError) as exc:
+        try:
+            key = (str(path), path.stat().st_mtime_ns)
+        except OSError:
+            key = (str(path), -1)
+        if key not in _UNREADABLE_LOGGED:
+            _UNREADABLE_LOGGED.add(key)
+            log(
+                f"skipped unreadable record {path}: {type(exc).__name__}"
+                f"{': ' + str(exc) if isinstance(exc, FrontmatterLoadError) else ''}"
+                " — only a person can repair it"
+            )
+        return None
+    except RecordError:
+        return None
 
 
 def _truncate_oldest(path: Path, cap: int) -> None:
@@ -1592,12 +1626,10 @@ def _digest(home: Path, limit: int = 20) -> str:
         for bucket in discover_buckets(home):
             path = bucket.path / "resolved" / f"{rid}.md"
             if path.is_file():
-                try:
-                    record = Record.from_path(path)
+                record = _read_resolved(path)
+                if record is not None:
                     title = record_title(record)
                     note = record.resolution_note
-                except RecordError:
-                    pass
                 break
         if title is None:
             continue  # not a resolvable reject here — never inject noise
@@ -3480,9 +3512,8 @@ def _recurrence_suspects(home: Path, batch: list) -> int:
         if not resolved_dir.is_dir():
             continue
         for path in sorted(resolved_dir.glob("lrn-*.md")):
-            try:
-                routed = Record.from_path(path)
-            except RecordError:
+            routed = _read_resolved(path)
+            if routed is None:
                 continue
             if routed.status != "routed":
                 continue

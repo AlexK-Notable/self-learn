@@ -288,7 +288,9 @@ class UnreadableRecord(LedgerOpsError):
 
 #: What a record read raises when the file is not a readable record — the
 #: same four types the ledger scan below treats as "not a record". Not a
-#: catch-all: anything else still escapes.
+#: catch-all: anything else still escapes. Since sweep 2's R4 (2026-09-27)
+#: a frontmatter that does not load arrives as `RecordError`
+#: (`records.FrontmatterLoadError`); `YAMLError` stays as defence in depth.
 UNREADABLE_RECORD_ERRORS = (RecordError, OSError, UnicodeDecodeError, YAMLError)
 
 

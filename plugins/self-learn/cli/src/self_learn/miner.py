@@ -59,7 +59,14 @@ from .hosts import load_hosts
 from .import_common import existing_origins
 from .ledger import discover_buckets, home_state, home_state_message, resolve_home
 from .ledger_ops import LedgerOpsError, create_record, record_title
-from .records import GENERALITIES, KINDS, RECORD_ID_RE, Record, RecordError
+from .records import (
+    GENERALITIES,
+    KINDS,
+    RECORD_ID_RE,
+    FrontmatterLoadError,
+    Record,
+    RecordError,
+)
 from .scan import scan as secret_scan
 
 __all__ = [
@@ -694,11 +701,13 @@ def _ledger_index(home: Path, corrupt: list[Path] | None = None) -> str:
             for path in sorted(d.glob("lrn-*.md")):
                 try:
                     r = Record.from_path(path)
-                except RecordError:
-                    continue
-                except UnicodeDecodeError:
+                except (FrontmatterLoadError, UnicodeDecodeError):
+                    # R4 (sweep 2, 2026-09-27): a header that does not
+                    # load is reported exactly like FW-53's bad bytes.
                     if corrupt is not None:
                         corrupt.append(path)
+                    continue
+                except RecordError:
                     continue
                 rows.append(
                     f"- {r.id} [{r.status}] ({r.scope}): {record_title(r)}"
@@ -720,11 +729,11 @@ def _canon_index(home: Path, corrupt: list[Path] | None = None) -> str:
         for path in sorted(d.glob("lrn-*.md")):
             try:
                 r = Record.from_path(path)
-            except RecordError:
-                continue
-            except UnicodeDecodeError:
+            except (FrontmatterLoadError, UnicodeDecodeError):
                 if corrupt is not None:
                     corrupt.append(path)
+                continue
+            except RecordError:
                 continue
             if r.status == "routed":
                 rows.append(f"- {r.id} ({r.scope}): {record_title(r)}")
@@ -2169,8 +2178,9 @@ def _run_locked(
         # never swallowed.
         result.corrupt_records = sorted({str(p) for p in corrupt})
         for p in result.corrupt_records:
-            log(f"run {run_id}: ledger record {p} not readable as UTF-8 — "
-                "excluded from the reconciliation index")
+            log(f"run {run_id}: ledger record {p} not readable (not UTF-8, "
+                "or a frontmatter that does not load) — excluded from the "
+                "reconciliation index")
     artifact = _invoke_reader(home, prompt)
     if artifact is None:
         result.status = "failed"

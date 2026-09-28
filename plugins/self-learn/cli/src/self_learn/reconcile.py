@@ -123,8 +123,11 @@ __all__ = [
 #: case are refused uniformly by the same tuple, not by kind-specific
 #: reasoning at the call site.
 #:
-#: `records.py` is out of lane scope to fix at its source, so all three
-#: raw classes are caught here instead. Caught BY NAME (never a bare
+#: Sweep 2, R4 (2026-09-27): `Record.from_text` now wraps a frontmatter
+#: that does not load as `records.FrontmatterLoadError` (a `RecordError`);
+#: `YAMLError` stays listed as defence in depth. Bad bytes and an
+#: unreadable file still arrive raw, so all three classes are still
+#: caught here. Caught BY NAME (never a bare
 #: ``except Exception``) so a *bug* in a validator — a ``TypeError``, an
 #: ``AttributeError`` — still surfaces as a crash, not a silently
 #: "invalid" orphan.

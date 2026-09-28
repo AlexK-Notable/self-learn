@@ -188,7 +188,13 @@ from .ledger_ops import (
 # `stamp_proposal_fields` wrapper is the alternative if it spreads.
 from .ledger_ops import _dump_yaml
 from . import records as records_mod
-from .records import RECORD_ID_RE, Record, RecordError, _validate_follow_up
+from .records import (
+    RECORD_ID_RE,
+    FrontmatterLoadError,
+    Record,
+    RecordError,
+    _validate_follow_up,
+)
 from .scan import format_refusal, refusal_text
 from .scan import scan as secret_scan
 
@@ -8202,7 +8208,20 @@ def recompile(
         for path in sorted(resolved.glob("lrn-*.md")):
             try:
                 record = Record.from_path(path)
-            except RecordError:
+            except ledger_ops.UNREADABLE_RECORD_ERRORS as exc:
+                # Sweep 2, R4 (2026-09-27): `except RecordError` alone let
+                # one bad-bytes or unreadable file abort the WHOLE repair
+                # (and a header that does not load, before records.py
+                # wrapped it). Skipped like the compile readers skip it
+                # (N9), and named: its canon line, if any, is not
+                # rewritten by this run.
+                if not isinstance(exc, RecordError) or isinstance(
+                    exc, FrontmatterLoadError
+                ):
+                    result.warnings.append(
+                        f"{path}: not readable as a record ({exc}) — skipped; "
+                        "only a person can repair it"
+                    )
                 continue
             destination = (record.routing or {}).get("destination")
             if destination not in (

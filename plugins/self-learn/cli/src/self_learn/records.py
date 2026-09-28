@@ -41,10 +41,12 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.error import YAMLError
 
 from .primitives import chrono, fsops, text, yamlio
 
 __all__ = [
+    "FrontmatterLoadError",
     "GENERALITIES",
     "MutationError",
     "Record",
@@ -117,6 +119,26 @@ class MutationError(RecordError):
     """An edit violates 02 §2's mutation rules."""
 
 
+class FrontmatterLoadError(ValidationError):
+    """The frontmatter block is present but does not LOAD at all: not YAML
+    (an unclosed bracket, a tab, a git conflict marker), a duplicate key,
+    or a tagged/implicit value the loader cannot construct
+    (``created: 2026-13-45``, ``!!int x``).
+
+    Sweep 2, R4 (2026-09-27): the loader's own exception used to escape
+    :meth:`Record.from_text` unwrapped, so every reader that catches
+    ``RecordError`` -- the miner's prompt and landing, the worker before
+    its model call, ``recompile`` -- crashed its whole run on one such
+    file instead of skipping it. A :class:`ValidationError` subclass, so
+    every existing ``except RecordError``/``ValidationError`` skips it;
+    its own name lets a reader that reports unreadable files (the
+    miner's ``corrupt`` list) tell it apart from a record that loaded
+    but breaks the schema. The message never quotes the file: the
+    loader's own text embeds a snippet of the source (and a
+    ``ValueError`` embeds the offending literal), so only the error's
+    type and position are kept."""
+
+
 def validate_body(type: str, body: str) -> None:
     """Body-shape validator for ``type`` (02 §1: ``behavior`` needs
     ``Trigger``+``Instruction``, ``knowledge`` needs ``Fact``) -- the ONE
@@ -167,6 +189,17 @@ def _make_yaml() -> YAML:
 
 def _now_iso() -> str:
     return chrono.now_iso()
+
+
+def _load_error_text(exc: BaseException) -> str:
+    """``frontmatter does not load (<Type> at line L, column C)`` -- the
+    position is 1-based within the frontmatter block, as the loader
+    prints it. Never ``str(exc)``: see :class:`FrontmatterLoadError`."""
+    mark = getattr(exc, "problem_mark", None) or getattr(exc, "context_mark", None)
+    where = ""
+    if mark is not None and isinstance(getattr(mark, "line", None), int):
+        where = f" at line {mark.line + 1}, column {int(getattr(mark, 'column', 0)) + 1}"
+    return f"frontmatter does not load ({type(exc).__name__}{where})"
 
 
 def _is_record_id(value: object) -> bool:
@@ -271,11 +304,25 @@ class Record:
             raise ValidationError("unterminated frontmatter: no closing '---'") from None
         fm_text = "\n".join(lines[1:close]) + "\n"
         body = "\n".join(lines[close + 1 :])
-        fm = _make_yaml().load(fm_text)
+        try:
+            fm = _make_yaml().load(fm_text)
+        except (YAMLError, ValueError, TypeError, RecursionError) as exc:
+            raise FrontmatterLoadError(_load_error_text(exc)) from exc
         if not isinstance(fm, CommentedMap):
             raise ValidationError("frontmatter is not a YAML mapping")
         record = cls(fm, body)
-        record.validate()
+        try:
+            record.validate()
+        except TypeError as exc:
+            # Sweep 2, R4's sibling: a key holding a list or mapping where
+            # a scalar belongs (`status: [x]`, `type: {a: 1}`) reaches a
+            # set-membership check and raises an unhashable-type
+            # TypeError, which escaped every `except RecordError` reader
+            # exactly like a non-YAML header did. Only a file being
+            # PARSED is wrapped; `validate()` itself is unchanged.
+            raise ValidationError(
+                f"frontmatter holds a value of the wrong type ({type(exc).__name__})"
+            ) from exc
         return record
 
     @classmethod
