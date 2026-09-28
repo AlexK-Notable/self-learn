@@ -675,7 +675,15 @@ def _population_key(population_text: str) -> str:
     return hashlib.sha256(population_text.encode("utf-8")).hexdigest()[:16]
 
 
-def _keep_phase_a(home: Path, stage: Path, week: str, key: str) -> None:
+#: 2026-09-28 (batch 0928 unit B): the kept phase A's journal and the id of
+#: the attempt that wrote it.
+_KEPT_JOURNAL = "journal.md"
+_KEPT_RUN = "run.id"
+
+
+def _keep_phase_a(
+    home: Path, stage: Path, week: str, key: str, run_id: str | None = None,
+) -> None:
     """2026-09-27 (fail-state audit finding 7): keep a validated phase A for
     the same week's next attempt, keyed by the population it saw. Only this
     week's copy is kept; older weeks' copies are removed."""
@@ -689,6 +697,13 @@ def _keep_phase_a(home: Path, stage: Path, week: str, key: str) -> None:
     target.mkdir(parents=True, exist_ok=True)
     for name in _PHASE_A_FILES:
         fsops.atomic_write(target / name, (stage / name).read_bytes(), fsync=False)
+    # 2026-09-28 (unit B): the journal as it stands after phase A -- only
+    # phase A's entries, since this runs before phase B is invoked -- so a
+    # reuse can carry them into the run whose decisions rest on them.
+    journal = stage / MODEL_JOURNAL_NAME
+    if run_id is not None and journal.is_file():
+        fsops.atomic_write(target / _KEPT_JOURNAL, journal.read_bytes(), fsync=False)
+        fsops.atomic_write(target / _KEPT_RUN, run_id + "\n", fsync=False)
     fsops.atomic_write(target / "population.key", key + "\n", fsync=False)
 
 
@@ -704,7 +719,36 @@ def _reuse_phase_a(home: Path, stage: Path, week: str, key: str) -> bool:
         return False
     for name in _PHASE_A_FILES:
         _write_stage(stage, stage / name, (source / name).read_text(encoding="utf-8"))
+    _carry_kept_journal(source, stage)
     return True
+
+
+def _carry_kept_journal(source: Path, stage: Path) -> None:
+    """2026-09-28 (batch 0928 unit B): append the reused phase A's journal
+    entries -- everything after its header line -- to this run's journal,
+    under one line naming the attempt that wrote them. Before, a reused
+    phase A's entries were lost and the committed journal lacked the work
+    this run's decisions rest on. Never fatal: the journal never changes a
+    run's outcome, and the commit-time secret scan still covers the text."""
+    try:
+        kept = (source / _KEPT_JOURNAL).read_text(encoding="utf-8")
+        old_run = (source / _KEPT_RUN).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return
+    lines = kept.splitlines()
+    body = "\n".join(lines[1:] if lines and lines[0].startswith("# ") else lines).strip()
+    if not body:
+        return
+    journal = stage / MODEL_JOURNAL_NAME
+    try:
+        current = journal.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    marker = (
+        f"(The entries below are phase A of attempt {old_run}, kept and reused by "
+        "this run instead of a new phase A.)"
+    )
+    _write_stage(stage, journal, current.rstrip("\n") + f"\n\n{marker}\n\n{body}\n")
 
 
 def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, run_id: str):
@@ -3826,7 +3870,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "a-incomplete", "reason": str(exc)[:300]})
         return RunResult("refused", EXIT_REFUSED, run_id, model_calls, excluded=excluded)
     if not dry_run and model_calls:
-        _keep_phase_a(home, stage, week, population_key)
+        _keep_phase_a(home, stage, week, population_key, run_id)
 
     coverage_before: bytes | None = None
     intent: intents.Intent | None = None

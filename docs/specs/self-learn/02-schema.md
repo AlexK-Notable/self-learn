@@ -738,7 +738,10 @@ one -- never for a narration of the model's own deliberation, which the API
 refuses as `[reasoning_extraction]` (2026-09-27). It is committed with every commit the run
 makes after its first model call (the committed recipe, the finalize, a
 partial finalize, a failed attempt's note, a close-out, a push-failure
-record), carried back into the stage on a resume, never committed when it
+record), carried back into the stage on a resume -- and when a later attempt
+reuses a kept phase A, that phase A's entries are appended to the new run's
+journal under one line naming the attempt that wrote them (2026-09-28), so the
+committed journal holds the work the run's decisions rest on -- never committed when it
 holds only its header line, never validated for content, never read by a
 later run, and — on a secret-scan hit — committed as a one-line stub naming
 the rule and line instead. It never changes a run's outcome. Nothing else
