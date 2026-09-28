@@ -75,6 +75,7 @@ import os
 import shutil
 import sys
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -188,7 +189,13 @@ from .ledger_ops import (
 # `stamp_proposal_fields` wrapper is the alternative if it spreads.
 from .ledger_ops import _dump_yaml
 from . import records as records_mod
-from .records import RECORD_ID_RE, Record, RecordError, _validate_follow_up
+from .records import (
+    RECORD_ID_RE,
+    FrontmatterLoadError,
+    Record,
+    RecordError,
+    _validate_follow_up,
+)
 from .scan import format_refusal, refusal_text
 from .scan import scan as secret_scan
 
@@ -3816,13 +3823,98 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
     return result, [target, manifest, marketplace]
 
 
-#: Host-phase failure classes: loud drift warning, never a rollback (H-2).
+#: Host-phase failure classes: loud drift warning, never a LEDGER rollback
+#: (H-2). A refused HOST commit is undone on the host side only (sweep 2,
+#: R3): see :func:`_undo_host_write`.
 _HOST_PHASE_ERRORS = (
     CompileError,
     gitops.GitOpsError,
     VerbError,
     OSError,
 )
+
+#: What :func:`_snapshot_host_files` keeps per path: its bytes and mode
+#: bits, or ``None`` when the path did not exist.
+_HostSnapshot = dict[Path, tuple[bytes, int] | None]
+
+
+def _host_write_candidates(spec: TargetSpec) -> list[Path]:
+    """Every host file a compile of *spec* can write, computed BEFORE the
+    compile runs (the compile itself only reports what it wrote after
+    the fact): the target, a reference route's references file and
+    pointer surface, a new skill's plugin manifest and marketplace."""
+    paths: list[Path] = []
+    if spec.target is not None:
+        paths.append(spec.target)
+    if spec.pointer_surface is not None:
+        paths.append(spec.pointer_surface)
+    if spec.destination == "reference" and spec.refs_dir is not None:
+        try:
+            paths.append(reference_target_path(spec.refs_dir, spec.ref_name))
+        except (CompileError, OSError):
+            pass
+    if spec.destination == "new-skill" and spec.new_skill:
+        paths.append(
+            spec.host_path / "plugins" / spec.new_skill / ".claude-plugin" / "plugin.json"
+        )
+        paths.append(spec.host_path / ".claude-plugin" / "marketplace.json")
+    return paths
+
+
+def _snapshot_host_files(paths: list[Path]) -> _HostSnapshot:
+    """The bytes and mode of each of *paths* right now (``None`` = absent),
+    so a host write whose commit is refused can be put back exactly."""
+    snapshot: _HostSnapshot = {}
+    for path in paths:
+        try:
+            snapshot[path] = (path.read_bytes(), path.stat().st_mode & 0o7777)
+        except FileNotFoundError:
+            snapshot[path] = None
+        except OSError:
+            continue  # unreadable now: nothing we could restore it to
+    return snapshot
+
+
+def _undo_host_write(
+    repo: Path, snapshot: _HostSnapshot, paths: list[Path]
+) -> str:
+    """Sweep 2, R3 (2026-09-27): a host commit refused (a pre-commit hook
+    such as the machine-wide gitleaks guard, a stale ``index.lock``) used
+    to leave the freshly compiled file written AND staged in the user's
+    repo -- every later route to that file was then refused as "unrelated
+    uncommitted changes", and the user's own next commit would carry our
+    change. Undo it on the HOST side only: unstage *paths* and put back
+    the bytes (and mode) :func:`_snapshot_host_files` saw before the
+    compile; a path that did not exist is removed. The LEDGER commit
+    stands (H-2: canon is stale, never lost), and the compile record's
+    ``based_on_sha256`` still matches the restored region, so the next
+    ``recompile`` reads it ``stale`` and retries the write.
+
+    Returns a short clause for the caller's warning; never raises."""
+    problems: list[str] = []
+    try:
+        gitops.unstage(repo, paths)
+    except gitops.GitOpsError as exc:
+        problems.append(f"could not unstage ({exc})")
+    for path in paths:
+        if path not in snapshot:
+            problems.append(f"no snapshot of {path}")
+            continue
+        before = snapshot[path]
+        try:
+            if before is None:
+                if path.exists():
+                    path.unlink()
+                continue
+            data, mode = before
+            if path.is_file() and path.read_bytes() == data:
+                continue
+            fsops.atomic_write(path, data, mode=mode, fsync=True, follow_symlinks=True)
+        except OSError as exc:
+            problems.append(f"could not put back {path} ({exc})")
+    if problems:
+        return "the host write was NOT fully undone: " + "; ".join(problems)
+    return "the host file was put back as it was and unstaged"
 
 
 def _host_phase(
@@ -3839,6 +3931,12 @@ def _host_phase(
     """Steps (e): compile + HOST commit under the sentinel hold. On ANY
     failure after the ledger commit: loud drift warning naming
     ``self-learn recompile``; the ledger stays truth (doc 13 §4.2).
+
+    Sweep 2, R3 (2026-09-27): when the HOST commit itself is refused (a
+    pre-commit hook, a stale ``index.lock``) in a git host, the files
+    this compile wrote are put back as they were and unstaged
+    (:func:`_undo_host_write`) before the warning — the ledger commit is
+    never rolled back, only the host's half of this one write.
 
     The HOST's commit lock spans compile→commit, for the same reason the
     ledger's spans mutation→commit: the compile WRITES the managed file
@@ -3859,6 +3957,11 @@ def _host_phase(
     (``gitops._held_locks``)."""
     try:
         with gitops.host_lock(spec.host_path, spec.mode):
+            snapshot = (
+                _snapshot_host_files(_host_write_candidates(spec))
+                if spec.mode == "git"
+                else {}
+            )
             compile_result, host_paths = _apply_target(
                 home,
                 spec,
@@ -3883,14 +3986,20 @@ def _host_phase(
                     getattr(compile_result, "pointer_changed", False)
                 )
                 if pointer_changed or (changed is not False and applied is not False):
-                    gitops.stage(spec.host_path, host_paths)
-                    rel = host_paths[0].relative_to(spec.host_path)
-                    host_sha = gitops.commit(
-                        spec.host_path,
-                        f"self-learn: apply {record_id} → {rel} ({spec.destination})",
-                        body=note,
-                        paths=host_paths,
-                    )
+                    try:
+                        gitops.stage(spec.host_path, host_paths)
+                        rel = host_paths[0].relative_to(spec.host_path)
+                        host_sha = gitops.commit(
+                            spec.host_path,
+                            f"self-learn: apply {record_id} → {rel} ({spec.destination})",
+                            body=note,
+                            paths=host_paths,
+                        )
+                    except gitops.GitOpsError as exc:
+                        # Sweep 2, R3: this one host write is what the
+                        # refusal costs -- never the user's repo state.
+                        undone = _undo_host_write(spec.host_path, snapshot, host_paths)
+                        raise gitops.GitOpsError(f"{exc} — {undone}") from exc
         return compile_result, host_sha
     except _HOST_PHASE_ERRORS as exc:
         warning = (
@@ -8133,12 +8242,28 @@ class RecompileResult:
         return sum(1 for e in self.entries if e.commit_sha is not None)
 
 
+def recompile_refusals(result: RecompileResult, record_id: str) -> list[str]:
+    """What stops a ``recompile(..., only_records=[record_id])`` from
+    establishing that record's host result (sweep 2, R2): every skipped
+    target (``"<target>: <reason>"``), then every warning that names the
+    record itself -- its target could not be resolved, or its own file
+    could not be read -- so an empty narrowed run is never read as
+    ``applied`` just because nothing was attempted."""
+    refused = [f"{e.target}: {e.skipped}" for e in result.entries if e.skipped]
+    refused += [
+        w for w in result.warnings
+        if w.startswith(f"{record_id}:") or f"/{record_id}.md:" in w
+    ]
+    return refused
+
+
 def recompile(
     home: Path | str,
     *,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
     adopt: Path | str | None = None,
+    only_records: Iterable[str] | None = None,
 ) -> RecompileResult:
     """The doc-13 drift repair (H-2: recompile is always safe and repairs
     any two-phase interruption). For every ROUTED record, recompute each
@@ -8192,6 +8317,7 @@ def recompile(
     # them (the pre-2026-07-17 shape) meant a target whose LAST record
     # retired was never revisited — the stale advisory lived forever.
     specs: dict[tuple[Path | None, Path | None], TargetSpec] = {}
+    spec_owners: dict[tuple[Path | None, Path | None], set[str]] = {}
     ref_work: dict[tuple[Path, Path], tuple[TargetSpec, list[Record]]] = {}
     hook_work: list[tuple[Record, Path, Path, str, str]] = []  # record, host, abs, rel, mode
     hook_removals: list[tuple[Record, tuple[Path, Path, str, str]]] = []  # m-4
@@ -8202,7 +8328,20 @@ def recompile(
         for path in sorted(resolved.glob("lrn-*.md")):
             try:
                 record = Record.from_path(path)
-            except RecordError:
+            except ledger_ops.UNREADABLE_RECORD_ERRORS as exc:
+                # Sweep 2, R4 (2026-09-27): `except RecordError` alone let
+                # one bad-bytes or unreadable file abort the WHOLE repair
+                # (and a header that does not load, before records.py
+                # wrapped it). Skipped like the compile readers skip it
+                # (N9), and named: its canon line, if any, is not
+                # rewritten by this run.
+                if not isinstance(exc, RecordError) or isinstance(
+                    exc, FrontmatterLoadError
+                ):
+                    result.warnings.append(
+                        f"{path}: not readable as a record ({exc}) — skipped; "
+                        "only a person can repair it"
+                    )
                 continue
             destination = (record.routing or {}).get("destination")
             if destination not in (
@@ -8293,6 +8432,23 @@ def recompile(
                 entry[1].append(record)
                 continue
             specs.setdefault((spec.host_path, spec.target), spec)
+            spec_owners.setdefault((spec.host_path, spec.target), set()).add(record.id)
+
+    if only_records is not None:
+        # Sweep 2, R2 (2026-09-27): the narrow form steward/overseer crash
+        # recovery uses to establish ONE recovered item's host result --
+        # only the targets the named records resolve to (resolved exactly
+        # as above, the way route resolves them) are compiled, committed
+        # and judged; every other target is left alone for an ordinary
+        # recompile. The compile SET of a kept target is still the full
+        # ledger's (that is what the target must hold).
+        wanted = set(only_records)
+        specs = {k: v for k, v in specs.items() if spec_owners.get(k, set()) & wanted}
+        ref_work = {
+            k: v for k, v in ref_work.items() if any(r.id in wanted for r in v[1])
+        }
+        hook_work = [w for w in hook_work if w[0].id in wanted]
+        hook_removals = [w for w in hook_removals if w[0].id in wanted]
 
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -8509,6 +8665,7 @@ def recompile(
             # the compile writes the managed file into the host worktree, so
             # a racing autostash there would stash it away mid-flight).
             with gitops.commit_lock(host_repo):
+                snapshot = _snapshot_host_files(_host_write_candidates(spec))
                 try:
                     compile_result, host_paths = _apply_target(
                         home, spec, None, notes=result.warnings
@@ -8524,11 +8681,26 @@ def recompile(
                         RecompileEntry(target=target, changed=False)
                     )
                     continue
-                gitops.stage(host_repo, host_paths)
                 rel = target.relative_to(host_repo)
-                sha = gitops.commit(
-                    host_repo, f"self-learn: recompile {rel}", paths=host_paths
-                )
+                try:
+                    gitops.stage(host_repo, host_paths)
+                    sha = gitops.commit(
+                        host_repo, f"self-learn: recompile {rel}", paths=host_paths
+                    )
+                except gitops.GitOpsError as exc:
+                    # Sweep 2, R3: a refused commit costs THIS target --
+                    # put back and unstaged, skipped with the reason, no
+                    # compile-record resync (the record's based_on still
+                    # matches the restored region, so the next recompile
+                    # retries) -- and every later target still repairs.
+                    assert target is not None  # a managed spec always has one
+                    undone = _undo_host_write(spec.host_path, snapshot, host_paths)
+                    reason = f"host commit refused: {exc} — {undone}"
+                    result.entries.append(
+                        RecompileEntry(target=target, changed=False, skipped=reason)
+                    )
+                    result.warnings.append(f"{target}: {reason}")
+                    continue
             # D-2 (code gate r1 fold): re-sync the compile record here
             # too — `edited` refuses in BOTH modes (REC2/REC4), so a
             # git-mode render leaving the record stale is the exact same
@@ -8620,6 +8792,10 @@ def recompile(
                 else None
             )
             with gitops.commit_lock(host_repo):  # ledger→host order
+                ref_snapshot = _snapshot_host_files(
+                    [probe]
+                    + ([spec.pointer_surface] if spec.pointer_surface is not None else [])
+                )
                 applied = False
                 failed = False
                 for record in sorted(records, key=lambda r: r.id):
@@ -8671,36 +8847,61 @@ def recompile(
                 # would leave the whole backfill committed and never
                 # pushed (r2 NOTE 9, criterion E8).
                 if applied:
-                    gitops.stage(host_repo, [probe])
                     rel = probe.relative_to(host_repo)
-                    sha = gitops.commit(
-                        host_repo, f"self-learn: recompile {rel}", paths=[probe]
-                    )
-                    result.entries.append(
-                        RecompileEntry(target=probe, changed=True, commit_sha=sha)
-                    )
-                    if host_repo not in touched_hosts:
-                        touched_hosts.append(host_repo)
+                    try:
+                        gitops.stage(host_repo, [probe])
+                        sha = gitops.commit(
+                            host_repo, f"self-learn: recompile {rel}", paths=[probe]
+                        )
+                    except gitops.GitOpsError as exc:
+                        # Sweep 2, R3: see the managed-target leg above.
+                        undone = _undo_host_write(host_repo, ref_snapshot, [probe])
+                        reason = f"host commit refused: {exc} — {undone}"
+                        result.entries.append(
+                            RecompileEntry(target=probe, changed=False, skipped=reason)
+                        )
+                        result.warnings.append(f"{probe}: {reason}")
+                        applied = False
+                    else:
+                        result.entries.append(
+                            RecompileEntry(target=probe, changed=True, commit_sha=sha)
+                        )
+                        if host_repo not in touched_hosts:
+                            touched_hosts.append(host_repo)
 
                 if pointer_changed:
                     pointer_surface = spec.pointer_surface
                     assert pointer_surface is not None
-                    gitops.stage(host_repo, [pointer_surface])
                     prel = pointer_surface.relative_to(host_repo)
-                    psha = gitops.commit(
-                        host_repo,
-                        f"self-learn: pointer {prel}",
-                        paths=[pointer_surface],
-                    )
-                    result.entries.append(
-                        RecompileEntry(
-                            target=pointer_surface,
-                            changed=True,
-                            commit_sha=psha,
+                    try:
+                        gitops.stage(host_repo, [pointer_surface])
+                        psha = gitops.commit(
+                            host_repo,
+                            f"self-learn: pointer {prel}",
+                            paths=[pointer_surface],
                         )
-                    )
-                    if host_repo not in touched_hosts:
-                        touched_hosts.append(host_repo)
+                    except gitops.GitOpsError as exc:
+                        undone = _undo_host_write(
+                            host_repo, ref_snapshot, [pointer_surface]
+                        )
+                        reason = f"host commit refused: {exc} — {undone}"
+                        result.entries.append(
+                            RecompileEntry(
+                                target=pointer_surface, changed=False, skipped=reason
+                            )
+                        )
+                        result.warnings.append(f"{pointer_surface}: {reason}")
+                        pointer_changed = False
+                    else:
+                        result.entries.append(
+                            RecompileEntry(
+                                target=pointer_surface,
+                                changed=True,
+                                commit_sha=psha,
+                            )
+                        )
+                        if host_repo not in touched_hosts:
+                            touched_hosts.append(host_repo)
 
             # D-3 (code gate r1 fold): resync the compile record for the
             # `reference`/`pointer` region kinds too — mirrors D-2's fix
@@ -8797,6 +8998,7 @@ def recompile(
             # own path (UN8) — this widens to plain without moving the
             # git-mode lock at all.
             with gitops.host_lock(host_repo, hook_mode):  # ledger→host order
+                hook_snapshot = _snapshot_host_files([script_abs])
                 apply_result = _write_hook_script(
                     script_abs, (record.routing or {})["hook"]["script"]
                 )
@@ -8806,12 +9008,26 @@ def recompile(
                     )
                     continue
                 if hook_mode == "git":
-                    gitops.stage(host_repo, [script_abs])
-                    sha = gitops.commit(
-                        host_repo,
-                        f"self-learn: recompile {rel}",
-                        paths=[script_abs],
-                    )
+                    try:
+                        gitops.stage(host_repo, [script_abs])
+                        sha = gitops.commit(
+                            host_repo,
+                            f"self-learn: recompile {rel}",
+                            paths=[script_abs],
+                        )
+                    except gitops.GitOpsError as exc:
+                        # Sweep 2, R3: see the managed-target leg above.
+                        undone = _undo_host_write(
+                            host_repo, hook_snapshot, [script_abs]
+                        )
+                        reason = f"host commit refused: {exc} — {undone}"
+                        result.entries.append(
+                            RecompileEntry(
+                                target=script_abs, changed=False, skipped=reason
+                            )
+                        )
+                        result.warnings.append(f"{script_abs}: {reason}")
+                        continue
             # D-3 completion: resync the record to the APPROVED bytes
             # this leg just (re-)applied — a standalone ledger commit,
             # same subject convention M-10/D-2/D-3 established, never

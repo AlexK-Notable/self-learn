@@ -202,7 +202,16 @@ revert). Doc 13 promotes that to the general rule:
 2. **Crash between phases = stale canon, never lost truth.** The
    `--selftest` gains a drift check: managed-section entry markers
    (`*(lrn-…)*`) vs the ledger's routed records; drift is repaired by
-   recompile, one command, idempotent.
+   recompile, one command, idempotent. *Amended 2026-09-27 (sweep 2,
+   R3):* a host commit that is **refused** (a pre-commit hook such as a
+   gitleaks guard, a stale `index.lock`) is the same interruption, and
+   costs only that one host write: the files it wrote are put back as
+   they were and unstaged, so the user's repo is left exactly as it was
+   (never a staged self-learn change a later route reads as "dirty", or
+   the user's own next commit would carry); the ledger commit stands and
+   the next `recompile` retries the write. In `recompile` the refused
+   target is skipped with the hook's message and every other target is
+   still repaired. Never `--no-verify`.
 3. **The rejected-proposal digest moves its grep to the ledger repo**
    (resolution commits live there now).
 4. **The sentinel contract SHRINKS.** The ledger repo has no watcher
@@ -317,8 +326,11 @@ intent recovery (§7.2a.3): an interrupted multi-file transaction leaves
 a staged rename the scan would otherwise report `blocked` forever, so
 recovery goes first and the scan only ever sees a clean-or-ordinary
 tree. When recovery leaves any intent `stopped`, `reconcile` refuses
-its WHOLE orphan batch — the same all-or-nothing contract `blocked` and
-`invalid` already carry — because the scan can see, and would stage,
+its WHOLE orphan batch — the all-or-nothing contract `blocked` and
+`invalid` also carried until 2026-09-27 (*amended, sweep 2 R1:* an
+invalid orphan now holds back only itself and the orphans that depend on
+it, and a blocked rename only its own record; the rest is committed,
+exit 8. A STOP alone still refuses everything) — because the scan can see, and would stage,
 the very files the stuck transaction half-wrote; the process exit is 6
 with the offender named, and every ordinary orphan under that home,
 the miner's own carried-over records included, stays uncommitted until

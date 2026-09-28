@@ -355,7 +355,8 @@ which:
   anything** (commonly: another producer — a worker or the miner — held
   the commit lock too long). The lock is taken before the first mutation,
   so nothing is half-done: it is safe to retry once the other producer
-  finishes. `reconcile` also returns 6 when it refuses an invalid orphan;
+  finishes. `reconcile` also returns 6 when it held back an invalid orphan
+  and had nothing else to commit (8 when it committed the rest around it);
   there the repair is the one it prints, not a retry.
 - **7** — the record WAS written but its **commit failed**. This is the
   opposite of 6 and must never be treated as it: the record has already
@@ -370,7 +371,9 @@ which:
   Revise action above, and one-motion `teach --route`) shares this same
   64 for its own usage errors (A22, fold r1, 2026-09-04 — was a private
   2; a bad *home* is still 5, unchanged).
-- **8** — `batch` only (`EXIT_BATCH_PARTIAL`): the run completed with
+- **8** — `batch`, and `reconcile` since 2026-09-27 (`EXIT_BATCH_PARTIAL`;
+  for `reconcile`: it committed every orphan except the invalid or blocked
+  ones it names and those that depend on them). For `batch`: the run completed with
   **some items applied and at least one refused** — the ledger DID
   change. Read the `--json` envelope's per-item `rc`/`state` to see which
   landed and which refused; a refused item's own reason renders the same

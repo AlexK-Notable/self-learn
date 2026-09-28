@@ -19,11 +19,12 @@ into the tmpdir, so the user CLAUDE.md is a sandbox file.
 from __future__ import annotations
 
 import pytest
+from ruamel.yaml.error import YAMLError
 
 from self_learn import batch, verbs
 from self_learn.compilers import BEGIN_MARKER, END_MARKER
 from self_learn.ledger_ops import create_record, find_record_path, write_proposal
-from self_learn.records import Record
+from self_learn.records import FrontmatterLoadError, Record
 from support import commit_all, make_behavior, make_env, proposal_dict
 
 MALFORMED_HOSTS = "skills_root: [unclosed\n"
@@ -101,9 +102,12 @@ def test_n9_a_resolved_record_whose_frontmatter_is_not_yaml_is_skipped(
     broken = resolved / "lrn-d10000ff.md"
     broken.write_text("---\nid: [unclosed\n---\n\nbody\n", encoding="utf-8")
     commit_all(env.ledger, "a resolved file that is not YAML")
-    with pytest.raises(Exception) as caught:  # positive control: it does not read
+    # positive control: it does not read -- not YAML at all. Since sweep 2's
+    # R4 (2026-09-27) the loader's own error arrives wrapped as a
+    # RecordError, its cause still the YAML parser's.
+    with pytest.raises(FrontmatterLoadError) as caught:
         Record.from_path(broken)
-    assert "YAML" in type(caught.value).__name__ or "yaml" in type(caught.value).__module__
+    assert isinstance(caught.value.__cause__, YAMLError)
 
     result = _run(
         env.ledger, tmp_path,

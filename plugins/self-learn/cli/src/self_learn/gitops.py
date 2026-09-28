@@ -303,6 +303,20 @@ def stage(repo: Path, paths: Iterable[Path | str]) -> list[Path]:
     return existing
 
 
+def unstage(repo: Path, paths: Iterable[Path | str]) -> None:
+    """Put *paths*' index entries back to ``HEAD`` (``git reset -q --
+    <paths>``) -- the inverse of :func:`stage` for a commit that was then
+    refused. Never touches the worktree. A repo with no ``HEAD`` yet falls
+    back to dropping the entries (``git rm --cached``), the same "not
+    staged" end state."""
+    given = [str(p) for p in paths]
+    if not given:
+        return
+    proc = _git(repo, "reset", "-q", "--", *given)
+    if proc.returncode != 0:
+        _git_ok(repo, "rm", "-q", "--cached", "--ignore-unmatch", "--", *given)
+
+
 def staged_diff(repo: Path, paths: Iterable[Path | str] = ()) -> str:
     """``git diff --cached [-- <paths>]`` — the pre-commit diff of what a
     verb staged. T8's ``teach --route`` prints this (08 §1 `teach --route`
