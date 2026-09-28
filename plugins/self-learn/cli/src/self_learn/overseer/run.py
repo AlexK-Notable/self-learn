@@ -317,21 +317,21 @@ class _YamlParseError(OverseerError):
     file's contents cost."""
 
 
-_QUOTED_SPAN_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
-
-
 def _yaml_error_text(name: str, exc: YAMLError) -> str:
     """``<file>: cannot parse — <problem> at line L, column C``.
 
     The parser's own ``str(exc)`` quotes a snippet of the source around the
-    error, and its ``problem`` can quote an alias, tag, or character from
-    it; both are the model's text. Only the position (1-based, as the
-    parser prints it) and the problem with every quoted span replaced by
-    ``…`` are kept, and a problem that still matches the secret scan
-    becomes a fixed phrase: runner lines are committed, and a scan hit
-    in the run record would refuse the run this exists to keep."""
+    error, and its ``problem`` can quote the model's text too: an alias, a
+    tag, a character, or a duplicate key's values (which can hold quotes of
+    their own, so no quote-matching rule is safe). Only the position
+    (1-based, as the parser prints it) and the problem cut at its first
+    quote character are kept (``mapping values are not allowed here``,
+    ``found undefined alias``, ``found duplicate key``). A problem that
+    still matches the secret scan becomes a fixed phrase: runner lines are
+    committed, and a scan hit in the run record would refuse the run this
+    exists to keep."""
     problem = str(getattr(exc, "problem", None) or getattr(exc, "context", None) or "")
-    problem = " ".join(_QUOTED_SPAN_RE.sub("…", problem).split())[:120]
+    problem = " ".join(re.split(r"['\"]", problem, maxsplit=1)[0].split()).rstrip(" ,:")[:120]
     if not problem or scan.scan(problem):
         problem = "not valid YAML"
     mark = getattr(exc, "problem_mark", None) or getattr(exc, "context_mark", None)

@@ -1333,7 +1333,7 @@ unit around it:
   `c2b9192b`): an unparseable case or sheet drops that pair, an unparseable
   `findings.yaml` reads as no findings, an unparseable `user-model-delta.yaml`
   as no updates; each is named by file, parse problem, line and column, never
-  the model's text (quoted spans in the problem become `…`). At execute time a
+  the model's text (the problem is cut at its first quote). At execute time a
   `cases.CaseError` refuses that case and its sheet as final refusals and the
   run goes on. An orphan `sheet-<name>.yaml` is dropped and named; a case in
   the window that cannot be classified into a coverage stratum is left out of

@@ -566,3 +566,20 @@ def test_a_user_model_delta_that_does_not_parse_costs_only_the_updates(tmp_path,
     assert "user-model-delta.yaml: cannot parse — mapping values are not allowed here" in refused
     assert ": no user-model updates this run" in refused
     assert MARKER not in report
+
+
+@pytest.mark.parametrize("text, problem", [
+    # A duplicate key: the parser's problem quotes both values, and a value
+    # may hold quotes of its own.
+    ('a:\n  text: "said \\"QUOTED-9Z\\" MARKER-7Q"\n  text: MARKER-7Q again\n', "found duplicate key"),
+    ("a: *MARKER-7Q\n", "found undefined alias"),
+    ("a: !MARKER-7Q 1\n", "could not determine a constructor for the tag"),
+])
+def test_a_parse_line_never_carries_the_files_text(tmp_path, text, problem):
+    path = tmp_path / "findings.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(overseer_run._YamlParseError) as caught:
+        overseer_run._yaml_mapping(path)
+    line = str(caught.value)
+    assert line.startswith(f"findings.yaml: cannot parse — {problem} at line ")  # positive control
+    assert "MARKER" not in line and "QUOTED" not in line
