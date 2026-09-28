@@ -452,7 +452,7 @@ def cluster_candidates(home: Path, batch: list) -> dict:
         if not resolved_dir.is_dir():
             continue
         for path in sorted(resolved_dir.glob("lrn-*.md")):
-            routed = _read_resolved(path)
+            routed = _read_resolved(path, name_in_log=False)  # LG7: see there
             if routed is None:
                 continue
             if routed.status != "routed":
@@ -835,7 +835,7 @@ def log(message: str) -> None:
 _UNREADABLE_LOGGED: set[tuple[str, int]] = set()
 
 
-def _read_resolved(path: Path) -> Record | None:
+def _read_resolved(path: Path, *, name_in_log: bool = True) -> Record | None:
     """A resolved record read by one of the worker's context passes (the
     candidate pool, the rejected examples, the recurrence suspects), or
     ``None`` when the file is not a usable record.
@@ -845,10 +845,17 @@ def _read_resolved(path: Path) -> Record | None:
     not UTF-8, or which cannot be read) crashed ``worker.run`` before its
     model call, on every run. A file that does not READ is skipped and
     named in worker.log (only a person can repair it); a record that
-    reads but breaks the schema is skipped as before."""
+    reads but breaks the schema is skipped as before.
+
+    ``name_in_log=False`` skips silently: the candidate pool is shared
+    with the analyst's single-record path, which LG7 forbids from ever
+    growing worker.log (``worker.run`` still names the file, through
+    :func:`_recurrence_suspects`)."""
     try:
         return Record.from_path(path)
     except (FrontmatterLoadError, UnicodeDecodeError, OSError) as exc:
+        if not name_in_log:
+            return None
         try:
             key = (str(path), path.stat().st_mtime_ns)
         except OSError:

@@ -140,3 +140,24 @@ def test_recompile_repairs_the_good_target_and_names_the_bad_file(tmp_path, monk
     result = verbs.recompile(env.ledger, no_push=True)
     assert "lrn-9e000002" in skill_md.read_text()  # repaired
     assert any(str(bad) in w and "not readable as a record" in w for w in result.warnings)
+
+
+def test_the_analyst_shared_candidate_pool_skips_without_writing_worker_log(
+    tmp_path, monkeypatch
+):
+    """The candidate pool is shared with the analyst's single-record path,
+    which LG7 forbids from growing worker.log: it skips the bad file
+    silently (worker.run names it through the recurrence pass)."""
+    env, _bad = _ledger_with_one_bad_resolved(tmp_path, monkeypatch, routed_good=True)
+    worker._UNREADABLE_LOGGED.clear()
+    entry = worker._enumerate(env.ledger)[0][0]
+    log_path = worker._p("worker.log")
+    before = log_path.read_bytes() if log_path.exists() else b""
+    # every pool member that shares a token scores: the positive control
+    # below then shows exactly what the pool holds
+    monkeypatch.setattr(worker, "pair_similarity", lambda *a, **k: 1.0)
+    candidates = worker.cluster_candidates(env.ledger, [entry])
+    # positive control: the good routed record is still in the pool
+    assert "lrn-9e000002" in repr(candidates[entry.record.id])
+    after = log_path.read_bytes() if log_path.exists() else b""
+    assert after == before
