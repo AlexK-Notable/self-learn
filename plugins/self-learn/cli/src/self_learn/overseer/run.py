@@ -309,11 +309,49 @@ def report(home: Path | str | None = None, *, date: str | None = None) -> str:
         raise OverseerError(f"overseer report: cannot read {path.name}: {exc}") from exc
 
 
+class _YamlParseError(OverseerError):
+    """A model-written stage file that is not YAML at all (2026-09-27, run
+    c2b9192b: a plain ``text:`` value holding ``": "`` refused the whole
+    run). Its message names the file and the parser's position and
+    problem, never the model's text; each phase-B caller decides what the
+    file's contents cost."""
+
+
+_QUOTED_SPAN_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+
+def _yaml_error_text(name: str, exc: YAMLError) -> str:
+    """``<file>: cannot parse — <problem> at line L, column C``.
+
+    The parser's own ``str(exc)`` quotes a snippet of the source around the
+    error, and its ``problem`` can quote an alias, tag, or character from
+    it; both are the model's text. Only the position (1-based, as the
+    parser prints it) and the problem with every quoted span replaced by
+    ``…`` are kept, and a problem that still matches the secret scan
+    becomes a fixed phrase: runner lines are committed, and a scan hit
+    in the run record would refuse the run this exists to keep."""
+    problem = str(getattr(exc, "problem", None) or getattr(exc, "context", None) or "")
+    problem = " ".join(_QUOTED_SPAN_RE.sub("…", problem).split())[:120]
+    if not problem or scan.scan(problem):
+        problem = "not valid YAML"
+    mark = getattr(exc, "problem_mark", None) or getattr(exc, "context_mark", None)
+    where = ""
+    if mark is not None and isinstance(getattr(mark, "line", None), int):
+        where = f" at line {mark.line + 1}, column {int(getattr(mark, 'column', 0)) + 1}"
+    return f"{name}: cannot parse — {problem}{where}"
+
+
 def _yaml_mapping(path: Path) -> dict[str, Any]:
     try:
-        data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, YAMLError) as exc:
-        raise OverseerError(f"{path.name}: cannot parse: {exc}") from exc
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        # Unchanged: an undecodable stage file is already refused by the
+        # whole-stage secret scan (`_secret_files`) before any parse.
+        raise OverseerError(f"{path.name}: cannot read: {type(exc).__name__}") from exc
+    try:
+        data = YAML(typ="safe").load(text)
+    except YAMLError as exc:
+        raise _YamlParseError(_yaml_error_text(path.name, exc)) from exc
     if not isinstance(data, dict):
         raise OverseerError(f"{path.name}: expected a mapping")
     return data
@@ -486,6 +524,14 @@ You are in phase {phase} now.
 """
 
 
+#: 2026-09-27 (run c2b9192b): a plain ``text:`` value holding ": " made
+#: findings.yaml unparseable. Both phase prompts carry this line.
+_YAML_TEXT_RULE = """In every YAML file you write, write each free-text value either as a block scalar (`text: |`
+with the text indented on the lines below it) or as a double-quoted string: a bare value that
+contains ": " does not parse, and the runner cannot use a file that does not parse.
+"""
+
+
 def _phase_a_prompt(stage: Path, count: int, excluded: int) -> str:
     return f"""You are the self-learn overseer, examining decisions independently.
 Binding rules: provisional is bookkeeping; silence is not agreement; evidence is never authority.
@@ -496,7 +542,7 @@ Read population.txt, nudges.yaml, and blind/*.md. Choose any number of cases; th
 Write selection.yaml with only cases: [{{id: case-...}}], why_these, and why_stopped.
 Write initial-views.yaml with cases, one per selected id, carrying id, what_i_would_do, why,
 what_evidence_decides_it, and confidence (clear or close-call).
-{_journal_block("A")}The log records only what you read in this stage; you have not seen the steward's decisions.
+{_YAML_TEXT_RULE}{_journal_block("A")}The log records only what you read in this stage; you have not seen the steward's decisions.
 """
 
 
@@ -517,7 +563,7 @@ quotes the ledger's words.
 Write report.md, findings.yaml, questions.yaml, user-model-delta.yaml, and either sheet.yaml or paired
 case-<name>.yaml plus sheet-<name>.yaml files. One successor case must supersede each parked
 case you decide. The runner alone records cases and applies sheets. Never run a verb.
-In a case file no line of any text field may start with `## `. To quote a heading line, quote
+{_YAML_TEXT_RULE}In a case file no line of any text field may start with `## `. To quote a heading line, quote
 it from after the `## ` (for `## 2026-08-19 — lrn-b197d06b` quote `2026-08-19 — lrn-b197d06b`):
 an evidence item with such a line is dropped, and any other field with one refuses the case.
 Every text field is secret-scanned: an evidence item whose quote or ref matches is dropped (with
@@ -4010,9 +4056,21 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 {row["case"] for row in cases.list_cases(home, only_ok=True)},
             )
             # 2026-09-27: a bad finding is dropped and named, not a refusal.
+            # 2026-09-27 (run c2b9192b): so is a findings.yaml that does not
+            # parse -- it reads as no findings, so no selected case counts
+            # as examined and coverage advances for none of them.
+            try:
+                findings_data = _yaml_mapping(stage / "findings.yaml")
+                findings_parse: list[str] = []
+            except _YamlParseError as exc:
+                findings_data = {"findings": []}
+                findings_parse = [f"{exc}: every finding dropped"]
+                _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                    "status": "file-dropped", "file": "findings.yaml", "reason": str(exc)})
             findings, examined_ids, finding_drops = _validate_findings(
-                _yaml_mapping(stage / "findings.yaml"), selected,
+                findings_data, selected,
             )
+            finding_drops = [*findings_parse, *finding_drops]
             if examined_ids != selected:
                 # Coverage was advanced from phase A's selection before
                 # phase B ran; a selected case with no valid examined
@@ -4033,13 +4091,42 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 if not dry_run:
                     fsops.atomic_write(coverage_path, coverage_text, fsync=True)
                 _write_stage(stage, stage / "coverage.yaml", coverage_text)
-            model_updates = _model_updates(stage / "user-model-delta.yaml")
+            case_drops: list[str] = []
+            try:
+                model_updates = _model_updates(stage / "user-model-delta.yaml")
+            except _YamlParseError as exc:
+                # 2026-09-27 (run c2b9192b): costs the user-model updates only.
+                model_updates = []
+                case_drops.append(f"{exc}: no user-model updates this run")
+                _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                    "status": "file-dropped", "file": "user-model-delta.yaml", "reason": str(exc)})
             prepared: list[tuple[Path | None, Path, batch.Sheet]] = []
             preview_apply = 0
             preview_refused = 0
             seen_predecessors: set[str] = set()
-            case_drops: list[str] = []
             for case_file, sheet_file in pairs:
+                # 2026-09-27 (run c2b9192b): a case or sheet file that does
+                # not parse costs that pair alone, named by file and parse
+                # position (never its text); the other pairs go ahead. It is
+                # checked first, so every read below sees files that parse.
+                unparsed: str | None = None
+                partner: Path | None = None
+                for staged, other in ((case_file, sheet_file), (sheet_file, case_file)):
+                    if staged is None:
+                        continue
+                    try:
+                        _yaml_mapping(staged)
+                    except _YamlParseError as exc:
+                        unparsed, partner = str(exc), other
+                        break
+                if unparsed is not None:
+                    case_drops.append(
+                        f"{unparsed}: dropped"
+                        + (f" with {partner.name}" if partner is not None else "")
+                    )
+                    _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                        "status": "pair-dropped", "reason": unparsed})
+                    continue
                 if case_file is not None and case_file.name == "case.yaml":
                     # A9: the caseless sheet's pair is catalogue maintenance;
                     # it supersedes nothing, so the successor rules below

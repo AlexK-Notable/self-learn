@@ -725,7 +725,9 @@ not selected this run, an unknown kind, empty text, a `dependency-moved` without
 could not do" and the run record's `runner_notes`. A selected case left with no
 valid `examined` finding is NOT examined: it is named there too, left out of the
 report's "Cases examined" line, and does not advance `coverage.yaml`. Only a file
-that is not a mapping holding just a `findings` list refuses the run.
+that parses but is not a mapping holding just a `findings` list refuses the run;
+a `findings.yaml` that does not parse at all reads as no findings (2026-09-27, run
+`c2b9192b`), named in one line by its parse position and problem, never its text.
 
 **Journal.** `overseer/journal/<date>-<run>.md` is the run's own journal: a
 stage file (`journal.md`) the runner creates before phase A and the model
@@ -1326,7 +1328,12 @@ unit around it:
 - *Overseer.* Phase B runs the case writer's rules (`cases.check_case_data`)
   on each staged decided and maintenance case as `cases.record` will see it
   (run id stamped, runner-dropped evidence gone); a failing case is dropped
-  with its sheet and named (file, parked case, rule). At execute time a
+  with its sheet and named (file, parked case, rule). A phase-B output file
+  that does not parse as YAML costs only what it carries (2026-09-27, run
+  `c2b9192b`): an unparseable case or sheet drops that pair, an unparseable
+  `findings.yaml` reads as no findings, an unparseable `user-model-delta.yaml`
+  as no updates; each is named by file, parse problem, line and column, never
+  the model's text (quoted spans in the problem become `…`). At execute time a
   `cases.CaseError` refuses that case and its sheet as final refusals and the
   run goes on. An orphan `sheet-<name>.yaml` is dropped and named; a case in
   the window that cannot be classified into a coverage stratum is left out of
