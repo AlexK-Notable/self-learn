@@ -443,3 +443,143 @@ def test_a_kept_phase_a_is_not_used_for_a_changed_population(tmp_path, monkeypat
     _seed_parked(home, tmp_path, "lrn-0d000004", "pd")  # a new case in the window
     overseer_run.run(home, no_push=True)
     assert labels == ["phase-a", "phase-b", "phase-a", "phase-b"]
+
+
+# ------------------------------------------------ unparseable stage files
+# 2026-09-27, run c2b9192b: findings.yaml held a plain `text:` value with
+# ": " in it, did not parse, and the whole run was refused with its three
+# decided cases unapplied. A file that does not parse now costs only what
+# it carries. The marker sits on the offending line itself, so the
+# parser's own message (which quotes the source around the error) would
+# carry it: its absence below is not vacuous.
+
+MARKER = "MARKER-7Q"
+UNPARSEABLE_FINDINGS = (
+    "findings:\n"
+    "  - case: case-00000000\n"
+    "    kind: examined\n"
+    f"    text: {MARKER} held: the decision stands\n"
+)
+UNPARSEABLE_CASE = (
+    "kind: resolution\n"
+    f"question: {MARKER} keep it: yes or no\n"
+)
+
+
+def test_a_findings_file_that_does_not_parse_costs_only_the_findings(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    rid_a, parked_a, rid_b, parked_b = _two_parked(home, tmp_path)
+
+    def invoke(spec):
+        stage = spec.cwd
+        if spec.label == "phase-a":
+            _phase_a(stage)
+        else:
+            _stage_two_successors(
+                stage, rid_a, _successor(rid_a, parked_a), rid_b, _successor(rid_b, parked_b),
+            )
+            (stage / "findings.yaml").write_text(UNPARSEABLE_FINDINGS, encoding="utf-8")
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    result = overseer_run.run(home, no_push=True)
+
+    # Both decided sheets applied: the run was not refused.
+    assert result.status == "applied", result
+    assert _status(home, rid_a) != "pending" and _status(home, rid_b) != "pending"
+    assert not overseer_run.has_unfinished_work(home)
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    refused = report.split("## Refused / could not do", 1)[1]
+    line = (
+        "findings.yaml: cannot parse — mapping values are not allowed here "
+        "at line 4, column 25: every finding dropped"
+    )
+    assert line in refused
+    manifest = execution_evidence.read_manifest(home, result.run, at="HEAD")
+    assert line in manifest["runner_notes"]
+    assert MARKER not in report
+    assert MARKER not in str(manifest)
+
+
+def test_a_case_file_that_does_not_parse_costs_only_its_pair(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    rid_a, parked_a, rid_b, parked_b = _two_parked(home, tmp_path)
+
+    def invoke(spec):
+        stage = spec.cwd
+        if spec.label == "phase-a":
+            _phase_a(stage)
+        else:
+            _stage_two_successors(
+                stage, rid_a, _successor(rid_a, parked_a), rid_b, _successor(rid_b, parked_b),
+            )
+            (stage / "case-a.yaml").write_text(UNPARSEABLE_CASE, encoding="utf-8")
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    result = overseer_run.run(home, no_push=True)
+
+    # Positive control: the other pair applied and the run finished.
+    assert _status(home, rid_b) != "pending"
+    assert result.status in {"applied", "partial"}, result
+    assert not overseer_run.has_unfinished_work(home)
+    # The unparseable pair cost itself: lesson untouched, parked case open.
+    assert _status(home, rid_a) == "pending"
+    parked_rows = {row["case"]: row for row in cases.list_cases(home, parked_for="overseer")}
+    assert not parked_rows[parked_a].get("superseded_by")
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    refused = report.split("## Refused / could not do", 1)[1]
+    assert (
+        "case-a.yaml: cannot parse — mapping values are not allowed here "
+        "at line 2, column 28: dropped with sheet-a.yaml"
+    ) in refused
+    assert MARKER not in report
+
+
+def test_a_user_model_delta_that_does_not_parse_costs_only_the_updates(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _enabled(monkeypatch)
+    rid_a, parked_a, rid_b, parked_b = _two_parked(home, tmp_path)
+
+    def invoke(spec):
+        stage = spec.cwd
+        if spec.label == "phase-a":
+            _phase_a(stage)
+        else:
+            _stage_two_successors(
+                stage, rid_a, _successor(rid_a, parked_a), rid_b, _successor(rid_b, parked_b),
+            )
+            (stage / "user-model-delta.yaml").write_text(
+                f"updates:\n  - action: add\n    because: {MARKER} said: so\n", encoding="utf-8",
+            )
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    result = overseer_run.run(home, no_push=True)
+
+    assert result.status == "applied", result
+    assert _status(home, rid_a) != "pending" and _status(home, rid_b) != "pending"
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    refused = report.split("## Refused / could not do", 1)[1]
+    assert "user-model-delta.yaml: cannot parse — mapping values are not allowed here" in refused
+    assert ": no user-model updates this run" in refused
+    assert MARKER not in report
+
+
+@pytest.mark.parametrize("text, problem", [
+    # A duplicate key: the parser's problem quotes both values, and a value
+    # may hold quotes of its own.
+    ('a:\n  text: "said \\"QUOTED-9Z\\" MARKER-7Q"\n  text: MARKER-7Q again\n', "found duplicate key"),
+    ("a: *MARKER-7Q\n", "found undefined alias"),
+    ("a: !MARKER-7Q 1\n", "could not determine a constructor for the tag"),
+])
+def test_a_parse_line_never_carries_the_files_text(tmp_path, text, problem):
+    path = tmp_path / "findings.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(overseer_run._YamlParseError) as caught:
+        overseer_run._yaml_mapping(path)
+    line = str(caught.value)
+    assert line.startswith(f"findings.yaml: cannot parse — {problem} at line ")  # positive control
+    assert "MARKER" not in line and "QUOTED" not in line

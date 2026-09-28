@@ -3033,3 +3033,51 @@ def test_a_findings_file_without_a_findings_list_still_refuses_the_run(tmp_path,
 
     assert (result.status, result.code) == ("refused", overseer_run.EXIT_REFUSED), result
     assert not (home / "overseer" / "coverage.yaml").exists(), "coverage restored, not advanced"
+
+
+def test_a_findings_file_that_does_not_parse_examines_no_case_and_does_not_refuse(tmp_path, monkeypatch):
+    """2026-09-27, run c2b9192b: a plain `text:` value holding ": " left
+    findings.yaml unparseable and refused the whole run. Now it reads as no
+    findings: the run completes, no selected case counts as examined, and
+    coverage advances for none of them."""
+    home = make_home(tmp_path)
+    first = _seed_case(home, tmp_path, "lrn-0d000001", "reject")
+    second = _seed_case(home, tmp_path, "lrn-0d000002", "defer")
+    _enabled(monkeypatch)
+    _silence_notifications(monkeypatch)
+    _fake_cases_phases(monkeypatch, [first, second], raw_findings=(
+        "findings:\n"
+        f"  - case: {first}\n"
+        "    kind: examined\n"
+        "    text: MARKER-7Q held: the decision stands\n"
+    ))
+
+    result = overseer_run.run(home, dry_run=False, no_push=True)
+
+    assert (result.status, result.code) == ("applied", 0), result
+    refused = _refused_section(home)
+    assert (
+        "- findings.yaml: cannot parse — mapping values are not allowed here "
+        "at line 4, column 25: every finding dropped"
+    ) in refused
+    assert f"- case {first}: not examined — no valid examined finding" in refused
+    assert f"- case {second}: not examined — no valid examined finding" in refused
+    assert "MARKER-7Q" not in refused
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    assert "- Cases examined: none (0 of 2)" in report
+    coverage = YAML(typ="safe").load((home / "overseer" / "coverage.yaml").read_text(encoding="utf-8"))
+    assert coverage["examined_count"] == 0
+    assert all(stratum["status"] != "examined" for stratum in coverage["strata"].values())
+    assert _git(home, "status", "--porcelain") == ""
+
+
+def test_both_phase_prompts_ask_for_quoted_or_block_free_text(tmp_path):
+    """2026-09-27, run c2b9192b: the model is told how to write a free-text
+    YAML value so a ": " inside it still parses."""
+    for prompt in (
+        overseer_run._phase_a_prompt(tmp_path, 1, 0),
+        overseer_run._phase_b_prompt(tmp_path, (), ()),
+    ):
+        assert "block scalar (`text: |`" in prompt
+        assert "double-quoted string" in prompt
+        assert 'a bare value that\ncontains ": " does not parse' in prompt
