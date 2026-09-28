@@ -89,6 +89,7 @@ from . import (
     hook_activation,
     intents,
     ledger_ops,
+    model_failures,
     sentinel,
     telemetry,
 )
@@ -8298,7 +8299,36 @@ def host_result_ids(items: Iterable[object]) -> list[str]:
     ]
 
 
-def post_run_recompile(home: Path | str, record_ids: Iterable[str]) -> dict[str, object]:
+#: The move verbs whose record leaves a bucket (2026-09-28, follow-up 1):
+#: the target the lesson resolved to BEFORE the move is recompiled too.
+MOVE_VERBS = frozenset({"rehome", "rescope"})
+
+
+def move_origins(home: Path | str, items: Iterable[object]) -> list[tuple[str, Path]]:
+    """``(record id, bucket)`` for each :data:`MOVE_VERBS` item of a sheet,
+    read BEFORE the sheet is applied (2026-09-28, follow-up 1): after a
+    move the record resolves only to its NEW bucket's target, so the one
+    it leaves is named here for :func:`post_run_recompile`. An id that
+    cannot be found is left out -- its move refuses anyway."""
+    home = Path(home)
+    out: list[tuple[str, Path]] = []
+    for item in items:
+        rid = getattr(item, "id", None)
+        if getattr(item, "verb", None) not in MOVE_VERBS or not rid:
+            continue
+        try:
+            path = find_record_path(home, str(rid))
+        except (LedgerOpsError, OSError):
+            continue
+        out.append((str(rid), path.parent.parent))
+    return out
+
+
+def post_run_recompile(
+    home: Path | str,
+    record_ids: Iterable[str],
+    moved_from: Iterable[tuple[str, Path]] = (),
+) -> dict[str, object]:
     """One narrowed ``recompile`` after a steward or overseer run that
     applied a route, rehome or rescope (2026-09-28: before, a host write
     the run left owed -- a refused or failed host commit, a rehomed routed
@@ -8308,17 +8338,49 @@ def post_run_recompile(home: Path | str, record_ids: Iterable[str]) -> dict[str,
     ``only_records``); every other target is left to an ordinary
     recompile. One pass: a target it skips is reported in the returned
     ``skipped`` list, never retried here. ``no_push`` -- the run's own
-    push publishes it. May raise; each runner catches and journals."""
+    push publishes it. May raise; each runner catches and journals.
+
+    *moved_from* (2026-09-28, follow-up 1): :func:`move_origins` pairs.
+    The bucket a moved record left is compiled too -- the target it
+    resolved to there -- so the lesson's line leaves the old file in the
+    same run. Only pairs whose id is in *record_ids* (the item applied)."""
     ids = sorted(dict.fromkeys(str(rid) for rid in record_ids))
     if not ids:
         return {"records": [], "changed": [], "skipped": [], "warnings": []}
-    result = recompile(home, no_push=True, only_records=ids)
+    origins = [(rid, Path(bucket)) for rid, bucket in moved_from if rid in ids]
+    result = recompile(home, no_push=True, only_records=ids, moved_from=origins)
     return {
         "records": ids,
         "changed": [str(e.target) for e in result.entries if e.changed],
         "skipped": [f"{e.target}: {e.skipped}" for e in result.entries if e.skipped],
         "warnings": list(result.warnings),
     }
+
+
+#: A post-run recompile's skip reason when the host's commit hook refused
+#: the write (sweep 2, R3's wording in :func:`recompile`).
+HOST_COMMIT_REFUSED = "host commit refused: "
+
+
+def host_refusal_causes(skipped: Iterable[str]) -> list[str]:
+    """The distinct causes behind a post-run recompile's skipped targets
+    that a host commit refused (2026-09-28, follow-up 2): ``"<target>:
+    <reason>"``, the reason cut before the undo note and, when it quotes
+    the failed git command, to what git said after ``failed:``; request and
+    message ids stripped (:func:`model_failures.strip_ids`); at most 300
+    characters. A dirty or unsound target is not a refusal and is left out."""
+    causes: list[str] = []
+    for line in skipped:
+        target, sep, rest = str(line).partition(f": {HOST_COMMIT_REFUSED}")
+        if not sep:
+            continue
+        reason = rest.split(" — ")[0]
+        _command, said, tail = reason.partition(" failed: ")
+        reason = model_failures.strip_ids(tail if said else reason)
+        cause = f"{target}: {reason}"[:300]
+        if cause not in causes:
+            causes.append(cause)
+    return causes
 
 
 def recompile(
@@ -8328,6 +8390,7 @@ def recompile(
     user_claude_md: Path | str | None = None,
     adopt: Path | str | None = None,
     only_records: Iterable[str] | None = None,
+    moved_from: Iterable[tuple[str, Path]] = (),
 ) -> RecompileResult:
     """The doc-13 drift repair (H-2: recompile is always safe and repairs
     any two-phase interruption). For every ROUTED record, recompute each
@@ -8498,6 +8561,46 @@ def recompile(
             specs.setdefault((spec.host_path, spec.target), spec)
             spec_owners.setdefault((spec.host_path, spec.target), set()).add(record.id)
 
+    # 2026-09-28 (follow-up 1): a moved record's OLD target -- the one it
+    # resolved to in the bucket it left (`move_origins`) -- joins the
+    # compile even when no record resolves there any more, and survives
+    # the narrowing below. Resolved exactly as above, from the bucket's
+    # own scope; the compile set is that bucket's, which no longer holds
+    # the record, so its line leaves the file.
+    moved_keys: set[tuple[Path | None, Path | None]] = set()
+    for rid, old_bucket in moved_from:
+        old_bucket = Path(old_bucket)
+        try:
+            now_path = find_record_path(home, rid)
+            record = Record.from_path(now_path)
+        except (LedgerOpsError, *ledger_ops.UNREADABLE_RECORD_ERRORS) as exc:
+            result.warnings.append(f"{rid}: moved-from target not resolved ({exc})")
+            continue
+        routing = record.routing or {}
+        destination = routing.get("destination")
+        if destination not in ("skill-md", "claude-md", "new-skill"):
+            continue  # references are append-only; hooks are not a doc target
+        if now_path.parent.parent == old_bucket:
+            continue  # it did not move
+        try:
+            spec = _resolve_target(
+                home,
+                old_bucket,
+                _bucket_scope_literal(home, old_bucket),
+                destination,
+                routing.get("new_skill") if destination == "new-skill" else None,
+                user_claude_md=user_claude_md,
+                check_dirty=False,
+                variant=routing.get("variant"),
+                rules_topic=routing.get("rules_topic"),
+            )
+        except VerbError as exc:
+            result.warnings.append(f"{rid}: moved-from target: {exc}")
+            continue
+        key = (spec.host_path, spec.target)
+        specs.setdefault(key, spec)
+        moved_keys.add(key)
+
     if only_records is not None:
         # Sweep 2, R2 (2026-09-27): the narrow form steward/overseer crash
         # recovery uses to establish ONE recovered item's host result --
@@ -8507,7 +8610,10 @@ def recompile(
         # recompile. The compile SET of a kept target is still the full
         # ledger's (that is what the target must hold).
         wanted = set(only_records)
-        specs = {k: v for k, v in specs.items() if spec_owners.get(k, set()) & wanted}
+        specs = {
+            k: v for k, v in specs.items()
+            if spec_owners.get(k, set()) & wanted or k in moved_keys
+        }
         ref_work = {
             k: v for k, v in ref_work.items() if any(r.id in wanted for r in v[1])
         }
@@ -8759,7 +8865,7 @@ def recompile(
                     # retries) -- and every later target still repairs.
                     assert target is not None  # a managed spec always has one
                     undone = _undo_host_write(spec.host_path, snapshot, host_paths)
-                    reason = f"host commit refused: {exc} — {undone}"
+                    reason = f"{HOST_COMMIT_REFUSED}{exc} — {undone}"
                     result.entries.append(
                         RecompileEntry(target=target, changed=False, skipped=reason)
                     )
@@ -8920,7 +9026,7 @@ def recompile(
                     except gitops.GitOpsError as exc:
                         # Sweep 2, R3: see the managed-target leg above.
                         undone = _undo_host_write(host_repo, ref_snapshot, [probe])
-                        reason = f"host commit refused: {exc} — {undone}"
+                        reason = f"{HOST_COMMIT_REFUSED}{exc} — {undone}"
                         result.entries.append(
                             RecompileEntry(target=probe, changed=False, skipped=reason)
                         )
@@ -8948,7 +9054,7 @@ def recompile(
                         undone = _undo_host_write(
                             host_repo, ref_snapshot, [pointer_surface]
                         )
-                        reason = f"host commit refused: {exc} — {undone}"
+                        reason = f"{HOST_COMMIT_REFUSED}{exc} — {undone}"
                         result.entries.append(
                             RecompileEntry(
                                 target=pointer_surface, changed=False, skipped=reason
@@ -9084,7 +9190,7 @@ def recompile(
                         undone = _undo_host_write(
                             host_repo, hook_snapshot, [script_abs]
                         )
-                        reason = f"host commit refused: {exc} — {undone}"
+                        reason = f"{HOST_COMMIT_REFUSED}{exc} — {undone}"
                         result.entries.append(
                             RecompileEntry(
                                 target=script_abs, changed=False, skipped=reason

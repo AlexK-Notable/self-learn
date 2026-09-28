@@ -762,7 +762,15 @@ is the session's cwd and its only read AND write area: the invocation charter
 (`invocation_sdk/charter.py`) denies a Read, Grep or Glob whose path, cwd-relative
 target, absolute Glob pattern, or `..` segment reaches outside it
 (`Containment.read_roots`; every other surface's reads stay unscoped, the steward's
-transcript reads included). Before each phase the runner writes
+transcript reads included). *2026-09-28 (follow-up 5):* the steward's reads
+have one deny root, `Containment.read_denied` = the cache's kept session
+copies (`<cache>/sessions/`, `session_copies.sessions_dir`): the same step
+of the charter denies a Read, Grep or Glob whose resolved path lies inside
+it (through a symlink too), and a Grep or Glob rooted at an ancestor of it;
+a `..` segment in a steward read is refused as it is for the overseer.
+Its evidence reads under Claude Code's own `projects/` are untouched.
+`containment_for("steward", …)` takes the directory as one new scalar,
+`sessions_dir`. Before each phase the runner writes
 `formats/` into it: `README.md` (the rules the runner and the case writer
 enforce), `closed-sets.yaml` (every closed set, read from the modules that
 enforce them: verbs and their keys, case kinds, triggers, outcomes, confidence
@@ -1395,9 +1403,26 @@ PDT: "fix the rest of 3".)*
   `recompile-failed`) and never raises out of the run. A target it skips is
   in the run's result (`recompile_skipped`, printed by `steward run` and
   `overseer run`) and is not retried in the run; the next run that touches
-  it, or a person's `recompile`, does. Known limit: a rehome or rescope of
-  a routed lesson recompiles its NEW target only; an entry left in its old
-  target waits for an ordinary `recompile`.
+  it, or a person's `recompile`, does. *A moved lesson updates both files
+  (2026-09-28, follow-up 1):* before a sheet is applied, the runner notes
+  the bucket each of its `rehome`/`rescope` items' records lives in
+  (`verbs.move_origins`); the post-run recompile also compiles the target
+  the record resolved to in the bucket it left (its routing block's
+  destination, resolved from that bucket's scope), even when no record
+  resolves there any more, so a line the lesson left in the old file goes
+  in the same run. Only a `skill-md`, `claude-md` or `new-skill` target:
+  a reference is append-only history and a hook script is not a document
+  target. A move a crash separated from its run's recompile is not
+  remembered; its old target waits for a person's `recompile`. *A host
+  that keeps refusing tells the user once (2026-09-28, follow-up 2):* a
+  target the pass skipped because the host's commit was refused (`host
+  commit refused: …`; a dirty or unsound target is not one) notifies the
+  user through the runners' notification path, once per distinct cause —
+  the target and what git said, request and message ids stripped
+  (`verbs.host_refusal_causes`). Each cause told is journaled
+  (`host-refused-told`, `cause`); a cause any earlier row carries is not
+  told again. A route's own refused host phase is covered by the same
+  pass, which retries it after the run.
 - *Overseer phase-A entries (audit finding 9).* An entry of
   `selection.yaml` that is not one string id, carries a key other than
   `id`, names a case outside the week's population or repeats one, and an
@@ -1419,8 +1444,28 @@ PDT: "fix the rest of 3".)*
   boolean), an empty successor sheet, a caseless non-empty sheet. A pair
   is one decision, so it is dropped whole, never item by item. A
   secret-scan hit in a pair's case or sheet drops that pair — nothing of
-  it reaches the ledger; a hit in `report.md`, `findings.yaml`,
-  `user-model-delta.yaml` or any other file still refuses the run.
+  it reaches the ledger. *(2026-09-28, follow-up 3)* A hit in
+  `findings.yaml`, `user-model-delta.yaml` or `report.md` costs that
+  file's contents, not the run: the runner rewrites the staged file,
+  before anything reads it, to what carries nothing (`findings: []`,
+  `updates: []`, or a report of the seven headings with `- none`), so the
+  run has no findings (as for an unparseable file: no selected case
+  counts as examined), no user-model updates, or a committed report of
+  the runner's own lines only; "Refused / could not do" names the file
+  and the matched rule (`<file>: withheld — the secret scan matched
+  <rule>`), never the text, and the journal gets a `file-dropped` row.
+  A hit in any other stage file still refuses the run. *(2026-09-28,
+  follow-up 4)* A run whose decisions were dropped says so: the run
+  record carries `decisions: {staged, dropped}` (the pairs phase B staged,
+  and how many of them the runner dropped by pairing, the secret scan,
+  parsing, the case writer or validation); when any was dropped, the
+  report's "Decided in the user's stead" gets `- decisions: <kept> of
+  <staged> reached the ledger; <dropped> dropped (named under Refused /
+  could not do)`, and `overseer run`'s text line, its notification and
+  its `--json` `status_text` read e.g. `applied (0 of 3; 3 dropped)`. The
+  machine `status` value (`applied`) and its exit code are unchanged; the
+  JSON also carries `decisions_staged` and `decisions_dropped`. The
+  steward has no such case: a dropped steward case is counted `refused`.
 - *Steward reconsider misfit (audit finding 10).* When `verbs.reconsider`
   refuses a reconsider case the case writer accepted (its outcome does not
   apply to the lesson's status, or the lesson is gone), that case is

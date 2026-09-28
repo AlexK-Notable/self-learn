@@ -36,7 +36,8 @@ def _enabled(monkeypatch):
     monkeypatch.setattr(settings, "resolve_setting", resolve)
 
 
-def _fake_two_phase(monkeypatch, *, a_turns=2, b_turns=3, secret=False, b_limit=False):
+def _fake_two_phase(monkeypatch, *, a_turns=2, b_turns=3, secret=False, b_limit=False,
+                    secret_file=None):
     calls = []
 
     def invoke(spec):
@@ -59,6 +60,10 @@ def _fake_two_phase(monkeypatch, *, a_turns=2, b_turns=3, secret=False, b_limit=
             if secret:
                 report_lines.append("token = ghp_abcdefghijklmnopqrstuvwxyz123456")
             (stage / "report.md").write_text("\n".join(report_lines) + "\n", encoding="utf-8")
+            if secret_file is not None:
+                (stage / secret_file).write_text(
+                    "token = ghp_abcdefghijklmnopqrstuvwxyz123456\n", encoding="utf-8"
+                )
             for name, data in (
                 ("sheet.yaml", {"version": 1, "items": []}),
                 ("findings.yaml", {"findings": []}),
@@ -565,9 +570,12 @@ def test_dry_run_preview_reports_sheet_apply_and_refusal_counts(tmp_path, monkey
 
 
 def test_secret_scan_names_files_and_applies_nothing(tmp_path, monkeypatch):
+    # REWRITTEN 2026-09-28 (follow-up 3): a hit in report.md now costs the
+    # report's text, not the run, so the whole-run refusal is exercised by
+    # a hit in a stage file outside the pairs and the three output files.
     home = make_home(tmp_path)
     _enabled(monkeypatch)
-    _fake_two_phase(monkeypatch, secret=True)
+    _fake_two_phase(monkeypatch, secret_file="notes.md")
     applied = []
     notices = []
     notice_lock_states = []
@@ -584,13 +592,13 @@ def test_secret_scan_names_files_and_applies_nothing(tmp_path, monkeypatch):
     assert applied == []
     assert not (home / "overseer" / "latest-report.md").exists()
     report = Path(result.report).read_text(encoding="utf-8")
-    assert "report.md" in report
+    assert "notes.md" in report
     assert "ghp_" not in report
     assert notices == [
-        (home, "routine", "overseer refused: secret-hit report.md", [result.run])
+        (home, "routine", "overseer refused: secret-hit notes.md", [result.run])
     ]
     assert notice_lock_states == [False]
-    assert overseer_run.read_journal(home)[-1]["reason"] == "secret-hit report.md"
+    assert overseer_run.read_journal(home)[-1]["reason"] == "secret-hit notes.md"
 
 
 def test_report_is_written_before_notification(tmp_path, monkeypatch):

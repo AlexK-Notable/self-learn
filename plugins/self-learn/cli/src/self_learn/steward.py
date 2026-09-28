@@ -17,6 +17,7 @@ import uuid
 from dataclasses import dataclass, field, replace as dataclass_replace
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Iterable
 from typing import cast
 
 from ruamel.yaml import YAML, YAMLError
@@ -444,9 +445,20 @@ _DRY_RUN_JOURNAL = False
 _HOST_RESULT_IDS: list[str] | None = None
 
 
+#: 2026-09-28 (follow-up 1): ``(record id, bucket)`` of each rehome or
+#: rescope item, read before its sheet is applied (:func:`verbs.
+#: move_origins`); the post-run recompile compiles the target it left.
+_MOVED_FROM: list[tuple[str, Path]] | None = None
+
+
 def _note_host_results(result: batch.BatchResult) -> None:
     if _HOST_RESULT_IDS is not None:
         _HOST_RESULT_IDS.extend(verbs.host_result_ids(result.items))
+
+
+def _note_move_origins(home: Path, items: Iterable[object]) -> None:
+    if _MOVED_FROM is not None:
+        _MOVED_FROM.extend(verbs.move_origins(home, items))
 
 
 def _journal(home: Path | str, entry: dict) -> None:
@@ -1251,11 +1263,19 @@ def _session_spec(
         home, settings.by_name("steward.turns_per_lesson")
     )
     per_lesson = int(cast(int | str, per_lesson_value))
+    # A local import: `serve` imports this module. The read-only resolver,
+    # not `session_copies.sessions_dir` (whose `worker.cache_dir` creates
+    # the cache), because `doctor`'s containment row builds this spec and
+    # doctor writes nothing (`Doc-0`); both name the same directory.
+    from .serve import cache_dir_readonly
+
     containment = invocation.containment_for(
         "steward",
         allowed_tools=_ALLOWED_TOOLS,
         disallowed_tools=_DISALLOWED_TOOLS,
         stage_dir=run_dir,
+        # 2026-09-28 (follow-up 5): never the kept session copies.
+        sessions_dir=cache_dir_readonly(home) / "sessions",
     )
     return invocation.SessionSpec(
         surface="steward",
@@ -3209,6 +3229,7 @@ def _apply_packet(
                 checkpoint = lambda partial, name=str(recipe["sheet_name"]): batch.write_receipt(
                     home, partial, name, no_push=True, prefix=True
                 )
+                _note_move_origins(home, items)
                 try:
                     result = batch.run(home, items, no_push=True, actor="steward",
                         continuation=continuation, checkpoint=checkpoint)
@@ -3380,24 +3401,32 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
     publish = not dry_run and not worker.no_push_requested()
     head_before = verbs.ledger_head(home) if publish else None
     result: RunResult | None = None
-    global _DRY_RUN_JOURNAL, _HOST_RESULT_IDS
+    global _DRY_RUN_JOURNAL, _HOST_RESULT_IDS, _MOVED_FROM
     marked_before = _DRY_RUN_JOURNAL
     host_before = _HOST_RESULT_IDS
+    moved_before = _MOVED_FROM
     _DRY_RUN_JOURNAL = dry_run
     _HOST_RESULT_IDS = []
+    _MOVED_FROM = []
     try:
         result = _run(home, dry_run=dry_run)
         if not dry_run and _HOST_RESULT_IDS:
-            result.recompile_skipped = _post_run_recompile(home, result.run_id, _HOST_RESULT_IDS)
+            result.recompile_skipped = _post_run_recompile(
+                home, result.run_id, _HOST_RESULT_IDS, _MOVED_FROM
+            )
         return result
     finally:
         _DRY_RUN_JOURNAL = marked_before
         _HOST_RESULT_IDS = host_before
+        _MOVED_FROM = moved_before
         if publish:
             _publish(home, head_before, result.run_id if result is not None else None)
 
 
-def _post_run_recompile(home: Path, run_id: str | None, record_ids: list[str]) -> list[str]:
+def _post_run_recompile(
+    home: Path, run_id: str | None, record_ids: list[str],
+    moved_from: list[tuple[str, Path]] | None = None,
+) -> list[str]:
     """2026-09-28: after a run that applied a route, rehome or rescope, one
     recompile of those records' own targets (:func:`verbs.post_run_recompile`)
     -- after `_run` has let go of every lock, before the run's push. It is
@@ -3406,14 +3435,43 @@ def _post_run_recompile(home: Path, run_id: str | None, record_ids: list[str]) -
     next run that touches it, or a person's `self-learn recompile`, does)."""
     ident = {"run_id": run_id} if run_id else {}
     try:
-        outcome = verbs.post_run_recompile(home, record_ids)
+        outcome = verbs.post_run_recompile(home, record_ids, moved_from or ())
     except Exception as exc:  # noqa: BLE001 -- never mask the run's own outcome
         _journal(home, {"ts": chrono.now_iso(), **ident, "status": "recompile-failed",
             "records": sorted(set(record_ids)), "error": _failure_detail(_short_cause(exc))})
         return []
     skipped = [str(line) for line in cast(list, outcome["skipped"])]
     _journal(home, {"ts": chrono.now_iso(), **ident, "status": "recompile", **outcome})
+    _tell_host_refusals(home, run_id, skipped)
     return skipped
+
+
+#: The journal status of a host refusal the user was told about.
+HOST_REFUSED_TOLD = "host-refused-told"
+
+
+def _tell_host_refusals(home: Path, run_id: str | None, skipped: list[str]) -> None:
+    """2026-09-28 (follow-up 2): a host whose commit hook keeps refusing the
+    post-run recompile's write tells the user -- once per distinct cause
+    (:func:`verbs.host_refusal_causes`), like an environment hold. Each
+    told cause is journaled; a cause already told is not told again."""
+    told = model_failures.told_causes(journal_path(home), HOST_REFUSED_TOLD)
+    ident = {"run_id": run_id} if run_id else {}
+    for cause in verbs.host_refusal_causes(skipped):
+        if cause in told:
+            continue
+        _journal(home, {"ts": chrono.now_iso(), **ident, "status": HOST_REFUSED_TOLD,
+            "cause": cause})
+        summary = (
+            f"self-learn steward: a host refused self-learn's commit — {cause}. "
+            "The lesson's line waits there; fix what refuses it, then run "
+            "`self-learn recompile`."
+        )
+        try:
+            overseer_notify.send(home, "routine", summary, [run_id] if run_id else [])
+        except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
+            _journal(home, {"ts": chrono.now_iso(), **ident,
+                "status": "notify-failed", "error": _short_cause(exc)})
 
 
 def _publish(home: Path, head_before: str | None, run_id: str | None = None) -> None:

@@ -147,7 +147,7 @@ def test_a_recompile_that_raises_never_escapes_the_run(tmp_path, monkeypatch):
     rid = "lrn-f0000003"
     _env, home, _skill_md = _route_run(tmp_path, monkeypatch, rid)
 
-    def boom(home_, record_ids):
+    def boom(home_, record_ids, moved_from=()):
         raise RuntimeError("simulated recompile crash")
 
     monkeypatch.setattr(verbs, "post_run_recompile", boom)
@@ -170,7 +170,7 @@ def test_a_run_that_routed_nothing_runs_no_recompile(tmp_path, monkeypatch):
         _writer(lambda ids: [(rid, [rid], [{"id": rid, "verb": "reject"}], "reject", "reject")]),
     )
     calls = []
-    monkeypatch.setattr(verbs, "post_run_recompile", lambda h, ids: calls.append(ids))
+    monkeypatch.setattr(verbs, "post_run_recompile", lambda h, ids, moved=(): calls.append(ids))
 
     result = steward.run(home)
 

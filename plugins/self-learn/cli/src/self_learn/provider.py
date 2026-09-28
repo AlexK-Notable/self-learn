@@ -466,6 +466,7 @@ DOCTOR_ROWS = (
     "orphans",
     "serve",
     "ui",
+    "sessions",
 )
 VERDICTS = ("PASS", "WARN", "FAIL", "SKIP", "INFO")
 
@@ -1413,7 +1414,49 @@ def preflight(home: Path | str) -> list[Row]:
     # ui (M-N) — self-learn-ui.service's linked/enabled state
     rows.append(_ui_row())
 
+    # sessions (2026-09-28, follow-up 6) — the kept transcript copies
+    rows.append(_sessions_row(home))
+
     return rows
+
+
+def _sessions_row(home: Path | str) -> Row:
+    """2026-09-28 (follow-up 6): how big the kept model-session copies
+    (`session_copies`, `<cache>/sessions/`) are -- their file count and
+    total size. INFO only, never FAIL: the copies are never pruned, so this
+    row is how a person sees them grow. Resolved without creating the
+    cache (`serve.cache_dir_readonly`, `Doc-0`'s writes-nothing rule); a
+    directory it cannot walk is said, not failed."""
+    from . import serve as serve_mod
+
+    root = serve_mod.cache_dir_readonly(home) / "sessions"
+    if not root.is_dir():
+        return Row(name="sessions", verdict="INFO", detail=f"none kept ({root})")
+    count = size = 0
+    try:
+        for path in root.rglob("*"):
+            try:
+                if path.is_file() and not path.is_symlink():
+                    count += 1
+                    size += path.stat().st_size
+            except OSError:
+                continue
+    except OSError as exc:
+        return Row(name="sessions", verdict="INFO",
+                   detail=f"could not walk {root}: {type(exc).__name__}")
+    return Row(
+        name="sessions", verdict="INFO",
+        detail=f"{count} file(s), {_human_size(size)} kept in {root}",
+    )
+
+
+def _human_size(n: int) -> str:
+    value = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024 or unit == "GiB":
+            return f"{int(value)} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{n} B"
 
 
 def _rollout_rows(resolutions: dict[str, ProviderResolution], home: Path | str) -> list[Row]:

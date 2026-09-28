@@ -184,7 +184,8 @@ def _inside(target: Path, roots: tuple[Path, ...]) -> bool:
 
 
 def _read_decision(
-    tool_name: str, tool_input: dict[str, Any], roots: tuple[Path, ...], cwd: Path
+    tool_name: str, tool_input: dict[str, Any], roots: tuple[Path, ...], cwd: Path,
+    denied: tuple[Path, ...] = (),
 ) -> str | None:
     """2026-09-28: why a read-family call reaches outside *roots*, or
     ``None`` when it stays inside. Every path the call names is judged: the
@@ -194,7 +195,15 @@ def _read_decision(
     refused outright: a pattern is matched after this check, so a relative
     climb cannot be judged by resolving it here. The requested path gets
     the full symlink-following `.resolve()`, as a write target does
-    (`P-b`); the roots were resolved once, at build time."""
+    (`P-b`); the roots were resolved once, at build time.
+
+    *denied* (2026-09-28, follow-up 5): directories no read may reach,
+    whatever *roots* allow; an empty *roots* then means "anywhere else".
+    A Grep rooted at an ANCESTOR of a denied directory is refused too, since
+    it would read the files inside it. A Glob rooted there is allowed: it
+    only lists names, the steward's real runs start Globs at the home and
+    cache folders (9 of 550 read-family calls, measured 2026-09-28), and a
+    Read of anything it lists inside the denied directory is still refused."""
     raw = _extract_target_path(tool_input)
     names = [raw] if raw is not None else []
     for key in ("pattern", "glob"):
@@ -216,7 +225,12 @@ def _read_decision(
         candidates.append(Path(prefix or "/"))
     for candidate in candidates:
         target = candidate.resolve()
-        if not _inside(target, roots):
+        for root in denied:
+            if _inside(target, (root,)) or (
+                tool_name == "Grep" and _inside(root, (target,))
+            ):
+                return f"{tool_name} may not read {target}: {root} is not readable here"
+        if roots and not _inside(target, roots):
             return f"{tool_name} read scope does not include {target}"
     return None
 
@@ -236,9 +250,11 @@ def build_can_use_tool(containment: Containment, *, cwd: Path | str | None = Non
          fires first).
       2. the enforcement hatch (`C-10`) is open -> ALLOW.
       3. `tool_name` is in the write family -> a path decision (`C-5`).
-      3a. (2026-09-28) the containment names `read_roots` and `tool_name`
-         is in the read family -> DENY when any path it names falls
-         outside every root; otherwise fall through to step 4.
+      3a. (2026-09-28) the containment names `read_roots` or
+         `read_denied` and `tool_name` is in the read family -> DENY when
+         any path it names falls outside every root or inside a denied
+         directory (a search rooted above one, too); otherwise fall
+         through to step 4.
       4. `tool_name` is in the containment's `allowed_tools` -> ALLOW
          (unscoped -- `C-2`: no CLI surface scopes reads by path).
       5. -> DENY, always, with a reason naming the tool.
@@ -254,6 +270,7 @@ def build_can_use_tool(containment: Containment, *, cwd: Path | str | None = Non
     # path are judged against *cwd* (the session's own), else the first
     # root -- the overseer's cwd IS its one root.
     read_roots = tuple(Path(root).resolve() for root in containment.read_roots)
+    read_denied = tuple(Path(root).resolve() for root in containment.read_denied)
     read_cwd = (
         Path(cwd).resolve() if cwd is not None
         else (read_roots[0] if read_roots else Path.cwd())
@@ -302,8 +319,8 @@ def build_can_use_tool(containment: Containment, *, cwd: Path | str | None = Non
                 )
             )
 
-        if read_roots and tool_name in R:
-            problem = _read_decision(tool_name, tool_input, read_roots, read_cwd)
+        if (read_roots or read_denied) and tool_name in R:
+            problem = _read_decision(tool_name, tool_input, read_roots, read_cwd, read_denied)
             if problem is not None:
                 return PermissionResultDeny(
                     message=f"self-learn invocation charter: {problem}"

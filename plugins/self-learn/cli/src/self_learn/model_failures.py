@@ -32,6 +32,8 @@ __all__ = [
     "failure_fields",
     "hold_cause",
     "last_hold_cause",
+    "strip_ids",
+    "told_causes",
 ]
 
 #: How long a runner waits before its one retry of a transient failure.
@@ -74,6 +76,35 @@ def failure_fields(outcome: Any) -> dict[str, str]:
 
 
 _IDS = re.compile(r"\b(?:request|message) id:?\s*\S+", re.I)
+
+
+def strip_ids(text: str) -> str:
+    """*text* with request and message ids removed and whitespace folded:
+    the same cause reads the same on the next attempt."""
+    return " ".join(_IDS.sub("", text).split())
+
+
+def told_causes(journal: Path, status: str, key: str = "cause") -> set[str]:
+    """Every *key* value of a runner's JSONL journal rows whose status is
+    *status* (2026-09-28, follow-up 2): what the user has already been told,
+    so each distinct cause is told once."""
+    try:
+        lines = journal.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return set()
+    told: set[str] = set()
+    for line in lines:
+        if status not in line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("status") == status:
+            value = row.get(key)
+            if isinstance(value, str):
+                told.add(value)
+    return told
 
 
 def hold_cause(outcome: Any) -> str:
