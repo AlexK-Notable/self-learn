@@ -78,6 +78,9 @@ class RunResult:
     #: keep a permanently failing close-out from becoming a silent loop.
     close_out_error: str | None = None
     coverage: dict[str, int] = field(default_factory=dict)
+    #: 2026-09-28: the targets the post-run recompile skipped
+    #: (``"<target>: <reason>"``), one pass, never retried in the run.
+    recompile_skipped: list[str] = field(default_factory=list)
     #: 2026-09-27 (fail-state audit finding 4): the cause when this run was
     #: held because the model or the installed Claude Code could not run a
     #: call at all (`environment`); that attempt was not counted.
@@ -433,6 +436,17 @@ def journal_path(home: Path | str) -> Path:
 #: real run behind it. A plain module flag, not a ContextVar: the model
 #: log callback may fire from another thread.
 _DRY_RUN_JOURNAL = False
+
+#: 2026-09-28: the ids of the route/rehome/rescope items this run applied
+#: or left `unresolved-host` (:func:`verbs.host_result_ids`), gathered where
+#: each sheet's result is known; `None` outside a run. :func:`run` hands
+#: them to one narrowed recompile after `_run` returns.
+_HOST_RESULT_IDS: list[str] | None = None
+
+
+def _note_host_results(result: batch.BatchResult) -> None:
+    if _HOST_RESULT_IDS is not None:
+        _HOST_RESULT_IDS.extend(verbs.host_result_ids(result.items))
 
 
 def _journal(home: Path | str, entry: dict) -> None:
@@ -3172,6 +3186,7 @@ def _apply_packet(
                     receipt_ok = False
                     phase = "unfinished"
                     halt_code = result.process_code or 8
+                _note_host_results(result)
         failed = [item for item in result.items if item.state in _FAILED_ITEM_STATES]
         refused += len(failed)
         successful = {item.id for item in result.items if item.state in _SUCCESS_RECEIPT_STATES}
@@ -3324,16 +3339,40 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
     publish = not dry_run and not worker.no_push_requested()
     head_before = verbs.ledger_head(home) if publish else None
     result: RunResult | None = None
-    global _DRY_RUN_JOURNAL
+    global _DRY_RUN_JOURNAL, _HOST_RESULT_IDS
     marked_before = _DRY_RUN_JOURNAL
+    host_before = _HOST_RESULT_IDS
     _DRY_RUN_JOURNAL = dry_run
+    _HOST_RESULT_IDS = []
     try:
         result = _run(home, dry_run=dry_run)
+        if not dry_run and _HOST_RESULT_IDS:
+            result.recompile_skipped = _post_run_recompile(home, result.run_id, _HOST_RESULT_IDS)
         return result
     finally:
         _DRY_RUN_JOURNAL = marked_before
+        _HOST_RESULT_IDS = host_before
         if publish:
             _publish(home, head_before, result.run_id if result is not None else None)
+
+
+def _post_run_recompile(home: Path, run_id: str | None, record_ids: list[str]) -> list[str]:
+    """2026-09-28: after a run that applied a route, rehome or rescope, one
+    recompile of those records' own targets (:func:`verbs.post_run_recompile`)
+    -- after `_run` has let go of every lock, before the run's push. It is
+    journaled and never raises out of the run; a target it skips is
+    returned for the run's result and journaled, not retried here (the
+    next run that touches it, or a person's `self-learn recompile`, does)."""
+    ident = {"run_id": run_id} if run_id else {}
+    try:
+        outcome = verbs.post_run_recompile(home, record_ids)
+    except Exception as exc:  # noqa: BLE001 -- never mask the run's own outcome
+        _journal(home, {"ts": chrono.now_iso(), **ident, "status": "recompile-failed",
+            "records": sorted(set(record_ids)), "error": _failure_detail(_short_cause(exc))})
+        return []
+    skipped = [str(line) for line in cast(list, outcome["skipped"])]
+    _journal(home, {"ts": chrono.now_iso(), **ident, "status": "recompile", **outcome})
+    return skipped
 
 
 def _publish(home: Path, head_before: str | None, run_id: str | None = None) -> None:

@@ -1384,6 +1384,20 @@ PDT: "fix the rest of 3".)*
   by its type only. This is the text the repair turn is shown and, when no
   pair passes, the text committed as the packet's `error` and
   `failure_detail`.
+- *A runner's owed host writes are recompiled without a person.* After a
+  steward or overseer run (not a dry run) whose sheets applied a `route`,
+  `rehome` or `rescope` item, or left one `unresolved-host`, the runner's
+  `run` wrapper — after `_run` has released every lock, before the run's
+  push — runs one `verbs.post_run_recompile`: `recompile(only_records=
+  <those ids>)`, so only those records' own targets are compiled, and only
+  a target whose bytes change is written and committed. It is journaled
+  (`recompile` with `records`, `changed`, `skipped`, `warnings`; or
+  `recompile-failed`) and never raises out of the run. A target it skips is
+  in the run's result (`recompile_skipped`, printed by `steward run` and
+  `overseer run`) and is not retried in the run; the next run that touches
+  it, or a person's `recompile`, does. Known limit: a rehome or rescope of
+  a routed lesson recompiles its NEW target only; an entry left in its old
+  target waits for an ordinary `recompile`.
 
 *(Added 2026-09-26, agenda item 24.)* No message a runner shows its model
 or commits into its run record carries the text a secret scan matched: each

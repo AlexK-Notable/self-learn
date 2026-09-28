@@ -808,7 +808,10 @@ def test_failed_boundary_push_keeps_applied_status_and_records_failure(tmp_path,
     text = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
     assert (result.code, result.status) == (3, "applied")
     assert "push: failed (3)" in text
-    assert overseer_run.read_journal(home)[-1]["push"] == "push: failed (3)"
+    # 2026-09-28: the post-run recompile's row (the route applied) now
+    # follows the run's own row, so the run's row is found by its key.
+    rows = [row for row in overseer_run.read_journal(home) if "push" in row]
+    assert rows and rows[-1]["push"] == "push: failed (3)"
 
 
 def test_a_long_model_report_is_kept_whole_and_the_runner_says_how_long(tmp_path):

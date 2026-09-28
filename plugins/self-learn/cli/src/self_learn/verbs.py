@@ -8279,6 +8279,48 @@ def recompile_refusals(result: RecompileResult, record_id: str) -> list[str]:
     return refused
 
 
+#: The sheet verbs whose host result a runner's own run can leave stale
+#: (2026-09-28): a route's host write, and the target of a rehome or
+#: rescope of a routed record, which `_move` never recompiles.
+HOST_RESULT_VERBS = frozenset({"route", "rehome", "rescope"})
+
+
+def host_result_ids(items: Iterable[object]) -> list[str]:
+    """The record ids of *items* (sheet item results) whose host result a
+    post-run recompile should establish: a :data:`HOST_RESULT_VERBS` item
+    that applied, or that left its host result owed (``unresolved-host``)."""
+    return [
+        str(getattr(item, "id"))
+        for item in items
+        if getattr(item, "verb", None) in HOST_RESULT_VERBS
+        and getattr(item, "state", None) in ("applied", "unresolved-host")
+        and getattr(item, "id", None)
+    ]
+
+
+def post_run_recompile(home: Path | str, record_ids: Iterable[str]) -> dict[str, object]:
+    """One narrowed ``recompile`` after a steward or overseer run that
+    applied a route, rehome or rescope (2026-09-28: before, a host write
+    the run left owed -- a refused or failed host commit, a rehomed routed
+    lesson's new target -- waited for a person to run ``self-learn
+    recompile``). Only the targets *record_ids* resolve to are compiled,
+    and only a target whose bytes change is committed (sweep 2 R2's
+    ``only_records``); every other target is left to an ordinary
+    recompile. One pass: a target it skips is reported in the returned
+    ``skipped`` list, never retried here. ``no_push`` -- the run's own
+    push publishes it. May raise; each runner catches and journals."""
+    ids = sorted(dict.fromkeys(str(rid) for rid in record_ids))
+    if not ids:
+        return {"records": [], "changed": [], "skipped": [], "warnings": []}
+    result = recompile(home, no_push=True, only_records=ids)
+    return {
+        "records": ids,
+        "changed": [str(e.target) for e in result.entries if e.changed],
+        "skipped": [f"{e.target}: {e.skipped}" for e in result.entries if e.skipped],
+        "warnings": list(result.warnings),
+    }
+
+
 def recompile(
     home: Path | str,
     *,

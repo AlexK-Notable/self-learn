@@ -1838,6 +1838,9 @@ def _cmd_steward(args: argparse.Namespace) -> int:
             # human running this by hand has to be able to SEE that it is
             # the thing that keeps failing.
             print(f"steward run: close-out FAILED — {result.close_out_error}")
+        for line in result.recompile_skipped:
+            # 2026-09-28: the post-run recompile's skips, one pass.
+            print(f"steward run: recompile skipped {line}")
     if result.status == "stopped":
         _print_unattended_stop("steward", result.stopped)
         return gitops.EXIT_GIT_FAILED

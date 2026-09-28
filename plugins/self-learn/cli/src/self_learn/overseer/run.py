@@ -22,7 +22,7 @@ import re
 import shutil
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
@@ -198,10 +198,14 @@ class RunResult:
     applied: int = 0
     refused: int = 0
     report: str | None = None
+    #: 2026-09-28: the targets the post-run recompile skipped
+    #: (``"<target>: <reason>"``), one pass, never retried in the run.
+    recompile_skipped: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
         data["examined"] = list(self.examined)
+        data["recompile_skipped"] = list(self.recompile_skipped)
         return data
 
 
@@ -248,6 +252,17 @@ def journal_path(home: Path | str) -> Path:
 #: every journal row written meanwhile is marked `"dry_run": true`, which
 #: serve's attempt cooldown skips (the steward's `_DRY_RUN_JOURNAL` twin).
 _DRY_RUN_JOURNAL = False
+
+#: 2026-09-28: the ids of the route/rehome/rescope items this run applied
+#: or left `unresolved-host` (:func:`verbs.host_result_ids`); `None`
+#: outside a run. :func:`run` hands them to one narrowed recompile after
+#: `_run` returns -- past the commit lock phase B holds.
+_HOST_RESULT_IDS: list[str] | None = None
+
+
+def _note_host_results(result: batch.BatchResult) -> None:
+    if _HOST_RESULT_IDS is not None:
+        _HOST_RESULT_IDS.extend(verbs.host_result_ids(result.items))
 
 
 def _journal(home: Path, entry: dict[str, Any]) -> None:
@@ -3226,6 +3241,7 @@ def _execute_manifest(
             manifest["remaining"] = order[position:]
             break
         codes.append(result.process_code)
+        _note_host_results(result)
         recipe["dispositions"] = [
             {
                 "n": item.n,
@@ -3599,16 +3615,41 @@ def run(
     publish = not dry_run and not boundary_no_push
     head_before = verbs.ledger_head(home) if publish else None
     result: RunResult | None = None
-    global _DRY_RUN_JOURNAL
+    global _DRY_RUN_JOURNAL, _HOST_RESULT_IDS
     marked_before = _DRY_RUN_JOURNAL
+    host_before = _HOST_RESULT_IDS
     _DRY_RUN_JOURNAL = dry_run
+    _HOST_RESULT_IDS = []
     try:
         result = _run(home, dry_run=dry_run, no_push=boundary_no_push, manual=manual)
+        if not dry_run and _HOST_RESULT_IDS:
+            skipped = _post_run_recompile(home, result.run, _HOST_RESULT_IDS)
+            if skipped:
+                result = replace(result, recompile_skipped=tuple(skipped))
         return result
     finally:
         _DRY_RUN_JOURNAL = marked_before
+        _HOST_RESULT_IDS = host_before
         if publish:
             _publish(home, head_before, result.run if result is not None else "?")
+
+
+def _post_run_recompile(home: Path, run_id: str, record_ids: list[str]) -> list[str]:
+    """2026-09-28: after a run that applied a route, rehome or rescope, one
+    recompile of those records' own targets (:func:`verbs.post_run_recompile`)
+    -- after `_run` has let go of the commit lock, before the run's push.
+    It is journaled and never raises out of the run; a target it skips is
+    returned for the run's result and journaled, not retried here."""
+    try:
+        outcome = verbs.post_run_recompile(home, record_ids)
+    except Exception as exc:  # noqa: BLE001 -- never mask the run's own outcome
+        cause = " ".join(str(exc).split()) or type(exc).__name__
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "recompile-failed",
+            "records": sorted(set(record_ids)), "error": cause[:300]})
+        return []
+    skipped = [str(line) for line in cast(list, outcome["skipped"])]
+    _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "recompile", **outcome})
+    return skipped
 
 
 def _publish(home: Path, head_before: str | None, run_id: str) -> None:
