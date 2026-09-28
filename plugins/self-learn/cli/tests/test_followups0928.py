@@ -6,17 +6,20 @@ the orchestrator decided them under that delegation. One test group per
 follow-up:
 
 1. A moved lesson updates both files.
+2. A host that keeps refusing tells the user once.
 
 Sandbox ledger and host repos under pytest's tmpdir; fake model sessions.
 """
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from self_learn import ledger_ops, steward, verbs
 from support import commit_all, git, make_env
-from test_batch0928_post_run_recompile import _journal_rows
+from test_batch0928_post_run_recompile import _journal_rows, _refusing_hook
 from test_steward import _enable_steward
 from test_steward_refusals import _dispositions, _notifications, _seed, _writer
 
@@ -128,3 +131,112 @@ def test_the_overseer_also_clears_the_file_a_rehomed_lesson_left(tmp_path, monke
     assert (home / "skills/t/pending" / f"{rid}.md").is_file()
     assert rid not in s_md.read_text()
     assert result.recompile_skipped == ()
+
+
+# ------------------------------------------- 2. a refusing host tells once
+
+
+def _told(sent):
+    return [summary for _cue, summary, _ids in sent if "refused self-learn's commit" in summary]
+
+
+def test_a_host_that_keeps_refusing_tells_the_user_once_per_cause(tmp_path, monkeypatch):
+    env = make_env(tmp_path)
+    home = env.ledger
+    _enable_steward(home)
+    sent = _notifications(monkeypatch)
+    _refusing_hook(tmp_path, env.host, times=None)
+    skill_md = env.skill_dir / "SKILL.md"
+
+    def one_run(rid):
+        _seed(home, rid)
+        monkeypatch.setattr(
+            steward.invocation, "write_session",
+            _writer(lambda ids: [
+                (rid, [rid], [{"id": rid, "verb": "route", "dest": "skill-md"}], "route", "route"),
+            ]),
+        )
+        return steward.run(home)
+
+    first = one_run("lrn-f2000001")
+    assert len(first.recompile_skipped) == 1  # positive control: the pass was refused
+    (told,) = _told(sent)
+    assert str(skill_md) in told and "test-hook: REFUSED the staged changes" in told
+
+    second = one_run("lrn-f2000002")
+    assert len(second.recompile_skipped) == 1  # refused again, same cause
+    assert len(_told(sent)) == 1  # not told again
+
+    hook = tmp_path / "refusing-hooks" / "pre-commit"
+    hook.write_text(hook.read_text().replace("REFUSED the staged changes", "REFUSED: signing key missing"))
+    third = one_run("lrn-f2000003")
+    assert len(third.recompile_skipped) == 1
+    assert len(_told(sent)) == 2 and "signing key missing" in _told(sent)[1]
+    rows = _journal_rows(home, steward.HOST_REFUSED_TOLD)
+    assert [row["run_id"] for row in rows] == [first.run_id, third.run_id]
+
+
+def test_host_refusal_causes_keep_only_hook_refusals_and_strip_ids():
+    skipped = [
+        "/h/SKILL.md: host commit refused: git commit -m x -- /h/SKILL.md failed: "
+        "hook said no; request id: req_abc123 — put back",
+        "/h/SKILL.md: host commit refused: git commit -m y -- /h/SKILL.md failed: "
+        "hook said no; request id: req_zzz999 — put back",
+        "/h/CLAUDE.md: dirty",
+    ]
+    assert verbs.host_refusal_causes(skipped) == ["/h/SKILL.md: hook said no;"]
+
+
+def test_the_overseer_tells_a_host_refusal_once_too(tmp_path, monkeypatch):
+    from self_learn import cases
+    from self_learn.overseer import run as overseer_run
+    from test_failstate_overseer import _ok, _phase_a, _phase_b_common
+    from test_overseer_run import _dump, _enabled
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    _enabled(monkeypatch)
+    sent = _notifications(monkeypatch)
+    rid = _seed(home, "lrn-f2000004")
+    parked_path = tmp_path / "parked.yaml"
+    _dump(parked_path, {
+        "kind": "parked", "trigger": "nightly", "outcome": "parked",
+        "records": [rid], "scope": "skill:s", "question": "route this?",
+        "parked_for": "overseer", "parked_reason": "authority-unclear",
+        "evidence": [{"ref": f"record:{rid}", "quote": "status: pending"}],
+        "decision": {"verb": "parked", "because": "delegated", "confidence": "provisional"},
+    })
+    parked = cases.record(home, parked_path, actor="steward")
+
+    def invoke(spec):
+        stage = spec.cwd
+        if spec.label == "phase-a":
+            _phase_a(stage)
+        else:
+            _phase_b_common(stage)
+            _dump(stage / "case-r.yaml", {
+                "kind": "resolution", "trigger": "weekly", "outcome": "route",
+                "records": [rid], "scope": "skill:s", "question": "route?",
+                "supersedes": parked,
+                "evidence": [{"ref": f"record:{rid}", "quote": "status: pending"}],
+                "decision": {"verb": "route", "because": "it holds", "confidence": "settled"},
+            })
+            _dump(stage / "sheet-r.yaml", {
+                "version": 1, "items": [{"id": rid, "verb": "route", "dest": "skill-md"}],
+            })
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    _refusing_hook(tmp_path, env.host, times=None)
+
+    result = overseer_run.run(home, no_push=True)
+
+    assert len(result.recompile_skipped) == 1  # positive control
+    (told,) = _told(sent)
+    assert "test-hook: REFUSED the staged changes" in told
+    rows = [
+        json.loads(line)
+        for line in overseer_run.journal_path(home).read_text().splitlines()
+        if overseer_run.HOST_REFUSED_TOLD in line
+    ]
+    assert [row["run"] for row in rows] == [result.run]

@@ -3805,7 +3805,36 @@ def _post_run_recompile(
         return []
     skipped = [str(line) for line in cast(list, outcome["skipped"])]
     _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "recompile", **outcome})
+    _tell_host_refusals(home, run_id, skipped)
     return skipped
+
+
+#: The journal status of a host refusal the user was told about.
+HOST_REFUSED_TOLD = "host-refused-told"
+
+
+def _tell_host_refusals(home: Path, run_id: str, skipped: list[str]) -> None:
+    """2026-09-28 (follow-up 2): a host whose commit hook keeps refusing the
+    post-run recompile's write tells the user -- once per distinct cause
+    (:func:`verbs.host_refusal_causes`), like an environment hold. Each
+    told cause is journaled; a cause already told is not told again."""
+    told = model_failures.told_causes(journal_path(home), HOST_REFUSED_TOLD)
+    for cause in verbs.host_refusal_causes(skipped):
+        if cause in told:
+            continue
+        _journal(home, {"at": chrono.now_iso(), "run": run_id,
+            "status": HOST_REFUSED_TOLD, "cause": cause})
+        try:
+            notify.send(
+                home, "routine",
+                f"self-learn overseer: a host refused self-learn's commit — {cause}. "
+                "The lesson's line waits there; fix what refuses it, then run "
+                "`self-learn recompile`.",
+                [run_id],
+            )
+        except Exception as exc:  # noqa: BLE001 -- a notification never fails a run
+            _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                "status": "notify-failed", "reason": str(exc)[:300]})
 
 
 def _publish(home: Path, head_before: str | None, run_id: str) -> None:

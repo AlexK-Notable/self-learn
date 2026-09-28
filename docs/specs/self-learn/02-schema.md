@@ -1405,7 +1405,16 @@ PDT: "fix the rest of 3".)*
   in the same run. Only a `skill-md`, `claude-md` or `new-skill` target:
   a reference is append-only history and a hook script is not a document
   target. A move a crash separated from its run's recompile is not
-  remembered; its old target waits for a person's `recompile`.
+  remembered; its old target waits for a person's `recompile`. *A host
+  that keeps refusing tells the user once (2026-09-28, follow-up 2):* a
+  target the pass skipped because the host's commit was refused (`host
+  commit refused: …`; a dirty or unsound target is not one) notifies the
+  user through the runners' notification path, once per distinct cause —
+  the target and what git said, request and message ids stripped
+  (`verbs.host_refusal_causes`). Each cause told is journaled
+  (`host-refused-told`, `cause`); a cause any earlier row carries is not
+  told again. A route's own refused host phase is covered by the same
+  pass, which retries it after the run.
 - *Overseer phase-A entries (audit finding 9).* An entry of
   `selection.yaml` that is not one string id, carries a key other than
   `id`, names a case outside the week's population or repeats one, and an

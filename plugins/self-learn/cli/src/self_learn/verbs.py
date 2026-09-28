@@ -89,6 +89,7 @@ from . import (
     hook_activation,
     intents,
     ledger_ops,
+    model_failures,
     sentinel,
     telemetry,
 )
@@ -8356,6 +8357,32 @@ def post_run_recompile(
     }
 
 
+#: A post-run recompile's skip reason when the host's commit hook refused
+#: the write (sweep 2, R3's wording in :func:`recompile`).
+HOST_COMMIT_REFUSED = "host commit refused: "
+
+
+def host_refusal_causes(skipped: Iterable[str]) -> list[str]:
+    """The distinct causes behind a post-run recompile's skipped targets
+    that a host commit refused (2026-09-28, follow-up 2): ``"<target>:
+    <reason>"``, the reason cut before the undo note and, when it quotes
+    the failed git command, to what git said after ``failed:``; request and
+    message ids stripped (:func:`model_failures.strip_ids`); at most 300
+    characters. A dirty or unsound target is not a refusal and is left out."""
+    causes: list[str] = []
+    for line in skipped:
+        target, sep, rest = str(line).partition(f": {HOST_COMMIT_REFUSED}")
+        if not sep:
+            continue
+        reason = rest.split(" — ")[0]
+        _command, said, tail = reason.partition(" failed: ")
+        reason = model_failures.strip_ids(tail if said else reason)
+        cause = f"{target}: {reason}"[:300]
+        if cause not in causes:
+            causes.append(cause)
+    return causes
+
+
 def recompile(
     home: Path | str,
     *,
@@ -8838,7 +8865,7 @@ def recompile(
                     # retries) -- and every later target still repairs.
                     assert target is not None  # a managed spec always has one
                     undone = _undo_host_write(spec.host_path, snapshot, host_paths)
-                    reason = f"host commit refused: {exc} — {undone}"
+                    reason = f"{HOST_COMMIT_REFUSED}{exc} — {undone}"
                     result.entries.append(
                         RecompileEntry(target=target, changed=False, skipped=reason)
                     )
@@ -8999,7 +9026,7 @@ def recompile(
                     except gitops.GitOpsError as exc:
                         # Sweep 2, R3: see the managed-target leg above.
                         undone = _undo_host_write(host_repo, ref_snapshot, [probe])
-                        reason = f"host commit refused: {exc} — {undone}"
+                        reason = f"{HOST_COMMIT_REFUSED}{exc} — {undone}"
                         result.entries.append(
                             RecompileEntry(target=probe, changed=False, skipped=reason)
                         )
@@ -9027,7 +9054,7 @@ def recompile(
                         undone = _undo_host_write(
                             host_repo, ref_snapshot, [pointer_surface]
                         )
-                        reason = f"host commit refused: {exc} — {undone}"
+                        reason = f"{HOST_COMMIT_REFUSED}{exc} — {undone}"
                         result.entries.append(
                             RecompileEntry(
                                 target=pointer_surface, changed=False, skipped=reason
@@ -9163,7 +9190,7 @@ def recompile(
                         undone = _undo_host_write(
                             host_repo, hook_snapshot, [script_abs]
                         )
-                        reason = f"host commit refused: {exc} — {undone}"
+                        reason = f"{HOST_COMMIT_REFUSED}{exc} — {undone}"
                         result.entries.append(
                             RecompileEntry(
                                 target=script_abs, changed=False, skipped=reason
