@@ -298,27 +298,11 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # census, and the six OP-series tests that shared one reason string,
     # `_U8_FOUR_SURFACES_REASON`, removed with them) were dropped as VACUOUS
     # by this landing's own refusal, for the same reason as the row above.
+    # 2026-09-28, ANCHOR 9940b03 (followups-0928 landing): the two `edited`
+    # doors batch 0928 added (test_ch14, test_op14) were dropped as VACUOUS by
+    # this landing's own refusal -- those edits are now at the anchor.
     "test_invocation_sdk.py": Behaviour(
         nodes=141, dump_sha="05fe6a2bb6f605cb8032c96b65ca4278c3679c5ae84750c0df037ae1399d9c6f",
-        edited={
-            "func:test_ch14_steward_and_overseer_write_stage_only_bash_and_mcp_tools_denied": (
-                "2026-09-28 batch 0928 unit A (`13-hosting-and-separation.md` §5, the "
-                "overseer's workspace; the user's words: \"it should have a 'sandbox' "
-                "... it can use as a workspace\"): the overseer's Read/Grep/Glob are "
-                "fenced to its own workspace, `stage/overseer`. The unscoped-read "
-                "assertion now holds for the steward only (its transcript reads stay "
-                "legitimate); for the overseer the test asserts a read inside the "
-                "workspace is allowed and one outside is denied."
-            ),
-            "func:test_op14_options_kwargs_matches_the_object_the_session_ran_on": (
-                "2026-09-28 batch 0928 part 3 (`13-hosting-and-separation.md` §6, the "
-                "session copies; the user's words: \"go ahead and just capture "
-                "everything\"): every session now also asks for summarized thinking "
-                "(`thinking`, behind `sdk.capture_sessions`, default on), so the "
-                "option set this test pins gains that one key; everything else it "
-                "checks is unchanged."
-            ),
-        },
     ),
     "test_worker.py": Behaviour(
         nodes=83, dump_sha="0d4ac5f2300dc2f265566bc14b258c0086d7d6b23fd16b0c421d3d995d8e7a46"
@@ -815,11 +799,16 @@ MEASURED: dict[str, Measured] = {
     ),
     "BEH7.dump_prefixes": Measured(
         value=(
-            "21ac729b38c2", "05fe6a2bb6f6", "0d4ac5f2300d", "15cee52b616e",
+            "21ac729b38c2", "8927c9911327", "0d4ac5f2300d", "15cee52b616e",
             "9ebb1c1e4262", "c61c80a0b91b", "95bbfe93d6c0", "4fbcee5f5481",
         ),
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-09-28 §4.5/§2.10, transcribed at ANCHOR 9940b03 from this module's "
+            "own STALE refusal (followups-0928 landing): test_invocation_sdk.py moved "
+            "(05fe6a2bb6f6 -> 8927c9911327) because batch 0928's edits to it "
+            "(test_ch14, test_op14; `13-hosting-and-separation.md` §5-§6) are now at "
+            "the anchor. Previous entry: "
             "2026-09-20 §4.5/§2.10, transcribed at ANCHOR 1a0220b from this module's "
             "own STALE refusal (liveness landing): five files moved (test_invocation.py, "
             "test_invocation_sdk.py, test_worker.py, test_repair.py, test_composer.py) "
@@ -886,9 +875,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=2,
+        value=0,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-09-28, transcribed at ANCHOR 9940b03 from this module's own STALE "
+            "refusal (followups-0928 landing): 2 -> 0, both batch-0928 doors dropped as "
+            "VACUOUS (their edits are at the anchor). Previous entry: "
             "2026-09-28 batch 0928 part 3 (`13-hosting-and-separation.md` §6): 1 -> 2, "
             "one door, `test_invocation_sdk.py: func:test_op14_options_kwargs_matches_"
             "the_object_the_session_ran_on` (the option set gains `thinking`). "
