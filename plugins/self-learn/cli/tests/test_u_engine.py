@@ -1235,8 +1235,14 @@ def test_pol1_both_build_can_use_tool_bodies_are_byte_unchanged_since_a0c67be():
     # direction that the overseer work in its own workspace (spec README
     # revision log 2026-09-28; 02-schema.md, the overseer's workspace). Its
     # body is pinned from that commit on; everything else from a0c67be.
+    # 2026-09-28 (follow-up 5, decided by the orchestrator under the user's
+    # 15:17 delegation): the same step 3a also runs for a containment naming
+    # `read_denied` (the steward's deny root, the kept session copies) --
+    # another DENY-only addition, in 7276fc2 (spec README revision log
+    # 2026-09-28, follow-ups; 02-schema.md, the overseer's workspace). The
+    # body is pinned from that commit on.
     targets = [
-        (cli_charter_path, "build_can_use_tool", "4aa5ab6"),
+        (cli_charter_path, "build_can_use_tool", "7276fc2"),
         (cli_charter_path, "CharterPaths", "a0c67be"),
         (cli_charter_path, "CharterPatternUnsupported", "a0c67be"),
         (ui_charter_path, "build_can_use_tool", "a0c67be"),
