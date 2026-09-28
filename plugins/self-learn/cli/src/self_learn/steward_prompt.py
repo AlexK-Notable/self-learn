@@ -438,26 +438,33 @@ def _render_containment(run: RunContext) -> str:
 #: to find -- five greps of the spec tree for "always-loaded" before it
 #: decided a user-scope route. Each headline is QUOTED, not paraphrased,
 #: and `tests/test_steward_prompt.py` checks the quote against the spec.
+#: U3b (2026-09-28): S-72 supersedes SA-1's trial hold -- the steward
+#: decides always-loaded lines and hooks itself; the brief quotes it instead.
 STANDING_RULINGS = (
     ("S-23", "The cheap tier is PATHED, not DEMAND — at every scope."),
-    ("SA-1", "Q1 HELD for the trial — no new escalation to always-loaded lines or to guards."),
+    (
+        "S-72",
+        "The steward decides always-loaded lines and hooks itself, under the combined test; "
+        "the overseer corrects its mistakes afterwards. SA-1's trial hold is lifted.",
+    ),
 )
 
 
 def _render_standing_rulings() -> str:
     lines = [
         "STANDING RULINGS YOU WOULD OTHERWISE GO LOOKING FOR",
-        "Whether a user-scope lesson may land on an always-loaded line (the managed section",
-        "of the user's CLAUDE.md) is settled by two decisions in the design authority,",
-        "docs/specs/self-learn/03-decisions.md, and by the routing doctrine's gate",
-        "(routing-doctrine.md sections 2-3). You need not open any of them; their headlines:",
+        "Whether a lesson may land on an always-loaded line (the managed section of a",
+        "CLAUDE.md, or a CLAUDE.local.md) is settled by two decisions in the design authority,",
+        "docs/specs/self-learn/03-decisions.md, and by the combined test (method section 14).",
+        "You need not open any of them; their headlines:",
     ]
     for number, headline in STANDING_RULINGS:
-        note = " (user ruling 2026-09-11)" if number == "SA-1" else ""
+        note = " (the user's direction, 2026-09-26)" if number == "S-72" else ""
         lines.append(f'  {number}{note}: "{headline}"')
     lines += [
-        "When these rulings leave you unsure whether an always-loaded",
-        "destination is yours to apply, park the case as `always-loaded-user-scope` (section 12).",
+        "An always-loaded line is yours to apply when all three tests of section 14 hold and",
+        "the case evidences each. When you cannot tell whether one holds, park the case as",
+        "`always-loaded-user-scope` (section 12).",
         "`report.context_budget` in the conditions block shows that file's growth against its",
         "threshold.",
     ]

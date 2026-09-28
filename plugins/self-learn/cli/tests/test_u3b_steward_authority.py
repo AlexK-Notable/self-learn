@@ -211,6 +211,8 @@ def test_an_evidenced_always_loaded_route_applies_and_a_missing_test_is_refused_
     repair = prompts[1].split(_REPAIR_HEADER, 1)[1]
     assert "missing_costs_more" in repair and f"{bad}.yaml" in repair
     assert f"{good}.yaml" not in repair
+    # SA-1's hold is lifted (S-72): nothing about the evidenced route was parked
+    assert cases.list_cases(home, record_id=good, parked_for="overseer") == []
     # the recorded case carries the evidence it was decided on
     decided = cases.list_cases(home, record_id=good)
     assert decided
@@ -278,3 +280,25 @@ def test_the_overseer_does_not_drop_an_always_loaded_route_with_all_three_tests(
         tmp_path, monkeypatch, always_loaded.TEST_KEYS
     )
     assert "always-loaded line" not in refused
+
+
+# ------------------------------------------------------------ 2. SA-1 lifts
+
+
+def test_the_brief_no_longer_carries_the_sa1_hold_and_quotes_s72():
+    rendered = steward_prompt._render_method()
+    assert "S-72" in rendered  # positive control: the rulings block rendered
+    assert "STANDING RULINGS YOU WOULD OTHERWISE GO LOOKING FOR" in rendered
+    assert "Q1 HELD" not in rendered
+    assert "no new escalation to always-loaded lines" not in rendered
+    assert "SA-1" not in dict(steward_prompt.STANDING_RULINGS)
+
+
+def test_sa1_is_marked_superseded_by_s72_in_the_decisions_register():
+    spec = Path(__file__).resolve().parents[4] / "docs/specs/self-learn/03-decisions.md"
+    text = spec.read_text(encoding="utf-8")
+    sa1 = next(line for line in text.splitlines() if line.startswith("| SA-1 |"))
+    assert "Superseded 2026-09-28 by S-72" in sa1
+    s72 = next(line for line in text.splitlines() if line.startswith("| S-72 |"))
+    assert "leave the overseer the job of corrercting it" in s72  # the user's own words
+    assert "not a user ruling" in s72

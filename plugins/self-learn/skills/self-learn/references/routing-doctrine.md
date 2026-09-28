@@ -23,11 +23,14 @@ does not mistake tier selection for the first question. An
 `DEMAND`) is a sound placement only behind a maintained, recognizable
 task cue: a shelf entry nobody could be pointed to from an
 already-delivered entry point is staging, not a served lesson — say so
-in the card (§8) rather than letting the write pass as delivery. **For
-the trial, *promotion* — moving an already-placed lesson to a stronger
-surface — targets PATHED rules and skill entries only; promoting a
-placed lesson to an ALWAYS line or a hook is out of scope until the
-day-30 review** (Q1 HELD — `03-decisions.md` SA-1). This does not touch
+in the card (§8) rather than letting the write pass as delivery.
+**Promotion** — moving an already-placed lesson to a stronger surface —
+may target an ALWAYS line or a hook as well as PATHED rules and skill
+entries: the trial hold on the first two (`03-decisions.md` SA-1) was
+lifted on 2026-09-28 by S-72, which lets the steward and the overseer
+decide always-loaded lines (under the combined test in §2) and hooks
+themselves, with hook activation still behind the human's
+`overseer.hook_activation`. This does not touch
 §2: the §2 gate procedure still derives `ALWAYS` and `HOOK` for a lesson
 placed for the first time, exactly as written there. **An unregistered
 host is an explicit unresolved placement,
