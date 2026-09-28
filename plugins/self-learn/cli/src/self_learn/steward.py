@@ -23,6 +23,7 @@ from typing import cast
 from ruamel.yaml import YAML, YAMLError
 
 from . import (
+    always_loaded,
     model_failures,
     batch,
     cases,
@@ -963,11 +964,16 @@ def _declared_stage_file(rel: str) -> bool:
     )
 
 
-def _pair_problem(stage: Path, case_path: Path) -> str | None:
+def _pair_problem(stage: Path, case_path: Path, home: Path | None = None) -> str | None:
     """What is wrong with ONE case/sheet pair, judged on its own, or `None`
     (2026-09-27, audit finding 3): the case's parked-reason rules, the
     sheet's own schema, and one sheet item for every lesson the case
-    covers. The messages are the ones the whole-stage check always gave."""
+    covers. The messages are the ones the whole-stage check always gave.
+
+    U3b (2026-09-28): a decided case that routes a lesson to an
+    always-loaded line must evidence all three tests of the combined test
+    (:mod:`always_loaded`); *home*, when given, resolves a dest-less
+    route's destination from the lesson's proposal."""
     try:
         case_data = _read_yaml(case_path)
     except ValueError as exc:
@@ -1040,7 +1046,12 @@ def _pair_problem(stage: Path, case_path: Path) -> str | None:
             f"{case_path.name}: every lesson in a case needs its own item in "
             f"sheets/{case_path.name}; no item for {without_item}"
         )
-    return None
+    return always_loaded.route_problem(
+        case_data,
+        items if isinstance(items, list) else [],
+        resolve=always_loaded.proposal_resolver(home) if home is not None else None,
+        label=case_path.name,
+    )
 
 
 def _validate_declared_stage(stage: Path) -> None:
@@ -1094,7 +1105,8 @@ def _quarantine_move(stage: Path, path: Path, quarantine: Path) -> str:
 
 
 def _check_stage(
-    stage: Path, selected_ids: set[str] | None, quarantine: Path
+    stage: Path, selected_ids: set[str] | None, quarantine: Path,
+    home: Path | None = None,
 ) -> _StageCheck:
     """The runner's stage check, per case/sheet pair (2026-09-27, audit
     finding 3). Before, one problem anywhere refused the whole packet, and
@@ -1127,7 +1139,7 @@ def _check_stage(
         if not case_path.is_file():
             problems[stem] = "cases/*.yaml and sheets/*.yaml must have matching stems"
             continue
-        problem = _pair_problem(stage, case_path)
+        problem = _pair_problem(stage, case_path, home)
         if problem is not None:
             problems[stem] = problem
             continue
@@ -3885,7 +3897,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                 #: first pass's too, when a repair turn followed it.
                 quarantined_all: list[str] = []
                 try:
-                    check = _check_stage(stage, open_records, quarantine)
+                    check = _check_stage(stage, open_records, quarantine, home)
                     quarantined_all.extend(check.quarantined)
                 except ValueError as first_error:
                     if packet_record.get("repair_remaining", 0) <= 0:
@@ -3940,7 +3952,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     try:
                         if not repair.ok:
                             raise ValueError(repair.detail or repair.failure or "repair invocation failed")
-                        check = _check_stage(stage, open_records, quarantine)
+                        check = _check_stage(stage, open_records, quarantine, home)
                         quarantined_all.extend(check.quarantined)
                     except ValueError as exc:
                         second_error = exc
@@ -3974,7 +3986,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                             shutil.copytree(first_pass, stage)
                             second_error = None
                             try:
-                                check = _check_stage(stage, open_records, quarantine)
+                                check = _check_stage(stage, open_records, quarantine, home)
                                 quarantined_all.extend(check.quarantined)
                             except ValueError as exc:  # it passed before; never expected
                                 second_error = exc

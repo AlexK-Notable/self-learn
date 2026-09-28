@@ -79,7 +79,7 @@ from typing import Any
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from . import gitops, intents, sentinel, user_model
+from . import always_loaded, gitops, intents, sentinel, user_model
 from .ledger import discover_buckets
 from .ledger_ops import LedgerOpsError, find_record_path
 from .primitives import chrono, fsops
@@ -473,6 +473,18 @@ def _render_decision(decision: dict) -> str:
         lines.append(f"- covered_by: {decision['covered_by']}")
     lines.append(f"- because: {decision['because']}")
     lines.append(f"- confidence: {decision['confidence']}")
+    block = decision.get(always_loaded.DECISION_KEY)
+    if isinstance(block, dict) and block:
+        # U3b: rendered only when present, so a case without the block
+        # renders (and freeze-hashes) exactly as it did before.
+        lines.append("")
+        lines.append("Always-loaded test (all three must hold):")
+        for key, headline, _text in always_loaded.TESTS:
+            entry = block.get(key)
+            if not isinstance(entry, dict):
+                continue
+            refs = ", ".join(str(ref) for ref in entry.get("refs") or [])
+            lines.append(f"- {headline} {entry.get('because')} (evidence: {refs})")
     wwc = decision.get("what_would_change") or []
     if wwc:
         lines.append("")
@@ -619,6 +631,10 @@ def check_case_data(data: dict, *, withhold_spans: bool = False) -> CaseFields:
     what_would_change = decision.get("what_would_change") or []
     if not isinstance(what_would_change, list):
         raise CaseUsageError("case record: decision.what_would_change must be a list")
+    if decision.get(always_loaded.DECISION_KEY) is not None:
+        shape = always_loaded.check_block_shape(decision[always_loaded.DECISION_KEY])
+        if shape is not None:
+            raise CaseUsageError(f"case record: {shape}")
 
     deps = data.get("dependencies") or {}
     if not isinstance(deps, dict):
@@ -642,6 +658,7 @@ def check_case_data(data: dict, *, withhold_spans: bool = False) -> CaseFields:
     if decision.get("covered_by") is not None:
         free_texts.append(str(decision["covered_by"]))
     free_texts += [str(b) for b in what_would_change]
+    free_texts += always_loaded.block_texts(decision.get(always_loaded.DECISION_KEY))
     for item in evidence:
         free_texts.append(str(item.get("ref", "")))
         free_texts.append(str(item.get("quote", "")))

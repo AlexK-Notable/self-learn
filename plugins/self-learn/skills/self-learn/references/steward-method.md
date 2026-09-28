@@ -388,3 +388,27 @@ question, and a decision actually applied — they are four different
 things, and none of them is the per-run cap this method does not have
 (§5 governs whether you may act alone on a given decision; nothing here
 reopens that, and nothing here rations how many decisions a run makes).
+
+## 14. An always-loaded line
+
+An always-loaded line is one every session of its scope reads: a route to
+`claude-md` (the user's CLAUDE.md, or a project's) or to `claude-md:local`.
+It costs context in every one of those sessions, so it is the most
+expensive place a lesson can go. A path-scoped rule
+(`claude-md:rules:<topic>`) is not one: it loads only when a matching file
+is read. You decide an always-loaded line yourself; the overseer corrects
+it afterwards if you were wrong. Route there only when **all three** of
+these tests hold:
+
+1. **It always has to apply.** The moment can come up in any session, with nothing the agent is reading to warn it. If it only matters while a particular file is open, it is a path-tied rule or a project line, not a global one.
+2. **Missing it costs more than carrying it.** Would an agent actually act differently because of the line (if not, it is context bloat for nothing)? Could the agent cheaply find the fact on its own at that moment, from config, `--help`, or a loud error (if so, missing it costs little and it fails)? What passes is a silent failure, or one that costs real work.
+3. **Cheaper fixes aren't working.** Either it has already come back after a cheaper placement (a path rule, the shelf, a skill), or no cheaper placement can reach that moment.
+
+For each test, write in the case's `decision.always_loaded` why it holds
+(`because`) and the evidence that shows it (`refs`: refs of the case's own
+evidence items, taken from the evidence pack). The runner refuses a case
+that routes to an always-loaded line with any of the three missing, or with
+a ref that is not one of the case's evidence items; the other cases of the
+packet go ahead. When a test fails, choose the cheaper destination it
+points to. When you cannot tell whether one holds, park the case as
+`always-loaded-user-scope` (§12) with your tentative answer.

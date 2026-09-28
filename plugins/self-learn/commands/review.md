@@ -508,6 +508,14 @@ marker are projections and never recovery authority.
 - Every routed or resolved record from a steward run carries `by:
   steward` — filter `case list` or the record's own history to see which
   decisions were the steward's.
+- The steward decides an always-loaded line (`claude-md`, `claude-md:local`)
+  itself, under the combined test — all three of "it always has to apply",
+  "missing it costs more than carrying it", "cheaper fixes aren't working"
+  must hold, each evidenced in the case's `decision.always_loaded`
+  (`02-schema.md` §3a.2). A case missing one is refused on its own; its
+  lessons stay open for a later run, and the packet's other cases apply.
+  The overseer corrects a wrong one afterwards; the same rule holds for its
+  own successor cases.
 - Exit codes follow the unattended-run contract in the exit-code list
   above: `0` is `dry-run` or `applied`; `EXIT_HELD` (10) is `idle`,
   `disabled`, or a held `steward.lock`; `8` is `partial`; `1` is

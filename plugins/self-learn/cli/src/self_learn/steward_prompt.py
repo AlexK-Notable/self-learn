@@ -58,6 +58,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
+from . import always_loaded
 from . import batch
 from . import cases
 from . import conditions
@@ -77,6 +78,7 @@ __all__ = [
     "OUTPUT_CONTRACT",
     "RUNNER_ONLY_PARKED_REASONS",
     "STAGE_EXAMPLES",
+    "AUTHORITY_EXAMPLES",
     "assemble",
     "withheld",
 ]
@@ -336,6 +338,61 @@ entries:
     changed_condition: the project this reading came from was archived
 """,
 }
+
+#: U3b (2026-09-28): one worked case/sheet pair for each of the steward's
+#: authorities this unit added -- always-loaded, hook, re-deciding a placed
+#: lesson, a path-scoped rule's globs. Kept apart from `STAGE_EXAMPLES`
+#: (one coherent packet the whole-stage check validates together); each
+#: pair here is fed through the same checkers in
+#: `tests/test_u3b_steward_authority.py`.
+AUTHORITY_EXAMPLES: dict[str, str] = {
+    "cases/every-session.yaml": """\
+kind: resolution
+trigger: nightly
+outcome: route
+records: [lrn-4e5f6a7b]
+scope: user
+question: >-
+  Should the lesson that a background job cannot answer a password prompt be in every session?
+evidence:
+  - ref: "transcript:example-session#L40"
+    quote: "the job hung on the password prompt until it timed out"
+  - ref: "ledger@4f2a9c1:user/shell/lrn-4e5f6a7b.yaml#L3-6"
+    quote: "a background job has no terminal to type a password into"
+  - ref: "file@4f2a9c1:references/shell.md#L12"
+    quote: "background jobs cannot answer prompts"
+decision:
+  verb: route
+  because: >-
+    Any task may start a background job, the hang is silent, and the shelf line did not stop it.
+  confidence: settled
+  always_loaded:
+    always_applies:
+      because: any session can start a background job, and nothing it reads first warns it
+      refs: ["transcript:example-session#L40"]
+    missing_costs_more:
+      because: the job hangs silently until it times out; no error names the prompt
+      refs: ["transcript:example-session#L40", "ledger@4f2a9c1:user/shell/lrn-4e5f6a7b.yaml#L3-6"]
+    cheaper_fixes_fail:
+      because: the same lesson already sat on the shell shelf and the hang came back
+      refs: ["file@4f2a9c1:references/shell.md#L12"]
+dependencies:
+  statements: []
+  user_model: []
+  conditions: []
+  capabilities: []
+""",
+    "sheets/every-session.yaml": """\
+version: 1
+case: $CASE_ID
+items:
+  - id: lrn-4e5f6a7b
+    verb: route
+    dest: claude-md
+    note: all three always-loaded tests hold; see the case
+""",
+}
+
 
 def withheld() -> tuple[str, ...]:
     """§4.1's withheld list, verbatim in substance -- never installed as
@@ -691,7 +748,8 @@ def _render_output_contract() -> str:
         "  evidence       non-empty list of {ref, quote}; both required; quote is verbatim",
         "  decision       mapping: `because` (required), `confidence` (required:",
         f"                 {_words(cases.CONFIDENCE_VALUES)}), `verb`, `what_would_change` (list of",
-        "                 strings), and for a retire `covered_by`",
+        "                 strings), for a retire `covered_by`, and for a route to an",
+        "                 always-loaded line `always_loaded` (below)",
         "  dependencies   mapping of four lists of strings: statements, user_model, conditions,",
         "                 capabilities (use [] for none)",
         "  supersedes     optional: the id of a case this one replaces (case- plus 8 hex digits)",
@@ -730,6 +788,7 @@ def _render_output_contract() -> str:
         "  verbs and their keys:",
     ]
     out += _sheet_verb_lines()
+    out += _always_loaded_lines()
     out += [
         "  `defer`'s `until` is a date, YYYY-MM-DD, today (UTC) or later; left out, it is 30 days.",
         "  WHERE A ROUTE LANDS. Write `dest` on EVERY `route`. Your brief shows no analyst",
@@ -815,7 +874,29 @@ def _render_output_contract() -> str:
     for name, body in STAGE_EXAMPLES.items():
         out.append(f"\n--- {name}")
         out.append(body.rstrip("\n"))
+    out.append("")
+    out.append("MORE EXAMPLES: one case/sheet pair each (all ids and text invented)")
+    for name, body in AUTHORITY_EXAMPLES.items():
+        out.append(f"\n--- {name}")
+        out.append(body.rstrip("\n"))
     return "\n".join(out)
+
+
+def _always_loaded_lines() -> list[str]:
+    """U3b: the combined test, from :data:`always_loaded.TESTS` -- the
+    constant the runner's check reads -- so the brief cannot drift."""
+    keys = ", ".join(always_loaded.TEST_KEYS)
+    lines = [
+        "  AN ALWAYS-LOADED LINE (method section 14). A `route` to `claude-md` or",
+        "  `claude-md:local` puts the lesson into every session of its scope. Its case's",
+        f"  `decision.{always_loaded.DECISION_KEY}` must evidence ALL THREE tests: a mapping with",
+        f"  the keys {keys}; each one `because` (why the test holds) and `refs`",
+        "  (a list of refs of THIS case's own evidence items). Missing one, or a ref that is not",
+        "  one of the case's evidence refs, and the runner refuses that case alone.",
+    ]
+    for number, (key, headline, _text) in enumerate(always_loaded.TESTS, start=1):
+        lines.append(f"    {number}. {key}: {headline}")
+    return lines
 
 def _ordered_blocks(
     home: Path,
