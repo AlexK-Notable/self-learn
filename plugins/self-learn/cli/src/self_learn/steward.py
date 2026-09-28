@@ -32,6 +32,7 @@ from . import (
     intents,
     invocation,
     ledger_ops,
+    session_copies,
     settings,
     statements,
     steward_inputs,
@@ -1268,6 +1269,8 @@ def _session_spec(
         allowed_tools=_ALLOWED_TOOLS,
         disallowed_tools=_DISALLOWED_TOOLS,
         stage_dir=run_dir,
+        # 2026-09-28 (follow-up 5): never the kept session copies.
+        sessions_dir=session_copies.sessions_dir(home),
     )
     return invocation.SessionSpec(
         surface="steward",

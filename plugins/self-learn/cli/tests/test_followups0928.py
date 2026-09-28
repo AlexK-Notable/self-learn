@@ -9,6 +9,7 @@ follow-up:
 2. A host that keeps refusing tells the user once.
 3. A secret hit outside the overseer's pairs costs that file's contents.
 4. An all-dropped run says so.
+5. The steward cannot read the transcript copies.
 
 Sandbox ledger and host repos under pytest's tmpdir; fake model sessions.
 """
@@ -371,3 +372,45 @@ def test_the_cli_text_line_carries_the_counts(capsys, monkeypatch):
     line = capsys.readouterr().out.splitlines()[0]
     assert line.startswith("self-learn overseer: applied (0 of 3; 3 dropped); examined=0")
     assert overseer_run.RunResult("applied", 0, "r").status_text == "applied"
+
+
+# ------------------------------- 5. the steward cannot read the kept copies
+
+
+def _verdict(decide, tool, tool_input) -> str:
+    import asyncio
+
+    return type(asyncio.run(decide(tool, tool_input, None))).__name__
+
+
+def test_the_steward_may_not_read_the_kept_session_copies(tmp_path, monkeypatch):
+    from self_learn import session_copies
+    from self_learn.invocation_sdk import charter
+
+    home = make_env(tmp_path).ledger
+    sessions = session_copies.sessions_dir(home)
+    copy = sessions / "steward" / "run-1" / "abc.jsonl"
+    copy.parent.mkdir(parents=True)
+    copy.write_text("{}", encoding="utf-8")
+    projects = tmp_path / "claude" / "projects" / "-home-x" / "abc.jsonl"
+    projects.parent.mkdir(parents=True)
+    projects.write_text("{}", encoding="utf-8")
+    run_dir = tmp_path / "run"
+    (run_dir / "steward").mkdir(parents=True)
+    (run_dir / "steward" / "link.jsonl").symlink_to(copy)
+
+    spec = steward._session_spec(home, run_dir, "prompt", label="decision")
+    assert spec.containment.read_denied == (str(sessions),)
+    decide = charter.build_can_use_tool(spec.containment, cwd=run_dir)
+    allow, deny = "PermissionResultAllow", "PermissionResultDeny"
+    # Positive controls: its evidence reads, and its own stage, stay open.
+    assert _verdict(decide, "Read", {"file_path": str(projects)}) == allow
+    assert _verdict(decide, "Grep", {"pattern": "x", "path": str(projects.parent)}) == allow
+    assert _verdict(decide, "Grep", {"pattern": "x"}) == allow
+    assert _verdict(decide, "Read", {"file_path": str(run_dir / "steward" / "brief.md")}) == allow
+    # The kept copies: refused, by path, by search, by glob and through a link.
+    assert _verdict(decide, "Read", {"file_path": str(copy)}) == deny
+    assert _verdict(decide, "Grep", {"pattern": "x", "path": str(sessions)}) == deny
+    assert _verdict(decide, "Grep", {"pattern": "x", "path": str(sessions.parent)}) == deny
+    assert _verdict(decide, "Glob", {"pattern": f"{sessions}/**/*.jsonl"}) == deny
+    assert _verdict(decide, "Read", {"file_path": str(run_dir / "steward" / "link.jsonl")}) == deny

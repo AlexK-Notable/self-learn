@@ -762,7 +762,15 @@ is the session's cwd and its only read AND write area: the invocation charter
 (`invocation_sdk/charter.py`) denies a Read, Grep or Glob whose path, cwd-relative
 target, absolute Glob pattern, or `..` segment reaches outside it
 (`Containment.read_roots`; every other surface's reads stay unscoped, the steward's
-transcript reads included). Before each phase the runner writes
+transcript reads included). *2026-09-28 (follow-up 5):* the steward's reads
+have one deny root, `Containment.read_denied` = the cache's kept session
+copies (`<cache>/sessions/`, `session_copies.sessions_dir`): the same step
+of the charter denies a Read, Grep or Glob whose resolved path lies inside
+it (through a symlink too), and a Grep or Glob rooted at an ancestor of it;
+a `..` segment in a steward read is refused as it is for the overseer.
+Its evidence reads under Claude Code's own `projects/` are untouched.
+`containment_for("steward", …)` takes the directory as one new scalar,
+`sessions_dir`. Before each phase the runner writes
 `formats/` into it: `README.md` (the rules the runner and the case writer
 enforce), `closed-sets.yaml` (every closed set, read from the modules that
 enforce them: verbs and their keys, case kinds, triggers, outcomes, confidence

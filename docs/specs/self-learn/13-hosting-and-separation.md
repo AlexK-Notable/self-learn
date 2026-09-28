@@ -507,7 +507,9 @@ not ledger, because a transcript holds raw tool output. The ledger and
 the journals get only a record: session id, the copy's cache-relative
 path, its size, and counts of entries and assistant blocks by type
 (`02-schema.md` §3a.5). Nothing self-learn builds for a model reads this
-directory. `sdk.capture_sessions` (default on) turns the copies — and the
+directory, and the steward's sessions are denied reads of it by the
+invocation charter (2026-09-28, follow-up 5; the overseer's reads are
+fenced to its workspace already). `sdk.capture_sessions` (default on) turns the copies — and the
 summarized thinking every session asks for — off. Copies are not pruned.
 
 **The lesson index and the host unit's environment (U2, 2026-09-26).**

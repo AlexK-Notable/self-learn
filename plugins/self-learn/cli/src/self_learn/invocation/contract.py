@@ -101,6 +101,11 @@ class Containment:
     #: the overseer has always been (`charter.py` `C-2`). The overseer's
     #: one root is its own workspace, the session's cwd.
     read_roots: tuple[str, ...] = ()
+    #: 2026-09-28 (follow-up 5): absolute DIRECTORY paths the read tools may
+    #: never read inside, whatever `read_roots` says -- the steward's is the
+    #: cache's kept session transcripts (`session_copies.sessions_dir`).
+    #: Empty = no deny root.
+    read_denied: tuple[str, ...] = ()
 
 
 def containment_rules(c: Containment) -> list[str]:
@@ -132,6 +137,7 @@ def containment_for(
     enforce: bool = True,
     write_exact: tuple[str, ...] = (),
     spool_dir: Path | str | None = None,
+    sessions_dir: Path | str | None = None,
 ) -> Containment:
     """``C-c`` -- receives SCALARS ONLY and renders every glob PATTERN
     from string literals inside this module. It may not receive, call, or
@@ -185,6 +191,10 @@ def containment_for(
             default_mode=None,
         )
     if surface == "steward":
+        # 2026-09-28 (follow-up 5): the steward reads transcripts under
+        # Claude Code's own `projects/` as evidence, unfenced; it may never
+        # read self-learn's kept COPIES of model sessions (`sessions_dir`,
+        # the cache's `sessions/`), which hold other runs' sessions.
         return Containment(
             allowed_tools=allowed_tools,
             disallowed_tools=disallowed_tools,
@@ -192,6 +202,7 @@ def containment_for(
             write_exact=(),
             strict_mcp=True,
             default_mode="default",
+            read_denied=(f"{sessions_dir}",) if sessions_dir is not None else (),
         )
     if surface == "overseer":
         # 2026-09-28 (the user's words: "it should have a 'sandbox' ... it
