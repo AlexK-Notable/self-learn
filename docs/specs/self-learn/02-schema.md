@@ -1374,6 +1374,17 @@ unit around it:
   reused by the week's next attempt when that hash is unchanged; it is
   dropped once a run record is published.
 
+**Fail-state batch 2026-09-28** *(Added 2026-09-28; the user's words, 11:54
+PDT: "fix the rest of 3".)*
+- *Parse errors carry no model text, steward too.* The steward's stage
+  reader names a YAML parse error by the overseer's rule, through one
+  shared helper (`scan.yaml_error_text`): file, parse problem cut at its
+  first quote, line and column; a problem that still matches the secret
+  scan becomes "not valid YAML". Any other read or parse failure is named
+  by its type only. This is the text the repair turn is shown and, when no
+  pair passes, the text committed as the packet's `error` and
+  `failure_detail`.
+
 *(Added 2026-09-26, agenda item 24.)* No message a runner shows its model
 or commits into its run record carries the text a secret scan matched: each
 hit is named by its rule and offsets, the span reads `[withheld]`. This

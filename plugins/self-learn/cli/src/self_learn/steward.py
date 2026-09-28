@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
-from ruamel.yaml import YAML
+from ruamel.yaml import YAML, YAMLError
 
 from . import (
     model_failures,
@@ -44,7 +44,7 @@ from .overseer import notify as overseer_notify
 from .records import Record, RecordError
 from .primitives import chrono
 from .primitives import fsops
-from .scan import format_refusal, refusal_text
+from .scan import format_refusal, refusal_text, yaml_error_text
 from .scan import scan as secret_scan
 
 
@@ -449,10 +449,21 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 def _read_yaml(path: Path) -> dict | list:
+    """A stage file's YAML. Its errors reach the repair turn and, when no
+    pair passes, the committed run record, so they never carry the
+    model's text (2026-09-28): a parse error is the overseer's rule
+    (:func:`scan.yaml_error_text` -- file, problem cut at its first quote,
+    line and column), and any other failure is named by its type only."""
     try:
-        value = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001 -- one repair turn receives the exact parse error
-        raise ValueError(f"{path.name}: unreadable YAML -- {exc}") from exc
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(f"{path.name}: cannot read: {type(exc).__name__}") from exc
+    try:
+        value = YAML(typ="safe").load(text)
+    except YAMLError as exc:
+        raise ValueError(yaml_error_text(path.name, exc)) from exc
+    except Exception as exc:  # noqa: BLE001 -- e.g. RecursionError; named, never quoted
+        raise ValueError(f"{path.name}: cannot parse — {type(exc).__name__}") from exc
     if not isinstance(value, (dict, list)):
         raise ValueError(f"{path.name}: expected a mapping or list")
     return value
