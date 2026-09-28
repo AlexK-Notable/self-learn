@@ -415,7 +415,7 @@ def test_coverage_precedes_uncapped_parked_intake(tmp_path, monkeypatch):
 
     def listed(given_home, **kwargs):
         if kwargs.get("parked_for") == "overseer":
-            assert (overseer_run.worker.stage_dir() / "overseer" / "coverage.yaml").is_file()
+            assert (overseer_run.workspace_dir(home) / "coverage.yaml").is_file()
             assert (home / "overseer" / "coverage.yaml").is_file()
             assert kwargs.get("only_ok") is True
             return parked
@@ -2077,7 +2077,7 @@ def test_the_phase_b_prompt_explains_an_attempts_exhausted_parked_case(
 
     overseer_run.run(home, dry_run=True, no_push=True)
 
-    prompt = (overseer_run.worker.stage_dir() / "overseer" / "prompt-b.md").read_text(
+    prompt = (overseer_run.workspace_dir(home) / "prompt-b.md").read_text(
         encoding="utf-8"
     )
     # positive control: this is the phase-B prompt and it rendered
@@ -2103,7 +2103,7 @@ def test_the_phase_b_prompt_explains_a_ledger_refused_parked_case(
 
     overseer_run.run(home, dry_run=True, no_push=True)
 
-    prompt = (overseer_run.worker.stage_dir() / "overseer" / "prompt-b.md").read_text(
+    prompt = (overseer_run.workspace_dir(home) / "prompt-b.md").read_text(
         encoding="utf-8"
     )
     # positive control: this is the phase-B prompt and it rendered
@@ -2635,7 +2635,7 @@ def test_a_resumed_run_keeps_its_journal(tmp_path, monkeypatch):
     second = overseer_run.run(home, dry_run=False, no_push=True)
 
     assert (second.run, second.status) == (first.run, "applied")
-    assert (overseer_run.worker.stage_dir() / "overseer" / "journal.md").read_text(encoding="utf-8") == expected
+    assert (overseer_run.workspace_dir(home) / "journal.md").read_text(encoding="utf-8") == expected
     assert _git(home, "show", f"HEAD:{rel}") == expected
 
 
@@ -2649,11 +2649,11 @@ def test_phase_sessions_get_edit_confined_exactly_as_write(tmp_path, monkeypatch
     seen = _wrap_phases(monkeypatch)
     result = overseer_run.run(home, dry_run=True, no_push=True)
     assert result.status == "dry-run"
-    stage = overseer_run.worker.stage_dir() / "overseer"
+    stage = overseer_run.workspace_dir(home)
     for phase in ("a_containment", "b_containment"):
         containment = seen[phase]
         assert containment.allowed_tools.split(",") == ["Read", "Grep", "Glob", "Write", "Edit"]
-        assert containment.write_globs == (f"{overseer_run.worker.stage_dir()}/overseer/**",)
+        assert containment.write_globs == (f"{overseer_run.workspace_dir(home)}/**",)
         decide = charter.build_can_use_tool(containment)
         for target, allowed in (
             (stage / "journal.md", True),

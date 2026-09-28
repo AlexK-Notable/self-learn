@@ -1133,8 +1133,16 @@ def test_ch14_steward_and_overseer_write_stage_only_bash_and_mcp_tools_denied(tm
             result = _call(cb, tool, {})
             assert isinstance(result, PermissionResultDeny), (surface, tool)
 
-        # unscoped reads: allowed_tools grants these regardless of path (C-2)
+        # the steward's reads are unscoped: allowed_tools grants these
+        # regardless of path (C-2). 2026-09-28: the overseer's reads are
+        # fenced to its own workspace, `stage/overseer` -- inside first.
         for tool in ("Read", "Grep", "Glob"):
+            if surface == "overseer":
+                result = _call(cb, tool, {"file_path": str(inside)})
+                assert isinstance(result, PermissionResultAllow), (surface, tool)
+                result = _call(cb, tool, {"file_path": str(tmp_path / "anywhere.txt")})
+                assert isinstance(result, PermissionResultDeny), (surface, tool)
+                continue
             result = _call(cb, tool, {"file_path": str(tmp_path / "anywhere.txt")})
             assert isinstance(result, PermissionResultAllow), (surface, tool)
 

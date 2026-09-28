@@ -746,7 +746,30 @@ carries a session's notes forward either: every overseer and steward
 session runs with Claude Code's auto-memory off
 (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, passed through `SessionSpec.extra_env`),
 because that memory is keyed to the session's working directory and the
-overseer's stage path never changes.
+overseer's workspace path never changes.
+
+**Workspace (2026-09-28).** The user's words: "that should all be stuff it has
+access to right off the bat. maybe even have it live in its working directory
+... it should have a 'sandbox' ... it can use as a workspace." The overseer's
+sessions run in their own workspace, `<cache>/overseer.workspace/overseer/`,
+cleared at the start of every run and every resume. It is never under the
+worker's stage (`worker.stage/`), so the worker's stage reset and the
+overseer's cannot empty each other's folder (fail-state audit finding 11). It
+is the session's cwd and its only read AND write area: the invocation charter
+(`invocation_sdk/charter.py`) denies a Read, Grep or Glob whose path, cwd-relative
+target, absolute Glob pattern, or `..` segment reaches outside it
+(`Containment.read_roots`; every other surface's reads stay unscoped, the steward's
+transcript reads included). Before each phase the runner writes
+`formats/` into it: `README.md` (the rules the runner and the case writer
+enforce), `closed-sets.yaml` (every closed set, read from the modules that
+enforce them: verbs and their keys, case kinds, triggers, outcomes, confidence
+values, parked reasons, finding and question kinds, report headings), and one
+valid example of every file the phase writes. Phase A's folder holds only the
+phase-A files and sets, so it stays blind to decision vocabulary. A test runs
+every example through the runner's own validators. Both phase prompts point at
+it. The steward needs no such folder: its output contract is generated from
+code (`steward_prompt._render_output_contract`) into `brief-shared.md` in its
+run directory, which is its cwd.
 
 (Full shape of the `overseer/` subtree — this fence names only the files —
 is the same list `13-hosting-and-separation.md` §3's own K1 delta carries;

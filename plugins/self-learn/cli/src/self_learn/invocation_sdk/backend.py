@@ -243,7 +243,7 @@ class CliSessionPolicy:
         self._spec = spec
 
     def can_use_tool(self) -> "sdk_policy.CanUseTool":
-        return charter.build_can_use_tool(self._spec.containment)
+        return charter.build_can_use_tool(self._spec.containment, cwd=self._spec.cwd)
 
     def option_floor(self) -> dict[str, object]:
         return sdk_policy.default_option_floor()

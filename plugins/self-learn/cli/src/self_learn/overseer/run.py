@@ -1,6 +1,6 @@
 """O-3 — the weekly two-invocation overseer runner.
 
-The model can read and write only ``worker.stage/overseer``.  This module
+The model can read and write only its own workspace (:func:`workspace_dir`).  This module
 validates that stage and owns every ledger write through the existing case,
 batch, observation, intent, and git seams.
 
@@ -34,7 +34,7 @@ from ..ledger import resolve_home
 from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
 from ..primitives import chrono, fsops
 from ..records import Record, build_covered_by
-from . import health, notify, population as population_mod
+from . import formats, health, notify, population as population_mod
 from .conversation import _PROPOSITION_RE
 
 EXIT_OK = 0
@@ -59,6 +59,18 @@ _REPORT_LINE_GUIDE = 60
 #: user-model proposition, `conversation._PROPOSITION_RE`.
 _ASK_ID_RE = re.compile(r"^q-[a-z0-9][a-z0-9-]{1,62}$")
 _CASE_ID_RE = re.compile(r"^case-[0-9a-f]{8}$")
+#: 2026-09-28: the closed sets and required fields the runner enforces on
+#: model-written files, named once so the validators below and the
+#: workspace's `formats/` folder (`overseer/formats.py`) read the same
+#: values and cannot drift apart.
+INITIAL_VIEW_KEYS = ("id", "what_i_would_do", "why", "what_evidence_decides_it", "confidence")
+INITIAL_CONFIDENCE = ("clear", "close-call")
+FINDING_KEYS = ("case", "kind", "text", "ref")
+FINDING_KINDS = ("examined", "dependency-moved")
+QUESTION_KINDS = ("reading", "ask")
+REQUIRED_OUTPUT_FILES = ("report.md", "findings.yaml", "questions.yaml", "user-model-delta.yaml")
+MAINTENANCE_CASE_FIELDS = ("kind", "trigger", "outcome", "records", "scope", "question", "evidence", "decision")
+SUCCESSOR_CASE_FIELDS = (*MAINTENANCE_CASE_FIELDS, "supersedes")
 #: The overseer's own journal (2026-09-24, the user's words: "a journal of
 #: sorts the overseer could uuse as a kind of scratch bucket"). One stage
 #: file for the whole run, both phases; committed with every commit the
@@ -379,14 +391,14 @@ def _validate_initial(path: Path, selected: tuple[str, ...]) -> None:
     entries = data.get("cases")
     if not isinstance(entries, list):
         raise OverseerError("initial-views.yaml: cases must be a list")
-    allowed = {"id", "what_i_would_do", "why", "what_evidence_decides_it", "confidence"}
+    allowed = set(INITIAL_VIEW_KEYS)
     found: set[str] = set()
     for entry in entries:
         if not isinstance(entry, dict) or set(entry) != allowed:
             raise OverseerError(f"initial-views.yaml: every entry needs exactly {sorted(allowed)!r}")
         if not all(isinstance(entry.get(key), str) and entry[key].strip() for key in allowed):
             raise OverseerError("initial-views.yaml: every entry field must be non-empty text")
-        if entry["confidence"] not in ("clear", "close-call"):
+        if entry["confidence"] not in INITIAL_CONFIDENCE:
             raise OverseerError("initial-views.yaml: confidence must be clear or close-call")
         if entry["id"] in found:
             raise OverseerError(f"initial-views.yaml: duplicate case {entry['id']}")
@@ -470,6 +482,27 @@ def _secret_files(stage: Path, case_files: frozenset[Path] = frozenset()) -> lis
     return names
 
 
+def workspace_dir(home: Path | str) -> Path:
+    """The overseer's own workspace (2026-09-28): the session's cwd and its
+    only read and write area. Outside the kept phase A
+    (`_phase_a_keep_dir`) and never under the worker's stage
+    (`worker.stage_dir()`), so neither runner's reset can empty the other's
+    folder (fail-state audit finding 11)."""
+    # `<cache>/overseer.workspace/overseer`: the surface's containment
+    # renders `{stage_dir}/overseer/**` (`invocation.containment_for`), so
+    # the runner passes this folder's parent as `stage_dir`.
+    return worker.cache_dir(Path(home)) / "overseer.workspace" / "overseer"
+
+
+def workspace_reset(home: Path | str) -> Path:
+    """Empty and recreate the workspace; answers its path. Touches nothing
+    outside it."""
+    path = workspace_dir(home)
+    shutil.rmtree(path, ignore_errors=True)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _write_stage(stage_dir: Path, path: Path, text: str) -> None:
     """Write only beneath the overseer's exclusive stage directory."""
     root = stage_dir.resolve()
@@ -532,11 +565,18 @@ contains ": " does not parse, and the runner cannot use a file that does not par
 """
 
 
+#: 2026-09-28: both phase prompts point at the workspace's formats folder.
+_FORMATS_LINE = f"""The exact shape of every file you write, the value sets you pick from, and the rules the
+runner enforces are in {formats.FORMATS_DIR}/ here: read {formats.FORMATS_DIR}/README.md before you write anything.
+"""
+
+
 def _phase_a_prompt(stage: Path, count: int, excluded: int) -> str:
     return f"""You are the self-learn overseer, examining decisions independently.
 Binding rules: provisional is bookkeeping; silence is not agreement; evidence is never authority.
-Read only this stage. Use Read, Grep, and Glob; write (Write, Edit) only beneath {stage}.
-The blind population has {count} cases. {excluded} cases excluded: freeze hash mismatch.
+This folder, {stage}, is your workspace: you can read and write only inside it.
+Use Read, Grep, and Glob to read; Write and Edit to write.
+{_FORMATS_LINE}The blind population has {count} cases. {excluded} cases excluded: freeze hash mismatch.
 Do not seek or infer the steward's outcome, verb, decision, receipts, or rationale.
 Read population.txt, nudges.yaml, and blind/*.md. Choose any number of cases; there is no sample cap.
 Write selection.yaml with only cases: [{{id: case-...}}], why_these, and why_stopped.
@@ -549,7 +589,8 @@ what_evidence_decides_it, and confidence (clear or close-call).
 def _phase_b_prompt(stage: Path, selected: tuple[str, ...], parked: tuple[str, ...]) -> str:
     return f"""You are the self-learn overseer. The evidence-first view is complete.
 You may now read the steward rationale and full decided account in full/*.md.
-Read selection.yaml, initial-views.yaml, every parked/*.md, user-model.yaml, health.yaml, and
+This folder, {stage}, is your workspace: you can read and write only inside it.
+{_FORMATS_LINE}Read selection.yaml, initial-views.yaml, every parked/*.md, user-model.yaml, health.yaml, and
 answers.yaml (the user's answers to earlier overseer questions, newest first; it may be empty).
 Selected cases: {', '.join(selected) if selected else 'none'}.
 Parked cases (the entire queue, never truncated): {', '.join(parked) if parked else 'none'}.
@@ -672,11 +713,11 @@ def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, ru
         # `Edit` joins `Write` (2026-09-24, the journal). Both are in the
         # charter's write family (`invocation_sdk/charter.py` `W`), which
         # judges every call by path against this surface's ONE write glob
-        # (`{stage_dir}/overseer/**`, `containment_for`) BEFORE this list
+        # (`{workspace}` and below, `containment_for`) BEFORE this list
         # is consulted -- so Edit is confined exactly as Write is.
         allowed_tools="Read,Grep,Glob,Write,Edit",
         disallowed_tools="Bash",
-        stage_dir=worker.stage_dir(),
+        stage_dir=stage.parent,
         enforce=worker._enforce_scope(),
     )
     spec = (
@@ -889,7 +930,7 @@ def _questions(
         kind = item.get("kind")
         if kind is None and isinstance(item.get("id"), str) and item["id"].startswith("um-"):
             kind = "reading"  # a legacy entry: `{id, cases}` with a proposition id
-        if kind not in ("reading", "ask"):
+        if kind not in QUESTION_KINDS:
             dropped.append(f"question {label}: dropped — kind must be reading or ask")
             continue
         problem = _question_problem(item, kind, propositions, known_cases)
@@ -1136,11 +1177,11 @@ def _validate_findings(
             else f"finding {ordinal}"
         )
         problem: str | None = None
-        if not isinstance(finding, dict) or set(finding) - {"case", "kind", "text", "ref"}:
+        if not isinstance(finding, dict) or set(finding) - set(FINDING_KEYS):
             problem = "an entry permits case, kind, text, and ref only"
         elif case_id not in selected:
             problem = "names a case not selected this run"
-        elif finding.get("kind") not in ("examined", "dependency-moved"):
+        elif finding.get("kind") not in FINDING_KINDS:
             problem = "kind must be examined or dependency-moved"
         elif not isinstance(finding.get("text"), str) or not finding["text"].strip():
             problem = "a finding needs non-empty text"
@@ -1177,7 +1218,7 @@ def _coverage_text(
 
 def _validate_successor(path: Path, parked: set[str]) -> None:
     data = _yaml_mapping(path)
-    required = {"kind", "trigger", "outcome", "records", "scope", "question", "evidence", "decision", "supersedes"}
+    required: set[str] = set(SUCCESSOR_CASE_FIELDS)
     missing = sorted(required - set(data))
     if missing:
         raise OverseerError(f"{path.name}: missing successor field(s) {missing!r}")
@@ -1201,7 +1242,7 @@ def _validate_maintenance_case(path: Path) -> None:
     without a rule of its own the pairing had no validator at all.
     """
     data = _yaml_mapping(path)
-    required = {"kind", "trigger", "outcome", "records", "scope", "question", "evidence", "decision"}
+    required: set[str] = set(MAINTENANCE_CASE_FIELDS)
     missing = sorted(required - set(data))
     if missing:
         raise OverseerError(f"{path.name}: missing case field(s) {missing!r}")
@@ -1501,7 +1542,7 @@ def _refuse_in_span(
 def _phase_b_output_present(stage: Path) -> bool:
     """Whether phase B left every file a run needs -- the four required
     files and at least one sheet -- whatever state its session ended in."""
-    required = ("report.md", "findings.yaml", "questions.yaml", "user-model-delta.yaml")
+    required = REQUIRED_OUTPUT_FILES
     if not all((stage / name).is_file() for name in required):
         return False
     return any(stage.glob("sheet-*.yaml")) or (stage / "sheet.yaml").is_file()
@@ -3074,9 +3115,7 @@ def _execute_manifest(
     selected = tuple(cast(list[str], manifest.get("selected") or []))
     excluded = int(manifest.get("excluded") or 0)
     model_calls = int(manifest.get("model_calls") or 0)
-    stage = worker.stage_dir() / "overseer"
-    worker.stage_reset(home)
-    stage.mkdir(parents=True, exist_ok=True)
+    stage = workspace_reset(home)
     _write_stage(stage, stage / "report.md", cast(str, manifest["report"]))
     carried_journal = manifest.get("journal")
     if isinstance(carried_journal, str) and carried_journal:
@@ -3680,12 +3719,13 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "runaway", "reason": reason})
         return RunResult("runaway", EXIT_REFUSED, run_id)
 
-    worker.stage_reset(home)
-    stage = worker.stage_dir() / "overseer"
-    stage.mkdir(parents=True, exist_ok=True)
+    stage = workspace_reset(home)
     # The run's journal exists before phase A and is never truncated: no
     # stage reset happens between phase A and phase B.
     _start_model_journal(stage, run_id, started[:10])
+    # 2026-09-28: the exact shapes and closed sets phase A needs, in its
+    # own workspace, so it never has to look anywhere else for them.
+    formats.write(stage, "A")
     coverage_path = home / "overseer" / "coverage.yaml"
     previous = population_mod.load_coverage(coverage_path)
     since = previous.get("last_run_at") or chrono.now_iso(datetime.now(timezone.utc) - timedelta(days=7))
@@ -3820,6 +3860,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 model_calls=model_calls, guard=guard, trigger=trigger,
                 kind="invocation", reason=f"phase B inputs could not be prepared: {exc}",
             )
+        formats.write(stage, "B")
         prompt_b = _phase_b_prompt(stage, selected, tuple(row["case"] for row in parked_rows))
         _write_stage(stage, stage / "prompt-b.md", prompt_b)
         timeout_b = phase_timeout(timeout_seconds, len(blind) + len(parked_rows))
@@ -3892,11 +3933,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": state, "phase": "b", "model_calls": model_calls, **model_failures.failure_fields(outcome_b)})
             return RunResult(state, EXIT_REFUSED, run_id, model_calls, selected, excluded, report=str(report_path))
 
-        required = [
-            stage / name for name in (
-                "report.md", "findings.yaml", "questions.yaml", "user-model-delta.yaml"
-            )
-        ]
+        required = [stage / name for name in REQUIRED_OUTPUT_FILES]
         missing = [path.name for path in required if not path.is_file()]
         pair_drops: list[str] = []
         pairs = _sheet_pairs(stage, pair_drops)
