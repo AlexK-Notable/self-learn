@@ -199,8 +199,11 @@ def _read_decision(
 
     *denied* (2026-09-28, follow-up 5): directories no read may reach,
     whatever *roots* allow; an empty *roots* then means "anywhere else".
-    A Grep or Glob rooted at an ANCESTOR of a denied directory is refused
-    too, since it would search inside it."""
+    A Grep rooted at an ANCESTOR of a denied directory is refused too, since
+    it would read the files inside it. A Glob rooted there is allowed: it
+    only lists names, the steward's real runs start Globs at the home and
+    cache folders (9 of 550 read-family calls, measured 2026-09-28), and a
+    Read of anything it lists inside the denied directory is still refused."""
     raw = _extract_target_path(tool_input)
     names = [raw] if raw is not None else []
     for key in ("pattern", "glob"):
@@ -224,7 +227,7 @@ def _read_decision(
         target = candidate.resolve()
         for root in denied:
             if _inside(target, (root,)) or (
-                tool_name in ("Grep", "Glob") and _inside(root, (target,))
+                tool_name == "Grep" and _inside(root, (target,))
             ):
                 return f"{tool_name} may not read {target}: {root} is not readable here"
         if roots and not _inside(target, roots):

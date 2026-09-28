@@ -414,6 +414,9 @@ def test_the_steward_may_not_read_the_kept_session_copies(tmp_path, monkeypatch)
     assert _verdict(decide, "Grep", {"pattern": "x", "path": str(sessions)}) == deny
     assert _verdict(decide, "Grep", {"pattern": "x", "path": str(sessions.parent)}) == deny
     assert _verdict(decide, "Glob", {"pattern": f"{sessions}/**/*.jsonl"}) == deny
+    # A Glob started ABOVE the copies only lists names (the steward's real
+    # runs do this): allowed; reading what it lists is still refused above.
+    assert _verdict(decide, "Glob", {"pattern": "**/*.md", "path": str(sessions.parent)}) == allow
     assert _verdict(decide, "Read", {"file_path": str(run_dir / "steward" / "link.jsonl")}) == deny
 
 
