@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
-from ruamel.yaml import YAML
+from ruamel.yaml import YAML, YAMLError
 
 from . import (
     model_failures,
@@ -44,7 +44,7 @@ from .overseer import notify as overseer_notify
 from .records import Record, RecordError
 from .primitives import chrono
 from .primitives import fsops
-from .scan import format_refusal, refusal_text
+from .scan import format_refusal, refusal_text, yaml_error_text
 from .scan import scan as secret_scan
 
 
@@ -78,6 +78,9 @@ class RunResult:
     #: keep a permanently failing close-out from becoming a silent loop.
     close_out_error: str | None = None
     coverage: dict[str, int] = field(default_factory=dict)
+    #: 2026-09-28: the targets the post-run recompile skipped
+    #: (``"<target>: <reason>"``), one pass, never retried in the run.
+    recompile_skipped: list[str] = field(default_factory=list)
     #: 2026-09-27 (fail-state audit finding 4): the cause when this run was
     #: held because the model or the installed Claude Code could not run a
     #: call at all (`environment`); that attempt was not counted.
@@ -434,6 +437,17 @@ def journal_path(home: Path | str) -> Path:
 #: log callback may fire from another thread.
 _DRY_RUN_JOURNAL = False
 
+#: 2026-09-28: the ids of the route/rehome/rescope items this run applied
+#: or left `unresolved-host` (:func:`verbs.host_result_ids`), gathered where
+#: each sheet's result is known; `None` outside a run. :func:`run` hands
+#: them to one narrowed recompile after `_run` returns.
+_HOST_RESULT_IDS: list[str] | None = None
+
+
+def _note_host_results(result: batch.BatchResult) -> None:
+    if _HOST_RESULT_IDS is not None:
+        _HOST_RESULT_IDS.extend(verbs.host_result_ids(result.items))
+
 
 def _journal(home: Path | str, entry: dict) -> None:
     if _DRY_RUN_JOURNAL:
@@ -449,10 +463,21 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 def _read_yaml(path: Path) -> dict | list:
+    """A stage file's YAML. Its errors reach the repair turn and, when no
+    pair passes, the committed run record, so they never carry the
+    model's text (2026-09-28): a parse error is the overseer's rule
+    (:func:`scan.yaml_error_text` -- file, problem cut at its first quote,
+    line and column), and any other failure is named by its type only."""
     try:
-        value = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001 -- one repair turn receives the exact parse error
-        raise ValueError(f"{path.name}: unreadable YAML -- {exc}") from exc
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(f"{path.name}: cannot read: {type(exc).__name__}") from exc
+    try:
+        value = YAML(typ="safe").load(text)
+    except YAMLError as exc:
+        raise ValueError(yaml_error_text(path.name, exc)) from exc
+    except Exception as exc:  # noqa: BLE001 -- e.g. RecursionError; named, never quoted
+        raise ValueError(f"{path.name}: cannot parse — {type(exc).__name__}") from exc
     if not isinstance(value, (dict, list)):
         raise ValueError(f"{path.name}: expected a mapping or list")
     return value
@@ -1263,7 +1288,21 @@ def _session_spec(
         # part. The doctor's containment probe passes no file.
         append_system_prompt_file=shared_brief,
         exclude_dynamic_sections=shared_brief is not None,
+        # 2026-09-28: every session of one run keeps its transcript copy in
+        # one folder, `<cache>/sessions/steward/<run id>/`.
+        transcript_group=run_id,
     )
+
+
+def _attempt_transcript(outcome: object) -> dict:
+    """2026-09-28 (the user's words: "go ahead and just capture
+    everything"): the call's transcript copy for its `attempts` row --
+    ``{"session": {session_id, path, bytes, entries, assistant_blocks}}``
+    or ``{"session": {session_id, error}}`` -- or nothing when no copy was
+    attempted (`sdk.capture_sessions` off, or a fake backend). Counts
+    only; the path is relative to the cache directory."""
+    transcript = getattr(outcome, "transcript", None)
+    return {"session": dict(transcript)} if isinstance(transcript, dict) else {}
 
 
 def _attempt_usage(outcome: object) -> dict:
@@ -1305,6 +1344,9 @@ def _repair_spec(spec: invocation.SessionSpec, error: str) -> invocation.Session
         # conditions; with it, it reads them from the cache as well.
         append_system_prompt_file=spec.append_system_prompt_file,
         exclude_dynamic_sections=spec.exclude_dynamic_sections,
+        # Carried (2026-09-28): the repair turn's transcript copy sits
+        # beside its decision call's.
+        transcript_group=spec.transcript_group,
     )
 
 
@@ -3068,8 +3110,32 @@ def _apply_packet(
             ))
             continue
         if isinstance(case_data, dict) and case_data.get("kind") == "reconsider":
-            for rid in case_data.get("records") or []:
-                verbs.reconsider(home, rid, case=case_id, by="steward", no_push=True)
+            try:
+                for rid in case_data.get("records") or []:
+                    verbs.reconsider(home, rid, case=case_id, by="steward", no_push=True)
+            except (verbs.VerbError, ledger_ops.LedgerOpsError) as exc:
+                # 2026-09-28 (fail-state audit finding 10): a reconsider
+                # case whose outcome does not fit the record ("outcome
+                # 'rehome' does not apply to a 'rejected' record") raised
+                # out of the run after `cases.record` had committed the
+                # case, so the rest of the packet and every later packet
+                # stopped, run after run, until the cap. It is refused
+                # like a case the case writer refuses: its sheet is not
+                # applied, its lessons are refused with the reason, and
+                # the run goes on.
+                refused_records = case_data.get("records")
+                refused += max(1, len(refused_records) if isinstance(refused_records, list) else 1)
+                error = refusal_text(exc)
+                _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "refused",
+                    "stage_file": case_path.name, "error": error})
+                _update_manifest(home, run_id, reason=f"case {case_id} refused", update=lambda current: (
+                    current["cases"][case_id].update(phase="refused", error=error),
+                    current["packets"][packet_index - 1]["dispositions"].update({
+                        rid: {"state": "refused", "input_version": inputs[rid], "reason": error}
+                        for rid in (refused_records or []) if rid in inputs
+                    }),
+                ))
+                continue
         items = batch.load_sheet(sheet_path, home=home)
         held: list[dict] | None = None
         if recipe.get("parking_reason") is not None:
@@ -3161,6 +3227,7 @@ def _apply_packet(
                     receipt_ok = False
                     phase = "unfinished"
                     halt_code = result.process_code or 8
+                _note_host_results(result)
         failed = [item for item in result.items if item.state in _FAILED_ITEM_STATES]
         refused += len(failed)
         successful = {item.id for item in result.items if item.state in _SUCCESS_RECEIPT_STATES}
@@ -3313,16 +3380,40 @@ def run(home: Path | str, *, dry_run: bool = False) -> RunResult:
     publish = not dry_run and not worker.no_push_requested()
     head_before = verbs.ledger_head(home) if publish else None
     result: RunResult | None = None
-    global _DRY_RUN_JOURNAL
+    global _DRY_RUN_JOURNAL, _HOST_RESULT_IDS
     marked_before = _DRY_RUN_JOURNAL
+    host_before = _HOST_RESULT_IDS
     _DRY_RUN_JOURNAL = dry_run
+    _HOST_RESULT_IDS = []
     try:
         result = _run(home, dry_run=dry_run)
+        if not dry_run and _HOST_RESULT_IDS:
+            result.recompile_skipped = _post_run_recompile(home, result.run_id, _HOST_RESULT_IDS)
         return result
     finally:
         _DRY_RUN_JOURNAL = marked_before
+        _HOST_RESULT_IDS = host_before
         if publish:
             _publish(home, head_before, result.run_id if result is not None else None)
+
+
+def _post_run_recompile(home: Path, run_id: str | None, record_ids: list[str]) -> list[str]:
+    """2026-09-28: after a run that applied a route, rehome or rescope, one
+    recompile of those records' own targets (:func:`verbs.post_run_recompile`)
+    -- after `_run` has let go of every lock, before the run's push. It is
+    journaled and never raises out of the run; a target it skips is
+    returned for the run's result and journaled, not retried here (the
+    next run that touches it, or a person's `self-learn recompile`, does)."""
+    ident = {"run_id": run_id} if run_id else {}
+    try:
+        outcome = verbs.post_run_recompile(home, record_ids)
+    except Exception as exc:  # noqa: BLE001 -- never mask the run's own outcome
+        _journal(home, {"ts": chrono.now_iso(), **ident, "status": "recompile-failed",
+            "records": sorted(set(record_ids)), "error": _failure_detail(_short_cause(exc))})
+        return []
+    skipped = [str(line) for line in cast(list, outcome["skipped"])]
+    _journal(home, {"ts": chrono.now_iso(), **ident, "status": "recompile", **outcome})
+    return skipped
 
 
 def _publish(home: Path, head_before: str | None, run_id: str | None = None) -> None:
@@ -3596,7 +3687,8 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     result.failed_calls += 1
                     transient_retry = {"failure": outcome.failure,
                         "detail": _failure_detail(outcome.detail),
-                        **model_failures.failure_fields(outcome)}
+                        **model_failures.failure_fields(outcome),
+                        **_attempt_transcript(outcome)}
                     _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
                         "status": "transient-retry", "packet": packet_index,
                         "call": "decision", **transient_retry})
@@ -3614,6 +3706,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     **model_failures.failure_fields(outcome),
                     **({"transient_retry": transient_retry} if transient_retry else {}),
                     **_attempt_usage(outcome),
+                    **_attempt_transcript(outcome),
                     # U3a data points: what the brief carried, and how much
                     # the steward still read for itself.
                     "brief": brief_stats,
@@ -3769,7 +3862,8 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                         result.failed_calls += 1
                         repair_retry = {"failure": repair.failure,
                             "detail": _failure_detail(repair.detail),
-                            **model_failures.failure_fields(repair)}
+                            **model_failures.failure_fields(repair),
+                            **_attempt_transcript(repair)}
                         _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
                             "status": "transient-retry", "packet": packet_index,
                             "call": "repair", **repair_retry})
@@ -3783,6 +3877,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                         **model_failures.failure_fields(repair),
                         **({"transient_retry": repair_retry} if repair_retry else {}),
                         **_attempt_usage(repair),
+                        **_attempt_transcript(repair),
                         "reads": steward_inputs.tool_reads(repair, home)})
                     try:
                         if not repair.ok:

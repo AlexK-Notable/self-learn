@@ -211,7 +211,13 @@ revert). Doc 13 promotes that to the general rule:
    the user's own next commit would carry); the ledger commit stands and
    the next `recompile` retries the write. In `recompile` the refused
    target is skipped with the hook's message and every other target is
-   still repaired. Never `--no-verify`.
+   still repaired. Never `--no-verify`. *Amended 2026-09-28:* the same
+   holds for the removal of a retired hook's guard script (`git rm`, then
+   commit): a refused commit puts the script back and unstages it, so no
+   staged deletion is left in the user's repo, and the removal is owed —
+   a retired hook record whose script is still on disk is what
+   `recompile` removes; until it can commit, `recompile` reports that
+   script as skipped ("hook removal not done — still owed").
 3. **The rejected-proposal digest moves its grep to the ledger repo**
    (resolution commits live there now).
 4. **The sentinel contract SHRINKS.** The ledger repo has no watcher
@@ -492,6 +498,17 @@ Each suite has its own sanctioned entry point instead (CLI: `plugins/
 self-learn/cli/scripts/suite`; UI: `cd plugins/self-learn/ui && uv run
 pytest`, explicit `tests/` path) — this has always been true and is not
 something this unit changed.
+
+**Session copies (2026-09-28).** The user's words: "go ahead and just
+capture everything." After every model session the seam copies Claude
+Code's own transcript of it (and its `subagents/` files) into this
+namespace at `sessions/<surface>/<run id>/<session id>.jsonl` — cache,
+not ledger, because a transcript holds raw tool output. The ledger and
+the journals get only a record: session id, the copy's cache-relative
+path, its size, and counts of entries and assistant blocks by type
+(`02-schema.md` §3a.5). Nothing self-learn builds for a model reads this
+directory. `sdk.capture_sessions` (default on) turns the copies — and the
+summarized thinking every session asks for — off. Copies are not pruned.
 
 **The lesson index and the host unit's environment (U2, 2026-09-26).**
 The lesson index (`02-schema.md` §3a.7) lives in this namespace at

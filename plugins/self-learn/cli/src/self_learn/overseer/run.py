@@ -1,6 +1,6 @@
 """O-3 — the weekly two-invocation overseer runner.
 
-The model can read and write only ``worker.stage/overseer``.  This module
+The model can read and write only its own workspace (:func:`workspace_dir`).  This module
 validates that stage and owns every ledger write through the existing case,
 batch, observation, intent, and git seams.
 
@@ -22,7 +22,7 @@ import re
 import shutil
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
@@ -34,7 +34,7 @@ from ..ledger import resolve_home
 from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
 from ..primitives import chrono, fsops
 from ..records import Record, build_covered_by
-from . import health, notify, population as population_mod
+from . import formats, health, notify, population as population_mod
 from .conversation import _PROPOSITION_RE
 
 EXIT_OK = 0
@@ -59,6 +59,18 @@ _REPORT_LINE_GUIDE = 60
 #: user-model proposition, `conversation._PROPOSITION_RE`.
 _ASK_ID_RE = re.compile(r"^q-[a-z0-9][a-z0-9-]{1,62}$")
 _CASE_ID_RE = re.compile(r"^case-[0-9a-f]{8}$")
+#: 2026-09-28: the closed sets and required fields the runner enforces on
+#: model-written files, named once so the validators below and the
+#: workspace's `formats/` folder (`overseer/formats.py`) read the same
+#: values and cannot drift apart.
+INITIAL_VIEW_KEYS = ("id", "what_i_would_do", "why", "what_evidence_decides_it", "confidence")
+INITIAL_CONFIDENCE = ("clear", "close-call")
+FINDING_KEYS = ("case", "kind", "text", "ref")
+FINDING_KINDS = ("examined", "dependency-moved")
+QUESTION_KINDS = ("reading", "ask")
+REQUIRED_OUTPUT_FILES = ("report.md", "findings.yaml", "questions.yaml", "user-model-delta.yaml")
+MAINTENANCE_CASE_FIELDS = ("kind", "trigger", "outcome", "records", "scope", "question", "evidence", "decision")
+SUCCESSOR_CASE_FIELDS = (*MAINTENANCE_CASE_FIELDS, "supersedes")
 #: The overseer's own journal (2026-09-24, the user's words: "a journal of
 #: sorts the overseer could uuse as a kind of scratch bucket"). One stage
 #: file for the whole run, both phases; committed with every commit the
@@ -186,10 +198,14 @@ class RunResult:
     applied: int = 0
     refused: int = 0
     report: str | None = None
+    #: 2026-09-28: the targets the post-run recompile skipped
+    #: (``"<target>: <reason>"``), one pass, never retried in the run.
+    recompile_skipped: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
         data["examined"] = list(self.examined)
+        data["recompile_skipped"] = list(self.recompile_skipped)
         return data
 
 
@@ -236,6 +252,17 @@ def journal_path(home: Path | str) -> Path:
 #: every journal row written meanwhile is marked `"dry_run": true`, which
 #: serve's attempt cooldown skips (the steward's `_DRY_RUN_JOURNAL` twin).
 _DRY_RUN_JOURNAL = False
+
+#: 2026-09-28: the ids of the route/rehome/rescope items this run applied
+#: or left `unresolved-host` (:func:`verbs.host_result_ids`); `None`
+#: outside a run. :func:`run` hands them to one narrowed recompile after
+#: `_run` returns -- past the commit lock phase B holds.
+_HOST_RESULT_IDS: list[str] | None = None
+
+
+def _note_host_results(result: batch.BatchResult) -> None:
+    if _HOST_RESULT_IDS is not None:
+        _HOST_RESULT_IDS.extend(verbs.host_result_ids(result.items))
 
 
 def _journal(home: Path, entry: dict[str, Any]) -> None:
@@ -317,28 +344,9 @@ class _YamlParseError(OverseerError):
     file's contents cost."""
 
 
-def _yaml_error_text(name: str, exc: YAMLError) -> str:
-    """``<file>: cannot parse — <problem> at line L, column C``.
-
-    The parser's own ``str(exc)`` quotes a snippet of the source around the
-    error, and its ``problem`` can quote the model's text too: an alias, a
-    tag, a character, or a duplicate key's values (which can hold quotes of
-    their own, so no quote-matching rule is safe). Only the position
-    (1-based, as the parser prints it) and the problem cut at its first
-    quote character are kept (``mapping values are not allowed here``,
-    ``found undefined alias``, ``found duplicate key``). A problem that
-    still matches the secret scan becomes a fixed phrase: runner lines are
-    committed, and a scan hit in the run record would refuse the run this
-    exists to keep."""
-    problem = str(getattr(exc, "problem", None) or getattr(exc, "context", None) or "")
-    problem = " ".join(re.split(r"['\"]", problem, maxsplit=1)[0].split()).rstrip(" ,:")[:120]
-    if not problem or scan.scan(problem):
-        problem = "not valid YAML"
-    mark = getattr(exc, "problem_mark", None) or getattr(exc, "context_mark", None)
-    where = ""
-    if mark is not None and isinstance(getattr(mark, "line", None), int):
-        where = f" at line {mark.line + 1}, column {int(getattr(mark, 'column', 0)) + 1}"
-    return f"{name}: cannot parse — {problem}{where}"
+#: The shared rule (2026-09-28): one helper for the overseer and the
+#: steward, in `scan` because it decides what text may be committed.
+_yaml_error_text = scan.yaml_error_text
 
 
 def _yaml_mapping(path: Path) -> dict[str, Any]:
@@ -357,46 +365,111 @@ def _yaml_mapping(path: Path) -> dict[str, Any]:
     return data
 
 
-def _selected_ids(selection: dict[str, Any], available: set[str]) -> tuple[str, ...]:
-    # coverage_update owns the strict unknown-key validation.  This read
-    # additionally refuses duplicate, malformed, or non-population ids.
-    population_mod.coverage_update(None, selection, [], [])
+def _case_label(value: object) -> str:
+    """A model-written case id fit for a committed line: the id itself
+    when it has a case id's shape, otherwise nothing (never the model's
+    free text)."""
+    return f" ({value})" if isinstance(value, str) and cases.CASE_ID_RE.match(value) else ""
+
+
+def _kept_selection(
+    selection: dict[str, Any], available: set[str]
+) -> tuple[dict[str, Any], tuple[str, ...], list[str]]:
+    """Phase A's selection, entry by entry (2026-09-28, fail-state audit
+    finding 9): an entry that is not one string id, carries a key other
+    than ``id``, names a case outside this week's population, or repeats
+    one is dropped and named (entry number and, when it has a case id's
+    shape, the id -- never other text). Before, one such entry refused
+    the whole attempt after about nine minutes of phase A. The file's
+    own shape (``cases`` not a list, an unknown top-level key) still
+    refuses: :func:`population.coverage_update` owns that check, run on
+    the kept selection. Returns the kept selection, its ids, the drops."""
+    entries = selection.get("cases")
+    if entries is None:
+        entries = []
+    if not isinstance(entries, list):
+        raise OverseerError("selection.yaml: cases must be a list")
+    allowed = population_mod._SELECTION_CASE_ALLOWED_KEYS  # noqa: SLF001 -- one rule
+    kept: list[dict[str, Any]] = []
     ids: list[str] = []
-    for entry in selection.get("cases") or []:
+    drops: list[str] = []
+    for n, entry in enumerate(entries, start=1):
         if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
-            raise OverseerError("selection.yaml: every case entry needs exactly one string id")
+            drops.append(f"selection.yaml entry {n}: dropped — a case entry needs exactly one string id")
+            continue
         case_id = entry["id"]
-        if case_id not in available:
-            raise OverseerError(f"selection.yaml: unknown case {case_id}")
-        if case_id in ids:
-            raise OverseerError(f"selection.yaml: duplicate case {case_id}")
-        ids.append(case_id)
-    return tuple(ids)
+        label = _case_label(case_id)
+        if set(entry) - allowed:
+            drops.append(f"selection.yaml entry {n}{label}: dropped — a case entry carries only id")
+        elif case_id not in available:
+            drops.append(f"selection.yaml entry {n}{label}: dropped — not a case of this week's population")
+        elif case_id in ids:
+            drops.append(f"selection.yaml entry {n}{label}: dropped — selected twice")
+        else:
+            kept.append(entry)
+            ids.append(case_id)
+    cleaned = {**selection, "cases": kept}
+    # coverage_update owns the strict top-level unknown-key validation.
+    population_mod.coverage_update(None, cleaned, [], [])
+    return cleaned, tuple(ids), drops
 
 
-def _validate_initial(path: Path, selected: tuple[str, ...]) -> None:
+def _selected_ids(selection: dict[str, Any], available: set[str]) -> tuple[str, ...]:
+    """The strict form: every entry valid, or :class:`OverseerError` (the
+    workspace's format examples are checked with it)."""
+    _cleaned, ids, drops = _kept_selection(selection, available)
+    if drops:
+        raise OverseerError(drops[0])
+    return ids
+
+
+def _kept_initial_views(
+    path: Path, selected: tuple[str, ...]
+) -> tuple[dict[str, Any], tuple[str, ...], list[str]]:
+    """Phase A's initial views, entry by entry (2026-09-28, fail-state
+    audit finding 9): an entry without exactly the view's fields, with an
+    empty field, a confidence outside the closed set (``high``), a repeat,
+    or a case that was not selected is dropped and named. Phase A's rule
+    that every selected case has a recorded initial view is kept by
+    DE-SELECTING a selected case left without a valid one (named too), not
+    by refusing the attempt. A file that is not a mapping with a ``cases``
+    list still refuses. Returns the kept file, the still-selected ids (in
+    selection order), the drops."""
     data = _yaml_mapping(path)
     entries = data.get("cases")
     if not isinstance(entries, list):
         raise OverseerError("initial-views.yaml: cases must be a list")
-    allowed = {"id", "what_i_would_do", "why", "what_evidence_decides_it", "confidence"}
-    found: set[str] = set()
-    for entry in entries:
+    allowed = set(INITIAL_VIEW_KEYS)
+    found: dict[str, dict[str, Any]] = {}
+    drops: list[str] = []
+    for n, entry in enumerate(entries, start=1):
+        label = _case_label(entry.get("id")) if isinstance(entry, dict) else ""
+        where = f"initial-views.yaml entry {n}{label}: dropped — "
         if not isinstance(entry, dict) or set(entry) != allowed:
-            raise OverseerError(f"initial-views.yaml: every entry needs exactly {sorted(allowed)!r}")
-        if not all(isinstance(entry.get(key), str) and entry[key].strip() for key in allowed):
-            raise OverseerError("initial-views.yaml: every entry field must be non-empty text")
-        if entry["confidence"] not in ("clear", "close-call"):
-            raise OverseerError("initial-views.yaml: confidence must be clear or close-call")
-        if entry["id"] in found:
-            raise OverseerError(f"initial-views.yaml: duplicate case {entry['id']}")
-        found.add(entry["id"])
-    unexpected = sorted(found - set(selected))
-    if unexpected:
-        raise OverseerError(f"initial-views.yaml: unselected case(s) {unexpected!r}")
-    missing = [case_id for case_id in selected if case_id not in found]
-    if missing:
-        raise OverseerError(f"initial-views.yaml: missing selected case(s) {missing!r}")
+            drops.append(where + f"an entry needs exactly {sorted(allowed)!r}")
+        elif not all(isinstance(entry.get(key), str) and entry[key].strip() for key in allowed):
+            drops.append(where + "every field must be non-empty text")
+        elif entry["confidence"] not in INITIAL_CONFIDENCE:
+            drops.append(where + "confidence must be clear or close-call")
+        elif entry["id"] in found:
+            drops.append(where + "a second view of the same case")
+        elif entry["id"] not in selected:
+            drops.append(where + "that case was not selected")
+        else:
+            found[entry["id"]] = entry
+    kept = tuple(case_id for case_id in selected if case_id in found)
+    for case_id in selected:
+        if case_id not in found:
+            drops.append(f"{case_id}: de-selected — no valid initial view in initial-views.yaml")
+    return {**data, "cases": [found[case_id] for case_id in kept]}, kept, drops
+
+
+def _validate_initial(path: Path, selected: tuple[str, ...]) -> None:
+    """The strict form: every entry valid and every selected case viewed,
+    or :class:`OverseerError` (the workspace's format examples)."""
+    _data, _kept, drops = _kept_initial_views(path, selected)
+    if drops:
+        raise OverseerError(drops[0])
 
 
 def _stage_files(stage: Path) -> list[Path]:
@@ -470,6 +543,27 @@ def _secret_files(stage: Path, case_files: frozenset[Path] = frozenset()) -> lis
     return names
 
 
+def workspace_dir(home: Path | str) -> Path:
+    """The overseer's own workspace (2026-09-28): the session's cwd and its
+    only read and write area. Outside the kept phase A
+    (`_phase_a_keep_dir`) and never under the worker's stage
+    (`worker.stage_dir()`), so neither runner's reset can empty the other's
+    folder (fail-state audit finding 11)."""
+    # `<cache>/overseer.workspace/overseer`: the surface's containment
+    # renders `{stage_dir}/overseer/**` (`invocation.containment_for`), so
+    # the runner passes this folder's parent as `stage_dir`.
+    return worker.cache_dir(Path(home)) / "overseer.workspace" / "overseer"
+
+
+def workspace_reset(home: Path | str) -> Path:
+    """Empty and recreate the workspace; answers its path. Touches nothing
+    outside it."""
+    path = workspace_dir(home)
+    shutil.rmtree(path, ignore_errors=True)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _write_stage(stage_dir: Path, path: Path, text: str) -> None:
     """Write only beneath the overseer's exclusive stage directory."""
     root = stage_dir.resolve()
@@ -532,11 +626,18 @@ contains ": " does not parse, and the runner cannot use a file that does not par
 """
 
 
+#: 2026-09-28: both phase prompts point at the workspace's formats folder.
+_FORMATS_LINE = f"""The exact shape of every file you write, the value sets you pick from, and the rules the
+runner enforces are in {formats.FORMATS_DIR}/ here: read {formats.FORMATS_DIR}/README.md before you write anything.
+"""
+
+
 def _phase_a_prompt(stage: Path, count: int, excluded: int) -> str:
     return f"""You are the self-learn overseer, examining decisions independently.
 Binding rules: provisional is bookkeeping; silence is not agreement; evidence is never authority.
-Read only this stage. Use Read, Grep, and Glob; write (Write, Edit) only beneath {stage}.
-The blind population has {count} cases. {excluded} cases excluded: freeze hash mismatch.
+This folder, {stage}, is your workspace: you can read and write only inside it.
+Use Read, Grep, and Glob to read; Write and Edit to write.
+{_FORMATS_LINE}The blind population has {count} cases. {excluded} cases excluded: freeze hash mismatch.
 Do not seek or infer the steward's outcome, verb, decision, receipts, or rationale.
 Read population.txt, nudges.yaml, and blind/*.md. Choose any number of cases; there is no sample cap.
 Write selection.yaml with only cases: [{{id: case-...}}], why_these, and why_stopped.
@@ -549,7 +650,8 @@ what_evidence_decides_it, and confidence (clear or close-call).
 def _phase_b_prompt(stage: Path, selected: tuple[str, ...], parked: tuple[str, ...]) -> str:
     return f"""You are the self-learn overseer. The evidence-first view is complete.
 You may now read the steward rationale and full decided account in full/*.md.
-Read selection.yaml, initial-views.yaml, every parked/*.md, user-model.yaml, health.yaml, and
+This folder, {stage}, is your workspace: you can read and write only inside it.
+{_FORMATS_LINE}Read selection.yaml, initial-views.yaml, every parked/*.md, user-model.yaml, health.yaml, and
 answers.yaml (the user's answers to earlier overseer questions, newest first; it may be empty).
 Selected cases: {', '.join(selected) if selected else 'none'}.
 Parked cases (the entire queue, never truncated): {', '.join(parked) if parked else 'none'}.
@@ -634,7 +736,15 @@ def _population_key(population_text: str) -> str:
     return hashlib.sha256(population_text.encode("utf-8")).hexdigest()[:16]
 
 
-def _keep_phase_a(home: Path, stage: Path, week: str, key: str) -> None:
+#: 2026-09-28 (batch 0928 unit B): the kept phase A's journal and the id of
+#: the attempt that wrote it.
+_KEPT_JOURNAL = "journal.md"
+_KEPT_RUN = "run.id"
+
+
+def _keep_phase_a(
+    home: Path, stage: Path, week: str, key: str, run_id: str | None = None,
+) -> None:
     """2026-09-27 (fail-state audit finding 7): keep a validated phase A for
     the same week's next attempt, keyed by the population it saw. Only this
     week's copy is kept; older weeks' copies are removed."""
@@ -648,6 +758,13 @@ def _keep_phase_a(home: Path, stage: Path, week: str, key: str) -> None:
     target.mkdir(parents=True, exist_ok=True)
     for name in _PHASE_A_FILES:
         fsops.atomic_write(target / name, (stage / name).read_bytes(), fsync=False)
+    # 2026-09-28 (unit B): the journal as it stands after phase A -- only
+    # phase A's entries, since this runs before phase B is invoked -- so a
+    # reuse can carry them into the run whose decisions rest on them.
+    journal = stage / MODEL_JOURNAL_NAME
+    if run_id is not None and journal.is_file():
+        fsops.atomic_write(target / _KEPT_JOURNAL, journal.read_bytes(), fsync=False)
+        fsops.atomic_write(target / _KEPT_RUN, run_id + "\n", fsync=False)
     fsops.atomic_write(target / "population.key", key + "\n", fsync=False)
 
 
@@ -663,20 +780,65 @@ def _reuse_phase_a(home: Path, stage: Path, week: str, key: str) -> bool:
         return False
     for name in _PHASE_A_FILES:
         _write_stage(stage, stage / name, (source / name).read_text(encoding="utf-8"))
+    _carry_kept_journal(source, stage)
     return True
 
 
-def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, run_id: str):
+def _carry_kept_journal(source: Path, stage: Path) -> None:
+    """2026-09-28 (batch 0928 unit B): append the reused phase A's journal
+    entries -- everything after its header line -- to this run's journal,
+    under one line naming the attempt that wrote them. Before, a reused
+    phase A's entries were lost and the committed journal lacked the work
+    this run's decisions rest on. Never fatal: the journal never changes a
+    run's outcome, and the commit-time secret scan still covers the text."""
+    try:
+        kept = (source / _KEPT_JOURNAL).read_text(encoding="utf-8")
+        old_run = (source / _KEPT_RUN).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return
+    lines = kept.splitlines()
+    body = "\n".join(lines[1:] if lines and lines[0].startswith("# ") else lines).strip()
+    if not body:
+        return
+    journal = stage / MODEL_JOURNAL_NAME
+    try:
+        current = journal.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    marker = (
+        f"(The entries below are phase A of attempt {old_run}, kept and reused by "
+        "this run instead of a new phase A.)"
+    )
+    _write_stage(stage, journal, current.rstrip("\n") + f"\n\n{marker}\n\n{body}\n")
+
+
+def _session_record(outcome: Any, phase: str) -> dict[str, Any] | None:
+    """2026-09-28 (the user's words: "go ahead and just capture
+    everything"): what the seam kept of one model session's transcript
+    (`session_copies`) -- session id, the copy's cache-relative path, its
+    size, its entry and block counts, or an ``error`` -- tagged with the
+    phase. ``None`` when no copy was attempted (`sdk.capture_sessions`
+    off, a fake backend, or a reused phase A that made no call)."""
+    transcript = getattr(outcome, "transcript", None)
+    if not isinstance(transcript, dict):
+        return None
+    return {"phase": phase, **transcript}
+
+
+def _invoke(
+    home: Path, stage: Path, prompt: str, timeout: float, label: str, run_id: str,
+    sessions: list[dict[str, Any]] | None = None,
+):
     containment = invocation.containment_for(
         "overseer",
         # `Edit` joins `Write` (2026-09-24, the journal). Both are in the
         # charter's write family (`invocation_sdk/charter.py` `W`), which
         # judges every call by path against this surface's ONE write glob
-        # (`{stage_dir}/overseer/**`, `containment_for`) BEFORE this list
+        # (`{workspace}` and below, `containment_for`) BEFORE this list
         # is consulted -- so Edit is confined exactly as Write is.
         allowed_tools="Read,Grep,Glob,Write,Edit",
         disallowed_tools="Bash",
-        stage_dir=worker.stage_dir(),
+        stage_dir=stage.parent,
         enforce=worker._enforce_scope(),
     )
     spec = (
@@ -698,9 +860,15 @@ def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, ru
             # overseer session -- a phase-B note reached the next blind
             # phase A. It would also make the journal readable across runs.
             extra_env=invocation.NO_AUTO_MEMORY_ENV,
+            # 2026-09-28: the run's transcript copies sit in one folder,
+            # `<cache>/sessions/overseer/<run id>/`.
+            transcript_group=run_id,
         )
     )
     outcome = invocation.write_session(spec)
+    record = _session_record(outcome, label)
+    if record is not None and sessions is not None:
+        sessions.append(record)
     if model_failures.should_retry(outcome):
         # 2026-09-27 (fail-state audit finding 4): overloaded, a server
         # error, a rate limit or the network -- the same call is made once
@@ -708,9 +876,13 @@ def _invoke(home: Path, stage: Path, prompt: str, timeout: float, label: str, ru
         # files stay in the stage; the retried session continues them.
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "transient-retry",
             "phase": label, "detail": _failure_detail(outcome.detail),
-            **model_failures.failure_fields(outcome)})
+            **model_failures.failure_fields(outcome),
+            **({"session": record} if record is not None else {})})
         model_failures.backoff()
         outcome = invocation.write_session(spec)
+        record = _session_record(outcome, label)
+        if record is not None and sessions is not None:
+            sessions.append(record)
     return outcome
 
 
@@ -889,7 +1061,7 @@ def _questions(
         kind = item.get("kind")
         if kind is None and isinstance(item.get("id"), str) and item["id"].startswith("um-"):
             kind = "reading"  # a legacy entry: `{id, cases}` with a proposition id
-        if kind not in ("reading", "ask"):
+        if kind not in QUESTION_KINDS:
             dropped.append(f"question {label}: dropped — kind must be reading or ask")
             continue
         problem = _question_problem(item, kind, propositions, known_cases)
@@ -1136,11 +1308,11 @@ def _validate_findings(
             else f"finding {ordinal}"
         )
         problem: str | None = None
-        if not isinstance(finding, dict) or set(finding) - {"case", "kind", "text", "ref"}:
+        if not isinstance(finding, dict) or set(finding) - set(FINDING_KEYS):
             problem = "an entry permits case, kind, text, and ref only"
         elif case_id not in selected:
             problem = "names a case not selected this run"
-        elif finding.get("kind") not in ("examined", "dependency-moved"):
+        elif finding.get("kind") not in FINDING_KINDS:
             problem = "kind must be examined or dependency-moved"
         elif not isinstance(finding.get("text"), str) or not finding["text"].strip():
             problem = "a finding needs non-empty text"
@@ -1177,7 +1349,7 @@ def _coverage_text(
 
 def _validate_successor(path: Path, parked: set[str]) -> None:
     data = _yaml_mapping(path)
-    required = {"kind", "trigger", "outcome", "records", "scope", "question", "evidence", "decision", "supersedes"}
+    required: set[str] = set(SUCCESSOR_CASE_FIELDS)
     missing = sorted(required - set(data))
     if missing:
         raise OverseerError(f"{path.name}: missing successor field(s) {missing!r}")
@@ -1201,7 +1373,7 @@ def _validate_maintenance_case(path: Path) -> None:
     without a rule of its own the pairing had no validator at all.
     """
     data = _yaml_mapping(path)
-    required = {"kind", "trigger", "outcome", "records", "scope", "question", "evidence", "decision"}
+    required: set[str] = set(MAINTENANCE_CASE_FIELDS)
     missing = sorted(required - set(data))
     if missing:
         raise OverseerError(f"{path.name}: missing case field(s) {missing!r}")
@@ -1501,7 +1673,7 @@ def _refuse_in_span(
 def _phase_b_output_present(stage: Path) -> bool:
     """Whether phase B left every file a run needs -- the four required
     files and at least one sheet -- whatever state its session ended in."""
-    required = ("report.md", "findings.yaml", "questions.yaml", "user-model-delta.yaml")
+    required = REQUIRED_OUTPUT_FILES
     if not all((stage / name).is_file() for name in required):
         return False
     return any(stage.glob("sheet-*.yaml")) or (stage / "sheet.yaml").is_file()
@@ -1535,6 +1707,47 @@ def _sheet_pairs(stage: Path, drops: list[str] | None = None) -> list[tuple[Path
     # half unenforceable rather than merely unenforced.
     case = stage / "case.yaml"
     return [(case if case.is_file() else None, sheet)]
+
+
+def _drop_secret_pairs(
+    stage: Path,
+    secret_files: list[str],
+    pairs: list[tuple[Path | None, Path]],
+    drops: list[str],
+) -> tuple[list[str], list[tuple[Path | None, Path]]]:
+    """Take out of *pairs* each case/sheet pair a secret-scan hit falls in
+    (2026-09-28, fail-state audit finding 9), naming it in *drops* by file
+    only. A secret never reaches the ledger either way; before, one hit in
+    one pair refused the whole run. Returns the scan hits left (those in
+    any other file, which still refuse the run) and the pairs kept."""
+    flagged = set(secret_files)
+    kept: list[tuple[Path | None, Path]] = []
+    for case_file, sheet_file in pairs:
+        files = [f for f in (case_file, sheet_file) if f is not None]
+        hit = [f.relative_to(stage).as_posix() for f in files
+               if f.relative_to(stage).as_posix() in flagged]
+        if not hit:
+            kept.append((case_file, sheet_file))
+            continue
+        flagged -= {f.relative_to(stage).as_posix() for f in files}
+        drops.append(
+            " and ".join(f.name for f in files)
+            + f": dropped — the secret scan matched {', '.join(hit)}; "
+            "nothing of this pair reaches the ledger"
+        )
+    return [name for name in secret_files if name in flagged], kept
+
+
+def _pair_problem_text(exc: BaseException, stage: Path) -> str:
+    """What a dropped pair's line says (2026-09-28): the validator's own
+    message, with the stage's absolute path taken out (a sheet error
+    names its file by full path) and bounded and secret-scanned like a
+    failure note's detail -- the same text a whole-run refusal committed
+    before, now for one pair."""
+    text = str(exc)
+    for prefix in {str(stage.resolve()) + "/", str(stage) + "/"}:
+        text = text.replace(prefix, "")
+    return _failure_detail(text) or type(exc).__name__
 
 
 def _load_sheet_allow_empty(path: Path, home: Path) -> batch.Sheet | None:
@@ -2408,6 +2621,7 @@ def _prepare_manifest(
     runner_notes: list[str] | None = None,
     journal_text: str | None = None,
     trigger: str = TRIGGER_SCHEDULED,
+    sessions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     existing = {row["case"] for row in cases.list_cases(home, only_ok=True)}
     recipes: dict[str, Any] = {}
@@ -2512,6 +2726,10 @@ def _prepare_manifest(
             _model_operation(payload, ordinal=index)
             for index, payload in enumerate(model_updates, start=1)
         ],
+        # 2026-09-28: one row per model session this run made -- its
+        # transcript copy in the cache (`session_copies`): id, cache-relative
+        # path, size, entry and block counts. Counts only, never text.
+        "sessions": [dict(row) for row in (sessions or [])],
     }
     _scan_manifest_or_refuse(manifest)
     return manifest
@@ -3074,9 +3292,7 @@ def _execute_manifest(
     selected = tuple(cast(list[str], manifest.get("selected") or []))
     excluded = int(manifest.get("excluded") or 0)
     model_calls = int(manifest.get("model_calls") or 0)
-    stage = worker.stage_dir() / "overseer"
-    worker.stage_reset(home)
-    stage.mkdir(parents=True, exist_ok=True)
+    stage = workspace_reset(home)
     _write_stage(stage, stage / "report.md", cast(str, manifest["report"]))
     carried_journal = manifest.get("journal")
     if isinstance(carried_journal, str) and carried_journal:
@@ -3162,6 +3378,7 @@ def _execute_manifest(
             manifest["remaining"] = order[position:]
             break
         codes.append(result.process_code)
+        _note_host_results(result)
         recipe["dispositions"] = [
             {
                 "n": item.n,
@@ -3535,16 +3752,41 @@ def run(
     publish = not dry_run and not boundary_no_push
     head_before = verbs.ledger_head(home) if publish else None
     result: RunResult | None = None
-    global _DRY_RUN_JOURNAL
+    global _DRY_RUN_JOURNAL, _HOST_RESULT_IDS
     marked_before = _DRY_RUN_JOURNAL
+    host_before = _HOST_RESULT_IDS
     _DRY_RUN_JOURNAL = dry_run
+    _HOST_RESULT_IDS = []
     try:
         result = _run(home, dry_run=dry_run, no_push=boundary_no_push, manual=manual)
+        if not dry_run and _HOST_RESULT_IDS:
+            skipped = _post_run_recompile(home, result.run, _HOST_RESULT_IDS)
+            if skipped:
+                result = replace(result, recompile_skipped=tuple(skipped))
         return result
     finally:
         _DRY_RUN_JOURNAL = marked_before
+        _HOST_RESULT_IDS = host_before
         if publish:
             _publish(home, head_before, result.run if result is not None else "?")
+
+
+def _post_run_recompile(home: Path, run_id: str, record_ids: list[str]) -> list[str]:
+    """2026-09-28: after a run that applied a route, rehome or rescope, one
+    recompile of those records' own targets (:func:`verbs.post_run_recompile`)
+    -- after `_run` has let go of the commit lock, before the run's push.
+    It is journaled and never raises out of the run; a target it skips is
+    returned for the run's result and journaled, not retried here."""
+    try:
+        outcome = verbs.post_run_recompile(home, record_ids)
+    except Exception as exc:  # noqa: BLE001 -- never mask the run's own outcome
+        cause = " ".join(str(exc).split()) or type(exc).__name__
+        _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "recompile-failed",
+            "records": sorted(set(record_ids)), "error": cause[:300]})
+        return []
+    skipped = [str(line) for line in cast(list, outcome["skipped"])]
+    _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "recompile", **outcome})
+    return skipped
 
 
 def _publish(home: Path, head_before: str | None, run_id: str) -> None:
@@ -3680,12 +3922,13 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "runaway", "reason": reason})
         return RunResult("runaway", EXIT_REFUSED, run_id)
 
-    worker.stage_reset(home)
-    stage = worker.stage_dir() / "overseer"
-    stage.mkdir(parents=True, exist_ok=True)
+    stage = workspace_reset(home)
     # The run's journal exists before phase A and is never truncated: no
     # stage reset happens between phase A and phase B.
     _start_model_journal(stage, run_id, started[:10])
+    # 2026-09-28: the exact shapes and closed sets phase A needs, in its
+    # own workspace, so it never has to look anywhere else for them.
+    formats.write(stage, "A")
     coverage_path = home / "overseer" / "coverage.yaml"
     previous = population_mod.load_coverage(coverage_path)
     since = previous.get("last_run_at") or chrono.now_iso(datetime.now(timezone.utc) - timedelta(days=7))
@@ -3708,6 +3951,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
     # The key is the population the model is shown (one line per case,
     # ids, opening times, headlines), never the window's moving start.
     population_key = _population_key((stage / "population.txt").read_text(encoding="utf-8"))
+    #: 2026-09-28: every model session this attempt makes, as its transcript
+    #: copy's record (`_session_record`), for the run record.
+    sessions: list[dict[str, Any]] = []
     if not dry_run and _reuse_phase_a(home, stage, week, population_key):
         # 2026-09-27 (fail-state audit finding 7): this week's phase A was
         # already made and validated against the same population by an
@@ -3718,10 +3964,12 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-a-reused",
             "week": week})
     else:
-        outcome_a = _invoke(home, stage, prompt_a, timeout_a, "phase-a", run_id)
+        outcome_a = _invoke(home, stage, prompt_a, timeout_a, "phase-a", run_id, sessions)
         model_calls = 1
+        record_a = _session_record(outcome_a, "phase-a")
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-a-returned",
-            "ok": bool(outcome_a.ok), "tool_turns": _reported_turns(outcome_a)})
+            "ok": bool(outcome_a.ok), "tool_turns": _reported_turns(outcome_a),
+            **({"session": record_a} if record_a is not None else {})})
     # A15: a failure of the FIRST model call leaves a committed trace with
     # its real reason. It happens before any `intents.begin` here, so the
     # note opens its own `intents.ledger_write` span. A dry run writes
@@ -3769,9 +4017,26 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 "status": "coverage-row-dropped", "case": row.get("case")})
     now_dt = datetime.now(timezone.utc)
     try:
-        selection = _yaml_mapping(stage / "selection.yaml")
-        selected = _selected_ids(selection, {row["case"] for row in week_rows})
-        _validate_initial(stage / "initial-views.yaml", selected)
+        # 2026-09-28 (fail-state audit finding 9): a bad entry in either
+        # phase-A file costs that entry (a selected case left without a
+        # valid initial view is de-selected), named in the run record;
+        # the kept form is written back to the stage, so phase B, the
+        # kept phase A and coverage all see the same selection.
+        selection, selected, phase_a_drops = _kept_selection(
+            _yaml_mapping(stage / "selection.yaml"), {row["case"] for row in week_rows},
+        )
+        views, selected, view_drops = _kept_initial_views(stage / "initial-views.yaml", selected)
+        phase_a_drops += view_drops
+        if phase_a_drops:
+            selection = {
+                **selection,
+                "cases": [entry for entry in selection["cases"] if entry["id"] in selected],
+            }
+            _write_stage(stage, stage / "selection.yaml", _yaml_text(selection))
+            _write_stage(stage, stage / "initial-views.yaml", _yaml_text(views))
+            for line in phase_a_drops:
+                _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                    "status": "phase-a-entry-dropped", "reason": line})
         coverage_text = _coverage_text(previous, selection, coverage_rows, offered, now_dt, trigger)
     except (OverseerError, population_mod.CoverageError) as exc:
         detail = _failure_detail(exc)
@@ -3786,10 +4051,21 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "a-incomplete", "reason": str(exc)[:300]})
         return RunResult("refused", EXIT_REFUSED, run_id, model_calls, excluded=excluded)
     if not dry_run and model_calls:
-        _keep_phase_a(home, stage, week, population_key)
+        _keep_phase_a(home, stage, week, population_key, run_id)
 
     coverage_before: bytes | None = None
     intent: intents.Intent | None = None
+    # 2026-09-28 (fail-state audit finding 12), kept as it is on purpose:
+    # the commit lock is held from the coverage write through the phase-B
+    # model call to the apply. The run's intent (coverage written first,
+    # put back by every failure path) spans that whole stretch, and phase
+    # B's inputs (the parked queue, the full case files) are read under
+    # it; narrowing the lock would split that intent and let another
+    # writer move the ledger between what the model read and what the run
+    # applies -- a redesign, not a fail-state fix, so it is not done here.
+    # The cost falls on a writer that waits past
+    # `gitops.COMMIT_LOCK_TIMEOUT`: a clean refusal (a person's verb), or
+    # one discarded model call for a worker batch -- never a lesson.
     lock_context = intents.ledger_write(home)
     with _DeferredNotice() as deferred_notice, lock_context:
         if not dry_run:
@@ -3820,13 +4096,16 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 model_calls=model_calls, guard=guard, trigger=trigger,
                 kind="invocation", reason=f"phase B inputs could not be prepared: {exc}",
             )
+        formats.write(stage, "B")
         prompt_b = _phase_b_prompt(stage, selected, tuple(row["case"] for row in parked_rows))
         _write_stage(stage, stage / "prompt-b.md", prompt_b)
         timeout_b = phase_timeout(timeout_seconds, len(blind) + len(parked_rows))
-        outcome_b = _invoke(home, stage, prompt_b, timeout_b, "phase-b", run_id)
+        outcome_b = _invoke(home, stage, prompt_b, timeout_b, "phase-b", run_id, sessions)
         model_calls += 1
+        record_b = _session_record(outcome_b, "phase-b")
         _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": "phase-b-returned",
-            "ok": bool(outcome_b.ok), "tool_turns": _reported_turns(outcome_b)})
+            "ok": bool(outcome_b.ok), "tool_turns": _reported_turns(outcome_b),
+            **({"session": record_b} if record_b is not None else {})})
         # Both phases have written to it by now; every commit below carries
         # it (already secret-scanned; a hit is the stub).
         journal_text = None if dry_run else _model_journal_text(home, stage, run_id, started[:10])
@@ -3892,11 +4171,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             _journal(home, {"at": chrono.now_iso(), "run": run_id, "status": state, "phase": "b", "model_calls": model_calls, **model_failures.failure_fields(outcome_b)})
             return RunResult(state, EXIT_REFUSED, run_id, model_calls, selected, excluded, report=str(report_path))
 
-        required = [
-            stage / name for name in (
-                "report.md", "findings.yaml", "questions.yaml", "user-model-delta.yaml"
-            )
-        ]
+        required = [stage / name for name in REQUIRED_OUTPUT_FILES]
         missing = [path.name for path in required if not path.is_file()]
         pair_drops: list[str] = []
         pairs = _sheet_pairs(stage, pair_drops)
@@ -3905,6 +4180,14 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
         secret_files = _secret_files(
             stage, frozenset(case for case, _sheet in pairs if case is not None),
         )
+        # 2026-09-28 (fail-state audit finding 9): a scan hit in a pair's
+        # case or sheet drops that pair (nothing of it reaches the ledger);
+        # a hit in any other file still refuses the run.
+        secret_files, pairs = _drop_secret_pairs(stage, secret_files, pairs, pair_drops)
+        for line in pair_drops:
+            if "the secret scan matched" in line:
+                _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                    "status": "pair-dropped", "reason": line})
 
         report_notes: list[str] = []
         if not missing and not secret_files:
@@ -4126,55 +4409,78 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     _journal(home, {"at": chrono.now_iso(), "run": run_id,
                         "status": "pair-dropped", "reason": unparsed})
                     continue
-                if case_file is not None and case_file.name == "case.yaml":
-                    # A9: the caseless sheet's pair is catalogue maintenance;
-                    # it supersedes nothing, so the successor rules below
-                    # cannot apply to it and it has rules of its own.
-                    _validate_maintenance_case(case_file)
-                    rule = _case_rule_problem(case_file, run_id)
-                    if rule is not None:
-                        # 2026-09-27 (audit finding 1): the same drop as a
-                        # decided case below -- it goes through the same
-                        # `cases.record`.
-                        case_drops.append(
-                            f"{case_file.name} (catalogue change): dropped with "
-                            f"{sheet_file.name} — the case writer refuses it: {rule}"
-                        )
-                        _journal(home, {"at": chrono.now_iso(), "run": run_id,
-                            "status": "case-dropped", "file": case_file.name, "rule": rule})
+                # 2026-09-28 (fail-state audit finding 9): every other check
+                # of one pair -- the successor or maintenance case's fields,
+                # a second successor for the same parked case, the sheet's
+                # schema (an unknown or missing item key, `close_call` not a
+                # boolean), an empty successor sheet, a caseless non-empty
+                # sheet -- costs that pair, named in "Refused / could not
+                # do" and the run record; before, each refused the whole
+                # run (about 22 minutes of phase B). A pair is one decision,
+                # so it is dropped whole, never item by item: applying part
+                # of a decision is not the decision the model made.
+                try:
+                    predecessor: str | None = None
+                    if case_file is not None and case_file.name == "case.yaml":
+                        # A9: the caseless sheet's pair is catalogue maintenance;
+                        # it supersedes nothing, so the successor rules below
+                        # cannot apply to it and it has rules of its own.
+                        _validate_maintenance_case(case_file)
+                        rule = _case_rule_problem(case_file, run_id)
+                        if rule is not None:
+                            # 2026-09-27 (audit finding 1): the same drop as a
+                            # decided case below -- it goes through the same
+                            # `cases.record`.
+                            case_drops.append(
+                                f"{case_file.name} (catalogue change): dropped with "
+                                f"{sheet_file.name} — the case writer refuses it: {rule}"
+                            )
+                            _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                                "status": "case-dropped", "file": case_file.name, "rule": rule})
+                            continue
+                    elif case_file is not None:
+                        _validate_successor(case_file, {row["case"] for row in parked_rows})
+                        predecessor = str(_yaml_mapping(case_file)["supersedes"])
+                        rule = _case_rule_problem(case_file, run_id)
+                        if rule is not None:
+                            # 2026-09-27 (audit finding 1): a decided case the
+                            # case writer would refuse costs that case and its
+                            # sheet, named by file and parked case (never its
+                            # text); the parked case stays open for next week.
+                            case_drops.append(
+                                f"{case_file.name} (successor for {predecessor}): dropped "
+                                f"with {sheet_file.name} — the case writer refuses it: {rule}"
+                            )
+                            _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                                "status": "case-dropped", "file": case_file.name,
+                                "supersedes": predecessor, "rule": rule})
+                            continue
+                        if predecessor in seen_predecessors:
+                            raise OverseerError(f"{case_file.name}: a second successor for {predecessor}")
+                    sheet = _load_sheet_allow_empty(sheet_file, home)
+                    if sheet is None:
+                        if case_file is not None:
+                            raise OverseerError(f"{sheet_file.name}: a successor case needs a non-empty sheet")
                         continue
-                elif case_file is not None:
-                    _validate_successor(case_file, {row["case"] for row in parked_rows})
-                    predecessor = str(_yaml_mapping(case_file)["supersedes"])
-                    rule = _case_rule_problem(case_file, run_id)
-                    if rule is not None:
-                        # 2026-09-27 (audit finding 1): a decided case the
-                        # case writer would refuse costs that case and its
-                        # sheet, named by file and parked case (never its
-                        # text); the parked case stays open for next week.
-                        case_drops.append(
-                            f"{case_file.name} (successor for {predecessor}): dropped "
-                            f"with {sheet_file.name} — the case writer refuses it: {rule}"
+                    if case_file is None:
+                        raise OverseerError(
+                            "sheet.yaml: a non-empty catalogue-change sheet needs a "
+                            "paired successor case in case.yaml, and that case must "
+                            "be kind: maintenance"
                         )
-                        _journal(home, {"at": chrono.now_iso(), "run": run_id,
-                            "status": "case-dropped", "file": case_file.name,
-                            "supersedes": predecessor, "rule": rule})
-                        continue
-                    if predecessor in seen_predecessors:
-                        raise OverseerError(f"{case_file.name}: duplicate successor for {predecessor}")
-                    seen_predecessors.add(predecessor)
-                sheet = _load_sheet_allow_empty(sheet_file, home)
-                if sheet is None:
-                    if case_file is not None:
-                        raise OverseerError(f"{sheet_file.name}: a successor case needs a non-empty sheet")
-                    continue
-                if case_file is None:
-                    raise OverseerError(
-                        "sheet.yaml: a non-empty catalogue-change sheet needs a "
-                        "paired successor case in case.yaml, and that case must "
-                        "be kind: maintenance"
+                    preview = batch.dry_run(home, sheet, actor="overseer", hook_activation=config.hook_activation_enabled(home))
+                except (OverseerError, batch.BatchError) as exc:
+                    reason = _pair_problem_text(exc, stage)
+                    case_drops.append(
+                        f"{case_file.name if case_file is not None else sheet_file.name}: "
+                        + (f"dropped with {sheet_file.name} — " if case_file is not None else "dropped — ")
+                        + reason
                     )
-                preview = batch.dry_run(home, sheet, actor="overseer", hook_activation=config.hook_activation_enabled(home))
+                    _journal(home, {"at": chrono.now_iso(), "run": run_id,
+                        "status": "pair-dropped", "reason": reason})
+                    continue
+                if predecessor is not None:
+                    seen_predecessors.add(predecessor)
                 preview_apply += sum(item.state == "would-apply" for item in preview.items)
                 preview_refused += sum(item.state == "would-refuse" for item in preview.items)
                 prepared.append((case_file, sheet_file, sheet))
@@ -4221,7 +4527,9 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 model_calls=model_calls, guard=guard, coverage_text=coverage_text,
                 questions=questions, findings=findings, prepared=prepared,
                 model_updates=model_updates,
+                sessions=sessions,
                 runner_notes=[
+                    *phase_a_drops,
                     *report_notes, *question_drops, *finding_drops, *case_drops,
                     *pair_drops, *coverage_drops, *phase_b_notes,
                 ],

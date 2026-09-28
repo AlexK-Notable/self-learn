@@ -56,6 +56,9 @@ def dispatch(args) -> int:
                     f"self-learn overseer: {result.status}; "
                     f"examined={len(result.examined)} applied={result.applied} refused={result.refused}"
                 )
+                for line in result.recompile_skipped:
+                    # 2026-09-28: the post-run recompile's skips, one pass.
+                    print(f"self-learn overseer: recompile skipped {line}")
             return result.code
         if command == "status":
             payload = runner.status(home)

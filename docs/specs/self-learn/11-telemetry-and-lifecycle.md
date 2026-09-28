@@ -237,8 +237,14 @@ plane, fixes the mechanism.
   `report`, worker run-end (kick-chained from teach/import, so still
   inside the human-triggered class), and explicit `telemetry flush`.
   **At flush, the §1 secret scan runs over every flushed line — a hit
-  refuses the flush** (belt-and-suspenders; payloads are ids/enums by
-  schema, §4.4). Every mutating dispatch — single verb or batch —
+  holds back that line** (belt-and-suspenders; payloads are ids/enums by
+  schema, §4.4). *Amended 2026-09-28 (fail-state audit finding 13):* a hit
+  used to refuse the whole flush with the spool intact, so the flagged
+  line was refused again on every later flush and no event reached the
+  ledger again. The flagged line now moves to the same-named file under
+  the cache's `spool-rejected/` (never the ledger), the spool is rewritten
+  without it, the flush names it by file, line and rule (never its text),
+  and every clean line flushes. Every mutating dispatch — single verb or batch —
   flushes once, through the ONE shared epilogue (`cli._mutating_epilogue`,
   §3.3c) — never per-item inside a batch loop, never skipped for a
   single verb.

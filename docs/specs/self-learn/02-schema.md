@@ -738,7 +738,10 @@ one -- never for a narration of the model's own deliberation, which the API
 refuses as `[reasoning_extraction]` (2026-09-27). It is committed with every commit the run
 makes after its first model call (the committed recipe, the finalize, a
 partial finalize, a failed attempt's note, a close-out, a push-failure
-record), carried back into the stage on a resume, never committed when it
+record), carried back into the stage on a resume -- and when a later attempt
+reuses a kept phase A, that phase A's entries are appended to the new run's
+journal under one line naming the attempt that wrote them (2026-09-28), so the
+committed journal holds the work the run's decisions rest on -- never committed when it
 holds only its header line, never validated for content, never read by a
 later run, and — on a secret-scan hit — committed as a one-line stub naming
 the rule and line instead. It never changes a run's outcome. Nothing else
@@ -746,7 +749,30 @@ carries a session's notes forward either: every overseer and steward
 session runs with Claude Code's auto-memory off
 (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, passed through `SessionSpec.extra_env`),
 because that memory is keyed to the session's working directory and the
-overseer's stage path never changes.
+overseer's workspace path never changes.
+
+**Workspace (2026-09-28).** The user's words: "that should all be stuff it has
+access to right off the bat. maybe even have it live in its working directory
+... it should have a 'sandbox' ... it can use as a workspace." The overseer's
+sessions run in their own workspace, `<cache>/overseer.workspace/overseer/`,
+cleared at the start of every run and every resume. It is never under the
+worker's stage (`worker.stage/`), so the worker's stage reset and the
+overseer's cannot empty each other's folder (fail-state audit finding 11). It
+is the session's cwd and its only read AND write area: the invocation charter
+(`invocation_sdk/charter.py`) denies a Read, Grep or Glob whose path, cwd-relative
+target, absolute Glob pattern, or `..` segment reaches outside it
+(`Containment.read_roots`; every other surface's reads stay unscoped, the steward's
+transcript reads included). Before each phase the runner writes
+`formats/` into it: `README.md` (the rules the runner and the case writer
+enforce), `closed-sets.yaml` (every closed set, read from the modules that
+enforce them: verbs and their keys, case kinds, triggers, outcomes, confidence
+values, parked reasons, finding and question kinds, report headings), and one
+valid example of every file the phase writes. Phase A's folder holds only the
+phase-A files and sets, so it stays blind to decision vocabulary. A test runs
+every example through the runner's own validators. Both phase prompts point at
+it. The steward needs no such folder: its output contract is generated from
+code (`steward_prompt._render_output_contract`) into `brief-shared.md` in its
+run directory, which is its cwd.
 
 (Full shape of the `overseer/` subtree — this fence names only the files —
 is the same list `13-hosting-and-separation.md` §3's own K1 delta carries;
@@ -1348,6 +1374,74 @@ unit around it:
   reused by the week's next attempt when that hash is unchanged; it is
   dropped once a run record is published.
 
+**Fail-state batch 2026-09-28** *(Added 2026-09-28; the user's words, 11:54
+PDT: "fix the rest of 3".)*
+- *Parse errors carry no model text, steward too.* The steward's stage
+  reader names a YAML parse error by the overseer's rule, through one
+  shared helper (`scan.yaml_error_text`): file, parse problem cut at its
+  first quote, line and column; a problem that still matches the secret
+  scan becomes "not valid YAML". Any other read or parse failure is named
+  by its type only. This is the text the repair turn is shown and, when no
+  pair passes, the text committed as the packet's `error` and
+  `failure_detail`.
+- *A runner's owed host writes are recompiled without a person.* After a
+  steward or overseer run (not a dry run) whose sheets applied a `route`,
+  `rehome` or `rescope` item, or left one `unresolved-host`, the runner's
+  `run` wrapper — after `_run` has released every lock, before the run's
+  push — runs one `verbs.post_run_recompile`: `recompile(only_records=
+  <those ids>)`, so only those records' own targets are compiled, and only
+  a target whose bytes change is written and committed. It is journaled
+  (`recompile` with `records`, `changed`, `skipped`, `warnings`; or
+  `recompile-failed`) and never raises out of the run. A target it skips is
+  in the run's result (`recompile_skipped`, printed by `steward run` and
+  `overseer run`) and is not retried in the run; the next run that touches
+  it, or a person's `recompile`, does. Known limit: a rehome or rescope of
+  a routed lesson recompiles its NEW target only; an entry left in its old
+  target waits for an ordinary `recompile`.
+- *Overseer phase-A entries (audit finding 9).* An entry of
+  `selection.yaml` that is not one string id, carries a key other than
+  `id`, names a case outside the week's population or repeats one, and an
+  entry of `initial-views.yaml` without exactly the view's fields, with an
+  empty field, a confidence outside `clear`/`close-call`, a repeat or an
+  unselected case, is dropped and named (entry number and, when it has a
+  case id's shape, the id). A selected case left without a valid initial
+  view is de-selected, so phase A's rule that every selected case has one
+  holds. The kept files are written back to the workspace, so phase B,
+  the kept phase A and coverage see the same selection. A file whose own
+  shape is wrong (not a mapping, `cases` not a list, an unknown top-level
+  key) still refuses the attempt.
+- *Overseer phase-B pairs (audit finding 9).* Every check of one
+  case/sheet pair costs that pair, named in "Refused / could not do" and
+  `runner_notes` with the validator's message (the workspace path taken
+  out, bounded and redacted like a failure note's detail): the successor
+  or maintenance case's fields, a second successor for one parked case,
+  the sheet's schema (an unknown or missing item key, `close_call` not a
+  boolean), an empty successor sheet, a caseless non-empty sheet. A pair
+  is one decision, so it is dropped whole, never item by item. A
+  secret-scan hit in a pair's case or sheet drops that pair — nothing of
+  it reaches the ledger; a hit in `report.md`, `findings.yaml`,
+  `user-model-delta.yaml` or any other file still refuses the run.
+- *Steward reconsider misfit (audit finding 10).* When `verbs.reconsider`
+  refuses a reconsider case the case writer accepted (its outcome does not
+  apply to the lesson's status, or the lesson is gone), that case is
+  refused like one the case writer refuses — its sheet not applied, its
+  lessons `refused` with the reason — and the run goes on; before, the
+  error escaped the run after the case was committed.
+- *The overseer's lock through phase B (audit finding 12) is kept.* The
+  run's intent (coverage written first, put back on every failure) spans
+  the coverage write, the phase-B model call and the apply, and phase B's
+  inputs are read under it; narrowing it would let the ledger move between
+  what the model read and what the run applies. A writer that waits past
+  `gitops.COMMIT_LOCK_TIMEOUT` meanwhile gets a clean refusal, or, for a
+  worker batch, loses that batch's model call (its lessons stay pending
+  and are analysed again) — never a lesson.
+- *A `hosts.yaml` that does not load (audit finding 14)* holds only the
+  mine candidates whose skill scope needs it: each is journaled
+  `dropped-invalid` with its session's cursor held (as a cap drop holds
+  it), so the session is read again once the file loads; the other
+  candidates land. Before, the error escaped the landing loop and failed
+  the whole pass after its reader call.
+
 *(Added 2026-09-26, agenda item 24.)* No message a runner shows its model
 or commits into its run record carries the text a secret scan matched: each
 hit is named by its rule and offsets, the span reads `[withheld]`. This
@@ -1700,6 +1794,19 @@ The repair round is a new session with the same file and flag. Each
 the first response's counts say whether the shared part came from cache;
 the session's are Claude Code's totals. The row has no `usage` when the
 backend reported none.
+Since 2026-09-28 each such row also carries `session`: the copy the seam
+kept of that session's Claude Code transcript (`13-hosting-and-separation.md`
+§6) — `session_id`, `path` (relative to the cache directory), `bytes`,
+`entries` (transcript entries by `type`), `assistant_blocks` (assistant
+content blocks by block `type`) and, when the session ran subagents,
+`subagent_files`/`subagent_bytes`; or `session_id` and an `error` when no
+copy could be made. A transient retry's first call carries its own under
+`transient_retry.session`. The overseer's run record carries the same rows
+as `sessions`, one per model session, each tagged with its `phase`, when the
+run gets as far as writing a run record; an attempt that fails before that
+has them in its journal lines only (`phase-a-returned`, `phase-b-returned`,
+`transient-retry`). Counts only, never text; no row when
+`sdk.capture_sessions` is off.
 
 ### 3a.6 Transcript refs (the checked pointer)
 

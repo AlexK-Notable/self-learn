@@ -36,6 +36,9 @@ __all__ = ["CharterPaths", "CharterPatternUnsupported", "build_can_use_tool"]
 
 #: `C-1` -- the write family, defined once.
 W = frozenset({"Write", "Edit", "NotebookEdit"})
+#: 2026-09-28 -- the read family, fenced by path only when the containment
+#: names `read_roots` (the overseer's workspace); unscoped otherwise (`C-2`).
+R = frozenset({"Read", "Grep", "Glob", "NotebookRead"})
 
 _UNSUPPORTED_CHARS = ("[", "]", "{", "}")
 
@@ -176,7 +179,49 @@ def _matches_write_scope(target: Path, paths: CharterPaths) -> bool:
     return any(pattern.match(target_str) is not None for pattern in paths.glob_patterns)
 
 
-def build_can_use_tool(containment: Containment) -> CanUseTool:
+def _inside(target: Path, roots: tuple[Path, ...]) -> bool:
+    return any(target == root or root in target.parents for root in roots)
+
+
+def _read_decision(
+    tool_name: str, tool_input: dict[str, Any], roots: tuple[Path, ...], cwd: Path
+) -> str | None:
+    """2026-09-28: why a read-family call reaches outside *roots*, or
+    ``None`` when it stays inside. Every path the call names is judged: the
+    target (any of `TARGET_PATH_KEYS`; absent means the session's
+    cwd, which is how Grep and Glob read it), and for Glob an absolute
+    `pattern`'s leading literal segments. A `..` segment in any of them is
+    refused outright: a pattern is matched after this check, so a relative
+    climb cannot be judged by resolving it here. The requested path gets
+    the full symlink-following `.resolve()`, as a write target does
+    (`P-b`); the roots were resolved once, at build time."""
+    raw = _extract_target_path(tool_input)
+    names = [raw] if raw is not None else []
+    for key in ("pattern", "glob"):
+        value = tool_input.get(key)
+        if tool_name in ("Glob", "Grep") and isinstance(value, str) and value:
+            if key == "glob" or tool_name == "Glob":
+                names.append(value)
+    for name in names:
+        if ".." in Path(name).parts:
+            return f"{tool_name} names a path that climbs with '..' ({name})"
+    candidates: list[Path] = []
+    if raw is None:
+        candidates.append(cwd)
+    else:
+        candidates.append(Path(raw) if Path(raw).is_absolute() else cwd / raw)
+    pattern = tool_input.get("pattern")
+    if tool_name == "Glob" and isinstance(pattern, str) and pattern.startswith("/"):
+        prefix, _rest = _split_trusted_prefix(pattern)
+        candidates.append(Path(prefix or "/"))
+    for candidate in candidates:
+        target = candidate.resolve()
+        if not _inside(target, roots):
+            return f"{tool_name} read scope does not include {target}"
+    return None
+
+
+def build_can_use_tool(containment: Containment, *, cwd: Path | str | None = None) -> CanUseTool:
     """Build the `can_use_tool` callback for one SDK session (`Charter-1`).
 
     Resolves every write-scope pattern ONCE, at callback-build time, then
@@ -191,6 +236,9 @@ def build_can_use_tool(containment: Containment) -> CanUseTool:
          fires first).
       2. the enforcement hatch (`C-10`) is open -> ALLOW.
       3. `tool_name` is in the write family -> a path decision (`C-5`).
+      3a. (2026-09-28) the containment names `read_roots` and `tool_name`
+         is in the read family -> DENY when any path it names falls
+         outside every root; otherwise fall through to step 4.
       4. `tool_name` is in the containment's `allowed_tools` -> ALLOW
          (unscoped -- `C-2`: no CLI surface scopes reads by path).
       5. -> DENY, always, with a reason naming the tool.
@@ -201,6 +249,15 @@ def build_can_use_tool(containment: Containment) -> CanUseTool:
     session's `EventLog` before it reaches the SDK.
     """
     paths = _build_charter_paths(containment)
+    # 2026-09-28: the read fence's roots, resolved ONCE here like a write
+    # pattern's trusted prefix. Relative requests and a Grep/Glob with no
+    # path are judged against *cwd* (the session's own), else the first
+    # root -- the overseer's cwd IS its one root.
+    read_roots = tuple(Path(root).resolve() for root in containment.read_roots)
+    read_cwd = (
+        Path(cwd).resolve() if cwd is not None
+        else (read_roots[0] if read_roots else Path.cwd())
+    )
     disallowed = frozenset(t for t in (containment.disallowed_tools or "").split(",") if t)
     allowed = frozenset(t for t in (containment.allowed_tools or "").split(",") if t)
     # `C-10` -- the hatch is a property of the containment DATA, never an
@@ -244,6 +301,13 @@ def build_can_use_tool(containment: Containment) -> CanUseTool:
                     f"does not include {target}"
                 )
             )
+
+        if read_roots and tool_name in R:
+            problem = _read_decision(tool_name, tool_input, read_roots, read_cwd)
+            if problem is not None:
+                return PermissionResultDeny(
+                    message=f"self-learn invocation charter: {problem}"
+                )
 
         if tool_name in allowed:
             return PermissionResultAllow()

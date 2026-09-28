@@ -96,6 +96,11 @@ class Containment:
     write_exact: tuple[str, ...]  # absolute FILE paths, no rule syntax
     strict_mcp: bool
     default_mode: str | None  # the settings file's permissions.defaultMode; None = key absent
+    #: 2026-09-28: absolute DIRECTORY paths the read tools (Read, Grep,
+    #: Glob) are fenced to; empty = reads unscoped, as every surface but
+    #: the overseer has always been (`charter.py` `C-2`). The overseer's
+    #: one root is its own workspace, the session's cwd.
+    read_roots: tuple[str, ...] = ()
 
 
 def containment_rules(c: Containment) -> list[str]:
@@ -189,6 +194,12 @@ def containment_for(
             default_mode="default",
         )
     if surface == "overseer":
+        # 2026-09-28 (the user's words: "it should have a 'sandbox' ... it
+        # can use as a workspace"): `{stage_dir}/overseer` is the overseer's
+        # OWN workspace (`overseer.run.workspace_dir`, whose parent the
+        # runner passes here), never under the worker's stage. It is both
+        # the only place the session may write and the only place it may
+        # read.
         return Containment(
             allowed_tools=allowed_tools,
             disallowed_tools=disallowed_tools,
@@ -196,6 +207,7 @@ def containment_for(
             write_exact=(),
             strict_mcp=True,
             default_mode="default",
+            read_roots=(f"{stage_dir}/overseer",),
         )
     raise ValueError(f"containment_for: unknown surface {surface!r}")
 
@@ -276,6 +288,13 @@ class SessionSpec:
     #: same bytes from one session to the next. `False` -- every producer
     #: but the steward -- leaves the preset exactly as it was.
     exclude_dynamic_sections: bool = False
+    #: The folder name this session's transcript copy lands under,
+    #: `<cache>/sessions/<surface>/<transcript_group>/` (2026-09-28,
+    #: `session_copies.py`): the steward and the overseer pass their run
+    #: id, so every session of one run sits together. `None` -- every
+    #: other producer -- falls back to the seam's own per-session run id. Keyword, defaulted and LAST, like the fields
+    #: above.
+    transcript_group: str | None = None
 
     @property
     def settings_home(self) -> Path | str:

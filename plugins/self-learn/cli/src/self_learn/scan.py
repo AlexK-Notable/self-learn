@@ -263,3 +263,31 @@ def refusal_text(exc: BaseException) -> str:
             hits.extend(h for h in carried if isinstance(h, Hit))
         pending.extend((current.__cause__, current.__context__))
     return withhold_spans(str(exc), hits)
+
+
+def yaml_error_text(name: str, exc: BaseException) -> str:
+    """``<file>: cannot parse — <problem> at line L, column C``: a YAML
+    parse error fit to keep in a committed run record or a journal line.
+
+    Shared by the overseer and the steward (2026-09-28: the steward's
+    stage reader put the parser's ``str(exc)`` into errors that reach its
+    committed run record). The parser's own ``str(exc)`` quotes a snippet
+    of the source around the error, and its ``problem`` can quote the
+    model's text too: an alias, a tag, a character, or a duplicate key's
+    values (which can hold quotes of their own, so no quote-matching rule
+    is safe). Only the position (1-based, as the parser prints it) and the
+    problem cut at its first quote character are kept (``mapping values
+    are not allowed here``, ``found undefined alias``, ``found duplicate
+    key``). A problem that still matches the secret scan becomes a fixed
+    phrase: a scan hit in a committed record would refuse the very commit
+    this text exists to keep. *exc* is read by attribute only, so any
+    parser error (or one without a position) is accepted."""
+    problem = str(getattr(exc, "problem", None) or getattr(exc, "context", None) or "")
+    problem = " ".join(re.split(r"['\"]", problem, maxsplit=1)[0].split()).rstrip(" ,:")[:120]
+    if not problem or scan(problem):
+        problem = "not valid YAML"
+    mark = getattr(exc, "problem_mark", None) or getattr(exc, "context_mark", None)
+    where = ""
+    if mark is not None and isinstance(getattr(mark, "line", None), int):
+        where = f" at line {mark.line + 1}, column {int(getattr(mark, 'column', 0)) + 1}"
+    return f"{name}: cannot parse — {problem}{where}"

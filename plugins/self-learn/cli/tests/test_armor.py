@@ -116,7 +116,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "3405224"
+ANCHOR = "06ca7f0"
 
 
 # ===================================================================== #
@@ -300,6 +300,25 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # by this landing's own refusal, for the same reason as the row above.
     "test_invocation_sdk.py": Behaviour(
         nodes=141, dump_sha="05fe6a2bb6f605cb8032c96b65ca4278c3679c5ae84750c0df037ae1399d9c6f",
+        edited={
+            "func:test_ch14_steward_and_overseer_write_stage_only_bash_and_mcp_tools_denied": (
+                "2026-09-28 batch 0928 unit A (`13-hosting-and-separation.md` §5, the "
+                "overseer's workspace; the user's words: \"it should have a 'sandbox' "
+                "... it can use as a workspace\"): the overseer's Read/Grep/Glob are "
+                "fenced to its own workspace, `stage/overseer`. The unscoped-read "
+                "assertion now holds for the steward only (its transcript reads stay "
+                "legitimate); for the overseer the test asserts a read inside the "
+                "workspace is allowed and one outside is denied."
+            ),
+            "func:test_op14_options_kwargs_matches_the_object_the_session_ran_on": (
+                "2026-09-28 batch 0928 part 3 (`13-hosting-and-separation.md` §6, the "
+                "session copies; the user's words: \"go ahead and just capture "
+                "everything\"): every session now also asks for summarized thinking "
+                "(`thinking`, behind `sdk.capture_sessions`, default on), so the "
+                "option set this test pins gains that one key; everything else it "
+                "checks is unchanged."
+            ),
+        },
     ),
     "test_worker.py": Behaviour(
         nodes=83, dump_sha="0d4ac5f2300dc2f265566bc14b258c0086d7d6b23fd16b0c421d3d995d8e7a46"
@@ -867,9 +886,17 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=2,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-09-28 batch 0928 part 3 (`13-hosting-and-separation.md` §6): 1 -> 2, "
+            "one door, `test_invocation_sdk.py: func:test_op14_options_kwargs_matches_"
+            "the_object_the_session_ran_on` (the option set gains `thinking`). "
+            "Previous entry: "
+            "2026-09-28 batch 0928 unit A (`13-hosting-and-separation.md` §5): 0 -> 1, "
+            "one door, `test_invocation_sdk.py: func:test_ch14_steward_and_overseer_"
+            "write_stage_only_bash_and_mcp_tools_denied` (the overseer's reads are "
+            "fenced to its workspace). Previous entry: "
             "2026-09-20, transcribed at ANCHOR 1a0220b from this module's own STALE "
             "refusal (liveness landing): 11 -> 0. All eleven `edited` doors belonged to "
             "the steward-overseer landing, which IS the anchor now, so each went VACUOUS "
@@ -909,9 +936,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=193,
+        value=194,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-09-28 batch 0928 part 3 (`13-hosting-and-separation.md` §6): "
+            "193 -> 194 -- `test_invocation_sdk.py`'s `test_op14_...` (the option "
+            "set gains `thinking`) now also differs from c3b48e7. Previous entry: "
             "2026-09-13 U8 (17-invocation-runbook.md §1), HEAD-scoped, "
             "re-run after this build's own edits against the RETIRED "
             "control anchor c3b48e7: 186 -> 191, five of this build's seven "
@@ -2049,6 +2079,25 @@ def test_arm6_refusal_writes_nothing(capsys):
             transcribed[name] = dataclasses.replace(transcribed[name], value=live)
         ns["MEASURED"] = transcribed
         assert ns["_compute_stale"]("15fb676") == []
+        # ... and drop every shipped door the advance leaves VACUOUS, as the
+        # landing's author does (section 4.7 FW-140's fold rule). 2026-09-28:
+        # a door on a node born after `15fb676` (batch 0928's `test_ch14`
+        # door) is vacuous at this fixed historical anchor; before any such
+        # door shipped this step had nothing to drop.
+        vacuous = ns["_compute_vacuous"]("15fb676")
+        if vacuous:
+            dropped_armor = {}
+            for k, v in ns["ARMOR"].items():
+                gone = set(vacuous.get(k, []))
+                if isinstance(v, ns["Behaviour"]) and gone:
+                    dropped_armor[k] = dataclasses.replace(
+                        v,
+                        missing={n: r for n, r in v.missing.items() if f"missing:{n}" not in gone},
+                        edited={n: r for n, r in v.edited.items() if f"edited:{n}" not in gone},
+                    )
+                else:
+                    dropped_armor[k] = v
+            ns["ARMOR"] = dropped_armor
         assert ns["_compute_vacuous"]("15fb676") == {}
 
         capsys.readouterr()

@@ -26,13 +26,14 @@ from claude_agent_sdk import (
     CLINotFoundError,
     ProcessError,
     ResultMessage,
+    SystemMessage,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
 )
 
-from .. import provider, settings, worker
+from .. import provider, session_copies, settings, worker
 from ..invocation import failure_class as _failure_class
 from ..invocation.contract import (
     LOG_TEMPLATES,
@@ -125,6 +126,12 @@ class SdkOutcome(Outcome):
     #: on a call that did not fail. Read by the steward and the overseer,
     #: and written to the session's event log.
     failure_class: str | None = None
+    #: 2026-09-28 (the user's words: "go ahead and just capture
+    #: everything"): what `session_copies.capture` kept of this session's
+    #: Claude Code transcript -- its id, the copy's cache-relative path,
+    #: its size and its entry/block counts, or an ``error`` saying why no
+    #: copy was made. ``None`` when `sdk.capture_sessions` is off.
+    transcript: dict[str, Any] | None = None
 
 
 #: The usage keys `SdkOutcome` keeps (2026-09-26).
@@ -243,7 +250,7 @@ class CliSessionPolicy:
         self._spec = spec
 
     def can_use_tool(self) -> "sdk_policy.CanUseTool":
-        return charter.build_can_use_tool(self._spec.containment)
+        return charter.build_can_use_tool(self._spec.containment, cwd=self._spec.cwd)
 
     def option_floor(self) -> dict[str, object]:
         return sdk_policy.default_option_floor()
@@ -403,6 +410,13 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
             "run: sdk backend could not apply max_budget_usd on this claude-agent-sdk version"
         )
 
+    # 2026-09-28: summarized thinking for every surface, behind
+    # `sdk.capture_sessions` (the same switch that keeps the transcript
+    # copies). Feature-detected like the two options above, but silently:
+    # an SDK without the field simply runs without it.
+    if "thinking" in supported and session_copies.enabled(spec.settings_home):
+        kwargs["thinking"] = dict(session_copies.SUMMARIZED_THINKING)
+
     return kwargs
 
 
@@ -549,6 +563,7 @@ async def _run_session(
     options: ClaudeAgentOptions,
     events: EventLog,
     set_child_pid: Callable[[int | None], None],
+    note_session_id: Callable[[str], None] | None = None,
 ) -> tuple[ResultMessage | None, str]:
     # `session.py` -- the transport loop, not the vocabulary: `SdkSession`
     # does nothing except call the same `connect`/`query`/
@@ -574,6 +589,16 @@ async def _run_session(
     final: ResultMessage | None = None
     last_assistant_text = ""
     async for message in session.drive():
+        # 2026-09-28: the session id as soon as any message carries it, so
+        # a session that times out or is killed before its result still
+        # has a transcript `session_copies` can find.
+        if note_session_id is not None:
+            if isinstance(message, SystemMessage):
+                noted = message.data.get("session_id") if isinstance(message.data, dict) else None
+            else:
+                noted = getattr(message, "session_id", None)
+            if isinstance(noted, str) and noted:
+                note_session_id(noted)
         if isinstance(message, AssistantMessage):
             events.note_first_usage(_cache_usage(getattr(message, "usage", None)))
             last_assistant_text = "".join(
@@ -637,11 +662,15 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
 
     client = ClaudeSDKClient(options=options)
     child_pid_holder: list[int | None] = [None]
+    session_id_holder: list[str] = []
 
     outcome: SdkOutcome | None = None
     try:
         result_message, last_assistant_text = await asyncio.wait_for(
-            _run_session(spec, client, options, events, child_pid_holder.append),
+            _run_session(
+                spec, client, options, events, child_pid_holder.append,
+                session_id_holder.append,
+            ),
             timeout=spec.timeout,
         )
     except asyncio.TimeoutError:
@@ -734,6 +763,20 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
         child_pid = child_pid_holder[-1]
         await lifecycle.run_kill_ladder(client, child_pid, spec.log)
         lifecycle.clear_sidecar(surface)
+        # 2026-09-28: the child has exited, so Claude Code's transcript is
+        # complete -- keep a copy in the cache. Never raises (a failure is
+        # a record with an `error`), so it cannot mask the outcome above.
+        transcript = session_copies.capture(
+            home=spec.settings_home,
+            surface=surface,
+            session_id=(
+                outcome.session_id if outcome is not None and outcome.session_id
+                else (session_id_holder[-1] if session_id_holder else None)
+            ),
+            group=spec.transcript_group,
+            fallback_group=run_id,
+            cwd=spec.cwd,
+        )
         write_event_log(
             surface,
             run_id,
@@ -751,6 +794,8 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
                     outcome.usage_first_response if outcome is not None else None
                 ),
                 "usage_session": outcome.usage_session if outcome is not None else None,
+                # 2026-09-28: the transcript copy (`session_copies`).
+                "transcript": transcript,
             },
             events=events,
         )
@@ -770,7 +815,7 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
     # `ProviderRefused`) exits BEFORE a client/child ever exists, so its
     # `_outcome(...)` call correctly leaves `child_pid` at the
     # dataclass's own `None` default instead of reaching this line.
-    return _dataclass_replace(outcome, child_pid=child_pid)
+    return _dataclass_replace(outcome, child_pid=child_pid, transcript=transcript)
 
 
 # --------------------------------------------------------------- SdkBackend

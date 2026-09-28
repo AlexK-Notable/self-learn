@@ -541,6 +541,15 @@ marker are projections and never recovery authority.
   secret-scan hit in the lesson's own record is `refused` and never parked,
   and a `returned` lesson counts in the run's refused count, so a run that
   sent a lesson back never reports plain success.
+- *(2026-09-28)* After a run that applied a route, rehome or rescope, the
+  run itself runs one `recompile` of those lessons' own host targets, so a
+  host write the run left owed (a host commit a pre-commit hook refused, a
+  rehomed routed lesson's new target) no longer waits for you to run
+  `self-learn recompile`. It is journaled (`recompile`, or
+  `recompile-failed` if it raised — it never fails the run); a target it
+  still cannot write is printed as `steward run: recompile skipped …` and
+  is not retried in the run. Run `self-learn recompile` yourself once the
+  cause (usually the hook's finding) is dealt with.
 - A failure that is not a judgment on the merits — the model call failed,
   timed out, hit the turn bound, staged output that would not validate, or
   a git write failed or half-landed, or the ledger refused an item for git

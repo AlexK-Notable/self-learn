@@ -1163,6 +1163,20 @@ REGISTRY: tuple[Setting, ...] = (
         description="USD cap on a single SDK invocation; unset means unlimited",
     ),
     Setting(
+        # 2026-09-28 (the user's words: "go ahead and just capture
+        # everything"): after every model session, a copy of Claude Code's
+        # own transcript file is kept in this cache under `sessions/`
+        # (`session_copies.py`), and every session asks the SDK for
+        # summarized thinking. One switch for both; off, neither happens.
+        name="sdk.capture_sessions",
+        env_var="SELF_LEARN_SDK_CAPTURE_SESSIONS",
+        config_section="sdk",
+        config_key="capture_sessions",
+        kind="bool",
+        default=True,
+        description="keep a copy of each model session's transcript in the cache and ask for summarized thinking",
+    ),
+    Setting(
         name="sdk.event_logs",
         env_var="SELF_LEARN_SDK_EVENT_LOGS",
         config_section="sdk",

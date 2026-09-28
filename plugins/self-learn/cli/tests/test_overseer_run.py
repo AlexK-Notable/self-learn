@@ -415,7 +415,7 @@ def test_coverage_precedes_uncapped_parked_intake(tmp_path, monkeypatch):
 
     def listed(given_home, **kwargs):
         if kwargs.get("parked_for") == "overseer":
-            assert (overseer_run.worker.stage_dir() / "overseer" / "coverage.yaml").is_file()
+            assert (overseer_run.workspace_dir(home) / "coverage.yaml").is_file()
             assert (home / "overseer" / "coverage.yaml").is_file()
             assert kwargs.get("only_ok") is True
             return parked
@@ -808,7 +808,10 @@ def test_failed_boundary_push_keeps_applied_status_and_records_failure(tmp_path,
     text = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
     assert (result.code, result.status) == (3, "applied")
     assert "push: failed (3)" in text
-    assert overseer_run.read_journal(home)[-1]["push"] == "push: failed (3)"
+    # 2026-09-28: the post-run recompile's row (the route applied) now
+    # follows the run's own row, so the run's row is found by its key.
+    rows = [row for row in overseer_run.read_journal(home) if "push" in row]
+    assert rows and rows[-1]["push"] == "push: failed (3)"
 
 
 def test_a_long_model_report_is_kept_whole_and_the_runner_says_how_long(tmp_path):
@@ -1698,9 +1701,14 @@ def test_a_caseless_sheets_paired_case_must_be_maintenance(tmp_path, monkeypatch
 
     result = overseer_run.run(home, dry_run=False, no_push=True)
 
-    assert result.status == "refused"
+    # REWRITTEN 2026-09-28 (fail-state audit finding 9): the misfit pair
+    # is dropped alone and named; the run is no longer refused whole.
+    assert result.status != "refused"
     report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
-    assert f"kind: maintenance, not '{case_kind}'" in report, report
+    refused = report.split("## Refused / could not do", 1)[1]
+    assert f"kind: maintenance, not '{case_kind}'" in refused, report
+    assert "case.yaml: dropped with sheet.yaml" in refused
+    assert result.applied == 0
 
 
 def test_a_maintenance_case_lets_a_caseless_sheet_through(tmp_path, monkeypatch):
@@ -2077,7 +2085,7 @@ def test_the_phase_b_prompt_explains_an_attempts_exhausted_parked_case(
 
     overseer_run.run(home, dry_run=True, no_push=True)
 
-    prompt = (overseer_run.worker.stage_dir() / "overseer" / "prompt-b.md").read_text(
+    prompt = (overseer_run.workspace_dir(home) / "prompt-b.md").read_text(
         encoding="utf-8"
     )
     # positive control: this is the phase-B prompt and it rendered
@@ -2103,7 +2111,7 @@ def test_the_phase_b_prompt_explains_a_ledger_refused_parked_case(
 
     overseer_run.run(home, dry_run=True, no_push=True)
 
-    prompt = (overseer_run.worker.stage_dir() / "overseer" / "prompt-b.md").read_text(
+    prompt = (overseer_run.workspace_dir(home) / "prompt-b.md").read_text(
         encoding="utf-8"
     )
     # positive control: this is the phase-B prompt and it rendered
@@ -2635,7 +2643,7 @@ def test_a_resumed_run_keeps_its_journal(tmp_path, monkeypatch):
     second = overseer_run.run(home, dry_run=False, no_push=True)
 
     assert (second.run, second.status) == (first.run, "applied")
-    assert (overseer_run.worker.stage_dir() / "overseer" / "journal.md").read_text(encoding="utf-8") == expected
+    assert (overseer_run.workspace_dir(home) / "journal.md").read_text(encoding="utf-8") == expected
     assert _git(home, "show", f"HEAD:{rel}") == expected
 
 
@@ -2649,11 +2657,11 @@ def test_phase_sessions_get_edit_confined_exactly_as_write(tmp_path, monkeypatch
     seen = _wrap_phases(monkeypatch)
     result = overseer_run.run(home, dry_run=True, no_push=True)
     assert result.status == "dry-run"
-    stage = overseer_run.worker.stage_dir() / "overseer"
+    stage = overseer_run.workspace_dir(home)
     for phase in ("a_containment", "b_containment"):
         containment = seen[phase]
         assert containment.allowed_tools.split(",") == ["Read", "Grep", "Glob", "Write", "Edit"]
-        assert containment.write_globs == (f"{overseer_run.worker.stage_dir()}/overseer/**",)
+        assert containment.write_globs == (f"{overseer_run.workspace_dir(home)}/**",)
         decide = charter.build_can_use_tool(containment)
         for target, allowed in (
             (stage / "journal.md", True),

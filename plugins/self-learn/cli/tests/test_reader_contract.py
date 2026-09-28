@@ -485,6 +485,9 @@ _OPTIONS_KWARGS_16_KEYS = {
     "cwd", "system_prompt", "model", "allowed_tools", "disallowed_tools", "can_use_tool",
     "permission_mode", "setting_sources", "settings", "strict_mcp_config", "mcp_servers",
     "include_partial_messages", "env", "cli_path", "max_turns", "max_budget_usd",
+    # 2026-09-28: summarized thinking, behind `sdk.capture_sessions` (on by
+    # default) -- a seventeenth key; the name is kept for its history.
+    "thinking",
 }
 
 
