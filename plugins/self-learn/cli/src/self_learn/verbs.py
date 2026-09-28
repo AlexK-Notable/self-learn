@@ -75,6 +75,7 @@ import os
 import shutil
 import sys
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -8241,12 +8242,28 @@ class RecompileResult:
         return sum(1 for e in self.entries if e.commit_sha is not None)
 
 
+def recompile_refusals(result: RecompileResult, record_id: str) -> list[str]:
+    """What stops a ``recompile(..., only_records=[record_id])`` from
+    establishing that record's host result (sweep 2, R2): every skipped
+    target (``"<target>: <reason>"``), then every warning that names the
+    record itself -- its target could not be resolved, or its own file
+    could not be read -- so an empty narrowed run is never read as
+    ``applied`` just because nothing was attempted."""
+    refused = [f"{e.target}: {e.skipped}" for e in result.entries if e.skipped]
+    refused += [
+        w for w in result.warnings
+        if w.startswith(f"{record_id}:") or f"/{record_id}.md:" in w
+    ]
+    return refused
+
+
 def recompile(
     home: Path | str,
     *,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
     adopt: Path | str | None = None,
+    only_records: Iterable[str] | None = None,
 ) -> RecompileResult:
     """The doc-13 drift repair (H-2: recompile is always safe and repairs
     any two-phase interruption). For every ROUTED record, recompute each
@@ -8300,6 +8317,7 @@ def recompile(
     # them (the pre-2026-07-17 shape) meant a target whose LAST record
     # retired was never revisited — the stale advisory lived forever.
     specs: dict[tuple[Path | None, Path | None], TargetSpec] = {}
+    spec_owners: dict[tuple[Path | None, Path | None], set[str]] = {}
     ref_work: dict[tuple[Path, Path], tuple[TargetSpec, list[Record]]] = {}
     hook_work: list[tuple[Record, Path, Path, str, str]] = []  # record, host, abs, rel, mode
     hook_removals: list[tuple[Record, tuple[Path, Path, str, str]]] = []  # m-4
@@ -8414,6 +8432,23 @@ def recompile(
                 entry[1].append(record)
                 continue
             specs.setdefault((spec.host_path, spec.target), spec)
+            spec_owners.setdefault((spec.host_path, spec.target), set()).add(record.id)
+
+    if only_records is not None:
+        # Sweep 2, R2 (2026-09-27): the narrow form steward/overseer crash
+        # recovery uses to establish ONE recovered item's host result --
+        # only the targets the named records resolve to (resolved exactly
+        # as above, the way route resolves them) are compiled, committed
+        # and judged; every other target is left alone for an ordinary
+        # recompile. The compile SET of a kept target is still the full
+        # ledger's (that is what the target must hold).
+        wanted = set(only_records)
+        specs = {k: v for k, v in specs.items() if spec_owners.get(k, set()) & wanted}
+        ref_work = {
+            k: v for k, v in ref_work.items() if any(r.id in wanted for r in v[1])
+        }
+        hook_work = [w for w in hook_work if w[0].id in wanted]
+        hook_removals = [w for w in hook_removals if w[0].id in wanted]
 
     hold = sentinel.hold()
     sentinel.heartbeat()

@@ -1399,6 +1399,14 @@ interruption names `recompile` as its source. A trailer proves only the ledger
 leg and never authorizes repeating that leg or inventing a host exit code. If
 `recompile` refuses an implicated target, the continuation carries that
 ledger-proven item as `unresolved-host`, with the target and refusal reason.
+*Amended 2026-09-27 (sweep 2, R2):* the implicated targets are the item's
+record's OWN — recovery runs `recompile` narrowed to that record
+(`only_records`, resolved the way `route` resolves it), never ledger-wide, so
+an unrelated skipped target (a user's uncommitted edit to another skill's
+SKILL.md) is not this item's host failure, and recovery rewrites no other
+target; a warning naming the record itself (its target cannot be resolved,
+its file cannot be read) is a refusal too. Every other stale target waits for
+an ordinary `recompile`.
 `batch.run` skips the ledger leg, receipts
 `unresolved-host: <target>: <reason>` before anything dependent can run, and
 halts with the partial result and untouched tail in `BookkeepingHalt` so the

@@ -1939,10 +1939,15 @@ def _recovered_items(
         if sha is None or not _verify_mutation_commit(home, sha, ref, item):
             continue
         if item.verb in {"route", "rehome", "rescope"}:
-            host = verbs.recompile(home, no_push=True)
-            skipped = [entry for entry in host.entries if entry.skipped]
-            if skipped:
-                first = skipped[0]
+            # Sweep 2, R2 (2026-09-27): judge THIS record's own target(s)
+            # only. A ledger-wide recompile here rewrote every other stale
+            # host target while checking one item, and any unrelated
+            # skipped target (a user's uncommitted edit to another
+            # SKILL.md) became this item's `unresolved-host`, halting it
+            # and every later case on every attempt.
+            host = verbs.recompile(home, no_push=True, only_records=[item.id])
+            refused = verbs.recompile_refusals(host, item.id)
+            if refused:
                 completed[item.n] = batch.ItemResult(
                     n=item.n,
                     id=item.id,
@@ -1950,7 +1955,7 @@ def _recovered_items(
                     rc=1,
                     sha=sha,
                     state="unresolved-host",
-                    detail=f"{first.target}: {first.skipped}",
+                    detail=refused[0],
                     evidence="ledger mutation proven; host result established by recompile",
                 )
             else:

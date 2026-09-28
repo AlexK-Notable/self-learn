@@ -2725,11 +2725,10 @@ def _mutation_proven_completed(
             )
         evidence = "ledger mutation verified against original item"
         if row["verb"] in batch._HOST_OUTCOME_VERBS:  # noqa: SLF001 -- shared executor contract
-            recomp = verbs.recompile(home, no_push=True)
-            refused = [
-                f"{entry.target}: {entry.skipped}"
-                for entry in recomp.entries if entry.skipped
-            ]
+            # Sweep 2, R2 (2026-09-27): this item's own target(s) only --
+            # see steward._recovered_items.
+            recomp = verbs.recompile(home, no_push=True, only_records=[row["id"]])
+            refused = verbs.recompile_refusals(recomp, row["id"])
             if refused:
                 completed[n] = batch.ItemResult(
                     n=n, id=row["id"], verb=row["verb"], rc=1,
