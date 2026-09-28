@@ -188,7 +188,7 @@ def _read_decision(
 ) -> str | None:
     """2026-09-28: why a read-family call reaches outside *roots*, or
     ``None`` when it stays inside. Every path the call names is judged: the
-    target (`file_path`/`path`/`notebook_path`; absent means the session's
+    target (any of `TARGET_PATH_KEYS`; absent means the session's
     cwd, which is how Grep and Glob read it), and for Glob an absolute
     `pattern`'s leading literal segments. A `..` segment in any of them is
     refused outright: a pattern is matched after this check, so a relative

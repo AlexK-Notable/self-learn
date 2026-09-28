@@ -1228,16 +1228,23 @@ def test_pol1_both_build_can_use_tool_bodies_are_byte_unchanged_since_a0c67be():
     ui_charter_path = ui_dir / "src" / "self_learn_ui" / "engine" / "charter.py"
     cli_charter_path = Path(charter_mod.__file__)
 
+    # 2026-09-28 (reviewed by the orchestrator): the CLI charter's
+    # `build_can_use_tool` gained the overseer's read fence (step 3a,
+    # `Containment.read_roots`, the `cwd` keyword) in 4aa5ab6 -- a DENY-only
+    # addition for surfaces that name read roots, per the user's 2026-09-28
+    # direction that the overseer work in its own workspace (spec README
+    # revision log 2026-09-28; 02-schema.md, the overseer's workspace). Its
+    # body is pinned from that commit on; everything else from a0c67be.
     targets = [
-        (cli_charter_path, "build_can_use_tool"),
-        (cli_charter_path, "CharterPaths"),
-        (cli_charter_path, "CharterPatternUnsupported"),
-        (ui_charter_path, "build_can_use_tool"),
-        (ui_charter_path, "CharterPaths"),
-        (ui_charter_path, "CanonReadRootsUnavailable"),
+        (cli_charter_path, "build_can_use_tool", "4aa5ab6"),
+        (cli_charter_path, "CharterPaths", "a0c67be"),
+        (cli_charter_path, "CharterPatternUnsupported", "a0c67be"),
+        (ui_charter_path, "build_can_use_tool", "a0c67be"),
+        (ui_charter_path, "CharterPaths", "a0c67be"),
+        (ui_charter_path, "CanonReadRootsUnavailable", "a0c67be"),
     ]
-    for path, qualname in targets:
-        before = _source_at_ref("a0c67be", path, qualname)
+    for path, qualname, ref in targets:
+        before = _source_at_ref(ref, path, qualname)
         after = _source_now(path, qualname)
         assert before == after, (path, qualname)
 
