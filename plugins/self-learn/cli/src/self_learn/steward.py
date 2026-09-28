@@ -32,7 +32,6 @@ from . import (
     intents,
     invocation,
     ledger_ops,
-    session_copies,
     settings,
     statements,
     steward_inputs,
@@ -1264,13 +1263,19 @@ def _session_spec(
         home, settings.by_name("steward.turns_per_lesson")
     )
     per_lesson = int(cast(int | str, per_lesson_value))
+    # A local import: `serve` imports this module. The read-only resolver,
+    # not `session_copies.sessions_dir` (whose `worker.cache_dir` creates
+    # the cache), because `doctor`'s containment row builds this spec and
+    # doctor writes nothing (`Doc-0`); both name the same directory.
+    from .serve import cache_dir_readonly
+
     containment = invocation.containment_for(
         "steward",
         allowed_tools=_ALLOWED_TOOLS,
         disallowed_tools=_DISALLOWED_TOOLS,
         stage_dir=run_dir,
         # 2026-09-28 (follow-up 5): never the kept session copies.
-        sessions_dir=session_copies.sessions_dir(home),
+        sessions_dir=cache_dir_readonly(home) / "sessions",
     )
     return invocation.SessionSpec(
         surface="steward",
