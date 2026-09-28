@@ -124,6 +124,7 @@ The rows, in the order they print:
 | `consistency` | Emitted **only** when something is wrong: a `bedrock` surface with no region, or one whose model id is an Anthropic alias. No row means no problem. |
 | `region` / `credentials` / `models` / `env` | Bedrock-side checks; SKIP wholesale under `anthropic`. `credentials` is **presence-only** and reports WARN, never FAIL, when it finds nothing — it cannot see an EC2 instance role (`FW-90`). |
 | `orphans` | Today always SKIP. It is a reserved extension point, **not** an orphan census — see §5.3. |
+| `sessions` | *(2026-09-28, follow-up 6)* Always INFO, never FAIL: the file count and total size of the kept model-session copies in `<cache>/sessions/` (`13-hosting-and-separation.md`, session copies), which are never pruned — `none kept` when the directory does not exist. Printed last, after `serve` and `ui`; resolved without creating the cache. |
 
 A healthy machine looks like this (*captured 2026-08-25, post-U-cleanup,
 `anthropic` install — the `switches` row is the part that changed then;

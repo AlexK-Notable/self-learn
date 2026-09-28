@@ -10,6 +10,7 @@ follow-up:
 3. A secret hit outside the overseer's pairs costs that file's contents.
 4. An all-dropped run says so.
 5. The steward cannot read the transcript copies.
+6. Show how big the kept transcripts are.
 
 Sandbox ledger and host repos under pytest's tmpdir; fake model sessions.
 """
@@ -414,3 +415,28 @@ def test_the_steward_may_not_read_the_kept_session_copies(tmp_path, monkeypatch)
     assert _verdict(decide, "Grep", {"pattern": "x", "path": str(sessions.parent)}) == deny
     assert _verdict(decide, "Glob", {"pattern": f"{sessions}/**/*.jsonl"}) == deny
     assert _verdict(decide, "Read", {"file_path": str(run_dir / "steward" / "link.jsonl")}) == deny
+
+
+# ------------------------------------------- 6. doctor shows the kept copies
+
+
+def test_doctor_shows_the_size_of_the_kept_session_copies(tmp_path, monkeypatch):
+    from self_learn import provider, session_copies
+
+    home = make_env(tmp_path).ledger
+    sessions = session_copies.sessions_dir(home)
+
+    def row():
+        (only,) = [r for r in provider.preflight(home) if r.name == "sessions"]
+        return only
+
+    assert row().verdict == "INFO" and row().detail.startswith("none kept")  # nothing yet
+    one = sessions / "steward" / "run-1" / "a.jsonl"
+    two = sessions / "overseer" / "run-2" / "b" / "subagents" / "agent-1.jsonl"
+    for path, size in ((one, 1000), (two, 2048)):
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"x" * size)
+    shown = row()
+    assert shown.verdict == "INFO"
+    assert shown.detail == f"2 file(s), 3.0 KiB kept in {sessions}"
+    assert "sessions" in provider.DOCTOR_ROWS
