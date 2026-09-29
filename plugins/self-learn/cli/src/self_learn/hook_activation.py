@@ -176,7 +176,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from .hook_compiler import command_for, replay_examples, settings_snippet
+from .hook_compiler import command_for, hook_event, replay_examples, settings_snippet
 from .ledger_ops import read_proposal, require_status
 from .primitives import fsops
 from .records import Record
@@ -361,7 +361,8 @@ class ActivationResult:
     ``hook_registered_entry``/``hook_script_path``/``hook_script_sha256``
     (fold r1, D-f / Astra 9; fold r2, item F fixes what
     ``hook_registered_entry`` shows on an idempotent match) are the
-    exact ``PreToolUse`` entry :func:`activate` wrote (or found already
+    exact hook entry (``PreToolUse``, or ``PostToolUse`` for a warning
+    hook, S-73) :func:`activate` wrote (or found already
     registered — the ACTUAL registered item, siblings and all, not the
     freshly rendered snippet this call would have proposed), the
     ledger-side script path, and its sha256; ``None`` for a delegated
@@ -517,6 +518,31 @@ def _registered_item(data: dict, event: str, matcher, command: str) -> dict | No
     return None
 
 
+def _other_events_for(data: dict, event: str, command: str) -> list[str]:
+    """S-73: every hook event OTHER than *event* whose array registers
+    *command* — a warning hook may be ``PostToolUse``, so the same
+    script can now be registered under the wrong event, a conflict both
+    :func:`_merge_snippet` and :func:`deactivate` refuse rather than
+    silently adding a second registration or reporting "absent"."""
+    hooks_cfg = data.get("hooks") or {}
+    if not isinstance(hooks_cfg, dict):
+        return []
+    found: list[str] = []
+    for other, items in hooks_cfg.items():
+        if other == event or not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if any(
+                isinstance(h, dict) and h.get("command") == command
+                for h in item.get("hooks") or []
+            ):
+                found.append(str(other))
+                break
+    return found
+
+
 def _merge_snippet(data: dict, snippet: str, command: str) -> tuple[dict, bool]:
     """Insert ``snippet``'s event entry into ``data["hooks"][event]``
     unless (matcher, command) is ALREADY registered together, ANYWHERE
@@ -534,6 +560,12 @@ def _merge_snippet(data: dict, snippet: str, command: str) -> tuple[dict, bool]:
     unchanged when already present under the SAME matcher."""
     event, new_entry = _snippet_fragment(snippet)
     matcher = new_entry.get("matcher")
+    other_events = _other_events_for(data, event, command)
+    if other_events:
+        raise HookActivationError(
+            f"{command} is already registered under {', '.join(other_events)}, "
+            f"expected {event} — deactivate first"
+        )
     hooks_cfg = dict(data.get("hooks") or {})
     event_list = list(hooks_cfg.get(event) or [])
     same_matcher_hit = False
@@ -829,7 +861,9 @@ def activate(
             raise HookActivationError(f"{problem} — settings.json left untouched")
 
         command = _command_for(name, claude_dir)
-        snippet = settings_snippet(list(tools), name, claude_dir=claude_dir)
+        snippet = settings_snippet(
+            list(tools), name, claude_dir=claude_dir, event=hook_event(meta)
+        )
         entry_event, entry = _snippet_fragment(snippet)
         matcher = entry.get("matcher")
         entry_json = json.dumps(entry, sort_keys=True)
@@ -898,7 +932,9 @@ def activate(
             # own Apply text already names them for the human path;
             # `verbs._hook_manual_steps` is the one place that renders
             # them, reused here so the two can never drift apart).
-            manual_snippet = settings_snippet(list(tools), name, claude_dir=claude_dir)
+            manual_snippet = settings_snippet(
+                list(tools), name, claude_dir=claude_dir, event=hook_event(meta)
+            )
             manual_steps = verbs._hook_manual_steps(manual_snippet, name)  # noqa: SLF001
             delegated_note = (
                 "activation is delegated but switched off "
@@ -937,7 +973,7 @@ def activate(
             steps.append(
                 StepReceipt(
                     "registered",
-                    f"inserted the PreToolUse entry for {name}: {entry_json} "
+                    f"inserted the {entry_event} entry for {name}: {entry_json} "
                     f"(script {script_abs}, sha256 {script_sha256})",
                 )
             )
@@ -1066,7 +1102,7 @@ def deactivate(
     classification = _classify_symlink(link, script_abs)
 
     command = _command_for(name, claude_dir)
-    snippet = settings_snippet(list(tools), name, claude_dir=claude_dir)
+    snippet = settings_snippet(list(tools), name, claude_dir=claude_dir, event=hook_event(meta))
     event, entry = _snippet_fragment(snippet)
     matcher = entry.get("matcher")
     # `settings_snippet` always sets a string "matcher" key -- narrows
@@ -1077,6 +1113,13 @@ def deactivate(
     settings_changed = False
     new_settings_bytes: bytes | None = None
     if problem is None:
+        other_events = _other_events_for(data, event, command)
+        if other_events:
+            raise HookActivationError(
+                f"{command} is registered under {', '.join(other_events)}, "
+                f"expected {event} — refusing to remove a registration this "
+                "call does not own (fix settings.json by hand)"
+            )
         found_matchers = _registered_matcher_for(data, event, command)
         if isinstance(found_matchers, list):
             # Fold r3, S4: collect-all — refuse when ANY entry names a
@@ -1108,7 +1151,7 @@ def deactivate(
             steps.append(
                 StepReceipt(
                     "unregistered",
-                    f"removed the PreToolUse entry for {name} (surgical — "
+                    f"removed the {event} entry for {name} (surgical — "
                     "every other registration untouched)",
                 )
             )

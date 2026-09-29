@@ -218,10 +218,18 @@ def command_for(name: str, claude_dir: Path | None) -> str:
     return shlex.quote(f"{resolved_root}/hooks/{name}")
 
 
-def settings_snippet(tools: list[str], name: str, claude_dir: Path | None = None) -> str:
+def settings_snippet(
+    tools: list[str],
+    name: str,
+    claude_dir: Path | None = None,
+    event: str = "PreToolUse",
+) -> str:
     """The M3-1 literal registration snippet. The matcher is the tool-name
     set ONLY (M3-14) — ``hook.tools`` joined with ``|``; the path regex
-    lives exclusively in-script. ``claude_dir`` (D-d, default ``None``)
+    lives exclusively in-script. ``event`` (S-73) is the hook event the
+    entry registers under — ``PreToolUse`` unless a warning hook names
+    ``PostToolUse``; the default keeps every deny snippet byte-identical.
+    ``claude_dir`` (D-d, default ``None``)
     selects the command's root via :func:`command_for` — every route-
     time caller leaves it ``None`` (the printed two-step snippet stays
     the portable ``$HOME`` form, unchanged from before this amendment);
@@ -229,8 +237,10 @@ def settings_snippet(tools: list[str], name: str, claude_dir: Path | None = None
     the moment it actually writes the command into ``settings.json``."""
     matcher = "|".join(tools)
     command = command_for(name, claude_dir)
+    if event not in HOOK_EVENTS:
+        raise HookCompileError(f"event must be one of {list(HOOK_EVENTS)}, got {event!r}")
     hooks = json.dumps([{"type": "command", "command": command}])
-    return f'"PreToolUse": [{{"matcher": {json.dumps(matcher)}, "hooks": {hooks}}}]'
+    return f'{json.dumps(event)}: [{{"matcher": {json.dumps(matcher)}, "hooks": {hooks}}}]'
 
 
 #: M-G: `grep -qE` against an empty stdin is a pattern-syntax check only

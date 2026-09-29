@@ -71,6 +71,7 @@ the skills root hosts its own CLAUDE.md canon).
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import shutil
 import sys
@@ -96,6 +97,7 @@ from . import (
 from .primitives import chrono, fsops, text as text_mod
 from .hook_compiler import (
     MODE_MESSAGE_KEY,
+    hook_event,
     hook_mode,
     replay_examples,
     script_name,
@@ -2552,7 +2554,7 @@ def _prepare_one_motion_hook(
     # back to a still-present proposal sibling only for the narrow case
     # one happens to exist.
     meta = _hook_route_meta(hook, rel, data["script"], data["examples"])
-    snippet = settings_snippet(list(hook["tools"]), spec.target.name)
+    snippet = settings_snippet(list(hook["tools"]), spec.target.name, event=hook_event(hook))
     return _HookRoute(
         spec=spec, meta=meta, snippet=snippet, script=data["script"]
     )
@@ -2638,7 +2640,7 @@ def _prepare_hook_route(
     # examples `hook_activation._examples_for` would have nothing to
     # replay for ANY normally-routed record.
     meta = _hook_route_meta(hook, rel, script, data["examples"])
-    snippet = settings_snippet(list(hook["tools"]), spec.target.name)
+    snippet = settings_snippet(list(hook["tools"]), spec.target.name, event=hook_event(hook))
     return _HookRoute(spec=spec, meta=meta, snippet=snippet, script=script)
 
 
@@ -2671,13 +2673,17 @@ def _prepare_sheet_hook(
 
 def _hook_manual_steps(snippet: str, name: str) -> list[str]:
     """M3-11: the route ends by printing the required manual steps — the
-    hook is inert by design until both are done."""
+    hook is inert by design until both are done. S-73: step 2 names the
+    event the snippet registers under (a warning hook may be
+    ``PostToolUse``), read back from the snippet itself so the two can
+    never disagree."""
+    event = next(iter(json.loads("{" + snippet + "}")))
     return [
         "hook routed — two manual steps remain (the guard is INERT until "
         "both):",
         f"  1. run ./install.sh — the ~/.claude/hooks/{name} symlink "
         "materializes only then",
-        "  2. add this to ~/.claude/settings.json (hooks):\n"
+        f"  2. add this to ~/.claude/settings.json (hooks, under {event}):\n"
         f"     {snippet}",
     ]
 
@@ -3027,7 +3033,8 @@ def _remove_hook_script(
     name = script.name
     post_notes.append(
         f"hook retired — finish by hand: remove the settings.json "
-        f"PreToolUse entry for {name} and the dead ~/.claude/hooks/{name} "
+        f"hook entry for {name} (PreToolUse, or PostToolUse for a warning "
+        f"hook) and the dead ~/.claude/hooks/{name} "
         "symlink (install.sh only adds links, it never removes them)"
     )
     if not script.is_file():

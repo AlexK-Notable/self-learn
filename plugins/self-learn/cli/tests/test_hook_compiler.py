@@ -517,3 +517,33 @@ class TestWarnReplay:
         # the deny guard read as a warn block mismatches: the verdicts differ
         as_warn = {"allow": examples["allow"], "warn": examples["deny"]}
         assert replay_examples(guard, as_warn, {**block, "mode": "warn"}) != []
+
+
+# ------------------------------------------- S-73: the snippet's event (item 4)
+
+
+class TestSnippetEvent:
+    def test_the_default_snippet_is_byte_identical(self):
+        name = script_name(RID, "About to edit .storage")
+        default = settings_snippet(["Edit", "Write"], name)
+        assert default.startswith('"PreToolUse": [')
+        assert settings_snippet(["Edit", "Write"], name, event="PreToolUse") == default
+
+    def test_a_posttooluse_snippet_registers_under_posttooluse(self):
+        name = script_name(RID, "About to edit .storage")
+        parsed = json.loads("{" + settings_snippet(["Bash"], name, event="PostToolUse") + "}")
+        assert list(parsed) == ["PostToolUse"]
+        assert parsed["PostToolUse"][0]["matcher"] == "Bash"
+
+    def test_an_unknown_event_is_refused(self):
+        with pytest.raises(HookCompileError, match="event"):
+            settings_snippet(["Bash"], "x.sh", event="Stop")
+
+    def test_an_old_block_reads_as_deny_on_pretooluse(self):
+        from self_learn.hook_compiler import hook_event, hook_message, hook_mode
+
+        old = {"tools": ["Edit"], "path_regex": "x", "deny_message": "stop"}
+        assert (hook_mode(old), hook_event(old), hook_message(old)) == ("deny", "PreToolUse", "stop")
+        warn = {**WARN_BLOCK}
+        assert (hook_mode(warn), hook_event(warn), hook_message(warn)) == (
+            "warn", "PostToolUse", WARN_MESSAGE)

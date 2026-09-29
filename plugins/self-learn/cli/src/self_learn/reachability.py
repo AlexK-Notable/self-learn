@@ -48,6 +48,7 @@ from pathlib import Path
 
 from . import domain
 from .compilers import has_paths_key, read_paths_frontmatter
+from .hook_compiler import hook_event
 from .hosts import HostsError, load_hosts
 from .ledger import Bucket, discover_buckets
 from .ledger_ops import bucket_project_path, glob_reaches
@@ -580,14 +581,17 @@ def _rp_hook(
         return "unreachable", "not-registered", (
             f"no settings.json registration names {script_name}"
         ), script
-    pretooluse = [(event, matcher) for event, matcher in matching_any if event == "PreToolUse"]
-    if not pretooluse:
+    # S-73: the event the hook's own record names (a warning hook may be
+    # PostToolUse); an old record with none is PreToolUse.
+    want = hook_event(meta)
+    on_event = [(event, matcher) for event, matcher in matching_any if event == want]
+    if not on_event:
         events = ", ".join(sorted({e for e, _m in matching_any}))
         return "unreachable", "wrong-event", (
-            f"{script_name} is registered only under {events}, never PreToolUse"
+            f"{script_name} is registered only under {events}, never {want}"
         ), script
 
-    matcher = pretooluse[0][1]
+    matcher = on_event[0][1]
     tools = meta.get("tools") or []
     results = [_matcher_covers(matcher, t) for t in tools]
     if any(r is None for r in results):
@@ -599,7 +603,7 @@ def _rp_hook(
             f"matcher {matcher!r} does not cover every guarded tool {tools}"
         ), script
     return "reachable", "registered", (
-        f"{script_name} is registered under PreToolUse with matcher {matcher!r}"
+        f"{script_name} is registered under {want} with matcher {matcher!r}"
     ), script
 
 

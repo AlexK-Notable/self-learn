@@ -256,3 +256,96 @@ def test_a_steward_warn_hook_is_placed_and_parked_for_activation(
     assert_placed_warn_hook(script, meta, event)
     assert (claude_dir / "hooks" / script.name).is_symlink()  # placed
     assert not (claude_dir / "settings.json").exists()  # activation is off: never registered
+
+
+# ------------------------------------ snippet, activation, reachability (item 4)
+
+
+def test_the_route_prints_the_warn_hooks_event_in_its_manual_steps(env):
+    seed_hook(env, hook=warn_hook("PostToolUse"), examples=_examples())
+    result = verbs.route(env.home, RID)
+    notes = "\n".join(result.post_notes)
+    assert "under PostToolUse" in notes
+    assert f'"PostToolUse": [{{"matcher": "Edit|Write", "hooks": [{{"type": "command", ' \
+        f'"command": "$HOME/.claude/hooks/{NAME}"}}]}}]' in notes
+    assert '"PreToolUse"' not in notes
+    assert '"PostToolUse"' in env.host_body()
+
+
+def test_a_deny_route_still_prints_pretooluse(env):
+    seed_hook(env)
+    notes = "\n".join(verbs.route(env.home, RID).post_notes)
+    assert "under PreToolUse" in notes and '"PreToolUse": [' in notes
+
+
+def _settings(claude_dir: Path) -> dict:
+    return json.loads((claude_dir / "settings.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("event", ["PreToolUse", "PostToolUse"])
+def test_activation_registers_the_warn_hooks_event_and_deactivation_removes_it(
+    env, claude_dir, monkeypatch, event
+):
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.home))
+    _route_warn(env, event)
+    result = verbs.hook_activate(env.home, RID, no_push=True)
+    hooks = _settings(claude_dir)["hooks"]
+    assert list(hooks) == [event]
+    entry = hooks[event][0]
+    assert entry["matcher"] == "Edit|Write"
+    assert entry["hooks"][0]["command"].endswith(f"/hooks/{NAME}")
+    assert (claude_dir / "hooks" / NAME).is_symlink()
+    assert result.hook_replay == "ran"
+    assert any(f"inserted the {event} entry" in note for note in result.post_notes)
+    verbs.hook_deactivate(env.home, RID, no_push=True)
+    assert "hooks" not in _settings(claude_dir)
+    assert not (claude_dir / "hooks" / NAME).exists()
+
+
+def test_activation_replays_the_warn_examples_against_the_placed_hook(env, claude_dir, monkeypatch):
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.home))
+    _route_warn(env)
+    _rewrite_meta(env, examples=_examples(warn=[WARN_EXAMPLES["warn"][0],
+                                                WARN_EXAMPLES["allow"][1]]))
+    # refused by the replay step itself, before anything is registered
+    # (the doctor step after it would also see this; the replay must not
+    # leave it to the doctor)
+    with pytest.raises(verbs.VerbError, match=r"(?s)guard replay failed against the placed "
+                       r"symlink.*warn\[1\] expected a warning"):
+        verbs.hook_activate(env.home, RID, no_push=True)
+    assert not (claude_dir / "settings.json").exists()
+
+
+def test_activation_refuses_the_same_script_under_another_event(env, claude_dir, monkeypatch):
+    from self_learn.hook_compiler import command_for
+
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.home))
+    _route_warn(env, "PostToolUse")
+    command = command_for(NAME, claude_dir)
+    stale = {"hooks": {"PreToolUse": [{"matcher": "Edit|Write",
+                                       "hooks": [{"type": "command", "command": command}]}]}}
+    (claude_dir / "settings.json").write_text(json.dumps(stale), encoding="utf-8")
+    with pytest.raises(verbs.VerbError, match="already registered under PreToolUse, expected PostToolUse"):
+        verbs.hook_activate(env.home, RID, no_push=True)
+    assert _settings(claude_dir) == stale  # untouched
+    with pytest.raises(verbs.VerbError, match="registered under PreToolUse, expected PostToolUse"):
+        verbs.hook_deactivate(env.home, RID, no_push=True)
+    assert _settings(claude_dir) == stale
+
+
+def test_reachability_reads_the_warn_hooks_event(env, claude_dir, monkeypatch):
+    from self_learn.reachability import reachability_rows
+
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.home))
+    _route_warn(env, "PostToolUse")
+    verbs.hook_activate(env.home, RID, no_push=True)
+    row = next(r for r in reachability_rows(env.home, claude_dir) if r.record_id == RID)
+    assert (row.state, row.reason) == ("reachable", "registered"), row
+    assert "under PostToolUse" in row.detail
+    # the same registration moved to PreToolUse is the wrong event for it
+    data = _settings(claude_dir)
+    data["hooks"] = {"PreToolUse": data["hooks"]["PostToolUse"]}
+    (claude_dir / "settings.json").write_text(json.dumps(data), encoding="utf-8")
+    row = next(r for r in reachability_rows(env.home, claude_dir) if r.record_id == RID)
+    assert (row.state, row.reason) == ("unreachable", "wrong-event"), row
+    assert "never PostToolUse" in row.detail
