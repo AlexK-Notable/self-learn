@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from ruamel.yaml import YAML
 
-from self_learn import batch, ledger_ops, steward
+from self_learn import always_loaded, batch, ledger_ops, steward
 from self_learn.invocation.contract import Outcome
 from self_learn.ledger_ops import create_record
 from support import commit_all, make_behavior, make_home, proposal_dict
@@ -78,6 +78,15 @@ def _case_document(fixture: dict[str, Any], ids: list[str]) -> dict[str, Any]:
     for key in ("supersedes", "parked_for", "parked_reason"):
         if key in fixture:
             case[key] = fixture[key]
+    if any(always_loaded.dest_is_always_loaded(item.get("dest")) for item in fixture["sheet"]):
+        # U3b (S-72): an always-loaded route carries the combined test's
+        # evidence, or the runner refuses the case; these fixtures are about
+        # the decision's other shapes, so the test is always evidenced.
+        ref = fixture["evidence"][0]["ref"]
+        case["decision"]["always_loaded"] = {
+            key: {"because": "the fixture's evidence shows it", "refs": [ref]}
+            for key in always_loaded.TEST_KEYS
+        }
     return _substitute(case, ids)
 
 
