@@ -972,7 +972,7 @@ def _check_hooks(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
                     # the record's own examples against the placed script.
                     # Read-only (a generated hook only reads stdin) and
                     # bounded (`replay_examples`, M-G).
-                    mismatches = replay_examples(script, meta["examples"], meta)
+                    mismatches = replay_examples(script, meta["examples"], meta, record.id)
                     if mismatches:
                         failures.append(
                             f"{record.id}: hook script {script} failed its "

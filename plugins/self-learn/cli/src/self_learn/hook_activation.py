@@ -955,7 +955,7 @@ def activate(
         n_examples = sum(
             len(examples.get(verdict, []) or []) for verdict in ("allow", "deny", "warn")
         )
-        mismatches = replay_examples(link, examples, meta)
+        mismatches = replay_examples(link, examples, meta, record_id)
         if mismatches:
             raise HookActivationError(
                 "guard replay failed against the placed symlink — aborting "

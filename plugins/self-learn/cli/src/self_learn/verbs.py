@@ -2341,7 +2341,9 @@ def _resolve_hook_target(home: Path, record: Record, bucket_dir: Path) -> Target
     return TargetSpec("hook", scope_kind, bucket_dir, target, root, mode=host_mode(home, root))
 
 
-def _replay_hook_examples(script: str, examples: dict, hook: dict | None = None) -> None:
+def _replay_hook_examples(
+    script: str, examples: dict, hook: dict | None = None, record_id: str | None = None
+) -> None:
     """M3-12: replay the analyst's allow/deny examples against the exact
     bytes the route will commit — BEFORE anything commits. Any mismatch
     aborts. (The scratch copy lives in a TemporaryDirectory and is never
@@ -2351,7 +2353,7 @@ def _replay_hook_examples(script: str, examples: dict, hook: dict | None = None)
         probe = Path(scratch) / "guard.sh"
         probe.write_text(script, encoding="utf-8")
         probe.chmod(0o700)
-        mismatches = replay_examples(probe, examples, hook)
+        mismatches = replay_examples(probe, examples, hook, record_id)
     if mismatches:
         raise VerbError(
             "guard replay failed — aborting the route (M3-12; the record "
@@ -2543,7 +2545,7 @@ def _prepare_one_motion_hook(
     # instead of leaving a live pyright false-positive.
     assert spec.target is not None
     hook = data["hook"]
-    _replay_hook_examples(data["script"], data["examples"], hook)
+    _replay_hook_examples(data["script"], data["examples"], hook, record.id)
 
     rel = spec.target.relative_to(spec.host_path).as_posix()
     # Fold r1, D-e (Opus S4 / Astra 8 — swept-proposal gap): the
@@ -2632,7 +2634,7 @@ def _prepare_hook_route(
     # instead of leaving a live pyright false-positive.
     assert spec.target is not None
     hook = data["hook"]
-    _replay_hook_examples(script, data["examples"], hook)
+    _replay_hook_examples(script, data["examples"], hook, record.id)
 
     rel = spec.target.relative_to(spec.host_path).as_posix()
     # Fold r1, D-e (Opus S4 / Astra 8 — the swept-proposal gap):

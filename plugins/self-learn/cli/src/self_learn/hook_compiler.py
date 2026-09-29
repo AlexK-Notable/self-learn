@@ -71,6 +71,7 @@ __all__ = [
     "settings_snippet",
     "trigger_slug",
     "validate_ere",
+    "warn_context",
     "warn_output",
 ]
 
@@ -428,14 +429,23 @@ exit 0
 """
 
 
-def warn_output(event: str, message: str) -> str:
+def warn_context(record_id: str, message: str) -> str:
+    """The text a warning hands the model: the block's message behind the
+    same ``self-learn lrn-…:`` prefix a deny message carries, so the model
+    can name the lesson it came from."""
+    return f"self-learn {record_id}: {message}"
+
+
+def warn_output(event: str, record_id: str, message: str) -> str:
     """The one JSON line a warn script prints on a match: Claude Code
-    hands ``additionalContext`` to the model (verified live on 2.1.284 for
-    both events, misc probe 2026-09-28). ``ensure_ascii=False`` keeps a
-    multibyte message near its own size rather than six bytes a
-    character."""
+    hands ``additionalContext`` (:func:`warn_context`) to the model
+    (verified live on 2.1.284 for both events, misc probe 2026-09-28).
+    ``ensure_ascii=False`` keeps a multibyte message near its own size
+    rather than six bytes a character. The generator and the replay both
+    build it here."""
+    context = warn_context(record_id, message)
     return json.dumps(
-        {"hookSpecificOutput": {"hookEventName": event, "additionalContext": message}},
+        {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}},
         ensure_ascii=False,
         separators=(",", ":"),
     )
@@ -459,7 +469,7 @@ def _warn_script(
     The JSON line is built here, at generation, and embedded as one
     single-quoted literal (the deny guard's quoting), so the script needs
     no jq to print it and its bytes stay deterministic."""
-    output = warn_output(event, message)
+    output = warn_output(event, record_id, message)
     if len(output.encode("utf-8")) > WARN_OUTPUT_CAP:
         raise HookCompileError(
             f"the warning's JSON line is {len(output.encode('utf-8'))} bytes — "
@@ -543,7 +553,10 @@ REPLAY_EXAMPLE_TIMEOUT_S = 10.0
 
 
 def replay_examples(
-    script_path: Path, examples: dict, hook: dict | None = None
+    script_path: Path,
+    examples: dict,
+    hook: dict | None = None,
+    record_id: str | None = None,
 ) -> list[str]:
     """M3-12: run the analyst's allow/deny example inputs against the
     generated script. Returns one human sentence per MISMATCH (empty =
@@ -556,9 +569,14 @@ def replay_examples(
 
     S-73: *hook* is the block (or routing.hook) the script came from; a
     ``mode: warn`` block replays through :func:`_replay_warn`. ``None``,
-    or a block that records no mode, replays as deny, unchanged."""
+    or a block that records no mode, replays as deny, unchanged. A warn
+    replay needs *record_id*: the expected text carries the lesson's id."""
     if hook is not None and hook_mode(hook) == "warn":
-        return _replay_warn(script_path, examples, hook_event(hook), hook_message(hook))
+        if record_id is None:
+            raise HookCompileError("a warning hook's replay needs its record id")
+        return _replay_warn(
+            script_path, examples, hook_event(hook), record_id, hook_message(hook)
+        )
     mismatches: list[str] = []
     for verdict, expected_rc in (("allow", 0), ("deny", 2)):
         for i, example in enumerate(examples.get(verdict, [])):
@@ -586,7 +604,9 @@ def replay_examples(
     return mismatches
 
 
-def _replay_warn(script_path: Path, examples: dict, event: str, message: str) -> list[str]:
+def _replay_warn(
+    script_path: Path, examples: dict, event: str, record_id: str, message: str
+) -> list[str]:
     """S-73: a warning hook's replay. Both verdicts exit 0, so the exit
     code alone proves nothing: an ``allow`` example must print nothing,
     and a ``warn`` example must print exactly :func:`warn_output`'s line
@@ -594,7 +614,7 @@ def _replay_warn(script_path: Path, examples: dict, event: str, message: str) ->
     output, a different event or text, a timeout) is a mismatch, named
     per example."""
     mismatches: list[str] = []
-    expected = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": message}}
+    expected = json.loads(warn_output(event, record_id, message))
     for verdict in ("allow", "warn"):
         for i, example in enumerate(examples.get(verdict, [])):
             where = f"{verdict}[{i}]"

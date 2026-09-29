@@ -755,7 +755,7 @@ def _replays(hook_input: dict) -> list[str]:
         probe = Path(scratch) / "guard.sh"
         probe.write_text(script, encoding="utf-8")
         probe.chmod(0o700)
-        return replay_examples(probe, hook_input["examples"], hook)
+        return replay_examples(probe, hook_input["examples"], hook, "lrn-0000000a")
 
 
 def test_the_authority_examples_cover_items_1_3_4_and_5():

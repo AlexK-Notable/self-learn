@@ -546,7 +546,8 @@ Rules for the hook block:
 - **A hook may warn instead of deny (S-73).** Add `mode: warn` and write
   `warn_message` (up to 2,000 characters, newlines allowed) in place of
   `deny_message`; the examples become `{allow, warn}`. A warning hook
-  lets the call run and hands the model the message; with
+  lets the call run and hands the model the message (as
+  `self-learn lrn-…: <warn_message>`, like a deny message); with
   `event: PostToolUse` it runs after the call instead of before (a deny
   guard is `PreToolUse` only). It never blocks: on any error it stays
   silent. Choose `warn` when the lesson is advice the model may rightly

@@ -353,7 +353,8 @@ class TestWarnScript:
         assert proc.returncode == 0
         assert proc.stdout.endswith("\n") and proc.stdout.count("\n") == 1
         assert json.loads(proc.stdout) == {
-            "hookSpecificOutput": {"hookEventName": event, "additionalContext": WARN_MESSAGE}
+            "hookSpecificOutput": {"hookEventName": event,
+                                   "additionalContext": f"self-learn {RID}: {WARN_MESSAGE}"}
         }
         assert proc.stderr == ""
 
@@ -428,7 +429,8 @@ class TestWarnScript:
     def test_quotes_newlines_and_multibyte_round_trip(self, tmp_path):
         message = "naïve — «don't» \"x\" $HOME `id` \\n\n\tsecond line ✓"
         proc = run_guard(_warn(tmp_path, message=message), PKILL)
-        assert json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"] == message
+        assert json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"] == (
+            f"self-learn {RID}: {message}")
 
     def test_the_output_is_bounded_under_the_cap(self, tmp_path):
         from self_learn.hook_compiler import WARN_MESSAGE_MAX, WARN_OUTPUT_CAP
@@ -438,11 +440,13 @@ class TestWarnScript:
         worst = '"' * WARN_MESSAGE_MAX
         proc = run_guard(_warn(tmp_path, message=worst), PKILL)
         assert len(proc.stdout.encode("utf-8")) <= WARN_OUTPUT_CAP
-        assert json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"] == worst
+        assert json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"] == (
+            f"self-learn {RID}: {worst}")
         # a multibyte message at the limit stays near its own size
         wide = "é✓" * (WARN_MESSAGE_MAX // 2)
         proc = run_guard(_warn(tmp_path, message=wide), PKILL)
-        assert json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"] == wide
+        assert json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"] == (
+            f"self-learn {RID}: {wide}")
         with pytest.raises(HookCompileError, match="at most"):
             generate_script(RID, "t", ["Bash"], "x", "y" * (WARN_MESSAGE_MAX + 1), mode="warn")
 
@@ -482,29 +486,29 @@ def _warn_block_guard(tmp_path: Path, block: dict = WARN_BLOCK) -> Path:
 
 class TestWarnReplay:
     def test_clean_warn_replay(self, tmp_path):
-        assert replay_examples(_warn_block_guard(tmp_path), WARN_EXAMPLES, WARN_BLOCK) == []
+        assert replay_examples(_warn_block_guard(tmp_path), WARN_EXAMPLES, WARN_BLOCK, RID) == []
 
     def test_an_allow_example_that_warns_is_named(self, tmp_path):
         examples = {**WARN_EXAMPLES, "allow": [PKILL, LS]}
-        mismatches = replay_examples(_warn_block_guard(tmp_path), examples, WARN_BLOCK)
+        mismatches = replay_examples(_warn_block_guard(tmp_path), examples, WARN_BLOCK, RID)
         assert len(mismatches) == 1 and mismatches[0].startswith("allow[0] expected no warning")
 
     def test_a_warn_example_that_stays_silent_is_named(self, tmp_path):
         examples = {**WARN_EXAMPLES, "warn": [PKILL, LS]}
-        mismatches = replay_examples(_warn_block_guard(tmp_path), examples, WARN_BLOCK)
+        mismatches = replay_examples(_warn_block_guard(tmp_path), examples, WARN_BLOCK, RID)
         assert len(mismatches) == 1 and mismatches[0].startswith("warn[1] expected a warning")
 
     def test_the_event_and_the_message_must_both_match(self, tmp_path):
         guard = _warn_block_guard(tmp_path)
-        assert replay_examples(guard, WARN_EXAMPLES, WARN_BLOCK) == []  # control
+        assert replay_examples(guard, WARN_EXAMPLES, WARN_BLOCK, RID) == []  # control
         pre = {**WARN_BLOCK, "event": "PreToolUse"}
-        assert len(replay_examples(guard, WARN_EXAMPLES, pre)) == 2
+        assert len(replay_examples(guard, WARN_EXAMPLES, pre, RID)) == 2
         other = {**WARN_BLOCK, "warn_message": "something else"}
-        assert len(replay_examples(guard, WARN_EXAMPLES, other)) == 2
+        assert len(replay_examples(guard, WARN_EXAMPLES, other, RID)) == 2
 
     def test_a_non_zero_exit_is_a_mismatch(self, tmp_path):
         guard = write_guard(tmp_path, "#!/usr/bin/env bash\ncat >/dev/null\nexit 2\n")
-        mismatches = replay_examples(guard, WARN_EXAMPLES, WARN_BLOCK)
+        mismatches = replay_examples(guard, WARN_EXAMPLES, WARN_BLOCK, RID)
         assert len(mismatches) == 4 and all("exited 2" in m for m in mismatches)
 
     def test_a_deny_guard_replays_as_before_with_or_without_its_block(self, tmp_path):
@@ -516,7 +520,7 @@ class TestWarnReplay:
         assert replay_examples(guard, examples, block) == []
         # the deny guard read as a warn block mismatches: the verdicts differ
         as_warn = {"allow": examples["allow"], "warn": examples["deny"]}
-        assert replay_examples(guard, as_warn, {**block, "mode": "warn"}) != []
+        assert replay_examples(guard, as_warn, {**block, "mode": "warn"}, RID) != []
 
 
 # ------------------------------------------- S-73: the snippet's event (item 4)
@@ -547,3 +551,37 @@ class TestSnippetEvent:
         warn = {**WARN_BLOCK}
         assert (hook_mode(warn), hook_event(warn), hook_message(warn)) == (
             "warn", "PostToolUse", WARN_MESSAGE)
+
+
+class TestWarningNamesItsLesson:
+    """The orchestrator's fold: a warning carries the `self-learn lrn-…:`
+    prefix a deny message carries, built in one place for the generator
+    and the replay."""
+
+    def test_the_context_is_prefixed_with_the_record_id(self, tmp_path):
+        from self_learn.hook_compiler import warn_context
+
+        assert warn_context(RID, "careful") == f"self-learn {RID}: careful"
+        proc = run_guard(_warn_block_guard(tmp_path), PKILL)
+        assert json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"] == (
+            f"self-learn {RID}: {WARN_MESSAGE}")
+
+    def test_the_replay_expects_the_prefix_and_the_right_id(self, tmp_path):
+        guard = _warn_block_guard(tmp_path)
+        assert replay_examples(guard, WARN_EXAMPLES, WARN_BLOCK, RID) == []  # control
+        assert len(replay_examples(guard, WARN_EXAMPLES, WARN_BLOCK, "lrn-99999999")) == 2
+
+    def test_a_warn_replay_without_the_record_id_is_refused(self, tmp_path):
+        with pytest.raises(HookCompileError, match="record id"):
+            replay_examples(_warn_block_guard(tmp_path), WARN_EXAMPLES, WARN_BLOCK)
+
+    def test_the_cap_counts_the_prefix(self, monkeypatch):
+        from self_learn import hook_compiler
+        from self_learn.hook_compiler import warn_output
+
+        size = len(warn_output("PreToolUse", RID, "y" * 200).encode("utf-8"))
+        monkeypatch.setattr(hook_compiler, "WARN_OUTPUT_CAP", size)
+        generate_script(RID, "t", ["Bash"], "x", "y" * 200, mode="warn")  # exactly at the cap
+        monkeypatch.setattr(hook_compiler, "WARN_OUTPUT_CAP", size - 1)
+        with pytest.raises(HookCompileError, match="output cap"):
+            generate_script(RID, "t", ["Bash"], "x", "y" * 200, mode="warn")

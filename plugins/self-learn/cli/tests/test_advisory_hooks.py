@@ -82,7 +82,7 @@ def run_hook(script: Path, payload: dict) -> subprocess.CompletedProcess:
                           capture_output=True, text=True)
 
 
-def assert_placed_warn_hook(script: Path, meta: dict, event: str) -> None:
+def assert_placed_warn_hook(script: Path, meta: dict, event: str, record_id: str = RID) -> None:
     """The placed bytes are the warning script for *event*, and routing.hook
     records what activation, the doctor and reachability read."""
     assert script.is_file()
@@ -94,7 +94,8 @@ def assert_placed_warn_hook(script: Path, meta: dict, event: str) -> None:
     hit = run_hook(script, WARN_EXAMPLES["warn"][0])
     assert hit.returncode == 0
     assert json.loads(hit.stdout) == {
-        "hookSpecificOutput": {"hookEventName": event, "additionalContext": WARN_MESSAGE}
+        "hookSpecificOutput": {"hookEventName": event,
+                               "additionalContext": f"self-learn {record_id}: {WARN_MESSAGE}"}
     }
     miss = run_hook(script, WARN_EXAMPLES["allow"][0])
     assert (miss.returncode, miss.stdout) == (0, "")
@@ -137,7 +138,7 @@ def test_a_one_motion_warn_hook_routes_is_placed_and_replays(tmp_path, monkeypat
                        hook_input=hook_input(hook=warn_hook(event), examples=_examples()))
     routed = Record.from_path(one.bucket / "resolved" / f"{record.id}.md")
     script = one.host / "plugins" / "s-plugin" / "hooks" / script_name(record.id, TRIGGER)
-    assert_placed_warn_hook(script, routed.routing["hook"], event)
+    assert_placed_warn_hook(script, routed.routing["hook"], event, record.id)
 
 
 def test_a_deny_route_keeps_its_routing_payload_shape(env):
@@ -253,7 +254,7 @@ def test_a_steward_warn_hook_is_placed_and_parked_for_activation(
     record = Record.from_path(verbs.find_record_path(home, rid))
     meta = record.routing["hook"]
     script = sandbox.host / "plugins" / "s-plugin" / "hooks" / script_name(rid, HOOK_TRIGGER)
-    assert_placed_warn_hook(script, meta, event)
+    assert_placed_warn_hook(script, meta, event, rid)
     assert (claude_dir / "hooks" / script.name).is_symlink()  # placed
     assert not (claude_dir / "settings.json").exists()  # activation is off: never registered
 
@@ -628,7 +629,8 @@ def test_the_overseer_moves_a_routed_lesson_to_a_warning_hook(tmp_path, monkeypa
     entry = next(h for h in record.history if h.get("event") == "hook-activated")
     assert "switched off" in (entry.get("note") or "")
     hit = run_hook(script, hook_input["examples"]["warn"][0])
-    assert json.loads(hit.stdout)["hookSpecificOutput"]["additionalContext"] == block["warn_message"]
+    assert json.loads(hit.stdout)["hookSpecificOutput"]["additionalContext"] == (
+        f"self-learn {rid}: {block['warn_message']}")
 
 
 def test_the_repair_preview_now_reports_a_refusal_only_the_widened_line_meets(tmp_path):

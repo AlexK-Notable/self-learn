@@ -463,7 +463,7 @@ acceptance (§7.3).*
 
 ### 8.1 M3 pins (extends §1/§7.1)
 
-*Amended 2026-09-28 (S-73):* the pins below now hold PER MODE. They describe the `deny` mode (the default; its scripts are byte-identical to before). A `mode: warn` hook keeps every pin except three: its event may be `PreToolUse` or `PostToolUse` (the snippet registers under it); a match exits 0 and prints one JSON line carrying `hookSpecificOutput.additionalContext` (the block's `warn_message`, newlines allowed, at most 2,000 characters; the line at most 7,500 bytes) instead of exit 2; and every error FAILS OPEN (exit 0, nothing printed) instead of failing closed. Its replay examples are 2–3 `allow` (must print nothing) and 2–3 `warn` (must print exactly the event and message). The doctor replays each placed hook's recorded examples.
+*Amended 2026-09-28 (S-73):* the pins below now hold PER MODE. They describe the `deny` mode (the default; its scripts are byte-identical to before). A `mode: warn` hook keeps every pin except three: its event may be `PreToolUse` or `PostToolUse` (the snippet registers under it); a match exits 0 and prints one JSON line carrying `hookSpecificOutput.additionalContext` = `self-learn lrn-…: <warn_message>` (the deny message's prefix; `warn_message` newlines allowed, at most 2,000 characters; the whole line, prefix included, at most 7,500 bytes) instead of exit 2; and every error FAILS OPEN (exit 0, nothing printed) instead of failing closed. Its replay examples are 2–3 `allow` (must print nothing) and 2–3 `warn` (must print exactly the event and the prefixed message). The doctor replays each placed hook's recorded examples.
 
 | Contract | Pin |
 |---|---|
