@@ -302,9 +302,12 @@ excerpt. Decide each event, one sheet item per event, in a case whose
 - the recurrence shows the rule's wording or placement failed — reconsider
   it through a successor case: a `kind: reconsider` case whose `supersedes`
   names the case that routed the lesson (shown above its brief as a prior
-  case), with the correction as that case's sheet items. When no case
-  routed it, or the fix is a stronger surface or a hook, park the case
-  (`authority-unclear`, or `hook`) with your tentative answer.
+  case), with the correction as that case's sheet items. A `route` item in
+  that case MOVES the placed lesson to the destination it names — a
+  path-scoped rule, a stronger surface, or a hook with its compile input
+  (the hook paragraph above, and §14 for an always-loaded line); the old placement is
+  retired in the same motion. When no case covers the lesson, park the
+  case (`authority-unclear`) with your tentative answer.
 
 `cannot-tell` is an answer too: when neither the excerpt nor the
 transcript shows whether the rule was loaded and applied, write a

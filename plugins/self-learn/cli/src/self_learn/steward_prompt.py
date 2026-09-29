@@ -438,6 +438,41 @@ items:
           - {tool_name: Write, tool_input: {file_path: /srv/other/cache.db}}
     note: a guard sees this exact call; the shelf line did not stop it
 """,
+    "cases/move-to-the-shelf.yaml": """\
+kind: reconsider
+trigger: nightly
+outcome: route
+records: [lrn-6a7b8c9d]
+scope: user
+supersedes: case-1a2b3c4d
+question: >-
+  The lesson sits in every session but matters only when release notes are written; move it?
+evidence:
+  - ref: "case-1a2b3c4d"
+    quote: "routed to the user's CLAUDE.md"
+  - ref: "transcript:example-session#L310"
+    quote: "only relevant when drafting release notes"
+decision:
+  verb: route
+  because: >-
+    The first placement failed the always-loaded test's first question; a reference file read at
+    the release step reaches the moment at a fraction of the cost.
+  confidence: settled
+dependencies:
+  statements: []
+  user_model: []
+  conditions: []
+  capabilities: []
+""",
+    "sheets/move-to-the-shelf.yaml": """\
+version: 1
+case: $CASE_ID
+items:
+  - id: lrn-6a7b8c9d
+    verb: route
+    dest: reference:releases.md
+    note: moved from the always-loaded line; the old line is retired in the same motion
+""",
 }
 
 
@@ -864,7 +899,11 @@ def _render_output_contract() -> str:
         "  `output-style:<style name>` -- the surface whose text already covers the lesson",
         "  (method section 9). `supersede` marks the item's `id` (the OLD lesson) replaced by",
         "  `new_id`, which must already exist as a record; the successor is routed by its own",
-        "  item. `rehome` and `rescope` both move a pending or deferred lesson to another",
+        "  item. RE-DECIDING A PLACED LESSON: in a `kind: reconsider` case whose `supersedes`",
+        "  names the case that covered it, a `route` line on a lesson that is already routed",
+        "  MOVES it to the `dest` it names (the runner applies it as a reroute; the old placement",
+        "  is retired in the same motion; `dest` is required; a hook needs its compile input;",
+        "  never `new-skill`). `rehome` and `rescope` both move a pending or deferred lesson to another",
         "  registered scope (`to`: `user`, `skill:<name>`, or a project path). `reopen` returns a",
         "  rejected or superseded lesson to pending.",
         "  WHAT EACH VERB NEEDS THE LESSON'S STATUS TO BE (the verbs' own checks; a mismatch is",

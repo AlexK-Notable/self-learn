@@ -2226,8 +2226,15 @@ in `batch --dry-run` alike; a dismissal of a fire records `basis:
 fire-suspected-violation`. Nothing spools a `recurrence-suspect` for a fire
 (the miner's crossover stays removed). Reconsidering the wording or
 placement is a `kind: reconsider` case whose `supersedes` names the case
-that routed the lesson; with no such case, or when the fix is a stronger
-surface or a hook, the steward parks.
+that routed the lesson; with no such case the steward parks. *(Amended
+2026-09-28, U3b / S-72.)* A `route` line in such a case moves the routed
+lesson (`batch` applies it as `reroute`), including to a path-scoped rule
+or, with the line's compile input, a hook — the fix may be a stronger
+surface or a hook, decided by the steward itself; the case's `outcome:
+route` now applies to a `routed` record (`verbs.reconsider`). The
+overseer's `kind: reconsider` successors do the same (its runner, unlike
+the steward's, writes no `reconsidered` history entry; the case's
+`supersedes` link is the record).
 
 ## 4. Managed sections (the compile targets' contract)
 

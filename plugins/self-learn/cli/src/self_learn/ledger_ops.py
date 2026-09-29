@@ -2784,6 +2784,7 @@ def reroute_record(
     variant: str | None = None,
     rules_topic: str | None = None,
     rules_paths: list[str] | None = None,
+    hook: dict | None = None,
 ) -> list[Path]:
     """File-op half of ``reroute`` (U-verbs S-54 / §4.5, Phase 2):
     correct a wrong routing DESTINATION on an already-ROUTED record. The
@@ -2814,6 +2815,10 @@ def reroute_record(
             routing["rules_topic"] = rules_topic
         if rules_paths is not None:
             routing["rules_paths"] = list(rules_paths)
+    if hook is not None:
+        # U3b: a reroute INTO a hook carries the generated script and its
+        # examples, exactly as `route`'s routing block does.
+        routing["hook"] = dict(hook)
     record.set_routing(routing)
     record.write(path)
     return [path]

@@ -6547,7 +6547,9 @@ _RECONSIDER_WIDENED_STATUSES_INCL_REJECTED = (
     _RECONSIDER_WIDENED_STATUSES | REOPENABLE_STATUSES
 )
 _OUTCOME_APPLICABLE_STATUSES: dict[str, frozenset[str]] = {
-    "route": DEFERRED_ONLY | REOPENABLE_STATUSES,
+    # U3b (S-72): a routed lesson may be re-decided to another destination
+    # (`batch` turns the case's `route` line into `reroute`).
+    "route": DEFERRED_ONLY | REOPENABLE_STATUSES | ROUTED_ONLY,
     "reject": _RECONSIDER_WIDENED_STATUSES,
     "defer": _RECONSIDER_WIDENED_STATUSES_INCL_REJECTED,
     "retire": _RECONSIDER_WIDENED_STATUSES_INCL_REJECTED,
@@ -6873,6 +6875,106 @@ def _routing_dest_label(routing: dict) -> str:
     return str(destination)
 
 
+@dataclass
+class _ReroutePlan:
+    path: Path
+    record: Record
+    bucket_dir: Path
+    old_routing: dict
+    old_retire: "_Retirement"
+    warnings: list[str]
+    destination: str
+    ref_name: str | None
+    spec: TargetSpec
+    hook_route: "_HookRoute | None"
+
+
+def _reroute_plan(
+    home: Path,
+    record_id: str,
+    *,
+    dest: str,
+    by: str | None,
+    note: str | None,
+    user_claude_md: Path | str | None,
+    hook_input: dict | None,
+) -> _ReroutePlan:
+    """`reroute`'s checks before any lock, in order, with nothing written
+    (U3b: factored out so `batch.dry_run` previews a reconsider case's
+    re-decision with the SAME checks the verb runs)."""
+    path = find_record_path(home, record_id)  # pending OR resolved
+    _scan_or_refuse([path], note)
+    try:
+        _, record = require_status(home, record_id, ROUTED_ONLY, verb="reroute")
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+    bucket_dir = path.parent.parent
+    old_routing = dict(record.routing or {})
+    warnings: list[str] = []
+    # Both preflights run BEFORE the lock (§4.5): the OLD target's
+    # retirement, and the NEW target's resolution.
+    old_retire = _retirement_preflight(
+        home, record, bucket_dir, warnings, user_claude_md=user_claude_md
+    )
+    resolved_dest = _resolve_destination(bucket_dir, record_id, dest)
+    destination = resolved_dest.destination
+    if hook_input is not None and destination != "hook":
+        raise SheetLineError(
+            f"reroute {record_id}: a hook compile input needs dest: hook, not {destination!r}"
+        )
+    hook_route: _HookRoute | None = None
+    if destination == "hook" and hook_input is not None:
+        hook_route = _prepare_sheet_hook(home, bucket_dir, record, hook_input, by=by)
+    elif destination in ONE_MOTION_UNROUTABLE:
+        raise VerbError(
+            f"reroute --dest {destination}: a one-motion destination — "
+            "rerouting INTO it is a fresh `route` decision on a fresh "
+            "record, not a correction (S-54); a hook needs its compile "
+            "input carried on a reconsider case's sheet line (S-72)"
+        )
+    ref_name = resolved_dest.ref_name
+    if hook_route is not None:
+        spec = hook_route.spec
+    else:
+        spec = _resolve_target(
+            home,
+            bucket_dir,
+            record.scope,
+            destination,
+            ref_name,
+            user_claude_md=user_claude_md,
+            variant=resolved_dest.variant,
+            rules_topic=resolved_dest.rules_topic,
+            rules_paths=resolved_dest.rules_paths,
+        )
+
+    # RER3: the idempotency refusal, decided by resolved FILE
+    # identity — the one comparison that cannot be fooled by two
+    # differently-spelled `--dest` strings resolving to the same
+    # target (a bare `claude-md` vs. an explicit qualifier-free one).
+    old_target = (
+        old_retire.spec.target if old_retire.spec is not None
+        else old_retire.reference[0] if old_retire.reference is not None
+        else None
+    )
+    new_target = (
+        spec.target if spec.target is not None
+        else reference_target_path(spec.refs_dir, spec.ref_name)
+        if spec.destination == "reference" and spec.refs_dir is not None
+        else None
+    )
+    if old_target is not None and old_target == new_target:
+        raise VerbError(
+            f"record {record_id} already routed to "
+            f"{_routing_dest_label(old_routing)} — nothing to change"
+        )
+    return _ReroutePlan(
+        path=path, record=record, bucket_dir=bucket_dir, old_routing=old_routing,
+        old_retire=old_retire, warnings=warnings, destination=destination,
+        ref_name=ref_name, spec=spec, hook_route=hook_route,
+    )
+
+
 def reroute(
     home: Path | str,
     record_id: str,
@@ -6882,6 +6984,7 @@ def reroute(
     note: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
+    hook_input: dict | None = None,
 ) -> VerbResult:
     """Correct a wrong routing DESTINATION on an already-ROUTED record
     (U-verbs S-54 / §4.5, Phase 2) — the live-motivated half of what
@@ -6904,67 +7007,28 @@ def reroute(
     new-skill`` (RER4 — both are ``ONE_MOTION_UNROUTABLE``: rerouting
     INTO either is a fresh ``route`` decision on a fresh record, not a
     correction; rerouting AWAY FROM either is supported — the retirement
-    half already exists for both)."""
-    home = Path(home)
-    path = find_record_path(home, record_id)  # pending OR resolved
-    _scan_or_refuse([path], note)
-    try:
-        _, record = require_status(home, record_id, ROUTED_ONLY, verb="reroute")
-    except LedgerOpsError as exc:
-        raise VerbError(str(exc)) from exc
-    bucket_dir = path.parent.parent
-    old_routing = dict(record.routing or {})
+    half already exists for both).
 
+    U3b (S-72, 2026-09-28): rerouting INTO a hook is admitted when the
+    caller carries the hook's compile input (*hook_input* — the steward's
+    or the overseer's re-decision through a reconsider case,
+    `batch._dispatch_reroute`); the script is generated, validated and
+    replayed exactly as for a fresh sheet-carried hook route
+    (:func:`_prepare_sheet_hook`), and the host phase writes it. Without
+    the compile input `--dest hook` stays refused. The checks before any
+    lock are :func:`_reroute_plan`, which `batch.dry_run` previews too."""
+    home = Path(home)
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
-        warnings: list[str] = []
-        # Both preflights run BEFORE the lock (§4.5): the OLD target's
-        # retirement, and the NEW target's resolution.
-        old_retire = _retirement_preflight(
-            home, record, bucket_dir, warnings, user_claude_md=user_claude_md
+        plan = _reroute_plan(
+            home, record_id, dest=dest, by=by, note=note,
+            user_claude_md=user_claude_md, hook_input=hook_input,
         )
-        resolved_dest = _resolve_destination(bucket_dir, record_id, dest)
-        destination = resolved_dest.destination
-        if destination in ONE_MOTION_UNROUTABLE:
-            raise VerbError(
-                f"reroute --dest {destination}: a one-motion destination — "
-                "rerouting INTO it is a fresh `route` decision on a fresh "
-                "record, not a correction (S-54)"
-            )
-        ref_name = resolved_dest.ref_name
-        spec = _resolve_target(
-            home,
-            bucket_dir,
-            record.scope,
-            destination,
-            ref_name,
-            user_claude_md=user_claude_md,
-            variant=resolved_dest.variant,
-            rules_topic=resolved_dest.rules_topic,
-            rules_paths=resolved_dest.rules_paths,
-        )
-
-        # RER3: the idempotency refusal, decided by resolved FILE
-        # identity — the one comparison that cannot be fooled by two
-        # differently-spelled `--dest` strings resolving to the same
-        # target (a bare `claude-md` vs. an explicit qualifier-free one).
-        old_target = (
-            old_retire.spec.target if old_retire.spec is not None
-            else old_retire.reference[0] if old_retire.reference is not None
-            else None
-        )
-        new_target = (
-            spec.target if spec.target is not None
-            else reference_target_path(spec.refs_dir, spec.ref_name)
-            if spec.destination == "reference" and spec.refs_dir is not None
-            else None
-        )
-        if old_target is not None and old_target == new_target:
-            raise VerbError(
-                f"record {record_id} already routed to "
-                f"{_routing_dest_label(old_routing)} — nothing to change"
-            )
+        path, record, bucket_dir = plan.path, plan.record, plan.bucket_dir
+        old_routing, old_retire, warnings = plan.old_routing, plan.old_retire, plan.warnings
+        destination, ref_name, spec = plan.destination, plan.ref_name, plan.spec
+        hook_route = plan.hook_route
 
         by = by if by is not None else "human"
         # M-1 (U-verbs Phase 2 code gate r1): the commit subject used
@@ -6973,9 +7037,9 @@ def reroute(
         # `_routing_dest_label` is the ONE place that vocabulary is
         # already spelled out (RER3's own same-destination refusal
         # message uses it for the OLD side; this is the NEW side).
-        # `new-skill`/`hook` never reach here (ONE_MOTION_UNROUTABLE
-        # already refused above), so only reference/claude-md carry a
-        # qualifier worth naming.
+        # `new-skill` never reaches here (ONE_MOTION_UNROUTABLE already
+        # refused it), and a `hook` (U3b, sheet-carried compile input) has
+        # no qualifier, so only reference/claude-md carry one worth naming.
         message_target = _routing_dest_label(
             {
                 "destination": destination,
@@ -7002,6 +7066,7 @@ def reroute(
                 variant=spec.variant,
                 rules_topic=spec.rules_topic,
                 rules_paths=list(spec.rules_paths) if spec.rules_paths else None,
+                hook=hook_route.meta if hook_route is not None else None,
             )
             routed_record = Record.from_path(path)  # AS RESOLVED — routed_at now set
 
@@ -7111,12 +7176,18 @@ def reroute(
                 skip_target=spec.target,
                 user_push=not no_push,
             )
+            host_note = note
+            if hook_route is not None:
+                snippet_block = f"settings.json snippet:\n{hook_route.snippet}"
+                host_note = f"{note}\n\n{snippet_block}" if note else snippet_block
+                assert spec.target is not None  # a hook spec always names its script
+                post_notes += _hook_manual_steps(hook_route.snippet, spec.target.name)
             compile_result, host_sha = _host_phase(
                 home,
                 spec,
                 record_id,
                 routed_record=routed_record,
-                note=note,
+                note=host_note,
                 message=message,
                 warnings=warnings,
                 user_push=not no_push,

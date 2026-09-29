@@ -191,7 +191,25 @@ record's compiled line from its host surface inside the same locked
 section — never a `supersede` of the record; the CASE is superseded,
 the record is re-decided (decided at U5's gate, 2026-09-14). A record
 routed to a `reference` or `hook` destination cannot yet be corrected
-this way and the verb refuses by name.
+this way (`reject`/`defer` under a reconsider case) and the verb refuses
+by name.
+
+**Moving a placed lesson to a different destination (U3b, S-72,
+2026-09-28).** Under the same `kind: reconsider` case, a `route` line on
+an already-routed lesson re-decides where it lives: the runner applies it
+as `reroute`, which retires the old placement and writes the new one in
+one motion (the old routing block moves into `history`). `dest` is
+required. Re-decidable FROM: `claude-md` (any variant), `skill-md`,
+`new-skill`, `reference` and `hook` (the shared retirement path, which
+keeps its own refusals — an unreadable `hosts.yaml`, a hook script it
+cannot find). TO: `claude-md`, `claude-md:local`,
+`claude-md:rules:<topic>`, `skill-md`, `reference:<file>`, and `hook` —
+the last only with the line's own compile input (`hook:`), and only for
+the steward's or the overseer's runner; never `new-skill`. The case must
+supersede a case that covers the lesson, so a lesson routed by hand with
+no case at all cannot be re-decided this way. The same line naming the
+destination the lesson already has is "already routed — nothing to
+change".
 
 **Two different undo paths — do not confuse them.** Among supersessions,
 `reopen` is for a mistaken retirement only: `self-learn reopen <id>`

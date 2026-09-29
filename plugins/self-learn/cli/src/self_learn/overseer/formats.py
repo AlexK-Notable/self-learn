@@ -27,6 +27,27 @@ EXAMPLE_RECORD = "lrn-0000000a"
 EXAMPLE_PARKED_CASE = "case-0000000a"
 EXAMPLE_CASE = "case-0000000b"
 
+#: U3b: a hook's compile input, as a sheet line carries it (the shape
+#: `batch.HOOK_INPUT_KEYS` and `ledger_ops._validate_hook_extension` check).
+EXAMPLE_HOOK_INPUT: dict[str, Any] = {
+    "rationale": "Blocks a pkill -f whose pattern also matches this shell; any other pkill stays allowed.",
+    "hook": {
+        "tools": ["Bash"],
+        "path_regex": "pkill -f",
+        "deny_message": "a -f pattern can match your own shell; kill by the PID you captured",
+    },
+    "examples": {
+        "allow": [
+            {"tool_name": "Bash", "tool_input": {"command": "pkill -x myserver"}},
+            {"tool_name": "Bash", "tool_input": {"command": "ls -la"}},
+        ],
+        "deny": [
+            {"tool_name": "Bash", "tool_input": {"command": "pkill -f 'app --reindex'"}},
+            {"tool_name": "Bash", "tool_input": {"command": "sleep 1; pkill -f worker"}},
+        ],
+    },
+}
+
 
 def _dump(data: Any) -> str:
     stream = io.StringIO()
@@ -130,6 +151,18 @@ def _rules(phase: str) -> str:
             "user-model-delta.yaml, case-example.yaml + sheet-example.yaml (a",
             "successor), case.yaml + sheet.yaml shapes in maintenance-case.yaml and",
             "maintenance-sheet.yaml.",
+            "",
+            "Moving a lesson that is ALREADY routed to a different destination",
+            "(a path-scoped rule, a stronger surface, a hook): a successor with",
+            "kind: reconsider whose sheet has a `route` item naming the new `dest`;",
+            "the runner applies it as a reroute, retiring the old placement in the",
+            "same motion. See case-redecide-example.yaml + sheet-redecide-example.yaml",
+            "(a routed lesson moved to a hook). A hook carries its compile input on",
+            "the line (`hook:`); the runner generates the script and replays the",
+            "examples against it. A hook can only deny a call, never just warn.",
+            "Switching a hook on stays the user's setting (overseer.hook_activation).",
+            "Re-decidable FROM claude-md, skill-md, new-skill, reference, hook;",
+            "TO claude-md (any variant), skill-md, reference, hook; never new-skill.",
         ]
     return "\n".join(lines) + "\n"
 
@@ -187,6 +220,23 @@ def phase_b_examples() -> dict[str, str]:
         "sheet-example.yaml": _dump({
             "version": 1,
             "items": [{"id": EXAMPLE_RECORD, "verb": "reject", "close_call": False}],
+        }),
+        "case-redecide-example.yaml": _dump({
+            "kind": "reconsider", "trigger": "weekly", "outcome": "route",
+            "records": [EXAMPLE_RECORD], "scope": "user",
+            "question": "The rule was broken twice while loaded; should a hook enforce it instead?",
+            "supersedes": EXAMPLE_PARKED_CASE,
+            "evidence": evidence,
+            "decision": {"verb": "route", "because": (
+                "The line was loaded and broken twice; the failure is one Bash call a guard can see."
+            ), "confidence": "settled"},
+        }),
+        "sheet-redecide-example.yaml": _dump({
+            "version": 1,
+            "items": [{
+                "id": EXAMPLE_RECORD, "verb": "route", "dest": "hook",
+                "hook": EXAMPLE_HOOK_INPUT, "close_call": False,
+            }],
         }),
         "maintenance-case.yaml": _dump({
             "kind": "maintenance", "trigger": "weekly", "outcome": "no-action",

@@ -308,6 +308,7 @@ def test_sa1_is_marked_superseded_by_s72_in_the_decisions_register():
 
 
 from test_hook_activation import _real_claude_dir_never_touched  # noqa: E402,F401 -- the real-~/.claude control
+from test_steward_inputs import roots  # noqa: E402,F401 -- transcript roots under tmp_path
 
 HOOK_TRIGGER = "About to edit `.storage/*.json` while HA is running."
 
@@ -439,3 +440,185 @@ def test_the_hook_route_is_open_to_the_steward_and_the_overseer_only():
     from self_learn import batch
 
     assert batch.HOOK_ROUTING_ACTORS == {"overseer", "steward"}
+
+
+# ------------------------------------------- 4. re-deciding a placed lesson
+
+
+def _record_case(home: Path, tmp_path: Path, data: dict, actor: str = "steward") -> str:
+    path = tmp_path / f"case-{len(list(tmp_path.glob('case-*.yaml')))}.yaml"
+    _dump_yaml(path, data)
+    return cases.record(home, path, actor=actor)
+
+
+def _route_through_a_case(home: Path, tmp_path: Path, rid: str) -> str:
+    """The lesson is routed to its skill's SKILL.md by a steward case, the
+    way the pipeline places lessons; returns that case's id."""
+    from self_learn import batch
+    from support import commit_all, proposal_dict
+
+    ledger_ops.create_record(home, make_behavior(record_id=rid, trigger=HOOK_TRIGGER))
+    ledger_ops.write_proposal(home, rid, proposal_dict())
+    ledger_ops.stamp_proposal(home, rid)
+    commit_all(home, f"seed {rid}")
+    case_id = _record_case(home, tmp_path, _case([rid], "route", "route"))
+    sheet_path = tmp_path / "first-route.yaml"
+    _dump_yaml(sheet_path, {"version": 1, "case": case_id,
+                            "items": [{"id": rid, "verb": "route", "dest": "skill-md"}]})
+    result = batch.run(home, batch.load_sheet(sheet_path, home=home), no_push=True, actor="steward")
+    assert result.items[0].state == "applied", result.items[0].detail
+    assert (_status(home, rid).routing or {}).get("destination") == "skill-md"
+    return case_id
+
+
+def _skill_md(env) -> str:
+    return next(env.host.glob("plugins/s-plugin/skills/s/SKILL.md")).read_text(encoding="utf-8")
+
+
+def _assert_moved_to_a_hook(env, rid: str, claude_dir: Path, *, by: str) -> None:
+    from self_learn.hook_compiler import script_name
+
+    record = _status(env.ledger, rid)
+    assert record.status == "routed"
+    assert (record.routing or {}).get("destination") == "hook"
+    assert (record.routing or {}).get("by") == by
+    displaced = [h for h in record.history if h.get("event") == "routing"]
+    assert displaced and displaced[-1]["routing"]["destination"] == "skill-md"
+    if by == "steward":  # the steward's runner writes the pointer (`verbs.reconsider`)
+        assert any(h.get("event") == "reconsidered" for h in record.history)
+    assert rid not in _skill_md(env)  # the old placement was retired
+    assert (claude_dir / "hooks" / script_name(rid, HOOK_TRIGGER)).is_symlink()
+
+
+def test_the_steward_moves_a_routed_lesson_to_a_hook_through_a_reconsider_case(
+    tmp_path, monkeypatch, claude_dir, roots
+):
+    from test_steward import _configure_steward
+    from test_steward_inputs import _fire
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+    monkeypatch.setenv("SELF_LEARN_ACTOR", "testhost")
+    monkeypatch.setenv("SELF_LEARN_EMBED_PROVIDER", "none")
+    rid = "lrn-a4000001"
+    (tmp_path / "setup").mkdir()
+    prior = _route_through_a_case(home, tmp_path / "setup", rid)
+    assert rid in _skill_md(env)  # positive control: it was placed there
+    nonce = _fire(home, rid)
+    _configure_steward(home)
+    _notifications(monkeypatch)
+
+    def session(spec):
+        case = _case([rid], "route", "route")
+        case.update(kind="reconsider", supersedes=prior)
+        return _stage_pairs(spec, {rid: (case, [
+            {"id": rid, "verb": "confirm-recurrence", "event": nonce},
+            {"id": rid, "verb": "route", "dest": "hook", "hook": _hook_input()},
+        ])})
+
+    monkeypatch.setattr(steward.invocation, "write_session", session)
+
+    result = steward.run(home)
+
+    assert result.status == "applied", result
+    _assert_moved_to_a_hook(env, rid, claude_dir, by="steward")
+
+
+def test_a_route_on_a_routed_lesson_without_a_reconsider_case_is_still_refused(tmp_path):
+    from self_learn import batch
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    (tmp_path / "setup").mkdir()
+    rid = "lrn-a4000002"
+    prior = _route_through_a_case(home, tmp_path / "setup", rid)
+    plain = _record_case(home, tmp_path / "setup", _case([rid], "route", "route"))
+    sheet_path = tmp_path / "again.yaml"
+    for case_id in (plain, None):
+        body = {"version": 1, "items": [{"id": rid, "verb": "route", "dest": "reference:x.md"}]}
+        if case_id:
+            body["case"] = case_id
+        _dump_yaml(sheet_path, body)
+        result = batch.run(home, batch.load_sheet(sheet_path, home=home), no_push=True, actor="steward")
+        assert result.items[0].state == "refused", case_id
+        assert "'routed'" in (result.items[0].detail or "")
+    assert (_status(home, rid).routing or {}).get("destination") == "skill-md"
+    # positive control: the same line under a reconsider case applies
+    reconsider = _case([rid], "route", "route")
+    reconsider.update(kind="reconsider", supersedes=prior)
+    rc = _record_case(home, tmp_path / "setup", reconsider)
+    _dump_yaml(sheet_path, {"version": 1, "case": rc,
+                            "items": [{"id": rid, "verb": "route", "dest": "reference:x.md"}]})
+    preview = batch.dry_run(home, batch.load_sheet(sheet_path, home=home), actor="steward")
+    assert preview.items[0].state == "would-apply", preview.items[0].detail
+    result = batch.run(home, batch.load_sheet(sheet_path, home=home), no_push=True, actor="steward")
+    assert result.items[0].state == "applied", result.items[0].detail
+    assert (_status(home, rid).routing or {}).get("reference_file") == "x.md"
+    again = batch.run(home, batch.load_sheet(sheet_path, home=home), no_push=True, actor="steward")
+    assert again.items[0].state == "already-applied"
+
+
+def test_the_overseer_moves_a_routed_lesson_to_a_hook_the_ec93fb36_shape(
+    tmp_path, monkeypatch, claude_dir
+):
+    """Run `ec93fb36`: a routed lesson, broken while loaded, parked by the
+    steward as `hook`; the overseer decides it should become a hook. Before
+    U3b the runner refused ("route needs status pending/deferred")."""
+    from self_learn.overseer import formats
+    from self_learn.overseer import run as overseer_run
+    from test_failstate_overseer import _dump, _ok, _phase_a, _phase_b_common
+    from test_overseer_run import _enabled
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    _enabled(monkeypatch)
+    (tmp_path / "setup").mkdir()
+    rid = "lrn-a4000003"
+    _route_through_a_case(home, tmp_path / "setup", rid)
+    parked = _case([rid], "parked", "route")
+    parked.update(kind="parked", parked_for="overseer", parked_reason="hook")
+    parked_id = _record_case(home, tmp_path / "setup", parked)
+    successor = _load_yaml(formats.phase_b_examples()["case-redecide-example.yaml"])
+    successor.update(records=[rid], scope="skill:s", supersedes=parked_id)
+    successor["evidence"] = [{"ref": f"record:{rid}", "quote": "status: routed"}]
+    sheet = _load_yaml(formats.phase_b_examples()["sheet-redecide-example.yaml"])
+    sheet["items"][0].update(id=rid, hook=_hook_input())
+
+    def invoke(spec):
+        if spec.label == "phase-a":
+            _phase_a(spec.cwd)
+        else:
+            _phase_b_common(spec.cwd)
+            _dump(spec.cwd / "case-a.yaml", successor)
+            _dump(spec.cwd / "sheet-a.yaml", sheet)
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    overseer_run.run(home, no_push=True)
+
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    assert "route needs status" not in report
+    _assert_moved_to_a_hook(env, rid, claude_dir, by="overseer")
+
+
+def _load_yaml(text: str):
+    return YAML(typ="safe").load(text)
+
+
+def test_classify_tells_claude_md_variants_apart(tmp_path):
+    """A lesson routed to a plain CLAUDE.md line is not "already applied"
+    for a line that moves it to a path-scoped rule of the same file family."""
+    from self_learn import batch
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    rid = _project_lesson(env, "lrn-a4000004")
+    ledger_ops.find_record_path(home, rid)
+    from self_learn import verbs
+
+    verbs.route(home, rid, dest="claude-md", no_push=True)
+    same = batch.SheetItem(n=1, id=rid, verb="route", fields={"dest": "claude-md"})
+    moved = batch.SheetItem(n=1, id=rid, verb="route", fields={"dest": "claude-md:rules:shell"})
+    assert batch.classify(home, same) is True  # control
+    assert batch.classify(home, moved) is False

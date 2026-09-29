@@ -2365,20 +2365,22 @@ class TestU5Reconsider:
         test list): `_OUTCOME_APPLICABLE_STATUSES` refuses a reconsider
         case whose `outcome` cannot correct the record's CURRENT status
         even though the case itself is otherwise perfectly valid (right
-        kind, right record) — `outcome: route` never widens `route`'s
-        own admitted statuses, so it applies only to a `deferred`
-        record, never an already-`routed` one."""
+        kind, right record). U3b (S-72, 2026-09-28): `outcome: route` now
+        DOES apply to a `routed` record -- a reconsider case's route line
+        moves a placed lesson (`batch._dispatch_reroute`) -- so the
+        not-applicable pair this pins is `outcome: rehome` over a routed
+        record (`rehome` admits only a deferred one)."""
         rid = seed_routed(env2.home, "lrn-95000005", scope="skill:a")
         old_case = _u5_case(
             tmp_path, env2.home, records=[rid], kind="resolution", outcome="route"
         )
         reconsider_case = _u5_case(
             tmp_path, env2.home, records=[rid], kind="reconsider",
-            outcome="route", supersedes=old_case,
+            outcome="rehome", supersedes=old_case,
         )
         with pytest.raises(verbs.VerbError) as exc:
             verbs.reconsider(env2.home, rid, case=reconsider_case, no_push=True)
-        assert "route" in str(exc.value) and "routed" in str(exc.value)
+        assert "rehome" in str(exc.value) and "routed" in str(exc.value)
 
     def test_6_outcome_applicable_to_rejected_record_for_the_reopen_shape(
         self, env2, tmp_path

@@ -714,6 +714,17 @@ def _resolved_route_dest(home: Path, path: Path, item: SheetItem):
     return resolved.destination, resolved.ref_name
 
 
+def _claude_md_qualifier(routing: dict) -> str | None:
+    """A stored claude-md routing block in `verbs._parse_dest`'s qualifier
+    spelling: ``None`` (the plain file), ``"local"``, ``"rules:<topic>"``."""
+    variant = routing.get("variant")
+    if variant == "local":
+        return "local"
+    if variant == "rules":
+        return f"rules:{routing.get('rules_topic')}"
+    return None
+
+
 def _hook_activation_registered(record: Record) -> bool | None:
     """Fold r1 (F4): what the record's OWN LAST ``hook-activated``
     history entry says about registration -- ``True`` (a full
@@ -802,6 +813,11 @@ def classify(
             return registered or not hook_activation
         if want_dest == "reference" and want_ref is not None:
             return routing.get("reference_file") == want_ref
+        if want_dest == "claude-md":
+            # U3b: a re-decision may move a lesson between claude-md's own
+            # variants (a CLAUDE.md line -> a path-scoped rule); the same
+            # destination word is not the same place.
+            return _claude_md_qualifier(routing) == want_ref
         return True
     if verb == "reject":
         return record.status == "rejected"
@@ -947,7 +963,10 @@ def _classify_or_refuse(
 #: though `_dispatch` never forwards `reconsider_case` to any of the
 #: three (they gained no such parameter) and the real run refused.
 _RECONSIDER_FORWARDING_VERBS = frozenset(
-    {"reject", "defer", "retire", "graduate", "supersede"}
+    # U3b (S-72): `route` joins -- under a valid reconsider case over a
+    # ROUTED lesson, a route line is that lesson's re-decision, and
+    # `_dispatch_reroute` moves it (`verbs.reroute`).
+    {"reject", "defer", "retire", "graduate", "supersede", "route"}
 )
 
 
@@ -1076,6 +1095,42 @@ def _dispatch_hook_activation(
             (list(route_result.warnings) if route_result is not None else [])
             + list(hook_result.warnings)
         ),
+    )
+
+
+def _dispatch_reroute(
+    home: Path,
+    item: SheetItem,
+    *,
+    actor: str,
+    hook_activation: bool,
+    is_hook_dest: bool,
+) -> "ItemResult":
+    """U3b (S-72, 2026-09-28): a `route` line under a valid `kind:
+    reconsider` case over a ROUTED lesson re-decides where it lives --
+    `verbs.reroute`, which retires the old placement and writes the new
+    one in one motion. Factored out of :func:`_dispatch` for the same
+    complexity reason as its siblings. A reroute INTO a hook needs the
+    line's compile input and, for the steward or the overseer, runs the
+    activation leg exactly as a fresh hook route does (the gate decides
+    placed-only or activated). Which destinations the old placement can
+    be retired FROM is `verbs._retirement_preflight`'s business: a lesson
+    it cannot undo refuses here, before any lock."""
+    f = item.fields
+    by = f.get("by") or (actor if actor != "human" else None)
+    result = verbs.reroute(
+        home, item.id, dest=_reroute_dest(item), by=by, note=f.get("note"),
+        no_push=True, hook_input=f.get("hook"),
+    )
+    if is_hook_dest and actor in HOOK_ROUTING_ACTORS:
+        return _dispatch_hook_activation(
+            home, item, actor=actor, hook_activation=hook_activation,
+            route_result=result,
+        )
+    return ItemResult(
+        n=item.n, id=item.id, verb=item.verb, rc=0, sha=result.commit_sha,
+        state="applied", detail=f"rerouted (reconsider): {result.commit_message}",
+        warnings=list(result.warnings),
     )
 
 
@@ -1225,6 +1280,11 @@ def _dispatch(
                         home, item, actor=actor, hook_activation=hook_activation,
                         route_result=None,
                     )
+            if _reconsider_case_for(home, item.id, case, verb) is not None:
+                return _dispatch_reroute(
+                    home, item, actor=actor, hook_activation=hook_activation,
+                    is_hook_dest=is_hook_dest,
+                )
             follow_up = None
             if f.get("follow_up") is not None:
                 follow_up = {"action": f["follow_up"]}
@@ -1770,6 +1830,36 @@ def _preview_checks(
     _PREVIEW_CHECKS[item.verb](home, item, by, reconsider_case)
 
 
+def _reroute_dest(item: SheetItem) -> str:
+    dest = item.fields.get("dest")
+    if not isinstance(dest, str) or not dest:
+        raise verbs.SheetLineError(
+            f"route {item.id}: re-deciding a routed lesson needs an explicit dest"
+        )
+    return dest
+
+
+def _preview_reroute(home: Path, item: SheetItem, actor: str, is_hook_dest: bool) -> "DryRunItem":
+    """U3b: the preview of `_dispatch_reroute` -- the SAME checks the verb
+    runs before any lock (`verbs._reroute_plan`), nothing written."""
+    if is_hook_dest and actor not in HOOK_ROUTING_ACTORS:
+        detail = _hook_refused_detail(item.id)
+        return DryRunItem(n=item.n, id=item.id, verb=item.verb, state="would-refuse",
+                          detail=detail, kind=_preview_kind([verbs.VerbError(detail)]))
+    f = item.fields
+    try:
+        verbs._reroute_plan(
+            home, item.id, dest=_reroute_dest(item),
+            by=f.get("by") or (actor if actor != "human" else None),
+            note=f.get("note"), user_claude_md=None, hook_input=f.get("hook"),
+        )
+    except _PREVIEW_REFUSALS as exc:
+        return DryRunItem(n=item.n, id=item.id, verb=item.verb, state="would-refuse",
+                          detail=refusal_text(exc), kind=_preview_kind([exc]))
+    return DryRunItem(n=item.n, id=item.id, verb=item.verb, state="would-apply",
+                      detail="reconsider: reroute")
+
+
 @dataclass
 class DryRunItem:
     n: int
@@ -1889,6 +1979,9 @@ def dry_run(
                 continue
             resolved = _resolved_route_dest(home, path, item)
             is_hook_dest = resolved is not None and resolved[0] == REFUSED_HOOK_DESTINATION
+            if _reconsider_case_for(home, item.id, sheet_case, item.verb) is not None:
+                result.items.append(_preview_reroute(home, item, actor, is_hook_dest))
+                continue
             if is_hook_dest:
                 result.hook_items.append(item.id)
                 if actor not in HOOK_ROUTING_ACTORS:
