@@ -66,10 +66,12 @@ __all__ = [
     "command_root",
     "generate_script",
     "replay_examples",
+    "script_for_hook",
     "script_name",
     "settings_snippet",
     "trigger_slug",
     "validate_ere",
+    "warn_output",
 ]
 
 #: The tool-name set a guard may decide on — exactly the tools whose
@@ -266,8 +268,20 @@ def _sq(text: str) -> str:
 
 
 def _validate_inputs(
-    record_id: str, tools: list[str], path_regex: str, deny_message: str
+    record_id: str,
+    tools: list[str],
+    path_regex: str,
+    deny_message: str,
+    *,
+    mode: str = "deny",
+    event: str = "PreToolUse",
 ) -> None:
+    if mode not in HOOK_MODES:
+        raise HookCompileError(f"hook.mode must be one of {list(HOOK_MODES)}, got {mode!r}")
+    if event not in MODE_EVENTS[mode]:
+        raise HookCompileError(
+            f"a {mode} hook runs on {' or '.join(MODE_EVENTS[mode])} only, got {event!r}"
+        )
     if not tools:
         raise HookCompileError("hook.tools must name at least one tool")
     bad = [t for t in tools if t not in GUARDABLE_TOOLS]
@@ -280,7 +294,13 @@ def _validate_inputs(
         raise HookCompileError(f"hook.tools has duplicates: {tools}")
     if not path_regex or not path_regex.strip():
         raise HookCompileError("hook.path_regex must be non-empty")
-    if "\n" in deny_message or not deny_message.strip():
+    if mode == "warn":
+        if not deny_message.strip() or len(deny_message) > WARN_MESSAGE_MAX:
+            raise HookCompileError(
+                f"hook.warn_message must be non-empty text of at most "
+                f"{WARN_MESSAGE_MAX} characters (S-73)"
+            )
+    elif "\n" in deny_message or not deny_message.strip():
         raise HookCompileError(
             "hook.deny_message must be non-empty and one line — the pinned "
             "deny is a ONE-line stderr message (08 §8.1)"
@@ -295,12 +315,23 @@ def generate_script(
     tools: list[str],
     path_regex: str,
     deny_message: str,
+    *,
+    mode: str = "deny",
+    event: str = "PreToolUse",
 ) -> str:
     """The deterministic guard script (08 §8.1 Generated-guard-shape pin).
 
     Byte-stable for identical inputs: no timestamps, no environment reads.
+
+    S-73: *deny_message* is the block's message whatever its mode (the
+    parameter keeps its name so every deny caller is unchanged). ``mode:
+    deny`` (the default) produces exactly the bytes it always has —
+    placed guards are re-derived and byte-compared (verbs m-5); ``mode:
+    warn`` produces :func:`_warn_script`.
     """
-    _validate_inputs(record_id, tools, path_regex, deny_message)
+    _validate_inputs(record_id, tools, path_regex, deny_message, mode=mode, event=event)
+    if mode == "warn":
+        return _warn_script(record_id, trigger, tools, path_regex, deny_message, event)
     name = script_name(record_id, trigger)
     matcher = "|".join(tools)
 
@@ -385,6 +416,112 @@ fi
 trap - ERR
 exit 0
 """
+
+
+def warn_output(event: str, message: str) -> str:
+    """The one JSON line a warn script prints on a match: Claude Code
+    hands ``additionalContext`` to the model (verified live on 2.1.284 for
+    both events, misc probe 2026-09-28). ``ensure_ascii=False`` keeps a
+    multibyte message near its own size rather than six bytes a
+    character."""
+    return json.dumps(
+        {"hookSpecificOutput": {"hookEventName": event, "additionalContext": message}},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _warn_script(
+    record_id: str,
+    trigger: str,
+    tools: list[str],
+    path_regex: str,
+    message: str,
+    event: str,
+) -> str:
+    """S-73: the warning script. The same input handling as the deny
+    guard — the tool name, the NAMED ``tool_input`` field (M3-8), the ERE
+    through ``grep -E`` — but it FAILS OPEN: a missing jq, empty or
+    malformed stdin, a regex error, or any other error exits 0 and prints
+    nothing. A warning must never block a call. On a match it prints
+    :func:`warn_output` and exits 0; on no match it exits 0, silent.
+
+    The JSON line is built here, at generation, and embedded as one
+    single-quoted literal (the deny guard's quoting), so the script needs
+    no jq to print it and its bytes stay deterministic."""
+    output = warn_output(event, message)
+    if len(output.encode("utf-8")) > WARN_OUTPUT_CAP:
+        raise HookCompileError(
+            f"the warning's JSON line is {len(output.encode('utf-8'))} bytes — "
+            f"over the {WARN_OUTPUT_CAP}-byte hook output cap; shorten warn_message"
+        )
+    name = script_name(record_id, trigger)
+    matcher = "|".join(tools)
+    arms = []
+    seen_fields: dict[str, list[str]] = {}
+    for tool in tools:
+        seen_fields.setdefault(TOOL_FIELDS[tool], []).append(tool)
+    for fld, fld_tools in seen_fields.items():
+        arms.append(
+            f"    {'|'.join(fld_tools)})\n"
+            f"        VALUE=$(jq -r '.tool_input.{fld} // empty' <<<\"$INPUT\" 2>/dev/null) || exit 0\n"
+            f"        ;;"
+        )
+    case_arms = "\n".join(arms)
+    regex_sq = _sq(path_regex)
+    output_sq = _sq(output)
+
+    return f"""#!/usr/bin/env bash
+# {name} — {event} warning hook, generated by self-learn from {record_id}.
+# Register manually in ~/.claude/settings.json under {event} (matcher: "{matcher}");
+# the symlink into ~/.claude/hooks/ materializes via ./install.sh.
+# NEVER hand-edit this file — supersede the record instead (08 §8.1
+# rollback pin); a hand edit silently drifts from its record.
+# WARN = exit 0 + one JSON line on stdout (additionalContext) · NO MATCH =
+# exit 0, silent · any error FAILS OPEN (exit 0, silent): a warning must
+# never block a call (S-73).
+
+set -uo pipefail
+trap 'exit 0' ERR
+
+command -v jq &>/dev/null || exit 0
+
+INPUT=$(cat) || exit 0
+[[ -n "${{INPUT//[[:space:]]/}}" ]] || exit 0
+TOOL=$(jq -r '.tool_name // empty' <<<"$INPUT" 2>/dev/null) || exit 0
+
+case "$TOOL" in
+{case_arms}
+    *)
+        exit 0
+        ;;
+esac
+
+[[ -n "$VALUE" ]] || exit 0
+
+# grep -E: 0 = match, 1 = no match, >= 2 = a broken regex -- only a match warns.
+MATCH_RC=0
+grep -qE -- {regex_sq} <<<"$VALUE" 2>/dev/null || MATCH_RC=$?
+[[ "$MATCH_RC" -eq 0 ]] || exit 0
+
+printf '%s\\n' {output_sq} || exit 0
+exit 0
+"""
+
+
+def script_for_hook(record_id: str, trigger: str, hook: dict) -> str:
+    """:func:`generate_script` for a hook block (or a routing.hook
+    payload): mode, event and message read the way an old placed hook
+    reads (no ``mode`` = deny, no ``event`` = PreToolUse)."""
+    return generate_script(
+        record_id,
+        trigger,
+        list(hook.get("tools") or []),
+        str(hook.get("path_regex") or ""),
+        hook_message(hook),
+        mode=hook_mode(hook),
+        event=hook_event(hook),
+    )
 
 
 #: M-G: the guard script is a compiled bash script of fixed, small size —

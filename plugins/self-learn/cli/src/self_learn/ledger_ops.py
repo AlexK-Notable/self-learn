@@ -2427,7 +2427,7 @@ def _generate_hook_script(record: Record, data: dict) -> str:
     input in, deterministic bash out (hook_compiler). The Trigger's first
     line seeds the M3-6 slug — hook routes therefore require a behavior
     record (a guard's firing condition IS the trigger, doctrine §6)."""
-    from .hook_compiler import HookCompileError, generate_script
+    from .hook_compiler import HookCompileError, script_for_hook
 
     if record.type != "behavior":
         raise ProposalError(
@@ -2442,13 +2442,9 @@ def _generate_hook_script(record: Record, data: dict) -> str:
         )
     trigger = record_title(record)
     try:
-        return generate_script(
-            record.id,
-            trigger,
-            list(hook.get("tools") or []),
-            str(hook.get("path_regex") or ""),
-            str(hook.get("deny_message") or ""),
-        )
+        # S-73: the block's mode and event pick the script; a block with
+        # neither is a deny PreToolUse guard, byte-identical to before.
+        return script_for_hook(record.id, trigger, hook)
     except HookCompileError as exc:
         raise ProposalError(str(exc)) from exc
 

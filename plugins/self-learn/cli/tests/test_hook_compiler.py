@@ -282,3 +282,185 @@ class TestReplay:
         assert len(mismatches) == 2
         assert any("allow[0]" in m for m in mismatches)
         assert any("deny[0]" in m for m in mismatches)
+
+
+# ------------------------------------------- S-73: the warn script (item 2)
+
+#: The deny oracle, generated on master a0fb55f by the orchestrator (the
+#: advisory-hooks spec): a deny block with no `mode` must keep producing
+#: exactly these bytes, since placed guards are re-derived and
+#: byte-compared (verbs m-5).
+DENY_ORACLE_SHA256 = "c681a150581d1ab9caa2ccb030649b4402f542b9c29b3b1370cbb182799b8921"
+DENY_ORACLE_ARGS = (
+    "lrn-0a1b2c3d",
+    "About to run pkill -f with a pattern",
+    ["Bash"],
+    r"(^|[;&|[:space:]])p(kill|grep)[[:space:]]+-[a-zA-Z]*f",
+    "self-learn lrn-0a1b2c3d: don't use pkill -f; it's got 'quotes'",
+)
+WARN_REGEX = r"(^|[;&|[:space:]])p(kill|grep)[[:space:]]+-[a-zA-Z]*f"
+WARN_MESSAGE = "don't use pkill -f; it's got 'quotes' and \"doubles\"\nkill by the PID you captured"
+
+
+def _sha256(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+class TestDenyBytesUnchanged:
+    def test_the_deny_oracle_hash_is_unchanged(self):
+        assert _sha256(generate_script(*DENY_ORACLE_ARGS)) == DENY_ORACLE_SHA256
+
+    def test_explicit_deny_and_pretooluse_give_the_same_bytes(self):
+        from self_learn.hook_compiler import script_for_hook
+
+        tools = DENY_ORACLE_ARGS[2]
+        block = {"tools": tools, "path_regex": DENY_ORACLE_ARGS[3],
+                 "deny_message": DENY_ORACLE_ARGS[4]}
+        rid, trigger = DENY_ORACLE_ARGS[0], DENY_ORACLE_ARGS[1]
+        assert _sha256(script_for_hook(rid, trigger, block)) == DENY_ORACLE_SHA256
+        explicit = {**block, "mode": "deny", "event": "PreToolUse"}
+        assert _sha256(script_for_hook(rid, trigger, explicit)) == DENY_ORACLE_SHA256
+        assert _sha256(generate_script(*DENY_ORACLE_ARGS, mode="deny",
+                                       event="PreToolUse")) == DENY_ORACLE_SHA256
+
+
+def _warn(tmp_path: Path, event: str = "PreToolUse", message: str = WARN_MESSAGE,
+          regex: str = WARN_REGEX) -> Path:
+    return write_guard(tmp_path, generate_script(
+        RID, "About to run pkill -f", ["Bash", "Edit"], regex, message,
+        mode="warn", event=event,
+    ))
+
+
+def _deny_twin(tmp_path: Path, regex: str = WARN_REGEX) -> Path:
+    twin = tmp_path / "deny"
+    twin.mkdir(exist_ok=True)
+    return write_guard(twin, generate_script(
+        RID, "About to run pkill -f", ["Bash", "Edit"], regex, "stop",
+    ))
+
+
+PKILL = {"tool_name": "Bash", "tool_input": {"command": "pkill -f 'node x'"}}
+LS = {"tool_name": "Bash", "tool_input": {"command": "ls -la"}}
+
+
+class TestWarnScript:
+    @pytest.mark.parametrize("event", ["PreToolUse", "PostToolUse"])
+    def test_match_prints_the_exact_json_and_exits_0(self, tmp_path, event):
+        proc = run_guard(_warn(tmp_path, event), PKILL)
+        assert proc.returncode == 0
+        assert proc.stdout.endswith("\n") and proc.stdout.count("\n") == 1
+        assert json.loads(proc.stdout) == {
+            "hookSpecificOutput": {"hookEventName": event, "additionalContext": WARN_MESSAGE}
+        }
+        assert proc.stderr == ""
+
+    def test_no_match_prints_nothing_and_exits_0(self, tmp_path):
+        guard = _warn(tmp_path)
+        assert run_guard(guard, PKILL).stdout != ""  # positive control
+        proc = run_guard(guard, LS)
+        assert (proc.returncode, proc.stdout, proc.stderr) == (0, "", "")
+
+    def test_the_named_field_is_the_one_matched(self, tmp_path):
+        guard = _warn(tmp_path)
+        edit = {"tool_name": "Edit", "tool_input": {"file_path": "x pkill -f y"}}
+        assert run_guard(guard, edit).stdout != ""  # Edit -> file_path
+        blob = {"tool_name": "Bash", "tool_input": {"description": "run pkill -f x",
+                                                    "command": "ls"}}
+        assert run_guard(guard, blob).stdout == ""  # never the raw blob
+        other = {"tool_name": "Write", "tool_input": {"file_path": "x pkill -f y"}}
+        assert run_guard(guard, other).stdout == ""  # an unlisted tool
+
+    def test_posttooluse_input_with_a_tool_response_still_matches(self, tmp_path):
+        guard = _warn(tmp_path, "PostToolUse")
+        payload = {**PKILL, "hook_event_name": "PostToolUse",
+                   "tool_response": {"stdout": "", "stderr": "", "interrupted": False}}
+        assert json.loads(run_guard(guard, payload).stdout)["hookSpecificOutput"][
+            "hookEventName"] == "PostToolUse"
+
+    @pytest.mark.parametrize("payload", ["this is not json {", "", "   \n",
+                                         {"tool_name": "Bash", "tool_input": {}},
+                                         {"tool_name": "Bash"}])
+    def test_bad_input_fails_open_where_the_deny_guard_fails_closed(self, tmp_path, payload):
+        warn = run_guard(_warn(tmp_path), payload)
+        assert (warn.returncode, warn.stdout) == (0, "")
+        deny = run_guard(_deny_twin(tmp_path), payload)
+        if payload in ("this is not json {", "", "   \n"):
+            assert deny.returncode == 2  # the same input fails CLOSED there
+        else:
+            assert deny.returncode == 0  # a missing field allows in both
+
+    def test_a_broken_regex_fails_open_where_the_deny_guard_fails_closed(self, tmp_path):
+        warn_text = generate_script(RID, "t", ["Bash"], r"placeholder", "careful",
+                                    mode="warn")
+        deny_text = generate_script(RID, "t", ["Bash"], r"placeholder", "stop")
+        assert warn_text.count("'placeholder'") == 1 and deny_text.count("'placeholder'") == 2
+        warn = write_guard(tmp_path, warn_text.replace("'placeholder'", "'(unclosed'"))
+        (tmp_path / "d").mkdir()
+        deny = write_guard(tmp_path / "d", deny_text.replace("'placeholder'", "'(unclosed'"))
+        payload = {"tool_name": "Bash", "tool_input": {"command": "(unclosed"}}
+        assert run_guard(deny, payload).returncode == 2
+        proc = run_guard(warn, payload)
+        assert (proc.returncode, proc.stdout) == (0, "")
+
+    def test_a_missing_jq_fails_open_where_the_deny_guard_fails_closed(self, tmp_path):
+        import os
+        import shutil
+
+        bin_dir = tmp_path / "bin-without-jq"
+        bin_dir.mkdir()
+        for tool in ("bash", "cat", "grep", "printf"):
+            found = shutil.which(tool)
+            if found:
+                (bin_dir / tool).symlink_to(found)
+        env = {**os.environ, "PATH": str(bin_dir)}
+
+        def run(script):
+            return subprocess.run([str(script)], input=json.dumps(PKILL),
+                                  capture_output=True, text=True, env=env)
+
+        assert run(_deny_twin(tmp_path)).returncode == 2  # control: jq really is absent
+        proc = run(_warn(tmp_path))
+        assert (proc.returncode, proc.stdout) == (0, "")
+
+    def test_quotes_newlines_and_multibyte_round_trip(self, tmp_path):
+        message = "naïve — «don't» \"x\" $HOME `id` \\n\n\tsecond line ✓"
+        proc = run_guard(_warn(tmp_path, message=message), PKILL)
+        assert json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"] == message
+
+    def test_the_output_is_bounded_under_the_cap(self, tmp_path):
+        from self_learn.hook_compiler import WARN_MESSAGE_MAX, WARN_OUTPUT_CAP
+
+        # the worst case the schema admits: 2,000 characters that each need
+        # JSON escaping stays under the cap
+        worst = '"' * WARN_MESSAGE_MAX
+        proc = run_guard(_warn(tmp_path, message=worst), PKILL)
+        assert len(proc.stdout.encode("utf-8")) <= WARN_OUTPUT_CAP
+        assert json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"] == worst
+        # a multibyte message at the limit stays near its own size
+        wide = "é✓" * (WARN_MESSAGE_MAX // 2)
+        proc = run_guard(_warn(tmp_path, message=wide), PKILL)
+        assert json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"] == wide
+        with pytest.raises(HookCompileError, match="at most"):
+            generate_script(RID, "t", ["Bash"], "x", "y" * (WARN_MESSAGE_MAX + 1), mode="warn")
+
+    def test_the_output_cap_is_enforced_at_generation(self, monkeypatch):
+        from self_learn import hook_compiler
+
+        generate_script(RID, "t", ["Bash"], "x", "y" * 200, mode="warn")  # control
+        monkeypatch.setattr(hook_compiler, "WARN_OUTPUT_CAP", 150)
+        with pytest.raises(HookCompileError, match="output cap"):
+            generate_script(RID, "t", ["Bash"], "x", "y" * 200, mode="warn")
+
+    def test_posttooluse_deny_and_unknown_modes_are_refused(self):
+        with pytest.raises(HookCompileError, match="PreToolUse only"):
+            generate_script(RID, "t", ["Bash"], "x", "m", event="PostToolUse")
+        with pytest.raises(HookCompileError, match="mode"):
+            generate_script(RID, "t", ["Bash"], "x", "m", mode="block")
+
+    def test_warn_script_is_deterministic(self):
+        a = generate_script(RID, "t", ["Bash"], "x", WARN_MESSAGE, mode="warn")
+        assert a == generate_script(RID, "t", ["Bash"], "x", WARN_MESSAGE, mode="warn")
+        assert a.startswith("#!/usr/bin/env bash\n") and RID in a

@@ -332,3 +332,20 @@ class TestStamp:
         data = read_proposal(stamp_proposal(env.ledger, record.id))
         assert marker not in data["script"]
         assert "about-to-edit" in data["script"]  # the trigger DID compile (slug)
+
+
+def test_stamp_generates_the_warn_script_for_a_warn_block(tmp_path):
+    """S-73: `proposal validate` stamps the script the block's mode and
+    event name; a deny block keeps its guard."""
+    from self_learn.hook_compiler import script_for_hook
+
+    env, record = TestStamp().seed(tmp_path)
+    hook = warn_payload(event="PostToolUse")
+    write_proposal(env.ledger, record.id, warn_proposal(hook=hook))
+    script = read_proposal(stamp_proposal(env.ledger, record.id))["script"]
+    trigger = "About to edit `.storage/*.json` while HA is running."
+    assert script == script_for_hook(record.id, trigger, hook)
+    assert "PostToolUse warning hook" in script and "exit 2" not in script
+    write_proposal(env.ledger, record.id, hook_proposal())  # control: deny
+    deny = read_proposal(stamp_proposal(env.ledger, record.id))["script"]
+    assert "exit 2" in deny and "warning hook" not in deny
