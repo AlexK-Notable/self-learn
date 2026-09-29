@@ -653,7 +653,8 @@ def test_output_contract_states_the_formats_the_first_real_run_went_looking_for(
     assert "`covered_by` is `<kind>:<name>`" in text
     for kind in records.COVERAGE_KINDS:
         assert f"`{kind}:" in text, kind
-    assert "its path globs come only from an analyst proposal naming the same" in " ".join(text.split())
+    # U3b (S-72, 2026-09-28): the steward names a rule's globs itself.
+    assert "Name the globs yourself with `rules_paths:` on the line" in " ".join(text.split())
     assert "WHERE A ROUTE LANDS." in text
     assert "WHAT EACH VERB NEEDS THE LESSON'S STATUS TO BE" in text
     for status in ledger_ops.RESOLVABLE_STATUSES:

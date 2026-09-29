@@ -473,6 +473,39 @@ items:
     dest: reference:releases.md
     note: moved from the always-loaded line; the old line is retired in the same motion
 """,
+    "cases/rule-for-migrations.yaml": """\
+kind: resolution
+trigger: nightly
+outcome: route
+records: [lrn-7b8c9d0e]
+scope: "project:/srv/example-repo"
+question: >-
+  Should the lesson about migration files load only when a migration is being edited?
+evidence:
+  - ref: "transcript:example-session#L57"
+    quote: "the migration was edited after it had already run in production"
+decision:
+  verb: route
+  because: >-
+    The moment is reading or editing a file under migrations/, which a path-scoped rule reaches
+    exactly; nothing else in a session needs it.
+  confidence: settled
+dependencies:
+  statements: []
+  user_model: []
+  conditions: []
+  capabilities: []
+""",
+    "sheets/rule-for-migrations.yaml": """\
+version: 1
+case: $CASE_ID
+items:
+  - id: lrn-7b8c9d0e
+    verb: route
+    dest: claude-md:rules:migrations
+    rules_paths: ["db/migrations/**/*.sql", "**/migrations/*.py"]
+    note: loads when a migration file is read
+""",
 }
 
 
@@ -886,8 +919,11 @@ def _render_output_contract() -> str:
         "  `dest: claude-md` is the host's plain CLAUDE.md, which on a project host is usually a",
         "  committed file; spell a variant to get it: `claude-md:local` (the host's git-ignored",
         "  CLAUDE.local.md) or `claude-md:rules:<topic>` (a path-scoped file under",
-        "  .claude/rules/; its path globs come only from an analyst proposal naming the same",
-        "  topic, and no sheet key sets them). `dest` is one of",
+        "  .claude/rules/, loaded only when a file matching its globs is read). Name the globs",
+        "  yourself with `rules_paths:` on the line -- a list of relative glob patterns (never",
+        "  absolute or starting with ~), each of which must match at least one file on this",
+        "  machine unless `allow_empty_glob: true`; they win over any analyst proposal's. A glob",
+        "  that is malformed or matches nothing refuses that line alone. `dest` is one of",
         f"  {_words(ledger_ops.PROPOSAL_DESTINATIONS)}, or `reference:<file name>`,",
         "  `claude-md:local`, `claude-md:rules:<topic>`. `follow_up` (with `unblocks_on`,",
         "  a gate label, and `follow_up_note`) records that this routing is a known-partial form",

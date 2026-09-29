@@ -622,3 +622,109 @@ def test_classify_tells_claude_md_variants_apart(tmp_path):
     moved = batch.SheetItem(n=1, id=rid, verb="route", fields={"dest": "claude-md:rules:shell"})
     assert batch.classify(home, same) is True  # control
     assert batch.classify(home, moved) is False
+
+
+# --------------------------------------- 5. path-scoped rules, the steward's globs
+
+
+def test_a_rules_route_with_the_stewards_own_globs_applies(tmp_path, monkeypatch):
+    env = make_env(tmp_path)
+    home = env.ledger
+    rid = _project_lesson(env, "lrn-a5000001")
+    _enable_steward(home)
+    _notifications(monkeypatch)
+    globs = ["plugins/**/SKILL.md"]
+
+    def session(spec):
+        return _stage_pairs(spec, {rid: (
+            _case([rid], "route", "route", scope="project"),
+            [{"id": rid, "verb": "route", "dest": "claude-md:rules:skills", "rules_paths": globs}],
+        )})
+
+    monkeypatch.setattr(steward.invocation, "write_session", session)
+
+    result = steward.run(home)
+
+    assert _dispositions(home, result.run_id)[rid]["state"] == "applied"
+    routing = _status(home, rid).routing or {}
+    assert routing.get("variant") == "rules" and routing.get("rules_topic") == "skills"
+    assert routing.get("rules_paths") == globs
+    rule = env.host / ".claude" / "rules" / "skills.md"
+    assert rule.is_file() and "plugins/**/SKILL.md" in rule.read_text(encoding="utf-8")
+
+
+def test_invalid_steward_globs_are_refused_alone(tmp_path, monkeypatch):
+    env = make_env(tmp_path)
+    home = env.ledger
+    absolute, dead, other = (
+        _project_lesson(env, rid) for rid in ("lrn-a5000002", "lrn-a5000003", "lrn-a5000004")
+    )
+    _enable_steward(home)
+    _notifications(monkeypatch)
+    prompts: list[str] = []
+
+    def session(spec):
+        prompts.append(spec.prompt)
+        return _stage_pairs(spec, {
+            absolute: (_case([absolute], "route", "route", scope="project"), [
+                {"id": absolute, "verb": "route", "dest": "claude-md:rules:etc",
+                 "rules_paths": ["/etc/*.conf"]}]),
+            dead: (_case([dead], "route", "route", scope="project"), [
+                {"id": dead, "verb": "route", "dest": "claude-md:rules:nothing",
+                 "rules_paths": ["no-such-dir/**/*.xyz"]}]),
+            other: (_case([other], "reject", "reject", scope="project"),
+                    [{"id": other, "verb": "reject"}]),
+        })
+
+    monkeypatch.setattr(steward.invocation, "write_session", session)
+
+    result = steward.run(home)
+
+    rows = _dispositions(home, result.run_id)
+    assert rows[other]["state"] == "applied"  # positive control
+    for rid in (absolute, dead):
+        assert _status(home, rid).status == "pending", rid
+        assert rows[rid]["state"] != "applied", rows[rid]
+    repair = prompts[1].split(_REPAIR_HEADER, 1)[1]
+    assert "absolute or home-relative" in repair
+    assert "match nothing" in repair
+    assert not (env.host / ".claude" / "rules").exists()
+
+
+def test_steward_globs_are_shape_checked_with_the_sheet(tmp_path):
+    from self_learn import batch
+
+    def load(item: dict):
+        path = tmp_path / "sheet.yaml"
+        _dump_yaml(path, {"version": 1, "items": [item]})
+        return batch.load_sheet(path)
+
+    good = {"id": "lrn-a5000005", "verb": "route", "dest": "claude-md:rules:x",
+            "rules_paths": ["src/**/*.py"]}
+    assert load(good)[0].fields["rules_paths"] == ["src/**/*.py"]  # control
+    with pytest.raises(batch.BatchError, match="only go with dest"):
+        load({**good, "dest": "claude-md"})
+    with pytest.raises(batch.BatchError, match="non-empty list"):
+        load({**good, "rules_paths": []})
+    with pytest.raises(batch.BatchError, match="non-empty list"):
+        load({**good, "rules_paths": "src/**/*.py"})
+
+
+def test_the_sheet_globs_win_over_a_proposal_naming_the_same_topic(tmp_path):
+    from self_learn import verbs
+    from support import commit_all, proposal_dict
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    rid = "lrn-a5000006"
+    ledger_ops.create_record(home, make_behavior(record_id=rid, scope="project"),
+                             project_path=env.host)
+    ledger_ops.write_proposal(home, rid, proposal_dict(
+        scope="project", destination="claude-md", variant="rules",
+        rules_topic="skills", rules_paths=["CLAUDE.md"]))
+    commit_all(home, f"seed {rid}")
+    bucket = ledger_ops.find_record_path(home, rid).parent.parent
+    inherited = verbs._resolve_destination(bucket, rid, "claude-md:rules:skills")
+    assert inherited.rules_paths == ["CLAUDE.md"]  # control: the proposal's globs
+    own = verbs._resolve_destination(bucket, rid, "claude-md:rules:skills", ["plugins/**/SKILL.md"])
+    assert own.rules_paths == ["plugins/**/SKILL.md"]

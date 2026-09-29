@@ -540,6 +540,12 @@ marker are projections and never recovery authority.
   lessons stay open for a later run, and the packet's other cases apply.
   The overseer corrects a wrong one afterwards; the same rule holds for its
   own successor cases.
+- A route to a path-scoped rule (`claude-md:rules:<topic>`) may name its own
+  globs on the sheet line (`rules_paths: [...]`, U3b / S-72); they win over
+  an analyst proposal's and are checked the same way — the proposal's shape
+  rule and glob translation when the sheet loads, the absolute-path and
+  reachability checks (`--allow-empty-glob` / `allow_empty_glob: true` the
+  one escape) when the line runs. A bad glob refuses that line alone.
 - Exit codes follow the unattended-run contract in the exit-code list
   above: `0` is `dry-run` or `applied`; `EXIT_HELD` (10) is `idle`,
   `disabled`, or a held `steward.lock`; `8` is `partial`; `1` is

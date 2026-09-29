@@ -124,8 +124,9 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
         {
             "dest", "collapse", "by", "follow_up", "unblocks_on",
             "follow_up_note", "allow_empty_glob", "note",
-            # U3b (S-72): a hook's compile input, carried by the line.
-            "hook",
+            # U3b (S-72): a hook's compile input, carried by the line; a
+            # path-scoped rule's globs, named by the line.
+            "hook", "rules_paths",
         }
     ),
     "reject": frozenset({"note", "by"}),
@@ -681,6 +682,10 @@ HOOK_INPUT_REQUIRED = frozenset({"rationale", "hook", "examples"})
 def _route_shape_problem(raw: dict) -> str | None:
     """U3b: the SHAPE of a route line's new keys, checked with the rest of
     the sheet (BAT1) -- the verb validates their content."""
+    if raw.get("rules_paths") is not None:
+        problem = verbs.sheet_rules_paths_problem(raw.get("dest"), raw.get("rules_paths"))
+        if problem is not None:
+            return problem
     hook = raw.get("hook")
     if hook is not None:
         if raw.get("dest") != REFUSED_HOOK_DESTINATION:
@@ -708,7 +713,9 @@ def _resolved_route_dest(home: Path, path: Path, item: SheetItem):
     bucket_dir = path.parent.parent
     dest = item.fields.get("dest")
     try:
-        resolved = verbs._resolve_destination(bucket_dir, item.id, dest)
+        resolved = verbs._resolve_destination(
+            bucket_dir, item.id, dest, item.fields.get("rules_paths")
+        )
     except Exception:  # noqa: BLE001 — any resolution failure: unknown here
         return None
     return resolved.destination, resolved.ref_name
@@ -1120,7 +1127,7 @@ def _dispatch_reroute(
     by = f.get("by") or (actor if actor != "human" else None)
     result = verbs.reroute(
         home, item.id, dest=_reroute_dest(item), by=by, note=f.get("note"),
-        no_push=True, hook_input=f.get("hook"),
+        no_push=True, hook_input=f.get("hook"), rules_paths=f.get("rules_paths"),
     )
     if is_hook_dest and actor in HOOK_ROUTING_ACTORS:
         return _dispatch_hook_activation(
@@ -1310,6 +1317,7 @@ def _dispatch(
                 allow_empty_glob=bool(f.get("allow_empty_glob", False)),
                 execution=execution,
                 hook_input=f.get("hook"),
+                rules_paths=f.get("rules_paths"),
             )
             if is_hook_dest and actor in HOOK_ROUTING_ACTORS:
                 # 13 §7.4 "The path" — the overseer's own runner call is
@@ -1852,6 +1860,7 @@ def _preview_reroute(home: Path, item: SheetItem, actor: str, is_hook_dest: bool
             home, item.id, dest=_reroute_dest(item),
             by=f.get("by") or (actor if actor != "human" else None),
             note=f.get("note"), user_claude_md=None, hook_input=f.get("hook"),
+            rules_paths=f.get("rules_paths"),
         )
     except _PREVIEW_REFUSALS as exc:
         return DryRunItem(n=item.n, id=item.id, verb=item.verb, state="would-refuse",
@@ -2010,6 +2019,7 @@ def dry_run(
                     home, item.id, dest=item.fields.get("dest"),
                     note=item.fields.get("note"),
                     hook_input=item.fields.get("hook"),
+                    rules_paths=item.fields.get("rules_paths"),
                 )
                 if dr.would_refuse:
                     result.items.append(
@@ -2035,6 +2045,7 @@ def dry_run(
                 home, item.id, dest=item.fields.get("dest"),
                 note=item.fields.get("note"),
                 hook_input=item.fields.get("hook"),
+                rules_paths=item.fields.get("rules_paths"),
             )
             state = "would-refuse" if dr.would_refuse else "would-apply"
             result.items.append(

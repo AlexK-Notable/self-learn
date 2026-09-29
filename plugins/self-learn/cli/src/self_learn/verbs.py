@@ -189,6 +189,7 @@ from .ledger_ops import (
 # precedent (the compilers names above) deliberately; a public
 # `stamp_proposal_fields` wrapper is the alternative if it spreads.
 from .ledger_ops import _dump_yaml
+from .ledger_ops import _compile_glob_pattern, _validate_rules_fields
 from . import records as records_mod
 from .records import (
     RECORD_ID_RE,
@@ -1332,6 +1333,27 @@ def _parse_dest(dest: str) -> tuple[str, str | None]:
     return dest, None
 
 
+def sheet_rules_paths_problem(dest: object, rules_paths: object) -> str | None:
+    """U3b (S-72): what is wrong with a sheet line's own ``rules_paths``,
+    or `None` -- the SAME shape rule an analyst proposal's globs meet
+    (`ledger_ops._validate_rules_fields`) plus the glob translation the
+    gate procedure uses (`ledger_ops._compile_glob_pattern`), reused, not
+    copied. Only an explicit ``claude-md:rules:<topic>`` takes globs."""
+    if not isinstance(dest, str) or not dest.startswith("claude-md:rules:"):
+        return "rules_paths only go with dest: claude-md:rules:<topic>"
+    topic = dest[len("claude-md:rules:"):]
+    try:
+        _validate_rules_fields({
+            "destination": "claude-md", "variant": "rules",
+            "rules_topic": topic, "rules_paths": rules_paths,
+        })
+        for pattern in rules_paths:  # type: ignore[union-attr] -- shape checked above
+            _compile_glob_pattern(pattern)
+    except ProposalError as exc:
+        return str(exc)
+    return None
+
+
 @dataclass(frozen=True)
 class _Destination:
     """A2 §4.4A — the route-time INPUT seam. What a route resolves to,
@@ -1352,7 +1374,8 @@ class _Destination:
 
 
 def _resolve_destination(
-    bucket_dir: Path, record_id: str, dest: str | None
+    bucket_dir: Path, record_id: str, dest: str | None,
+    rules_paths: list[str] | None = None,
 ) -> _Destination:
     """Destination for a route: ``--dest`` overrides; else the proposal
     sibling; neither → error.
@@ -1366,10 +1389,21 @@ def _resolve_destination(
     rules route silently dropping the human-reviewed globs. A missing,
     unparseable, or schema-invalid sibling never raises here — the read
     is guarded, not trusted (A6); it degrades to no inheritance, exactly
-    like today's ``--dest`` branch with no sibling at all."""
+    like today's ``--dest`` branch with no sibling at all.
+
+    U3b (S-72): *rules_paths*, when given, are the deciding agent's own
+    globs from its sheet line, for an explicit ``claude-md:rules:<topic>``
+    only; they win over the sibling's (shape-checked by
+    :func:`sheet_rules_paths_problem`; reachability is checked where every
+    rules route's globs are, :func:`_resolve_rules_target`)."""
+    if rules_paths is not None:
+        problem = sheet_rules_paths_problem(dest, rules_paths)
+        if problem is not None:
+            raise SheetLineError(f"route {record_id}: {problem}")
     if dest is not None:
         destination, qualifier = _parse_dest(dest)
-        rules_paths: list[str] | None = None
+        if rules_paths is not None:
+            return _Destination(destination, qualifier, rules_paths=list(rules_paths))
         if (
             destination == "claude-md"
             and qualifier is not None
@@ -4218,6 +4252,7 @@ def route_dry_run(
     allow_empty_glob: bool = False,
     note: str | None = None,
     hook_input: dict | None = None,
+    rules_paths: list[str] | None = None,
 ) -> RouteDryRunResult:
     """U-verbs §4.3: runs every preflight the real `route` runs, in the
     SAME order, and computes the bytes the compiler would write instead
@@ -4271,7 +4306,7 @@ def route_dry_run(
     bucket_dir = path.parent.parent
     resolved_dest: _Destination | None = None
     try:
-        resolved_dest = _resolve_destination(bucket_dir, record_id, dest)
+        resolved_dest = _resolve_destination(bucket_dir, record_id, dest, rules_paths)
     except (VerbError, LedgerOpsError, ProposalError) as exc:
         would_refuse.append(refusal_text(exc))
         errors.append(exc)
@@ -5234,6 +5269,7 @@ def route(
     allow_empty_glob: bool = False,
     execution: execution_evidence.ExecutionRef | None = None,
     hook_input: dict | None = None,
+    rules_paths: list[str] | None = None,
 ) -> VerbResult:
     """Route a pending record into canon. See the module docstring for the
     pinned sequence (M-R: the post-preflight half now lives once, in
@@ -5255,6 +5291,10 @@ def route(
     deny_message}, examples: {allow, deny}}`` -- in place of an analyst
     proposal (:func:`_prepare_sheet_hook`). Only with a ``hook``
     destination.
+
+    ``rules_paths`` (U3b, S-72): a path-scoped rule's globs named by the
+    sheet line itself, for ``claude-md:rules:<topic>`` only; they win over
+    the proposal's and are checked exactly as its globs are.
 
     ``by`` (FW-64, defaulted ``None``): names the actor that CHOSE THE
     DESTINATION, when the CALLER already knows and the ``dest``-is-not-
@@ -5317,7 +5357,7 @@ def route(
     sentinel.heartbeat()
     try:
         bucket_dir = path.parent.parent
-        resolved_dest = _resolve_destination(bucket_dir, record_id, dest)
+        resolved_dest = _resolve_destination(bucket_dir, record_id, dest, rules_paths)
         destination = resolved_dest.destination
         ref_name = resolved_dest.ref_name
 
@@ -6898,6 +6938,7 @@ def _reroute_plan(
     note: str | None,
     user_claude_md: Path | str | None,
     hook_input: dict | None,
+    rules_paths: list[str] | None = None,
 ) -> _ReroutePlan:
     """`reroute`'s checks before any lock, in order, with nothing written
     (U3b: factored out so `batch.dry_run` previews a reconsider case's
@@ -6916,7 +6957,7 @@ def _reroute_plan(
     old_retire = _retirement_preflight(
         home, record, bucket_dir, warnings, user_claude_md=user_claude_md
     )
-    resolved_dest = _resolve_destination(bucket_dir, record_id, dest)
+    resolved_dest = _resolve_destination(bucket_dir, record_id, dest, rules_paths)
     destination = resolved_dest.destination
     if hook_input is not None and destination != "hook":
         raise SheetLineError(
@@ -6985,6 +7026,7 @@ def reroute(
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
     hook_input: dict | None = None,
+    rules_paths: list[str] | None = None,
 ) -> VerbResult:
     """Correct a wrong routing DESTINATION on an already-ROUTED record
     (U-verbs S-54 / §4.5, Phase 2) — the live-motivated half of what
@@ -7024,6 +7066,7 @@ def reroute(
         plan = _reroute_plan(
             home, record_id, dest=dest, by=by, note=note,
             user_claude_md=user_claude_md, hook_input=hook_input,
+            rules_paths=rules_paths,
         )
         path, record, bucket_dir = plan.path, plan.record, plan.bucket_dir
         old_routing, old_retire, warnings = plan.old_routing, plan.old_retire, plan.warnings
