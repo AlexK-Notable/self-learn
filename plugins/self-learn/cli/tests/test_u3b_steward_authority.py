@@ -745,16 +745,17 @@ def _replays(hook_input: dict) -> list[str]:
     way the route does (hook_compiler), on a synthetic record id."""
     import tempfile
 
-    from self_learn.hook_compiler import generate_script, replay_examples
+    from self_learn.hook_compiler import replay_examples, script_for_hook
 
+    # S-73: the block's mode and event pick the script and the replay (a
+    # warning hook's examples are {allow, warn}).
     hook = hook_input["hook"]
-    script = generate_script("lrn-0000000a", "About to run a guarded call.", list(hook["tools"]),
-                             hook["path_regex"], hook["deny_message"])
+    script = script_for_hook("lrn-0000000a", "About to run a guarded call.", hook)
     with tempfile.TemporaryDirectory() as scratch:
         probe = Path(scratch) / "guard.sh"
         probe.write_text(script, encoding="utf-8")
         probe.chmod(0o700)
-        return replay_examples(probe, hook_input["examples"])
+        return replay_examples(probe, hook_input["examples"], hook, "lrn-0000000a")
 
 
 def test_the_authority_examples_cover_items_1_3_4_and_5():

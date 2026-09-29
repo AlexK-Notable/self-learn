@@ -798,7 +798,8 @@ def _build_parser() -> argparse.ArgumentParser:
     hact.add_argument(
         "--json", action="store_true", dest="as_json",
         help="machine-readable outcome envelope, including the exact "
-        "registered PreToolUse entry + script path + sha256, the three "
+        "registered hook entry (PreToolUse, or PostToolUse for a warning "
+        "hook) + script path + sha256, the three "
         "step receipts, the replay status (ran/skipped-no-examples), "
         "and the reload-not-observed caveat (§4 pin: no other stdout "
         "text under --json)",

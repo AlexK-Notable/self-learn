@@ -244,7 +244,13 @@ cluster is invalid and must not resurface as a card.
 regenerate-at-apply)*: a `destination: hook` proposal additionally carries
 the structured compile input — `hook: {tools: […], path_regex: "…",
 deny_message: "…"}` plus the full generated script text and the analyst's
-allow/deny example inputs. The route verb applies that content **verbatim**
+allow/deny example inputs. *S-73 (2026-09-28):* the block may also carry
+`mode` (`deny`, the default, or `warn`) and `event` (`PreToolUse`, the default,
+or `PostToolUse` for `warn` only); a warn block carries `warn_message` (at most
+2,000 characters, newlines allowed) in place of `deny_message`, and its examples
+are `{allow, warn}`. The keys are a closed set per mode. `routing.hook` records
+`mode`/`event` when the block states them and the message under its mode's key;
+a payload with neither reads as deny + PreToolUse. The route verb applies that content **verbatim**
 (byte-identical to the approved diff; P9 — the target is executable);
 a `record_sha` mismatch aborts and forces re-analysis + fresh approval,
 never silent regeneration (`08-build-plan.md` §8.1).

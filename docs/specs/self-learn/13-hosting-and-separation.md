@@ -1635,7 +1635,8 @@ ledger-write verb.
 
 **What this section does not do.** It does not widen the hook *destination
 grammar* itself (advisory PreToolUse, PostToolUse, bounded-command hooks) —
-that is `FW-161`'s own scope, sequenced independently of this section; O-2
+that is `FW-161`'s own scope, sequenced independently of this section (S-73
+built the warning hooks; activation handles their event); O-2
 only decides *who* may approve and install a hook already compiled under
 whatever destination grammar exists at build time.
 

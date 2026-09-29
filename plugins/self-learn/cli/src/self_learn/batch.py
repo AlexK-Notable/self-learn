@@ -978,7 +978,11 @@ _RECONSIDER_FORWARDING_VERBS = frozenset(
 
 
 def _reconsider_case_for(
-    home: Path, record_id: str, case: str | None, verb: str
+    home: Path,
+    record_id: str,
+    case: str | None,
+    verb: str,
+    reconsidered: frozenset[str] = frozenset(),
 ) -> str | None:
     """U5: forward the sheet's own top-level ``case:`` into a resolution
     verb's ``reconsider_case`` ONLY when it could genuinely apply —
@@ -1013,10 +1017,18 @@ def _reconsider_case_for(
     wrong record" wording `_reconsider_case_check` would have produced
     — reported here, not silently matched, since `build-u5.md` does not
     test this edge and this repo has no sheet combining a non-reconsider
-    case with an already-routed record's item either way."""
+    case with an already-routed record's item either way.
+
+    *reconsidered* (S-73 item 6, :func:`dry_run` only): the record ids a
+    staged ``kind: reconsider`` case covers, for a preview run WITHOUT
+    that case (it is not in the ledger yet). A covered record that is
+    routed gets :class:`verbs.PreviewReconsiderCase` -- the widening the
+    real case will give it at apply time -- under the same verb and
+    status gates; the placeholder is never written. :func:`run` never
+    passes it."""
     if verb not in _RECONSIDER_FORWARDING_VERBS:
         return None
-    if case is None:
+    if case is None and record_id not in reconsidered:
         return None
     try:
         record = Record.from_path(find_record_path(home, record_id))
@@ -1024,6 +1036,8 @@ def _reconsider_case_for(
         return None
     if record.status != "routed":
         return None
+    if case is None:
+        return verbs.PreviewReconsiderCase(verbs.PREVIEW_RECONSIDER_CASE_ID)
     try:
         cases.require_reconsider_case(home, case, record_id)
     except cases.CaseError:
@@ -1825,7 +1839,12 @@ _PREVIEW_REFUSALS = (
 
 
 def _preview_checks(
-    home: Path, item: SheetItem, *, actor: str, sheet_case: str | None
+    home: Path,
+    item: SheetItem,
+    *,
+    actor: str,
+    sheet_case: str | None,
+    reconsidered: frozenset[str] = frozenset(),
 ) -> None:
     """Run the checks the verb would run for a non-`route` *item*, with
     the same `by` and `reconsider_case` `_dispatch` would pass it."""
@@ -1834,7 +1853,9 @@ def _preview_checks(
         by = f.get("by") or (actor if actor != "human" else None)
     else:
         by = f.get("by") or actor
-    reconsider_case = _reconsider_case_for(home, item.id, sheet_case, item.verb)
+    reconsider_case = _reconsider_case_for(
+        home, item.id, sheet_case, item.verb, reconsidered
+    )
     _PREVIEW_CHECKS[item.verb](home, item, by, reconsider_case)
 
 
@@ -1926,6 +1947,7 @@ def dry_run(
     *,
     actor: str = "human",
     hook_activation: bool = False,
+    reconsidered: frozenset[str] | set[str] = frozenset(),
 ) -> DryRunResult:
     """BAT9: writes nothing at all — ledger AND hosts (O-2b: this
     includes the runtime directory — a hook item's preview below never
@@ -1946,7 +1968,15 @@ def dry_run(
     decision `_dispatch` would make for a hook item WITHOUT touching
     anything — refused (``actor != "overseer"``), placed only
     (``actor == "overseer"`` and the gate is ``False``), or activated
-    (``actor == "overseer"`` and the gate is ``True``)."""
+    (``actor == "overseer"`` and the gate is ``True``).
+
+    ``reconsidered`` (S-73 item 6): the record ids a ``kind: reconsider``
+    case covers when that case is staged but not yet recorded (the
+    steward's repair preview runs without it). Those lines preview as
+    apply time will run them with the real case: the reconsider widening
+    applies, so a re-decision's route is previewed as the reroute it
+    will be -- hook shape, replay, destination -- rather than stopping at
+    the routed-status refusal. Nothing is written."""
     if actor not in verbs.ROUTING_BY_VALUES:
         raise BatchError(
             f"batch: actor={actor!r} must be one of "
@@ -1954,6 +1984,7 @@ def dry_run(
         )
     home = Path(home)
     sheet_case = getattr(items, "case", None)
+    reconsidered = frozenset(reconsidered)
     result = DryRunResult(
         case=sheet_case,
         sheet_sha=getattr(items, "sheet_sha", None),
@@ -1988,7 +2019,9 @@ def dry_run(
                 continue
             resolved = _resolved_route_dest(home, path, item)
             is_hook_dest = resolved is not None and resolved[0] == REFUSED_HOOK_DESTINATION
-            if _reconsider_case_for(home, item.id, sheet_case, item.verb) is not None:
+            if _reconsider_case_for(
+                home, item.id, sheet_case, item.verb, reconsidered
+            ) is not None:
                 result.items.append(_preview_reroute(home, item, actor, is_hook_dest))
                 continue
             if is_hook_dest:
@@ -2057,7 +2090,10 @@ def dry_run(
             )
             continue
         try:
-            _preview_checks(home, item, actor=actor, sheet_case=sheet_case)
+            _preview_checks(
+                home, item, actor=actor, sheet_case=sheet_case,
+                reconsidered=reconsidered,
+            )
         except _PREVIEW_REFUSALS as exc:
             result.items.append(
                 DryRunItem(n=item.n, id=item.id, verb=item.verb,

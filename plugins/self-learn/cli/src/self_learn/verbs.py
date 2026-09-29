@@ -71,6 +71,7 @@ the skills root hosts its own CLAUDE.md canon).
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import shutil
 import sys
@@ -94,7 +95,14 @@ from . import (
     telemetry,
 )
 from .primitives import chrono, fsops, text as text_mod
-from .hook_compiler import replay_examples, script_name, settings_snippet
+from .hook_compiler import (
+    MODE_MESSAGE_KEY,
+    hook_event,
+    hook_mode,
+    replay_examples,
+    script_name,
+    settings_snippet,
+)
 from .normalize import sha_anchor
 from .skill_scaffold import (
     SkillScaffoldError,
@@ -2333,16 +2341,19 @@ def _resolve_hook_target(home: Path, record: Record, bucket_dir: Path) -> Target
     return TargetSpec("hook", scope_kind, bucket_dir, target, root, mode=host_mode(home, root))
 
 
-def _replay_hook_examples(script: str, examples: dict) -> None:
+def _replay_hook_examples(
+    script: str, examples: dict, hook: dict | None = None, record_id: str | None = None
+) -> None:
     """M3-12: replay the analyst's allow/deny examples against the exact
     bytes the route will commit — BEFORE anything commits. Any mismatch
     aborts. (The scratch copy lives in a TemporaryDirectory and is never
-    committed anywhere.)"""
+    committed anywhere.) S-73: *hook* is the block, so a warning hook
+    replays as one (allow prints nothing, warn prints its message)."""
     with tempfile.TemporaryDirectory(prefix="self-learn-hook-replay-") as scratch:
         probe = Path(scratch) / "guard.sh"
         probe.write_text(script, encoding="utf-8")
         probe.chmod(0o700)
-        mismatches = replay_examples(probe, examples)
+        mismatches = replay_examples(probe, examples, hook, record_id)
     if mismatches:
         raise VerbError(
             "guard replay failed — aborting the route (M3-12; the record "
@@ -2429,6 +2440,24 @@ def _one_motion_hook_gates() -> dict:
     }
 
 
+def _hook_route_meta(hook: dict, rel: str, script: str, examples: dict) -> dict:
+    """The routing.hook payload (the APPROVED compile artifacts, M3-2).
+    S-73: ``mode``/``event`` are copied only when the block states them,
+    and the message rides under its mode's key, so a deny block's payload
+    is exactly what it was before; a reader of an old payload with
+    neither reads deny + PreToolUse (``hook_compiler.hook_mode``)."""
+    meta: dict = {"tools": list(hook["tools"]), "path_regex": hook["path_regex"]}
+    for key in ("mode", "event"):
+        if key in hook:
+            meta[key] = hook[key]
+    message_key = MODE_MESSAGE_KEY[hook_mode(hook)]
+    meta[message_key] = hook[message_key]
+    meta["script_path"] = rel
+    meta["script"] = script
+    meta["examples"] = examples
+    return meta
+
+
 def _prepare_one_motion_hook(
     home: Path, record: Record, bucket_dir: Path, hook_input: dict | None
 ) -> _HookRoute:
@@ -2443,8 +2472,9 @@ def _prepare_one_motion_hook(
         raise VerbError(
             "one-motion hook route needs the compile input — pass "
             "--hook-input <yaml> carrying {rationale, hook: {tools, "
-            "path_regex, deny_message}, examples: {allow, deny}} "
-            "(routing-doctrine §5.1)"
+            "path_regex, deny_message}, examples: {allow, deny}} — or, for "
+            "a warning hook, hook: {mode: warn, event, tools, path_regex, "
+            "warn_message} with examples {allow, warn} (routing-doctrine §5.1)"
         )
     data = dict(hook_input)
     data.setdefault("destination", "hook")
@@ -2514,27 +2544,20 @@ def _prepare_one_motion_hook(
     # branch; the assert documents the invariant for this call site
     # instead of leaving a live pyright false-positive.
     assert spec.target is not None
-    _replay_hook_examples(data["script"], data["examples"])
-
     hook = data["hook"]
+    _replay_hook_examples(data["script"], data["examples"], hook, record.id)
+
     rel = spec.target.relative_to(spec.host_path).as_posix()
-    meta = {
-        "tools": list(hook["tools"]),
-        "path_regex": hook["path_regex"],
-        "deny_message": hook["deny_message"],
-        "script_path": rel,
-        "script": data["script"],
-        # Fold r1, D-e (Opus S4 / Astra 8 — swept-proposal gap): the
-        # proposal sibling `data["examples"]` came from never survives
-        # routing (`remove_proposal_siblings` sweeps it), so activation-
-        # time replay would otherwise have nothing to replay for EVERY
-        # one-motion-routed record. Persisted here, same class as
-        # `script` above — `hook_activation._examples_for` reads this
-        # first, falling back to a still-present proposal sibling only
-        # for the narrow case one happens to exist.
-        "examples": data["examples"],
-    }
-    snippet = settings_snippet(list(hook["tools"]), spec.target.name)
+    # Fold r1, D-e (Opus S4 / Astra 8 — swept-proposal gap): the
+    # proposal sibling `data["examples"]` came from never survives
+    # routing (`remove_proposal_siblings` sweeps it), so activation-
+    # time replay would otherwise have nothing to replay for EVERY
+    # one-motion-routed record. Persisted in the payload, same class as
+    # `script` — `hook_activation._examples_for` reads it first, falling
+    # back to a still-present proposal sibling only for the narrow case
+    # one happens to exist.
+    meta = _hook_route_meta(hook, rel, data["script"], data["examples"])
+    snippet = settings_snippet(list(hook["tools"]), spec.target.name, event=hook_event(hook))
     return _HookRoute(
         spec=spec, meta=meta, snippet=snippet, script=data["script"]
     )
@@ -2610,25 +2633,17 @@ def _prepare_hook_route(
     # branch; the assert documents the invariant for this call site
     # instead of leaving a live pyright false-positive.
     assert spec.target is not None
-    _replay_hook_examples(script, data["examples"])
-
     hook = data["hook"]
+    _replay_hook_examples(script, data["examples"], hook, record.id)
+
     rel = spec.target.relative_to(spec.host_path).as_posix()
-    meta = {
-        "tools": list(hook["tools"]),
-        "path_regex": hook["path_regex"],
-        "deny_message": hook["deny_message"],
-        "script_path": rel,
-        "script": script,
-        # Fold r1, D-e (Opus S4 / Astra 8 — the swept-proposal gap):
-        # `route()` sweeps `proposals/<id>.yaml` on every successful
-        # route (`ledger_ops.remove_proposal_siblings`), so without
-        # this, `hook_activation._examples_for` would have nothing to
-        # replay for ANY normally-routed record. Same persistence
-        # class as `script` above — already the full compiled bytes.
-        "examples": data["examples"],
-    }
-    snippet = settings_snippet(list(hook["tools"]), spec.target.name)
+    # Fold r1, D-e (Opus S4 / Astra 8 — the swept-proposal gap):
+    # `route()` sweeps `proposals/<id>.yaml` on every successful route
+    # (`ledger_ops.remove_proposal_siblings`), so without the persisted
+    # examples `hook_activation._examples_for` would have nothing to
+    # replay for ANY normally-routed record.
+    meta = _hook_route_meta(hook, rel, script, data["examples"])
+    snippet = settings_snippet(list(hook["tools"]), spec.target.name, event=hook_event(hook))
     return _HookRoute(spec=spec, meta=meta, snippet=snippet, script=script)
 
 
@@ -2648,7 +2663,9 @@ def _prepare_sheet_hook(
     if not isinstance(hook_input, dict):
         raise SheetLineError(
             f"route {record.id}: `hook` must be a mapping with rationale, "
-            "hook {tools, path_regex, deny_message} and examples {allow, deny}"
+            "hook {tools, path_regex, deny_message} and examples {allow, deny} "
+            "(or, for a warning hook, hook {mode: warn, event, tools, path_regex, "
+            "warn_message} and examples {allow, warn})"
         )
     data = {"model": f"{by or 'human'}-sheet", **hook_input}
     try:
@@ -2661,13 +2678,17 @@ def _prepare_sheet_hook(
 
 def _hook_manual_steps(snippet: str, name: str) -> list[str]:
     """M3-11: the route ends by printing the required manual steps — the
-    hook is inert by design until both are done."""
+    hook is inert by design until both are done. S-73: step 2 names the
+    event the snippet registers under (a warning hook may be
+    ``PostToolUse``), read back from the snippet itself so the two can
+    never disagree."""
+    event = next(iter(json.loads("{" + snippet + "}")))
     return [
         "hook routed — two manual steps remain (the guard is INERT until "
         "both):",
         f"  1. run ./install.sh — the ~/.claude/hooks/{name} symlink "
         "materializes only then",
-        "  2. add this to ~/.claude/settings.json (hooks):\n"
+        f"  2. add this to ~/.claude/settings.json (hooks, under {event}):\n"
         f"     {snippet}",
     ]
 
@@ -3017,7 +3038,8 @@ def _remove_hook_script(
     name = script.name
     post_notes.append(
         f"hook retired — finish by hand: remove the settings.json "
-        f"PreToolUse entry for {name} and the dead ~/.claude/hooks/{name} "
+        f"hook entry for {name} (PreToolUse, or PostToolUse for a warning "
+        f"hook) and the dead ~/.claude/hooks/{name} "
         "symlink (install.sh only adds links, it never removes them)"
     )
     if not script.is_file():
@@ -5288,7 +5310,9 @@ def route(
 
     ``hook_input`` (U3b, S-72): a hook route's compile input carried by the
     sheet item itself -- ``{rationale, hook: {tools, path_regex,
-    deny_message}, examples: {allow, deny}}`` -- in place of an analyst
+    deny_message}, examples: {allow, deny}}``, or a warning hook's
+    ``{mode: warn, event, …, warn_message}`` with ``{allow, warn}`` (S-73)
+    -- in place of an analyst
     proposal (:func:`_prepare_sheet_hook`). Only with a ``hook``
     destination.
 
@@ -5881,6 +5905,23 @@ def _wrap_case_error(exc: cases.CaseError) -> VerbError:
     return VerbError(str(exc))
 
 
+class PreviewReconsiderCase(str):
+    """S-73 item 6: the placeholder case id :func:`batch.dry_run` hands a
+    line covered by a ``kind: reconsider`` case that is staged but not yet
+    in the ledger (the steward's repair preview). It widens exactly as the
+    real case will at apply time, and :func:`_reconsider_case_check` skips
+    the case-file read for it -- there is no file yet.
+
+    It is a TYPE, not a value: no sheet text, CLI argument or YAML load can
+    produce an instance (a string equal to its value is a plain ``str``
+    and is checked like any other case id), and it is never written: only
+    the preview constructs one, and a preview writes nothing."""
+
+
+#: The placeholder's value, as a preview names it.
+PREVIEW_RECONSIDER_CASE_ID = "case-preview"
+
+
 def _reconsider_case_check(
     home: Path, reconsider_case: str | None, record_id: str
 ) -> dict | None:
@@ -5899,6 +5940,8 @@ def _reconsider_case_check(
     default, every pre-U5 call site, behaviour unchanged)."""
     if reconsider_case is None:
         return None
+    if isinstance(reconsider_case, PreviewReconsiderCase):
+        return None  # a preview of a staged case: no file to read yet
     try:
         case_fm, _old_fm = cases.require_reconsider_case(
             home, reconsider_case, record_id

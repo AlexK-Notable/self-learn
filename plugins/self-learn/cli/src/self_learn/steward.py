@@ -1420,8 +1420,20 @@ def _sheet_without_case(sheet_path: Path) -> batch.Sheet:
         validation_path.unlink(missing_ok=True)
 
 
-def _forced_parking_reason(home: Path, sheet_path: Path) -> str | None:
-    """Return the policy reason that prevents this sheet from dispatching."""
+def _reconsidered_by(case_data: object) -> frozenset[str]:
+    """S-73 item 6: the record ids a staged ``kind: reconsider`` case
+    covers -- the lines the preview widens as apply time will."""
+    if not isinstance(case_data, dict) or case_data.get("kind") != "reconsider":
+        return frozenset()
+    return frozenset(str(rid) for rid in case_data.get("records") or [])
+
+
+def _forced_parking_reason(
+    home: Path, sheet_path: Path, reconsidered: frozenset[str] = frozenset()
+) -> str | None:
+    """Return the policy reason that prevents this sheet from dispatching.
+    *reconsidered* (S-73 item 6): the lines a staged reconsider case covers
+    preview with its widening, the same as :func:`_ledger_repair_message`."""
     raw = _read_yaml(sheet_path)
     if not isinstance(raw, dict):
         return None
@@ -1432,6 +1444,7 @@ def _forced_parking_reason(home: Path, sheet_path: Path) -> str | None:
     preview = batch.dry_run(
         home, _sheet_without_case(sheet_path), actor="steward",
         hook_activation=config.hook_activation_enabled(home),
+        reconsidered=reconsidered,
     )
     for item in preview.items:
         route = item.route_preview or {}
@@ -1480,12 +1493,15 @@ def _ledger_repair_message(
     Each other sheet is previewed exactly as apply time will (the same
     `[reopen, verb]` sequence rule). A `status` refusal is collected only
     when the lesson's status is unchanged since selection, and never for a
-    lesson a staged `kind: reconsider` case of the same pair covers: this
-    preview runs without the case (it is not in the ledger yet), so the
-    reconsider widening -- which lets reject/defer/revise act on a routed
-    lesson -- cannot apply here, while apply time previews with the real
-    case (`_apply_packet`). A pair in *skip* (its stem) failed the
-    runner's own per-pair check and is left out (2026-09-27)."""
+    lesson a staged `kind: reconsider` case of the same pair covers. The
+    preview runs without that case (it is not in the ledger yet), but
+    since S-73 item 6 it passes the covered ids to `batch.dry_run`
+    (`reconsidered=`), which widens those lines as the real case will at
+    apply time: every check after the status gate runs -- a
+    re-decision's hook shape, its replay, its destination -- so a bad
+    example is found while the repair turn can still fix it. A pair in
+    *skip* (its stem) failed the runner's own per-pair check and is left
+    out (2026-09-27)."""
     found: list[str] = []
     for case_path in sorted((stage / "cases").glob("*.yaml")):
         if case_path.stem in skip:
@@ -1494,17 +1510,14 @@ def _ledger_repair_message(
         case_data = _read_yaml(case_path)
         if not isinstance(case_data, dict) or case_data.get("kind") == "parked":
             continue
-        if _forced_parking_reason(home, sheet_path) is not None:
+        reconsidered = _reconsidered_by(case_data)
+        if _forced_parking_reason(home, sheet_path, reconsidered) is not None:
             continue
-        reconsidered = (
-            {str(rid) for rid in case_data.get("records") or []}
-            if case_data.get("kind") == "reconsider"
-            else set()
-        )
         sheet = _sheet_without_case(sheet_path)
         preview = batch.dry_run(
             home, sheet, actor="steward",
             hook_activation=config.hook_activation_enabled(home),
+            reconsidered=reconsidered,
         )
         for line in _held_refusals(preview, sheet):
             kind = line.get("kind")
@@ -1780,7 +1793,9 @@ def _prepared_recipe(
             )
         if predecessor_ids and not case_data.get("supersedes"):
             case_data["supersedes"] = next(iter(predecessor_ids))
-        parking_reason = _forced_parking_reason(home, sheet_path)
+        parking_reason = _forced_parking_reason(
+            home, sheet_path, _reconsidered_by(case_data)
+        )
         if parking_reason is None and case_data.get("kind") == "parked":
             # The MODEL parked this case (method section 12): it could not
             # decide alone. Until 2026-09-20 only the runner's own two

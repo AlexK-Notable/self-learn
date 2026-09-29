@@ -112,7 +112,9 @@ limit; free-text "Other" is always there beyond them):
   places the route and parks it with a receipt saying activation is
   delegated but switched off. Either may carry the hook's compile input
   on its own sheet line (`hook: {rationale, hook: {tools, path_regex,
-  deny_message}, examples: {allow, deny}}`) instead of an analyst
+  deny_message}, examples: {allow, deny}}`, or a warning hook's
+  `hook: {mode: warn, event, tools, path_regex, warn_message}` with
+  `examples: {allow, warn}` — S-73) instead of an analyst
   proposal; the CLI still generates the script from it and replays the
   examples before anything commits, and a failed replay refuses that
   line alone.

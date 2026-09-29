@@ -114,6 +114,7 @@ from .compilers import (
     reference_target_path,
 )
 from .compilers import surface_names_target as _surface_names_target
+from .hook_compiler import replay_examples
 from .hosts import HostsError, ancestors_of, host_mode, host_slug, hosts_path, load_hosts, skill_dir_for
 from .ledger import Bucket, discover_buckets, home_state, home_state_message
 from .ledger_ops import (
@@ -964,6 +965,19 @@ def _check_hooks(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
                         "guard; run `self-learn recompile` (durable change "
                         "= supersede)"
                     )
+                elif isinstance(meta.get("examples"), dict):
+                    # S-73: intact bytes are not a working hook. A warning
+                    # hook FAILS OPEN, so one that stopped firing (jq gone,
+                    # a changed grep) is silent everywhere but here: replay
+                    # the record's own examples against the placed script.
+                    # Read-only (a generated hook only reads stdin) and
+                    # bounded (`replay_examples`, M-G).
+                    mismatches = replay_examples(script, meta["examples"], meta, record.id)
+                    if mismatches:
+                        failures.append(
+                            f"{record.id}: hook script {script} failed its "
+                            "replay — " + "; ".join(mismatches)
+                        )
             elif script.is_file():
                 stale += 1
                 failures.append(
