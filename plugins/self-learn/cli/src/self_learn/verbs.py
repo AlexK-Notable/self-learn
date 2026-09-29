@@ -94,7 +94,13 @@ from . import (
     telemetry,
 )
 from .primitives import chrono, fsops, text as text_mod
-from .hook_compiler import replay_examples, script_name, settings_snippet
+from .hook_compiler import (
+    MODE_MESSAGE_KEY,
+    hook_mode,
+    replay_examples,
+    script_name,
+    settings_snippet,
+)
 from .normalize import sha_anchor
 from .skill_scaffold import (
     SkillScaffoldError,
@@ -2333,16 +2339,17 @@ def _resolve_hook_target(home: Path, record: Record, bucket_dir: Path) -> Target
     return TargetSpec("hook", scope_kind, bucket_dir, target, root, mode=host_mode(home, root))
 
 
-def _replay_hook_examples(script: str, examples: dict) -> None:
+def _replay_hook_examples(script: str, examples: dict, hook: dict | None = None) -> None:
     """M3-12: replay the analyst's allow/deny examples against the exact
     bytes the route will commit — BEFORE anything commits. Any mismatch
     aborts. (The scratch copy lives in a TemporaryDirectory and is never
-    committed anywhere.)"""
+    committed anywhere.) S-73: *hook* is the block, so a warning hook
+    replays as one (allow prints nothing, warn prints its message)."""
     with tempfile.TemporaryDirectory(prefix="self-learn-hook-replay-") as scratch:
         probe = Path(scratch) / "guard.sh"
         probe.write_text(script, encoding="utf-8")
         probe.chmod(0o700)
-        mismatches = replay_examples(probe, examples)
+        mismatches = replay_examples(probe, examples, hook)
     if mismatches:
         raise VerbError(
             "guard replay failed — aborting the route (M3-12; the record "
@@ -2427,6 +2434,24 @@ def _one_motion_hook_gates() -> dict:
         "e1": {"sightings": 1, "post_demand_recurrence": False},
         "outcome": "HOOK",
     }
+
+
+def _hook_route_meta(hook: dict, rel: str, script: str, examples: dict) -> dict:
+    """The routing.hook payload (the APPROVED compile artifacts, M3-2).
+    S-73: ``mode``/``event`` are copied only when the block states them,
+    and the message rides under its mode's key, so a deny block's payload
+    is exactly what it was before; a reader of an old payload with
+    neither reads deny + PreToolUse (``hook_compiler.hook_mode``)."""
+    meta: dict = {"tools": list(hook["tools"]), "path_regex": hook["path_regex"]}
+    for key in ("mode", "event"):
+        if key in hook:
+            meta[key] = hook[key]
+    message_key = MODE_MESSAGE_KEY[hook_mode(hook)]
+    meta[message_key] = hook[message_key]
+    meta["script_path"] = rel
+    meta["script"] = script
+    meta["examples"] = examples
+    return meta
 
 
 def _prepare_one_motion_hook(
@@ -2514,26 +2539,19 @@ def _prepare_one_motion_hook(
     # branch; the assert documents the invariant for this call site
     # instead of leaving a live pyright false-positive.
     assert spec.target is not None
-    _replay_hook_examples(data["script"], data["examples"])
-
     hook = data["hook"]
+    _replay_hook_examples(data["script"], data["examples"], hook)
+
     rel = spec.target.relative_to(spec.host_path).as_posix()
-    meta = {
-        "tools": list(hook["tools"]),
-        "path_regex": hook["path_regex"],
-        "deny_message": hook["deny_message"],
-        "script_path": rel,
-        "script": data["script"],
-        # Fold r1, D-e (Opus S4 / Astra 8 — swept-proposal gap): the
-        # proposal sibling `data["examples"]` came from never survives
-        # routing (`remove_proposal_siblings` sweeps it), so activation-
-        # time replay would otherwise have nothing to replay for EVERY
-        # one-motion-routed record. Persisted here, same class as
-        # `script` above — `hook_activation._examples_for` reads this
-        # first, falling back to a still-present proposal sibling only
-        # for the narrow case one happens to exist.
-        "examples": data["examples"],
-    }
+    # Fold r1, D-e (Opus S4 / Astra 8 — swept-proposal gap): the
+    # proposal sibling `data["examples"]` came from never survives
+    # routing (`remove_proposal_siblings` sweeps it), so activation-
+    # time replay would otherwise have nothing to replay for EVERY
+    # one-motion-routed record. Persisted in the payload, same class as
+    # `script` — `hook_activation._examples_for` reads it first, falling
+    # back to a still-present proposal sibling only for the narrow case
+    # one happens to exist.
+    meta = _hook_route_meta(hook, rel, data["script"], data["examples"])
     snippet = settings_snippet(list(hook["tools"]), spec.target.name)
     return _HookRoute(
         spec=spec, meta=meta, snippet=snippet, script=data["script"]
@@ -2610,24 +2628,16 @@ def _prepare_hook_route(
     # branch; the assert documents the invariant for this call site
     # instead of leaving a live pyright false-positive.
     assert spec.target is not None
-    _replay_hook_examples(script, data["examples"])
-
     hook = data["hook"]
+    _replay_hook_examples(script, data["examples"], hook)
+
     rel = spec.target.relative_to(spec.host_path).as_posix()
-    meta = {
-        "tools": list(hook["tools"]),
-        "path_regex": hook["path_regex"],
-        "deny_message": hook["deny_message"],
-        "script_path": rel,
-        "script": script,
-        # Fold r1, D-e (Opus S4 / Astra 8 — the swept-proposal gap):
-        # `route()` sweeps `proposals/<id>.yaml` on every successful
-        # route (`ledger_ops.remove_proposal_siblings`), so without
-        # this, `hook_activation._examples_for` would have nothing to
-        # replay for ANY normally-routed record. Same persistence
-        # class as `script` above — already the full compiled bytes.
-        "examples": data["examples"],
-    }
+    # Fold r1, D-e (Opus S4 / Astra 8 — the swept-proposal gap):
+    # `route()` sweeps `proposals/<id>.yaml` on every successful route
+    # (`ledger_ops.remove_proposal_siblings`), so without the persisted
+    # examples `hook_activation._examples_for` would have nothing to
+    # replay for ANY normally-routed record.
+    meta = _hook_route_meta(hook, rel, script, data["examples"])
     snippet = settings_snippet(list(hook["tools"]), spec.target.name)
     return _HookRoute(spec=spec, meta=meta, snippet=snippet, script=script)
 

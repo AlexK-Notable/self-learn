@@ -916,8 +916,10 @@ def activate(
         # never be written into settings.json.
         bucket_dir = path.parent.parent
         examples = _examples_for(record, bucket_dir)
-        n_examples = len(examples.get("allow", []) or []) + len(examples.get("deny", []) or [])
-        mismatches = replay_examples(link, examples)
+        n_examples = sum(
+            len(examples.get(verdict, []) or []) for verdict in ("allow", "deny", "warn")
+        )
+        mismatches = replay_examples(link, examples, meta)
         if mismatches:
             raise HookActivationError(
                 "guard replay failed against the placed symlink — aborting "

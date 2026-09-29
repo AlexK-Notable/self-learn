@@ -464,3 +464,56 @@ class TestWarnScript:
         a = generate_script(RID, "t", ["Bash"], "x", WARN_MESSAGE, mode="warn")
         assert a == generate_script(RID, "t", ["Bash"], "x", WARN_MESSAGE, mode="warn")
         assert a.startswith("#!/usr/bin/env bash\n") and RID in a
+
+
+# ----------------------------------------------- S-73: warn replay (item 3)
+
+WARN_BLOCK = {"mode": "warn", "event": "PostToolUse", "tools": ["Bash"],
+              "path_regex": WARN_REGEX, "warn_message": WARN_MESSAGE}
+WARN_EXAMPLES = {"allow": [LS, {"tool_name": "Bash", "tool_input": {"command": "pkill -x node"}}],
+                 "warn": [PKILL, {"tool_name": "Bash", "tool_input": {"command": "pgrep -af keys"}}]}
+
+
+def _warn_block_guard(tmp_path: Path, block: dict = WARN_BLOCK) -> Path:
+    from self_learn.hook_compiler import script_for_hook
+
+    return write_guard(tmp_path, script_for_hook(RID, "About to run pkill -f", block))
+
+
+class TestWarnReplay:
+    def test_clean_warn_replay(self, tmp_path):
+        assert replay_examples(_warn_block_guard(tmp_path), WARN_EXAMPLES, WARN_BLOCK) == []
+
+    def test_an_allow_example_that_warns_is_named(self, tmp_path):
+        examples = {**WARN_EXAMPLES, "allow": [PKILL, LS]}
+        mismatches = replay_examples(_warn_block_guard(tmp_path), examples, WARN_BLOCK)
+        assert len(mismatches) == 1 and mismatches[0].startswith("allow[0] expected no warning")
+
+    def test_a_warn_example_that_stays_silent_is_named(self, tmp_path):
+        examples = {**WARN_EXAMPLES, "warn": [PKILL, LS]}
+        mismatches = replay_examples(_warn_block_guard(tmp_path), examples, WARN_BLOCK)
+        assert len(mismatches) == 1 and mismatches[0].startswith("warn[1] expected a warning")
+
+    def test_the_event_and_the_message_must_both_match(self, tmp_path):
+        guard = _warn_block_guard(tmp_path)
+        assert replay_examples(guard, WARN_EXAMPLES, WARN_BLOCK) == []  # control
+        pre = {**WARN_BLOCK, "event": "PreToolUse"}
+        assert len(replay_examples(guard, WARN_EXAMPLES, pre)) == 2
+        other = {**WARN_BLOCK, "warn_message": "something else"}
+        assert len(replay_examples(guard, WARN_EXAMPLES, other)) == 2
+
+    def test_a_non_zero_exit_is_a_mismatch(self, tmp_path):
+        guard = write_guard(tmp_path, "#!/usr/bin/env bash\ncat >/dev/null\nexit 2\n")
+        mismatches = replay_examples(guard, WARN_EXAMPLES, WARN_BLOCK)
+        assert len(mismatches) == 4 and all("exited 2" in m for m in mismatches)
+
+    def test_a_deny_guard_replays_as_before_with_or_without_its_block(self, tmp_path):
+        guard = write_guard(tmp_path, generate_script(RID, "t", ["Edit"], r"\.storage/", "stop"))
+        examples = {"allow": [{"tool_name": "Edit", "tool_input": {"file_path": "/ok"}}],
+                    "deny": [{"tool_name": "Edit", "tool_input": {"file_path": "/.storage/a"}}]}
+        block = {"tools": ["Edit"], "path_regex": r"\.storage/", "deny_message": "stop"}
+        assert replay_examples(guard, examples) == []
+        assert replay_examples(guard, examples, block) == []
+        # the deny guard read as a warn block mismatches: the verdicts differ
+        as_warn = {"allow": examples["allow"], "warn": examples["deny"]}
+        assert replay_examples(guard, as_warn, {**block, "mode": "warn"}) != []

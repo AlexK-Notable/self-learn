@@ -532,7 +532,9 @@ def script_for_hook(record_id: str, trigger: str, hook: dict) -> str:
 REPLAY_EXAMPLE_TIMEOUT_S = 10.0
 
 
-def replay_examples(script_path: Path, examples: dict) -> list[str]:
+def replay_examples(
+    script_path: Path, examples: dict, hook: dict | None = None
+) -> list[str]:
     """M3-12: run the analyst's allow/deny example inputs against the
     generated script. Returns one human sentence per MISMATCH (empty =
     replay clean); the route verb aborts on any. An unexpected exit code
@@ -540,7 +542,13 @@ def replay_examples(script_path: Path, examples: dict) -> list[str]:
     deny. A guard that does not finish within
     ``REPLAY_EXAMPLE_TIMEOUT_S`` (M-G) counts as a mismatch too — a
     wedged guard is exactly the kind of guard the replay must abort a
-    route over, not one hung request that hangs the whole verb."""
+    route over, not one hung request that hangs the whole verb.
+
+    S-73: *hook* is the block (or routing.hook) the script came from; a
+    ``mode: warn`` block replays through :func:`_replay_warn`. ``None``,
+    or a block that records no mode, replays as deny, unchanged."""
+    if hook is not None and hook_mode(hook) == "warn":
+        return _replay_warn(script_path, examples, hook_event(hook), hook_message(hook))
     mismatches: list[str] = []
     for verdict, expected_rc in (("allow", 0), ("deny", 2)):
         for i, example in enumerate(examples.get(verdict, [])):
@@ -564,5 +572,61 @@ def replay_examples(script_path: Path, examples: dict) -> list[str]:
                     f"{verdict}[{i}] expected {verdict} but the guard "
                     f"{got}: {json.dumps(example)}"
                     + (f" (stderr: {proc.stderr.strip()})" if proc.stderr.strip() else "")
+                )
+    return mismatches
+
+
+def _replay_warn(script_path: Path, examples: dict, event: str, message: str) -> list[str]:
+    """S-73: a warning hook's replay. Both verdicts exit 0, so the exit
+    code alone proves nothing: an ``allow`` example must print nothing,
+    and a ``warn`` example must print exactly :func:`warn_output`'s line
+    for this event and message — anything else (another exit code, stray
+    output, a different event or text, a timeout) is a mismatch, named
+    per example."""
+    mismatches: list[str] = []
+    expected = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": message}}
+    for verdict in ("allow", "warn"):
+        for i, example in enumerate(examples.get(verdict, [])):
+            where = f"{verdict}[{i}]"
+            try:
+                proc = procs.run_bounded(
+                    [str(script_path)],
+                    input=json.dumps(example),
+                    timeout=REPLAY_EXAMPLE_TIMEOUT_S,
+                )
+            except procs.BoundedTimeout:
+                mismatches.append(
+                    f"{where} the hook did not finish within "
+                    f"{REPLAY_EXAMPLE_TIMEOUT_S:g}s: {json.dumps(example)}"
+                )
+                continue
+            if proc.returncode != 0:
+                mismatches.append(
+                    f"{where} expected exit 0 but the warning hook exited "
+                    f"{proc.returncode}: {json.dumps(example)}"
+                )
+                continue
+            out = proc.stdout.strip()
+            if verdict == "allow":
+                if out:
+                    mismatches.append(
+                        f"{where} expected no warning but the hook warned: "
+                        f"{json.dumps(example)}"
+                    )
+                continue
+            if not out:
+                mismatches.append(
+                    f"{where} expected a warning but the hook printed nothing: "
+                    f"{json.dumps(example)}"
+                )
+                continue
+            try:
+                got = json.loads(out)
+            except ValueError:
+                got = None
+            if got != expected:
+                mismatches.append(
+                    f"{where} expected the {event} warning with the block's "
+                    f"message but the hook printed {out[:200]!r}: {json.dumps(example)}"
                 )
     return mismatches
