@@ -106,10 +106,16 @@ limit; free-text "Other" is always there beyond them):
   with one shortcut: `self-learn hook activate <id>` performs both by
   hand (and `hook deactivate <id>` reverses it), no setting required.
   Separately, when the user's delegation switch
-  (`overseer.hook_activation`) is on, the overseer places and activates
-  an approved hook route by code on its own owned path (S-66); with the
-  switch off it places the route and parks it with a receipt saying
-  activation is delegated but switched off.
+  (`overseer.hook_activation`) is on, the overseer — and, since S-72
+  (2026-09-28), the steward — places and activates a hook route it
+  decided by code on its own owned path (S-66); with the switch off it
+  places the route and parks it with a receipt saying activation is
+  delegated but switched off. Either may carry the hook's compile input
+  on its own sheet line (`hook: {rationale, hook: {tools, path_regex,
+  deny_message}, examples: {allow, deny}}`) instead of an analyst
+  proposal; the CLI still generates the script from it and replays the
+  examples before anything commits, and a failed replay refuses that
+  line alone.
 - **Discuss** — open-ended: drop into conversation with the record and
   proposal in context. You may **edit the pending record** per the user's
   direction (pending substance is freely editable; use Edit on the record
@@ -143,9 +149,9 @@ review session must never hand-sequence a run of individual `self-learn
 naming a `host` verb or a hook route is refused at validation (nothing
 runs) — sequence those by hand, outside the sheet. A `--dry-run` of a
 sheet carrying a hook route reports that item refused and exits 1,
-exactly as the real run would — the overseer's own runner (13 §7.4) is
-the one caller a hook route is ever not refused for, and this session
-is never that caller.
+exactly as the real run would — the overseer's and the steward's own
+runners (13 §7.4; S-72) are the only callers a hook route is ever not
+refused for, and this session is never one of them.
 
 **A sheet may name the decision case it is applying (S-65).** A
 top-level `case: case-<8hex>` key is optional; when present, the sheet's

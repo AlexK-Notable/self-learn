@@ -391,6 +391,53 @@ items:
     dest: claude-md
     note: all three always-loaded tests hold; see the case
 """,
+    "cases/guard-the-database.yaml": """\
+kind: resolution
+trigger: nightly
+outcome: route
+records: [lrn-5f6a7b8c]
+scope: user
+question: >-
+  Should editing the service's live database file be blocked by a hook?
+evidence:
+  - ref: "transcript:example-session#L88"
+    quote: "edited data.db while the service was running and lost the change"
+  - ref: "ledger@4f2a9c1:user/services/lrn-5f6a7b8c.yaml#L3-6"
+    quote: "stop the service before editing its database"
+decision:
+  verb: route
+  because: >-
+    The mistake is one tool call on one kind of file, a guard can see it exactly, and it recurred
+    after the lesson was on the shelf.
+  confidence: settled
+dependencies:
+  statements: []
+  user_model: []
+  conditions: []
+  capabilities: []
+""",
+    "sheets/guard-the-database.yaml": """\
+version: 1
+case: $CASE_ID
+items:
+  - id: lrn-5f6a7b8c
+    verb: route
+    dest: hook
+    hook:
+      rationale: Blocks an Edit or Write of a .db file; every other file, and reading one, stays allowed.
+      hook:
+        tools: [Edit, Write]
+        path_regex: '\\.db$'
+        deny_message: stop the service before editing its database file
+      examples:
+        allow:
+          - {tool_name: Edit, tool_input: {file_path: /srv/app/config.yaml}}
+          - {tool_name: Write, tool_input: {file_path: /srv/app/notes.md}}
+        deny:
+          - {tool_name: Edit, tool_input: {file_path: /srv/app/data.db}}
+          - {tool_name: Write, tool_input: {file_path: /srv/other/cache.db}}
+    note: a guard sees this exact call; the shelf line did not stop it
+""",
 }
 
 
@@ -832,8 +879,8 @@ def _render_output_contract() -> str:
         "  saying why the rule stays; `dismiss-suspect`'s `why` is one of",
         f"  {_words(verbs.DISMISS_REASONS)}.",
         f"  These are never sheet verbs and are refused: {', '.join(sorted(batch.REFUSED_VERBS_LITERAL))}, and",
-        "  anything starting `host `. A route to `dest: hook` is not applied: the runner parks",
-        "  that case for the overseer.",
+        "  anything starting `host `.",
+        *_hook_lines(),
         *textwrap.wrap(
             _REFUSED_LINE_SENTENCE, width=90, initial_indent="  ", subsequent_indent="  "
         ),
@@ -887,6 +934,34 @@ def _render_output_contract() -> str:
         out.append(f"\n--- {name}")
         out.append(body.rstrip("\n"))
     return "\n".join(out)
+
+
+def _hook_lines() -> list[str]:
+    """U3b: a hook route the steward writes itself (S-72), from the
+    constants the checkers read (`batch.HOOK_INPUT_KEYS`, the hook block's
+    keys and the example counts `ledger_ops` validates, the tools
+    `hook_compiler` can guard)."""
+    from . import hook_compiler
+
+    low, high = ledger_ops._HOOK_EXAMPLES_MIN, ledger_ops._HOOK_EXAMPLES_MAX
+    return [
+        "  A HOOK (a guard that denies a tool call). Write `dest: hook` and a `hook` key on the",
+        f"  line: a mapping of {', '.join(sorted(batch.HOOK_INPUT_KEYS))}"
+        f" ({', '.join(sorted(batch.HOOK_INPUT_REQUIRED))} required).",
+        "    rationale   one or two sentences: what it blocks, and what it must NOT block",
+        f"    hook        {{{', '.join(ledger_ops._HOOK_KEYS)}}}: tools from"
+        f" {', '.join(hook_compiler.GUARDABLE_TOOLS)};",
+        "                path_regex an extended regular expression matched against the file path",
+        "                (Edit, Write) or the command (Bash); deny_message one line",
+        f"    examples    {{allow: [...], deny: [...]}}, {low} to {high} each, every one",
+        "                {tool_name: <one of the tools>, tool_input: {file_path: ...} or {command: ...}}",
+        "  You never write the script: the runner generates it from the hook block and replays",
+        "  every example against it before anything is committed; an example the script gets",
+        "  wrong refuses that line alone. The lesson must have a Trigger (a behavior lesson).",
+        "  The runner places the script; switching it on stays the user's setting",
+        "  (`overseer.hook_activation`), so with it off the hook is placed and not registered.",
+        "  A hook only DENIES; a warning that lets the call through is not something it can do.",
+    ]
 
 
 def _always_loaded_lines() -> list[str]:

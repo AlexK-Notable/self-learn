@@ -275,8 +275,15 @@ against.
 A real failure still needs a diagnosis, not just a label: consider a
 missed entry cue, a wrong or incomplete instruction, an exception that
 should have applied, or a tool defect before proposing a stronger
-delivery surface. A hook decision is never yours alone — send it to the
-overseer.
+delivery surface. A hook is yours to decide (`03-decisions.md` S-72): when
+the failure is one tool call a guard can see exactly (an Edit, Write or Bash
+call matching a pattern), write the route with its compile input — the
+output contract shows the shape; the runner writes the script, replays your
+examples against it, and places it. Switching it on stays the user's
+setting; the overseer corrects a hook that was a mistake. A hook can only
+deny a call; a lesson that needs a warning, not a block, is not a hook.
+Park as `hook` only when you cannot tell whether a guard would block
+legitimate work.
 
 **A suspected-violation input.** Some briefs are not a pending lesson but
 a ROUTED one that the miner reported as possibly broken: its brief lists

@@ -28,6 +28,7 @@ from . import (
     batch,
     cases,
     conditions,
+    config,
     execution_evidence,
     gitops,
     intents,
@@ -1424,10 +1425,14 @@ def _forced_parking_reason(home: Path, sheet_path: Path) -> str | None:
     raw = _read_yaml(sheet_path)
     if not isinstance(raw, dict):
         return None
-    for item in raw.get("items") or []:
-        if isinstance(item, dict) and item.get("verb") == "route" and item.get("dest") == "hook":
-            return "hook"
-    preview = batch.dry_run(home, _sheet_without_case(sheet_path), actor="steward")
+    # U3b (S-72, 2026-09-28): a hook route is no longer parked here -- the
+    # steward decides hooks itself; the batch dispatches it (actor steward,
+    # `batch.HOOK_ROUTING_ACTORS`) and activation stays behind the human's
+    # `overseer.hook_activation` (off: placed, with the delegated receipt).
+    preview = batch.dry_run(
+        home, _sheet_without_case(sheet_path), actor="steward",
+        hook_activation=config.hook_activation_enabled(home),
+    )
     for item in preview.items:
         route = item.route_preview or {}
         if item.verb != "route" or route.get("mode") != "plain":
@@ -1497,7 +1502,10 @@ def _ledger_repair_message(
             else set()
         )
         sheet = _sheet_without_case(sheet_path)
-        preview = batch.dry_run(home, sheet, actor="steward")
+        preview = batch.dry_run(
+            home, sheet, actor="steward",
+            hook_activation=config.hook_activation_enabled(home),
+        )
         for line in _held_refusals(preview, sheet):
             kind = line.get("kind")
             record_id = str(line.get("id"))
@@ -1784,8 +1792,9 @@ def _prepared_recipe(
             # pending for the overseer. The sheet is the model's
             # tentative answer, on record and not acted on. The reason
             # was checked by `_validate_declared_stage`. When the runner's
-            # own check fires too (a hook route), its reason wins: that is
-            # the one the overseer's hook intake sorts on.
+            # own check fires too (a plain host's committed file), its
+            # reason wins. (Until U3b a hook route was one of the runner's
+            # own checks; since S-72 the steward decides hooks.)
             parking_reason = str(case_data.get("parked_reason"))
         if parking_reason is not None:
             case_data["kind"] = "parked"
@@ -3192,7 +3201,10 @@ def _apply_packet(
             receipt_ok = bool(receipt and receipt.get("state") == "ok")
             phase = "parked" if receipt_ok else "unfinished"
         else:
-            preview = batch.dry_run(home, items, actor="steward")
+            preview = batch.dry_run(
+                home, items, actor="steward",
+                hook_activation=config.hook_activation_enabled(home),
+            )
             if not _preview_is_clean_for_sequence(preview, items):
                 result = batch.BatchResult(
                     items=[
@@ -3244,7 +3256,8 @@ def _apply_packet(
                 _note_move_origins(home, items)
                 try:
                     result = batch.run(home, items, no_push=True, actor="steward",
-                        continuation=continuation, checkpoint=checkpoint)
+                        continuation=continuation, checkpoint=checkpoint,
+                        hook_activation=config.hook_activation_enabled(home))
                     if result.items and all(
                         item.n in result.preserved_receipt_items for item in result.items
                     ):

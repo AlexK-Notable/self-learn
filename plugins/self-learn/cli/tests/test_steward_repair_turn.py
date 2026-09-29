@@ -232,9 +232,11 @@ def test_a_case_the_model_parked_is_not_previewed_for_repair(tmp_path, monkeypat
     assert _dispositions(home, result.run_id)[rid]["state"] == "parked"
 
 
-def test_a_case_the_runner_will_park_is_not_previewed_for_repair(tmp_path, monkeypatch):
-    """A sheet with a hook route is parked by the runner (never applied), so
-    its other line the ledger would refuse is nobody's to repair either."""
+def test_a_hook_line_is_previewed_for_repair_like_any_other(tmp_path, monkeypatch):
+    """Until U3b a sheet with a hook route was parked by the runner, so its
+    other lines were nobody's to repair. Since S-72 (2026-09-28) the steward
+    decides hooks: the sheet is previewed like any other, and its line the
+    ledger would refuse goes to the repair turn."""
     home = make_env(tmp_path).ledger
     rid = _seed(home, "lrn-c000000b")
     _enable_steward(home)
@@ -255,8 +257,10 @@ def test_a_case_the_runner_will_park_is_not_previewed_for_repair(tmp_path, monke
 
     result = steward.run(home)
 
-    assert len(prompts) == 1
-    assert _dispositions(home, result.run_id)[rid]["state"] == "parked"
+    assert len(prompts) == 2
+    repair = _repair_part(prompts[1])
+    assert _LEDGER_REPAIR in repair and f"(defer {rid})" in repair
+    assert _dispositions(home, result.run_id)[rid]["state"] != "parked"
 
 
 def test_the_dry_run_spends_the_repair_turn_the_same_way_and_writes_nothing(

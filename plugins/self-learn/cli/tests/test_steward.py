@@ -114,6 +114,11 @@ def _write_decision_stage(spec, *, turns: int | None = None):
 
 
 def _write_hook_stage(spec):
+    """A case parked as `hook` whose tentative answer is a hook route.
+    U3b (S-72, 2026-09-28): the runner no longer parks a hook route on its
+    own account -- the steward decides hooks -- so the parked case these
+    tests rely on is now the MODEL's (`kind: parked`, `parked_reason:
+    hook`), which the runner records and never dispatches, as before."""
     outcome = _write_decision_stage(spec)
     match = re.search(r"^stage directory \(the only place you may write\): (.+)$", spec.prompt, re.M)
     assert match is not None
@@ -124,8 +129,9 @@ def _write_hook_stage(spec):
     _dump_yaml(sheet, data)
     case = next((stage / "cases").glob("*.yaml"))
     case_data = YAML(typ="safe").load(case.read_text(encoding="utf-8"))
-    case_data["outcome"] = "route"
+    case_data["outcome"] = "parked"
     case_data["decision"]["verb"] = "route"
+    case_data.update(kind="parked", parked_for="overseer", parked_reason="hook")
     _dump_yaml(case, case_data)
     return outcome
 

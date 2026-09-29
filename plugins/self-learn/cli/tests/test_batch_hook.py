@@ -471,7 +471,10 @@ class TestOnlyOverseerLiftsTheRefusal:
     own job above; `"overseer"` is the one that lifts it) against a
     REAL hook route."""
 
-    @pytest.mark.parametrize("actor", ["steward", "analyst", "agent"])
+    # U3b (S-72, 2026-09-28): the steward joined the overseer in
+    # `batch.HOOK_ROUTING_ACTORS`; its own hook path is tested in
+    # `test_u3b_steward_authority.py`. Every OTHER actor still refuses.
+    @pytest.mark.parametrize("actor", ["analyst", "agent"])
     def test_non_overseer_actor_still_refuses_the_hook_route(
         self, env, tmp_path, actor
     ):

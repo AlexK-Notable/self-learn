@@ -302,3 +302,140 @@ def test_sa1_is_marked_superseded_by_s72_in_the_decisions_register():
     s72 = next(line for line in text.splitlines() if line.startswith("| S-72 |"))
     assert "leave the overseer the job of corrercting it" in s72  # the user's own words
     assert "not a user ruling" in s72
+
+
+# ------------------------------------------------- 3. hooks the steward writes
+
+
+from test_hook_activation import _real_claude_dir_never_touched  # noqa: E402,F401 -- the real-~/.claude control
+
+HOOK_TRIGGER = "About to edit `.storage/*.json` while HA is running."
+
+
+def _hook_input(*, deny_path: str = "/x/.storage/core.config") -> dict:
+    return {
+        "rationale": "Blocks an Edit or Write under .storage/; every other file stays allowed.",
+        "hook": {
+            "tools": ["Edit", "Write"],
+            "path_regex": r"\.storage/",
+            "deny_message": "stop the HA container first",
+        },
+        "examples": {
+            "allow": [
+                {"tool_name": "Edit", "tool_input": {"file_path": "/x/configuration.yaml"}},
+                {"tool_name": "Write", "tool_input": {"file_path": "/x/notes.md"}},
+            ],
+            "deny": [
+                {"tool_name": "Edit", "tool_input": {"file_path": deny_path}},
+                {"tool_name": "Write", "tool_input": {"file_path": "/y/.storage/auth"}},
+            ],
+        },
+    }
+
+
+@pytest.fixture
+def claude_dir(tmp_path, monkeypatch):
+    claude = tmp_path / "claude-dir"
+    (claude / "hooks").mkdir(parents=True)
+    monkeypatch.setenv("SELF_LEARN_CLAUDE_DIR", str(claude))
+    return claude
+
+
+def _behavior_lesson(env, rid: str) -> str:
+    return _seed(env.ledger, rid, record=make_behavior(record_id=rid, trigger=HOOK_TRIGGER))
+
+
+def test_a_steward_hook_is_placed_with_the_delegated_receipt_when_activation_is_off(
+    tmp_path, monkeypatch, claude_dir
+):
+    from self_learn.hook_compiler import script_name
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    rid = _behavior_lesson(env, "lrn-a3000001")
+    _enable_steward(home)
+    _notifications(monkeypatch)
+
+    def session(spec):
+        return _stage_pairs(spec, {rid: (
+            _case([rid], "route", "route"),
+            [{"id": rid, "verb": "route", "dest": "hook", "hook": _hook_input()}],
+        )})
+
+    monkeypatch.setattr(steward.invocation, "write_session", session)
+
+    result = steward.run(home)
+
+    rows = _dispositions(home, result.run_id)
+    assert rows[rid]["state"] == "applied", rows[rid]
+    record = _status(home, rid)
+    assert record.status == "routed"
+    hook_meta = (record.routing or {}).get("hook") or {}
+    assert (record.routing or {}).get("destination") == "hook"
+    assert hook_meta.get("script", "").startswith("#!")  # the CLI generated it
+    name = script_name(rid, HOOK_TRIGGER)
+    assert (claude_dir / "hooks" / name).is_symlink()  # placed
+    assert not (claude_dir / "settings.json").exists()  # never registered
+    entry = next(h for h in record.history if h.get("event") == "hook-activated")
+    assert "switched off" in (entry.get("note") or "")
+    assert cases.list_cases(home, record_id=rid, parked_for="overseer") == []
+
+
+def test_a_steward_hook_whose_replay_fails_is_refused_alone(tmp_path, monkeypatch, claude_dir):
+    """The deny example does not match the regex, so the generated guard
+    would allow a call the steward said it denies: that line is refused,
+    the repair turn is told, and the packet's other case applies."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    bad = _behavior_lesson(env, "lrn-a3000002")
+    other = _seed(home, "lrn-a3000003")
+    _enable_steward(home)
+    _notifications(monkeypatch)
+    prompts: list[str] = []
+
+    def session(spec):
+        prompts.append(spec.prompt)
+        return _stage_pairs(spec, {
+            bad: (_case([bad], "route", "route"), [{
+                "id": bad, "verb": "route", "dest": "hook",
+                "hook": _hook_input(deny_path="/x/config/core.config"),
+            }]),
+            other: (_case([other], "reject", "reject"), [{"id": other, "verb": "reject"}]),
+        })
+
+    monkeypatch.setattr(steward.invocation, "write_session", session)
+
+    result = steward.run(home)
+
+    rows = _dispositions(home, result.run_id)
+    assert rows[other]["state"] == "applied"  # positive control
+    assert _status(home, other).status == "rejected"
+    assert _status(home, bad).status == "pending"
+    assert rows[bad]["state"] != "applied"
+    assert "guard replay failed" in (rows[bad].get("reason") or ""), rows[bad]
+    assert len(prompts) == 2 and "guard replay failed" in prompts[1]
+    assert not any((claude_dir / "hooks").iterdir())
+
+
+def test_a_hook_compile_input_is_shape_checked_with_the_sheet(tmp_path):
+    from self_learn import batch
+
+    def load(item: dict):
+        path = tmp_path / "sheet.yaml"
+        _dump_yaml(path, {"version": 1, "items": [item]})
+        return batch.load_sheet(path)
+
+    good = {"id": "lrn-a3000004", "verb": "route", "dest": "hook", "hook": _hook_input()}
+    assert load(good)[0].fields["hook"]["hook"]["tools"] == ["Edit", "Write"]  # control
+    with pytest.raises(batch.BatchError, match="needs dest: hook"):
+        load({**good, "dest": "reference:x.md"})
+    with pytest.raises(batch.BatchError, match="missing"):
+        load({**good, "hook": {"rationale": "r", "hook": {}}})
+    with pytest.raises(batch.BatchError, match="must be a mapping"):
+        load({**good, "hook": "script text"})
+
+
+def test_the_hook_route_is_open_to_the_steward_and_the_overseer_only():
+    from self_learn import batch
+
+    assert batch.HOOK_ROUTING_ACTORS == {"overseer", "steward"}

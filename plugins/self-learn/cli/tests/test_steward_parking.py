@@ -158,11 +158,12 @@ def test_parking_fields_on_a_case_that_is_not_parked_get_the_repair_turn(tmp_pat
     assert [_status(home, rid) for rid in ids] == ["rejected", "pending"]
 
 
-def test_when_the_runner_would_park_the_case_anyway_its_reason_is_the_one_recorded(tmp_path, monkeypatch):
+def test_a_tentative_hook_route_keeps_the_models_own_parking_reason(tmp_path, monkeypatch):
     """The model parks a lesson for its own reason, and the tentative
-    answer on its sheet is a route to a hook -- which the runner parks on
-    its own account. The overseer's hook intake sorts on `hook`, so that
-    is the reason that must reach the ledger."""
+    answer on its sheet is a route to a hook. Until U3b the runner parked
+    every hook route on its own account and its `hook` reason won; since
+    S-72 (2026-09-28) the steward decides hooks, the runner parks none,
+    and the reason the model chose is the one recorded."""
     home = make_home(tmp_path)
     ids = _seed_fresh_proposals(home, 1)
     _enable_steward(home)
@@ -176,7 +177,7 @@ def test_when_the_runner_would_park_the_case_anyway_its_reason_is_the_one_record
     _run_with(home, monkeypatch, park_a_hook_route)
 
     (parked,) = cases.list_cases(home, parked_for="overseer")
-    assert parked["parked_reason"] == "hook"
+    assert parked["parked_reason"] == "authority-unclear"
     assert _status(home, ids[0]) == "pending"
 
 

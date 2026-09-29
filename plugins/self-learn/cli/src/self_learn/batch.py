@@ -124,6 +124,8 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
         {
             "dest", "collapse", "by", "follow_up", "unblocks_on",
             "follow_up_note", "allow_empty_glob", "note",
+            # U3b (S-72): a hook's compile input, carried by the line.
+            "hook",
         }
     ),
     "reject": frozenset({"note", "by"}),
@@ -201,6 +203,12 @@ REFUSED_VERBS_LITERAL = frozenset(
     }
 )
 REFUSED_HOOK_DESTINATION = "hook"
+#: U3b (S-72, 2026-09-28): the actors a hook route is not refused for --
+#: the overseer (S-66) and, since S-72, the steward. `_dispatch`,
+#: `classify` and `dry_run` all read this ONE set, so the real run and its
+#: preview cannot disagree about who may route a hook. Activation stays
+#: behind the human's `overseer.hook_activation` for both.
+HOOK_ROUTING_ACTORS = frozenset({"overseer", "steward"})
 
 
 def _hook_refused_detail(record_id: str) -> str:
@@ -653,11 +661,40 @@ def load_sheet(path: Path | str, *, home: Path | str | None = None) -> Sheet:
                 f"batch {path}: item {n} ({verb}) has by={by_val!r}, must "
                 f"be one of {sorted(verbs.ROUTING_BY_VALUES)}"
             )
+        shape = _route_shape_problem(raw) if verb == "route" else None
+        if shape is not None:
+            raise BatchError(f"batch {path}: item {n} (route): {shape}")
         fields = {k: v for k, v in raw.items() if k not in ("id", "verb")}
         items.append(SheetItem(n=n, id=rid, verb=verb, fields=fields))
     return Sheet(
         items, case=case, sheet_sha=sheet_sha, sheet_digest=sheet_digest
     )
+
+
+#: U3b: what a route line's `hook` mapping holds -- the compile input
+#: `ledger_ops.validate_proposal` checks for a hook proposal, minus the
+#: bookkeeping the verb fills in (`hook_compiler` generates the script).
+HOOK_INPUT_KEYS = frozenset({"rationale", "hook", "examples", "alternates"})
+HOOK_INPUT_REQUIRED = frozenset({"rationale", "hook", "examples"})
+
+
+def _route_shape_problem(raw: dict) -> str | None:
+    """U3b: the SHAPE of a route line's new keys, checked with the rest of
+    the sheet (BAT1) -- the verb validates their content."""
+    hook = raw.get("hook")
+    if hook is not None:
+        if raw.get("dest") != REFUSED_HOOK_DESTINATION:
+            return "`hook` (a compile input) needs dest: hook"
+        if not isinstance(hook, dict):
+            return "`hook` must be a mapping of rationale, hook, examples"
+        unknown = sorted(set(hook) - HOOK_INPUT_KEYS)
+        missing = sorted(HOOK_INPUT_REQUIRED - set(hook))
+        if unknown or missing:
+            return (
+                f"`hook` has unknown key(s) {unknown} / is missing {missing}; "
+                f"it holds {sorted(HOOK_INPUT_KEYS)} ({sorted(HOOK_INPUT_REQUIRED)} required)"
+            )
+    return None
 
 
 def _resolved_route_dest(home: Path, path: Path, item: SheetItem):
@@ -740,7 +777,7 @@ def classify(
         routing = record.routing or {}
         if routing.get("destination") != want_dest:
             return False
-        if want_dest == REFUSED_HOOK_DESTINATION and actor == "overseer":
+        if want_dest == REFUSED_HOOK_DESTINATION and actor in HOOK_ROUTING_ACTORS:
             # Fold r1 (F4): the route leg landed (status/destination
             # already matched above), but for the OVERSEER's own path
             # "already applied" also means the ACTIVATION leg matches
@@ -1161,9 +1198,9 @@ def _dispatch(
             route_path = find_record_path(home, item.id)
             resolved = _resolved_route_dest(home, route_path, item)
             is_hook_dest = resolved == (REFUSED_HOOK_DESTINATION, None)
-            if is_hook_dest and actor != "overseer":
+            if is_hook_dest and actor not in HOOK_ROUTING_ACTORS:
                 raise verbs.VerbError(_hook_refused_detail(item.id))
-            if is_hook_dest and actor == "overseer":
+            if is_hook_dest and actor in HOOK_ROUTING_ACTORS:
                 # Fold r1 (F4): a hook-dest item reaches HERE, under
                 # `actor="overseer"`, in one of two shapes -- a fresh
                 # route (record still `pending`, falls through below)
@@ -1212,8 +1249,9 @@ def _dispatch(
                 collapse=f.get("collapse"),
                 allow_empty_glob=bool(f.get("allow_empty_glob", False)),
                 execution=execution,
+                hook_input=f.get("hook"),
             )
-            if is_hook_dest and actor == "overseer":
+            if is_hook_dest and actor in HOOK_ROUTING_ACTORS:
                 # 13 §7.4 "The path" — the overseer's own runner call is
                 # the ONE caller that carries a hook route through to
                 # activation: route's own commit above is unchanged from
@@ -1853,7 +1891,7 @@ def dry_run(
             is_hook_dest = resolved is not None and resolved[0] == REFUSED_HOOK_DESTINATION
             if is_hook_dest:
                 result.hook_items.append(item.id)
-                if actor != "overseer":
+                if actor not in HOOK_ROUTING_ACTORS:
                     # Fold r1 (F8): the SAME shared sentence `_dispatch`
                     # raises for real — previewed here, nothing touched,
                     # never a second hand-copied literal to drift. S-71:
@@ -1878,6 +1916,7 @@ def dry_run(
                 dr = verbs.route_dry_run(
                     home, item.id, dest=item.fields.get("dest"),
                     note=item.fields.get("note"),
+                    hook_input=item.fields.get("hook"),
                 )
                 if dr.would_refuse:
                     result.items.append(
@@ -1894,7 +1933,7 @@ def dry_run(
                 result.items.append(
                     DryRunItem(
                         n=item.n, id=item.id, verb=item.verb, state="would-apply",
-                        detail=f"overseer path: route, then hook {label}",
+                        detail=f"{actor} path: route, then hook {label}",
                         route_preview=dr.to_json(),
                     )
                 )
@@ -1902,6 +1941,7 @@ def dry_run(
             dr = verbs.route_dry_run(
                 home, item.id, dest=item.fields.get("dest"),
                 note=item.fields.get("note"),
+                hook_input=item.fields.get("hook"),
             )
             state = "would-refuse" if dr.would_refuse else "would-apply"
             result.items.append(
