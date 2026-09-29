@@ -728,3 +728,119 @@ def test_the_sheet_globs_win_over_a_proposal_naming_the_same_topic(tmp_path):
     assert inherited.rules_paths == ["CLAUDE.md"]  # control: the proposal's globs
     own = verbs._resolve_destination(bucket, rid, "claude-md:rules:skills", ["plugins/**/SKILL.md"])
     assert own.rules_paths == ["plugins/**/SKILL.md"]
+
+
+# ---------------------------------------------- 6. instructions and formats
+
+
+def _authority_pairs():
+    return sorted(
+        name[len("cases/"):-len(".yaml")]
+        for name in steward_prompt.AUTHORITY_EXAMPLES if name.startswith("cases/")
+    )
+
+
+def _replays(hook_input: dict) -> list[str]:
+    """Generate the guard from a hook block and replay its examples, the
+    way the route does (hook_compiler), on a synthetic record id."""
+    import tempfile
+
+    from self_learn.hook_compiler import generate_script, replay_examples
+
+    hook = hook_input["hook"]
+    script = generate_script("lrn-0000000a", "About to run a guarded call.", list(hook["tools"]),
+                             hook["path_regex"], hook["deny_message"])
+    with tempfile.TemporaryDirectory() as scratch:
+        probe = Path(scratch) / "guard.sh"
+        probe.write_text(script, encoding="utf-8")
+        probe.chmod(0o700)
+        return replay_examples(probe, hook_input["examples"])
+
+
+def test_the_authority_examples_cover_items_1_3_4_and_5():
+    sheets = {
+        name: YAML(typ="safe").load(body)
+        for name, body in steward_prompt.AUTHORITY_EXAMPLES.items() if name.startswith("sheets/")
+    }
+    lines = [item for sheet in sheets.values() for item in sheet["items"]]
+    assert any(always_loaded.dest_is_always_loaded(line.get("dest")) for line in lines)  # 1
+    assert any(line.get("hook") for line in lines)  # 3
+    kinds = [YAML(typ="safe").load(steward_prompt.AUTHORITY_EXAMPLES[f"cases/{n}.yaml"])["kind"]
+             for n in _authority_pairs()]
+    assert "reconsider" in kinds  # 4
+    assert any(line.get("rules_paths") for line in lines)  # 5
+    text = steward_prompt._render_output_contract()
+    for name in steward_prompt.AUTHORITY_EXAMPLES:
+        assert f"--- {name}" in text
+
+
+@pytest.mark.parametrize("stem", _authority_pairs())
+def test_each_authority_example_passes_the_runners_checks(stem, tmp_path):
+    from self_learn import batch
+
+    stage = tmp_path / "stage"
+    for kind in ("cases", "sheets"):
+        path = stage / kind / f"{stem}.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(steward_prompt.AUTHORITY_EXAMPLES[f"{kind}/{stem}.yaml"], encoding="utf-8")
+    assert steward._pair_problem(stage, stage / "cases" / f"{stem}.yaml") is None
+    case = YAML(typ="safe").load((stage / "cases" / f"{stem}.yaml").read_text(encoding="utf-8"))
+    cases.check_case_data(steward._as_recorded(case))
+    sheet = YAML(typ="safe").load((stage / "sheets" / f"{stem}.yaml").read_text(encoding="utf-8"))
+    for item in sheet["items"]:
+        if item.get("hook"):
+            assert _replays(item["hook"]) == [], stem
+    # the broken twin: a route to an always-loaded line with no evidence
+    case.get("decision", {}).pop("always_loaded", None)
+    for item in sheet["items"]:
+        item["dest"] = "claude-md"
+        item.pop("hook", None)
+        item.pop("rules_paths", None)
+    _dump_yaml(stage / "cases" / f"{stem}.yaml", case)
+    _dump_yaml(stage / "sheets" / f"{stem}.yaml", sheet)
+    assert "always-loaded line" in (steward._pair_problem(stage, stage / "cases" / f"{stem}.yaml") or "")
+    assert batch  # imported for the sheet schema the pair check runs
+
+
+def test_a_broken_hook_example_would_fail_its_replay():
+    sheet = YAML(typ="safe").load(steward_prompt.AUTHORITY_EXAMPLES["sheets/guard-the-database.yaml"])
+    hook = sheet["items"][0]["hook"]
+    assert _replays(hook) == []  # control
+    hook["examples"]["deny"][0]["tool_input"]["file_path"] = "/srv/app/data.txt"
+    assert _replays(hook) != []
+
+
+def test_the_overseer_formats_carry_the_new_examples_and_each_validates(tmp_path):
+    from self_learn.overseer import formats
+    from self_learn.overseer import run as overseer_run
+    from support import make_home
+
+    home = make_home(tmp_path)
+    root = formats.write(tmp_path / "ws", "B")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    for name in ("case-redecide-example.yaml", "sheet-redecide-example.yaml",
+                 "sheet-rule-example.yaml", "case-always-loaded-example.yaml"):
+        assert (root / name).is_file(), name
+        assert name in readme, name
+    for case_name in ("case-redecide-example.yaml", "case-always-loaded-example.yaml"):
+        overseer_run._validate_successor(root / case_name, {formats.EXAMPLE_PARKED_CASE})
+        assert overseer_run._case_rule_problem(root / case_name, "abcd1234") is None, case_name
+    always = YAML(typ="safe").load((root / "case-always-loaded-example.yaml").read_text(encoding="utf-8"))
+    assert always_loaded.missing_tests(always) == []
+    redecide = YAML(typ="safe").load((root / "case-redecide-example.yaml").read_text(encoding="utf-8"))
+    assert redecide["kind"] == "reconsider"
+    for sheet_name in ("sheet-redecide-example.yaml", "sheet-rule-example.yaml"):
+        work = tmp_path / sheet_name
+        work.write_text((root / sheet_name).read_text(encoding="utf-8"), encoding="utf-8")
+        sheet = overseer_run._load_sheet_allow_empty(work, home)
+        assert sheet is not None and len(sheet) == 1, sheet_name
+    hook_line = YAML(typ="safe").load((root / "sheet-redecide-example.yaml").read_text(encoding="utf-8"))
+    assert _replays(hook_line["items"][0]["hook"]) == []
+    # broken twins: one test missing; a hook line on a non-hook dest
+    del always["decision"]["always_loaded"]["cheaper_fixes_fail"]
+    assert always_loaded.missing_tests(always) == ["cheaper_fixes_fail"]
+    hook_line["items"][0]["dest"] = "reference:x.md"
+    _dump_yaml(tmp_path / "bad.yaml", hook_line)
+    from self_learn import batch
+    with pytest.raises(batch.BatchError):
+        overseer_run._load_sheet_allow_empty(tmp_path / "bad.yaml", home)
