@@ -106,10 +106,16 @@ limit; free-text "Other" is always there beyond them):
   with one shortcut: `self-learn hook activate <id>` performs both by
   hand (and `hook deactivate <id>` reverses it), no setting required.
   Separately, when the user's delegation switch
-  (`overseer.hook_activation`) is on, the overseer places and activates
-  an approved hook route by code on its own owned path (S-66); with the
-  switch off it places the route and parks it with a receipt saying
-  activation is delegated but switched off.
+  (`overseer.hook_activation`) is on, the overseer — and, since S-72
+  (2026-09-28), the steward — places and activates a hook route it
+  decided by code on its own owned path (S-66); with the switch off it
+  places the route and parks it with a receipt saying activation is
+  delegated but switched off. Either may carry the hook's compile input
+  on its own sheet line (`hook: {rationale, hook: {tools, path_regex,
+  deny_message}, examples: {allow, deny}}`) instead of an analyst
+  proposal; the CLI still generates the script from it and replays the
+  examples before anything commits, and a failed replay refuses that
+  line alone.
 - **Discuss** — open-ended: drop into conversation with the record and
   proposal in context. You may **edit the pending record** per the user's
   direction (pending substance is freely editable; use Edit on the record
@@ -143,9 +149,9 @@ review session must never hand-sequence a run of individual `self-learn
 naming a `host` verb or a hook route is refused at validation (nothing
 runs) — sequence those by hand, outside the sheet. A `--dry-run` of a
 sheet carrying a hook route reports that item refused and exits 1,
-exactly as the real run would — the overseer's own runner (13 §7.4) is
-the one caller a hook route is ever not refused for, and this session
-is never that caller.
+exactly as the real run would — the overseer's and the steward's own
+runners (13 §7.4; S-72) are the only callers a hook route is ever not
+refused for, and this session is never one of them.
 
 **A sheet may name the decision case it is applying (S-65).** A
 top-level `case: case-<8hex>` key is optional; when present, the sheet's
@@ -185,7 +191,25 @@ record's compiled line from its host surface inside the same locked
 section — never a `supersede` of the record; the CASE is superseded,
 the record is re-decided (decided at U5's gate, 2026-09-14). A record
 routed to a `reference` or `hook` destination cannot yet be corrected
-this way and the verb refuses by name.
+this way (`reject`/`defer` under a reconsider case) and the verb refuses
+by name.
+
+**Moving a placed lesson to a different destination (U3b, S-72,
+2026-09-28).** Under the same `kind: reconsider` case, a `route` line on
+an already-routed lesson re-decides where it lives: the runner applies it
+as `reroute`, which retires the old placement and writes the new one in
+one motion (the old routing block moves into `history`). `dest` is
+required. Re-decidable FROM: `claude-md` (any variant), `skill-md`,
+`new-skill`, `reference` and `hook` (the shared retirement path, which
+keeps its own refusals — an unreadable `hosts.yaml`, a hook script it
+cannot find). TO: `claude-md`, `claude-md:local`,
+`claude-md:rules:<topic>`, `skill-md`, `reference:<file>`, and `hook` —
+the last only with the line's own compile input (`hook:`), and only for
+the steward's or the overseer's runner; never `new-skill`. The case must
+supersede a case that covers the lesson, so a lesson routed by hand with
+no case at all cannot be re-decided this way. The same line naming the
+destination the lesson already has is "already routed — nothing to
+change".
 
 **Two different undo paths — do not confuse them.** Among supersessions,
 `reopen` is for a mistaken retirement only: `self-learn reopen <id>`
@@ -508,6 +532,20 @@ marker are projections and never recovery authority.
 - Every routed or resolved record from a steward run carries `by:
   steward` — filter `case list` or the record's own history to see which
   decisions were the steward's.
+- The steward decides an always-loaded line (`claude-md`, `claude-md:local`)
+  itself, under the combined test — all three of "it always has to apply",
+  "missing it costs more than carrying it", "cheaper fixes aren't working"
+  must hold, each evidenced in the case's `decision.always_loaded`
+  (`02-schema.md` §3a.2). A case missing one is refused on its own; its
+  lessons stay open for a later run, and the packet's other cases apply.
+  The overseer corrects a wrong one afterwards; the same rule holds for its
+  own successor cases.
+- A route to a path-scoped rule (`claude-md:rules:<topic>`) may name its own
+  globs on the sheet line (`rules_paths: [...]`, U3b / S-72); they win over
+  an analyst proposal's and are checked the same way — the proposal's shape
+  rule and glob translation when the sheet loads, the absolute-path and
+  reachability checks (`--allow-empty-glob` / `allow_empty_glob: true` the
+  one escape) when the line runs. A bad glob refuses that line alone.
 - Exit codes follow the unattended-run contract in the exit-code list
   above: `0` is `dry-run` or `applied`; `EXIT_HELD` (10) is `idle`,
   `disabled`, or a held `steward.lock`; `8` is `partial`; `1` is

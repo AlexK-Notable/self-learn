@@ -58,6 +58,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
+from . import always_loaded
 from . import batch
 from . import cases
 from . import conditions
@@ -77,6 +78,7 @@ __all__ = [
     "OUTPUT_CONTRACT",
     "RUNNER_ONLY_PARKED_REASONS",
     "STAGE_EXAMPLES",
+    "AUTHORITY_EXAMPLES",
     "assemble",
     "withheld",
 ]
@@ -337,6 +339,176 @@ entries:
 """,
 }
 
+#: U3b (2026-09-28): one worked case/sheet pair for each of the steward's
+#: authorities this unit added -- always-loaded, hook, re-deciding a placed
+#: lesson, a path-scoped rule's globs. Kept apart from `STAGE_EXAMPLES`
+#: (one coherent packet the whole-stage check validates together); each
+#: pair here is fed through the same checkers in
+#: `tests/test_u3b_steward_authority.py`.
+AUTHORITY_EXAMPLES: dict[str, str] = {
+    "cases/every-session.yaml": """\
+kind: resolution
+trigger: nightly
+outcome: route
+records: [lrn-4e5f6a7b]
+scope: user
+question: >-
+  Should the lesson that a background job cannot answer a password prompt be in every session?
+evidence:
+  - ref: "transcript:example-session#L40"
+    quote: "the job hung on the password prompt until it timed out"
+  - ref: "ledger@4f2a9c1:user/shell/lrn-4e5f6a7b.yaml#L3-6"
+    quote: "a background job has no terminal to type a password into"
+  - ref: "file@4f2a9c1:references/shell.md#L12"
+    quote: "background jobs cannot answer prompts"
+decision:
+  verb: route
+  because: >-
+    Any task may start a background job, the hang is silent, and the shelf line did not stop it.
+  confidence: settled
+  always_loaded:
+    always_applies:
+      because: any session can start a background job, and nothing it reads first warns it
+      refs: ["transcript:example-session#L40"]
+    missing_costs_more:
+      because: the job hangs silently until it times out; no error names the prompt
+      refs: ["transcript:example-session#L40", "ledger@4f2a9c1:user/shell/lrn-4e5f6a7b.yaml#L3-6"]
+    cheaper_fixes_fail:
+      because: the same lesson already sat on the shell shelf and the hang came back
+      refs: ["file@4f2a9c1:references/shell.md#L12"]
+dependencies:
+  statements: []
+  user_model: []
+  conditions: []
+  capabilities: []
+""",
+    "sheets/every-session.yaml": """\
+version: 1
+case: $CASE_ID
+items:
+  - id: lrn-4e5f6a7b
+    verb: route
+    dest: claude-md
+    note: all three always-loaded tests hold; see the case
+""",
+    "cases/guard-the-database.yaml": """\
+kind: resolution
+trigger: nightly
+outcome: route
+records: [lrn-5f6a7b8c]
+scope: user
+question: >-
+  Should editing the service's live database file be blocked by a hook?
+evidence:
+  - ref: "transcript:example-session#L88"
+    quote: "edited data.db while the service was running and lost the change"
+  - ref: "ledger@4f2a9c1:user/services/lrn-5f6a7b8c.yaml#L3-6"
+    quote: "stop the service before editing its database"
+decision:
+  verb: route
+  because: >-
+    The mistake is one tool call on one kind of file, a guard can see it exactly, and it recurred
+    after the lesson was on the shelf.
+  confidence: settled
+dependencies:
+  statements: []
+  user_model: []
+  conditions: []
+  capabilities: []
+""",
+    "sheets/guard-the-database.yaml": """\
+version: 1
+case: $CASE_ID
+items:
+  - id: lrn-5f6a7b8c
+    verb: route
+    dest: hook
+    hook:
+      rationale: Blocks an Edit or Write of a .db file; every other file, and reading one, stays allowed.
+      hook:
+        tools: [Edit, Write]
+        path_regex: '\\.db$'
+        deny_message: stop the service before editing its database file
+      examples:
+        allow:
+          - {tool_name: Edit, tool_input: {file_path: /srv/app/config.yaml}}
+          - {tool_name: Write, tool_input: {file_path: /srv/app/notes.md}}
+        deny:
+          - {tool_name: Edit, tool_input: {file_path: /srv/app/data.db}}
+          - {tool_name: Write, tool_input: {file_path: /srv/other/cache.db}}
+    note: a guard sees this exact call; the shelf line did not stop it
+""",
+    "cases/move-to-the-shelf.yaml": """\
+kind: reconsider
+trigger: nightly
+outcome: route
+records: [lrn-6a7b8c9d]
+scope: user
+supersedes: case-1a2b3c4d
+question: >-
+  The lesson sits in every session but matters only when release notes are written; move it?
+evidence:
+  - ref: "case-1a2b3c4d"
+    quote: "routed to the user's CLAUDE.md"
+  - ref: "transcript:example-session#L310"
+    quote: "only relevant when drafting release notes"
+decision:
+  verb: route
+  because: >-
+    The first placement failed the always-loaded test's first question; a reference file read at
+    the release step reaches the moment at a fraction of the cost.
+  confidence: settled
+dependencies:
+  statements: []
+  user_model: []
+  conditions: []
+  capabilities: []
+""",
+    "sheets/move-to-the-shelf.yaml": """\
+version: 1
+case: $CASE_ID
+items:
+  - id: lrn-6a7b8c9d
+    verb: route
+    dest: reference:releases.md
+    note: moved from the always-loaded line; the old line is retired in the same motion
+""",
+    "cases/rule-for-migrations.yaml": """\
+kind: resolution
+trigger: nightly
+outcome: route
+records: [lrn-7b8c9d0e]
+scope: "project:/srv/example-repo"
+question: >-
+  Should the lesson about migration files load only when a migration is being edited?
+evidence:
+  - ref: "transcript:example-session#L57"
+    quote: "the migration was edited after it had already run in production"
+decision:
+  verb: route
+  because: >-
+    The moment is reading or editing a file under migrations/, which a path-scoped rule reaches
+    exactly; nothing else in a session needs it.
+  confidence: settled
+dependencies:
+  statements: []
+  user_model: []
+  conditions: []
+  capabilities: []
+""",
+    "sheets/rule-for-migrations.yaml": """\
+version: 1
+case: $CASE_ID
+items:
+  - id: lrn-7b8c9d0e
+    verb: route
+    dest: claude-md:rules:migrations
+    rules_paths: ["db/migrations/**/*.sql", "**/migrations/*.py"]
+    note: loads when a migration file is read
+""",
+}
+
+
 def withheld() -> tuple[str, ...]:
     """§4.1's withheld list, verbatim in substance -- never installed as
     prose in the packet; this exists so the run record can print what
@@ -381,26 +553,33 @@ def _render_containment(run: RunContext) -> str:
 #: to find -- five greps of the spec tree for "always-loaded" before it
 #: decided a user-scope route. Each headline is QUOTED, not paraphrased,
 #: and `tests/test_steward_prompt.py` checks the quote against the spec.
+#: U3b (2026-09-28): S-72 supersedes SA-1's trial hold -- the steward
+#: decides always-loaded lines and hooks itself; the brief quotes it instead.
 STANDING_RULINGS = (
     ("S-23", "The cheap tier is PATHED, not DEMAND — at every scope."),
-    ("SA-1", "Q1 HELD for the trial — no new escalation to always-loaded lines or to guards."),
+    (
+        "S-72",
+        "The steward decides always-loaded lines and hooks itself, under the combined test; "
+        "the overseer corrects its mistakes afterwards. SA-1's trial hold is lifted.",
+    ),
 )
 
 
 def _render_standing_rulings() -> str:
     lines = [
         "STANDING RULINGS YOU WOULD OTHERWISE GO LOOKING FOR",
-        "Whether a user-scope lesson may land on an always-loaded line (the managed section",
-        "of the user's CLAUDE.md) is settled by two decisions in the design authority,",
-        "docs/specs/self-learn/03-decisions.md, and by the routing doctrine's gate",
-        "(routing-doctrine.md sections 2-3). You need not open any of them; their headlines:",
+        "Whether a lesson may land on an always-loaded line (the managed section of a",
+        "CLAUDE.md, or a CLAUDE.local.md) is settled by two decisions in the design authority,",
+        "docs/specs/self-learn/03-decisions.md, and by the combined test (method section 14).",
+        "You need not open any of them; their headlines:",
     ]
     for number, headline in STANDING_RULINGS:
-        note = " (user ruling 2026-09-11)" if number == "SA-1" else ""
+        note = " (the user's direction, 2026-09-26)" if number == "S-72" else ""
         lines.append(f'  {number}{note}: "{headline}"')
     lines += [
-        "When these rulings leave you unsure whether an always-loaded",
-        "destination is yours to apply, park the case as `always-loaded-user-scope` (section 12).",
+        "An always-loaded line is yours to apply when all three tests of section 14 hold and",
+        "the case evidences each. When you cannot tell whether one holds, park the case as",
+        "`always-loaded-user-scope` (section 12).",
         "`report.context_budget` in the conditions block shows that file's growth against its",
         "threshold.",
     ]
@@ -691,7 +870,8 @@ def _render_output_contract() -> str:
         "  evidence       non-empty list of {ref, quote}; both required; quote is verbatim",
         "  decision       mapping: `because` (required), `confidence` (required:",
         f"                 {_words(cases.CONFIDENCE_VALUES)}), `verb`, `what_would_change` (list of",
-        "                 strings), and for a retire `covered_by`",
+        "                 strings), for a retire `covered_by`, and for a route to an",
+        "                 always-loaded line `always_loaded` (below)",
         "  dependencies   mapping of four lists of strings: statements, user_model, conditions,",
         "                 capabilities (use [] for none)",
         "  supersedes     optional: the id of a case this one replaces (case- plus 8 hex digits)",
@@ -730,6 +910,7 @@ def _render_output_contract() -> str:
         "  verbs and their keys:",
     ]
     out += _sheet_verb_lines()
+    out += _always_loaded_lines()
     out += [
         "  `defer`'s `until` is a date, YYYY-MM-DD, today (UTC) or later; left out, it is 30 days.",
         "  WHERE A ROUTE LANDS. Write `dest` on EVERY `route`. Your brief shows no analyst",
@@ -738,8 +919,11 @@ def _render_output_contract() -> str:
         "  `dest: claude-md` is the host's plain CLAUDE.md, which on a project host is usually a",
         "  committed file; spell a variant to get it: `claude-md:local` (the host's git-ignored",
         "  CLAUDE.local.md) or `claude-md:rules:<topic>` (a path-scoped file under",
-        "  .claude/rules/; its path globs come only from an analyst proposal naming the same",
-        "  topic, and no sheet key sets them). `dest` is one of",
+        "  .claude/rules/, loaded only when a file matching its globs is read). Name the globs",
+        "  yourself with `rules_paths:` on the line -- a list of relative glob patterns (never",
+        "  absolute or starting with ~), each of which must match at least one file on this",
+        "  machine unless `allow_empty_glob: true`; they win over any analyst proposal's. A glob",
+        "  that is malformed or matches nothing refuses that line alone. `dest` is one of",
         f"  {_words(ledger_ops.PROPOSAL_DESTINATIONS)}, or `reference:<file name>`,",
         "  `claude-md:local`, `claude-md:rules:<topic>`. `follow_up` (with `unblocks_on`,",
         "  a gate label, and `follow_up_note`) records that this routing is a known-partial form",
@@ -751,7 +935,11 @@ def _render_output_contract() -> str:
         "  `output-style:<style name>` -- the surface whose text already covers the lesson",
         "  (method section 9). `supersede` marks the item's `id` (the OLD lesson) replaced by",
         "  `new_id`, which must already exist as a record; the successor is routed by its own",
-        "  item. `rehome` and `rescope` both move a pending or deferred lesson to another",
+        "  item. RE-DECIDING A PLACED LESSON: in a `kind: reconsider` case whose `supersedes`",
+        "  names the case that covered it, a `route` line on a lesson that is already routed",
+        "  MOVES it to the `dest` it names (the runner applies it as a reroute; the old placement",
+        "  is retired in the same motion; `dest` is required; a hook needs its compile input;",
+        "  never `new-skill`). `rehome` and `rescope` both move a pending or deferred lesson to another",
         "  registered scope (`to`: `user`, `skill:<name>`, or a project path). `reopen` returns a",
         "  rejected or superseded lesson to pending.",
         "  WHAT EACH VERB NEEDS THE LESSON'S STATUS TO BE (the verbs' own checks; a mismatch is",
@@ -766,8 +954,8 @@ def _render_output_contract() -> str:
         "  saying why the rule stays; `dismiss-suspect`'s `why` is one of",
         f"  {_words(verbs.DISMISS_REASONS)}.",
         f"  These are never sheet verbs and are refused: {', '.join(sorted(batch.REFUSED_VERBS_LITERAL))}, and",
-        "  anything starting `host `. A route to `dest: hook` is not applied: the runner parks",
-        "  that case for the overseer.",
+        "  anything starting `host `.",
+        *_hook_lines(),
         *textwrap.wrap(
             _REFUSED_LINE_SENTENCE, width=90, initial_indent="  ", subsequent_indent="  "
         ),
@@ -815,7 +1003,57 @@ def _render_output_contract() -> str:
     for name, body in STAGE_EXAMPLES.items():
         out.append(f"\n--- {name}")
         out.append(body.rstrip("\n"))
+    out.append("")
+    out.append("MORE EXAMPLES: one case/sheet pair each (all ids and text invented)")
+    for name, body in AUTHORITY_EXAMPLES.items():
+        out.append(f"\n--- {name}")
+        out.append(body.rstrip("\n"))
     return "\n".join(out)
+
+
+def _hook_lines() -> list[str]:
+    """U3b: a hook route the steward writes itself (S-72), from the
+    constants the checkers read (`batch.HOOK_INPUT_KEYS`, the hook block's
+    keys and the example counts `ledger_ops` validates, the tools
+    `hook_compiler` can guard)."""
+    from . import hook_compiler
+
+    low, high = ledger_ops._HOOK_EXAMPLES_MIN, ledger_ops._HOOK_EXAMPLES_MAX
+    return [
+        "  A HOOK (a guard that denies a tool call). Write `dest: hook` and a `hook` key on the",
+        f"  line: a mapping of {', '.join(sorted(batch.HOOK_INPUT_KEYS))}"
+        f" ({', '.join(sorted(batch.HOOK_INPUT_REQUIRED))} required).",
+        "    rationale   one or two sentences: what it blocks, and what it must NOT block",
+        f"    hook        {{{', '.join(ledger_ops._HOOK_KEYS)}}}: tools from"
+        f" {', '.join(hook_compiler.GUARDABLE_TOOLS)};",
+        "                path_regex an extended regular expression matched against the file path",
+        "                (Edit, Write) or the command (Bash); deny_message one line",
+        f"    examples    {{allow: [...], deny: [...]}}, {low} to {high} each, every one",
+        "                {tool_name: <one of the tools>, tool_input: {file_path: ...} or {command: ...}}",
+        "  You never write the script: the runner generates it from the hook block and replays",
+        "  every example against it before anything is committed; an example the script gets",
+        "  wrong refuses that line alone. The lesson must have a Trigger (a behavior lesson).",
+        "  The runner places the script; switching it on stays the user's setting",
+        "  (`overseer.hook_activation`), so with it off the hook is placed and not registered.",
+        "  A hook only DENIES; a warning that lets the call through is not something it can do.",
+    ]
+
+
+def _always_loaded_lines() -> list[str]:
+    """U3b: the combined test, from :data:`always_loaded.TESTS` -- the
+    constant the runner's check reads -- so the brief cannot drift."""
+    keys = ", ".join(always_loaded.TEST_KEYS)
+    lines = [
+        "  AN ALWAYS-LOADED LINE (method section 14). A `route` to `claude-md` or",
+        "  `claude-md:local` puts the lesson into every session of its scope. Its case's",
+        f"  `decision.{always_loaded.DECISION_KEY}` must evidence ALL THREE tests: a mapping with",
+        f"  the keys {keys}; each one `because` (why the test holds) and `refs`",
+        "  (a list of refs of THIS case's own evidence items). Missing one, or a ref that is not",
+        "  one of the case's evidence refs, and the runner refuses that case alone.",
+    ]
+    for number, (key, headline, _text) in enumerate(always_loaded.TESTS, start=1):
+        lines.append(f"    {number}. {key}: {headline}")
+    return lines
 
 def _ordered_blocks(
     home: Path,

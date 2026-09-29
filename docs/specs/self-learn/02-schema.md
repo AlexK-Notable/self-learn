@@ -1001,6 +1001,21 @@ in the staged file) still refuses as before.
 followed by "What would change this decision" (one to three bullets). The
 deciding actor writes reasons, not votes.
 
+*(Added 2026-09-28, U3b.)* A case whose sheet routes a lesson to an
+always-loaded line — `claude-md` or `claude-md:local`, no `rules` variant —
+carries `decision.always_loaded`, one entry per test of the combined test
+(`always_applies`, `missing_costs_more`, `cheaper_fixes_fail`; the wording is
+`routing-doctrine.md` §2 and `steward-method.md` §14), each `{because, refs}`
+where every ref is one of the case's own evidence refs as the runner records
+them. **All three must hold.** The steward's and the overseer's runners refuse
+that case alone (its lessons stay open; the other cases apply) when any test
+is missing or a ref is not a recorded evidence ref; a dest-less route is
+tested through the destination its proposal names. When present the block
+renders after the labelled lines as "Always-loaded test (all three must
+hold):", one line per test, and every text in it is secret-scanned and
+heading-checked like the other decision fields; a case without it renders
+exactly as before.
+
 **Section 4, Dependencies** — everything the decision rests on, each cited
 from the evidence table:
 
@@ -2211,8 +2226,15 @@ in `batch --dry-run` alike; a dismissal of a fire records `basis:
 fire-suspected-violation`. Nothing spools a `recurrence-suspect` for a fire
 (the miner's crossover stays removed). Reconsidering the wording or
 placement is a `kind: reconsider` case whose `supersedes` names the case
-that routed the lesson; with no such case, or when the fix is a stronger
-surface or a hook, the steward parks.
+that routed the lesson; with no such case the steward parks. *(Amended
+2026-09-28, U3b / S-72.)* A `route` line in such a case moves the routed
+lesson (`batch` applies it as `reroute`), including to a path-scoped rule
+or, with the line's compile input, a hook — the fix may be a stronger
+surface or a hook, decided by the steward itself; the case's `outcome:
+route` now applies to a `routed` record (`verbs.reconsider`). The
+overseer's `kind: reconsider` successors do the same (its runner, unlike
+the steward's, writes no `reconsidered` history entry; the case's
+`supersedes` link is the record).
 
 ## 4. Managed sections (the compile targets' contract)
 

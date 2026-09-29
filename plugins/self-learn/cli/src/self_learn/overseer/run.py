@@ -30,7 +30,7 @@ from typing import Any, cast
 
 from ruamel.yaml import YAML, YAMLError
 
-from .. import batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, model_failures, provider, scan, settings, statements, user_model, verbs, worker
+from .. import always_loaded, batch, cases, conditions, config, execution_evidence, gitops, intents, invocation, model_failures, provider, scan, settings, statements, user_model, verbs, worker
 from ..ledger import resolve_home
 from ..ledger_ops import DEFAULT_DEFER_DAYS, LedgerOpsError, find_record_path
 from ..primitives import chrono, fsops
@@ -4639,6 +4639,16 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                             "paired successor case in case.yaml, and that case must "
                             "be kind: maintenance"
                         )
+                    # U3b: an always-loaded route needs the combined test,
+                    # evidenced in the case -- the steward's rule, one copy.
+                    always = always_loaded.route_problem(
+                        _yaml_mapping(case_file),
+                        [{"id": item.id, "verb": item.verb, **item.fields} for item in sheet],
+                        resolve=always_loaded.proposal_resolver(home),
+                        label=case_file.name,
+                    )
+                    if always is not None:
+                        raise OverseerError(always)
                     preview = batch.dry_run(home, sheet, actor="overseer", hook_activation=config.hook_activation_enabled(home))
                 except (OverseerError, batch.BatchError) as exc:
                     reason = _pair_problem_text(exc, stage)

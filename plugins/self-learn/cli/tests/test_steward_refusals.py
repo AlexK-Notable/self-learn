@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from self_learn import (
-    batch, cases, execution_evidence, gitops, ledger_ops, steward, steward_prompt, verbs,
+    always_loaded, batch, cases, execution_evidence, gitops, ledger_ops, steward, steward_prompt, verbs,
 )
 from self_learn.hosts import MARKER_FILENAME, host_add
 from self_learn.invocation.contract import Outcome
@@ -77,6 +77,19 @@ def _case(records: list[str], outcome: str, verb: str, scope: str = "skill:s") -
 _REPAIR_HEADER = "=== repair ==="
 
 
+def _with_always_loaded(case: dict, items: list[dict]) -> dict:
+    """U3b: a case routing to an always-loaded line carries the combined
+    test's evidence, or the runner refuses it -- these scenarios are about
+    what the ledger does with the line, so the test is always evidenced."""
+    if any(always_loaded.dest_is_always_loaded(item.get("dest")) for item in items):
+        ref = case["evidence"][0]["ref"]
+        case["decision"]["always_loaded"] = {
+            key: {"because": "the scenario needs a line in every session", "refs": [ref]}
+            for key in always_loaded.TEST_KEYS
+        }
+    return case
+
+
 def _writer(groups, *, before=None, calls=None, prompts=None):
     """A fake session. `groups(ids)` returns `(name, records, items,
     outcome, verb)` tuples, one case/sheet pair each; `before(ids)` runs
@@ -98,7 +111,10 @@ def _writer(groups, *, before=None, calls=None, prompts=None):
             before(ids)
         stage = _stage_dir(spec)
         for name, records, items, outcome, verb in groups(ids):
-            _dump_yaml(stage / "cases" / f"{name}.yaml", _case(records, outcome, verb))
+            _dump_yaml(
+                stage / "cases" / f"{name}.yaml",
+                _with_always_loaded(_case(records, outcome, verb), items),
+            )
             _dump_yaml(
                 stage / "sheets" / f"{name}.yaml",
                 {"version": 1, "case": "$CASE_ID", "items": items},

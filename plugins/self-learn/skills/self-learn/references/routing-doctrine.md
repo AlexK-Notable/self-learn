@@ -23,11 +23,14 @@ does not mistake tier selection for the first question. An
 `DEMAND`) is a sound placement only behind a maintained, recognizable
 task cue: a shelf entry nobody could be pointed to from an
 already-delivered entry point is staging, not a served lesson — say so
-in the card (§8) rather than letting the write pass as delivery. **For
-the trial, *promotion* — moving an already-placed lesson to a stronger
-surface — targets PATHED rules and skill entries only; promoting a
-placed lesson to an ALWAYS line or a hook is out of scope until the
-day-30 review** (Q1 HELD — `03-decisions.md` SA-1). This does not touch
+in the card (§8) rather than letting the write pass as delivery.
+**Promotion** — moving an already-placed lesson to a stronger surface —
+may target an ALWAYS line or a hook as well as PATHED rules and skill
+entries: the trial hold on the first two (`03-decisions.md` SA-1) was
+lifted on 2026-09-28 by S-72, which lets the steward and the overseer
+decide always-loaded lines (under the combined test in §2) and hooks
+themselves, with hook activation still behind the human's
+`overseer.hook_activation`. This does not touch
 §2: the §2 gate procedure still derives `ALWAYS` and `HOOK` for a lesson
 placed for the first time, exactly as written there. **An unregistered
 host is an explicit unresolved placement,
@@ -257,6 +260,19 @@ three promoting signals by field path (`t4.fs.verdict`,
 any ONE promotes) and the alternatives: route `PATHED` if the lesson
 has a path trigger, `SKILL` if an owning skill holds it, or defer with
 flag `no-cheap-surface` if neither has a surface at this scope.
+
+**The steward's rule for an always-loaded line is stricter: the combined
+test, all three must hold (U3b, 2026-09-28).** The "any ONE promotes"
+check above is the analyst-era rule; it stays, for the analyst's own
+proposals, until U5 retires the analyst. The steward and the overseer
+decide an always-loaded line (`claude-md`, or `claude-md:local`, with no
+`rules` variant) themselves and must evidence each test in the case
+(`decision.always_loaded`, refs from the evidence pack; the runner refuses
+the case otherwise — `always_loaded.py`, `steward-method.md` §14):
+
+1. **It always has to apply.** The moment can come up in any session, with nothing the agent is reading to warn it. If it only matters while a particular file is open, it is a path-tied rule or a project line, not a global one.
+2. **Missing it costs more than carrying it.** Would an agent actually act differently because of the line (if not, it is context bloat for nothing)? Could the agent cheaply find the fact on its own at that moment, from config, `--help`, or a loud error (if so, missing it costs little and it fails)? What passes is a silent failure, or one that costs real work.
+3. **Cheaper fixes aren't working.** Either it has already come back after a cheaper placement (a path rule, the shelf, a skill), or no cheaper placement can reach that moment.
 
 **E1 — recurrence.** Not a question you answer fresh; a count you carry
 forward (`sightings`, `post_demand_recurrence`) that T3a and T4 read

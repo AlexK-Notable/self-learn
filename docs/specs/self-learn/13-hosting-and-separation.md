@@ -1572,6 +1572,18 @@ test run never touches the real directory:
   sheet text. `batch` keeps refusing a hook route on every ordinary sheet,
   unchanged (the default is `actor="human", hook_activation=False`); this
   is the one caller that lifts the refusal, and only for its own call.
+- **The steward's path** *(added 2026-09-28, U3b, `03-decisions.md` S-72)*:
+  the same as the overseer's — `batch.HOOK_ROUTING_ACTORS` is
+  `{overseer, steward}`, read by the dispatch, the already-applied check
+  and the preview alike — and the steward's runner passes the SAME gate,
+  `overseer.hook_activation`, so the human's one switch governs both.
+  Either agent may carry the hook's compile input on its sheet line
+  (`hook: {rationale, hook: {tools, path_regex, deny_message}, examples:
+  {allow, deny}}`) instead of an analyst proposal: the CLI generates the
+  script from it, validates, secret-scans and replays the examples exactly
+  as for a one-motion hook (`verbs._prepare_sheet_hook` reuses that chain),
+  and `route --dry-run` previews the same chain, so a failed replay is a
+  refused line (`bad-line`), alone.
 
 Both paths perform the same three steps; the gate above conditions only
 the overseer's path — each step produces its own receipt line:
