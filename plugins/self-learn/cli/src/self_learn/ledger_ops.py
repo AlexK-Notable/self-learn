@@ -739,6 +739,14 @@ def _validate_lint(data: dict) -> None:
 #: 08 §4 replay row: 2–3 allow + 2–3 deny examples per hook proposal.
 _HOOK_EXAMPLES_MIN, _HOOK_EXAMPLES_MAX = 2, 3
 _HOOK_KEYS = ("tools", "path_regex", "deny_message")
+#: S-73: a block's keys are a closed set PER MODE. `mode` and `event` are
+#: optional in both (absent = deny, PreToolUse); a warn block carries
+#: `warn_message` where a deny block carries `deny_message`.
+_HOOK_OPTIONAL_KEYS = ("mode", "event")
+_HOOK_REQUIRED_KEYS = {
+    "deny": _HOOK_KEYS,
+    "warn": ("tools", "path_regex", "warn_message"),
+}
 
 
 @lru_cache(maxsize=256)
@@ -756,7 +764,15 @@ def _validate_hook_extension(data: dict) -> None:
     input + analyst-authored replay ``examples``; ``script`` is optional
     at validation — the CLI stamps it (:func:`stamp_proposal`), the model's
     emitted value is never trusted with executable bytes."""
-    from .hook_compiler import GUARDABLE_TOOLS
+    from .hook_compiler import (
+        GUARDABLE_TOOLS,
+        HOOK_EVENTS,
+        HOOK_MODES,
+        MODE_EVENTS,
+        MODE_MESSAGE_KEY,
+        MODE_VERDICTS,
+        WARN_MESSAGE_MAX,
+    )
 
     dest = data.get("destination")
     present = [k for k in ("hook", "examples", "script") if data.get(k) is not None]
@@ -772,7 +788,9 @@ def _validate_hook_extension(data: dict) -> None:
     if not isinstance(hook, dict):
         raise ProposalError(
             "a hook proposal carries the structured compile input — "
-            "hook: {tools, path_regex, deny_message} (02 §1 hook extension)"
+            "hook: {tools, path_regex, deny_message} for a deny hook, or "
+            "{mode: warn, event, tools, path_regex, warn_message} for a "
+            "warning hook (02 §1 hook extension; S-73)"
         )
     # key=repr (S6): YAML mapping keys need not be strings — a `hook:`
     # block with 2+ unknown keys of mutually incomparable types (e.g.
@@ -781,14 +799,38 @@ def _validate_hook_extension(data: dict) -> None:
     # caller's `except ProposalError` (FW-63). `repr()` is total on any
     # object and stable enough for a deterministic error message; the
     # sort order itself carries no semantic meaning here.
-    unknown = sorted(set(hook) - set(_HOOK_KEYS), key=repr)
+    # S-73: the mode decides the block's closed key set, so it is read
+    # first. Absent = deny (every block written before S-73).
+    mode = hook.get("mode", "deny")
+    if mode not in HOOK_MODES:
+        raise ProposalError(f"hook.mode must be one of {list(HOOK_MODES)}, got {mode!r}")
+    event = hook.get("event", "PreToolUse")
+    if event not in HOOK_EVENTS:
+        raise ProposalError(f"hook.event must be one of {list(HOOK_EVENTS)}, got {event!r}")
+    if event not in MODE_EVENTS[mode]:
+        raise ProposalError(
+            f"hook.event {event} needs mode: warn — a {mode} hook runs on "
+            f"{' or '.join(MODE_EVENTS[mode])} only (a deny after the call has "
+            "run means nothing)"
+        )
+    required = _HOOK_REQUIRED_KEYS[mode]
+    allowed = (*_HOOK_OPTIONAL_KEYS, *required)
+    wrong_mode = sorted(
+        key for other, key in MODE_MESSAGE_KEY.items() if other != mode and key in hook
+    )
+    if wrong_mode:
+        raise ProposalError(
+            f"hook key(s) {wrong_mode} belong to another mode — a mode: {mode} "
+            f"block carries {MODE_MESSAGE_KEY[mode]}"
+        )
+    unknown = sorted(set(hook) - set(allowed), key=repr)
     if unknown:
-        raise ProposalError(f"unknown hook key(s) {unknown} — allowed: {list(_HOOK_KEYS)}")
+        raise ProposalError(f"unknown hook key(s) {unknown} — allowed: {list(allowed)}")
     # Paired with `unknown` above: currently safe (both operands are
-    # `str`-only, drawn from `_HOOK_KEYS`), but the pairing invites the
+    # `str`-only, drawn from the key tuples), but the pairing invites the
     # same bug if this ever sorts a set with a non-`str` operand — same
     # `key=repr` fix applied defensively.
-    missing = sorted(set(_HOOK_KEYS) - set(hook), key=repr)
+    missing = sorted(set(required) - set(hook), key=repr)
     if missing:
         raise ProposalError(f"hook block missing {missing}")
     tools = hook.get("tools")
@@ -808,20 +850,30 @@ def _validate_hook_extension(data: dict) -> None:
     problem = _ere_problem(regex)
     if problem is not None:
         raise ProposalError(f"hook.path_regex is not a valid ERE regex: {problem}")
-    deny = hook.get("deny_message")
-    if not isinstance(deny, str) or not deny.strip() or "\n" in deny:
-        raise ProposalError(
-            "hook.deny_message must be non-empty and one line (the pinned "
-            "deny is a ONE-line stderr message, 08 §8.1)"
-        )
+    if mode == "deny":
+        deny = hook.get("deny_message")
+        if not isinstance(deny, str) or not deny.strip() or "\n" in deny:
+            raise ProposalError(
+                "hook.deny_message must be non-empty and one line (the pinned "
+                "deny is a ONE-line stderr message, 08 §8.1)"
+            )
+    else:
+        warn = hook.get("warn_message")
+        if not isinstance(warn, str) or not warn.strip() or len(warn) > WARN_MESSAGE_MAX:
+            raise ProposalError(
+                f"hook.warn_message must be non-empty text of at most "
+                f"{WARN_MESSAGE_MAX} characters (newlines allowed; S-73)"
+            )
 
+    verdicts = MODE_VERDICTS[mode]
     examples = data.get("examples")
-    if not isinstance(examples, dict) or set(examples) != {"allow", "deny"}:
+    if not isinstance(examples, dict) or set(examples) != set(verdicts):
         raise ProposalError(
             "a hook proposal carries replay examples: "
-            "examples: {allow: […], deny: […]} (M3-12)"
+            f"examples: {{{verdicts[0]}: […], {verdicts[1]}: […]}} for a "
+            f"mode: {mode} hook (M3-12)"
         )
-    for verdict in ("allow", "deny"):
+    for verdict in verdicts:
         cases = examples[verdict]
         if (
             not isinstance(cases, list)

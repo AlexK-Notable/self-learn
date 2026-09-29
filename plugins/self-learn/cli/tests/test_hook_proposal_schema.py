@@ -152,6 +152,98 @@ class TestValidate:
         validate_proposal(proposal_dict())  # the 754-test baseline shape
 
 
+def warn_payload(**overrides) -> dict:
+    base = {
+        "mode": "warn",
+        "tools": ["Bash"],
+        "path_regex": r"p(kill|grep)[[:space:]]+-[a-zA-Z]*f",
+        "warn_message": "a -f pattern can match your own shell;\nkill by the PID you captured",
+    }
+    base.update(overrides)
+    return base
+
+
+def warn_examples(**overrides) -> dict:
+    base = {
+        "allow": [
+            {"tool_name": "Bash", "tool_input": {"command": "pkill -x node"}},
+            {"tool_name": "Bash", "tool_input": {"command": "ls"}},
+        ],
+        "warn": [
+            {"tool_name": "Bash", "tool_input": {"command": "pkill -f 'node x'"}},
+            {"tool_name": "Bash", "tool_input": {"command": "pgrep -af keys"}},
+        ],
+    }
+    base.update(overrides)
+    return base
+
+
+def warn_proposal(**overrides) -> dict:
+    data = hook_proposal(hook=warn_payload(), examples=warn_examples())
+    data.update(overrides)
+    return data
+
+
+class TestWarnMode:
+    """S-73 (FW-161 items 1 and 2): a hook block gains `mode` and `event`."""
+
+    def test_warn_block_validates_on_both_events(self):
+        validate_proposal(warn_proposal())
+        validate_proposal(warn_proposal(hook=warn_payload(event="PreToolUse")))
+        validate_proposal(warn_proposal(hook=warn_payload(event="PostToolUse")))
+
+    def test_explicit_deny_mode_and_pretooluse_still_validate(self):
+        validate_proposal(hook_proposal(hook=hook_payload(mode="deny", event="PreToolUse")))
+
+    def test_posttooluse_deny_refused(self):
+        validate_proposal(hook_proposal(hook=hook_payload(event="PreToolUse")))  # control
+        with pytest.raises(ProposalError, match="needs mode: warn"):
+            validate_proposal(hook_proposal(hook=hook_payload(event="PostToolUse")))
+
+    @pytest.mark.parametrize("field,value", [("mode", "block"), ("mode", None),
+                                             ("event", "Stop"), ("event", None)])
+    def test_unknown_mode_or_event_refused(self, field, value):
+        with pytest.raises(ProposalError, match=f"hook.{field}"):
+            validate_proposal(warn_proposal(hook=warn_payload(**{field: value})))
+
+    def test_wrong_mode_keys_refused_by_name(self):
+        warn = warn_payload(deny_message="stop")
+        with pytest.raises(ProposalError, match="deny_message.*belong to another mode"):
+            validate_proposal(warn_proposal(hook=warn))
+        deny = hook_payload(warn_message="careful")
+        with pytest.raises(ProposalError, match="warn_message.*belong to another mode"):
+            validate_proposal(hook_proposal(hook=deny))
+
+    def test_warn_block_needs_its_message(self):
+        hook = warn_payload()
+        del hook["warn_message"]
+        with pytest.raises(ProposalError, match="missing.*warn_message"):
+            validate_proposal(warn_proposal(hook=hook))
+
+    def test_warn_message_bounds(self):
+        from self_learn.hook_compiler import WARN_MESSAGE_MAX
+
+        validate_proposal(warn_proposal(hook=warn_payload(warn_message="x" * WARN_MESSAGE_MAX)))
+        with pytest.raises(ProposalError, match="at most"):
+            validate_proposal(
+                warn_proposal(hook=warn_payload(warn_message="x" * (WARN_MESSAGE_MAX + 1)))
+            )
+        with pytest.raises(ProposalError, match="non-empty"):
+            validate_proposal(warn_proposal(hook=warn_payload(warn_message="  ")))
+
+    def test_warn_examples_are_allow_and_warn(self):
+        with pytest.raises(ProposalError, match="allow.*warn"):
+            validate_proposal(warn_proposal(examples=hook_examples()))
+        with pytest.raises(ProposalError, match="allow.*deny"):
+            validate_proposal(hook_proposal(examples=warn_examples()))
+
+    @pytest.mark.parametrize("n", [1, 4])
+    def test_warn_examples_keep_the_two_to_three_bound(self, n):
+        ex = {"tool_name": "Bash", "tool_input": {"command": "pkill -f x"}}
+        with pytest.raises(ProposalError, match="examples.warn"):
+            validate_proposal(warn_proposal(examples=warn_examples(warn=[dict(ex)] * n)))
+
+
 class TestStamp:
     def seed(self, tmp_path):
         env = make_env(tmp_path)

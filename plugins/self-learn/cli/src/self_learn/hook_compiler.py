@@ -50,7 +50,17 @@ from .primitives import procs
 
 __all__ = [
     "GUARDABLE_TOOLS",
+    "HOOK_EVENTS",
+    "HOOK_MODES",
+    "MODE_EVENTS",
+    "MODE_MESSAGE_KEY",
+    "MODE_VERDICTS",
     "TOOL_FIELDS",
+    "WARN_MESSAGE_MAX",
+    "WARN_OUTPUT_CAP",
+    "hook_event",
+    "hook_message",
+    "hook_mode",
     "HookCompileError",
     "command_for",
     "command_root",
@@ -70,6 +80,50 @@ GUARDABLE_TOOLS = ("Edit", "Write", "Bash")
 
 #: tool_name → the ``tool_input`` key the path regex applies to (M3-8).
 TOOL_FIELDS = {"Edit": "file_path", "Write": "file_path", "Bash": "command"}
+
+#: S-73 (FW-161 items 1 and 2): what a hook does when its regex matches.
+#: ``deny`` (the default, byte-unchanged) blocks the call: exit 2, a
+#: one-line stderr message. ``warn`` lets the call through and hands the
+#: model a message instead: exit 0 with one JSON line carrying
+#: ``hookSpecificOutput.additionalContext``.
+HOOK_MODES = ("deny", "warn")
+
+#: The Claude Code hook events a generated script may register under.
+HOOK_EVENTS = ("PreToolUse", "PostToolUse")
+
+#: The events each mode may use. A deny after the call has run means
+#: nothing, so ``PostToolUse`` is for ``warn`` only.
+MODE_EVENTS = {"deny": ("PreToolUse",), "warn": ("PreToolUse", "PostToolUse")}
+
+#: The hook-block key that carries each mode's message.
+MODE_MESSAGE_KEY = {"deny": "deny_message", "warn": "warn_message"}
+
+#: The two example verdicts each mode's replay checks.
+MODE_VERDICTS = {"deny": ("allow", "deny"), "warn": ("allow", "warn")}
+
+#: A warn message's own bound (newlines allowed).
+WARN_MESSAGE_MAX = 2000
+
+#: The bound on the JSON line a warn script prints, under Claude Code's own
+#: cap on hook output (the hand-written precedent, git-stage-status.sh,
+#: keeps the same 7,500).
+WARN_OUTPUT_CAP = 7500
+
+
+def hook_mode(hook: dict) -> str:
+    """The block's mode; a block (or an old placed hook's routing.hook)
+    that records none is ``deny``."""
+    return hook.get("mode") or "deny"
+
+
+def hook_event(hook: dict) -> str:
+    """The block's event; one that records none is ``PreToolUse``."""
+    return hook.get("event") or "PreToolUse"
+
+
+def hook_message(hook: dict) -> str:
+    """The block's message, read from its mode's key."""
+    return str(hook.get(MODE_MESSAGE_KEY.get(hook_mode(hook), "deny_message")) or "")
 
 _SLUG_WORD_RE = re.compile(r"[a-z0-9]+")
 
