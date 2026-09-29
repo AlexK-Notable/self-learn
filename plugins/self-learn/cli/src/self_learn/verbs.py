@@ -5903,6 +5903,23 @@ def _wrap_case_error(exc: cases.CaseError) -> VerbError:
     return VerbError(str(exc))
 
 
+class PreviewReconsiderCase(str):
+    """S-73 item 6: the placeholder case id :func:`batch.dry_run` hands a
+    line covered by a ``kind: reconsider`` case that is staged but not yet
+    in the ledger (the steward's repair preview). It widens exactly as the
+    real case will at apply time, and :func:`_reconsider_case_check` skips
+    the case-file read for it -- there is no file yet.
+
+    It is a TYPE, not a value: no sheet text, CLI argument or YAML load can
+    produce an instance (a string equal to its value is a plain ``str``
+    and is checked like any other case id), and it is never written: only
+    the preview constructs one, and a preview writes nothing."""
+
+
+#: The placeholder's value, as a preview names it.
+PREVIEW_RECONSIDER_CASE_ID = "case-preview"
+
+
 def _reconsider_case_check(
     home: Path, reconsider_case: str | None, record_id: str
 ) -> dict | None:
@@ -5921,6 +5938,8 @@ def _reconsider_case_check(
     default, every pre-U5 call site, behaviour unchanged)."""
     if reconsider_case is None:
         return None
+    if isinstance(reconsider_case, PreviewReconsiderCase):
+        return None  # a preview of a staged case: no file to read yet
     try:
         case_fm, _old_fm = cases.require_reconsider_case(
             home, reconsider_case, record_id

@@ -442,3 +442,225 @@ def test_the_formats_closed_sets_carry_the_hook_block_per_mode(tmp_path):
     assert hook["events_per_mode"] == {"deny": ["PreToolUse"], "warn": ["PreToolUse", "PostToolUse"]}
     assert hook["keys_per_mode"]["warn"]["required"] == ["tools", "path_regex", "warn_message"]
     assert hook["example_verdicts_per_mode"]["warn"] == ["allow", "warn"]
+
+
+# ----------------------------------------- the reconsider preview (item 6)
+
+
+def _stage_reconsider(tmp_path: Path, home: Path, rid: str, prior: str, items: list[dict],
+                      records: list[str] | None = None) -> Path:
+    from test_steward import _dump_yaml
+    from test_steward_refusals import _case
+
+    stage = tmp_path / "stage"
+    case = _case(records or [rid], "route", "route")
+    case.update(kind="reconsider", supersedes=prior)
+    _dump_yaml(stage / "cases" / "redecide.yaml", case)
+    _dump_yaml(stage / "sheets" / "redecide.yaml",
+               {"version": 1, "case": "$CASE_ID", "items": items})
+    return stage
+
+
+def _routed_lesson(tmp_path: Path, rid: str):
+    from support import make_env
+    from test_u3b_steward_authority import _route_through_a_case
+
+    sandbox = make_env(tmp_path)
+    (tmp_path / "setup").mkdir()
+    prior = _route_through_a_case(sandbox.ledger, tmp_path / "setup", rid)
+    return sandbox, prior
+
+
+def _redecide_line(rid: str, examples: dict | None = None) -> dict:
+    return {"id": rid, "verb": "route", "dest": "hook",
+            "hook": _sheet_hook_input("PreToolUse", examples)}
+
+
+def test_the_repair_preview_reports_a_broken_warn_example_on_a_reconsider_line(tmp_path):
+    from self_learn import steward
+
+    rid = "lrn-a7300101"
+    sandbox, prior = _routed_lesson(tmp_path, rid)
+    home = sandbox.ledger
+    good = _stage_reconsider(tmp_path / "good", home, rid, prior, [_redecide_line(rid)])
+    assert steward._ledger_repair_message(home, good, {rid: "routed"}) is None  # control
+    broken = _examples(warn=[WARN_EXAMPLES["warn"][0], WARN_EXAMPLES["allow"][1]])
+    bad = _stage_reconsider(tmp_path / "bad", home, rid, prior, [_redecide_line(rid, broken)])
+    message = steward._ledger_repair_message(home, bad, {rid: "routed"})
+    assert message is not None
+    assert f"(route {rid})" in message and "warn[1] expected a warning" in message
+    # the preview wrote nothing: the lesson is still where it was
+    record = Record.from_path(verbs.find_record_path(home, rid))
+    assert record.routing["destination"] == "skill-md"
+
+
+def test_the_repair_preview_still_skips_the_plain_status_refusal_for_a_covered_line(tmp_path):
+    from self_learn import steward
+
+    rid, other = "lrn-a7300102", "lrn-a7300103"
+    sandbox, prior = _routed_lesson(tmp_path, rid)
+    home = sandbox.ledger
+    from test_steward_refusals import _seed
+
+    _seed(home, other)
+    verbs.reject(home, other, no_push=True)
+    line = {"id": other, "verb": "defer", "until": "2099-01-01"}
+    # control: uncovered, the same refused line is reported
+    uncovered = _stage_reconsider(tmp_path / "u", home, rid, prior, [line], records=[rid])
+    assert f"(defer {other})" in (steward._ledger_repair_message(
+        home, uncovered, {other: "rejected"}) or "")
+    covered = _stage_reconsider(tmp_path / "c", home, rid, prior, [line], records=[rid, other])
+    assert steward._ledger_repair_message(home, covered, {other: "rejected"}) is None
+
+
+def test_both_previews_widen_the_lines_the_staged_case_covers(tmp_path, monkeypatch):
+    from self_learn import batch, steward
+
+    rid = "lrn-a7300104"
+    sandbox, prior = _routed_lesson(tmp_path, rid)
+    stage = _stage_reconsider(tmp_path, sandbox.ledger, rid, prior, [_redecide_line(rid)])
+    seen: list[frozenset] = []
+    real = batch.dry_run
+
+    def spy(*args, **kwargs):
+        seen.append(frozenset(kwargs.get("reconsidered", ())))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(batch, "dry_run", spy)
+    steward._ledger_repair_message(sandbox.ledger, stage, {rid: "routed"})
+    # `_forced_parking_reason`'s preview, then the repair preview's own
+    assert seen == [frozenset({rid}), frozenset({rid})]
+
+
+def test_the_preview_placeholder_cannot_come_from_text(tmp_path):
+    """A string equal to the placeholder is checked like any case id: only
+    the preview's own instance skips the case-file read."""
+    rid = "lrn-a7300105"
+    sandbox, _prior = _routed_lesson(tmp_path, rid)
+    home = sandbox.ledger
+    assert verbs._reconsider_case_check(
+        home, verbs.PreviewReconsiderCase(verbs.PREVIEW_RECONSIDER_CASE_ID), rid) is None
+    with pytest.raises(verbs.VerbError):
+        verbs._reconsider_case_check(home, verbs.PREVIEW_RECONSIDER_CASE_ID, rid)
+    with pytest.raises(verbs.VerbError, match="malformed case id"):
+        verbs.reject(home, rid, no_push=True, reconsider_case=verbs.PREVIEW_RECONSIDER_CASE_ID)
+    assert Record.from_path(verbs.find_record_path(home, rid)).status == "routed"
+
+
+def test_a_dry_run_without_reconsidered_is_unchanged(tmp_path):
+    """Positive control on the default: no covered ids, the routed lesson's
+    route line stops at the status refusal as before."""
+    from self_learn import batch
+    from test_steward import _dump_yaml
+
+    rid = "lrn-a7300106"
+    sandbox, _prior = _routed_lesson(tmp_path, rid)
+    path = tmp_path / "sheet.yaml"
+    _dump_yaml(path, {"version": 1, "items": [_redecide_line(rid)]})
+    sheet = batch.load_sheet(path, home=sandbox.ledger)
+    plain = batch.dry_run(sandbox.ledger, sheet, actor="steward")
+    assert plain.items[0].state == "would-refuse" and plain.items[0].kind == "status"
+    widened = batch.dry_run(sandbox.ledger, sheet, actor="steward", reconsidered={rid})
+    assert widened.items[0].state == "would-apply", widened.items[0].detail
+
+
+# -------------------------- the lrn-19f82fc5 shape, end to end (the live case)
+
+
+@pytest.mark.parametrize("example", ["EXAMPLE_HOOK_INPUT", "EXAMPLE_POST_HOOK_INPUT"])
+def test_the_overseer_moves_a_routed_lesson_to_a_warning_hook(tmp_path, monkeypatch, claude_dir,
+                                                               example):
+    """A routed lesson, a reconsider case and a `dest: hook` warn line (the
+    formats' own example, the lrn-19f82fc5 shape), applied by the overseer
+    runner with fakes: the hook is placed and parked, not registered,
+    while `overseer.hook_activation` is off."""
+    from ruamel.yaml import YAML
+
+    from self_learn import config
+    from self_learn.overseer import formats
+    from self_learn.overseer import run as overseer_run
+    from test_failstate_overseer import _dump, _ok, _phase_a, _phase_b_common
+    from test_overseer_run import _enabled
+    from test_steward_refusals import _case
+    from test_u3b_steward_authority import HOOK_TRIGGER, _record_case
+
+    rid = "lrn-a7300107"
+    sandbox, _prior = _routed_lesson(tmp_path, rid)
+    home = sandbox.ledger
+    _enabled(monkeypatch)
+    assert config.hook_activation_enabled(home) is False
+    parked = _case([rid], "parked", "route")
+    parked.update(kind="parked", parked_for="overseer", parked_reason="hook")
+    parked_id = _record_case(home, tmp_path / "setup", parked)
+    load = YAML(typ="safe").load
+    successor = load(formats.phase_b_examples()["case-redecide-example.yaml"])
+    successor.update(records=[rid], scope="skill:s", supersedes=parked_id)
+    successor["evidence"] = [{"ref": f"record:{rid}", "quote": "status: routed"}]
+    sheet = load(formats.phase_b_examples()["sheet-redecide-example.yaml"])
+    hook_input = json.loads(json.dumps(getattr(formats, example)))
+    sheet["items"][0].update(id=rid, hook=hook_input)
+
+    def invoke(spec):
+        if spec.label == "phase-a":
+            _phase_a(spec.cwd)
+        else:
+            _phase_b_common(spec.cwd)
+            _dump(spec.cwd / "case-a.yaml", successor)
+            _dump(spec.cwd / "sheet-a.yaml", sheet)
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    overseer_run.run(home, no_push=True)
+
+    record = Record.from_path(verbs.find_record_path(home, rid))
+    assert record.status == "routed" and record.routing["destination"] == "hook"
+    assert record.routing["by"] == "overseer"
+    meta = record.routing["hook"]
+    block = hook_input["hook"]
+    assert (meta["mode"], meta["event"], meta["warn_message"]) == (
+        "warn", block["event"], block["warn_message"])
+    name = script_name(rid, HOOK_TRIGGER)
+    script = sandbox.host / "plugins" / "s-plugin" / "hooks" / name
+    assert script.read_text(encoding="utf-8") == meta["script"]
+    assert f"{block['event']} warning hook" in meta["script"]
+    assert (claude_dir / "hooks" / name).is_symlink()  # placed
+    assert not (claude_dir / "settings.json").exists()  # parked: never registered
+    entry = next(h for h in record.history if h.get("event") == "hook-activated")
+    assert "switched off" in (entry.get("note") or "")
+    hit = run_hook(script, hook_input["examples"]["warn"][0])
+    assert json.loads(hit.stdout)["hookSpecificOutput"]["additionalContext"] == block["warn_message"]
+
+
+def test_the_repair_preview_now_reports_a_refusal_only_the_widened_line_meets(tmp_path):
+    """The widening's discriminating case: rejecting a REFERENCE-routed
+    lesson under a reconsider case is refused (a reference route is
+    corrected by hand) -- a repairable `bad-line`. Without the widening
+    the preview stopped at the routed-status refusal, which it skips for a
+    covered line, so the model was never told; apply time refused it with
+    no repair turn left."""
+    from self_learn import batch, steward
+    from support import commit_all, make_behavior, make_env, proposal_dict
+    from test_steward import _dump_yaml
+    from test_steward_refusals import _case
+    from test_u3b_steward_authority import HOOK_TRIGGER, _record_case
+
+    rid = "lrn-a7300108"
+    sandbox = make_env(tmp_path)
+    home = sandbox.ledger
+    (tmp_path / "setup").mkdir()
+    from self_learn import ledger_ops
+
+    ledger_ops.create_record(home, make_behavior(record_id=rid, trigger=HOOK_TRIGGER))
+    ledger_ops.write_proposal(home, rid, proposal_dict())
+    ledger_ops.stamp_proposal(home, rid)
+    commit_all(home, f"seed {rid}")
+    prior = _record_case(home, tmp_path / "setup", _case([rid], "route", "route"))
+    first = tmp_path / "first.yaml"
+    _dump_yaml(first, {"version": 1, "case": prior,
+                       "items": [{"id": rid, "verb": "route", "dest": "reference:x.md"}]})
+    assert batch.run(home, batch.load_sheet(first, home=home), no_push=True,
+                     actor="steward").items[0].state == "applied"
+    stage = _stage_reconsider(tmp_path / "s", home, rid, prior, [{"id": rid, "verb": "reject"}])
+    message = steward._ledger_repair_message(home, stage, {rid: "routed"})
+    assert message is not None and f"(reject {rid})" in message
+    assert "corrected by hand" in message
