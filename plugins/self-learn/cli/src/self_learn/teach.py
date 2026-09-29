@@ -246,7 +246,9 @@ def add_teach_parser(sub) -> argparse.ArgumentParser:
         metavar="YAML",
         help="with --route --dest hook (config-gated, S-10 amendment): the "
         "compile input file — {rationale, hook: {tools, path_regex, "
-        "deny_message}, examples: {allow, deny}}; the CLI generates the "
+        "deny_message} or a warning hook's {mode: warn, event, tools, "
+        "path_regex, warn_message}, examples: {allow, deny} or {allow, "
+        "warn}}; the CLI generates the "
         "script, validates, scans, replays, and prints the applied bytes",
     )
     # M-R (Sprint 2 lane L7): the SAME two `route` CLI flags (`cli.py`'s

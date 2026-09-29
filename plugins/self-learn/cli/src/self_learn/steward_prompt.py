@@ -1019,23 +1019,42 @@ def _hook_lines() -> list[str]:
     from . import hook_compiler
 
     low, high = ledger_ops._HOOK_EXAMPLES_MIN, ledger_ops._HOOK_EXAMPLES_MAX
+    keys = {
+        mode: "{" + ", ".join((*ledger_ops._HOOK_OPTIONAL_KEYS, *required)) + "}"
+        for mode, required in ledger_ops._HOOK_REQUIRED_KEYS.items()
+    }
+    verdicts = {
+        mode: "{" + ", ".join(f"{v}: [...]" for v in pair) + "}"
+        for mode, pair in hook_compiler.MODE_VERDICTS.items()
+    }
+    events = hook_compiler.MODE_EVENTS
     return [
-        "  A HOOK (a guard that denies a tool call). Write `dest: hook` and a `hook` key on the",
-        f"  line: a mapping of {', '.join(sorted(batch.HOOK_INPUT_KEYS))}"
+        "  A HOOK (a script that runs on a tool call: it DENIES the call, or lets it run and",
+        "  WARNS the agent). Write `dest: hook` and a `hook` key on the line: a mapping of",
+        f"  {', '.join(sorted(batch.HOOK_INPUT_KEYS))}"
         f" ({', '.join(sorted(batch.HOOK_INPUT_REQUIRED))} required).",
-        "    rationale   one or two sentences: what it blocks, and what it must NOT block",
-        f"    hook        {{{', '.join(ledger_ops._HOOK_KEYS)}}}: tools from"
-        f" {', '.join(hook_compiler.GUARDABLE_TOOLS)};",
+        "    rationale   one or two sentences: what it blocks or warns on, and what it must NOT touch",
+        f"    hook        a deny hook {keys['deny']};",
+        f"                a warning hook {keys['warn']};",
+        f"                mode {' or '.join(hook_compiler.HOOK_MODES)} (absent = deny); event"
+        f" {' or '.join(events['warn'])}",
+        f"                (absent = {events['deny'][0]}); a deny hook is {' or '.join(events['deny'])}"
+        " only, since",
+        "                after the call has run there is nothing to deny;",
+        f"                tools from {', '.join(hook_compiler.GUARDABLE_TOOLS)};",
         "                path_regex an extended regular expression matched against the file path",
-        "                (Edit, Write) or the command (Bash); deny_message one line",
-        f"    examples    {{allow: [...], deny: [...]}}, {low} to {high} each, every one",
+        "                (Edit, Write) or the command (Bash); deny_message one line; warn_message",
+        f"                up to {hook_compiler.WARN_MESSAGE_MAX} characters, newlines allowed",
+        f"    examples    {verdicts['deny']} for deny, {verdicts['warn']} for warn,"
+        f" {low} to {high} each, every one",
         "                {tool_name: <one of the tools>, tool_input: {file_path: ...} or {command: ...}}",
+        "  Choose warn when the lesson is advice the agent may rightly override; choose deny when",
+        "  the call is always wrong. A warning hook never blocks: on any error it stays silent.",
         "  You never write the script: the runner generates it from the hook block and replays",
         "  every example against it before anything is committed; an example the script gets",
         "  wrong refuses that line alone. The lesson must have a Trigger (a behavior lesson).",
         "  The runner places the script; switching it on stays the user's setting",
         "  (`overseer.hook_activation`), so with it off the hook is placed and not registered.",
-        "  A hook only DENIES; a warning that lets the call through is not something it can do.",
     ]
 
 

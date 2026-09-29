@@ -280,10 +280,14 @@ the failure is one tool call a guard can see exactly (an Edit, Write or Bash
 call matching a pattern), write the route with its compile input — the
 output contract shows the shape; the runner writes the script, replays your
 examples against it, and places it. Switching it on stays the user's
-setting; the overseer corrects a hook that was a mistake. A hook can only
-deny a call; a lesson that needs a warning, not a block, is not a hook.
-Park as `hook` only when you cannot tell whether a guard would block
-legitimate work.
+setting; the overseer corrects a hook that was a mistake. A hook either
+denies the call (`mode: deny`, the default) or lets it run and hands the
+agent a warning (`mode: warn`, before the call or, with `event:
+PostToolUse`, after it; S-73). Choose `warn` when the lesson is advice the
+agent may rightly override (a pattern that is usually a mistake but
+sometimes right); choose `deny` when the call is always wrong. Park as
+`hook` only when you cannot tell whether a deny guard would block
+legitimate work and a warning would not do.
 
 **A suspected-violation input.** Some briefs are not a pending lesson but
 a ROUTED one that the miner reported as possibly broken: its brief lists

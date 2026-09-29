@@ -349,3 +349,96 @@ def test_reachability_reads_the_warn_hooks_event(env, claude_dir, monkeypatch):
     row = next(r for r in reachability_rows(env.home, claude_dir) if r.record_id == RID)
     assert (row.state, row.reason) == ("unreachable", "wrong-event"), row
     assert "never PostToolUse" in row.detail
+
+
+# ------------------------------- everyone who writes a hook is told (item 5)
+
+
+def test_the_steward_brief_tells_warn_exists_from_the_constants(monkeypatch):
+    from self_learn import hook_compiler, steward_prompt
+
+    text = "\n".join(steward_prompt._hook_lines())
+    assert "only DENIES" not in text
+    assert "mode deny or warn" in text and "warn_message" in text
+    assert "event PreToolUse or PostToolUse" in text
+    assert "{allow: [...], warn: [...]} for warn" in text
+    assert "Choose warn when the lesson is advice the agent may rightly override" in text
+    monkeypatch.setattr(hook_compiler, "WARN_MESSAGE_MAX", 1234)
+    assert "up to 1234 characters" in "\n".join(steward_prompt._hook_lines())
+
+
+def test_the_brief_stays_byte_identical_across_packets():
+    from self_learn import steward_prompt
+
+    assert steward_prompt._hook_lines() == steward_prompt._hook_lines()
+
+
+def test_the_method_and_the_doctrine_describe_warn():
+    from self_learn import worker
+
+    refs = worker.package_skill_refs()
+    method = (refs / "steward-method.md").read_text(encoding="utf-8")
+    assert "can only\ndeny" not in method and "is not a hook" not in method
+    assert "`mode: warn`" in method and "choose `deny` when the call is always wrong" in method
+    doctrine = (refs / "routing-doctrine.md").read_text(encoding="utf-8")
+    assert "A hook may warn instead of deny (S-73)" in doctrine
+    assert "mode: warn" in doctrine and "warn_message" in doctrine
+
+
+def _formats_root(tmp_path: Path) -> Path:
+    from self_learn.overseer import formats
+
+    return formats.write(tmp_path / "ws", "B")
+
+
+def test_the_overseer_formats_carry_warn_hook_examples_and_each_validates(tmp_path):
+    from ruamel.yaml import YAML
+
+    from self_learn import ledger_ops
+    from self_learn.overseer import run as overseer_run
+    from support import make_home
+    from test_u3b_steward_authority import _replays
+
+    home = make_home(tmp_path)
+    root = _formats_root(tmp_path)
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    assert "A hook can only deny" not in readme
+    modes = {}
+    for name in ("sheet-redecide-example.yaml", "sheet-hook-warn-post-example.yaml",
+                 "sheet-hook-deny-example.yaml"):
+        assert name in readme, name
+        work = tmp_path / name
+        work.write_text((root / name).read_text(encoding="utf-8"), encoding="utf-8")
+        sheet = overseer_run._load_sheet_allow_empty(work, home)
+        assert sheet is not None and len(sheet) == 1, name
+        line = YAML(typ="safe").load((root / name).read_text(encoding="utf-8"))["items"][0]
+        hook_input = line["hook"]
+        ledger_ops._validate_hook_extension({"destination": "hook", **hook_input})
+        assert _replays(hook_input) == [], name
+        block = hook_input["hook"]
+        modes[name] = (block.get("mode", "deny"), block.get("event", "PreToolUse"))
+    assert modes == {
+        "sheet-redecide-example.yaml": ("warn", "PreToolUse"),
+        "sheet-hook-warn-post-example.yaml": ("warn", "PostToolUse"),
+        "sheet-hook-deny-example.yaml": ("deny", "PreToolUse"),
+    }
+    # the re-decision is the pgrep/pkill -f self-match shape, as a warning
+    redecide = YAML(typ="safe").load((root / "sheet-redecide-example.yaml").read_text(
+        encoding="utf-8"))["items"][0]["hook"]
+    assert "p(kill|grep)" in redecide["hook"]["path_regex"]
+    assert set(redecide["examples"]) == {"allow", "warn"}
+    # broken twin: a warn example the script does not warn on
+    redecide["examples"]["warn"][0]["tool_input"]["command"] = "ls"
+    assert _replays(redecide) != []
+
+
+def test_the_formats_closed_sets_carry_the_hook_block_per_mode(tmp_path):
+    from ruamel.yaml import YAML
+
+    sets = YAML(typ="safe").load((_formats_root(tmp_path) / "closed-sets.yaml").read_text(
+        encoding="utf-8"))
+    hook = sets["hook"]
+    assert hook["mode"] == ["deny", "warn"]
+    assert hook["events_per_mode"] == {"deny": ["PreToolUse"], "warn": ["PreToolUse", "PostToolUse"]}
+    assert hook["keys_per_mode"]["warn"]["required"] == ["tools", "path_regex", "warn_message"]
+    assert hook["example_verdicts_per_mode"]["warn"] == ["allow", "warn"]

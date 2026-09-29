@@ -27,23 +27,77 @@ EXAMPLE_RECORD = "lrn-0000000a"
 EXAMPLE_PARKED_CASE = "case-0000000a"
 EXAMPLE_CASE = "case-0000000b"
 
-#: U3b: a hook's compile input, as a sheet line carries it (the shape
-#: `batch.HOOK_INPUT_KEYS` and `ledger_ops._validate_hook_extension` check).
+#: S-73: a WARNING hook's compile input, as a sheet line carries it (the
+#: shape `batch.HOOK_INPUT_KEYS` and `ledger_ops._validate_hook_extension`
+#: check). The shape of a real re-decision (a `pgrep -f`/`pkill -f`
+#: self-match lesson moved to a warning hook), with invented text: the
+#: agent may rightly use `-f`, so the hook warns rather than blocks.
 EXAMPLE_HOOK_INPUT: dict[str, Any] = {
-    "rationale": "Blocks a pkill -f whose pattern also matches this shell; any other pkill stays allowed.",
+    "rationale": (
+        "Warns on a pgrep -f or pkill -f; the call still runs, because a -f pattern is "
+        "sometimes right. Other pgrep and pkill calls get no warning."
+    ),
     "hook": {
+        "mode": "warn",
+        "event": "PreToolUse",
         "tools": ["Bash"],
-        "path_regex": "pkill -f",
-        "deny_message": "a -f pattern can match your own shell; kill by the PID you captured",
+        "path_regex": "(^|[;&|[:space:]])p(kill|grep)[[:space:]]+-[a-zA-Z]*f",
+        "warn_message": (
+            "A -f pattern matches whole command lines, this shell's included, so it can "
+            "find or kill the caller.\nAct on a PID you captured, or check the pattern "
+            "cannot match this command."
+        ),
     },
     "examples": {
         "allow": [
             {"tool_name": "Bash", "tool_input": {"command": "pkill -x myserver"}},
-            {"tool_name": "Bash", "tool_input": {"command": "ls -la"}},
+            {"tool_name": "Bash", "tool_input": {"command": "pgrep -l node"}},
+        ],
+        "warn": [
+            {"tool_name": "Bash", "tool_input": {"command": "pkill -f 'app --reindex'"}},
+            {"tool_name": "Bash", "tool_input": {"command": "until ! pgrep -af worker; do sleep 1; done"}},
+        ],
+    },
+}
+
+#: S-73: a warning hook that runs AFTER the call (PostToolUse).
+EXAMPLE_POST_HOOK_INPUT: dict[str, Any] = {
+    "rationale": "Reminds the agent to check the migration after a Write under db/migrations/; nothing is blocked.",
+    "hook": {
+        "mode": "warn",
+        "event": "PostToolUse",
+        "tools": ["Write"],
+        "path_regex": "db/migrations/",
+        "warn_message": "A migration was written: run the migration check before the next step.",
+    },
+    "examples": {
+        "allow": [
+            {"tool_name": "Write", "tool_input": {"file_path": "/repo/db/seeds/users.sql"}},
+            {"tool_name": "Write", "tool_input": {"file_path": "/repo/README.md"}},
+        ],
+        "warn": [
+            {"tool_name": "Write", "tool_input": {"file_path": "/repo/db/migrations/0042_add.sql"}},
+            {"tool_name": "Write", "tool_input": {"file_path": "/repo/db/migrations/0043_idx.sql"}},
+        ],
+    },
+}
+
+#: A DENY hook (the default mode): the call is blocked.
+EXAMPLE_DENY_HOOK_INPUT: dict[str, Any] = {
+    "rationale": "Blocks an Edit or Write of the service's database file; every other file stays allowed.",
+    "hook": {
+        "tools": ["Edit", "Write"],
+        "path_regex": "/data/app\\.db$",
+        "deny_message": "stop the service before editing its database file",
+    },
+    "examples": {
+        "allow": [
+            {"tool_name": "Edit", "tool_input": {"file_path": "/srv/app/config.yaml"}},
+            {"tool_name": "Write", "tool_input": {"file_path": "/srv/app/data/app.db.bak"}},
         ],
         "deny": [
-            {"tool_name": "Bash", "tool_input": {"command": "pkill -f 'app --reindex'"}},
-            {"tool_name": "Bash", "tool_input": {"command": "sleep 1; pkill -f worker"}},
+            {"tool_name": "Edit", "tool_input": {"file_path": "/srv/app/data/app.db"}},
+            {"tool_name": "Write", "tool_input": {"file_path": "/opt/x/data/app.db"}},
         ],
     },
 }
@@ -111,6 +165,28 @@ def closed_sets() -> dict[str, Any]:
             "source": ["system-reading"],
         },
         "report_headings_in_order": list(run._REPORT_SECTIONS),
+        "hook": _hook_closed_sets(),
+    }
+
+
+def _hook_closed_sets() -> dict[str, Any]:
+    """S-73: a hook block's closed sets, per mode, read from the validator's
+    and the compiler's own constants."""
+    from .. import hook_compiler, ledger_ops
+
+    return {
+        "mode": list(hook_compiler.HOOK_MODES),
+        "default_mode": "deny",
+        "events_per_mode": {m: list(e) for m, e in hook_compiler.MODE_EVENTS.items()},
+        "default_event": "PreToolUse",
+        "keys_per_mode": {
+            mode: {"optional": list(ledger_ops._HOOK_OPTIONAL_KEYS), "required": list(required)}
+            for mode, required in ledger_ops._HOOK_REQUIRED_KEYS.items()
+        },
+        "example_verdicts_per_mode": {m: list(v) for m, v in hook_compiler.MODE_VERDICTS.items()},
+        "examples_per_verdict": [ledger_ops._HOOK_EXAMPLES_MIN, ledger_ops._HOOK_EXAMPLES_MAX],
+        "tools": list(hook_compiler.GUARDABLE_TOOLS),
+        "warn_message_max_chars": hook_compiler.WARN_MESSAGE_MAX,
     }
 
 
@@ -157,9 +233,15 @@ def _rules(phase: str) -> str:
             "kind: reconsider whose sheet has a `route` item naming the new `dest`;",
             "the runner applies it as a reroute, retiring the old placement in the",
             "same motion. See case-redecide-example.yaml + sheet-redecide-example.yaml",
-            "(a routed lesson moved to a hook). A hook carries its compile input on",
-            "the line (`hook:`); the runner generates the script and replays the",
-            "examples against it. A hook can only deny a call, never just warn.",
+            "(a routed lesson moved to a warning hook). A hook carries its compile",
+            "input on the line (`hook:`); the runner generates the script and replays",
+            "the examples against it. A hook either DENIES the call (mode: deny, the",
+            "default; PreToolUse only) or lets it run and WARNS the agent (mode: warn;",
+            "event PreToolUse, before the call, or PostToolUse, after it). Choose warn",
+            "when the lesson is advice the agent may rightly override, deny when the",
+            "call is always wrong. See sheet-hook-warn-post-example.yaml (a warning",
+            "after the call) and sheet-hook-deny-example.yaml (a deny guard); the",
+            "hook block's keys per mode are in closed-sets.yaml under `hook`.",
             "Switching a hook on stays the user's setting (overseer.hook_activation).",
             "Re-decidable FROM claude-md, skill-md, new-skill, reference, hook;",
             "TO claude-md (any variant), skill-md, reference, hook; never new-skill.",
@@ -240,7 +322,8 @@ def phase_b_examples() -> dict[str, str]:
             "supersedes": EXAMPLE_PARKED_CASE,
             "evidence": evidence,
             "decision": {"verb": "route", "because": (
-                "The line was loaded and broken twice; the failure is one Bash call a guard can see."
+                "The line was loaded and broken twice; the failure is one Bash call a hook can "
+                "see, and a -f pattern is sometimes right, so the hook warns rather than blocks."
             ), "confidence": "settled"},
         }),
         "sheet-redecide-example.yaml": _dump({
@@ -248,6 +331,20 @@ def phase_b_examples() -> dict[str, str]:
             "items": [{
                 "id": EXAMPLE_RECORD, "verb": "route", "dest": "hook",
                 "hook": EXAMPLE_HOOK_INPUT, "close_call": False,
+            }],
+        }),
+        "sheet-hook-warn-post-example.yaml": _dump({
+            "version": 1,
+            "items": [{
+                "id": EXAMPLE_RECORD, "verb": "route", "dest": "hook",
+                "hook": EXAMPLE_POST_HOOK_INPUT, "close_call": False,
+            }],
+        }),
+        "sheet-hook-deny-example.yaml": _dump({
+            "version": 1,
+            "items": [{
+                "id": EXAMPLE_RECORD, "verb": "route", "dest": "hook",
+                "hook": EXAMPLE_DENY_HOOK_INPUT, "close_call": False,
             }],
         }),
         "sheet-rule-example.yaml": _dump({

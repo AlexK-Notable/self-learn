@@ -2470,8 +2470,9 @@ def _prepare_one_motion_hook(
         raise VerbError(
             "one-motion hook route needs the compile input — pass "
             "--hook-input <yaml> carrying {rationale, hook: {tools, "
-            "path_regex, deny_message}, examples: {allow, deny}} "
-            "(routing-doctrine §5.1)"
+            "path_regex, deny_message}, examples: {allow, deny}} — or, for "
+            "a warning hook, hook: {mode: warn, event, tools, path_regex, "
+            "warn_message} with examples {allow, warn} (routing-doctrine §5.1)"
         )
     data = dict(hook_input)
     data.setdefault("destination", "hook")
@@ -2660,7 +2661,9 @@ def _prepare_sheet_hook(
     if not isinstance(hook_input, dict):
         raise SheetLineError(
             f"route {record.id}: `hook` must be a mapping with rationale, "
-            "hook {tools, path_regex, deny_message} and examples {allow, deny}"
+            "hook {tools, path_regex, deny_message} and examples {allow, deny} "
+            "(or, for a warning hook, hook {mode: warn, event, tools, path_regex, "
+            "warn_message} and examples {allow, warn})"
         )
     data = {"model": f"{by or 'human'}-sheet", **hook_input}
     try:
@@ -5305,7 +5308,9 @@ def route(
 
     ``hook_input`` (U3b, S-72): a hook route's compile input carried by the
     sheet item itself -- ``{rationale, hook: {tools, path_regex,
-    deny_message}, examples: {allow, deny}}`` -- in place of an analyst
+    deny_message}, examples: {allow, deny}}``, or a warning hook's
+    ``{mode: warn, event, …, warn_message}`` with ``{allow, warn}`` (S-73)
+    -- in place of an analyst
     proposal (:func:`_prepare_sheet_hook`). Only with a ``hook``
     destination.
 

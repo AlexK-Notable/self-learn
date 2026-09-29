@@ -543,6 +543,32 @@ Rules for the hook block:
   an unguarded tool is vacuous — guards allow unguarded tools by design).
   Make the allow examples REALISTIC near-misses, not strawmen: the
   closest legitimate calls you expect the guard to let through.
+- **A hook may warn instead of deny (S-73).** Add `mode: warn` and write
+  `warn_message` (up to 2,000 characters, newlines allowed) in place of
+  `deny_message`; the examples become `{allow, warn}`. A warning hook
+  lets the call run and hands the model the message; with
+  `event: PostToolUse` it runs after the call instead of before (a deny
+  guard is `PreToolUse` only). It never blocks: on any error it stays
+  silent. Choose `warn` when the lesson is advice the model may rightly
+  override; choose `deny` when the call is always wrong — a warning
+  carries no over-block, so its `rationale` names what it warns on and
+  what it stays quiet for.
+
+```yaml
+hook:
+  mode: warn
+  event: PreToolUse        # or PostToolUse (after the call)
+  tools: [Bash]
+  path_regex: '(^|[;&|[:space:]])p(kill|grep)[[:space:]]+-[a-zA-Z]*f'
+  warn_message: "a -f pattern can match this shell too; act on a PID you captured"
+examples:
+  allow:
+    - {tool_name: Bash, tool_input: {command: pkill -x myserver}}
+    - {tool_name: Bash, tool_input: {command: pgrep -l node}}
+  warn:
+    - {tool_name: Bash, tool_input: {command: "pkill -f 'app --reindex'"}}
+    - {tool_name: Bash, tool_input: {command: pgrep -af worker}}
+```
 
 ### 5.2 The decision trace is mandatory (S-26)
 
