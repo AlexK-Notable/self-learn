@@ -1142,6 +1142,7 @@ def _dispatch_reroute(
     result = verbs.reroute(
         home, item.id, dest=_reroute_dest(item), by=by, note=f.get("note"),
         no_push=True, hook_input=f.get("hook"), rules_paths=f.get("rules_paths"),
+        allow_empty_glob=bool(f.get("allow_empty_glob", False)),
     )
     if is_hook_dest and actor in HOOK_ROUTING_ACTORS:
         return _dispatch_hook_activation(
@@ -1882,6 +1883,7 @@ def _preview_reroute(home: Path, item: SheetItem, actor: str, is_hook_dest: bool
             by=f.get("by") or (actor if actor != "human" else None),
             note=f.get("note"), user_claude_md=None, hook_input=f.get("hook"),
             rules_paths=f.get("rules_paths"),
+            allow_empty_glob=bool(f.get("allow_empty_glob", False)),
         )
     except _PREVIEW_REFUSALS as exc:
         return DryRunItem(n=item.n, id=item.id, verb=item.verb, state="would-refuse",
@@ -2053,6 +2055,7 @@ def dry_run(
                     note=item.fields.get("note"),
                     hook_input=item.fields.get("hook"),
                     rules_paths=item.fields.get("rules_paths"),
+                    allow_empty_glob=bool(item.fields.get("allow_empty_glob", False)),
                 )
                 if dr.would_refuse:
                     result.items.append(
@@ -2079,6 +2082,7 @@ def dry_run(
                 note=item.fields.get("note"),
                 hook_input=item.fields.get("hook"),
                 rules_paths=item.fields.get("rules_paths"),
+                allow_empty_glob=bool(item.fields.get("allow_empty_glob", False)),
             )
             state = "would-refuse" if dr.would_refuse else "would-apply"
             result.items.append(
