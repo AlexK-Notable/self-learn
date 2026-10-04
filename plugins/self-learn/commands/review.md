@@ -548,6 +548,13 @@ marker are projections and never recovery authority.
   rule and glob translation when the sheet loads, the absolute-path and
   reachability checks (`--allow-empty-glob` / `allow_empty_glob: true` the
   one escape) when the line runs. A bad glob refuses that line alone.
+  A route into a rules topic whose file already has a `paths:` list is
+  refused when the line carries no `rules_paths` (no sheet key unscopes a file);
+  a record that `supersedes` one routed to the same topic inherits its globs
+  when the line names none, and `self-learn show --json <id>` prints a routed
+  lesson's `routing.rules_paths`. A dead glob for a file the lesson guards
+  against recreating is kept with `allow_empty_glob: true`. The same keys ride
+  a `route` line under a `kind: reconsider` case (applied as a reroute).
 - Exit codes follow the unattended-run contract in the exit-code list
   above: `0` is `dry-run` or `applied`; `EXIT_HELD` (10) is `idle`,
   `disabled`, or a held `steward.lock`; `8` is `partial`; `1` is

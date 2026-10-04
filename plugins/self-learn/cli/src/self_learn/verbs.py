@@ -744,8 +744,10 @@ def _abort_if_region_unsound(
     if compiled.refuses(verdict, mode):
         raise DirtyTargetError(
             f"compile target {target} {REGION_VERDICT_MARKER} ({verdict}) "
-            "— the managed region no longer matches what self-learn last "
-            f"wrote; run `self-learn recompile --adopt {target}` to accept "
+            f"— the {'pointer' if region_kind == 'pointer' else 'managed'} region "
+            "no longer matches what self-learn last "
+            f"wrote; run `self-learn recompile --adopt {target}"
+            f"{'#pointer' if region_kind == 'pointer' else ''}` to accept "
             "the on-disk region as authoritative, or restore self-learn's "
             "last write",
             cause="region",
@@ -909,6 +911,14 @@ def _write_compile_record_entry(
         # genuinely broken) — never let record bookkeeping break a
         # resolution that would otherwise succeed.
         return None
+
+
+def _adopt_list(adopt: "Path | str | Iterable[Path | str] | None") -> list[Path | str]:
+    if adopt is None:
+        return []
+    if isinstance(adopt, (str, Path)):
+        return [adopt]
+    return list(adopt)
 
 
 def _observe_region_hash_at(target: Path, region_kind: str) -> str | None:
@@ -1472,9 +1482,9 @@ def _abort_if_unscopes_rules_file(
             f"route {record_id}: {spec.target} is path-scoped (paths: "
             f"{list(existing)}) and this lesson carries no rules_paths -- "
             "routing it would make the whole file load unconditionally. "
-            "Give it globs (--rules-path GLOB, repeatable), supersede a "
-            "record that has them, or pass --allow-unpathed to unscope the "
-            "file deliberately"
+            "Give it globs (`rules_paths` on a sheet line, --rules-path GLOB "
+            "on the CLI), supersede a record that has them, or (CLI only) "
+            "pass --allow-unpathed to unscope the file deliberately"
         )
 
 
@@ -4732,6 +4742,12 @@ def show(home: Path | str, record_id: str) -> dict:
                 "by": routing.get("by"),
                 "variant": routing.get("variant"),
                 "follow_up": routing.get("follow_up"),
+                # a path-scoped rule's scope: what a successor's route
+                # (or a steward/overseer sheet line) needs to see to
+                # reuse the globs
+                "rules_topic": routing.get("rules_topic"),
+                "rules_paths": routing.get("rules_paths"),
+                "rules_paths_from": routing.get("rules_paths_from"),
             }
             if routing is not None
             else None
@@ -8770,7 +8786,7 @@ def recompile(
     *,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
-    adopt: Path | str | None = None,
+    adopt: "Path | str | Iterable[Path | str] | None" = None,
     only_records: Iterable[str] | None = None,
     moved_from: Iterable[tuple[str, Path]] = (),
 ) -> RecompileResult:
@@ -8791,6 +8807,14 @@ def recompile(
     Adopting writes and commits ONLY the record entry; it never changes
     the target's bytes. ``--force`` is deliberately not offered anywhere
     in this path.
+
+    ``adopt`` takes one target or several, and each names a REGION the way
+    the compile record's keys do: ``<path>`` (or ``<path>#managed``) is the
+    managed region, ``<path>#pointer`` the pointer region of a reference-
+    routed host's CLAUDE.md/SKILL.md (S-74: one file holds both, and they
+    are separate entries). Adopt both by naming both. A pointer adopt
+    leaves that surface's pointer block alone for the rest of the run, the
+    same as a managed adopt leaves its region.
 
     References are append-only, which is exactly why they belong here
     (audit 2026-07-16 BLOCKER 2): a ``reference`` route interrupted
@@ -9021,18 +9045,78 @@ def recompile(
         # authoritative before this run's own soundness check runs — the
         # write is mode-agnostic (REC4: the record covers git hosts too),
         # so it is resolved once, ahead of the mode split below.
-        adopt_target = Path(adopt).resolve() if adopt is not None else None
-        adopt_matched = False
+        adopt_managed: set[Path] = set()
+        adopt_pointer: set[Path] = set()
+        for raw in _adopt_list(adopt):
+            text_ = str(raw)
+            if text_.endswith("#pointer"):
+                adopt_pointer.add(Path(text_[: -len("#pointer")]).resolve())
+            else:
+                if text_.endswith("#managed"):
+                    text_ = text_[: -len("#managed")]
+                adopt_managed.add(Path(text_).resolve())
+        adopt_matched_managed: set[Path] = set()
+        adopted_pointer_surfaces: set[Path] = set()
+        for surface in sorted({
+            spec.pointer_surface.resolve()
+            for spec, _records in ref_work.values()
+            if spec.pointer_surface is not None
+        }):
+            if surface not in adopt_pointer:
+                continue
+            owner = next(
+                spec for spec, _r in ref_work.values()
+                if spec.pointer_surface is not None and spec.pointer_surface.resolve() == surface
+            )
+            try:
+                region = compiled.region_bytes(surface.read_text(encoding="utf-8"), "pointer")
+            except (OSError, UnicodeDecodeError, compiled.CompiledRecordError) as exc:
+                result.entries.append(RecompileEntry(target=surface, changed=False, skipped=str(exc)))
+                result.warnings.append(f"{surface}#pointer: --adopt: {exc}")
+                continue
+            if region is None:
+                result.warnings.append(
+                    f"{surface}#pointer: --adopt: no pointer region on disk — nothing to adopt"
+                )
+                continue
+            slug = host_slug(home, owner.host_path, scope_kind=owner.scope_kind)
+            host_label = (
+                "(user scope — ~/.claude)" if owner.scope_kind == "user" else str(owner.host_path)
+            )
+            key = compiled.region_key(owner.host_path, surface, "pointer")
+            adopted_pointer_surfaces.add(surface)  # only once something is adopted
+            with _ledger_write(home, earlier_commits=span_commits) as recovered:
+                intents.announce_recovered(recovered)
+                record_path = compiled.adopt_entry(
+                    home, slug, key, region="pointer",
+                    observed_hash=compiled.sha256_hex(region), nbytes=len(region),
+                    host=host_label, mode=owner.mode,
+                )
+                adopt_subject = f"self-learn: recompile --adopt {key}"
+                _commit_ledger(home, [record_path], adopt_subject)
+            span_commits.append(adopt_subject)
+            result.entries.append(RecompileEntry(target=surface, changed=True, commit_sha=None))
+        known_surfaces = {
+            spec.pointer_surface.resolve()
+            for spec, _records in ref_work.values()
+            if spec.pointer_surface is not None
+        }
+        for missing in sorted(adopt_pointer - known_surfaces):
+            result.warnings.append(
+                f"{missing}#pointer: --adopt: no reference-routed pointer surface at this "
+                "path — nothing adopted"
+            )
         for (host_repo, target), spec in sorted(
             specs.items(), key=lambda kv: str(kv[0][1])
         ):
             region_kind = _region_kind_for(spec)
             if (
-                adopt_target is not None
+                adopt_managed
                 and region_kind is not None
-                and target.resolve() == adopt_target
+                and target is not None
+                and target.resolve() in adopt_managed
             ):
-                adopt_matched = True
+                adopt_matched_managed.add(target.resolve())
                 try:
                     text = target.read_text(encoding="utf-8")
                     region = compiled.region_bytes(text, region_kind)
@@ -9277,9 +9361,9 @@ def recompile(
             if host_repo not in touched_hosts:
                 touched_hosts.append(host_repo)
 
-        if adopt_target is not None and not adopt_matched:
+        for missing in sorted(adopt_managed - adopt_matched_managed):
             result.warnings.append(
-                f"{adopt_target}: --adopt: no routed managed target at this "
+                f"{missing}: --adopt: no routed managed target at this "
                 "path — nothing adopted"
             )
 
@@ -9306,7 +9390,11 @@ def recompile(
             # proceed — the two repairs are independent, and a human's
             # uncommitted SKILL.md edit is no reason to withhold canon
             # from LEARNINGS.md.
-            skip_pointer = False
+            # a pointer region adopted this run is frozen as adopted
+            skip_pointer = (
+                spec.pointer_surface is not None
+                and spec.pointer_surface.resolve() in adopted_pointer_surfaces
+            )
             if (
                 spec.pointer_surface is not None
                 and spec.pointer_surface.is_file()

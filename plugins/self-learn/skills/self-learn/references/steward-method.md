@@ -426,3 +426,32 @@ a ref that is not one of the case's evidence items; the other cases of the
 packet go ahead. When a test fails, choose the cheaper destination it
 points to. When you cannot tell whether one holds, park the case as
 `always-loaded-user-scope` (§12) with your tentative answer.
+
+## 15. A path-scoped rule's globs
+
+A route to `claude-md:rules:<topic>` puts the lesson in a file under
+`.claude/rules/` that loads only when a file matching its `paths:` globs is
+read. The globs are the file's `paths:` frontmatter, which the compiler
+rebuilds from the `rules_paths` of every lesson routed to the topic. One lesson
+without globs would make the whole file load in every session, so the runner
+**refuses** a route (or a `reroute` under a reconsider case) that has no
+`rules_paths` when the topic's file already has a `paths:` list. No sheet key
+unscopes a file; if the lesson really applies everywhere, it does not belong
+in that topic.
+
+Name the globs on the line (`rules_paths: ["gtk-4.0/*.css"]`, relative to the
+host repo root, never absolute or starting with `~`). Choose them in this order:
+
+1. **The lesson this one supersedes.** `self-learn show --json <old id>` prints
+   its `routing.rules_paths`. A record with `supersedes:` routed to the same
+   topic inherits them when the line names none (`routing.rules_paths_from`
+   records where they came from), but write them out when you can see them.
+2. **The file's existing `paths:`**, when the new lesson concerns the same files.
+3. **The files the lesson is about**, as narrow as its trigger.
+
+Each glob must match a file on this machine unless the line carries
+`allow_empty_glob: true`. A glob for a file that no longer exists is acceptable,
+and often right, when the lesson warns against recreating it: set
+`allow_empty_glob: true` and the glob is kept. Inherited globs are kept the
+same way without the flag. A `reroute` onto the topic the lesson already sits
+in, with different `rules_paths`, re-scopes it.

@@ -1266,10 +1266,14 @@ def _build_parser() -> argparse.ArgumentParser:
     recompile_p.add_argument(
         "--adopt",
         metavar="TARGET",
+        action="append",
         default=None,
-        help="re-record TARGET's on-disk managed region as authoritative, "
-        "clearing an edited/unknown-provenance refusal — content is never "
-        "changed (no --force is offered)",
+        help="re-record TARGET's on-disk region as authoritative, clearing "
+        "an edited/unknown-provenance refusal — content is never changed "
+        "(no --force is offered). TARGET names the region as the compile "
+        "record's keys do: PATH (or PATH#managed) is the managed region, "
+        "PATH#pointer the pointer region of a file that also holds a "
+        "managed one; repeat --adopt to adopt both",
     )
 
     sentinel_p = sub.add_parser(
@@ -3027,7 +3031,7 @@ def _cmd_recompile(args: argparse.Namespace) -> int:
         result = verbs.recompile(
             home,
             no_push=args.no_push,
-            adopt=Path(args.adopt) if args.adopt else None,
+            adopt=args.adopt or None,
         )
     except intents.LedgerStoppedError as exc:
         # Gate r1 MAJOR-1 (§7.2a.5(4)/(5)): `recompile` is THE named
@@ -3608,6 +3612,12 @@ def _cmd_show(args: argparse.Namespace) -> int:
             f"  routed → {routing['destination']} "
             f"({routing['by']}, {routing['routed_at']})"
         )
+        if routing.get("rules_paths"):
+            origin = (
+                f" (inherited from {routing['rules_paths_from']})"
+                if routing.get("rules_paths_from") else ""
+            )
+            print(f"  rules_paths{origin}: {', '.join(routing['rules_paths'])}")
         canon = data["canon"]
         if canon["target"]:
             present = "present" if canon["present"] else "NOT present"
