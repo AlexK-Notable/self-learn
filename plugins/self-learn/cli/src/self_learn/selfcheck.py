@@ -685,7 +685,8 @@ def _check_drift(
                     slug = host_slug(home, host_path, scope_kind=scope_kind)
                     entry = compiled.entry_for(
                         compiled.load_record(home, slug),
-                        compiled.region_key(host_path, target),
+                        compiled.region_key(host_path, target, "managed"),
+                        region="managed",
                     )
                     observed = compiled.sha256_hex(region)
                     verdict = compiled.verdict_for(entry, observed)

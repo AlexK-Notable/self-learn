@@ -490,6 +490,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "routing block",
     )
     route.add_argument(
+        "--rules-path",
+        action="append",
+        dest="rules_paths",
+        metavar="GLOB",
+        help=(
+            "claude-md:rules:<topic> only: a glob the rule fires on (repeatable); "
+            "validated like a proposal's rules_paths and checked for reachability. "
+            "Omitted: a lesson that supersedes a record routed to the same topic "
+            "inherits that record's globs (routing.rules_paths_from names it)"
+        ),
+    )
+    route.add_argument(
+        "--allow-unpathed",
+        action="store_true",
+        dest="allow_unpathed",
+        help=(
+            "let this lesson turn a path-scoped rules file into an unscoped one "
+            "(it refuses by default: the whole file would then load every session)"
+        ),
+    )
+    route.add_argument(
         "--by",
         choices=sorted(verbs.ROUTING_BY_VALUES),
         help="FW-64: names the actor that chose the destination, for a "
@@ -632,6 +653,33 @@ def _build_parser() -> argparse.ArgumentParser:
         help="the new destination: skill-md | claude-md[:local|:rules:"
         "<topic>] | reference[:<file>] — never hook or new-skill "
         "(rerouting INTO either is a fresh `route`, not a correction)",
+    )
+    reroute.add_argument(
+        "--rules-path",
+        action="append",
+        dest="rules_paths",
+        metavar="GLOB",
+        help=(
+            "claude-md:rules:<topic> only: a glob the rule fires on (repeatable); "
+            "validated like a proposal's rules_paths and checked for reachability. "
+            "Omitted: a lesson that supersedes a record routed to the same topic "
+            "inherits that record's globs (routing.rules_paths_from names it)"
+        ),
+    )
+    reroute.add_argument(
+        "--allow-empty-glob",
+        action="store_true",
+        dest="allow_empty_glob",
+        help="route a rules_paths glob that matches nothing (recorded in the routing block)",
+    )
+    reroute.add_argument(
+        "--allow-unpathed",
+        action="store_true",
+        dest="allow_unpathed",
+        help=(
+            "let this lesson turn a path-scoped rules file into an unscoped one "
+            "(it refuses by default: the whole file would then load every session)"
+        ),
     )
     reroute.add_argument(
         "--by",
@@ -2500,6 +2548,8 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 args.id,
                 dest=args.dest,
                 allow_empty_glob=args.allow_empty_glob,
+                rules_paths=args.rules_paths,
+                allow_unpathed=args.allow_unpathed,
             )
             if args.as_json:
                 print(json.dumps(dr.to_json()))
@@ -2542,6 +2592,8 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 follow_up=follow_up,
                 collapse=args.collapse,
                 allow_empty_glob=args.allow_empty_glob,
+                rules_paths=args.rules_paths,
+                allow_unpathed=args.allow_unpathed,
             )
             return _finish_verb(
                 result, _routed_destination(result), as_json=args.as_json
@@ -2655,7 +2707,9 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         if args.command == "reroute":
             result = verbs.reroute(
                 home, args.id, dest=args.dest, by=args.by, note=args.note,
-                no_push=args.no_push,
+                no_push=args.no_push, rules_paths=args.rules_paths,
+                allow_empty_glob=args.allow_empty_glob,
+                allow_unpathed=args.allow_unpathed,
             )
             return _finish_verb(
                 result, _routed_destination(result), as_json=args.as_json

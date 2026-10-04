@@ -807,7 +807,9 @@ class TestObligation21AbsorptionAndFailOpenControl:
             env.home, "lrn-3c3c3c3c",
             proposal_dict(scope='project', destination="claude-md", variant="rules", rules_topic="absorbed"),
         )
-        result = verbs.route(env.home, "lrn-3c3c3c3c")
+        # absorption is still reachable -- deliberately: a globless lesson
+        # into a path-scoped topic now refuses unless `allow_unpathed`
+        result = verbs.route(env.home, "lrn-3c3c3c3c", allow_unpathed=True)
 
         absorbed = (env.host / ".claude" / "rules" / "absorbed.md").read_text(encoding="utf-8")
         assert "paths:" not in absorbed
@@ -1134,7 +1136,7 @@ class TestObligation26FormerManagedRefusalNowSucceeds:
                 destination="claude-md", variant="rules", rules_topic="already-pathed",
             ),
         )
-        result = verbs.route(env.home, OLD, user_claude_md=target)
+        result = verbs.route(env.home, OLD, user_claude_md=target, allow_unpathed=True)
         assert result.commit_sha
         assert not (env.home / "user" / "pending" / f"{OLD}.md").is_file()
         assert (env.home / "user" / "resolved" / f"{OLD}.md").is_file()

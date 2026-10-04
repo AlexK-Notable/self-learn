@@ -17,7 +17,10 @@ for BOTH modes (REC4) — only the plain-host GATE differs by mode
 there too, and additionally refuses on an ``edited``/``unknown``
 verdict, §4.5a's "real hazard on a git host as well").
 
-**Shape**, per target key::
+**Shape**, per REGION key (a path, plus ``#pointer`` for the pointer
+region -- one CLAUDE.md holds both a managed and a pointer region, see
+:func:`region_key`; entries written before that read compatibly, see
+:func:`entry_for`)::
 
     host: /home/user/notes
     mode: plain
@@ -65,6 +68,7 @@ __all__ = [
     "compiled_record_path",
     "entry_for",
     "load_record",
+    "migrate_legacy_entries",
     "region_bytes",
     "region_key",
     "sha256_hex",
@@ -190,16 +194,38 @@ def region_bytes(text: str, kind: str) -> bytes | None:
     )
 
 
-def region_key(host_path: Path | str, target: Path) -> str:
-    """The record's per-target key: the path relative to the host when
-    the target sits inside it (the common case — matches §4.5's own
+#: Region kinds that SHARE a file with another kind get a ``#<kind>``
+#: suffix on their key. A host ``CLAUDE.md`` carries two marker pairs --
+#: the managed region and the pointer region -- so a path-only key made
+#: the two kinds overwrite one entry, and whichever kind wrote last made
+#: the other kind's next route read ``edited`` (a false "hand-edited"
+#: refusal). ``managed`` stays the bare path (the §4.5 example,
+#: ``CLAUDE.md:``) and ``reference``/``script`` are whole files that
+#: share with nothing, so only ``pointer`` carries a suffix.
+_KEY_SUFFIX = {"pointer": "#pointer"}
+
+
+def region_key(host_path: Path | str, target: Path, region: str = "managed") -> str:
+    """The record's per-region key: the path relative to the host when
+    the target sits inside it (the common case -- matches §4.5's own
     example, ``CLAUDE.md:``), else the resolved absolute path (a
     reference target may live under a ``refs_dir`` the "host" concept
-    does not directly contain)."""
+    does not directly contain), plus the ``#<kind>`` suffix for a
+    region kind that shares its file with another (:data:`_KEY_SUFFIX`).
+    One entry identifies (path, region kind), never the path alone."""
     try:
-        return str(Path(target).resolve().relative_to(Path(host_path).resolve()))
+        base = str(Path(target).resolve().relative_to(Path(host_path).resolve()))
     except ValueError:
-        return str(Path(target).resolve())
+        base = str(Path(target).resolve())
+    return base + _KEY_SUFFIX.get(region, "")
+
+
+def _split_key(key: str) -> tuple[str, str | None]:
+    """``(base path, region kind the suffix names or None)``."""
+    for kind, suffix in _KEY_SUFFIX.items():
+        if key.endswith(suffix):
+            return key[: -len(suffix)], kind
+    return key, None
 
 
 def load_record(home: Path | str, slug: str) -> dict:
@@ -215,9 +241,28 @@ def load_record(home: Path | str, slug: str) -> dict:
     return dict(data) if data else {}
 
 
-def entry_for(record_data: dict, key: str) -> dict | None:
+def entry_for(record_data: dict, key: str, *, region: str | None = None) -> dict | None:
+    """This region's stored entry, or ``None``.
+
+    Records written before entries identified (path, region kind) keep ONE
+    entry per file under the bare path, tagged by its ``region:`` field.
+    Read compatibly: a bare-path entry whose ``region:`` names a kind that
+    carries a suffix is that kind's entry (a legacy ``CLAUDE.md`` entry
+    with ``region: pointer`` answers a ``CLAUDE.md#pointer`` lookup), and
+    it does NOT answer a lookup for a different kind -- so a managed
+    lookup against it reads "no entry" (``unknown``), never the other
+    region's hash. *region* is the kind the caller is asking about;
+    without it the lookup is the old exact-key one."""
     targets = record_data.get("targets") or {}
     entry = targets.get(key)
+    if region is not None:
+        base, suffix_kind = _split_key(key)
+        if entry is not None and entry.get("region") not in (None, region):
+            entry = None  # a legacy bare-path entry belonging to another kind
+        if entry is None and suffix_kind == region:
+            legacy = targets.get(base)
+            if legacy is not None and legacy.get("region") == region:
+                entry = legacy
     return dict(entry) if entry else None
 
 
@@ -246,6 +291,24 @@ def verdict_for(entry: dict | None, observed_hash: str | None) -> str:
     if entry.get("based_on_sha256") is not None and observed_hash == entry.get("based_on_sha256"):
         return "stale"
     return "edited"
+
+
+def migrate_legacy_entries(targets, key: str) -> None:
+    """In place: move a legacy bare-path entry whose ``region:`` kind
+    carries a key suffix to its own ``<path>#<kind>`` key, for the path
+    *key* names. Run by every writer BEFORE it touches ``targets`` so
+    writing one region kind never overwrites (or orphans) the other
+    kind's pre-migration entry. An already-present suffixed entry wins
+    over the legacy one (it is newer by construction)."""
+    base, _ = _split_key(key)
+    legacy = targets.get(base)
+    if legacy is None:
+        return
+    suffix = _KEY_SUFFIX.get(legacy.get("region"))
+    if suffix is None:
+        return
+    del targets[base]
+    targets.setdefault(base + suffix, legacy)
 
 
 def write_entry(
@@ -280,6 +343,7 @@ def write_entry(
     if targets is None:
         targets = {}
         data["targets"] = targets
+    migrate_legacy_entries(targets, key)
     targets[key] = {
         "region": region,
         "sha256": sha256,
@@ -318,6 +382,7 @@ def delete_entry(home: Path | str, slug: str, key: str) -> Path | None:
     y = _yaml()
     data = y.load(path.read_text(encoding="utf-8")) or {}
     targets = data.get("targets") or {}
+    migrate_legacy_entries(targets, key)
     if key not in targets:
         return None
     del targets[key]

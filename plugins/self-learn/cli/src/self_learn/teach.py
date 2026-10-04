@@ -263,6 +263,28 @@ def add_teach_parser(sub) -> argparse.ArgumentParser:
         "zero-match/budget-exhausted glob refusal (A2 §5.1 / U-glob)",
     )
     p.add_argument(
+        "--rules-path",
+        action="append",
+        dest="rules_paths",
+        metavar="GLOB",
+        help=(
+            "with --route --dest claude-md:rules:<topic>: a glob the rule fires on "
+            "(repeatable); validated and reachability-checked like a proposal's "
+            "rules_paths. Omitted: a lesson that --supersedes a record routed to "
+            "the same topic inherits that record's globs"
+        ),
+    )
+    p.add_argument(
+        "--allow-unpathed",
+        dest="allow_unpathed",
+        action="store_true",
+        help=(
+            "with --route: let this lesson turn a path-scoped rules file into an "
+            "unscoped one (it refuses by default: the whole file would then load "
+            "every session)"
+        ),
+    )
+    p.add_argument(
         "--follow-up",
         dest="follow_up",
         metavar="ACTION",
@@ -413,6 +435,8 @@ def run_teach(args: argparse.Namespace) -> int:
         ("--note", args.note is not None),
         ("--no-push", args.no_push),
         ("--hook-input", args.hook_input is not None),
+        ("--rules-path", bool(args.rules_paths)),
+        ("--allow-unpathed", args.allow_unpathed),
     ):
         if given and not args.route:
             return _fail(f"{flag} needs --route")
@@ -816,6 +840,8 @@ def _route_now(
             hook_input=hook_input,
             follow_up=follow_up,
             allow_empty_glob=args.allow_empty_glob,
+            rules_paths=args.rules_paths,
+            allow_unpathed=args.allow_unpathed,
         )
     except verbs.SecretRefusal as exc:
         print(str(exc), file=sys.stderr)

@@ -248,7 +248,9 @@ revert). Doc 13 promotes that to the general rule:
    and `self-learn recompile` remains the one-command repair (H-2). What IS
    replaced is the **dirty gate**. A plain host is gated by a
    **ledger-side compile record** — `<home>/compiled/<host-slug>.yaml`, one
-   entry per target, carrying the sha256 of the region the ledger says must
+   entry per REGION (a path plus its region kind — a host `CLAUDE.md` holds
+   a managed and a pointer region, so `CLAUDE.md` and `CLAUDE.md#pointer`
+   are two entries; S-74), carrying the sha256 of the region the ledger says must
    be there and the sha256 of **the state that write was based on** — the
    region as it was observed on disk at pre-flight. A region matching the
    current hash is clean; matching the based-on hash means our own apply

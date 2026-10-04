@@ -716,7 +716,11 @@ def _abort_if_region_unsound(
     if region is None:
         return  # region absent on disk — "fresh"/"missing", proceeds
     slug = host_slug(home, host_path, scope_kind=scope_kind)
-    entry = compiled.entry_for(compiled.load_record(home, slug), compiled.region_key(host_path, target))
+    entry = compiled.entry_for(
+        compiled.load_record(home, slug),
+        compiled.region_key(host_path, target, region_kind),
+        region=region_kind,
+    )
     observed_hash = compiled.sha256_hex(region)
     verdict = compiled.verdict_for(entry, observed_hash)
     if verdict == "unknown" and region_kind == "managed" and spec is not None:
@@ -883,7 +887,7 @@ def _write_compile_record_entry(
             return None
         if expected is None:
             return None
-        key = compiled.region_key(spec.host_path, spec.target)
+        key = compiled.region_key(spec.host_path, spec.target, region_kind)
         slug = host_slug(home, spec.host_path, scope_kind=spec.scope_kind)
         host_label = "(user scope — ~/.claude)" if spec.scope_kind == "user" else str(spec.host_path)
         intents.add_step(intent, compiled.compiled_record_path(home, slug))
@@ -990,7 +994,7 @@ def _resync_region_entry(
     is about to run, never for the two no-op returns above (nothing
     mutates there)."""
     try:
-        key = compiled.region_key(host_path, target)
+        key = compiled.region_key(host_path, target, region_kind)
         slug = host_slug(home, host_path, scope_kind=scope_kind)
         step_path = compiled.compiled_record_path(home, slug)
         if delete:
@@ -1379,6 +1383,99 @@ class _Destination:
     variant: str | None = None
     rules_topic: str | None = None
     rules_paths: list[str] | None = None
+    #: Set by :func:`_inherit_rules_paths` when ``rules_paths`` came from
+    #: the record this one supersedes (that record's id).
+    rules_paths_from: str | None = None
+
+
+def _inherit_rules_paths(
+    home: Path, record: Record, dest: _Destination, bucket_dir: Path
+) -> _Destination:
+    """A rules route of a record that SUPERSEDES a record routed to the
+    SAME rules topic (same scope) inherits that record's ``rules_paths``
+    when the route names none of its own (no sheet/``--rules-path`` globs,
+    no proposal globs). Without this, the replacement was compiled as an
+    UNPATHED lesson, and the compiler's absorbing rule (union with
+    "always" is "always") rewrote the whole topic file's ``paths:``
+    frontmatter away -- the file then loaded unconditionally instead of
+    only for the files it names (live, 2026-10-03, ``gtk-user-css``).
+
+    Anything that does not fit returns *dest* unchanged: no predecessor, an
+    unreadable one, a different scope, a non-rules or different-topic
+    routing, or a predecessor that was itself unpathed. The inherited
+    globs are the predecessor's STORED routing block, so a chain of
+    supersessions carries them forward."""
+    if dest.rules_paths or dest.destination != "claude-md" or not record.supersedes:
+        return dest
+    variant, topic = dest.variant, dest.rules_topic
+    if variant is None and dest.ref_name is not None:
+        try:
+            variant, topic = _decode_claude_md_qualifier(dest.ref_name)
+        except SheetLineError:
+            return dest
+    if variant != "rules" or topic is None:
+        return dest
+    own = record.routing or {}
+    if (
+        own.get("variant") == "rules"
+        and own.get("rules_topic") == topic
+        and own.get("rules_paths")
+    ):
+        # a reroute onto the topic the record already sits in keeps the
+        # globs it already has -- never swaps them for its predecessor's
+        return replace(dest, rules_paths=list(own["rules_paths"]))
+    try:
+        old_path = find_record_path(home, record.supersedes)
+        old = read_record_or_refuse(old_path)
+    except (LedgerOpsError, VerbError, *ledger_ops.UNREADABLE_RECORD_ERRORS):
+        return dest
+    if old_path.parent.parent != bucket_dir:
+        return dest  # another project's (or scope's) bucket: its globs are not ours
+    old_routing = old.routing or {}
+    old_paths = old_routing.get("rules_paths")
+    if (
+        old.scope != record.scope
+        or old_routing.get("destination") != "claude-md"
+        or old_routing.get("variant") != "rules"
+        or old_routing.get("rules_topic") != topic
+        or not isinstance(old_paths, list)
+        or not old_paths
+    ):
+        return dest
+    return replace(dest, rules_paths=list(old_paths), rules_paths_from=old.id)
+
+
+def _abort_if_unscopes_rules_file(
+    spec: "TargetSpec", record_id: str, *, allow_unpathed: bool
+) -> None:
+    """Refuses a rules route that would turn a PATH-SCOPED topic file into
+    an unscoped one. The compiler's absorbing rule makes ANY routed lesson
+    without ``rules_paths`` widen the file's ``paths:`` to nothing (loaded
+    at launch, every session) -- it used to do so with one stderr note
+    after the commit. Exact, not heuristic: the file on disk carries a
+    non-empty ``paths:`` and this route supplies no globs, so the union
+    is empty. ``--allow-unpathed`` is the deliberate way through."""
+    if (
+        allow_unpathed
+        or spec.variant != "rules"
+        or spec.rules_paths
+        or spec.target is None
+        or not spec.target.is_file()
+    ):
+        return
+    try:
+        existing = read_paths_frontmatter(spec.target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return
+    if existing:
+        raise VerbError(
+            f"route {record_id}: {spec.target} is path-scoped (paths: "
+            f"{list(existing)}) and this lesson carries no rules_paths -- "
+            "routing it would make the whole file load unconditionally. "
+            "Give it globs (--rules-path GLOB, repeatable), supersede a "
+            "record that has them, or pass --allow-unpathed to unscope the "
+            "file deliberately"
+        )
 
 
 def _resolve_destination(
@@ -1538,6 +1635,11 @@ class TargetSpec:
     #: U-glob §6.4: WHAT was bypassed — ``"zero-match"`` | ``"budget"`` |
     #: ``None``. Set only when ``glob_bypass`` is True.
     glob_bypass_reason: str | None = None
+    #: The record id whose ``rules_paths`` this route INHERITED (the new
+    #: record supersedes a record routed to the same rules topic and
+    #: carries no globs of its own) -- written to the routing block as
+    #: ``rules_paths_from`` so a reader can see where the globs came from.
+    rules_paths_from: str | None = None
     #: U-pointer §3.4: the ALWAYS-loaded surface (SKILL.md / CLAUDE.md) a
     #: `reference` route must ALSO write a pointer into -- set only in
     #: `_resolve_target`'s reference branch; ``None`` for every other
@@ -4275,6 +4377,7 @@ def route_dry_run(
     note: str | None = None,
     hook_input: dict | None = None,
     rules_paths: list[str] | None = None,
+    allow_unpathed: bool = False,
 ) -> RouteDryRunResult:
     """U-verbs §4.3: runs every preflight the real `route` runs, in the
     SAME order, and computes the bytes the compiler would write instead
@@ -4371,6 +4474,7 @@ def route_dry_run(
         )
 
     spec: TargetSpec | None = None
+    resolved_dest = _inherit_rules_paths(home, record, resolved_dest, bucket_dir)
     try:
         spec = _resolve_target(
             home,
@@ -4382,8 +4486,12 @@ def route_dry_run(
             variant=resolved_dest.variant,
             rules_topic=resolved_dest.rules_topic,
             rules_paths=resolved_dest.rules_paths,
-            allow_empty_glob=allow_empty_glob,
+            # inherited globs may have gone dead since they were routed;
+            # the lesson is meant to fire if the files come back
+            allow_empty_glob=allow_empty_glob or resolved_dest.rules_paths_from is not None,
         )
+        spec = replace(spec, rules_paths_from=resolved_dest.rules_paths_from)
+        _abort_if_unscopes_rules_file(spec, record_id, allow_unpathed=allow_unpathed)
     except VerbError as exc:
         would_refuse.append(refusal_text(exc))
         errors.append(exc)
@@ -5053,6 +5161,7 @@ def _execute_route(
                 variant=spec.variant,
                 rules_topic=spec.rules_topic,
                 rules_paths=list(spec.rules_paths) if spec.rules_paths else None,
+                rules_paths_from=spec.rules_paths_from,
                 allow_empty_glob=spec.glob_bypass,
                 glob_bypass_reason=spec.glob_bypass_reason,
                 verb="route",
@@ -5292,6 +5401,7 @@ def route(
     execution: execution_evidence.ExecutionRef | None = None,
     hook_input: dict | None = None,
     rules_paths: list[str] | None = None,
+    allow_unpathed: bool = False,
 ) -> VerbResult:
     """Route a pending record into canon. See the module docstring for the
     pinned sequence (M-R: the post-preflight half now lives once, in
@@ -5381,7 +5491,10 @@ def route(
     sentinel.heartbeat()
     try:
         bucket_dir = path.parent.parent
-        resolved_dest = _resolve_destination(bucket_dir, record_id, dest, rules_paths)
+        resolved_dest = _inherit_rules_paths(
+            home, record, _resolve_destination(bucket_dir, record_id, dest, rules_paths),
+            bucket_dir,
+        )
         destination = resolved_dest.destination
         ref_name = resolved_dest.ref_name
 
@@ -5419,8 +5532,12 @@ def route(
                 variant=resolved_dest.variant,
                 rules_topic=resolved_dest.rules_topic,
                 rules_paths=resolved_dest.rules_paths,
-                allow_empty_glob=allow_empty_glob,
+                # inherited globs may have gone dead since they were
+                # routed; the lesson is meant to fire if the files return
+                allow_empty_glob=allow_empty_glob or resolved_dest.rules_paths_from is not None,
             )
+            spec = replace(spec, rules_paths_from=resolved_dest.rules_paths_from)
+            _abort_if_unscopes_rules_file(spec, record_id, allow_unpathed=allow_unpathed)
 
         # §2.3, corrected by FW-64: `routing.by` names the actor that CHOSE
         # THE DESTINATION. The premise this comment used to state — "the
@@ -5476,6 +5593,8 @@ def route_direct(
     hook_input: dict | None = None,
     follow_up: dict | None = None,
     allow_empty_glob: bool = False,
+    rules_paths: list[str] | None = None,
+    allow_unpathed: bool = False,
 ) -> VerbResult:
     """``teach --route``'s writer (02 §2 lifecycle note): the composed,
     not-yet-on-disk record is written DIRECTLY into its bucket's
@@ -5597,6 +5716,18 @@ def route_direct(
             )
             spec = hook_route.spec
         else:
+            if rules_paths is not None:
+                problem = sheet_rules_paths_problem(dest, rules_paths)
+                if problem is not None:
+                    raise SheetLineError(f"route {record.id}: {problem}")
+            direct_dest = _inherit_rules_paths(
+                home, record,
+                _Destination(
+                    destination, ref_name,
+                    rules_paths=list(rules_paths) if rules_paths is not None else None,
+                ),
+                bucket_dir,
+            )
             spec = _resolve_target(
                 home,
                 bucket_dir,
@@ -5605,8 +5736,11 @@ def route_direct(
                 ref_name,
                 user_claude_md=user_claude_md,
                 project_path=project_path,
-                allow_empty_glob=allow_empty_glob,
+                rules_paths=direct_dest.rules_paths,
+                allow_empty_glob=allow_empty_glob or direct_dest.rules_paths_from is not None,
             )
+            spec = replace(spec, rules_paths_from=direct_dest.rules_paths_from)
+            _abort_if_unscopes_rules_file(spec, record.id, allow_unpathed=allow_unpathed)
 
         # dict[str, object]: mixes str/dict/list values below (hook is a
         # dict, rules_paths is a list) — a narrower inferred type makes
@@ -5640,6 +5774,12 @@ def route_direct(
                 routing["rules_topic"] = spec.rules_topic
             if spec.rules_paths:
                 routing["rules_paths"] = list(spec.rules_paths)
+            if spec.rules_paths_from is not None:
+                routing["rules_paths_from"] = spec.rules_paths_from
+            if spec.glob_bypass:
+                routing["allow_empty_glob"] = True
+            if spec.glob_bypass_reason is not None:
+                routing["glob_bypass_reason"] = spec.glob_bypass_reason
         record.set_routing(routing)
         record.set_status("routed")
         if note is not None:
@@ -6982,6 +7122,8 @@ def _reroute_plan(
     user_claude_md: Path | str | None,
     hook_input: dict | None,
     rules_paths: list[str] | None = None,
+    allow_empty_glob: bool = False,
+    allow_unpathed: bool = False,
 ) -> _ReroutePlan:
     """`reroute`'s checks before any lock, in order, with nothing written
     (U3b: factored out so `batch.dry_run` previews a reconsider case's
@@ -7000,7 +7142,10 @@ def _reroute_plan(
     old_retire = _retirement_preflight(
         home, record, bucket_dir, warnings, user_claude_md=user_claude_md
     )
-    resolved_dest = _resolve_destination(bucket_dir, record_id, dest, rules_paths)
+    resolved_dest = _inherit_rules_paths(
+        home, record, _resolve_destination(bucket_dir, record_id, dest, rules_paths),
+        bucket_dir,
+    )
     destination = resolved_dest.destination
     if hook_input is not None and destination != "hook":
         raise SheetLineError(
@@ -7030,7 +7175,10 @@ def _reroute_plan(
             variant=resolved_dest.variant,
             rules_topic=resolved_dest.rules_topic,
             rules_paths=resolved_dest.rules_paths,
+            allow_empty_glob=allow_empty_glob or resolved_dest.rules_paths_from is not None,
         )
+        spec = replace(spec, rules_paths_from=resolved_dest.rules_paths_from)
+        _abort_if_unscopes_rules_file(spec, record_id, allow_unpathed=allow_unpathed)
 
     # RER3: the idempotency refusal, decided by resolved FILE
     # identity — the one comparison that cannot be fooled by two
@@ -7047,7 +7195,16 @@ def _reroute_plan(
         if spec.destination == "reference" and spec.refs_dir is not None
         else None
     )
-    if old_target is not None and old_target == new_target:
+    # Re-scoping is a real change on an unchanged target: the SAME rules
+    # topic file with different globs (the only way, short of a hand-written
+    # proposal, to give an already-routed lesson its `paths:` back).
+    rescoped = (
+        spec.variant == "rules"
+        and old_routing.get("variant") == "rules"
+        and old_routing.get("rules_topic") == spec.rules_topic
+        and list(old_routing.get("rules_paths") or ()) != list(spec.rules_paths or ())
+    )
+    if old_target is not None and old_target == new_target and not rescoped:
         raise VerbError(
             f"record {record_id} already routed to "
             f"{_routing_dest_label(old_routing)} — nothing to change"
@@ -7070,6 +7227,8 @@ def reroute(
     user_claude_md: Path | str | None = None,
     hook_input: dict | None = None,
     rules_paths: list[str] | None = None,
+    allow_empty_glob: bool = False,
+    allow_unpathed: bool = False,
 ) -> VerbResult:
     """Correct a wrong routing DESTINATION on an already-ROUTED record
     (U-verbs S-54 / §4.5, Phase 2) — the live-motivated half of what
@@ -7109,7 +7268,8 @@ def reroute(
         plan = _reroute_plan(
             home, record_id, dest=dest, by=by, note=note,
             user_claude_md=user_claude_md, hook_input=hook_input,
-            rules_paths=rules_paths,
+            rules_paths=rules_paths, allow_empty_glob=allow_empty_glob,
+            allow_unpathed=allow_unpathed,
         )
         path, record, bucket_dir = plan.path, plan.record, plan.bucket_dir
         old_routing, old_retire, warnings = plan.old_routing, plan.old_retire, plan.warnings
@@ -7152,6 +7312,9 @@ def reroute(
                 variant=spec.variant,
                 rules_topic=spec.rules_topic,
                 rules_paths=list(spec.rules_paths) if spec.rules_paths else None,
+                rules_paths_from=spec.rules_paths_from,
+                allow_empty_glob=spec.glob_bypass,
+                glob_bypass_reason=spec.glob_bypass_reason,
                 hook=hook_route.meta if hook_route is not None else None,
             )
             routed_record = Record.from_path(path)  # AS RESOLVED — routed_at now set
@@ -8895,7 +9058,7 @@ def recompile(
                         if spec.scope_kind == "user"
                         else str(spec.host_path)
                     )
-                    key = compiled.region_key(spec.host_path, target)
+                    key = compiled.region_key(spec.host_path, target, region_kind)
                     with _ledger_write(home, earlier_commits=span_commits) as recovered:
                         intents.announce_recovered(recovered)
                         record_path = compiled.adopt_entry(
