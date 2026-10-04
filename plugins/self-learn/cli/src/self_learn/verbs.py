@@ -1388,7 +1388,9 @@ class _Destination:
     rules_paths_from: str | None = None
 
 
-def _inherit_rules_paths(home: Path, record: Record, dest: _Destination) -> _Destination:
+def _inherit_rules_paths(
+    home: Path, record: Record, dest: _Destination, bucket_dir: Path
+) -> _Destination:
     """A rules route of a record that SUPERSEDES a record routed to the
     SAME rules topic (same scope) inherits that record's ``rules_paths``
     when the route names none of its own (no sheet/``--rules-path`` globs,
@@ -1413,10 +1415,22 @@ def _inherit_rules_paths(home: Path, record: Record, dest: _Destination) -> _Des
             return dest
     if variant != "rules" or topic is None:
         return dest
+    own = record.routing or {}
+    if (
+        own.get("variant") == "rules"
+        and own.get("rules_topic") == topic
+        and own.get("rules_paths")
+    ):
+        # a reroute onto the topic the record already sits in keeps the
+        # globs it already has -- never swaps them for its predecessor's
+        return replace(dest, rules_paths=list(own["rules_paths"]))
     try:
-        old = read_record_or_refuse(find_record_path(home, record.supersedes))
+        old_path = find_record_path(home, record.supersedes)
+        old = read_record_or_refuse(old_path)
     except (LedgerOpsError, VerbError, *ledger_ops.UNREADABLE_RECORD_ERRORS):
         return dest
+    if old_path.parent.parent != bucket_dir:
+        return dest  # another project's (or scope's) bucket: its globs are not ours
     old_routing = old.routing or {}
     old_paths = old_routing.get("rules_paths")
     if (
@@ -4460,7 +4474,7 @@ def route_dry_run(
         )
 
     spec: TargetSpec | None = None
-    resolved_dest = _inherit_rules_paths(home, record, resolved_dest)
+    resolved_dest = _inherit_rules_paths(home, record, resolved_dest, bucket_dir)
     try:
         spec = _resolve_target(
             home,
@@ -5478,7 +5492,8 @@ def route(
     try:
         bucket_dir = path.parent.parent
         resolved_dest = _inherit_rules_paths(
-            home, record, _resolve_destination(bucket_dir, record_id, dest, rules_paths)
+            home, record, _resolve_destination(bucket_dir, record_id, dest, rules_paths),
+            bucket_dir,
         )
         destination = resolved_dest.destination
         ref_name = resolved_dest.ref_name
@@ -5711,6 +5726,7 @@ def route_direct(
                     destination, ref_name,
                     rules_paths=list(rules_paths) if rules_paths is not None else None,
                 ),
+                bucket_dir,
             )
             spec = _resolve_target(
                 home,
@@ -7127,7 +7143,8 @@ def _reroute_plan(
         home, record, bucket_dir, warnings, user_claude_md=user_claude_md
     )
     resolved_dest = _inherit_rules_paths(
-        home, record, _resolve_destination(bucket_dir, record_id, dest, rules_paths)
+        home, record, _resolve_destination(bucket_dir, record_id, dest, rules_paths),
+        bucket_dir,
     )
     destination = resolved_dest.destination
     if hook_input is not None and destination != "hook":

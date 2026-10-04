@@ -451,3 +451,36 @@ class TestUnscopingAPathScopedFileIsRefused:
         verbs.route(env.ledger, NEW, dest="claude-md", no_push=True)
         with pytest.raises(verbs.VerbError, match="path-scoped"):
             verbs.reroute(env.ledger, NEW, dest="claude-md:rules:t", no_push=True)
+
+
+class TestGateFindings:
+    """Blind-gate findings F1/F2: a reroute never swaps a record's own
+    globs for its predecessor's; inheritance never crosses projects."""
+
+    def test_same_topic_reroute_keeps_the_records_own_globs(self, env):
+        route_pathed(env)  # OLD: GLOBS
+        seed(env, NEW, supersedes=OLD)
+        verbs.route(env.ledger, NEW, dest="claude-md:rules:t", rules_paths=["a/**"], no_push=True)
+        with pytest.raises(verbs.VerbError, match="nothing to change"):
+            verbs.reroute(env.ledger, NEW, dest="claude-md:rules:t", no_push=True)
+        assert routed(env, NEW).routing["rules_paths"] == ["a/**"]
+
+    def test_inheritance_does_not_cross_projects(self, env, tmp_path):
+        from self_learn.hosts import slug_for
+        from support import init_repo, commit_all
+
+        route_pathed(env)
+        host2 = tmp_path / "host2"
+        init_repo(host2)
+        (host2 / "CLAUDE.md").write_text("# h2\n", encoding="utf-8")
+        commit_all(host2, "seed")
+        reg = env.ledger / "hosts.yaml"
+        reg.write_text(reg.read_text(encoding="utf-8") + f"  - path: {host2}\n", encoding="utf-8")
+        commit_all(env.ledger, "second host")
+        rec = make_behavior(scope="project", record_id=NEW)
+        rec.set_supersedes(OLD)
+        create_record(env.ledger, rec, project_path=host2)
+        verbs.route(env.ledger, NEW, dest="claude-md:rules:t", no_push=True)
+        b2 = env.ledger / "projects" / slug_for(host2) / "resolved" / f"{NEW}.md"
+        routing = Record.from_path(b2).routing
+        assert "rules_paths" not in routing and "rules_paths_from" not in routing
