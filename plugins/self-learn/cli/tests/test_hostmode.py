@@ -747,7 +747,7 @@ class TestRec7FourRegionKinds:
 
         pointer_surface = env.skill_md
         pointer_text = pointer_surface.read_text(encoding="utf-8")
-        pointer_key = compiled.region_key(env.host, pointer_surface)
+        pointer_key = compiled.region_key(env.host, pointer_surface, "pointer")
         pointer_entry = compiled.entry_for(data, pointer_key)
         assert pointer_entry is not None
         assert pointer_entry["region"] == "pointer"
@@ -1261,7 +1261,7 @@ class TestD3CompletionEveryVerbEveryKindResync:
 
         pointer_surface = env.skill_md
         pointer_text = pointer_surface.read_text(encoding="utf-8")
-        pointer_key = compiled.region_key(env.host, pointer_surface)
+        pointer_key = compiled.region_key(env.host, pointer_surface, "pointer")
         pointer_entry = compiled.entry_for(data, pointer_key)
         assert pointer_entry is not None, "route_direct wrote NO pointer record entry at all"
         assert pointer_entry["region"] == "pointer"
@@ -2866,7 +2866,7 @@ class TestRecompileRecordResyncOnRender:
 
         slug = hosts_mod.host_slug(env.ledger, env.host, scope_kind="skill")
         ref_key = compiled.region_key(env.host, ref_path)
-        pointer_key = compiled.region_key(env.host, pointer_surface)
+        pointer_key = compiled.region_key(env.host, pointer_surface, "pointer")
         correct_ref_entry = compiled.entry_for(
             compiled.load_record(env.ledger, slug), ref_key
         )

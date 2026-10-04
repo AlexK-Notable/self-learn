@@ -2525,6 +2525,7 @@ def resolve_record(
     rules_paths: list[str] | None = None,
     allow_empty_glob: bool = False,
     glob_bypass_reason: str | None = None,
+    rules_paths_from: str | None = None,
     verb: str | None = None,
     extra_allowed_source: frozenset[str] | None = None,
 ) -> list[Path]:
@@ -2618,6 +2619,11 @@ def resolve_record(
                 routing["rules_topic"] = rules_topic
             if rules_paths is not None:
                 routing["rules_paths"] = list(rules_paths)
+            if rules_paths_from is not None:
+                # the globs were INHERITED from the record this one
+                # supersedes (same rules topic) -- name where they came
+                # from, so the routing block explains its own paths
+                routing["rules_paths_from"] = rules_paths_from
             if allow_empty_glob:
                 # A2 §5.1 test obligation §13 item 3: the --allow-empty-
                 # glob bypass, recorded so a later reader knows the rule
@@ -2832,6 +2838,9 @@ def reroute_record(
     variant: str | None = None,
     rules_topic: str | None = None,
     rules_paths: list[str] | None = None,
+    rules_paths_from: str | None = None,
+    allow_empty_glob: bool = False,
+    glob_bypass_reason: str | None = None,
     hook: dict | None = None,
 ) -> list[Path]:
     """File-op half of ``reroute`` (U-verbs S-54 / §4.5, Phase 2):
@@ -2863,6 +2872,12 @@ def reroute_record(
             routing["rules_topic"] = rules_topic
         if rules_paths is not None:
             routing["rules_paths"] = list(rules_paths)
+        if rules_paths_from is not None:
+            routing["rules_paths_from"] = rules_paths_from
+        if allow_empty_glob:
+            routing["allow_empty_glob"] = True
+        if glob_bypass_reason is not None:
+            routing["glob_bypass_reason"] = glob_bypass_reason
     if hook is not None:
         # U3b: a reroute INTO a hook carries the generated script and its
         # examples, exactly as `route`'s routing block does.
