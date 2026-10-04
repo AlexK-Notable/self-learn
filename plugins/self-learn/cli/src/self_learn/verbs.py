@@ -744,8 +744,10 @@ def _abort_if_region_unsound(
     if compiled.refuses(verdict, mode):
         raise DirtyTargetError(
             f"compile target {target} {REGION_VERDICT_MARKER} ({verdict}) "
-            "— the managed region no longer matches what self-learn last "
-            f"wrote; run `self-learn recompile --adopt {target}` to accept "
+            f"— the {'pointer' if region_kind == 'pointer' else 'managed'} region "
+            "no longer matches what self-learn last "
+            f"wrote; run `self-learn recompile --adopt {target}"
+            f"{'#pointer' if region_kind == 'pointer' else ''}` to accept "
             "the on-disk region as authoritative, or restore self-learn's "
             "last write",
             cause="region",
@@ -9062,7 +9064,6 @@ def recompile(
         }):
             if surface not in adopt_pointer:
                 continue
-            adopted_pointer_surfaces.add(surface)
             owner = next(
                 spec for spec, _r in ref_work.values()
                 if spec.pointer_surface is not None and spec.pointer_surface.resolve() == surface
@@ -9083,6 +9084,7 @@ def recompile(
                 "(user scope — ~/.claude)" if owner.scope_kind == "user" else str(owner.host_path)
             )
             key = compiled.region_key(owner.host_path, surface, "pointer")
+            adopted_pointer_surfaces.add(surface)  # only once something is adopted
             with _ledger_write(home, earlier_commits=span_commits) as recovered:
                 intents.announce_recovered(recovered)
                 record_path = compiled.adopt_entry(
@@ -9094,7 +9096,12 @@ def recompile(
                 _commit_ledger(home, [record_path], adopt_subject)
             span_commits.append(adopt_subject)
             result.entries.append(RecompileEntry(target=surface, changed=True, commit_sha=None))
-        for missing in sorted(adopt_pointer - adopted_pointer_surfaces):
+        known_surfaces = {
+            spec.pointer_surface.resolve()
+            for spec, _records in ref_work.values()
+            if spec.pointer_surface is not None
+        }
+        for missing in sorted(adopt_pointer - known_surfaces):
             result.warnings.append(
                 f"{missing}#pointer: --adopt: no reference-routed pointer surface at this "
                 "path — nothing adopted"

@@ -140,7 +140,18 @@ def test_naming_an_absent_pointer_region_warns_and_writes_nothing(env):
     result = verbs.recompile(env.ledger, no_push=True, adopt=f"{claude}#pointer")
 
     assert any("no pointer region on disk" in w for w in result.warnings), result.warnings
-    assert _entry(env, "pointer") == before
+    after = _entry(env, "pointer")
+    assert after["sha256"] == before["sha256"]  # the restored block is the one first recorded
+    assert after["by"] != "recompile --adopt"  # and no adopt wrote it
+    # nothing was adopted, so the run still restores the block (as a plain recompile does)
+    assert POINTER_BEGIN_MARKER in claude.read_text(encoding="utf-8")
+
+
+def test_a_refused_pointer_names_the_pointer_selector(env):
+    _both_regions(env)
+    _hand_edit(env, "pointer")
+    with pytest.raises(verbs.VerbError, match=r"pointer region.*--adopt \S+CLAUDE\.md#pointer"):
+        _route(env, "lrn-0000c003", "reference")  # a second reference route meets the edited pointer
 
 
 def test_naming_a_pointer_on_a_path_with_no_reference_route_warns(env):
