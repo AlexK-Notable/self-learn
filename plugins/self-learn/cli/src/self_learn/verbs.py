@@ -9106,6 +9106,7 @@ def recompile(
             if (
                 adopt_managed
                 and region_kind is not None
+                and target is not None
                 and target.resolve() in adopt_managed
             ):
                 adopt_matched_managed.add(target.resolve())
