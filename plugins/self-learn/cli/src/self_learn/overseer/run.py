@@ -1505,10 +1505,19 @@ def _refuse_doomed_reconsider(
     The raise names every refused line, and the pair loop puts it in
     "Refused / could not do" and the run journal, so a drop is never
     silent. Resolution and maintenance pairs are not touched: a parked
-    case's resolution is the decision itself, refused lines and all."""
+    case's resolution is the decision itself, refused lines and all.
+
+    A refusal of a retried kind (`batch.RETRIED_REFUSAL_KINDS`: `git`,
+    `target-busy`) does not doom the pair (the coordinator's ruling,
+    2026-10-05): S-68 retries such a line on a later attempt rather than
+    giving up on it, so a pair whose only refusals are of those kinds is
+    recorded and goes through the normal retry path."""
     if _yaml_mapping(case_file).get("kind") != "reconsider":
         return
-    refused = [item for item in preview.items if item.state == "would-refuse"]
+    refused = [
+        item for item in preview.items
+        if item.state == "would-refuse" and item.kind not in batch.RETRIED_REFUSAL_KINDS
+    ]
     if not refused:
         return
     lines = "; ".join(

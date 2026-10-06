@@ -764,3 +764,44 @@ def test_the_live_shape_a_human_routed_claude_md_line_moves_to_a_warn_hook(
     assert not (fake_home / "settings.json").exists()  # never registered: activation is off
     entry = next(h for h in reversed(record.history) if h.get("event") == "hook-activated")
     assert "switched off" in (entry.get("note") or "")
+
+
+# ---- 2026-10-05 fold: a retried refusal kind does not doom a reconsider
+
+
+def test_a_reconsider_whose_preview_refuses_only_a_retried_kind_is_recorded(
+    tmp_path, monkeypatch, claude_dir
+):
+    """S-68: a line refused as `git` or `target-busy` is retried by a later
+    attempt, not given up on (`batch.RETRIED_REFUSAL_KINDS`). A reconsider
+    whose preview refuses only such a line is recorded and goes through the
+    normal retry path; probe D's `bad-line` refusal (the test above) is the
+    control that still drops. The preview is made to report `target-busy`
+    for the pair's line; apply time then runs the real line."""
+    from self_learn import batch
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    _enabled(monkeypatch)
+    _parked_id, resolution_id = _seed_the_chain_up_to_the_refused_resolution(home, tmp_path, monkeypatch)
+    assert "target-busy" in batch.RETRIED_REFUSAL_KINDS  # control: a retried kind
+    real_dry_run = overseer_run.batch.dry_run
+    busied: list[str] = []
+
+    def target_busy_preview(*args, **kwargs):
+        result = real_dry_run(*args, **kwargs)
+        for item in result.items:
+            item.state, item.kind = "would-refuse", "target-busy"
+            item.detail = "target file has edits self-learn did not make"
+            busied.append(item.id)
+        return result
+
+    monkeypatch.setattr(overseer_run.batch, "dry_run", target_busy_preview)
+    _second_run(home, monkeypatch, resolution_id, _reconsider_of(resolution_id),
+                {"version": 1, "items": [_warn_hook_line(RID)]})
+
+    assert busied == [RID]  # control: the preview really reported target-busy
+    refused = _refused_section(home)
+    assert "would be refused" not in refused, refused
+    reconsider_id = _case_fm(home, resolution_id).get("superseded_by")
+    assert reconsider_id and _case_fm(home, reconsider_id)["kind"] == "reconsider", refused
