@@ -558,3 +558,206 @@ def test_a_list_supersedes_does_not_end_the_run(tmp_path, monkeypatch, claude_di
     assert _record(home, rid_b).status == "rejected", result  # the other pair applied
     assert _record(home, rid_a).status == "pending"
     assert _case_fm(home, parked_a).get("superseded_by") is None
+
+
+# ------------------- 2026-10-05 fold: tests the blind gate found missing
+
+
+def test_a_reconsider_with_null_records_is_a_per_pair_drop(tmp_path, decided):
+    """Gate nit 4 (its mutation 9 survived): without the records type
+    check, `records: null` raised TypeError out of `_validate_successor`,
+    which the pair loop does not catch."""
+    home, _setup, prior = decided
+    for records in (None, 7, RID, [RID, 7]):
+        bad = dict(_reconsider_of(prior), records=records)
+        with pytest.raises(overseer_run.OverseerError, match="records must be a list of record ids"):
+            overseer_run._validate_successor(_staged(tmp_path, bad), set(), home)
+
+
+def test_a_resolution_naming_a_non_parked_case_drops_with_the_s76_line(
+    tmp_path, monkeypatch, claude_dir
+):
+    """Gate nit 5 (its mutation 7 survived): the drop line the S-76 row
+    quotes, end to end, as the literal text."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _enabled(monkeypatch)
+    _parked_id, resolution_id = _seed_the_chain_up_to_the_refused_resolution(home, tmp_path, monkeypatch)
+    plain = dict(_reconsider_of(resolution_id), kind="resolution")
+
+    _second_run(home, monkeypatch, resolution_id, plain, {"version": 1, "items": [_warn_hook_line(RID)]})
+
+    refused = _refused_section(home)
+    assert "case-pkill-hook.yaml: dropped with sheet-pkill-hook.yaml" in refused, refused
+    assert (
+        "supersedes must name a verified parked case (only a kind: reconsider "
+        "successor may correct a case that is not parked)"
+    ) in refused, refused
+    assert _case_fm(home, resolution_id).get("superseded_by") is None
+
+
+def test_two_reconsiders_of_one_non_parked_case_the_second_is_dropped_alone(
+    tmp_path, monkeypatch, claude_dir
+):
+    """Gate probe B: a case is superseded once. The second reconsider of
+    the same non-parked case is dropped ("a second successor for"); the
+    first applies."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _enabled(monkeypatch)
+    _parked_id, resolution_id = _seed_the_chain_up_to_the_refused_resolution(home, tmp_path, monkeypatch)
+    hook = {"version": 1, "items": [_warn_hook_line(RID)]}
+
+    def invoke(spec):
+        if spec.label == "phase-a":
+            _phase_a(spec.cwd)
+        else:
+            _phase_b_common(spec.cwd)
+            for name in ("a-hook", "b-hook"):
+                _dump(spec.cwd / f"case-{name}.yaml", _reconsider_of(resolution_id))
+                _dump(spec.cwd / f"sheet-{name}.yaml", hook)
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    result = overseer_run.run(home, no_push=True, manual=True)
+
+    refused = _refused_section(home)
+    assert f"case-b-hook.yaml: dropped with sheet-b-hook.yaml — case-b-hook.yaml: a second successor for {resolution_id}" in refused, refused
+    assert "case-a-hook.yaml" not in refused, refused
+    successors = [row["case"] for row in cases.list_cases(home) if row.get("supersedes") == resolution_id]
+    assert successors == [_case_fm(home, resolution_id)["superseded_by"]], successors
+    assert (_record(home, RID).routing or {}).get("destination") == "hook"
+    assert (result.status, result.decisions_dropped) == ("applied", 1), result
+
+
+def test_a_reconsider_refused_at_apply_is_itself_corrected_by_a_later_reconsider(
+    tmp_path, monkeypatch, claude_dir
+):
+    """Gate probe C, under this fold's phase-B drop: a line the preview
+    passes but apply time refuses (injected here: `verbs.reroute` raises
+    at apply) leaves reconsider R1 recorded with its line refused. A later
+    run's reconsider naming R1 -- not selected that run -- applies."""
+    from self_learn import verbs
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    _enabled(monkeypatch)
+    _parked_id, resolution_id = _seed_the_chain_up_to_the_refused_resolution(home, tmp_path, monkeypatch)
+    real_reroute = verbs.reroute
+
+    def refused_at_apply(*args, **kwargs):
+        raise verbs.VerbError("injected: refused at apply time")
+
+    monkeypatch.setattr(verbs, "reroute", refused_at_apply)
+    _second_run(home, monkeypatch, resolution_id, _reconsider_of(resolution_id),
+                {"version": 1, "items": [_warn_hook_line(RID)]})
+    r1 = _case_fm(home, resolution_id).get("superseded_by")
+    assert r1 and _case_fm(home, r1)["kind"] == "reconsider"  # R1 was recorded (the preview passed)
+    application = cases.show(home, r1, evidence_only=False).sections["Application"]
+    assert "route → refused" in application, application
+    assert (_record(home, RID).routing or {}).get("destination") == "skill-md"  # nothing changed
+
+    monkeypatch.setattr(verbs, "reroute", real_reroute)
+
+    def invoke(spec):
+        if spec.label == "phase-a":
+            _phase_a(spec.cwd)  # R1 is not selected this run
+        else:
+            _phase_b_common(spec.cwd)
+            _dump(spec.cwd / "case-r2.yaml", _reconsider_of(r1))
+            _dump(spec.cwd / "sheet-r2.yaml", {"version": 1, "items": [_warn_hook_line(RID)]})
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    overseer_run.run(home, no_push=True, manual=True)
+
+    r2 = _case_fm(home, r1).get("superseded_by")
+    assert r2 and _case_fm(home, r2)["kind"] == "reconsider", _refused_section(home)
+    routing = _record(home, RID).routing or {}
+    assert routing.get("destination") == "hook" and (routing.get("hook") or {}).get("mode") == "warn"
+
+
+# ---- the live shape: claude-md, user scope, routed by a person (Sunday's run)
+
+LIVE_RID = "lrn-a5000009"
+
+
+@pytest.fixture
+def fake_home(tmp_path, monkeypatch):
+    """`~/.claude` for this test: HOME and SELF_LEARN_CLAUDE_DIR both point
+    into tmp_path, so the user CLAUDE.md and the hooks folder are scratch
+    (the module's `_real_claude_dir_never_touched` is the control)."""
+    home_dir = tmp_path / "fake-home"
+    (home_dir / ".claude" / "hooks").mkdir(parents=True)
+    (home_dir / ".claude" / "skills").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setenv("SELF_LEARN_CLAUDE_DIR", str(home_dir / ".claude"))
+    return home_dir / ".claude"
+
+
+def test_the_live_shape_a_human_routed_claude_md_line_moves_to_a_warn_hook(
+    tmp_path, monkeypatch, fake_home
+):
+    """`lrn-19f82fc5` as it is on disk: user scope, routed to the user
+    CLAUDE.md `by: human`; the steward parked it as `hook`; an overseer
+    resolution's route was refused at apply. A reconsider naming that
+    resolution (an overseer case, so the actor guard admits it) moves the
+    lesson to a warn hook and retires the always-loaded line."""
+    from self_learn import ledger_ops, verbs
+    from support import commit_all, make_behavior
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    _enabled(monkeypatch)
+    user_claude_md = fake_home / "CLAUDE.md"
+    ledger_ops.create_record(home, make_behavior(record_id=LIVE_RID, scope="user", trigger=HOOK_TRIGGER))
+    commit_all(home, f"seed {LIVE_RID}")
+    verbs.route(home, LIVE_RID, dest="claude-md", no_push=True)
+    routing = _record(home, LIVE_RID).routing or {}
+    assert (routing.get("destination"), routing.get("by")) == ("claude-md", "human"), routing
+    assert LIVE_RID in user_claude_md.read_text(encoding="utf-8")  # control: the line is loaded
+
+    setup = tmp_path / "setup"
+    setup.mkdir()
+    parked = _case([LIVE_RID], "parked", "route", scope="user")
+    parked.update(kind="parked", parked_for="overseer", parked_reason="hook")
+    parked_id = _record_case(home, setup, parked)
+    first = _successor(LIVE_RID, parked_id)
+    first.update(outcome="route", scope="user")
+    first["decision"]["verb"] = "route"
+    line = _warn_hook_line(LIVE_RID)
+
+    def invoke_first(spec):
+        if spec.label == "phase-a":
+            _phase_a(spec.cwd)
+        else:
+            _phase_b_common(spec.cwd)
+            _dump(spec.cwd / "case-pkill-hook.yaml", first)
+            _dump(spec.cwd / "sheet-pkill-hook.yaml", {"version": 1, "items": [line]})
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke_first)
+    overseer_run.run(home, no_push=True)
+    resolution_id = _case_fm(home, parked_id).get("superseded_by")
+    assert resolution_id and _case_fm(home, resolution_id)["actor"] == "overseer"
+    application = cases.show(home, resolution_id, evidence_only=False).sections["Application"]
+    assert "route → refused" in application, application
+
+    reconsider = _reconsider_of(resolution_id)
+    reconsider.update(records=[LIVE_RID])
+    reconsider["evidence"] = [{"ref": f"record:{LIVE_RID}", "quote": "status: routed"}]
+    _second_run(home, monkeypatch, resolution_id, reconsider, {"version": 1, "items": [line]})
+
+    refused = _refused_section(home)
+    assert "dropped" not in refused, refused
+    reconsider_id = _case_fm(home, resolution_id).get("superseded_by")
+    assert reconsider_id and _case_fm(home, reconsider_id)["kind"] == "reconsider", refused
+    record = _record(home, LIVE_RID)
+    routing = record.routing or {}
+    assert (record.status, routing.get("destination"), routing.get("by")) == ("routed", "hook", "overseer")
+    assert (routing.get("hook") or {}).get("mode") == "warn"
+    assert LIVE_RID not in user_claude_md.read_text(encoding="utf-8")  # the always-loaded line retired
+    assert (fake_home / "hooks" / script_name(LIVE_RID, HOOK_TRIGGER)).is_symlink()  # placed
+    assert not (fake_home / "settings.json").exists()  # never registered: activation is off
+    entry = next(h for h in reversed(record.history) if h.get("event") == "hook-activated")
+    assert "switched off" in (entry.get("note") or "")
