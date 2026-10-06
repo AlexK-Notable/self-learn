@@ -111,6 +111,10 @@ intent field, phase, or second executor.
   A bucket records its project's absolute path at creation (`meta.yaml`
   beside the bucket; the slug alone is lossy). Producers know the path:
   teach uses cwd; the miner reads the transcript's own `cwd` field.
+  *(FW-162, 2026-10-05:)* when that path lies inside a linked git
+  worktree whose main working tree is a registered project host, the
+  capture files under that host (`hosts.capture_host_path`); every
+  other path, and any case git cannot answer, is used as before.
   *(Added 2026-07-18 — feedback round 3 item 3, 02 §2's `rehome` pin:)*
   a bucket can also be created by `self-learn rehome` moving a pending
   record into a registered project that has no bucket yet — dirs +
