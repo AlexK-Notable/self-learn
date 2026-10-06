@@ -8,9 +8,14 @@ Every repo here is real: ``git init`` plus ``git worktree add`` in
 fails on the code before FW-162 by landing in the worktree's bucket, not
 by a missing name.
 
+A removed worktree (git can no longer answer) files under its host only
+by the narrow ``<registered host>/.claude/worktrees/<name>`` shape, and
+only while the path does not exist (``TestRemovedWorktree``).
+
 The unchanged cases (a sibling repo, an unregistered repo's worktree, a
-main-tree subdirectory) and the fail-closed cases (git absent, worktree
-removed, hosts.yaml unloadable) pass before and after FW-162 by design.
+main-tree subdirectory, a removed path elsewhere) and the fail-closed
+cases (git absent, hosts.yaml unloadable) pass before and after FW-162
+by design.
 Each of them carries a positive control in the same environment: the
 remapping is shown to be live there, so "unchanged" cannot be a resolver
 that never fires.
@@ -272,6 +277,95 @@ class TestUnchanged:
         assert hosts.capture_host_path(home, wt) == wt
 
 
+# --------------------------------------------------------- removed worktree
+
+
+class TestRemovedWorktree:
+    """Once a worktree is removed git has nothing left to answer, so for a
+    path that does NOT exist — and only then — the shape
+    ``<P>/.claude/worktrees/<name>[/…]`` with ``<P>`` exactly a registered
+    project host files under ``<P>``."""
+
+    def test_removed_worktree_under_a_registered_host_maps_to_the_host(self, sandbox):
+        home, host, wt = sandbox.ledger, sandbox.host, sandbox.inside
+        assert hosts.capture_host_path(home, wt) == host.resolve()  # git's answer while live
+
+        git(host, "worktree", "remove", str(wt))
+        assert not wt.exists()
+        # git no longer knows it: the remap below cannot be git's answer
+        listing = git(host, "worktree", "list", "--porcelain").stdout
+        assert f"worktree {sandbox.outside}" in listing  # control: listing is real
+        assert f"worktree {wt}" not in listing
+
+        assert hosts.capture_host_path(home, wt) == host.resolve()
+        assert hosts.capture_host_path(home, wt / "src" / "deep") == host.resolve()
+
+    def test_removed_path_under_an_unregistered_repo_is_unchanged(self, sandbox, tmp_path):
+        home, host = sandbox.ledger, sandbox.host
+        other = tmp_path / "other"
+        init_repo(other)
+        (other / "README").write_text("x\n", encoding="utf-8")
+        commit_all(other)
+        other_wt = _add_worktree(other, other / ".claude" / "worktrees" / "w", "w")
+        git(other, "worktree", "remove", str(other_wt))
+        assert not other_wt.exists()
+        # nested inside the registered host, but not the host itself
+        nested_gone = host / "vendor" / "lib" / ".claude" / "worktrees" / "w"
+        assert hosts.ancestors_of(load_hosts(home), nested_gone)  # an ancestor IS registered
+
+        assert hosts.capture_host_path(home, other_wt) == other_wt
+        assert hosts.capture_host_path(home, nested_gone) == nested_gone
+
+        # positive control, same registry: the pattern is live for the host
+        gone = host / ".claude" / "worktrees" / "never-existed"
+        assert hosts.capture_host_path(home, gone) == host.resolve()
+
+    def test_removed_path_elsewhere_is_unchanged(self, sandbox):
+        home, host, wt = sandbox.ledger, sandbox.host, sandbox.outside
+        assert hosts.capture_host_path(home, wt) == host.resolve()  # control, while live
+
+        git(host, "worktree", "remove", str(wt))
+        assert not wt.exists()
+
+        assert hosts.capture_host_path(home, wt) == wt
+
+    def test_existing_non_worktree_dir_follows_git_not_the_pattern(self, sandbox):
+        """A directory that EXISTS under ``.claude/worktrees/`` but is not a
+        worktree is part of the host's main working tree: git says so, and
+        git's answer is the only one asked for a live path."""
+        home, host = sandbox.ledger, sandbox.host
+        plain = host / ".claude" / "worktrees" / "scratch"
+        plain.mkdir(parents=True)
+        assert not _is_linked_worktree(plain)  # git: a main working tree
+
+        assert hosts.capture_host_path(home, plain) == plain
+
+        # positive control: the SAME shape, once gone, does map
+        gone = host / ".claude" / "worktrees" / "scratch-gone"
+        assert hosts.capture_host_path(home, gone) == host.resolve()
+
+    def test_miner_lands_a_removed_worktree_session_in_the_host_bucket(self, sandbox):
+        """The nightly mine reads a session after it ends — the path that
+        produced 6 of the 7 live misfiles."""
+        home, host = sandbox.ledger, sandbox.host
+        git(host, "worktree", "remove", str(sandbox.inside))
+        git(host, "worktree", "remove", str(sandbox.outside))
+        assert not sandbox.inside.exists() and not sandbox.outside.exists()
+
+        result = _mine(
+            home, {"sess-inside": sandbox.inside, "sess-outside": sandbox.outside}
+        )
+
+        assert len(result.landed) == 2
+        host_bucket = _bucket(home, host)
+        assert len(_pending_ids(host_bucket)) == 1
+        assert bucket_project_path(host_bucket) == host.resolve()
+        assert not _bucket(home, sandbox.inside).exists()
+        # control, same run: a removed worktree NOT under .claude/worktrees/
+        # keeps its own bucket, so the remap above is the pattern's doing
+        assert len(_pending_ids(_bucket(home, sandbox.outside))) == 1
+
+
 # ------------------------------------------------------------- fail closed
 
 
@@ -285,18 +379,6 @@ class TestFailClosed:
         empty.mkdir()
         monkeypatch.setenv("PATH", str(empty))
         assert shutil.which("git") is None  # git really is absent now
-
-        assert hosts.capture_host_path(home, wt) == wt
-
-    def test_removed_worktree(self, sandbox):
-        """Gone means "cannot tell" — even under ``.claude/worktrees/``,
-        whose path shape alone would name the host: no path pattern."""
-        home, host = sandbox.ledger, sandbox.host
-        wt = sandbox.inside
-        assert hosts.capture_host_path(home, wt) == host.resolve()  # control
-
-        git(host, "worktree", "remove", str(wt))
-        assert not wt.exists()
 
         assert hosts.capture_host_path(home, wt) == wt
 

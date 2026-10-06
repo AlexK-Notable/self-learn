@@ -1267,6 +1267,31 @@ def _git_stdout(path: Path, *args: str) -> str | None:
     return proc.stdout
 
 
+#: FW-162: Claude Code's own worktree placement, ``<repo>/.claude/worktrees/
+#: <name>`` — read ONLY for a path that no longer exists.
+_WORKTREES_PARTS = (".claude", "worktrees")
+
+
+def _removed_worktree_host(hosts: Hosts, target: Path) -> Path | None:
+    """FW-162, for a *target* that does NOT exist as a directory: the
+    registered project host ``<P>`` when *target* is ``<P>/.claude/
+    worktrees/<name>`` or below it, else None. ``<P>`` must be EXACTLY a
+    registered project host (:func:`is_project_host`, never an ancestor
+    match); with several ``.claude/worktrees`` segments on the path, the
+    innermost is tried first. Path arithmetic only — the caller has
+    already established that the directory is gone, which is the only
+    case this may ever be asked about."""
+    parts = target.parts
+    n = len(_WORKTREES_PARTS)
+    for i in range(len(parts) - n - 1, 0, -1):
+        if parts[i : i + n] != _WORKTREES_PARTS:
+            continue
+        candidate = Path(*parts[:i])
+        if is_project_host(hosts, candidate):
+            return candidate.resolve()
+    return None
+
+
 def capture_host_path(home: Path | str, path: Path | str) -> Path:
     """FW-162: the project path a CAPTURE files under, given the path its
     producer derived from the session's working directory (teach and
@@ -1282,16 +1307,24 @@ def capture_host_path(home: Path | str, path: Path | str) -> Path:
     the directory is removed); a bucket keyed to it is unregistered, so
     ``route`` refused every record in it.
 
-    Detection is git's own answer, never a path pattern: ``--git-dir``
-    differs from ``--git-common-dir`` only inside a linked worktree (the
-    same ``--git-common-dir`` :func:`gitops.commit_lock_path` keys on),
-    and ``git worktree list --porcelain`` names the main working tree
-    first.
+    For a path that EXISTS, detection is git's own answer, never a path
+    pattern: ``--git-dir`` differs from ``--git-common-dir`` only inside a
+    linked worktree (the same ``--git-common-dir``
+    :func:`gitops.commit_lock_path` keys on), and ``git worktree list
+    --porcelain`` names the main working tree first.
+
+    For a path that does NOT exist as a directory — the nightly miner reads
+    a session after it ends, often after its worktree was removed — git
+    has nothing left to answer, so one narrow shape is read from the path
+    itself (:func:`_removed_worktree_host`): ``<P>/.claude/worktrees/
+    <name>[/…]`` with ``<P>`` exactly a registered project host files under
+    ``<P>``. That pattern is never applied to a path that exists.
 
     Returns *path* UNCHANGED — exactly today's behaviour — when:
 
     - no project host is registered, or hosts.yaml does not load;
-    - *path* is not an existing directory (the worktree was removed);
+    - *path* does not exist as a directory and is not under a registered
+      project host's ``.claude/worktrees/``;
     - git is not installed, does not finish, or *path* is not in a repo;
     - *path* is in a main working tree (a plain repo, a subdirectory of
       one, or a submodule) — only a linked worktree is ever remapped;
@@ -1313,7 +1346,8 @@ def capture_host_path(home: Path | str, path: Path | str) -> Path:
     try:
         target = original.expanduser().resolve()
         if not target.is_dir():
-            return original
+            removed_host = _removed_worktree_host(hosts, target)
+            return removed_host if removed_host is not None else original
         out = _git_stdout(
             target, "rev-parse", "--git-dir", "--git-common-dir", "--show-toplevel"
         )
