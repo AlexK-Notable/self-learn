@@ -344,6 +344,37 @@ class TestRemovedWorktree:
         gone = host / ".claude" / "worktrees" / "scratch-gone"
         assert hosts.capture_host_path(home, gone) == host.resolve()
 
+    def test_bare_worktrees_dir_without_a_name_is_unchanged(self, sandbox, tmp_path):
+        """``<P>/.claude/worktrees`` itself is not a worktree: the shape
+        needs a ``<name>`` segment after it."""
+        home = sandbox.ledger
+        second = tmp_path / "second-host"  # a registered host with no .claude/ yet
+        init_repo(second)
+        (second / "README").write_text("x\n", encoding="utf-8")
+        commit_all(second)
+        host_add(home, second, "project")
+        bare = second / ".claude" / "worktrees"
+        assert not bare.exists()
+
+        assert hosts.capture_host_path(home, bare) == bare
+
+        # positive control: one segment deeper, the same host IS named
+        assert hosts.capture_host_path(home, bare / "gone") == second.resolve()
+
+    def test_innermost_registered_host_wins(self, sandbox):
+        """Several ``.claude/worktrees`` segments: the innermost one whose
+        ``<P>`` is registered names the host."""
+        home, host, inner = sandbox.ledger, sandbox.host, sandbox.inside
+        gone = inner / ".claude" / "worktrees" / "nested-gone"
+        assert not gone.exists()
+        # positive control: with only the OUTER host registered, the outer
+        # segment is the one that matches — both segments are reachable
+        assert hosts.capture_host_path(home, gone) == host.resolve()
+
+        host_add(home, inner, "project")  # the worktree itself, registered
+
+        assert hosts.capture_host_path(home, gone) == inner.resolve()
+
     def test_miner_lands_a_removed_worktree_session_in_the_host_bucket(self, sandbox):
         """The nightly mine reads a session after it ends — the path that
         produced 6 of the 7 live misfiles."""
