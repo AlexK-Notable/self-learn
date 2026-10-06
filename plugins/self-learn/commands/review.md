@@ -550,7 +550,8 @@ marker are projections and never recovery authority.
   one escape) when the line runs. A bad glob refuses that line alone.
   A route into a rules topic whose file already has a `paths:` list is
   refused when the line carries no `rules_paths` (no sheet key unscopes a file);
-  a record that `supersedes` one routed to the same topic inherits its globs
+  a record that `supersedes` one routed to the same topic in the same bucket
+  (same scope and, for a project lesson, the same project) inherits its globs
   when the line names none, and `self-learn show --json <id>` prints a routed
   lesson's `routing.rules_paths`. A dead glob for a file the lesson guards
   against recreating is kept with `allow_empty_glob: true`. The same keys ride

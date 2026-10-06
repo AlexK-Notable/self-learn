@@ -443,9 +443,11 @@ Name the globs on the line (`rules_paths: ["gtk-4.0/*.css"]`, relative to the
 host repo root, never absolute or starting with `~`). Choose them in this order:
 
 1. **The lesson this one supersedes.** `self-learn show --json <old id>` prints
-   its `routing.rules_paths`. A record with `supersedes:` routed to the same
-   topic inherits them when the line names none (`routing.rules_paths_from`
-   records where they came from), but write them out when you can see them.
+   its `routing.rules_paths`. A record with `supersedes:` inherits them when
+   the line names none, but only from a lesson routed to the same topic in the
+   same bucket (same scope and, for a project lesson, the same project);
+   `routing.rules_paths_from` records where they came from. Write them out
+   when you can see them.
 2. **The file's existing `paths:`**, when the new lesson concerns the same files.
 3. **The files the lesson is about**, as narrow as its trigger.
 
