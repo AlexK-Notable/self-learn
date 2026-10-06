@@ -180,14 +180,18 @@ class TestRescopeMove:
 
     def test_deferred_record_rescopes_and_stays_deferred(self, env):
         rec = env.seed_user_record()
-        defer_record(env.home, rec.id, "2027-01-01")
+        # `defer_record` refuses an explicit --until in the past, so the date
+        # must stay ahead of ANY clock the suite runs on: a 2027 literal
+        # started failing on its own date. 2099 is the suite's convention.
+        until = "2099-01-01"
+        defer_record(env.home, rec.id, until)
         commit_all(env.home, "defer seed")
 
         verbs.rescope(env.home, rec.id, to="skill:s")
 
         moved = Record.from_path(env.pending_s(rec.id))
         assert moved.status == "deferred"
-        assert str(moved.deferred_until) == "2027-01-01"
+        assert str(moved.deferred_until) == until
         assert moved.deferred_count == 1
 
     def test_creates_target_bucket_dirs_when_absent(self, env):

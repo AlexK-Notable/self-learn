@@ -304,11 +304,15 @@ class TestDeferEnvelope:
 
     def test_defer_until_explicit_date_rides_the_envelope(self, env, capsys):
         seed_skill_record(env)
+        # `defer` refuses an explicit --until in the past, so the date must
+        # stay ahead of ANY clock the suite runs on: a 2027 literal started
+        # failing on its own date. 2099 is the suite's convention.
+        until = "2099-01-15"
         code, envelope = run_json(
-            ["defer", RID, "--until", "2027-01-15", "--json"], capsys
+            ["defer", RID, "--until", until, "--json"], capsys
         )
         assert code == 0
-        assert envelope["deferred_until"] == "2027-01-15"
+        assert envelope["deferred_until"] == until
 
 
 class TestRejectEnvelope:

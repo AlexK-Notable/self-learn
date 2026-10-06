@@ -148,12 +148,22 @@ def test_u14_record_finishes_intent_before_fallible_index_refresh(tmp_path, monk
         raise OSError("index unavailable")
 
     monkeypatch.setattr(cases, "_update_index", fail_index)
+    # A case is filed under the month it was OPENED in (`cases._month_dir`
+    # reads the first seven characters of `opened_at`, which is
+    # `chrono.now_iso()`). Freeze that clock and derive the folder from the
+    # same value, so the path below holds in any month: the old hardcoded
+    # `cases/2026-09/` went red on 2026-10-01.
+    opened_at = "2026-09-14T13:00:00Z"
+    monkeypatch.setattr(cases.chrono, "now_iso", lambda *_a, **_k: opened_at)
     with pytest.raises(OSError, match="index unavailable"):
         cases.record(home, stage, actor="steward", reserved_id="case-acde1234")
     assert (home / ".intents").exists() is False or not list(
         (home / ".intents").glob("*.json")
     )
-    assert gitops._git(home, "show", "HEAD:cases/2026-09/case-acde1234.md").stdout
+    month = opened_at[:7]
+    assert gitops._git(
+        home, "show", f"HEAD:cases/{month}/case-acde1234.md"
+    ).stdout
 
 
 def test_record_secret_scan_refuses_evidence_quote(tmp_path):
