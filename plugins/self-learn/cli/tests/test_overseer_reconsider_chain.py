@@ -513,3 +513,48 @@ def test_a_resolution_pair_whose_preview_refuses_a_line_is_still_recorded(tmp_pa
     parked_id, resolution_id = _seed_the_chain_up_to_the_refused_resolution(home, tmp_path, monkeypatch)
     assert _case_fm(home, resolution_id)["supersedes"] == parked_id
     assert "would be refused" not in _refused_section(home)
+
+
+# -------------- 2026-10-05 fold: a list `supersedes` costs the pair only
+
+
+def test_a_resolution_naming_a_list_of_cases_is_a_per_pair_drop(tmp_path, decided):
+    home, _setup, prior = decided
+    listed = _reconsider_of(prior)
+    listed.update(kind="resolution", supersedes=[prior])
+    with pytest.raises(overseer_run.OverseerError, match="supersedes must name one case id, not a list"):
+        overseer_run._validate_successor(_staged(tmp_path, listed), {prior}, home)
+
+
+def test_a_list_supersedes_does_not_end_the_run(tmp_path, monkeypatch, claude_dir):
+    """End to end: the pair is dropped and named, the other pair of the
+    run applies, and the parked case it named stays open."""
+    from test_failstate_overseer import _two_parked
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    _enabled(monkeypatch)
+    rid_a, parked_a, rid_b, parked_b = _two_parked(home, tmp_path)
+    listed = _successor(rid_a, parked_a)
+    listed["supersedes"] = [parked_a]
+
+    def invoke(spec):
+        if spec.label == "phase-a":
+            _phase_a(spec.cwd)
+        else:
+            _phase_b_common(spec.cwd)
+            _dump(spec.cwd / "case-a.yaml", listed)
+            _dump(spec.cwd / "sheet-a.yaml", {"version": 1, "items": [{"id": rid_a, "verb": "reject"}]})
+            _dump(spec.cwd / "case-b.yaml", _successor(rid_b, parked_b))
+            _dump(spec.cwd / "sheet-b.yaml", {"version": 1, "items": [{"id": rid_b, "verb": "reject"}]})
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    result = overseer_run.run(home, no_push=True)
+
+    refused = _refused_section(home)
+    assert "case-a.yaml: dropped with sheet-a.yaml" in refused, refused
+    assert "supersedes must name one case id, not a list" in refused, refused
+    assert _record(home, rid_b).status == "rejected", result  # the other pair applied
+    assert _record(home, rid_a).status == "pending"
+    assert _case_fm(home, parked_a).get("superseded_by") is None

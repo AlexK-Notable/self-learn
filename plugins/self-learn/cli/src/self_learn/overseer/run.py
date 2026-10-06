@@ -1476,6 +1476,14 @@ def _validate_successor(path: Path, parked: set[str], home: Path) -> None:
         problem = _reconsider_predecessor_problem(home, data, parked)
         if problem is not None:
             raise OverseerError(f"{path.name}: {problem}")
+    elif not isinstance(data.get("supersedes"), str):
+        # 2026-10-05 (the gate, pre-existing): a list or a mapping here
+        # raised TypeError (unhashable) at the `in parked` test below,
+        # which the pair loop does not catch, so it ended the run.
+        raise OverseerError(
+            f"{path.name}: supersedes must name one case id, not a "
+            f"{type(data.get('supersedes')).__name__}"
+        )
     elif data.get("supersedes") not in parked:
         raise OverseerError(f"{path.name}: {_NOT_PARKED_TEXT}")
     if data.get("kind") == "parked" or data.get("outcome") == "parked":
