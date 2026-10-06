@@ -328,7 +328,7 @@ def test_the_formats_carry_a_reconsider_correcting_a_case_that_is_not_parked(tmp
     root = formats.write(tmp_path / "ws", "B")
     readme = (root / "README.md").read_text(encoding="utf-8")
     assert "case-correct-example.yaml" in readme
-    assert "examined that is NOT parked" in readme
+    assert "is NOT parked" in readme
     assert "case-correct-example.yaml" in overseer_run._phase_b_prompt(tmp_path, (), ())
     example = _load_yaml((root / "case-correct-example.yaml").read_text(encoding="utf-8"))
     assert example["kind"] == "reconsider"
@@ -341,3 +341,32 @@ def test_the_formats_carry_a_reconsider_correcting_a_case_that_is_not_parked(tmp
     example["records"] = ["lrn-a5000002"]
     with pytest.raises(overseer_run.OverseerError, match="does not cover"):
         overseer_run._validate_successor(_staged(tmp_path, example), set(), home)
+
+
+#: S-76 as the code checks it (`_reconsider_predecessor_problem`): coverage,
+#: not superseded, freeze hash -- and nothing about this run's selection.
+_CODE_TERMS = (
+    "covers every record the reconsider names, has not been superseded, "
+    "and passes its freeze hash"
+)
+
+
+@pytest.mark.parametrize("name", ["phase B prompt", "formats README"])
+def test_the_overseer_is_told_the_reconsider_rule_in_the_codes_terms(tmp_path, name):
+    """The coordinator's ruling, 2026-10-05: the words match the code. The
+    rule names the three things `_validate_successor` checks of a non-parked
+    predecessor and never says the case must be one the run examined."""
+    if name == "phase B prompt":
+        raw = overseer_run._phase_b_prompt(tmp_path, (), ())
+    else:
+        raw = (formats.write(tmp_path / "ws", "B") / "README.md").read_text(encoding="utf-8")
+    text = " ".join(raw.split())
+    assert "kind: reconsider successor" in text  # control: the S-76 sentence rendered
+    assert _CODE_TERMS in text, name
+    # the sentence that states the rule: from the sentence start before
+    # "not parked" through the code's terms
+    lowered = text.lower()
+    at = lowered.index("not parked")
+    sentence = lowered[lowered.rfind(". ", 0, at):lowered.index(_CODE_TERMS, at) + len(_CODE_TERMS)]
+    assert "kind: reconsider" in sentence, sentence  # control: it is the S-76 sentence
+    assert "examined" not in sentence, sentence

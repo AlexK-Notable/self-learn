@@ -696,9 +696,10 @@ ledger refused its line for a reason only a person or a different decision can f
 quotes the ledger's words.
 Write report.md, findings.yaml, questions.yaml, user-model-delta.yaml, and either sheet.yaml or paired
 case-<name>.yaml plus sheet-<name>.yaml files. One successor case must supersede each parked
-case you decide. To correct a case you examined that is not parked (for example a decision whose
-line the ledger refused), write a kind: reconsider successor that supersedes it; that case must
-cover every record the reconsider names (formats/case-correct-example.yaml).
+case you decide. To correct a case that is not parked (for example a decision whose line the
+ledger refused), write a kind: reconsider successor that supersedes it, provided that case covers
+every record the reconsider names, has not been superseded, and passes its freeze hash
+(formats/case-correct-example.yaml).
 The runner alone records cases and applies sheets. Never run a verb.
 {_YAML_TEXT_RULE}In a case file no line of any text field may start with `## `. To quote a heading line, quote
 it from after the `## ` (for `## 2026-08-19 — lrn-b197d06b` quote `2026-08-19 — lrn-b197d06b`):
@@ -1434,9 +1435,11 @@ def _validate_successor(path: Path, parked: set[str], home: Path) -> None:
     """A staged successor case's own rules, before anything is applied.
 
     S-76 (2026-10-05): a ``kind: reconsider`` successor may supersede a
-    case that is NOT parked -- a decision the overseer examined and is
-    correcting -- provided that case covers the same records
-    (:func:`_reconsider_predecessor_problem`). Before, every successor had
+    case that is NOT parked -- an earlier decision it is correcting --
+    provided that case covers the same records, has not been superseded,
+    and passes its freeze hash (:func:`_reconsider_predecessor_problem`);
+    whether this run selected that case is deliberately not checked (it
+    may lie outside the population window). Before, every successor had
     to name a parked case, so the overseer could not retry a decision that
     failed once to apply: run `03a07173`'s reconsider of `case-5257d97d`
     (a resolution whose route was refused at apply, which had already
