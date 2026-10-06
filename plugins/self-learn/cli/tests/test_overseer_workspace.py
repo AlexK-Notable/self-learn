@@ -138,8 +138,11 @@ def test_user_model_delta_example_applies(formats_dir, tmp_path):
 
 
 def test_successor_case_example_validates(formats_dir, tmp_path):
+    # A kind: resolution successor: the parked-only rule decides it, so the
+    # sandbox ledger is never read (S-76 reads it for a reconsider only).
+    home = make_home(tmp_path)
     path = formats_dir / "case-example.yaml"
-    overseer_run._validate_successor(path, {formats.EXAMPLE_PARKED_CASE})
+    overseer_run._validate_successor(path, {formats.EXAMPLE_PARKED_CASE}, home)
     assert overseer_run._case_rule_problem(path, "abcd1234") is None
     broken = _load(path)
     broken["decision"]["confidence"] = "high"
@@ -150,7 +153,7 @@ def test_successor_case_example_validates(formats_dir, tmp_path):
     del missing["supersedes"]
     _dump(bad, missing)
     with pytest.raises(overseer_run.OverseerError):
-        overseer_run._validate_successor(bad, {formats.EXAMPLE_PARKED_CASE})
+        overseer_run._validate_successor(bad, {formats.EXAMPLE_PARKED_CASE}, home)
 
 
 def test_maintenance_case_example_validates(formats_dir, tmp_path):

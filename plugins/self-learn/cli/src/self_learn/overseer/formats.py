@@ -15,10 +15,12 @@ own validators in ``tests/test_overseer_workspace.py``.
 from __future__ import annotations
 
 import io
+import textwrap
 from pathlib import Path
 from typing import Any
 
 from ruamel.yaml import YAML
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
 FORMATS_DIR = "formats"
 
@@ -163,6 +165,11 @@ def closed_sets() -> dict[str, Any]:
             "action": ["add", "lapse"],
             "containers_you_may_add_to": overseer_containers,
             "source": ["system-reading"],
+            # 2026-10-05: the fields the user model refuses a line break
+            # or a leading `#` in, per action (`user_model.ONE_LINE_FIELDS`).
+            "one_line_fields": {
+                action: list(fields) for action, fields in user_model.ONE_LINE_FIELDS.items()
+            },
         },
         "report_headings_in_order": list(run._REPORT_SECTIONS),
         "hook": _hook_closed_sets(),
@@ -188,6 +195,33 @@ def _hook_closed_sets() -> dict[str, Any]:
         "tools": list(hook_compiler.GUARDABLE_TOOLS),
         "warn_message_max_chars": hook_compiler.WARN_MESSAGE_MAX,
     }
+
+
+def user_model_one_line_rule() -> str:
+    """The user model's one-line rule, as the overseer reads it, generated
+    from `user_model.ONE_LINE_FIELDS` -- the table `add_entry` and
+    `lapse_entry` check (2026-10-05).
+
+    Run `03a07173`'s add `op-3b0e8cf5ca64` was refused ("a free-text field
+    contains an embedded newline or a leading '#' heading-shaped line"):
+    its `because` was a hard-wrapped block scalar, the form the general
+    YAML rule (`run._YAML_TEXT_RULE`) recommends for free text and the one
+    form these fields can never take, since even a one-line `|` scalar
+    ends with a line break. The refusal is deliberate (gate r2 B1: a line
+    break in these fields becomes forged structure in user-model.md); the
+    instructions were what was missing."""
+    from .. import user_model
+
+    add = ", ".join(user_model.ONE_LINE_FIELDS["add"])
+    lapse = ", ".join(user_model.ONE_LINE_FIELDS["lapse"])
+    return (
+        "In user-model-delta.yaml every free-text value is ONE paragraph on ONE line: an "
+        f"add's {add} (every item of a list), and a lapse's {lapse}. Write each as a "
+        "double-quoted string on a single line, never as a block scalar (`|` or `>` keeps "
+        "a line break), with no line break inside it and no line starting with `#`. A "
+        "value with a line break or a heading-shaped line is refused, and that update is "
+        "lost."
+    )
 
 
 def _rules(phase: str) -> str:
@@ -217,11 +251,22 @@ def _rules(phase: str) -> str:
             "- In a case file no line of any text field may start with `## `.",
             "- Every text field of a case is secret-scanned: an evidence item whose",
             "  quote or ref matches is dropped; a hit anywhere else refuses the case.",
-            "- A successor case supersedes exactly one parked case, and a parked case",
-            "  gets at most one successor. Each case-<name>.yaml pairs with a",
+            "- A successor case supersedes exactly one case, and a case gets at most",
+            "  one successor. A kind: resolution successor supersedes a parked case.",
+            "  A kind: reconsider successor may supersede a parked case or a case that",
+            "  is NOT parked, to correct it (for example a decision whose line the",
+            "  ledger refused at apply time), provided that case covers every record",
+            "  the reconsider names, has not been superseded, passes its freeze hash,",
+            "  and was recorded by the steward or the overseer, never by a person. See",
+            "  case-correct-example.yaml. Each case-<name>.yaml pairs with a",
             "  sheet-<name>.yaml; a successor's sheet is never empty.",
             "- A catalogue change that decides no parked case is case.yaml (kind:",
             "  maintenance, no supersedes) with sheet.yaml.",
+            *textwrap.wrap(
+                user_model_one_line_rule(), width=78,
+                initial_indent="- ", subsequent_indent="  ",
+                break_long_words=False, break_on_hyphens=False,
+            ),
             "",
             "Phase B files: report.md, findings.yaml, questions.yaml,",
             "user-model-delta.yaml, case-example.yaml + sheet-example.yaml (a",
@@ -256,8 +301,10 @@ def _rules(phase: str) -> str:
             "`rules_paths` -- an unpathed lesson would make the whole file load in",
             "every session; no sheet key unscopes a file. Choose the globs in this",
             "order: the lesson it supersedes (`self-learn show --json <old id>`",
-            "prints routing.rules_paths; a successor routed to the same topic",
-            "inherits them if the line names none, but write them out), the file's",
+            "prints routing.rules_paths; a successor inherits them if the line",
+            "names none, but only from a lesson routed to the same topic in the same",
+            "bucket -- same scope and, for a project lesson, the same project -- so",
+            "write them out), the file's",
             "existing `paths:` when the lesson concerns the same files, else the",
             "files the lesson is about, relative to the host root, as narrow as the",
             "trigger. A glob for a file that no longer exists is fine when the",
@@ -310,11 +357,16 @@ def phase_b_examples() -> dict[str, str]:
             "text": "Will you keep using this repository next month? Yes keeps the lesson; no retires it.",
             "why": "It decides whether the lesson stays loaded.",
         }]}),
+        # Every free-text value double-quoted on one line, the form
+        # `user_model_one_line_rule` asks for (2026-10-05).
         "user-model-delta.yaml": _dump({"updates": [{
             "action": "add", "container": "D", "source": "system-reading",
-            "title": "Prefers small reviewed steps",
-            "because": "Three cases this week split one change into several reviewed parts.",
-            "ref": f"case:{EXAMPLE_CASE}",
+            "title": DoubleQuotedScalarString("Prefers small reviewed steps"),
+            "because": DoubleQuotedScalarString(
+                "Three cases this week split one change into several reviewed parts: "
+                "each part was reviewed before the next was started."
+            ),
+            "ref": DoubleQuotedScalarString(f"case:{EXAMPLE_CASE}"),
         }]}),
         "case-example.yaml": _dump({
             "kind": "resolution", "trigger": "weekly", "outcome": "reject",
@@ -338,6 +390,26 @@ def phase_b_examples() -> dict[str, str]:
             "decision": {"verb": "route", "because": (
                 "The line was loaded and broken twice; the failure is one Bash call a hook can "
                 "see, and a -f pattern is sometimes right, so the hook warns rather than blocks."
+            ), "confidence": "settled"},
+        }),
+        # S-76: a reconsider correcting a case that is not parked -- the
+        # shape of run `03a07173`'s re-decision of `lrn-19f82fc5`, whose
+        # first decision (a resolution) had its route refused at apply.
+        # It pairs with a sheet like sheet-redecide-example.yaml.
+        "case-correct-example.yaml": _dump({
+            "kind": "reconsider", "trigger": "weekly", "outcome": "route",
+            "records": [EXAMPLE_RECORD], "scope": "user",
+            "question": (
+                "The earlier decision to move this lesson to a hook was right, but its route "
+                "was refused because that case was not a reconsider; should it be made again?"
+            ),
+            "supersedes": EXAMPLE_CASE,
+            # its own evidence: the lesson it re-decides is already routed
+            "evidence": [{"ref": f"record:{EXAMPLE_RECORD}", "quote": "status: routed"}],
+            "decision": {"verb": "route", "because": (
+                f"{EXAMPLE_CASE} decided a warning hook and its route line was refused at apply "
+                "time because the lesson was already routed; a reconsider is the case kind that "
+                "moves a routed lesson, so the same decision is made again here."
             ), "confidence": "settled"},
         }),
         "sheet-redecide-example.yaml": _dump({

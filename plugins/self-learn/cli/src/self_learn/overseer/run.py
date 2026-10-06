@@ -20,6 +20,7 @@ import json
 import hashlib
 import re
 import shutil
+import textwrap
 import time
 import uuid
 from dataclasses import asdict, dataclass, replace
@@ -654,6 +655,9 @@ You are in phase {phase} now.
 _YAML_TEXT_RULE = """In every YAML file you write, write each free-text value either as a block scalar (`text: |`
 with the text indented on the lines below it) or as a double-quoted string: a bare value that
 contains ": " does not parse, and the runner cannot use a file that does not parse.
+The one exception is user-model-delta.yaml: there, write each free-text value as a double-quoted
+string on one line, never a block scalar (a block scalar keeps a line break, which the user model
+refuses).
 """
 
 
@@ -695,7 +699,11 @@ ledger refused its line for a reason only a person or a different decision can f
 quotes the ledger's words.
 Write report.md, findings.yaml, questions.yaml, user-model-delta.yaml, and either sheet.yaml or paired
 case-<name>.yaml plus sheet-<name>.yaml files. One successor case must supersede each parked
-case you decide. The runner alone records cases and applies sheets. Never run a verb.
+case you decide. To correct a case that is not parked (for example a decision whose line the
+ledger refused), write a kind: reconsider successor that supersedes it, provided that case covers
+every record the reconsider names, has not been superseded, passes its freeze hash, and was
+recorded by the steward or the overseer, never by a person (formats/case-correct-example.yaml).
+The runner alone records cases and applies sheets. Never run a verb.
 {_YAML_TEXT_RULE}In a case file no line of any text field may start with `## `. To quote a heading line, quote
 it from after the `## ` (for `## 2026-08-19 — lrn-b197d06b` quote `2026-08-19 — lrn-b197d06b`):
 an evidence item with such a line is dropped, and any other field with one refuses the case.
@@ -732,6 +740,7 @@ user-model-delta.yaml is {{updates: [...]}}. Each update is either
 {{action: add, container, title, because, source: system-reading, ref, held_since?, conditions?, statements?, basis?}}
 or {{action: lapse, id, changed_condition?|contrary?|consolidated_into?}}. Adds are provisional
 system readings only. A lapse must name exactly one changed condition, contrary item, or consolidation.
+{textwrap.fill(formats.user_model_one_line_rule(), width=100, break_long_words=False, break_on_hyphens=False)}
 report.md should stay under about 60 lines: it is the summary, not the record. Its
 "Questions for you" section lists each question as - <id>: <a few words>; the full text lives
 in questions.yaml. It has these headings, in this exact order: Examined; Decided in the user's
@@ -1387,16 +1396,141 @@ def _coverage_text(
     return population_mod.render_coverage(coverage)
 
 
-def _validate_successor(path: Path, parked: set[str]) -> None:
+#: S-76: the drop line of a successor that is not a reconsider and names a
+#: case outside the verified parked queue.
+_NOT_PARKED_TEXT = (
+    "supersedes must name a verified parked case (only a kind: reconsider "
+    "successor may correct a case that is not parked)"
+)
+
+
+#: S-76 (2026-10-05, the coordinator's fold after the gate's risk 1): the
+#: `cases.ACTORS` whose NON-parked cases a reconsider may supersede. Before
+#: S-76 the overseer could never supersede a case a person recorded,
+#: because such a case is never in the parked queue; this keeps it so.
+#: Every other actor value -- `human`, or anything outside the closed set
+#: -- is refused.
+_CORRECTABLE_ACTORS = frozenset({"steward", "overseer"})
+
+
+def _reconsider_predecessor_problem(
+    home: Path, data: dict[str, Any], parked: set[str]
+) -> str | None:
+    """S-76: why a staged ``kind: reconsider`` successor may not supersede
+    the case it names, or ``None``.
+
+    The predecessor must exist, pass its own freeze hash, and cover every
+    record the successor names -- `cases.require_reconsider_predecessor`,
+    the half of `cases.require_reconsider_case` that can be asked before
+    the reconsider case exists, so this is the coverage apply time will
+    demand, one copy of it. It must also not be superseded already (a
+    case is superseded once; `cases.record` refuses the second at apply
+    time, and saying so here costs the pair instead of a late refusal).
+    A predecessor outside the verified parked queue (*parked*) must also
+    have been recorded by the steward or the overseer
+    (:data:`_CORRECTABLE_ACTORS`): a person's decision is never superseded
+    by a reconsider."""
+    supersedes = data.get("supersedes")
+    records = data.get("records")
+    if not isinstance(supersedes, str) or not supersedes:
+        return "a reconsider must name the case it corrects in supersedes"
+    if not isinstance(records, list) or not all(isinstance(rid, str) for rid in records):
+        return "records must be a list of record ids"
+    try:
+        predecessor = cases.require_reconsider_predecessor(home, supersedes, records)
+    except (cases.CaseError, OSError, ValueError, YAMLError) as exc:
+        return f"supersedes {supersedes}: {_case_rule(exc)}"
+    if predecessor.get("superseded_by"):
+        return (
+            f"supersedes {supersedes}, which is already superseded by "
+            f"{predecessor['superseded_by']} (a case is superseded once)"
+        )
+    actor = predecessor.get("actor")
+    if supersedes not in parked and actor not in _CORRECTABLE_ACTORS:
+        return (
+            f"supersedes {supersedes}, a case recorded by actor {actor!r}: a "
+            "reconsider corrects only a case the steward or the overseer "
+            "recorded, never a person's decision"
+        )
+    return None
+
+
+def _validate_successor(path: Path, parked: set[str], home: Path) -> None:
+    """A staged successor case's own rules, before anything is applied.
+
+    S-76 (2026-10-05): a ``kind: reconsider`` successor may supersede a
+    case that is NOT parked -- an earlier decision it is correcting --
+    provided that case covers the same records, has not been superseded,
+    passes its freeze hash, and was recorded by the steward or the
+    overseer (:func:`_reconsider_predecessor_problem`); whether this run
+    selected that case is deliberately not checked (it may lie outside
+    the population window). Before, every successor had
+    to name a parked case, so the overseer could not retry a decision that
+    failed once to apply: run `03a07173`'s reconsider of `case-5257d97d`
+    (a resolution whose route was refused at apply, which had already
+    consumed the parked case) was dropped here. Every other successor
+    still supersedes only a verified parked case."""
     data = _yaml_mapping(path)
     required: set[str] = set(SUCCESSOR_CASE_FIELDS)
     missing = sorted(required - set(data))
     if missing:
         raise OverseerError(f"{path.name}: missing successor field(s) {missing!r}")
-    if data.get("supersedes") not in parked:
-        raise OverseerError(f"{path.name}: supersedes must name a verified parked case")
+    if data.get("kind") == "reconsider":
+        problem = _reconsider_predecessor_problem(home, data, parked)
+        if problem is not None:
+            raise OverseerError(f"{path.name}: {problem}")
+    elif not isinstance(data.get("supersedes"), str):
+        # 2026-10-05 (the gate, pre-existing): a list or a mapping here
+        # raised TypeError (unhashable) at the `in parked` test below,
+        # which the pair loop does not catch, so it ended the run.
+        raise OverseerError(
+            f"{path.name}: supersedes must name one case id, not a "
+            f"{type(data.get('supersedes')).__name__}"
+        )
+    elif data.get("supersedes") not in parked:
+        raise OverseerError(f"{path.name}: {_NOT_PARKED_TEXT}")
     if data.get("kind") == "parked" or data.get("outcome") == "parked":
         raise OverseerError(f"{path.name}: a decision successor cannot remain parked")
+
+
+def _refuse_doomed_reconsider(
+    case_file: Path, predecessor: str | None, preview: batch.DryRunResult
+) -> None:
+    """The gate's risk 2 (2026-10-05): a ``kind: reconsider`` pair whose
+    preview refuses ANY of its lines is dropped at phase B. Recorded, it
+    would supersede its predecessor (a case is superseded once) and then
+    change nothing -- e.g. a `reject` of a lesson routed to a hook, which
+    `verbs` refuses by name ("hook and reference routes are corrected by
+    hand"). Dropped, the predecessor stays open for a better correction.
+    The raise names every refused line, and the pair loop puts it in
+    "Refused / could not do" and the run journal, so a drop is never
+    silent. Resolution and maintenance pairs are not touched: a parked
+    case's resolution is the decision itself, refused lines and all.
+
+    A refusal of a retried kind (`batch.RETRIED_REFUSAL_KINDS`: `git`,
+    `target-busy`) does not doom the pair (the coordinator's ruling,
+    2026-10-05): S-68 retries such a line on a later attempt rather than
+    giving up on it, so a pair whose only refusals are of those kinds is
+    recorded and goes through the normal retry path."""
+    if _yaml_mapping(case_file).get("kind") != "reconsider":
+        return
+    refused = [
+        item for item in preview.items
+        if item.state == "would-refuse" and item.kind not in batch.RETRIED_REFUSAL_KINDS
+    ]
+    if not refused:
+        return
+    lines = "; ".join(
+        f"item {item.n} ({item.verb} {item.id}) would be refused"
+        + (f" [{item.kind}]" if item.kind else "")
+        + (f": {item.detail}" if item.detail else "")
+        for item in refused
+    )
+    raise OverseerError(
+        f"{case_file.name}: a reconsider whose preview refuses a line is not recorded, "
+        f"so {predecessor} is not superseded by a decision that would change nothing "
+        f"— {lines}"
+    )
 
 
 def _validate_maintenance_case(path: Path) -> None:
@@ -4609,7 +4743,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                             pairs_dropped += 1
                             continue
                     elif case_file is not None:
-                        _validate_successor(case_file, {row["case"] for row in parked_rows})
+                        _validate_successor(case_file, {row["case"] for row in parked_rows}, home)
                         predecessor = str(_yaml_mapping(case_file)["supersedes"])
                         rule = _case_rule_problem(case_file, run_id)
                         if rule is not None:
@@ -4649,7 +4783,21 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     )
                     if always is not None:
                         raise OverseerError(always)
-                    preview = batch.dry_run(home, sheet, actor="overseer", hook_activation=config.hook_activation_enabled(home))
+                    from ..steward import _reconsidered_by  # one definition, the steward's
+
+                    preview = batch.dry_run(
+                        home, sheet, actor="overseer",
+                        hook_activation=config.hook_activation_enabled(home),
+                        # S-73 item 6, as the steward's preview does: the
+                        # records a staged reconsider successor covers
+                        # preview with the widening its recorded case will
+                        # give them at apply time (a route on a routed
+                        # lesson previews as the reroute it will be), not
+                        # as the routed-status refusal. 2026-10-05: before,
+                        # every reconsider reroute counted "would refuse".
+                        reconsidered=_reconsidered_by(_yaml_mapping(case_file)),
+                    )
+                    _refuse_doomed_reconsider(case_file, predecessor, preview)
                 except (OverseerError, batch.BatchError) as exc:
                     reason = _pair_problem_text(exc, stage)
                     case_drops.append(

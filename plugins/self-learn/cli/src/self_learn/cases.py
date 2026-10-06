@@ -104,6 +104,7 @@ __all__ = [
     "CaseView",
     "record",
     "require_reconsider_case",
+    "require_reconsider_predecessor",
     "show",
     "list_cases",
     "rebuild_index",
@@ -871,6 +872,41 @@ def record(
 # ------------------------------------------------------------ reconsider
 
 
+def require_reconsider_predecessor(
+    home: Path | str, supersedes: str, record_ids: list[str]
+) -> dict:
+    """The predecessor half of :func:`require_reconsider_case`: *supersedes*
+    names an EXISTING case that passes its own freeze-hash check and covers
+    every one of *record_ids* (``record_id in predecessor.records``).
+    Returns the predecessor's frontmatter; every refusal is a
+    :class:`CaseError`.
+
+    S-76 (2026-10-05): factored out so the overseer's phase B can hold a
+    STAGED ``kind: reconsider`` successor -- one that does not exist yet,
+    so :func:`require_reconsider_case` cannot be asked about it -- to the
+    same coverage that function demands of it at apply time, one copy of
+    the rule. A reconsider may correct a case that is not parked (the
+    ``lrn-19f82fc5`` chain); what it may not do is name a predecessor that
+    is not about the records it re-decides."""
+    home = Path(home)
+    old_path = _case_path_for_id(home, str(supersedes))
+    old_text = old_path.read_text(encoding="utf-8")
+    old_fm, old_body = _split_frontmatter(old_text)
+    old_frozen, _old_rest = _split_frozen(old_body)
+    if _hash_frozen(old_frozen) != old_fm.get("decided_sha256"):
+        raise CaseError(
+            f"reconsider: {supersedes} failed its freeze-hash check — "
+            "refusing to act on a tampered predecessor case"
+        )
+    for record_id in record_ids:
+        if record_id not in (old_fm.get("records") or []):
+            raise CaseError(
+                f"reconsider: {supersedes} does not cover {record_id} — wrong "
+                "record"
+            )
+    return old_fm
+
+
 def require_reconsider_case(
     home: Path | str, case_id: str, record_id: str
 ) -> tuple[dict, dict]:
@@ -925,20 +961,7 @@ def require_reconsider_case(
             f"reconsider: {case_id} names no predecessor case (supersedes "
             "is unset) — no case"
         )
-    old_path = _case_path_for_id(home, str(supersedes))
-    old_text = old_path.read_text(encoding="utf-8")
-    old_fm, old_body = _split_frontmatter(old_text)
-    old_frozen, _old_rest = _split_frozen(old_body)
-    if _hash_frozen(old_frozen) != old_fm.get("decided_sha256"):
-        raise CaseError(
-            f"reconsider: {supersedes} failed its freeze-hash check — "
-            "refusing to act on a tampered predecessor case"
-        )
-    if record_id not in (old_fm.get("records") or []):
-        raise CaseError(
-            f"reconsider: {supersedes} does not cover {record_id} — wrong "
-            "record"
-        )
+    old_fm = require_reconsider_predecessor(home, str(supersedes), [record_id])
     if old_fm.get("superseded_by") != case_id:
         raise CaseError(
             f"reconsider: {supersedes}'s superseded_by is "

@@ -753,15 +753,21 @@ def test_reference_reconsider_refusal_is_committed_and_not_retried(tmp_path, mon
         "record is not supported here"
     )
     text = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
-    # The reject wrote nothing (HEAD unchanged), so it is an ordinary
-    # receipted refusal, not a bookkeeping halt: the one-item sheet is fully
-    # receipted and the run completes tonight as `refused`. (Until 2026-09-22
-    # the same refusal halted the sheet, left the run unfinished, and needed
-    # a resume to reach the same end state.)
-    assert result.status == "refused"
+    # 2026-10-05 (the gate's risk 2): the reconsider's preview already
+    # refuses its one line, so the pair is dropped at phase B -- never
+    # recorded, never applied -- and the parked case stays open for a
+    # better decision instead of being consumed by one that changes
+    # nothing. The verb's own refusal text still reaches "Refused / could
+    # not do", in the drop line. (Until 2026-10-05 the case was recorded,
+    # superseded the parked case, and its one line was refused at apply;
+    # until 2026-09-22 that refusal also halted the sheet.)
+    assert result.status == "applied" and result.decisions_dropped == 1
     assert execution_evidence.read_manifest(home, result.run)["status"] == "complete"
-    assert message in text.partition("## Refused / could not do")[2]
-    assert len(calls) == 1
+    refused_section = text.partition("## Refused / could not do")[2]
+    assert "case-reconsider.yaml: dropped with sheet-reconsider.yaml" in refused_section
+    assert message in refused_section
+    assert len(calls) == 0
+    assert cases.show(home, parked, evidence_only=False).frontmatter.get("superseded_by") is None
     assert record_path.read_bytes() == before
     assert not __import__("subprocess").run(
         ["git", "-C", str(home), "status", "--porcelain"], check=True,
@@ -777,7 +783,7 @@ def test_reference_reconsider_refusal_is_committed_and_not_retried(tmp_path, mon
     )
     recovered = overseer_run.run(home, dry_run=False, no_push=True)
     assert recovered.status == "held-week-done", "nothing left to resume, nothing re-dispatched"
-    assert len(calls) == 1
+    assert len(calls) == 0
     assert execution_evidence.read_manifest(home, result.run)["status"] == "complete"
 
 
