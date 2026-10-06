@@ -15,9 +15,15 @@ from typing import Any, Iterable
 from ruamel.yaml import YAML
 
 from .. import conditions, gitops, report, settings, telemetry
+from ..always_loaded import is_always_loaded
 from ..ledger import discover_buckets
 from ..records import Record, RecordError
 
+
+#: How far back a fire counts when the row asks which always-loaded lines have
+#: gone quiet. One constant for the lookback and the label, so the number and
+#: the words that describe it cannot drift apart.
+_FIRE_WINDOW_DAYS = 30
 
 _SILENCE_CAUTION = (
     "Silence is not retirement evidence: fire telemetry is incomplete and "
@@ -53,10 +59,21 @@ def recurrence_suspects(gathered: dict[str, Any]) -> dict[str, Any]:
 
 
 def never_fired_always_loaded(
-    always_loaded: Iterable[str], fired: set[str]
+    always_loaded: Iterable[str],
+    fired: set[str],
+    *,
+    window_days: int = _FIRE_WINDOW_DAYS,
 ) -> dict[str, Any]:
+    """Always-loaded lines with no recorded fire in the last *window_days*.
+
+    The function keeps its old name for its callers; the row it builds says
+    what it measures: a lookback window, not "never"."""
     return {
-        "kind": "never-fired-always-loaded",
+        "kind": "no-fire-always-loaded",
+        "label": (
+            f"Always-loaded CLAUDE.md lines with no recorded fire in the last {window_days} days"
+        ),
+        "window_days": window_days,
         "value": sorted({record_id for record_id in always_loaded if record_id not in fired}),
         "caution": _SILENCE_CAUTION,
     }
@@ -154,6 +171,11 @@ def _historical_yaml(home: Path, commit: str | None, name: str) -> Any:
 
 
 def _always_loaded_ids(home: Path) -> list[str]:
+    """Ids of routed user-scope lessons whose destination is an always-loaded
+    line, by the same test the steward's gate uses
+    (:func:`self_learn.always_loaded.is_always_loaded`). A lesson routed to a reference
+    shelf, a path-scoped rule, a skill or a hook loads some other way and is
+    not counted."""
     ids: list[str] = []
     for bucket in discover_buckets(home):
         if bucket.scope != "user":
@@ -166,7 +188,10 @@ def _always_loaded_ids(home: Path) -> list[str]:
                 record = Record.from_path(path)
             except (RecordError, OSError, UnicodeDecodeError):
                 continue
-            if record.status == "routed":
+            if record.status != "routed":
+                continue
+            routing = record.routing or {}
+            if is_always_loaded(routing.get("destination"), routing.get("variant")):
                 ids.append(record.id)
     return ids
 
@@ -194,7 +219,7 @@ def gather(home: Path | str) -> list[dict[str, Any]]:
     """Read and render the bounded catalogue-health packet."""
     resolved = Path(home)
     gathered = report.gather(resolved)
-    since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    since = (datetime.now(timezone.utc) - timedelta(days=_FIRE_WINDOW_DAYS)).isoformat()
     fired = {
         str(event["record"])
         for event in telemetry.read_events(resolved)

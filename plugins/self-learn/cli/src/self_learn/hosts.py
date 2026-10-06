@@ -76,6 +76,7 @@ __all__ = [
     "HostsError",
     "ancestors_of",
     "canon_read_roots",
+    "capture_host_path",
     "effective_default_mode",
     "host_add",
     "host_marker_path",
@@ -1245,3 +1246,134 @@ def unregistered_ancestor_dirs(hosts: Hosts, path: Path | str) -> list[Path]:
             hits.append(cur)
         cur = cur.parent
     return hits
+
+
+def _git_stdout(path: Path, *args: str) -> str | None:
+    """stdout of one bounded local ``git -C <path> …`` call, or None when
+    git is not installed (``OSError``), the call does not finish in
+    :data:`gitops.GIT_LOCAL_TIMEOUT`, or it exits non-zero. Every None is
+    "cannot tell", which :func:`capture_host_path` turns into "leave the
+    path as it is"."""
+    from .primitives import procs
+
+    try:
+        proc = procs.run_bounded(
+            ["git", "-C", str(path), *args], timeout=gitops.GIT_LOCAL_TIMEOUT
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+#: FW-162: Claude Code's own worktree placement, ``<repo>/.claude/worktrees/
+#: <name>`` — read ONLY for a path that no longer exists.
+_WORKTREES_PARTS = (".claude", "worktrees")
+
+
+def _removed_worktree_host(hosts: Hosts, target: Path) -> Path | None:
+    """FW-162, for a *target* that does NOT exist as a directory: the
+    registered project host ``<P>`` when *target* is ``<P>/.claude/
+    worktrees/<name>`` or below it, else None. ``<P>`` must be EXACTLY a
+    registered project host (:func:`is_project_host`, never an ancestor
+    match); with several ``.claude/worktrees`` segments on the path, the
+    innermost is tried first. Path arithmetic only — the caller has
+    already established that the directory is gone, which is the only
+    case this may ever be asked about."""
+    parts = target.parts
+    n = len(_WORKTREES_PARTS)
+    for i in range(len(parts) - n - 1, 0, -1):
+        if parts[i : i + n] != _WORKTREES_PARTS:
+            continue
+        candidate = Path(*parts[:i])
+        if is_project_host(hosts, candidate):
+            return candidate.resolve()
+    return None
+
+
+def capture_host_path(home: Path | str, path: Path | str) -> Path:
+    """FW-162: the project path a CAPTURE files under, given the path its
+    producer derived from the session's working directory (teach and
+    ``import-memory``: the git toplevel of cwd; the miner: the transcript's
+    raw ``cwd``).
+
+    When *path* lies inside a LINKED git worktree (``git worktree add``,
+    wherever it sits — under ``.claude/worktrees/`` or anywhere else) and
+    that worktree's MAIN working tree is a registered project host, the
+    capture belongs to that host: this returns the main working tree, so
+    the record lands in the host's bucket and its ``meta.yaml`` names the
+    host. A worktree is disposable by construction (its branch merges and
+    the directory is removed); a bucket keyed to it is unregistered, so
+    ``route`` refused every record in it.
+
+    For a path that EXISTS, detection is git's own answer, never a path
+    pattern: ``--git-dir`` differs from ``--git-common-dir`` only inside a
+    linked worktree (the same ``--git-common-dir``
+    :func:`gitops.commit_lock_path` keys on), and ``git worktree list
+    --porcelain`` names the main working tree first.
+
+    For a path that does NOT exist as a directory — the nightly miner reads
+    a session after it ends, often after its worktree was removed — git
+    has nothing left to answer, so one narrow shape is read from the path
+    itself (:func:`_removed_worktree_host`): ``<P>/.claude/worktrees/
+    <name>[/…]`` with ``<P>`` exactly a registered project host files under
+    ``<P>``. That pattern is never applied to a path that exists.
+
+    Returns *path* UNCHANGED — exactly today's behaviour — when:
+
+    - no project host is registered, or hosts.yaml does not load;
+    - *path* does not exist as a directory and is not under a registered
+      project host's ``.claude/worktrees/``;
+    - git is not installed, does not finish, or *path* is not in a repo;
+    - *path* is in a main working tree (a plain repo, a subdirectory of
+      one, or a submodule) — only a linked worktree is ever remapped;
+    - the worktree's own top level is itself a registered project host
+      (that registration is explicit and wins);
+    - the main working tree is not a registered project host — an
+      unregistered repo's worktree, including one nested under a
+      registered umbrella, keeps today's bucket (exact match only, never
+      an ancestor match).
+
+    Pure: reads hosts.yaml and asks git; writes nothing anywhere."""
+    original = Path(path)
+    try:
+        hosts = load_hosts(home)
+    except HostsError:
+        return original
+    if not hosts.projects:
+        return original
+    try:
+        target = original.expanduser().resolve()
+        if not target.is_dir():
+            removed_host = _removed_worktree_host(hosts, target)
+            return removed_host if removed_host is not None else original
+        out = _git_stdout(
+            target, "rev-parse", "--git-dir", "--git-common-dir", "--show-toplevel"
+        )
+        if out is None:
+            return original
+        lines = out.splitlines()
+        if len(lines) != 3:
+            return original
+        # Relative answers (``.git``, ``../.git``) are relative to the
+        # ``-C`` directory, exactly as :func:`gitops.commit_lock_path`
+        # resolves them.
+        git_dir = (target / lines[0]).resolve()
+        common_dir = (target / lines[1]).resolve()
+        if git_dir == common_dir:
+            return original  # a main working tree, not a linked worktree
+        if is_project_host(hosts, Path(lines[2])):
+            return original  # the worktree itself is a registered host
+        listing = _git_stdout(target, "worktree", "list", "--porcelain")
+        if listing is None:
+            return original
+        first = listing.splitlines()[0] if listing.strip() else ""
+        if not first.startswith("worktree "):
+            return original
+        main = Path(first[len("worktree "):])
+        if not is_project_host(hosts, main):
+            return original
+        return main.resolve()
+    except OSError:
+        return original

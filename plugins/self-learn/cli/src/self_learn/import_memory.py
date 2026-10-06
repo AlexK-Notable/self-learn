@@ -54,6 +54,7 @@ from ruamel.yaml.error import YAMLError
 from . import gitops
 from . import intents
 from . import scan as scan_mod
+from .hosts import capture_host_path
 from .import_common import ImporterError, ImportReport, commit_import, existing_origins
 from .ledger import discover_buckets
 from .ledger_ops import create_record
@@ -116,13 +117,15 @@ def import_memory(
     into the per-project bucket (project-typed memories) or the user
     bucket. ``project_path`` binds the project records (doc 13 §3:
     import_memory imports THIS project's memory — default: the git
-    toplevel of cwd, else cwd). Idempotent via the all-statuses origin
-    index; scan-then-write; ONE ledger commit per run (H-5)."""
+    toplevel of cwd, else cwd; a linked git worktree of a registered
+    project host binds to that host, FW-162). Idempotent via the
+    all-statuses origin index; scan-then-write; ONE ledger commit per run
+    (H-5)."""
     memory_dir = Path(memory_dir)
     if not memory_dir.is_dir():
         raise ImporterError(f"no memory directory at {memory_dir}")
     if project_path is None:
-        project_path = gitops.toplevel(Path.cwd()) or Path.cwd()
+        project_path = capture_host_path(home, gitops.toplevel(Path.cwd()) or Path.cwd())
 
     known = existing_origins(home)
     report = ImportReport(source="auto-memory")
