@@ -63,6 +63,7 @@ from ..records import Record, RecordError
 from ..report import recurrence_suspects
 from .. import telemetry
 from .. import user_model as user_model_mod
+from .health import _always_loaded_ids
 
 __all__ = [
     "OUTCOMES",
@@ -319,9 +320,10 @@ def _recurrence_nudges(home: Path) -> list[dict]:
 
 
 def _always_loaded_zero_fire_nudges(home: Path, week: str) -> list[dict]:
-    """Always-loaded lessons (routed, `scope: user` — the ones compiled
-    into `~/.claude/CLAUDE.md`'s managed section, in context on every
-    turn) with zero `fire` telemetry events since *week*. Best-effort:
+    """Always-loaded lessons (routed, `scope: user`, destination an
+    always-loaded line — the ones compiled into `~/.claude/CLAUDE.md`'s
+    managed section, in context on every turn) with zero `fire` telemetry
+    events since *week*. Best-effort:
     any read failure (missing bucket, unreadable telemetry) degrades to
     `[]`, never a crash — this is an information-only nudge (plan §4.5,
     "information, never forced draws")."""
@@ -337,20 +339,11 @@ def _always_loaded_zero_fire_nudges(home: Path, week: str) -> list[dict]:
             if isinstance(rid, str):
                 fired_ids.add(rid)
 
-        always_loaded: list[str] = []
-        for bucket in discover_buckets(home):
-            if bucket.scope != "user":
-                continue
-            resolved_dir = bucket.path / "resolved"
-            if not resolved_dir.is_dir():
-                continue
-            for path in sorted(resolved_dir.glob("lrn-*.md")):
-                try:
-                    record = Record.from_path(path)
-                except (RecordError, OSError, UnicodeDecodeError):
-                    continue
-                if record.status == "routed":
-                    always_loaded.append(record.id)
+        # ONE definition of "an always-loaded lesson": the helper the
+        # catalogue-health row uses (a routed user-scope record whose
+        # destination `always_loaded.is_always_loaded` accepts). A lesson on
+        # a reference shelf, a path rule, a skill or a hook is not one.
+        always_loaded = _always_loaded_ids(home)
     except Exception:
         return []
     return [

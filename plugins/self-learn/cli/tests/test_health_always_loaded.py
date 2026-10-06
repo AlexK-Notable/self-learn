@@ -1,5 +1,6 @@
 """The overseer's catalogue-health row for always-loaded lines that have
-gone quiet: it counts the right records, over a window it names.
+gone quiet, and the population module's zero-fire nudge for the same
+lessons: both count the right records, and the row names its window.
 
 Two defects, measured 2026-10-05 against the live ledger (the overseer
 reported 44 "always-loaded entries that have never fired"):
@@ -11,9 +12,14 @@ reported 44 "always-loaded entries that have never fired"):
 2. ``gather`` looked at fires since ``now - 7 days`` and the row was named
    "never fired".
 
-These tests drive ``health.gather`` over a scratch ledger. Each absence
-assertion has a positive control checked first: the record that SHOULD be
-listed is listed, and the fire that SHOULD be read is read.
+``population._always_loaded_zero_fire_nudges`` had the first defect too (every
+routed user-scope record got an ``always-loaded-zero-fire`` nudge); it now asks
+the same helper ``health`` uses. Its own window (fires since the week's start)
+is a per-week nudge, not the health count, and stays as it was.
+
+These tests drive ``health.gather`` and ``population.nudges`` over a scratch
+ledger. Each absence assertion has a positive control checked first: the record
+that SHOULD be listed is listed, and the fire that SHOULD be read is read.
 """
 
 from __future__ import annotations
@@ -22,7 +28,7 @@ import json
 from pathlib import Path
 
 from self_learn import telemetry
-from self_learn.overseer import health
+from self_learn.overseer import health, population
 from self_learn.records import Record
 from support import days_ago, make_home
 
@@ -147,3 +153,60 @@ def test_the_row_names_its_window_instead_of_saying_never(tmp_path: Path) -> Non
     for text in (str(row["kind"]), str(row.get("label"))):
         assert "never" not in text.lower(), f"{text!r} still claims 'never'"
     assert "Silence is not retirement evidence" in row["caution"]
+
+
+# ------------------------------------------------ the zero-fire nudge (twin)
+
+#: An old week start: no fire the tests write is older than it, so a record
+#: gets the nudge exactly when it has no fire at all.
+_OLD_WEEK = "2020-01-01T00:00:00Z"
+
+
+def _zero_fire_ids(home: Path, week: str = _OLD_WEEK) -> list[str]:
+    """Ids carrying an ``always-loaded-zero-fire`` nudge, through the public
+    ``population.nudges`` entry point the overseer's runner calls."""
+    offered = population.nudges(home, population._empty_coverage(), week)
+    return [n["id"] for n in offered if n["kind"] == "always-loaded-zero-fire"]
+
+
+def test_zero_fire_nudge_goes_to_always_loaded_lines_only(tmp_path: Path) -> None:
+    home = make_home(tmp_path)
+    _write_routed(home, "lrn-00000001", destination="claude-md")
+    _write_routed(home, "lrn-00000002", destination="claude-md", variant="local")
+    _write_routed(home, "lrn-00000003", destination="reference")
+    _write_routed(home, "lrn-00000004", destination="claude-md", variant="rules")
+    _write_routed(home, "lrn-00000005", destination="skill")
+    _write_routed(home, "lrn-00000006", destination="hook")
+
+    ids = _zero_fire_ids(home)
+
+    # Positive control first: the always-loaded routes DO get the nudge, so
+    # the absence assertions below are about the filter, not a nudge that
+    # never fires.
+    assert "lrn-00000001" in ids
+    assert "lrn-00000002" in ids
+    assert ids == ["lrn-00000001", "lrn-00000002"], (
+        "a lesson that is not an always-loaded line was nudged as one"
+    )
+    # One definition: the health row (no fires, so its window is moot) names
+    # the same lessons as the nudge.
+    assert _health_row(home)["value"] == ids
+
+
+def test_zero_fire_nudge_keeps_its_own_week_window(tmp_path: Path) -> None:
+    home = make_home(tmp_path)
+    _write_routed(home, "lrn-000000e1", destination="claude-md")  # fired 3 days ago
+    _write_routed(home, "lrn-000000e2", destination="claude-md")  # fired 20 days ago
+    _write_routed(home, "lrn-000000e3", destination="claude-md")  # never fired
+    _write_fire(home, "lrn-000000e1", days=3)
+    _write_fire(home, "lrn-000000e2", days=20)
+
+    ids = _zero_fire_ids(home, week=days_ago(7))
+
+    # Positive control: the record with no fire at all is nudged.
+    assert "lrn-000000e3" in ids
+    # A fire inside the week silences the nudge...
+    assert "lrn-000000e1" not in ids
+    # ...and a fire before the week does not: this is a per-week nudge, not
+    # the 30-day health count.
+    assert ids == ["lrn-000000e2", "lrn-000000e3"]
