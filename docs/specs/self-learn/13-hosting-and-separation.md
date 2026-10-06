@@ -1621,8 +1621,9 @@ for either actor. The overseer's own activation additionally lands, as an
 ordinary executor receipt, in the Application section of the overseer's
 decision case — the successor of that parked item, or *(2026-10-05,
 S-76)* a `kind: reconsider` successor correcting a case that is not
-parked (one that covers the same records, has not been superseded, and
-passes its freeze hash) — the same path that appends any
+parked (one that covers the same records, has not been superseded,
+passes its freeze hash, and was recorded by the steward or the overseer)
+— the same path that appends any
 other verb's receipt there (`02-schema.md` §3a.2 §5); the human path opens
 no case, so no Application section exists to write to. `batch`'s flush
 epilogue remains the Application section's one writer.

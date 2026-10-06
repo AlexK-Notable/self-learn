@@ -1635,8 +1635,11 @@ gets `superseded_by`. Parking never installs a standing belief.
 supersedes only a parked case. A `kind: reconsider` successor may also
 supersede a case that is NOT parked, to correct an earlier decision (one
 whose line the ledger refused at apply, for instance), provided that case
-covers every record the reconsider names, has not been superseded, and
-passes its freeze hash — the predecessor check
+covers every record the reconsider names, has not been superseded,
+passes its freeze hash, and was recorded by the steward or the overseer —
+never a case a person recorded (`actor: human`), which before S-76 could
+not happen because such a case is never parked; any other actor is a
+per-pair drop naming it — the predecessor check
 `cases.require_reconsider_case` makes at apply time, asked at phase B.
 Nothing requires the case to be one the run selected: the case being
 corrected may lie outside the run's population window.
@@ -2253,8 +2256,8 @@ route` now applies to a `routed` record (`verbs.reconsider`). The
 overseer's `kind: reconsider` successors do the same (its runner, unlike
 the steward's, writes no `reconsidered` history entry; the case's
 `supersedes` link is the record), and may name a case that is not parked
-— one that covers the same records, has not been superseded, and passes
-its freeze hash (§3a, S-76).
+— one that covers the same records, has not been superseded, passes its
+freeze hash, and was recorded by the steward or the overseer (§3a, S-76).
 
 ## 4. Managed sections (the compile targets' contract)
 

@@ -347,7 +347,7 @@ def test_the_formats_carry_a_reconsider_correcting_a_case_that_is_not_parked(tmp
 #: not superseded, freeze hash -- and nothing about this run's selection.
 _CODE_TERMS = (
     "covers every record the reconsider names, has not been superseded, "
-    "and passes its freeze hash"
+    "passes its freeze hash, and was recorded by the steward or the overseer"
 )
 
 
@@ -411,3 +411,46 @@ def test_the_dry_run_preview_counts_a_reconsider_reroute_as_would_apply(
     # a dry run writes nothing: the lesson and the case it would correct are unchanged
     assert _case_fm(home, resolution_id) == head_before
     assert (_record(home, RID).routing or {}).get("destination") == "skill-md"
+
+
+# --------------- 2026-10-05 fold: who recorded the case being corrected
+
+
+def test_a_reconsider_never_supersedes_a_case_a_person_recorded(tmp_path, decided):
+    """The gate's risk 1 (probe E): before S-76 the overseer could never
+    supersede a case a person recorded, because such a case is never in
+    the parked queue. A reconsider of a non-parked case now needs a
+    predecessor the steward or the overseer recorded; a person's case is
+    a per-pair drop that names the actor."""
+    home, setup, prior = decided
+    human = _case([RID], "route", "route", scope="user")
+    human_id = _record_case(home, setup, human, actor="human")
+    assert _case_fm(home, human_id)["actor"] == "human"  # control: a person's case
+    with pytest.raises(overseer_run.OverseerError, match=f"{human_id}, a case recorded by actor 'human'"):
+        overseer_run._validate_successor(_staged(tmp_path, _reconsider_of(human_id)), set(), home)
+
+
+def test_a_reconsider_of_a_steward_or_overseer_case_is_accepted(tmp_path, decided):
+    home, setup, prior = decided
+    assert _case_fm(home, prior)["actor"] == "steward"
+    overseer_run._validate_successor(_staged(tmp_path, _reconsider_of(prior)), set(), home)
+    first = _reconsider_of(prior)
+    first["trigger"] = "nightly"
+    by_overseer = _record_case(home, setup, first, actor="overseer")
+    assert _case_fm(home, by_overseer)["actor"] == "overseer"
+    overseer_run._validate_successor(_staged(tmp_path, _reconsider_of(by_overseer)), set(), home)
+
+
+def test_the_actor_guard_is_for_cases_outside_the_parked_queue_only(tmp_path, decided):
+    """A parked case is decided through the parked queue, whoever recorded
+    it; the guard reads `actor` only for a predecessor outside it."""
+    home, setup, _prior = decided
+    human_id = _record_case(home, setup, _case([RID], "route", "route", scope="user"), actor="human")
+    overseer_run._validate_successor(_staged(tmp_path, _reconsider_of(human_id)), {human_id}, home)
+
+
+def test_the_correctable_actors_are_the_case_actors_but_a_person():
+    from self_learn import cases as cases_mod
+
+    assert "human" in cases_mod.ACTORS  # control: the closed set has a person in it
+    assert overseer_run._CORRECTABLE_ACTORS == cases_mod.ACTORS - {"human"}

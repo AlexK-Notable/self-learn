@@ -698,8 +698,8 @@ Write report.md, findings.yaml, questions.yaml, user-model-delta.yaml, and eithe
 case-<name>.yaml plus sheet-<name>.yaml files. One successor case must supersede each parked
 case you decide. To correct a case that is not parked (for example a decision whose line the
 ledger refused), write a kind: reconsider successor that supersedes it, provided that case covers
-every record the reconsider names, has not been superseded, and passes its freeze hash
-(formats/case-correct-example.yaml).
+every record the reconsider names, has not been superseded, passes its freeze hash, and was
+recorded by the steward or the overseer, never by a person (formats/case-correct-example.yaml).
 The runner alone records cases and applies sheets. Never run a verb.
 {_YAML_TEXT_RULE}In a case file no line of any text field may start with `## `. To quote a heading line, quote
 it from after the `## ` (for `## 2026-08-19 — lrn-b197d06b` quote `2026-08-19 — lrn-b197d06b`):
@@ -1401,7 +1401,18 @@ _NOT_PARKED_TEXT = (
 )
 
 
-def _reconsider_predecessor_problem(home: Path, data: dict[str, Any]) -> str | None:
+#: S-76 (2026-10-05, the coordinator's fold after the gate's risk 1): the
+#: `cases.ACTORS` whose NON-parked cases a reconsider may supersede. Before
+#: S-76 the overseer could never supersede a case a person recorded,
+#: because such a case is never in the parked queue; this keeps it so.
+#: Every other actor value -- `human`, or anything outside the closed set
+#: -- is refused.
+_CORRECTABLE_ACTORS = frozenset({"steward", "overseer"})
+
+
+def _reconsider_predecessor_problem(
+    home: Path, data: dict[str, Any], parked: set[str]
+) -> str | None:
     """S-76: why a staged ``kind: reconsider`` successor may not supersede
     the case it names, or ``None``.
 
@@ -1412,7 +1423,10 @@ def _reconsider_predecessor_problem(home: Path, data: dict[str, Any]) -> str | N
     demand, one copy of it. It must also not be superseded already (a
     case is superseded once; `cases.record` refuses the second at apply
     time, and saying so here costs the pair instead of a late refusal).
-    Whether it is parked does not matter."""
+    A predecessor outside the verified parked queue (*parked*) must also
+    have been recorded by the steward or the overseer
+    (:data:`_CORRECTABLE_ACTORS`): a person's decision is never superseded
+    by a reconsider."""
     supersedes = data.get("supersedes")
     records = data.get("records")
     if not isinstance(supersedes, str) or not supersedes:
@@ -1428,6 +1442,13 @@ def _reconsider_predecessor_problem(home: Path, data: dict[str, Any]) -> str | N
             f"supersedes {supersedes}, which is already superseded by "
             f"{predecessor['superseded_by']} (a case is superseded once)"
         )
+    actor = predecessor.get("actor")
+    if supersedes not in parked and actor not in _CORRECTABLE_ACTORS:
+        return (
+            f"supersedes {supersedes}, a case recorded by actor {actor!r}: a "
+            "reconsider corrects only a case the steward or the overseer "
+            "recorded, never a person's decision"
+        )
     return None
 
 
@@ -1437,9 +1458,10 @@ def _validate_successor(path: Path, parked: set[str], home: Path) -> None:
     S-76 (2026-10-05): a ``kind: reconsider`` successor may supersede a
     case that is NOT parked -- an earlier decision it is correcting --
     provided that case covers the same records, has not been superseded,
-    and passes its freeze hash (:func:`_reconsider_predecessor_problem`);
-    whether this run selected that case is deliberately not checked (it
-    may lie outside the population window). Before, every successor had
+    passes its freeze hash, and was recorded by the steward or the
+    overseer (:func:`_reconsider_predecessor_problem`); whether this run
+    selected that case is deliberately not checked (it may lie outside
+    the population window). Before, every successor had
     to name a parked case, so the overseer could not retry a decision that
     failed once to apply: run `03a07173`'s reconsider of `case-5257d97d`
     (a resolution whose route was refused at apply, which had already
@@ -1451,7 +1473,7 @@ def _validate_successor(path: Path, parked: set[str], home: Path) -> None:
     if missing:
         raise OverseerError(f"{path.name}: missing successor field(s) {missing!r}")
     if data.get("kind") == "reconsider":
-        problem = _reconsider_predecessor_problem(home, data)
+        problem = _reconsider_predecessor_problem(home, data, parked)
         if problem is not None:
             raise OverseerError(f"{path.name}: {problem}")
     elif data.get("supersedes") not in parked:
