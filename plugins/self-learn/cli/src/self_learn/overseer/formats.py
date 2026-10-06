@@ -404,7 +404,8 @@ def phase_b_examples() -> dict[str, str]:
                 "was refused because that case was not a reconsider; should it be made again?"
             ),
             "supersedes": EXAMPLE_CASE,
-            "evidence": evidence,
+            # its own evidence: the lesson it re-decides is already routed
+            "evidence": [{"ref": f"record:{EXAMPLE_RECORD}", "quote": "status: routed"}],
             "decision": {"verb": "route", "because": (
                 f"{EXAMPLE_CASE} decided a warning hook and its route line was refused at apply "
                 "time because the lesson was already routed; a reconsider is the case kind that "

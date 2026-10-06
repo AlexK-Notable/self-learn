@@ -655,6 +655,9 @@ You are in phase {phase} now.
 _YAML_TEXT_RULE = """In every YAML file you write, write each free-text value either as a block scalar (`text: |`
 with the text indented on the lines below it) or as a double-quoted string: a bare value that
 contains ": " does not parse, and the runner cannot use a file that does not parse.
+The one exception is user-model-delta.yaml: there, write each free-text value as a double-quoted
+string on one line, never a block scalar (a block scalar keeps a line break, which the user model
+refuses).
 """
 
 

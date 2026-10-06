@@ -326,3 +326,30 @@ def test_the_one_line_drift_check_refuses_even_under_python_O():
     )
     proc = subprocess.run([sys.executable, "-O", "-c", probe], capture_output=True, text=True)
     assert "REFUSED" in proc.stdout, (proc.stdout, proc.stderr)
+
+
+def test_the_general_yaml_rule_names_the_user_model_exception(tmp_path):
+    """Gate nit 7: the general rule (block scalar or double-quoted string,
+    first in both phase prompts and the formats README) used to have no
+    exception, though a block scalar is the one form the user model
+    refuses -- the tension behind `op-3b0e8cf5ca64`. `_YAML_TEXT_RULE` is
+    the overseer's own (the steward's brief does not read it)."""
+    from self_learn import steward_prompt
+    from self_learn.overseer import formats
+
+    def flat(text: str) -> str:
+        return " ".join(text.split())
+
+    exception = (
+        "The one exception is user-model-delta.yaml: there, write each free-text value as a "
+        "double-quoted string on one line, never a block scalar"
+    )
+    texts = {
+        "phase A prompt": overseer_run._phase_a_prompt(tmp_path, 1, 0),
+        "phase B prompt": overseer_run._phase_b_prompt(tmp_path, (), ()),
+        "formats README": (formats.write(tmp_path / "ws", "B") / "README.md").read_text(encoding="utf-8"),
+    }
+    for name, text in texts.items():
+        assert "block scalar (`text: |`" in text, name  # control: the general rule is there
+        assert exception in flat(text), name
+    assert overseer_run._YAML_TEXT_RULE not in steward_prompt._render_output_contract()

@@ -281,7 +281,10 @@ def test_a_reconsider_whose_predecessor_does_not_cover_its_records_is_refused(tm
     wrong["records"] = [RID, "lrn-a5000002"]
     with pytest.raises(overseer_run.OverseerError, match=f"{prior} does not cover lrn-a5000002"):
         overseer_run._validate_successor(_staged(tmp_path, wrong), set(), home)
-    # even when it names a parked case: apply time would refuse the routed line
+    # Parked or not, a reconsider's predecessor must cover every record it
+    # names (S-76). For a parked predecessor this is stricter than before
+    # S-76 and than a resolution of the same parked case (gate nit 3); it
+    # matters most for a routed record, whose line apply time would refuse.
     with pytest.raises(overseer_run.OverseerError, match="does not cover"):
         overseer_run._validate_successor(_staged(tmp_path, wrong), {prior}, home)
 
