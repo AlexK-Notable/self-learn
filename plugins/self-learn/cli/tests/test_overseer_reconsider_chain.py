@@ -370,3 +370,44 @@ def test_the_overseer_is_told_the_reconsider_rule_in_the_codes_terms(tmp_path, n
     sentence = lowered[lowered.rfind(". ", 0, at):lowered.index(_CODE_TERMS, at) + len(_CODE_TERMS)]
     assert "kind: reconsider" in sentence, sentence  # control: it is the S-76 sentence
     assert "examined" not in sentence, sentence
+
+
+def test_the_dry_run_preview_counts_a_reconsider_reroute_as_would_apply(
+    tmp_path, monkeypatch, claude_dir
+):
+    """Phase B previews each pair with `batch.dry_run`. Without the records
+    the staged reconsider covers (`reconsidered=`, S-73 item 6, as the
+    steward's preview passes them), its route line on the routed lesson
+    previewed as the routed-status refusal apply time no longer makes, and
+    the dry-run report counted it "would refuse"."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _enabled(monkeypatch)
+    _parked_id, resolution_id = _seed_the_chain_up_to_the_refused_resolution(home, tmp_path, monkeypatch)
+    head_before = _case_fm(home, resolution_id)
+
+    def invoke(spec):
+        if spec.label == "phase-a":
+            _dump(spec.cwd / "selection.yaml", {
+                "cases": [{"id": resolution_id}], "why_these": "x", "why_stopped": "y",
+            })
+            _dump(spec.cwd / "initial-views.yaml", {"cases": [{
+                "id": resolution_id, "what_i_would_do": "a", "why": "b",
+                "what_evidence_decides_it": "c", "confidence": "clear",
+            }]})
+        else:
+            _phase_b_common(spec.cwd)
+            _dump(spec.cwd / "case-pkill-hook.yaml", _reconsider_of(resolution_id))
+            _dump(spec.cwd / "sheet-pkill-hook.yaml", {"version": 1, "items": [_warn_hook_line(RID)]})
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    result = overseer_run.run(home, dry_run=True, no_push=True)
+
+    assert result.status == "dry-run", result
+    report = Path(result.report).read_text(encoding="utf-8")
+    assert "- Dry-run preview: 1 sheet(s);" in report, report  # control: the pair was previewed
+    assert "1 would apply; 0 would refuse" in report, report
+    # a dry run writes nothing: the lesson and the case it would correct are unchanged
+    assert _case_fm(home, resolution_id) == head_before
+    assert (_record(home, RID).routing or {}).get("destination") == "skill-md"

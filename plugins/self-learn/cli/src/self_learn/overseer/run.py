@@ -4710,7 +4710,20 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                     )
                     if always is not None:
                         raise OverseerError(always)
-                    preview = batch.dry_run(home, sheet, actor="overseer", hook_activation=config.hook_activation_enabled(home))
+                    from ..steward import _reconsidered_by  # one definition, the steward's
+
+                    preview = batch.dry_run(
+                        home, sheet, actor="overseer",
+                        hook_activation=config.hook_activation_enabled(home),
+                        # S-73 item 6, as the steward's preview does: the
+                        # records a staged reconsider successor covers
+                        # preview with the widening its recorded case will
+                        # give them at apply time (a route on a routed
+                        # lesson previews as the reroute it will be), not
+                        # as the routed-status refusal. 2026-10-05: before,
+                        # every reconsider reroute counted "would refuse".
+                        reconsidered=_reconsidered_by(_yaml_mapping(case_file)),
+                    )
                 except (OverseerError, batch.BatchError) as exc:
                     reason = _pair_problem_text(exc, stage)
                     case_drops.append(
