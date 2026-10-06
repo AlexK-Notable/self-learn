@@ -1460,7 +1460,10 @@ PDT: "fix the rest of 3".)*
   case/sheet pair costs that pair, named in "Refused / could not do" and
   `runner_notes` with the validator's message (the workspace path taken
   out, bounded and redacted like a failure note's detail): the successor
-  or maintenance case's fields, a second successor for one parked case,
+  or maintenance case's fields, a second successor for one case, a
+  successor naming a case it may not supersede (a resolution naming a
+  case that is not parked; a reconsider naming one that does not cover
+  its records, is already superseded, or fails its freeze hash — S-76),
   the sheet's schema (an unknown or missing item key, `close_call` not a
   boolean), an empty successor sheet, a caseless non-empty sheet. A pair
   is one decision, so it is dropped whole, never item by item. A
@@ -1628,6 +1631,13 @@ filled, and section 3 holding the question and the steward's tentative
 answer if any. The overseer decides it in the user's stead as a **successor
 case** (`actor: overseer`, `supersedes: <parked case>`); the parked case
 gets `superseded_by`. Parking never installs a standing belief.
+*(Amended 2026-10-05, S-76.)* An overseer `kind: resolution` successor
+supersedes only a parked case. A `kind: reconsider` successor may also
+supersede a case that is NOT parked, to correct a decision the overseer
+examined (one whose line the ledger refused at apply, for instance),
+provided that case covers every record the reconsider names, passes its
+own freeze hash, and is not already superseded — the predecessor check
+`cases.require_reconsider_case` makes at apply time, asked at phase B.
 
 Two reasons in that closed set are written by a runner rather than chosen by
 the steward: `plain-host-committed-file`, and `attempts-exhausted` *(added
@@ -2240,7 +2250,8 @@ surface or a hook, decided by the steward itself; the case's `outcome:
 route` now applies to a `routed` record (`verbs.reconsider`). The
 overseer's `kind: reconsider` successors do the same (its runner, unlike
 the steward's, writes no `reconsidered` history entry; the case's
-`supersedes` link is the record).
+`supersedes` link is the record), and may name a case that is not parked
+— the decision being corrected (§3a, S-76).
 
 ## 4. Managed sections (the compile targets' contract)
 

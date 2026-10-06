@@ -1619,7 +1619,9 @@ write records a `hook-activated`/`hook-deactivated` history entry on the
 record (`02-schema.md` §2 as amended), the same entries this build adds
 for either actor. The overseer's own activation additionally lands, as an
 ordinary executor receipt, in the Application section of the overseer's
-decision case for that parked item — the same path that appends any
+decision case — the successor of that parked item, or *(2026-10-05,
+S-76)* a `kind: reconsider` successor correcting a case the overseer
+examined that is not parked — the same path that appends any
 other verb's receipt there (`02-schema.md` §3a.2 §5); the human path opens
 no case, so no Application section exists to write to. `batch`'s flush
 epilogue remains the Application section's one writer.
