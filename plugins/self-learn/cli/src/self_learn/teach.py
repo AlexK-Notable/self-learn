@@ -76,6 +76,7 @@ from .primitives import chrono
 from .compilers import CompileError
 from .gitops import EXIT_GIT_FAILED as _EXIT_GIT_FAILED
 from .gitops import EXIT_HALF_WRITTEN as _EXIT_HALF_WRITTEN
+from .hosts import capture_host_path
 from .ledger import EXIT_NO_HOME as _EXIT_NO_HOME
 from .ledger import home_state, home_state_message, resolve_home
 from .ledger_ops import LedgerOpsError, create_record, record_title
@@ -344,8 +345,10 @@ def _now_iso() -> str:
 
 def _project_path() -> Path:
     """Project scope binds to THIS session's project (doc 13 §3: producers
-    know the path — teach uses cwd): the git toplevel of cwd, else cwd."""
-    return gitops.toplevel(Path.cwd()) or Path.cwd()
+    know the path — teach uses cwd): the git toplevel of cwd, else cwd —
+    and, when that is a linked git worktree of a registered project host,
+    the host itself (FW-162, :func:`hosts.capture_host_path`)."""
+    return capture_host_path(resolve_home(), gitops.toplevel(Path.cwd()) or Path.cwd())
 
 
 def _capture_txn(

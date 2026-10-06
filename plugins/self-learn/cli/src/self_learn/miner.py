@@ -55,7 +55,7 @@ from . import gitops, intents, invocation, provider, sentinel, settings, telemet
 from .primitives import chrono
 from . import reconcile as reconcile_mod
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
-from .hosts import HostsError, load_hosts
+from .hosts import HostsError, capture_host_path, load_hosts
 from .import_common import existing_origins
 from .ledger import discover_buckets, home_state, home_state_message, resolve_home
 from .ledger_ops import LedgerOpsError, create_record, record_title
@@ -1576,7 +1576,7 @@ def _reconcile_and_land(
                     reason="no cwd for project scope",
                 )
                 continue
-            project_path = Path(cwd)
+            project_path = capture_host_path(home, Path(cwd))  # FW-162
         entry = {"session": session_id, "ts": _now_iso(), "origin": origin}
         if quote:
             entry["quote"] = quote
