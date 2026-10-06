@@ -44,7 +44,7 @@ import pytest
 import self_learn
 from self_learn import hook_compiler, hosts, ledger_ops, verbs, worker
 from self_learn.primitives import procs
-from support import init_repo
+from support import git, init_repo, make_env
 
 SRC = Path(self_learn.__file__).parent
 
@@ -715,6 +715,26 @@ def _case_ledger_ops_git_mv(monkeypatch, tmp_path):
     assert "did not finish" in str(excinfo.value)
 
 
+def _case_hosts_capture_host_path(monkeypatch, tmp_path):
+    # FW-162: a capture's git calls time out -> the path comes back
+    # unchanged, never a BoundedTimeout out of the miner's landing loop
+    # (which holds the ledger lock).
+    env = make_env(tmp_path)  # a registered project host
+    wt = tmp_path / "wt"
+    git(env.host, "worktree", "add", "-q", str(wt), "-b", "wt")
+    # positive control: with git answering, the worktree maps to its host
+    assert hosts.capture_host_path(env.ledger, wt) == env.host.resolve()
+    calls: list[list[str]] = []
+
+    def timing_out(argv, *, timeout, **kwargs):
+        calls.append(list(argv))
+        raise procs.BoundedTimeout(list(argv), timeout)
+
+    monkeypatch.setattr(procs, "run_bounded", timing_out)
+    assert hosts.capture_host_path(env.ledger, wt) == wt
+    assert calls and all(c[0] == "git" for c in calls)  # the timeout was really hit
+
+
 _BOUNDED_TIMEOUT_CASES = [
     pytest.param(_case_validate_ere, id="hook_compiler.validate_ere"),
     pytest.param(_case_replay_examples, id="hook_compiler.replay_examples"),
@@ -723,6 +743,7 @@ _BOUNDED_TIMEOUT_CASES = [
     pytest.param(_case_show_lifecycle, id="verbs._show_lifecycle"),
     pytest.param(_case_worker_digest, id="worker._digest"),
     pytest.param(_case_ledger_ops_git_mv, id="ledger_ops._git_mv"),
+    pytest.param(_case_hosts_capture_host_path, id="hosts.capture_host_path"),
 ]
 
 
