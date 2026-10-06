@@ -217,8 +217,13 @@ def _rules(phase: str) -> str:
             "- In a case file no line of any text field may start with `## `.",
             "- Every text field of a case is secret-scanned: an evidence item whose",
             "  quote or ref matches is dropped; a hit anywhere else refuses the case.",
-            "- A successor case supersedes exactly one parked case, and a parked case",
-            "  gets at most one successor. Each case-<name>.yaml pairs with a",
+            "- A successor case supersedes exactly one case, and a case gets at most",
+            "  one successor. A kind: resolution successor supersedes a parked case.",
+            "  A kind: reconsider successor may supersede a parked case or a case you",
+            "  examined that is NOT parked, to correct it (for example a decision whose",
+            "  line the ledger refused at apply time): that case must cover every",
+            "  record the reconsider names and must not already be superseded. See",
+            "  case-correct-example.yaml. Each case-<name>.yaml pairs with a",
             "  sheet-<name>.yaml; a successor's sheet is never empty.",
             "- A catalogue change that decides no parked case is case.yaml (kind:",
             "  maintenance, no supersedes) with sheet.yaml.",
@@ -338,6 +343,25 @@ def phase_b_examples() -> dict[str, str]:
             "decision": {"verb": "route", "because": (
                 "The line was loaded and broken twice; the failure is one Bash call a hook can "
                 "see, and a -f pattern is sometimes right, so the hook warns rather than blocks."
+            ), "confidence": "settled"},
+        }),
+        # S-76: a reconsider correcting a case that is not parked -- the
+        # shape of run `03a07173`'s re-decision of `lrn-19f82fc5`, whose
+        # first decision (a resolution) had its route refused at apply.
+        # It pairs with a sheet like sheet-redecide-example.yaml.
+        "case-correct-example.yaml": _dump({
+            "kind": "reconsider", "trigger": "weekly", "outcome": "route",
+            "records": [EXAMPLE_RECORD], "scope": "user",
+            "question": (
+                "The earlier decision to move this lesson to a hook was right, but its route "
+                "was refused because that case was not a reconsider; should it be made again?"
+            ),
+            "supersedes": EXAMPLE_CASE,
+            "evidence": evidence,
+            "decision": {"verb": "route", "because": (
+                f"{EXAMPLE_CASE} decided a warning hook and its route line was refused at apply "
+                "time because the lesson was already routed; a reconsider is the case kind that "
+                "moves a routed lesson, so the same decision is made again here."
             ), "confidence": "settled"},
         }),
         "sheet-redecide-example.yaml": _dump({

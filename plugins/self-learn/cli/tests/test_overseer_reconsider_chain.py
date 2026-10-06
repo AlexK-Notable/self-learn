@@ -208,3 +208,136 @@ def test_the_live_chain_a_reconsider_naming_the_refused_resolution_moves_the_les
     assert not (claude_dir / "settings.json").exists()  # never registered: activation is off
     entry = next(h for h in reversed(record.history) if h.get("event") == "hook-activated")
     assert "switched off" in (entry.get("note") or "")  # the delegated receipt
+
+
+def test_the_drop_line_names_the_real_reason_when_a_reconsider_names_the_wrong_case(
+    tmp_path, monkeypatch, claude_dir
+):
+    """S-76: the run's "Refused / could not do" line for a dropped
+    reconsider names why (here: its predecessor does not cover the
+    record), not the parked-only rule that no longer applies to it."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _enabled(monkeypatch)
+    _parked_id, resolution_id = _seed_the_chain_up_to_the_refused_resolution(home, tmp_path, monkeypatch)
+    wrong = _reconsider_of(resolution_id)
+    wrong["records"] = ["lrn-a5000002"]
+
+    _second_run(home, monkeypatch, resolution_id, wrong,
+                {"version": 1, "items": [_warn_hook_line("lrn-a5000002")]})
+
+    refused = _refused_section(home)
+    assert "case-pkill-hook.yaml: dropped with sheet-pkill-hook.yaml" in refused, refused
+    assert f"reconsider: {resolution_id} does not cover lrn-a5000002" in refused, refused
+    assert "verified parked case" not in refused, refused
+    assert _case_fm(home, resolution_id).get("superseded_by") is None
+
+
+# ------------------------------------- the successor guards, one by one
+
+
+@pytest.fixture
+def decided(tmp_path):
+    """A sandbox ledger with a routed lesson and the steward's (non-parked)
+    case that routed it, plus a second lesson that case does not cover."""
+    from support import commit_all, make_behavior
+    from self_learn.ledger_ops import create_record
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    setup = tmp_path / "setup"
+    setup.mkdir()
+    prior = _route_through_a_case(home, setup, RID)
+    create_record(home, make_behavior(record_id="lrn-a5000002"))
+    commit_all(home, "seed lrn-a5000002")
+    return home, setup, prior
+
+
+def _staged(tmp_path: Path, data: dict) -> Path:
+    path = tmp_path / f"case-{len(list(tmp_path.glob('case-*.yaml')))}.yaml"
+    _dump(path, data)
+    return path
+
+
+def test_a_reconsider_may_supersede_a_decided_case_that_covers_its_records(tmp_path, decided):
+    home, _setup, prior = decided
+    assert _case_fm(home, prior)["kind"] == "resolution"  # not parked
+    overseer_run._validate_successor(_staged(tmp_path, _reconsider_of(prior)), set(), home)
+
+
+def test_a_resolution_successor_still_supersedes_only_a_parked_case(tmp_path, decided):
+    home, _setup, prior = decided
+    plain = _reconsider_of(prior)
+    plain["kind"] = "resolution"
+    with pytest.raises(overseer_run.OverseerError, match="verified parked case"):
+        overseer_run._validate_successor(_staged(tmp_path, plain), set(), home)
+    # control: the same successor naming a parked case passes
+    overseer_run._validate_successor(_staged(tmp_path, plain), {prior}, home)
+
+
+def test_a_reconsider_whose_predecessor_does_not_cover_its_records_is_refused(tmp_path, decided):
+    home, _setup, prior = decided
+    wrong = _reconsider_of(prior)
+    wrong["records"] = [RID, "lrn-a5000002"]
+    with pytest.raises(overseer_run.OverseerError, match=f"{prior} does not cover lrn-a5000002"):
+        overseer_run._validate_successor(_staged(tmp_path, wrong), set(), home)
+    # even when it names a parked case: apply time would refuse the routed line
+    with pytest.raises(overseer_run.OverseerError, match="does not cover"):
+        overseer_run._validate_successor(_staged(tmp_path, wrong), {prior}, home)
+
+
+def test_a_reconsider_of_a_case_already_superseded_is_refused(tmp_path, decided):
+    home, setup, prior = decided
+    first = _reconsider_of(prior)
+    first["trigger"] = "nightly"
+    taken = _record_case(home, setup, first)
+    assert _case_fm(home, prior)["superseded_by"] == taken  # control
+    with pytest.raises(overseer_run.OverseerError, match=f"already superseded by {taken}"):
+        overseer_run._validate_successor(_staged(tmp_path, _reconsider_of(prior)), set(), home)
+
+
+def test_a_reconsider_of_a_tampered_or_unknown_case_is_refused(tmp_path, decided):
+    home, _setup, prior = decided
+    with pytest.raises(overseer_run.OverseerError, match="no such case"):
+        overseer_run._validate_successor(_staged(tmp_path, _reconsider_of("case-0000ffff")), set(), home)
+    path = next((home / "cases").glob(f"*/{prior}.md"))
+    text = path.read_text(encoding="utf-8")
+    assert "the evidence settles it" in text  # control: the frozen text is there to change
+    path.write_text(text.replace("the evidence settles it", "the evidence settles nothing"), encoding="utf-8")
+    with pytest.raises(overseer_run.OverseerError, match="freeze-hash"):
+        overseer_run._validate_successor(_staged(tmp_path, _reconsider_of(prior)), set(), home)
+
+
+def test_a_reconsider_successor_cannot_remain_parked_or_miss_a_field(tmp_path, decided):
+    home, _setup, prior = decided
+    parked = _reconsider_of(prior)
+    parked["outcome"] = "parked"
+    with pytest.raises(overseer_run.OverseerError, match="cannot remain parked"):
+        overseer_run._validate_successor(_staged(tmp_path, parked), set(), home)
+    missing = _reconsider_of(prior)
+    del missing["evidence"]
+    with pytest.raises(overseer_run.OverseerError, match="missing successor field"):
+        overseer_run._validate_successor(_staged(tmp_path, missing), set(), home)
+
+
+def test_the_formats_carry_a_reconsider_correcting_a_case_that_is_not_parked(tmp_path, decided):
+    """The overseer's instructions say a reconsider may name a non-parked
+    case it is correcting, with one example that passes the runner's own
+    checks once its placeholder ids stand for a real decided case."""
+    home, _setup, prior = decided
+    root = formats.write(tmp_path / "ws", "B")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    assert "case-correct-example.yaml" in readme
+    assert "examined that is NOT parked" in readme
+    assert "case-correct-example.yaml" in overseer_run._phase_b_prompt(tmp_path, (), ())
+    example = _load_yaml((root / "case-correct-example.yaml").read_text(encoding="utf-8"))
+    assert example["kind"] == "reconsider"
+    assert example["supersedes"] == formats.EXAMPLE_CASE != formats.EXAMPLE_PARKED_CASE
+    example.update(records=[RID], supersedes=prior)
+    path = _staged(tmp_path, example)
+    overseer_run._validate_successor(path, set(), home)
+    assert overseer_run._case_rule_problem(path, "abcd1234") is None
+    # broken twin: the same example over a record its predecessor does not cover
+    example["records"] = ["lrn-a5000002"]
+    with pytest.raises(overseer_run.OverseerError, match="does not cover"):
+        overseer_run._validate_successor(_staged(tmp_path, example), set(), home)

@@ -695,7 +695,10 @@ ledger refused its line for a reason only a person or a different decision can f
 quotes the ledger's words.
 Write report.md, findings.yaml, questions.yaml, user-model-delta.yaml, and either sheet.yaml or paired
 case-<name>.yaml plus sheet-<name>.yaml files. One successor case must supersede each parked
-case you decide. The runner alone records cases and applies sheets. Never run a verb.
+case you decide. To correct a case you examined that is not parked (for example a decision whose
+line the ledger refused), write a kind: reconsider successor that supersedes it; that case must
+cover every record the reconsider names (formats/case-correct-example.yaml).
+The runner alone records cases and applies sheets. Never run a verb.
 {_YAML_TEXT_RULE}In a case file no line of any text field may start with `## `. To quote a heading line, quote
 it from after the `## ` (for `## 2026-08-19 — lrn-b197d06b` quote `2026-08-19 — lrn-b197d06b`):
 an evidence item with such a line is dropped, and any other field with one refuses the case.
@@ -1387,14 +1390,67 @@ def _coverage_text(
     return population_mod.render_coverage(coverage)
 
 
-def _validate_successor(path: Path, parked: set[str]) -> None:
+#: S-76: the drop line of a successor that is not a reconsider and names a
+#: case outside the verified parked queue.
+_NOT_PARKED_TEXT = (
+    "supersedes must name a verified parked case (only a kind: reconsider "
+    "successor may correct a case that is not parked)"
+)
+
+
+def _reconsider_predecessor_problem(home: Path, data: dict[str, Any]) -> str | None:
+    """S-76: why a staged ``kind: reconsider`` successor may not supersede
+    the case it names, or ``None``.
+
+    The predecessor must exist, pass its own freeze hash, and cover every
+    record the successor names -- `cases.require_reconsider_predecessor`,
+    the half of `cases.require_reconsider_case` that can be asked before
+    the reconsider case exists, so this is the coverage apply time will
+    demand, one copy of it. It must also not be superseded already (a
+    case is superseded once; `cases.record` refuses the second at apply
+    time, and saying so here costs the pair instead of a late refusal).
+    Whether it is parked does not matter."""
+    supersedes = data.get("supersedes")
+    records = data.get("records")
+    if not isinstance(supersedes, str) or not supersedes:
+        return "a reconsider must name the case it corrects in supersedes"
+    if not isinstance(records, list) or not all(isinstance(rid, str) for rid in records):
+        return "records must be a list of record ids"
+    try:
+        predecessor = cases.require_reconsider_predecessor(home, supersedes, records)
+    except (cases.CaseError, OSError, ValueError, YAMLError) as exc:
+        return f"supersedes {supersedes}: {_case_rule(exc)}"
+    if predecessor.get("superseded_by"):
+        return (
+            f"supersedes {supersedes}, which is already superseded by "
+            f"{predecessor['superseded_by']} (a case is superseded once)"
+        )
+    return None
+
+
+def _validate_successor(path: Path, parked: set[str], home: Path) -> None:
+    """A staged successor case's own rules, before anything is applied.
+
+    S-76 (2026-10-05): a ``kind: reconsider`` successor may supersede a
+    case that is NOT parked -- a decision the overseer examined and is
+    correcting -- provided that case covers the same records
+    (:func:`_reconsider_predecessor_problem`). Before, every successor had
+    to name a parked case, so the overseer could not retry a decision that
+    failed once to apply: run `03a07173`'s reconsider of `case-5257d97d`
+    (a resolution whose route was refused at apply, which had already
+    consumed the parked case) was dropped here. Every other successor
+    still supersedes only a verified parked case."""
     data = _yaml_mapping(path)
     required: set[str] = set(SUCCESSOR_CASE_FIELDS)
     missing = sorted(required - set(data))
     if missing:
         raise OverseerError(f"{path.name}: missing successor field(s) {missing!r}")
-    if data.get("supersedes") not in parked:
-        raise OverseerError(f"{path.name}: supersedes must name a verified parked case")
+    if data.get("kind") == "reconsider":
+        problem = _reconsider_predecessor_problem(home, data)
+        if problem is not None:
+            raise OverseerError(f"{path.name}: {problem}")
+    elif data.get("supersedes") not in parked:
+        raise OverseerError(f"{path.name}: {_NOT_PARKED_TEXT}")
     if data.get("kind") == "parked" or data.get("outcome") == "parked":
         raise OverseerError(f"{path.name}: a decision successor cannot remain parked")
 
@@ -4609,7 +4665,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                             pairs_dropped += 1
                             continue
                     elif case_file is not None:
-                        _validate_successor(case_file, {row["case"] for row in parked_rows})
+                        _validate_successor(case_file, {row["case"] for row in parked_rows}, home)
                         predecessor = str(_yaml_mapping(case_file)["supersedes"])
                         rule = _case_rule_problem(case_file, run_id)
                         if rule is not None:

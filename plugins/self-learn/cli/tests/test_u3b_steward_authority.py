@@ -823,8 +823,20 @@ def test_the_overseer_formats_carry_the_new_examples_and_each_validates(tmp_path
                  "sheet-rule-example.yaml", "case-always-loaded-example.yaml"):
         assert (root / name).is_file(), name
         assert name in readme, name
+    # S-76 (2026-10-05): a reconsider's predecessor is read from the ledger
+    # and must cover the reconsider's records, so the examples' placeholder
+    # parked case is stood in for by a real one over the example record.
+    parked = _case([formats.EXAMPLE_RECORD], "parked", "route")
+    parked.update(kind="parked", parked_for="overseer", parked_reason="hook")
+    (tmp_path / "setup").mkdir()
+    parked_id = _record_case(home, tmp_path / "setup", parked)
     for case_name in ("case-redecide-example.yaml", "case-always-loaded-example.yaml"):
-        overseer_run._validate_successor(root / case_name, {formats.EXAMPLE_PARKED_CASE})
+        work_case = tmp_path / case_name
+        staged = YAML(typ="safe").load((root / case_name).read_text(encoding="utf-8"))
+        assert staged["supersedes"] == formats.EXAMPLE_PARKED_CASE, case_name
+        staged["supersedes"] = parked_id
+        _dump_yaml(work_case, staged)
+        overseer_run._validate_successor(work_case, {parked_id}, home)
         assert overseer_run._case_rule_problem(root / case_name, "abcd1234") is None, case_name
     always = YAML(typ="safe").load((root / "case-always-loaded-example.yaml").read_text(encoding="utf-8"))
     assert always_loaded.missing_tests(always) == []
