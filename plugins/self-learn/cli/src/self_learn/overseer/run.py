@@ -20,6 +20,7 @@ import json
 import hashlib
 import re
 import shutil
+import textwrap
 import time
 import uuid
 from dataclasses import asdict, dataclass, replace
@@ -735,6 +736,7 @@ user-model-delta.yaml is {{updates: [...]}}. Each update is either
 {{action: add, container, title, because, source: system-reading, ref, held_since?, conditions?, statements?, basis?}}
 or {{action: lapse, id, changed_condition?|contrary?|consolidated_into?}}. Adds are provisional
 system readings only. A lapse must name exactly one changed condition, contrary item, or consolidation.
+{textwrap.fill(formats.user_model_one_line_rule(), width=100, break_long_words=False, break_on_hyphens=False)}
 report.md should stay under about 60 lines: it is the summary, not the record. Its
 "Questions for you" section lists each question as - <id>: <a few words>; the full text lives
 in questions.yaml. It has these headings, in this exact order: Examined; Decided in the user's

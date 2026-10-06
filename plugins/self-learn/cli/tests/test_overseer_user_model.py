@@ -10,6 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from ruamel.yaml import YAML
 
 from self_learn import execution_evidence, user_model
@@ -192,3 +193,73 @@ run._maintain_manifest(home, "deadbeef")
     assert first_id in lines[0]
     rows = [row for values in user_model.show(home)["containers"].values() for row in values]
     assert [row["title"] for row in rows].count("One durable reading") == 1
+
+
+# ------------------------------------------ 2026-10-05: the one-line fields
+#
+# Run `03a07173`'s add `op-3b0e8cf5ca64` was refused ("a free-text field
+# contains an embedded newline or a leading '#' heading-shaped line"): the
+# model wrote `because` as a hard-wrapped block scalar, the form the general
+# YAML rule recommends for free text. The refusal is deliberate (gate r2 B1)
+# and stays; what changed is that the fields it covers are named once
+# (`user_model.ONE_LINE_FIELDS`), checked from that table, and the overseer
+# is told about them in words generated from it.
+
+_LIST_FIELDS = ("conditions", "statements", "basis")
+
+
+def _add_kwargs(**overrides) -> dict:
+    kwargs: dict = dict(
+        container="C", title="ok", because="ok text", source="system-reading",
+        by="overseer", ref="case:case-00000000", statements=["stmt-11112222"],
+        conditions=["a condition"], basis=["transcript:x#L1"],
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_every_one_line_field_refuses_a_line_break_or_heading_and_one_line_applies(tmp_path):
+    home = make_home(tmp_path)
+    assert user_model.add_entry(home, **_add_kwargs()).startswith("um-")  # control
+    for field in user_model.ONE_LINE_FIELDS["add"]:
+        for value in ("first line\nsecond line", "# a heading"):
+            bad = _add_kwargs(**{field: [value] if field in _LIST_FIELDS else value})
+            with pytest.raises(user_model.UserModelError, match="structural refusal"):
+                user_model.add_entry(home, **bad)
+    # The live shape: a hard-wrapped `|` block scalar is refused; the same
+    # paragraph double-quoted on one line applies.
+    wrapped = YAML(typ="safe").load("because: |\n  one paragraph,\n  hard-wrapped.\n")["because"]
+    with pytest.raises(user_model.UserModelError, match="structural refusal"):
+        user_model.add_entry(home, **_add_kwargs(because=wrapped))
+    one_line = YAML(typ="safe").load('because: "one paragraph, on: one line."\n')["because"]
+    assert user_model.add_entry(home, **_add_kwargs(because=one_line)).startswith("um-")
+
+    entry_id = user_model.add_entry(home, **_add_kwargs(title="to lapse"))
+    for field in user_model.ONE_LINE_FIELDS["lapse"]:
+        with pytest.raises(user_model.UserModelError, match="structural refusal"):
+            user_model.lapse_entry(home, entry_id, by="overseer", **{field: "cond:x\nsecond line"})
+    assert user_model.lapse_entry(home, entry_id, by="overseer", changed_condition="cond:x")  # control
+
+
+def test_the_overseer_is_told_the_one_line_fields_in_words_generated_from_the_table(tmp_path):
+    from self_learn.overseer import formats
+
+    def flat(text: str) -> str:
+        return " ".join(text.split())
+
+    rule = formats.user_model_one_line_rule()
+    for fields in user_model.ONE_LINE_FIELDS.values():
+        for field in fields:
+            assert field in rule, field
+    assert "double-quoted string on a single line" in rule and "block scalar" in rule
+    assert flat(rule) in flat(overseer_run._phase_b_prompt(tmp_path, (), ()))
+    root = formats.write(tmp_path / "ws", "B")
+    assert flat(rule) in flat((root / "README.md").read_text(encoding="utf-8"))
+    sets = YAML(typ="safe").load((root / "closed-sets.yaml").read_text(encoding="utf-8"))
+    assert sets["user_model_delta"]["one_line_fields"] == {
+        action: list(fields) for action, fields in user_model.ONE_LINE_FIELDS.items()
+    }
+    example = (root / "user-model-delta.yaml").read_text(encoding="utf-8")
+    assert 'because: "' in example and 'title: "' in example  # double-quoted, one line each
+    update = YAML(typ="safe").load(example)["updates"][0]
+    assert all("\n" not in str(update[key]) for key in ("title", "because", "ref"))

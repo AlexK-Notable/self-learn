@@ -138,6 +138,39 @@ def _refuse_structural(*texts: str | None) -> None:
             )
 
 
+#: The fields :func:`_refuse_structural` checks, per action, named once
+#: (2026-10-05). Run `03a07173`'s add `op-3b0e8cf5ca64` was refused because
+#: its `because` was a hard-wrapped YAML block scalar: the overseer had
+#: been told to write free text that way and never told that these fields
+#: refuse a line break. `add_entry` and `lapse_entry` check exactly these
+#: fields (:func:`_refuse_structural_fields`), and the overseer's
+#: instructions (`overseer/formats.py`, the phase B prompt) are generated
+#: from this table, so the two cannot drift. Every item of a list field
+#: is checked.
+ONE_LINE_FIELDS: dict[str, tuple[str, ...]] = {
+    "add": ("title", "because", "ref", "conditions", "statements", "basis"),
+    "lapse": ("changed_condition", "contrary", "consolidated_into"),
+}
+
+
+def _refuse_structural_fields(
+    action: str, values: dict[str, str | list[str] | None]
+) -> None:
+    """:func:`_refuse_structural` over exactly the fields
+    ``ONE_LINE_FIELDS[action]`` names; *values* must carry each of them
+    (``None`` when absent) and nothing else."""
+    names = ONE_LINE_FIELDS[action]
+    assert set(values) == set(names), (action, sorted(values))
+    texts: list[str | None] = []
+    for name in names:
+        value = values[name]
+        if isinstance(value, list):
+            texts.extend(value)
+        else:
+            texts.append(value)
+    _refuse_structural(*texts)
+
+
 _DELIM = "---"
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
 _CONTAINER_HEADING_RE = re.compile(r"^## ([A-E])\.[^\n]*$", re.MULTILINE)
@@ -388,11 +421,13 @@ def add_entry(
     # Gate r2 B1 / Astra 12: refuse before any write, same as the secret
     # scan just above — `ref` is included because it too is rendered as
     # a raw line (`_render_entry`'s `- ref: …`).
-    _refuse_structural(title, because, ref)
     # Fold r2 residual (builder's own post-commit find): the list-shaped
     # fields render through `_fmt_list` as raw text on one line each, so
     # every ITEM is a free-text field too — refuse per item.
-    _refuse_structural(*(conditions or []), *(statements or []), *(basis or []))
+    _refuse_structural_fields("add", {
+        "title": title, "because": because, "ref": ref,
+        "conditions": conditions, "statements": statements, "basis": basis,
+    })
 
     statements = list(statements or [])
     if source == "system-reading":
@@ -495,8 +530,13 @@ def lapse_entry(
         raise attach_hits(UserModelError(format_refusal(hits)), hits)
     # Gate r2 B1 / Astra 12: same structural refusal as `add_entry` — the
     # lapse cause is rendered as `- changed_condition: …`, one more line
-    # a newline could turn into forged structure.
-    _refuse_structural(changed_text)
+    # a newline could turn into forged structure. Checked field by field
+    # (`ONE_LINE_FIELDS["lapse"]`), which refuses everything the rendered
+    # `changed_text` would and names the fields the overseer is told about.
+    _refuse_structural_fields("lapse", {
+        "changed_condition": changed_condition, "contrary": contrary,
+        "consolidated_into": consolidated_into,
+    })
 
     # Astra 4/10 (item 6): `_load`/`_find` (and the checks that depend on
     # what they find — permission-by-container, already-LAPSED) are

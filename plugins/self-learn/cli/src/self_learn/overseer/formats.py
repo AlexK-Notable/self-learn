@@ -15,10 +15,12 @@ own validators in ``tests/test_overseer_workspace.py``.
 from __future__ import annotations
 
 import io
+import textwrap
 from pathlib import Path
 from typing import Any
 
 from ruamel.yaml import YAML
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
 FORMATS_DIR = "formats"
 
@@ -163,6 +165,11 @@ def closed_sets() -> dict[str, Any]:
             "action": ["add", "lapse"],
             "containers_you_may_add_to": overseer_containers,
             "source": ["system-reading"],
+            # 2026-10-05: the fields the user model refuses a line break
+            # or a leading `#` in, per action (`user_model.ONE_LINE_FIELDS`).
+            "one_line_fields": {
+                action: list(fields) for action, fields in user_model.ONE_LINE_FIELDS.items()
+            },
         },
         "report_headings_in_order": list(run._REPORT_SECTIONS),
         "hook": _hook_closed_sets(),
@@ -188,6 +195,33 @@ def _hook_closed_sets() -> dict[str, Any]:
         "tools": list(hook_compiler.GUARDABLE_TOOLS),
         "warn_message_max_chars": hook_compiler.WARN_MESSAGE_MAX,
     }
+
+
+def user_model_one_line_rule() -> str:
+    """The user model's one-line rule, as the overseer reads it, generated
+    from `user_model.ONE_LINE_FIELDS` -- the table `add_entry` and
+    `lapse_entry` check (2026-10-05).
+
+    Run `03a07173`'s add `op-3b0e8cf5ca64` was refused ("a free-text field
+    contains an embedded newline or a leading '#' heading-shaped line"):
+    its `because` was a hard-wrapped block scalar, the form the general
+    YAML rule (`run._YAML_TEXT_RULE`) recommends for free text and the one
+    form these fields can never take, since even a one-line `|` scalar
+    ends with a line break. The refusal is deliberate (gate r2 B1: a line
+    break in these fields becomes forged structure in user-model.md); the
+    instructions were what was missing."""
+    from .. import user_model
+
+    add = ", ".join(user_model.ONE_LINE_FIELDS["add"])
+    lapse = ", ".join(user_model.ONE_LINE_FIELDS["lapse"])
+    return (
+        "In user-model-delta.yaml every free-text value is ONE paragraph on ONE line: an "
+        f"add's {add} (every item of a list), and a lapse's {lapse}. Write each as a "
+        "double-quoted string on a single line, never as a block scalar (`|` or `>` keeps "
+        "a line break), with no line break inside it and no line starting with `#`. A "
+        "value with a line break or a heading-shaped line is refused, and that update is "
+        "lost."
+    )
 
 
 def _rules(phase: str) -> str:
@@ -227,6 +261,11 @@ def _rules(phase: str) -> str:
             "  sheet-<name>.yaml; a successor's sheet is never empty.",
             "- A catalogue change that decides no parked case is case.yaml (kind:",
             "  maintenance, no supersedes) with sheet.yaml.",
+            *textwrap.wrap(
+                user_model_one_line_rule(), width=78,
+                initial_indent="- ", subsequent_indent="  ",
+                break_long_words=False, break_on_hyphens=False,
+            ),
             "",
             "Phase B files: report.md, findings.yaml, questions.yaml,",
             "user-model-delta.yaml, case-example.yaml + sheet-example.yaml (a",
@@ -315,11 +354,16 @@ def phase_b_examples() -> dict[str, str]:
             "text": "Will you keep using this repository next month? Yes keeps the lesson; no retires it.",
             "why": "It decides whether the lesson stays loaded.",
         }]}),
+        # Every free-text value double-quoted on one line, the form
+        # `user_model_one_line_rule` asks for (2026-10-05).
         "user-model-delta.yaml": _dump({"updates": [{
             "action": "add", "container": "D", "source": "system-reading",
-            "title": "Prefers small reviewed steps",
-            "because": "Three cases this week split one change into several reviewed parts.",
-            "ref": f"case:{EXAMPLE_CASE}",
+            "title": DoubleQuotedScalarString("Prefers small reviewed steps"),
+            "because": DoubleQuotedScalarString(
+                "Three cases this week split one change into several reviewed parts: "
+                "each part was reviewed before the next was started."
+            ),
+            "ref": DoubleQuotedScalarString(f"case:{EXAMPLE_CASE}"),
         }]}),
         "case-example.yaml": _dump({
             "kind": "resolution", "trigger": "weekly", "outcome": "reject",
