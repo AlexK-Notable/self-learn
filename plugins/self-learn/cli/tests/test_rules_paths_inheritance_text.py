@@ -15,20 +15,37 @@ Text only: no ledger, no model call.
 
 from __future__ import annotations
 
+import argparse
 import inspect
 from pathlib import Path
 
 import pytest
 
-from self_learn import steward_prompt, verbs
+from self_learn import cli, steward_prompt, verbs
 from self_learn.overseer import formats
 
 METHOD = Path(__file__).resolve().parents[2] / "skills" / "self-learn" / "references" / "steward-method.md"
 REVIEW = Path(__file__).resolve().parents[2] / "commands" / "review.md"
 
 
+def _rules_path_help(command: str) -> str:
+    """The `--rules-path` help of one CLI subcommand, as argparse holds it."""
+    parser = cli._build_parser()
+    subparsers = next(
+        action for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    sub = subparsers.choices[command]
+    return next(
+        action.help or "" for action in sub._actions
+        if "--rules-path" in action.option_strings
+    )
+
+
 def _text_of(name: str) -> str:
-    if name == "steward brief":
+    if name.endswith(" --rules-path help"):
+        raw = _rules_path_help(name.split()[0])
+    elif name == "steward brief":
         raw = steward_prompt._render_output_contract()
     elif name == "overseer rules":
         raw = formats._rules("B")
@@ -39,7 +56,11 @@ def _text_of(name: str) -> str:
     return " ".join(raw.lower().split())
 
 
-@pytest.mark.parametrize("name", ["steward brief", "overseer rules", "steward method", "review md"])
+@pytest.mark.parametrize("name", [
+    "steward brief", "overseer rules", "steward method", "review md",
+    # 2026-10-05 fold: the CLI's own help says it too (cli.py, teach.py)
+    "route --rules-path help", "reroute --rules-path help", "teach --rules-path help",
+])
 def test_each_text_says_inheritance_needs_the_same_topic_and_the_same_bucket(name):
     # The texts describe these two lines of `_inherit_rules_paths`; if
     # either goes, so must the words.
@@ -47,7 +68,7 @@ def test_each_text_says_inheritance_needs_the_same_topic_and_the_same_bucket(nam
     assert "old_path.parent.parent != bucket_dir" in source
     assert 'old_routing.get("rules_topic") != topic' in source
     text = _text_of(name)
-    assert "claude-md:rules:" in text or "rules topic" in text  # control: the right text
+    assert "claude-md:rules:" in text or "rules topic" in text or "rules_paths" in text  # control
     assert "inherits" in text  # control: the inheritance sentence is there
     assert "same bucket" in text, name
     assert "for a project lesson, the same project" in text, name

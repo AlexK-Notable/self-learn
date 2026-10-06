@@ -271,7 +271,8 @@ def add_teach_parser(sub) -> argparse.ArgumentParser:
             "with --route --dest claude-md:rules:<topic>: a glob the rule fires on "
             "(repeatable); validated and reachability-checked like a proposal's "
             "rules_paths. Omitted: a lesson that --supersedes a record routed to "
-            "the same topic inherits that record's globs"
+            "the same topic in the same bucket (same scope and, for a project "
+            "lesson, the same project) inherits that record's globs"
         ),
     )
     p.add_argument(

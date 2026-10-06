@@ -498,7 +498,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "claude-md:rules:<topic> only: a glob the rule fires on (repeatable); "
             "validated like a proposal's rules_paths and checked for reachability. "
             "Omitted: a lesson that supersedes a record routed to the same topic "
-            "inherits that record's globs (routing.rules_paths_from names it)"
+            "in the same bucket (same scope and, for a project lesson, the same "
+            "project) inherits that record's globs (routing.rules_paths_from names it)"
         ),
     )
     route.add_argument(
@@ -663,7 +664,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "claude-md:rules:<topic> only: a glob the rule fires on (repeatable); "
             "validated like a proposal's rules_paths and checked for reachability. "
             "Omitted: a lesson that supersedes a record routed to the same topic "
-            "inherits that record's globs (routing.rules_paths_from names it)"
+            "in the same bucket (same scope and, for a project lesson, the same "
+            "project) inherits that record's globs (routing.rules_paths_from names it)"
         ),
     )
     reroute.add_argument(
