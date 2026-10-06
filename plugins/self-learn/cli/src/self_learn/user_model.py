@@ -147,27 +147,55 @@ def _refuse_structural(*texts: str | None) -> None:
 #: instructions (`overseer/formats.py`, the phase B prompt) are generated
 #: from this table, so the two cannot drift. Every item of a list field
 #: is checked.
+#:
+#: 2026-10-05 audit (the blind gate's probe F forged an entry `um-ffff`
+#: through `held_since`): every field `_render_entry` writes, and where it
+#: comes from --
+#:   id, r, status, provisional: set by this module, never by a caller;
+#:   source: checked against the closed set `SOURCES` before anything else;
+#:   title, because, ref, conditions, statements, basis: here (add);
+#:   held_since, recorded_by: caller-supplied text rendered raw (the
+#:     agents' add payload goes to `add_entry` as keyword arguments), so
+#:     here too (add);
+#:   lapsed_at (the `at` argument) and changed_condition (the rendered
+#:     cause): caller-supplied, here as `at` and the three causes (lapse).
 ONE_LINE_FIELDS: dict[str, tuple[str, ...]] = {
-    "add": ("title", "because", "ref", "conditions", "statements", "basis"),
-    "lapse": ("changed_condition", "contrary", "consolidated_into"),
+    "add": (
+        "title", "because", "ref", "conditions", "statements", "basis",
+        "held_since", "recorded_by",
+    ),
+    "lapse": ("changed_condition", "contrary", "consolidated_into", "at"),
 }
 
 
 def _refuse_structural_fields(
-    action: str, values: dict[str, str | list[str] | None]
+    action: str, values: dict[str, object]
 ) -> None:
     """:func:`_refuse_structural` over exactly the fields
     ``ONE_LINE_FIELDS[action]`` names; *values* must carry each of them
-    (``None`` when absent) and nothing else."""
-    names = ONE_LINE_FIELDS[action]
-    assert set(values) == set(names), (action, sorted(values))
+    (``None`` when absent) and nothing else. A scalar that is not text (a
+    YAML date for `held_since`) is checked as it renders, ``str(value)``.
+
+    The drift check is a real refusal, not an ``assert`` (which ``python
+    -O`` strips): a call that passes a different set of fields than the
+    table names would check fields the agents are not told about, or not
+    check fields they are told about."""
+    names = ONE_LINE_FIELDS.get(action)
+    if names is None or set(values) != set(names):
+        raise UserModelError(
+            f"user-model: internal -- the one-line check for {action!r} was "
+            f"called with fields {sorted(values)}, not {list(names or ())} "
+            "(ONE_LINE_FIELDS drifted from its call site); nothing written"
+        )
     texts: list[str | None] = []
     for name in names:
         value = values[name]
         if isinstance(value, list):
             texts.extend(value)
-        else:
+        elif value is None or isinstance(value, str):
             texts.append(value)
+        else:
+            texts.append(str(value))
     _refuse_structural(*texts)
 
 
@@ -427,6 +455,7 @@ def add_entry(
     _refuse_structural_fields("add", {
         "title": title, "because": because, "ref": ref,
         "conditions": conditions, "statements": statements, "basis": basis,
+        "held_since": held_since, "recorded_by": recorded_by,
     })
 
     statements = list(statements or [])
@@ -535,7 +564,7 @@ def lapse_entry(
     # `changed_text` would and names the fields the overseer is told about.
     _refuse_structural_fields("lapse", {
         "changed_condition": changed_condition, "contrary": contrary,
-        "consolidated_into": consolidated_into,
+        "consolidated_into": consolidated_into, "at": at,
     })
 
     # Astra 4/10 (item 6): `_load`/`_find` (and the checks that depend on

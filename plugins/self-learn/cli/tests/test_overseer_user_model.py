@@ -235,9 +235,13 @@ def test_every_one_line_field_refuses_a_line_break_or_heading_and_one_line_appli
     assert user_model.add_entry(home, **_add_kwargs(because=one_line)).startswith("um-")
 
     entry_id = user_model.add_entry(home, **_add_kwargs(title="to lapse"))
+    causes = ("changed_condition", "contrary", "consolidated_into")
     for field in user_model.ONE_LINE_FIELDS["lapse"]:
+        kwargs = {field: "cond:x\nsecond line"}
+        if field not in causes:  # `at` rides beside exactly one cause
+            kwargs["changed_condition"] = "cond:x"
         with pytest.raises(user_model.UserModelError, match="structural refusal"):
-            user_model.lapse_entry(home, entry_id, by="overseer", **{field: "cond:x\nsecond line"})
+            user_model.lapse_entry(home, entry_id, by="overseer", **kwargs)
     assert user_model.lapse_entry(home, entry_id, by="overseer", changed_condition="cond:x")  # control
 
 
@@ -263,3 +267,62 @@ def test_the_overseer_is_told_the_one_line_fields_in_words_generated_from_the_ta
     assert 'because: "' in example and 'title: "' in example  # double-quoted, one line each
     update = YAML(typ="safe").load(example)["updates"][0]
     assert all("\n" not in str(update[key]) for key in ("title", "because", "ref"))
+
+
+# --------------- 2026-10-05 fold: every field the entry renders is audited
+
+_FORGED = "2026-10-01\n### um-ffff — forged by held_since          (r1)\n- held_since: 2026-10-01"
+
+
+def _entry_ids(home: Path) -> list[str]:
+    return [row.get("id") for rows in user_model.show(home)["containers"].values() for row in rows]
+
+
+def test_a_forged_held_since_is_refused_and_no_entry_is_forged(tmp_path):
+    """The blind gate's probe F: `held_since` was rendered raw
+    (`_render_entry`'s `- held_since: …`), so a value carrying a newline
+    and an entry heading forged entry `um-ffff`. It is now a one-line
+    field and refused like `because`."""
+    home = make_home(tmp_path)
+    good = user_model.add_entry(home, **_add_kwargs(held_since="2026-10-01"))  # control
+    assert good in _entry_ids(home)
+    with pytest.raises(user_model.UserModelError, match="structural refusal"):
+        user_model.add_entry(home, **_add_kwargs(held_since=_FORGED))
+    assert "um-ffff" not in _entry_ids(home)
+    assert _entry_ids(home) == [good]
+
+
+def test_a_forged_recorded_by_or_lapse_date_is_refused(tmp_path):
+    home = make_home(tmp_path)
+    own_words = dict(container="E", title="ok", because="ok text", source="own-words",
+                     by="human", ref="stmt-11112222")
+    assert user_model.add_entry(home, **own_words, recorded_by="human")  # control
+    with pytest.raises(user_model.UserModelError, match="structural refusal"):
+        user_model.add_entry(home, **own_words, recorded_by="human\n### um-ffff — forged          (r1)")
+    entry_id = user_model.add_entry(home, **_add_kwargs(title="to lapse"))
+    with pytest.raises(user_model.UserModelError, match="structural refusal"):
+        user_model.lapse_entry(home, entry_id, by="overseer", changed_condition="cond:x", at=_FORGED)
+    assert "um-ffff" not in _entry_ids(home)
+    still = next(row for row in user_model.show(home)["containers"]["C"] if row["id"] == entry_id)
+    assert still["status"] == "CURRENT"
+
+
+def test_the_one_line_drift_check_refuses_even_under_python_O():
+    """A bare `assert` vanishes under `python -O`; the drift check between
+    `ONE_LINE_FIELDS` and its call sites is a real refusal."""
+    with pytest.raises(user_model.UserModelError, match="drifted"):
+        user_model._refuse_structural_fields("add", {"title": "ok"})
+    stripped = subprocess.run(
+        [sys.executable, "-O", "-c", "assert False\nprint('asserts stripped')"],
+        capture_output=True, text=True,
+    )
+    assert "asserts stripped" in stripped.stdout  # control: -O really strips asserts
+    probe = (
+        "from self_learn import user_model\n"
+        "try:\n"
+        "    user_model._refuse_structural_fields('add', {'title': 'ok'})\n"
+        "except user_model.UserModelError as exc:\n"
+        "    print('REFUSED', exc)\n"
+    )
+    proc = subprocess.run([sys.executable, "-O", "-c", probe], capture_output=True, text=True)
+    assert "REFUSED" in proc.stdout, (proc.stdout, proc.stderr)
