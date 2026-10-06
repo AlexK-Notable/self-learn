@@ -1482,6 +1482,37 @@ def _validate_successor(path: Path, parked: set[str], home: Path) -> None:
         raise OverseerError(f"{path.name}: a decision successor cannot remain parked")
 
 
+def _refuse_doomed_reconsider(
+    case_file: Path, predecessor: str | None, preview: batch.DryRunResult
+) -> None:
+    """The gate's risk 2 (2026-10-05): a ``kind: reconsider`` pair whose
+    preview refuses ANY of its lines is dropped at phase B. Recorded, it
+    would supersede its predecessor (a case is superseded once) and then
+    change nothing -- e.g. a `reject` of a lesson routed to a hook, which
+    `verbs` refuses by name ("hook and reference routes are corrected by
+    hand"). Dropped, the predecessor stays open for a better correction.
+    The raise names every refused line, and the pair loop puts it in
+    "Refused / could not do" and the run journal, so a drop is never
+    silent. Resolution and maintenance pairs are not touched: a parked
+    case's resolution is the decision itself, refused lines and all."""
+    if _yaml_mapping(case_file).get("kind") != "reconsider":
+        return
+    refused = [item for item in preview.items if item.state == "would-refuse"]
+    if not refused:
+        return
+    lines = "; ".join(
+        f"item {item.n} ({item.verb} {item.id}) would be refused"
+        + (f" [{item.kind}]" if item.kind else "")
+        + (f": {item.detail}" if item.detail else "")
+        for item in refused
+    )
+    raise OverseerError(
+        f"{case_file.name}: a reconsider whose preview refuses a line is not recorded, "
+        f"so {predecessor} is not superseded by a decision that would change nothing "
+        f"— {lines}"
+    )
+
+
 def _validate_maintenance_case(path: Path) -> None:
     """A9 / O-7.3: the case paired with a CASELESS sheet is a catalogue
     change, not a decision on a delegated question, so its `kind` must be
@@ -4746,6 +4777,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         # every reconsider reroute counted "would refuse".
                         reconsidered=_reconsidered_by(_yaml_mapping(case_file)),
                     )
+                    _refuse_doomed_reconsider(case_file, predecessor, preview)
                 except (OverseerError, batch.BatchError) as exc:
                     reason = _pair_problem_text(exc, stage)
                     case_drops.append(

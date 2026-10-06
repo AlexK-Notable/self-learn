@@ -454,3 +454,62 @@ def test_the_correctable_actors_are_the_case_actors_but_a_person():
 
     assert "human" in cases_mod.ACTORS  # control: the closed set has a person in it
     assert overseer_run._CORRECTABLE_ACTORS == cases_mod.ACTORS - {"human"}
+
+
+# ------------- 2026-10-05 fold: a reconsider that would change nothing
+
+
+def _moved_to_a_hook(home: Path, tmp_path: Path, monkeypatch) -> tuple[str, str]:
+    """The chain through its second run: the lesson moved to a warn hook by
+    reconsider R1. Returns (resolution id, R1 id)."""
+    _parked_id, resolution_id = _seed_the_chain_up_to_the_refused_resolution(home, tmp_path, monkeypatch)
+    _second_run(home, monkeypatch, resolution_id, _reconsider_of(resolution_id),
+                {"version": 1, "items": [_warn_hook_line(RID)]})
+    r1 = _case_fm(home, resolution_id).get("superseded_by")
+    assert r1 and (_record(home, RID).routing or {}).get("destination") == "hook"
+    return resolution_id, r1
+
+
+def test_a_reconsider_whose_preview_refuses_a_line_is_dropped_at_phase_b(
+    tmp_path, monkeypatch, claude_dir
+):
+    """The gate's risk 2 (probe D): a reconsider rejecting a lesson routed
+    to a hook previews "would refuse" (hook and reference routes are
+    corrected by hand). It used to be recorded anyway, superseding R1 and
+    changing nothing. Now the pair is dropped at phase B, R1 stays open,
+    and the drop names the refused line in the report and the journal.
+    The positive control is R1 itself: a reconsider whose preview applies
+    was recorded and applied (`_moved_to_a_hook`)."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _enabled(monkeypatch)
+    _resolution_id, r1 = _moved_to_a_hook(home, tmp_path, monkeypatch)
+    reject = _reconsider_of(r1)
+    reject["outcome"] = "reject"
+    reject["decision"] = dict(reject["decision"], verb="reject")
+
+    _second_run(home, monkeypatch, r1, reject, {"version": 1, "items": [
+        {"id": RID, "verb": "reject", "note": "narrow", "close_call": False},
+    ]})
+
+    refused = _refused_section(home)
+    assert "case-pkill-hook.yaml: dropped with sheet-pkill-hook.yaml" in refused, refused
+    assert f"item 1 (reject {RID}) would be refused" in refused, refused
+    assert _case_fm(home, r1).get("superseded_by") is None  # R1 is still open
+    record = _record(home, RID)
+    assert (record.status, (record.routing or {}).get("destination")) == ("routed", "hook")
+    dropped = [row for row in overseer_run.read_journal(home, limit=200)
+               if row.get("status") == "pair-dropped"]
+    assert any(f"item 1 (reject {RID}) would be refused" in (row.get("reason") or "") for row in dropped), dropped
+
+
+def test_a_resolution_pair_whose_preview_refuses_a_line_is_still_recorded(tmp_path, monkeypatch, claude_dir):
+    """The drop is for reconsider pairs only: run 1 of the chain is a
+    resolution whose route previews and applies as refused, and it is
+    recorded (the live first decision, `case-5257d97d`)."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _enabled(monkeypatch)
+    parked_id, resolution_id = _seed_the_chain_up_to_the_refused_resolution(home, tmp_path, monkeypatch)
+    assert _case_fm(home, resolution_id)["supersedes"] == parked_id
+    assert "would be refused" not in _refused_section(home)
