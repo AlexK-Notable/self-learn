@@ -133,12 +133,16 @@ class TestRehomeMove:
 
     def test_deferred_record_moves_and_stays_deferred(self, env):
         rec = env.seed_project_record()
-        defer_record(env.home, rec.id, "2027-01-01")
+        # `defer_record` refuses an explicit --until in the past, so the date
+        # must stay ahead of ANY clock the suite runs on: a 2027 literal
+        # started failing on its own date. 2099 is the suite's convention.
+        until = "2099-01-01"
+        defer_record(env.home, rec.id, until)
         commit_all(env.home, "defer seed")
         verbs.rehome(env.home, rec.id, to=str(env.host_b))
         moved = Record.from_path(env.pending_b(rec.id))
         assert moved.status == "deferred"
-        assert str(moved.deferred_until) == "2027-01-01"
+        assert str(moved.deferred_until) == until
         assert moved.deferred_count == 1
 
     def test_sweeps_proposal_siblings_never_moves_them(self, env):
