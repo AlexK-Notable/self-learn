@@ -37,6 +37,7 @@ expressed in config or by unsetting the key.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -51,7 +52,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
-from . import gitops, intents, invocation, provider, sentinel, settings, telemetry, worker
+from . import gitops, intents, invocation, provider, sentinel, settings, steward_prompt, telemetry, worker
 from .primitives import chrono
 from . import reconcile as reconcile_mod
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
@@ -59,6 +60,7 @@ from .hosts import HostsError, capture_host_path, load_hosts
 from .import_common import existing_origins
 from .ledger import discover_buckets, home_state, home_state_message, resolve_home
 from .ledger_ops import LedgerOpsError, create_record, record_title
+from .overseer import run as overseer_run
 from .records import (
     GENERALITIES,
     KINDS,
@@ -165,10 +167,18 @@ def digest_limits(home: Path | str | None = None) -> DigestLimits:
     return DigestLimits(**{f.name: settings.resolve_int(root, f"miner.{f.name}") for f in fields(DigestLimits)})
 
 #: Sessions whose FIRST user turn opens with one of these are the
-#: system's own machinery — never mined (M-5).
+#: system's own machinery — never mined (M-5). The steward's and the
+#: overseer's openings are not typed here: each is defined beside the prompt
+#: that makes it (`steward_prompt.SESSION_OPENINGS`,
+#: `overseer.run.SESSION_OPENINGS`) and `tests/test_miner_self_sessions.py`
+#: builds the real prompts and checks they begin with them, so an edit to
+#: either prompt cannot quietly start the miner reading that agent's
+#: sessions again (it did, until 2026-10-06).
 SELF_PROMPT_HEADERS = (
     "You are the self-learn routing analyst worker.",
     "You are the self-learn transcript miner.",
+    *steward_prompt.SESSION_OPENINGS,
+    *overseer_run.SESSION_OPENINGS,
 )
 #: Self-learn command spans inside otherwise-minable sessions (M-5).
 _COMMAND_SPAN_RE = re.compile(r"<command-name>/?self-learn:")
@@ -378,6 +388,80 @@ def _contains_self_learn(text: str) -> bool:
     )
 
 
+def _user_turn_text(message: dict) -> str:
+    """The text blocks of one user entry's message, joined; blank blocks
+    dropped. A tool-result-only entry has none."""
+    texts = [str(b.get("text", "")) for b in _blocks(message) if b.get("type") == "text"]
+    return "\n".join(t for t in texts if t.strip())
+
+
+def _is_self_prompt(user_text: str) -> bool:
+    """True when a session whose first user turn is `user_text` is one of
+    self-learn's own agents (M-5): the text BEGINS with a header. A person
+    who pastes a header into the middle of their own message does not match."""
+    return user_text.strip().startswith(SELF_PROMPT_HEADERS)
+
+
+def _first_user_text(path: Path) -> str:
+    """The transcript's first user turn that carries text, or '' when there
+    is none or the file cannot be read. Streams the file and stops there: the
+    prompt is among its first lines, and a transcript can be tens of MiB."""
+    try:
+        with path.open(encoding="utf-8") as fh:
+            for raw in fh:
+                try:
+                    entry = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(entry, dict) and entry.get("type") == "user":
+                    text = _user_turn_text(entry.get("message") or {})
+                    if text.strip():
+                        return text
+    except (OSError, UnicodeDecodeError):
+        pass
+    return ""
+
+
+#: The cursor file's record of which header list its tracked sessions were
+#: last checked against: a fingerprint of :data:`SELF_PROMPT_HEADERS`.
+_HEADERS_CHECKED_KEY = "__self_prompt_headers__"
+
+
+def _headers_fingerprint() -> str:
+    return hashlib.sha256("\n".join(SELF_PROMPT_HEADERS).encode("utf-8")).hexdigest()[:16]
+
+
+def halt_tracked_self_sessions() -> int:
+    """Halt every tracked session whose first user turn is a self-learn
+    prompt, once per header list; returns how many it halted.
+
+    A header added to :data:`SELF_PROMPT_HEADERS` reaches only the sessions
+    :func:`digest_transcript` sees from their first line. A file the cursor
+    file already tracks is never shown to it again: an unchanged file is
+    skipped without a read, and a grown one is read from its cursor onward,
+    where the first prompt is not. So a session tracked before its header
+    existed (the steward's and the overseer's, until 2026-10-06) stays
+    unhalted, and mined as soon as it grows. This reads the head of each
+    tracked, unhalted file once and halts the ones that open with a header,
+    then records the header list's fingerprint in the cursor file; a later
+    run with the same list reads nothing, and a changed list does it again.
+    A file that is gone (Claude Code deletes old transcripts) is left as it is."""
+    fingerprint = _headers_fingerprint()
+    cursors = _load_cursors()
+    if cursors.get(_HEADERS_CHECKED_KEY) == fingerprint:
+        return 0
+    halted = 0
+    for key, entry in cursors.items():
+        if not isinstance(entry, dict) or entry.get("halt"):
+            continue
+        if _is_self_prompt(_first_user_text(Path(key))):
+            entry["halt"] = True
+            halted += 1
+    cursors[_HEADERS_CHECKED_KEY] = fingerprint
+    _save_cursors(cursors)
+    return halted
+
+
 def initialized() -> bool:
     return bool(_load_cursors().get("__initialized__"))
 
@@ -409,6 +493,9 @@ def initialize_cursors() -> int:
             cursors[str(path)] = entry
             seeded += 1
     cursors["__initialized__"] = _now_iso()
+    # The seeding above halted by the same headers: nothing for
+    # `halt_tracked_self_sessions` to catch up on.
+    cursors[_HEADERS_CHECKED_KEY] = _headers_fingerprint()
     _save_cursors(cursors)
     return seeded
 
@@ -581,22 +668,12 @@ def digest_transcript(s: SessionSlice, limits: DigestLimits | None = None) -> tu
         etype = entry.get("type")
         message = entry.get("message") or {}
         if etype == "user":
-            texts: list[str] = []
-            results: list[dict] = []
-            for block in _blocks(message):
-                btype = block.get("type")
-                if btype == "text":
-                    texts.append(str(block.get("text", "")))
-                elif btype == "tool_result":
-                    results.append(block)
-            user_text = "\n".join(t for t in texts if t.strip())
+            results = [b for b in _blocks(message) if b.get("type") == "tool_result"]
+            user_text = _user_turn_text(message)
             if user_text.strip():
                 if not first_user_seen:
                     first_user_seen = True
-                    if any(
-                        user_text.strip().startswith(h)
-                        for h in SELF_PROMPT_HEADERS
-                    ):
+                    if _is_self_prompt(user_text):
                         return None, True  # own machinery: halt forever
                 if _COMMAND_SPAN_RE.search(user_text):
                     halt = True
@@ -2135,6 +2212,13 @@ def _run_locked(
                   "duration_secs": round(time.time() - t0, 1)})
         log(f"run {run_id}: initialized forward-only ({seeded} files seeded)")
         return MineResult(status="initialized", run_id=run_id)
+
+    swept = halt_tracked_self_sessions()
+    if swept:
+        log(
+            f"run {run_id}: halted {swept} tracked sessions that open with a "
+            "self-learn prompt (the steward's, the overseer's, ...): never mined"
+        )
 
     slices = walk(since)
     digests: list[str] = []
