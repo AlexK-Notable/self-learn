@@ -24,13 +24,17 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     ClaudeSDKError,
     CLINotFoundError,
+    McpSdkServerConfig,
     ProcessError,
     ResultMessage,
+    SdkMcpTool,
     SystemMessage,
     TextBlock,
+    ToolAnnotations,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
+    create_sdk_mcp_server,
 )
 
 from .. import provider, session_copies, settings, worker
@@ -40,8 +44,11 @@ from ..invocation.contract import (
     SELECTOR_FOR_SURFACE,
     TRANSPORT,
     LogTemplates,
+    McpTool,
+    McpToolset,
     Outcome,
     SessionSpec,
+    ToolReply,
 )
 from ..sdksession import policy as sdk_policy
 from ..sdksession import result as sdk_result
@@ -74,6 +81,19 @@ _DEFAULT_MAX_TURNS: dict[str, int] = {
 #: `Map-1` -- surfaces on which the SDK backend enters this build's
 #: analyst-vs-worker/miner OSError/ClaudeSDKError split.
 _CATCHES_OS_ERROR = dict(TRANSPORT)
+
+#: 2026-10-06 (U4-seam): the bound on one call of a session's own tool
+#: (`SessionSpec.mcp_toolset`). Whether Claude Code's own MCP tool timeout
+#: reaches an in-process server is unmeasured, so the seam bounds each
+#: call itself. Read at CALL time inside the handler wrapper, so a test
+#: can lower it with `monkeypatch.setattr`.
+MCP_HANDLER_TIMEOUT_SECS: float = 60
+
+#: 2026-10-06 (U4-seam): the longest reply one of a session's own tools
+#: may give, in characters. Claude Code cuts a longer tool result silently
+#: (measured near 50,000 characters); a reply over this bound becomes an
+#: error that names the bound instead.
+MCP_REPLY_MAX_CHARS = 48_000
 
 
 @dataclass(frozen=True)
@@ -392,6 +412,36 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
             )
         kwargs["extra_args"] = extra_args
 
+    # 2026-10-06 (U4-seam): a session with its OWN tools. Every key below
+    # is set only when `spec.mcp_toolset` is, so a session without one
+    # gets exactly the options it got before.
+    toolset = spec.mcp_toolset
+    if toolset is not None:
+        unsupported = [name for name in ("tools", "mcp_servers") if name not in supported]
+        if unsupported:
+            # Fail closed: without `tools` the session would be offered
+            # every built-in tool beside its own.
+            raise ValueError(
+                f"this claude-agent-sdk has no {', '.join(unsupported)}; cannot run a "
+                "session on its own tools only, refusing the session"
+            )
+        # The charter allows a tool exactly when its name is in the
+        # containment's `allowed_tools` (`charter.py` step 4), parsed the
+        # same way here: a session with its own tools may allow those
+        # tools and nothing else.
+        allowed = frozenset(t for t in (containment.allowed_tools or "").split(",") if t)
+        own = frozenset(toolset.qualified_names)
+        if allowed != own:
+            raise ValueError(
+                "a session with its own tools must allow exactly those tools; "
+                f"allowed but not its own: {sorted(allowed - own)}; "
+                f"its own but not allowed: {sorted(own - allowed)}"
+            )
+        # An empty list switches every built-in tool off (measured,
+        # miner-sdk-tools report 2026-09-26, b).
+        kwargs["tools"] = []
+        kwargs["mcp_servers"] = {toolset.server: _build_mcp_server(toolset)}
+
     if "max_turns" in supported:
         # A session that names its own limit (the steward sizes it to its
         # batch) gets that limit; every other session gets its surface's.
@@ -420,6 +470,61 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
     return kwargs
 
 
+def _tool_result(text: str, *, is_error: bool) -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": text}], "is_error": is_error}
+
+
+def _wrap_tool_handler(
+    tool: McpTool,
+) -> Callable[[dict[str, Any]], Coroutine[Any, Any, dict[str, Any]]]:
+    """The SDK handler for one of a session's own tools (2026-10-06,
+    U4-seam): awaits the plain handler under `MCP_HANDLER_TIMEOUT_SECS`
+    and turns everything that is not a normal reply into an error reply
+    the model can read. A raised exception reports its TYPE NAME only:
+    its message may hold transcript text. Never raises (a cancelled
+    session's `CancelledError` still propagates)."""
+
+    async def handler(args: dict[str, Any]) -> dict[str, Any]:
+        timeout = MCP_HANDLER_TIMEOUT_SECS
+        try:
+            reply = await asyncio.wait_for(tool.handler(dict(args)), timeout)
+            if not isinstance(reply, ToolReply) or not isinstance(reply.text, str):
+                raise TypeError("a tool handler must answer with a ToolReply")
+        except asyncio.TimeoutError:
+            # Before the generic branch: `TimeoutError` is an `Exception`.
+            return _tool_result(f"tool timed out after {timeout:g} s", is_error=True)
+        except Exception as exc:  # noqa: BLE001 - every handler failure becomes a reply
+            return _tool_result(f"tool failed: {type(exc).__name__}", is_error=True)
+        if len(reply.text) > MCP_REPLY_MAX_CHARS:
+            return _tool_result(
+                f"tool reply too long: {len(reply.text)} characters, over the limit of "
+                f"{MCP_REPLY_MAX_CHARS} characters",
+                is_error=True,
+            )
+        return _tool_result(reply.text, is_error=bool(reply.is_error))
+
+    return handler
+
+
+def _build_mcp_server(toolset: McpToolset) -> McpSdkServerConfig:
+    """The SDK's in-process MCP server for a session's own tools
+    (2026-10-06, U4-seam, decision D4): producers hand the seam plain
+    tool definitions, and only this package touches the SDK."""
+    return create_sdk_mcp_server(
+        name=toolset.server,
+        tools=[
+            SdkMcpTool(
+                name=tool.name,
+                description=tool.description,
+                input_schema=dict(tool.input_schema),
+                handler=_wrap_tool_handler(tool),
+                annotations=ToolAnnotations(readOnlyHint=tool.read_only),
+            )
+            for tool in toolset.tools
+        ],
+    )
+
+
 def _build_options(spec: SessionSpec, events: EventLog) -> ClaudeAgentOptions:
     # `options_kwargs` returns `dict[str, object]` deliberately (OP14
     # compares it structurally against the built options), so the
@@ -438,8 +543,9 @@ def _format(template: str, spec: SessionSpec, **kwargs: object) -> str:
 
 def _stdout_for(spec: SessionSpec, text: str) -> str:
     """`O-stdout`/`OU7` -- `""` on both worker surfaces, the extracted
-    text on the miner and the analyst."""
-    return text if spec.surface in ("miner-reader", "analyst") else ""
+    text on the miner, the analyst and (2026-10-06, U4-seam) the session
+    miner, whose answer is its final message."""
+    return text if spec.surface in ("miner-reader", "analyst", "miner-session") else ""
 
 
 def _extract_text(result_message: ResultMessage, last_assistant_text: str) -> str:
@@ -581,8 +687,14 @@ async def _run_session(
         # child_pid_unresolved` was written but read by nothing, a
         # second unwatched copy of one operator string.
         spec.log(lifecycle.CLI_SHUTDOWN_MESSAGES.child_pid_unresolved)
-    else:
+    elif spec.sidecar_key is None:
         lifecycle.write_sidecar(spec.surface, child_pid, str(options.cli_path or ""))
+    else:
+        # 2026-10-06 (U4-seam): the keyword only for a keyed session, so
+        # every other session calls the sidecar functions exactly as before.
+        lifecycle.write_sidecar(
+            spec.surface, child_pid, str(options.cli_path or ""), session_key=spec.sidecar_key
+        )
 
     await session.query(spec.prompt)
 
@@ -629,8 +741,10 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
     surface = spec.surface
     templates = LOG_TEMPLATES[surface]
 
-    # `K-5` -- before connecting.
-    lifecycle.sweep_orphans(surface, spec.log)
+    # `K-5` -- before connecting. 2026-10-06 (U4-seam): unless this
+    # session's batch already swept (`SessionSpec.skip_orphan_sweep`).
+    if not spec.skip_orphan_sweep:
+        lifecycle.sweep_orphans(surface, spec.log)
 
     try:
         options = _build_options(spec, events)
@@ -762,7 +876,10 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
     finally:
         child_pid = child_pid_holder[-1]
         await lifecycle.run_kill_ladder(client, child_pid, spec.log)
-        lifecycle.clear_sidecar(surface)
+        if spec.sidecar_key is None:
+            lifecycle.clear_sidecar(surface)
+        else:
+            lifecycle.clear_sidecar(surface, session_key=spec.sidecar_key)
         # 2026-09-28: the child has exited, so Claude Code's transcript is
         # complete -- keep a copy in the cache. Never raises (a failure is
         # a record with an `error`), so it cannot mask the outcome above.

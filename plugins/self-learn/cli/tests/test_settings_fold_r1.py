@@ -422,6 +422,7 @@ _LITERAL_ENV_FIRST_NAMES = frozenset(
         "invocation.backend_analyst",
         "invocation.backend_steward",  # U8
         "invocation.backend_overseer",  # U8
+        "invocation.backend_miner-session",  # U4-seam
         "sdk.cli_path",
         "models.worker",
         "models.miner",
@@ -495,7 +496,7 @@ _LITERAL_ENABLED_WHEN_NAMES = frozenset(
 def test_major2_env_first_literal_16_names_match_the_registry_exactly():
     actual = frozenset(s.name for s in settings.REGISTRY if s.direction == "env-first")
     assert actual == _LITERAL_ENV_FIRST_NAMES
-    assert len(_LITERAL_ENV_FIRST_NAMES) == 22  # U8: 16 -> 22 (+6)
+    assert len(_LITERAL_ENV_FIRST_NAMES) == 23  # U8: 16 -> 22 (+6); U4-seam: +1 (invocation.backend_miner-session)
 
 
 def test_major2_config_first_literal_complement_27_names_match_the_registry_exactly():

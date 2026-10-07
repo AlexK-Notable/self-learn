@@ -330,6 +330,8 @@ MODEL_KEY_FOR_SURFACE = {
     "analyst": "analyst",
     "steward": "steward",
     "overseer": "overseer",
+    # 2026-10-06 (U4-seam): the session miner runs on the old miner's model.
+    "miner-session": "miner",
 }
 
 
