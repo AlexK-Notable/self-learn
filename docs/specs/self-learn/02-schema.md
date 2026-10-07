@@ -2267,6 +2267,270 @@ the steward's, writes no `reconsidered` history entry; the case's
 — one that covers the same records, has not been superseded, passes its
 freeze hash, and was recorded by the steward or the overseer (§3a, S-76).
 
+### 3a.9 Session miner output (miner-output/1)
+
+*(Added 2026-10-06, U4 — the new miner run beside the old one; code
+`mining/contract.py` and `mining/compare.py`; the U4 build spec §6–§7.)*
+The contract the session miner writes and everything downstream reads. Two
+layers. The **model output** is what the model writes as its whole final
+message: small, carrying line numbers and quotes only, and nothing code can
+fill in itself. The **checked output** is what code makes of it after the
+engine's checks (§3a.6 refs): every pointer a full ref, every quote with a
+verdict, every drop listed with its reason. The engine, the comparison
+harness and (at U5) the landing code read only the checked output. The
+validators are hand-written in `mining/contract.py` (the CLI has no
+`jsonschema` dependency); a validator returns a list of messages, empty
+when the document is valid, each starting with the path of the offending
+field (`lessons[0].evidence[1].quote: longer than 400`) and never echoing a
+value. The one thing a message may name from the document itself is an
+unknown key, and only when the key is a plain identifier (a letter or
+underscore, then up to 40 letters, digits or underscores) that the secret
+scan (`scan.redact`) leaves unchanged; any other key, a token-shaped one
+included, is reported as `unknown key (name withheld)` at its parent's path.
+Every pattern check (`id`, `record`, `subagent`, `scope`, a hash) is a full
+match, so a trailing newline is refused. The JSON Schema document
+`model_output_json_schema()` builds from the same constants exists only to
+show the model the shape, and it agrees with the validator: a test runs a
+set of documents through both (the validator and a JSON Schema validator)
+and the two verdicts match for every document except a repeated lesson `id`,
+which JSON Schema cannot express and the validator refuses. Enums are
+imported, never retyped: `records.TYPES`, `records.KINDS`,
+`records.GENERALITIES`, `refs.ROLES`, `refs.VERDICTS`.
+
+**Model output — `miner-output-model/1`.** One JSON object (one surrounding
+```` ```json ```` fence is tolerated); no field beyond those listed, at any
+level.
+
+```text
+Output        = { "contract": "miner-output-model/1",
+                  "lessons":     [Lesson]      0..10,
+                  "sightings":   [Sighting]    0..20,
+                  "rule_checks": [RuleCheck]   0..8 }
+
+Point         = { "line": int >= 1,
+                  "subagent"?: str matching ^[A-Za-z0-9_-]{1,64}$ }   # absent = the main session file
+QuotedPoint   = Point + { "quote": str, 1..400 chars }
+
+Lesson        = { "id":            "L1".."L10", unique in the output,
+                  "shape":         "correction" | "verified-gotcha" | "standing-preference" | "repeated-friction",
+                  "scope":         "user" | "project" | "skill:<name>"   (a non-empty name: the ledger's rule),
+                  "type":          one of records.TYPES   ("behavior" | "knowledge"),
+                  "kind":          one of records.KINDS   if type == "behavior", else null,
+                  "trigger":       str 1..1000   if type == "behavior", else null,
+                  "instruction":   str 1..1000   if type == "behavior", else null,
+                  "fact":          str 1..1000   if type == "knowledge", else null,
+                  "context":       str 1..1000 or null   (null when type == "behavior"),
+                  "evidence":      [QuotedPoint] 1..4,
+                  "steps":         [Point + { "what": str 1..300 }]  0, or 2..6, in order of events,
+                  "verification":  (QuotedPoint + { "how": str 1..300 }) or null,
+                  "incident_cost": (Point + { "text": str 1..300 }) or null,
+                  "generality":    one of records.GENERALITIES,
+                  "why_durable":   str 1..300,
+                  "subagent_cause": "bad-brief" | "left-brief" | "unchecked-report" | null }
+
+Sighting      = { "record": str matching ^lrn-[0-9a-f]{8}$,
+                  "evidence": [QuotedPoint] 1..3 }
+
+RuleCheck     = { "record":    str matching ^lrn-[0-9a-f]{8}$,
+                  "outcome":   "suspected-compliance" | "suspected-violation" | "cannot-tell",
+                  "situation": Point,
+                  "action":    Point or null }
+```
+
+`kind` follows the ledger (`records.py`: "kind applies to behavior records
+only"): a `behavior` lesson names one of `records.KINDS`, a `knowledge`
+lesson carries `null` (the key is always present). Integers are never booleans. `steps` are in the order the events happened;
+the order is not machine-checked (a subagent step carries the subagent
+file's line numbers).
+
+**Checked output — `miner-output/1`** (`runs/<run_id>/out/<session>.json`).
+One file per session that was called (status `ok`, `bad-output` or
+`failed`); the three lists are empty unless the status is `ok`.
+
+```text
+Checked       = { "contract": "miner-output/1", "run_id": str, "mode": "testset" | "night",
+                  "model": str, "method_version": str, "session": SessionInfo,
+                  "status": "ok" | "bad-output" | "failed",
+                  "lessons": [CheckedLesson] 0..10, "sightings": [CheckedSighting] 0..20,
+                  "rule_checks": [CheckedRuleCheck] 0..8, "drops": [Drop], "redactions": int >= 0 }
+
+SessionInfo   = { "id": str, "project_dir": str, "file": str,
+                  "judged": { "first_line": int, "last_line": int,
+                              "first_turn": int | null, "last_turn": int | null },
+                  "typed_turns": int, "spine_tokens_est": int, "over_budget": bool,
+                  "search_mode": "hybrid" | "lexical-only",
+                  "flags": [ { "record": str, "turn": int, "basis": "lexical" | "lexical+meaning" } ] }
+
+RefDict       = refs.Ref.to_dict()                  # §3a.6
+Pointer       = { "ref": RefDict, "turn": int | null }   # turn = typed turns at or before the line
+Evidence      = Pointer + { "quote": str 1..400,
+                            "verdict": "exact" | "normalised" | "nearby" | "elsewhere_in_file",
+                            "corrected_from": int | null }   # the line the model cited, when moved
+
+CheckedLesson    = Lesson with "evidence": [Evidence] 1..4, "steps": [Pointer + { "what": str }] 0 or 2..6,
+                   "verification": (Evidence + { "how": str }) | null,
+                   "incident_cost": (Pointer + { "text": str }) | null (every other field unchanged)
+CheckedSighting  = { "record": str, "evidence": [Evidence] 1..3 }
+CheckedRuleCheck = { "record": str, "outcome": str, "situation": Pointer, "action": Pointer | null }
+
+Drop          = { "item": str, "reason": one of DROP_REASONS, "detail": str 0..200 }
+```
+
+A drop's `item` is a path into the model output (`output`, `L2`,
+`L2.evidence[1]`, `L2.verification`, `sightings[3].evidence[0]`,
+`rule_checks[0]`; indexes are the model output's) and its `detail` never
+holds transcript or quote text. `DROP_REASONS` (closed): `over-count`,
+`line-unresolved`, `out-of-range`, `quote-stitched`, `quote-not-found`,
+`already-judged`, `duplicate`, `no-evidence`, `no-user-evidence`,
+`verification-unchecked`, `incident-cost-unresolved`, `steps-unresolved`,
+`unknown-record`, `not-flagged`, `bad-output`.
+
+**Run record — `miner-shadow-run/1`** (`runs/<run_id>/run.json`).
+
+```text
+Run           = { "contract": "miner-shadow-run/1", "run_id": str, "mode": "testset" | "night",
+                  "started_at": iso, "finished_at": iso | null, "model": str, "method_version": str,
+                  "settings": { "parallel": int, "spine_tokens": int, "max_usd": number },
+                  "testset": { "dir": str, "manifest_sha256": str } | null,
+                  "status": "ok" | "stopped-ceiling" | "failed" | "dry-run" | "activated",
+                  "search_mode": "hybrid" | "lexical-only",
+                  "sessions": [ { "session": str, "file": str,
+                                  "status": "called" | "skipped" | "not-run",
+                                  "reason": str | null,   # skipped: no-marker | no-typed-turns | nothing-new | halted;
+                                                          # not-run: spend-ceiling; called: null
+                                  "out_status": "ok" | "bad-output" | "failed" | null,   # set when called
+                                  "attempts": int, "failure_class": str | null,
+                                  "cost_usd": number | null, "turns": int | null,
+                                  "claude_session_id": str | null,
+                                  "usage_first_response": object | null, "usage_session": object | null,
+                                  "charter_denials": int, "duration_secs": number } ],
+                  "totals": { "called": int, "skipped": { reason: int }, "not_run": int, "cost_usd": number,
+                              "lessons": int, "sightings": int, "rule_checks": int, "drops": { reason: int } } }
+```
+
+`totals` equals what the sessions say (`called`, `skipped` by reason,
+`not_run`), and `load_run` checks the folder against itself: one out file
+per called session and no other, each file's `run_id`, `mode` and `status`
+equal to the run record's, and `lessons`/`sightings`/`rule_checks`/`drops`
+equal to what the out files hold. A session id may appear in `sessions` only
+once (`sessions[1].session: listed twice` otherwise; the message names the
+row, never the id): the comparison keys its per-session views by id, so a
+second row would change the result with the order of the rows. The engine
+plans one file per session id.
+
+**Typed turns.** `has_typed_turn_marker(entries)` (some `user` row carries an
+`origin` object or a `promptSource` key), `typed_turn_lines(entries)` (the
+1-based physical lines whose `refs.role_of` is `user` and whose entry text is
+not blank; `entries` keeps one slot per line, `None` for a line that is not a
+JSON object) and `turn_of(typed_lines, line)` (typed turns at or before the
+line) are the one definition of a session's `T<k>`, used by the engine's
+spine and by the comparison harness.
+
+**What each field is for.** `shape` — the rubric's four shapes; a
+`correction` needs user evidence. `scope`, `type`, `kind` — the record's
+frontmatter. `trigger`/`instruction`, `fact`/`context` — the lesson itself.
+`evidence[]` — the moments that show it, each a checked ref with its quote
+(`verdict` and `corrected_from` say how the quote was found). `steps[]` — the
+order of events, replacing the episode brief; the actor is `ref.role`.
+`verification` — how it was confirmed, with its own checked quote ("no ref =
+not verified"). `incident_cost` — what it cost, with a pointer. `subagent_cause`
+— which party failed when a subagent was involved. `sightings[]` — an
+existing lesson seen again, with checked evidence. `rule_checks[]` — a flagged
+rule's situation and the agent's action (a `suspected-violation` is the
+steward's input). Dropped from the old miner's output: `near_misses`,
+`match.status`, `match.record`, `confidence`, `verified`/`verified_how` (now
+`verification` with a ref), `episode_brief`, the single `quote`+`session`+`line`
+(now `evidence[]`), and the bare `fires` rows (now `rule_checks`). A kept
+lesson becomes a pending record at U5, its evidence items `{ref, quote,
+session, ts: ref.entry_ts, origin}`; that mapping is U5's.
+
+**The comparison — `miner-compare/1`** (`runs/<run_id>/compare/report.json`,
+written by `python -m self_learn.mining.compare report`, which writes only
+under `runs/<run_id>/compare/`; counts and keys only, never transcript text).
+`python -m self_learn.mining.compare inventory --testset DIR --out DIR` (the
+zero-call look at a frozen set) requires `--out` and writes `inventory.json`
+nowhere else; `--home LEDGER` names the ledger to read (default: the ledger
+in use). `report --run RUN_DIR` takes `--testset DIR` (default: the set the
+run recorded), `--home LEDGER`, `--shared-sample N` (default 8), `--marks
+FILE` (a filled-in spot-marks file) and, for a night run, `--journal FILE`
+(the old miner's journal; default: the one in the ledger's cache),
+`--nights N` (how many journal rows to compare with; default 1) and
+`--transcript-root DIR` (where transcripts live; repeatable; default: the
+usual transcript roots). `report.md` is the same counts as tables;
+`spot-check.md` (mode 0600) holds the redacted excerpts; `spot-marks.template.json`
+has one `{"mark": "", "note": ""}` per key and keeps any mark already entered.
+
+```text
+{ "contract": "miner-compare/1", "run_id": str, "mode": "testset" | "night", "generated_at": iso,
+  "sessions": { "called", "ok", "bad_output", "failed": int, "skipped": { reason: int }, "not_run": int },
+  "moments": null | { "total": int, "unresolved": int,           # a frozen set
+      "by_bucket": { "A"|"B"|"C"|"other": { "total", "found_strict", "found_loose", "found_as_lesson",
+          "found_as_sighting", "found_as_sighting_naming_citing_record", "missed", "missed_strict": int,
+          "not_judged": { reason: int }, "out_of_scope": int, "counts_as_miss": bool } } },
+  "old_finds": null | { <the same counts>, "rejected_match": int, "rejected_match_keys": [key],
+      "by_outcome": { kind: int }, "journal_rows": [iso], "unresolved": int },   # a night
+  "items": { "lessons", "sightings", "rule_checks", "matched", "matched_strict", "new", "new_strict": int,
+             "marks": { "real", "junk", "duplicate", "not-a-lesson", "unmarked": int } },
+  "accuracy": { "drops": { reason: int }, "verdicts": { verdict: int }, "corrected": int },
+  "rule_checks": { "old_fires", "matched", "matched_strict", "missed", "missed_strict", "not_judged",
+                   "new", "new_strict", "outcome_same", "outcome_different": int },
+  "cost": { "shadow_usd": number, "per_called_session_usd": { "median", "max": number }, "old_usd": number | null },
+  "missed_moments": [key], "not_found_moments": { key: bucket }, "new_items": [key],
+  "missed_a_marks": { key: mark }, "skipped_moments": { key: reason },
+  "shared_sample": { key: mark }, "shared_sample_marks": { "same", "new-better", "old-better", "both-off", "unmarked": int },
+  "ledger": { "records": int, "unreadable": int } }
+```
+
+Bucket by the ledger records whose evidence cites a moment (an `origin`
+string, or a `ref` with the same session and line): **A** — a mined record
+(`source: session`) that was not rejected; **B** — only rejected mined
+records (its own line, never a miss: `counts_as_miss` is false); **C** — only
+`teach` records; `other` — none of those. Only bucket A is ever called missed:
+`missed_moments` lists the judged bucket-A moments no item found (for a night,
+every old find no item matched), and the judged moments of B, C and `other`
+that no item found are listed apart, by key and bucket, in
+`not_found_moments`; stdout and `report.md` print `not found N` for those
+buckets, never `missed`. (The per-bucket `missed` and `missed_strict` fields
+of `report.json` are plain counts; `counts_as_miss` says whether the bucket
+counts them as misses.) For a night, `journal_rows` is the `ts` of each old
+miner journal row the comparison used. Matching is **strict** (the same
+entry uuid; the same session and line when either uuid is missing) or
+**loose** (strict, or the same session or a file holding the uuid within one
+typed turn; a subagent pointer matches by uuid only). `missed` is the loose
+view and `missed_strict` the strict one. A moment in a session the new miner
+did not judge is counted under its reason (`no-marker`, `nothing-new`,
+`halted`, `spend-ceiling`, `bad-output`, `failed`, `out-of-range`,
+`not-in-run`), never as a miss; a session with no typed turns is shelved by
+design: its reason is `out-of-scope` and it is counted in the `out_of_scope`
+field. Every reason value is hyphenated; JSON field names stay snake_case.
+`skipped_moments` lists every such moment no item found, by key, with its
+reason. The **shared sample** is a
+deterministic draw (the keys ordered by the SHA-256 of `<run id>:<key>`,
+default 8, `--shared-sample N`) of lessons that hit a moment the old miner's
+records also cite; the spot check shows each beside those records, and the
+person marks `same`, `new-better`, `old-better` or `both-off`. New items and
+missed bucket-A moments take `real`, `junk`, `duplicate` or `not-a-lesson`;
+an entry with no mark is `unmarked`, never guessed. The template keeps every
+entry whose `mark` is a string (a missing `note` is kept as `""`), so a mark
+entered without a note survives a rerun.
+
+**The inventory — `miner-inventory/1`** (`inventory.json`; counts and ids
+only, never transcript text).
+
+```text
+{ "contract": "miner-inventory/1",
+  "sessions": { "total", "with_marker", "without_marker", "without_typed_turns",
+                "with_subagent_logs": int },
+  "without_marker_ids": [session], "without_typed_turns_ids": [session],
+  "with_subagent_logs_ids": [session],
+  "typed_turns": { "median": number, "max": int },           # per session
+  "moments": { "total": int,
+               "by_bucket": { "A"|"B"|"C"|"other": int },
+               "in_sessions_without_marker": { bucket: int },
+               "roles": { role: int } },                     # the role of each moment's line; "unresolved" if none
+  "manifest_sha256": str }
+```
+
 ## 4. Managed sections (the compile targets' contract)
 
 Compilers own exactly the region between their markers, and nothing else:

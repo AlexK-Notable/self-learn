@@ -51,14 +51,22 @@ from ..ledger import resolve_home
 from ..sdksession import events as sdk_events
 from ..sdksession.events import EventLog, new_run_id
 
-__all__ = ["EventLog", "new_run_id", "prune_event_logs", "write_event_log"]
+__all__ = ["EventLog", "event_log_name", "new_run_id", "prune_event_logs", "write_event_log"]
 
 #: `E-5` -- default retention when `SELF_LEARN_SDK_EVENT_LOGS` is unset.
 _DEFAULT_EVENT_LOGS = 20
 
 
+def event_log_name(surface: str, run_id: str) -> str:
+    """The file name of one session's event log. EV4: this module is the one
+    definer of the naming convention, so a reader elsewhere (the session
+    miner's comparison, `mining/compare.py`) builds its names here; pass
+    ``run_id="*"`` for the glob."""
+    return f"{surface}.tool-events.{run_id}.jsonl"
+
+
 def _event_log_path(surface: str, run_id: str) -> Path:
-    return worker.cache_dir() / f"{surface}.tool-events.{run_id}.jsonl"
+    return worker.cache_dir() / event_log_name(surface, run_id)
 
 
 def write_event_log(surface: str, run_id: str, *, meta: dict[str, Any], events: EventLog) -> None:
