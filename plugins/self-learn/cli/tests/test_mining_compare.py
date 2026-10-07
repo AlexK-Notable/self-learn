@@ -226,7 +226,7 @@ class World:
                 checks += len(out["rule_checks"])
                 for d in out["drops"]:
                     totals_drops[d["reason"]] = totals_drops.get(d["reason"], 0) + 1
-                rows.append(_run_row(sid, "called", None, out["status"], cost))
+                rows.append(_run_row(sid, "called", None, out["status"], cost[sid] if isinstance(cost, dict) else cost))
             else:
                 _kind, sid, reason = spec
                 if spec[0] == "skipped":
@@ -242,7 +242,7 @@ class World:
                         if testset and mode == "testset" else None),
             "status": "ok", "search_mode": "lexical-only", "sessions": rows,
             "totals": {"called": called, "skipped": skipped, "not_run": not_run,
-                       "cost_usd": round(cost * called, 6), "lessons": lessons, "sightings": sightings,
+                       "cost_usd": round(sum(cost.values()) if isinstance(cost, dict) else cost * called, 6), "lessons": lessons, "sightings": sightings,
                        "rule_checks": checks, "drops": totals_drops},
         }
         assert contract.validate_run(run) == [], contract.validate_run(run)
@@ -490,6 +490,8 @@ def test_h3_a_session_that_was_not_judged_is_not_missed(world, capsys):
                                "out-of-range": 1, "halted": 1, "nothing-new": 1}
     assert A["out_of_scope"] == 1  # the program session, shelved by design
     assert A["total"] == A["found_loose"] + A["missed"] + sum(A["not_judged"].values()) + A["out_of_scope"]
+    assert rep["sessions"] == {"called": 4, "ok": 2, "bad_output": 1, "failed": 1,
+                               "skipped": {"halted": 1, "no-marker": 1, "no-typed-turns": 1, "nothing-new": 1}, "not_run": 1}
 
 
 # ------------------------------------------------------------------- H8
@@ -926,6 +928,33 @@ def test_h10_rule_checks_against_the_old_fires(world, capsys):
     assert rep["items"]["rule_checks"] == 4 and rep["items"]["new"] == 2
     assert f"{RUN_ID}/sess-a/rule_checks[2]" in rep["new_items"] and f"{RUN_ID}/sess-a/rule_checks[3]" in rep["new_items"]
     assert "### " + f"{RUN_ID}/sess-a/rule_checks[3]" in (run / "compare" / "spot-check.md").read_text(encoding="utf-8")
+
+
+# ----------------------------------------------- accuracy, cost, sessions
+
+
+def test_accuracy_and_cost_are_counted_from_the_outputs_and_the_run(world, capsys):
+    world.session("sess-a", conversation(8))
+    world.session("sess-b", conversation(4))
+    world.session("sess-c", conversation(4))
+    lesson = world.lesson("L1", [world.evidence("sess-a", 3, verdict="nearby", corrected_from=1), world.evidence("sess-a", 5)])
+    lesson["verification"] = dict(world.evidence("sess-a", 7, verdict="normalised"), how="reran it")
+    sighting = world.sighting("lrn-00000001", [world.evidence("sess-a", 9, verdict="elsewhere_in_file", corrected_from=2)])
+    drops = [{"item": "L2", "reason": "no-evidence", "detail": ""},
+             {"item": "L3.evidence[0]", "reason": "quote-not-found", "detail": ""},
+             {"item": "L4.evidence[0]", "reason": "quote-not-found", "detail": "1 other session searched"}]
+    run = world.run(
+        [("called", world.out("sess-a", lessons=[lesson], sightings=[sighting], drops=drops)),
+         ("called", world.out("sess-b")),
+         ("called", world.out("sess-c", status="bad-output", drops=[{"item": "output", "reason": "bad-output", "detail": ""}]))],
+        cost={"sess-a": 0.5, "sess-b": 0.2, "sess-c": 0.1},
+    )
+    rep, _, _ = report(world, run, capsys=capsys)
+    assert rep["accuracy"] == {"drops": {"bad-output": 1, "no-evidence": 1, "quote-not-found": 2},
+                               "verdicts": {"elsewhere_in_file": 1, "exact": 1, "nearby": 1, "normalised": 1}, "corrected": 2}
+    assert rep["cost"] == {"shadow_usd": 0.8, "per_called_session_usd": {"median": 0.2, "max": 0.5}, "old_usd": None}
+    assert rep["sessions"]["called"] == 3 and rep["sessions"]["bad_output"] == 1 and rep["sessions"]["ok"] == 2
+    assert (rep["items"]["lessons"], rep["items"]["sightings"], rep["items"]["rule_checks"]) == (1, 1, 0)
 
 
 # ------------------------------------------------- bad inputs and contracts
