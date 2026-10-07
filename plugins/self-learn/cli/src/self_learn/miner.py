@@ -167,16 +167,18 @@ def digest_limits(home: Path | str | None = None) -> DigestLimits:
     return DigestLimits(**{f.name: settings.resolve_int(root, f"miner.{f.name}") for f in fields(DigestLimits)})
 
 #: Sessions whose FIRST user turn opens with one of these are the
-#: system's own machinery — never mined (M-5). The steward's and the
-#: overseer's openings are not typed here: each is defined beside the prompt
-#: that makes it (`steward_prompt.SESSION_OPENINGS`,
-#: `overseer.run.SESSION_OPENINGS`) and `tests/test_miner_self_sessions.py`
-#: builds the real prompts and checks they begin with them, so an edit to
-#: either prompt cannot quietly start the miner reading that agent's
-#: sessions again (it did, until 2026-10-06).
+#: system's own machinery — never mined (M-5). The worker's, the steward's and
+#: the overseer's openings are not typed here: each is defined beside the
+#: prompt that makes it (`worker.SESSION_OPENINGS`,
+#: `steward_prompt.SESSION_OPENINGS`, `overseer.run.SESSION_OPENINGS`) and
+#: `tests/test_miner_self_sessions.py` builds the real prompts and checks they
+#: begin with them, so an edit to any of those prompts cannot quietly start
+#: the miner reading that agent's sessions again (it did, until 2026-10-06).
+#: Changing this list changes its fingerprint, and
+#: :func:`halt_tracked_self_sessions` then checks the tracked files once more.
 SELF_PROMPT_HEADERS = (
-    "You are the self-learn routing analyst worker.",
     "You are the self-learn transcript miner.",
+    *worker.SESSION_OPENINGS,
     *steward_prompt.SESSION_OPENINGS,
     *overseer_run.SESSION_OPENINGS,
 )
