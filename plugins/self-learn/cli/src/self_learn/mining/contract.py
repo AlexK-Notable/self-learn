@@ -377,20 +377,24 @@ def _model_lesson(v: _V, path: str, d: object) -> str | None:
     if not _scope_ok(o.get("scope")):
         v.err(_join(path, "scope"), "not user, project or skill:<name>")
     type_ok = v.enum(_join(path, "type"), o.get("type"), sorted(records.TYPES))
-    v.enum(_join(path, "kind"), o.get("kind"), sorted(records.KINDS))
     if type_ok:
         if o["type"] == "behavior":
+            v.enum(_join(path, "kind"), o.get("kind"), sorted(records.KINDS))
             v.string(_join(path, "trigger"), o.get("trigger"), 1, TEXT_MAX)
             v.string(_join(path, "instruction"), o.get("instruction"), 1, TEXT_MAX)
             for k in ("fact", "context"):
                 if o.get(k) is not None:
                     v.err(_join(path, k), "must be null for a behavior lesson")
         else:
+            if o.get("kind") is not None:
+                v.err(_join(path, "kind"), "must be null for a knowledge lesson")
             v.string(_join(path, "fact"), o.get("fact"), 1, TEXT_MAX)
             v.string(_join(path, "context"), o.get("context"), 1, TEXT_MAX, nullable=True)
             for k in ("trigger", "instruction"):
                 if o.get(k) is not None:
                     v.err(_join(path, k), "must be null for a knowledge lesson")
+    if not type_ok:
+        v.enum(_join(path, "kind"), o.get("kind"), sorted(records.KINDS), nullable=True)
     ev = v.array(_join(path, "evidence"), o.get("evidence"), 1, MAX_EVIDENCE)
     for i, e in enumerate(ev or []):
         _quoted_point(v, _idx(_join(path, "evidence"), i), e)
@@ -897,7 +901,7 @@ def _lesson_schema() -> dict[str, Any]:
         "shape": {"enum": list(SHAPES)},
         "scope": {"type": "string", "pattern": SCOPE_PATTERN},
         "type": {"enum": sorted(records.TYPES)},
-        "kind": {"enum": sorted(records.KINDS)},
+        "kind": {"enum": [*sorted(records.KINDS), None]},
         "trigger": _s(1, TEXT_MAX, nullable=True),
         "instruction": _s(1, TEXT_MAX, nullable=True),
         "fact": _s(1, TEXT_MAX, nullable=True),
@@ -927,6 +931,7 @@ def _lesson_schema() -> dict[str, Any]:
                 "if": {"properties": {"type": {"const": "behavior"}}, "required": ["type"]},
                 "then": {
                     "properties": {
+                        "kind": {"enum": sorted(records.KINDS)},
                         "trigger": {"type": "string"},
                         "instruction": {"type": "string"},
                         "fact": {"type": "null"},
@@ -938,6 +943,7 @@ def _lesson_schema() -> dict[str, Any]:
                 "if": {"properties": {"type": {"const": "knowledge"}}, "required": ["type"]},
                 "then": {
                     "properties": {
+                        "kind": {"type": "null"},
                         "trigger": {"type": "null"},
                         "instruction": {"type": "null"},
                         "fact": {"type": "string"},

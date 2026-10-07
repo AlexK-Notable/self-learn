@@ -2305,7 +2305,7 @@ Lesson        = { "id":            "L1".."L10", unique in the output,
                   "shape":         "correction" | "verified-gotcha" | "standing-preference" | "repeated-friction",
                   "scope":         "user" | "project" | "skill:<name>"   (a non-empty name: the ledger's rule),
                   "type":          one of records.TYPES   ("behavior" | "knowledge"),
-                  "kind":          one of records.KINDS,
+                  "kind":          one of records.KINDS   if type == "behavior", else null,
                   "trigger":       str 1..1000   if type == "behavior", else null,
                   "instruction":   str 1..1000   if type == "behavior", else null,
                   "fact":          str 1..1000   if type == "knowledge", else null,
@@ -2327,9 +2327,9 @@ RuleCheck     = { "record":    str matching ^lrn-[0-9a-f]{8}$,
                   "action":    Point or null }
 ```
 
-`kind` is required of every lesson, a `knowledge` lesson included, although
-a ledger record of type `knowledge` carries none: landing (U5) drops it.
-Integers are never booleans. `steps` are in the order the events happened;
+`kind` follows the ledger (`records.py`: "kind applies to behavior records
+only"): a `behavior` lesson names one of `records.KINDS`, a `knowledge`
+lesson carries `null` (the key is always present). Integers are never booleans. `steps` are in the order the events happened;
 the order is not machine-checked (a subagent step carries the subagent
 file's line numbers).
 
@@ -2431,8 +2431,11 @@ lesson becomes a pending record at U5, its evidence items `{ref, quote,
 session, ts: ref.entry_ts, origin}`; that mapping is U5's.
 
 **The comparison — `miner-compare/1`** (`runs/<run_id>/compare/report.json`,
-written by `python -m self_learn.mining.compare report`; counts and keys only,
-never transcript text). `report.md` is the same counts as tables;
+written by `python -m self_learn.mining.compare report`, which writes only
+under `runs/<run_id>/compare/`; counts and keys only, never transcript text).
+`python -m self_learn.mining.compare inventory --testset DIR --out DIR` (the
+zero-call look at a frozen set) requires `--out` and writes `inventory.json`
+nowhere else. `report.md` is the same counts as tables;
 `spot-check.md` (mode 0600) holds the redacted excerpts; `spot-marks.template.json`
 has one `{"mark": "", "note": ""}` per key and keeps any mark already entered.
 
@@ -2469,8 +2472,10 @@ view and `missed_strict` the strict one. A moment in a session the new miner
 did not judge is counted under its reason (`no-marker`, `nothing-new`,
 `halted`, `spend-ceiling`, `bad-output`, `failed`, `out-of-range`,
 `not-in-run`), never as a miss; a session with no typed turns is shelved by
-design and counted as `out_of_scope`. `skipped_moments` lists every such
-moment no item found, by key, with its reason. The **shared sample** is a
+design: its reason is `out-of-scope` and it is counted in the `out_of_scope`
+field. Every reason value is hyphenated; JSON field names stay snake_case.
+`skipped_moments` lists every such moment no item found, by key, with its
+reason. The **shared sample** is a
 deterministic draw (the keys ordered by the SHA-256 of `<run id>:<key>`,
 default 8, `--shared-sample N`) of lessons that hit a moment the old miner's
 records also cite; the spot check shows each beside those records, and the

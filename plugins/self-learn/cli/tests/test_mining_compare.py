@@ -502,7 +502,7 @@ def test_h8_every_skipped_moment_is_logged_by_key_with_its_reason(world, capsys)
     rep, out, _ = report(world, run, capsys=capsys)
     assert rep["skipped_moments"] == {
         "sess-old#L2": "no-marker",
-        "sess-prog#L1": "out_of_scope",
+        "sess-prog#L1": "out-of-scope",
         "sess-fail#L3": "failed",
         "sess-bad#L3": "bad-output",
         "sess-ceil#L3": "spend-ceiling",
@@ -756,7 +756,7 @@ def test_h6_a_night_old_finds_by_outcome_fires_by_window_and_program_sessions(wo
     assert old["by_outcome"] == {"dropped-cap": 1, "dropped-invalid": 1, "dropped-rejected": 1, "folded": 1,
                                  "landed": 2, "recurrence": 1, "recurrence-from-fire": 1, "skipped-known-origin": 1}
     assert old["rejected_match"] == 1 and old["rejected_match_keys"] == ["sess-a#L15"]
-    assert old["out_of_scope"] == 1 and rep["skipped_moments"] == {"sess-prog#L1": "out_of_scope"}
+    assert old["out_of_scope"] == 1 and rep["skipped_moments"] == {"sess-prog#L1": "out-of-scope"}
     assert old["missed"] == 4  # folded, recurrence, recurrence-from-fire, dropped-cap in the judged session
     # fires: only the one inside the window
     assert rep["rule_checks"]["old_fires"] == 1 and rep["rule_checks"]["matched"] == 1
@@ -807,6 +807,35 @@ def test_h7_the_inventory_counts_and_prints_no_text(world, env, capsys):
         assert CANARY not in text
         assert not any(t in text for t in ("old one", "old two", "tool output", "a relay", "a program prompt", "turn 1 text"))
     assert "without 1" in cap.out and "sess-old" in cap.out  # control: the output does carry the counts and the id
+
+
+def test_h7_the_inventory_needs_an_out_directory_and_writes_nothing_to_the_working_directory(world, env, capsys, monkeypatch):
+    world.session("sess-a", conversation(3), moments=[1])
+    world.write_set()
+    cwd = env / "elsewhere"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    with pytest.raises(SystemExit) as exc:
+        compare.main(["inventory", "--testset", str(world.set_dir), "--home", str(world.home)])
+    assert exc.value.code == 2
+    assert "--out" in capsys.readouterr().err
+    assert list(cwd.iterdir()) == []
+    # control: with the flag the file lands where it was told, and still not in the working directory
+    assert compare.main(["inventory", "--testset", str(world.set_dir), "--home", str(world.home), "--out", str(env / "inv")]) == 0
+    assert (env / "inv" / "inventory.json").exists() and list(cwd.iterdir()) == []
+
+
+def test_h7_report_writes_only_under_the_run_folder(world, env, capsys, monkeypatch):
+    world.session("sess-a", conversation(6), moments=[3])
+    world.record("lrn-00000001", "session", "routed", [("sess-a", 3)])
+    run = world.run([("called", world.out("sess-a"))])
+    cwd = env / "elsewhere"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    report(world, run, capsys=capsys)
+    assert sorted(p.name for p in (run / "compare").iterdir()) == [
+        "report.json", "report.md", "spot-check.md", "spot-marks.template.json"]
+    assert list(cwd.iterdir()) == []
 
 
 def test_h7_the_module_runs_with_dash_m(world, env):
@@ -1016,7 +1045,8 @@ def test_a_missing_transcript_or_ledger_is_refused(world, env, capsys):
 
 
 def test_bad_arguments_exit_2(world, env):
-    for argv in (["report"], ["report", "--run", str(env), "--shared-sample", "-1"], ["inventory"], []):
+    for argv in (["report"], ["report", "--run", str(env), "--shared-sample", "-1"], ["inventory"],
+                 ["inventory", "--testset", str(env)], []):
         with pytest.raises(SystemExit) as exc:
             compare.main(argv)
         assert exc.value.code == 2

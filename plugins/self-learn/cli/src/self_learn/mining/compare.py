@@ -4,7 +4,7 @@ miner output").
 
 Run as ``python -m self_learn.mining.compare``:
 
-``inventory --testset DIR [--home LEDGER] [--out DIR]``
+``inventory --testset DIR --out DIR [--home LEDGER]``
     The zero-call inventory of a frozen test set: sessions with and without
     Claude Code's typed-turn marker, typed turns per session, the known
     moments per bucket (and how many sit in marker-less sessions), the role
@@ -12,8 +12,8 @@ Run as ``python -m self_learn.mining.compare``:
 
 ``report --run RUN_DIR [--testset DIR] [--home LEDGER] [--journal FILE]
 [--marks FILE] [--shared-sample N] [--nights N] [--transcript-root DIR]``
-    Compare one shadow run with what the old miner found. Writes
-    ``<run>/compare/report.json`` (``miner-compare/1``), ``report.md``,
+    Compare one shadow run with what the old miner found. Writes only under
+    ``<run>/compare/``: ``report.json`` (``miner-compare/1``), ``report.md``,
     ``spot-check.md`` and ``spot-marks.template.json``.
 
 Everything it reads is read-only and it never calls a model. What it prints,
@@ -41,7 +41,9 @@ Vocabulary used throughout:
 - *Not judged is not missed*: a target in a session the new miner did not
   judge (skipped, not run, call failed, bad output, outside the judged line
   range, or absent from the run) is counted under its reason. A session with
-  no typed turns is shelved by design and counted as ``out_of_scope``.
+  no typed turns is shelved by design: its reason is ``out-of-scope`` and the
+  count field is ``out_of_scope`` (every reason value is hyphenated; the JSON
+  field names stay snake_case).
 """
 
 from __future__ import annotations
@@ -411,7 +413,7 @@ class RunView:
             return "judged", None
         if entry["status"] == "skipped":
             if entry["reason"] == "no-typed-turns":
-                return "out-of-scope", "out_of_scope"
+                return "out-of-scope", "out-of-scope"
             return "not-judged", entry["reason"]
         return "not-judged", entry["reason"]
 
@@ -1505,7 +1507,7 @@ def cmd_inventory(args: argparse.Namespace) -> int:
         },
         "manifest_sha256": ts.manifest_sha256,
     }
-    out_dir = Path(args.out).expanduser() if args.out else Path.cwd()
+    out_dir = Path(args.out).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
     fsops.atomic_write(out_dir / "inventory.json", json.dumps(inv, indent=1, sort_keys=True) + "\n")
     s = inv["sessions"]
@@ -1551,7 +1553,7 @@ def build_parser() -> argparse.ArgumentParser:
     inv = sub.add_parser("inventory", help="the zero-call inventory of a frozen test set")
     inv.add_argument("--testset", required=True, metavar="DIR")
     inv.add_argument("--home", metavar="LEDGER")
-    inv.add_argument("--out", metavar="DIR", help="where inventory.json goes (default: the current directory)")
+    inv.add_argument("--out", required=True, metavar="DIR", help="where inventory.json goes (required: nothing is written to the working directory)")
     rep = sub.add_parser("report", help="compare one shadow run with the old miner")
     rep.add_argument("--run", required=True, metavar="RUN_DIR")
     rep.add_argument("--testset", metavar="DIR", help="default: the set the run recorded")

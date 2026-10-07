@@ -219,7 +219,7 @@ def _drop(path_keys):
 
 def _knowledge(d):
     L = _lesson(d)
-    L.update(type="knowledge", trigger=None, instruction=None, fact="A fact", context="Some context")
+    L.update(type="knowledge", kind=None, trigger=None, instruction=None, fact="A fact", context="Some context")
 
 
 # (case id, edit, the path the message must start with)
@@ -243,6 +243,10 @@ K1_CASES = [
     ("type-enum", _set(["lessons", 0, "type"], "rumour"), "lessons[0].type:"),
     ("kind-enum", _set(["lessons", 0, "kind"], "vibe"), "lessons[0].kind:"),
     ("kind-null", _set(["lessons", 0, "kind"], None), "lessons[0].kind:"),
+    ("behavior-missing-kind", _drop(["lessons", 0, "kind"]), "lessons[0].kind: missing"),
+    ("bad-type-bad-kind", lambda d: _lesson(d).update(type="rumour", kind="vibe"), "lessons[0].kind:"),
+    ("knowledge-with-kind", lambda d: (_knowledge(d), _lesson(d).__setitem__("kind", "anti-pattern")), "lessons[0].kind: must be null for a knowledge lesson"),
+    ("knowledge-with-bad-kind", lambda d: (_knowledge(d), _lesson(d).__setitem__("kind", "vibe")), "lessons[0].kind: must be null for a knowledge lesson"),
     ("behavior-no-trigger", _set(["lessons", 0, "trigger"], None), "lessons[0].trigger:"),
     ("behavior-no-instruction", _set(["lessons", 0, "instruction"], None), "lessons[0].instruction:"),
     ("behavior-with-fact", _set(["lessons", 0, "fact"], "a fact"), "lessons[0].fact: must be null"),
@@ -312,6 +316,7 @@ def test_k1_a_root_that_is_not_an_object_is_refused(bad):
 
 def test_k1_valid_knowledge_and_optional_fields_pass():
     d = _mutated(EXAMPLE, _knowledge)
+    assert d["lessons"][0]["kind"] is None  # a knowledge lesson carries no kind, as a ledger record carries none
     assert c.validate_model_output(d) == []
     d["lessons"][0]["context"] = None
     d["lessons"][0]["steps"] = []
@@ -351,7 +356,7 @@ def test_k1_every_error_is_a_path_then_a_message():
 
 #: SHA-256 of ``json.dumps(model_output_json_schema(), indent=1, sort_keys=True)``.
 #: A change to the schema is always deliberate: update this constant with it.
-SCHEMA_SHA256 = "69fea07b534b58525820eeb77002fc9bc5b340741c5a1649df9b82c49305140f"
+SCHEMA_SHA256 = "f18bbc0070ac837b54e8b409f82ea5173c8c39ca4f65b05fb652ff3fde10c18f"
 
 
 def _schema_text() -> str:
@@ -376,7 +381,8 @@ def test_k2_schema_enums_equal_the_constants_and_the_imported_sets():
     props = _lesson_props(s)
     assert props["shape"]["enum"] == list(c.SHAPES)
     assert props["type"]["enum"] == sorted(records.TYPES)
-    assert props["kind"]["enum"] == sorted(records.KINDS)
+    assert [x for x in props["kind"]["enum"] if x is not None] == sorted(records.KINDS)
+    assert None in props["kind"]["enum"]  # null, for a knowledge lesson
     assert props["generality"]["enum"] == sorted(records.GENERALITIES)
     assert [x for x in props["subagent_cause"]["enum"] if x is not None] == list(c.SUBAGENT_CAUSES)
     assert None in props["subagent_cause"]["enum"]
@@ -418,6 +424,10 @@ def test_k2_schema_limits_and_required_keys_agree_with_the_validator():
     # every key the example carries is a key the schema defines (nothing the validator accepts is missing from it)
     assert set(EXAMPLE["lessons"][0]) == set(lesson["properties"])
     assert set(EXAMPLE["rule_checks"][0]) == set(top["rule_checks"]["items"]["properties"])
+    # the schema says what the validator says about kind: one of the kinds for behavior, null for knowledge
+    then = {b["if"]["properties"]["type"]["const"]: b["then"]["properties"] for b in lesson["allOf"]}
+    assert then["behavior"]["kind"] == {"enum": sorted(records.KINDS)}
+    assert then["knowledge"]["kind"] == {"type": "null"}
     assert lesson["additionalProperties"] is False and s["additionalProperties"] is False
     assert s["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert s["properties"]["contract"] == {"const": c.MODEL_CONTRACT}
@@ -433,6 +443,10 @@ def test_k3_checked_output_and_run_record_validate():
 
 def _cl(d):
     return d["lessons"][0]
+
+
+def _cknowledge(d):
+    _cl(d).update(type="knowledge", kind=None, trigger=None, instruction=None, fact="A fact", context=None)
 
 
 K3_CHECKED_CASES = [
@@ -468,6 +482,9 @@ K3_CHECKED_CASES = [
     ("evidence-quote-too-long", _set(["lessons", 0, "evidence", 0, "quote"], "q" * 401), "lessons[0].evidence[0].quote: longer than 400"),
     ("lesson-text-rule", _set(["lessons", 0, "trigger"], None), "lessons[0].trigger:"),
     ("lesson-behavior-with-fact", _set(["lessons", 0, "fact"], "f"), "lessons[0].fact: must be null"),
+    ("lesson-behavior-no-kind", _set(["lessons", 0, "kind"], None), "lessons[0].kind:"),
+    ("lesson-behavior-missing-kind", _drop(["lessons", 0, "kind"]), "lessons[0].kind: missing"),
+    ("lesson-knowledge-with-kind", lambda d: (_cknowledge(d), _cl(d).__setitem__("kind", "anti-pattern")), "lessons[0].kind: must be null for a knowledge lesson"),
     ("lesson-unknown-key", _set(["lessons", 0, "confidence"], "high"), "lessons[0].confidence: unknown key"),
     ("lesson-missing-key", _drop(["lessons", 0, "why_durable"]), "lessons[0].why_durable: missing"),
     ("lesson-id-pattern", _set(["lessons", 0, "id"], "L12"), "lessons[0].id:"),
@@ -504,6 +521,14 @@ def test_k3_each_broken_checked_output_fails_with_its_path(case_id, edit, prefix
     errors = c.validate_checked_output(obj)
     assert errors, case_id
     assert _has(errors, prefix), (case_id, errors)
+
+
+def test_k3_a_checked_knowledge_lesson_has_no_kind():
+    d = _mutated(checked_example(), _cknowledge)
+    assert _cl(d)["kind"] is None
+    assert c.validate_checked_output(d) == []  # accepted without a kind
+    _cl(d)["kind"] = "anti-pattern"
+    assert _has(c.validate_checked_output(d), "lessons[0].kind: must be null for a knowledge lesson")  # refused with one
 
 
 def test_k3_a_session_that_did_not_succeed_may_carry_empty_lists():
