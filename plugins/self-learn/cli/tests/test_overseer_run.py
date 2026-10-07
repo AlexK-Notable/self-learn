@@ -722,10 +722,16 @@ def test_reference_reconsider_refusal_is_committed_and_not_retried(tmp_path, mon
     home = make_home(tmp_path)
     rid = "lrn-0f0e0d0c"
     create_record(home, make_behavior(record_id=rid))
-    write_proposal(home, rid, proposal_dict(destination="reference"))
+    # Until 2026-10-06 this lesson was routed to `reference`; a reconsider
+    # reject now takes one off its shelf (test_reconsider_off_shelf.py), so
+    # the refusal this test recovers from is the hook half's.
+    from test_route_hook import hook_proposal
+
+    write_proposal(home, rid, hook_proposal())
     stamp_proposal(home, rid)
-    commit_all(home, "reference seed")
-    verbs.route(home, rid, dest="reference", no_push=True)
+    commit_all(home, "hook seed")
+    verbs.route(home, rid, no_push=True)
+    assert (Record.from_path(find_record_path(home, rid)).routing or {}).get("destination") == "hook"
     record_path = find_record_path(home, rid)
     before = record_path.read_bytes()
     parked_stage = tmp_path / "parked-reference.yaml"
@@ -749,7 +755,7 @@ def test_reference_reconsider_refusal_is_committed_and_not_retried(tmp_path, mon
     monkeypatch.setattr(overseer_run.batch, "run", counted)
     result = overseer_run.run(home, dry_run=False, no_push=True)
     message = (
-        f"reject {rid}: a reconsider correction of a routed 'reference'-destination "
+        f"reject {rid}: a reconsider correction of a routed 'hook'-destination "
         "record is not supported here"
     )
     text = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")

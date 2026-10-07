@@ -634,17 +634,19 @@ def test_the_overseer_moves_a_routed_lesson_to_a_warning_hook(tmp_path, monkeypa
 
 
 def test_the_repair_preview_now_reports_a_refusal_only_the_widened_line_meets(tmp_path):
-    """The widening's discriminating case: rejecting a REFERENCE-routed
-    lesson under a reconsider case is refused (a reference route is
-    corrected by hand) -- a repairable `bad-line`. Without the widening
-    the preview stopped at the routed-status refusal, which it skips for a
-    covered line, so the model was never told; apply time refused it with
-    no repair turn left."""
-    from self_learn import batch, steward
-    from support import commit_all, make_behavior, make_env, proposal_dict
-    from test_steward import _dump_yaml
+    """The widening's discriminating case: rejecting a HOOK-routed lesson
+    under a reconsider case is refused (a hook route is corrected by
+    hand) -- a repairable `bad-line`. Without the widening the preview
+    stopped at the routed-status refusal, which it skips for a covered
+    line, so the model was never told; apply time refused it with no
+    repair turn left. (A reference-routed lesson was this case until
+    2026-10-06; a reconsider reject now takes one off its shelf --
+    test_reconsider_off_shelf.py.)"""
+    from self_learn import steward
+    from support import commit_all, make_behavior, make_env
+    from test_route_hook import hook_proposal
     from test_steward_refusals import _case
-    from test_u3b_steward_authority import HOOK_TRIGGER, _record_case
+    from test_u3b_steward_authority import _record_case
 
     rid = "lrn-a7300108"
     sandbox = make_env(tmp_path)
@@ -652,16 +654,14 @@ def test_the_repair_preview_now_reports_a_refusal_only_the_widened_line_meets(tm
     (tmp_path / "setup").mkdir()
     from self_learn import ledger_ops
 
-    ledger_ops.create_record(home, make_behavior(record_id=rid, trigger=HOOK_TRIGGER))
-    ledger_ops.write_proposal(home, rid, proposal_dict())
+    ledger_ops.create_record(home, make_behavior(record_id=rid, trigger=TRIGGER))
+    ledger_ops.write_proposal(home, rid, hook_proposal())
     ledger_ops.stamp_proposal(home, rid)
     commit_all(home, f"seed {rid}")
     prior = _record_case(home, tmp_path / "setup", _case([rid], "route", "route"))
-    first = tmp_path / "first.yaml"
-    _dump_yaml(first, {"version": 1, "case": prior,
-                       "items": [{"id": rid, "verb": "route", "dest": "reference:x.md"}]})
-    assert batch.run(home, batch.load_sheet(first, home=home), no_push=True,
-                     actor="steward").items[0].state == "applied"
+    verbs.route(home, rid, no_push=True)  # placed as its hook
+    routed = Record.from_path(verbs.find_record_path(home, rid))
+    assert (routed.routing or {}).get("destination") == "hook"
     stage = _stage_reconsider(tmp_path / "s", home, rid, prior, [{"id": rid, "verb": "reject"}])
     message = steward._ledger_repair_message(home, stage, {rid: "routed"})
     assert message is not None and f"(reject {rid})" in message

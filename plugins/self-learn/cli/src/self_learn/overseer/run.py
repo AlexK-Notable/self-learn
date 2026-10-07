@@ -1503,8 +1503,9 @@ def _refuse_doomed_reconsider(
     preview refuses ANY of its lines is dropped at phase B. Recorded, it
     would supersede its predecessor (a case is superseded once) and then
     change nothing -- e.g. a `reject` of a lesson routed to a hook, which
-    `verbs` refuses by name ("hook and reference routes are corrected by
-    hand"). Dropped, the predecessor stays open for a better correction.
+    `verbs` refuses by name ("a hook route is corrected by hand"; a
+    reference route was refused the same way until 2026-10-06). Dropped,
+    the predecessor stays open for a better correction.
     The raise names every refused line, and the pair loop puts it in
     "Refused / could not do" and the run journal, so a drop is never
     silent. Resolution and maintenance pairs are not touched: a parked
@@ -3363,7 +3364,7 @@ def _run_manifest_sheet(
     # failure's KIND, never the word the receipt happens to carry:
     #
     #   * a receipted `refused` item is FINAL — never dispatched again (in
-    #     particular, never retry U5's refused reference reconsideration) —
+    #     particular, never retry U5's refused hook reconsideration) —
     #     UNLESS its committed disposition row names kind `git` or
     #     `target-busy`: git or lock trouble, or a target file with
     #     uncommitted edits unrelated to self-learn, neither of which says
