@@ -43,6 +43,11 @@ EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_STOPPED = gitops.EXIT_GIT_FAILED
 EXIT_PARTIAL = 8
+#: How an overseer session's prompt begins: both phase prompts below start
+#: with it. `miner.SELF_PROMPT_HEADERS` carries it, so the nightly miner never
+#: reads the overseer's own sessions (2026-10-06).
+#: `tests/test_miner_self_sessions.py` builds both real prompts and checks it.
+SESSION_OPENINGS = ("You are the self-learn overseer",)
 _REPORT_SECTIONS = (
     "Examined",
     "Decided in the user's stead",

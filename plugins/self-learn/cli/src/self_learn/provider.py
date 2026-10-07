@@ -330,6 +330,8 @@ MODEL_KEY_FOR_SURFACE = {
     "analyst": "analyst",
     "steward": "steward",
     "overseer": "overseer",
+    # 2026-10-06 (U4-seam): the session miner runs on the old miner's model.
+    "miner-session": "miner",
 }
 
 
@@ -943,7 +945,7 @@ def _selected_model_floors(
 def _floor_requirements_text(rows: list[tuple[str, str, str]]) -> str:
     """One readable clause per `(surface, model, floor)` triple, so the
     row names the surface, the model AND the floor rather than leaving a
-    reader to work out which of six surfaces is the problem."""
+    reader to work out which surface is the problem."""
     return "; ".join(
         f"{surface} needs Claude Code >= {floor} for model {model}"
         for surface, model, floor in rows

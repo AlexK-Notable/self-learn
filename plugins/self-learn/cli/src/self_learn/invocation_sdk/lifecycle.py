@@ -117,12 +117,14 @@ def _sidecar_path(surface: str) -> Path:
     return worker.cache_dir() / f"{surface}.sdk-child.pid"
 
 
-def write_sidecar(surface: str, pid: int, cli: str) -> None:
+def write_sidecar(surface: str, pid: int, cli: str, *, session_key: str | None = None) -> None:
     """`K-4` -- written as soon as the child pid is known. Delegates to
     `sdksession.children.write_sidecar` (see the module docstring's
     Sprint 2 M-V note) -- `session_key=None` reproduces `_sidecar_path`'s
-    filename byte-for-byte."""
-    children.write_sidecar(worker.cache_dir(), surface, pid, cli, session_key=None)
+    filename byte-for-byte. 2026-10-06 (U4-seam): a `session_key` keys
+    the file to one session (`SessionSpec.sidecar_key`), so parallel
+    sessions on one surface each keep their own."""
+    children.write_sidecar(worker.cache_dir(), surface, pid, cli, session_key=session_key)
 
 
 def read_sidecar(surface: str) -> dict[str, Any] | None:
@@ -131,11 +133,12 @@ def read_sidecar(surface: str) -> dict[str, Any] | None:
     return children.read_sidecar(worker.cache_dir(), surface, session_key=None)
 
 
-def clear_sidecar(surface: str) -> None:
+def clear_sidecar(surface: str, *, session_key: str | None = None) -> None:
     """`K-4`/`K-5` -- unlinked whether the session succeeded, failed, or
     timed out. Delegates to `sdksession.children.clear_sidecar` -- see
-    the module docstring's Sprint 2 M-V note."""
-    children.clear_sidecar(worker.cache_dir(), surface, session_key=None)
+    the module docstring's Sprint 2 M-V note. `session_key` as in
+    `write_sidecar`."""
+    children.clear_sidecar(worker.cache_dir(), surface, session_key=session_key)
 
 
 def kill_child(pid: int | None, log: Callable[[str], None]) -> None:
