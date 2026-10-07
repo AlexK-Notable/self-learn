@@ -753,7 +753,7 @@ def test_where_a_route_lands_is_what_the_route_verb_really_does(tmp_path, monkey
         assert destination in text, destination
     # the worked example writes a dest, and not a bare claude-md
     example = steward_prompt.STAGE_EXAMPLES["sheets/shell-quoting.yaml"]
-    assert "dest: reference:" in example and "dest: claude-md\n" not in example
+    assert "dest: claude-md:rules:" in example and "dest: claude-md\n" not in example
 
     # ... and with no proposal at all, a route without `dest` is refused.
     bare_id = "lrn-0000de58"

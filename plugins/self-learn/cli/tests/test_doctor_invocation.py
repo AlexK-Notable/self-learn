@@ -108,8 +108,8 @@ def test_dc1_pristine_home_zero_fail_all_rows_once(capsys):
     single_line_rows = ("switches", "provider", "config", "sdk", "rollout", "region", "credentials", "orphans", "ui", "sessions")
     for row in single_line_rows:
         assert len(_rows_by_name(out, row)) == 1, row
-    assert len(_rows_by_name(out, "models")) == 7  # 6 surfaces + small_fast (U8: +steward/+overseer)
-    assert len(_rows_by_name(out, "env")) == 6  # U8: +steward/+overseer
+    assert len(_rows_by_name(out, "models")) == 8  # 7 surfaces + small_fast (U8: +steward/+overseer; U4-seam: +miner-session)
+    assert len(_rows_by_name(out, "env")) == 7  # U8: +steward/+overseer; U4-seam: +miner-session
     assert len(_rows_by_name(out, "consistency")) == 0
 
     # row order
@@ -757,7 +757,9 @@ def test_dc9_handoff_block_fixed_fields_and_no_leak_and_equality(monkeypatch, ca
     # DC9 asks for the FIXED field set, transcribed — a literal, not
     # `provider.SURFACES`, so a surface added to the tuple trips this test
     # instead of being silently followed (U8 fold r1, gate S2).
-    _HANDOFF_SURFACES = ("worker", "worker-repair", "miner-reader", "analyst", "steward", "overseer")
+    _HANDOFF_SURFACES = (
+        "worker", "worker-repair", "miner-reader", "analyst", "steward", "overseer", "miner-session",
+    )
     assert tuple(provider.SURFACES) == _HANDOFF_SURFACES
     expected_fields = (
         ["provider"]
@@ -951,7 +953,7 @@ def test_dc12_mixed_rollout_info_lines_per_surface(monkeypatch, _home):
     monkeypatch.setenv("SELF_LEARN_BACKEND_OVERSEER", "cli")
     rows = provider.preflight(_home)
     rollout_rows = {r.surface: r for r in rows if r.name == "rollout"}
-    assert len(rollout_rows) == 6
+    assert len(rollout_rows) == 7  # U4-seam: +miner-session (shares MINER, pinned sdk here)
     # U-cleanup-B (§8.1, MAJOR-5 extension): the rollout row's non-sdk
     # wording was "backend=cli" (a value that can no longer be literally
     # true post-collapse) -- corrected to the SEL6 pattern, matching the
@@ -1031,7 +1033,7 @@ def test_dc14_env_row_per_surface_and_catches_refusal(monkeypatch, capsys, _home
     monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
     rows = provider.preflight(_home)
     env_rows = {r.surface: r for r in rows if r.name == "env"}
-    assert len(env_rows) == 6
+    assert len(env_rows) == 7  # U4-seam: +miner-session
     assert env_rows["worker"].verdict == "SKIP"
     assert env_rows["analyst"].verdict == "PASS"
 

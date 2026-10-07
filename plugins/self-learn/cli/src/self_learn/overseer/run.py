@@ -43,6 +43,11 @@ EXIT_OK = 0
 EXIT_REFUSED = 1
 EXIT_STOPPED = gitops.EXIT_GIT_FAILED
 EXIT_PARTIAL = 8
+#: How an overseer session's prompt begins: both phase prompts below start
+#: with it. `miner.SELF_PROMPT_HEADERS` carries it, so the nightly miner never
+#: reads the overseer's own sessions (2026-10-06).
+#: `tests/test_miner_self_sessions.py` builds both real prompts and checks it.
+SESSION_OPENINGS = ("You are the self-learn overseer",)
 _REPORT_SECTIONS = (
     "Examined",
     "Decided in the user's stead",
@@ -704,6 +709,9 @@ ledger refused), write a kind: reconsider successor that supersedes it, provided
 every record the reconsider names, has not been superseded, passes its freeze hash, and was
 recorded by the steward or the overseer, never by a person (formats/case-correct-example.yaml).
 The runner alone records cases and applies sheets. Never run a verb.
+Never route a lesson to `reference` (a references/ shelf file): the runner refuses it from you.
+{formats.FORMATS_DIR}/README.md says where such a lesson goes instead, and how a lesson already
+on a shelf is taken off it.
 {_YAML_TEXT_RULE}In a case file no line of any text field may start with `## `. To quote a heading line, quote
 it from after the `## ` (for `## 2026-08-19 — lrn-b197d06b` quote `2026-08-19 — lrn-b197d06b`):
 an evidence item with such a line is dropped, and any other field with one refuses the case.
@@ -1500,8 +1508,9 @@ def _refuse_doomed_reconsider(
     preview refuses ANY of its lines is dropped at phase B. Recorded, it
     would supersede its predecessor (a case is superseded once) and then
     change nothing -- e.g. a `reject` of a lesson routed to a hook, which
-    `verbs` refuses by name ("hook and reference routes are corrected by
-    hand"). Dropped, the predecessor stays open for a better correction.
+    `verbs` refuses by name ("a hook route is corrected by hand"; a
+    reference route was refused the same way until 2026-10-06). Dropped,
+    the predecessor stays open for a better correction.
     The raise names every refused line, and the pair loop puts it in
     "Refused / could not do" and the run journal, so a drop is never
     silent. Resolution and maintenance pairs are not touched: a parked
@@ -3360,7 +3369,7 @@ def _run_manifest_sheet(
     # failure's KIND, never the word the receipt happens to carry:
     #
     #   * a receipted `refused` item is FINAL — never dispatched again (in
-    #     particular, never retry U5's refused reference reconsideration) —
+    #     particular, never retry U5's refused hook reconsideration) —
     #     UNLESS its committed disposition row names kind `git` or
     #     `target-busy`: git or lock trouble, or a target file with
     #     uncommitted edits unrelated to self-learn, neither of which says

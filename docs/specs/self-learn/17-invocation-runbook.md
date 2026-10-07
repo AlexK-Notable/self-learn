@@ -24,7 +24,7 @@ Agent SDK unconditionally. There is nothing left to flip a surface
 BETWEEN — `backend` is no longer a real switch, it is a single-valued
 constant with a refusal wired to its old alternative.*
 
-Self-learn invokes a model on **six surfaces**, all of them on the
+Self-learn invokes a model on **seven surfaces**, all of them on the
 Agent SDK. One switch remains live:
 
 | Switch | Scope | Values | Default |
@@ -50,7 +50,7 @@ applies — every surface's own default is already `sdk`); the doctor's
 `rollout` row still catches the one way a Bedrock configuration can go
 fully inert today — every surface explicitly refused (§3).
 
-The six surfaces, and the five selector names that address them:
+The seven surfaces, and the five selector names that address them:
 
 | Surface | What it is | Env selector | `config.yaml` key |
 |---|---|---|---|
@@ -60,13 +60,127 @@ The six surfaces, and the five selector names that address them:
 | `analyst` | the one-shot `teach --route` analyst | `ANALYST` | `backend_analyst` |
 | `steward` | the steward's nightly decision run | `STEWARD` | `backend_steward` |
 | `overseer` | the overseer's weekly examination run | `OVERSEER` | `backend_overseer` |
+| `miner-session` | the session miner, one transcript per call (§1a) | `MINER` (**shared with `miner-reader`**) | `backend_miner-session` |
 
-Both new surfaces are `Containment` objects in the same sense `03-decisions.md`
-`S-34`/`S-50` already describe: on the `sdk` backend, the `can_use_tool`
-charter denies `Bash` and `Task` structurally and grants `Edit`/`Write` only
-inside the run's own declared stage directory — never the ledger or canon
-directly. Neither surface is a new kind of charter; each gets its own
-`Containment` instance with a narrower write set than the surfaces it joins.
+`steward` and `overseer` (added 2026-09-13) are `Containment` objects in the
+same sense `03-decisions.md` `S-34`/`S-50` already describe: on the `sdk`
+backend, the `can_use_tool` charter denies `Bash` and `Task` structurally and
+grants `Edit`/`Write` only inside the run's own declared stage directory —
+never the ledger or canon directly. Neither of the two is a new kind of
+charter; each gets its own `Containment` instance with a narrower write set
+than the surfaces it joins. `miner-session` (2026-10-06) writes nothing at
+all and runs only on its own tools; §1a describes it.
+
+### 1a. The seventh surface: `miner-session`, which runs on its own tools
+
+*Added 2026-10-06 (U4-seam).* `miner-session` is the session miner: it
+reads one transcript per call and, during its shadow period, runs beside
+the old miner (`miner-reader`) without replacing it.
+
+**Why a surface of its own.** Pid sidecars, the orphan sweep, event-log
+retention and the kept session copies are all per surface. Sharing
+`miner-reader` would let a shadow run started by hand sweep away the
+nightly old miner's live child, and one shadow run's many calls would
+push every old-miner event log out of the 20-file retention — the only
+place the old miner's cost is recorded. The new surface shares the
+`MINER` selector, so `models.miner`, `sdk.max_turns.miner` and
+`SELF_LEARN_BACKEND_MINER` apply to both miners alike; only the
+`config.yaml` key `invocation.backend_miner-session` addresses it alone.
+The doctor's `switches`, `models`, `env` and `rollout` rows gain one
+`miner-session` entry each.
+
+**Its own tools.** A producer gives the session its tools as plain data:
+`SessionSpec.mcp_toolset`, an `McpToolset` (a server name and a tuple of
+`McpTool`s — name, description, a JSON Schema carrying `type` and
+`properties`, an async handler answering a `ToolReply`, and `read_only`).
+Building the toolset checks it: at least one tool, no duplicate names,
+each name and the server name lower-case letters, digits and underscores
+(starting with a letter, at most 32), and each schema with a string
+`type` and a `properties` mapping — anything else the SDK would show the
+model as a different tool. The model sees each tool as
+`mcp__<server>__<name>`. Only
+`invocation_sdk/backend.py` turns them into the SDK's in-process MCP
+server; the producer never imports the SDK. When the field is set, the
+session's options change in exactly two keys: `tools` becomes the empty
+list (every built-in tool switched off) and `mcp_servers` holds that one
+server. The shared floor is untouched: `allowed_tools` stays empty, so
+nothing is pre-approved, MCP stays strict, and no settings file is read.
+
+**The rule.** A `miner-session` session runs **only** on its own tools:
+a spec without `mcp_toolset` is refused, because it would be offered every
+built-in tool and its containment fences no reads. The session's
+containment must allow **exactly** the toolset's `mcp__<server>__<name>`
+names — one more (a built-in such as `Read`), one fewer, or another
+server's name, and the seam refuses the session with a `ValueError`
+naming the difference. It refuses too when the installed SDK has no
+`tools` or no `mcp_servers` option, rather than run with every built-in
+tool beside the session's own. A refusal is raised while the options are
+built: no Claude Code process is started and no event log is written, but
+the orphan sweep (unless skipped) has already run, and the `ValueError`
+reaches the caller of `write_session`/`text_session` as an exception, not
+as an `Outcome` — the same shape as the append-file refusal. Permission is
+containment data decided by unchanged code: the charter allows a tool
+exactly when its name is in the containment's `allowed_tools`, and denies
+everything else. Whether Claude Code consults the charter for an
+in-process MCP tool at all is **unmeasured** (the probe pre-approved its
+tools); the session miner's pilot measures it before any larger run.
+
+**What a tool call can return.** The seam wraps every handler. A call is
+bounded at 60 seconds (`MCP_HANDLER_TIMEOUT_SECS`, because whether Claude
+Code's own MCP timeout reaches an in-process server is unmeasured) — but
+the bound can only interrupt a handler at an `await`. **Handlers must be
+async and must never block:** a handler runs on the session's own event
+loop, so one that blocks (`time.sleep`, a synchronous HTTP or SQLite call)
+stalls the whole session, its own timeout included, and is not bounded at
+all. The session miner's handlers do synchronous or network work through
+`asyncio.to_thread` (or an async client). The bound running out, a raised
+exception, an answer that is not a `ToolReply`, and a reply longer than
+48,000 characters (`MCP_REPLY_MAX_CHARS`; Claude Code cuts longer tool
+results silently, near 50,000) all come back to the model as an error
+reply it can read. An exception is reported by its type name only, never
+its message, which may hold transcript text; a handler that raises its
+own `TimeoutError` (a socket timeout, say) reads `tool failed:
+TimeoutError`, not as the bound running out. A cancellation is not a
+failure: when the session is cancelled while a tool runs, the
+cancellation reaches the session, not the model.
+
+**Parallel sessions on one surface.** Two more `SessionSpec` fields let a
+producer run several sessions of one surface at once:
+
+- `sidecar_key` keys the pid sidecar to one session,
+  `<surface>.sdk-child.<key>.pid` (the whole key must match
+  `[A-Za-z0-9_-]{1,64}`; a trailing newline is refused). Without a key,
+  the one sidecar per surface is written and cleared with exactly the
+  same calls as before. Nothing checks that keys are unique: **a
+  producer must give every session of a run its own key**, or the first
+  of two sessions sharing one deletes the other's sidecar when it ends.
+- `skip_orphan_sweep` skips the orphan sweep before that session starts.
+  The sweep judges every sidecar of the surface, and it unlinks one whose
+  process is alive but not older than this process — a live sibling's —
+  so a batch sweeps once, on a first call that runs alone, and its other
+  calls skip it.
+- **Across processes the sweep is not safe.** A run in one process sweeps
+  the `miner-session` sidecars another process's run left live: it kills
+  the children that run started before this process began, and deletes
+  the sidecars of the ones it started later. So a producer of
+  `miner-session` runs (the session miner's engine) must hold a run lock
+  across processes — the way the old miner holds `miner.lock` — so that
+  two runs never overlap, whether a hand-started run meets the serve job
+  or one night's run is still going when the next one starts.
+
+**The prune fix.** Two sessions on one surface that end at the same
+moment both prune the event logs; one could unlink a file between the
+other's listing and its `stat`, and the `FileNotFoundError` was raised
+inside the session's `finally`, replacing the session's real outcome.
+`sdksession.events.prune_event_logs` now sorts a vanished file as the
+oldest instead.
+
+**Every other surface is unchanged.** The three new `SessionSpec` fields
+default to `None`, `None` and `False`, and with those defaults every
+surface sends byte-for-byte the options and makes exactly the sidecar and
+sweep calls it made before. In the cache, the new surface writes only its
+own `miner-session.*` event logs and sidecars and its session copies
+under `sessions/miner-session/`.
 
 ## 2. The `[sdk]` extra is no longer optional
 

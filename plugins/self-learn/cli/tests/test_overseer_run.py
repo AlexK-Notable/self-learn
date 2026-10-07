@@ -223,7 +223,7 @@ def _fake_selected_phases(monkeypatch, case_id):
     monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
 
 
-def _fake_reference_reconsider_phases(monkeypatch, rid, parked):
+def _fake_hook_reconsider_phases(monkeypatch, rid, parked):
     def invoke(spec):
         stage = spec.cwd
         if spec.label == "phase-a":
@@ -243,7 +243,7 @@ def _fake_reference_reconsider_phases(monkeypatch, rid, parked):
             _dump(stage / "user-model-delta.yaml", {"updates": []})
             _dump(stage / "case-reconsider.yaml", {
                 "kind": "reconsider", "trigger": "reconsider", "outcome": "reject",
-                "records": [rid], "scope": "skill:s", "question": "correct reference route?",
+                "records": [rid], "scope": "skill:s", "question": "correct hook route?",
                 "supersedes": parked,
                 "evidence": [{"ref": f"record:{rid}", "quote": "status: routed"}],
                 "decision": {"verb": "reject", "because": "route was wrong", "confidence": "settled"},
@@ -718,27 +718,33 @@ def test_write_stage_refuses_outside_stage_before_mkdir(tmp_path):
     assert inside.read_text(encoding="utf-8") == "yes\n"
 
 
-def test_reference_reconsider_refusal_is_committed_and_not_retried(tmp_path, monkeypatch):
+def test_hook_reconsider_refusal_is_committed_and_not_retried(tmp_path, monkeypatch):
     home = make_home(tmp_path)
     rid = "lrn-0f0e0d0c"
     create_record(home, make_behavior(record_id=rid))
-    write_proposal(home, rid, proposal_dict(destination="reference"))
+    # Until 2026-10-06 this lesson was routed to `reference`; a reconsider
+    # reject now takes one off its shelf (test_reconsider_off_shelf.py), so
+    # the refusal this test recovers from is the hook half's.
+    from test_route_hook import hook_proposal
+
+    write_proposal(home, rid, hook_proposal())
     stamp_proposal(home, rid)
-    commit_all(home, "reference seed")
-    verbs.route(home, rid, dest="reference", no_push=True)
+    commit_all(home, "hook seed")
+    verbs.route(home, rid, no_push=True)
+    assert (Record.from_path(find_record_path(home, rid)).routing or {}).get("destination") == "hook"
     record_path = find_record_path(home, rid)
     before = record_path.read_bytes()
-    parked_stage = tmp_path / "parked-reference.yaml"
+    parked_stage = tmp_path / "parked-hook.yaml"
     _dump(parked_stage, {
         "kind": "parked", "trigger": "nightly", "outcome": "parked",
-        "records": [rid], "scope": "skill:s", "question": "correct reference route?",
+        "records": [rid], "scope": "skill:s", "question": "correct hook route?",
         "parked_for": "overseer", "parked_reason": "authority-unclear",
         "evidence": [{"ref": f"record:{rid}", "quote": "status: routed"}],
         "decision": {"verb": "parked", "because": "needs review", "confidence": "provisional"},
     })
     parked = cases.record(home, parked_stage, actor="steward")
     _enabled(monkeypatch)
-    _fake_reference_reconsider_phases(monkeypatch, rid, parked)
+    _fake_hook_reconsider_phases(monkeypatch, rid, parked)
     calls = []
     real_run = overseer_run.batch.run
 
@@ -749,7 +755,7 @@ def test_reference_reconsider_refusal_is_committed_and_not_retried(tmp_path, mon
     monkeypatch.setattr(overseer_run.batch, "run", counted)
     result = overseer_run.run(home, dry_run=False, no_push=True)
     message = (
-        f"reject {rid}: a reconsider correction of a routed 'reference'-destination "
+        f"reject {rid}: a reconsider correction of a routed 'hook'-destination "
         "record is not supported here"
     )
     text = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")

@@ -536,7 +536,7 @@ def test_a_route_on_a_routed_lesson_without_a_reconsider_case_is_still_refused(t
     plain = _record_case(home, tmp_path / "setup", _case([rid], "route", "route"))
     sheet_path = tmp_path / "again.yaml"
     for case_id in (plain, None):
-        body = {"version": 1, "items": [{"id": rid, "verb": "route", "dest": "reference:x.md"}]}
+        body = {"version": 1, "items": [{"id": rid, "verb": "route", "dest": "claude-md"}]}
         if case_id:
             body["case"] = case_id
         _dump_yaml(sheet_path, body)
@@ -549,12 +549,12 @@ def test_a_route_on_a_routed_lesson_without_a_reconsider_case_is_still_refused(t
     reconsider.update(kind="reconsider", supersedes=prior)
     rc = _record_case(home, tmp_path / "setup", reconsider)
     _dump_yaml(sheet_path, {"version": 1, "case": rc,
-                            "items": [{"id": rid, "verb": "route", "dest": "reference:x.md"}]})
+                            "items": [{"id": rid, "verb": "route", "dest": "claude-md"}]})
     preview = batch.dry_run(home, batch.load_sheet(sheet_path, home=home), actor="steward")
     assert preview.items[0].state == "would-apply", preview.items[0].detail
     result = batch.run(home, batch.load_sheet(sheet_path, home=home), no_push=True, actor="steward")
     assert result.items[0].state == "applied", result.items[0].detail
-    assert (_status(home, rid).routing or {}).get("reference_file") == "x.md"
+    assert (_status(home, rid).routing or {}).get("destination") == "claude-md"
     again = batch.run(home, batch.load_sheet(sheet_path, home=home), no_push=True, actor="steward")
     assert again.items[0].state == "already-applied"
 

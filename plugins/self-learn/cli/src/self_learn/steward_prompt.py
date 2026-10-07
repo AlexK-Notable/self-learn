@@ -103,6 +103,22 @@ _BLOCK_ORDER = (
 #: time (the conditions' `observed_at` is the run's one snapshot).
 SHARED_BLOCKS = frozenset({"method", "conditions", "output_contract"})
 
+#: How the user message of a steward session begins: the prefix
+#: `miner.SELF_PROMPT_HEADERS` carries, so the nightly miner never reads the
+#: steward's own sessions (2026-10-06). DERIVED, not typed a second time: since
+#: 2026-09-26 (faa1853) the user message is the first block a run does not
+#: share (the method rides in the appended system prompt), and `assemble`
+#: writes every block as `=== <name> ===`. Before that date the whole brief
+#: was the user message and `containment` came first in it too, so this one
+#: opening covers every steward session there has been. It is NOT
+#: `=== method ===`: the method block never began a user message, and a
+#: person who pastes a brief that opens with it is not one of self-learn's
+#: agents. `tests/test_miner_self_sessions.py` builds real packets, and the
+#: whole brief as it was sent before faa1853, and checks them.
+SESSION_OPENINGS = (
+    f"=== {next(name for name in _BLOCK_ORDER if name not in SHARED_BLOCKS)} ===",
+)
+
 #: Container reading order for the user-model block (plan §4.1 item 3):
 #: own words -> seen readings -> declared conditions -> provisional
 #: readings -> observed regularities. NOT the interface draft §3.1
@@ -232,8 +248,9 @@ case: $CASE_ID
 items:
   - id: lrn-0a1b2c3d
     verb: route
-    dest: reference:shell.md
-    note: recurred twice; nothing existing covers it; a reference file is read when shell work starts
+    dest: claude-md:rules:shell
+    rules_paths: ["**/*.sh"]
+    note: recurred twice; nothing existing covers it; the rule loads when a shell script is read
 """,
     "cases/two-duplicates.yaml": """\
 kind: resolution
@@ -438,25 +455,26 @@ items:
           - {tool_name: Write, tool_input: {file_path: /srv/other/cache.db}}
     note: a guard sees this exact call; the shelf line did not stop it
 """,
-    "cases/move-to-the-shelf.yaml": """\
+    "cases/move-off-the-shelf.yaml": """\
 kind: reconsider
 trigger: nightly
 outcome: route
 records: [lrn-6a7b8c9d]
-scope: user
+scope: "project:/srv/example-repo"
 supersedes: case-1a2b3c4d
 question: >-
-  The lesson sits in every session but matters only when release notes are written; move it?
+  The lesson sits on the project's reference shelf, which nothing points a task at; move it to
+  where its moment happens?
 evidence:
   - ref: "case-1a2b3c4d"
-    quote: "routed to the user's CLAUDE.md"
+    quote: "routed to references/LEARNINGS.md"
   - ref: "transcript:example-session#L310"
     quote: "only relevant when drafting release notes"
 decision:
   verb: route
   because: >-
-    The first placement failed the always-loaded test's first question; a reference file read at
-    the release step reaches the moment at a fraction of the cost.
+    A shelf is read only when an agent chooses to open it, and its pointer names no subject; the
+    moment is editing the release notes, which a path-scoped rule on those files reaches exactly.
   confidence: settled
 dependencies:
   statements: []
@@ -464,14 +482,15 @@ dependencies:
   conditions: []
   capabilities: []
 """,
-    "sheets/move-to-the-shelf.yaml": """\
+    "sheets/move-off-the-shelf.yaml": """\
 version: 1
 case: $CASE_ID
 items:
   - id: lrn-6a7b8c9d
     verb: route
-    dest: reference:releases.md
-    note: moved from the always-loaded line; the old line is retired in the same motion
+    dest: claude-md:rules:releases
+    rules_paths: ["CHANGELOG.md", "docs/releases/*.md"]
+    note: moved off the reference shelf; its shelf entry is removed in the same motion
 """,
     "cases/rule-for-migrations.yaml": """\
 kind: resolution
@@ -924,8 +943,12 @@ def _render_output_contract() -> str:
         "  absolute or starting with ~), each of which must match at least one file on this",
         "  machine unless `allow_empty_glob: true`; they win over any analyst proposal's. A glob",
         "  that is malformed or matches nothing refuses that line alone. `dest` is one of",
-        f"  {_words(ledger_ops.PROPOSAL_DESTINATIONS)}, or `reference:<file name>`,",
-        "  `claude-md:local`, `claude-md:rules:<topic>`. `follow_up` (with `unblocks_on`,",
+        f"  {_words(d for d in ledger_ops.PROPOSAL_DESTINATIONS if d != 'reference')},",
+        "  `claude-md:local`, `claude-md:rules:<topic>`. NEVER `reference` (or",
+        "  `reference:<file name>`): the runner refuses a route to a reference shelf from you",
+        "  (method section 16) and sends the line back. A lesson you would have put on a shelf",
+        "  goes to a path-scoped rule when it is tied to files, an existing skill, a warning hook",
+        "  when it is tied to a command, or is parked or rejected. `follow_up` (with `unblocks_on`,",
         "  a gate label, and `follow_up_note`) records that this routing is a known-partial form",
         "  and names the planned stronger one; `allow_empty_glob` routes a path-scoped rule whose",
         "  glob matches nothing on this machine; `collapse` folds a merge cluster into this",
@@ -953,7 +976,12 @@ def _render_output_contract() -> str:
         "  names the case that covered it, a `route` line on a lesson that is already routed",
         "  MOVES it to the `dest` it names (the runner applies it as a reroute; the old placement",
         "  is retired in the same motion; `dest` is required; a hook needs its compile input;",
-        "  never `new-skill`). `rehome` and `rescope` both move a pending or deferred lesson to another",
+        "  never `new-skill` or `reference`). A `reject` or `defer` line in such a case removes the",
+        "  lesson's placement in the same motion; on a reference shelf that removes its entry from",
+        "  the shelf file, so a `route`, `reject` or `defer` line each takes a lesson off a reference",
+        "  shelf. A lesson routed to a hook cannot be rejected or deferred this way; move it with a",
+        "  `route` line instead.",
+        "  `rehome` and `rescope` both move a pending or deferred lesson to another",
         "  registered scope (`to`: `user`, `skill:<name>`, or a project path). `reopen` returns a",
         "  rejected or superseded lesson to pending.",
         "  WHAT EACH VERB NEEDS THE LESSON'S STATUS TO BE (the verbs' own checks; a mismatch is",

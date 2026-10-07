@@ -160,6 +160,11 @@ def closed_sets() -> dict[str, Any]:
             "item_keys_on_every_verb": ["id", "verb", "close_call"],
             "by": sorted(verbs.ROUTING_BY_VALUES),
             "refused_verbs": sorted(batch.REFUSED_VERBS_LITERAL),
+            # 2026-10-06: the route destinations the runner refuses from the
+            # overseer -- read from the batch's own actor set.
+            "refused_dests": (
+                ["reference"] if "overseer" in batch.REFERENCE_REFUSED_ACTORS else []
+            ),
         },
         "user_model_delta": {
             "action": ["add", "lapse"],
@@ -291,7 +296,21 @@ def _rules(phase: str) -> str:
             "hook block's keys per mode are in closed-sets.yaml under `hook`.",
             "Switching a hook on stays the user's setting (overseer.hook_activation).",
             "Re-decidable FROM claude-md, skill-md, new-skill, reference, hook;",
-            "TO claude-md (any variant), skill-md, reference, hook; never new-skill.",
+            "TO claude-md (any variant), skill-md, hook; never new-skill or reference.",
+            "",
+            "Never route a lesson to `reference` (a references/ shelf file such as",
+            "references/LEARNINGS.md): the runner refuses that line from you, whether",
+            "it is a fresh route or a re-decision (closed-sets.yaml, sheet.refused_dests).",
+            "A shelf is reached only through a pointer that names no subject, and none",
+            "had ever been read when this was measured. A lesson you would have put on a",
+            "shelf goes to a path-scoped rule when it is tied to files, an existing",
+            "skill, a warning hook when it is tied to a command, or is parked or",
+            "rejected -- never to an always-loaded line just because the shelf is",
+            "closed (the combined test below still decides that). A lesson already ON",
+            "a shelf can be taken off it by a kind: reconsider successor: a `route`",
+            "line moves it, and a `reject` or `defer` line takes it off too; either way",
+            "its shelf entry is removed in the same motion. A lesson routed to a hook",
+            "cannot be rejected or deferred this way; move it with a `route` line.",
             "",
             "A path-scoped rule (dest: claude-md:rules:<topic>) takes its globs from",
             "`rules_paths:` on the line (relative globs; each must match a file unless",

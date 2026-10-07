@@ -166,6 +166,16 @@ def _run_id_of(path: Path, surface: str, log_kind: str) -> str:
     return path.name[len(prefix) : -len(".jsonl")]
 
 
+def _mtime_or_oldest(path: Path) -> float:
+    """A file's mtime, or minus infinity when it is gone: a sibling
+    session's prune may unlink it between the glob and this `stat`
+    (2026-10-06, U4-seam)."""
+    try:
+        return path.stat().st_mtime
+    except FileNotFoundError:
+        return float("-inf")
+
+
 def prune_event_logs(
     cache_dir: Path,
     surface: str,
@@ -181,10 +191,15 @@ def prune_event_logs(
 
     `F-3`/`MS4`: a file whose run id is in `live_run_ids` is NEVER
     unlinked, regardless of its mtime rank -- a starting session must
-    not unlink another session's in-flight log."""
+    not unlink another session's in-flight log.
+
+    2026-10-06 (U4-seam): two sessions on one surface that end at the
+    same moment both prune; a file the other one already unlinked sorts
+    as oldest instead of raising `FileNotFoundError` -- which, raised in
+    the session's `finally`, would replace the session's real outcome."""
     keep = max(keep, 0)
     pattern = f"{surface}.{log_kind}.*.jsonl"
-    matches = sorted(cache_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    matches = sorted(cache_dir.glob(pattern), key=_mtime_or_oldest, reverse=True)
     kept = 0
     for path in matches:
         if _run_id_of(path, surface, log_kind) in live_run_ids:

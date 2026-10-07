@@ -457,3 +457,33 @@ and often right, when the lesson warns against recreating it: set
 `allow_empty_glob: true` and the glob is kept. Inherited globs are kept the
 same way without the flag. A `reroute` onto the topic the lesson already sits
 in, with different `rules_paths`, re-scopes it.
+
+## 16. Never a reference shelf
+
+A reference shelf is a project's or a skill's `references/LEARNINGS.md`
+(or another references file), reached only through one pointer line that
+names no subject, so no task ever matches it. When this was measured
+(2026-10-05), seven shelves held 40 lessons and none had ever been read.
+So you and the overseer never route a lesson to `reference`: the runner
+refuses that line from either of you, whether it is a fresh route or a
+re-decision under a reconsider case, and the lesson comes back to you to
+decide again (`03-decisions.md` S-23 had already made path-scoped rules the
+cheap tier; the user's direction, 2026-10-06). A person may still route
+there by hand.
+
+A lesson you would have put on a shelf goes instead to:
+
+- a path-scoped rule (`claude-md:rules:<topic>`, §15) when it is tied to
+  files;
+- an existing skill (`skill-md`) when its scope is that skill;
+- a warning hook (§10) when it is tied to a command;
+- otherwise, park it or reject it.
+
+Never send it to an always-loaded line just because the shelf is closed:
+§14's three tests still decide that.
+
+A lesson already on a shelf can be taken off it. In a `kind: reconsider`
+case whose `supersedes` names the case that covered it, a `route` line
+moves it to the destination it names, and a `reject` or `defer` line takes
+it off too; either way its entry leaves the shelf file in the same motion.
+The shelf file and its pointer line stay, even when no entry is left.

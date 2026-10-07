@@ -1594,7 +1594,13 @@ test run never touches the real directory:
   script from it, validates, secret-scans and replays the examples exactly
   as for a one-motion hook (`verbs._prepare_sheet_hook` reuses that chain),
   and `route --dry-run` previews the same chain, so a failed replay is a
-  refused line (`bad-line`), alone.
+  refused line (`bad-line`), alone. The opposite holds for a shelf
+  *(added 2026-10-06, `03-decisions.md` S-77)*:
+  `batch.REFERENCE_REFUSED_ACTORS` is also `{overseer, steward}`, and a
+  route line from either whose destination resolves to `reference` is
+  refused by name (`bad-line`) in the dispatch and the preview alike,
+  before the reconsider branch; a person's sheet runs as `human` and is
+  not affected.
 
 Both paths perform the same three steps; the gate above conditions only
 the overseer's path — each step produces its own receipt line:
