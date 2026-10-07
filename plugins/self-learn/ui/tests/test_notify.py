@@ -299,7 +299,7 @@ def test_no_daemon_at_all_exits_silently(tmp_path: Path) -> None:
 
 
 def test_resolves_sibling_ui_open_through_a_symlink(tmp_path: Path) -> None:
-    """install.sh deploys ~/bin/self-learn-notify as a SYMLINK back into
+    """install.sh deploys ~/.local/bin/self-learn-notify as a SYMLINK back into
     this repo (P3-1). Invoking through a symlink that lives somewhere
     else entirely must still find the REAL self-learn-ui-open beside the
     symlink's TARGET, never a (nonexistent) file beside the symlink

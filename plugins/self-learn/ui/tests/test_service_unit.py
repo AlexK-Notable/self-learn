@@ -99,7 +99,8 @@ def test_miner_unit_carries_a_path_floor_including_home_local_bin() -> None:
         if line.startswith("Environment=PATH=")
     )
     assert "%h/.local/bin" in path_line
-    assert "%h/bin" in path_line
+    assert "%h/bin/agents" in path_line  # the ~/bin user folders (2026-10 reorg)
+    assert "%h/bin:" not in path_line  # no flat %h/bin entry any more
 
 
 def test_miner_unit_success_exit_status_includes_exit_held() -> None:
@@ -118,7 +119,7 @@ def test_miner_unit_success_exit_status_includes_exit_held() -> None:
 def test_exec_start_is_pinned() -> None:
     content = UI_UNIT.read_text(encoding="utf-8")
     service = _section(content, "Service")
-    assert "ExecStart=%h/bin/self-learn-ui serve" in service
+    assert "ExecStart=%h/.local/bin/self-learn-ui serve" in service
 
 
 def test_restart_on_failure_is_pinned() -> None:
@@ -158,8 +159,8 @@ def test_registration_documented_in_a_comment() -> None:
 def test_execstart_is_h_relative_like_the_miner_unit() -> None:
     ui_service = _section(UI_UNIT.read_text(encoding="utf-8"), "Service")
     miner_service = _section(MINER_UNIT.read_text(encoding="utf-8"), "Service")
-    assert "%h/bin/" in ui_service
-    assert "%h/bin/" in miner_service
+    assert "%h/.local/bin/" in ui_service
+    assert "%h/.local/bin/" in miner_service
 
 
 def test_carries_the_same_b1_env_pin_as_the_miner_unit() -> None:
@@ -219,7 +220,8 @@ def test_carries_a_path_floor_including_home_local_bin() -> None:
         line for line in ui_service.splitlines() if line.startswith("Environment=PATH=")
     )
     assert "%h/.local/bin" in path_line
-    assert "%h/bin" in path_line
+    assert "%h/bin/agents" in path_line  # the ~/bin user folders (2026-10 reorg)
+    assert "%h/bin:" not in path_line  # no flat %h/bin entry any more
 
 
 def test_both_units_document_manual_registration_via_symlink() -> None:
@@ -254,7 +256,7 @@ def test_host_unit_exists() -> None:
 def test_host_unit_exec_start_is_pinned() -> None:
     content = HOST_UNIT.read_text(encoding="utf-8")
     service = _section(content, "Service")
-    assert "ExecStart=%h/bin/self-learn serve" in service
+    assert "ExecStart=%h/.local/bin/self-learn serve" in service
 
 
 def test_host_unit_type_is_simple() -> None:
@@ -292,8 +294,8 @@ def test_host_unit_registration_documented_in_a_comment() -> None:
 def test_host_unit_execstart_is_h_relative_like_the_miner_unit() -> None:
     host_service = _section(HOST_UNIT.read_text(encoding="utf-8"), "Service")
     miner_service = _section(MINER_UNIT.read_text(encoding="utf-8"), "Service")
-    assert "%h/bin/" in host_service
-    assert "%h/bin/" in miner_service
+    assert "%h/.local/bin/" in host_service
+    assert "%h/.local/bin/" in miner_service
 
 
 def test_host_unit_carries_the_same_b1_env_pin_as_the_miner_unit() -> None:
@@ -351,7 +353,8 @@ def test_host_unit_carries_a_path_floor_including_home_local_bin() -> None:
         if line.startswith("Environment=PATH=")
     )
     assert "%h/.local/bin" in path_line
-    assert "%h/bin" in path_line
+    assert "%h/bin/agents" in path_line  # the ~/bin user folders (2026-10 reorg)
+    assert "%h/bin:" not in path_line  # no flat %h/bin entry any more
 
 
 def test_o4_overseer_service_and_weekly_persistent_timer_are_shipped() -> None:
@@ -359,7 +362,7 @@ def test_o4_overseer_service_and_weekly_persistent_timer_are_shipped() -> None:
     assert OVERSEER_TIMER.is_file()
     service = _section(OVERSEER_SERVICE.read_text(encoding="utf-8"), "Service")
     timer = _section(OVERSEER_TIMER.read_text(encoding="utf-8"), "Timer")
-    assert "ExecStart=%h/bin/self-learn overseer run" in service
+    assert "ExecStart=%h/.local/bin/self-learn overseer run" in service
     assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in service
     assert "OnCalendar=Sun *-*-* 04:15" in timer
     assert "Persistent=true" in timer

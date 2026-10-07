@@ -20,7 +20,7 @@ import pytest
 #: `SELF_LEARN_UI_CLI_BIN` FIRST, ahead of `shutil.which`'s raw-PATH
 #: lookup -- pinning it here closes the gap BOTH resolvers had: a test
 #: process invoked in some non-canonical way (`.venv/bin` not first on
-#: `PATH`) could silently resolve to PRODUCTION's real `~/bin/self-learn`
+#: `PATH`) could silently resolve to PRODUCTION's real `~/.local/bin/self-learn`
 #: instead of this worktree's own binary. Measured: before this pin
 #: existed, 10 of 11 `test_settings_route.py` tests 503'd exactly this
 #: way, because production's `self-learn` on master has no `config` verb

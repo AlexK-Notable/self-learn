@@ -64,13 +64,14 @@ Environment=SELF_LEARN_HOME=%h/.self-learn
 # also falls back to well-known absolute uv locations independently
 # (belt and braces — this fixes the unit even if the wrapper is ever
 # bypassed).
-# Gate r1 fold (2026-08-29): %h/bin is in this floor too, for the same
-# reason the host unit carries it — worker.py's self-learn-notify
-# dispatch resolves that helper via shutil.which() (the ~/bin deploy
-# surface), and this unit's prior no-PATH-at-all state let %h/bin
-# through by the same accident as everything else.
-Environment=PATH=%h/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/bin/self-learn-ui serve
+# Gate r1 fold (2026-08-29): the ~/bin user folders (%h/bin/agents ...
+# %h/bin/system) are in this floor too, for the same reason the host unit
+# carries them — worker.py's self-learn-notify dispatch resolves that
+# helper via shutil.which() (the %h/.local/bin deploy surface since the
+# 2026-10 reorg), and this unit's prior no-PATH-at-all state let the old
+# flat %h/bin through by the same accident as everything else.
+Environment=PATH=%h/bin/agents:%h/bin/backup:%h/bin/desktop:%h/bin/gpu:%h/bin/input:%h/bin/media:%h/bin/printing:%h/bin/system:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/self-learn-ui serve
 Restart=on-failure
 RestartSec=5
 

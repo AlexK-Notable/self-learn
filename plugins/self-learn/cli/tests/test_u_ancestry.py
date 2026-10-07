@@ -1055,7 +1055,7 @@ def test_doc4_deployed_skill_is_a_symlink():
     directory OUTSIDE any worktree. Not asserted against `_repo_root()`
     (this test's own worktree copy) -- a builder's worktree and the
     live checkout that symlink correctly targets are two different
-    directories on disk ("working tree is production": `~/bin/self-learn`
+    directories on disk ("working tree is production": `~/.local/bin/self-learn`
     runs the MAIN repo's working tree, never a build worktree's copy),
     so a byte-for-byte path match here would fail even when the
     deployment is completely correct."""

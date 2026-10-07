@@ -1,6 +1,6 @@
 # self-learn-ui.desktop template (feedback round 1 item 6). install.sh
 # GENERATES the runtime entry from this file (sed @BIN@ -> the user's
-# ~/bin) because the desktop spec expands neither ~ nor $HOME in Exec=,
+# ~/.local/bin) because the desktop spec expands neither ~ nor $HOME in Exec=,
 # and launchers do not inherit an interactive shell's PATH.
 #
 # StartupWMClass caveat (T-D, 2026-07-17): chromium honors --class when

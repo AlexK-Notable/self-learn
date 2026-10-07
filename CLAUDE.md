@@ -80,7 +80,7 @@ ledger on a given host) belong in `CLAUDE.local.md`, which is git-ignored.
 ## Safety rules inherent to the product
 
 - **An installed checkout's working tree is production.** `install.sh` symlinks
-  the `~/bin` shims, the hooks, and the units into this tree, so the host service's
+  the `~/.local/bin` shims, the hooks, and the units into this tree, so the host service's
   nightly mine, the worker, and the UI execute whatever is sitting here, committed
   or not. Never leave a probe or a half-finished edit in an installed checkout
   across a session boundary. Do mutation testing in a git worktree, and prove the

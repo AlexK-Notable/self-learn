@@ -250,7 +250,7 @@ def _path_without_real_notify_helper(*leading_dirs: Path) -> str:
     with any directory that would resolve a REAL `self-learn-notify`
     filtered out — so a "helper absent" test stays true even on a
     machine (like this repo's own dev host) where self-learn-notify is
-    actually deployed to `~/bin` (repo CLAUDE.md deploy surface).
+    actually deployed to `~/.local/bin` (repo CLAUDE.md deploy surface).
 
     NOT extended to filter `notify-send` too (tried, reverted, 2026-08-09
     — gate MAJOR 2): on this host `/usr/bin/notify-send` lives in the
@@ -778,7 +778,7 @@ def test_notify_kill_switch_both_directions(
     """Bug B (incident 2026-08-09), positive control in BOTH directions —
     a check that passes when the feature is absent is worthless.
     `_notify_with_ids`/`_notify` resolve their helper via PATH, which on
-    a dev machine finds the REAL deployed ~/bin scripts regardless of
+    a dev machine finds the REAL deployed ~/.local/bin scripts regardless of
     sandboxing, so an un-suppressed worker test notified the operator's
     REAL desktop (measured: fixture proposal lrn-10000000 notified
     repeatedly from an agent worktree).

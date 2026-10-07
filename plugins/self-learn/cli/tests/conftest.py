@@ -9,7 +9,7 @@ Coalesce sleep is zeroed for the same reason.
 Incident 2026-08-09: notifications are ALSO suppressed globally here
 (`SELF_LEARN_NO_NOTIFY=1`, same convention as AUTOKICK above) — both
 `worker._notify` and `worker._notify_with_ids` resolve their helper via
-PATH, which on a dev machine finds the REAL deployed ~/bin scripts
+PATH, which on a dev machine finds the REAL deployed ~/.local/bin scripts
 regardless of sandboxing, so an unsuppressed worker test notified the
 operator's REAL desktop. Tests exercising notify behavior opt back out
 via `monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)` — same

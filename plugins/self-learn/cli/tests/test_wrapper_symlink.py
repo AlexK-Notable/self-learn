@@ -1,6 +1,6 @@
 """CLI-through-symlink test (T1).
 
-install.sh deploys plugins/self-learn/scripts/self-learn as a ~/bin symlink;
+install.sh deploys plugins/self-learn/scripts/self-learn as a ~/.local/bin symlink;
 the wrapper must locate the uv project via `readlink -f` (resolving the real
 script path), not `dirname $0` (which would resolve beside the symlink).
 This test exercises exactly that path: symlink in a tmpdir -> wrapper ->

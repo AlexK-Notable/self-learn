@@ -26,7 +26,7 @@ install`):
 |---|---|---|
 | `~/.claude/skills/self-learn` | `plugins/self-learn/skills/self-learn/` | native skill activation |
 | `~/.claude/commands/self-learn` | `plugins/self-learn/commands/` | `/self-learn:teach`, `/self-learn:review` |
-| `~/bin/self-learn` | `plugins/self-learn/scripts/self-learn` | the CLI (uv wrapper over `cli/`) |
+| `~/.local/bin/self-learn` | `plugins/self-learn/scripts/self-learn` | the CLI (uv wrapper over `cli/`) |
 
 `install.sh` also runs `uv sync` for `plugins/self-learn/cli/`. `--dry-run`
 prints every step (the first `mkdir -p` included) without touching the

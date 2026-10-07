@@ -21,17 +21,19 @@ Environment=SELF_LEARN_HOME=%h/.self-learn
 # the same scripts/self-learn wrapper, so it depends on `uv` being
 # resolvable exactly like self-learn-host.service did when it
 # crash-looped six times on 2026-08-28 (see that unit's own comment).
-# Gate r2 MAJOR-2 CORRECTED the round-1 measurement below: %h/bin IS
-# needed here after all. `mine run` -> `worker.kick(home)` whenever a
+# Gate r2 MAJOR-2 CORRECTED the round-1 measurement below: a ~/bin PATH
+# entry (flat %h/bin then; the ~/bin user folders since the 2026-10 reorg,
+# with the helper itself now in %h/.local/bin) IS needed here after all. `mine run` -> `worker.kick(home)` whenever a
 # candidate lands (miner.py:2108, pinned by
 # test_miner.py::test_run_lands_candidate) -> `_open_window` ->
 # `_spawn_window`, which spawns `worker run --coalesce` with
 # `env = dict(os.environ)` (worker.py) -- i.e. THIS unit's own
 # environment, PATH included. That spawned `worker.run` is exactly the
 # one that calls `shutil.which("self-learn-notify")` (worker.py:3102),
-# the ~/bin deploy surface -- so this unit DOES reach that call, through
+# the deploy surface (~/bin then, %h/.local/bin now) -- so this unit DOES reach that call, through
 # the miner-kicks-worker chain, not by running `worker.run` directly.
-# Measured live on this host (2026-08-29): `~/bin/self-learn-notify`
+# Measured live on this host (2026-08-29, before the 2026-10 reorg moved the
+# link to %h/.local/bin): `~/bin/self-learn-notify`
 # EXISTS (a symlink into this repo) but `%h/bin` was NEVER on the
 # systemd user-manager's own PATH (`systemctl --user show-environment`
 # has no `~/bin` entry at all, among an ABSURDLY duplicated run of
@@ -48,7 +50,7 @@ Environment=SELF_LEARN_HOME=%h/.self-learn
 # manager's PATH (/usr/bin is on it) and DBUS_SESSION_BUS_ADDRESS is
 # present, and self-learn-miner.timer is not even installed on this host
 # (three units listed, no timer) -- the real ledger's worker.log carries
-# zero notify lines either way. What adding %h/bin actually changes:
+# zero notify lines either way. What adding that PATH entry actually changes:
 # `self-learn-notify` (this same repo's script) registers a click-to-open
 # `-A "open=Open"` action tied to `--ids <csv-of-record-ids>`, which the
 # plain `_notify()` fallback above never does (no `-A` anywhere in it) --
@@ -67,8 +69,8 @@ Environment=SELF_LEARN_HOME=%h/.self-learn
 # unit's own wrapper now implements for uv. No wrapper-style treatment
 # is owed to `claude` anywhere in this codebase; sized as zero
 # additional work, not scoped out as a bigger unit.
-Environment=PATH=%h/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/bin/self-learn mine run --trigger timer
+Environment=PATH=%h/bin/agents:%h/bin/backup:%h/bin/desktop:%h/bin/gpu:%h/bin/input:%h/bin/media:%h/bin/printing:%h/bin/system:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/self-learn mine run --trigger timer
 # The run spawns a contained `claude -p` reader; give it headroom.
 TimeoutStartSec=30m
 Nice=10

@@ -37,10 +37,10 @@ plugins/self-learn/
   hooks/                self-learn-pending.sh (SessionStart pending-count line;
                         also names the overseer's open interpretation questions)
                         self-learn-refread.sh (PostToolUse reference-read observer)
-  scripts/self-learn    ~/bin shim (readlink -f → uv run against cli/)
-  scripts/self-learn-ui        ~/bin shim (readlink -f → uv run against ui/; `serve` = the systemd entry point)
-  scripts/self-learn-ui-open   ~/bin deep-link launcher / window-focuser (the only WM/browser-aware file)
-  scripts/self-learn-notify    ~/bin desktop notifier (swaync action → self-learn-ui-open)
+  scripts/self-learn    ~/.local/bin shim (readlink -f → uv run against cli/)
+  scripts/self-learn-ui        ~/.local/bin shim (readlink -f → uv run against ui/; `serve` = the systemd entry point)
+  scripts/self-learn-ui-open   ~/.local/bin deep-link launcher / window-focuser (the only WM/browser-aware file)
+  scripts/self-learn-notify    ~/.local/bin desktop notifier (swaync action → self-learn-ui-open)
 docs/specs/self-learn/  the ratified spec corpus (00–13 + fixtures + reviews)
 systemd/                self-learn-host.service (resident host process: nightly mine at
                         03:30 + worker + steward; weekly overseer)
@@ -67,7 +67,7 @@ That gives you the skill and the `/self-learn:*` slash commands.
 The plugin install covers the skill and commands. It does **not** cover
 the parts that live outside a plugin's boundary:
 
-- the `~/bin` shims — `self-learn`, `self-learn-ui`, `self-learn-ui-open`,
+- the `~/.local/bin` shims — `self-learn`, `self-learn-ui`, `self-learn-ui-open`,
   `self-learn-notify`
 - the `systemd --user` units: `self-learn-host.service` (the resident host
   process that schedules the nightly mine and the worker) and

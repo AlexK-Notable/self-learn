@@ -122,7 +122,7 @@ class TestSelfLearnBinResolution:
     resolved via `shutil.which("self-learn")` against the raw process
     `PATH` unconditionally — a test process invoked in some
     non-canonical way could silently land on PRODUCTION's real
-    `~/bin/self-learn` instead of this worktree's own venv binary
+    `~/.local/bin/self-learn` instead of this worktree's own venv binary
     (measured: 10 of 11 `test_settings_route.py` tests 503'd this way).
     `conftest.py`'s `_pin_self_learn_cli_bin` autouse fixture now pins
     `SELF_LEARN_UI_CLI_BIN` to this package's own venv binary for every

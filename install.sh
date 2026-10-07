@@ -7,14 +7,14 @@
 # scheduler (M-U/D5):
 #   - ~/.claude/skills/self-learn    -> plugins/self-learn/skills/self-learn
 #   - ~/.claude/commands/self-learn  -> plugins/self-learn/commands
-#   - ~/bin/self-learn               -> plugins/self-learn/scripts/self-learn
+#   - ~/.local/bin/self-learn               -> plugins/self-learn/scripts/self-learn
 #   - ~/.claude/hooks/self-learn-pending.sh -> plugins/self-learn/hooks/…
 #   - ~/.claude/hooks/self-learn-refread.sh -> plugins/self-learn/hooks/…
 #     (U-readref — PostToolUse/Read reference-shelf observable)
 #   - uv sync of the CLI project
-#   - ~/bin/self-learn-ui            -> plugins/self-learn/scripts/self-learn-ui
-#   - ~/bin/self-learn-ui-open       -> plugins/self-learn/scripts/self-learn-ui-open
-#   - ~/bin/self-learn-notify        -> plugins/self-learn/scripts/self-learn-notify
+#   - ~/.local/bin/self-learn-ui            -> plugins/self-learn/scripts/self-learn-ui
+#   - ~/.local/bin/self-learn-ui-open       -> plugins/self-learn/scripts/self-learn-ui-open
+#   - ~/.local/bin/self-learn-notify        -> plugins/self-learn/scripts/self-learn-notify
 #   - ~/.config/systemd/user/self-learn-ui.service -> systemd/self-learn-ui.service
 #     (G-3 surface — 10 §1 "Service"/"Companion scripts" rows; explicit link
 #     lines mirroring the miner-units block below, no glob — 13 §7.3)
@@ -114,7 +114,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_DIR="$HOME/.claude/skills"
 COMMANDS_DIR="$HOME/.claude/commands"
 HOOKS_DIR="$HOME/.claude/hooks"
-BIN_DIR="$HOME/bin"
+BIN_DIR="$HOME/.local/bin"
 # Resolved the way systemd itself resolves the user unit search path
 # (U-servehermetic, 2026-08-27, matching serve.unit_dir()'s order):
 # $XDG_CONFIG_HOME/systemd/user if XDG_CONFIG_HOME is set, else the real
@@ -195,10 +195,10 @@ link "$P/skills/self-learn" "$SKILLS_DIR/self-learn"
 say "== slash commands =="
 link "$P/commands" "$COMMANDS_DIR/self-learn"
 
-say "== CLI shim (~/bin) =="
+say "== CLI shim (~/.local/bin) =="
 link "$P/scripts/self-learn" "$BIN_DIR/self-learn"
 
-say "== G-3 surface scripts (~/bin) =="
+say "== G-3 surface scripts (~/.local/bin) =="
 link "$P/scripts/self-learn-ui" "$BIN_DIR/self-learn-ui"
 link "$P/scripts/self-learn-ui-open" "$BIN_DIR/self-learn-ui-open"
 link "$P/scripts/self-learn-notify" "$BIN_DIR/self-learn-notify"
@@ -209,7 +209,7 @@ ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
 run "mkdir -p $(q "$APPS_DIR") $(q "$ICON_DIR")"
 # The .desktop entry is GENERATED, not symlinked: Exec= needs an absolute
 # path (the desktop spec expands neither ~ nor $HOME, and launchers do
-# not inherit an interactive shell's PATH — ~/bin isn't findable there).
+# not inherit an interactive shell's PATH — ~/.local/bin is not reliably findable there).
 # M-U/D5: generated into a temp file IN THE SAME DIRECTORY first, then
 # moved over the destination -- a reader never observes a half-written
 # .desktop file, and a dry run touches neither the temp file nor the

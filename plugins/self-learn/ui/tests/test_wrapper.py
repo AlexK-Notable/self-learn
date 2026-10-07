@@ -368,7 +368,7 @@ def test_wrapper_has_bash_shebang() -> None:
 
 
 def test_wrapper_uses_readlink_f() -> None:
-    """P3-1, load-bearing: install.sh deploys this file as a ~/bin
+    """P3-1, load-bearing: install.sh deploys this file as a ~/.local/bin
     symlink, so a bare $(dirname "$0") would resolve beside the symlink,
     not the repo. readlink -f is what makes it resolve correctly."""
     content = WRAPPER.read_text(encoding="utf-8")
