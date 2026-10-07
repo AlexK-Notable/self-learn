@@ -16,7 +16,10 @@ dependency). Each returns a list of messages, empty when the document is
 valid, and every message starts with the path of the offending field
 (``lessons[0].evidence[1].quote: longer than 400``). A message never echoes a
 value of the document: a model's text is not safe to print, and a key name
-the model invented is echoed only when it is a plain identifier.
+the model invented is named only when it is a plain identifier the secret
+scan leaves unchanged (a token-shaped key reads ``unknown key (name
+withheld)``). Every pattern is matched in full, so a trailing newline is
+refused.
 :func:`model_output_json_schema` builds, from the same constants, the JSON
 Schema document the model's instructions show; it is not used to validate.
 
@@ -39,6 +42,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .. import records, refs
+from ..scan import redact
 
 __all__ = [
     "BASES",
@@ -162,7 +166,8 @@ _RECORD_ID_RE = records.RECORD_ID_RE
 #: A drop's ``item`` is a path into the model output: ``output``, ``L2``,
 #: ``L2.evidence[1]``, ``sightings[3].evidence[0]``, ``rule_checks[0]``.
 _DROP_ITEM_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[\d+\])?(\.[A-Za-z_][A-Za-z0-9_]*(\[\d+\])?)*$")
-_PLAIN_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,40}$")
+_PLAIN_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,40}")
+_SCOPE_RE = re.compile(SCOPE_PATTERN)
 
 Run = dict[str, Any]
 Checked = dict[str, Any]
@@ -221,10 +226,12 @@ class _V:
         known = set(required) | set(optional)
         unknown = [k for k in v if k not in known]
         for k in sorted(unknown, key=str):
-            if isinstance(k, str) and _PLAIN_KEY_RE.match(k):
+            # name a key only when it is a plain identifier the secret scan leaves
+            # alone: an invented key can be a token
+            if isinstance(k, str) and _PLAIN_KEY_RE.fullmatch(k) and redact(k)[0] == k:
                 self.err(_join(path, k), "unknown key")
             else:
-                self.err(path, "unknown key (not a plain identifier)")
+                self.err(path, "unknown key (name withheld)")
         return v
 
     def string(self, path: str, v: object, lo: int, hi: int, *, nullable: bool = False) -> bool:
@@ -282,7 +289,7 @@ class _V:
         return True
 
     def matches(self, path: str, v: object, rx: re.Pattern[str]) -> bool:
-        if not isinstance(v, str) or not rx.match(v):
+        if not isinstance(v, str) or not rx.fullmatch(v):
             self.err(path, "does not match the required pattern")
             return False
         return True
@@ -332,7 +339,11 @@ class _V:
 
 
 def _scope_ok(scope: object) -> bool:
-    """The ledger's own rule (``records._validate_scope``), not a copy."""
+    """The ledger's own rule (``records._validate_scope``), not a copy, and the
+    schema's pattern matched in full (so ``skill:`` plus a newline is refused by
+    both)."""
+    if not isinstance(scope, str) or not _SCOPE_RE.fullmatch(scope):
+        return False
     try:
         records._validate_scope(scope)  # pyright: ignore[reportPrivateUsage]
     except records.ValidationError:
@@ -696,6 +707,7 @@ def validate_run(obj: object) -> list[str]:
 
     called = not_run = 0
     skipped: dict[str, int] = {}
+    seen_sessions: set[str] = set()
     sessions = v.array("sessions", o.get("sessions"), 0, None)
     for i, s in enumerate(sessions or []):
         sp = _idx("sessions", i)
@@ -710,7 +722,10 @@ def validate_run(obj: object) -> list[str]:
         )
         if so is None:
             continue
-        v.string(_join(sp, "session"), so.get("session"), 1, 200)
+        if v.string(_join(sp, "session"), so.get("session"), 1, 200):
+            if so["session"] in seen_sessions:
+                v.err(_join(sp, "session"), "listed twice")  # one row per session id: load_run never has to choose
+            seen_sessions.add(so["session"])
         v.string(_join(sp, "file"), so.get("file"), 1, 10_000)
         status_ok = v.enum(_join(sp, "status"), so.get("status"), SESSION_STATUSES)
         v.string(_join(sp, "reason"), so.get("reason"), 1, 200, nullable=True)
@@ -911,6 +926,7 @@ def _lesson_schema() -> dict[str, Any]:
             "type": "array",
             "items": _point_schema({"what": _s(1, STEP_WHAT_MAX)}),
             "maxItems": MAX_STEPS,
+            "anyOf": [{"maxItems": 0}, {"minItems": MIN_STEPS}],
             "description": f"empty, or {MIN_STEPS} to {MAX_STEPS} steps in the order the events happened",
         },
         "verification": {
@@ -963,6 +979,10 @@ def model_output_json_schema() -> dict[str, Any]:
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": MODEL_CONTRACT,
+        "description": (
+            "Write every line number as a plain integer (640, never 640.0 or 6.4e2). "
+            "Write each key listed under required, with null where a field does not apply."
+        ),
         "type": "object",
         "properties": {
             "contract": {"const": MODEL_CONTRACT},

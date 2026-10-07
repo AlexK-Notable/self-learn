@@ -14,12 +14,14 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 from self_learn import records, refs
 from self_learn.mining import contract as c
+from self_learn.scan import redact
 
 # ------------------------------------------------------------------ examples
 
@@ -267,6 +269,16 @@ K1_CASES = [
     ("line-zero", _set(["lessons", 0, "evidence", 0, "line"], 0), "lessons[0].evidence[0].line:"),
     ("line-bool", _set(["lessons", 0, "evidence", 0, "line"], True), "lessons[0].evidence[0].line: not an integer"),
     ("line-string", _set(["lessons", 0, "evidence", 0, "line"], "640"), "lessons[0].evidence[0].line:"),
+    ("line-float", _set(["lessons", 0, "evidence", 0, "line"], 640.0), "lessons[0].evidence[0].line: not an integer"),
+    ("id-trailing-newline", _set(["lessons", 0, "id"], "L1\n"), "lessons[0].id:"),
+    ("scope-skill-newline", _set(["lessons", 0, "scope"], "skill:\n"), "lessons[0].scope:"),
+    ("scope-skill-multiline", _set(["lessons", 0, "scope"], "skill:a\nb"), "lessons[0].scope:"),
+    # a valid name plus ONE trailing newline: the case a search or a prefix match lets through
+    ("scope-skill-name-trailing-newline", _set(["lessons", 0, "scope"], "skill:name\n"), "lessons[0].scope:"),
+    ("scope-user-trailing-newline", _set(["lessons", 0, "scope"], "user\n"), "lessons[0].scope:"),
+    ("subagent-trailing-newline", _set(["lessons", 0, "steps", 1, "subagent"], "abc\n"), "lessons[0].steps[1].subagent:"),
+    ("sighting-record-trailing-newline", _set(["sightings"], [{"record": "lrn-19f82fc5\n", "evidence": [{"line": 1, "quote": "q"}]}]), "sightings[0].record:"),
+    ("check-record-trailing-newline", _set(["rule_checks", 0, "record"], "lrn-19f82fc5\n"), "rule_checks[0].record:"),
     ("subagent-bad-pattern", _set(["lessons", 0, "evidence", 0, "subagent"], "a b/c"), "lessons[0].evidence[0].subagent:"),
     ("subagent-too-long", _set(["lessons", 0, "evidence", 0, "subagent"], "a" * 65), "lessons[0].evidence[0].subagent:"),
     ("evidence-unknown-key", _set(["lessons", 0, "evidence", 0, "page"], 1), "lessons[0].evidence[0].page: unknown key"),
@@ -344,6 +356,31 @@ def test_k1_messages_never_echo_a_value():
     assert _has(c.validate_model_output(_mutated(EXAMPLE, _set(["lessons", 0, "bogus"], 1))), "lessons[0].bogus: unknown key")
 
 
+def _secret_keys():
+    """Key names the secret scan flags, built at run time (a literal would trip the commit scan)."""
+    return ["ghp_" + "Q7w8E9r0" * 4 + "Zx1Y", "AKIA" + "QWERTYUIOPASDFGH"]
+
+
+def test_k1_a_secret_shaped_key_is_never_echoed_but_a_plain_one_still_is():
+    for secret in _secret_keys():
+        assert len(secret) <= 41 and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", secret)  # control: it looks like a plain identifier
+        assert redact(secret)[0] != secret  # control: the secret scan flags it
+        docs = (
+            (c.validate_model_output, _mutated(EXAMPLE, _set([secret], 1))),
+            (c.validate_model_output, _mutated(EXAMPLE, _set(["lessons", 0, secret], 1))),
+            (c.validate_checked_output, _mutated(checked_example(), _set(["lessons", 0, "evidence", 0, secret], 1))),
+            (c.validate_run, _mutated(run_example(), _set([secret], 1))),
+        )
+        for validate, doc in docs:
+            errors = validate(doc)
+            assert errors, validate  # positive control: the key was reported ...
+            assert any("unknown key" in e for e in errors)
+            assert all(secret not in e for e in errors), errors  # ... but not named
+    # a plain identifier is still named, so a path stays useful (also in the checked output and run record)
+    assert _has(c.validate_checked_output(_mutated(checked_example(), _set(["bogus"], 1))), "bogus: unknown key")
+    assert _has(c.validate_run(_mutated(run_example(), _set(["bogus"], 1))), "bogus: unknown key")
+
+
 def test_k1_every_error_is_a_path_then_a_message():
     for _id, edit, _prefix in K1_CASES:
         for e in c.validate_model_output(_mutated(EXAMPLE, edit)):
@@ -356,7 +393,7 @@ def test_k1_every_error_is_a_path_then_a_message():
 
 #: SHA-256 of ``json.dumps(model_output_json_schema(), indent=1, sort_keys=True)``.
 #: A change to the schema is always deliberate: update this constant with it.
-SCHEMA_SHA256 = "f18bbc0070ac837b54e8b409f82ea5173c8c39ca4f65b05fb652ff3fde10c18f"
+SCHEMA_SHA256 = "3ae98270590b398a71247ed28694d8cf7bc964311856a44ea926870f5dbfb93b"
 
 
 def _schema_text() -> str:
@@ -370,6 +407,75 @@ def test_k2_schema_is_stable():
     s = c.model_output_json_schema()
     s["properties"]["lessons"]["maxItems"] = 99
     assert c.model_output_json_schema()["properties"]["lessons"]["maxItems"] == c.MAX_LESSONS
+
+
+def _json_schema_validators():
+    """A JSON Schema validator for the model-output schema, plus the stock one.
+
+    Two settings make the validator read the schema the way the model does: an integer is a token
+    written without a fraction (stock draft 2020-12 calls 640.0 an integer; JSON text and this
+    contract do not), and ``$`` ends the string (ECMA 262; Python's ``re`` lets ``$`` match before
+    a final newline)."""
+    import jsonschema
+    from jsonschema import Draft202012Validator, validators
+
+    def integer(_checker, instance):
+        return isinstance(instance, int) and not isinstance(instance, bool)
+
+    def pattern(validator, patrn, instance, _schema):
+        if validator.is_type(instance, "string"):
+            ecma = patrn[:-1] + r"\Z" if patrn.endswith("$") else patrn
+            if not re.search(ecma, instance):
+                yield jsonschema.ValidationError(f"does not match {patrn!r}")
+
+    strict = validators.extend(
+        Draft202012Validator,
+        validators={"pattern": pattern},
+        type_checker=Draft202012Validator.TYPE_CHECKER.redefine("integer", integer),
+    )
+    schema = c.model_output_json_schema()
+    return strict(schema), Draft202012Validator(schema)
+
+
+#: What JSON Schema cannot express: a lesson id used twice.
+INEXPRESSIBLE_IN_JSON_SCHEMA = {"duplicate-id"}
+
+
+def test_k2_the_validator_and_a_json_schema_validator_agree():
+    strict, stock = _json_schema_validators()
+
+    def schema_errors(doc):
+        return list(strict.iter_errors(doc))
+
+    # documents both accept
+    valid = [EXAMPLE, _mutated(EXAMPLE, _knowledge)]
+    optional = _mutated(EXAMPLE, lambda d: _lesson(d).update(context=None, steps=[], verification=None, subagent_cause=None, scope="skill:demo"))
+    optional["rule_checks"][0]["action"] = {"line": 700, "subagent": "ab-12"}
+    valid.append(optional)
+    valid.append(_mutated(EXAMPLE, _set(["lessons", 0, "steps"], EXAMPLE["lessons"][0]["steps"][:2])))
+    for doc in valid:
+        assert c.validate_model_output(doc) == [] and schema_errors(doc) == []
+    # documents both refuse: every K1 case the validator refuses, the schema refuses too, except duplicate ids
+    disagreements = []
+    for case_id, edit, _prefix in K1_CASES:
+        doc = _mutated(EXAMPLE, edit)
+        mine, lib = c.validate_model_output(doc), schema_errors(doc)
+        assert mine, case_id
+        if case_id in INEXPRESSIBLE_IN_JSON_SCHEMA:
+            assert not lib, case_id  # the one difference, stated: a schema cannot say "unique ids"
+        elif not lib:
+            disagreements.append(case_id)
+    assert disagreements == []
+    # the three disagreements the gate found, by name
+    one_step = _mutated(EXAMPLE, _set(["lessons", 0, "steps"], EXAMPLE["lessons"][0]["steps"][:1]))
+    assert c.validate_model_output(one_step) and schema_errors(one_step)
+    float_line = _mutated(EXAMPLE, _set(["lessons", 0, "evidence", 0, "line"], 640.0))
+    assert c.validate_model_output(float_line) and schema_errors(float_line)
+    assert not list(stock.iter_errors(float_line))  # control: stock draft 2020-12 calls 640.0 an integer, hence the strict reading
+    newline_scope = _mutated(EXAMPLE, _set(["lessons", 0, "scope"], "skill:\n"))
+    assert c.validate_model_output(newline_scope) and schema_errors(newline_scope)
+    # the schema tells the model how to write a line number
+    assert "640.0" in c.model_output_json_schema()["description"]
 
 
 def _lesson_props(schema: dict) -> dict:
@@ -508,6 +614,12 @@ K3_CHECKED_CASES = [
     ("drop-detail-too-long", _set(["drops", 0, "detail"], "d" * 201), "drops[0].detail: longer than 200"),
     ("drop-item-not-a-path", _set(["drops", 0, "item"], "a quote with spaces"), "drops[0].item: does not match"),
     ("drop-item-empty", _set(["drops", 0, "item"], ""), "drops[0].item: shorter than 1"),
+    ("drop-item-trailing-newline", _set(["drops", 0, "item"], "L2\n"), "drops[0].item: does not match"),
+    ("lesson-id-trailing-newline", _set(["lessons", 0, "id"], "L1\n"), "lessons[0].id:"),
+    ("lesson-scope-newline", _set(["lessons", 0, "scope"], "skill:\n"), "lessons[0].scope:"),
+    ("lesson-scope-name-trailing-newline", _set(["lessons", 0, "scope"], "skill:name\n"), "lessons[0].scope:"),
+    ("sighting-record-trailing-newline", _set(["sightings", 0, "record"], "lrn-19f82fc5\n"), "sightings[0].record:"),
+    ("flag-record-trailing-newline", _set(["session", "flags", 0, "record"], "lrn-19f82fc5\n"), "session.flags[0].record:"),
     ("drop-unknown-key", _set(["drops", 0, "text"], "t"), "drops[0].text: unknown key"),
     ("failed-with-lessons", _set(["status"], "failed"), "lessons: must be empty unless the status is ok"),
     ("bad-output-with-sightings", _set(["status"], "bad-output"), "sightings: must be empty unless the status is ok"),
@@ -554,6 +666,9 @@ K3_RUN_CASES = [
     ("settings-max-usd-str", _set(["settings", "max_usd"], "40"), "settings.max_usd:"),
     ("settings-missing", _drop(["settings", "spine_tokens"]), "settings.spine_tokens: missing"),
     ("testset-sha", _set(["testset", "manifest_sha256"], "abc"), "testset.manifest_sha256:"),
+    ("testset-sha-trailing-newline", _set(["testset", "manifest_sha256"], "0" * 64 + "\n"), "testset.manifest_sha256:"),
+    ("session-listed-twice", lambda d: d["sessions"].append(copy.deepcopy(d["sessions"][1])), "sessions[3].session: listed twice"),
+    ("called-session-listed-twice", lambda d: d["sessions"].insert(1, copy.deepcopy(d["sessions"][0])), "sessions[1].session: listed twice"),
     ("testset-missing-dir", _drop(["testset", "dir"]), "testset.dir: missing"),
     ("status-enum", _set(["status"], "done"), "status:"),
     ("search-mode", _set(["search_mode"], "both"), "search_mode:"),
@@ -750,6 +865,14 @@ def test_k5_totals_must_equal_the_files(tmp_path):
     assert _has(_load_errors(tmp_path / "a", run=run), "run.json: totals.lessons does not equal the out files")
     run = _mutated(run_example(), _set(["totals", "drops"], {"duplicate": 1}))
     assert _has(_load_errors(tmp_path / "b", run=run), "run.json: totals.drops does not equal the out files")
+
+
+def test_k5_a_session_listed_twice_is_refused_in_either_order(tmp_path):
+    for n, order in enumerate((0, 1)):
+        run = run_example()
+        first, dup = run["sessions"][0], dict(run["sessions"][1], session="sess-1")
+        run["sessions"][:2] = [first, dup] if order == 0 else [dup, first]
+        assert _has(_load_errors(tmp_path / f"d{n}", run=run), "run.json: sessions[1].session: listed twice")
 
 
 def test_k5_missing_or_garbled_files(tmp_path):

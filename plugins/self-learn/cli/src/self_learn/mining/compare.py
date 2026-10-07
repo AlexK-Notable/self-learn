@@ -21,7 +21,9 @@ and what ``report.json`` and ``report.md`` hold, is counts and keys: session
 ids and ``<session>#L<line>`` moment keys, never transcript text. The one
 file with excerpts, ``spot-check.md``, is private (mode 0600). Exit codes: 0
 done, 2 bad arguments or an input that fails its contract (the message names
-the path of the first error and never echoes a value).
+the path of the first error and never echoes a value; an unknown key of a
+run folder's files is named only when it is a plain identifier the secret scan
+leaves unchanged, see ``contract``).
 
 Vocabulary used throughout:
 
@@ -32,7 +34,10 @@ Vocabulary used throughout:
   rejected. B: cited only by rejected mined records (reported on its own
   line, never as a miss). C: cited only by ``teach`` records. ``other``:
   cited by none of those (a synthetic set can produce it; the real set
-  cannot).
+  cannot). Only bucket A is ever called *missed*: ``missed_moments`` holds its
+  misses (a night's unmatched old finds), and the unfound moments of B, C and
+  ``other`` are listed apart in ``not_found_moments`` and printed as "not
+  found".
 - A target is *found* when an item of the new miner hits it: **strict** (the
   same entry uuid; the same session and line when either uuid is missing) or
   **loose** (strict, or the same session, or a file holding the uuid, within
@@ -1067,7 +1072,12 @@ def analyse(
         "accuracy": _accuracy(outs),
         "rule_checks": rc_stats,
         "cost": _cost(run, old_usd),
-        "missed_moments": sorted(r.target.key for r in rows if r.state == "judged" and not r.match.loose),
+        "missed_moments": [r.target.key for r in missed_spot],
+        "not_found_moments": {
+            r.target.key: r.target.bucket
+            for r in sorted(rows, key=lambda r: r.target.key)
+            if r.state == "judged" and not r.match.loose and r.target.key not in {m.target.key for m in missed_spot}
+        },
         "new_items": new_keys,
         "missed_a_marks": {r.target.key: marks.get(r.target.key, "unmarked") for r in missed_spot},
         "skipped_moments": _skipped(rows),
@@ -1093,6 +1103,7 @@ def analyse(
         old["rejected_match"] = len(rejected)
         old["rejected_match_keys"] = rejected
         old["by_outcome"] = night.by_outcome
+        old["journal_rows"] = [r["ts"] for r in night.rows]
         old["unresolved"] = sum(1 for r in rows if r.target.unresolved)
         report["old_finds"] = old
     return Analysis(report, items, rows, new_keys, new_rc, missed_spot, shared, valid_marks, roots)
@@ -1308,7 +1319,9 @@ def build_markdown(rep: dict[str, Any]) -> str:
         out.append("## Known moments\n\n" + head)
         for b, d in rep["moments"]["by_bucket"].items():
             name = {"A": "A (mined, kept)", "B": "B (rejected only: never a miss)", "C": "C (taught only)", "other": "other (no mined or taught citer)"}[b]
-            out.append(row(name, d["total"], d["found_strict"], d["found_loose"], d["found_as_lesson"], d["found_as_sighting"], d["missed"], d["missed_strict"], json.dumps(d["not_judged"], sort_keys=True), d["out_of_scope"]))
+            missed = d["missed"] if d["counts_as_miss"] else f"not found {d['missed']}"
+            missed_strict = d["missed_strict"] if d["counts_as_miss"] else f"not found {d['missed_strict']}"
+            out.append(row(name, d["total"], d["found_strict"], d["found_loose"], d["found_as_lesson"], d["found_as_sighting"], missed, missed_strict, json.dumps(d["not_judged"], sort_keys=True), d["out_of_scope"]))
         out.append(f"\n{rep['moments']['unresolved']} moment(s) did not resolve to a transcript entry.\n\n")
     if rep["old_finds"] is not None:
         d = rep["old_finds"]
@@ -1329,9 +1342,10 @@ def build_markdown(rep: dict[str, Any]) -> str:
     old = "not measured" if c["old_usd"] is None else f"${c['old_usd']:.2f}"
     out.append(f"## Cost\n\nShadow ${c['shadow_usd']:.2f} (median per called session ${c['per_called_session_usd']['median']:.2f}, max ${c['per_called_session_usd']['max']:.2f}); old miner {old}.\n\n")
     out.append("## Keys\n\n")
-    a_missed = [k for k, _ in rep["missed_a_marks"].items()]
-    out.append(keys("Missed, to spot-check", a_missed))
-    out.append(keys("Missed, all buckets", rep["missed_moments"]))
+    out.append(keys("Missed, to spot-check", list(rep["missed_a_marks"])))
+    out.append(keys("Missed", rep["missed_moments"]))
+    if rep["moments"] is not None:
+        out.append(keys("Not found (buckets B, C and other: never a miss)", list(rep["not_found_moments"])))
     out.append(keys("New items", rep["new_items"]))
     out.append(keys("Shared sample", list(rep["shared_sample"])))
     out.append(keys("Skipped (not judged, not found), with reasons in report.json", list(rep["skipped_moments"])))
@@ -1360,8 +1374,11 @@ def _write_outputs(
     tpl: dict[str, Any] = {}
     for k in sorted(template_keys):
         prev = existing.get(k)
-        keep = isinstance(prev, dict) and isinstance(prev.get("mark"), str) and isinstance(prev.get("note"), str)
-        tpl[k] = prev if keep else {"mark": "", "note": ""}
+        if isinstance(prev, dict) and isinstance(prev.get("mark"), str):
+            note = prev.get("note")
+            tpl[k] = {"mark": prev["mark"], "note": note if isinstance(note, str) else ""}
+        else:
+            tpl[k] = {"mark": "", "note": ""}
     fsops.private_write(tpl_path, json.dumps(tpl, indent=1, sort_keys=True) + "\n")
 
 
@@ -1373,9 +1390,10 @@ def _summary(rep: dict[str, Any]) -> str:
     ]
     if rep["moments"] is not None:
         for b, d in rep["moments"]["by_bucket"].items():
+            gone = f"missed {d['missed']}" if d["counts_as_miss"] else f"not found {d['missed']}"
             lines.append(
                 f"moments {b}: {d['total']} (found strict {d['found_strict']} / loose {d['found_loose']}, "
-                f"missed {d['missed']}, not judged {sum(d['not_judged'].values())}, out of scope {d['out_of_scope']})"
+                f"{gone}, not judged {sum(d['not_judged'].values())}, out of scope {d['out_of_scope']})"
             )
     if rep["old_finds"] is not None:
         d = rep["old_finds"]

@@ -300,7 +300,8 @@ def test_h1_a_mined_record_that_was_not_rejected_makes_the_moment_bucket_a(world
     assert bucket(rep, "A")["total"] == 1 and bucket(rep, "B")["total"] == 0
 
 
-def test_h1_buckets_from_the_records_that_cite_the_moments(world, capsys):
+def _buckets_world(world):
+    """Moments in every bucket, none found: A at 3 and 11, B at 7 and 21, C at 13, other at 23."""
     world.session("sess-a", conversation(12), moments=[3, 7, 11, 13, 21, 23])
     # 3: a routed mined record → A
     world.record("lrn-00000001", "session", "routed", [("sess-a", 3)])
@@ -316,7 +317,11 @@ def test_h1_buckets_from_the_records_that_cite_the_moments(world, capsys):
     world.record("lrn-00000007", "session", "rejected", [("sess-a", 21)])
     world.record("lrn-00000008", "teach", "pending", [("sess-a", 21)])
     # 23: cited by nobody
-    run = world.run([("called", world.out("sess-a"))])
+    return world.run([("called", world.out("sess-a"))])
+
+
+def test_h1_buckets_from_the_records_that_cite_the_moments(world, capsys):
+    run = _buckets_world(world)
     rep, _, _ = report(world, run, capsys=capsys)
     assert [bucket(rep, b)["total"] for b in ("A", "B", "C")] == [2, 2, 1]
     assert bucket(rep, "other")["total"] == 1
@@ -324,6 +329,55 @@ def test_h1_buckets_from_the_records_that_cite_the_moments(world, capsys):
     # B is on its own line and never counts as a miss; A does
     assert bucket(rep, "B")["counts_as_miss"] is False and bucket(rep, "A")["counts_as_miss"] is True
     assert bucket(rep, "A")["missed"] == 2  # nothing was found in this run
+
+
+def test_h1_a_bucket_b_moment_is_never_called_missed_anywhere(world, capsys):
+    run = _buckets_world(world)
+    rep, out, _ = report(world, run, capsys=capsys)
+    # the list of misses is bucket A's; B, C and other are listed apart, with their bucket, as not found
+    assert rep["missed_moments"] == sorted(["sess-a#L3", "sess-a#L11"])
+    assert rep["not_found_moments"] == {"sess-a#L7": "B", "sess-a#L21": "B", "sess-a#L13": "C", "sess-a#L23": "other"}
+    assert sorted(rep["missed_a_marks"]) == rep["missed_moments"]
+    # stdout says "missed" for A and "not found" for the rest
+    lines = {ln.split(":")[0]: ln for ln in out.splitlines() if ln.startswith("moments ")}
+    assert "missed 2" in lines["moments A"] and "not found" not in lines["moments A"]
+    for b, n in (("B", 2), ("C", 1), ("other", 1)):
+        assert f"not found {n}" in lines[f"moments {b}"] and "missed" not in lines[f"moments {b}"], lines[f"moments {b}"]
+    # report.md too: no "missed" list that holds a B moment, and the table row says "not found"
+    md = (run / "compare" / "report.md").read_text(encoding="utf-8")
+    assert "Missed, all buckets" not in md
+    missed_lines = [ln for ln in md.splitlines() if ln.startswith("**Missed")]
+    assert len(missed_lines) == 2  # control: "Missed, to spot-check" and "Missed" both rendered
+    for ln in missed_lines:
+        assert "sess-a#L3" in ln and "sess-a#L11" in ln
+        assert not any(f"sess-a#L{n}`" in ln for n in (7, 13, 21, 23)), ln
+    not_found_line = next(ln for ln in md.splitlines() if ln.startswith("**Not found"))
+    assert all(f"sess-a#L{n}" in not_found_line for n in (7, 13, 21, 23)) and "sess-a#L3`" not in not_found_line
+    # the table: the "missed" and "missed strict" cells of B, C and other read "not found N"; A's are numbers
+    lines = md.splitlines()
+    head = next(ln for ln in lines if ln.startswith("| line |"))
+    cols = [c.strip() for c in head.strip("|\n").split("|")]
+    at_missed, at_strict = cols.index("missed"), cols.index("missed strict")
+
+    def cells(prefix: str) -> list[str]:
+        ln = next(ln for ln in lines if ln.startswith(prefix))
+        return [c.strip() for c in ln.strip("|\n").split("|")]
+
+    assert cells("| A ")[at_missed] == "2" and cells("| A ")[at_strict] == "2"
+    for prefix, n in (("| B ", 2), ("| C ", 1), ("| other ", 1)):
+        row = cells(prefix)
+        assert row[at_missed] == f"not found {n}" and row[at_strict] == f"not found {n}", (prefix, row)
+
+
+def test_h1_the_spot_check_and_template_hold_only_bucket_a_misses(world, capsys):
+    run = _buckets_world(world)
+    rep, _, _ = report(world, run, capsys=capsys)
+    sheet = (run / "compare" / "spot-check.md").read_text(encoding="utf-8")
+    assert "### sess-a#L3\n" in sheet and "### sess-a#L11\n" in sheet  # control: bucket A's are on the sheet
+    for key in ("sess-a#L7", "sess-a#L21", "sess-a#L13", "sess-a#L23"):
+        assert f"### {key}\n" not in sheet, key
+    tpl = json.loads((run / "compare" / "spot-marks.template.json").read_text(encoding="utf-8"))
+    assert sorted(tpl) == sorted(["sess-a#L3", "sess-a#L11"])
 
 
 def test_h1_bucket_of_directly():
@@ -422,6 +476,24 @@ def test_h2_a_fork_holding_the_moments_uuid_counts_for_loose_too(world, capsys):
     run2 = world.run([("called", world.out("sess-a")), ("called", world.out("sess-g", lessons=[world.lesson("L1", [ev2])]))])
     rep2, _, _ = report(world, run2, capsys=capsys)
     assert bucket(rep2, "A")["found_loose"] == 0 and bucket(rep2, "A")["missed"] == 1
+
+
+def test_h2_a_moment_resolves_through_its_uuid_not_a_same_id_copy(world, capsys):
+    entries = conversation(6)
+    entries[2] = typed(f"{CANARY} the real moment")
+    world.session("sess-a", entries, moments=[3])
+    world.record("lrn-00000001", "session", "routed", [("sess-a", 3)])
+    run = world.run([("called", world.out("sess-a"))])
+    # a LARGER file with the same session id under the archive root: same line 3, another entry
+    decoy = stamp("decoy", conversation(30))
+    decoy[2] = typed("decoy text at the same line")
+    path = world.set_dir / "sessions" / "from-archive" / "-other-proj" / "sess-a.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text("".join(json.dumps(e) + "\n" for e in decoy), encoding="utf-8")
+    report(world, run, capsys=capsys)
+    sheet = (run / "compare" / "spot-check.md").read_text(encoding="utf-8")
+    assert "### sess-a#L3\n" in sheet  # control: the missed moment is on the sheet, with an excerpt
+    assert CANARY in sheet and "decoy text" not in sheet
 
 
 def test_h2_a_moment_that_does_not_resolve_is_counted_not_hidden(world, capsys):
@@ -567,8 +639,9 @@ def test_h4_new_items_reach_the_spot_check_and_no_text_reaches_the_counts(world,
     for name in ("report.json", "report.md", "spot-marks.template.json"):
         assert CANARY not in (cdir / name).read_text(encoding="utf-8"), name
     assert CANARY not in out and CANARY not in err
-    # the one file with text is private
+    # the one file with text is private, and so is the file a person writes marks into
     assert (cdir / "spot-check.md").stat().st_mode & 0o777 == 0o600
+    assert (cdir / "spot-marks.template.json").stat().st_mode & 0o777 == 0o600
 
 
 def test_h4_the_sheet_offers_lexical_neighbours_when_an_index_exists(world, capsys, monkeypatch):
@@ -683,6 +756,21 @@ def test_h5_the_template_lists_every_key_and_never_loses_a_filled_in_mark(world,
     assert kept[rep["new_items"][0]] == {"mark": "junk", "note": "dup of an old one"}
 
 
+def test_h5_a_mark_without_a_note_survives_a_rerun(world, capsys):
+    run = _marked_world(world)
+    rep, _, _ = report(world, run, "--shared-sample", "0", capsys=capsys)
+    key = rep["new_items"][0]
+    tpl_path = run / "compare" / "spot-marks.template.json"
+    tpl = json.loads(tpl_path.read_text(encoding="utf-8"))
+    tpl[key] = {"mark": "junk"}  # no "note"
+    tpl_path.write_text(json.dumps(tpl), encoding="utf-8")
+    for _ in range(3):  # each rerun reads the marks, then rewrites the template
+        again, _, _ = report(world, run, "--shared-sample", "0", "--marks", str(tpl_path), capsys=capsys)
+        assert again["items"]["marks"]["junk"] == 1 and again["items"]["marks"]["unmarked"] == 1
+    kept = json.loads(tpl_path.read_text(encoding="utf-8"))
+    assert kept[key] == {"mark": "junk", "note": ""}  # the mark is kept; the missing note reads as empty
+
+
 # ------------------------------------------------------------------- H6
 
 
@@ -755,6 +843,7 @@ def test_h6_a_night_old_finds_by_outcome_fires_by_window_and_program_sessions(wo
     # every outcome entry of the night's row, by kind (the earlier and later nights' rows are not counted)
     assert old["by_outcome"] == {"dropped-cap": 1, "dropped-invalid": 1, "dropped-rejected": 1, "folded": 1,
                                  "landed": 2, "recurrence": 1, "recurrence-from-fire": 1, "skipped-known-origin": 1}
+    assert old["journal_rows"] == ["2026-09-30T03:30:00Z"]  # the one row this night was compared with
     assert old["rejected_match"] == 1 and old["rejected_match_keys"] == ["sess-a#L15"]
     assert old["out_of_scope"] == 1 and rep["skipped_moments"] == {"sess-prog#L1": "out-of-scope"}
     assert old["missed"] == 4  # folded, recurrence, recurrence-from-fire, dropped-cap in the judged session
@@ -762,6 +851,44 @@ def test_h6_a_night_old_finds_by_outcome_fires_by_window_and_program_sessions(wo
     assert rep["rule_checks"]["old_fires"] == 1 and rep["rule_checks"]["matched"] == 1
     assert rep["rule_checks"]["outcome_same"] == 1 and rep["rule_checks"]["new"] == 0
     assert rep["cost"]["old_usd"] == 0.91 and rep["cost"]["shadow_usd"] == 0.25
+
+
+def _night_run(world, env, rows):
+    world.session("sess-a", conversation(8))
+    world.write_set()
+    troots = env / "transcripts"
+    _write_transcripts(world, troots)
+    journal = env / "journal.jsonl"
+    journal.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    run = world.run([("called", world.out("sess-a", mode="night"))], mode="night", started_at="2026-09-30T04:00:00Z")
+    return run, ["--journal", str(journal), "--transcript-root", str(troots)]
+
+
+def test_h6_the_report_names_the_journal_rows_it_used(world, env, capsys):
+    rows = [
+        _journal_row("2026-09-28T03:30:00Z", [("transcript:sess-a#L1", "landed")]),
+        _journal_row("2026-09-29T03:30:00Z", [("transcript:sess-a#L3", "landed")]),
+        {"ts": "2026-09-30T03:30:00Z", "run_id": "j3", "status": "failed"},  # a failed night: no outcomes, no row for us
+        _journal_row("2026-09-30T03:40:00Z", [("transcript:sess-a#L5", "landed")]),
+    ]
+    run, flags = _night_run(world, env, rows)
+    one, _, _ = report(world, run, *flags, capsys=capsys, testset=False)
+    assert one["old_finds"]["journal_rows"] == ["2026-09-30T03:40:00Z"] and one["old_finds"]["total"] == 1
+    two, _, _ = report(world, run, *flags, "--nights", "2", capsys=capsys, testset=False)
+    assert two["old_finds"]["journal_rows"] == ["2026-09-29T03:30:00Z", "2026-09-30T03:40:00Z"]
+    assert two["old_finds"]["total"] == 2
+
+
+def test_h6_an_origin_found_and_rejected_the_same_night_is_a_find(world, env, capsys):
+    rows = [_journal_row("2026-09-30T03:30:00Z", [
+        ("transcript:sess-a#L3", "dropped-rejected"),  # rejected first, found later in the same row
+        ("transcript:sess-a#L3", "landed"),
+        ("transcript:sess-a#L5", "dropped-rejected"),  # control: only rejected
+    ])]
+    run, flags = _night_run(world, env, rows)
+    rep, _, _ = report(world, run, *flags, capsys=capsys, testset=False)
+    old = rep["old_finds"]
+    assert old["total"] == 1 and old["rejected_match"] == 1 and old["rejected_match_keys"] == ["sess-a#L5"]
 
 
 def test_h6_a_night_with_no_journal_row_is_refused(world, env, capsys):
@@ -1014,6 +1141,45 @@ def test_a_run_that_fails_its_contract_is_refused_naming_the_path(world, capsys)
     (run / "out" / "sess-a.json").write_text(json.dumps(bad), encoding="utf-8")
     _, _, err = report(world, run, expect=2, capsys=capsys)
     assert err.startswith("error: out/sess-a.json: lessons[0].shape:") and "ZQX" not in err
+
+
+def test_a_secret_shaped_key_in_a_run_folder_is_not_named_on_stderr(world, capsys):
+    secret = "ghp_" + "Q7w8E9r0" * 4 + "Zx1Y"  # built at run time; a GitHub-token shape used as a key name
+    assert redact(secret)[0] != secret  # control: the secret scan flags it
+    world.session("sess-a", conversation(6), moments=[3])
+    run = world.run([("called", world.out("sess-a"))])
+    run_json = json.loads((run / "run.json").read_text(encoding="utf-8"))
+    run_json[secret] = 1
+    (run / "run.json").write_text(json.dumps(run_json), encoding="utf-8")
+    _, out, err = report(world, run, expect=2, capsys=capsys)
+    assert err.startswith("error: run.json: $: unknown key (name withheld)") and secret not in err and secret not in out
+    # and in an out file
+    run2 = world.run([("called", world.out("sess-a"))])
+    bad = json.loads((run2 / "out" / "sess-a.json").read_text(encoding="utf-8"))
+    bad["session"][secret] = 1
+    (run2 / "out" / "sess-a.json").write_text(json.dumps(bad), encoding="utf-8")
+    _, out2, err2 = report(world, run2, expect=2, capsys=capsys)
+    assert "out/sess-a.json: session: unknown key" in err2 and secret not in err2 and secret not in out2
+    # control: a plain key is still named
+    bad2 = json.loads((run2 / "out" / "sess-a.json").read_text(encoding="utf-8"))
+    del bad2["session"][secret]
+    bad2["session"]["bogus"] = 1
+    (run2 / "out" / "sess-a.json").write_text(json.dumps(bad2), encoding="utf-8")
+    _, _, err3 = report(world, run2, expect=2, capsys=capsys)
+    assert "out/sess-a.json: session.bogus: unknown key" in err3
+
+
+def test_a_session_listed_twice_in_a_run_record_is_refused_in_either_order(world, capsys):
+    world.session("sess-a", conversation(6), moments=[3])
+    world.session("sess-b", conversation(4))
+    for order in ("called-then-skipped", "skipped-then-called"):
+        run = world.run([("called", world.out("sess-a")), ("skipped", "sess-b", "no-marker")])
+        run_json = json.loads((run / "run.json").read_text(encoding="utf-8"))
+        dup = dict(run_json["sessions"][1], session="sess-a")  # the skipped row, renamed to the called session
+        run_json["sessions"] = [run_json["sessions"][0], dup] if order == "called-then-skipped" else [dup, run_json["sessions"][0]]
+        (run / "run.json").write_text(json.dumps(run_json), encoding="utf-8")
+        _, _, err = report(world, run, expect=2, capsys=capsys)
+        assert err.startswith("error: run.json: sessions[1].session: listed twice"), (order, err)
 
 
 def test_a_manifest_that_differs_from_the_runs_is_refused(world, capsys):
