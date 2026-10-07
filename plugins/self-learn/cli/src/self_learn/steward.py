@@ -126,12 +126,31 @@ _CASE_SCOPES = ("user", "project", "skill")
 _RUN_TERMINAL_DISPOSITIONS = frozenset(
     {"applied", "parked", "refused", "abandoned", "returned", "overtaken"}
 )
-#: "This input version needs no new decision": what `_terminal_versions`,
-#: and therefore `_eligible_lessons`, reads. `returned` is deliberately
-#: NOT here.
+#: "This input version needs no new decision": what `_terminal_versions`
+#: and `_decided_placements` (and so `_eligible_lessons`) read. `returned`
+#: is deliberately NOT here, and an `applied` filing move decides nothing
+#: (`_decided_placements`, 2026-10-06).
 _DECIDED_DISPOSITIONS = frozenset(
     {"applied", "parked", "refused", "abandoned", "overtaken"}
 )
+#: The two sheet verbs that FILE a lesson -- move it to another bucket --
+#: without deciding it (2026-10-06). The lesson is still pending after
+#: either, at the same version when the move rewrites no `scope:` (a
+#: project->project move, `verbs.rehome`), so it needs a decision in the
+#: bucket it now lives in.
+_FILING_VERBS = frozenset({"rehome", "rescope"})
+#: How many filing moves of one lesson the steward's own committed runs may
+#: have applied before a case that moves it again is parked for the
+#: overseer as `scope-conflict` instead of applied (2026-10-06). One: a
+#: lesson filed once and then filed again -- back where it came from, onward
+#: to a third bucket, or away from where the overseer or a person put it --
+#: is a disagreement about where it belongs, which is the overseer's to
+#: settle; without this a steward that keeps changing its mind moves the
+#: lesson every night for ever (each move is a complete, progressing run,
+#: so S-68's per-packet attempt cap never sees it).
+_FILING_MOVE_LIMIT = 1
+#: The reason that park is recorded with (`cases.PARKED_REASONS`).
+_REFILING_PARKED_REASON = "scope-conflict"
 _SUCCESS_RECEIPT_STATES = frozenset({"applied", "already-applied"})
 #: S-71 §4.2: what the steward does with a record whose line the ledger
 #: refused, by kind. `status` never appears here: it is resolved first,
@@ -767,9 +786,139 @@ def _terminal_versions(
     return terminal
 
 
+def _row_bucket(path: object) -> str | None:
+    """The ledger bucket (``user``, ``skills/<name>``, ``projects/<slug>``)
+    an input row's ``path`` lies in, or `None` when the row names none.
+
+    Both lesson row shapes name one: ``<bucket>/pending/<id>.md`` (the
+    record, since U3a) and ``<bucket>/proposals/<id>.yaml`` (the analyst
+    proposal, before it). A reconsider row (``reconsider/<id>.yaml``), a
+    suspected-violation row (``telemetry:fire/<id>``) and a row with no
+    ``path`` at all do not."""
+    if not isinstance(path, str):
+        return None
+    parts = path.split("/")
+    if len(parts) < 3 or parts[-2] not in {"pending", "resolved", "proposals"}:
+        return None
+    return "/".join(parts[:-2])
+
+
+def _files_record(recipe: object, record_id: str) -> bool:
+    """True when this committed case recipe's sheet holds a filing item
+    (`rehome` / `rescope`) for *record_id*. "Holds one", not "holds only
+    those": a lesson an `applied` case moved and that is still pending at
+    the same version was only moved -- any item that decides a lesson
+    changes its status, and a `revise` changes its version."""
+    if not isinstance(recipe, dict):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("id") == record_id
+        and item.get("verb") in _FILING_VERBS
+        for item in recipe.get("items") or []
+    )
+
+
+def _decided_placements(
+    home: Path, states: frozenset[str] = _DECIDED_DISPOSITIONS
+) -> dict[tuple[str, str], set[str | None]]:
+    """``(record, input version)`` -> the buckets a committed steward run
+    decided that version in (2026-10-06).
+
+    A decision is about a lesson where it was filed. Two things follow.
+    (1) A filing move -- an `applied` row whose case moved the lesson --
+    decides nothing at all, not even in the bucket it moved the lesson
+    out of: the lesson needs a decision where it now lives, and if the
+    overseer or a person later moves it back there, it needs one there
+    again. (2) Every other decided row decides its version in the bucket
+    the run selected it from (the input row's ``path``), so a lesson parked
+    in one bucket and then moved -- by the overseer deciding the parked
+    case, or by hand -- is decided afresh in the new one. A row whose
+    bucket cannot be told (`None`: no input row, or no ``path``) decides its
+    version wherever the lesson lives, as every row did before."""
+    decided: dict[tuple[str, str], set[str | None]] = {}
+    for manifest in committed_manifests(home):
+        recipes = manifest.get("cases") or {}
+        for packet in manifest.get("packets") or []:
+            if not isinstance(packet, dict):
+                continue
+            paths = {
+                row.get("record"): row.get("path")
+                for row in packet.get("inputs") or []
+                if isinstance(row, dict)
+            }
+            for rid, disposition in (packet.get("dispositions") or {}).items():
+                if not isinstance(disposition, dict):
+                    continue
+                state = disposition.get("state")
+                version = disposition.get("input_version")
+                if state not in states or not isinstance(rid, str) or not isinstance(version, str):
+                    continue
+                if state == "applied" and _files_record(
+                    recipes.get(disposition.get("case")), rid
+                ):
+                    continue
+                decided.setdefault((rid, version), set()).add(_row_bucket(paths.get(rid)))
+    return decided
+
+
+def _decided_here(buckets: set[str | None] | None, bucket: str | None) -> bool:
+    """A version decided in *bucket*, or in a bucket that cannot be told."""
+    if not buckets:
+        return False
+    return None in buckets or bucket in buckets
+
+
+def _steward_filing_moves(home: Path) -> dict[str, int]:
+    """record -> how many filing moves of it the steward's committed runs
+    applied, at any version (so a `[revise, rehome]` pair each night is
+    counted too). The overseer's own moves are not in a steward run record
+    and are never counted."""
+    moves: dict[str, int] = {}
+    for manifest in committed_manifests(home):
+        recipes = manifest.get("cases") or {}
+        for packet in manifest.get("packets") or []:
+            if not isinstance(packet, dict):
+                continue
+            for rid, disposition in (packet.get("dispositions") or {}).items():
+                if (
+                    isinstance(rid, str)
+                    and isinstance(disposition, dict)
+                    and disposition.get("state") == "applied"
+                    and _files_record(recipes.get(disposition.get("case")), rid)
+                ):
+                    moves[rid] = moves.get(rid, 0) + 1
+    return moves
+
+
+def _refiling_reason(home: Path, sheet_path: Path) -> str | None:
+    """`scope-conflict` when this staged sheet would move a lesson the
+    steward has already moved `_FILING_MOVE_LIMIT` times; else `None`.
+    The case is then parked for the overseer (its sheet recorded, never
+    applied), and the lesson stays pending where it is -- decided there --
+    until the overseer decides it."""
+    raw = _read_yaml(sheet_path)
+    if not isinstance(raw, dict):
+        return None
+    filed = {
+        str(item.get("id"))
+        for item in raw.get("items") or []
+        if isinstance(item, dict) and item.get("verb") in _FILING_VERBS
+    }
+    if not filed:
+        return None
+    moves = _steward_filing_moves(home)
+    if any(moves.get(rid, 0) >= _FILING_MOVE_LIMIT for rid in filed):
+        return _REFILING_PARKED_REASON
+    return None
+
+
 def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
     """Every queued (pending, not deferred) lesson whose current version no
-    committed run has decided, oldest first, with its input row.
+    committed run has decided in the bucket it lives in now, oldest first,
+    with its input row (:func:`_decided_placements`: a filing move decides
+    nothing, so a lesson the steward rehomed or rescoped is selected again
+    by the next run, in its new bucket).
 
     U3a (2026-09-27): no analyst proposal is needed. The worker still
     writes proposals for now (U5 retires it); nothing here reads them
@@ -784,8 +933,8 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
             entry.record.id,
         )
     )
-    terminal = _terminal_versions(home)
-    legacy_terminal = _terminal_versions(home, _LEGACY_DECIDED_DISPOSITIONS)
+    decided = _decided_placements(home)
+    legacy_decided = _decided_placements(home, _LEGACY_DECIDED_DISPOSITIONS)
     out: list[tuple[ledger_ops.QueueEntry, dict]] = []
     for entry in entries:
         try:
@@ -793,10 +942,11 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
         except ValueError:
             continue
         rid = entry.record.id
-        if (rid, identity["version"]) in terminal:
+        here = _row_bucket(identity["path"])
+        if _decided_here(decided.get((rid, identity["version"])), here):
             continue
         legacy = identity.get("legacy_version")
-        if isinstance(legacy, str) and (rid, legacy) in legacy_terminal:
+        if isinstance(legacy, str) and _decided_here(legacy_decided.get((rid, legacy)), here):
             continue
         out.append((entry, identity))
     return out
@@ -1489,7 +1639,8 @@ def _ledger_repair_message(
     written, when the refusal is the model's to fix -- or `None`.
 
     A case the model parked, or one the runner will park
-    (`_forced_parking_reason`), is skipped: none of its lines is applied.
+    (`_forced_parking_reason`, `_refiling_reason`), is skipped: none of
+    its lines is applied.
     Each other sheet is previewed exactly as apply time will (the same
     `[reopen, verb]` sequence rule). A `status` refusal is collected only
     when the lesson's status is unchanged since selection, and never for a
@@ -1512,6 +1663,8 @@ def _ledger_repair_message(
             continue
         reconsidered = _reconsidered_by(case_data)
         if _forced_parking_reason(home, sheet_path, reconsidered) is not None:
+            continue
+        if _refiling_reason(home, sheet_path) is not None:
             continue
         sheet = _sheet_without_case(sheet_path)
         preview = batch.dry_run(
@@ -1811,6 +1964,12 @@ def _prepared_recipe(
             # reason wins. (Until U3b a hook route was one of the runner's
             # own checks; since S-72 the steward decides hooks.)
             parking_reason = str(case_data.get("parked_reason"))
+        if parking_reason is None:
+            # 2026-10-06: a case that would move a lesson the steward has
+            # already moved is a disagreement about where it belongs, and
+            # is parked for the overseer (`_FILING_MOVE_LIMIT`). Checked
+            # last, so a case the model parked keeps its own reason.
+            parking_reason = _refiling_reason(home, sheet_path)
         if parking_reason is not None:
             case_data["kind"] = "parked"
             case_data["outcome"] = "parked"
