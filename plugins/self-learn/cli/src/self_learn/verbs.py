@@ -6179,7 +6179,7 @@ def _reconsider_retirement_if_routed(
     """`reject`'s and `defer`'s retirement leg: only a ROUTED lesson admitted
     by a reconsider case has one (its compiled entry drops in the same
     locked section). The verbs run it under their hold; `batch.dry_run`
-    calls it too (S-71 fold), so a hook- or reference-routed lesson, which
+    calls it too (S-71 fold), so a hook-routed lesson, which
     `_reconsider_retirement_preflight` refuses, previews as refused."""
     pre_record = Record.from_path(path)
     if extra_allowed is not None and pre_record.status == "routed":

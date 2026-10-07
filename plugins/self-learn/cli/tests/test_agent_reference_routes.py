@@ -10,8 +10,8 @@ lessons tied to no file.
 
 The refusal is enforced in the batch, by name, for the two agent actors
 (`batch.REFERENCE_REFUSED_ACTORS`): a fresh route, a route whose
-destination comes from the proposal, and a re-decision under a reconsider
-case. Its kind is `bad-line`, so the steward is sent the line back to
+destination comes from the proposal, a collapse route, and a re-decision
+under a reconsider case. Its kind is `bad-line`, so the steward is sent the line back to
 choose again. A person's route there (a review session's sheet, which runs
 as `human`) is unchanged -- the positive control every refusal here is
 measured against. The agents are told, in their own instructions, where
@@ -33,7 +33,14 @@ from self_learn.ledger_ops import find_record_path
 from self_learn.overseer import formats
 from self_learn.overseer import run as overseer_run
 from self_learn.records import Record
-from support import commit_all, last_verb_sha, make_behavior, make_env, proposal_dict
+from support import (
+    commit_all,
+    last_verb_sha,
+    make_behavior,
+    make_env,
+    merge_proposal_text,
+    proposal_dict,
+)
 from test_steward import _dump_yaml
 from test_steward_refusals import _case
 from test_u3b_steward_authority import _record_case, _route_through_a_case
@@ -130,6 +137,75 @@ def test_an_agents_other_routes_are_untouched(tmp_path):
     _pending_with_a_shelf_proposal(home, other)
     sheet = _sheet(tmp_path, [{"id": other, "verb": "route", "dest": "reference"}])
     assert batch.run(home, sheet, no_push=True, actor="steward").items[0].state == "refused"
+
+
+# --------------------------------------------- a collapse route onto a shelf
+
+
+def _a_cluster_whose_survivor_goes_to_a_shelf(
+    home: Path, rid: str, loser: str, cluster: str
+) -> Path:
+    """Two pending skill lessons whose analyst proposals say `reference`,
+    and the merge proposal naming them: the `{verb: route, collapse:
+    merge-...}` line routes the survivor and supersedes the loser."""
+    for each in (rid, loser):
+        ledger_ops.create_record(
+            home, make_behavior(record_id=each, trigger=f"Editing {each} live.")
+        )
+        ledger_ops.write_proposal(home, each, proposal_dict(destination="reference"))
+    merge_path = find_record_path(home, rid).parent.parent / "proposals" / f"{cluster}.yaml"
+    merge_path.write_text(merge_proposal_text(cluster, [rid, loser], rid), encoding="utf-8")
+    commit_all(home, "cluster seeded")
+    assert merge_path.is_file()  # control: the cluster exists before any route runs
+    return merge_path
+
+
+@pytest.mark.parametrize("dest_named", [False, True], ids=["dest-from-proposal", "dest-named"])
+@pytest.mark.parametrize("actor", AGENTS)
+def test_an_agent_collapse_route_onto_a_shelf_is_refused_and_a_persons_applies(
+    tmp_path, actor, dest_named
+):
+    """`collapse` is a route line's other key: the cluster's survivor is
+    routed (`verbs.route(..., collapse=...)`), so a survivor whose
+    destination resolves to `reference` lands on the shelf unless the
+    batch refuses it first, with or without a `dest` on the line."""
+    loser, cluster = "lrn-5e1f1003", "merge-5e1f10cc"
+    item = {"id": RID, "verb": "route", "collapse": cluster}
+    if dest_named:
+        item["dest"] = "reference"
+    sheet = _sheet(tmp_path, [item])
+
+    # positive control, first: in a ledger of its own, a person's same
+    # line collapses the cluster onto the shelf
+    control = make_env(tmp_path / "control")
+    control_merge = _a_cluster_whose_survivor_goes_to_a_shelf(control.ledger, RID, loser, cluster)
+    control_shelf = control.skill_dir / "references" / "LEARNINGS.md"
+    assert batch.dry_run(control.ledger, sheet).items[0].state == "would-apply"
+    applied = batch.run(control.ledger, sheet, no_push=True)
+    assert applied.items[0].state == "applied", applied.items[0].detail
+    assert _record(control.ledger, RID).status == "routed"
+    assert _record(control.ledger, loser).status == "superseded"
+    assert f"— {RID}" in control_shelf.read_text(encoding="utf-8")
+    assert not control_merge.exists()
+
+    env = make_env(tmp_path / "agent")
+    merge_path = _a_cluster_whose_survivor_goes_to_a_shelf(env.ledger, RID, loser, cluster)
+    shelf = env.skill_dir / "references" / "LEARNINGS.md"
+    before = last_verb_sha(env.ledger)
+
+    preview = batch.dry_run(env.ledger, sheet, actor=actor)
+    result = batch.run(env.ledger, sheet, no_push=True, actor=actor)
+
+    refused, previewed = result.items[0], preview.items[0]
+    assert (previewed.state, previewed.kind) == ("would-refuse", "bad-line")
+    assert (refused.state, refused.kind) == ("refused", "bad-line"), refused.detail
+    assert refused.detail == previewed.detail
+    assert f"refused for the {actor}" in (refused.detail or "")
+    assert _record(env.ledger, RID).status == "pending"
+    assert _record(env.ledger, loser).status == "pending"  # the cluster was not collapsed
+    assert merge_path.is_file()
+    assert not shelf.exists()
+    assert last_verb_sha(env.ledger) == before  # no ledger write of any verb
 
 
 # ---------------------------------------------- a re-decision onto a shelf

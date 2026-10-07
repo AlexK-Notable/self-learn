@@ -192,13 +192,15 @@ def test_a_reconsider_reject_or_defer_takes_the_lesson_off_its_shelf(tmp_path, v
 
 
 @pytest.mark.parametrize("mode", ["git", "plain"])
+@pytest.mark.parametrize("verb", ["reject", "defer"])
 def test_the_shelf_hosts_lock_is_held_from_the_prediction_through_the_write(
-    tmp_path, monkeypatch, mode
+    tmp_path, monkeypatch, mode, verb
 ):
     """REC12, the discipline `_retire_impl` already follows for a shelf:
     the shelf's host lock is taken before its bytes are observed and
     predicted for the compile record, and held through the host write, so
-    no other producer can change the shelf between the two."""
+    no other producer can change the shelf between the two. `reject` and
+    `defer` each take it on their own `with` line, so each is run."""
     home, host, shelf, prior = _shelved(tmp_path, mode)
     lock = str(gitops.host_lock_path(host, mode))
     seen: list[tuple[str, bool]] = []
@@ -215,12 +217,42 @@ def test_the_shelf_hosts_lock_is_held_from_the_prediction_through_the_write(
 
     monkeypatch.setattr(verbs, "_predicted_retired_reference_region", predict)
     monkeypatch.setattr(verbs, "retire_reference", remove)
-    rc = _reconsider(home, tmp_path / "setup", prior, "reject", "overseer")
+    rc = _reconsider(home, tmp_path / "setup", prior, verb, "overseer")
     assert lock not in gitops._held_locks  # control: nothing holds it before the run
-    result = batch.run(home, _sheet(tmp_path, "off", rc, [{"id": RID, "verb": "reject"}]),
+    result = batch.run(home, _sheet(tmp_path, "off", rc, [{"id": RID, "verb": verb}]),
                        no_push=True, actor="overseer")
     assert result.items[0].state == "applied", result.items[0].detail
     assert seen == [("predict", True), ("remove", True)], seen
+
+
+@pytest.mark.parametrize("mode", ["git", "plain"])
+@pytest.mark.parametrize("verb", ["reject", "defer"])
+def test_the_shelfs_compile_record_names_the_bytes_it_was_based_on(tmp_path, verb, mode):
+    """The compile-record entry a retirement writes carries two hashes:
+    `sha256`, the shelf's bytes after the removal, and `based_on_sha256`,
+    the shelf's bytes OBSERVED before it (REC12: "the state this write is
+    based on"). `compiled.verdict` reads a leftover entry whose
+    `based_on_sha256` matches the file as `stale` and lets the next writer
+    through; with no `based_on_sha256` the same file reads `edited` and
+    refuses it. The value is checked against the hash taken here, off the
+    file, before the verb runs -- never against a field merely present."""
+    home, host, shelf, prior = _shelved(tmp_path, mode)
+    before = hashlib.sha256(shelf.read_bytes()).hexdigest()
+    # control: the route left an entry whose hash is the file's, so `before`
+    # is what the compile record knew the shelf as
+    _data, routed = _reference_entry(home, host, shelf)
+    assert routed is not None and routed["sha256"] == before
+    rc = _reconsider(home, tmp_path / "setup", prior, verb, "overseer")
+    result = batch.run(home, _sheet(tmp_path, "off", rc, [{"id": RID, "verb": verb}]),
+                       no_push=True, actor="overseer")
+    assert result.items[0].state == "applied", result.items[0].detail
+
+    _data, entry = _reference_entry(home, host, shelf)
+    assert entry is not None
+    after = hashlib.sha256(shelf.read_bytes()).hexdigest()
+    assert after != before  # control: the removal changed the shelf's bytes
+    assert entry["sha256"] == after
+    assert entry["based_on_sha256"] == before
 
 
 def test_the_preview_and_the_run_agree_about_the_shelf_line(tmp_path):
