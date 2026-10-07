@@ -543,3 +543,20 @@ def test_a_reconsider_of_the_case_that_moved_a_lesson_passes_the_predecessor_che
     assert overseer_run._reconsider_predecessor_problem(
         env.home, {"supersedes": case_id, "records": [rid]}, set()
     ) is None
+
+
+def test_a_move_row_counts_only_for_the_lesson_its_case_moved():
+    """`_files_record` asks whether a case's sheet holds a filing item for
+    THIS lesson. A case that moves one lesson and decides another
+    (`[rehome L1, reject L2]`) is a filing move for L1 only: counting it for
+    L2 would park a later steward move of L2 as `scope-conflict`, and would
+    skip L2's real decision in `_terminal_versions`."""
+    recipe = {
+        "items": [
+            {"id": "lrn-f110000d", "verb": "rehome", "to": "user"},
+            {"id": "lrn-f110000e", "verb": "reject"},
+        ]
+    }
+    assert steward._files_record(recipe, "lrn-f110000d")  # control: the moved lesson counts
+    assert not steward._files_record(recipe, "lrn-f110000e")
+    assert not steward._files_record(recipe, "lrn-f110000f")  # a lesson the case never names
