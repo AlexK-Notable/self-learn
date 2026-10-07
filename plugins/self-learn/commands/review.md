@@ -153,7 +153,10 @@ runs) — sequence those by hand, outside the sheet. A `--dry-run` of a
 sheet carrying a hook route reports that item refused and exits 1,
 exactly as the real run would — the overseer's and the steward's own
 runners (13 §7.4; S-72) are the only callers a hook route is ever not
-refused for, and this session is never one of them.
+refused for, and this session is never one of them. The opposite holds for
+a `reference` route (2026-10-06): the steward's and the overseer's runners
+refuse a route to `reference` (a fresh route or a re-decision), and this
+session, which runs as a person, still may route there.
 
 **A sheet may name the decision case it is applying (S-65).** A
 top-level `case: case-<8hex>` key is optional; when present, the sheet's
@@ -192,9 +195,13 @@ to admit a rejected record directly. A `routed → rejected` (or
 record's compiled line from its host surface inside the same locked
 section — never a `supersede` of the record; the CASE is superseded,
 the record is re-decided (decided at U5's gate, 2026-09-14). A record
-routed to a `reference` or `hook` destination cannot yet be corrected
-this way (`reject`/`defer` under a reconsider case) and the verb refuses
-by name.
+routed to a `hook` destination cannot yet be corrected this way
+(`reject`/`defer` under a reconsider case) and the verb refuses by name.
+A record routed to `reference` can (2026-10-06): its entry block leaves
+the shelf file in the same locked section the status flips in. In a plain
+host the file is changed and the compile record updated, never committed
+there. The shelf file and its pointer line stay even when no entry is
+left.
 
 **Moving a placed lesson to a different destination (U3b, S-72,
 2026-09-28).** Under the same `kind: reconsider` case, a `route` line on
@@ -206,8 +213,10 @@ required. Re-decidable FROM: `claude-md` (any variant), `skill-md`,
 keeps its own refusals — an unreadable `hosts.yaml`, a hook script it
 cannot find). TO: `claude-md`, `claude-md:local`,
 `claude-md:rules:<topic>`, `skill-md`, `reference:<file>`, and `hook` —
-the last only with the line's own compile input (`hook:`), and only for
-the steward's or the overseer's runner; never `new-skill`. The case must
+`reference:<file>` only for a person (the steward's and the overseer's
+runners refuse it), `hook` only with the line's own compile input
+(`hook:`), and only for the steward's or the overseer's runner; never
+`new-skill`. The case must
 supersede a case that covers the lesson, so a lesson routed by hand with
 no case at all cannot be re-decided this way. The same line naming the
 destination the lesson already has is "already routed — nothing to

@@ -47,6 +47,23 @@ Exactly five, the `destination` enum — unchanged by anything below:
 | `new-skill` | scaffold a new skill (M3 compiler) |
 | `hook` | PreToolUse/etc. guard script (M3 compiler) |
 
+**`reference` is a person's destination only (2026-10-06).** The steward
+and the overseer never route a lesson to `reference`: the batch refuses
+such a line from either of them by name — a fresh route, a re-decision
+under a reconsider case, and a reconsider's correcting route alike — and a
+person may still route there (a review session, or `self-learn route
+--dest reference`). A shelf is reached only through a pointer that names no
+subject, and when this was measured (2026-10-05) no self-learn shelf had
+ever been read. This does not change your gate procedure: when your answers
+derive `DEMAND`, the proposal still says so, and the person reading it
+decides. A lesson an agent would have shelved goes instead to a path-scoped
+rule when it is tied to files, an existing skill, a warning hook when it is
+tied to a command, or is parked or rejected — never to an always-loaded
+line just because the shelf is closed; §2's combined test still decides
+that. A lesson already on a shelf can be taken off it under a reconsider
+case: rerouted, rejected or deferred, its entry leaving the shelf file in
+the same locked section.
+
 You do not pick a destination directly. You answer the gate procedure
 (§2), it derives a **tier** (`HOOK` / `PATHED` / `SKILL` / `DEMAND` /
 `ALWAYS`), and the tier renders to a destination at the record's scope —

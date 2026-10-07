@@ -26,9 +26,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from ruamel.yaml import YAML
 
-from self_learn import batch, ledger_ops, steward
+from self_learn import batch, ledger_ops, steward, steward_prompt
 from self_learn.ledger_ops import find_record_path
+from self_learn.overseer import formats
+from self_learn.overseer import run as overseer_run
 from self_learn.records import Record
 from support import commit_all, last_verb_sha, make_behavior, make_env, proposal_dict
 from test_steward import _dump_yaml
@@ -37,6 +40,8 @@ from test_u3b_steward_authority import _record_case, _route_through_a_case
 
 RID = "lrn-5e1f1001"
 AGENTS = ("steward", "overseer")
+REFS = Path(__file__).resolve().parents[2] / "skills" / "self-learn" / "references"
+REVIEW_MD = Path(__file__).resolve().parents[2] / "commands" / "review.md"
 
 
 @pytest.fixture(autouse=True)
@@ -178,3 +183,59 @@ def test_the_stewards_repair_turn_is_told_before_anything_is_applied(tmp_path):
     _dump_yaml(stage / "sheets" / "shelf.yaml", {"version": 1, "case": "$CASE_ID", "items": [
         {"id": RID, "verb": "route", "dest": "skill-md"}]})
     assert steward._ledger_repair_message(home, stage, {RID: "pending"}) is None
+
+
+# ------------------------------------------------- what the agents are told
+
+
+def _all_example_lines() -> list[dict]:
+    examples = {**steward_prompt.STAGE_EXAMPLES, **steward_prompt.AUTHORITY_EXAMPLES}
+    lines = []
+    for name, body in examples.items():
+        if name.startswith("sheets/"):
+            lines += YAML(typ="safe").load(body)["items"]
+    return lines
+
+
+def test_the_stewards_examples_and_contract_never_route_to_a_shelf():
+    lines = [line for line in _all_example_lines() if line.get("verb") == "route"]
+    assert len(lines) >= 5  # control: the examples' route lines were read
+    for line in lines:
+        assert not str(line.get("dest", "")).startswith("reference"), line
+    # the re-decision example now moves a lesson OFF a shelf
+    moved = steward_prompt.AUTHORITY_EXAMPLES["cases/move-off-the-shelf.yaml"]
+    assert "kind: reconsider" in moved and "references/LEARNINGS.md" in moved
+    text = " ".join(steward_prompt._render_output_contract().split())
+    assert "NEVER `reference` (or `reference:<file name>`)" in text
+    assert "takes a lesson off a reference shelf" in text
+
+
+def test_the_stewards_method_says_where_a_shelf_lesson_goes():
+    method = " ".join((REFS / "steward-method.md").read_text(encoding="utf-8").split())
+    assert "## 16. Never a reference shelf" in method
+    for phrase in ("a path-scoped rule", "an existing skill", "a warning hook",
+                   "park it or reject it", "§14's three tests still decide that"):
+        assert phrase in method, phrase
+    # the always-loaded test's own wording, which `always_loaded.py` checks, is untouched
+    assert "(a path rule, the shelf, a skill)" in method
+
+
+def test_the_overseer_is_told_and_its_closed_sets_name_the_refusal(tmp_path):
+    root = formats.write(tmp_path / "ws", "B")
+    sets = YAML(typ="safe").load((root / "closed-sets.yaml").read_text(encoding="utf-8"))
+    assert sets["sheet"]["refused_dests"] == ["reference"]
+    readme = " ".join((root / "README.md").read_text(encoding="utf-8").split())
+    assert "TO claude-md (any variant), skill-md, hook; never new-skill or reference." in readme
+    assert "Never route a lesson to `reference`" in readme
+    assert "a `reject` or `defer` line takes it off too" in readme
+    prompt = overseer_run._phase_b_prompt(tmp_path / "ws", (), ())
+    assert "Never route a lesson to `reference`" in " ".join(prompt.split())
+
+
+def test_the_doctrine_and_the_review_command_say_so():
+    doctrine = " ".join((REFS / "routing-doctrine.md").read_text(encoding="utf-8").split())
+    assert "The steward and the overseer never route a lesson to `reference`" in doctrine
+    review = " ".join(REVIEW_MD.read_text(encoding="utf-8").split())
+    assert "A record routed to a `reference` or `hook` destination cannot yet" not in review
+    assert "A record routed to a `hook` destination cannot yet be corrected this way" in review
+    assert "the steward's and the overseer's runners refuse a route to `reference`" in review

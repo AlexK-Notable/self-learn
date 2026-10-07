@@ -704,6 +704,9 @@ ledger refused), write a kind: reconsider successor that supersedes it, provided
 every record the reconsider names, has not been superseded, passes its freeze hash, and was
 recorded by the steward or the overseer, never by a person (formats/case-correct-example.yaml).
 The runner alone records cases and applies sheets. Never run a verb.
+Never route a lesson to `reference` (a references/ shelf file): the runner refuses it from you.
+{formats.FORMATS_DIR}/README.md says where such a lesson goes instead, and how a lesson already
+on a shelf is taken off it.
 {_YAML_TEXT_RULE}In a case file no line of any text field may start with `## `. To quote a heading line, quote
 it from after the `## ` (for `## 2026-08-19 — lrn-b197d06b` quote `2026-08-19 — lrn-b197d06b`):
 an evidence item with such a line is dropped, and any other field with one refuses the case.
