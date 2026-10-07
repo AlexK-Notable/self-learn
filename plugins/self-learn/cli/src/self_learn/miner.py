@@ -50,7 +50,7 @@ import uuid
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import NamedTuple, cast
 
 from . import gitops, intents, invocation, provider, sentinel, settings, steward_prompt, telemetry, worker
 from .primitives import chrono
@@ -390,9 +390,12 @@ def _contains_self_learn(text: str) -> bool:
     )
 
 
-def _user_turn_text(message: dict) -> str:
+def _user_turn_text(message: object) -> str:
     """The text blocks of one user entry's message, joined; blank blocks
-    dropped. A tool-result-only entry has none."""
+    dropped. A tool-result-only entry has none, and neither has a message that
+    is not a dict."""
+    if not isinstance(message, dict):
+        return ""
     texts = [str(b.get("text", "")) for b in _blocks(message) if b.get("type") == "text"]
     return "\n".join(t for t in texts if t.strip())
 
@@ -405,22 +408,24 @@ def _is_self_prompt(user_text: str) -> bool:
 
 
 def _first_user_text(path: Path) -> str:
-    """The transcript's first user turn that carries text, or '' when there
-    is none or the file cannot be read. Streams the file and stops there: the
-    prompt is among its first lines, and a transcript can be tens of MiB."""
-    try:
-        with path.open(encoding="utf-8") as fh:
-            for raw in fh:
-                try:
-                    entry = json.loads(raw)
-                except ValueError:
+    """The transcript's first user turn that carries text, or '' when the
+    file has none. Streams the file and stops there: the prompt is among its
+    first lines, and a transcript can be tens of MiB. A row of any odd shape
+    (not JSON, JSON too deep to parse, a user row whose message is not a dict)
+    is "no text here" and is skipped, never an exception. A file that cannot be
+    opened or read raises :class:`OSError`; what that means is the caller's to
+    say (bytes that are not UTF-8 are read as replacement characters instead)."""
+    with path.open(encoding="utf-8", errors="replace") as fh:
+        for raw in fh:
+            try:
+                entry = json.loads(raw)
+                if not isinstance(entry, dict) or entry.get("type") != "user":
                     continue
-                if isinstance(entry, dict) and entry.get("type") == "user":
-                    text = _user_turn_text(entry.get("message") or {})
-                    if text.strip():
-                        return text
-    except (OSError, UnicodeDecodeError):
-        pass
+                text = _user_turn_text(entry.get("message"))
+            except Exception:  # noqa: BLE001 -- a row of any shape is only "no text here"
+                continue
+            if text.strip():
+                return text
     return ""
 
 
@@ -433,9 +438,17 @@ def _headers_fingerprint() -> str:
     return hashlib.sha256("\n".join(SELF_PROMPT_HEADERS).encode("utf-8")).hexdigest()[:16]
 
 
-def halt_tracked_self_sessions() -> int:
+class SweepResult(NamedTuple):
+    """What :func:`halt_tracked_self_sessions` did: how many sessions it halted,
+    and how many it could not check this time."""
+
+    halted: int
+    unchecked: int
+
+
+def halt_tracked_self_sessions() -> SweepResult:
     """Halt every tracked session whose first user turn is a self-learn
-    prompt, once per header list; returns how many it halted.
+    prompt, once per header list.
 
     A header added to :data:`SELF_PROMPT_HEADERS` reaches only the sessions
     :func:`digest_transcript` sees from their first line. A file the cursor
@@ -447,21 +460,36 @@ def halt_tracked_self_sessions() -> int:
     tracked, unhalted file once and halts the ones that open with a header,
     then records the header list's fingerprint in the cursor file; a later
     run with the same list reads nothing, and a changed list does it again.
-    A file that is gone (Claude Code deletes old transcripts) is left as it is."""
+
+    One file never stops the pass. A file that is gone (Claude Code deletes old
+    transcripts) is left as it is, with nothing to check later. Any other
+    failure on a file (a permission error, a failure of the check itself) leaves
+    that file unhalted this time and counted in ``unchecked``; the fingerprint
+    is then NOT recorded, so the next run checks the tracked files again, until
+    a pass finishes with nothing unchecked. That costs one more read of each
+    tracked file's first lines per run while a file stays unreadable."""
     fingerprint = _headers_fingerprint()
     cursors = _load_cursors()
     if cursors.get(_HEADERS_CHECKED_KEY) == fingerprint:
-        return 0
-    halted = 0
+        return SweepResult(0, 0)
+    halted = unchecked = 0
     for key, entry in cursors.items():
         if not isinstance(entry, dict) or entry.get("halt"):
             continue
-        if _is_self_prompt(_first_user_text(Path(key))):
+        try:
+            text = _first_user_text(Path(key))
+        except FileNotFoundError:
+            continue
+        except Exception:  # noqa: BLE001 -- one file never stops the pass
+            unchecked += 1
+            continue
+        if _is_self_prompt(text):
             entry["halt"] = True
             halted += 1
-    cursors[_HEADERS_CHECKED_KEY] = fingerprint
+    if not unchecked:
+        cursors[_HEADERS_CHECKED_KEY] = fingerprint
     _save_cursors(cursors)
-    return halted
+    return SweepResult(halted, unchecked)
 
 
 def initialized() -> bool:
@@ -2216,10 +2244,16 @@ def _run_locked(
         return MineResult(status="initialized", run_id=run_id)
 
     swept = halt_tracked_self_sessions()
-    if swept:
+    if swept.halted:
         log(
-            f"run {run_id}: halted {swept} tracked sessions that open with a "
+            f"run {run_id}: halted {swept.halted} tracked sessions that open with a "
             "self-learn prompt (the steward's, the overseer's, ...): never mined"
+        )
+    if swept.unchecked:
+        # a count only: never a path, never anything a file or an exception said
+        log(
+            f"run {run_id}: {swept.unchecked} tracked sessions could not be checked "
+            "against the self-learn prompts this time; they are checked again next run"
         )
 
     slices = walk(since)

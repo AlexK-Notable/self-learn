@@ -14,9 +14,11 @@ hand-typed header: `overseer.run._phase_a_prompt` / `_phase_b_prompt`,
 `_compose_repair_prompt`. A later edit to how any of them opens therefore turns
 a test red instead of silently re-enabling mining.
 
-Behaviour tests do not name anything this unit added, so they run (red) against
-the code before the fix. Only the two pin tests at the bottom name the new
-constants.
+The tests of what a session's first turn does (the digest tests and the whole
+night's run on new files) name nothing this unit added, so they run, and fail,
+against the code before it. The tests of the tracked-session pass, of the
+first-activation stamp, and the pin tests at the bottom name the new functions
+and constants.
 """
 
 from __future__ import annotations
@@ -36,6 +38,12 @@ from support import make_home
 # ordinary one (the positive control behind every "never" below).
 OWN_TAIL = "OWN-SESSION-TAIL-xylophone"
 ORDINARY_TAIL = "ORDINARY-SESSION-TAIL-marimba"
+
+#: The order `steward_prompt._ordered_blocks` returned the seven blocks in at
+#: faa1853's parent (`git show faa1853^:.../steward_prompt.py`).
+BLOCK_ORDER_BEFORE_0926 = (
+    "containment", "method", "user_model", "conditions", "open_cases", "briefs", "output_contract",
+)
 
 #: Project folders shaped like the real ones (Claude Code names a folder after
 #: the session's working directory, `/` and `.` becoming `-`).
@@ -130,8 +138,8 @@ def overseer_prompts(tmp_path) -> dict[str, str]:
     }
 
 
-def steward_prompts(tmp_path, home) -> dict[str, str]:
-    context = steward_prompt.RunContext(
+def steward_context(tmp_path):
+    return steward_prompt.RunContext(
         run_id="run-test1",
         stage_dir=tmp_path / "stage",
         packet_index=1,
@@ -139,13 +147,21 @@ def steward_prompts(tmp_path, home) -> dict[str, str]:
         last_run_at=None,
         verbs_the_runner_executes=("case record", "batch"),
     )
+
+
+def steward_prompts(tmp_path, home) -> dict[str, str]:
+    context = steward_context(tmp_path)
     packet = steward_prompt.assemble(home, tmp_path / "cache", context, [])
     spec = steward._session_spec(home, tmp_path / "run-dir", packet.per_packet, label="steward-t")
     return {
         # the user message since 2026-09-26: the part of the brief a run does NOT share
         "per-packet": packet.per_packet,
-        # the whole brief, the user message of every steward session before that date
-        "whole-brief": packet.text,
+        # before that date (faa1853) the whole brief was the user message, its
+        # blocks in the order `_ordered_blocks` then returned them: containment
+        # FIRST, then the method
+        "whole-brief-before-0926": "\n\n".join(
+            f"=== {name} ===\n{dict(packet.blocks)[name]}" for name in BLOCK_ORDER_BEFORE_0926
+        ),
         # the steward's repair turn is its own session; its prompt extends the packet's
         "repair-turn": steward._repair_spec(spec, "a stage file failed its check").prompt,
     }
@@ -182,7 +198,7 @@ def test_overseer_session_is_halted(tmp_path, transcripts, phase):
     assert miner.digest_transcript(slice_of(path)) == (None, True)
 
 
-@pytest.mark.parametrize("kind", ["per-packet", "whole-brief", "repair-turn"])
+@pytest.mark.parametrize("kind", ["per-packet", "whole-brief-before-0926", "repair-turn"])
 def test_steward_session_is_halted(tmp_path, home, transcripts, kind):
     prompt = steward_prompts(tmp_path, home)[kind]
     path = write_session(transcripts, STEWARD_FOLDER, f"sess-steward-{kind}", own_session_lines(prompt))
@@ -203,6 +219,43 @@ def test_ordinary_session_is_still_mined(tmp_path, transcripts):
     digest, halt = miner.digest_transcript(slice_of(path))
     assert halt is False
     assert digest is not None and "please fix the failing test" in digest and ORDINARY_TAIL in digest
+
+
+def test_a_program_run_session_that_is_not_self_learns_is_still_mined(tmp_path, home, transcripts, monkeypatch):
+    """The user wants sessions a program ran (rows with `promptSource: "sdk"`
+    and no `origin`) mined, unless they are self-learn's own agents. The halt
+    reads the prompt's opening, never that marker."""
+    prompt = "Summarise the release notes below in three bullets and fix the typo in the README."
+    path = write_session(transcripts, ORDINARY_FOLDER, "sess-program", [user_row(prompt, **SDK_ROW), assistant_row(ORDINARY_TAIL)])
+    digest, halt = miner.digest_transcript(slice_of(path))
+    assert halt is False and digest is not None and ORDINARY_TAIL in digest
+    # a whole night: a new program-run session is read, a tracked one that grew is read
+    tracked = write_session(transcripts, ORDINARY_FOLDER, "sess-program-tracked", [user_row(prompt, **SDK_ROW), assistant_row("first")])
+    track_at_end(tracked)
+    append(tracked, user_row(f"{ORDINARY_TAIL} second turn", **SDK_ROW), assistant_row("ok"))
+    captured = shim_reader(monkeypatch)
+    result = miner.run(home)
+    assert result.status == "ok" and result.sessions_scanned == 2
+    assert f"{ORDINARY_TAIL} second turn" in captured["prompt"] and prompt in captured["prompt"]
+    cursors = miner._load_cursors()
+    assert not cursors[str(path)].get("halt") and not cursors[str(tracked)].get("halt")
+
+
+def test_a_session_that_opens_with_the_method_block_is_not_halted(tmp_path, home, transcripts, monkeypatch):
+    """No steward session ever began with the method block (it came second, then
+    moved to the appended system prompt). A person who pastes the shared brief
+    as their first message is an ordinary session, and is mined."""
+    method = dict(steward_prompt.assemble(home, tmp_path / "cache", steward_context(tmp_path), []).blocks)["method"]
+    pasted = f"=== method ===\n{method}\n\nwhat do you make of section 4?"
+    path = write_session(transcripts, ORDINARY_FOLDER, "sess-pasted-method", [user_row(pasted, **TYPED_ROW), assistant_row(ORDINARY_TAIL)])
+    digest, halt = miner.digest_transcript(slice_of(path))
+    assert halt is False and digest is not None and "what do you make of section 4?" in digest
+    # and the pass over tracked files leaves it alone too
+    track_at_end(path)
+    shim_reader(monkeypatch)
+    miner.run(home)
+    assert not miner._load_cursors()[str(path)].get("halt")
+    assert miner._load_cursors()[miner._HEADERS_CHECKED_KEY] == miner._headers_fingerprint()  # positive control: the pass ran
 
 
 def test_a_prompt_that_only_mentions_the_openings_is_still_mined(tmp_path, home, transcripts):
@@ -266,7 +319,7 @@ def test_tracked_own_sessions_are_halted_by_the_next_mine(tmp_path, home, transc
         write_session(transcripts, OVERSEER_FOLDER, "sess-overseer-a", own_session_lines(prompts["phase-a"])),
         write_session(transcripts, OVERSEER_FOLDER, "sess-overseer-b", own_session_lines(prompts["phase-b"])),
         write_session(transcripts, STEWARD_FOLDER, "sess-steward-now", own_session_lines(steward_texts["per-packet"])),
-        write_session(transcripts, STEWARD_FOLDER, "sess-steward-old", own_session_lines(steward_texts["whole-brief"])),
+        write_session(transcripts, STEWARD_FOLDER, "sess-steward-old", own_session_lines(steward_texts["whole-brief-before-0926"])),
         write_session(transcripts, WORKER_FOLDER, "sess-worker-normal", own_session_lines(worker_texts["normal-pass"])),
         write_session(transcripts, WORKER_FOLDER, "sess-worker-repair", own_session_lines(worker_texts["repair-pass"])),
     ]
@@ -366,11 +419,12 @@ def test_adding_a_header_checks_the_tracked_files_once_more(tmp_path, home, tran
         own_session_lines(worker_prompts(tmp_path, home)["repair-pass"]),
     )
     track_at_end(repair)
-    previous_list = (
+    previous_list = (  # the list as it stood before the worker's repair pass was added
         "You are the self-learn routing analyst worker.",
         "You are the self-learn transcript miner.",
-        *steward_prompt.SESSION_OPENINGS,
-        *overseer_run.SESSION_OPENINGS,
+        "=== containment ===",
+        "=== method ===",
+        "You are the self-learn overseer",
     )
     previous = hashlib.sha256("\n".join(previous_list).encode("utf-8")).hexdigest()[:16]
     assert miner._headers_fingerprint() != previous  # positive control: the list did change
@@ -386,8 +440,99 @@ def test_adding_a_header_checks_the_tracked_files_once_more(tmp_path, home, tran
     assert cursors["__self_prompt_headers__"] == miner._headers_fingerprint()
 
 
+def test_a_malformed_row_never_stops_the_sweep(tmp_path, home, transcripts, monkeypatch):
+    """A row of an odd shape is "no text here", never an exception: one such row
+    in one file must not stop the pass, keep it from stamping its fingerprint
+    (every later mine would crash the same way), or hide the self-learn prompts
+    that follow it."""
+    prompt = overseer_prompts(tmp_path)["phase-a"]
+    odd_rows = [
+        json.dumps({"type": "user", "message": "a string where a message goes"}),
+        json.dumps({"type": "user", "message": ["not", "a", "message"]}),
+        json.dumps({"type": "user", "message": {"content": 7}}),
+        "[" * 100_000 + "]" * 100_000,  # valid JSON, too deep for the parser
+        "not json at all",
+        json.dumps(["a", "list", "row"]),
+    ]
+    odd_then_own = write_session(transcripts, OVERSEER_FOLDER, "sess-odd-then-own", [*odd_rows, *own_session_lines(prompt)])
+    odd_then_ordinary = write_session(transcripts, ORDINARY_FOLDER, "sess-odd-then-ordinary", [*odd_rows, *ordinary_session_lines()])
+    clean_own = write_session(transcripts, OVERSEER_FOLDER, "sess-clean-own", own_session_lines(prompt))
+    clean_ordinary = write_session(transcripts, ORDINARY_FOLDER, "sess-clean-ordinary", ordinary_session_lines())
+    for path in (odd_then_own, odd_then_ordinary, clean_own, clean_ordinary):
+        track_at_end(path)
+    shim_reader(monkeypatch)
+
+    assert miner.run(home).status == "idle"
+
+    cursors = miner._load_cursors()
+    assert cursors[miner._HEADERS_CHECKED_KEY] == miner._headers_fingerprint()
+    assert cursors[str(clean_own)].get("halt") is True  # positive control: the pass did its work
+    assert cursors[str(odd_then_own)].get("halt") is True  # the odd rows are skipped, the prompt behind them is seen
+    assert not cursors[str(odd_then_ordinary)].get("halt")
+    assert not cursors[str(clean_ordinary)].get("halt")
+
+
+def test_a_row_that_is_not_utf8_does_not_hide_the_prompt_behind_it(tmp_path, home, transcripts, monkeypatch):
+    """Bytes that are not UTF-8 are read as replacement characters: the file is
+    still checked, and the pass still stamps its fingerprint."""
+    own = transcripts / OVERSEER_FOLDER / "sess-bad-bytes.jsonl"
+    own.write_bytes(b"\xff\xfe not text \x80\n" + "\n".join(own_session_lines(overseer_prompts(tmp_path)["phase-a"])).encode("utf-8") + b"\n")
+    cursors = miner._load_cursors()  # tracked at its end by hand: `track_at_end` reads strictly
+    cursors[str(own)] = {"lines": 3, "size": own.stat().st_size}
+    miner._save_cursors(cursors)
+    shim_reader(monkeypatch)
+
+    assert miner.run(home).status == "idle"
+
+    cursors = miner._load_cursors()
+    assert cursors[str(own)].get("halt") is True
+    assert cursors[miner._HEADERS_CHECKED_KEY] == miner._headers_fingerprint()
+
+
+def test_a_tracked_file_that_cannot_be_checked_is_checked_again_next_run(tmp_path, home, transcripts, monkeypatch):
+    """A file the pass cannot read (a permission error, or any failure of its
+    own) is simply not halted this time. The pass does not stamp its
+    fingerprint, so the next mine checks again; and it logs a count, never a
+    path or any transcript text."""
+    prompt = overseer_prompts(tmp_path)["phase-a"]
+    unreadable = write_session(transcripts, OVERSEER_FOLDER, "sess-unreadable", own_session_lines(prompt))
+    broken = write_session(transcripts, OVERSEER_FOLDER, "sess-broken", own_session_lines(prompt))
+    fine = write_session(transcripts, OVERSEER_FOLDER, "sess-fine", own_session_lines(prompt))
+    for path in (unreadable, broken, fine):
+        track_at_end(path)
+    shim_reader(monkeypatch)
+    real = miner._first_user_text
+
+    def failing(path):
+        if path == unreadable:
+            raise PermissionError(13, "Permission denied")
+        if path == broken:
+            raise RuntimeError(f"unexpected failure with {OWN_TAIL} in it")
+        return real(path)
+
+    monkeypatch.setattr(miner, "_first_user_text", failing)
+
+    assert miner.run(home).status == "idle"
+
+    cursors = miner._load_cursors()
+    assert cursors[str(fine)].get("halt") is True  # positive control: one bad file does not stop the others
+    assert not cursors[str(unreadable)].get("halt") and not cursors[str(broken)].get("halt")
+    assert cursors.get(miner._HEADERS_CHECKED_KEY) != miner._headers_fingerprint()  # not stamped
+    log_text = (miner.miner_dir() / "miner.log").read_text(encoding="utf-8")
+    assert "2 tracked sessions could not be checked" in log_text
+    assert OWN_TAIL not in log_text and str(unreadable) not in log_text and "sess-broken" not in log_text
+
+    monkeypatch.setattr(miner, "_first_user_text", real)  # the failures pass
+    assert miner.run(home).status == "idle"
+
+    cursors = miner._load_cursors()
+    assert cursors[str(unreadable)].get("halt") is True and cursors[str(broken)].get("halt") is True
+    assert cursors[miner._HEADERS_CHECKED_KEY] == miner._headers_fingerprint()
+
+
 def test_a_tracked_session_whose_file_is_gone_is_left_alone(tmp_path, home, transcripts, monkeypatch):
-    """Claude Code deletes old transcripts; a cursor entry may outlive its file."""
+    """Claude Code deletes old transcripts; a cursor entry may outlive its file,
+    and a file that is gone is nothing to check again."""
     gone = transcripts / OVERSEER_FOLDER / "sess-gone.jsonl"
     cursors = miner._load_cursors()
     cursors[str(gone)] = {"lines": 2, "size": 100}
@@ -395,6 +540,7 @@ def test_a_tracked_session_whose_file_is_gone_is_left_alone(tmp_path, home, tran
     shim_reader(monkeypatch)
     assert miner.run(home).status == "idle"
     assert miner._load_cursors()[str(gone)] == {"lines": 2, "size": 100}
+    assert miner._load_cursors()[miner._HEADERS_CHECKED_KEY] == miner._headers_fingerprint()
 
 
 # ------------------------------------------------- first-time activation
@@ -438,11 +584,10 @@ def test_every_real_prompt_begins_with_its_declared_opening(tmp_path, home):
     for name, text in overseer_prompts(tmp_path).items():
         assert text.startswith(overseer_run.SESSION_OPENINGS), name
     steward_texts = steward_prompts(tmp_path, home)
-    now, legacy = steward_prompt.SESSION_OPENINGS
-    assert steward_texts["per-packet"].startswith(now)
-    assert steward_texts["repair-turn"].startswith(now)
-    assert steward_texts["whole-brief"].startswith(legacy)
-    assert now != legacy
+    (opening,) = steward_prompt.SESSION_OPENINGS
+    assert steward_texts["per-packet"].startswith(opening)
+    assert steward_texts["repair-turn"].startswith(opening)
+    assert steward_texts["whole-brief-before-0926"].startswith(opening)
     worker_texts = worker_prompts(tmp_path, home)
     normal, repair = worker.SESSION_OPENINGS
     assert worker_texts["normal-pass"].startswith(normal)
