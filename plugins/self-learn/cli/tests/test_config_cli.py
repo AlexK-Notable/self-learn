@@ -155,6 +155,9 @@ class TestConfigGet:
             # same emergency-rollback lever as every other surface.
             "invocation.backend_steward",
             "invocation.backend_overseer",
+            # U4-seam (17-invocation-runbook.md §1a): the session miner's
+            # surface joins the same generated family.
+            "invocation.backend_miner-session",
         }
         assert a_names == {s.name for s in settings.REGISTRY} - c_names
 
