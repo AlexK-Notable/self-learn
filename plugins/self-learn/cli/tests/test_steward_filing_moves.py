@@ -1,22 +1,27 @@
-"""2026-10-06 -- a filing move does not strand a lesson.
+"""2026-10-06 -- a filing move does not strand a lesson (L8, redesigned).
 
 When the steward rehomes or rescopes a pending lesson, the lesson is still
-pending afterwards, in its new bucket. A project->project move rewrites no
-byte of the record (`verbs.rehome`, U-verbs §3.2b), so its version -- the
-record's committed blob (U3a) -- is unchanged, and the move's `applied`
-disposition used to mark that version decided: every later run skipped
+pending afterwards, in its new bucket. A project->project move used to
+rewrite no byte of the record (`verbs.rehome`, U-verbs §3.2b), so its
+version -- the record's committed blob (U3a) -- was unchanged, and the
+move's `applied` row marked that version decided: every later run skipped
 the lesson and it waited for ever. Found read-only on the live ledger:
 `case-1f29abaf` (run `run-56216707bd4f`) rehomed two lessons and
 `case-ccbbeedb` a third, all three still pending and never selected.
 
-Covers: a lesson the steward moved is selected again by the next run, in
-its new bucket (the live shape, with a real `rehome`); a decision is about
-the lesson where it was filed, so a parked lesson stays decided until
-someone moves it and is then decided afresh (the overseer's own filing
-moves); a lesson moved back where the steward filed it from is selected
-there; and the bound -- a case that would move a lesson the steward has
-already moved is parked for the overseer as `scope-conflict`, never
-applied, whatever verb or wording it uses.
+The design (the orchestrator's, after the gate on 61ec621 found that
+scoping decisions to a bucket re-opens every decided lesson of a bucket
+`host rebind` renames):
+- every move writes one `moved` history entry into the record it moves,
+  for every actor, so the moved lesson is a new version, selected again in
+  its new bucket; a rebind writes nothing, so a decided lesson stays
+  decided;
+- an `applied` row whose case moved the lesson is not a decision, which is
+  what brings back a lesson moved before this change (its blob never
+  changed);
+- the bound: the steward moves a lesson at most once, and never moves one
+  a person or the overseer moved last -- such a case is parked for the
+  overseer as `scope-conflict`, never applied.
 
 Two registered project hosts under ``tmp_path``; no real model call (the
 fakes write the stage files), no embedding call.
@@ -29,9 +34,11 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import cases, ledger_ops, steward, verbs
+from self_learn import cases, execution_evidence, hosts, ledger_ops, steward, verbs
 from self_learn.hosts import host_add, slug_for
 from self_learn.invocation.contract import Outcome
+from self_learn.overseer import run as overseer_run
+from self_learn.records import Record
 from support import commit_all, git, init_repo, make_env, make_knowledge
 from test_steward import _configure_steward, _dump_yaml, _head_manifest, _stage_dir
 
@@ -47,11 +54,12 @@ def _quiet(tmp_path, monkeypatch):
 
 class Ledger:
     """Two registered project hosts, A and B -- the live stranding was a
-    project->project move, the one move that leaves the record's bytes
-    (its version) unchanged."""
+    project->project move, the one move that used to leave the record's
+    bytes (its version) unchanged."""
 
     def __init__(self, tmp_path: Path):
         sandbox = make_env(tmp_path)
+        self.tmp_path = tmp_path
         self.home = sandbox.ledger
         self.host_a = sandbox.host
         self.host_b = tmp_path / "repos" / "znote-owner"
@@ -73,6 +81,9 @@ class Ledger:
     def pending(self, bucket: str, rid: str) -> Path:
         return self.home / bucket / "pending" / f"{rid}.md"
 
+    def record(self, rid: str) -> Record:
+        return Record.from_path(ledger_ops.find_record_path(self.home, rid))
+
     def blob(self, rid: str) -> str:
         rel = ledger_ops.find_record_path(self.home, rid).relative_to(self.home).as_posix()
         return git(self.home, "rev-parse", f"HEAD:{rel}").stdout.strip()
@@ -82,8 +93,22 @@ class Ledger:
         return next(row for entry, row in steward._eligible_lessons(self.home)
                     if entry.record.id == rid)
 
-    def move(self, rid: str, host: Path, *, by: str) -> None:
+    def move(self, rid: str, host: Path, *, by: str | None) -> None:
         verbs.rehome(self.home, rid, to=str(host), by=by, no_push=True)
+
+    def move_without_entry(self, rid: str) -> None:
+        """A project->project move as it was before L8: the file renamed
+        into B, not one byte of it changed."""
+        bucket_b = self.home / self.bucket_b
+        ledger_ops.ensure_project_meta(bucket_b, self.host_b)
+        (bucket_b / "pending").mkdir(parents=True, exist_ok=True)
+        git(self.home, "mv", f"{self.bucket_a}/pending/{rid}.md",
+            f"{self.bucket_b}/pending/{rid}.md")
+        commit_all(self.home, f"self-learn: rehome {rid} → {self.bucket_b}")
+
+
+def _moves(record: Record) -> list[dict]:
+    return [dict(e) for e in record.history or [] if e.get("event") == "moved"]
 
 
 def _publish_run(home: Path, run_id: str, rows: list[tuple[dict, str, str, list[dict]]]) -> None:
@@ -110,93 +135,133 @@ def _selected(home: Path) -> list[str]:
     return [entry.record.id for entry, _row in steward._eligible_lessons(home)]
 
 
-# ------------------------------------------- 1. eligibility after a move
+# ------------------------------------------------ 1. the move writes itself
 
 
-def test_a_lesson_the_steward_rehomed_is_selected_again_in_its_new_bucket(tmp_path):
-    """The live shape: `case-1f29abaf` rehomed a lesson project->project; the
-    run record says `applied` at the version it selected; the lesson is
-    pending in the new bucket at that same version."""
+@pytest.mark.parametrize(
+    ("verb", "to", "by", "expected_by", "expected_to"),
+    [
+        ("rehome", "B", "steward", "steward", "B"),
+        ("rescope", "B", "overseer", "overseer", "B"),
+        ("rescope", "user", None, "human", "user"),
+    ],
+    ids=["rehome-steward", "rescope-overseer", "rescope-person"],
+)
+def test_rehome_and_rescope_append_exactly_one_moved_entry(
+    verb, to, by, expected_by, expected_to, tmp_path
+):
+    env = Ledger(tmp_path)
+    rid = "lrn-f1100010"
+    env.lesson(rid)
+    before = env.blob(rid)
+    target = str(env.host_b) if to == "B" else "user"
+
+    getattr(verbs, verb)(env.home, rid, to=target, by=by, no_push=True)
+
+    record = env.record(rid)
+    (entry,) = _moves(record)
+    assert set(entry) == {"at", "event", "from", "to", "by"}
+    assert entry["from"] == env.bucket_a
+    assert entry["to"] == (env.bucket_b if expected_to == "B" else "user")
+    assert entry["by"] == expected_by
+    assert len(record.history) == 1
+    assert env.blob(rid) != before, "the move is a new version of the lesson"
+
+
+def test_a_delegated_move_names_its_runner_and_case(tmp_path):
+    """Under a delegated sheet the runner's own identity is the actor (as
+    for the commit's attribution, never a sheet field) and the case rides
+    along."""
+    env = Ledger(tmp_path)
+    rid = "lrn-f1100011"
+    env.lesson(rid)
+    ref = execution_evidence.ExecutionRef(
+        run_id="run-f11000000011", case_id="case-f1100011", sheet_sha="0123abcd",
+        sheet_digest="0" * 64, item=1, record_id=rid, verb="rehome", actor="overseer",
+    )
+    verbs.rehome(env.home, rid, to=str(env.host_b), by="human", no_push=True, execution=ref)
+
+    (entry,) = _moves(env.record(rid))
+    assert entry["by"] == "overseer"
+    assert entry["case"] == "case-f1100011"
+
+
+# ------------------------------------------- 2. eligibility after a move
+
+
+def test_a_lesson_moved_before_the_move_entry_existed_is_selected_again(tmp_path):
+    """The live shape: `case-1f29abaf` rehomed a lesson project->project
+    before moves wrote into the record; the run record says `applied` at
+    the version it selected; the lesson is pending in the new bucket at
+    that same version, with no `moved` entry."""
     env = Ledger(tmp_path)
     rid = "lrn-f1100001"
     env.lesson(rid)
     row = env.row(rid)
-    assert row["path"] == f"{env.bucket_a}/pending/{rid}.md"
-    env.move(rid, env.host_b, by="steward")
+    env.move_without_entry(rid)
     _publish_run(env.home, "run-f11000000001", [
         (row, "applied", "case-f1100001", [{"n": 1, "id": rid, "verb": "rehome"}]),
     ])
 
-    # positive control: this is the stranding shape -- the move left the
-    # record's bytes, and so its version, exactly as the run selected them
+    # positive control: this is the stranding shape
     assert env.pending(env.bucket_b, rid).is_file()
-    assert not env.pending(env.bucket_a, rid).exists()
+    assert env.blob(rid) == row["version"] and _moves(env.record(rid)) == []
+
+    assert _selected(env.home) == [rid]
+    assert env.row(rid)["path"] == f"{env.bucket_b}/pending/{rid}.md"
+
+
+@pytest.mark.parametrize("by", ["overseer", None], ids=["overseer", "person"])
+def test_a_parked_lesson_a_person_or_the_overseer_moves_is_selected_again(by, tmp_path):
+    """The overseer decides a parked case by moving the lesson (live:
+    `case-64084ade` -> `case-7d83a07b` rehomed `lrn-56860b4a`; that move
+    was project->user and so changed the bytes by luck). A same-scope move
+    now changes them too."""
+    env = Ledger(tmp_path)
+    rid = "lrn-f1100002"
+    env.lesson(rid)
+    row = env.row(rid)
+    _publish_run(env.home, "run-f11000000002", [
+        (row, "parked", "case-f1100002", [{"n": 1, "id": rid, "verb": "route"}]),
+    ])
+    assert _selected(env.home) == [], "positive control: parked and unmoved, still decided"
+
+    env.move(rid, env.host_b, by=by)
+
+    assert _selected(env.home) == [rid]
+    assert env.row(rid)["version"] != row["version"]
+
+
+@pytest.mark.parametrize("state", ["parked", "refused", "abandoned", "overtaken"])
+def test_host_rebind_leaves_a_decided_lesson_decided(state, tmp_path):
+    """Gate F1 on 61ec621: `host rebind` renames a whole bucket and writes
+    no record. A decision tied to the bucket made every decided lesson in
+    it look undecided -- a second case beside the overseer's parked one, a
+    secret-refused lesson retried. A decision is tied to the version, and a
+    rebind does not change it."""
+    env = Ledger(tmp_path)
+    rid = "lrn-f1100003"
+    env.lesson(rid)
+    row = env.row(rid)
+    _publish_run(env.home, "run-f11000000003", [
+        (row, state, "case-f1100003", [{"n": 1, "id": rid, "verb": "route"}]),
+    ])
+    moved_host = tmp_path / "repos" / "host-repo-moved"
+    init_repo(moved_host)
+    (moved_host / "README.md").write_text("moved\n", encoding="utf-8")
+    commit_all(moved_host, "moved seed")
+
+    new_bucket = hosts.host_rebind(env.home, slug_for(env.host_a), moved_host)
+
+    # positive control: the bucket really was renamed, the record untouched
+    rel = ledger_ops.find_record_path(env.home, rid).relative_to(env.home).as_posix()
+    assert rel == f"projects/{new_bucket.name}/pending/{rid}.md" != row["path"]
     assert env.blob(rid) == row["version"]
 
-    assert _selected(env.home) == [rid]
-    again = env.row(rid)
-    assert again["version"] == row["version"]
-    assert again["path"] == f"{env.bucket_b}/pending/{rid}.md"
+    assert _selected(env.home) == []
 
 
-def test_a_parked_lesson_stays_decided_until_someone_moves_it(tmp_path):
-    """The overseer's own filing moves: it decides a parked case by moving
-    the lesson (live: `case-64084ade` -> `case-7d83a07b` rehomed
-    `lrn-56860b4a`). That one rewrote `scope:` (project->user), so its
-    version changed and it was picked up; a project->project move would
-    have stranded it exactly like the steward's."""
-    env = Ledger(tmp_path)
-    parked, untold = "lrn-f1100002", "lrn-f1100003"
-    env.lesson(parked)
-    env.lesson(untold)
-    parked_row = env.row(parked)
-    untold_row = env.row(untold)
-    _publish_run(env.home, "run-f11000000002", [
-        (parked_row, "parked", "case-f1100002", [{"n": 1, "id": parked, "verb": "route"}]),
-    ])
-    # A row from before input rows carried their path decides its version
-    # wherever the lesson lives, as every row did before.
-    _publish_run(env.home, "run-f11000000003", [
-        ({"record": untold, "version": untold_row["version"]}, "parked", "case-f1100003",
-         [{"n": 1, "id": untold, "verb": "route"}]),
-    ])
-    assert _selected(env.home) == [], "parked and unmoved: still decided"
-
-    env.move(parked, env.host_b, by="overseer")
-    env.move(untold, env.host_b, by="overseer")
-    assert env.blob(parked) == parked_row["version"], "positive control: same version"
-
-    assert _selected(env.home) == [parked]
-
-
-def test_a_lesson_moved_back_where_the_steward_filed_it_from_is_decided_there(tmp_path):
-    """A filing move decides nothing, not even in the bucket it moved the
-    lesson out of. The steward moved A -> B and then parked it in B; the
-    overseer decided that parked case by moving it back to A, for the
-    steward to place. Were the move a decision in A, the lesson would be
-    stranded there."""
-    env = Ledger(tmp_path)
-    rid = "lrn-f1100004"
-    env.lesson(rid)
-    in_a = env.row(rid)
-    env.move(rid, env.host_b, by="steward")
-    in_b = env.row(rid)
-    _publish_run(env.home, "run-f11000000004", [
-        (in_a, "applied", "case-f1100004", [{"n": 1, "id": rid, "verb": "rehome"}]),
-    ])
-    _publish_run(env.home, "run-f11000000005", [
-        (in_b, "parked", "case-f1100005", [{"n": 1, "id": rid, "verb": "route"}]),
-    ])
-    assert _selected(env.home) == [], "positive control: parked in B, decided there"
-
-    env.move(rid, env.host_a, by="overseer")
-    assert env.blob(rid) == in_a["version"]
-
-    assert _selected(env.home) == [rid]
-    assert env.row(rid)["path"] == f"{env.bucket_a}/pending/{rid}.md"
-
-
-# ------------------------------------------------ 2. the bound, end to end
+# ------------------------------------------------ 3. the bound, end to end
 
 
 def _session(target: Path, *, verb: str = "rehome", revise: str | None = None,
@@ -237,12 +302,15 @@ def _session(target: Path, *, verb: str = "rehome", revise: str | None = None,
     return write
 
 
+def _case_id(home: Path, run_id: str, rid: str) -> str:
+    (packet,) = _head_manifest(home, run_id)["packets"]
+    return str(packet["dispositions"][rid]["case"])
+
+
 def _case_of(home: Path, run_id: str, rid: str) -> dict:
     """The frontmatter of the committed case this run's record names as
     *rid*'s disposition."""
-    (packet,) = _head_manifest(home, run_id)["packets"]
-    case_id = packet["dispositions"][rid]["case"]
-    view = cases.show(home, case_id, evidence_only=False)
+    view = cases.show(home, _case_id(home, run_id, rid), evidence_only=False)
     assert view.frontmatter.get("run_id") == run_id
     return dict(view.frontmatter)
 
@@ -255,14 +323,12 @@ def _case_of(home: Path, run_id: str, rid: str) -> dict:
 def test_a_second_move_of_the_same_lesson_is_parked_for_the_overseer(
     verb, revise, tmp_path, monkeypatch
 ):
-    # (each pass rewords the lesson differently, so each move is at a new
-    # version -- the shape a per-version count would never stop)
-    """Run 1 moves the lesson A -> B and does not decide it in the same run;
-    the next run selects it in B. Run 2 tries to move it back: the case is
-    parked as `scope-conflict` and its sheet is recorded, never applied, so
-    the lesson stays pending in B for the overseer -- and is decided there.
-    The count is per lesson, not per version, so rewording the lesson
-    before each move does not start the count again."""
+    """Run 1 moves the lesson A -> B, writes the move into the record, and
+    does not decide it in the same run; the next run selects it in B. Run 2
+    tries to move it back: the case is parked as `scope-conflict` and its
+    sheet is recorded, never applied, so the lesson stays pending in B for
+    the overseer. The count is per lesson, not per version, so rewording
+    the lesson before each move does not start it again."""
     env = Ledger(tmp_path)
     rid = "lrn-f1100006"
     env.lesson(rid)
@@ -271,16 +337,17 @@ def test_a_second_move_of_the_same_lesson_is_parked_for_the_overseer(
     calls: list = []
     monkeypatch.setattr(steward.invocation, "write_session", _session(
         env.host_b, verb=verb, revise="Reworded once." if revise else None, calls=calls))
-    selected = env.row(rid)
     first = steward.run(env.home)
     assert first.status == "applied" and len(calls) == 1
     assert env.pending(env.bucket_b, rid).is_file()
     assert _case_of(env.home, str(first.run_id), rid).get("kind") != "parked"
+    (entry,) = _moves(env.record(rid))
+    assert (entry["from"], entry["to"], entry["by"]) == (env.bucket_a, env.bucket_b, "steward")
+    assert entry["case"] == _case_id(env.home, str(first.run_id), rid)
     # moved, not decided: still pending, and run 1 made no second case for it
-    assert ledger_ops.read_record_or_refuse(env.pending(env.bucket_b, rid)).status == "pending"
+    assert env.record(rid).status == "pending"
     (packet,) = _head_manifest(env.home, str(first.run_id))["packets"]
     assert len(packet["case_ids"]) == 1
-    assert (env.blob(rid) == selected["version"]) is (not revise)
     assert [rid] == _selected(env.home), "the next run selects it, in its new bucket"
 
     monkeypatch.setattr(steward.invocation, "write_session", _session(
@@ -290,13 +357,39 @@ def test_a_second_move_of_the_same_lesson_is_parked_for_the_overseer(
 
     assert env.pending(env.bucket_b, rid).is_file(), "the second move was not applied"
     assert not env.pending(env.bucket_a, rid).exists()
+    assert len(_moves(env.record(rid))) == 1
     parked = _case_of(env.home, str(second.run_id), rid)
     assert parked.get("kind") == "parked"
     assert parked.get("parked_reason") == "scope-conflict"
-    manifest = _head_manifest(env.home, str(second.run_id))
-    (packet,) = manifest["packets"]
+    (packet,) = _head_manifest(env.home, str(second.run_id))["packets"]
     assert packet["dispositions"][rid]["state"] == "parked"
     assert _selected(env.home) == [], "parked in B: decided there, the overseer's now"
+
+
+@pytest.mark.parametrize("by", ["overseer", None], ids=["overseer", "person"])
+def test_the_steward_never_moves_a_lesson_a_person_or_the_overseer_moved_last(
+    by, tmp_path, monkeypatch
+):
+    """A person or the overseer filed the lesson into B. The steward has
+    never moved it (its count is zero), yet a case that moves it is parked
+    for the overseer: the steward does not override their filing."""
+    env = Ledger(tmp_path)
+    rid = "lrn-f1100009"
+    env.lesson(rid)
+    env.move(rid, env.host_b, by=by)
+    _configure_steward(env.home)
+    # positive control: no steward run exists, so no steward move is counted
+    assert steward.committed_manifests(env.home) == []
+    assert _selected(env.home) == [rid]
+
+    monkeypatch.setattr(steward.invocation, "write_session", _session(env.host_a))
+    result = steward.run(env.home)
+
+    assert result.status == "applied"
+    assert env.pending(env.bucket_b, rid).is_file(), "the steward's move was not applied"
+    assert not env.pending(env.bucket_a, rid).exists()
+    parked = _case_of(env.home, str(result.run_id), rid)
+    assert parked.get("parked_reason") == "scope-conflict"
 
 
 def test_the_repair_turn_is_not_asked_to_fix_a_case_the_runner_will_park(tmp_path):
@@ -351,3 +444,27 @@ def test_a_case_the_model_parked_keeps_its_own_reason(tmp_path, monkeypatch):
     assert parked.get("kind") == "parked"
     assert parked.get("parked_reason") == "authority-unclear"
     assert env.pending(env.bucket_b, rid).is_file()
+
+
+# ------------------------------------- 4. a reconsider of the moving case
+
+
+def test_a_reconsider_of_the_case_that_moved_a_lesson_passes_the_predecessor_check(
+    tmp_path, monkeypatch
+):
+    """Writing the move into the record must not break a later reconsider
+    of the case that moved it: the predecessor check reads the case's own
+    freeze hash and its `records`, never the record's version."""
+    env = Ledger(tmp_path)
+    rid = "lrn-f110000c"
+    env.lesson(rid)
+    _configure_steward(env.home)
+    monkeypatch.setattr(steward.invocation, "write_session", _session(env.host_b))
+    run = steward.run(env.home)
+    case_id = _case_id(env.home, str(run.run_id), rid)
+    (entry,) = _moves(env.record(rid))
+    assert entry["case"] == case_id, "positive control: the move is written into the record"
+
+    assert overseer_run._reconsider_predecessor_problem(
+        env.home, {"supersedes": case_id, "records": [rid]}, set()
+    ) is None

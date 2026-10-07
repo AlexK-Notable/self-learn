@@ -2687,6 +2687,15 @@ def resolve_record(
     return touched
 
 
+def _ledger_relative(home: Path, path: Path) -> str:
+    """*path* as a ledger-relative POSIX string (``projects/<slug>``,
+    ``skills/<name>``, ``user``); the absolute path when it lies outside."""
+    try:
+        return path.resolve().relative_to(Path(home).resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def move_record(
     home: Path,
     record_id: str,
@@ -2694,6 +2703,8 @@ def move_record(
     target_scope: str,
     target_bucket: Path,
     project_path: Path | None = None,
+    by: str = "human",
+    case: str | None = None,
 ) -> tuple[list[Path], list[Path]]:
     """The ONE file-op behind both ``rehome`` and ``rescope`` (U-verbs
     §3.2a, ruling R1 — replaces the two half-complete
@@ -2724,6 +2735,15 @@ def move_record(
     (``find_record_path(..., statuses=("pending",))``) — this function
     trusts the path it is handed.
 
+    Every move appends one ``moved`` history entry to the record
+    (2026-10-06, L8): ``from``/``to`` (the ledger-relative buckets), ``by``
+    (the actor) and ``case`` when the caller knows the sheet's case. The
+    entry is written in the same ``record.write`` as the scope, so a move
+    always changes the record's bytes and the moved lesson is a new
+    version for the steward to decide in its new bucket; a bucket rename
+    (``host rebind``) writes no record and leaves a decided lesson
+    decided.
+
     Returns ``(touched, swept)`` — ``touched`` is the exact path list
     :func:`_commit_ledger` should stage; ``swept`` is the subset
     :func:`remove_proposal_siblings` removed (a strict subset of
@@ -2744,6 +2764,14 @@ def move_record(
         (target_bucket / sub).mkdir(parents=True, exist_ok=True)
     record = Record.from_path(path)
     record.set_scope(target_scope)  # written unconditionally (§3.2a step 5)
+    moved: dict = {
+        "from": _ledger_relative(home, source_bucket),
+        "to": _ledger_relative(home, target_bucket),
+        "by": by,
+    }
+    if case is not None:
+        moved["case"] = case
+    record.append_history("moved", moved)
     dest_path = target_bucket / "pending" / path.name
     if _is_tracked(home, path):
         _git_mv(home, path, dest_path)
