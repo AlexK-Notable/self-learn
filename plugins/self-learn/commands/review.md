@@ -471,7 +471,9 @@ what an unattended run decided, and how you correct it:
   `always-loaded-user-scope`, `broad-removal`, `authority-unclear`,
   `scope-conflict` — the five the steward chooses — plus
   `plain-host-committed-file`, `attempts-exhausted` and `ledger-refused`,
-  which its runner writes for it).
+  which its runner writes for it; the runner also writes `scope-conflict`
+  for a case that would move a lesson the steward already moved, or one a
+  person or the overseer moved last).
 - `self-learn case observe <id> --kind
   examined|presented|statement|corrected|dependency-moved --text …
   [--ref …] [--presented-outcome agreed|corrected|noted]` — appends a Later

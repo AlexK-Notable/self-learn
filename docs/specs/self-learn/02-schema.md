@@ -339,6 +339,16 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   nothing changed. `reconsidered` is the
   successor-case pointer a dependency-moved observation queues
   (`02-schema.md` §3a.2) — a decision, made once, here.
+- **`history`'s closed set widens to six kinds** *(2026-10-06, L8,
+  `03-decisions.md` S-78)*: `moved` joins the five above.
+  `ledger_ops.move_record` appends one per `rehome` or `rescope`, for every
+  actor, in the same write as the `scope:` rewrite: `{at, event: "moved",
+  from, to, by, case?}`. `from` and `to` are ledger-relative buckets
+  (`user`, `skills/<name>`, `projects/<slug>`). `by` is the delegated
+  runner's own actor, else the verb's `by`, else `human`; `case` is present
+  only under a delegated sheet. A move is therefore never byte-identical:
+  it is a new version of the lesson (§3a.8). Code older than this widening
+  refuses such a record.
 - **`<ledger>/overseer/` is not a bucket** *(2026-09-13 — the overseer
   build, O-0)*: it holds no `pending/resolved/proposals` records, is never
   a route destination, and never appears in `list --json`'s bucket
@@ -1665,6 +1675,10 @@ decision's line for a reason neither a retry nor a fresh decision can fix —
 a refusal of kind `needs-person` or `unclassified`, or a second refusal of a
 lesson already sent back once. The steward's model may never choose any of
 the three.
+One reason the model may choose, `scope-conflict`, the runner also writes
+*(added 2026-10-06, S-78)*: for a case that would move a lesson the steward
+has already moved, or one a person or the overseer moved last. A case the
+model parked keeps its own reason.
 
 **The index**, `<cache>/cases/index.json`, is rebuildable, not truth (a
 `NOT_REPO_TRUTH` disposition): `case, opened_at, actor, kind, trigger,
@@ -2134,7 +2148,12 @@ record's `inputs` with a `kind`:
 | `reconsider` | a record a later observation brought back (unchanged) | `observation:<obs-id>` |
 | `suspected-violation` | a ROUTED record that unhandled `fire` events with outcome `suspected-violation` name (a legacy `violated` reads as it, §4.3 of `11-telemetry-and-lifecycle.md`); the row carries the events (`nonce`, `ts`, `outcome`, `origin`) | `fires:<nonce>,<nonce>…`, sorted |
 
-A record edited after selection is a new version. A proposal written or
+A record edited after selection is a new version. A move is such an edit
+*(2026-10-06, S-78)*: its `moved` history entry makes the lesson a new
+version, decided afresh in its new bucket. An `applied` disposition whose
+case moved the lesson (a `rehome` or `rescope` item for it) is not a
+decision either, which is what brings back a lesson moved before moves
+wrote that entry. A proposal written or
 rewritten beside it changes nothing. Every run record written before this
 change keyed its dispositions by the proposal blob: a lesson whose
 `legacy_version` a committed run applied, parked or abandoned is still
