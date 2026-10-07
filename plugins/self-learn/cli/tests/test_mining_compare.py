@@ -546,7 +546,7 @@ def _canary_world(world):
     world.record("lrn-00000001", "session", "routed", [("sess-a", 3)])
     world.record("lrn-00000002", "session", "routed", [("sess-a", 15)])
     matched = world.lesson("L1", [world.evidence("sess-a", 15, "turn 8 text")])
-    new = world.lesson("L2", [world.evidence("sess-a", 11, f"{CANARY} two")])
+    new = world.lesson("L2", [world.evidence("sess-a", 11, f"{CANARY} two")], trigger="Old trigger text repeated again")
     run = world.run([("called", world.out("sess-a", lessons=[matched, new]))])
     return a, run
 
@@ -573,15 +573,17 @@ def test_h4_new_items_reach_the_spot_check_and_no_text_reaches_the_counts(world,
 
 def test_h4_the_sheet_offers_lexical_neighbours_when_an_index_exists(world, capsys, monkeypatch):
     _a, run = _canary_world(world)
-    rep, _, _ = report(world, run, capsys=capsys)
+    rep, _, _ = report(world, run, "--shared-sample", "0", capsys=capsys)
     assert "no lesson index built" in (run / "compare" / "spot-check.md").read_text(encoding="utf-8")
     # build a lexical index of the scratch ledger, then ask again
     index = LessonIndex.open(world.home)
     index.build(provider=None)
     index.close()
-    rep, _, _ = report(world, run, capsys=capsys)
+    rep, _, _ = report(world, run, "--shared-sample", "0", capsys=capsys)
     sheet = (run / "compare" / "spot-check.md").read_text(encoding="utf-8")
-    assert "lexical neighbours" in sheet and "lrn-0000000" in sheet.split("lexical neighbours", 1)[1][:600]
+    assert "no lesson index built" not in sheet
+    block = sheet.split("- lexical neighbours (a hint for duplicates):", 1)[1].split("\n- ", 1)[0]
+    assert "lrn-0000000" in block and "[routed]" in block
 
 
 def test_h4_the_sheet_withholds_a_secret_the_ledger_text_carries(world, capsys):
@@ -593,6 +595,20 @@ def test_h4_the_sheet_withholds_a_secret_the_ledger_text_carries(world, capsys):
     sheet = (run / "compare" / "spot-check.md").read_text(encoding="utf-8")
     assert "[redacted:" in sheet and fake not in sheet
     assert "Old trigger" in sheet  # control: the sentence around it is there
+
+
+def test_h4_a_secret_in_the_models_own_fields_is_redacted_on_the_sheet(world, capsys):
+    fake = "ghp_" + "Z9y8X7w6" * 5  # built at run time; a GitHub-token shape
+    world.session("sess-a", conversation(6), moments=[3])
+    world.record("lrn-00000001", "session", "routed", [("sess-a", 3)])
+    new = world.lesson("L1", [world.evidence("sess-a", 9, f"turn 5 text {fake}")],
+                       trigger=f"About to paste {fake} into a prompt", instruction="Redact it first")
+    run = world.run([("called", world.out("sess-a", lessons=[new]))])
+    report(world, run, "--shared-sample", "0", capsys=capsys)
+    sheet = (run / "compare" / "spot-check.md").read_text(encoding="utf-8")
+    assert f"### {RUN_ID}/sess-a/L1" in sheet  # control: the new lesson is on the sheet
+    assert "[redacted:" in sheet and fake not in sheet
+    assert "About to paste" in sheet and "into a prompt" in sheet  # the words around it are kept
 
 
 # ------------------------------------------------------------------- H5
