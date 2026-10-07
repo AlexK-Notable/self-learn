@@ -78,8 +78,18 @@ projects vs allowlist). Transcript retention (`cleanupPeriodDays`) plus a
 daily cadence means the cursor never races deletion.
 
 **Loop exclusions (M-5):** skip transcripts whose opening prompt matches
-the pinned worker or miner prompt headers (the system must not mine its
-own machinery); skip spans inside `/self-learn:review` and
+one of the system's own prompt openings (the system must not mine its
+own machinery): the worker's normal and repair passes, the miner's own
+reader, the steward and the overseer. Each agent's opening is defined
+beside the prompt that makes it (`worker.SESSION_OPENINGS`,
+`steward_prompt.SESSION_OPENINGS`, `overseer.run.SESSION_OPENINGS`) and
+`miner.SELF_PROMPT_HEADERS` unpacks them, so an edit to a prompt cannot
+quietly start the miner reading that agent's sessions again
+(2026-10-06). A session the cursor file already tracks is checked once
+per header list by `halt_tracked_self_sessions` (its fingerprint is
+kept in `cursors.json`); a file that cannot be read is checked again on
+the next run, and a malformed row is skipped, never raised on.
+Program-run sessions that are not self-learn's own are still mined; skip spans inside `/self-learn:review` and
 `/self-learn:teach` command execution (identifiable by command tags in
 the transcript) — a review session *discusses* lessons, and mining the
 discussion re-captures them. Phase 3 dedup is the backstop for anything

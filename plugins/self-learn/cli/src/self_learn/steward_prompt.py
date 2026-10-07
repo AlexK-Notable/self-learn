@@ -103,6 +103,22 @@ _BLOCK_ORDER = (
 #: time (the conditions' `observed_at` is the run's one snapshot).
 SHARED_BLOCKS = frozenset({"method", "conditions", "output_contract"})
 
+#: How the user message of a steward session begins: the prefix
+#: `miner.SELF_PROMPT_HEADERS` carries, so the nightly miner never reads the
+#: steward's own sessions (2026-10-06). DERIVED, not typed a second time: since
+#: 2026-09-26 (faa1853) the user message is the first block a run does not
+#: share (the method rides in the appended system prompt), and `assemble`
+#: writes every block as `=== <name> ===`. Before that date the whole brief
+#: was the user message and `containment` came first in it too, so this one
+#: opening covers every steward session there has been. It is NOT
+#: `=== method ===`: the method block never began a user message, and a
+#: person who pastes a brief that opens with it is not one of self-learn's
+#: agents. `tests/test_miner_self_sessions.py` builds real packets, and the
+#: whole brief as it was sent before faa1853, and checks them.
+SESSION_OPENINGS = (
+    f"=== {next(name for name in _BLOCK_ORDER if name not in SHARED_BLOCKS)} ===",
+)
+
 #: Container reading order for the user-model block (plan §4.1 item 3):
 #: own words -> seen readings -> declared conditions -> provisional
 #: readings -> observed regularities. NOT the interface draft §3.1

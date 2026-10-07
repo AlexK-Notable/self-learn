@@ -2164,6 +2164,18 @@ named.
 {files}
 """
 
+#: How a worker session's prompt begins: the prefixes `miner.SELF_PROMPT_HEADERS`
+#: carries, so the nightly miner never reads the worker's own sessions. Cut from
+#: the two templates themselves, each up to its first period, so a header can
+#: neither go stale nor be typed a second time: "You are the self-learn routing
+#: analyst worker" (the normal pass) and "... worker's REPAIR pass" (the repair
+#: pass, which a typed header ending in a period never matched, until
+#: 2026-10-06). `tests/test_miner_self_sessions.py` builds both real prompts and
+#: checks they begin with these.
+SESSION_OPENINGS = tuple(
+    template.partition(".")[0] for template in (_PROMPT_TEMPLATE, _REPAIR_PROMPT_TEMPLATE)
+)
+
 
 def _doctrine_and_registry_text() -> tuple[str, str]:
     # PACKAGE-relative (doc 13 T-H3): doctrine + registry ship with the
