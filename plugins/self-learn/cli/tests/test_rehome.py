@@ -2,7 +2,8 @@
 record re-home on a constructed two-project ledger.
 
 Covers: the move itself (one ledger commit, pinned subject, --note →
-commit body only, bytes untouched), --to by path AND by slug, a deferred
+commit body only, bytes untouched but one `moved` history entry), --to by
+path AND by slug, a deferred
 record moving and staying deferred, target bucket dirs + meta.yaml
 created from hosts.yaml when absent, the proposal-sibling sweep
 (lrn-<id>.{yaml,diff}) plus a merge-cluster member's rehome sweeping the
@@ -100,15 +101,28 @@ class TestRehomeMove:
         assert result.action == "rehome"
         assert not env.pending_a(rec.id).exists()
         assert env.pending_b(rec.id).is_file()
-        # 02 §2: the record file is byte-untouched — a filing move, never
-        # a substance edit.
-        assert env.pending_b(rec.id).read_text(encoding="utf-8") == before
+        # 02 §2: a filing move, never a substance edit -- the record file is
+        # byte-untouched apart from ONE appended `moved` history entry
+        # (2026-10-06, L8: every move is a new version of the lesson).
+        moved = Record.from_text(env.pending_b(rec.id).read_text(encoding="utf-8"))
+        (entry,) = moved.history
+        assert entry["event"] == "moved" and entry["by"] == "human"
+        assert entry["from"] == f"projects/{env.slug_a}"
+        assert entry["to"] == f"projects/{env.slug_b}"
+        assert "history" not in before
+        unmoved = moved.to_text().split("history:\n", 1)
+        assert len(unmoved) == 2
+        head, tail = unmoved
+        rest = tail.split("\n", 1)[1]
+        while rest.startswith("  "):
+            rest = rest.split("\n", 1)[1]
+        assert head + rest == before
         subject = f"self-learn: rehome {rec.id} → projects/{env.slug_b}"
         assert result.commit_message == subject
         assert verb_subject(env.home) == subject
         # --note rides the commit body ONLY (rehome is not a resolution;
-        # the byte-identity assertion above proves resolution_note — and
-        # everything else in the file — stayed untouched).
+        # the byte comparison above proves resolution_note — and
+        # everything else in the file but the `moved` entry — stayed untouched).
         assert "umbrella" in env.body()
         # ONE commit carries the whole move: rename halves + meta.yaml.
         files = verb_files(env.home)

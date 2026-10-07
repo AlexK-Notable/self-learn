@@ -128,10 +128,35 @@ _RUN_TERMINAL_DISPOSITIONS = frozenset(
 )
 #: "This input version needs no new decision": what `_terminal_versions`,
 #: and therefore `_eligible_lessons`, reads. `returned` is deliberately
-#: NOT here.
+#: NOT here, and an `applied` row whose case moved the lesson decides
+#: nothing (`_terminal_versions`, 2026-10-06).
 _DECIDED_DISPOSITIONS = frozenset(
     {"applied", "parked", "refused", "abandoned", "overtaken"}
 )
+#: The two sheet verbs that FILE a lesson -- move it to another bucket --
+#: without deciding it (2026-10-06). The lesson is still pending after
+#: either, in its new bucket, and needs a decision there. Since L8 every
+#: move appends a `moved` history entry to the record (`ledger_ops.
+#: move_record`), so a moved lesson is a new version anyway; a lesson moved
+#: before that, project->project, kept its version, and only
+#: `_terminal_versions`' skip of its move row brings it back.
+_FILING_VERBS = frozenset({"rehome", "rescope"})
+#: How many filing moves of one lesson the steward may have made -- its
+#: committed `applied` move rows or the record's own `moved` entries by the
+#: steward, whichever is more -- before a case that moves it again is
+#: parked for the overseer as `scope-conflict` instead of applied
+#: (2026-10-06). One: a
+#: lesson filed once and then filed again -- back where it came from or
+#: onward to a third bucket -- is a disagreement about where it belongs,
+#: which is the overseer's to settle; without this a steward that keeps
+#: changing its mind moves the lesson every night for ever (each move is a
+#: complete, progressing run, so S-68's per-packet attempt cap never sees
+#: it). Separately, the steward never moves a lesson a person or the
+#: overseer moved last (`_last_mover`), whatever this count says.
+_FILING_MOVE_LIMIT = 1
+#: The reason that park is recorded with (`cases.PARKED_REASONS`): both
+#: parks are a disagreement about which scope the lesson belongs in.
+_REFILING_PARKED_REASON = "scope-conflict"
 _SUCCESS_RECEIPT_STATES = frozenset({"applied", "already-applied"})
 #: S-71 §4.2: what the steward does with a record whose line the ledger
 #: refused, by kind. `status` never appears here: it is resolved first,
@@ -749,11 +774,36 @@ def _record_identity(home: Path, entry: ledger_ops.QueueEntry) -> dict:
 _LEGACY_DECIDED_DISPOSITIONS = _DECIDED_DISPOSITIONS - {"refused"}
 
 
+def _files_record(recipe: object, record_id: str) -> bool:
+    """True when this committed case recipe's sheet holds a filing item
+    (`rehome` / `rescope`) for *record_id*. "Holds one", not "holds only
+    those": a lesson an `applied` case moved and that is still pending at
+    the same version was only moved -- any item that decides a lesson
+    changes its status, and a `revise` changes its version."""
+    if not isinstance(recipe, dict):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("id") == record_id
+        and item.get("verb") in _FILING_VERBS
+        for item in recipe.get("items") or []
+    )
+
+
 def _terminal_versions(
     home: Path, states: frozenset[str] = _DECIDED_DISPOSITIONS
 ) -> set[tuple[str, str]]:
+    """Every ``(record, input version)`` a committed steward run decided.
+
+    2026-10-06: an `applied` row whose case moved the lesson (a filing
+    move, :func:`_files_record`) is not a decision: the lesson is still
+    pending, in its new bucket, and needs one there. Since L8 a move also
+    changes the record's version (its `moved` history entry), so this skip
+    is what brings back a lesson moved project->project before that -- its
+    bytes, and so its version, never changed."""
     terminal: set[tuple[str, str]] = set()
     for manifest in committed_manifests(home):
+        recipes = manifest.get("cases") or {}
         for packet in manifest.get("packets") or []:
             if not isinstance(packet, dict):
                 continue
@@ -761,15 +811,110 @@ def _terminal_versions(
                 if not isinstance(disposition, dict):
                     continue
                 if disposition.get("state") in states:
+                    if disposition.get("state") == "applied" and _files_record(
+                        recipes.get(disposition.get("case")), str(rid)
+                    ):
+                        continue
                     version = disposition.get("input_version")
                     if isinstance(rid, str) and isinstance(version, str):
                         terminal.add((rid, version))
     return terminal
 
 
+def _steward_filing_moves(home: Path) -> dict[str, int]:
+    """record -> how many filing moves of it the steward's committed runs
+    applied, at any version (so a `[revise, rehome]` pair each night is
+    counted too). The overseer's own moves are not in a steward run record
+    and are never counted; :func:`_last_mover` covers them."""
+    moves: dict[str, int] = {}
+    for manifest in committed_manifests(home):
+        recipes = manifest.get("cases") or {}
+        for packet in manifest.get("packets") or []:
+            if not isinstance(packet, dict):
+                continue
+            for rid, disposition in (packet.get("dispositions") or {}).items():
+                if (
+                    isinstance(rid, str)
+                    and isinstance(disposition, dict)
+                    and disposition.get("state") == "applied"
+                    and _files_record(recipes.get(disposition.get("case")), rid)
+                ):
+                    moves[rid] = moves.get(rid, 0) + 1
+    return moves
+
+
+def _last_mover(home: Path, record_id: str) -> str | None:
+    """Who moved this lesson last: the ``by`` of the newest ``moved``
+    history entry on its record (written by every move since L8), or
+    `None` when it has none or cannot be read."""
+    record = _find_record(home, record_id)
+    if record is None:
+        return None
+    for entry in reversed(record.history or []):
+        if isinstance(entry, dict) and entry.get("event") == "moved":
+            by = entry.get("by")
+            return str(by) if by is not None else None
+    return None
+
+
+def _steward_moves_on_record(home: Path, record_id: str) -> int:
+    """How many ``moved`` history entries by the steward the lesson's
+    record carries. This counts a steward move whatever became of the case
+    that made it: a `[rehome, route]` case whose route the ledger refused
+    ends `returned`, `unfinished` or `abandoned`, never `applied`, so the
+    run records alone never count its move (the 6f9a33f review)."""
+    record = _find_record(home, record_id)
+    if record is None:
+        return 0
+    return sum(
+        1
+        for entry in record.history or []
+        if isinstance(entry, dict)
+        and entry.get("event") == "moved"
+        and entry.get("by") == "steward"
+    )
+
+
+def _refiling_reason(home: Path, sheet_path: Path) -> str | None:
+    """`scope-conflict` when this staged sheet would move a lesson that
+    (a) the steward's committed runs have already moved
+    `_FILING_MOVE_LIMIT` times, or (b) a person or the overseer moved last
+    -- the steward never overrides their filing, however few moves it has
+    made itself; else `None`. The case is then parked for the overseer (its
+    sheet recorded, never applied), and the lesson stays pending where it
+    is, decided at its version, until the overseer decides it.
+
+    The steward's own count is the larger of its committed `applied` move
+    rows (which still count a move made before moves wrote a `moved`
+    entry) and the record's `moved` entries by the steward (which count a
+    move inside a case that did not end `applied`)."""
+    raw = _read_yaml(sheet_path)
+    if not isinstance(raw, dict):
+        return None
+    filed = {
+        str(item.get("id"))
+        for item in raw.get("items") or []
+        if isinstance(item, dict) and item.get("verb") in _FILING_VERBS
+    }
+    if not filed:
+        return None
+    moves = _steward_filing_moves(home)
+    for rid in sorted(filed):
+        count = max(moves.get(rid, 0), _steward_moves_on_record(home, rid))
+        if count >= _FILING_MOVE_LIMIT:
+            return _REFILING_PARKED_REASON
+        last = _last_mover(home, rid)
+        if last is not None and last != "steward":
+            return _REFILING_PARKED_REASON
+    return None
+
+
 def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
     """Every queued (pending, not deferred) lesson whose current version no
-    committed run has decided, oldest first, with its input row.
+    committed run has decided, oldest first, with its input row. A filing
+    move decides nothing (:func:`_terminal_versions`), so a lesson the
+    steward rehomed or rescoped is selected again by the next run, in its
+    new bucket.
 
     U3a (2026-09-27): no analyst proposal is needed. The worker still
     writes proposals for now (U5 retires it); nothing here reads them
@@ -1489,7 +1634,8 @@ def _ledger_repair_message(
     written, when the refusal is the model's to fix -- or `None`.
 
     A case the model parked, or one the runner will park
-    (`_forced_parking_reason`), is skipped: none of its lines is applied.
+    (`_forced_parking_reason`, `_refiling_reason`), is skipped: none of
+    its lines is applied.
     Each other sheet is previewed exactly as apply time will (the same
     `[reopen, verb]` sequence rule). A `status` refusal is collected only
     when the lesson's status is unchanged since selection, and never for a
@@ -1512,6 +1658,8 @@ def _ledger_repair_message(
             continue
         reconsidered = _reconsidered_by(case_data)
         if _forced_parking_reason(home, sheet_path, reconsidered) is not None:
+            continue
+        if _refiling_reason(home, sheet_path) is not None:
             continue
         sheet = _sheet_without_case(sheet_path)
         preview = batch.dry_run(
@@ -1811,6 +1959,12 @@ def _prepared_recipe(
             # reason wins. (Until U3b a hook route was one of the runner's
             # own checks; since S-72 the steward decides hooks.)
             parking_reason = str(case_data.get("parked_reason"))
+        if parking_reason is None:
+            # 2026-10-06: a case that would move a lesson the steward has
+            # already moved is a disagreement about where it belongs, and
+            # is parked for the overseer (`_FILING_MOVE_LIMIT`). Checked
+            # last, so a case the model parked keeps its own reason.
+            parking_reason = _refiling_reason(home, sheet_path)
         if parking_reason is not None:
             case_data["kind"] = "parked"
             case_data["outcome"] = "parked"

@@ -90,8 +90,21 @@ REQUIRED_SECTIONS = {"behavior": ("Trigger", "Instruction"), "knowledge": ("Fact
 #: case pointer a `self-learn reconsider` call appends to the record it
 #: revisits (payload carries `case`/`supersedes`, never a status/note —
 #: `reconsider` does not itself change the record's status).
+#: *Widened 2026-10-06 (L8, the orchestrator's decision; spec row and
+#: `02-schema.md` §2 wording proposed for landing):* `moved` records a
+#: filing move -- `rehome` or `rescope`, for every actor -- written by
+#: :func:`ledger_ops.move_record` itself, the one file-op behind both:
+#: payload ``from``/``to`` (ledger-relative buckets), ``by`` (the actor)
+#: and ``case`` when the move ran under a delegated sheet. It makes every
+#: move change the record's bytes, so the moved lesson is a new version
+#: the steward decides afresh in its new bucket, while a bucket rename
+#: (`host rebind`), which writes no record, leaves a decided lesson
+#: decided.
 HISTORY_EVENTS = frozenset(
-    {"resolution", "routing", "hook-activated", "hook-deactivated", "reconsidered"}
+    {
+        "resolution", "routing", "hook-activated", "hook-deactivated", "reconsidered",
+        "moved",
+    }
 )
 #: "Episode brief" (02 §1 amendment, 10 §3 U18): a miner-only, optional
 #: body section for BOTH types — no ``required`` weight, duplicate-guarded

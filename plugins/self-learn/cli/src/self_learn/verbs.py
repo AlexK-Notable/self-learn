@@ -6632,6 +6632,11 @@ def _move(
         home, record_id, to=to, verb=verb, note=note, by=by
     )
 
+    # 2026-10-06 (L8): who moved it, for the record's `moved` history
+    # entry -- the delegated runner's own identity when there is one (as
+    # for the commit's attribution, never a sheet field), else `by`, else
+    # a person at the CLI.
+    actor = execution.actor if execution is not None else (by or "human")
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -6644,6 +6649,8 @@ def _move(
                 target_scope=target_scope,
                 target_bucket=target_bucket,
                 project_path=project_path,
+                by=actor,
+                case=execution.case_id if execution is not None else None,
             )
             relswept = [
                 p.relative_to(home) if p.is_relative_to(home) else p for p in swept
@@ -6687,7 +6694,9 @@ def rehome(
     resolution, ``resolution_note`` stays untouched). The record's bytes
     are otherwise untouched apart from ``scope:`` (§3.2b: a project→
     project move rewrites no ``scope:``, since both read the literal
-    ``"project"`` — the ROUND-TRIP write is byte-identical there); a
+    ``"project"``) and one appended ``moved`` history entry naming the
+    two buckets and the actor (2026-10-06, L8 -- so every move is a new
+    version of the lesson); a
     deferred record moves and stays deferred. Proposal siblings are
     swept and the sweep DISCLOSED (u-rescope's shape — `rehome`'s own
     sweep used to be silent; §3.2 closes that).
@@ -6717,7 +6726,8 @@ def rescope(
     additionally accepts the project forms `rehome` always took.
     ``scope:`` is rewritten whenever the target scope literal differs
     from the source bucket's own (§3.2b); a project→project move
-    rewrites no ``scope:`` (both read ``"project"``). Ledger-only (one
+    rewrites no ``scope:`` (both read ``"project"``). Every move appends
+    one ``moved`` history entry (2026-10-06, L8). Ledger-only (one
     commit; ``--note`` rides the commit body only — rescope is not a
     resolution, ``resolution_note`` stays untouched). A deferred record
     re-scopes and stays deferred. Proposal siblings are swept and the

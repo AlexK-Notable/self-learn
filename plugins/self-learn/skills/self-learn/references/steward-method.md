@@ -339,7 +339,10 @@ value at stake that stopped you from deciding alone. Name the reason you
 parked it as one of five: `hook`, `always-loaded-user-scope`,
 `broad-removal`, `authority-unclear`, `scope-conflict` — this is what the
 overseer's intake and its notification cues sort on, so pick the one that
-actually stopped you, never a catch-all. A parked case still has a sheet,
+actually stopped you, never a catch-all. The runner also parks a case as
+`scope-conflict` on its own when it would move a lesson you have already
+moved once, or one a person or the overseer moved last; a case you parked
+keeps your reason. A parked case still has a sheet,
 and that sheet is your tentative answer written out as the items you would
 have staged: the runner records them as parked and applies none of them, so
 the record stays pending until the overseer decides. A sheet cannot be
