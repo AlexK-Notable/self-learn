@@ -6033,15 +6033,22 @@ def commit_drift(
             hold.release()
 
 
-#: U5 (`self-learn reconsider`): the ONLY three destinations a routed
-#: record's `reject`/`defer` retirement leg (below) will drop a
-#: compiled entry for — exactly `_retirement_preflight`'s own managed-
-#: doc-target branch (`skill-md`/`claude-md`/`new-skill`). A hook- or
-#: reference-routed record's reconsider correction refuses by name
-#: instead of silently reusing the hook-removal/reference-retirement
-#: legs UNTESTED under a non-graduating resolution — U5's own gate
-#: tested only the managed-target shape (`build-u5.md` test 3).
-_RECONSIDER_RETIREABLE_DESTINATIONS = frozenset({"skill-md", "claude-md", "new-skill"})
+#: U5 (`self-learn reconsider`): the ONLY destinations a routed record's
+#: `reject`/`defer` retirement leg (below) will retire a placement from —
+#: `_retirement_preflight`'s managed-doc-target branch (`skill-md`/
+#: `claude-md`/`new-skill`) and, since 2026-10-06, its `reference`
+#: branch: a lesson can be taken off a reference shelf, its entry block
+#: leaving the references file in the SAME locked section the status
+#: flips in (the leg `retire`/`graduate` already take, `_retire_impl`;
+#: tested under reject and defer, both host modes, in
+#: `tests/test_reconsider_off_shelf.py`). The file and its pointer line
+#: stay even when no entry is left, as after every other retirement. A
+#: hook-routed record's reconsider correction still refuses by name: its
+#: removal leg is untested under a non-graduating resolution (U5's own
+#: gate tested only the managed-target shape, `build-u5.md` test 3).
+_RECONSIDER_RETIREABLE_DESTINATIONS = frozenset(
+    {"skill-md", "claude-md", "new-skill", "reference"}
+)
 
 
 def _wrap_case_error(exc: cases.CaseError) -> VerbError:
@@ -6116,19 +6123,20 @@ def _reconsider_retirement_preflight(
     user_claude_md: Path | str | None = None,
 ) -> tuple["_Retirement", list[str]]:
     """U5: the read-only preflight half of dropping a ROUTED record's
-    compiled entry when `reject`/`defer` admit it only via a validated
-    reconsider case — MUST run before any status-flip mutation
-    (``record.status`` must still be ``"routed"``, the same
-    precondition :func:`_retirement_preflight` itself checks). Reuses
-    that shared preflight verbatim (the same one `graduate`/`supersede`
-    use for their own retirements) rather than a second implementation
-    of "what host presence does this routed record have"."""
+    compiled entry (or, since 2026-10-06, its reference-shelf entry) when
+    `reject`/`defer` admit it only via a validated reconsider case — MUST
+    run before any status-flip mutation (``record.status`` must still be
+    ``"routed"``, the same precondition :func:`_retirement_preflight`
+    itself checks). Reuses that shared preflight verbatim (the same one
+    `graduate`/`supersede` use for their own retirements) rather than a
+    second implementation of "what host presence does this routed record
+    have"."""
     destination = (record.routing or {}).get("destination")
     if destination not in _RECONSIDER_RETIREABLE_DESTINATIONS:
         raise SheetLineError(
             f"{verb} {record.id}: a reconsider correction of a routed "
             f"{destination!r}-destination record is not supported here "
-            "— hook and reference routes are corrected by hand"
+            "— a hook route is corrected by hand"
         )
     warnings: list[str] = []
     retire = _retirement_preflight(
@@ -6171,12 +6179,66 @@ def _reconsider_retirement_if_routed(
     """`reject`'s and `defer`'s retirement leg: only a ROUTED lesson admitted
     by a reconsider case has one (its compiled entry drops in the same
     locked section). The verbs run it under their hold; `batch.dry_run`
-    calls it too (S-71 fold), so a hook- or reference-routed lesson, which
+    calls it too (S-71 fold), so a hook-routed lesson, which
     `_reconsider_retirement_preflight` refuses, previews as refused."""
     pre_record = Record.from_path(path)
     if extra_allowed is not None and pre_record.status == "routed":
         return _reconsider_retirement_preflight(home, pre_record, path, verb=verb)
     return None, []
+
+
+def _reconsider_retirement_lock(
+    retire: "_Retirement | None",
+) -> contextlib.AbstractContextManager[object]:
+    """The host lock `reject`/`defer`'s retirement leg holds from its region
+    observation through its host write (only the push sits outside): the
+    managed target's host, or — 2026-10-06 — the reference shelf's host,
+    the same discipline `_retire_impl` already follows for both. No lock
+    when nothing is retired."""
+    if retire is not None and retire.spec is not None:
+        return gitops.host_lock(retire.spec.host_path, retire.spec.mode)
+    if retire is not None and retire.reference is not None:
+        ref_spec = retire.reference[1]
+        return gitops.host_lock(ref_spec.host_path, ref_spec.mode)
+    return contextlib.nullcontext()
+
+
+def _reconsider_retirement_records(
+    home: Path,
+    retire: "_Retirement",
+    observed_hash: str | None,
+    record_id: str,
+    *,
+    by: str,
+) -> list[Path]:
+    """The compile-record entry `reject`/`defer`'s retirement leg owes,
+    written into the SAME ledger commit as the status flip (REC9) — before
+    the host phase rewrites the file, so the next write against it does not
+    read the retirement's own change as a hand edit. A managed target goes
+    through :func:`_write_retirement_compile_record`; a reference shelf
+    (2026-10-06) through the same prediction `_retire_impl` makes for it,
+    :func:`_predicted_retired_reference_region` — the pure transform the
+    real removal applies, so prediction and write cannot drift. Recorded in
+    either host mode: a plain host's file is changed and recorded, never
+    committed there (PLAIN11/H-j)."""
+    record_path = _write_retirement_compile_record(home, retire, observed_hash, by=by)
+    if record_path is not None:
+        return [record_path]
+    if retire.reference is None:
+        return []
+    ref_path, ref_spec = retire.reference
+    ref_record_path = _resync_region_entry(
+        home,
+        host_path=ref_spec.host_path,
+        scope_kind=ref_spec.scope_kind,
+        mode=ref_spec.mode,
+        target=ref_path,
+        region_kind="reference",
+        expected=_predicted_retired_reference_region(ref_path, record_id),
+        observed_hash=_observe_region_hash_at(ref_path, "reference"),
+        by=by,
+    )
+    return [ref_record_path] if ref_record_path is not None else []
 
 
 def reject(
@@ -6212,7 +6274,8 @@ def reject(
     `graduate`/`supersede` retirement already takes, reused here for a
     resolution that does not graduate the record — it just stops being
     live canon; `_reconsider_retirement_preflight` scopes this to a
-    managed doc target). The CLI's single-verb parser never gains a
+    managed doc target or, since 2026-10-06, a reference shelf, whose
+    entry block leaves the references file). The CLI's single-verb parser never gains a
     `--reconsider-case` flag — only `batch._dispatch` passes this,
     naming the sheet's own top-level `case:`."""
     home = Path(home)
@@ -6227,11 +6290,7 @@ def reject(
         retire, warnings = _reconsider_retirement_if_routed(
             home, path, extra_allowed, verb="reject"
         )
-        host_lock_cm: object = contextlib.nullcontext()
-        if retire is not None:
-            assert retire.spec is not None  # the destination allowlist guarantees this
-            host_lock_cm = gitops.host_lock(retire.spec.host_path, retire.spec.mode)
-        with _ledger_write(home) as recovered, host_lock_cm:
+        with _ledger_write(home) as recovered, _reconsider_retirement_lock(retire):
             intents.announce_recovered(recovered)
             observed_hash = _observe_retirement_region(retire) if retire else None
             touched = resolve_record(
@@ -6239,11 +6298,9 @@ def reject(
                 extra_allowed_source=extra_allowed,
             )
             if retire is not None:
-                record_path = _write_retirement_compile_record(
-                    home, retire, observed_hash, by=f"reject {record_id}"
+                touched = touched + _reconsider_retirement_records(
+                    home, retire, observed_hash, record_id, by=f"reject {record_id}"
                 )
-                if record_path is not None:
-                    touched = touched + [record_path]
             staged, sha = _stage_and_commit(home, touched, message, body)
             post_notes: list[str] = []
             host_sha = host_repo = None
@@ -6318,11 +6375,7 @@ def defer(
         retire, warnings = _reconsider_retirement_if_routed(
             home, path, extra_allowed, verb="defer"
         )
-        host_lock_cm: object = contextlib.nullcontext()
-        if retire is not None:
-            assert retire.spec is not None  # the destination allowlist guarantees this
-            host_lock_cm = gitops.host_lock(retire.spec.host_path, retire.spec.mode)
-        with _ledger_write(home) as recovered, host_lock_cm:
+        with _ledger_write(home) as recovered, _reconsider_retirement_lock(retire):
             intents.announce_recovered(recovered)
             observed_hash = _observe_retirement_region(retire) if retire else None
             try:
@@ -6343,11 +6396,9 @@ def defer(
             deferred_until = _date_str(Record.from_path(touched[-1]).deferred_until)
             message = f"self-learn: defer {record_id} until {deferred_until}"
             if retire is not None:
-                record_path = _write_retirement_compile_record(
-                    home, retire, observed_hash, by=f"defer {record_id}"
+                touched = touched + _reconsider_retirement_records(
+                    home, retire, observed_hash, record_id, by=f"defer {record_id}"
                 )
-                if record_path is not None:
-                    touched = touched + [record_path]
             staged, sha = _stage_and_commit(home, touched, message, body)
             post_notes: list[str] = []
             host_sha = host_repo = None

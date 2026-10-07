@@ -282,8 +282,8 @@ def _other_rows():
 
     def hook_routed_under_reconsider(verb):
         """A reconsider case admits a reject/defer of a ROUTED lesson, but
-        the verb's retirement leg (run under its hold) refuses a hook- or
-        reference-routed one: those are corrected by hand."""
+        the verb's retirement leg (run under its hold) refuses a hook-routed
+        one: those are corrected by hand."""
         def setup(e):
             create_record(
                 e.ledger, make_behavior(scope="skill:s", record_id=A, trigger=TRIGGER)
