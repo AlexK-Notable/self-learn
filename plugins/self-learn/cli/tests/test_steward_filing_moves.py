@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import cases, execution_evidence, hosts, ledger_ops, steward, verbs
+from self_learn import always_loaded, cases, execution_evidence, hosts, ledger_ops, steward, verbs
 from self_learn.hosts import host_add, slug_for
 from self_learn.invocation.contract import Outcome
 from self_learn.overseer import run as overseer_run
@@ -389,6 +389,81 @@ def test_the_steward_never_moves_a_lesson_a_person_or_the_overseer_moved_last(
     assert env.pending(env.bucket_b, rid).is_file(), "the steward's move was not applied"
     assert not env.pending(env.bucket_a, rid).exists()
     parked = _case_of(env.home, str(result.run_id), rid)
+    assert parked.get("parked_reason") == "scope-conflict"
+
+
+def _move_then_route(target: Path):
+    """A fake steward session: one case per lesson, `[rehome to *target*,
+    route claude-md]`, the route evidenced for an always-loaded line."""
+
+    def write(spec):
+        stage = _stage_dir(spec)
+        for rid in re.findall(r"^### brief: (lrn-[0-9a-f]{8})$", spec.prompt, re.M):
+            _dump_yaml(stage / "cases" / f"{rid}.yaml", {
+                "kind": "resolution", "trigger": "nightly", "outcome": "route",
+                "records": [rid], "scope": "project",
+                "question": "where does this pending lesson belong, and as what?",
+                "evidence": [{"ref": "transcript:fake#L1", "quote": "status: pending"}],
+                "decision": {
+                    "verb": "route", "because": "it belongs to the other project",
+                    "confidence": "provisional",
+                    "always_loaded": {
+                        key: {"because": "it is needed in every session there",
+                              "refs": ["transcript:fake#L1"]}
+                        for key in always_loaded.TEST_KEYS
+                    },
+                },
+                "dependencies": {"statements": [], "user_model": [], "conditions": [],
+                                 "capabilities": []},
+            })
+            _dump_yaml(stage / "sheets" / f"{rid}.yaml", {"version": 1, "case": "$CASE_ID",
+                "items": [
+                    {"id": rid, "verb": "rehome", "to": str(target), "note": "moved first"},
+                    {"id": rid, "verb": "route", "dest": "claude-md", "note": "then placed"},
+                ]})
+        return Outcome(ok=True, rc=0, stdout="", detail="", failure=None)
+
+    return write
+
+
+def test_a_move_inside_a_case_that_did_not_apply_is_still_counted(tmp_path, monkeypatch):
+    """The 6f9a33f review: a `[rehome, route]` case whose rehome applies and
+    whose route the ledger refuses ends `returned`, not `applied`, so its
+    run record never counts the move. The lesson is a new version (its
+    `moved` entry), the next night selects it again, the last mover is the
+    steward -- and without the record's own count it was moved again,
+    every night. The record's `moved` entries by the steward count it."""
+    env = Ledger(tmp_path)
+    rid = "lrn-f110000d"
+    env.lesson(rid)
+    _configure_steward(env.home)
+    refused: list[str] = []
+
+    def route_refused(home, record_id, **kwargs):
+        refused.append(record_id)
+        raise verbs.SheetLineError(f"simulated: the route line for {record_id} does not fit")
+
+    monkeypatch.setattr(verbs, "route", route_refused)
+    monkeypatch.setattr(steward.invocation, "write_session", _move_then_route(env.host_b))
+    first = steward.run(env.home)
+
+    # positive control: the move applied, the route was refused, and the
+    # run record does not say `applied`
+    assert refused == [rid]
+    assert env.pending(env.bucket_b, rid).is_file()
+    (packet,) = _head_manifest(env.home, str(first.run_id))["packets"]
+    assert packet["dispositions"][rid]["state"] == "returned"
+    assert [e["by"] for e in _moves(env.record(rid))] == ["steward"]
+    assert _selected(env.home) == [rid], "a new version: selected again"
+
+    monkeypatch.setattr(steward.invocation, "write_session", _move_then_route(env.host_a))
+    second = steward.run(env.home)
+
+    assert env.pending(env.bucket_b, rid).is_file(), "the second move was not applied"
+    assert not env.pending(env.bucket_a, rid).exists()
+    assert len(_moves(env.record(rid))) == 1
+    assert refused == [rid], "the parked case dispatched nothing"
+    parked = _case_of(env.home, str(second.run_id), rid)
     assert parked.get("parked_reason") == "scope-conflict"
 
 

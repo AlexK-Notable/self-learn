@@ -141,9 +141,11 @@ _DECIDED_DISPOSITIONS = frozenset(
 #: before that, project->project, kept its version, and only
 #: `_terminal_versions`' skip of its move row brings it back.
 _FILING_VERBS = frozenset({"rehome", "rescope"})
-#: How many filing moves of one lesson the steward's own committed runs may
-#: have applied before a case that moves it again is parked for the
-#: overseer as `scope-conflict` instead of applied (2026-10-06). One: a
+#: How many filing moves of one lesson the steward may have made -- its
+#: committed `applied` move rows or the record's own `moved` entries by the
+#: steward, whichever is more -- before a case that moves it again is
+#: parked for the overseer as `scope-conflict` instead of applied
+#: (2026-10-06). One: a
 #: lesson filed once and then filed again -- back where it came from or
 #: onward to a third bucket -- is a disagreement about where it belongs,
 #: which is the overseer's to settle; without this a steward that keeps
@@ -855,6 +857,24 @@ def _last_mover(home: Path, record_id: str) -> str | None:
     return None
 
 
+def _steward_moves_on_record(home: Path, record_id: str) -> int:
+    """How many ``moved`` history entries by the steward the lesson's
+    record carries. This counts a steward move whatever became of the case
+    that made it: a `[rehome, route]` case whose route the ledger refused
+    ends `returned`, `unfinished` or `abandoned`, never `applied`, so the
+    run records alone never count its move (the 6f9a33f review)."""
+    record = _find_record(home, record_id)
+    if record is None:
+        return 0
+    return sum(
+        1
+        for entry in record.history or []
+        if isinstance(entry, dict)
+        and entry.get("event") == "moved"
+        and entry.get("by") == "steward"
+    )
+
+
 def _refiling_reason(home: Path, sheet_path: Path) -> str | None:
     """`scope-conflict` when this staged sheet would move a lesson that
     (a) the steward's committed runs have already moved
@@ -862,7 +882,12 @@ def _refiling_reason(home: Path, sheet_path: Path) -> str | None:
     -- the steward never overrides their filing, however few moves it has
     made itself; else `None`. The case is then parked for the overseer (its
     sheet recorded, never applied), and the lesson stays pending where it
-    is, decided at its version, until the overseer decides it."""
+    is, decided at its version, until the overseer decides it.
+
+    The steward's own count is the larger of its committed `applied` move
+    rows (which still count a move made before moves wrote a `moved`
+    entry) and the record's `moved` entries by the steward (which count a
+    move inside a case that did not end `applied`)."""
     raw = _read_yaml(sheet_path)
     if not isinstance(raw, dict):
         return None
@@ -875,7 +900,8 @@ def _refiling_reason(home: Path, sheet_path: Path) -> str | None:
         return None
     moves = _steward_filing_moves(home)
     for rid in sorted(filed):
-        if moves.get(rid, 0) >= _FILING_MOVE_LIMIT:
+        count = max(moves.get(rid, 0), _steward_moves_on_record(home, rid))
+        if count >= _FILING_MOVE_LIMIT:
             return _REFILING_PARKED_REASON
         last = _last_mover(home, rid)
         if last is not None and last != "steward":
