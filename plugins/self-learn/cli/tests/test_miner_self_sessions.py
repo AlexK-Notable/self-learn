@@ -593,3 +593,26 @@ def test_every_real_prompt_begins_with_its_declared_opening(tmp_path, home):
     assert worker_texts["normal-pass"].startswith(normal)
     assert worker_texts["repair-pass"].startswith(repair)
     assert normal != repair
+
+
+def test_a_row_whose_message_is_not_a_dict_never_stops_the_digest(tmp_path, transcripts):
+    """Orchestrator fold, 2026-10-06 (gate-l9 R2's sibling): the nightly loop
+    calls `digest_transcript` with no error handling, so one user or assistant
+    row whose `message` is not a dict must be skipped, never raised on -- it
+    would otherwise stop every mine at the same row, night after night. The
+    rest of the session is still read (positive control)."""
+    path = write_session(
+        transcripts,
+        ORDINARY_FOLDER,
+        "sess-odd-rows",
+        [
+            user_row("please fix the failing test", **TYPED_ROW),
+            json.dumps({"type": "user", "message": "not a dict"}),
+            json.dumps({"type": "user", "message": ["also", "not", "a", "dict"]}),
+            json.dumps({"type": "assistant", "message": "not a dict either"}),
+            assistant_row(ORDINARY_TAIL),
+        ],
+    )
+    digest, halt = miner.digest_transcript(slice_of(path))
+    assert halt is False
+    assert digest is not None and ORDINARY_TAIL in digest

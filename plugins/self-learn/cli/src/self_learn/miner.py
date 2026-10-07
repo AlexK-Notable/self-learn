@@ -615,8 +615,13 @@ def _edges(text: str) -> str:
     return f"{_clip(lines[0], 200)} ⋯ {_clip(lines[-1], 200)}"
 
 
-def _blocks(message: dict) -> list[dict]:
-    content = (message or {}).get("content")
+def _blocks(message: object) -> list[dict]:
+    # A message that is not a dict (a malformed row) has no blocks: the
+    # nightly loop calls `digest_transcript` with no error handling, so one
+    # such row must never raise (2026-10-06).
+    if not isinstance(message, dict):
+        return []
+    content = message.get("content")
     if isinstance(content, str):
         return [{"type": "text", "text": content}]
     if isinstance(content, list):
