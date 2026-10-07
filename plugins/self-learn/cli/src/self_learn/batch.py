@@ -210,6 +210,35 @@ REFUSED_HOOK_DESTINATION = "hook"
 #: preview cannot disagree about who may route a hook. Activation stays
 #: behind the human's `overseer.hook_activation` for both.
 HOOK_ROUTING_ACTORS = frozenset({"overseer", "steward"})
+#: 2026-10-06 (the user's direction; S-23 kept a shelf only for lessons
+#: not tied to files): the actors a route to the `reference` destination
+#: is refused for. The steward and the overseer never put a lesson on a
+#: reference shelf (a project's or a skill's `references/LEARNINGS.md`,
+#: reached through one pointer line no task can match) -- not by a fresh
+#: route, not by a reroute, not by a reconsider's correcting route. Seven
+#: shelves held 40 lessons on 2026-10-05 and none had ever been read. A
+#: person still may: a review session's sheet runs as `human`, and
+#: `self-learn route --dest reference` never passes through here.
+#: `_dispatch` and `dry_run` both read this ONE set, so a run and its
+#: preview cannot disagree; the overseer's formats list what it refuses.
+REFERENCE_REFUSED_ACTORS = frozenset({"overseer", "steward"})
+
+
+def _refuse_agent_reference(
+    record_id: str, resolved: tuple[str, str | None] | None, actor: str
+) -> None:
+    """Raise the refusal of a route that resolves to `reference` when
+    *actor* is one :data:`REFERENCE_REFUSED_ACTORS` names -- a
+    :class:`verbs.SheetLineError`, so the refusal's kind is `bad-line`: the
+    line is the mistake, and the steward is sent it back to choose again.
+    The ONE sentence both `_dispatch` and `dry_run` show."""
+    if actor in REFERENCE_REFUSED_ACTORS and resolved is not None and resolved[0] == "reference":
+        raise verbs.SheetLineError(
+            f"{record_id}: a route to a reference shelf is refused for the {actor} "
+            "(2026-10-06) — no agent puts a lesson on a shelf; choose a path-scoped "
+            "rule (claude-md:rules:<topic>) when it is tied to files, an existing "
+            "skill, a warning hook when it is tied to a command, or park or reject it"
+        )
 
 
 def _hook_refused_detail(record_id: str) -> str:
@@ -1274,6 +1303,10 @@ def _dispatch(
         if verb == "route":
             route_path = find_record_path(home, item.id)
             resolved = _resolved_route_dest(home, route_path, item)
+            # 2026-10-06: before the reconsider branch below, so a fresh
+            # route, a reroute and a reconsider's correcting route are
+            # all refused alike.
+            _refuse_agent_reference(item.id, resolved, actor)
             is_hook_dest = resolved == (REFUSED_HOOK_DESTINATION, None)
             if is_hook_dest and actor not in HOOK_ROUTING_ACTORS:
                 raise verbs.VerbError(_hook_refused_detail(item.id))
@@ -2020,6 +2053,17 @@ def dry_run(
                 )
                 continue
             resolved = _resolved_route_dest(home, path, item)
+            try:
+                # 2026-10-06: the SAME refusal `_dispatch` raises, before
+                # the reconsider branch, as there.
+                _refuse_agent_reference(item.id, resolved, actor)
+            except verbs.SheetLineError as exc:
+                result.items.append(
+                    DryRunItem(n=item.n, id=item.id, verb=item.verb,
+                               state="would-refuse", detail=refusal_text(exc),
+                               kind=_preview_kind([exc]))
+                )
+                continue
             is_hook_dest = resolved is not None and resolved[0] == REFUSED_HOOK_DESTINATION
             if _reconsider_case_for(
                 home, item.id, sheet_case, item.verb, reconsidered
