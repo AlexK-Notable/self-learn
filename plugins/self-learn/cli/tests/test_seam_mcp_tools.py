@@ -194,14 +194,34 @@ def test_s1_a_toolset_switches_off_the_builtins_and_serves_one_server(tmp_path):
     ]
 
     # Positive control: the same spec without the toolset has no `tools`
-    # key and no server -- and differs in nothing else.
-    plain = backend_mod.options_kwargs(dataclasses.replace(spec, mcp_toolset=None))
+    # key and no server -- and differs in nothing else. It runs on
+    # `miner-reader`, because `miner-session` refuses to run without its
+    # own tools (test_s2c); the two share the MINER selector, so the model
+    # and the turn bound are the same.
+    plain = backend_mod.options_kwargs(
+        dataclasses.replace(spec, surface="miner-reader", mcp_toolset=None)
+    )
     assert "tools" not in plain
     assert plain["mcp_servers"] == {}
     ignore = {"tools", "mcp_servers", "can_use_tool"}
     assert {k: v for k, v in plain.items() if k not in ignore} == {
         k: v for k, v in kwargs.items() if k not in ignore
     }
+
+
+def test_s1b_the_server_is_named_by_the_toolset(tmp_path):
+    """The `mcp_servers` key and the server's name come from
+    `McpToolset.server`, not from a constant: a server named `lessons`
+    is served as `lessons`, and its tools are `mcp__lessons__*`."""
+    home = _home(tmp_path)
+    toolset = invocation.McpToolset("lessons", tuple(_tool(n) for n in _TOOL_NAMES))
+    assert toolset.qualified_names == tuple(f"mcp__lessons__{n}" for n in _TOOL_NAMES)
+    kwargs = backend_mod.options_kwargs(
+        _spec(home, containment=_containment(toolset), mcp_toolset=toolset)
+    )
+    assert list(kwargs["mcp_servers"]) == ["lessons"]
+    assert kwargs["mcp_servers"]["lessons"]["name"] == "lessons"
+    assert kwargs["mcp_servers"]["lessons"]["instance"].name == "lessons"
 
 
 # ===================================================================== #
@@ -254,6 +274,37 @@ def test_s2_the_containment_must_allow_exactly_the_toolsets_names(tmp_path, monk
         backend_mod.options_kwargs(accepted)
     assert "has no tools" in str(exc.value)
 
+    # ... and the same for an SDK without `mcp_servers`.
+    monkeypatch.setattr(
+        backend_mod,
+        "_dataclass_fields",
+        lambda cls: [f for f in real_fields(cls) if f.name != "mcp_servers"],
+    )
+    with pytest.raises(ValueError) as exc:
+        backend_mod.options_kwargs(accepted)
+    assert "has no mcp_servers" in str(exc.value)
+    assert "tools," not in str(exc.value)  # only the missing option is named
+
+
+def test_s2c_miner_session_never_runs_without_its_own_tools(tmp_path):
+    """Gate R2: a `miner-session` spec with no `mcp_toolset` would get every
+    built-in tool, and its containment has no read roots -- so it is
+    refused, with a reason that names the missing toolset."""
+    home = _home(tmp_path)
+    containment = invocation.containment_for(
+        "miner-session", allowed_tools="Read,Grep,Glob", disallowed_tools="Bash,Task"
+    )
+    with pytest.raises(ValueError) as exc:
+        backend_mod.options_kwargs(_spec(home, containment=containment))
+    assert "miner-session" in str(exc.value)
+    assert "mcp_toolset" in str(exc.value)
+
+    # Positive controls: the same surface with its own tools is accepted,
+    # and a surface that has built-in tools still runs without a toolset.
+    assert backend_mod.options_kwargs(_session_spec(home))["tools"] == []
+    reader = backend_mod.options_kwargs(_spec(home, surface="miner-reader", containment=containment))
+    assert "tools" not in reader
+
 
 def test_s2b_toolset_and_sidecar_key_are_checked_at_construction(tmp_path):
     with pytest.raises(ValueError, match="duplicate tool name 'open_stretch'"):
@@ -263,9 +314,30 @@ def test_s2b_toolset_and_sidecar_key_are_checked_at_construction(tmp_path):
             invocation.McpToolset(bad, (_tool("open_stretch"),))
         with pytest.raises(ValueError, match="bad tool name"):
             invocation.McpToolset("miner", (_tool(bad),))
-    for bad_key in ("", "a/b", "../x", "k" * 65, "a.b"):
+    # A trailing newline is refused too (gate N1: `$` alone accepts one).
+    with pytest.raises(ValueError, match="bad server name"):
+        invocation.McpToolset("miner\n", (_tool("open_stretch"),))
+    with pytest.raises(ValueError, match="bad tool name"):
+        invocation.McpToolset("miner", (_tool("open_stretch\n"),))
+    for bad_key in ("", "a/b", "../x", "k" * 65, "a.b", "k1\n", "a" * 64 + "\n"):
         with pytest.raises(ValueError, match="bad sidecar_key"):
             _spec(tmp_path, containment=invocation.DEGRADED_WORKER_CONTAINMENT, sidecar_key=bad_key)
+    # No tools at all (gate N4): the SDK would serve no tool list.
+    with pytest.raises(ValueError, match="no tools"):
+        invocation.McpToolset("miner", ())
+    # A schema the SDK would misread (gate N3): it needs a string `type`
+    # and a `properties` mapping.
+    for bad_schema in (
+        {"type": "object"},
+        {"properties": {}},
+        {"type": 1, "properties": {}},
+        {"type": "object", "properties": []},
+    ):
+        tool = invocation.McpTool("open_stretch", "d", bad_schema, _echo)
+        with pytest.raises(ValueError, match="input_schema"):
+            invocation.McpToolset("miner", (tool,))
+    no_arguments = invocation.McpTool("open_stretch", "d", {"type": "object", "properties": {}}, _echo)
+    assert invocation.McpToolset("miner", (no_arguments,)).qualified_names == ("mcp__miner__open_stretch",)
     # Positive controls: the boundary shapes are accepted.
     assert invocation.McpToolset("m" * 32, (_tool("t" * 32),)).qualified_names == (
         f"mcp__{'m' * 32}__{'t' * 32}",
@@ -339,6 +411,10 @@ def test_s4_the_server_wraps_every_handler(tmp_path, monkeypatch):
     async def not_a_reply(args):
         return "plain text"
 
+    async def own_timeout(args):
+        # e.g. a socket timeout inside the handler, long before the bound
+        raise TimeoutError(f"read timed out on {canary}")
+
     handlers = {
         "ok": ok,
         "bad_argument": bad_argument,
@@ -348,6 +424,7 @@ def test_s4_the_server_wraps_every_handler(tmp_path, monkeypatch):
         "sleeps": sleeps,
         "at_once": at_once,
         "not_a_reply": not_a_reply,
+        "own_timeout": own_timeout,
     }
     toolset = _toolset(*(_tool(name, handler) for name, handler in handlers.items()))
     kwargs = backend_mod.options_kwargs(
@@ -389,6 +466,46 @@ def test_s4_the_server_wraps_every_handler(tmp_path, monkeypatch):
     # A handler that answers with something other than a ToolReply fails
     # closed, by type name.
     assert _call_tool(server, "not_a_reply", {}) == ("tool failed: TypeError", True)
+
+    # A handler's OWN TimeoutError is a failure of the handler, not the
+    # seam's bound running out (gate N2) -- reported by type name, message
+    # withheld. (The bound is still 0.1 s here; this one raises at once.)
+    assert _call_tool(server, "own_timeout", {}) == ("tool failed: TimeoutError", True)
+
+
+def test_s4b_a_cancelled_session_cancels_the_tool_call(tmp_path):
+    """The wrapper turns every handler FAILURE into a reply, but never a
+    cancellation: when the session is cancelled (its own timeout, a kill)
+    while a tool runs, the CancelledError must reach the caller rather
+    than come back as a `tool failed: CancelledError` reply (gate M8)."""
+    home = _home(tmp_path)
+
+    async def waits(args):
+        await asyncio.sleep(30)
+        return invocation.ToolReply("never")
+
+    toolset = _toolset(_tool("waits", waits))
+    server = _server_instance(
+        backend_mod.options_kwargs(_spec(home, containment=_containment(toolset), mcp_toolset=toolset))
+    )
+    request = mcp_types.CallToolRequest(
+        method="tools/call", params=mcp_types.CallToolRequestParams(name="waits", arguments={})
+    )
+
+    async def cancel_while_running():
+        task = asyncio.ensure_future(server.request_handlers[mcp_types.CallToolRequest](request))
+        await asyncio.sleep(0.05)
+        assert not task.done()  # positive control: the call really was in flight
+        task.cancel()
+        try:
+            result = await task
+        except asyncio.CancelledError:
+            return "cancelled"
+        return result
+
+    started = time.monotonic()
+    assert asyncio.run(cancel_while_running()) == "cancelled"
+    assert time.monotonic() - started < 5
 
 
 # ===================================================================== #

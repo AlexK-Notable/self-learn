@@ -86,8 +86,14 @@ _CATCHES_OS_ERROR = dict(TRANSPORT)
 #: (`SessionSpec.mcp_toolset`). Whether Claude Code's own MCP tool timeout
 #: reaches an in-process server is unmeasured, so the seam bounds each
 #: call itself. Read at CALL time inside the handler wrapper, so a test
-#: can lower it with `monkeypatch.setattr`.
+#: can lower it with `monkeypatch.setattr`. It interrupts a handler only
+#: at an `await`; a handler that blocks is not bounded (`McpTool`).
 MCP_HANDLER_TIMEOUT_SECS: float = 60
+
+#: Surfaces that may run ONLY on their own tools (2026-10-06, gate R2): a
+#: `miner-session` spec without `mcp_toolset` would be offered every
+#: built-in tool, and its containment fences no reads.
+_OWN_TOOLS_ONLY = frozenset({"miner-session"})
 
 #: 2026-10-06 (U4-seam): the longest reply one of a session's own tools
 #: may give, in characters. Claude Code cuts a longer tool result silently
@@ -416,6 +422,11 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
     # is set only when `spec.mcp_toolset` is, so a session without one
     # gets exactly the options it got before.
     toolset = spec.mcp_toolset
+    if toolset is None and spec.surface in _OWN_TOOLS_ONLY:
+        raise ValueError(
+            f"a {spec.surface} session runs only on its own tools, and this one has "
+            "no mcp_toolset; refusing the session"
+        )
     if toolset is not None:
         unsupported = [name for name in ("tools", "mcp_servers") if name not in supported]
         if unsupported:
@@ -479,21 +490,26 @@ def _wrap_tool_handler(
 ) -> Callable[[dict[str, Any]], Coroutine[Any, Any, dict[str, Any]]]:
     """The SDK handler for one of a session's own tools (2026-10-06,
     U4-seam): awaits the plain handler under `MCP_HANDLER_TIMEOUT_SECS`
-    and turns everything that is not a normal reply into an error reply
-    the model can read. A raised exception reports its TYPE NAME only:
-    its message may hold transcript text. Never raises (a cancelled
-    session's `CancelledError` still propagates)."""
+    and turns every handler failure into an error reply the model can
+    read. A raised exception reports its TYPE NAME only: its message may
+    hold transcript text. A cancellation is not a failure: the session's
+    `CancelledError` propagates (`except Exception`, never
+    `BaseException`)."""
 
     async def handler(args: dict[str, Any]) -> dict[str, Any]:
         timeout = MCP_HANDLER_TIMEOUT_SECS
+        # `asyncio.timeout`, not `wait_for`: its `expired()` tells the
+        # seam's own bound running out from a `TimeoutError` the handler
+        # raised itself (a socket timeout is a failure of the handler).
+        bound = asyncio.timeout(timeout)
         try:
-            reply = await asyncio.wait_for(tool.handler(dict(args)), timeout)
+            async with bound:
+                reply = await tool.handler(dict(args))
             if not isinstance(reply, ToolReply) or not isinstance(reply.text, str):
                 raise TypeError("a tool handler must answer with a ToolReply")
-        except asyncio.TimeoutError:
-            # Before the generic branch: `TimeoutError` is an `Exception`.
-            return _tool_result(f"tool timed out after {timeout:g} s", is_error=True)
         except Exception as exc:  # noqa: BLE001 - every handler failure becomes a reply
+            if isinstance(exc, TimeoutError) and bound.expired():
+                return _tool_result(f"tool timed out after {timeout:g} s", is_error=True)
             return _tool_result(f"tool failed: {type(exc).__name__}", is_error=True)
         if len(reply.text) > MCP_REPLY_MAX_CHARS:
             return _tool_result(

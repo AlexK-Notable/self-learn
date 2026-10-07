@@ -277,11 +277,13 @@ DEGRADED_WORKER_CONTAINMENT = Containment(
 
 
 #: A tool or server name as the model sees it, `mcp__<server>__<name>`:
-#: lower-case, starting with a letter, at most 32 characters.
-_MCP_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+#: lower-case, starting with a letter, at most 32 characters. Both
+#: patterns are applied with `fullmatch`, never `match` with `$`, which
+#: would also accept a trailing newline.
+_MCP_NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,31}")
 
 #: `SessionSpec.sidecar_key` becomes part of a file name in the cache.
-_SIDECAR_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_SIDECAR_KEY_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 @dataclass(frozen=True)
@@ -298,11 +300,20 @@ class ToolReply:
 class McpTool:
     """One of a session's own tools, as plain data (2026-10-06, U4-seam):
     nothing here imports the SDK, so a producer can define its tools
-    without it. `input_schema` is a JSON Schema object (it must carry
-    `type` and `properties`); `handler` receives the model's arguments
-    and answers with a `ToolReply`. `read_only` tools may run in
-    parallel. The seam (`invocation_sdk/backend.py`) builds the SDK's
-    in-process server from these."""
+    without it. `input_schema` is a JSON Schema object (it must carry a
+    string `type` and a `properties` mapping, checked by `McpToolset`);
+    `handler` receives the model's arguments and answers with a
+    `ToolReply`. `read_only` tools may run in parallel. The seam
+    (`invocation_sdk/backend.py`) builds the SDK's in-process server from
+    these.
+
+    **A handler must be async and must never block.** It runs on the
+    session's own event loop, and the seam's time bound
+    (`MCP_HANDLER_TIMEOUT_SECS`) can only interrupt a handler at an
+    `await`: a handler that blocks -- `time.sleep`, a synchronous HTTP or
+    SQLite call -- stalls the whole session, its message reader and its
+    own timeout included, for as long as it blocks. Do synchronous or
+    network work through `asyncio.to_thread` (or an async client)."""
 
     name: str
     description: str
@@ -322,15 +333,33 @@ class McpToolset:
     tools: tuple[McpTool, ...]
 
     def __post_init__(self) -> None:
-        if not _MCP_NAME_RE.match(self.server):
+        if not _MCP_NAME_RE.fullmatch(self.server):
             raise ValueError(f"McpToolset: bad server name {self.server!r}")
+        if not self.tools:
+            # The SDK registers no tool-list handler for a server without
+            # tools, so Claude Code's request for the list would fail.
+            raise ValueError("McpToolset: no tools")
         seen: set[str] = set()
         for tool in self.tools:
-            if not _MCP_NAME_RE.match(tool.name):
+            if not _MCP_NAME_RE.fullmatch(tool.name):
                 raise ValueError(f"McpToolset: bad tool name {tool.name!r}")
             if tool.name in seen:
                 raise ValueError(f"McpToolset: duplicate tool name {tool.name!r}")
             seen.add(tool.name)
+            # The SDK passes a schema through unchanged only when it has a
+            # string `type` and `properties`; anything else it reads as a
+            # map of argument names to Python types, and shows the model
+            # a different tool.
+            schema = tool.input_schema
+            if not (
+                isinstance(schema, Mapping)
+                and isinstance(schema.get("type"), str)
+                and isinstance(schema.get("properties"), Mapping)
+            ):
+                raise ValueError(
+                    f"McpToolset: tool {tool.name!r} input_schema needs a string "
+                    "'type' and a 'properties' mapping"
+                )
 
     @property
     def qualified_names(self) -> tuple[str, ...]:
@@ -425,7 +454,7 @@ class SessionSpec:
     skip_orphan_sweep: bool = False
 
     def __post_init__(self) -> None:
-        if self.sidecar_key is not None and not _SIDECAR_KEY_RE.match(self.sidecar_key):
+        if self.sidecar_key is not None and not _SIDECAR_KEY_RE.fullmatch(self.sidecar_key):
             raise ValueError(f"SessionSpec: bad sidecar_key {self.sidecar_key!r}")
 
     @property

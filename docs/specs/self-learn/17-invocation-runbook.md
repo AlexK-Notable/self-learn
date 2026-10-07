@@ -62,12 +62,14 @@ The seven surfaces, and the five selector names that address them:
 | `overseer` | the overseer's weekly examination run | `OVERSEER` | `backend_overseer` |
 | `miner-session` | the session miner, one transcript per call (§1a) | `MINER` (**shared with `miner-reader`**) | `backend_miner-session` |
 
-Both new surfaces are `Containment` objects in the same sense `03-decisions.md`
-`S-34`/`S-50` already describe: on the `sdk` backend, the `can_use_tool`
-charter denies `Bash` and `Task` structurally and grants `Edit`/`Write` only
-inside the run's own declared stage directory — never the ledger or canon
-directly. Neither surface is a new kind of charter; each gets its own
-`Containment` instance with a narrower write set than the surfaces it joins.
+`steward` and `overseer` (added 2026-09-13) are `Containment` objects in the
+same sense `03-decisions.md` `S-34`/`S-50` already describe: on the `sdk`
+backend, the `can_use_tool` charter denies `Bash` and `Task` structurally and
+grants `Edit`/`Write` only inside the run's own declared stage directory —
+never the ledger or canon directly. Neither of the two is a new kind of
+charter; each gets its own `Containment` instance with a narrower write set
+than the surfaces it joins. `miner-session` (2026-10-06) writes nothing at
+all and runs only on its own tools; §1a describes it.
 
 ### 1a. The seventh surface: `miner-session`, which runs on its own tools
 
@@ -91,7 +93,12 @@ The doctor's `switches`, `models`, `env` and `rollout` rows gain one
 `SessionSpec.mcp_toolset`, an `McpToolset` (a server name and a tuple of
 `McpTool`s — name, description, a JSON Schema carrying `type` and
 `properties`, an async handler answering a `ToolReply`, and `read_only`).
-The model sees each tool as `mcp__<server>__<name>`. Only
+Building the toolset checks it: at least one tool, no duplicate names,
+each name and the server name lower-case letters, digits and underscores
+(starting with a letter, at most 32), and each schema with a string
+`type` and a `properties` mapping — anything else the SDK would show the
+model as a different tool. The model sees each tool as
+`mcp__<server>__<name>`. Only
 `invocation_sdk/backend.py` turns them into the SDK's in-process MCP
 server; the producer never imports the SDK. When the field is set, the
 session's options change in exactly two keys: `tools` becomes the empty
@@ -99,12 +106,19 @@ list (every built-in tool switched off) and `mcp_servers` holds that one
 server. The shared floor is untouched: `allowed_tools` stays empty, so
 nothing is pre-approved, MCP stays strict, and no settings file is read.
 
-**The rule.** The session's containment must allow **exactly** the
-toolset's `mcp__<server>__<name>` names — one more (a built-in such as
-`Read`), one fewer, or another server's name, and the seam refuses the
-session with a `ValueError` naming the difference before anything starts.
-It refuses too when the installed SDK has no `tools` option, rather than
-run with every built-in tool beside the session's own. Permission is
+**The rule.** A `miner-session` session runs **only** on its own tools:
+a spec without `mcp_toolset` is refused, because it would be offered every
+built-in tool and its containment fences no reads. The session's
+containment must allow **exactly** the toolset's `mcp__<server>__<name>`
+names — one more (a built-in such as `Read`), one fewer, or another
+server's name, and the seam refuses the session with a `ValueError`
+naming the difference. It refuses too when the installed SDK has no
+`tools` or no `mcp_servers` option, rather than run with every built-in
+tool beside the session's own. A refusal is raised while the options are
+built: no Claude Code process is started and no event log is written, but
+the orphan sweep (unless skipped) has already run, and the `ValueError`
+reaches the caller of `write_session`/`text_session` as an exception, not
+as an `Outcome` — the same shape as the append-file refusal. Permission is
 containment data decided by unchanged code: the charter allows a tool
 exactly when its name is in the containment's `allowed_tools`, and denies
 everything else. Whether Claude Code consults the charter for an
@@ -113,25 +127,46 @@ tools); the session miner's pilot measures it before any larger run.
 
 **What a tool call can return.** The seam wraps every handler. A call is
 bounded at 60 seconds (`MCP_HANDLER_TIMEOUT_SECS`, because whether Claude
-Code's own MCP timeout reaches an in-process server is unmeasured). A
-timeout, a raised exception, an answer that is not a `ToolReply`, and a
-reply longer than 48,000 characters (`MCP_REPLY_MAX_CHARS`; Claude Code
-cuts longer tool results silently, near 50,000) all come back to the
-model as an error reply it can read. An exception is reported by its
-type name only, never its message, which may hold transcript text.
+Code's own MCP timeout reaches an in-process server is unmeasured) — but
+the bound can only interrupt a handler at an `await`. **Handlers must be
+async and must never block:** a handler runs on the session's own event
+loop, so one that blocks (`time.sleep`, a synchronous HTTP or SQLite call)
+stalls the whole session, its own timeout included, and is not bounded at
+all. The session miner's handlers do synchronous or network work through
+`asyncio.to_thread` (or an async client). The bound running out, a raised
+exception, an answer that is not a `ToolReply`, and a reply longer than
+48,000 characters (`MCP_REPLY_MAX_CHARS`; Claude Code cuts longer tool
+results silently, near 50,000) all come back to the model as an error
+reply it can read. An exception is reported by its type name only, never
+its message, which may hold transcript text; a handler that raises its
+own `TimeoutError` (a socket timeout, say) reads `tool failed:
+TimeoutError`, not as the bound running out. A cancellation is not a
+failure: when the session is cancelled while a tool runs, the
+cancellation reaches the session, not the model.
 
 **Parallel sessions on one surface.** Two more `SessionSpec` fields let a
 producer run several sessions of one surface at once:
 
 - `sidecar_key` keys the pid sidecar to one session,
-  `<surface>.sdk-child.<key>.pid` (the key must match
-  `^[A-Za-z0-9_-]{1,64}$`). Without a key, the one sidecar per surface is
-  written and cleared with exactly the same calls as before.
+  `<surface>.sdk-child.<key>.pid` (the whole key must match
+  `[A-Za-z0-9_-]{1,64}`; a trailing newline is refused). Without a key,
+  the one sidecar per surface is written and cleared with exactly the
+  same calls as before. Nothing checks that keys are unique: **a
+  producer must give every session of a run its own key**, or the first
+  of two sessions sharing one deletes the other's sidecar when it ends.
 - `skip_orphan_sweep` skips the orphan sweep before that session starts.
   The sweep judges every sidecar of the surface, and it unlinks one whose
   process is alive but not older than this process — a live sibling's —
   so a batch sweeps once, on a first call that runs alone, and its other
   calls skip it.
+- **Across processes the sweep is not safe.** A run in one process sweeps
+  the `miner-session` sidecars another process's run left live: it kills
+  the children that run started before this process began, and deletes
+  the sidecars of the ones it started later. So a producer of
+  `miner-session` runs (the session miner's engine) must hold a run lock
+  across processes — the way the old miner holds `miner.lock` — so that
+  two runs never overlap, whether a hand-started run meets the serve job
+  or one night's run is still going when the next one starts.
 
 **The prune fix.** Two sessions on one surface that end at the same
 moment both prune the event logs; one could unlink a file between the
