@@ -785,15 +785,19 @@ def _fires(home: Path) -> list[Fire]:
 
 def _old_cost(home: Path, windows: Sequence[tuple[datetime, datetime]]) -> float | None:
     """The old miner's own cost for the night(s): the first line of each
-    ``miner-reader.tool-events.<seam run id>.jsonl`` whose run id's timestamp
-    falls in a row's window, while those logs are retained."""
+    of the seam's per-run event logs for ``miner-reader`` (named by
+    ``events.event_log_name``) whose run id's timestamp falls in a row's
+    window, while those logs are retained."""
     cache = _cache_dir(home)
     total = 0.0
     seen = False
     if not cache.is_dir():
         return None
-    for p in sorted(cache.glob("miner-reader.tool-events.*.jsonl")):
-        run_id = p.name[len("miner-reader.tool-events.") : -len(".jsonl")]
+    from ..invocation_sdk import events  # late: the package imports the SDK backend
+
+    prefix, suffix = events.event_log_name("miner-reader", "*").split("*")
+    for p in sorted(cache.glob(prefix + "*" + suffix)):
+        run_id = p.name[len(prefix) : -len(suffix)]
         m = _RUN_ID_TS_RE.match(run_id)
         if m is None:
             continue
