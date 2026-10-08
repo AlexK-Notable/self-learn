@@ -1166,8 +1166,9 @@ def test_adopting_a_path_no_lesson_was_routed_to_still_adopts_nothing(tmp_path):
     assert compiled.load_record(home, host_slug(home, host, scope_kind="project")) == before
 
 
+@pytest.mark.parametrize("repair", ["adopt-now", "by-hand"])
 def test_a_file_tracked_after_the_prediction_is_repaired_by_the_adopt_it_names(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, repair
 ):
     """Gate SH2b F4. CLAUDE.md is tracked after the ledger's prediction and
     before the host write: the prediction dropped both entries (the shelf
@@ -1175,7 +1176,8 @@ def test_a_file_tracked_after_the_prediction_is_repaired_by_the_adopt_it_names(
     both files as they were, and in a plain host both read `unknown` -- no
     later route to the shelf gets through. No routed lesson is left on that
     shelf, yet both regions can be adopted: the warning names the command,
-    and once it has run the next route lands."""
+    and once it has run the next route lands. Its hand repair, done
+    literally instead, lands the next route too."""
     home = make_env(tmp_path).ledger
     host = _plain_shelved(home, tmp_path, RID)
     claude, shelf = host / "CLAUDE.md", _shelf(host)
@@ -1197,6 +1199,20 @@ def test_a_file_tracked_after_the_prediction_is_repaired_by_the_adopt_it_names(
     _never_deletes_a_shelf(failed, shelf)
     adopt = _blocked_now(failed)
     assert adopt == [str(shelf), f"{claude}#pointer"]
+    if repair == "by-hand":
+        assert f"from {shelf} and its pointer line from {claude} by hand, then" in failed
+        git(host, "rm", "-q", "--cached", "CLAUDE.md")  # the cause, fixed
+        git(host, "commit", "-q", "-m", "untrack CLAUDE.md again")
+        text = shelf.read_text(encoding="utf-8")
+        shelf.write_text(compilers._retire_reference_text(text, RID)[0] + "\n", encoding="utf-8")
+        claude.write_text(claude.read_text(encoding="utf-8").replace(SHELF_LINE + "\n", ""),
+                          encoding="utf-8")
+        _adopted(home, _after_hand_removal(failed))
+        assert _refused(home, host, *regions) == []
+        assert f"— {RID}" not in shelf.read_text(encoding="utf-8")
+        _route_again(home, host, OTHER)
+        assert _refused(home, host, *regions) == []
+        return
     _lesson(home, host, OTHER)
     with pytest.raises(verbs.DirtyTargetError):  # control: blocked until adopted
         verbs.route(home, OTHER, dest="reference", no_push=True)
@@ -1397,7 +1413,8 @@ def test_a_shelf_tracked_after_the_pre_flight_is_never_deleted(tmp_path, monkeyp
     tracked it after the pre-flight. The host write's own check asks
     whether git tracks a file it deletes, and refuses: the shelf stays in
     their repository, git shows no deletion, and the record still matches
-    it."""
+    it. The warning's hand repair, done literally once the shelf is
+    untracked again, lands the next route."""
     home = make_env(tmp_path).ledger
     host = _plain_shelved(home, tmp_path, RID)
     shelf = _shelf(host)
@@ -1410,6 +1427,7 @@ def test_a_shelf_tracked_after_the_pre_flight_is_never_deleted(tmp_path, monkeyp
 
     monkeypatch.setattr(verbs, "resolve_record", track_then_resolve)
     result = verbs.graduate(home, RID, no_push=True)
+    monkeypatch.setattr(verbs, "resolve_record", real_resolve)
 
     assert _record(home, RID).status == "superseded"  # control: the ledger commit stands
     assert shelf.is_file() and shelf.read_bytes() == shelf_bytes
@@ -1419,8 +1437,23 @@ def test_a_shelf_tracked_after_the_pre_flight_is_never_deleted(tmp_path, monkeyp
     assert "LEARNINGS.md is tracked by git" in failed  # the cause, named
     assert "Nothing later is blocked" in _own_words(failed)
     _never_deletes_a_shelf(failed, shelf)
-    regions = [(shelf, "reference"), (host / "CLAUDE.md", "pointer")]
+    claude = host / "CLAUDE.md"
+    regions = [(shelf, "reference"), (claude, "pointer")]
     assert _refused(home, host, *regions) == []
+    assert f"from {shelf} and its pointer line from {claude} by hand, then" in failed
+    git(host, "rm", "-q", "--cached", "references/LEARNINGS.md")  # the cause, fixed
+    git(host, "commit", "-q", "-m", "untrack the shelf again")
+    shelf.write_text(
+        compilers._retire_reference_text(shelf.read_text(encoding="utf-8"), RID)[0] + "\n",
+        encoding="utf-8",
+    )
+    claude.write_text(claude.read_text(encoding="utf-8").replace(SHELF_LINE + "\n", ""),
+                      encoding="utf-8")
+    _adopted(home, _after_hand_removal(failed))
+    assert _refused(home, host, *regions) == []
+    _route_again(home, host, OTHER)
+    assert _refused(home, host, *regions) == []
+    assert _status(host) == ""
 
 
 def test_the_failure_warning_survives_a_compile_record_it_cannot_read(tmp_path):
