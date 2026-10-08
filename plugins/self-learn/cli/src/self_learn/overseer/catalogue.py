@@ -8,8 +8,10 @@ on this machine. Each is data first, then a renderer over the data:
    user ``CLAUDE.md``, each project's ``CLAUDE.md`` / ``CLAUDE.local.md``, each
    rules file, each skill's ``SKILL.md``, each reference shelf -- every ROUTED
    lesson placed there, with the line exactly as the compiler writes it, its
-   word count, its fires in the window, who placed it, and its age. One
-   markdown text per surface, under a stable, filesystem-safe key.
+   word count, its fires in the window, who placed it, and its age. A
+   surface is a FILE: lessons are grouped on the resolved file the compiler
+   writes them into, whatever scope or route reached it. One markdown text
+   per surface, under a stable, filesystem-safe key derived from the file.
 2. **Skills on this machine** (:func:`skills_on_machine`,
    :func:`render_skills_index`): every skill Claude Code loads here, with its
    description, where it lives, and how many routed lessons are compiled into
@@ -43,7 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import domain, hosts as hosts_mod, reachability, telemetry
-from ..compilers import _iso, _reference_block, entry_line, reference_target_path
+from ..compilers import _iso, _reference_block, entry_line
 from ..ledger import Bucket, discover_buckets
 from ..ledger_ops import UNREADABLE_RECORD_ERRORS, bucket_project_path
 from ..primitives import chrono
@@ -102,17 +104,24 @@ WHERE_PERSONAL = "personal"  # ~/.claude/skills/<name>, a folder or a symlink
 WHERE_PLUGIN = "plugin"  # <enabled plugin>/skills/<name>
 WHERE_HOST = "host"  # <registered host>/.claude/skills/<name>
 
+#: Surface keys. A key is a readable label taken from the surface's file
+#: plus a digest of that file's resolved path, so one file is one key and two
+#: files never share one. ``KEY_MAX`` is the longest key; the label is cut to
+#: fit. ``KEY_DIGEST_CHARS`` is how many hex digits of the digest are kept.
+KEY_MAX = 120
+KEY_DIGEST_CHARS = 8
+
 # ============================================================ end of knobs ==
 
-#: Surface kinds (:attr:`Surface.kind`).
+#: Surface kinds (:attr:`Surface.kind`), in the order a surface reached by
+#: routes of more than one kind takes its kind from.
 KIND_CLAUDE_MD = "claude-md"
 KIND_CLAUDE_LOCAL = "claude-local"
 KIND_RULES = "rules"
 KIND_SKILL = "skill"
 KIND_REFERENCE = "reference"
+_KIND_ORDER = (KIND_CLAUDE_MD, KIND_CLAUDE_LOCAL, KIND_RULES, KIND_SKILL, KIND_REFERENCE)
 
-#: Longest surface key kept whole; a longer one is cut and given a digest.
-_KEY_MAX = 120
 _UNSAFE_KEY_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -133,15 +142,23 @@ class PlacedLesson:
 
 @dataclass(frozen=True)
 class Surface:
-    """A place lessons are loaded from, and the lessons placed there."""
+    """One file lessons are loaded from, and the lessons placed there.
+
+    A surface IS a file: every lesson whose route resolves to the same file
+    is on the same surface, whatever scope or destination routed it there
+    (a repo registered as both a project and the skills root has ONE
+    ``CLAUDE.md``, holding both scopes' lines)."""
 
     key: str  # filesystem-safe and stable: the file name under catalogue/
     kind: str  # one of the KIND_* values
-    title: str
+    title: str  # names the file's kind and every owner that reaches it
     loaded: str  # how it reaches a session, in a sentence
     target: Path  # the file the compiler writes (resolved)
     window_days: int  # the fire window the counts were taken over
     lessons: tuple[PlacedLesson, ...]
+    #: Every scope and route that reaches this file, one line each, e.g.
+    #: ``project host-repo-1a2b3c4d (claude-md)``.
+    owners: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -189,13 +206,12 @@ class Catalogue:
 
 @dataclass(frozen=True)
 class _Place:
-    """Where one lesson goes, before the keys are made filesystem-safe."""
+    """Where one lesson goes: the resolved file the compiler writes it into,
+    the kind of that file, and who routed it there."""
 
-    raw_key: str
-    kind: str
-    title: str
-    loaded: str
     target: Path
+    kind: str
+    owner: str
 
 
 @dataclass
@@ -234,33 +250,48 @@ def placed_lessons(
 
     walk = _walk_ledger(ledger, claude)
     fires = _fires_by_record(ledger, moment, window)
-    keys = {place.raw_key: _safe_key(place.raw_key) for place, _ in walk.placed}
 
-    grouped: dict[str, list[tuple[_Place, Record]]] = {}
+    # One surface per FILE: group on the resolved file the compiler writes.
+    grouped: dict[Path, list[tuple[_Place, Record]]] = {}
     for place, record in walk.placed:
-        grouped.setdefault(keys[place.raw_key], []).append((place, record))
+        grouped.setdefault(place.target, []).append((place, record))
 
+    user_claude_md = _resolved(claude / "CLAUDE.md")
     surfaces: dict[str, Surface] = {}
-    for key in sorted(grouped):
-        members = grouped[key]
-        first = members[0][0]
-        members.sort(key=lambda m: (_iso((m[1].routing or {}).get("routed_at") or ""), m[1].id))
+    for target in sorted(grouped, key=str):
+        # Sort first; everything below is chosen from the sorted group, so
+        # nothing depends on the order the ledger walk met the lessons in.
+        members = sorted(grouped[target], key=_placement_order)
+        kind = min((place.kind for place, _ in members), key=_KIND_ORDER.index)
+        owners = tuple(sorted({place.owner for place, _ in members}))
+        label = _readable_label(kind, target, claude)
+        key = _surface_key(label, target)
+        if key in surfaces:  # a digest collision: the full digest keeps them apart
+            key = _surface_key(label, target, digest_chars=64)
         surfaces[key] = Surface(
             key=key,
-            kind=first.kind,
-            title=first.title,
-            loaded=first.loaded,
-            target=first.target,
+            kind=kind,
+            title=f"{_file_label(kind, target)}, reached by {'; '.join(owners)}",
+            loaded=_loaded(kind, target, user_claude_md),
+            target=target,
             window_days=window,
             lessons=tuple(
                 _lesson_row(place, record, fires, moment) for place, record in members
             ),
+            owners=owners,
         )
     return PlacedLessons(
-        surfaces=surfaces,
+        surfaces=dict(sorted(surfaces.items())),
         unlisted=tuple(sorted(walk.unlisted)),
         unreadable=tuple(sorted(walk.unreadable)),
     )
+
+
+def _placement_order(member: tuple[_Place, Record]) -> tuple[str, str]:
+    """Oldest routing first, then id: the order the compiler writes a section
+    in."""
+    record = member[1]
+    return (_iso((record.routing or {}).get("routed_at") or ""), record.id)
 
 
 def _claude_dir(claude_dir: Path | str | None) -> Path:
@@ -318,24 +349,35 @@ def _lesson_row(
 def _place(
     home: Path, bucket: Bucket, record: Record, claude_dir: Path
 ) -> tuple[_Place | None, str]:
-    """The surface *record* is loaded from, or ``(None, why)``.
+    """The file *record* is loaded from, or ``(None, why)``.
 
-    The target file comes from the compiler's own resolution
-    (:func:`self_learn.verbs.managed_target_for`) so the catalogue and the
-    compile can never disagree about where a lesson lands. The user
-    ``CLAUDE.md`` is always passed in: left to default, that resolution reads
-    the real ``~/.claude``.
+    The file is the compiler's own answer, never a second derivation: for a
+    managed section (``claude-md``, ``skill-md``, ``new-skill``)
+    :func:`self_learn.verbs.managed_target_for`, the resolution
+    ``recompile`` groups its compile sets on; for a reference shelf
+    :func:`self_learn.selfcheck._reference_target_for`, the same
+    skill-``references/`` or project-``references/`` resolution the route
+    and recompile use. The user ``CLAUDE.md`` is always passed in: left to
+    default, that resolution reads the real ``~/.claude``.
     """
     from .. import verbs
+    from ..selfcheck import _reference_target_for
 
     routing = record.routing or {}
     destination = routing.get("destination")
-    variant = routing.get("variant")
 
     if destination == "hook":
         return None, "routed to a hook (a script, not a loaded line)"
     if destination == "reference":
-        return _place_reference(home, bucket, record)
+        target = _reference_target_for(home, bucket, record)
+        if target is None:
+            why = (
+                "user scope has no shelf"
+                if bucket.scope == "user"
+                else "its host is not registered, or its skill is missing or ambiguous"
+            )
+            return None, f"the reference shelf cannot be resolved ({why})"
+        return _Place(_resolved(target), KIND_REFERENCE, _owner(bucket, routing)), ""
     if destination not in ("claude-md", "skill-md", "new-skill"):
         return None, f"destination {destination!r} loads no text"
 
@@ -347,66 +389,36 @@ def _place(
         return None, f"the target file cannot be resolved ({exc})"
     if target is None:
         return None, f"the target file cannot be resolved (destination {destination})"
-
     if destination in ("skill-md", "new-skill"):
-        name = bucket.name if destination == "skill-md" else str(routing.get("new_skill"))
-        return (
-            _Place(
-                f"skill-{name}",
-                KIND_SKILL,
-                f"Skill {name}: SKILL.md",
-                "when Claude invokes the skill (only its description is in every session)",
-                target,
-            ),
-            "",
-        )
-
-    if variant == "rules":
-        topic = str(routing.get("rules_topic"))
-        owner, prefix = _owner(bucket, record)
-        return (
-            _Place(
-                f"{prefix}-rules-{topic}",
-                KIND_RULES,
-                f"{owner} rule file {topic}",
-                "when a file matching the rule file's paths is read "
-                "(a rule file with no paths loads every session)",
-                target,
-            ),
-            "",
-        )
-    if variant == "local":
-        owner, prefix = _owner(bucket, record)
-        return (
-            _Place(
-                f"{prefix}-claude-local-md",
-                KIND_CLAUDE_LOCAL,
-                f"{owner} CLAUDE.local.md",
-                "every session in that project",
-                target,
-            ),
-            "",
-        )
-    owner, prefix = _owner(bucket, record)
-    if record.scope == "user":
-        loaded = "every session, in every project"
+        kind = KIND_SKILL
+    elif routing.get("variant") == "rules":
+        kind = KIND_RULES
+    elif routing.get("variant") == "local":
+        kind = KIND_CLAUDE_LOCAL
     else:
-        loaded = "every session in that project"
-    return (
-        _Place(f"{prefix}-claude-md", KIND_CLAUDE_MD, f"{owner} CLAUDE.md", loaded, target),
-        "",
-    )
+        kind = KIND_CLAUDE_MD
+    return _Place(_resolved(target), kind, _owner(bucket, routing)), ""
 
 
-def _owner(bucket: Bucket, record: Record) -> tuple[str, str]:
-    """``(display name, key prefix)`` of the scope that owns a CLAUDE.md or
-    rules surface."""
-    if record.scope == "user":
-        return "User", "user"
-    if record.scope == "project":
-        label = _project_label(bucket)
-        return f"Project {label}", f"project-{label}"
-    return "Skills root", "skills-root"
+def _owner(bucket: Bucket, routing: dict[str, Any]) -> str:
+    """Who reaches a file: the lesson's bucket and its route, e.g.
+    ``project host-repo-1a2b3c4d (claude-md)`` or ``skill s (skill-md)``."""
+    if bucket.scope == "user":
+        scope = "user"
+    elif bucket.scope == "project":
+        scope = f"project {_project_label(bucket)}"
+    else:
+        scope = f"skill {bucket.name}"
+    destination = str(routing.get("destination"))
+    if destination == "new-skill":
+        route = f"new-skill {routing.get('new_skill')}"
+    elif destination == "claude-md" and routing.get("variant") == "rules":
+        route = f"claude-md, rules topic {routing.get('rules_topic')}"
+    elif destination == "claude-md" and routing.get("variant") == "local":
+        route = "claude-md, local"
+    else:
+        route = destination
+    return f"{scope} ({route})"
 
 
 def _project_label(bucket: Bucket) -> str:
@@ -419,58 +431,81 @@ def _project_label(bucket: Bucket) -> str:
     return f"{path.name}-{bucket.name[-8:]}"
 
 
-def _place_reference(
-    home: Path, bucket: Bucket, record: Record
-) -> tuple[_Place | None, str]:
-    """A reference lesson's shelf. ``managed_target_for`` has no answer for a
-    reference (it has no managed section), so this follows the route-time
-    resolution in ``verbs._resolve_target``: a skill's ``references/`` or a
-    project's ``references/``; user scope has no shelf."""
-    routing = record.routing or {}
-    if bucket.scope == "skill":
-        try:
-            skill_dir = hosts_mod.skill_dir_for(hosts_mod.load_hosts(home), bucket.name)
-        except hosts_mod.HostsError as exc:
-            return None, f"the reference shelf cannot be resolved ({exc})"
-        refs_dir = skill_dir / "references"
-        owner, prefix = f"skill {bucket.name}", f"skill-{bucket.name}"
-    elif bucket.scope == "project":
-        host = bucket_project_path(bucket.path)
-        if host is None:
-            return None, "the reference shelf cannot be resolved (project host unknown)"
-        label = _project_label(bucket)
-        refs_dir = host / "references"
-        owner, prefix = f"project {label}", f"project-{label}"
-    else:
-        return None, "the reference shelf cannot be resolved (user scope has no shelf)"
-    target = reference_target_path(refs_dir, routing.get("reference_file"))
-    shelf = target.stem if target.suffix == ".md" else target.name
-    return (
-        _Place(
-            f"{prefix}-reference-{shelf}",
-            KIND_REFERENCE,
-            f"Reference shelf {target.name} of {owner}",
-            "only when read; the SKILL.md or CLAUDE.md carries a pointer to it",
-            target.resolve(),
-        ),
-        "",
-    )
+# --------------------------------------------------- what a surface says ---
+
+
+def _file_label(kind: str, target: Path) -> str:
+    if kind == KIND_SKILL:
+        return f"Skill {target.parent.name}: SKILL.md"
+    if kind == KIND_REFERENCE:
+        return f"Reference shelf {target.name}"
+    if kind == KIND_RULES:
+        return f"Rule file {target.stem}"
+    return target.name  # CLAUDE.md or CLAUDE.local.md
+
+
+def _loaded(kind: str, target: Path, user_claude_md: Path) -> str:
+    """How a surface reaches a session, in a sentence."""
+    if kind == KIND_SKILL:
+        return "when Claude invokes the skill (only its description is in every session)"
+    if kind == KIND_REFERENCE:
+        return "only when read; the SKILL.md or CLAUDE.md carries a pointer to it"
+    if kind == KIND_RULES:
+        return (
+            "when a file matching the rule file's paths is read "
+            "(a rule file with no paths loads every session)"
+        )
+    if kind == KIND_CLAUDE_MD and target == user_claude_md:
+        return "every session, in every project"
+    return "every session started in that repository"
 
 
 # ---------------------------------------------------------- surface keys ---
 
 
-def _safe_key(raw: str) -> str:
-    """A filesystem-safe, stable key for a raw key. A raw key made only of
-    ``A-Za-z0-9._-`` is its own key. Any other becomes the same text with each
-    run of other characters turned into ``-``, plus a short digest of the raw
-    key, so two raw keys that differ never share a key. The key depends on the
-    raw key alone: it does not change when another surface appears."""
-    key = _UNSAFE_KEY_CHARS.sub("-", raw).strip("-.")
-    if key == raw and 0 < len(key) <= _KEY_MAX:
-        return key
-    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
-    return f"{(key or 'surface')[: _KEY_MAX - 9]}-{digest}"
+def _readable_label(kind: str, target: Path, claude_dir: Path) -> str:
+    """The readable half of a surface key, taken from the FILE (its kind,
+    its name and the folders around it) and never from the lessons on it, so
+    it cannot change when the lessons do. It need not be unique: the key's
+    digest is."""
+    if kind == KIND_SKILL:
+        return f"skill-{target.parent.name}"
+    shelf_or_stem = target.stem if target.suffix == ".md" else target.name
+    if kind == KIND_REFERENCE:
+        refs_owner = target.parent.parent
+        if refs_owner.parent.name == "skills":  # <...>/skills/<name>/references/<file>
+            return f"skill-{refs_owner.name}-reference-{shelf_or_stem}"
+        return f"{refs_owner.name}-reference-{shelf_or_stem}"
+    if kind == KIND_RULES:
+        # <claude dir>/rules/<topic>.md or <host>/.claude/rules/<topic>.md;
+        # a topic may hold a "/", so the rules folder is looked for upward.
+        user_rules = _resolved(claude_dir / "rules")
+        if user_rules in target.parents:
+            owner, topic = "user", target.relative_to(user_rules)
+        else:
+            rules_dir = next(
+                (p for p in target.parents if p.name == "rules" and p.parent.name == ".claude"),
+                target.parent,
+            )
+            owner, topic = rules_dir.parent.parent.name, target.relative_to(rules_dir)
+        topic_text = str(topic.with_suffix("") if topic.suffix == ".md" else topic)
+        return f"{owner}-rules-{topic_text}"
+    user_file = _resolved(claude_dir / target.name) == target
+    owner = "user" if user_file else target.parent.name
+    return f"{owner}-claude-local-md" if kind == KIND_CLAUDE_LOCAL else f"{owner}-claude-md"
+
+
+def _surface_key(label: str, target: Path, *, digest_chars: int | None = None) -> str:
+    """A filesystem-safe, stable key for the surface whose file is *target*:
+    the *label* with each run of characters outside ``A-Za-z0-9._-`` turned
+    into ``-``, cut to fit :data:`KEY_MAX`, then ``-`` and a digest of the
+    resolved file path. The key depends on the file alone, so it does not
+    change when another surface appears, and two files never share one."""
+    chars = KEY_DIGEST_CHARS if digest_chars is None else digest_chars
+    digest = hashlib.sha256(str(target).encode("utf-8")).hexdigest()[:chars]
+    text = _UNSAFE_KEY_CHARS.sub("-", label).strip("-.") or "surface"
+    text = text[: max(1, KEY_MAX - len(digest) - 1)].rstrip("-.") or "surface"
+    return f"{text}-{digest}"
 
 
 # ----------------------------------------------------------------- fires ---

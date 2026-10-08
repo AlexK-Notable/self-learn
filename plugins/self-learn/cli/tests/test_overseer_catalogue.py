@@ -31,10 +31,11 @@ from pathlib import Path
 import pytest
 from ruamel.yaml import YAML
 
-from self_learn import hosts, report
+from self_learn import hosts, report, verbs
+from self_learn.ledger import Bucket, discover_buckets
 from self_learn.overseer import catalogue
 from self_learn.records import Record, format_covered_by
-from support import git, iso, make_home
+from support import commit_all, git, iso, make_home
 
 #: Every age and window in these tests is measured from this instant, so no
 #: assertion depends on the day the suite runs.
@@ -74,16 +75,40 @@ class World:
             f"path: {self.host}\n", encoding="utf-8"
         )
         # The skill the fixture host carries gets frontmatter, so it has a
-        # description to list.
+        # description to list. It sits at plugins/s-plugin/skills/s, NOT the
+        # plugins/<name>/skills/<name> layout a new-skill route resolves to.
         self.skill_dir = self.host / "plugins" / "s-plugin" / "skills" / "s"
         (self.skill_dir / "SKILL.md").write_text(
             "---\nname: s\ndescription: The s skill, for fixtures.\n---\n\n# s\n",
             encoding="utf-8",
         )
+        # A new-skill route needs the skills root's marketplace.json (the
+        # compiler refuses one without it); committed, so no target is dirty.
+        (self.host / ".claude-plugin").mkdir()
+        (self.host / ".claude-plugin" / "marketplace.json").write_text(
+            '{"plugins": []}\n', encoding="utf-8"
+        )
+        commit_all(self.host, "fixture skill frontmatter + marketplace")
 
     @property
     def project_label(self) -> str:
         return f"host-repo-{self.slug[-8:]}"
+
+    def record(self, record_id: str) -> tuple[Bucket, Record]:
+        path = next(self.home.rglob(f"{record_id}.md"))
+        bucket = next(b for b in discover_buckets(self.home) if b.path == path.parent.parent)
+        return bucket, Record.from_path(path)
+
+    def compiler_target(self, record_id: str) -> Path:
+        """The file the COMPILER resolves a managed-section lesson to,
+        asked of ``verbs.managed_target_for`` directly (the oracle the
+        catalogue is checked against, not a copy of its logic)."""
+        bucket, record = self.record(record_id)
+        target = verbs.managed_target_for(
+            self.home, bucket, record, user_claude_md=self.claude / "CLAUDE.md"
+        )
+        assert target is not None, record_id
+        return target
 
     def bucket(self, scope: str) -> Path:
         """The bucket directory a record of *scope* is written into."""
@@ -179,6 +204,21 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> World:
     return World(tmp_path, monkeypatch)
 
 
+def _by_file(placed: catalogue.PlacedLessons) -> dict[Path, list[str]]:
+    """``{surface file: [lesson ids, in order]}``. Fails if two surfaces
+    name the same file."""
+    files = [surface.target for surface in placed.surfaces.values()]
+    assert len(files) == len(set(files)), f"two surfaces share a file: {files}"
+    return {s.target: [x.id for x in s.lessons] for s in placed.surfaces.values()}
+
+
+def _surface_at(placed: catalogue.PlacedLessons, target: Path) -> catalogue.Surface:
+    """The one surface whose file is *target*."""
+    found = [s for s in placed.surfaces.values() if s.target == target.resolve()]
+    assert len(found) == 1, f"{len(found)} surfaces for {target}: {list(placed.surfaces)}"
+    return found[0]
+
+
 def _rows(placed: catalogue.PlacedLessons) -> dict[str, catalogue.PlacedLesson]:
     """Every listed lesson by id. Fails if one id is listed twice."""
     counts = Counter(
@@ -195,17 +235,27 @@ def _rows(placed: catalogue.PlacedLessons) -> dict[str, catalogue.PlacedLesson]:
 # --------------------------------------------- (a) each lesson once, on its surface
 
 
-def test_each_routed_lesson_appears_once_under_its_surface(world: World) -> None:
+def test_each_routed_lesson_appears_once_under_the_file_the_compiler_writes(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
     u1 = world.lesson(1)
     u2 = world.lesson(2, by="steward", age=3, trigger="About to run the other thing.")
     p1 = world.lesson(3, scope="project", by="overseer")
     p2 = world.lesson(4, scope="project", variant="local")
     r1 = world.lesson(5, variant="rules", rules_topic="git-style")
     s1 = world.lesson(6, scope="skill:s", destination="skill-md")
+    # A new-skill route named s: the compiler resolves it to
+    # plugins/s/skills/s/SKILL.md, NOT the s-plugin folder skill s lives in.
     n1 = world.lesson(7, destination="new-skill", new_skill="s")
     ref = world.lesson(8, scope="skill:s", destination="reference")
     k1 = world.lesson(9, fact="The router is at 192.0.2.1.", age=12)
-    # A named shelf file is its own surface, apart from LEARNINGS.md.
+    # A named shelf file is its own surface, apart from LEARNINGS.md (the
+    # compiler appends only to a named shelf that exists).
+    (world.skill_dir / "references").mkdir()
+    (world.skill_dir / "references" / "gotchas.md").write_text("# gotchas\n", encoding="utf-8")
+    # CLAUDE.local.md is git-ignored, as a route to it requires.
+    (world.host / ".gitignore").write_text("CLAUDE.local.md\n", encoding="utf-8")
+    commit_all(world.host, "gotchas shelf + .gitignore")
     ref2 = world.lesson(10, scope="skill:s", destination="reference", reference_file="gotchas.md")
     # u1 fired twice inside 30 days and once outside; u2 never.
     world.fire(u1, 5)
@@ -214,27 +264,28 @@ def test_each_routed_lesson_appears_once_under_its_surface(world: World) -> None
 
     placed = world.placed()
 
-    label = world.project_label
-    assert set(placed.surfaces) == {
-        "user-claude-md",
-        f"project-{label}-claude-md",
-        f"project-{label}-claude-local-md",
-        "user-rules-git-style",
-        "skill-s",
-        "skill-s-reference-LEARNINGS",
-        "skill-s-reference-gotchas",
+    # Every expected file written out by hand.
+    shelf = world.skill_dir / "references"
+    expected = {
+        world.claude / "CLAUDE.md": [u1, k1, u2],  # oldest routing first
+        world.host / "CLAUDE.md": [p1],
+        world.host / "CLAUDE.local.md": [p2],
+        world.claude / "rules" / "git-style.md": [r1],
+        world.skill_dir / "SKILL.md": [s1],
+        world.host / "plugins" / "s" / "skills" / "s" / "SKILL.md": [n1],
+        shelf / "LEARNINGS.md": [ref],
+        shelf / "gotchas.md": [ref2],
     }
-    by_surface = {k: [x.id for x in v.lessons] for k, v in placed.surfaces.items()}
-    # Oldest routing first, as the compiler orders its section.
-    assert by_surface["user-claude-md"] == [u1, k1, u2]
-    assert by_surface[f"project-{label}-claude-md"] == [p1]
-    assert by_surface[f"project-{label}-claude-local-md"] == [p2]
-    assert by_surface["user-rules-git-style"] == [r1]
-    # A skill-md route and a new-skill route into the same skill share one
-    # SKILL.md, so they share one surface.
-    assert by_surface["skill-s"] == [s1, n1]
-    assert by_surface["skill-s-reference-LEARNINGS"] == [ref]
-    assert by_surface["skill-s-reference-gotchas"] == [ref2]
+    assert _by_file(placed) == {path.resolve(): ids for path, ids in expected.items()}
+    # ...and each managed-section lesson's file is the one the compiler
+    # itself resolves (asked of managed_target_for, not of the catalogue).
+    for lesson in (u1, u2, k1, p1, p2, r1, s1, n1):
+        listed = next(s for s in placed.surfaces.values() if lesson in [x.id for x in s.lessons])
+        assert listed.target == world.compiler_target(lesson), lesson
+    # One key per file, each filesystem-safe.
+    assert len(placed.surfaces) == len(expected)
+    for key in placed.surfaces:
+        assert re.fullmatch(r"[A-Za-z0-9._-]+", key) and not key.startswith("."), key
 
     rows = _rows(placed)  # also proves no id is listed twice
     assert set(rows) == {u1, u2, p1, p2, r1, s1, n1, ref, ref2, k1}
@@ -263,6 +314,104 @@ def test_each_routed_lesson_appears_once_under_its_surface(world: World) -> None
     assert placed.unlisted == ()
     assert placed.unreadable == ()
 
+    # POSITIVE CHECK AGAINST THE COMPILER: a real recompile of this scratch
+    # ledger writes every listed line into the file it is listed under, and
+    # into no other listed file.
+    monkeypatch.setenv("HOME", str(world.tmp / "home"))  # never the real ~/.claude
+    result = verbs.recompile(world.home, no_push=True, user_claude_md=world.claude / "CLAUDE.md")
+    # The one warning this git-mode fixture gives: the git-ignored
+    # CLAUDE.local.md cannot be committed to the host repo. Its line is still
+    # written to the file, which the loop below checks like every other.
+    local = (world.host / "CLAUDE.local.md").resolve()
+    assert [w for w in result.warnings if not w.startswith(f"{local}: host commit refused")] == []
+    written = {entry.target.resolve() for entry in result.entries if entry.changed}
+    assert set(_by_file(placed)) - {local} <= written, "the compiler skipped a listed file"
+    for surface in placed.surfaces.values():
+        text = surface.target.read_text(encoding="utf-8")
+        others = [o for o in placed.surfaces.values() if o.target != surface.target]
+        for lesson in surface.lessons:
+            assert lesson.line in text, f"{lesson.id} is not in {surface.target}"
+            for other in others:
+                assert lesson.id not in other.target.read_text(encoding="utf-8"), (
+                    f"{lesson.id} is also in {other.target}"
+                )
+
+
+def test_a_file_reached_by_a_project_and_by_the_skills_root_is_one_surface(
+    world: World, tmp_path: Path
+) -> None:
+    # The fixture host is registered as a project AND as the skills root:
+    # its CLAUDE.md takes project claude-md lessons and skill-scope
+    # claude-md lessons alike.
+    p1 = world.lesson(1, scope="project", trigger="About to touch the project.")
+    q1 = world.lesson(2, scope="skill:s", trigger="About to touch the skills root.")
+    # A second project bucket whose host path is a symlink to the same repo
+    # (named by hand: slug_for resolves the link, so it would name the first).
+    link = tmp_path / "host-link"
+    link.symlink_to(world.host)
+    linked_bucket = world.home / "projects" / "-host-link-0badf00d"
+    linked_bucket.mkdir(parents=True)
+    (linked_bucket / "meta.yaml").write_text(f"path: {link}\n", encoding="utf-8")
+    l1 = _ID.format(3)
+    record = Record.create(
+        type="behavior", scope="project", source="teach", kind="anti-pattern",
+        trigger="About to touch the link.", instruction="Stop first.",
+        record_id=l1, created_at=_ago(40),
+    )
+    record.set_routing({"routed_at": _ago(39), "destination": "claude-md", "by": "human"})
+    record.set_status("routed")
+    (linked_bucket / "resolved").mkdir()
+    record.write(linked_bucket / "resolved" / f"{l1}.md")
+    # CONTROL: a user lesson is on its own surface, so "one surface" below
+    # is the grouping, not a catalogue that only ever makes one.
+    u1 = world.lesson(4)
+
+    placed = world.placed()
+
+    assert len(placed.surfaces) == 2
+    shared = _surface_at(placed, world.host / "CLAUDE.md")
+    assert sorted(x.id for x in shared.lessons) == sorted([p1, q1, l1])
+    assert [x.id for x in _surface_at(placed, world.claude / "CLAUDE.md").lessons] == [u1]
+    # Full word count, by hand: "- **When about to touch the project:**
+    # stop first. *(id)*" is 10 words, the link's line 10, and the skills
+    # root's line 11 ("skills root:**" is two words).
+    words = {x.id: x.words for x in shared.lessons}
+    assert words == {p1: 10, q1: 11, l1: 10}
+    assert "- Lessons: 3 · words: 31 ·" in catalogue.render_surface(shared)
+    # The title names every owner that reaches the file.
+    assert shared.owners == (
+        "project host-link-0badf00d (claude-md)",
+        f"project {world.project_label} (claude-md)",
+        "skill s (claude-md)",
+    )
+    for owner in shared.owners:
+        assert owner in shared.title
+
+
+def test_a_skill_and_another_skills_shelf_with_the_same_readable_name_stay_apart(
+    world: World,
+) -> None:
+    # Skill "s-reference-gotchas" (its SKILL.md) and skill s's "gotchas"
+    # shelf read the same in a key ("skill-s-reference-gotchas"), but they
+    # are two files, so they are two surfaces with two keys.
+    odd_dir = world.host / "plugins" / "odd-plugin" / "skills" / "s-reference-gotchas"
+    odd_dir.mkdir(parents=True)
+    (odd_dir / "SKILL.md").write_text("# odd\n", encoding="utf-8")
+    on_skill = world.lesson(1, scope="skill:s-reference-gotchas", destination="skill-md")
+    on_shelf = world.lesson(2, scope="skill:s", destination="reference", reference_file="gotchas.md")
+
+    placed = world.placed()
+
+    by_file = _by_file(placed)
+    assert by_file == {
+        (odd_dir / "SKILL.md").resolve(): [on_skill],
+        (world.skill_dir / "references" / "gotchas.md").resolve(): [on_shelf],
+    }
+    keys = list(placed.surfaces)
+    assert len(set(keys)) == 2
+    # Both keys carry the same readable part; the file's digest tells them apart.
+    assert all(key.startswith("skill-s-reference-gotchas-") for key in keys)
+
 
 def test_rendered_surface_shows_the_line_verbatim_and_its_numbers(world: World) -> None:
     u1 = world.lesson(1)
@@ -272,10 +421,11 @@ def test_rendered_surface_shows_the_line_verbatim_and_its_numbers(world: World) 
     texts = catalogue.render_surfaces(world.placed())
 
     # Positive control: the surface exists and is rendered.
-    assert list(texts) == ["user-claude-md"]
-    text = texts["user-claude-md"]
-    assert text.startswith("# user-claude-md\n")
-    assert f"- File: {world.claude / 'CLAUDE.md'}" in text
+    assert len(texts) == 1
+    key, text = next(iter(texts.items()))
+    assert re.fullmatch(r"user-claude-md-[0-9a-f]{8}", key)
+    assert text.startswith(f"# {key}\n\nCLAUDE.md, reached by user (claude-md)\n")
+    assert f"- File: {(world.claude / 'CLAUDE.md').resolve()}" in text
     assert "- Loaded: every session, in every project" in text
     assert "- Lessons: 1 · words: 10 · fires counted over the last 30 days" in text
     # The line, then its numbers on the next line, in the configured order.
@@ -285,29 +435,38 @@ def test_rendered_surface_shows_the_line_verbatim_and_its_numbers(world: World) 
     ) in text
 
 
-def test_surface_keys_are_filesystem_safe_and_stable(world: World) -> None:
+def test_surface_keys_are_filesystem_safe_and_stable(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
     safe = world.lesson(1, variant="rules", rules_topic="plain-topic")
     odd = world.lesson(2, variant="rules", rules_topic="a/b c")
     other = world.lesson(3, variant="rules", rules_topic="a b/c")
+    long_topic = "/".join(["segment"] * 20)
+    deep = world.lesson(4, variant="rules", rules_topic=long_topic)
 
     placed = world.placed()
 
-    keys = set(placed.surfaces)
-    # Positive control: the plain topic is its own key, unchanged.
-    assert "user-rules-plain-topic" in keys
-    assert len(keys) == 3
-    for key in keys:
+    keys = {x.id: k for k, v in placed.surfaces.items() for x in v.lessons}
+    assert len(set(keys.values())) == 4
+    for key in keys.values():
         assert re.fullmatch(r"[A-Za-z0-9._-]+", key), key
         assert not key.startswith("."), key
-    # The odd topics are different surfaces and get different keys...
-    odd_key = next(k for k, v in placed.surfaces.items() if [x.id for x in v.lessons] == [odd])
-    other_key = next(k for k, v in placed.surfaces.items() if [x.id for x in v.lessons] == [other])
-    assert odd_key != other_key
-    # ...that stay the same when another surface is added or removed.
-    world.lesson(4)  # a user CLAUDE.md lesson appears
-    again = world.placed()
-    assert {k for k, v in again.surfaces.items() if [x.id for x in v.lessons] == [odd]} == {odd_key}
-    assert safe  # the plain-topic lesson was written
+        assert len(key) <= catalogue.KEY_MAX, key
+    # The readable part comes from the file; the digest is of its path.
+    assert re.fullmatch(r"user-rules-plain-topic-[0-9a-f]{8}", keys[safe])
+    assert keys[deep].startswith("user-rules-segment-segment-")
+    # "a/b c" and "a b/c" are two files whose readable parts are the same
+    # text; their keys still differ.
+    assert keys[odd].startswith("user-rules-a-b-c-") and keys[other].startswith("user-rules-a-b-c-")
+    assert keys[odd] != keys[other]
+    # A key stays the same when another surface is added...
+    world.lesson(5)  # a user CLAUDE.md lesson appears
+    again = {x.id: k for k, v in world.placed().surfaces.items() for x in v.lessons}
+    assert {lesson: again[lesson] for lesson in keys} == keys
+    # ...and when the knob changes, every key obeys the new limit.
+    monkeypatch.setattr(catalogue, "KEY_MAX", 30)
+    for key in world.placed().surfaces:
+        assert len(key) <= 30, key
 
 
 # -------------------------------------------- (b) a superseded lesson is not listed
@@ -432,9 +591,17 @@ def _settings(world: World, **keys: object) -> None:
 
 
 def test_skills_index_lists_personal_symlinked_plugin_and_host_skills(world: World) -> None:
-    # Two lessons are compiled into skill s (a skill-md and a new-skill route).
+    # One lesson is compiled into skill s's SKILL.md (plugins/s-plugin/...).
     world.lesson(6, scope="skill:s", destination="skill-md")
+    # A new-skill route named s resolves to plugins/s/skills/s/SKILL.md, a
+    # different file (absent here): it is NOT one of skill s's lessons.
     world.lesson(7, destination="new-skill", new_skill="s")
+    # A new-skill route named n IS compiled into skill n's SKILL.md, which
+    # sits where new-skill puts it (plugins/n/skills/n).
+    n_dir = world.host / "plugins" / "n" / "skills" / "n"
+    _skill_md(n_dir, "The n skill.", "n")
+    (world.claude / "skills" / "n").symlink_to(n_dir)
+    world.lesson(9, destination="new-skill", new_skill="n")
     # A superseded lesson routed there must not count (control: it was counted
     # in the ledger before it was superseded, see the superseded test).
     world.lesson(8, scope="skill:s", destination="skill-md", status="superseded", superseded_by=_ID.format(6))
@@ -454,7 +621,7 @@ def test_skills_index_lists_personal_symlinked_plugin_and_host_skills(world: Wor
     machine = world.machine()
 
     by_name = {s.name: s for s in machine.skills}
-    assert set(by_name) == {"personal-one", "bare", "s", "demo:drawing", "hostskill"}
+    assert set(by_name) == {"personal-one", "bare", "s", "n", "demo:drawing", "hostskill"}
 
     personal = by_name["personal-one"]
     assert personal.where == "personal"
@@ -470,7 +637,8 @@ def test_skills_index_lists_personal_symlinked_plugin_and_host_skills(world: Wor
     assert linked.resolves_to == str(world.skill_dir.resolve())
     assert linked.repo == "host-repo"
     assert linked.description == "The s skill, for fixtures."
-    assert linked.lessons == 2
+    assert linked.lessons == 1
+    assert by_name["n"].lessons == 1
 
     plugin = by_name["demo:drawing"]
     assert plugin.where == "plugin"
@@ -713,13 +881,14 @@ def test_the_knobs_at_the_top_of_the_module_change_the_output(
     base = world.placed()
     assert _rows(base)[u1].fires == 2
     assert rejected not in _rows(base)
-    base_text = catalogue.render_surface(base.surfaces["user-claude-md"])
+    user_md = world.claude / "CLAUDE.md"
+    base_text = catalogue.render_surface(_surface_at(base, user_md))
     assert "fires in the last 30 days: 2" in base_text
 
     monkeypatch.setattr(catalogue, "FIRE_WINDOW_DAYS", 7)
     narrow = world.placed()
     assert _rows(narrow)[u1].fires == 1
-    assert "fires in the last 7 days: 1" in catalogue.render_surface(narrow.surfaces["user-claude-md"])
+    assert "fires in the last 7 days: 1" in catalogue.render_surface(_surface_at(narrow, user_md))
     monkeypatch.setattr(catalogue, "FIRE_WINDOW_DAYS", 30)
 
     monkeypatch.setattr(catalogue, "PLACED_STATUSES", frozenset({"routed", "rejected"}))
@@ -727,7 +896,7 @@ def test_the_knobs_at_the_top_of_the_module_change_the_output(
     monkeypatch.setattr(catalogue, "PLACED_STATUSES", frozenset({"routed"}))
 
     monkeypatch.setattr(catalogue, "LESSON_COLUMNS", (("words", "words"),))
-    only_words = catalogue.render_surface(world.placed().surfaces["user-claude-md"])
+    only_words = catalogue.render_surface(_surface_at(world.placed(), user_md))
     assert "  - words: 10\n" in only_words
     assert "placed by" not in only_words
 
