@@ -302,6 +302,52 @@ def test_drift_check_judges_a_hand_edit_in_the_plain_project_s_file(tmp_path):
     assert "hand-edited outside self-learn (edited)" in msg and rid in msg
 
 
+def test_push_follows_the_git_registration_whichever_is_listed_first(tmp_path):
+    """`push` skips a plain registration before it counts the repo as
+    seen. Red on master: a plain skills root (listed first) marked the
+    repo seen and its git project registration was never pushed."""
+    env = _double(tmp_path, root="plain", project="git")
+    home, repo = env.ledger, env.host
+    bare = _with_remote(tmp_path, repo, "host-remote")
+    (repo / "notes.md").write_text("an unpushed commit\n", encoding="utf-8")
+    commit_all(repo, "unpushed")
+    assert gitops.unpushed_commits(repo)  # control
+
+    pushed = verbs.push_pending(home)
+
+    assert repo.resolve() in [Path(r).resolve() for r, _ in pushed.entries]
+    assert git(bare, "rev-parse", "main").stdout.strip() == _head(repo)
+
+
+# ------------------------------- (b) the skills-root leg: git, committed
+
+
+def test_b_a_skill_md_route_commits_exactly_that_skill_md_under_the_pause(
+    tmp_path, commits_under_pause
+):
+    """(b) *control*: the skills root's git registration commits exactly
+    the SKILL.md it changed, while the autosync pause is held, and pushes
+    it."""
+    env = _double(tmp_path)
+    home, repo = env.ledger, env.host
+    bare = _with_remote(tmp_path, repo, "host-remote")
+    rid = _skill_lesson(home, "lrn-8b000004")
+    assert not sentinel.is_live()  # control: nobody holds the pause before
+
+    result = verbs.route(home, rid, dest="skill-md")
+
+    assert result.mode == "git" and result.host_commit_sha is not None
+    rel = env.skill_md.relative_to(repo).as_posix()
+    assert _commit_files(repo, result.host_commit_sha) == [rel]
+    assert rid in env.skill_md.read_text(encoding="utf-8")
+    assert (repo.resolve(), True) in commits_under_pause  # the host commit, paused
+    assert not sentinel.is_live()  # released after
+    assert result.host_push is not None and result.host_push.ok
+    assert git(bare, "rev-parse", "main").stdout.strip() == result.host_commit_sha
+    assert _status(repo) == ""
+    assert not _ignored(repo, rel)  # git mode writes no ignore line
+
+
 # ---------------------------------------------------------- (c) one lock
 
 
@@ -490,6 +536,113 @@ def test_e_recompile_warns_and_skips_a_lesson_already_on_the_refused_destination
     assert any(rid in w and "also registered as a project host" in w for w in result.warnings)
     assert (repo / "CLAUDE.md").read_bytes() == claude_md
     assert _head(repo) == host_head
+
+
+# ---------------------------------- (f) tracked files, by registration
+
+
+def test_f_a_project_write_into_a_tracked_claude_md_is_refused_and_a_skill_md_commits(
+    tmp_path,
+):
+    """(f) *control* (G1/S-80 on master). An ADDITION into the tracked
+    CLAUDE.md through the plain project registration is S-80's
+    `destination-unavailable`; taking a lesson OUT of it is `needs-person`;
+    the skills root's git registration commits a tracked SKILL.md."""
+    env = _double(tmp_path)
+    home, repo = env.ledger, env.host
+    git(repo, "rm", "-q", "--cached", "CLAUDE.md")
+    git(repo, "commit", "-q", "-m", "untrack CLAUDE.md")
+    placed = _project_lesson(home, repo, "lrn-8b00000c")
+    verbs.route(home, placed, dest="claude-md", no_push=True)
+    assert placed in (repo / "CLAUDE.md").read_text(encoding="utf-8")  # control
+    git(repo, "add", "-f", "CLAUDE.md")
+    git(repo, "commit", "-q", "-m", "track CLAUDE.md after all")
+    claude_md = (repo / "CLAUDE.md").read_bytes()
+
+    added = _project_lesson(home, repo, "lrn-8b00000d")
+    preview = batch.dry_run(home, _sheet(tmp_path, added, "route", "claude-md"), actor="human")
+    (pitem,) = preview.items
+    assert (pitem.state, pitem.kind) == ("would-refuse", "destination-unavailable"), pitem.detail
+    with pytest.raises(verbs.DestinationUnavailable, match="CLAUDE.md is tracked by git"):
+        verbs.route(home, added, dest="claude-md", no_push=True)
+    with pytest.raises(verbs.NeedsPerson, match="CLAUDE.md is tracked by git"):
+        verbs.graduate(home, placed, no_push=True)
+    assert (repo / "CLAUDE.md").read_bytes() == claude_md
+    assert _record(home, placed).status == "routed"
+
+    skill = _skill_lesson(home, "lrn-8b00000e")
+    rel = env.skill_md.relative_to(repo).as_posix()
+    assert git(repo, "ls-files", "--", rel).stdout.strip() == rel  # control: tracked
+    result = verbs.route(home, skill, dest="skill-md", no_push=True)
+    assert result.mode == "git" and result.host_commit_sha is not None
+    assert _commit_files(repo, result.host_commit_sha) == [rel]
+    assert _status(repo) == ""
+
+
+# ------------------------------------ hook scripts and new skills, git mode
+
+
+def test_a_project_hook_script_lands_in_the_git_root_and_is_committed(
+    tmp_path, commits_under_pause
+):
+    """*control*: a project lesson's hook script lands in the skills
+    root's `hooks/self-learn/` (S-17 D1) and the root's git registration
+    commits exactly that script, under the pause."""
+    env = _double(tmp_path)
+    home, repo = env.ledger, env.host
+    rid = "lrn-8b00000f"
+    record = make_behavior(scope="project", record_id=rid)
+    create_record(home, record, project_path=repo)
+    write_proposal(
+        home, rid,
+        proposal_dict(scope="project", destination="hook", alternates=["claude-md"],
+                      **hook_proposal_fields()),
+    )
+    stamp_proposal(home, rid)
+    commit_all(home, f"seed {rid}")
+
+    result = verbs.route(home, rid, dest="hook", no_push=True)
+
+    assert result.target is not None
+    rel = result.target.relative_to(repo).as_posix()
+    assert rel == f"hooks/self-learn/{script_name(rid, verbs.record_title(record))}"
+    assert result.mode == "git" and result.host_commit_sha is not None
+    assert _commit_files(repo, result.host_commit_sha) == [rel]
+    assert (repo / rel).is_file()
+    assert git(repo, "ls-files", "--", rel).stdout.strip() == rel
+    assert (repo.resolve(), True) in commits_under_pause
+    assert _status(repo) == ""
+
+
+def test_a_new_skill_route_creates_and_commits_the_skill(tmp_path, commits_under_pause):
+    """*control*: `new-skill` through the git root scaffolds the plugin,
+    appends the marketplace entry and commits them, under the pause."""
+    env = _double(tmp_path)
+    home, repo = env.ledger, env.host
+    marketplace = repo / ".claude-plugin" / "marketplace.json"
+    marketplace.parent.mkdir()
+    marketplace.write_text(
+        json.dumps({"name": "sandbox", "plugins": [
+            {"name": "s-plugin", "source": "./plugins/s-plugin", "description": "seed",
+             "version": "1.0.0"},
+        ]}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    commit_all(repo, "marketplace seed")
+    rid = _skill_lesson(home, "lrn-8b000010")
+
+    result = verbs.route(home, rid, dest="new-skill:probe-skill", no_push=True)
+
+    skill_md = repo / "plugins" / "probe-skill" / "skills" / "probe-skill" / "SKILL.md"
+    assert result.mode == "git" and result.host_commit_sha is not None
+    assert rid in skill_md.read_text(encoding="utf-8")
+    files = _commit_files(repo, result.host_commit_sha)
+    assert "plugins/probe-skill/skills/probe-skill/SKILL.md" in files
+    assert ".claude-plugin/marketplace.json" in files
+    names = [p["name"] for p in json.loads(marketplace.read_text(encoding="utf-8"))["plugins"]]
+    assert names == ["s-plugin", "probe-skill"]
+    assert (repo.resolve(), True) in commits_under_pause
+    assert _status(repo) == ""
 
 
 # ----------------------------------------------- moving the repo (rebind)

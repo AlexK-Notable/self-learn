@@ -9451,9 +9451,6 @@ def push_pending(home: Path | str) -> PushReport:
         if problem is not None:
             print(f"self-learn push: skipping {repo} — {problem}", file=sys.stderr)
             continue
-        if repo in seen:
-            continue
-        seen.add(repo)
         # U-hostmode M-5 (code gate r1 fold, PLAIN10): a plain host has no
         # `git status` to consult at all — `unpushed_commits` is a raw
         # git subprocess, so calling it against a plain host's directory
@@ -9461,9 +9458,16 @@ def push_pending(home: Path | str) -> PushReport:
         # ancestor of it, or fail outright. Skip SILENTLY (never a print
         # — a plain host publishing nothing to push is the expected,
         # every-run state, not an anomaly worth a line) and never touch
-        # `unpushed_commits` for it.
+        # `unpushed_commits` for it. S-82: the mode is THIS
+        # registration's, and a plain registration is skipped before the
+        # repo counts as seen, so a repo registered twice (a git skills
+        # root, a plain project) is pushed through its git registration
+        # whichever order the two are listed in.
         if host_mode(home, repo, registration=kind) == "plain":
             continue
+        if repo in seen:
+            continue
+        seen.add(repo)
         if gitops.unpushed_commits(repo):
             entries.append((repo, gitops.push_if_remote(repo)))
     return PushReport(entries)
