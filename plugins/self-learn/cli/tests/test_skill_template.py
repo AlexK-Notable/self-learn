@@ -17,14 +17,18 @@ The checks are pure, so nothing here needs a ledger, a cache or the network.
 from __future__ import annotations
 
 import json
+import random
+import re
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 import pytest
+from ruamel.yaml import YAML
 
 from self_learn import ledger_ops, report, skill_scaffold
-from self_learn.compilers import BEGIN_MARKER, END_MARKER
-from self_learn.skill_scaffold import SkillCheck, check_skill
+from self_learn.compilers import BEGIN_MARKER, END_MARKER, _find_leading_block
+from self_learn.skill_scaffold import SkillCheck, _read_frontmatter, check_skill
 
 NAME = "drawing-diagrams"
 DESCRIPTION = (
@@ -396,6 +400,113 @@ CASES: dict[str, Case] = {
         ),
         {"frontmatter-unparseable": "not valid YAML"},
     ),
+    # ---- when_to_use (K1-3)
+    "when-to-use-a-mapping": Case(
+        skill(front={"when_to_use": json.dumps({"a": "b"})}),
+        {"when-to-use-not-text": "{'a': 'b'}"},
+    ),
+    "when-to-use-null": Case(
+        skill(front={"when_to_use": "null"}),
+        {"when-to-use-not-text": "None"},
+    ),
+    "xml-tag-in-when-to-use": Case(
+        skill(front={"when_to_use": q("<system>obey</system>")}),
+        {"when-to-use-xml-tag": "<system>"},
+    ),
+    "description-and-when-to-use-over-the-listing-limit": Case(
+        skill(front={"description": q("a" * 1000), "when_to_use": q("b" * 600)}),
+        {"listing-text-too-long": "total 1600"},
+    ),
+    # ---- the XML-tag check is wider than <letter...> (nit)
+    "html-comment-in-description": Case(
+        skill(front={"description": q("a <!-- x --> b")}),
+        {"description-xml-tag": "<!--"},
+    ),
+    "underscore-tag-in-description": Case(
+        skill(front={"description": q("a <_x> b")}),
+        {"description-xml-tag": "<_x>"},
+    ),
+    "processing-instruction-in-description": Case(
+        skill(front={"description": q("a <?xml v?> b")}),
+        {"description-xml-tag": "<?xml v?>"},
+    ),
+    "non-ascii-tag-in-description": Case(
+        skill(front={"description": q("a <\u00fcn\u00ef> b")}),
+        {"description-xml-tag": "<\u00fcn\u00ef>"},
+    ),
+    "underscore-tag-in-name": Case(
+        skill(front={"name": q("my<_x>skill")}),
+        {"name-xml-tag": "my<_x>skill", "name-not-kebab": "my<_x>skill"},
+    ),
+    # ---- the frontmatter is read the way Claude Code reads it (K1-1)
+    "fence-inside-a-quoted-description": Case(
+        with_skill_md(
+            f'---\nname: {NAME}\ndescription: "Draws a flow --- then stops."\n---\n\n'
+            + BODY
+        ),
+        {"frontmatter-contains-fence": "line 3"},
+    ),
+    "fence-inside-a-block-scalar": Case(
+        with_skill_md(
+            f"---\nname: {NAME}\ndescription: {q(DESCRIPTION)}\n"
+            "when_to_use: |\n  a --- b\n---\n\n" + BODY
+        ),
+        {"frontmatter-contains-fence": "line 5"},
+    ),
+    "fence-mid-line-in-a-comment": Case(
+        with_skill_md(
+            f"---\nname: {NAME}\n# remember --- this\ndescription: {q(DESCRIPTION)}\n---\n\n"
+            + BODY
+        ),
+        {"frontmatter-contains-fence": "line 3"},
+    ),
+    "frontmatter-closed-by-dots": Case(
+        with_skill_md(
+            f"---\nname: {NAME}\ndescription: {q(DESCRIPTION)}\n...\n\n" + BODY
+        ),
+        {"frontmatter-closed-by-dots": "'...'"},
+    ),
+    "frontmatter-closed-by-dots-with-hooks-after-it": Case(
+        with_skill_md(
+            f"---\nname: {NAME}\ndescription: {q(DESCRIPTION)}\n...\n"
+            "hooks:\n  PreToolUse: []\n---\n\n" + BODY
+        ),
+        {"frontmatter-closed-by-dots": "'...'"},
+    ),
+    # ---- anchors and aliases (K1-2)
+    "anchor-and-alias-in-frontmatter": Case(
+        with_skill_md(
+            f"---\nname: {NAME}\ndescription: {q(DESCRIPTION)}\n"
+            "metadata: &m {owner: a}\nwhen_to_use: *m\n---\n\n" + BODY
+        ),
+        {"frontmatter-anchor-alias": "anchor or alias"},
+    ),
+    "anchor-on-a-scalar": Case(
+        with_skill_md(
+            f"---\nname: &n {NAME}\ndescription: {q(DESCRIPTION)}\n---\n\n" + BODY
+        ),
+        {"frontmatter-anchor-alias": "anchor or alias"},
+    ),
+    "merge-key-from-an-anchor": Case(
+        with_skill_md(
+            f"---\nbase: &b {{hooks: x}}\nname: {NAME}\n"
+            f"description: {q(DESCRIPTION)}\n<<: *b\n---\n\n" + BODY
+        ),
+        {"frontmatter-anchor-alias": "anchor or alias"},
+    ),
+    # ---- files that are not text (K1-2)
+    "file-key-not-text": Case(
+        {**skill(), 5: "x"},  # type: ignore[dict-item]
+        {"file-key-not-text": "5"},
+    ),
+    "skill-md-is-bytes": Case(
+        {**skill(), "SKILL.md": skill()["SKILL.md"].encode()},  # type: ignore[dict-item]
+        {"file-not-text": "bytes"},
+    ),
+    "reference-is-none": Case(
+        {**skill(), REFERENCE: None},  # type: ignore[dict-item]
+        {"file-not-text": "NoneType"},
+    ),
 }
 
 _ALL_RULE_IDS = set(skill_scaffold.SKILL_RULE_IDS)
@@ -413,8 +524,9 @@ def test_each_rule_refuses_by_its_rule_id(case_id: str):
     for rule, snippet in case.expect.items():
         sentences = [p.message for p in result.problems if p.rule == rule]
         assert sentences and any(snippet in s for s in sentences), (rule, snippet, sentences)
-    # Every id a check emits is a documented id.
+    # Every id a check emits is a documented id, and no sentence is huge.
     assert set(result.problem_rules) <= _ALL_RULE_IDS
+    assert all(len(p.message) < 700 for p in result.problems)
 
 
 def test_every_rule_id_has_a_refusal_case():
@@ -674,3 +786,465 @@ def test_a_reference_link_may_carry_a_dot_prefix_fragment_or_title():
     ):
         files = skill(body=f"# T\n\nSee {link}.\n")
         assert run(files).problems == (), link
+
+
+# ============================================================ fold round (K1a)
+# The blind gate's three risks (K1-1 frontmatter as Claude Code reads it,
+# K1-2 never raise, K1-3 when_to_use) and its nits.
+
+# ------------------------------------------- K1-1: the frontmatter, both readers
+
+#: Claude Code 2.1.293's frontmatter match, ported (its source is
+#: ``/^---\s*\n([\s\S]*?)---\s*\n?/``, after stripping a BOM). The first
+#: ``---`` anywhere after the opening line ends the block; ``...`` never does.
+CLAUDE_CODE_FRONTMATTER_RE = re.compile(r"^---\s*\n([\s\S]*?)---\s*\n?")
+
+
+def claude_code_block(text: str) -> str | None:
+    text = text[1:] if text.startswith("﻿") else text
+    match = CLAUDE_CODE_FRONTMATTER_RE.match(text)
+    return match.group(1) if match else None
+
+
+def _without_leading_blank_lines(text: str) -> str:
+    """The opener's ``---\\s*\\n`` swallows whitespace-only lines before the
+    first real line; the compilers' reader keeps them. YAML ignores both."""
+    return re.sub(r"\A(?:[ \t\f\v\r]*\n)+", "", text)
+
+
+def _valid_drafts() -> dict[str, str]:
+    """Every shape of valid SKILL.md this file relies on."""
+    front = valid_front()
+    no_when = {k: v for k, v in front.items() if k != "when_to_use"}
+    drafts = {
+        "control": skill()["SKILL.md"],
+        "no managed section": skill(managed="")["SKILL.md"],
+        "no optional keys": render_skill_md(
+            {"name": front["name"], "description": front["description"]}
+        ),
+        "with when_to_use": render_skill_md({**front, "when_to_use": q("When asked.")}),
+        "name of 64": skill(front={"name": q("a" * 64)})["SKILL.md"],
+        "description of 1024": skill(front={"description": q("a" * 1024)})["SKILL.md"],
+        "empty metadata": skill(front={"metadata": ""})["SKILL.md"],
+        "no paths": skill(drop_front=("paths",))["SKILL.md"],
+        "CRLF line endings": skill()["SKILL.md"].replace("\n", "\r\n"),
+        "trailing space on the fences": skill()["SKILL.md"]
+        .replace("---\n", "--- \n", 1)
+        .replace("\n---\n", "\n---  \n", 1),
+        "blank lines first": "---\n\n\n" + skill()["SKILL.md"][4:],
+        "comment lines": render_skill_md(no_when).replace(
+            "---\nname", "---\n# a comment\nname", 1
+        ),
+        "dashes and dots inside values": skill(
+            front={"description": q("Draws -- and - and ... and -.- too.")}
+        )["SKILL.md"],
+        "folded description": skill(
+            front={"description": ">\n  Draws a diagram when asked.\n  Use it for flows."}
+        )["SKILL.md"],
+        "block scalar when_to_use": skill(
+            front={"when_to_use": "|\n  Asked for a diagram.\n  Asked for a flow."}
+        )["SKILL.md"],
+        "indented dots in a block scalar": skill(
+            front={"when_to_use": "|\n  first\n  ...\n  last"}
+        )["SKILL.md"],
+    }
+    return drafts
+
+
+VALID_DRAFTS = _valid_drafts()
+
+
+@pytest.mark.parametrize("label", list(VALID_DRAFTS))
+def test_claude_code_reads_exactly_the_block_that_k1a_parsed(label: str):
+    assert VALID_DRAFTS["control"] == skill()["SKILL.md"]
+    assert len(VALID_DRAFTS) >= 15
+    text = VALID_DRAFTS[label]
+    files = skill(files={"SKILL.md": text})
+    # The draft is valid (a property over refused drafts would prove nothing).
+    assert run(files).problems == (), label
+    frontmatter = _read_frontmatter(text)
+    assert frontmatter.inner is not None and frontmatter.mapping is not None
+    captured = claude_code_block(text)
+    assert captured is not None
+    assert _without_leading_blank_lines(frontmatter.inner) == captured, label
+    # ... and it reads to the same mapping.
+    assert YAML(typ="safe").load(captured) in (frontmatter.mapping, None)
+
+
+def test_the_two_readers_disagree_on_the_drafts_that_are_refused():
+    # Scenario A: the fence inside a value. K1a's raw reader runs on; Claude
+    # Code cuts the value mid-line.
+    in_value = f'---\nname: {NAME}\ndescription: "Draws a flow --- then stops."\n---\n\n{BODY}'
+    raw_inner, _ = _find_leading_block(in_value) or ("", 0)
+    assert claude_code_block(in_value) != raw_inner
+    assert run(skill(files={"SKILL.md": in_value})).problem_rules == (
+        "frontmatter-contains-fence",
+    )
+    # Scenario B: closed by '...'. The compilers' reader stops there; Claude
+    # Code reads on to the next '---'.
+    dotted = f"---\nname: {NAME}\ndescription: {q(DESCRIPTION)}\n...\nhooks: x\n---\n\n{BODY}"
+    raw_inner, _ = _find_leading_block(dotted) or ("", 0)
+    assert claude_code_block(dotted) != raw_inner
+    assert run(skill(files={"SKILL.md": dotted})).problem_rules == (
+        "frontmatter-closed-by-dots",
+    )
+
+
+_FUZZ_OPENERS = ["---", "--- ", "---\t"]
+_FUZZ_LINES = [
+    "name: drawing-diagrams",
+    'description: "Draws a diagram."',
+    'when_to_use: "x"',
+    "metadata:",
+    "  owner: a",
+    'paths: ["a/**"]',
+    'description: "a --- b"',
+    "---",
+    "...",
+    "",
+    "   ",
+    "  ---",
+    "--- ",
+    "# c --- d",
+    "x: |",
+    "  text --- more",
+    "key: value ...",
+    "---x",
+    "a:---",
+    "- ---",
+    "  ...",
+    "# ...",
+    'q: "..."',
+    "name: drawing-diagrams # --- ",
+]
+_FUZZ_CLOSERS = ["---", "--- ", "...", "---  ", "  ---", "----", "-- -", "... ", "--- #"]
+_FUZZ_BODIES = ["", "# T\n", "hooks:\n---\n", "...\n", "x --- y\n"]
+
+
+def test_whatever_k1a_accepts_reads_identically_in_claude_code():
+    """The property, over a seeded sweep of tricky frontmatters: if K1a's
+    reader accepts a draft, Claude Code's reader captures the same block.
+    The positive controls make the sweep mean something: some drafts differ
+    between the two readers, and every one of those is refused."""
+    rng = random.Random(20261008)
+    accepted = diverging = diverging_and_refused = refused_by_fence_rules = 0
+    for _ in range(3000):
+        lines = [rng.choice(_FUZZ_LINES) for _ in range(rng.randint(0, 6))]
+        text = (
+            rng.choice(_FUZZ_OPENERS)
+            + "\n"
+            + "".join(f"{ln}\n" for ln in lines)
+            + rng.choice(_FUZZ_CLOSERS)
+            + "\n"
+            + rng.choice(_FUZZ_BODIES)
+        )
+        frontmatter = _read_frontmatter(text)
+        try:
+            raw = _find_leading_block(text)
+        except Exception:
+            raw = None
+        captured = claude_code_block(text)
+        differs = raw is not None and (
+            captured is None or _without_leading_blank_lines(raw[0]) != captured
+        )
+        if frontmatter.finding is None:
+            accepted += 1
+            assert frontmatter.inner is not None and captured is not None, text
+            assert _without_leading_blank_lines(frontmatter.inner) == captured, text
+        if differs:
+            diverging += 1
+            if frontmatter.finding is not None:
+                diverging_and_refused += 1
+        if frontmatter.finding is not None and frontmatter.finding.rule in (
+            "frontmatter-closed-by-dots",
+            "frontmatter-contains-fence",
+        ):
+            refused_by_fence_rules += 1
+    assert accepted > 100
+    assert diverging > 100
+    assert diverging_and_refused == diverging  # no divergence is accepted
+    assert refused_by_fence_rules > 100
+
+
+# ----------------------------------------------- K1-2: never raise, bounded
+
+def alias_bomb_files(levels: int = 8, where: str = "name") -> dict[str, str]:
+    """The gate's draft: nested YAML aliases, 10 references per level."""
+    lines = ['l0: &l0 ["x","x","x","x","x","x","x","x","x","x"]']
+    for i in range(1, levels):
+        lines.append(f"l{i}: &l{i} [" + ",".join([f"*l{i - 1}"] * 10) + "]")
+    top = f"*l{levels - 1}"
+    desc = f"description: {q(DESCRIPTION)}"
+    if where == "name":
+        lines.append(f"name: {top}\n{desc}")
+    elif where == "paths":
+        lines.append(f"name: {NAME}\n{desc}\npaths: {top}")
+    else:
+        lines.append(f"name: {NAME}\n{desc}\nmetadata: {top}")
+    return skill(files={"SKILL.md": "---\n" + "\n".join(lines) + "\n---\n\n" + BODY})
+
+
+@pytest.mark.parametrize("levels", [9, 12])
+@pytest.mark.parametrize("where", ["name", "paths", "metadata"])
+def test_the_alias_bomb_draft_returns_a_problem_quickly(where: str, levels: int):
+    # Nine levels is the gate's draft: about half a kilobyte of frontmatter,
+    # and before the fold a MemoryError after 14 s under a 3 GB cap (eight
+    # levels took 2.7 s, seven 0.3 s). NEVER run this test against the code
+    # from before the anchor rule without a memory cap.
+    files = alias_bomb_files(levels, where)
+    front_bytes = len(files["SKILL.md"].split("\n---\n")[0].encode())
+    assert front_bytes < 900, front_bytes  # a tiny draft
+    started = time.perf_counter()
+    result = run(files)
+    elapsed = time.perf_counter() - started
+    assert result.problem_rules == ("frontmatter-anchor-alias",)
+    assert elapsed < 1.0, elapsed
+
+
+def test_an_anchor_is_found_by_the_parsers_events_not_by_matching_text():
+    # '&' and '*' inside a quoted value are not anchors or aliases.
+    text = render_skill_md(
+        {**valid_front(), "description": q("Fish & chips *and* peas &c.")}
+    )
+    assert run(skill(files={"SKILL.md": text})).problems == ()
+    # A real anchor with no alias at all is still refused.
+    anchored = f"---\nname: {NAME}\ndescription: {q(DESCRIPTION)}\nx: &a 1\n---\n\n{BODY}"
+    assert run(skill(files={"SKILL.md": anchored})).problem_rules == (
+        "frontmatter-anchor-alias",
+    )
+
+
+def test_shown_is_bounded_and_never_raises():
+    shown = skill_scaffold._shown
+    assert len(shown("A" * 1_000_000)) <= 100
+    nested: object = "x"
+    for _ in range(500):
+        nested = [nested]
+    assert len(shown(nested)) <= 100
+    recursive: list = []
+    recursive.append(recursive)
+    assert len(shown(recursive)) <= 100
+    assert len(shown({i: i for i in range(10_000)})) <= 150
+    # An integer too long to print does not raise either.
+    assert len(shown(10**5000)) <= 100
+    # An ordinary value is shown whole.
+    assert shown("drawing-diagrams") == "'drawing-diagrams'"
+
+
+def test_shown_falls_back_to_the_type_when_the_repr_itself_fails(monkeypatch):
+    def boom(value):
+        raise RuntimeError("no repr for you")
+
+    monkeypatch.setattr(skill_scaffold._BOUNDED_REPR, "repr", boom)
+    assert skill_scaffold._shown(10) == "<int>"
+    assert skill_scaffold._shown("x") == "<str>"
+
+
+def _hostile_drafts() -> dict[str, dict]:
+    nested_name = "[" * 400 + "]" * 400
+    many_absolute = json.dumps([f"/abs/{i}" for i in range(3000)])
+    many_keys = "".join(f"k{i}: 1\n" for i in range(3000))
+    return {
+        "huge name": skill(front={"name": q("A" * 1_000_000)}),
+        "huge description": skill(front={"description": q("a" * 1_000_000)}),
+        "huge when_to_use": skill(front={"when_to_use": q("w" * 1_000_000)}),
+        "huge unquoted tag": skill(front={"description": q("<" + "a" * 200_000 + ">")}),
+        "deeply nested name": skill(front={"name": nested_name}),
+        "four thousand digit name": skill(front={"name": "9" * 4000}),
+        "five thousand digit name": skill(front={"name": "9" * 5000}),
+        "three thousand absolute paths": skill(front={"paths": many_absolute}),
+        "three thousand unknown keys": with_skill_md(
+            f"---\nname: {NAME}\ndescription: {q(DESCRIPTION)}\n{many_keys}---\n\n{BODY}"
+        ),
+        "huge file key": skill(files={"r" * 200_000: "x"}),
+        "huge unknown key": skill(front={"k" * 200_000: "1"}),
+        "unclosed links": skill(body="[a](<" * 12_000),
+        "unclosed brackets": skill(body="[" * 50_000),
+        "unclosed definitions": skill(body="[x]: <\n" * 20_000),
+    }
+
+
+@pytest.mark.parametrize("label", list(_hostile_drafts()))
+def test_a_hostile_draft_is_a_bounded_problem_not_an_exception(label: str):
+    files = _hostile_drafts()[label]
+    started = time.perf_counter()
+    result = run(files)
+    elapsed = time.perf_counter() - started
+    assert isinstance(result, SkillCheck)
+    assert set(result.problem_rules) <= _ALL_RULE_IDS
+    # Every sentence is short, however large the offending value was.
+    assert all(len(p.message) < 800 for p in result.problems + result.notes)
+    assert elapsed < 3.0, elapsed
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[a](<" * 15_000,
+        "[x]: <\n" * 20_000,
+        "[" * 150_000,
+        "[a][" * 30_000,
+        # With a definition present the reference-style patterns run too.
+        "[d]: references/format.md\n" + "[" * 150_000,
+    ],
+    ids=[
+        "unclosed-angle-links",
+        "unclosed-definitions",
+        "unclosed-brackets",
+        "unclosed-refs",
+        "unclosed-brackets-after-a-definition",
+    ],
+)
+def test_the_link_patterns_do_not_rescan_the_file_from_every_bracket(body: str):
+    # An unbounded run (`<([^>]*)>`) rescans the rest of the text from every
+    # `[a](<`: 7 s on 50 KB before the fold; bounded, a fraction of a second.
+    started = time.perf_counter()
+    assert skill_scaffold._linked_targets(body) == set()
+    assert time.perf_counter() - started < 2.0
+
+
+def test_the_hostile_drafts_are_not_all_clean():
+    # Positive control for the bound above: most of these do draw a problem,
+    # so a sentence-length assertion is looking at real sentences.
+    refused = sum(not run(f).ok for f in _hostile_drafts().values())
+    assert refused >= 10
+
+
+def test_non_text_files_become_problems_and_are_left_out_of_other_checks():
+    files = {**skill(), 5: "x", "references/extra.md": None, b"k": "x"}
+    result = run(files)  # type: ignore[arg-type]
+    assert sorted(result.problem_rules) == [
+        "file-key-not-text",
+        "file-key-not-text",
+        "file-not-text",
+    ]
+    # A SKILL.md that is not text is not ALSO reported missing.
+    bad_entry = {**skill(), "SKILL.md": b"bytes"}
+    assert run(bad_entry).problem_rules == ("file-not-text",)  # type: ignore[arg-type]
+    assert run(skill(drop_files=("SKILL.md",))).problem_rules == ("skill-md-missing",)
+
+
+# ----------------------------------------------------- K1-3: when_to_use
+
+def test_when_to_use_and_description_at_exactly_the_listing_limit_pass():
+    limit = skill_scaffold.SKILL_LISTING_MAX_CHARS
+    assert limit == 1536  # D-AUTHOR §3.1
+    exact = skill(front={"description": q("a" * 1000), "when_to_use": q("b" * (limit - 1000))})
+    assert run(exact).problems == ()
+    over = skill(front={"description": q("a" * 1000), "when_to_use": q("b" * (limit - 999))})
+    assert run(over).problem_rules == ("listing-text-too-long",)
+
+
+def test_when_to_use_is_optional_and_may_be_empty_text():
+    assert run(skill(drop_front=("when_to_use",))).problems == ()
+    assert run(skill(front={"when_to_use": q("")})).problems == ()
+
+
+def test_a_comparison_is_not_an_xml_tag_in_any_text_field():
+    text = "Use when a < 5 and b > 3, or when x <3 and y> 2."
+    files = skill(front={"description": q(text), "when_to_use": q(text)})
+    assert run(files).problems == ()
+    # Positive control: the same fields do refuse a real tag.
+    files = skill(front={"description": q(text + " <b>"), "when_to_use": q(text + " </b>")})
+    assert set(run(files).problem_rules) == {"description-xml-tag", "when-to-use-xml-tag"}
+
+
+# ---------------------------------------------------------- the nits
+
+def test_an_empty_metadata_is_no_metadata():
+    for empty in ("", "null", "~"):
+        assert run(skill(front={"metadata": empty})).problems == (), empty
+    # Positive control: metadata that is not a mapping is still refused.
+    assert run(skill(front={"metadata": q("text")})).problem_rules == (
+        "metadata-not-mapping",
+    )
+
+
+LINKED_BODIES = {
+    "reference-style, full": "See [the notes][n].\n\n[n]: references/format.md\n",
+    "reference-style, collapsed": "See [format][].\n\n[format]: references/format.md\n",
+    "reference-style, shortcut": 'See [format].\n\n[format]: references/format.md "Title"\n',
+    "reference-style, angle brackets": "See [x][n].\n\n[n]: <references/format.md>\n",
+    "reference-style, label case": "See [x][N].\n\n[n]: references/format.md\n",
+    "autolink": "See <references/format.md>.\n",
+    "normalised through ..": "See [x](references/../references/format.md).\n",
+    "normalised through .": "See [x](references/./format.md).\n",
+    "percent-escaped": "See [x](references/format%2Emd).\n",
+}
+UNLINKED_BODIES = {
+    "a definition nothing uses": "\n[n]: references/format.md\n",
+    "a link that normalises elsewhere": "See [x](references/../format.md).\n",
+    "an absolute link": "See [x](/references/format.md).\n",
+    "a link that climbs out": "See [x](../references/format.md).\n",
+    "an undefined label": "See [x][n].\n",
+    "another file": "See [x](references/other.md).\n",
+    "a path only mentioned": "See `references/format.md`.\n",
+}
+
+
+@pytest.mark.parametrize("label", list(LINKED_BODIES))
+def test_these_link_styles_link_a_reference(label: str):
+    assert run(skill(body="# T\n\n" + LINKED_BODIES[label])).problems == (), label
+
+
+@pytest.mark.parametrize("label", list(UNLINKED_BODIES))
+def test_these_do_not_link_a_reference(label: str):
+    result = run(skill(body="# T\n\n" + UNLINKED_BODIES[label]))
+    assert result.problem_rules == ("reference-not-linked",), label
+
+
+def test_the_remaining_rule_values_are_read_from_the_constants(monkeypatch):
+    # Each value below is now a named constant; changing it changes the rule.
+    # (The refusal cases above are the positive controls: with the shipped
+    # values these same drafts are refused.)
+    home = skill(front={"paths": json.dumps(["~/notes/**"])})
+    assert run(home).problem_rules == ("paths-absolute",)
+    monkeypatch.setattr(skill_scaffold, "SKILL_PATHS_ABSOLUTE_PREFIXES", ("/",))
+    assert run(home).problems == ()
+    monkeypatch.undo()
+
+    climbing = skill(front={"paths": json.dumps(["docs/../x/**"])})
+    assert run(climbing).problem_rules == ("paths-parent",)
+    monkeypatch.setattr(skill_scaffold, "SKILL_PATHS_PARENT_SEGMENT", "UP")
+    assert run(climbing).problems == ()
+    monkeypatch.undo()
+
+    nested = skill(
+        body=BODY + "\nAlso [the deep one](references/a/b.md).\n",
+        files={"references/a/b.md": "# Deep\n"},
+    )
+    assert run(nested).problem_rules == ("file-nested",)
+    monkeypatch.setattr(skill_scaffold, "SKILL_REFERENCES_MAX_DEPTH", 2)
+    assert run(nested).problems == ()
+    monkeypatch.undo()
+
+    backslash = skill(files={"references\\x.md": "# x\n"})
+    assert run(backslash).problem_rules == ("file-path-unsafe",)
+    monkeypatch.setattr(skill_scaffold, "SKILL_FILE_PATH_FORBIDDEN_CHARS", ())
+    assert "file-path-unsafe" not in run(backslash).problem_rules
+    monkeypatch.undo()
+
+    dotted = skill(files={"references/./x.md": "# x\n"})
+    assert run(dotted).problem_rules == ("file-path-unsafe",)
+    monkeypatch.setattr(skill_scaffold, "SKILL_FILE_PATH_FORBIDDEN_SEGMENTS", ("", ".."))
+    assert "file-path-unsafe" not in run(dotted).problem_rules
+    monkeypatch.undo()
+
+    with_when = skill(front={"when_to_use": q("When asked for a diagram.")})
+    assert run(with_when).problems == ()
+    monkeypatch.setattr(skill_scaffold, "SKILL_LISTING_MAX_CHARS", 20)
+    assert run(with_when).problem_rules == ("listing-text-too-long",)
+    monkeypatch.undo()
+
+    in_value = with_skill_md(
+        f'---\nname: {NAME}\ndescription: "a @@@ b"\n---\n\n{BODY}'
+    )
+    assert run(in_value).problems == ()
+    monkeypatch.setattr(skill_scaffold, "SKILL_FRONTMATTER_FENCE", "@@@")
+    assert run(in_value).problem_rules == ("frontmatter-contains-fence",)
+    monkeypatch.undo()
+
+    assert run(skill()).problems == ()
+    monkeypatch.setattr(skill_scaffold, "SKILL_FRONTMATTER_REFUSED_CLOSER", "---")
+    assert run(skill()).problem_rules == ("frontmatter-closed-by-dots",)
+    monkeypatch.undo()
