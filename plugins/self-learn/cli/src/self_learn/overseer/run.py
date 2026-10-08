@@ -4364,7 +4364,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
 
         # This read is deliberately after coverage was written.  It is the
         # whole verified parked queue; no count or prompt budget truncates it.
-        # S-80: the one definition the steward's hold reads too.
+        # S-81: the one definition the steward's hold reads too.
         parked_rows = cases.awaiting_overseer(home)
         try:
             model_doc = _full_inputs(home, stage, selected, parked_rows)

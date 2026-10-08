@@ -920,7 +920,7 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
     writes proposals for now (U5 retires it); nothing here reads them
     except to recognise a version a run decided before this change.
 
-    S-80 (2026-10-08): a lesson the overseer holds (`cases.held_lessons`)
+    S-81 (2026-10-08): a lesson the overseer holds (`cases.held_lessons`)
     is not selected, whatever parked it; once the overseer's decision
     supersedes its parked case it is selected again if its version is
     still undecided."""
@@ -971,7 +971,7 @@ def _suspected_violation_inputs(home: Path, exclude: set[str] | None = None) -> 
     new version. An event a record entry already handled
     (`confirm-recurrence` / `dismiss-suspect` wrote its nonce) is dropped
     before the version is taken. A lesson the overseer holds is not
-    offered (S-80)."""
+    offered (S-81)."""
     found = steward_inputs.suspected_violations(home, _find_record)
     if not found:
         return []
@@ -1042,7 +1042,7 @@ def _reconsider_unresolved(home: Path, record: Record) -> str:
 
 def _reconsider_proposals(home: Path) -> tuple[list[tuple[_QueuedProposal, dict]], dict[str, str]]:
     """Every lesson a case's new statement or dependency observation brings
-    back, as a reconsider input. A lesson the overseer holds is not (S-80):
+    back, as a reconsider input. A lesson the overseer holds is not (S-81):
     its observation stays unconsumed."""
     all_cases = cases.list_cases(home, only_ok=True)
     superseded = {row.get("supersedes") for row in all_cases if row.get("supersedes")}
@@ -1697,13 +1697,13 @@ def _reconsider_status_problem(
     return refusal_text(refusal) if refusal is not None else None
 
 
-#: S-80: the sheet keys that name a lesson a line acts on -- the item's own
+#: S-81: the sheet keys that name a lesson a line acts on -- the item's own
 #: `id`, and a `supersede`'s `new_id` (the lesson named its replacement).
 _HELD_LINE_KEYS = ("id", "new_id")
 
 
 def _held_sentence(record_id: str, rows: list[dict]) -> str:
-    """S-80: why a line on *record_id* is refused, naming each parked case
+    """S-81: why a line on *record_id* is refused, naming each parked case
     that holds it and that case's reason."""
     named = ", ".join(
         f"{row.get('case')} ({row.get('parked_reason') or 'no reason given'})" for row in rows
@@ -1718,7 +1718,7 @@ def _held_sentence(record_id: str, rows: list[dict]) -> str:
 def _held_lines(
     home: Path, items: object, held: dict[str, list[dict]] | None = None
 ) -> list[dict]:
-    """S-80: the lines of a sheet (its raw `items` list) that name a lesson
+    """S-81: the lines of a sheet (its raw `items` list) that name a lesson
     the overseer holds (`cases.held_lessons`), shaped like case-result
     items: kind `bad-line` -- the steward's own line is the mistake -- and
     :func:`_held_sentence` as the detail. The one check behind the repair
@@ -1745,7 +1745,7 @@ def _held_lines(
 
 
 def _holds_for(home: Path, case_id: str, case_records: list[str]) -> dict[str, list[dict]]:
-    """S-80: the holds a case's lines are checked against at apply time.
+    """S-81: the holds a case's lines are checked against at apply time.
     A case already in the ledger is being re-driven (a park or a receipt
     that did not land, a retried line): its decision predates any hold on
     its OWN lessons, which only its own outcome can have caused -- a lesson
@@ -1792,7 +1792,7 @@ def _ledger_repair_message(
     time, after the one repair turn was gone (run-9858d321b158: two
     pending lessons an earlier case had moved).
 
-    S-80 (2026-10-08): a line naming a lesson the overseer holds is
+    S-81 (2026-10-08): a line naming a lesson the overseer holds is
     flagged by name (:func:`_held_lines`), before the ledger preview of
     that sheet; apply time refuses the whole case for it."""
     found: list[str] = []
@@ -2265,7 +2265,7 @@ def _prepared_recipe(
         ("statement", "statements.yaml"),
         ("model", "model-updates.yaml"),
         ("parked-case", "parked.yaml"),
-        # S-80: a note for the overseer on a lesson it holds.
+        # S-81: a note for the overseer on a lesson it holds.
         ("note", _NOTES_FILE),
     ):
         for item in _stage_entries(stage / filename):
@@ -2502,7 +2502,7 @@ def _model_entries(home: Path) -> list[dict]:
     ]
 
 
-#: S-80: the stage file of the steward's notes for the overseer, one entry
+#: S-81: the stage file of the steward's notes for the overseer, one entry
 #: per note, on a lesson the overseer holds (`steward_prompt.OUTPUT_CONTRACT`).
 _NOTES_FILE = "overseer-notes.yaml"
 #: ... the observation kind a note is recorded as (`cases.OBSERVE_KINDS`):
@@ -2521,7 +2521,7 @@ def _note_observation_id(case_id: str, operation_id: str) -> str:
 
 
 def _add_overseer_note(home: Path, payload: dict, operation_id: str) -> str:
-    """S-80: one entry of `overseer-notes.yaml` -- ``{case, text}`` -- as an
+    """S-81: one entry of `overseer-notes.yaml` -- ``{case, text}`` -- as an
     `examined` later observation by the steward on that case, which must be
     one the overseer has yet to decide (`cases.awaiting_overseer`). The
     only thing the steward may do about a lesson the overseer holds (the
@@ -3531,7 +3531,7 @@ def _case_dispositions(
             # comes back as an ordinary lesson input at its record's
             # version (:func:`_selected_again`). Otherwise, sent back, it
             # would be decided by no one, and it is parked now instead.
-            # (2026-10-07, gate S1 D1.) Since S-80 a parked lesson is never
+            # (2026-10-07, gate S1 D1.) Since S-81 a parked lesson is never
             # selected while its parked case is open, so parking here is
             # safe on any path; sending it back is kept because a fresh
             # steward decision is cheaper than the overseer's.
@@ -3543,7 +3543,7 @@ def _case_dispositions(
             row.get("case") != _successor_case_for(home, str(manifest.get("run_id")), rid)
             for row in held_now[rid]
         ):
-            # S-80: another parked case holds it already (it was parked
+            # S-81: another parked case holds it already (it was parked
             # after this run selected it). A second one would only ask the
             # same question again; it is sent back, and decided -- by the
             # overseer, or by a later run once the overseer lets it go. A
@@ -3716,7 +3716,7 @@ def _refuse_unrecorded_case(
 ) -> tuple[list[tuple[str, str]], bool]:
     """A case refused BEFORE it reached the ledger: the case writer refused
     it (2026-10-07, gate S1 R1), a sheet line names a lesson the overseer
-    holds (S-80), or its text matched the secret scan when it was prepared
+    holds (S-81), or its text matched the secret scan when it was prepared
     (gate S1b F6). Nothing of it is in the ledger or dispatched; *items*
     are the refused lines, each with its S-71 kind. Its lessons follow
     §4.2 as for a case the preview holds back -- every one takes the
@@ -3812,7 +3812,7 @@ def _apply_packet(
             [str(rid) for rid in dict.fromkeys(records_named)]
             if isinstance(records_named, list) else []
         )
-        # S-80 (2026-10-08): a line on a lesson the overseer holds is
+        # S-81 (2026-10-08): a line on a lesson the overseer holds is
         # refused by name before anything of the case applies -- the case
         # is not recorded, so no reconsider widens it and no line
         # dispatches -- unless the case is parked, whose sheet never

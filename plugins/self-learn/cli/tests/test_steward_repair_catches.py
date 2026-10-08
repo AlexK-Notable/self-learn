@@ -524,7 +524,7 @@ def _parking_session(pair: MovedPair, prompts: list[str]):
 def _overseer_decides(home: Path, parked_case: str, records: list[str], tmp: Path) -> str:
     """The overseer's decision of a parked case, as the overseer's runner
     records one: a successor case that supersedes it (here it leaves the
-    lessons as they are). S-80: this is what lifts the hold."""
+    lessons as they are). S-81: this is what lifts the hold."""
     stage = tmp / f"overseer-decides-{parked_case}.yaml"
     case = _case(list(records), "no-action", "defer")
     case.update(trigger="weekly", question="the overseer's answer to the parked question")

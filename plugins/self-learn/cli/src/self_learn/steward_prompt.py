@@ -745,7 +745,7 @@ def _later_observations(home: Path, case_id: str, since: str | None) -> list[str
     return out
 
 
-#: S-80: the title of the list of lessons the overseer holds, at the top of
+#: S-81: the title of the list of lessons the overseer holds, at the top of
 #: the open-cases block, and the one sentence under it.
 HELD_TITLE = "LESSONS THE OVERSEER HOLDS"
 HELD_INSTRUCTION = (
@@ -755,7 +755,7 @@ HELD_INSTRUCTION = (
 
 
 def _render_held(home: Path) -> str | None:
-    """S-80: each lesson an open parked case holds (`cases.held_lessons`,
+    """S-81: each lesson an open parked case holds (`cases.held_lessons`,
     the set the steward selects none of), with each case's id and reason;
     `None` when there is none."""
     held = cases.held_lessons(home)

@@ -1340,7 +1340,7 @@ def awaiting_overseer(home: Path | str) -> list[dict]:
     intact (``only_ok``), and not superseded. The ONE definition both the
     overseer's queue (`overseer.run`) and the steward's hold
     (:func:`held_lessons`) read, so the two can never disagree about which
-    lessons the overseer holds (S-80, 2026-10-08)."""
+    lessons the overseer holds (S-81, 2026-10-08)."""
     return [
         row for row in list_cases(home, parked_for="overseer", only_ok=True)
         if not row.get("superseded_by")
@@ -1348,7 +1348,7 @@ def awaiting_overseer(home: Path | str) -> list[dict]:
 
 
 def held_lessons(home: Path | str) -> dict[str, list[dict]]:
-    """S-80: every lesson a case :func:`awaiting_overseer` names, with
+    """S-81: every lesson a case :func:`awaiting_overseer` names, with
     those cases. The overseer holds such a lesson: the steward selects it
     for no decision and refuses any sheet line on it, and may only add a
     note to its case (the user's words, 2026-10-08). The hold lifts when

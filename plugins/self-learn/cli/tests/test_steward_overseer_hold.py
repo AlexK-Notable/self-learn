@@ -1,4 +1,4 @@
-"""S-80 (2026-10-08): a lesson the overseer holds is the overseer's alone.
+"""S-81 (2026-10-08): a lesson the overseer holds is the overseer's alone.
 
 The user's words, 2026-10-08: "if there's a lesson with something that
 needs to be adjudicated by the overseer then it shouldn't be further meddled
