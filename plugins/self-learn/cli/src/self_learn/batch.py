@@ -2200,7 +2200,11 @@ def dry_run(
                            kind=_preview_kind([exc]))
             )
             continue
-        if revised is not None:
+        # A record file whose frontmatter names another id (hand-corrupted)
+        # gets no overlay: its later lines are previewed against the disk,
+        # as before E0b, never handed to `route_dry_run` as an override it
+        # refuses with a ValueError (E0b gate F1).
+        if revised is not None and revised.id == item.id:
             overlay[item.id] = revised
         result.items.append(
             DryRunItem(n=item.n, id=item.id, verb=item.verb, state="would-apply")

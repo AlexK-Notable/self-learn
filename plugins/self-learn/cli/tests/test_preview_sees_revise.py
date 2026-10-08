@@ -30,13 +30,14 @@ from __future__ import annotations
 import pytest
 from ruamel.yaml import YAML
 
-from self_learn import batch, steward
+from self_learn import batch, steward, verbs
 from self_learn.ledger_ops import (
     create_record,
     find_record_path,
     stamp_proposal,
     write_proposal,
 )
+from self_learn.records import Record
 from support import commit_all, git, last_verb_sha, make_behavior, make_env
 
 from test_route_hook import TRIGGER, hook_proposal
@@ -340,3 +341,40 @@ def test_a_hook_route_after_a_revise_previews_the_stale_analysis_refusal(env, tm
     result = batch.run(env.ledger, sheet, no_push=True, actor="overseer")
     assert _ran(result) == _as_run(_shown(preview))
     assert result.items[1].detail == preview.items[1].detail
+
+
+# ------------------------------------------------- the override's own guards
+
+
+def test_a_record_file_naming_another_id_never_crashes_the_preview(env, tmp_path):
+    """A hand-corrupted record file (X's file, Y's id in its frontmatter)
+    gets no overlay: the preview still returns a verdict per line, the
+    route read against the two lines on disk, instead of raising."""
+    _seed(env, X, instruction=TWO)
+    path = find_record_path(env.ledger, X)
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(f"id: {X}", f"id: {Y}"), encoding="utf-8"
+    )
+    commit_all(env.ledger, "corrupt the id")
+    sheet = _sheet(tmp_path, [_revise(X, "Instruction", ONE), _route(X)])
+
+    preview = batch.dry_run(env.ledger, sheet, actor="steward")
+    assert [i.verb for i in preview.items] == ["revise", "route"]
+    assert preview.items[1].state == "would-refuse"
+
+
+def test_route_dry_run_refuses_an_override_for_another_lesson(env):
+    _seed(env, X, instruction=ONE)
+    _seed(env, Y, instruction=ONE)
+    other = Record.from_path(find_record_path(env.ledger, Y))
+    with pytest.raises(ValueError):
+        verbs.route_dry_run(env.ledger, X, dest="skill-md", record_override=other)
+
+
+def test_route_dry_run_never_changes_the_override_it_is_given(env):
+    _seed(env, X, instruction=ONE)
+    override = Record.from_path(find_record_path(env.ledger, X))
+    before = override.to_text()
+    preview = verbs.route_dry_run(env.ledger, X, dest="skill-md", record_override=override)
+    assert preview.would_refuse == []  # positive control: a full route preview ran
+    assert override.to_text() == before
