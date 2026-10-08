@@ -147,6 +147,16 @@ staged, and only its receipts (case section 5) establish what actually
 happened. Do not describe a proposed wording or a proposed decision as
 already applied.
 
+**Which kind of case.** A `kind: reconsider` case re-decides a lesson an
+earlier case placed, rejected or deferred — its status is routed, rejected
+or deferred — and names that case in `supersedes`. A lesson that is pending
+is decided with a `kind: resolution` case, even when an earlier case moved
+it (`rehome`, `rescope`), and even when it came back to you as a reconsider
+input because something an earlier case relied on changed: there is no
+placement to reconsider, only a decision still to make. The runner refuses
+a reconsider case that names a pending lesson, and the repair turn tells
+you so.
+
 ## 7. Refine wording at adjudication
 
 When a record's lesson is right and only its sentence is wrong, and the

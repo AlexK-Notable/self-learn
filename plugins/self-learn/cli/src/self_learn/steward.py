@@ -1627,6 +1627,29 @@ def _status_unchanged(home: Path, record_id: str, selected_status: object) -> bo
         return False
 
 
+def _reconsider_status_problem(
+    home: Path, record_id: str, selected_status: object
+) -> str | None:
+    """2026-10-07 (run-9858d321b158): the refusal `verbs.reconsider` gives
+    *record_id* at apply time for its STATUS, in the verb's own words and
+    from the verb's own check (`ledger_ops.require_status` over
+    `RECONSIDERABLE_STATUSES`), when the lesson's status is still the one
+    the run selected it with -- the steward's own mistake, known at
+    selection time -- else `None`. A lesson that moved on since selection
+    is left to apply time, as every `status` refusal of one is (S-71 §4.2)."""
+    if not _status_unchanged(home, record_id, selected_status):
+        return None
+    try:
+        ledger_ops.require_status(
+            home, record_id, ledger_ops.RECONSIDERABLE_STATUSES, verb="reconsider"
+        )
+    except ledger_ops.StatusRefusal as exc:
+        return refusal_text(exc)
+    except ledger_ops.LedgerOpsError:
+        return None
+    return None
+
+
 def _ledger_repair_message(
     home: Path, stage: Path, selected: dict[str, object], skip: frozenset[str] | set[str] = frozenset(),
 ) -> str | None:
@@ -1647,8 +1670,16 @@ def _ledger_repair_message(
     re-decision's hook shape, its replay, its destination -- so a bad
     example is found while the repair turn can still fix it. A pair in
     *skip* (its stem) failed the runner's own per-pair check and is left
-    out (2026-09-27)."""
+    out (2026-09-27).
+
+    2026-10-07: a staged `kind: reconsider` case is also held to the
+    status `verbs.reconsider` needs of each lesson it names
+    (:func:`_reconsider_status_problem`). Before, a reconsider case naming
+    a PENDING lesson passed every check here and was refused only at apply
+    time, after the one repair turn was gone (run-9858d321b158: two
+    pending lessons an earlier case had moved)."""
     found: list[str] = []
+    case_found: list[str] = []
     for case_path in sorted((stage / "cases").glob("*.yaml")):
         if case_path.stem in skip:
             continue
@@ -1661,6 +1692,12 @@ def _ledger_repair_message(
             continue
         if _refiling_reason(home, sheet_path) is not None:
             continue
+        for record_id in dict.fromkeys(str(rid) for rid in case_data.get("records") or []):
+            if record_id not in reconsidered:
+                continue
+            problem = _reconsider_status_problem(home, record_id, selected.get(record_id))
+            if problem is not None:
+                case_found.append(f"- cases/{case_path.name}: {problem}")
         sheet = _sheet_without_case(sheet_path)
         preview = batch.dry_run(
             home, sheet, actor="steward",
@@ -1681,14 +1718,33 @@ def _ledger_repair_message(
                 f"- sheets/{sheet_path.name}: item {line.get('n')} "
                 f"({line.get('verb')} {record_id}): {line.get('detail') or kind}"
             )
-    if not found:
-        return None
-    return "\n".join([
-        "The ledger would refuse these lines of your sheets as written:",
-        *found,
-        "Fix each one: rewrite the line, choose a different destination or verb, or park the case",
-        "with the reason that names its question. Leave every other file as it is.",
-    ])
+    sections: list[str] = []
+    if found:
+        sections.append("\n".join([
+            "The ledger would refuse these lines of your sheets as written:",
+            *found,
+            "Fix each one: rewrite the line, choose a different destination or verb, or park the case",
+            "with the reason that names its question. Leave every other file as it is.",
+        ]))
+    if case_found:
+        sections.append("\n".join([
+            "The ledger would refuse these reconsider cases as written:",
+            *case_found,
+            *_RECONSIDER_REPAIR_ADVICE,
+        ]))
+    return "\n\n".join(sections) or None
+
+
+#: What the repair turn says under a `kind: reconsider` case naming a lesson
+#: whose status a reconsider cannot take (2026-10-07). The statuses are the
+#: verb's own (`ledger_ops.RECONSIDERABLE_STATUSES`).
+_RECONSIDER_REPAIR_ADVICE = (
+    "A `kind: reconsider` case is only for a lesson an earlier case placed, rejected or",
+    f"deferred (status {', '.join(sorted(ledger_ops.RECONSIDERABLE_STATUSES))}). A lesson that is",
+    "pending -- even one an earlier case moved, or one that came back to you as a reconsider",
+    "input -- is decided with a `kind: resolution` case: change the case's `kind` to",
+    "`resolution` and keep or fix its sheet. Leave every other file as it is.",
+)
 
 
 def _as_recorded(data: dict, *, parked_entry: bool = False) -> dict:
@@ -3319,6 +3375,8 @@ def _apply_packet(
                 }),
             ))
             continue
+        #: (kind, the ledger's words) when `verbs.reconsider` refused this case
+        reconsider_refusal: tuple[str, str] | None = None
         if isinstance(case_data, dict) and case_data.get("kind") == "reconsider":
             try:
                 for rid in case_data.get("records") or []:
@@ -3329,26 +3387,57 @@ def _apply_packet(
                 # 'rehome' does not apply to a 'rejected' record") raised
                 # out of the run after `cases.record` had committed the
                 # case, so the rest of the packet and every later packet
-                # stopped, run after run, until the cap. It is refused
-                # like a case the case writer refuses: its sheet is not
-                # applied, its lessons are refused with the reason, and
-                # the run goes on.
-                refused_records = case_data.get("records")
-                refused += max(1, len(refused_records) if isinstance(refused_records, list) else 1)
+                # stopped, run after run, until the cap. Its sheet is not
+                # applied, and the run goes on.
+                #
+                # 2026-10-07 (run-9858d321b158): its lessons were written
+                # a bare `refused` row -- no kind, no case -- which no S-71
+                # rule reads, and which `_terminal_versions` counts as a
+                # decision, so a lesson input refused this way was never
+                # selected again at its version. The refusal now carries
+                # its kind, from the exception's type as every refusal's
+                # is (`batch.refusal_kind`: the verb's status check is
+                # `status`; a raise site no type names is `unclassified`),
+                # and the case is handled below exactly as one the
+                # preview holds back: its sheet receipted refused, nothing
+                # of it dispatched, every lesson taking the case's action
+                # (S-71 §4.2: sent back, parked now, or retried).
                 error = refusal_text(exc)
+                reconsider_refusal = (batch.refusal_kind(exc, rc=1, state="refused"), error)
                 _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "refused",
                     "stage_file": case_path.name, "error": error})
-                _update_manifest(home, run_id, reason=f"case {case_id} refused", update=lambda current: (
-                    current["cases"][case_id].update(phase="refused", error=error),
-                    current["packets"][packet_index - 1]["dispositions"].update({
-                        rid: {"state": "refused", "input_version": inputs[rid], "reason": error}
-                        for rid in (refused_records or []) if rid in inputs
-                    }),
-                ))
-                continue
         items = batch.load_sheet(sheet_path, home=home)
         held: list[dict] | None = None
-        if recipe.get("parking_reason") is not None:
+        if reconsider_refusal is not None:
+            reconsider_kind, error = reconsider_refusal
+            case_records_now = case_data.get("records") if isinstance(case_data, dict) else None
+            result = batch.BatchResult(
+                items=[
+                    batch.ItemResult(
+                        n=item.n, id=item.id, verb=item.verb, rc=1,
+                        state="refused", detail=error, kind=reconsider_kind,
+                    )
+                    for item in items
+                ],
+                process_code=1,
+                case=case_id,
+                sheet_sha=items.sheet_sha,
+                actor="steward",
+            )
+            receipt = batch.write_receipt(
+                home, result, str(recipe["sheet_name"]), no_push=True, prefix=True
+            )
+            # One refused `reconsider` line per lesson of the case, shaped
+            # like `_held_refusals`' rows: the verb that refused is named in
+            # each lesson's reason.
+            held = [
+                {"id": str(rid), "verb": "reconsider", "rc": 1, "state": "refused",
+                 "detail": error, "kind": reconsider_kind}
+                for rid in dict.fromkeys(case_records_now if isinstance(case_records_now, list) else [])
+            ]
+            receipt_ok = bool(receipt and receipt.get("state") == "ok")
+            phase = "complete" if receipt_ok else "unfinished"
+        elif recipe.get("parking_reason") is not None:
             result = batch.BatchResult(
                 items=[
                     batch.ItemResult(
