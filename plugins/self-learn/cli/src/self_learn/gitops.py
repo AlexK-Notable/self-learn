@@ -910,6 +910,19 @@ def git_path(repo: Path, name: str) -> Path:
     return out if out.is_absolute() else Path(repo) / out
 
 
+def _is_exclude_begin(line: str) -> bool:
+    """Whether *line* opens the self-learn block: exactly
+    :data:`EXCLUDE_BEGIN`, or ``# self-learn:begin`` alone or followed by
+    a space (gate G1 N4). An operator's ``# self-learn:beginning notes``
+    is just a comment."""
+    bare = line.rstrip("\r\n")
+    return (
+        bare == EXCLUDE_BEGIN
+        or bare == _EXCLUDE_BEGIN_PREFIX
+        or bare.startswith(_EXCLUDE_BEGIN_PREFIX + " ")
+    )
+
+
 def _exclude_text_with(text: str, patterns: set[str], where: Path) -> str:
     """*text* (an ``info/exclude`` file) with every one of *patterns* in
     the self-learn block -- appended at the end, as a new block, when there
@@ -917,7 +930,7 @@ def _exclude_text_with(text: str, patterns: set[str], where: Path) -> str:
     lines are kept and the new ones merged in, sorted. Returns *text*
     itself when nothing is missing."""
     lines = text.splitlines(keepends=True)
-    begins = [i for i, line in enumerate(lines) if line.startswith(_EXCLUDE_BEGIN_PREFIX)]
+    begins = [i for i, line in enumerate(lines) if _is_exclude_begin(line)]
     ends = [i for i, line in enumerate(lines) if line.rstrip("\r\n") == EXCLUDE_END]
     if not begins and not ends:
         body = "".join(f"{p}\n" for p in sorted(patterns))
@@ -958,6 +971,13 @@ def ensure_excluded(repo: Path, patterns: Iterable[str]) -> bool:
             text = exclude.read_text(encoding="utf-8")
         except FileNotFoundError:
             text = ""
+        except UnicodeDecodeError as exc:
+            # Gate G1 N2: a GitOpsError, so every host-phase caller handles
+            # it like any other failure; the file is never rewritten.
+            raise GitOpsError(
+                f"{exclude} is not UTF-8 text ({exc.reason} at byte {exc.start}) -- "
+                "self-learn will not rewrite it; fix its encoding by hand"
+            ) from exc
         new_text = _exclude_text_with(text, wanted, exclude)
         if new_text == text:
             return False

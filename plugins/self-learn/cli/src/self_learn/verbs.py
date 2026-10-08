@@ -3245,7 +3245,9 @@ def _remove_hook_script(
             if mode != "git":
                 # G1: never delete a file git tracks in a plain host (the
                 # pre-flight refused it; its tracking may have changed).
-                _refuse_unsafe_plain_paths([script], removal=True, deleting=True)
+                _refuse_unsafe_plain_paths(
+                    [script], removal=True, deleting=True, skills_root=host_repo
+                )
                 script.unlink()
                 return None
             snapshot = _snapshot_host_files([script])
@@ -3736,7 +3738,9 @@ def _retirement_preflight(
         if removal is not None and removal[3] == "plain":
             # G1: deleting a file git tracks in a plain host is a change
             # git shows; deleting an untracked one is not.
-            _refuse_unsafe_plain_paths([removal[1]], removal=True, deleting=True)
+            _refuse_unsafe_plain_paths(
+                [removal[1]], removal=True, deleting=True, skills_root=removal[0]
+            )
         return _Retirement(removal=removal)
     if destination == "reference":
         ref_spec = _resolve_target(
@@ -3811,7 +3815,9 @@ def _retire_reference_host_phase(
     try:
         with gitops.host_lock(spec.host_path, spec.mode):
             if spec.mode == "plain":
-                _ensure_plain_excludes([ref_path], removal=True)  # G1
+                _ensure_plain_excludes(  # G1
+                    [ref_path], removal=True, skills_root=_skills_root_of(spec)
+                )
             result = retire_reference(spec.refs_dir, record_id, dest=spec.ref_name)
             if not result.applied or spec.mode != "git":
                 return None
@@ -3864,6 +3870,7 @@ def _retirement_host_phase(
             message=message,
             warnings=warnings,
             user_push=user_push,
+            removal=True,
         )
         return host_sha, retirement.spec.host_path
     if retirement.removal is not None:
@@ -4168,6 +4175,43 @@ def _host_write_candidates(spec: TargetSpec) -> list[Path]:
     return paths
 
 
+def _pointer_write_needed(spec: TargetSpec) -> bool:
+    """Gate G1 D1: whether a reference route's host phase will write its
+    pointer surface. Mirrors :func:`compilers.apply_pointer`'s first two
+    legs: an absent surface is created (a write); a surface that already
+    names the references file (``surface_names_target`` -- a hand-written
+    mention counts) is left alone, ``changed=False``. Anything this
+    cannot read answers "a write" -- the guard then judges the surface,
+    as before."""
+    surface = spec.pointer_surface
+    if surface is None:
+        return False
+    if not surface.is_file() or spec.refs_dir is None:
+        return True
+    try:
+        return not surface_names_target(
+            surface, reference_target_path(spec.refs_dir, spec.ref_name)
+        )
+    except (CompileError, OSError, UnicodeDecodeError):
+        return True
+
+
+def _plain_guard_candidates(spec: TargetSpec, *, removal: bool = False) -> list[Path]:
+    """Gate G1 D1: the host files a write of *spec* will actually CHANGE --
+    what the plain-host guard judges and gives ignore lines. That is
+    :func:`_host_write_candidates` less a reference spec's pointer
+    surface when the write leaves it alone: a reference RETIREMENT
+    (*removal*) takes its entry off the shelf only, and a reference ROUTE
+    writes no pointer when the surface already names the shelf.
+    (:func:`_host_write_candidates` itself stays whole: the git-mode
+    snapshot wants every file the compile COULD touch.)"""
+    paths = _host_write_candidates(spec)
+    surface = spec.pointer_surface
+    if surface is not None and (removal or not _pointer_write_needed(spec)):
+        paths = [p for p in paths if p != surface]
+    return paths
+
+
 # ------------------------------------- G1: a plain host receives ignored files
 
 
@@ -4218,7 +4262,11 @@ _PLAIN_RULE = (
 
 
 def _refuse_unsafe_plain_paths(
-    paths: Iterable[Path], *, removal: bool = False, deleting: bool = False
+    paths: Iterable[Path],
+    *,
+    removal: bool = False,
+    deleting: bool = False,
+    skills_root: Path | None = None,
 ) -> list[tuple[Path, str]]:
     """G1: run :func:`_plain_write_check` over every path ONE write
     touches; raise when any is refused, naming every refused path. Returns
@@ -4231,7 +4279,16 @@ def _refuse_unsafe_plain_paths(
     takes a lesson's lines out of a file that stays where it is) is
     :class:`NeedsPerson` -- no choice of destination changes where the
     lines already sit; a person moves or untracks that file first (the
-    later migration unit)."""
+    later migration unit).
+
+    *skills_root* (gate G1 R1) names the skills root the file lives in
+    when no destination OUTSIDE it can take the lesson -- a skill lesson
+    (skill-md, new-skill, a skill-scope reference or claude-md, a skill's
+    hook script) -- and, for a removal, any file under the skills root.
+    While that root is registered plain, every skill file in it is
+    tracked, so "choose another destination" has no right answer there:
+    an addition is :class:`NeedsPerson` too (the steward parks it at
+    once), and the advice names the two real ways out."""
     problems: list[str] = []
     lines: list[tuple[Path, str]] = []
     for path in paths:
@@ -4244,9 +4301,23 @@ def _refuse_unsafe_plain_paths(
         return lines
     found = "; ".join(problems)
     if removal:
+        way_out = (
+            f"a person switches the skills root at {skills_root} to git mode, or "
+            "moves or untracks that file, then re-runs"
+            if skills_root is not None
+            else "move or untrack it first, then re-run"
+        )
         raise NeedsPerson(
             f"{found} -- {_PLAIN_RULE}. Taking this lesson out would change that "
-            "file; move or untrack it first, then re-run"
+            f"file; {way_out}"
+        )
+    if skills_root is not None:
+        raise NeedsPerson(
+            f"{found} -- {_PLAIN_RULE}. The skills root at {skills_root} is "
+            "registered plain, and a skill's files there are tracked by git, so "
+            "no other destination for this skill lesson is free either. The "
+            "lesson waits for a person: switch that skills root to git mode "
+            "(self-learn then commits its own changes there), or untrack the file"
         )
     raise DestinationUnavailable(
         f"{found} -- {_PLAIN_RULE}. Choose a destination whose file git does not "
@@ -4255,26 +4326,46 @@ def _refuse_unsafe_plain_paths(
     )
 
 
+def _skills_root_of(spec: TargetSpec) -> Path | None:
+    """Gate G1 R1: the skills root a write of *spec* lands in when the
+    lesson has no destination outside it -- a skill-scope spec (skill-md,
+    a skill reference, a skill's hook script), the skills root's own
+    ``claude-md``, or a new skill -- else ``None``. Keyed off the spec's
+    scope, never the path: claude-skills' PROJECT registration writes
+    into the same repo, and a project lesson has ``claude-md:local``."""
+    if spec.destination == "new-skill" or spec.scope_kind in ("skill", "skill-root"):
+        return spec.host_path
+    return None
+
+
 def _refuse_unsafe_plain_write(spec: TargetSpec, *, removal: bool = False) -> None:
     """G1, the pre-flight half (D-DEPLOY §1.1): for a ``plain``-mode
-    spec, every file its write can touch (:func:`_host_write_candidates`)
+    spec, every file its write will change (:func:`_plain_guard_candidates`)
     must pass :func:`_plain_write_check`. Pure -- writes nothing in the
     host or the ledger. A ``git``-mode spec is unaffected: git mode
     commits its targets. The mode is the spec's, so the check keys off
     the REGISTRATION the write goes through, never the repo's path."""
     if spec.mode != "plain":
         return
-    _refuse_unsafe_plain_paths(_host_write_candidates(spec), removal=removal)
+    _refuse_unsafe_plain_paths(
+        _plain_guard_candidates(spec, removal=removal),
+        removal=removal,
+        skills_root=_skills_root_of(spec),
+    )
 
 
-def _ensure_plain_excludes(paths: Iterable[Path], *, removal: bool = False) -> None:
+def _ensure_plain_excludes(
+    paths: Iterable[Path], *, removal: bool = False, skills_root: Path | None = None
+) -> None:
     """G1, the write half: re-run the check (a file's tracking can change
     between pre-flight and write), then put each file's line in its repo's
     self-learn ``info/exclude`` block (:func:`gitops.ensure_excluded`,
     which takes that repo's lock). Called for plain hosts only, under the
     host lock, just before the files are written."""
     by_repo: dict[Path, list[str]] = {}
-    for repo, line in _refuse_unsafe_plain_paths(paths, removal=removal):
+    for repo, line in _refuse_unsafe_plain_paths(
+        paths, removal=removal, skills_root=skills_root
+    ):
         by_repo.setdefault(repo, []).append(line)
     for repo, lines in by_repo.items():
         gitops.ensure_excluded(repo, lines)
@@ -4349,6 +4440,7 @@ def _host_phase(
     message: str,
     warnings: list[str],
     user_push: bool = True,
+    removal: bool = False,
 ) -> tuple[object | None, str | None]:
     """Steps (e): compile + HOST commit under the sentinel hold. On ANY
     failure after the ledger commit: loud drift warning naming
@@ -4383,8 +4475,14 @@ def _host_phase(
                 # G1 (D-DEPLOY §1.1): the ignore line goes in first, under
                 # this lock, just before the file is written -- and the
                 # guard runs once more here, since the file's tracking can
-                # change between the pre-flight and this write.
-                _ensure_plain_excludes(_host_write_candidates(spec))
+                # change between the pre-flight and this write. *removal*
+                # (a retirement's recompile) keeps a file tracked since the
+                # pre-flight on the removal wording and kind (gate G1 N1).
+                _ensure_plain_excludes(
+                    _plain_guard_candidates(spec, removal=removal),
+                    removal=removal,
+                    skills_root=_skills_root_of(spec),
+                )
             snapshot = (
                 _snapshot_host_files(_host_write_candidates(spec))
                 if spec.mode == "git"
@@ -8296,6 +8394,7 @@ def supersede(
                     message=message,
                     warnings=warnings,
                     user_push=not no_push,
+                    removal=True,
                 )
             elif removal is not None:
                 host_sha = _remove_hook_script(
@@ -9681,7 +9780,7 @@ def recompile(
             # surface below.
             if spec.mode == "plain":
                 try:
-                    _refuse_unsafe_plain_paths([probe])
+                    _refuse_unsafe_plain_paths([probe], skills_root=_skills_root_of(spec))
                 except VerbError as exc:
                     result.entries.append(
                         RecompileEntry(target=probe, changed=False, skipped=str(exc))
@@ -9709,7 +9808,9 @@ def recompile(
             pointer_refusal: str | None = None
             if spec.mode == "plain" and spec.pointer_surface is not None and not skip_pointer:
                 try:
-                    _refuse_unsafe_plain_paths([spec.pointer_surface])
+                    _refuse_unsafe_plain_paths(
+                        [spec.pointer_surface], skills_root=_skills_root_of(spec)
+                    )
                 except VerbError as exc:
                     pointer_refusal = str(exc)
             if pointer_refusal is not None:
@@ -9771,7 +9872,8 @@ def recompile(
                                 [spec.pointer_surface]
                                 if spec.pointer_surface is not None and not skip_pointer
                                 else []
-                            )
+                            ),
+                            skills_root=_skills_root_of(spec),
                         )
                     except (VerbError, gitops.GitOpsError) as exc:
                         result.entries.append(
@@ -10002,7 +10104,12 @@ def recompile(
                     # G1: a plain host's script must be one git ignores --
                     # its line first, or the script is left alone, loudly.
                     try:
-                        _ensure_plain_excludes([script_abs])
+                        _ensure_plain_excludes(
+                            [script_abs],
+                            skills_root=(
+                                host_repo if _hook_scope_kind(record) == "skill" else None
+                            ),
+                        )
                     except (VerbError, gitops.GitOpsError) as exc:
                         result.entries.append(
                             RecompileEntry(target=script_abs, changed=False, skipped=str(exc))

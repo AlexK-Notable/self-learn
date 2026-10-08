@@ -24,6 +24,7 @@ sandbox repos and ledgers with fake model sessions; ids are synthetic.
 
 from __future__ import annotations
 
+import fcntl
 import os
 import subprocess
 from pathlib import Path
@@ -55,8 +56,11 @@ from test_steward_refusals import (
     _case,
     _dispositions,
     _notifications,
+    _one_line_each,
+    _parked_now_cases,
     _seed,
     _with_always_loaded,
+    _writer,
 )
 
 
@@ -106,7 +110,10 @@ def _block(repo: Path) -> list[str] | None:
     if not path.is_file():
         return None
     lines = path.read_text(encoding="utf-8").splitlines()
-    begins = [i for i, line in enumerate(lines) if line.startswith("# self-learn:begin")]
+    begins = [
+        i for i, line in enumerate(lines)
+        if line == "# self-learn:begin" or line.startswith("# self-learn:begin ")
+    ]
     if not begins:
         return None
     end = lines.index("# self-learn:end")
@@ -458,9 +465,12 @@ def test_a_plain_skills_root_takes_a_new_hook_script_ignored_and_refuses_a_track
     lesson = "lrn-9a00000e"
     create_record(home, make_behavior(scope="skill:s", record_id=lesson))
     commit_all(home, f"seed {lesson}")
-    with pytest.raises(verbs.DestinationUnavailable) as caught:
+    with pytest.raises(verbs.NeedsPerson) as caught:
         verbs.route(home, lesson, dest="skill-md", no_push=True)
     assert "SKILL.md is tracked by git" in str(caught.value)
+    assert f"skills root at {repo} is registered plain" in str(caught.value)
+    assert "switch that skills root to git mode" in str(caught.value)
+    assert "Choose a destination" not in str(caught.value)
     assert env.skill_md.read_bytes() == skill_md
 
     hook = "lrn-9a00000f"
@@ -497,6 +507,7 @@ def test_a_plain_skills_root_takes_a_new_hook_script_ignored_and_refuses_a_track
     with pytest.raises(verbs.NeedsPerson) as removal:
         verbs.graduate(home, hook, no_push=True)
     assert f"{rel} is tracked by git" in str(removal.value)
+    assert f"switches the skills root at {repo} to git mode" in str(removal.value)
     assert script.is_file()
     assert _record(home, hook).status == "routed"
     assert _status(repo) == ""
@@ -536,10 +547,11 @@ def test_a_hook_script_the_skills_repo_re_admits_is_refused_before_anything_is_w
     rid = _hook_lesson(home, "lrn-9a000017")
     ledger_head = last_verb_sha(home)
 
-    with pytest.raises(verbs.DestinationUnavailable) as caught:
+    with pytest.raises(verbs.NeedsPerson) as caught:
         verbs.route(home, rid, dest="hook", no_push=True)
 
     assert "would still not be ignored by git" in str(caught.value)
+    assert "switch that skills root to git mode" in str(caught.value)
     assert not list(repo.glob("plugins/*/hooks/*.sh"))
     assert _record(home, rid).status == "pending"
     assert last_verb_sha(home) == ledger_head  # a telemetry flush may ride on top
@@ -1083,4 +1095,276 @@ def test_recompile_repairs_the_shelf_when_only_its_pointer_file_is_tracked(tmp_p
     assert "is tracked by git" in (skipped.skipped or "")
     assert (host / "CLAUDE.md").read_bytes() == pointer_bytes
     assert _head(host) == head
+    assert _status(host) == ""
+
+
+# ------------------------------------------- gate G1 folds (2026-10-08)
+
+
+def test_a_shelf_retirement_never_judges_the_pointer_file_it_does_not_write(tmp_path):
+    """Gate G1 D1 (probe P1). The owner tracked CLAUDE.md after the
+    lesson's pointer went in; the shelf stayed untracked. A retirement
+    takes the entry off the SHELF only, so it goes ahead, and CLAUDE.md is
+    untouched. (The other direction -- a TRACKED shelf refuses -- is
+    `test_a_reference_retirement_from_a_tracked_shelf_is_refused_for_a_person`.)"""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a000028")
+    verbs.route(home, rid, dest="reference", no_push=True)
+    shelf = host / "references" / "LEARNINGS.md"
+    assert rid in shelf.read_text(encoding="utf-8")  # control
+    git(host, "add", "-f", "--", "CLAUDE.md")
+    git(host, "commit", "-q", "-m", "track CLAUDE.md after all")
+    pointer = (host / "CLAUDE.md").read_bytes()
+    assert b"references/LEARNINGS.md" in pointer  # control: it names the shelf
+
+    verbs.graduate(home, rid, no_push=True)
+
+    assert rid not in shelf.read_text(encoding="utf-8")
+    assert _record(home, rid).status == "superseded"
+    assert (host / "CLAUDE.md").read_bytes() == pointer
+    assert _ignored(host, "references/LEARNINGS.md")
+    assert _status(host) == ""
+
+
+def test_a_reference_route_judges_its_pointer_file_only_when_it_would_write_it(tmp_path):
+    """Gate G1 D1 (probe P3), both directions. CLAUDE.md is tracked.
+    Without a pointer to the shelf, the route would write one there:
+    refused, nothing written. Once CLAUDE.md names the shelf (here by
+    hand), the pointer write is a no-op: the route goes ahead, writes
+    only the untracked shelf, and leaves CLAUDE.md byte for byte."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path)
+    rid = _lesson(home, host, "lrn-9a000029")
+    shelf = host / "references" / "LEARNINGS.md"
+
+    with pytest.raises(verbs.DestinationUnavailable) as caught:
+        verbs.route(home, rid, dest="reference", no_push=True)
+    assert "CLAUDE.md is tracked by git" in str(caught.value)
+    assert not shelf.exists()
+    assert _record(home, rid).status == "pending"
+
+    with (host / "CLAUDE.md").open("a", encoding="utf-8") as fh:
+        fh.write("\nOlder lessons: see references/LEARNINGS.md.\n")
+    git(host, "commit", "-q", "-am", "point at the shelf by hand")
+    claude_md = (host / "CLAUDE.md").read_bytes()
+    head = _head(host)
+
+    result = verbs.route(home, rid, dest="reference", no_push=True)
+
+    assert not any("HOST PHASE FAILED" in w for w in result.warnings), result.warnings
+    assert rid in shelf.read_text(encoding="utf-8")
+    assert (host / "CLAUDE.md").read_bytes() == claude_md
+    assert _block(host) == ["/references/LEARNINGS.md"]
+    assert _ignored(host, "references/LEARNINGS.md")
+    assert _status(host) == ""
+    assert _head(host) == head
+
+
+def test_the_steward_parks_a_skill_lesson_its_plain_skills_root_cannot_take(
+    tmp_path, monkeypatch
+):
+    """Gate G1 R1. While the skills root is plain, every skill destination
+    in it is tracked, so "choose another destination" has no right
+    answer: the refusal is `needs-person`, the steward parks the lesson in
+    the same run, and no repair turn is spent on it."""
+    home, repo = _plain_skills_root(tmp_path)
+    rid = _seed(home, "lrn-9a00002a")
+    _enable_steward(home)
+    sent = _notifications(monkeypatch)
+    skill_md = (repo / "plugins" / "s-plugin" / "skills" / "s" / "SKILL.md").read_bytes()
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        steward.invocation, "write_session",
+        _writer(_one_line_each("route", "route", dest="skill-md"), prompts=prompts),
+    )
+
+    result = steward.run(home)
+
+    assert len(prompts) == 1, "parked at once: no repair turn"
+    row = _dispositions(home, result.run_id)[rid]
+    assert row["state"] == "abandoned", row
+    assert row["kind"] == "needs-person"
+    # The steward clips a reason to its detail budget; the full wording is
+    # pinned at the route and in the overseer's report.
+    assert row["reason"].startswith(f"route {rid}: "), row["reason"]
+    assert len(_parked_now_cases(home, rid)) == 1
+    assert len(sent) == 1 and sent[0][2] == [rid]
+    assert _record(home, rid).status == "pending"
+    assert (repo / "plugins" / "s-plugin" / "skills" / "s" / "SKILL.md").read_bytes() == skill_md
+    assert _status(repo) == ""
+
+
+def test_the_overseer_reports_a_skill_lesson_s_refusal_as_needing_a_person(
+    tmp_path, monkeypatch
+):
+    """Gate G1 R1, the overseer's side: the report's "Refused / could not
+    do" line for a skill lesson says `needs-person` and why."""
+    home, repo = _plain_skills_root(tmp_path)
+    rid = _seed(home, "lrn-9a00002b")
+    parked_path = tmp_path / "parked.yaml"
+    _dump(parked_path, {
+        "kind": "parked", "trigger": "nightly", "outcome": "parked",
+        "records": [rid], "scope": "skill:s", "question": "where does this go?",
+        "parked_for": "overseer", "parked_reason": "authority-unclear",
+        "evidence": [{"ref": f"record:{rid}", "quote": "status: pending"}],
+        "decision": {"verb": "parked", "because": "delegated", "confidence": "provisional"},
+    })
+    parked = cases.record(home, parked_path, actor="steward")
+    _enabled(monkeypatch)
+    items = [{"id": rid, "verb": "route", "dest": "skill-md"}]
+    successor = _with_always_loaded({
+        "kind": "resolution", "trigger": "weekly", "outcome": "route",
+        "records": [rid], "scope": "skill:s", "question": "where does this go?",
+        "supersedes": parked,
+        "evidence": [{"ref": f"record:{rid}", "quote": "status: pending"}],
+        "decision": {"verb": "route", "because": "it applies here", "confidence": "settled"},
+    }, items)
+
+    def invoke(spec):
+        if spec.label == "phase-a":
+            _phase_a(spec.cwd)
+        else:
+            _phase_b_common(spec.cwd)
+            _dump(spec.cwd / "case-skill.yaml", successor)
+            _dump(spec.cwd / "sheet-skill.yaml", {"version": 1, "items": items})
+        return _ok()
+
+    monkeypatch.setattr(overseer_run.invocation, "write_session", invoke)
+    overseer_run.run(home, no_push=True)
+
+    report = (home / "overseer" / "latest-report.md").read_text(encoding="utf-8")
+    refused = report.partition("## Refused / could not do")[2].split("\n## ", 1)[0]
+    assert refused.strip(), report  # positive control: the section rendered
+    assert "SKILL.md is tracked by git" in refused, refused
+    assert "[needs-person]" in refused, refused
+    assert "switch that skills root to git mode" in refused, refused
+    assert _record(home, rid).status == "pending"
+    assert _status(repo) == ""
+
+
+def test_a_file_tracked_mid_retirement_gets_the_removal_wording(tmp_path, monkeypatch):
+    """Gate G1 N1. The retirement's pre-flight passed (stood in for here);
+    by the host phase the owner has tracked CLAUDE.md. The write-time
+    check refuses as a REMOVAL -- move or untrack the file -- never with
+    the addition's "choose a destination" advice."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a00002c")
+    verbs.route(home, rid, dest="claude-md", no_push=True)
+    git(host, "add", "-f", "--", "CLAUDE.md")
+    git(host, "commit", "-q", "-m", "track CLAUDE.md")
+    claude_md = (host / "CLAUDE.md").read_bytes()
+    assert rid.encode() in claude_md  # control
+    monkeypatch.setattr(
+        verbs, "_refuse_unsafe_plain_write", lambda spec, removal=False: None, raising=False
+    )
+
+    result = verbs.graduate(home, rid, no_push=True)
+
+    (failed,) = [w for w in result.warnings if "HOST PHASE FAILED" in w]
+    assert "CLAUDE.md is tracked by git" in failed
+    assert "Taking this lesson out would change that file" in failed
+    assert "Choose a destination" not in failed
+    assert (host / "CLAUDE.md").read_bytes() == claude_md
+    assert _status(host) == ""
+
+
+def test_an_exclude_file_that_is_not_utf8_stops_the_write_as_a_host_phase_failure(
+    tmp_path,
+):
+    """Gate G1 N2: a non-UTF-8 info/exclude is a host-phase failure like
+    any other (canon stale, never lost), never a raw UnicodeDecodeError;
+    the file is not rewritten."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path)
+    raw = OPERATOR_LINES.encode() + b"# caf\xe9, by hand\n"
+    _exclude(host).write_bytes(raw)
+    rid = _lesson(home, host, "lrn-9a00002d")
+
+    result = verbs.route(home, rid, dest="claude-md:local", no_push=True)
+
+    (failed,) = [w for w in result.warnings if "HOST PHASE FAILED" in w]
+    assert "is not UTF-8 text" in failed
+    assert not (host / "CLAUDE.local.md").exists()
+    assert _exclude(host).read_bytes() == raw
+    assert _record(home, rid).status == "routed"  # the ledger commit stands
+
+
+def test_an_operator_comment_that_merely_starts_like_the_block_is_left_alone(tmp_path):
+    """Gate G1 N4: only the exact begin line opens the block. An operator's
+    "# self-learn:beginning ..." comment is just a comment: the write goes
+    ahead, the comment stays, and the real block is appended."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path)
+    operator = OPERATOR_LINES + "# self-learn:beginning notes, by hand\n"
+    _exclude(host).write_text(operator, encoding="utf-8")
+    rid = _lesson(home, host, "lrn-9a00002e")
+
+    result = verbs.route(home, rid, dest="claude-md:local", no_push=True)
+
+    assert not any("HOST PHASE FAILED" in w for w in result.warnings), result.warnings
+    assert rid in (host / "CLAUDE.local.md").read_text(encoding="utf-8")
+    assert _exclude(host).read_text(encoding="utf-8").startswith(operator)
+    assert _block(host) == ["/CLAUDE.local.md"]
+    assert _ignored(host, "CLAUDE.local.md") and _status(host) == ""
+
+
+def test_the_exclude_writer_holds_the_repo_lock_while_it_writes(tmp_path, monkeypatch):
+    """Gate G1 M18: `ensure_excluded` takes the repo's commit lock itself
+    (every registration and worktree of a repo shares its one exclude
+    file). While it writes, a second open of that lock file cannot take
+    it. Called directly, with no caller's lock around it. (This pins
+    behaviour 0fd0c4e..f3c9f95 already had, so it passes on ac85669 too;
+    the mutation that removes the lock is what turns it red.)"""
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    (repo / "seed").write_text("seed\n", encoding="utf-8")
+    commit_all(repo, "seed")
+    lock = gitops.commit_lock_path(repo)
+    real_write = gitops.fsops.atomic_write
+    seen: list[bool] = []
+
+    def write_and_probe(path, *args, **kwargs):
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock, "a+") as other:
+            try:
+                fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                seen.append(True)  # held by the writer
+            else:
+                fcntl.flock(other.fileno(), fcntl.LOCK_UN)
+                seen.append(False)
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(gitops.fsops, "atomic_write", write_and_probe)
+
+    assert gitops.ensure_excluded(repo, ["/notes.txt"]) is True
+
+    assert seen == [True]  # the probe ran once, during the one write
+    assert _block(repo) == ["/notes.txt"]
+
+
+def test_a_shelf_retirement_ignores_a_tracked_claude_md_that_no_longer_points_at_it(
+    tmp_path,
+):
+    """Gate G1 D1, the retirement rule itself: the owner took the pointer
+    out of CLAUDE.md by hand and tracked the file. A route would write a
+    pointer there (and be refused); a retirement never does, so it judges
+    the shelf alone and goes ahead, CLAUDE.md untouched."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a00002f")
+    verbs.route(home, rid, dest="reference", no_push=True)
+    (host / "CLAUDE.md").write_text(CLAUDE_MD_SEED, encoding="utf-8")
+    git(host, "add", "-f", "--", "CLAUDE.md")
+    git(host, "commit", "-q", "-m", "track CLAUDE.md without the pointer")
+    claude_md = (host / "CLAUDE.md").read_bytes()
+    assert b"references/LEARNINGS.md" not in claude_md  # control
+
+    verbs.graduate(home, rid, no_push=True)
+
+    assert rid not in (host / "references" / "LEARNINGS.md").read_text(encoding="utf-8")
+    assert _record(home, rid).status == "superseded"
+    assert (host / "CLAUDE.md").read_bytes() == claude_md
     assert _status(host) == ""
