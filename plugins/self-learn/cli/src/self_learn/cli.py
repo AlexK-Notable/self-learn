@@ -3013,7 +3013,7 @@ def _host_line(home, path, kind: str) -> str:
     if path is None:
         return "(none registered)"
     problem = hosts_mod.host_path_problem(home, path, kind)
-    mode = hosts_mod.host_mode(home, path)
+    mode = hosts_mod.host_mode(home, path, registration=kind)
     mode_suffix = f"  [mode={mode}]" if mode != "git" else ""
     if problem is None:
         return f"{path}{mode_suffix}"

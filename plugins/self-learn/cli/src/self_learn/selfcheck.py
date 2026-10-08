@@ -673,7 +673,11 @@ def _check_drift(
             host_path = _managed_host_for(
                 home, bucket, record, user_claude_md=user_claude_md
             )
-            if host_path is not None and host_mode(home, host_path) != "git":
+            registration = "skills-root" if bucket.scope == "skill" else "project"
+            if (
+                host_path is not None
+                and host_mode(home, host_path, registration=registration) != "git"
+            ):
                 try:
                     region = compiled.region_bytes(text, "managed")
                 except compiled.CompiledRecordError:

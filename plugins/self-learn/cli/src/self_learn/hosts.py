@@ -336,35 +336,67 @@ def is_project_host(hosts: Hosts, path: Path | str) -> bool:
     return any(Path(p).resolve() == target for p in hosts.projects)
 
 
-def host_mode(home: Path | str, path: Path | str) -> str:
+def _check_registration(registration: str | None) -> None:
+    """S-82: a named registration is one of :data:`HOST_KINDS`."""
+    if registration is not None and registration not in HOST_KINDS:
+        raise HostsError(
+            f"registration must be one of {list(HOST_KINDS)}, got {registration!r}"
+        )
+
+
+def host_mode(
+    home: Path | str, path: Path | str, *, registration: str | None = None
+) -> str:
     """U-hostmode §4.1: THE ONE resolver for a registered host's posture.
     Returns ``"git"`` for a registered git-mode host, an UNREGISTERED
     path (the pre-existing, safe default), or a path that fails to
     resolve; returns ``"plain"`` only for a path this registry names as
     plain (project entry or ``skills_root``, exact resolved-path match).
 
+    ``registration`` (S-82, 2026-10-08): the registration the write goes
+    through -- ``"skills-root"`` or ``"project"`` (:data:`HOST_KINDS`).
+    One repository may be registered twice, as the skills root and as a
+    project host, each in its own mode (claude-skills: the root ``git``,
+    the project ``plain``), so a path alone does not name a mode. Named,
+    the answer is that registration's own mode; a path with no entry of
+    that kind falls back to the path-only answer below, so the keyword
+    changes the result only for a path registered both ways. Every
+    caller in ``src`` names one (pinned by
+    ``tests/test_double_registration.py``); ``None`` keeps the path-only
+    answer, which checks the skills root first.
+
     No other site may decide a posture (MODE9) — a caller with a
     :class:`~self_learn.verbs.TargetSpec` reads ``spec.mode`` (computed
     HERE, once, at resolve time), never re-derives one from ``.git``
     presence."""
+    _check_registration(registration)
     hosts = load_hosts(home)
     try:
         target = Path(path).expanduser().resolve()
     except OSError:
         return "git"
+    root_mode: str | None = None
     if hosts.skills_root is not None:
         try:
             if Path(hosts.skills_root).expanduser().resolve() == target:
-                return hosts.skills_root_mode
+                root_mode = hosts.skills_root_mode
         except OSError:
             pass
+    project_mode: str | None = None
     for p in hosts.projects:
         try:
             resolved = Path(p).expanduser().resolve()
         except OSError:
             continue
         if resolved == target:
-            return hosts.project_modes.get(str(resolved), "git")
+            project_mode = hosts.project_modes.get(str(resolved), "git")
+            break
+    if registration == "project" and project_mode is not None:
+        return project_mode
+    if root_mode is not None:
+        return root_mode
+    if project_mode is not None:
+        return project_mode
     return "git"
 
 
@@ -554,7 +586,7 @@ def host_path_problem(
             "<new-path>` (or `self-learn host remove` it)"
         )
     target = target.resolve()
-    resolved_mode = mode if mode is not None else host_mode(home, target)
+    resolved_mode = mode if mode is not None else host_mode(home, target, registration=kind)
     if resolved_mode == "plain":
         if check_marker and not (target / MARKER_FILENAME).is_file():
             return (
@@ -702,7 +734,7 @@ def host_add(
             existing_mode = hosts.skills_root_mode
     else:
         if is_project_host(hosts, target):
-            existing_mode = host_mode(home, target)
+            existing_mode = host_mode(home, target, registration="project")
 
     if existing_mode is not None and existing_mode != mode:
         raise HostsError(
@@ -863,7 +895,9 @@ def host_rebind(home: Path | str, ref: str, new_path: Path | str) -> Path:
             f"no project bucket for {ref!r} — name its slug (see "
             "`self-learn status`) or its old absolute path"
         )
-    old_mode = host_mode(home, old_path) if old_path is not None else "git"
+    old_mode = (
+        host_mode(home, old_path, registration="project") if old_path is not None else "git"
+    )
     # U-hostmode M-12 (code gate r1 fold): `new_path` is unregistered by
     # definition (rebind is what registers it), so without `mode=`,
     # `validate_host_path`'s default registry lookup would read
@@ -945,19 +979,23 @@ def host_rebind(home: Path | str, ref: str, new_path: Path | str) -> Path:
         skills_root = hosts.skills_root
         skills_root_mode = hosts.skills_root_mode
         new_modes = dict(hosts.project_modes)
-        if (
-            old_path is not None
-            and str(old_path.resolve()) in new_modes
-            and (skills_root is None or Path(skills_root).resolve() != old_path.resolve())
-        ):
-            del new_modes[str(old_path.resolve())]
-        if (
+        # S-82: one repo may be the skills root AND a project host, each
+        # in its own mode. The root moves with its path and keeps its own
+        # mode; the project entry keeps ITS mode (`old_mode`, read from
+        # the project registration above). Before, a repo registered both
+        # ways lost the project's mode on a rebind: the project came out
+        # `git` while the root kept its own.
+        old_was_project = old_path is not None and is_project_host(hosts, old_path)
+        root_moves = (
             skills_root is not None
             and old_path is not None
             and Path(skills_root).resolve() == old_path.resolve()
-        ):
+        )
+        if old_path is not None:
+            new_modes.pop(str(old_path.resolve()), None)
+        if root_moves:
             skills_root = target
-        elif old_mode != "git":
+        if old_mode != "git" and (old_was_project or not root_moves):
             new_modes[str(target.resolve())] = old_mode
         touched.append(
             save_hosts(
