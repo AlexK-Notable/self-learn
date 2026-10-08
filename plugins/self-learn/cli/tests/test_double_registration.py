@@ -665,3 +665,45 @@ def test_a_rebind_keeps_each_registration_s_own_mode(tmp_path):
     assert after.skills_root_mode == "git"
     assert [Path(p).resolve() for p in after.projects] == [moved.resolve()]
     assert after.project_modes == {str(moved.resolve()): "plain"}
+
+
+# ------------------------------------------------- --selftest's hosts row
+
+
+def test_the_selftest_hosts_row_shows_a_repo_registered_twice_with_each_mode(
+    tmp_path, monkeypatch, capsys
+):
+    """Red on master (no such row)."""
+    env = _double(tmp_path)
+    home, repo = env.ledger, env.host
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+    capsys.readouterr()
+
+    cli.main(["--selftest"])
+
+    out = capsys.readouterr().out
+    assert (
+        f"selftest: PASS hosts — 2 registration(s); {repo.resolve()} is registered "
+        "twice: skills-root=git, project=plain\n"
+    ) in out
+
+    (home / "hosts.yaml").write_text(_registry(repo, root="git", project=None), encoding="utf-8")
+    assert selfcheck._check_hosts(home) == (
+        selfcheck.Verdict.PASS, "1 registration(s); no repo is registered twice"
+    )
+    (home / "hosts.yaml").unlink()
+    assert selfcheck._check_hosts(home)[0] is selfcheck.Verdict.UNMEASURED
+    (home / "hosts.yaml").write_text("projects: 7\n", encoding="utf-8")
+    verdict, msg = selfcheck._check_hosts(home)
+    assert verdict is selfcheck.Verdict.FAIL and "hosts.yaml unreadable" in msg
+
+
+def test_the_selftest_hosts_row_fails_on_a_lesson_left_on_the_refused_destination(tmp_path):
+    """Red on master (no such row)."""
+    env, rid = _lesson_left_on_the_root_claude_md(tmp_path)
+
+    verdict, msg = selfcheck._check_hosts(env.ledger)
+
+    assert verdict is selfcheck.Verdict.FAIL
+    assert "skills-root=git, project=plain" in msg
+    assert rid in msg and "reroute" in msg

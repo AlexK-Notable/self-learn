@@ -109,7 +109,8 @@ def test_selftest_exits_9_on_healthy_sandbox_no_real_claude_dir(env, capsys):
         assert f"PASS {check}" in out
     assert "worker" not in out
     assert "UNMEASURED surface" in out
-    assert "8 passed, 1 unmeasured, 0 failed" in out
+    # S-82 (GM, 2026-10-08): the `hosts` row joined the selftest, one more PASS.
+    assert "9 passed, 1 unmeasured, 0 failed" in out
 
 
 def test_selftest_green_on_empty_home(env, capsys):
@@ -742,7 +743,8 @@ def test_selftest_reports_nine_checks_criterion_12(env, capsys):
     # the summary line has one fewer UNMEASURED than before (1, not 2).
     assert rc == 9
     assert "PASS reach" in out
-    assert "8 passed, 1 unmeasured, 0 failed" in out
+    # S-82 (GM, 2026-10-08): the `hosts` row joined the selftest, one more PASS.
+    assert "9 passed, 1 unmeasured, 0 failed" in out
 
 
 # --------------------------------------------------- FW-66: decode safety
@@ -830,7 +832,8 @@ def test_selftest_survives_corrupt_resolved_record_prints_all_nine_rows(env, cap
     # to skill-md/claude-md here means every real check PASSes (the
     # corrupt resolved record is skipped, not counted) -- exit 0.
     assert rc == 0
-    assert "9 passed, 0 unmeasured, 0 failed" in out
+    # S-82 (GM, 2026-10-08): the `hosts` row joined the selftest, one more PASS.
+    assert "10 passed, 0 unmeasured, 0 failed" in out
     for check in (
         "capture", "compiler", "markers", "drift", "reach", "hooks", "surface", "sentinel",
     ):
