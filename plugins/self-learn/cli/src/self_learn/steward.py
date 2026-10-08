@@ -3171,6 +3171,16 @@ def _deciding(refusals: list[_Refusal]) -> _Refusal:
     return min(refusals, key=lambda refusal: _EFFECTIVE_PRECEDENCE.index(refusal.effective))
 
 
+def _selected_again(home: Path, record_id: str) -> bool:
+    """True when the next run will select *record_id* as an ordinary lesson
+    input: it is queued (pending, not deferred) at a version no committed
+    run has decided. Asked of :func:`_eligible_lessons`, the function that
+    selects, so the answer cannot drift from the selection. It reads every
+    queued lesson's committed version, which is why only a refused
+    `observation:` input asks it (2026-10-07, gate S1 D1)."""
+    return any(entry.record.id == record_id for entry, _row in _eligible_lessons(home))
+
+
 def _returned_before(home: Path, record_id: str, version: str, case_id: str) -> bool:
     """S-71 §4.2: one return per input version. A committed `returned`
     disposition for the same record and version, written by a DIFFERENT
@@ -3276,9 +3286,15 @@ def _case_dispositions(
         if action == "return" and (
             not isinstance(version, str)
             # A reconsider input (`observation:<id>`) is never selected
-            # again: its observation is consumed with this run. Sent
-            # back, it would be decided by no one.
-            or version.startswith("observation:")
+            # again under its observation, which this run consumed. It is
+            # sent back only when the next run selects the LESSON again --
+            # still pending, at a version no committed run has decided, it
+            # comes back as an ordinary lesson input at its record's
+            # version (:func:`_selected_again`). Otherwise, sent back, it
+            # would be decided by no one, and it is parked now instead.
+            # (2026-10-07, gate S1 D1: parking a lesson that comes back
+            # anyway gave it two deciders, the overseer and the steward.)
+            or (version.startswith("observation:") and not _selected_again(home, rid))
             or _returned_before(home, rid, version, case_id)
         ):
             action = "park"
@@ -3439,16 +3455,22 @@ def _apply_packet(
                 #
                 # 2026-10-07 (run-9858d321b158): its lessons were written
                 # a bare `refused` row -- no kind, no case -- which no S-71
-                # rule reads, and which `_terminal_versions` counts as a
-                # decision, so a lesson input refused this way was never
-                # selected again at its version. The refusal now carries
-                # its kind, from the exception's type as every refusal's
-                # is (`batch.refusal_kind`: the verb's status check is
-                # `status`; a raise site no type names is `unclassified`),
-                # and the case is handled below exactly as one the
-                # preview holds back: its sheet receipted refused, nothing
-                # of it dispatched, every lesson taking the case's action
-                # (S-71 §4.2: sent back, parked now, or retried).
+                # rule reads. In that run they were reconsider inputs, so
+                # the row decided only their observation, and both
+                # lessons, still pending, came back the next night as
+                # ordinary lesson inputs; a LESSON input refused this way
+                # was stranded for good, since `_terminal_versions` counts
+                # `refused` as a decision of the record's version. The
+                # refusal now carries its kind, from the exception's type
+                # as every refusal's is (`batch.refusal_kind`: the verb's
+                # status check is `status`; a raise site no type names is
+                # `unclassified`), and the case is handled below exactly
+                # as one the preview holds back: its sheet receipted
+                # refused, nothing of it dispatched, every lesson taking
+                # the case's action (S-71 §4.2: sent back, parked now, or
+                # retried). A pending lesson the steward's own `status`
+                # line refused is sent back whatever its input kind
+                # (`_case_dispositions`): the next run selects it again.
                 error = refusal_text(exc)
                 reconsider_refusal = (batch.refusal_kind(exc, rc=1, state="refused"), error)
                 _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "refused",

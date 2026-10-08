@@ -275,20 +275,28 @@ def test_the_brief_and_the_method_say_a_pending_lesson_takes_a_resolution_case()
 
 
 @pytest.mark.parametrize(
-    "observed, state",
-    [(False, "returned"), (True, "abandoned")],
-    ids=["lesson-inputs-sent-back", "reconsider-inputs-parked-now"],
+    "observed", [False, True], ids=["lesson-inputs-sent-back", "reconsider-inputs-sent-back"],
 )
 def test_a_reconsider_refusal_left_after_the_repair_carries_its_kind(
-    tmp_path, monkeypatch, observed, state
+    tmp_path, monkeypatch, observed
 ):
     """The model insists: its repair writes the same ``kind: reconsider``
     case. Apply time still refuses it -- and the refusal is no longer a bare
     ``refused`` row. It carries kind ``status`` (resolved to the steward's
     own line: the lessons did not move since selection) and the case, so
-    S-71 §4.2 applies: a lesson input is sent back to the next run, which
-    selects it again; a reconsider input, which is never selected again
-    under its observation, is parked now for the overseer."""
+    S-71 §4.2 applies: each lesson is sent back to the next run, which
+    selects it again as an ordinary lesson input at its record's version.
+
+    That holds for a RECONSIDER input too (gate S1 D1). Its observation is
+    consumed with this run, but the lesson is still pending at a version no
+    run has decided, so the next run selects it anyway; parking it now, as
+    the first version of this fix did, gave it two deciders -- the overseer,
+    through the parked case, and the steward, the next night.
+
+    The case itself was recorded, so its sheet is receipted refused on it
+    (one line per item) and its phase is ``complete``: a case phase
+    ``refused`` means the case writer refused it and it is not in the
+    ledger at all (gate S1 R4: M8, M9)."""
     pair = MovedPair(tmp_path, observed=observed, prefix="lrn-c2d0")
     sent = _notifications(monkeypatch)
     prompts: list[str] = []
@@ -297,29 +305,38 @@ def test_a_reconsider_refusal_left_after_the_repair_carries_its_kind(
 
     result = steward.run(pair.home)
 
-    rows = _packet(pair.home, result.run_id)["dispositions"]
-    case_id = next(iter(_packet(pair.home, result.run_id)["case_ids"]))
+    packet = _packet(pair.home, result.run_id)
+    inputs = {row["record"]: row for row in packet["inputs"]}
+    # positive control: the inputs are the shape this case is about
+    assert {row["kind"] for row in inputs.values()} == {"reconsider" if observed else "lesson"}
+    rows = packet["dispositions"]
+    (case_id,) = packet["case_ids"]
     for rid in pair.ids:
         row = rows[rid]
         # positive control: the reconsider case reached apply and was refused
         assert "reconsider needs status" in str(row.get("reason")), row
-        assert row["state"] == state, row
+        assert row["state"] == "returned", row
         assert row["kind"] == "status", row
         assert row["case"] == case_id, row
+        assert row["input_version"] == inputs[rid]["version"], row
         assert _status(pair.home, rid) == "pending"
     assert result.decided == []
     assert len(prompts) == 2, "the repair turn was offered (and the model kept its case)"
-    selected_again = {entry.record.id for entry, _row in steward._eligible_lessons(pair.home)}
-    if observed:
-        for rid in pair.ids:
-            assert rows[rid]["successor_case"], rows[rid]
-            (parked,) = cases.list_cases(pair.home, record_id=rid, parked_for="overseer",
-                                         parked_reason="ledger-refused")
-            assert parked["case"] == rows[rid]["successor_case"]
-        assert sent, "the user is told about a park-now"
-    else:
-        assert set(pair.ids) <= selected_again, "a lesson sent back is decided again"
-        assert not cases.list_cases(pair.home, record_id=pair.ids[0], parked_for="overseer")
+    selected_again = {entry.record.id: row["version"]
+                      for entry, row in steward._eligible_lessons(pair.home)}
+    assert set(pair.ids) <= set(selected_again), "a lesson sent back is decided again"
+    for rid in pair.ids:
+        assert not selected_again[rid].startswith("observation:")  # the record's own version
+        assert not cases.list_cases(pair.home, record_id=rid, parked_for="overseer"), (
+            "a lesson the next run decides is not also parked for the overseer"
+        )
+    assert sent == []
+    # The case is in the ledger: its sheet is receipted on it, every line
+    # refused, and its recipe is `complete` -- not `refused`, which is the
+    # phase of a case the case writer refused (never recorded).
+    application = cases.show(pair.home, case_id, evidence_only=False).sections["Application"]
+    assert application.count("refused (exit 1)") == len(pair.ids), application
+    assert _head_manifest(pair.home, result.run_id)["cases"][case_id]["phase"] == "complete"
 
 
 def test_a_reconsider_refusal_of_another_shape_carries_its_kind_too(tmp_path, monkeypatch):
@@ -354,6 +371,8 @@ def test_a_reconsider_refusal_of_another_shape_carries_its_kind_too(tmp_path, mo
 
     monkeypatch.setattr(steward.invocation, "write_session", write)
 
+    sent = _notifications(monkeypatch)
+
     result = steward.run(home)
 
     row = _packet(home, result.run_id)["dispositions"][rid]
@@ -362,6 +381,178 @@ def test_a_reconsider_refusal_of_another_shape_carries_its_kind_too(tmp_path, mo
     assert row["state"] == "abandoned" and row["successor_case"], row
     assert row["case"] in _packet(home, result.run_id)["case_ids"]
     assert _status(home, rid) == "rejected"
+    assert [ids for _cue, _summary, ids in sent] == [[rid]], "the user is told about a park-now"
+
+
+# --------------------- 1.5 sent back, not parked, while the lesson is pending
+
+
+def _stubborn_session(pair: MovedPair, supersedes: str, prompts: list[str]):
+    """A model that writes ``kind: reconsider`` for the pair every night,
+    in its repair turn too, superseding the one case still open for the
+    pair -- the gate S1 probe's shape (`test_probe_return_alternative`)."""
+    def write(spec):
+        prompts.append(spec.prompt)
+        stage = _stage_dir(spec)
+        case = _decide_pair(pair, kind="reconsider")
+        case["supersedes"] = supersedes
+        _dump_yaml(stage / "cases" / "moved-pair.yaml", case)
+        _dump_yaml(stage / "sheets" / "moved-pair.yaml", {
+            "version": 1, "case": "$CASE_ID",
+            "items": [{"id": rid, "verb": "reject"} for rid in pair.ids],
+        })
+        return Outcome(ok=True, rc=0, stdout="", detail="", failure=None)
+
+    return write
+
+
+def _open_case(pair: MovedPair) -> str:
+    """The one case for the pair that is neither superseded nor parked."""
+    (row,) = [row for row in cases.list_cases(pair.home, record_id=pair.ids[0])
+              if not row.get("superseded_by") and row.get("kind") != "parked"]
+    return row["case"]
+
+
+def test_a_stubborn_reconsider_is_sent_back_twice_then_parked_and_never_has_two_deciders(
+    tmp_path, monkeypatch
+):
+    """Gate S1 D1, the four nights the gate measured. The model writes
+    ``kind: reconsider`` for two pending lessons every night, however the
+    repair turn advises it. The lessons are never parked while the next
+    run still selects them, and never selected while they are parked:
+
+    1. reconsider inputs (`observation:` versions): sent back -- the next
+       run selects each lesson again, at its record's version;
+    2. those lesson inputs: sent back again (one return per input version,
+       and this is a new one);
+    3. the same lesson inputs: the second return of that version parks them
+       now for the overseer (`_returned_before`), at the record's version,
+       which decides it;
+    4. nothing is selected: the run is idle and makes no model call.
+
+    Before the fix night 1 parked both lessons now, and night 2 selected
+    them again anyway."""
+    pair = MovedPair(tmp_path, observed=True, prefix="lrn-c7d0")
+    sent = _notifications(monkeypatch)
+    versions: dict[str, str] = {}
+
+    def night(expected_kind: str) -> tuple[dict, dict, list[str]]:
+        prompts: list[str] = []
+        monkeypatch.setattr(steward.invocation, "write_session",
+                            _stubborn_session(pair, _open_case(pair), prompts))
+        result = steward.run(pair.home)
+        packet = _packet(pair.home, result.run_id)
+        inputs = {row["record"]: row for row in packet["inputs"]}
+        assert set(inputs) == set(pair.ids)  # positive control: both were selected
+        assert {row["kind"] for row in inputs.values()} == {expected_kind}
+        assert len(prompts) == 2, "the repair turn was offered, and the model kept its case"
+        return inputs, packet["dispositions"], prompts
+
+    def deciders(rid: str) -> tuple[bool, bool]:
+        selected = rid in {entry.record.id for entry, _row in steward._eligible_lessons(pair.home)}
+        parked = any(not row.get("superseded_by") for row in cases.list_cases(
+            pair.home, record_id=rid, parked_for="overseer"))
+        return selected, parked
+
+    inputs, rows, _prompts = night("reconsider")
+    eligible = {entry.record.id: row["version"] for entry, row in steward._eligible_lessons(pair.home)}
+    for rid in pair.ids:
+        assert inputs[rid]["version"].startswith("observation:")
+        assert (rows[rid]["state"], rows[rid]["kind"]) == ("returned", "status"), rows[rid]
+        assert rows[rid]["input_version"] == inputs[rid]["version"]
+        versions[rid] = eligible[rid]
+        assert not versions[rid].startswith("observation:"), "selected again as a LESSON"
+        assert deciders(rid) == (True, False)
+
+    inputs, rows, _prompts = night("lesson")
+    for rid in pair.ids:
+        assert inputs[rid]["version"] == versions[rid]
+        assert (rows[rid]["state"], rows[rid]["kind"]) == ("returned", "status"), rows[rid]
+        assert deciders(rid) == (True, False)
+    assert sent == []
+
+    inputs, rows, _prompts = night("lesson")
+    for rid in pair.ids:
+        assert inputs[rid]["version"] == versions[rid]
+        row = rows[rid]
+        assert (row["state"], row["kind"], row["input_version"]) == (
+            "abandoned", "status", versions[rid]), row
+        (parked,) = cases.list_cases(pair.home, record_id=rid, parked_for="overseer",
+                                     parked_reason="ledger-refused")
+        assert parked["case"] == row["successor_case"]
+        assert deciders(rid) == (False, True)
+    assert sorted(id_ for _cue, _summary, ids in sent for id_ in ids) == sorted(pair.ids)
+
+    prompts: list[str] = []
+    monkeypatch.setattr(steward.invocation, "write_session",
+                        _stubborn_session(pair, _open_case(pair), prompts))
+    assert steward.run(pair.home).status == "idle"
+    assert prompts == []
+    assert {_status(pair.home, rid) for rid in pair.ids} == {"pending"}
+
+
+def _secret_session(pair: MovedPair, prompts: list[str]):
+    """A decision whose case text the secret scan refuses, first pass and
+    repair alike: its lessons get a bare `refused` row at their version,
+    which decides that version (built at runtime, never a literal)."""
+    def write(spec):
+        prompts.append(spec.prompt)
+        stage = _stage_dir(spec)
+        case = _decide_pair(pair, kind="resolution")
+        case["decision"]["because"] = "token ghp_" + "Ab1" * 12
+        _dump_yaml(stage / "cases" / "moved-pair.yaml", case)
+        _dump_yaml(stage / "sheets" / "moved-pair.yaml", {
+            "version": 1, "case": "$CASE_ID",
+            "items": [{"id": rid, "verb": "reject"} for rid in pair.ids],
+        })
+        return Outcome(ok=True, rc=0, stdout="", detail="", failure=None)
+
+    return write
+
+
+def test_a_pending_reconsider_input_is_sent_back_only_when_the_next_run_selects_it(
+    tmp_path, monkeypatch
+):
+    """The rule behind D1 is "decided by no one", read from the selection
+    itself (`steward._selected_again`). A pending reconsider input whose
+    lesson the next run will select is sent back. One whose record version
+    a committed run already decided -- here a bare secret-scan `refused`
+    row, which strands a lesson for good -- is not selected again, so it is
+    still parked now for the overseer: sent back, nobody would decide it."""
+    decided = MovedPair(tmp_path / "decided", observed=False, prefix="lrn-c8d0")
+    sent = _notifications(monkeypatch)
+    prompts: list[str] = []
+    monkeypatch.setattr(steward.invocation, "write_session", _secret_session(decided, prompts))
+    first = steward.run(decided.home)
+    rows = _packet(decided.home, first.run_id)["dispositions"]
+    assert {rows[rid]["state"] for rid in decided.ids} == {"refused"}  # control: decided
+    assert not {entry.record.id for entry, _row in steward._eligible_lessons(decided.home)} & set(
+        decided.ids)
+    cases.observe(decided.home, decided.moving_case, "statement",
+                  text="the user said more", ref=decided.statement, by="steward")
+    monkeypatch.setattr(steward.invocation, "write_session",
+                        _pair_session(decided, "reconsider", "reconsider", []))
+
+    result = steward.run(decided.home)
+
+    packet = _packet(decided.home, result.run_id)
+    assert {(row["kind"], row["record_status"]) for row in packet["inputs"]} == {
+        ("reconsider", "pending")}
+    for rid in decided.ids:
+        row = packet["dispositions"][rid]
+        assert (row["state"], row["kind"]) == ("abandoned", "status"), row
+        (parked,) = cases.list_cases(decided.home, record_id=rid, parked_for="overseer",
+                                     parked_reason="ledger-refused")
+        assert parked["case"] == row["successor_case"]
+    assert sent, "the user is told about a park-now"
+
+    fresh = MovedPair(tmp_path / "fresh", observed=True, prefix="lrn-c8e0")
+    monkeypatch.setattr(steward.invocation, "write_session",
+                        _pair_session(fresh, "reconsider", "reconsider", []))
+    result = steward.run(fresh.home)
+    rows = _packet(fresh.home, result.run_id)["dispositions"]
+    assert {(rows[rid]["state"], rows[rid]["kind"]) for rid in fresh.ids} == {("returned", "status")}
+    assert not cases.list_cases(fresh.home, record_id=fresh.ids[0], parked_for="overseer")
 
 
 # ------------------------------------- 2. a reopen pair hides no bad line
