@@ -1409,12 +1409,14 @@ def test_a_shelf_tracked_after_the_pre_flight_is_never_deleted(tmp_path, monkeyp
         return real_resolve(*args, **kwargs)
 
     monkeypatch.setattr(verbs, "resolve_record", track_then_resolve)
-    failed = _failure(verbs.graduate(home, RID, no_push=True))
+    result = verbs.graduate(home, RID, no_push=True)
 
-    assert "LEARNINGS.md is tracked by git" in failed  # control: the cause
-    assert shelf.read_bytes() == shelf_bytes
+    assert _record(home, RID).status == "superseded"  # control: the ledger commit stands
+    assert shelf.is_file() and shelf.read_bytes() == shelf_bytes
     assert git(host, "ls-files", "references").stdout.strip() == "references/LEARNINGS.md"
-    assert _status(host) == "", _status(host)
+    assert _status(host) == "", _status(host)  # no deletion for git to show
+    failed = _failure(result)
+    assert "LEARNINGS.md is tracked by git" in failed  # the cause, named
     assert "Nothing later is blocked" in _own_words(failed)
     _never_deletes_a_shelf(failed, shelf)
     regions = [(shelf, "reference"), (host / "CLAUDE.md", "pointer")]
