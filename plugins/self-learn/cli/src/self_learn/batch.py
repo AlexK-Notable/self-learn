@@ -779,6 +779,7 @@ def _hook_activation_registered(record: Record) -> bool | None:
 def classify(
     home: Path, item: SheetItem, *, actor: str = "human",
     hook_activation: bool = False,
+    record_override: Record | None = None,
 ) -> bool:
     """True iff *item* is ALREADY-APPLIED (§3.3b) — a STATE READ, never
     a parse of a refusal message. An unresolvable record id is never
@@ -790,12 +791,18 @@ def classify(
     ``route`` item resolving to the ``hook`` destination under
     ``actor == "overseer"`` -- every other verb, and every OTHER actor
     (including the default), is byte-unchanged by these two parameters;
-    see the ``route`` branch below for what they change."""
+    see the ``route`` branch below for what they change.
+
+    ``record_override`` (E0b, :func:`dry_run` only): the lesson as the
+    earlier lines of the same sheet would leave it, read in place of the
+    file -- so a second ``revise`` of the same text classifies
+    already-applied in the preview exactly as it does in the run.
+    :func:`run` never passes it."""
     try:
         path = find_record_path(home, item.id)
     except LedgerOpsError:
         return False
-    record = read_record_or_refuse(path)
+    record = read_record_or_refuse(path) if record_override is None else record_override
     verb = item.verb
     f = item.fields
 
@@ -971,13 +978,18 @@ def classify(
 
 
 def _classify_or_refuse(
-    home: Path, item: SheetItem, *, actor: str, hook_activation: bool
+    home: Path, item: SheetItem, *, actor: str, hook_activation: bool,
+    record_override: Record | None = None,
 ) -> tuple[bool, ItemResult | None]:
     """:func:`classify`, or -- when the item's record file does not read
     back (S-71 §8.2) -- ``(False, <that item's refused result>)``, so the
-    caller receipts it and moves on to the next item."""
+    caller receipts it and moves on to the next item. *record_override*
+    is :func:`dry_run`'s overlay for this item's lesson (E0b), or ``None``."""
     try:
-        applied = classify(home, item, actor=actor, hook_activation=hook_activation)
+        applied = classify(
+            home, item, actor=actor, hook_activation=hook_activation,
+            record_override=record_override,
+        )
     except UnreadableRecord as exc:
         # rc 64: the code `_dispatch` gives every LedgerOpsError refusal.
         return False, ItemResult(
@@ -1836,15 +1848,23 @@ def _preview_followup_done(
 
 
 def _preview_revise(
-    home: Path, item: SheetItem, by: str | None, rc: str | None
-) -> None:
-    verbs._preflight_revise(
+    home: Path, item: SheetItem, by: str | None, rc: str | None,
+    record_override: Record | None = None,
+) -> Record:
+    """The revise's own checks, from *record_override* (an earlier revise
+    of the same lesson in this preview) when there is one. Returns the
+    lesson as this revise would leave it: :func:`dry_run` previews the
+    later lines of the sheet against it (E0b)."""
+    _path, revised = verbs._preflight_revise(
         home, item.id, section=item.fields["section"], text=item.fields["text"],
-        because=item.fields["because"], by=by,
+        because=item.fields["because"], by=by, record_override=record_override,
     )
+    return revised
 
 
-_PreviewCheck = Callable[[Path, SheetItem, str | None, str | None], None]
+#: Each check raises the verb's refusal or returns; only `revise` returns
+#: something, the lesson as it would leave it (E0b).
+_PreviewCheck = Callable[[Path, SheetItem, str | None, str | None], Record | None]
 
 _PREVIEW_CHECKS: dict[str, _PreviewCheck] = {
     "reject": _preview_reject,
@@ -1879,9 +1899,16 @@ def _preview_checks(
     actor: str,
     sheet_case: str | None,
     reconsidered: frozenset[str] = frozenset(),
-) -> None:
+    record_override: Record | None = None,
+) -> Record | None:
     """Run the checks the verb would run for a non-`route` *item*, with
-    the same `by` and `reconsider_case` `_dispatch` would pass it."""
+    the same `by` and `reconsider_case` `_dispatch` would pass it.
+
+    *record_override* (E0b): the item's lesson as the earlier lines of the
+    sheet would leave it. Only `revise` reads a lesson's text, so only
+    `revise` is given it; the other verbs' checks read status and
+    frontmatter, which a revise never changes. Returns what the check
+    returns: for a `revise`, the lesson as it would leave it."""
     f = item.fields
     if item.verb == "revise":
         by = f.get("by") or (actor if actor != "human" else None)
@@ -1890,7 +1917,11 @@ def _preview_checks(
     reconsider_case = _reconsider_case_for(
         home, item.id, sheet_case, item.verb, reconsidered
     )
-    _PREVIEW_CHECKS[item.verb](home, item, by, reconsider_case)
+    if item.verb == "revise":
+        return _preview_revise(
+            home, item, by, reconsider_case, record_override=record_override
+        )
+    return _PREVIEW_CHECKS[item.verb](home, item, by, reconsider_case)
 
 
 def _reroute_dest(item: SheetItem) -> str:
@@ -2011,7 +2042,19 @@ def dry_run(
     apply time will run them with the real case: the reconsider widening
     applies, so a re-decision's route is previewed as the reroute it
     will be -- hook shape, replay, destination -- rather than stopping at
-    the routed-status refusal. Nothing is written."""
+    the routed-status refusal. Nothing is written.
+
+    E0b (S-79 as amended): each line is previewed against its lesson as
+    the EARLIER lines of the same sheet would leave it, when those lines
+    would apply. A ``revise`` that previews ``would-apply`` puts the
+    revised lesson in an in-memory overlay, keyed by record id; a later
+    line for the same lesson reads the overlay instead of the file -- its
+    already-applied check (:func:`classify`), a second revise's checks,
+    and every record read inside :func:`verbs.route_dry_run` (S-79's
+    loaded-text check among them). A revise the preview refuses, or one
+    that is already applied, changes nothing. The overlay lives for this
+    one call; :func:`run` reads the disk, where the earlier lines have
+    already landed, so both see the same lesson."""
     if actor not in verbs.ROUTING_BY_VALUES:
         raise BatchError(
             f"batch: actor={actor!r} must be one of "
@@ -2025,9 +2068,12 @@ def dry_run(
         sheet_sha=getattr(items, "sheet_sha", None),
         actor=actor,
     )
+    # E0b: record id -> the lesson as the earlier lines would leave it.
+    overlay: dict[str, Record] = {}
     for item in items:
         applied, unreadable = _classify_or_refuse(
-            home, item, actor=actor, hook_activation=hook_activation
+            home, item, actor=actor, hook_activation=hook_activation,
+            record_override=overlay.get(item.id),
         )
         if unreadable is not None:
             result.items.append(
@@ -2068,6 +2114,9 @@ def dry_run(
             if _reconsider_case_for(
                 home, item.id, sheet_case, item.verb, reconsidered
             ) is not None:
+                # E0b: no overlay can reach a reroute. This branch needs the
+                # lesson ROUTED on disk, and a revise previews would-apply
+                # only for a pending or deferred one (DRAFT_STATUSES).
                 result.items.append(_preview_reroute(home, item, actor, is_hook_dest))
                 continue
             if is_hook_dest:
@@ -2100,6 +2149,7 @@ def dry_run(
                     hook_input=item.fields.get("hook"),
                     rules_paths=item.fields.get("rules_paths"),
                     allow_empty_glob=bool(item.fields.get("allow_empty_glob", False)),
+                    record_override=overlay.get(item.id),
                 )
                 if dr.would_refuse:
                     result.items.append(
@@ -2127,6 +2177,7 @@ def dry_run(
                 hook_input=item.fields.get("hook"),
                 rules_paths=item.fields.get("rules_paths"),
                 allow_empty_glob=bool(item.fields.get("allow_empty_glob", False)),
+                record_override=overlay.get(item.id),
             )
             state = "would-refuse" if dr.would_refuse else "would-apply"
             result.items.append(
@@ -2138,9 +2189,9 @@ def dry_run(
             )
             continue
         try:
-            _preview_checks(
+            revised = _preview_checks(
                 home, item, actor=actor, sheet_case=sheet_case,
-                reconsidered=reconsidered,
+                reconsidered=reconsidered, record_override=overlay.get(item.id),
             )
         except _PREVIEW_REFUSALS as exc:
             result.items.append(
@@ -2149,6 +2200,8 @@ def dry_run(
                            kind=_preview_kind([exc]))
             )
             continue
+        if revised is not None:
+            overlay[item.id] = revised
         result.items.append(
             DryRunItem(n=item.n, id=item.id, verb=item.verb, state="would-apply")
         )
