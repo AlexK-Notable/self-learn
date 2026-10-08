@@ -4399,14 +4399,31 @@ def route_dry_run(
     hook_input: dict | None = None,
     rules_paths: list[str] | None = None,
     allow_unpathed: bool = False,
+    record_override: Record | None = None,
 ) -> RouteDryRunResult:
     """U-verbs §4.3: runs every preflight the real `route` runs, in the
     SAME order, and computes the bytes the compiler would write instead
     of writing them. Reuses U-hostmode's own `_expected_*_region`
     helpers verbatim (`DRY2`) — nothing here recomputes canon bytes a
     second way. Takes NO lock, holds NO sentinel, mutates nothing
-    (`DRY3`) — every record touched is a fresh in-memory copy."""
+    (`DRY3`) — every record touched is a fresh in-memory copy.
+
+    *record_override* (S-79 as amended, E0b): the lesson as the earlier
+    lines of the same sheet would leave it -- ``batch.dry_run``'s
+    in-memory copy after a ``revise`` that would apply. When given, it
+    stands in for the record read from disk in every check below that
+    reads the record (the loaded-text check, a hook's ``record_sha`` and
+    script, the supersede and rules-glob preflights, the target's scope)
+    and in the byte prediction, exactly as the real `route` reads the
+    revised file once the revise has run. The secret scan of the record
+    file and the status gate still read the disk: a revise changes no
+    status, and its own preview scanned its text. Never written; a copy
+    is taken, so the caller's record is never mutated."""
     home = Path(home)
+    if record_override is not None and record_override.id != record_id:
+        raise ValueError(
+            f"route_dry_run: record_override is {record_override.id}, not {record_id}"
+        )
     path = find_record_path(home, record_id)  # unknown id: bare LedgerOpsError, 64
 
     # DRY4: every failed preflight is REPORTED, not just the first — so
@@ -4436,6 +4453,8 @@ def route_dry_run(
         would_refuse.append(refusal_text(exc))
         errors.append(exc)
         record = Record.from_path(path)  # still needed below (scope)
+    if record_override is not None:
+        record = Record.from_text(record_override.to_text())
 
     # The predecessor preflight the real `route` runs — previewed through
     # the SAME helper, so a `teach --supersedes` record whose predecessor
@@ -4532,8 +4551,12 @@ def route_dry_run(
         )
 
     # The AS-IF-ROUTED record the byte prediction is computed from — a
-    # fresh in-memory copy; the file on disk is never touched.
-    simulated = Record.from_path(path)
+    # fresh in-memory copy; the file on disk is never touched. With an
+    # override, a copy of the lesson as the earlier lines leave it.
+    simulated = (
+        Record.from_path(path) if record_override is None
+        else Record.from_text(record_override.to_text())
+    )
     routed_at = _now_iso()
     resolved_by = by if by is not None else ("human" if dest is not None else "analyst")
     routing: dict = {
@@ -10343,10 +10366,21 @@ def _preflight_revise(
     text: str,
     because: str,
     by: str | None,
-) -> Path:
+    record_override: Record | None = None,
+) -> tuple[Path, Record]:
     """S-71 §6: `revise`'s checks before any lock (fields, scans, status, the
     splice, the simulated body) — moved here verbatim so the verb and
-    `batch.dry_run` run the SAME checks, in the same order."""
+    `batch.dry_run` run the SAME checks, in the same order.
+
+    Returns the record file's path and the simulated record: an in-memory
+    copy carrying the revised body, which ``batch.dry_run`` keeps so the
+    later lines of the same sheet are previewed against it (S-79 as
+    amended, E0b). *record_override* is that copy from an EARLIER revise of
+    the same lesson in the same preview; the splice and the "nothing to
+    revise" check then start from it instead of the file on disk. The
+    status gate and the secret scan of the record file still read the disk:
+    a revise changes no status, and the earlier revise's own preview
+    scanned its text. The verb passes none."""
     if not isinstance(section, str) or not section.strip():
         raise SheetLineUsageError("revise needs --section")
     if not isinstance(text, str) or not text.strip():
@@ -10363,7 +10397,7 @@ def _preflight_revise(
     # never a lying "not found" for an existing but wrongly-staged id.
     _scan_or_refuse([path], text)
     _scan_or_refuse([], because)  # P2-7: `because` rides the commit body
-    record = Record.from_path(path)
+    record = Record.from_path(path) if record_override is None else record_override
     try:
         require_status(home, record_id, records_mod.DRAFT_STATUSES, verb="revise")
     except LedgerOpsError as exc:
@@ -10387,7 +10421,7 @@ def _preflight_revise(
         raise SheetLineError(
             f"record {record_id} cannot revise {section!r}: {exc}"
         ) from exc
-    return path
+    return path, sim
 
 
 def revise(
@@ -10445,7 +10479,7 @@ def revise(
     saw the new wording, so re-stamping it fresh would misreport the
     proposal as re-validated against text it was not."""
     home = Path(home)
-    path = _preflight_revise(
+    path, _revised = _preflight_revise(
         home, record_id, section=section, text=text, because=because, by=by
     )
 
