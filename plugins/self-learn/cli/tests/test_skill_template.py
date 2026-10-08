@@ -1137,6 +1137,9 @@ def test_the_alias_bomb_draft_returns_a_problem_quickly(where: str, levels: int)
     result = run(files)
     elapsed = time.perf_counter() - started
     assert result.problem_rules == ("frontmatter-anchor-alias",)
+    # Measured idle (2026-10-08, this file's fold 2): at most 0.4 ms, since
+    # the anchor pass stops at the first anchor. The bound is over 2,000
+    # times that, so only a return of the blow-up can fail it.
     assert elapsed < 1.0, elapsed
 
 
@@ -1179,52 +1182,77 @@ def test_shown_falls_back_to_the_type_when_the_repr_itself_fails(monkeypatch):
     assert skill_scaffold._shown("x") == "<str>"
 
 
-def _hostile_drafts() -> dict[str, dict]:
+#: The rule a frontmatter over a cap is refused by, before any parse.
+_CAP_RULES = frozenset({"frontmatter-too-long", "frontmatter-flow-too-deep"})
+
+
+def _hostile_drafts() -> dict[str, tuple[dict, frozenset[str]]]:
+    """Each hostile draft and exactly the rules it is refused by (fold 2,
+    F4: the rule id is asserted, not the time). The frontmatter ones are
+    refused by a cap before any parse; the body ones by the unlinked
+    reference (the body that linked it was replaced)."""
     nested_name = "[" * 400 + "]" * 400
     many_absolute = json.dumps([f"/abs/{i}" for i in range(3000)])
     many_keys = "".join(f"k{i}: 1\n" for i in range(3000))
+    too_long = frozenset({"frontmatter-too-long"})
+    unlinked = frozenset({"reference-not-linked"})
     return {
-        "huge name": skill(front={"name": q("A" * 1_000_000)}),
-        "huge description": skill(front={"description": q("a" * 1_000_000)}),
-        "huge when_to_use": skill(front={"when_to_use": q("w" * 1_000_000)}),
-        "huge unquoted tag": skill(front={"description": q("<" + "a" * 200_000 + ">")}),
-        "deeply nested name": skill(front={"name": nested_name}),
-        "four thousand digit name": skill(front={"name": "9" * 4000}),
-        "five thousand digit name": skill(front={"name": "9" * 5000}),
-        "three thousand absolute paths": skill(front={"paths": many_absolute}),
-        "three thousand unknown keys": with_skill_md(
-            f"---\nname: {NAME}\ndescription: {q(DESCRIPTION)}\n{many_keys}---\n\n{BODY}"
+        "huge name": (skill(front={"name": q("A" * 1_000_000)}), too_long),
+        "huge description": (skill(front={"description": q("a" * 1_000_000)}), too_long),
+        "huge when_to_use": (skill(front={"when_to_use": q("w" * 1_000_000)}), too_long),
+        "huge unquoted tag": (
+            skill(front={"description": q("<" + "a" * 200_000 + ">")}),
+            too_long,
         ),
-        "huge file key": skill(files={"r" * 200_000: "x"}),
-        "huge unknown key": skill(front={"k" * 200_000: "1"}),
-        "unclosed links": skill(body="[a](<" * 12_000),
-        "unclosed brackets": skill(body="[" * 50_000),
-        "unclosed definitions": skill(body="[x]: <\n" * 20_000),
+        "deeply nested name": (
+            skill(front={"name": nested_name}),
+            frozenset({"frontmatter-flow-too-deep"}),
+        ),
+        "four thousand digit name": (skill(front={"name": "9" * 4000}), too_long),
+        "five thousand digit name": (skill(front={"name": "9" * 5000}), too_long),
+        "three thousand absolute paths": (skill(front={"paths": many_absolute}), too_long),
+        "three thousand unknown keys": (
+            with_skill_md(
+                f"---\nname: {NAME}\ndescription: {q(DESCRIPTION)}\n{many_keys}---\n\n{BODY}"
+            ),
+            too_long,
+        ),
+        "huge file key": (
+            skill(files={"r" * 200_000: "x"}),
+            frozenset({"file-outside-references", "file-not-markdown"}),
+        ),
+        "huge unknown key": (skill(front={"k" * 200_000: "1"}), too_long),
+        "unclosed links": (skill(body="[a](<" * 12_000), unlinked),
+        "unclosed brackets": (skill(body="[" * 50_000), unlinked),
+        "unclosed definitions": (skill(body="[x]: <\n" * 20_000), unlinked),
     }
 
 
 @pytest.mark.parametrize("label", list(_hostile_drafts()))
-def test_a_hostile_draft_is_a_bounded_problem_not_an_exception(label: str):
-    files = _hostile_drafts()[label]
-    started = time.perf_counter()
+def test_a_hostile_draft_is_a_bounded_problem_not_an_exception(label: str, monkeypatch):
+    files, expected = _hostile_drafts()[label]
+    if expected <= _CAP_RULES:
+        # Refused before any parse: the YAML stand-in is never made.
+        monkeypatch.setattr(skill_scaffold, "YAML", _NoYaml)
+        _NoYaml.made.clear()
     result = run(files)
-    elapsed = time.perf_counter() - started
     assert isinstance(result, SkillCheck)
-    assert set(result.problem_rules) <= _ALL_RULE_IDS
+    assert set(result.problem_rules) == expected, [str(p) for p in result.problems]
+    if expected <= _CAP_RULES:
+        assert _NoYaml.made == []
     # Every sentence is short, however large the offending value was.
     assert all(len(p.message) < 800 for p in result.problems + result.notes)
-    assert elapsed < 3.0, elapsed
 
 
 @pytest.mark.parametrize(
-    "body",
+    ("body", "bound"),
     [
-        "[a](<" * 15_000,
-        "[x]: <\n" * 20_000,
-        "[" * 150_000,
-        "[a][" * 30_000,
+        ("[a](<" * 15_000, 5.0),
+        ("[x]: <\n" * 20_000, 1.0),
+        ("[" * 150_000, 1.0),
+        ("[a][" * 30_000, 1.0),
         # With a definition present the reference-style patterns run too.
-        "[d]: references/format.md\n" + "[" * 150_000,
+        ("[d]: references/format.md\n" + "[" * 150_000, 12.0),
     ],
     ids=[
         "unclosed-angle-links",
@@ -1234,19 +1262,25 @@ def test_a_hostile_draft_is_a_bounded_problem_not_an_exception(label: str):
         "unclosed-brackets-after-a-definition",
     ],
 )
-def test_the_link_patterns_do_not_rescan_the_file_from_every_bracket(body: str):
+def test_the_link_patterns_do_not_rescan_the_file_from_every_bracket(body: str, bound: float):
     # An unbounded run (`<([^>]*)>`) rescans the rest of the text from every
     # `[a](<`: 7 s on 50 KB before the fold; bounded, a fraction of a second.
+    # The body is not frontmatter, so no cap applies and no rule id can
+    # stand in for the time. Measured idle (2026-10-08, fold 2, best of 7):
+    # angle links 0.43 s, definitions 0.008 s, brackets 0.084 s, refs
+    # 0.001 s, brackets after a definition 1.08 s. Each bound is at least
+    # 10 times its case's idle time, and never under 1 s; an unbounded run
+    # over these sizes takes far longer (quadratic in the length).
     started = time.perf_counter()
     assert skill_scaffold._linked_targets(body) == set()
-    assert time.perf_counter() - started < 2.0
+    assert time.perf_counter() - started < bound
 
 
 def test_the_hostile_drafts_are_not_all_clean():
-    # Positive control for the bound above: most of these do draw a problem,
-    # so a sentence-length assertion is looking at real sentences.
-    refused = sum(not run(f).ok for f in _hostile_drafts().values())
-    assert refused >= 10
+    # Positive control for the bounded-sentence check above: these do draw
+    # problems, so it is looking at real sentences.
+    refused = sum(not run(files).ok for files, _ in _hostile_drafts().values())
+    assert refused == len(_hostile_drafts())
 
 
 def test_non_text_files_become_problems_and_are_left_out_of_other_checks():
