@@ -394,11 +394,13 @@ def test_a_skill_and_another_skills_shelf_with_the_same_readable_name_stay_apart
     # Skill "s-reference-gotchas" (its SKILL.md) and skill s's "gotchas"
     # shelf read the same in a key ("skill-s-reference-gotchas"), but they
     # are two files, so they are two surfaces with two keys.
+    on_shelf = world.lesson(2, scope="skill:s", destination="reference", reference_file="gotchas.md")
+    alone = world.placed()
+    (shelf_key_alone,) = alone.surfaces  # positive control: the shelf is listed
     odd_dir = world.host / "plugins" / "odd-plugin" / "skills" / "s-reference-gotchas"
     odd_dir.mkdir(parents=True)
     (odd_dir / "SKILL.md").write_text("# odd\n", encoding="utf-8")
     on_skill = world.lesson(1, scope="skill:s-reference-gotchas", destination="skill-md")
-    on_shelf = world.lesson(2, scope="skill:s", destination="reference", reference_file="gotchas.md")
 
     placed = world.placed()
 
@@ -411,6 +413,10 @@ def test_a_skill_and_another_skills_shelf_with_the_same_readable_name_stay_apart
     assert len(set(keys)) == 2
     # Both keys carry the same readable part; the file's digest tells them apart.
     assert all(key.startswith("skill-s-reference-gotchas-") for key in keys)
+    # The shelf keeps the key it had alone: a key depends on its file only,
+    # never on which other surfaces happen to exist.
+    shelf_key = next(k for k, v in placed.surfaces.items() if [x.id for x in v.lessons] == [on_shelf])
+    assert shelf_key == shelf_key_alone
 
 
 def test_rendered_surface_shows_the_line_verbatim_and_its_numbers(world: World) -> None:
