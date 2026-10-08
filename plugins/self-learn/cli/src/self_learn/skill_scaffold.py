@@ -51,6 +51,7 @@ __all__ = [
     "SKILL_FRONTMATTER_MAX_FLOW_DEPTH",
     "SKILL_FRONTMATTER_REFUSED_CLOSER",
     "SKILL_FRONTMATTER_REFUSED_KEYS",
+    "SKILL_LISTING_JOINER",
     "SKILL_LISTING_MAX_CHARS",
     "SKILL_NAME_MAX_CHARS",
     "SKILL_NAME_RESERVED_WORDS",
@@ -212,9 +213,16 @@ SKILL_BODY_SOFT_MAX_LINES = 500
 #: shows, and Claude Code truncates that combined text at 1,536 characters
 #: (D-AUTHOR §3.1, line 556: "the combined `description` and `when_to_use`
 #: text is truncated at 1,536 characters in the skill listing to reduce
-#: context usage"). The check counts the plain sum of the two lengths; the
-#: quoted sentence does not say how Claude Code joins them.
+#: context usage"). How it joins and counts them is in Claude Code 2.1.293's
+#: bundled code, read from the binary by the 2026-10-08 gate:
+#: ``whenToUse ? `${description} - ${whenToUse}` : description``, cut when
+#: its ``length`` exceeds 1,536 (the ``skillListingMaxDescChars`` setting).
+#: JavaScript's ``length`` counts UTF-16 code units, so a character outside
+#: the Basic Multilingual Plane (most emoji) counts 2. The check builds
+#: that same text and counts it the same way; an empty when_to_use adds no
+#: joiner, as in JavaScript.
 SKILL_LISTING_MAX_CHARS = 1536
+SKILL_LISTING_JOINER = " - "
 
 #: ``name``, ``description`` and ``when_to_use`` may not contain an XML tag
 #: (Anthropic: "Cannot contain XML tags"; ``when_to_use`` is listed beside
@@ -923,8 +931,8 @@ def _check_description(raw: object) -> list[SkillFinding]:
 
 
 def _check_when_to_use(mapping: dict[Any, Any]) -> list[SkillFinding]:
-    """``when_to_use``, when present: text, no XML tag, and together with
-    ``description`` within the skill listing's limit."""
+    """``when_to_use``, when present: text and no XML tag. (Its share of
+    the skill listing is :func:`_check_listing`'s.)"""
     if "when_to_use" not in mapping:
         return []
     raw = mapping["when_to_use"]
@@ -944,20 +952,45 @@ def _check_when_to_use(mapping: dict[Any, Any]) -> list[SkillFinding]:
                 f"when_to_use contains an XML tag, {_shown(found.group(0))}",
             )
         )
-    description = mapping.get("description")
-    if isinstance(description, str):
-        total = len(description) + len(raw)
-        if total > SKILL_LISTING_MAX_CHARS:
-            out.append(
-                SkillFinding(
-                    RULE_LISTING_TOO_LONG,
-                    f"description ({len(description)} characters) and "
-                    f"when_to_use ({len(raw)}) total {total}; the skill "
-                    f"listing keeps only {SKILL_LISTING_MAX_CHARS} of them "
-                    "together",
-                )
-            )
     return out
+
+
+def _utf16_length(text: str) -> int:
+    """``text.length`` in JavaScript: UTF-16 code units. ``surrogatepass``
+    counts a lone surrogate (a YAML ``"\\ud800"`` escape) as the one unit
+    JavaScript counts, instead of raising."""
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def _check_listing(mapping: dict[Any, Any]) -> list[SkillFinding]:
+    """The skill listing's text, built and measured as Claude Code builds and
+    measures it (:data:`SKILL_LISTING_MAX_CHARS`), with or without a
+    when_to_use. A description or when_to_use that is not text is refused by
+    its own rule; this one then measures what is text."""
+    description = mapping.get("description")
+    if not isinstance(description, str):
+        return []
+    when_to_use = mapping.get("when_to_use")
+    joined = isinstance(when_to_use, str) and bool(when_to_use)
+    listing = (
+        f"{description}{SKILL_LISTING_JOINER}{when_to_use}" if joined else description
+    )
+    units = _utf16_length(listing)
+    if units <= SKILL_LISTING_MAX_CHARS:
+        return []
+    parts = (
+        f"the description, then {SKILL_LISTING_JOINER!r}, then the when_to_use"
+        if joined
+        else "the description"
+    )
+    return [
+        SkillFinding(
+            RULE_LISTING_TOO_LONG,
+            f"the skill listing text ({parts}) is {units} characters as "
+            "Claude Code counts them (UTF-16 units, where most emoji count "
+            f"2); Claude Code cuts it after {SKILL_LISTING_MAX_CHARS}",
+        )
+    ]
 
 
 def _check_keys(mapping: dict[Any, Any]) -> list[SkillFinding]:
@@ -1317,6 +1350,7 @@ def check_skill(
             )
             problems += _check_description(mapping.get("description", _ABSENT))
             problems += _check_when_to_use(mapping)
+            problems += _check_listing(mapping)
             problems += _check_keys(mapping)
             problems += _check_metadata(mapping)
             problems += _check_paths(mapping)

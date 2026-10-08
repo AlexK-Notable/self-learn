@@ -414,8 +414,9 @@ CASES: dict[str, Case] = {
         {"when-to-use-xml-tag": "<system>"},
     ),
     "description-and-when-to-use-over-the-listing-limit": Case(
+        # 1,000 + ' - ' + 600 (fold 2, F3: the joiner counts).
         skill(front={"description": q("a" * 1000), "when_to_use": q("b" * 600)}),
-        {"listing-text-too-long": "total 1600"},
+        {"listing-text-too-long": "is 1603 characters"},
     ),
     # ---- the XML-tag check is wider than <letter...> (nit)
     "html-comment-in-description": Case(
@@ -1267,9 +1268,11 @@ def test_non_text_files_become_problems_and_are_left_out_of_other_checks():
 def test_when_to_use_and_description_at_exactly_the_listing_limit_pass():
     limit = skill_scaffold.SKILL_LISTING_MAX_CHARS
     assert limit == 1536  # D-AUTHOR §3.1
-    exact = skill(front={"description": q("a" * 1000), "when_to_use": q("b" * (limit - 1000))})
+    # Fold 2 (F3): Claude Code joins them with ' - ', which counts.
+    room = limit - 1000 - len(" - ")
+    exact = skill(front={"description": q("a" * 1000), "when_to_use": q("b" * room)})
     assert run(exact).problems == ()
-    over = skill(front={"description": q("a" * 1000), "when_to_use": q("b" * (limit - 999))})
+    over = skill(front={"description": q("a" * 1000), "when_to_use": q("b" * (room + 1))})
     assert run(over).problem_rules == ("listing-text-too-long",)
 
 
@@ -1611,5 +1614,89 @@ def test_crlf_line_endings_are_not_a_lone_carriage_return():
 def test_the_gates_next_line_value_difference_is_refused():
     # U+0085 in a plain value: ruamel reads 'a b', Claude Code 'a\x85b'.
     text = f"---\nname: {NAME}\ndescription: a\x85b\n---\n# T\n"
-    assert YAML(typ="safe").load(f"description: a\x85b\n") == {"description": "a b"}
+    assert YAML(typ="safe").load("description: a\x85b\n") == {"description": "a b"}
     assert run({"SKILL.md": text}).problem_rules == ("frontmatter-forbidden-character",)
+
+
+# ------------------------- F3: the listing limit, as Claude Code computes it
+
+#: A character outside the Basic Multilingual Plane: one Python character,
+#: two UTF-16 units (JavaScript's ``length`` counts 2).
+EMOJI = "\U0001f600"
+
+
+def q_raw(value: str) -> str:
+    """A YAML double-quoted scalar that keeps non-ASCII characters as they
+    are (``q`` would escape an emoji into two lone surrogates)."""
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _listing_case(description: str, when_to_use: str | None) -> SkillCheck:
+    front = {"description": q_raw(description)}
+    if when_to_use is None:
+        return run(skill(front=front, drop_front=("when_to_use",)))
+    return run(skill(front={**front, "when_to_use": q_raw(when_to_use)}))
+
+
+def test_the_joiner_counts_a_full_description_and_510_more_is_refused():
+    # 1,024 + 3 + 510 = 1,537: the plain sum (1,534) would pass.
+    result = _listing_case("a" * 1024, "b" * 510)
+    assert result.problem_rules == ("listing-text-too-long",)
+    assert "is 1537 characters" in result.problems[0].message
+    assert "' - '" in result.problems[0].message
+
+
+def test_eight_hundred_emoji_without_when_to_use_are_refused():
+    # 800 characters (within the 1,024 description limit), 1,600 units.
+    result = _listing_case(EMOJI * 800, None)
+    assert result.problem_rules == ("listing-text-too-long",)
+    assert "is 1600 characters" in result.problems[0].message
+
+
+@pytest.mark.parametrize(
+    ("description", "when_to_use"),
+    [
+        ("a" * 1000, "b" * 533),  # 1,000 + 3 + 533
+        ("a" * 1000, EMOJI * 266 + "b"),  # 1,000 + 3 + 532 + 1
+        ("a" * 512 + EMOJI * 512, None),  # 1,024 characters, 1,536 units
+        ("a" * 512 + EMOJI * 512, ""),  # an empty when_to_use adds no joiner
+    ],
+    ids=["ascii with when_to_use", "emoji when_to_use", "emoji description", "empty when_to_use"],
+)
+def test_the_listing_limit_boundary(description: str, when_to_use: str | None):
+    # Exactly 1,536 units passes ...
+    assert _listing_case(description, when_to_use).problems == ()
+    # ... and one unit more is refused, by the listing rule alone.
+    if when_to_use:
+        longer = (description, when_to_use + "c")
+    else:
+        longer = ("a" * 511 + EMOJI * 513, when_to_use)  # still 1,024 characters
+    result = _listing_case(*longer)
+    assert result.problem_rules == ("listing-text-too-long",)
+    assert "is 1537 characters" in result.problems[0].message
+
+
+def test_an_empty_when_to_use_is_no_when_to_use_but_one_character_brings_the_joiner():
+    description = "a" * 1532
+    # (over the 1,024 description limit, so look only at the listing rule)
+    assert "listing-text-too-long" not in _listing_case(description, "").problem_rules
+    # 1,532 + 3 + 1 = 1,536 still fits; 1,532 + 3 + 2 does not.
+    assert "listing-text-too-long" not in _listing_case(description, "x").problem_rules
+    assert "listing-text-too-long" in _listing_case(description, "xy").problem_rules
+
+
+def test_a_lone_surrogate_is_counted_not_raised():
+    # ruamel reads the escape "\ud800" as a lone surrogate; JavaScript
+    # counts it as one unit.
+    files = skill(front={"description": '"a\\ud800b"'})
+    result = run(files)
+    assert "listing-text-too-long" not in result.problem_rules
+    assert skill_scaffold._utf16_length("a\ud800b") == 3
+    assert skill_scaffold._utf16_length("a" + EMOJI) == 3
+
+
+def test_the_listing_joiner_is_read_from_the_module_constant(monkeypatch):
+    files = skill(front={"description": q("a" * 1024), "when_to_use": q("b" * 510)})
+    assert run(files).problem_rules == ("listing-text-too-long",)
+    monkeypatch.setattr(skill_scaffold, "SKILL_LISTING_JOINER", "")
+    assert run(files).problems == ()
