@@ -2185,7 +2185,9 @@ def _resolve_target(
     guard (G1, D-DEPLOY §1.1): a plain host's files must be ones git
     ignores (:func:`_refuse_unsafe_plain_write`). ``removal`` says the
     write only takes a lesson's lines OUT of the target (a retirement),
-    which changes the refusal's kind, never whether it refuses. Pure —
+    which changes the plain-host refusal's kind, never whether it
+    refuses; it also lets a lesson leave the skills root's own
+    ``claude-md`` while that destination refuses additions (S-82). Pure —
     writes nothing; ``check_dirty=False`` (recompile, ``list --json``,
     commit-drift) resolves exactly as before and runs its own checks."""
     spec = _resolve_target_unguarded(
@@ -2193,6 +2195,7 @@ def _resolve_target(
         user_claude_md=user_claude_md, project_path=project_path,
         check_dirty=check_dirty, variant=variant, rules_topic=rules_topic,
         rules_paths=rules_paths, allow_empty_glob=allow_empty_glob,
+        removal=removal,
     )
     if check_dirty:
         _refuse_unsafe_plain_write(spec, removal=removal)
@@ -2213,10 +2216,12 @@ def _resolve_target_unguarded(
     rules_topic: str | None = None,
     rules_paths: list[str] | tuple[str, ...] | None = None,
     allow_empty_glob: bool = False,
+    removal: bool = False,
 ) -> TargetSpec:
     """PRE-FLIGHT target resolution (doc 13 §4 step c): registry gates
     (H-3) + dirty checks against the HOST repo, all raising BEFORE any
-    commit. Pure — writes nothing.
+    commit. Pure — writes nothing. ``removal``: see
+    :func:`_resolve_target` (the S-82 refusal below spares a removal).
 
     A2 §4.4: ``variant``/``rules_topic``/``rules_paths`` are the
     structured params a proposal-sourced route carries (threaded by
@@ -2310,10 +2315,14 @@ def _resolve_target_unguarded(
             # (`_compile_set`). Under two modes, a git-mode commit of it
             # would commit the plain registration's lessons too, and a
             # plain write would leave the root's uncommitted. Refused by
-            # name in every resolution (a recompile warns and skips it).
-            # Same mode both ways (one coherent posture) still resolves.
+            # name for every write that ADDS to it (a route; a recompile
+            # warns and skips the section), never for a REMOVAL (retire,
+            # supersede, a reroute's old placement, a reconsider's
+            # reject/defer: `_retirement_preflight` passes `removal`), so
+            # a lesson already there can always be moved off it. Same
+            # mode both ways (one coherent posture) still resolves.
             project_mode = host_mode(home, root, registration="project")
-            if project_mode != mode:
+            if project_mode != mode and not removal:
                 raise DestinationUnavailable(
                     f"the skills root's own claude-md ({target}) is refused: "
                     f"{root} is also registered as a project host "

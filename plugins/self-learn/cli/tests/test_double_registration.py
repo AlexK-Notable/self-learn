@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import ast
 import json
+import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -532,19 +534,30 @@ def test_e_the_skills_root_claude_md_still_resolves_without_two_modes(tmp_path, 
         assert result.host_commit_sha is None
 
 
-def _lesson_left_on_the_root_claude_md(tmp_path: Path):
+def _lesson_left_on_the_root_claude_md(
+    tmp_path: Path, *, agree: str = "git", diverge_to: str = "plain"
+):
     """A skill lesson routed to the skills root's own claude-md while the
-    repo was registered once (git), THEN the plain project registration
-    added: the double registration in two modes, with a lesson already on
-    the destination it refuses."""
-    env = _double(tmp_path, root="git", project=None)
+    two registrations' modes AGREE (both *agree*), then the project
+    registration switched to *diverge_to* through the verbs (`host remove
+    --project`, `host add --mode`): the double registration in two modes,
+    with a lesson already on the destination it now refuses to add to."""
+    env = _double(tmp_path, root=agree, project=agree)
     home, repo = env.ledger, env.host
+    if agree == "plain":
+        git(repo, "rm", "-q", "--cached", "CLAUDE.md")  # a plain host takes only ignored files
+        git(repo, "commit", "-q", "-m", "untrack CLAUDE.md")
     rid = _skill_lesson(home, "lrn-8b00000b")
     verbs.route(home, rid, dest="claude-md", no_push=True)
     assert rid in (repo / "CLAUDE.md").read_text(encoding="utf-8")  # control: it landed
-    (repo / MARKER_FILENAME).write_text("plain registration\n", encoding="utf-8")
-    _exclude(repo).write_text(f"/{MARKER_FILENAME}\n", encoding="utf-8")
-    host_add(home, repo, "project", mode="plain")
+    hosts.host_remove(home, repo, registration="project")
+    if diverge_to == "plain":
+        exclude = _exclude(repo)
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        exclude.write_text(f"/{MARKER_FILENAME}\n", encoding="utf-8")
+    host_add(home, repo, "project", mode=diverge_to)
+    assert host_mode(home, repo, registration="skills-root") == agree
+    assert host_mode(home, repo, registration="project") == diverge_to
     return env, rid
 
 
@@ -606,15 +619,7 @@ def test_f_a_project_write_into_a_tracked_claude_md_is_refused_and_a_skill_md_co
 # ------------------------------------ hook scripts and new skills, git mode
 
 
-def test_a_project_hook_script_lands_in_the_git_root_and_is_committed(
-    tmp_path, commits_under_pause
-):
-    """*control*: a project lesson's hook script lands in the skills
-    root's `hooks/self-learn/` (S-17 D1) and the root's git registration
-    commits exactly that script, under the pause."""
-    env = _double(tmp_path)
-    home, repo = env.ledger, env.host
-    rid = "lrn-8b00000f"
+def _project_hook_lesson(home: Path, repo: Path, rid: str) -> tuple[str, Record]:
     record = make_behavior(scope="project", record_id=rid)
     create_record(home, record, project_path=repo)
     write_proposal(
@@ -624,6 +629,18 @@ def test_a_project_hook_script_lands_in_the_git_root_and_is_committed(
     )
     stamp_proposal(home, rid)
     commit_all(home, f"seed {rid}")
+    return rid, record
+
+
+def test_a_project_hook_script_lands_in_the_git_root_and_is_committed(
+    tmp_path, commits_under_pause
+):
+    """*control*: a project lesson's hook script lands in the skills
+    root's `hooks/self-learn/` (S-17 D1) and the root's git registration
+    commits exactly that script, under the pause."""
+    env = _double(tmp_path)
+    home, repo = env.ledger, env.host
+    rid, record = _project_hook_lesson(home, repo, "lrn-8b00000f")
 
     result = verbs.route(home, rid, dest="hook", no_push=True)
 
@@ -722,12 +739,61 @@ def test_the_selftest_hosts_row_shows_a_repo_registered_twice_with_each_mode(
     assert verdict is selfcheck.Verdict.FAIL and "hosts.yaml unreadable" in msg
 
 
-def test_the_selftest_hosts_row_fails_on_a_lesson_left_on_the_refused_destination(tmp_path):
-    """Red on master (no such row)."""
+def test_the_selftest_hosts_row_fails_on_a_stranded_lesson_and_its_printed_reroute_clears_it(
+    tmp_path, monkeypatch, capsys
+):
+    """F1 (gate GM): the row names the lesson and a command, and the
+    command WORKS -- a removal off the refused destination is never
+    refused. Red on 6a27412: the reroute raised `destination-unavailable`
+    (the refusal fired on the removal of the old placement too)."""
     env, rid = _lesson_left_on_the_root_claude_md(tmp_path)
+    home, repo = env.ledger, env.host
 
-    verdict, msg = selfcheck._check_hosts(env.ledger)
-
+    verdict, msg = selfcheck._check_hosts(home)
     assert verdict is selfcheck.Verdict.FAIL
-    assert "skills-root=git, project=plain" in msg
-    assert rid in msg and "reroute" in msg
+    assert "skills-root=git, project=plain" in msg and rid in msg
+    (command,) = re.findall(r"`(self-learn reroute [^`]*)`", msg)
+    argv = shlex.split(command.replace("<id>", rid))[1:] + ["--no-push"]
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+    capsys.readouterr()
+
+    assert cli.main(argv) == 0, capsys.readouterr().err
+
+    assert rid not in (repo / "CLAUDE.md").read_text(encoding="utf-8")
+    assert rid in env.skill_md.read_text(encoding="utf-8")
+    assert _record(home, rid).routing["destination"] == "skill-md"
+    assert _status(repo) == ""  # the git root committed both files
+    verdict, msg = selfcheck._check_hosts(home)
+    assert verdict is selfcheck.Verdict.PASS, msg
+
+
+def test_a_stranded_lesson_can_be_graduated_off_the_refused_destination(tmp_path):
+    """F1: retiring a lesson off the root's own claude-md is a removal,
+    never refused. Red on 6a27412 (`destination-unavailable`)."""
+    env, rid = _lesson_left_on_the_root_claude_md(tmp_path)
+    home, repo = env.ledger, env.host
+    head = _head(repo)
+
+    verbs.graduate(home, rid, no_push=True)
+
+    assert _record(home, rid).status == "superseded"
+    assert rid not in (repo / "CLAUDE.md").read_text(encoding="utf-8")
+    assert _head(repo) != head and _status(repo) == ""  # committed in git mode
+    assert selfcheck._check_hosts(home)[0] is selfcheck.Verdict.PASS
+
+
+def test_a_steward_sheet_retiring_a_stranded_lesson_applies(tmp_path):
+    """F1: an agent's sheet line that only removes such a lesson is not
+    refused `destination-unavailable` (preview and run). Red on 6a27412."""
+    env, rid = _lesson_left_on_the_root_claude_md(tmp_path)
+    home, repo = env.ledger, env.host
+    sheet = _sheet(tmp_path, rid, "graduate")
+
+    preview = batch.dry_run(home, sheet, actor="steward")
+    result = batch.run(home, sheet, no_push=True, actor="steward")
+
+    (pitem,), (item,) = preview.items, result.items
+    assert pitem.state == "would-apply", (pitem.kind, pitem.detail)
+    assert item.state == "applied", (item.kind, item.detail)
+    assert rid not in (repo / "CLAUDE.md").read_text(encoding="utf-8")
+    assert _status(repo) == ""
