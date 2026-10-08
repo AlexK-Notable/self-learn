@@ -216,23 +216,26 @@ def test_the_shelf_hosts_lock_is_held_from_the_prediction_through_the_write(
     the shelf's host lock is taken before its bytes are observed and
     predicted for the compile record, and held through the host write, so
     no other producer can change the shelf between the two. `reject` and
-    `defer` each take it on their own `with` line, so each is run."""
+    `defer` each take it on their own `with` line, so each is run. (The
+    prediction is `_plan_shelf_retirement`; the host write is
+    `retire_empty_shelf`, which takes the entry off -- or, as here, where
+    the entry is the shelf's last, deletes the header-only shelf.)"""
     home, host, shelf, prior = _shelved(tmp_path, mode)
     lock = str(gitops.host_lock_path(host, mode))
     seen: list[tuple[str, bool]] = []
-    real_predict = verbs._predicted_retired_reference_region
-    real_remove = verbs.retire_reference
+    real_predict = verbs._plan_shelf_retirement
+    real_remove = verbs.retire_empty_shelf
 
-    def predict(ref_path, record_id):
+    def predict(*args, **kwargs):
         seen.append(("predict", lock in gitops._held_locks))
-        return real_predict(ref_path, record_id)
+        return real_predict(*args, **kwargs)
 
     def remove(*args, **kwargs):
         seen.append(("remove", lock in gitops._held_locks))
         return real_remove(*args, **kwargs)
 
-    monkeypatch.setattr(verbs, "_predicted_retired_reference_region", predict)
-    monkeypatch.setattr(verbs, "retire_reference", remove)
+    monkeypatch.setattr(verbs, "_plan_shelf_retirement", predict)
+    monkeypatch.setattr(verbs, "retire_empty_shelf", remove)
     rc = _reconsider(home, tmp_path / "setup", prior, verb, "overseer")
     assert lock not in gitops._held_locks  # control: nothing holds it before the run
     result = batch.run(home, _sheet(tmp_path, "off", rc, [{"id": RID, "verb": verb}]),

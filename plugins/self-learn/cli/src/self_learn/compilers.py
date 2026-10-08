@@ -158,9 +158,11 @@ __all__ = [
     "apply_pointer",
     "SHELF_HEADERS",
     "EmptyShelf",
+    "ShelfRetirement",
     "shelf_has_entries",
     "shelf_is_header_only",
     "plan_empty_shelf",
+    "plan_shelf_retirement",
     "retire_empty_shelf",
 ]
 
@@ -971,13 +973,19 @@ def _text_names_target(text: str, surface: Path, target: Path) -> bool:
     is not on disk yet (an emptied shelf's pointer removal, S-77 (3) as
     amended) answers exactly as the real file will."""
     pattern = re.compile(f"[^{_TOKEN_DELIMS}]*" + re.escape(target.name))
-    resolved_target = target.resolve()
-    for match in pattern.finditer(text):
-        token = Path(match.group(0)).expanduser()
-        candidate = token if token.is_absolute() else surface.parent / token
-        if candidate.resolve() == resolved_target:
-            return True
-    return False
+    return any(
+        _token_resolves_to(match.group(0), surface, target)
+        for match in pattern.finditer(text)
+    )
+
+
+def _token_resolves_to(token: str, surface: Path, target: Path) -> bool:
+    """§2.1 steps 3-4 for ONE path token: expanduser'd, used as-is when
+    absolute, else read relative to ``surface.parent`` (as its author meant
+    it), and compared with ``target`` after both are resolved."""
+    path = Path(token).expanduser()
+    candidate = path if path.is_absolute() else surface.parent / path
+    return candidate.resolve() == target.resolve()
 
 
 def pointer_token(surface: Path, target: Path) -> str:
@@ -1003,8 +1011,16 @@ def pointer_line(token: str, label: str) -> str:
     """One pointer-block line (§3.1 grammar): ``- `<token>` -- <label>``.
     Backticked deliberately -- `` ` `` is in the detector's
     ``_TOKEN_DELIMS``, so it terminates the leftward token scan cleanly.
-    The em dash and the label are free text and are never parsed back."""
+    The label is free text and is never parsed back; the shape up to it is
+    (:data:`_POINTER_LINE_RE`), so a removal can tell self-learn's own line
+    from a person's."""
     return f"- `{token}` — {label}"
+
+
+#: The :func:`pointer_line` grammar, read back up to the label: the token is
+#: everything between the backticks. A line in any other shape -- a person's
+#: own bullet that happens to name a shelf -- is not self-learn's line.
+_POINTER_LINE_RE = re.compile(r"- `([^`\r\n]+)` — ")
 
 
 _POINTER_HEADING = "## Reference material (self-learn)"
@@ -1220,24 +1236,35 @@ def apply_pointer(
     )
 
 
+def _pointer_line_to(line: str, surface: Path, target: Path) -> bool:
+    """Whether *line* is self-learn's own pointer line (the
+    :func:`pointer_line` grammar) to *target*: its whole backticked token
+    resolves to it (:func:`_token_resolves_to`)."""
+    match = _POINTER_LINE_RE.match(line)
+    return match is not None and _token_resolves_to(match.group(1), surface, target)
+
+
 def _retire_pointer_text(
     surface_text: str, surface: Path, target: Path
 ) -> tuple[str, bool]:
     """Pure text transform, the removal twin of :func:`compile_pointer_text`
     (S-77 (3) as amended, 2026-10-07: an emptied shelf loses its pointer).
-    Removes every pointer line (``- `token` -- label``, the
-    :func:`pointer_line` grammar) INSIDE the pointer block whose token
-    resolves to *target* -- the same resolution :func:`surface_names_target`
-    uses, never a string compare. Text outside the markers is never
-    touched: a person's own mention of the shelf stays where it is.
+    Removes every line INSIDE the pointer block that is in self-learn's own
+    pointer grammar (``- `token` -- label``, :func:`pointer_line`,
+    :data:`_POINTER_LINE_RE`) and whose WHOLE token resolves to *target* --
+    the same path resolution :func:`surface_names_target` uses, never a
+    string or basename compare. A line in any other shape is a person's and
+    stays, even when it names the shelf (gate SH2 finding 1: a bullet such
+    as ``- Team note: read references/LEARNINGS.md ...``); text outside the
+    markers is never touched either.
 
     When no pointer line is left and the block holds nothing but
     self-learn's own preamble (either :func:`_pointer_preamble` form), the
     whole block goes, with the blank line the bootstrap put before it --
     the exact inverse of the bootstrap, so a surface that held nothing but
     the block becomes empty and one that ended before it ends as it did
-    (with one trailing newline). A block holding anything else keeps its
-    markers and whatever else is there.
+    (with one trailing newline). A block holding anything else -- another
+    shelf's line, a person's line -- keeps its markers and all of that.
 
     Returns ``(new_text, block_removed)``; ``new_text == surface_text``
     when the block names nothing that resolves to *target*, or when there
@@ -1258,15 +1285,12 @@ def _retire_pointer_text(
         raise CompileError("broken pointer-block markers: end marker precedes begin marker")
     inner_at = begin_at + len(POINTER_BEGIN_MARKER)
     lines = surface_text[inner_at:end_at].splitlines(keepends=True)
-    kept = [
-        line for line in lines
-        if not (line.startswith("- ") and _text_names_target(line, surface, target))
-    ]
+    kept = [line for line in lines if not _pointer_line_to(line, surface, target)]
     if len(kept) == len(lines):
         return surface_text, False
     inner = "".join(kept)
     preambles = {"\n" + _pointer_preamble(names_base=nb) for nb in (False, True)}
-    if any(line.startswith("- ") for line in kept) or inner not in preambles:
+    if inner not in preambles:  # another line is left: the block stays
         return surface_text[:inner_at] + inner + surface_text[end_at:], False
     head = surface_text[:begin_at].rstrip("\n")
     tail = surface_text[end_at + len(POINTER_END_MARKER):]
@@ -1476,7 +1500,10 @@ class EmptyShelf:
     decides it from texts -- so the ledger's same-commit prediction and the
     host write apply one rule to the same bytes."""
 
-    emptied: bool  # the shelf holds no entry any more
+    #: The shelf is EMPTY: nothing but one of self-learn's own headers is
+    #: left on it (:func:`shelf_is_header_only`). Only an empty shelf loses
+    #: its pointer or its file; one holding a person's text does not.
+    emptied: bool
     surface_text: str | None  # the pointer surface afterwards (None: no surface file)
     surface_changed: bool
     block_removed: bool  # the whole pointer block went, not one line
@@ -1491,21 +1518,29 @@ def plan_empty_shelf(
     surface_text: str | None,
     *,
     default_shelf: bool,
+    shelf_is_link: bool = False,
 ) -> EmptyShelf:
     """Pure. *shelf_text* is the shelf AFTER an entry left it (``None``: no
     file), *surface_text* the pointer surface as it is (``None``: no file).
 
-    A shelf that still holds an entry changes nothing. An emptied one loses
+    Only an EMPTY shelf -- nothing on it but one of self-learn's own
+    headers (:func:`shelf_is_header_only`) -- changes anything (the user,
+    2026-10-07: "empty shelves lose their pointer"). A shelf still holding
+    an entry, or a person's own text with no entry at all (gate SH2 finding
+    5: a ``## Release checklist`` section; a named shelf's own header), is
+    not empty and keeps both its pointer and its file. An empty one loses
     its pointer line, and the block when no line is left
     (:func:`_retire_pointer_text`); broken pointer markers leave the surface
-    as it is and say so in ``note``. The shelf FILE is removed only when all
-    three hold: it is the default shelf (*default_shelf*: the
+    as it is and say so in ``note``. The shelf FILE is removed only when it
+    is, besides empty: the default shelf (*default_shelf*: the
     ``LEARNINGS.md`` :func:`compile_reference` creates, and creates again
     for the next route -- a named shelf is a file a person made, and a later
-    route to it needs it to exist); it holds nothing but one of self-learn's
-    headers (:func:`shelf_is_header_only`); and the surface no longer names
-    it, so no sentence is left pointing at a file that is gone."""
-    if shelf_text is None or shelf_has_entries(shelf_text):
+    route to it needs it to exist); named by nothing left in the surface, so
+    no sentence points at a file that is gone; and not a symlink
+    (*shelf_is_link*, gate SH2 finding 4: deleting a person's link to a
+    shared file would end their arrangement, and the next route would make
+    a plain file in its place)."""
+    if shelf_text is None or not shelf_is_header_only(shelf_text):
         return EmptyShelf(False, surface_text, False, False, False)
     new_surface, block_removed, note = surface_text, False, None
     if surface is not None and surface_text is not None:
@@ -1518,33 +1553,74 @@ def plan_empty_shelf(
         and new_surface is not None
         and _text_names_target(new_surface, surface, shelf)
     )
-    delete = default_shelf and not named and shelf_is_header_only(shelf_text)
+    delete = default_shelf and not named and not shelf_is_link
     return EmptyShelf(
         True, new_surface, new_surface != surface_text, block_removed, delete, note
     )
 
 
-def retire_empty_shelf(
-    shelf: Path, surface: Path | None, *, default_shelf: bool
-) -> EmptyShelf:
-    """The host write :func:`plan_empty_shelf` describes, over the two files
-    as they are now (call it after the entry's own removal,
-    :func:`retire_reference`): the surface is rewritten in one atomic
-    replace, then the shelf file is removed. Writes nothing for a shelf that
-    still holds an entry. Commits nothing; the caller holds the host lock."""
-    shelf_text = shelf.read_text(encoding="utf-8") if shelf.is_file() else None
-    surface_text = (
-        surface.read_text(encoding="utf-8")
-        if surface is not None and surface.is_file()
-        else None
+@dataclass(frozen=True)
+class ShelfRetirement:
+    """Everything taking one entry off a shelf will write, decided BEFORE
+    anything is written (:func:`plan_shelf_retirement`), so the tracked-file
+    check (S-80), the ledger's same-commit prediction and the host write
+    all judge the same files."""
+
+    shelf_text: str | None  # the shelf once the entry left it (None: no file)
+    entry: str | None  # the entry block taken off (None: it was not on the shelf)
+    empty: EmptyShelf  # what that does to the shelf's pointer and its file
+
+    def changes(self, shelf: Path, surface: Path | None) -> tuple[list[Path], list[Path]]:
+        """``(rewritten, deleted)``: the files the host write rewrites --
+        the shelf when its entry leaves and it stays, the pointer surface
+        when its pointer changes -- and the files it deletes (the shelf,
+        when it goes; it is then deleted outright, never rewritten first)."""
+        rewritten: list[Path] = []
+        if self.entry is not None and not self.empty.delete_shelf:
+            rewritten.append(shelf)
+        if self.empty.surface_changed and surface is not None:
+            rewritten.append(surface)
+        return rewritten, [shelf] if self.empty.delete_shelf else []
+
+
+def plan_shelf_retirement(
+    shelf: Path,
+    shelf_text: str | None,
+    record_id: str,
+    surface: Path | None,
+    surface_text: str | None,
+    *,
+    default_shelf: bool,
+    shelf_is_link: bool = False,
+) -> ShelfRetirement:
+    """Pure: *record_id*'s entry leaving *shelf_text* (the shelf as it is;
+    ``None``: no file) -- :func:`_retire_reference_text`, the same transform
+    :func:`retire_reference` writes -- and what that leaves of the shelf's
+    pointer and its file (:func:`plan_empty_shelf`)."""
+    post, entry = (None, None) if shelf_text is None else _retire_reference_text(
+        shelf_text, record_id
     )
-    plan = plan_empty_shelf(
-        shelf, shelf_text, surface, surface_text, default_shelf=default_shelf
+    return ShelfRetirement(
+        post,
+        entry,
+        plan_empty_shelf(
+            shelf, post, surface, surface_text,
+            default_shelf=default_shelf, shelf_is_link=shelf_is_link,
+        ),
     )
+
+
+def retire_empty_shelf(shelf: Path, surface: Path | None, plan: EmptyShelf) -> None:
+    """The emptied shelf's part of the host write *plan* describes
+    (:func:`plan_empty_shelf`, decided before anything was written): the
+    surface is rewritten in one atomic replace, then the shelf file is
+    removed. The entry's own removal from a shelf that STAYS is
+    :func:`retire_reference`'s; a shelf that goes is deleted outright, never
+    rewritten first. Writes nothing for a shelf that is not empty. Commits
+    nothing; the caller holds the host lock."""
     if plan.surface_changed and surface is not None and plan.surface_text is not None:
         fsops.atomic_write(
             surface, plan.surface_text, preserve_mode=True, fsync=True, follow_symlinks=True
         )
     if plan.delete_shelf:
         shelf.unlink()
-    return plan

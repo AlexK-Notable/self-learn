@@ -118,9 +118,9 @@ from .compilers import (
     DEFAULT_REFERENCE_BASENAME,
     FORBIDDEN_REFERENCE_BASENAME,
     CompileError,
-    EmptyShelf,
     PathsResult,
     SectionResult,
+    ShelfRetirement,
     apply_paths_frontmatter,
     apply_pointer,
     compile_managed_file,
@@ -129,10 +129,10 @@ from .compilers import (
     compile_reference,
     has_paths_key,
     loaded_text_problem,
+    plan_shelf_retirement,
     pointer_line,
     pointer_token,
     read_paths_frontmatter,
-    plan_empty_shelf,
     reference_target_path,
     retire_empty_shelf,
     retire_reference,
@@ -144,7 +144,6 @@ from .compilers import (
 from .compilers import (
     _LEARNINGS_HEADER,
     _reference_block,
-    _retire_reference_text,
     _text_names_target,
 )
 from .hosts import (
@@ -3691,6 +3690,7 @@ def _retirement_preflight(
     warnings: list[str],
     *,
     user_claude_md: Path | str | None = None,
+    after_route: "tuple[TargetSpec, Record] | None" = None,
 ) -> _Retirement:
     """Resolve a retiring record's host-side cleanup BEFORE any commit
     (doc 13 §4 step c — the standalone supersede verb has always done
@@ -3706,7 +3706,15 @@ def _retirement_preflight(
     longer append-only for their own lifetime (§3.5): a
     graduate/supersede/reroute now retires the record's own entry block
     through the SAME shared path every other destination already used,
-    never a per-verb branch (the M46 mutation's own wrong shape)."""
+    never a per-verb branch (the M46 mutation's own wrong shape).
+
+    SH2 + S-80: that branch's tracked-file check is the shelf retirement's
+    own (:func:`_refuse_unsafe_shelf_retirement`), on the plan the ledger's
+    prediction and the host write share (:func:`_shelf_retirement_plan`):
+    it refuses here, before the ledger commit, exactly when the host write
+    would -- the pointer file whose pointer an emptied shelf loses
+    included. *after_route* is the route completing a ``teach
+    --supersedes`` (its spec and record), whose own write lands first."""
     if record.status != "routed":
         return _Retirement()
     routing = record.routing or {}
@@ -3751,7 +3759,10 @@ def _retirement_preflight(
             )
         return _Retirement(removal=removal)
     if destination == "reference":
-        ref_spec = _resolve_target(
+        # Unguarded: the registry and region gates only. Its G1 step would
+        # judge the shelf alone; the shelf retirement's own check, below,
+        # judges exactly what this retirement changes.
+        ref_spec = _resolve_target_unguarded(
             home,
             bucket_dir,
             record.scope,
@@ -3762,7 +3773,6 @@ def _retirement_preflight(
             # variant/rules_topic only — never rules_paths.
             variant=routing.get("variant"),
             rules_topic=routing.get("rules_topic"),
-            removal=True,  # G1: as the managed branch above
         )
         # `TargetSpec.target` is None for a reference spec (the file is
         # resolved through `refs_dir`/`ref_name` — see `_resolve_target`'s
@@ -3778,22 +3788,13 @@ def _retirement_preflight(
         # managed branches; this documents the reference one.
         assert ref_spec.refs_dir is not None
         ref_path = reference_target_path(ref_spec.refs_dir, ref_spec.ref_name)
-        return _Retirement(reference=(ref_path, ref_spec))
+        reference = (ref_path, ref_spec)
+        _refuse_unsafe_shelf_retirement(
+            reference,
+            _shelf_retirement_plan(home, reference, record.id, after_route=after_route),
+        )
+        return _Retirement(reference=reference)
     return _Retirement()
-
-
-def _predicted_retired_reference_region(ref_path: Path, record_id: str) -> bytes | None:
-    """REC7's own discipline, applied to a reference RETIREMENT (RER5/
-    RER7's same-commit prediction, mirroring `_expected_reference_region`'s
-    write-side contract): predict :func:`compilers.retire_reference`'s
-    final bytes for THIS removal, without writing, via the SAME pure
-    text transform (:func:`compilers._retire_reference_text`) the real
-    removal calls — prediction and the write cannot drift."""
-    if not ref_path.is_file():
-        return None
-    text = ref_path.read_text(encoding="utf-8")
-    new_text, _removed = _retire_reference_text(text, record_id)
-    return new_text.encode("utf-8")
 
 
 def _default_shelf(ref_path: Path, spec: TargetSpec) -> bool:
@@ -3827,37 +3828,45 @@ def _predicted_pointer_text(
     return compile_pointer_text(current, line, names_base=_pointer_names_base(home, spec))[0]
 
 
-def _plan_shelf_retirement(
+def _shelf_retirement_plan(
     home: Path,
     reference: tuple[Path, TargetSpec],
     record_id: str,
     *,
     after_route: "tuple[TargetSpec, Record] | None" = None,
     then_route: "tuple[TargetSpec, Path] | None" = None,
-) -> tuple[bytes | None, EmptyShelf]:
-    """The ledger-side prediction of a shelf retirement's host write
-    (REC7/REC9, S-77 (3) as amended): the shelf's bytes once *record_id*'s
-    entry leaves it (``None``: no shelf file), and what that does to its
-    pointer and its file (:func:`compilers.plan_empty_shelf` -- the same
-    rule :func:`compilers.retire_empty_shelf` applies at the host phase).
+) -> ShelfRetirement:
+    """THE decision of a shelf retirement (REC7/REC9, S-77 (3) as amended,
+    S-80): what taking *record_id*'s entry off its shelf writes -- the
+    shelf's bytes afterwards, its pointer, its file -- over the shelf and its
+    pointer surface as they are now (:func:`compilers.plan_shelf_retirement`,
+    the same pure transforms the host write applies). Three callers, which
+    must agree: the retirement pre-flight judges the files it changes before
+    any lock (:func:`_retirement_preflight`), the ledger's prediction records
+    them (:func:`_plan_shelf_retirement`), and the host phase judges them
+    again and writes them (:func:`_retire_reference_host_phase`).
 
     Two callers write the SAME region in the same motion as the retirement,
-    and the record must hold what both writes leave:
+    and the plan must hold what both writes leave:
 
     - *after_route* ``(spec, routed_record)``: the route that completes a
       ``teach --supersedes`` writes its own target FIRST (its host phase
       runs before the old record's retirement): onto the same shelf, its
-      entry is appended before this one leaves; onto the same pointer
-      surface, its line is added before this one's goes.
+      entry is appended before this one leaves -- so that shelf is never
+      emptied, and its pointer file is never changed; onto the same pointer
+      surface, its line is added before this one's goes. The pre-flight
+      passes it too, so it judges what the host write will really change.
     - *then_route* ``(spec, reference_path)``: ``reroute`` retires the old
       placement FIRST and writes the new one after; when the new one is a
       shelf behind the same pointer surface, its line is added to the
-      surface this removal leaves.
+      surface this removal leaves. That changes only the bytes recorded,
+      never WHICH files the retirement changes, so the pre-flight (run
+      before the new spec resolves) does without it.
     """
     ref_path, spec = reference
     surface = spec.pointer_surface
+    shelf_text = _read_text_or_none(ref_path)
     surface_text = _read_text_or_none(surface)
-    shelf_text: str | None = None
     if after_route is not None:
         new_spec, routed = after_route
         if new_spec.destination == "reference" and new_spec.refs_dir is not None:
@@ -3868,25 +3877,64 @@ def _plan_shelf_retirement(
                     shelf_text = appended.decode("utf-8")
             if surface is not None and new_spec.pointer_surface == surface:
                 surface_text = _predicted_pointer_text(home, new_spec, new_ref, surface_text)
-    if shelf_text is not None:
-        post: bytes | None = _retire_reference_text(shelf_text, record_id)[0].encode("utf-8")
-    else:
-        post = _predicted_retired_reference_region(ref_path, record_id)
-    plan = plan_empty_shelf(
+    retirement = plan_shelf_retirement(
         ref_path,
-        post.decode("utf-8") if post is not None else None,
+        shelf_text,
+        record_id,
         surface,
         surface_text,
         default_shelf=_default_shelf(ref_path, spec),
+        shelf_is_link=ref_path.is_symlink(),
     )
-    if then_route is not None and plan.surface_changed:
+    if then_route is not None and retirement.empty.surface_changed:
         new_spec, new_ref = then_route
         if surface is not None and new_spec.pointer_surface == surface:
-            plan = replace(
-                plan,
-                surface_text=_predicted_pointer_text(home, new_spec, new_ref, plan.surface_text),
+            composed = _predicted_pointer_text(
+                home, new_spec, new_ref, retirement.empty.surface_text
             )
-    return post, plan
+            retirement = replace(
+                retirement, empty=replace(retirement.empty, surface_text=composed)
+            )
+    return retirement
+
+
+def _plan_shelf_retirement(
+    home: Path,
+    reference: tuple[Path, TargetSpec],
+    record_id: str,
+    *,
+    after_route: "tuple[TargetSpec, Record] | None" = None,
+    then_route: "tuple[TargetSpec, Path] | None" = None,
+) -> ShelfRetirement:
+    """The ledger-side PREDICTION of a shelf retirement's host write, made
+    inside the leg's ledger write under the shelf host's lock (REC12):
+    :func:`_shelf_retirement_plan`, the one decision the pre-flight and the
+    host phase make too. Its own name, so a test can tell the prediction
+    from those two."""
+    return _shelf_retirement_plan(
+        home, reference, record_id, after_route=after_route, then_route=then_route
+    )
+
+
+def _refuse_unsafe_shelf_retirement(
+    reference: tuple[Path, TargetSpec], retirement: ShelfRetirement
+) -> list[tuple[Path, str]]:
+    """S-80 for a shelf retirement, judged on exactly the files it CHANGES
+    (:meth:`compilers.ShelfRetirement.changes`): the shelf it rewrites and
+    the pointer file whose pointer it removes must be files git ignores --
+    each gets its line first, and is refused when git tracks it or the
+    repo re-admits it; the shelf it DELETES is asked only whether git
+    tracks it, since an untracked file's deletion publishes nothing. Every
+    refusal is a removal (``needs-person``): no choice of destination moves
+    lines that already sit in a file. A ``git`` host is not judged. Pure;
+    returns the ``(repo, line)`` pairs the write needs first."""
+    ref_path, spec = reference
+    if spec.mode != "plain":
+        return []
+    rewritten, deleted = retirement.changes(ref_path, spec.pointer_surface)
+    return _refuse_unsafe_plain_paths(
+        rewritten, removal=True, deleted=deleted, skills_root=_skills_root_of(spec)
+    )
 
 
 def _shelf_retirement_records(
@@ -3910,12 +3958,26 @@ def _shelf_retirement_records(
     entry, so the next write reads ``fresh``, never ``missing``/``edited``
     -- :func:`_resync_region_entry`'s ``delete``). Recorded in either host
     mode (a plain host's files are changed and recorded, never committed).
-    """
+
+    S-80 (the gate's handoff note): the prediction applies the host write's
+    own tracked-file check (:func:`_refuse_unsafe_shelf_retirement`) to the
+    same plan. The pre-flight already refused every file it saw tracked;
+    one tracked since then is refused by the host write as a whole -- it
+    writes nothing -- so nothing is recorded either, and the record never
+    says a region is gone while the check keeps it on disk. (A git failure
+    while checking records nothing too: raising here, inside the ledger
+    write, would strand its half-made commit.)"""
     ref_path, spec = reference
     ref_observed = _observe_region_hash_at(ref_path, "reference")
-    post, plan = _plan_shelf_retirement(
+    retirement = _plan_shelf_retirement(
         home, reference, record_id, after_route=after_route, then_route=then_route
     )
+    try:
+        _refuse_unsafe_shelf_retirement(reference, retirement)
+    except (VerbError, gitops.GitOpsError):
+        return []
+    plan = retirement.empty
+    post = retirement.shelf_text.encode("utf-8") if retirement.shelf_text is not None else None
     touched: list[Path] = []
     path = _resync_region_entry(
         home,
@@ -3961,68 +4023,139 @@ def _retire_reference_host_phase(
     note: str | None,
     warnings: list[str],
 ) -> str | None:
-    """Host phase of a REFERENCE retirement (U-verbs S-54 / RER2):
-    removes the record's own entry block from its references file
-    (:func:`compilers.retire_reference` — the real write; the ledger
+    """Host phase of a REFERENCE retirement (U-verbs S-54 / RER2): takes
+    the record's own entry block off its references file (the ledger
     commit already carried the SAME-commit compile-record prediction,
-    :func:`_shelf_retirement_records`). When that leaves the shelf with no
-    entry (S-77 (3) as amended, 2026-10-07), its pointer line leaves the
-    pointer surface -- the whole block when no line is left -- and a
-    default shelf holding only its header is removed
-    (:func:`compilers.retire_empty_shelf`), in the same host lock and the
-    same host commit. Self-contained (REC12: takes its OWN host lock, like
+    :func:`_shelf_retirement_records`). When that leaves the shelf EMPTY --
+    nothing but self-learn's header on it (S-77 (3) as amended,
+    2026-10-07) -- its pointer line leaves the pointer surface, the whole
+    block when no line is left, and a default shelf named by nothing is
+    deleted outright, in the same host lock and the same host commit. What
+    it writes is decided first (:func:`_shelf_retirement_plan`, the
+    decision the pre-flight and the prediction made), then judged (S-80,
+    :func:`_refuse_unsafe_shelf_retirement`: a plain host's rewritten files
+    get their ignore lines, a tracked one refuses the whole write), then
+    written. Self-contained (REC12: takes its OWN host lock, like
     :func:`_remove_hook_script` — this call site is not lexically inside
     the caller's :func:`_ledger_write` block by the time it runs). git mode
-    commits (pinned subject `... (reference retired)`; a removed shelf is
+    commits (pinned subject `... (reference retired)`; a deleted shelf is
     committed as a deletion by the pathspec commit); plain mode degrades to
     an uncommitted write, the same posture every other plain-host write
-    takes (PLAIN11/H-j)."""
+    takes (PLAIN11/H-j).
+
+    A refused git commit (a pre-commit hook, a stale ``index.lock``) is
+    undone the way :func:`_host_phase` undoes its own (Sweep 2, R3,
+    :func:`_undo_host_write`): every file this write touched is put back and
+    unstaged, so nothing a person did not make is left in their tree and no
+    later write reads the file as busy (``target-busy``, retried forever).
+    That leaves the compile record -- committed with the ledger, before
+    this -- describing the retired state while the host holds the old one,
+    and it is the SAFER of the two wrong states: in a git host a region
+    whose entry was dropped reads ``unknown`` and one re-recorded reads
+    ``stale`` (its ``based_on_sha256`` is the restored bytes), and
+    :func:`compiled.refuses` lets both through in git mode, so nothing later
+    is blocked; leaving the write staged instead blocks every later write to
+    the file and rides the person's next commit. Neither state is repaired
+    by ``recompile``, which never takes a retired lesson out (it re-adds
+    routed ones) -- the warning says so, and how to finish by hand."""
     ref_path, spec = reference
     # `refs_dir` is `Path | None` generically; this function only ever
     # receives a reference-destination `TargetSpec` (the caller's own
     # `_Retirement.reference` leg), so it is never None here -- same
     # invariant as `_retirement_preflight`'s own reference branch.
     assert spec.refs_dir is not None
+    surface = spec.pointer_surface
+    changed: list[Path] = []
+    leaves_pointer = False
+    step = "check"  # how far the host write got, for the failure warning
     try:
         with gitops.host_lock(spec.host_path, spec.mode):
+            retirement = _shelf_retirement_plan(home, reference, record_id)
+            rewritten, deleted = retirement.changes(ref_path, surface)
+            changed = rewritten + deleted
+            leaves_pointer = retirement.empty.surface_changed
             if spec.mode == "plain":
-                _ensure_plain_excludes(  # G1
-                    [ref_path], removal=True, skills_root=_skills_root_of(spec)
+                # S-80: judged again under the lock (a file's tracking can
+                # change since the pre-flight), each rewritten file's line
+                # first; a refusal here writes nothing at all.
+                _ensure_plain_excludes(
+                    rewritten, removal=True, deleted=deleted, skills_root=_skills_root_of(spec)
                 )
-            result = retire_reference(spec.refs_dir, record_id, dest=spec.ref_name)
-            shelf = retire_empty_shelf(
-                ref_path, spec.pointer_surface, default_shelf=_default_shelf(ref_path, spec)
-            )
-            changed = [ref_path] if result.applied or shelf.delete_shelf else []
-            if shelf.note is not None:
-                warnings.append(shelf.note)
-            if shelf.surface_changed and spec.pointer_surface is not None:
-                changed.append(spec.pointer_surface)
+            snapshot = _snapshot_host_files(changed) if spec.mode == "git" else {}
+            step = "write"
+            if ref_path in rewritten:
+                retire_reference(spec.refs_dir, record_id, dest=spec.ref_name)
+            retire_empty_shelf(ref_path, surface, retirement.empty)
+            if retirement.empty.note is not None:
+                warnings.append(retirement.empty.note)
+            if leaves_pointer and surface is not None:
                 warnings.append(
-                    f"reference pointer to {ref_path.name} removed from "
-                    f"{spec.pointer_surface} (no entry left on the shelf)"
+                    f"reference pointer to {ref_path.name} removed from {surface} "
+                    "(nothing but its header is left on the shelf)"
                 )
-            if shelf.delete_shelf:
+            if deleted:
                 warnings.append(f"removed {ref_path} (it held only its header)")
             if spec.mode != "git" or not gitops.known_paths(spec.host_path, changed):
                 return None
-            gitops.stage(spec.host_path, changed)  # a removed shelf is skipped here ...
-            rel = ref_path.relative_to(spec.host_path)
-            return gitops.commit(  # ... and its deletion committed by the pathspec
-                spec.host_path,
-                f"self-learn: apply {record_id} → {rel} (reference retired)",
-                body=note,
-                paths=changed,
-            )
+            step = "commit"
+            try:
+                gitops.stage(spec.host_path, changed)  # a deleted shelf is skipped here ...
+                rel = ref_path.relative_to(spec.host_path)
+                return gitops.commit(  # ... and its deletion committed by the pathspec
+                    spec.host_path,
+                    f"self-learn: apply {record_id} → {rel} (reference retired)",
+                    body=note,
+                    paths=changed,
+                )
+            except gitops.GitOpsError as exc:
+                undone = _undo_host_write(spec.host_path, snapshot, changed)
+                raise gitops.GitOpsError(f"{exc} — {undone}") from exc
     except (gitops.GitOpsError, OSError, VerbError) as exc:
-        warning = (
-            f"REFERENCE RETIREMENT FAILED after the ledger commit ({exc}) "
-            f"— {ref_path} is stale, never lost (H-2); run `self-learn "
-            "recompile` to repair"
+        warning = _reference_retirement_failure(
+            exc, record_id, ref_path, surface if leaves_pointer else None,
+            changed, step=step, git=spec.mode == "git",
         )
         print(f"self-learn: {warning}", file=sys.stderr)
         warnings.append(warning)
         return None
+
+
+def _reference_retirement_failure(
+    exc: BaseException,
+    record_id: str,
+    shelf: Path,
+    surface: Path | None,
+    changed: list[Path],
+    *,
+    step: str,
+    git: bool,
+) -> str:
+    """The warning a failed shelf-retirement host phase leaves (gate SH2
+    finding 2): it names every file the write touched and says, truthfully,
+    what repairs it. ``recompile`` does not: it only re-adds ROUTED lessons,
+    so a retired lesson left behind is taken out by hand."""
+    files = ", ".join(str(p) for p in changed) or str(shelf)
+    lesson = f"{record_id}'s entry is still on {shelf}" + (
+        f", and its pointer in {surface}" if surface is not None else ""
+    )
+    if step == "check":
+        happened = f"nothing was written; {lesson}"
+    elif step == "commit":
+        happened = (
+            f"{files} were put back as they were and unstaged; {lesson}"
+            if "NOT fully undone" not in str(exc)
+            else f"{files} could not all be put back -- check them; {lesson} or partly removed"
+        )
+    else:
+        happened = f"the write stopped part-way through {files} -- check them"
+    commit = " and commit" if git else ""
+    return (
+        f"REFERENCE RETIREMENT FAILED after the ledger commit ({exc}) — {happened}. "
+        f"{record_id} stays retired in the ledger; `self-learn recompile` never takes a "
+        f"retired lesson out, so once the cause is fixed, take it out by hand{commit}. If "
+        "a later write then reads one of those files as hand-edited, `self-learn recompile "
+        "--adopt <file>#<region>` accepts it"
+    )
 
 
 def _retirement_host_phase(
@@ -4385,9 +4518,11 @@ def _plain_guard_candidates(spec: TargetSpec, *, removal: bool = False) -> list[
     """Gate G1 D1: the host files a write of *spec* will actually CHANGE --
     what the plain-host guard judges and gives ignore lines. That is
     :func:`_host_write_candidates` less a reference spec's pointer
-    surface when the write leaves it alone: a reference RETIREMENT
-    (*removal*) takes its entry off the shelf only, and a reference ROUTE
-    writes no pointer when the surface already names the shelf.
+    surface when the write leaves it alone: a reference ROUTE writes no
+    pointer when the surface already names the shelf. (*removal* drops the
+    surface too; a reference RETIREMENT is no longer judged here but on
+    its own plan, which knows whether the shelf empties and the pointer
+    goes -- :func:`_refuse_unsafe_shelf_retirement`, SH2.)
     (:func:`_host_write_candidates` itself stays whole: the git-mode
     snapshot wants every file the compile COULD touch.)"""
     paths = _host_write_candidates(spec)
@@ -4452,10 +4587,16 @@ def _refuse_unsafe_plain_paths(
     removal: bool = False,
     deleting: bool = False,
     skills_root: Path | None = None,
+    deleted: Iterable[Path] = (),
 ) -> list[tuple[Path, str]]:
     """G1: run :func:`_plain_write_check` over every path ONE write
     touches; raise when any is refused, naming every refused path. Returns
     the ``(repo, line)`` pairs the write needs in place first.
+
+    *deleting* asks the deletion's question (tracked?) of every one of
+    *paths*; *deleted* names the files a write that ALSO rewrites others
+    deletes (an emptied shelf, SH2), each asked that question alone and
+    needing no line, in the same one refusal.
 
     The refusal's kind (S-71) follows what could fix it. An ADDITION is
     :class:`DestinationUnavailable` -- another destination, or another
@@ -4482,6 +4623,10 @@ def _refuse_unsafe_plain_paths(
             problems.append(problem)
         elif repo is not None and line is not None:
             lines.append((repo, line))
+    for path in deleted:
+        problem = _plain_write_check(path, deleting=True)[2]
+        if problem is not None:
+            problems.append(problem)
     if not problems:
         return lines
     found = "; ".join(problems)
@@ -4540,16 +4685,21 @@ def _refuse_unsafe_plain_write(spec: TargetSpec, *, removal: bool = False) -> No
 
 
 def _ensure_plain_excludes(
-    paths: Iterable[Path], *, removal: bool = False, skills_root: Path | None = None
+    paths: Iterable[Path],
+    *,
+    removal: bool = False,
+    skills_root: Path | None = None,
+    deleted: Iterable[Path] = (),
 ) -> None:
     """G1, the write half: re-run the check (a file's tracking can change
     between pre-flight and write), then put each file's line in its repo's
     self-learn ``info/exclude`` block (:func:`gitops.ensure_excluded`,
     which takes that repo's lock). Called for plain hosts only, under the
-    host lock, just before the files are written."""
+    host lock, just before the files are written. A file the write deletes
+    (*deleted*) is checked too, and needs no line."""
     by_repo: dict[Path, list[str]] = {}
     for repo, line in _refuse_unsafe_plain_paths(
-        paths, removal=removal, skills_root=skills_root
+        paths, removal=removal, skills_root=skills_root, deleted=deleted
     ):
         by_repo.setdefault(repo, []).append(line)
     for repo, lines in by_repo.items():
@@ -5573,6 +5723,10 @@ def _execute_route(
             old_path.parent.parent,
             warnings,
             user_claude_md=user_claude_md,
+            # S-80: this route's own write lands first (onto the same shelf,
+            # it keeps that shelf from emptying), so the old shelf's check
+            # judges what the retirement will really change.
+            after_route=(spec, record),
         )
         old_observed_hash = _observe_retirement_region(old_retire)
 
@@ -5781,14 +5935,28 @@ def _execute_route(
             # route's own host write -- so these entries are written after
             # `_resync_three_regions`'s and predict what both writes leave
             # when they share the shelf or its pointer surface.
-            touched = touched + _shelf_retirement_records(
-                home,
-                old_retire.reference,
-                old_id,
-                by=f"{verb_label} {record_id} (supersedes {old_id})",
-                intent=intent,
-                after_route=(spec, routed_record),
-            )
+            #
+            # Gate SH2 finding 3: the old shelf may live in ANOTHER host
+            # (a project lesson superseding a skill lesson), whose files
+            # are read here for the prediction -- so under THAT host's
+            # lock, as its removal below is. Taken last, inside the ledger
+            # lock and this route's host lock: ledger before host, the one
+            # order (re-entrant when both hosts share a repository). The
+            # two host locks nest under the ledger lock, which one process
+            # holds at a time, so no other route can hold them the other way
+            # round; a host phase run without the ledger lock takes one host
+            # lock (plus, under G1, the lock of another repository only for
+            # a file a symlink takes there -- bounded by the lock timeout).
+            old_ref_spec = old_retire.reference[1]
+            with gitops.host_lock(old_ref_spec.host_path, old_ref_spec.mode):
+                touched = touched + _shelf_retirement_records(
+                    home,
+                    old_retire.reference,
+                    old_id,
+                    by=f"{verb_label} {record_id} (supersedes {old_id})",
+                    intent=intent,
+                    after_route=(spec, routed_record),
+                )
 
         if intent is not None and execution is not None:
             # Collapse roll-forward commits use the intent's pinned subject
@@ -6581,9 +6749,9 @@ def commit_drift(
 #: leaving the references file in the SAME locked section the status
 #: flips in (the leg `retire`/`graduate` already take, `_retire_impl`;
 #: tested under reject and defer, both host modes, in
-#: `tests/test_reconsider_off_shelf.py`). When no entry is left, the
-#: shelf loses its pointer line, as after every other retirement (S-77
-#: (3) as amended, 2026-10-07; `_retire_reference_host_phase`). A
+#: `tests/test_reconsider_off_shelf.py`). When nothing but self-learn's
+#: header is left, the shelf loses its pointer line, as after every other
+#: retirement (S-77 (3) as amended, 2026-10-07; `_retire_reference_host_phase`). A
 #: hook-routed record's reconsider correction still refuses by name: its
 #: removal leg is untested under a non-graduating resolution (U5's own
 #: gate tested only the managed-target shape, `build-u5.md` test 3).
