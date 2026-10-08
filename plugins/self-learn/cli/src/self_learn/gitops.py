@@ -77,12 +77,17 @@ import fcntl
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator
 
+from .primitives import fsops
+
 __all__ = [
+    "EXCLUDE_BEGIN",
+    "EXCLUDE_END",
     "EXIT_GIT_FAILED",
     "head_sha",
     "EXIT_HALF_WRITTEN",
@@ -99,9 +104,14 @@ __all__ = [
     "commit_lock",
     "commit_lock_path",
     "dirty_paths",
+    "ensure_excluded",
+    "exclude_pattern",
+    "git_path",
     "has_remote",
     "host_lock",
     "host_lock_path",
+    "ignored_with_line",
+    "in_index_or_head",
     "is_tracked",
     "known_paths",
     "paths_dirty",
@@ -114,6 +124,7 @@ __all__ = [
     "stage_and_commit",
     "staged_diff",
     "toplevel",
+    "work_tree_of",
 ]
 
 #: Distinct non-zero exits (08 §1 Push pin: failures are loud AND distinct).
@@ -506,16 +517,30 @@ def host_lock_path(path: Path, mode: str) -> Path:
     ``<git-common-dir>/self-learn.commit.lock``, derived from the repo
     itself.
 
-    ``mode == "plain"`` — a plain host has no ``.git`` to hold a lock
-    file, so the lock moves to the global cache dir, keyed by the SAME
-    slug shape ``hosts.slug_for`` uses (the sentinel's own reasoning,
-    ``sentinel.py``: global and NOT ledger-home-namespaced, because a host
-    can be registered by more than one ledger home and the contended
-    resource is the HOST's file, not any one home's view of it):
-    ``${XDG_CACHE_HOME:-~/.cache}/self-learn/host-<slug>.commit.lock``."""
+    ``mode == "plain"`` — a plain host OUTSIDE any git work tree has no
+    ``.git`` to hold a lock file, so the lock moves to the global cache
+    dir, keyed by the SAME slug shape ``hosts.slug_for`` uses (the
+    sentinel's own reasoning, ``sentinel.py``: global and NOT
+    ledger-home-namespaced, because a host can be registered by more than
+    one ledger home and the contended resource is the HOST's file, not
+    any one home's view of it):
+    ``${XDG_CACHE_HOME:-~/.cache}/self-learn/host-<slug>.commit.lock``.
+
+    A plain host INSIDE a git work tree (every live plain host, G1
+    2026-10-07) locks at :func:`commit_lock_path` -- the same file a
+    git-mode registration of that repo uses. Keyed by the old slug path,
+    one repo registered twice in two modes (claude-skills: the skills root
+    and a project host), or as a main checkout plus a linked worktree,
+    held two different locks, so two self-learn writers into one repo
+    (and into its one shared ``info/exclude``) shared none. The mode is
+    not read from here: this only chooses where the lock FILE lives. A
+    path with no ``.git`` above it never runs git at all (PLAIN4)."""
     if mode == "git":
         return commit_lock_path(Path(path))
     if mode == "plain":
+        if _git_marker_above(Path(path).expanduser().resolve()) is not None:
+            with contextlib.suppress(GitOpsError):
+                return commit_lock_path(Path(path))
         # N-1 (code gate r1 fold): `hosts.slug_for` used to be
         # duplicated here verbatim (as `_plain_host_cache_key`) to dodge
         # a `gitops`<->`hosts` import cycle (`hosts.py` already imports
@@ -756,6 +781,211 @@ def check_ignore(repo: Path, target: Path | str) -> bool:
     raise GitOpsError(
         f"git check-ignore failed: {(proc.stderr or proc.stdout).strip()}"
     )
+
+
+# ------------------------------------------- G1: plain hosts get ignored files
+#
+# D-DEPLOY §1.1 (2026-10-06): "self-learn writes a file in a repo only after
+# git ignores that file." The probes below are read-only; the one writer,
+# :func:`ensure_excluded`, touches only the repo's PRIVATE ignore file
+# (``$(git rev-parse --git-path info/exclude)``, never committed, shared by
+# every worktree of the repo).
+
+#: The managed block in a repo's ``info/exclude``. Lines outside it are the
+#: operator's and are never touched.
+EXCLUDE_BEGIN = "# self-learn:begin (managed by self-learn; one line per file it writes in this repo)"
+EXCLUDE_END = "# self-learn:end"
+_EXCLUDE_BEGIN_PREFIX = "# self-learn:begin"
+
+
+def _git_marker_above(path: Path) -> Path | None:
+    """The nearest directory at or above *path* holding a ``.git`` entry
+    (a repo's ``.git`` dir, or a linked worktree's/submodule's ``.git``
+    file), or ``None``. A pure filesystem walk: it is the cheap
+    pre-filter that keeps a path outside every repo from costing (or
+    showing) a single git subprocess (PLAIN4). Its answer is never the
+    final word on a work tree -- :func:`work_tree_of` asks git for that."""
+    for d in (path, *path.parents):
+        if (d / ".git").exists():
+            return d
+    return None
+
+
+def work_tree_of(path: Path | str) -> Path | None:
+    """The top of the git work tree the REAL (symlink-resolved) *path*
+    lives in, resolved, or ``None`` when it lives in none. *path* need not
+    exist yet: the nearest existing directory above it is asked. Asked of
+    git (``rev-parse --show-toplevel``), never inferred from ``.git``
+    presence alone; a path with no ``.git`` above it is ``None`` without a
+    git call."""
+    real = Path(os.path.realpath(Path(path).expanduser()))
+    probe = real.parent
+    while not probe.is_dir() and probe != probe.parent:
+        probe = probe.parent
+    if _git_marker_above(probe) is None:
+        return None
+    proc = _git(probe, "rev-parse", "--show-toplevel")
+    if proc.returncode != 0:
+        return None  # e.g. inside a .git directory: no work tree there
+    top = proc.stdout.strip()
+    return Path(top).resolve() if top else None
+
+
+def in_index_or_head(repo: Path, rel: str) -> bool:
+    """Whether git knows *rel* (relative to *repo*'s work-tree root) in
+    the INDEX or in ``HEAD`` -- what "tracked" means for the plain-host
+    write guard. The ``HEAD`` half is :func:`known_paths`'s own lesson: a
+    ``git mv``'d or ``git rm --cached``'d path is gone from the index but
+    still in ``HEAD`` until the change is committed, and must still count.
+    (``known_paths`` itself also admits any path that merely EXISTS, so it
+    cannot answer "tracked".) Pathspec magic is off: a file name is a
+    name, never a glob. A repo with no commit yet has no ``HEAD``; the
+    index alone answers then."""
+    proc = _git(
+        repo, "--literal-pathspecs", "ls-files", "--error-unmatch",
+        "--with-tree=HEAD", "--", rel,
+    )
+    if proc.returncode == 0:
+        return True
+    if proc.returncode == 1:
+        return False
+    if _git(repo, "rev-parse", "-q", "--verify", "HEAD").returncode != 0:
+        return (
+            _git(
+                repo, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", rel
+            ).returncode
+            == 0
+        )
+    raise GitOpsError(
+        f"git ls-files in {repo} failed: {(proc.stderr or proc.stdout).strip()}"
+    )
+
+
+def exclude_pattern(rel: str) -> str:
+    """The one ignore line naming exactly *rel*: anchored at the work-tree
+    root (``/<rel>``, so a leading ``!`` or ``#`` in a name is never read
+    as a negation or a comment) with the glob characters and trailing
+    spaces escaped (gitignore(5))."""
+    out = []
+    for ch in rel:
+        out.append("\\" + ch if ch in "\\*?[" else ch)
+    text = "".join(out)
+    stripped = text.rstrip(" ")
+    return "/" + stripped + "\\ " * (len(text) - len(stripped))
+
+
+def ignored_with_line(repo: Path, rel: str, line: str) -> bool:
+    """D-DEPLOY §0.5's probe: would git ignore *rel* if *line* were in the
+    repo's private ignore file? The line is put in a throwaway file outside
+    every repo and handed to git as ``core.excludesFile`` -- the LOWEST
+    ranked ignore source -- so a yes here is a yes from ``info/exclude``
+    too, which ranks above it (gitignore(5) precedence). ``--no-index``
+    answers for the pattern alone, tracked or not; tracking is
+    :func:`in_index_or_head`'s question. ``-q`` without ``-v``: with
+    ``-v``, a path matched only by a NEGATION also exits 0 (measured,
+    git 2.56.0). Nothing in the host or the ledger is written."""
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", prefix="self-learn-exclude-probe-", suffix=".txt"
+    ) as fh:
+        fh.write(line + "\n")
+        fh.flush()
+        # No `--literal-pathspecs` here: check-ignore refuses that magic
+        # (exit 128, measured); it reads its arguments as plain names.
+        proc = _git(
+            repo, "-c", f"core.excludesFile={fh.name}",
+            "check-ignore", "-q", "--no-index", "--", rel,
+        )
+    if proc.returncode in (0, 1):
+        return proc.returncode == 0
+    raise GitOpsError(
+        f"git check-ignore in {repo} failed: {(proc.stderr or proc.stdout).strip()}"
+    )
+
+
+def git_path(repo: Path, name: str) -> Path:
+    """``git rev-parse --git-path <name>``, absolute. For ``info/exclude``
+    this is the COMMON dir's file, so every linked worktree of a repo
+    names the same one."""
+    out = Path(_git_ok(repo, "rev-parse", "--git-path", name).stdout.strip())
+    return out if out.is_absolute() else Path(repo) / out
+
+
+def _is_exclude_begin(line: str) -> bool:
+    """Whether *line* opens the self-learn block: exactly
+    :data:`EXCLUDE_BEGIN`, or ``# self-learn:begin`` alone or followed by
+    a space (gate G1 N4). An operator's ``# self-learn:beginning notes``
+    is just a comment."""
+    bare = line.rstrip("\r\n")
+    return (
+        bare == EXCLUDE_BEGIN
+        or bare == _EXCLUDE_BEGIN_PREFIX
+        or bare.startswith(_EXCLUDE_BEGIN_PREFIX + " ")
+    )
+
+
+def _exclude_text_with(text: str, patterns: set[str], where: Path) -> str:
+    """*text* (an ``info/exclude`` file) with every one of *patterns* in
+    the self-learn block -- appended at the end, as a new block, when there
+    is none. Lines outside the block are kept byte for byte; the block's
+    lines are kept and the new ones merged in, sorted. Returns *text*
+    itself when nothing is missing."""
+    lines = text.splitlines(keepends=True)
+    begins = [i for i, line in enumerate(lines) if _is_exclude_begin(line)]
+    ends = [i for i, line in enumerate(lines) if line.rstrip("\r\n") == EXCLUDE_END]
+    if not begins and not ends:
+        body = "".join(f"{p}\n" for p in sorted(patterns))
+        head = text if not text or text.endswith("\n") else text + "\n"
+        return f"{head}{EXCLUDE_BEGIN}\n{body}{EXCLUDE_END}\n"
+    if len(begins) != 1 or len(ends) != 1 or ends[0] < begins[0]:
+        raise GitOpsError(
+            f"{where}: the self-learn block is malformed (one '{_EXCLUDE_BEGIN_PREFIX}' "
+            f"line and one '{EXCLUDE_END}' line after it are expected) -- fix it by hand"
+        )
+    begin, end = begins[0], ends[0]
+    current = [line.rstrip("\r\n") for line in lines[begin + 1 : end]]
+    if patterns <= set(current):
+        return text
+    merged = sorted({c for c in current if c.strip()} | patterns)
+    return "".join(
+        [*lines[: begin + 1], *(f"{p}\n" for p in merged), *lines[end:]]
+    )
+
+
+def ensure_excluded(repo: Path, patterns: Iterable[str]) -> bool:
+    """Put each of *patterns* (from :func:`exclude_pattern`) in the
+    self-learn block of *repo*'s private ignore file, creating the file or
+    the block when absent. Never removes a line, in or out of the block.
+    Returns whether the file changed.
+
+    Takes *repo*'s :func:`commit_lock` itself: the file is shared by every
+    registration and every worktree of the repo, so this is the one lock
+    every writer of it agrees on. A caller holding :func:`host_lock` for a
+    plain host in the same repo already holds that very file
+    (:func:`host_lock_path`), so this is a re-entrant pass-through."""
+    wanted = set(patterns)
+    if not wanted:
+        return False
+    with commit_lock(repo):
+        exclude = git_path(repo, "info/exclude")
+        try:
+            text = exclude.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            text = ""
+        except UnicodeDecodeError as exc:
+            # Gate G1 N2: a GitOpsError, so every host-phase caller handles
+            # it like any other failure; the file is never rewritten.
+            raise GitOpsError(
+                f"{exclude} is not UTF-8 text ({exc.reason} at byte {exc.start}) -- "
+                "self-learn will not rewrite it; fix its encoding by hand"
+            ) from exc
+        new_text = _exclude_text_with(text, wanted, exclude)
+        if new_text == text:
+            return False
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        fsops.atomic_write(
+            exclude, new_text, preserve_mode=True, fsync=True, follow_symlinks=True
+        )
+        return True
 
 
 @dataclass(frozen=True)
