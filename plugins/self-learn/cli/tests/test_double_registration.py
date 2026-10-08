@@ -783,6 +783,36 @@ def test_a_rebind_checks_the_new_path_for_the_git_root_too(tmp_path):
     assert sorted(p.name for p in (home / "projects").iterdir()) == buckets
 
 
+def test_the_mode_flip_refusal_names_the_registration_on_both_commands(
+    tmp_path, monkeypatch, capsys
+):
+    """A bare `host remove` drops both registrations and an `add` without
+    `--skills-root` registers a project, so the refusal names the flags;
+    running the two named commands changes only that registration. Red on
+    6a27412 (bare remove, no `--skills-root` on the add)."""
+    env = _double(tmp_path)
+    home, repo = env.ledger, env.host
+    with pytest.raises(hosts.HostsError) as root_flip:
+        host_add(home, repo, "skills-root", mode="plain")
+    with pytest.raises(hosts.HostsError) as project_flip:
+        host_add(home, repo, "project", mode="git")
+    assert f"`self-learn host remove {repo} --project`" in str(project_flip.value)
+    assert f"`self-learn host add {repo} --mode git`" in str(project_flip.value)
+    remove, add = re.findall(r"`self-learn (host [^`]*)`", str(root_flip.value))
+    assert remove == f"host remove {repo} --skills-root"
+    assert add == f"host add {repo} --skills-root --mode plain"
+    git(repo, "rm", "-q", "--cached", "CLAUDE.md")  # nothing here blocks a plain root
+    git(repo, "commit", "-q", "-m", "untrack CLAUDE.md")
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+
+    assert cli.main(shlex.split(remove)) == 0
+    assert cli.main(shlex.split(add)) == 0
+
+    assert host_mode(home, repo, registration="skills-root") == "plain"
+    assert host_mode(home, repo, registration="project") == "plain"  # untouched
+    assert [Path(p).resolve() for p in load_hosts(home).projects] == [repo.resolve()]
+
+
 # ------------------------------------------------- --selftest's hosts row
 
 
@@ -872,6 +902,32 @@ def test_a_steward_sheet_retiring_a_stranded_lesson_applies(tmp_path):
     assert item.state == "applied", (item.kind, item.detail)
     assert rid not in (repo / "CLAUDE.md").read_text(encoding="utf-8")
     assert _status(repo) == ""
+
+
+def test_the_hosts_row_names_the_way_out_for_a_plain_root(tmp_path, monkeypatch):
+    """The reverse case (root `plain`, project `git`): a plain root's
+    SKILL.md is tracked, so `reroute --dest skill-md` is refused too; the
+    row names switching the root to git instead, and doing that clears
+    it. Red on 6a27412 (the row named the reroute)."""
+    env, rid = _lesson_left_on_the_root_claude_md(tmp_path, agree="plain", diverge_to="git")
+    home, repo = env.ledger, env.host
+
+    verdict, msg = selfcheck._check_hosts(home)
+    assert verdict is selfcheck.Verdict.FAIL
+    assert "skills-root=plain, project=git" in msg and rid in msg
+    assert "switch the skills root to git mode" in msg
+    assert "--dest skill-md" not in msg
+    with pytest.raises(verbs.NeedsPerson, match="SKILL.md is tracked by git"):
+        verbs.reroute(home, rid, dest="skill-md", no_push=True)  # why the row says so
+    remove, add = re.findall(r"`self-learn (host [^`]*)`", msg)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+
+    assert cli.main(shlex.split(remove)) == 0
+    assert cli.main(shlex.split(add)) == 0
+
+    assert host_mode(home, repo, registration="skills-root") == "git"
+    assert host_mode(home, repo, registration="project") == "git"
+    assert selfcheck._check_hosts(home)[0] is selfcheck.Verdict.PASS
 
 
 def test_the_hosts_row_passes_a_lesson_on_the_root_claude_md_when_the_modes_agree(tmp_path):

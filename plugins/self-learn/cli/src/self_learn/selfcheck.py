@@ -1166,8 +1166,12 @@ def _check_hosts(home: Path) -> tuple[Verdict, str]:
     twice in two modes still has routed skill lessons on the skills
     root's own ``claude-md`` -- that destination is refused there
     (``verbs._resolve_target_unguarded``), so ``recompile`` warns and
-    skips them and their lines are no longer managed. UNMEASURED with no
-    ``hosts.yaml`` (nothing registered to show), like the drift row."""
+    skips them and their lines are no longer managed. The FAIL names the
+    way out for the root's mode: under a git root, move each lesson to
+    its SKILL.md (a removal is never refused); under a plain root, whose
+    SKILL.md files git tracks, switch the root to git mode. UNMEASURED
+    with no ``hosts.yaml`` (nothing registered to show), like the drift
+    row."""
     state = home_state(home)
     if state in ("missing", "not-a-repo"):
         return Verdict.FAIL, home_state_message(state, home)
@@ -1209,11 +1213,30 @@ def _check_hosts(home: Path) -> tuple[Verdict, str]:
             if domain.is_canon_live(record) and routing.get("destination") == "claude-md":
                 stranded.append(record.id)
     if stranded:
+        if root_mode == "git":
+            # A removal is never refused there (S-82), and a git skills
+            # root takes the lesson in its SKILL.md.
+            advice = (
+                "move each to its SKILL.md (`self-learn reroute <id> --dest "
+                "skill-md`), or retire it"
+            )
+        else:
+            # A plain skills root's SKILL.md is tracked by git, so it takes
+            # no lesson either (S-80): a reroute there is refused too. With
+            # the root in git mode the two modes agree (the project is git)
+            # and the destination is no longer refused.
+            advice = (
+                "a plain skills root's SKILL.md takes no lesson while git "
+                "tracks it (S-80), so a reroute is refused too; switch the "
+                f"skills root to git mode (`self-learn host remove {resolved_root} "
+                f"--skills-root --gate-only`, then `self-learn host add "
+                f"{resolved_root} --skills-root --mode git`), after which the "
+                "two modes agree and the destination is no longer refused"
+            )
         return Verdict.FAIL, (
             f"{shown} — {len(stranded)} routed skill lesson(s) on the skills "
             f"root's own claude-md ({', '.join(stranded[:5])}), refused while the "
-            "two registrations' modes differ; route each to its SKILL.md "
-            "(`self-learn reroute <id> --dest skill-md`)"
+            f"two registrations' modes differ; {advice}"
         )
     return Verdict.PASS, shown
 

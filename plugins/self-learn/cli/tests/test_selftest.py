@@ -814,9 +814,9 @@ def test_reach_undecodable_resolved_record_skipped_not_crashed(env):
     assert "1 reference-routed record(s) reachable" in reason
 
 
-def test_selftest_survives_corrupt_resolved_record_prints_all_nine_rows(env, capsys):
+def test_selftest_survives_corrupt_resolved_record_prints_every_row(env, capsys):
     """The end-to-end proof: `_section_targets` (feeding checks (b)/(c),
-    called BEFORE the nine-check loop even runs) shares the identical
+    called BEFORE the check loop even runs) shares the identical
     from_path/RecordError gap — left unfixed, a corrupt resolved record
     file killed `--selftest` before it printed a single row, not just the
     reach/drift ones. Exercised through the full `cli.main(["--selftest"])`
@@ -834,8 +834,11 @@ def test_selftest_survives_corrupt_resolved_record_prints_all_nine_rows(env, cap
     assert rc == 0
     # S-82 (GM, 2026-10-08): the `hosts` row joined the selftest, one more PASS.
     assert "10 passed, 0 unmeasured, 0 failed" in out
+    # S-82 (GM fold, 2026-10-08): the `hosts` row is named here too, not
+    # only counted, and the test no longer says "nine rows".
     for check in (
-        "capture", "compiler", "markers", "drift", "reach", "hooks", "surface", "sentinel",
+        "capture", "compiler", "markers", "drift", "reach", "hooks", "surface",
+        "hosts", "sentinel",
     ):
         assert f"PASS {check}" in out
 

@@ -738,10 +738,16 @@ def host_add(
             existing_mode = host_mode(home, target, registration="project")
 
     if existing_mode is not None and existing_mode != mode:
+        # S-82: name the registration on both commands. A bare `host
+        # remove` drops EVERY registration of the path (claude-skills is
+        # the skills root and a project host), and an `add` without
+        # `--skills-root` registers a project.
+        which = "--skills-root" if kind == "skills-root" else "--project"
+        add_flag = " --skills-root" if kind == "skills-root" else ""
         raise HostsError(
             f"{kind} host {target} is already registered as "
-            f"{existing_mode!r} — `self-learn host remove {target}` "
-            f"then `self-learn host add {target} --mode {mode}` to "
+            f"{existing_mode!r} — `self-learn host remove {target} {which}` "
+            f"then `self-learn host add {target}{add_flag} --mode {mode}` to "
             "change it (MODE is set once; there is no in-place flip)"
         )
 
