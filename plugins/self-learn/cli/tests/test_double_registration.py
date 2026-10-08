@@ -655,6 +655,57 @@ def test_a_project_hook_script_lands_in_the_git_root_and_is_committed(
     assert _status(repo) == ""
 
 
+def test_retiring_a_committed_hook_script_in_the_git_root_deletes_and_commits_it(tmp_path):
+    """R1/M12: the script's removal goes through the skills root's git
+    registration -- a commit that deletes it, never the plain project's
+    "tracked by git" refusal."""
+    env = _double(tmp_path)
+    home, repo = env.ledger, env.host
+    rid, _record_ = _project_hook_lesson(home, repo, "lrn-8b000014")
+    routed = verbs.route(home, rid, dest="hook", no_push=True)
+    assert routed.target is not None and routed.target.is_file()  # control
+    rel = routed.target.relative_to(repo).as_posix()
+    assert git(repo, "ls-files", "--", rel).stdout.strip() == rel  # control: tracked
+    head = _head(repo)
+
+    verbs.graduate(home, rid, no_push=True)
+
+    assert _record(home, rid).status == "superseded"
+    assert not routed.target.exists()
+    assert _head(repo) != head
+    assert _commit_files(repo, _head(repo)) == [rel]  # the deletion, committed
+    assert git(repo, "ls-files", "--", rel).stdout.strip() == ""
+    assert _status(repo) == ""
+
+
+def test_a_skill_reference_route_and_reroute_go_through_the_git_root(tmp_path):
+    """R1/M18: a skill lesson's shelf and its SKILL.md pointer are the
+    skills root's files -- committed in git mode, and a reroute off the
+    shelf commits the removal."""
+    env = _double(tmp_path)
+    home, repo = env.ledger, env.host
+    rid = _skill_lesson(home, "lrn-8b000015")
+
+    routed = verbs.route(home, rid, dest="reference", no_push=True)
+
+    shelf = env.skill_dir / "references" / "LEARNINGS.md"
+    assert routed.mode == "git" and routed.host_commit_sha is not None
+    assert rid in shelf.read_text(encoding="utf-8")
+    assert set(_commit_files(repo, routed.host_commit_sha)) == {
+        shelf.relative_to(repo).as_posix(), env.skill_md.relative_to(repo).as_posix(),
+    }
+    assert _status(repo) == ""
+    head = _head(repo)
+
+    verbs.reroute(home, rid, dest="skill-md", no_push=True)
+
+    assert _head(repo) != head  # committed in git mode
+    assert not shelf.exists() or rid not in shelf.read_text(encoding="utf-8")
+    assert rid in env.skill_md.read_text(encoding="utf-8")
+    assert _record(home, rid).routing["destination"] == "skill-md"
+    assert _status(repo) == ""
+
+
 def test_a_new_skill_route_creates_and_commits_the_skill(tmp_path, commits_under_pause):
     """*control*: `new-skill` through the git root scaffolds the plugin,
     appends the marketplace entry and commits them, under the pause."""
@@ -797,3 +848,18 @@ def test_a_steward_sheet_retiring_a_stranded_lesson_applies(tmp_path):
     assert item.state == "applied", (item.kind, item.detail)
     assert rid not in (repo / "CLAUDE.md").read_text(encoding="utf-8")
     assert _status(repo) == ""
+
+
+def test_the_hosts_row_passes_a_lesson_on_the_root_claude_md_when_the_modes_agree(tmp_path):
+    """R1/M19: with one mode both ways the destination is not refused, so
+    a lesson on it is not stranded."""
+    env = _double(tmp_path, root="git", project="git")
+    home, repo = env.ledger, env.host
+    rid = _skill_lesson(home, "lrn-8b000013")
+    verbs.route(home, rid, dest="claude-md", no_push=True)
+    assert rid in (repo / "CLAUDE.md").read_text(encoding="utf-8")  # control
+
+    verdict, msg = selfcheck._check_hosts(home)
+
+    assert verdict is selfcheck.Verdict.PASS, msg
+    assert msg.endswith("skills-root=git, project=git")
