@@ -83,7 +83,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator
 
+from .primitives import fsops
+
 __all__ = [
+    "EXCLUDE_BEGIN",
+    "EXCLUDE_END",
     "EXIT_GIT_FAILED",
     "head_sha",
     "EXIT_HALF_WRITTEN",
@@ -100,6 +104,7 @@ __all__ = [
     "commit_lock",
     "commit_lock_path",
     "dirty_paths",
+    "ensure_excluded",
     "exclude_pattern",
     "git_path",
     "has_remote",
@@ -767,7 +772,16 @@ def check_ignore(repo: Path, target: Path | str) -> bool:
 # ------------------------------------------- G1: plain hosts get ignored files
 #
 # D-DEPLOY §1.1 (2026-10-06): "self-learn writes a file in a repo only after
-# git ignores that file." The probes below are read-only.
+# git ignores that file." The probes below are read-only; the one writer,
+# :func:`ensure_excluded`, touches only the repo's PRIVATE ignore file
+# (``$(git rev-parse --git-path info/exclude)``, never committed, shared by
+# every worktree of the repo).
+
+#: The managed block in a repo's ``info/exclude``. Lines outside it are the
+#: operator's and are never touched.
+EXCLUDE_BEGIN = "# self-learn:begin (managed by self-learn; one line per file it writes in this repo)"
+EXCLUDE_END = "# self-learn:end"
+_EXCLUDE_BEGIN_PREFIX = "# self-learn:begin"
 
 
 def _git_marker_above(path: Path) -> Path | None:
@@ -880,6 +894,64 @@ def git_path(repo: Path, name: str) -> Path:
     names the same one."""
     out = Path(_git_ok(repo, "rev-parse", "--git-path", name).stdout.strip())
     return out if out.is_absolute() else Path(repo) / out
+
+
+def _exclude_text_with(text: str, patterns: set[str], where: Path) -> str:
+    """*text* (an ``info/exclude`` file) with every one of *patterns* in
+    the self-learn block -- appended at the end, as a new block, when there
+    is none. Lines outside the block are kept byte for byte; the block's
+    lines are kept and the new ones merged in, sorted. Returns *text*
+    itself when nothing is missing."""
+    lines = text.splitlines(keepends=True)
+    begins = [i for i, line in enumerate(lines) if line.startswith(_EXCLUDE_BEGIN_PREFIX)]
+    ends = [i for i, line in enumerate(lines) if line.rstrip("\r\n") == EXCLUDE_END]
+    if not begins and not ends:
+        body = "".join(f"{p}\n" for p in sorted(patterns))
+        head = text if not text or text.endswith("\n") else text + "\n"
+        return f"{head}{EXCLUDE_BEGIN}\n{body}{EXCLUDE_END}\n"
+    if len(begins) != 1 or len(ends) != 1 or ends[0] < begins[0]:
+        raise GitOpsError(
+            f"{where}: the self-learn block is malformed (one '{_EXCLUDE_BEGIN_PREFIX}' "
+            f"line and one '{EXCLUDE_END}' line after it are expected) -- fix it by hand"
+        )
+    begin, end = begins[0], ends[0]
+    current = [line.rstrip("\r\n") for line in lines[begin + 1 : end]]
+    if patterns <= set(current):
+        return text
+    merged = sorted({c for c in current if c.strip()} | patterns)
+    return "".join(
+        [*lines[: begin + 1], *(f"{p}\n" for p in merged), *lines[end:]]
+    )
+
+
+def ensure_excluded(repo: Path, patterns: Iterable[str]) -> bool:
+    """Put each of *patterns* (from :func:`exclude_pattern`) in the
+    self-learn block of *repo*'s private ignore file, creating the file or
+    the block when absent. Never removes a line, in or out of the block.
+    Returns whether the file changed.
+
+    Takes *repo*'s :func:`commit_lock` itself: the file is shared by every
+    registration and every worktree of the repo, so this is the one lock
+    every writer of it agrees on. A caller holding :func:`host_lock` for a
+    plain host in the same repo already holds that very file
+    (:func:`host_lock_path`), so this is a re-entrant pass-through."""
+    wanted = set(patterns)
+    if not wanted:
+        return False
+    with commit_lock(repo):
+        exclude = git_path(repo, "info/exclude")
+        try:
+            text = exclude.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            text = ""
+        new_text = _exclude_text_with(text, wanted, exclude)
+        if new_text == text:
+            return False
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        fsops.atomic_write(
+            exclude, new_text, preserve_mode=True, fsync=True, follow_symlinks=True
+        )
+        return True
 
 
 @dataclass(frozen=True)

@@ -3770,6 +3770,8 @@ def _retire_reference_host_phase(
     assert spec.refs_dir is not None
     try:
         with gitops.host_lock(spec.host_path, spec.mode):
+            if spec.mode == "plain":
+                _ensure_plain_excludes([ref_path], removal=True)  # G1
             result = retire_reference(spec.refs_dir, record_id, dest=spec.ref_name)
             if not result.applied or spec.mode != "git":
                 return None
@@ -3781,7 +3783,7 @@ def _retire_reference_host_phase(
                 body=note,
                 paths=[ref_path],
             )
-    except (gitops.GitOpsError, OSError) as exc:
+    except (gitops.GitOpsError, OSError, VerbError) as exc:
         warning = (
             f"REFERENCE RETIREMENT FAILED after the ledger commit ({exc}) "
             f"— {ref_path} is stale, never lost (H-2); run `self-learn "
@@ -4225,6 +4227,19 @@ def _refuse_unsafe_plain_write(spec: TargetSpec, *, removal: bool = False) -> No
     _refuse_unsafe_plain_paths(_host_write_candidates(spec), removal=removal)
 
 
+def _ensure_plain_excludes(paths: Iterable[Path], *, removal: bool = False) -> None:
+    """G1, the write half: re-run the check (a file's tracking can change
+    between pre-flight and write), then put each file's line in its repo's
+    self-learn ``info/exclude`` block (:func:`gitops.ensure_excluded`,
+    which takes that repo's lock). Called for plain hosts only, under the
+    host lock, just before the files are written."""
+    by_repo: dict[Path, list[str]] = {}
+    for repo, line in _refuse_unsafe_plain_paths(paths, removal=removal):
+        by_repo.setdefault(repo, []).append(line)
+    for repo, lines in by_repo.items():
+        gitops.ensure_excluded(repo, lines)
+
+
 def _snapshot_host_files(paths: list[Path]) -> _HostSnapshot:
     """The bytes and mode of each of *paths* right now (``None`` = absent),
     so a host write whose commit is refused can be put back exactly."""
@@ -4324,6 +4339,12 @@ def _host_phase(
     (``gitops._held_locks``)."""
     try:
         with gitops.host_lock(spec.host_path, spec.mode):
+            if spec.mode == "plain":
+                # G1 (D-DEPLOY §1.1): the ignore line goes in first, under
+                # this lock, just before the file is written -- and the
+                # guard runs once more here, since the file's tracking can
+                # change between the pre-flight and this write.
+                _ensure_plain_excludes(_host_write_candidates(spec))
             snapshot = (
                 _snapshot_host_files(_host_write_candidates(spec))
                 if spec.mode == "git"
@@ -9686,7 +9707,27 @@ def recompile(
                 if spec.pointer_surface is not None
                 else None
             )
-            with gitops.commit_lock(host_repo):  # ledger→host order
+            # `host_lock` is `commit_lock`'s own file for a git host (UN8);
+            # for a plain host it is the host's real lock (G1: `commit_lock`
+            # refuses outright on a plain host outside any repo).
+            with gitops.host_lock(host_repo, spec.mode):  # ledger→host order
+                if spec.mode == "plain":
+                    # G1: each file's ignore line before its first write.
+                    try:
+                        _ensure_plain_excludes(
+                            [probe]
+                            + (
+                                [spec.pointer_surface]
+                                if spec.pointer_surface is not None and not skip_pointer
+                                else []
+                            )
+                        )
+                    except (VerbError, gitops.GitOpsError) as exc:
+                        result.entries.append(
+                            RecompileEntry(target=probe, changed=False, skipped=str(exc))
+                        )
+                        result.warnings.append(f"{probe}: {exc}")
+                        continue
                 ref_snapshot = _snapshot_host_files(
                     [probe]
                     + ([spec.pointer_surface] if spec.pointer_surface is not None else [])
@@ -9741,7 +9782,20 @@ def recompile(
                 # `host_repo` on EITHER commit — a leg that skips this
                 # would leave the whole backfill committed and never
                 # pushed (r2 NOTE 9, criterion E8).
-                if applied:
+                if spec.mode != "git":
+                    # G1: a plain host is never committed to (PLAIN11/H-j)
+                    # -- this leg used to stage and commit regardless of
+                    # mode, which in a plain host that is a git repo
+                    # committed the shelf into the user's history, and with
+                    # the shelf now ignored would fail and undo the repair.
+                    if applied:
+                        result.entries.append(RecompileEntry(target=probe, changed=True))
+                    if pointer_changed:
+                        assert spec.pointer_surface is not None
+                        result.entries.append(
+                            RecompileEntry(target=spec.pointer_surface, changed=True)
+                        )
+                elif applied:
                     rel = probe.relative_to(host_repo)
                     try:
                         gitops.stage(host_repo, [probe])
@@ -9764,7 +9818,7 @@ def recompile(
                         if host_repo not in touched_hosts:
                             touched_hosts.append(host_repo)
 
-                if pointer_changed:
+                if pointer_changed and spec.mode == "git":
                     pointer_surface = spec.pointer_surface
                     assert pointer_surface is not None
                     prel = pointer_surface.relative_to(host_repo)
@@ -9893,6 +9947,17 @@ def recompile(
             # own path (UN8) — this widens to plain without moving the
             # git-mode lock at all.
             with gitops.host_lock(host_repo, hook_mode):  # ledger→host order
+                if hook_mode == "plain":
+                    # G1: a plain host's script must be one git ignores --
+                    # its line first, or the script is left alone, loudly.
+                    try:
+                        _ensure_plain_excludes([script_abs])
+                    except (VerbError, gitops.GitOpsError) as exc:
+                        result.entries.append(
+                            RecompileEntry(target=script_abs, changed=False, skipped=str(exc))
+                        )
+                        result.warnings.append(f"{script_abs}: {exc}")
+                        continue
                 hook_snapshot = _snapshot_host_files([script_abs])
                 apply_result = _write_hook_script(
                     script_abs, (record.routing or {})["hook"]["script"]
