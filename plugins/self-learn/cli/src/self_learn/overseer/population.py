@@ -339,7 +339,7 @@ def _always_loaded_zero_fire_nudges(home: Path, week: str) -> list[dict]:
             if isinstance(rid, str):
                 fired_ids.add(rid)
 
-        # A lesson replaced by `supersede` or `teach --supersedes` keeps its
+        # A lesson that `supersede` or `teach --supersedes` replaced keeps its
         # fires: a fire on any lesson in a replacement chain counts toward the
         # live lesson at its end, so a rewritten line does not draw a false
         # "never fired" nudge under its new id.
