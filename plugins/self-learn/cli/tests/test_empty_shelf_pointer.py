@@ -35,8 +35,11 @@ In a plain host inside a git repository (S-80), the retirement writes only
 files git ignores: the pointer file it rewrites gets its ignore line first
 and is refused, as a removal (`needs-person`), when git tracks it; the shelf
 it deletes is asked only whether git tracks it. The pre-flight, the ledger's
-prediction and the host write judge the same files, so the compile record
-never says a region is gone while the check keeps it on disk. The plain
+prediction and the host write judge the same files, so a file tracked before
+the prediction leaves the compile record true; one tracked after it (or a
+refused `(reference retired)` commit while a route completes `teach
+--supersedes`) leaves a region the record no longer matches, which the
+failure warning names and `recompile --adopt` accepts (gate SH2b). The plain
 hosts here hide self-learn's own `.self-learn-host` marker with an
 operator's line in `info/exclude`, as the tracked-file tests do.
 
@@ -47,6 +50,7 @@ pytest's tmpdir); no model is called.
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 
 import pytest
@@ -346,9 +350,9 @@ def test_the_pointer_stays_while_one_entry_is_left(tmp_path, mode):
 def _named_shelf(home: Path, host: Path, mode: str, header: str = NAMED_HEADER) -> Path:
     """A named shelf a person made by hand (self-learn never creates one).
     A git host's history is its provenance; a plain host refuses a file the
-    compile record has never seen (`unknown`), and `recompile --adopt` has
-    no form for a reference file, so the entry an adopt would write is
-    written here directly."""
+    compile record has never seen (`unknown`). `recompile --adopt <shelf>`
+    accepts a shelf only once a lesson was routed to it, so the entry an
+    adopt would write is written here directly."""
     named = _shelf(host, "git.md")
     named.parent.mkdir(parents=True, exist_ok=True)
     named.write_text(header, encoding="utf-8")
@@ -795,6 +799,7 @@ def test_a_refused_host_commit_puts_the_host_back_and_blocks_no_later_write(tmp_
     assert str(claude) in failed and str(shelf) in failed
     assert "put back" in failed and "by hand" in failed
     assert "recompile` to repair" not in failed
+    assert "Nothing later is blocked" in _own_words(failed)  # measured just below
     assert claude.read_bytes() == claude_bytes and shelf.read_bytes() == shelf_bytes
     assert _status(host) == ""
     hook.unlink()
@@ -995,8 +1000,10 @@ def test_a_pointer_file_tracked_after_the_pre_flight_leaves_the_record_true(
 
     assert _record(home, RID).status == "superseded"  # the ledger commit stands
     (failed,) = [w for w in result.warnings if "REFERENCE RETIREMENT FAILED" in w]
-    assert "CLAUDE.md is tracked by git" in failed
-    assert "nothing was written" in failed
+    assert "CLAUDE.md is tracked by git" in failed  # control: the cause is named
+    # the warning's own words (the embedded refusal says "nothing was written" too)
+    assert f"nothing was written; {RID}'s entry is still on {_shelf(host)}" in failed
+    assert "Nothing later is blocked" in _own_words(failed)
     assert claude.read_bytes() == claude_bytes and _shelf(host).read_bytes() == shelf_bytes
     pointer = _entry(home, host, claude, "pointer")
     assert pointer is not None and pointer["sha256"] == _region_sha(claude, "pointer")
@@ -1023,6 +1030,466 @@ def test_a_supersede_onto_the_same_shelf_never_judges_the_pointer_file_it_keeps(
     assert _record(home, RID).status == "superseded"
     assert (host / "CLAUDE.md").read_bytes() == claude_bytes
     assert _status(host) == ""
+
+
+# ------------------------------- failure paths and their repairs (gate SH2b)
+
+
+def _failure(result) -> str:
+    (failed,) = [w for w in result.warnings if "REFERENCE RETIREMENT FAILED" in w]
+    return failed
+
+
+def _own_words(failed: str) -> str:
+    """The warning after the cause it quotes: the cause is another check's
+    refusal, with its own advice, so the warning's own words are read
+    apart from it."""
+    return failed.split(" stays retired in the ledger", 1)[1]
+
+
+def _commands(text: str) -> list[list[str]]:
+    """Each `self-learn recompile --adopt ...` command *text* prints, as the
+    list of its --adopt arguments -- run exactly as printed."""
+    return [
+        re.findall(r"--adopt ([^\s`]+)", command)
+        for command in re.findall(r"`self-learn recompile ((?:--adopt [^\s`]+ ?)+)`", text)
+    ]
+
+
+def _blocked_now(failed: str) -> list[str]:
+    """The adopt the warning names for what is refused NOW."""
+    own = _own_words(failed)
+    assert "Blocked now:" in own, own
+    first = _commands(own.split("Blocked now:", 1)[1].split("To take the entry out", 1)[0])
+    assert len(first) == 1, own
+    return first[0]
+
+
+def _after_hand_removal(failed: str) -> list[str]:
+    """The adopt the warning names once the entry is taken out by hand."""
+    own = _own_words(failed)
+    (command,) = _commands(own.split("To take the entry out", 1)[1])
+    return command
+
+
+def _never_deletes_a_shelf(failed: str, shelf: Path) -> None:
+    own = _own_words(failed)
+    assert str(shelf) in own  # control: the shelf is named in the warning's own words
+    assert "delete" not in own.lower() and "unlink" not in own.lower(), own
+    assert 'no "re-run" above applies' in own  # the cause's own advice is withdrawn
+
+
+def _refused(home: Path, host: Path, *regions: tuple[Path, str]) -> list[str]:
+    """Which of *regions* the next write would refuse right now."""
+    mode = verbs.host_mode(home, host)
+    out = []
+    for path, kind in regions:
+        sha = _region_sha(path, kind) if path.is_file() else None
+        verdict = compiled.verdict_for(_entry(home, host, path, kind), sha)
+        if compiled.refuses(verdict, mode):
+            out.append(f"{path.name}#{kind}={verdict}")
+    return out
+
+
+def _adopted(home: Path, adopt: list[str]) -> None:
+    result = verbs.recompile(home, no_push=True, adopt=adopt)
+    assert not [w for w in result.warnings if "nothing adopted" in w], result.warnings
+
+
+def _refused_commit_hook(host: Path) -> Path:
+    """A commit-msg hook refusing only the `(reference retired)` commit, so
+    the route's own commit lands and the retirement's is undone."""
+    hook = host / ".git" / "hooks" / "commit-msg"
+    hook.write_text(
+        '#!/bin/sh\ngrep -q "reference retired" "$1" && { echo refused-by-hook >&2; exit 1; }\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    return hook
+
+
+@pytest.mark.parametrize("mode", ["git", "plain"])
+@pytest.mark.parametrize("form", ["bare", "#reference"])
+def test_a_hand_edited_shelf_is_refused_until_adopted_then_takes_the_next_route(
+    tmp_path, mode, form
+):
+    """Gate SH2b F1, the root cause. A shelf a person edited reads `edited`,
+    and every route to it is refused with "run `self-learn recompile --adopt
+    <shelf>`". That command now accepts the shelf as it stands (the shelf's
+    whole file is its `reference` region), and the next route lands with
+    the person's text kept."""
+    home = make_env(tmp_path).ledger
+    if mode == "git":
+        host = _project_host(home, tmp_path, "git")
+        _shelve(home, host, RID)
+    else:
+        host = _plain_shelved(home, tmp_path, RID)
+    shelf = _shelf(host)
+    shelf.write_text(shelf.read_text(encoding="utf-8") + "\nA note a person added.\n",
+                     encoding="utf-8")
+    if mode == "git":
+        commit_all(host, "a person's note on the shelf")
+    _lesson(home, host, OTHER)
+    with pytest.raises(verbs.DirtyTargetError) as caught:
+        verbs.route(home, OTHER, dest="reference", no_push=True)
+    (named,) = re.findall(r"`self-learn recompile --adopt ([^\s`]+)`", str(caught.value))
+    assert Path(named) == shelf  # the refusal names the shelf itself
+
+    _adopted(home, [named if form == "bare" else f"{named}#reference"])
+
+    entry = _entry(home, host, shelf, "reference")
+    assert entry is not None and entry["sha256"] == _region_sha(shelf, "reference")
+    verbs.route(home, OTHER, dest="reference", no_push=True)
+    text = shelf.read_text(encoding="utf-8")
+    assert f"— {OTHER}" in text and "A note a person added." in text
+    assert _record(home, OTHER).status == "routed"
+
+
+def test_adopting_a_path_no_lesson_was_routed_to_still_adopts_nothing(tmp_path):
+    """Control for the shelf adopt: a path no lesson was ever routed to is
+    neither a shelf nor a managed target, in either spelling; nothing is
+    recorded and both say so."""
+    home = make_env(tmp_path).ledger
+    host = _project_host(home, tmp_path, "git")
+    _shelve(home, host, RID)
+    stray = host / "references" / "stray.md"
+    stray.write_text("# Stray\n", encoding="utf-8")
+    commit_all(host, "a stray file")
+    before = compiled.load_record(home, host_slug(home, host, scope_kind="project"))
+
+    result = verbs.recompile(home, no_push=True, adopt=[str(stray), f"{stray}#reference"])
+
+    nothing = [w for w in result.warnings if "nothing adopted" in w]
+    assert len(nothing) == 2, result.warnings
+    assert _entry(home, host, stray, "reference") is None
+    assert compiled.load_record(home, host_slug(home, host, scope_kind="project")) == before
+
+
+def test_a_file_tracked_after_the_prediction_is_repaired_by_the_adopt_it_names(
+    tmp_path, monkeypatch
+):
+    """Gate SH2b F4. CLAUDE.md is tracked after the ledger's prediction and
+    before the host write: the prediction dropped both entries (the shelf
+    was to go, and the block with it), the host write's own check keeps
+    both files as they were, and in a plain host both read `unknown` -- no
+    later route to the shelf gets through. No routed lesson is left on that
+    shelf, yet both regions can be adopted: the warning names the command,
+    and once it has run the next route lands."""
+    home = make_env(tmp_path).ledger
+    host = _plain_shelved(home, tmp_path, RID)
+    claude, shelf = host / "CLAUDE.md", _shelf(host)
+    real_phase = verbs._retire_reference_host_phase
+
+    def track_then_write(*args, **kwargs):
+        _track(host, "CLAUDE.md")
+        return real_phase(*args, **kwargs)
+
+    monkeypatch.setattr(verbs, "_retire_reference_host_phase", track_then_write)
+    failed = _failure(verbs.graduate(home, RID, no_push=True))
+    monkeypatch.setattr(verbs, "_retire_reference_host_phase", real_phase)
+
+    assert f"— {RID}" in shelf.read_text(encoding="utf-8")  # nothing was written
+    regions = [(shelf, "reference"), (claude, "pointer")]
+    assert _refused(home, host, *regions) == [
+        "LEARNINGS.md#reference=unknown", "CLAUDE.md#pointer=unknown",
+    ]
+    _never_deletes_a_shelf(failed, shelf)
+    adopt = _blocked_now(failed)
+    assert adopt == [str(shelf), f"{claude}#pointer"]
+    _lesson(home, host, OTHER)
+    with pytest.raises(verbs.DirtyTargetError):  # control: blocked until adopted
+        verbs.route(home, OTHER, dest="reference", no_push=True)
+
+    _adopted(home, adopt)
+
+    assert _refused(home, host, *regions) == []
+    verbs.route(home, OTHER, dest="reference", no_push=True)
+    assert f"— {OTHER}" in shelf.read_text(encoding="utf-8")
+    assert _refused(home, host, *regions) == []
+
+
+def test_a_file_tracked_before_the_prediction_is_finished_by_hand_as_the_warning_says(
+    tmp_path, monkeypatch
+):
+    """Gate SH2b 1a. CLAUDE.md is tracked after the pre-flight, before the
+    prediction: nothing is written or recorded, nothing is blocked, and the
+    retired entry stays. The warning's own hand repair, done literally --
+    the cause fixed (CLAUDE.md untracked again), the entry and its pointer
+    line taken out by hand, then its adopt command -- leaves both regions
+    accepted, and the next route to the shelf lands."""
+    home = make_env(tmp_path).ledger
+    host = _plain_shelved(home, tmp_path, RID)
+    claude, shelf = host / "CLAUDE.md", _shelf(host)
+    real_resolve = verbs.resolve_record
+
+    def track_then_resolve(*args, **kwargs):
+        _track(host, "CLAUDE.md")
+        return real_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(verbs, "resolve_record", track_then_resolve)
+    failed = _failure(verbs.graduate(home, RID, no_push=True))
+    monkeypatch.setattr(verbs, "resolve_record", real_resolve)
+
+    own = _own_words(failed)
+    assert "Nothing later is blocked" in own and "Blocked now" not in own
+    assert f"from {shelf} and its pointer line from {claude} by hand, then" in own
+    assert " and commit" not in own  # a plain host is never committed to
+    _never_deletes_a_shelf(failed, shelf)
+    regions = [(shelf, "reference"), (claude, "pointer")]
+    assert _refused(home, host, *regions) == []
+    git(host, "rm", "-q", "--cached", "CLAUDE.md")
+    git(host, "commit", "-q", "-m", "untrack CLAUDE.md again")
+    text = shelf.read_text(encoding="utf-8")
+    shelf.write_text(compilers._retire_reference_text(text, RID)[0] + "\n", encoding="utf-8")
+    claude.write_text(claude.read_text(encoding="utf-8").replace(SHELF_LINE + "\n", ""),
+                      encoding="utf-8")
+    assert _refused(home, host, *regions) == [
+        "LEARNINGS.md#reference=edited", "CLAUDE.md#pointer=edited",
+    ]  # control: the hand edits are what the adopt is for
+
+    _adopted(home, _after_hand_removal(failed))
+
+    assert _refused(home, host, *regions) == []
+    assert f"— {RID}" not in shelf.read_text(encoding="utf-8")
+    _route_again(home, host, OTHER)
+    assert _refused(home, host, *regions) == []
+
+
+def test_a_refused_retirement_commit_on_another_shelf_blocks_the_pointer_until_adopted(
+    tmp_path,
+):
+    """Gate SH2b F2, two shelves behind one CLAUDE.md. A route completing
+    `teach --supersedes` moves the lesson from the default shelf to
+    `git.md`; the route's commit lands and only the `(reference retired)`
+    commit is refused. The undo leaves the pointer block as the route left
+    it, which matches neither hash the record holds: it reads `edited`, and
+    every later write through that CLAUDE.md is refused. The warning names
+    the adopt that clears it, and its hand repair finishes the job."""
+    home = make_env(tmp_path).ledger
+    host = _project_host(home, tmp_path, "git")
+    named = _named_shelf(home, host, "git")
+    _shelve(home, host, RID)
+    claude, shelf = host / "CLAUDE.md", _shelf(host)
+    _lesson(home, host, NEW, supersedes=RID)
+    hook = _refused_commit_hook(host)
+
+    failed = _failure(verbs.route(home, NEW, dest="reference:git.md", no_push=True))
+    hook.unlink()
+
+    assert "refused-by-hook" in failed  # control: it is the retirement's commit
+    assert f"— {NEW}" in named.read_text(encoding="utf-8")
+    regions = [(shelf, "reference"), (claude, "pointer"), (named, "reference")]
+    assert _refused(home, host, *regions) == ["CLAUDE.md#pointer=edited"]
+    _never_deletes_a_shelf(failed, shelf)
+    assert _blocked_now(failed) == [f"{claude}#pointer"]
+    _lesson(home, host, OTHER)
+    with pytest.raises(verbs.DirtyTargetError):  # control: blocked until adopted
+        verbs.route(home, OTHER, dest="reference:git.md", no_push=True)
+
+    _adopted(home, _blocked_now(failed))
+
+    assert _refused(home, host, *regions) == []
+    verbs.route(home, OTHER, dest="reference:git.md", no_push=True)
+    assert f"— {OTHER}" in named.read_text(encoding="utf-8")
+    # ... and the hand repair, exactly as the warning words it
+    assert f"from {shelf} and its pointer line from {claude} by hand and commit" in failed
+    text = shelf.read_text(encoding="utf-8")
+    shelf.write_text(compilers._retire_reference_text(text, RID)[0] + "\n", encoding="utf-8")
+    claude.write_text(claude.read_text(encoding="utf-8").replace(SHELF_LINE + "\n", ""),
+                      encoding="utf-8")
+    commit_all(host, "take the retired lesson out by hand")
+    _adopted(home, _after_hand_removal(failed))
+    assert _refused(home, host, *regions) == []
+    assert SHELF_LINE not in claude.read_text(encoding="utf-8")
+    _route_again(home, host, THIRD)
+    assert _refused(home, host, *regions) == []
+    assert _status(host) == ""
+
+
+def test_a_refused_retirement_commit_on_the_same_shelf_blocks_the_shelf_until_adopted(
+    tmp_path,
+):
+    """Gate SH2b F2, one shelf. The route appends the new entry and commits;
+    the `(reference retired)` commit that would take the old one off is
+    refused. The shelf, as the undo leaves it, reads `edited` and refuses
+    every later route to it. The warning's adopt clears it; its hand repair
+    -- even with a stray blank line, which a byte-exact match never
+    forgave -- is accepted the same way."""
+    home = make_env(tmp_path).ledger
+    host = _project_host(home, tmp_path, "git")
+    _shelve(home, host, RID)
+    claude, shelf = host / "CLAUDE.md", _shelf(host)
+    _lesson(home, host, NEW, supersedes=RID)
+    hook = _refused_commit_hook(host)
+
+    failed = _failure(verbs.route(home, NEW, dest="reference", no_push=True))
+    hook.unlink()
+
+    assert "refused-by-hook" in failed  # control
+    regions = [(shelf, "reference"), (claude, "pointer")]
+    assert _refused(home, host, *regions) == ["LEARNINGS.md#reference=edited"]
+    _never_deletes_a_shelf(failed, shelf)
+    assert _blocked_now(failed) == [str(shelf)]
+    _lesson(home, host, OTHER)
+    with pytest.raises(verbs.DirtyTargetError):  # control: blocked until adopted
+        verbs.route(home, OTHER, dest="reference", no_push=True)
+
+    _adopted(home, _blocked_now(failed))
+
+    assert _refused(home, host, *regions) == []
+    verbs.route(home, OTHER, dest="reference", no_push=True)
+    # ... and the hand repair: the shelf keeps entries, so no pointer line goes
+    assert f"from {shelf} by hand and commit" in failed
+    text = shelf.read_text(encoding="utf-8")
+    shelf.write_text(compilers._retire_reference_text(text, RID)[0] + "\n", encoding="utf-8")
+    commit_all(host, "take the retired entry out by hand (one stray blank line)")
+    assert _refused(home, host, *regions) == ["LEARNINGS.md#reference=edited"]  # control
+    _adopted(home, _after_hand_removal(failed))
+    assert _refused(home, host, *regions) == []
+    _lesson(home, host, THIRD)
+    verbs.route(home, THIRD, dest="reference", no_push=True)
+    text = shelf.read_text(encoding="utf-8")
+    assert f"— {RID}" not in text and f"— {OTHER}" in text and f"— {THIRD}" in text
+    assert _status(host) == ""
+
+
+def test_a_refused_retirement_commit_is_finished_by_hand_as_the_warning_says(tmp_path):
+    """Gate SH2b F1, a retirement run by itself. Its refused commit blocks
+    nothing (the test above this section shows the next writes land); the
+    retired entry is still there. The warning's hand repair, done literally
+    -- the entry and its pointer line out, committed, then its adopt
+    command -- leaves both regions accepted and the next route lands."""
+    home = make_env(tmp_path).ledger
+    host = _project_host(home, tmp_path, "git")
+    _shelve(home, host, RID)
+    claude, shelf = host / "CLAUDE.md", _shelf(host)
+    hook = host / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho refused-by-hook >&2\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    failed = _failure(verbs.retire(home, RID, covered_by="claude-md:CLAUDE.md", no_push=True))
+    hook.unlink()
+
+    own = _own_words(failed)
+    assert "Nothing later is blocked" in own and "Blocked now" not in own
+    _never_deletes_a_shelf(failed, shelf)
+    assert f"from {shelf} and its pointer line from {claude} by hand and commit" in own
+    text = shelf.read_text(encoding="utf-8")
+    shelf.write_text(compilers._retire_reference_text(text, RID)[0] + "\n", encoding="utf-8")
+    claude.write_text(claude.read_text(encoding="utf-8").replace(SHELF_LINE + "\n", ""),
+                      encoding="utf-8")
+    commit_all(host, "take the retired lesson out by hand")
+
+    _adopted(home, _after_hand_removal(failed))
+
+    regions = [(shelf, "reference"), (claude, "pointer")]
+    assert _refused(home, host, *regions) == []
+    for path, kind in regions:  # accepted, not merely let through
+        entry = _entry(home, host, path, kind)
+        assert entry is not None and entry["sha256"] == _region_sha(path, kind), (path, kind)
+    _route_again(home, host, OTHER)
+    assert _status(host) == ""
+
+
+def test_a_shelf_tracked_after_the_pre_flight_is_never_deleted(tmp_path, monkeypatch):
+    """Gate SH2b M11. The emptied default shelf would be DELETED; the person
+    tracked it after the pre-flight. The host write's own check asks
+    whether git tracks a file it deletes, and refuses: the shelf stays in
+    their repository, git shows no deletion, and the record still matches
+    it."""
+    home = make_env(tmp_path).ledger
+    host = _plain_shelved(home, tmp_path, RID)
+    shelf = _shelf(host)
+    shelf_bytes = shelf.read_bytes()
+    real_resolve = verbs.resolve_record
+
+    def track_then_resolve(*args, **kwargs):
+        _track(host, "references/LEARNINGS.md")
+        return real_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(verbs, "resolve_record", track_then_resolve)
+    failed = _failure(verbs.graduate(home, RID, no_push=True))
+
+    assert "LEARNINGS.md is tracked by git" in failed  # control: the cause
+    assert shelf.read_bytes() == shelf_bytes
+    assert git(host, "ls-files", "references").stdout.strip() == "references/LEARNINGS.md"
+    assert _status(host) == "", _status(host)
+    assert "Nothing later is blocked" in _own_words(failed)
+    _never_deletes_a_shelf(failed, shelf)
+    regions = [(shelf, "reference"), (host / "CLAUDE.md", "pointer")]
+    assert _refused(home, host, *regions) == []
+
+
+def test_the_failure_warning_survives_a_compile_record_it_cannot_read(tmp_path):
+    """The warning reads the compile record after the write has stopped; a
+    record it cannot parse, or one whose entries are the wrong shape, is
+    left out of it -- the failure is still reported, never replaced by a
+    crash."""
+    home = make_env(tmp_path).ledger
+    host = _project_host(home, tmp_path, "git")
+    _shelve(home, host, RID)
+    record = _record(home, RID)
+    spec = verbs._resolve_target(
+        home, find_record_path(home, RID).parent.parent, record.scope, "reference", None,
+        check_dirty=False,
+    )
+    shelf = _shelf(host)
+    regions = [(shelf, "reference"), (host / "CLAUDE.md", "pointer")]
+    path = compiled.compiled_record_path(home, host_slug(home, host, scope_kind="project"))
+    shelf.write_text("edited by hand\n", encoding="utf-8")
+    assert verbs._refused_regions(home, spec, regions) == [
+        (shelf, "reference", "edited")
+    ]  # control: the record is read when it can be
+    path.write_text("targets: [1, 2]\n", encoding="utf-8")  # the wrong shape
+    assert verbs._refused_regions(home, spec, regions) == []
+    path.write_text("targets: {unclosed\n", encoding="utf-8")  # not YAML
+    assert verbs._refused_regions(home, spec, regions) == []
+
+
+@pytest.mark.parametrize("tracked", ["CLAUDE.md", "references/LEARNINGS.md"])
+def test_the_preview_refuses_a_supersede_whose_old_shelf_cannot_change(tmp_path, tracked):
+    """Gate SH2b F3(a). A route that completes `teach --supersedes` retires
+    the old lesson's entry; when that empties a shelf whose pointer file
+    (or the shelf itself) git tracks in a plain host, the run refuses
+    (`needs-person`). The preview runs the same pre-flight, with the
+    route's own write ahead of it, and refuses alike."""
+    home = make_env(tmp_path).ledger
+    host = _plain_shelved(home, tmp_path, RID)
+    _track(host, tracked)
+    _lesson(home, host, NEW, supersedes=RID)
+    sheet = _sheet(tmp_path, [{"id": NEW, "verb": "route", "dest": "claude-md:local"}])
+    ledger_head = last_verb_sha(home)
+
+    preview = batch.dry_run(home, sheet, actor="human")
+    result = batch.run(home, sheet, no_push=True, actor="human")
+
+    (pitem,), (item,) = preview.items, result.items
+    assert (item.state, item.kind) == ("refused", "needs-person"), item.detail  # control
+    assert (pitem.state, pitem.kind) == ("would-refuse", "needs-person"), pitem.detail
+    assert f"{Path(tracked).name} is tracked by git" in (pitem.detail or "")
+    assert _record(home, RID).status == "routed" and _record(home, NEW).status == "pending"
+    assert last_verb_sha(home) == ledger_head
+
+
+def test_the_preview_of_a_supersede_onto_the_same_shelf_sees_the_shelf_kept(tmp_path):
+    """The preview's pre-flight runs with the route's own write ahead of it,
+    as the run's does: onto the SAME shelf, the new entry keeps the shelf
+    from emptying, so CLAUDE.md -- tracked here -- is not changed and the
+    preview applies, as the run does."""
+    home = make_env(tmp_path).ledger
+    host = _plain_shelved(home, tmp_path, RID)
+    _track(host, "CLAUDE.md")
+    _lesson(home, host, NEW, supersedes=RID)
+    sheet = _sheet(tmp_path, [{"id": NEW, "verb": "route", "dest": "reference"}])
+
+    preview = batch.dry_run(home, sheet, actor="human")
+    result = batch.run(home, sheet, no_push=True, actor="human")
+
+    (pitem,), (item,) = preview.items, result.items
+    assert item.state == "applied", item.detail  # control: the run applies
+    assert pitem.state == "would-apply", pitem.detail
+    assert _record(home, RID).status == "superseded"
 
 
 # ------------------------------------------------ the pure text transforms
