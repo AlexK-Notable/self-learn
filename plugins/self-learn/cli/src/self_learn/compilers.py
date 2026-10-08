@@ -261,11 +261,17 @@ def _lower_first(text: str) -> str:
     return text
 
 
+#: A trigger's own leading "When " (any case, repeated or not): the entry
+#: line writes its own, so keeping this one rendered "When when ..." --
+#: only the WORD, never "Whenever" or "Somewhen".
+_LEADING_WHEN_RE = re.compile(r"^(?:when\s+)+", re.IGNORECASE)
+
+
 def entry_line(record: Record) -> str:
     """One tight managed-section line for a record (02 §4, trigger-first)."""
     sections = _body_sections(record)
     if record.type == "behavior":
-        trigger = _one_liner(sections.get("Trigger", ""))
+        trigger = _LEADING_WHEN_RE.sub("", _one_liner(sections.get("Trigger", "")))
         trigger = trigger[:-1].rstrip() if trigger.endswith(".") else trigger
         instruction = _lower_first(_one_liner(sections.get("Instruction", "")))
         return f"- **When {_lower_first(trigger)}:** {instruction} *({record.id})*"

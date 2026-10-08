@@ -22,6 +22,8 @@ Every scenario that touches the ledger runs on a sandbox ledger and host
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from ruamel.yaml import YAML
 
@@ -316,3 +318,81 @@ def test_wiring_the_check_did_not_widen_the_compile_itself(sandbox):
     line = compilers.entry_line(record)  # ... and the compile still goes through
     assert "first line, the loaded sentence." in line  # (lower-cased after "When ...:")
     assert "Second line" not in line
+
+
+# ------------------------------------------------ "When when" (item 2)
+
+
+def _says_when_when(line: str) -> bool:
+    return re.search(r"\bwhen\s+when\b", line, re.IGNORECASE) is not None
+
+
+@pytest.mark.parametrize(
+    "trigger, loaded",
+    [
+        ("When about to edit X.", "about to edit X"),
+        ("when about to edit X.", "about to edit X"),
+        ("WHEN about to edit X", "about to edit X"),
+        ("When   about to edit X", "about to edit X"),
+        ("When when about to edit X", "about to edit X"),  # the prefix repeated
+        ("When About to Edit X", "about to Edit X"),
+    ],
+)
+def test_the_entry_line_drops_a_leading_when_from_the_trigger(trigger, loaded):
+    line = compilers.entry_line(_behavior(trigger=trigger))
+    assert line == f"- **When {loaded}:** stop first. *(lrn-0e000001)*"
+    assert not _says_when_when(line)
+
+
+@pytest.mark.parametrize(
+    "trigger, loaded",
+    [
+        ("About to edit X.", "about to edit X"),
+        ("Whenever X happens", "whenever X happens"),
+        ("Somewhen soon, when X happens", "somewhen soon, when X happens"),
+        ("Edit X when Y is running", "edit X when Y is running"),
+    ],
+)
+def test_only_the_leading_word_when_is_dropped(trigger, loaded):
+    expected = f"- **When {loaded}:** stop first. *(lrn-0e000001)*"
+    # a trigger that does not open with the word "When" is untouched ...
+    assert compilers.entry_line(_behavior(trigger=trigger)) == expected
+    # ... and the strip is live beside it: the same trigger with a "When " in
+    # front compiles to the very same line
+    assert compilers.entry_line(_behavior(trigger="When " + trigger)) == expected
+
+
+def test_a_when_leading_trigger_compiles_without_when_when_in_a_whole_section():
+    records = []
+    for n, trigger in enumerate(
+        ["When about to edit X.", "About to edit Y.", "when Z is running", "Whenever W"]
+    ):
+        record = _behavior(trigger=trigger, rid=f"lrn-0e00b00{n}")
+        record.set_routing(
+            {"routed_at": f"2026-07-13T18:0{n}:00Z", "destination": "skill-md", "by": "human"}
+        )
+        record.set_status("routed")
+        records.append(record)
+    result = compilers.compile_managed_text("# skill\n", records)
+    section = result.text
+    assert "lrn-0e00b000" in section and "lrn-0e00b003" in section  # the section is there
+    assert not _says_when_when(section)
+    assert "- **When about to edit X:** stop first. *(lrn-0e00b000)*" in section
+    # regeneration is byte-stable
+    assert compilers.compile_managed_text(section, records).text == section
+
+
+def test_a_route_to_skill_md_writes_the_line_without_when_when(sandbox):
+    env = sandbox
+    create_record(
+        env.ledger, make_behavior(record_id=GOOD, trigger="When about to edit .storage.")
+    )
+    commit_all(env.ledger, "seed")
+    verbs.route(env.ledger, GOOD, dest="skill-md", no_push=True)
+    skill = env.skill_md.read_text(encoding="utf-8")
+    assert f"- **When about to edit .storage:** stop the container first. *({GOOD})*" in skill
+    assert not _says_when_when(skill)
+    # the strip belongs to the managed line only: the same record's journal
+    # entry (the shelf) keeps the trigger word for word
+    routed = Record.from_path(find_record_path(env.ledger, GOOD))
+    assert "**Trigger:** When about to edit .storage." in compilers._reference_block(routed)
