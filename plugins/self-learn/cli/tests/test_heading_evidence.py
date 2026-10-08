@@ -30,7 +30,12 @@ from test_overseer_run import (
     _silence_notifications,
 )
 from test_steward import _dump_yaml, _enable_steward, _head_manifest, _stage_dir
-from test_steward_refusals import _dispositions, _notifications, _seed
+from test_steward_refusals import (
+    _assert_parked_now_by_case_writer,
+    _dispositions,
+    _notifications,
+    _seed,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -213,9 +218,14 @@ def test_steward_still_refuses_a_heading_it_may_not_drop(tmp_path, monkeypatch, 
     result = steward.run(home)
 
     row = _dispositions(home, result.run_id)[rid]
-    assert row["state"] == "refused", row
+    # 2026-10-07 (gate S1 R1): refused by the case writer, the lesson is
+    # parked now rather than left a kindless `refused` row
+    successor = _assert_parked_now_by_case_writer(home, rid, row)
     assert D_I in row["reason"]
-    assert cases.list_cases(home, record_id=rid) == []
+    # the refused case was never recorded: the lesson's only case is its park
+    assert [(c["case"], c["kind"], c.get("parked_reason"))
+            for c in cases.list_cases(home, record_id=rid)] == [
+        (successor, "parked", "ledger-refused")]
 
 
 # ------------------------------------------------------------ the overseer

@@ -34,6 +34,7 @@ from support import make_env, make_knowledge
 from test_steward import _dump_yaml, _enable_steward, _journal_rows, _stage_dir
 from test_steward_refusals import (
     _REPAIR_HEADER,
+    _assert_parked_now_by_case_writer,
     _case,
     _dispositions,
     _notifications,
@@ -246,8 +247,15 @@ def test_an_apply_time_case_refusal_keeps_the_rule_and_not_the_secret(tmp_path, 
     result = steward.run(home)
 
     row = _dispositions(home, result.run_id)[rid]
-    assert row["state"] == "refused", row  # positive control
+    # positive control: parked now, the case writer's refusal as its kind
+    successor = _assert_parked_now_by_case_writer(home, rid, row)
     assert f"[{RULE}]" in row["reason"] and SECRET not in row["reason"], row
+    # ... and the parked case, whose evidence is the row's reason, keeps the
+    # rule and not the secret either (2026-10-07, gate S1 R1)
+    view = cases.show(home, successor, evidence_only=False)
+    parked_text = view.to_text() + "".join(view.sections.values())
+    assert f"[{RULE}]" in parked_text  # positive control: the reason reached it
+    assert SECRET not in parked_text
     refused = [r for r in _journal_rows(home) if r.get("status") == "refused"]
     assert refused and all(SECRET not in str(r) for r in refused), refused
 

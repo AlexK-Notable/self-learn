@@ -150,6 +150,20 @@ def _parked_now_cases(home: Path, rid: str) -> list[dict]:
     )
 
 
+def _assert_parked_now_by_case_writer(home: Path, rid: str, row: dict) -> str:
+    """2026-10-07 (gate S1 R1): a case the case writer refuses at apply time
+    leaves no kindless `refused` row. Its lesson takes `batch.refusal_kind`'s
+    kind -- `unclassified`, no type names a `cases.CaseError` -- and is
+    parked now: `abandoned`, naming its `ledger-refused` successor, the ONE
+    open such case for the lesson. The refused case was never recorded, so
+    the row names no case. Returns the successor's id."""
+    assert (row.get("state"), row.get("kind")) == ("abandoned", "unclassified"), row
+    assert "case" not in row, row
+    (parked,) = [found for found in _parked_now_cases(home, rid) if not found.get("superseded_by")]
+    assert row["successor_case"] == parked["case"], row
+    return parked["case"]
+
+
 def _all_parked_for(home: Path, rid: str) -> list[dict]:
     return cases.list_cases(home, record_id=rid, parked_for="overseer")
 
@@ -887,9 +901,12 @@ def test_the_action_precedence_is_the_spec_table():
 
 
 def test_a_reconsider_input_is_parked_rather_than_sent_back(tmp_path):
-    """A reconsider input (`observation:<id>`) is never selected again once
-    its run consumed the observation, so sending it back would leave it
-    decided by no one: it is parked now instead."""
+    """A reconsider input (`observation:<id>`) is never selected again under
+    its observation, which its run consumed. It is sent back only when the
+    next run will select the LESSON again (`steward._selected_again`: still
+    pending, at a version no committed run decided); otherwise, sent back,
+    it would be decided by no one, and it is parked now instead. Here the
+    lesson is routed (and not even in this ledger), so it is parked."""
     home = make_env(tmp_path).ledger
     rid = "lrn-b0000016"
     packet = {
