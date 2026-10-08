@@ -69,11 +69,17 @@ def _project_host(home: Path, tmp_path: Path, mode: str) -> Path:
     """A git repository registered as a project host in *mode* (`host add
     --mode`; a plain host gets its marker file). Plain hosts are git
     repositories too on this user's machine; self-learn just never
-    commits to them, and that is what this file checks."""
+    commits to them, and that is what this file checks. Since G1
+    (2026-10-07) self-learn also writes a plain host's file only once git
+    ignores it, and never one git tracks -- so in the plain host the
+    `CLAUDE.md` the shelf's pointer goes into is on disk but untracked."""
     host = tmp_path / f"{mode}-host"
     init_repo(host)
     (host / "CLAUDE.md").write_text(CLAUDE_MD_SEED, encoding="utf-8")
     commit_all(host, "host seed")
+    if mode == "plain":
+        git(host, "rm", "-q", "--cached", "CLAUDE.md")
+        git(host, "commit", "-q", "-m", "untrack CLAUDE.md")
     host_add(home, host, "project", mode=mode)
     return host
 
@@ -129,7 +135,7 @@ def _reference_entry(home: Path, host: Path, shelf: Path) -> tuple[dict, dict | 
 
 def _assert_host_side(host: Path, mode: str, host_before: str, rid: str) -> None:
     """git mode commits the shelf's change in the host; plain mode leaves
-    it changed and uncommitted there (PLAIN11/H-j)."""
+    it changed and uncommitted there (PLAIN11/H-j), and ignored (G1)."""
     status = git(host, "status", "--porcelain").stdout
     tracked = git(host, "ls-files", "references").stdout
     if mode == "git":
@@ -141,7 +147,13 @@ def _assert_host_side(host: Path, mode: str, host_before: str, rid: str) -> None
     else:
         assert _head(host) == host_before, "a plain host is never committed to"
         assert tracked == "", tracked  # the shelf never entered the host's history
-        assert "references/" in status, status  # control: the shelf is on disk, uncommitted
+        # G1: on disk and uncommitted, but ignored through the self-learn
+        # block of the host's info/exclude, so `git status` does not show
+        # it. The control comes first: `git check-ignore` exits 0 only for
+        # an ignored path (`git()` raises on any other exit).
+        assert (host / "references" / "LEARNINGS.md").is_file()
+        git(host, "check-ignore", "-q", "--", "references/LEARNINGS.md")
+        assert "references/" not in status, status
 
 
 # ------------------------------------------------ reject / defer off a shelf
