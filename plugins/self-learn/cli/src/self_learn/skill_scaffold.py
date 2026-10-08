@@ -45,6 +45,8 @@ __all__ = [
     "SKILL_FILE_PATH_FORBIDDEN_SEGMENTS",
     "SKILL_FRONTMATTER_ALLOWED_KEYS",
     "SKILL_FRONTMATTER_FENCE",
+    "SKILL_FRONTMATTER_MAX_CHARS",
+    "SKILL_FRONTMATTER_MAX_FLOW_DEPTH",
     "SKILL_FRONTMATTER_REFUSED_CLOSER",
     "SKILL_FRONTMATTER_REFUSED_KEYS",
     "SKILL_LISTING_MAX_CHARS",
@@ -254,6 +256,31 @@ SKILL_FILE_PATH_FORBIDDEN_SEGMENTS: tuple[str, ...] = ("", ".", "..")
 SKILL_FRONTMATTER_FENCE = "---"
 SKILL_FRONTMATTER_REFUSED_CLOSER = "..."
 
+#: The two caps checked BEFORE any YAML parse. ruamel's pure-Python parser
+#: costs time quadratic in how deeply ``[``/``{`` collections nest (the
+#: 2026-10-08 gate: 4 KB of ``[`` took about 2 s, 30 KB about 30 s), so a
+#: tiny hostile draft could stall the check; with both caps the worst draft
+#: that reaches the parser takes tens of milliseconds.
+#:
+#: The size cap, in characters of the text between the fences. A skill's
+#: frontmatter carries a name (at most 64 characters), a description (at
+#: most 1,024) and a when_to_use that together with it fits the 1,536-
+#: character listing limit, a few ``paths`` globs and a little metadata.
+#: 4,096 is about 2.7 times the listing limit: room for that text quoted
+#: or folded (which can roughly double it) plus the name, paths and
+#: metadata lines. Anything larger is not a skill's frontmatter.
+SKILL_FRONTMATTER_MAX_CHARS = 4096
+#: The flow-nesting cap. The depth is measured by a linear scan of the raw
+#: text, as an upper bound: every ``[`` and ``{`` counts as one level more
+#: and no ``]`` or ``}`` ever counts one less, because a closer inside a
+#: quoted value (``["]", ["]", ...``) cannot be told from a real one
+#: without parsing, and a scan that subtracted it would read the hundreds
+#: of real levels 4 KB can hold that way as 1. Brackets in quoted text and
+#: comments count too. A skill's
+#: frontmatter needs only a few (``paths: [...]``, ``metadata: {...}``, a
+#: brace glob), so a false refusal costs nothing.
+SKILL_FRONTMATTER_MAX_FLOW_DEPTH = 32
+
 #: ``paths`` entries: a leading character that makes a glob absolute or
 #: home-relative (never fires against a project tree), and the segment that
 #: climbs out. Both refused.
@@ -306,6 +333,8 @@ RULE_FILE_NOT_TEXT = "file-not-text"
 RULE_FRONTMATTER_UNPARSEABLE = "frontmatter-unparseable"
 RULE_FRONTMATTER_CLOSED_BY_DOTS = "frontmatter-closed-by-dots"
 RULE_FRONTMATTER_CONTAINS_FENCE = "frontmatter-contains-fence"
+RULE_FRONTMATTER_TOO_LONG = "frontmatter-too-long"
+RULE_FRONTMATTER_FLOW_TOO_DEEP = "frontmatter-flow-too-deep"
 RULE_FRONTMATTER_ANCHOR = "frontmatter-anchor-alias"
 RULE_FRONTMATTER_KEY_REFUSED = "frontmatter-key-refused"
 RULE_FRONTMATTER_KEY_UNKNOWN = "frontmatter-key-unknown"
@@ -345,6 +374,8 @@ SKILL_RULE_IDS: tuple[str, ...] = (
     RULE_FRONTMATTER_UNPARSEABLE,
     RULE_FRONTMATTER_CLOSED_BY_DOTS,
     RULE_FRONTMATTER_CONTAINS_FENCE,
+    RULE_FRONTMATTER_TOO_LONG,
+    RULE_FRONTMATTER_FLOW_TOO_DEEP,
     RULE_FRONTMATTER_ANCHOR,
     RULE_FRONTMATTER_KEY_REFUSED,
     RULE_FRONTMATTER_KEY_UNKNOWN,
@@ -567,10 +598,37 @@ def _read_frontmatter(text: str) -> _Frontmatter:
             "the skill would load cut short. Reword it",
             body,
         )
+    # The caps come before ANY YAML call: they are what bounds the parser's
+    # work (see SKILL_FRONTMATTER_MAX_CHARS). Both are linear scans.
+    if len(inner) > SKILL_FRONTMATTER_MAX_CHARS:
+        return refuse(
+            RULE_FRONTMATTER_TOO_LONG,
+            f"the frontmatter is {len(inner)} characters; the limit is "
+            f"{SKILL_FRONTMATTER_MAX_CHARS}. A skill's frontmatter holds a "
+            "name, a description, an optional when_to_use, paths and a little "
+            "metadata; move anything longer into the body or a reference file",
+            body,
+        )
+    flow_depth = inner.count("[") + inner.count("{")
+    if flow_depth > SKILL_FRONTMATTER_MAX_FLOW_DEPTH:
+        return refuse(
+            RULE_FRONTMATTER_FLOW_TOO_DEEP,
+            f"the frontmatter has {flow_depth} '[' and '{{' characters; each "
+            "counts as one more level of flow nesting (a ']' or '}' inside a "
+            "quoted value cannot be told from a real one without parsing), "
+            f"and the limit is {SKILL_FRONTMATTER_MAX_FLOW_DEPTH}. Use fewer "
+            "brackets, or block lists ('- item' lines) instead of [ ... ]",
+            body,
+        )
     try:
-        # Events first: syntax errors surface here, and anchors and aliases
-        # are seen BEFORE anything is built (an alias can expand a small
-        # draft into an enormous structure).
+        # The events pass is here to refuse anchors and aliases as a RULE:
+        # a skill has no use for them, and the parser's own events find
+        # them, so an '&' or '*' inside a quoted value is not one. It is not
+        # what keeps an alias bomb cheap: ruamel loads an alias as a shared
+        # reference, and the bomb's cost was in building its repr, which
+        # ``_shown`` bounds (the 2026-10-08 gate's mutation K-M13 ran load()
+        # first and stayed fast). Syntax errors surface in this pass too.
+        # Its cost, like load()'s, is bounded by the two caps above.
         anchored = any(
             getattr(event, "anchor", None) is not None
             for event in YAML(typ="safe").parse(inner)

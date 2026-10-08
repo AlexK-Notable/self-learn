@@ -494,6 +494,16 @@ CASES: dict[str, Case] = {
         ),
         {"frontmatter-anchor-alias": "anchor or alias"},
     ),
+    # ---- the caps checked before any YAML parse (fold 2, F1)
+    "frontmatter-over-the-size-cap": Case(
+        skill(front={"metadata": json.dumps({"note": "x" * 4100})}),
+        {"frontmatter-too-long": "the limit is 4096"},
+    ),
+    "frontmatter-flow-nesting-over-the-cap": Case(
+        # 33 nested mappings, plus the control's one '[' in paths.
+        skill(front={"metadata": "{a: " * 33 + "b" + "}" * 33}),
+        {"frontmatter-flow-too-deep": "has 34 '['"},
+    ),
     # ---- files that are not text (K1-2)
     "file-key-not-text": Case(
         {**skill(), 5: "x"},  # type: ignore[dict-item]
@@ -1248,3 +1258,118 @@ def test_the_remaining_rule_values_are_read_from_the_constants(monkeypatch):
     monkeypatch.setattr(skill_scaffold, "SKILL_FRONTMATTER_REFUSED_CLOSER", "---")
     assert run(skill()).problem_rules == ("frontmatter-closed-by-dots",)
     monkeypatch.undo()
+
+
+# ============================================================ fold 2 (K1a)
+# The second blind gate (2026-10-08): F1 bound the work before any YAML
+# parse, F2 read the frontmatter exactly as Claude Code does or refuse, F3
+# the listing limit computed as Claude Code computes it, F4 no wall-clock
+# assertion a busy machine can fail, and the nits.
+
+# ------------------------------------------- F1: the caps before any parse
+
+
+def _front_text(inner: str) -> dict[str, str]:
+    """The valid skill whose frontmatter is exactly ``inner``."""
+    return skill(files={"SKILL.md": f"---\n{inner}---\n\n{BODY}\n{MANAGED}"})
+
+
+def _nested_metadata_inner(levels: int) -> str:
+    """name, description, and a metadata value of ``levels`` nested flow
+    mappings: exactly ``levels`` '{' in the whole frontmatter."""
+    nested = "{a: " * levels + "b" + "}" * levels
+    return f"name: {NAME}\ndescription: {q(DESCRIPTION)}\nmetadata: {nested}\n"
+
+
+def _padded_inner(total: int) -> str:
+    """A valid frontmatter of exactly ``total`` characters (a metadata note
+    pads it)."""
+    head = f"name: {NAME}\ndescription: {q(DESCRIPTION)}\nmetadata:\n  note: \""
+    tail = '"\n'
+    return head + "x" * (total - len(head) - len(tail)) + tail
+
+
+class _NoYaml:
+    """Stands in for ruamel's ``YAML``: records that a parse was attempted.
+    It has no ``parse`` or ``load``, so a check that reaches it gets an
+    error (which the check reports as unparseable)."""
+
+    made: list[str] = []
+
+    def __init__(self, *args, **kwargs):
+        _NoYaml.made.append("YAML")
+
+
+def test_a_frontmatter_at_the_size_cap_passes_and_one_over_is_refused():
+    cap = skill_scaffold.SKILL_FRONTMATTER_MAX_CHARS
+    assert cap == 4096
+    at_cap = _padded_inner(cap)
+    assert len(at_cap) == cap
+    assert run(_front_text(at_cap)).problems == ()
+    over = _padded_inner(cap + 1)
+    result = run(_front_text(over))
+    assert result.problem_rules == ("frontmatter-too-long",)
+    assert f"is {cap + 1} characters" in result.problems[0].message
+
+
+def test_flow_nesting_at_the_cap_passes_and_one_deeper_is_refused():
+    cap = skill_scaffold.SKILL_FRONTMATTER_MAX_FLOW_DEPTH
+    assert cap == 32
+    assert run(_front_text(_nested_metadata_inner(cap))).problems == ()
+    result = run(_front_text(_nested_metadata_inner(cap + 1)))
+    assert result.problem_rules == ("frontmatter-flow-too-deep",)
+    assert f"has {cap + 1} '['" in result.problems[0].message
+
+
+#: The gate's slow drafts (F1), and one a scan that subtracted closers would
+#: miss: each ']' sits inside a quoted value, so the real nesting is one
+#: level per '["]", ' while a subtracting count stays at 1.
+CAPPED_DRAFTS: dict[str, tuple[str, str]] = {
+    "4 KB of '['": (
+        f"name: {NAME}\ndescription: " + "[" * 2000 + "\n",
+        "frontmatter-flow-too-deep",
+    ),
+    "'[a, ' nested 800 deep": (
+        f"name: {NAME}\ndescription: " + "[a, " * 800 + "]" * 800 + "\n",
+        "frontmatter-flow-too-deep",
+    ),
+    "quoted closers hide 560 levels": (
+        f"name: {NAME}\ndescription: " + '["]", ' * 560 + "]" * 560 + "\n",
+        "frontmatter-flow-too-deep",
+    ),
+    "16 KB of '['": (
+        f"name: {NAME}\ndescription: " + "[" * 16_000 + "\n",
+        "frontmatter-too-long",
+    ),
+    "a 1 MB description": (
+        f"name: {NAME}\ndescription: {q('a' * 1_000_000)}\n",
+        "frontmatter-too-long",
+    ),
+}
+
+
+@pytest.mark.parametrize("label", list(CAPPED_DRAFTS))
+def test_a_draft_over_a_cap_is_refused_before_any_yaml_parse(label: str, monkeypatch):
+    inner, rule = CAPPED_DRAFTS[label]
+    files = _front_text(inner)
+    # Positive control: the stand-in does see the control reach the parser.
+    monkeypatch.setattr(skill_scaffold, "YAML", _NoYaml)
+    _NoYaml.made.clear()
+    assert run(skill()).problem_rules == ("frontmatter-unparseable",)
+    assert _NoYaml.made == ["YAML"]
+    _NoYaml.made.clear()
+    # The capped draft is refused by its rule, and the parser is never made.
+    result = run(files)
+    assert result.problem_rules == (rule,)
+    assert _NoYaml.made == []
+    assert all(len(p.message) < 700 for p in result.problems)
+
+
+def test_the_caps_are_read_from_the_module_constants(monkeypatch):
+    assert run(skill()).problems == ()
+    monkeypatch.setattr(skill_scaffold, "SKILL_FRONTMATTER_MAX_CHARS", 50)
+    assert run(skill()).problem_rules == ("frontmatter-too-long",)
+    monkeypatch.undo()
+    # The control has one '[' (paths) and one '{' (metadata).
+    monkeypatch.setattr(skill_scaffold, "SKILL_FRONTMATTER_MAX_FLOW_DEPTH", 1)
+    assert run(skill()).problem_rules == ("frontmatter-flow-too-deep",)
