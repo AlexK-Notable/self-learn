@@ -907,3 +907,180 @@ def test_a_malformed_self_learn_block_stops_the_write_and_says_so(tmp_path):
     assert any("HOST PHASE FAILED" in w and "malformed" in w for w in result.warnings)
     assert not (host / "CLAUDE.local.md").exists()
     assert _exclude(host).read_text(encoding="utf-8") == broken
+
+
+# ------------------------------------------- the block, edge shapes
+
+
+def test_a_second_file_s_line_joins_the_block_and_the_operator_s_lines_stay(tmp_path):
+    """The block exists; a write to another file merges its line in. The
+    operator's lines above the block, and one they put below it, are kept
+    byte for byte."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    verbs.route(home, _lesson(home, host, "lrn-9a00001f"), dest="claude-md:local", no_push=True)
+    assert _block(host) == ["/CLAUDE.local.md"]  # control: the block exists
+    below = "# after the block, by hand\n/notes.txt\n"
+    with _exclude(host).open("a", encoding="utf-8") as fh:
+        fh.write(below)
+
+    verbs.route(home, _lesson(home, host, "lrn-9a000020"), dest="claude-md", no_push=True)
+
+    text = _exclude(host).read_text(encoding="utf-8")
+    assert _block(host) == ["/CLAUDE.local.md", "/CLAUDE.md"]
+    assert text.startswith(OPERATOR_LINES)
+    assert text.endswith(below)
+    assert _ignored(host, "CLAUDE.md") and _status(host) == ""
+
+
+def test_a_repo_with_no_commit_yet_answers_tracked_from_its_index(tmp_path):
+    """A host that is `git init`ed but has no commit has no HEAD, so
+    `ls-files --with-tree=HEAD` cannot run; the index alone says what is
+    tracked. A staged CLAUDE.md is refused; CLAUDE.local.md gets its line."""
+    home = make_env(tmp_path).ledger
+    host = tmp_path / "fresh-host"
+    init_repo(host)
+    (host / "CLAUDE.md").write_text(CLAUDE_MD_SEED, encoding="utf-8")
+    git(host, "add", "--", "CLAUDE.md")
+    _write_operator_lines(host)
+    host_add(home, host, "project", mode="plain")
+    assert subprocess.run(  # control: there really is no HEAD
+        ["git", "-C", str(host), "rev-parse", "-q", "--verify", "HEAD"], capture_output=True
+    ).returncode != 0
+    staged = _lesson(home, host, "lrn-9a000021")
+    before = (host / "CLAUDE.md").read_bytes()
+
+    with pytest.raises(verbs.DestinationUnavailable) as caught:
+        verbs.route(home, staged, dest="claude-md", no_push=True)
+    assert "CLAUDE.md is tracked by git" in str(caught.value)
+    assert (host / "CLAUDE.md").read_bytes() == before
+
+    verbs.route(home, _lesson(home, host, "lrn-9a000022"), dest="claude-md:local", no_push=True)
+    assert _ignored(host, "CLAUDE.local.md")
+    assert _block(host) == ["/CLAUDE.local.md"]
+
+
+def test_a_repo_without_an_info_directory_gets_one(tmp_path):
+    """`git init --template=` (or a hand-cleaned .git) leaves no info/
+    directory: the writer creates it along with the exclude file."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path)
+    info = _exclude(host).parent
+    for child in info.iterdir():
+        child.unlink()
+    info.rmdir()
+    assert not info.exists()  # control
+
+    verbs.route(home, _lesson(home, host, "lrn-9a000023"), dest="claude-md:local", no_push=True)
+
+    assert _block(host) == ["/CLAUDE.local.md"]
+    assert _ignored(host, "CLAUDE.local.md")
+
+
+# ------------------------------------- references: registration, removal
+
+
+def test_a_project_reference_in_a_repo_registered_twice_follows_the_project_registration(
+    tmp_path,
+):
+    """The skills root is `git`, the project registration `plain`: a
+    project-scope REFERENCE route (shelf + pointer) follows plain rules --
+    ignored, never committed."""
+    env = make_env(tmp_path)
+    home, repo = env.ledger, env.host
+    git(repo, "rm", "-q", "--cached", "CLAUDE.md")
+    git(repo, "commit", "-q", "-m", "untrack CLAUDE.md")
+    (home / "hosts.yaml").write_text(
+        f"skills_root: {repo}\nprojects:\n  - path: {repo}\n    mode: plain\n",
+        encoding="utf-8",
+    )
+    commit_all(home, "the project registration is plain")
+    (repo / MARKER_FILENAME).write_text("plain project host\n", encoding="utf-8")
+    _write_operator_lines(repo)
+    rid = _lesson(home, repo, "lrn-9a000024")
+    head = _head(repo)
+
+    result = verbs.route(home, rid, dest="reference", no_push=True)
+
+    assert rid in (repo / "references" / "LEARNINGS.md").read_text(encoding="utf-8")
+    assert result.host_commit_sha is None
+    assert _head(repo) == head
+    assert _ignored(repo, "references/LEARNINGS.md") and _ignored(repo, "CLAUDE.md")
+    assert _status(repo) == ""
+    assert _block(repo) == ["/CLAUDE.md", "/references/LEARNINGS.md"]
+
+
+def test_a_reference_retirement_from_a_tracked_shelf_is_refused_for_a_person(tmp_path):
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a000025")
+    verbs.route(home, rid, dest="reference", no_push=True)
+    git(host, "add", "-f", "--", "references/LEARNINGS.md")
+    git(host, "commit", "-q", "-m", "keep the shelf in history")
+    shelf = (host / "references" / "LEARNINGS.md").read_bytes()
+    assert rid.encode() in shelf  # control
+    sheet = _sheet(tmp_path, [{"id": rid, "verb": "graduate"}])
+
+    preview = batch.dry_run(home, sheet, actor="human")
+    result = batch.run(home, sheet, no_push=True, actor="human")
+
+    (pitem,), (item,) = preview.items, result.items
+    assert (pitem.state, pitem.kind) == ("would-refuse", "needs-person"), pitem.detail
+    assert (item.state, item.kind) == ("refused", "needs-person"), item.detail
+    assert "LEARNINGS.md is tracked by git" in (item.detail or "")
+    assert _record(home, rid).status == "routed"
+    assert (host / "references" / "LEARNINGS.md").read_bytes() == shelf
+
+
+# --------------------------------------------- recompile's reference leg
+
+
+def test_recompile_rebuilds_a_lost_shelf_pointer_and_lines_without_committing(tmp_path):
+    """Shelf, pointer file and block all lost: recompile writes both lines
+    first, then both files, and commits nothing."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a000026")
+    verbs.route(home, rid, dest="reference", no_push=True)
+    shelf, pointer = host / "references" / "LEARNINGS.md", host / "CLAUDE.md"
+    assert "`references/LEARNINGS.md`" in pointer.read_text(encoding="utf-8")  # control
+    shelf.unlink()
+    pointer.unlink()
+    _write_operator_lines(host)  # the block is lost
+    head = _head(host)
+
+    result = verbs.recompile(home, no_push=True)
+
+    assert rid in shelf.read_text(encoding="utf-8")
+    assert "`references/LEARNINGS.md`" in pointer.read_text(encoding="utf-8")
+    assert not [e for e in result.entries if e.skipped], result.entries
+    assert _head(host) == head  # never committed
+    assert _ignored(host, "references/LEARNINGS.md") and _ignored(host, "CLAUDE.md")
+    assert _status(host) == ""
+    assert _block(host) == ["/CLAUDE.md", "/references/LEARNINGS.md"]
+
+
+def test_recompile_repairs_the_shelf_when_only_its_pointer_file_is_tracked(tmp_path):
+    """The pointer's CLAUDE.md is tracked now; the shelf is not. The shelf
+    is still repaired; the pointer is skipped loudly, CLAUDE.md untouched."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a000027")
+    verbs.route(home, rid, dest="reference", no_push=True)
+    git(host, "add", "-f", "--", "CLAUDE.md")
+    git(host, "commit", "-q", "-m", "track CLAUDE.md")
+    shelf = host / "references" / "LEARNINGS.md"
+    shelf.unlink()
+    pointer_bytes = (host / "CLAUDE.md").read_bytes()
+    head = _head(host)
+
+    result = verbs.recompile(home, no_push=True)
+
+    assert rid in shelf.read_text(encoding="utf-8")
+    assert verbs.RecompileEntry(target=shelf, changed=True) in result.entries
+    (skipped,) = [e for e in result.entries if e.skipped]
+    assert skipped.target == host / "CLAUDE.md"
+    assert "is tracked by git" in (skipped.skipped or "")
+    assert (host / "CLAUDE.md").read_bytes() == pointer_bytes
+    assert _head(host) == head
+    assert _status(host) == ""
