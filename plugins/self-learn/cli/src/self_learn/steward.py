@@ -1379,7 +1379,15 @@ def _check_stage(
                     )
     valid = [stem for stem in sorted(records) if stem not in problems]
     covered = {rid for stem in valid for rid in records[stem]}
-    uncovered = sorted(selected_ids - covered) if selected_ids is not None else []
+    # S-81 (gate S1c D4): a lesson the overseer came to hold during the
+    # session is not the model's to cover -- its brief says to write
+    # nothing for it -- so no repair turn asks for one; the attempt drops
+    # it from the inputs afterwards (`_drop_held_inputs`).
+    held = cases.held_lessons(home) if home is not None and selected_ids else {}
+    uncovered = (
+        sorted(rid for rid in selected_ids - covered if rid not in held)
+        if selected_ids is not None else []
+    )
     if not valid:
         if not problems:
             raise ValueError("cases/*.yaml: at least one decision case is required")
@@ -1767,21 +1775,6 @@ def _holds_for(home: Path, case_id: str) -> dict[str, list[dict]]:
     if any(row.get("case") == case_id for row in cases.list_cases(home)):
         return {}
     return cases.held_lessons(home)
-
-
-def _held_records(
-    case_records: list[str], held: dict[str, list[dict]], named: set[str]
-) -> list[dict]:
-    """S-81: a case's own lessons the overseer holds and no line of it
-    names -- refused like a held line (kind `bad-line`): a case about a
-    held lesson decides it even with no line on it (a `no-action`, or a
-    second parked case for it, gate S1c R1)."""
-    return [
-        {"id": rid, "verb": "case", "rc": 1, "state": "refused",
-         "detail": _held_sentence(rid, held[rid]), "kind": "bad-line"}
-        for rid in case_records
-        if rid in held and rid not in named
-    ]
 
 
 def _without_held_lines(
@@ -2764,11 +2757,7 @@ def _maintain_manifest(home: Path, run_id: str, packet_index: int) -> tuple[int,
                 "status": "stopped", "error": str(exc)})
             return refused, True
         except (statements.StatementError, user_model.UserModelError, cases.CaseError, TypeError, ValueError) as exc:
-            # Gate S1c nit: a refused note for the overseer is fact-finding
-            # that did not land -- journaled, kept on the run record, but
-            # not a refusal of the run's work, so it never makes a run
-            # `partial` on its own.
-            refused += 0 if operation["kind"] == "note" else 1
+            refused += 1
             # A secret-scan span is withheld: the error is committed into
             # the run record (2026-09-26).
             error = refusal_text(exc)
@@ -4055,17 +4044,13 @@ def _apply_packet(
         # applies. Kind `bad-line`: the steward's own line is the mistake,
         # so its lessons are sent back to be decided again without it
         # (parked on a second refusal, as ever); a held lesson of the case
-        # gets a `held` row (`_case_dispositions`). Since the ledger-level
-        # round the case's own lessons are checked too, parked case or not
-        # (gate S1c R1: a model's parked case on a lesson parked mid-run
-        # parked it a second time).
-        holds = _holds_for(home, case_id)
+        # gets a `held` row (`_case_dispositions`). A case that names a held
+        # lesson with no line on it -- a model's parked case on a lesson
+        # parked mid-run, gate S1c R1 -- is refused by the case writer
+        # itself (`cases.record`, kind `bad-line`), just below.
         refused_lines = (
-            _held_lines(home, _sheet_items(sheet_path), holds)
+            _held_lines(home, _sheet_items(sheet_path), _holds_for(home, case_id))
             if recipe.get("parking_reason") is None else []
-        )
-        refused_lines += _held_records(
-            named_records, holds, {str(line["id"]) for line in refused_lines}
         )
         error = "; ".join(dict.fromkeys(str(line["detail"]) for line in refused_lines))
         unrecorded = bool(refused_lines)
@@ -5210,6 +5195,11 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
             if row["record"] not in packet.get("dispositions", {})
             or packet["dispositions"][row["record"]].get("state") == "unfinished"
         ]
+        # Gate S1c nit: a refused note for the overseer is fact-finding that
+        # did not land -- journaled and kept on the run record, but not a
+        # refusal of the run's work, so it never makes a run `partial` on
+        # its own. (This recount, from the committed run record, is what
+        # the run reports; the per-packet tally above is overwritten here.)
         maintenance_refused_total = sum(
             1 for packet in manifest["packets"] for op in packet.get("maintenance", [])
             if op.get("state") == "refused" and op.get("kind") != "note"

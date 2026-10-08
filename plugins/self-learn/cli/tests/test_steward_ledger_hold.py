@@ -585,6 +585,63 @@ def test_1b_the_stewards_direct_reconsider_is_refused_for_a_held_lesson(tmp_path
         assert find_record_path(env.ledger, A).read_bytes() == record_before
 
 
+def test_1d_the_batch_preview_refuses_the_steward_as_the_run_does(tmp_path):
+    """`batch.dry_run` opens the same scope from its own actor, so a
+    steward preview -- here called directly, outside any steward run --
+    refuses a held lesson's line as the run would (`would-refuse`,
+    `bad-line`, the hold's sentence), and a person's preview of the same
+    line would apply. The preview writes nothing either way."""
+    env = make_env(tmp_path)
+    _pending(env, A)
+    parked = _person_parks(env.ledger, [A], tmp_path)
+    sheet = tmp_path / "sheet.yaml"
+    _dump_yaml(sheet, {"version": 1, "items": [{"id": A, "verb": "reject"}]})
+    items = batch.load_sheet(sheet, home=env.ledger)
+    head = gitops.head_sha(env.ledger)
+
+    person = batch.dry_run(env.ledger, items, actor="human")  # control
+    assert [(item.state, item.kind) for item in person.items] == [("would-apply", None)]
+    preview = batch.dry_run(env.ledger, items, actor="steward")
+
+    (item,) = preview.items
+    assert (item.state, item.kind) == ("would-refuse", "bad-line"), item
+    assert f"the overseer holds {A} (parked case {parked}" in str(item.detail)
+    assert gitops.head_sha(env.ledger) == head
+    assert git(env.ledger, "status", "--porcelain").stdout == ""
+
+
+def test_1e_the_whole_steward_run_acts_as_the_steward(tmp_path, monkeypatch):
+    """`steward.run` opens the steward's scope around the whole run, so
+    anything the run asks of the ledger outside a batch -- a model session,
+    the case writer, `verbs.reconsider`, the post-run recompile -- is asked
+    as the steward. Read from inside the model session and inside the case
+    writer; control: no scope before or after the run."""
+    home = make_env(tmp_path).ledger
+    _seed(home, "lrn-f4e00001")
+    _enable_steward(home)
+    _notifications(monkeypatch)
+    seen: list[object] = []
+
+    def write(spec):
+        seen.append(("session", ledger_ops.steward_acting_home()))
+        return _write_decision_stage(spec)
+
+    real_record = cases.record
+
+    def record(*args, **kwargs):
+        seen.append(("case writer", ledger_ops.steward_acting_home()))
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(steward.invocation, "write_session", write)
+    monkeypatch.setattr(steward.cases, "record", record)
+    assert ledger_ops.steward_acting_home() is None  # control
+
+    assert steward.run(home).status == "applied"
+
+    assert ledger_ops.steward_acting_home() is None
+    assert seen == [("session", home), ("case writer", home)], seen
+
+
 def _steward_case(home: Path, tmp: Path, name: str, **fields) -> str:
     stage = tmp / f"steward-{name}.yaml"
     case = _case(fields.pop("records"), fields.pop("outcome", "reject"), "reject")
@@ -824,8 +881,9 @@ def test_finding_4_a_lesson_parked_during_a_run_leaves_its_inputs(tmp_path, monk
     next attempts listed it (as an input AND as held), the obeying model
     covered it with no case, and the cap parked it a second time and told
     the user the run decided none of them. Now X gets a `held` row in the
-    same run, the run completes, no further model call is made for X, and
-    X has one parked case."""
+    same run, the run completes, no further model call is made for X --
+    not even a repair turn asking for a case on it -- and X has one parked
+    case."""
     home = make_env(tmp_path).ledger
     x = _seed(home, "lrn-f4b00001")
     y = _seed(home, "lrn-f4b00002")
@@ -856,7 +914,9 @@ def test_finding_4_a_lesson_parked_during_a_run_leaves_its_inputs(tmp_path, monk
     assert _head_manifest(home, first.run_id)["status"] == "complete"
     assert first.status == "applied", first
     assert later == ["idle", "idle", "idle"]
-    assert all(set(brief) <= {x, y} for brief in briefs) and len(briefs) <= 2
+    # one model call: no repair turn asks the model to cover the lesson it
+    # was told to leave alone, and no later attempt is made for it
+    assert briefs == [[x, y]], briefs
     assert [row["case"] for row in _open_parked(home, x)] == by_hand
     assert sent == []
     assert _status(home, x) == "pending"
@@ -894,15 +954,16 @@ def test_finding_4_the_next_attempts_brief_no_longer_lists_a_held_input(tmp_path
     assert row["state"] == "held", row
 
 
-def test_risk_1_no_other_path_parks_a_held_lesson_a_second_time(tmp_path, monkeypatch):
-    """Gate S1c R1, three paths that skipped the never-parked-twice check:
-    the model's `parked.yaml` naming a held lesson (refused as an
-    operation), the model's `kind: parked` case on a lesson parked mid-run
-    (`held` row, the case not recorded), and the attempt cap's close-out
-    (`held` row). Each lesson keeps exactly the person's parked case."""
+# Gate S1c R1: three paths that skipped the never-parked-twice check. Each
+# lesson keeps exactly the person's parked case.
+
+
+def test_risk_1a_a_parked_yaml_entry_on_a_held_lesson_is_refused(tmp_path, monkeypatch):
+    """The model's `parked.yaml` naming a held lesson: the maintenance
+    operation is refused (the case writer's hold), the lesson keeps its one
+    parked case, and the run's own decision on the free lesson applies."""
     _notifications(monkeypatch)
-    # (a) parked.yaml
-    home, held, free, parked = _held_and_free(tmp_path / "a", "lrn-f5a0")
+    home, held, free, parked = _held_and_free(tmp_path, "lrn-f5a0")
 
     def parked_yaml(spec):
         stage = _stage_dir(spec)
@@ -923,16 +984,24 @@ def test_risk_1_no_other_path_parks_a_held_lesson_a_second_time(tmp_path, monkey
     assert operation["state"] == "refused", operation
     assert f"the overseer holds {held}" in operation["result"]["error"]
     assert [row["case"] for row in _open_parked(home, held)] == [parked]
+    assert _status(home, free) == "rejected"  # control: the run did apply
 
-    # (b) the model parks a lesson a person parked while it was deciding
-    home = make_env(tmp_path / "b").ledger
+
+def test_risk_1b_a_model_parked_case_on_a_lesson_parked_mid_run_is_not_recorded(
+    tmp_path, monkeypatch
+):
+    """The model parks X (`kind: parked`) while a person parks it during
+    the same session: the case writer refuses the model's case, X gets a
+    `held` row, and X keeps the person's one parked case."""
+    _notifications(monkeypatch)
+    home = make_env(tmp_path).ledger
     x = _seed(home, "lrn-f5b00001")
     _enable_steward(home)
     by_hand: list[str] = []
 
     def model_parks(spec):
         if not by_hand:
-            by_hand.append(_person_parks(home, [x], tmp_path / "b"))
+            by_hand.append(_person_parks(home, [x], tmp_path))
         case = _case([x], "defer", "defer")
         case.update(kind="parked", outcome="parked", parked_reason="authority-unclear")
         case["decision"]["confidence"] = "provisional"
@@ -942,23 +1011,38 @@ def test_risk_1_no_other_path_parks_a_held_lesson_a_second_time(tmp_path, monkey
     monkeypatch.setattr(steward.invocation, "write_session", model_parks)
     result = steward.run(home)
     row = _packet(home, result.run_id)["dispositions"][x]
-    assert row["state"] == "held", row
+    assert (row["state"], row.get("held_by")) == ("held", by_hand), row
     assert [r["case"] for r in _open_parked(home, x)] == by_hand
 
-    # (c) the attempt cap: the model call fails, a person parks the lesson
-    home = make_env(tmp_path / "c").ledger
+
+def test_risk_1c_the_cap_close_out_does_not_park_a_held_lesson_again(tmp_path, monkeypatch):
+    """Every model call fails; a person parks X during the attempt that
+    reaches the cap, so the close-out at the end of that run is the first
+    to see it held: X gets a `held` row, no `attempts-exhausted` case."""
+    _notifications(monkeypatch)
+    home = make_env(tmp_path).ledger
     x = _seed(home, "lrn-f5c00001")
     _enable_steward(home)
-    monkeypatch.setattr(steward.invocation, "write_session", _transport_failure)
-    steward.run(home)
-    person = _person_parks(home, [x], tmp_path / "c")
-    for _night in range(3):
-        steward.run(home)
+    calls: list[int] = []
+    person: list[str] = []
+
+    def failing(spec):
+        calls.append(1)
+        if len(calls) == 3:
+            person.append(_person_parks(home, [x], tmp_path))
+        return _transport_failure(spec)
+
+    monkeypatch.setattr(steward.invocation, "write_session", failing)
+    runs = [steward.run(home) for _night in range(3)]
+    assert len(calls) == 3 and person  # control: three attempts, the cap
+    (run_id,) = {run.run_id for run in runs}
+    manifest = _head_manifest(home, run_id)
+    assert manifest["packets"][0]["phase"] == "abandoned"  # control: closed out
+    row = manifest["packets"][0]["dispositions"][x]
+    assert (row["state"], row.get("held_by")) == ("held", person), row
     assert [(r["case"], r.get("parked_reason")) for r in _open_parked(home, x)] == [
-        (person, "authority-unclear")]
-    rows = [packet["dispositions"].get(x) for manifest in steward.committed_manifests(home)
-            for packet in manifest["packets"]]
-    assert any(row and row["state"] == "held" for row in rows), rows
+        (person[0], "authority-unclear")]
+    assert cases.list_cases(home, record_id=x, parked_reason="attempts-exhausted") == []
 
 
 def test_risk_2_a_held_lessons_observation_is_not_used_up_by_a_sibling(tmp_path, monkeypatch):
