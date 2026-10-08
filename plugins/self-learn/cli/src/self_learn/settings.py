@@ -990,6 +990,22 @@ REGISTRY: tuple[Setting, ...] = (
         default="~/.claude/projects",
         description="root directory the miner scans for Claude Code session transcripts",
     ),
+    # M-5, 2026-10-07 (the user: "scheduled jobs maybe not unless i
+    # explicitly ask for coverage. background jobs yes."): a scheduled
+    # job's sessions are halted unless the job is named here. Parsed by
+    # `miner.mined_scheduled_jobs`.
+    Setting(
+        name="miner.mined_scheduled_jobs",
+        env_var="SELF_LEARN_MINER_MINED_SCHEDULED_JOBS",
+        config_section="miner",
+        config_key="mined_scheduled_jobs",
+        kind="str",
+        default="",
+        description=(
+            "scheduled jobs whose sessions the miner reads anyway, comma-separated, each named as its "
+            "scheduled-task tag names it; every other scheduled job's session is skipped"
+        ),
+    ),
     # ------------------------------------------------------- refs (U1, 2026-09-26)
     Setting(
         name="refs.transcript_roots",
