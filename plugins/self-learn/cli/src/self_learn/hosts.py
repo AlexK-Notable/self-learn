@@ -909,6 +909,16 @@ def host_rebind(home: Path | str, ref: str, new_path: Path | str) -> Path:
     target = validate_host_path(home, new_path, "project", mode=old_mode)
     if old_path is not None and old_path.resolve() == target:
         raise HostsError(f"{target} is already this bucket's path — nothing to rebind")
+    if (
+        old_path is not None
+        and hosts.skills_root is not None
+        and Path(hosts.skills_root).expanduser().resolve() == old_path.resolve()
+    ):
+        # S-82: the skills root moves with this path too (below), so the
+        # new path must also be sound for the ROOT's registration and
+        # mode -- a git skills root needs a git repo there -- or the
+        # rebind would leave the root broken.
+        validate_host_path(home, target, "skills-root", mode=hosts.skills_root_mode)
 
     # Everything above this line is READ-ONLY (validation + lookups); the
     # refusals above are therefore honest "nothing was written" refusals.

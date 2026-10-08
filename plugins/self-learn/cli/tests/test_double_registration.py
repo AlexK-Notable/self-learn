@@ -759,6 +759,30 @@ def test_a_rebind_keeps_each_registration_s_own_mode(tmp_path):
     assert after.project_modes == {str(moved.resolve()): "plain"}
 
 
+def test_a_rebind_checks_the_new_path_for_the_git_root_too(tmp_path):
+    """R3 (gate GM): the skills root moves with the path, so the new path
+    must be sound for the root's registration (a git root needs a git
+    repo) as well as the project's (a plain project needs its marker).
+    Red on 6a27412: the rebind passed a directory with no `.git`, leaving
+    the git skills root broken."""
+    env = _double(tmp_path)
+    home, repo = env.ledger, env.host
+    _project_lesson(home, repo, "lrn-8b000016")
+    not_a_repo = tmp_path / "not-a-repo"
+    not_a_repo.mkdir()
+    (not_a_repo / MARKER_FILENAME).write_text("plain registration\n", encoding="utf-8")
+    registry = (home / "hosts.yaml").read_bytes()
+    ledger_head = _head(home)
+    buckets = sorted(p.name for p in (home / "projects").iterdir())
+
+    with pytest.raises(hosts.HostsError, match="skills-root host .* is not a git repo"):
+        hosts.host_rebind(home, str(repo), not_a_repo)
+
+    assert (home / "hosts.yaml").read_bytes() == registry
+    assert _head(home) == ledger_head
+    assert sorted(p.name for p in (home / "projects").iterdir()) == buckets
+
+
 # ------------------------------------------------- --selftest's hosts row
 
 
