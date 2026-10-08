@@ -71,7 +71,8 @@ def never_fired_always_loaded(
     return {
         "kind": "no-fire-always-loaded",
         "label": (
-            f"Always-loaded CLAUDE.md lines with no recorded fire in the last {window_days} days"
+            f"Always-loaded CLAUDE.md lines with no recorded fire in the last {window_days} days "
+            "(a replaced lesson's fires count)"
         ),
         "window_days": window_days,
         "value": sorted({record_id for record_id in always_loaded if record_id not in fired}),

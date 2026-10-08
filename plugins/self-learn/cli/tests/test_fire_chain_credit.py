@@ -399,3 +399,138 @@ def test_the_old_lesson_may_sit_in_another_bucket(tmp_path: Path) -> None:
 
     assert _nudged(home, week=days_ago(7)) == ["lrn-0000c001"]
     assert _health_value(home) == ["lrn-0000c001"]
+
+
+# -------------------------------------------------------------------- merges
+
+
+@pytest.mark.parametrize("fired", ["lrn-0000a001", "lrn-0000a002"])
+def test_a_merge_credits_the_successor_from_either_predecessor(
+    tmp_path: Path, fired: str
+) -> None:
+    """Two old lessons replaced by ONE successor (a merge). A fire on either
+    predecessor reaches it, including the later one in file order: a walk that
+    keeps only the first predecessor of each successor loses the second."""
+    home = make_home(tmp_path)
+    _replaced(home, "lrn-0000a001", "lrn-0000b001")
+    _replaced(home, "lrn-0000a002", "lrn-0000b001")
+    _write_lesson(home, "lrn-0000b001")
+    _write_lesson(home, "lrn-0000c001")  # control: unrelated, never fired
+    _write_fire(home, fired, days=2)
+
+    nudged = _nudged(home, week=days_ago(7))
+    listed = _health_value(home)
+
+    assert "lrn-0000c001" in nudged and "lrn-0000c001" in listed, (
+        "positive control: the unrelated live lesson is still reported"
+    )
+    assert nudged == ["lrn-0000c001"], f"merge successor nudged after a fire on {fired}"
+    assert listed == ["lrn-0000c001"], f"merge successor on the row after a fire on {fired}"
+
+
+# ------------------------------------------------- files that do not read back
+
+
+def _write_non_utf8(home: Path, bucket: str, name: str) -> None:
+    resolved = home / bucket / "resolved"
+    resolved.mkdir(parents=True, exist_ok=True)
+    (resolved / name).write_bytes(b"\xff\xfe\x00 not utf-8")
+
+
+def test_non_utf8_record_files_do_not_stop_the_credit_on_the_nudge(
+    tmp_path: Path,
+) -> None:
+    """A record file that is not UTF-8, in the user bucket and in a project
+    bucket, is skipped by the chain walk; the chain beside it is still
+    credited.
+
+    Not covered here: ``health.gather``. It raises on such a file BEFORE the
+    credit runs, in ``report.gather`` -> ``ledger_ops.open_followups``
+    (``Record.from_path`` with no ``UnicodeDecodeError`` catch). That is
+    existing behaviour outside this change, and a test would pin a defect. The
+    health row's own share of the work, ``health.credit_replacement_chains``,
+    is checked directly in the next test."""
+    home = make_home(tmp_path)
+    _replaced(home, "lrn-0000a001", "lrn-0000b001")
+    _write_lesson(home, "lrn-0000b001")
+    _write_lesson(home, "lrn-0000c001")  # control: unrelated, never fired
+    _write_fire(home, "lrn-0000a001", days=2)
+    _write_non_utf8(home, "user", "lrn-0000bad1.md")
+    _write_non_utf8(home, "projects/-proj-12345678", "lrn-0000bad2.md")
+    # Positive control: the bad files are on disk and are not valid UTF-8, so
+    # the walk really meets them.
+    for bucket, name in (
+        ("user", "lrn-0000bad1.md"),
+        ("projects/-proj-12345678", "lrn-0000bad2.md"),
+    ):
+        with pytest.raises(UnicodeDecodeError):
+            (home / bucket / "resolved" / name).read_text(encoding="utf-8")
+
+    assert _nudged(home, week=days_ago(7)) == ["lrn-0000c001"]
+
+
+def test_non_utf8_record_files_do_not_stop_the_health_helper(tmp_path: Path) -> None:
+    """The health row's part of the credit, called directly because
+    ``health.gather`` cannot get past a non-UTF-8 file for an unrelated reason
+    (see the test above)."""
+    home = make_home(tmp_path)
+    _replaced(home, "lrn-0000a001", "lrn-0000b001")
+    _replaced(home, "lrn-0000b001", "lrn-0000c001")
+    _write_lesson(home, "lrn-0000c001")
+    _write_non_utf8(home, "user", "lrn-0000bad1.md")
+    _write_non_utf8(home, "projects/-proj-12345678", "lrn-0000bad2.md")
+
+    credited = health.credit_replacement_chains(home, {"lrn-0000a001"})
+
+    assert credited == {"lrn-0000a001", "lrn-0000b001", "lrn-0000c001"}
+    # Positive control that the result is not simply "everything": with no
+    # fire there is nothing to credit.
+    assert health.credit_replacement_chains(home, set()) == set()
+
+
+# ------------------------------------------------- the two windows differ in width
+
+
+def test_a_fire_between_the_two_windows_credits_the_row_but_not_the_nudge(
+    tmp_path: Path,
+) -> None:
+    """The health row looks back 30 days; the nudge looks back to the start of
+    the week. A predecessor fire 15 days ago is inside the first and outside
+    the second, so the same fire clears the successor on the row and leaves the
+    nudge standing."""
+    home = make_home(tmp_path)
+    _replaced(home, "lrn-0000a001", "lrn-0000b001")
+    _write_lesson(home, "lrn-0000b001")
+    _write_fire(home, "lrn-0000a001", days=15)
+    # Control: a predecessor fire inside BOTH windows clears both surfaces.
+    _replaced(home, "lrn-0000a002", "lrn-0000b002")
+    _write_lesson(home, "lrn-0000b002")
+    _write_fire(home, "lrn-0000a002", days=3)
+    _write_lesson(home, "lrn-0000c001")  # control: unrelated, never fired
+
+    nudged = _nudged(home, week=days_ago(7))
+    listed = _health_value(home)
+
+    assert "lrn-0000c001" in nudged and "lrn-0000c001" in listed
+    assert "lrn-0000b002" not in nudged and "lrn-0000b002" not in listed, (
+        "a fire inside both windows was not credited"
+    )
+    assert nudged == ["lrn-0000b001", "lrn-0000c001"], (
+        "the nudge credited a fire from before the week"
+    )
+    assert listed == ["lrn-0000c001"], "the 30-day row did not credit a 15-day-old fire"
+
+
+# ----------------------------------------------------------------------- label
+
+
+def test_the_row_label_says_a_replaced_lessons_fires_count(tmp_path: Path) -> None:
+    home = make_home(tmp_path)
+    _write_lesson(home, "lrn-0000c001")  # a populated row, not an absent one
+
+    rows = [r for r in health.gather(home) if r.get("kind") == "no-fire-always-loaded"]
+
+    assert len(rows) == 1 and rows[0]["value"] == ["lrn-0000c001"]
+    label = str(rows[0]["label"])
+    assert "30 days" in label
+    assert "replaced lesson's fires count" in label
