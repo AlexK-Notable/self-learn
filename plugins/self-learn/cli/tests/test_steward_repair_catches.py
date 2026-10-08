@@ -216,6 +216,17 @@ def test_a_reconsider_case_naming_pending_lessons_reaches_the_repair_turn(
     decided_by = [row for row in cases.list_cases(pair.home, record_id=pair.ids[0])
                   if row["case"] != pair.moving_case]
     assert [row["kind"] for row in decided_by] == ["resolution"]
+    # The repaired case still replaces the one that moved the lessons: for a
+    # reconsider input the runner fills `supersedes` in from the input's
+    # predecessor whatever the case's kind; a lesson input has none, and
+    # the repair's case names none (gate S1 R4).
+    (moving,) = [row for row in cases.list_cases(pair.home) if row["case"] == pair.moving_case]
+    if observed:
+        assert decided_by[0]["supersedes"] == pair.moving_case
+        assert moving["superseded_by"] == decided_by[0]["case"]
+    else:
+        assert decided_by[0].get("supersedes") is None
+        assert not moving.get("superseded_by")
 
 
 def _reconsider_stage(stage: Path, rid: str) -> None:
@@ -704,3 +715,132 @@ def test_a_reopen_pair_whose_second_line_stays_bad_does_not_reopen_alone(tmp_pat
     assert _status(home, rid) == "rejected", "the reopen did not land alone"
     assert row["kind"] == "bad-line", row
     assert len(prompts) == 2, "the line reached the repair turn"
+
+
+# ------------------------ 3. a case the case writer refuses is never stranded
+
+
+def test_a_case_the_case_writer_refuses_parks_its_lessons_instead_of_stranding_them(
+    tmp_path, monkeypatch
+):
+    """Gate S1 R1, its way 2. Night 1's refused reconsider case was still
+    RECORDED, so it already superseded the case that moved the pair (built
+    here by hand). Night 2 offers the lessons as ordinary lesson inputs; the
+    model writes ``kind: reconsider`` naming that moved-them case, and its
+    repair follows the advice -- ``kind: resolution`` -- keeping the
+    ``supersedes``. The case writer refuses it: that case is already
+    superseded.
+
+    Before, each lesson got a bare ``refused`` row at its record's version:
+    no kind, no case, decided for good and decided by no one. Now the
+    refusal takes its kind from `batch.refusal_kind` (`unclassified`: no
+    type in the table names a `cases.CaseError`), and both lessons are
+    parked now for the overseer, who decides them. The case is not in the
+    ledger, so no row names it and its phase is ``refused``."""
+    pair = MovedPair(tmp_path, observed=False, prefix="lrn-c9d0")
+    night_one = tmp_path / "night-1-reconsider.yaml"
+    _dump_yaml(night_one, _decide_pair(pair, kind="reconsider"))
+    refused_reconsider = cases.record(pair.home, night_one, actor="steward")
+    (moving,) = [row for row in cases.list_cases(pair.home) if row["case"] == pair.moving_case]
+    assert moving["superseded_by"] == refused_reconsider  # control: night 1's leftover
+    sent = _notifications(monkeypatch)
+    prompts: list[str] = []
+
+    def write(spec):
+        prompts.append(spec.prompt)
+        stage = _stage_dir(spec)
+        case = _decide_pair(pair, kind="reconsider")  # names the moved-them case
+        if _REPAIR_HEADER in spec.prompt:
+            case.update(kind="resolution", trigger="nightly")  # the advice; supersedes kept
+        _dump_yaml(stage / "cases" / "moved-pair.yaml", case)
+        _dump_yaml(stage / "sheets" / "moved-pair.yaml", {
+            "version": 1, "case": "$CASE_ID",
+            "items": [{"id": rid, "verb": "reject"} for rid in pair.ids],
+        })
+        return Outcome(ok=True, rc=0, stdout="", detail="", failure=None)
+
+    monkeypatch.setattr(steward.invocation, "write_session", write)
+
+    result = steward.run(pair.home)
+
+    packet = _packet(pair.home, result.run_id)
+    inputs = {row["record"]: row for row in packet["inputs"]}
+    assert {row["kind"] for row in inputs.values()} == {"lesson"}
+    assert len(prompts) == 2, "the repair turn was offered and followed"
+    (case_id,) = packet["case_ids"]
+    for rid in pair.ids:
+        row = packet["dispositions"][rid]
+        # positive control: the case writer refused the repaired case
+        assert f"{pair.moving_case} is already superseded by {refused_reconsider}" in row["reason"]
+        assert row["kind"] == "unclassified", row
+        assert row["state"] == "abandoned" and row["successor_case"], row
+        assert row["input_version"] == inputs[rid]["version"], row
+        assert "case" not in row, "the refused case was never recorded"
+        (parked,) = cases.list_cases(pair.home, record_id=rid, parked_for="overseer",
+                                     parked_reason="ledger-refused")
+        assert parked["case"] == row["successor_case"]
+        assert _status(pair.home, rid) == "pending"
+    assert case_id not in {row["case"] for row in cases.list_cases(pair.home)}
+    assert _head_manifest(pair.home, result.run_id)["cases"][case_id]["phase"] == "refused"
+    assert sorted(id_ for _cue, _summary, ids in sent for id_ in ids) == sorted(pair.ids)
+
+    # decided for the next run: the overseer has them, the steward does not
+    later: list[str] = []
+    monkeypatch.setattr(steward.invocation, "write_session",
+                        _pair_session(pair, "resolution", "resolution", later))
+    assert steward.run(pair.home).status == "idle"
+    assert later == []
+
+
+# ------------- way 1: one predecessor, two cases -- the runner names it once
+
+
+@pytest.mark.parametrize("explicit", [False, True], ids=["both-filled-in", "second-names-it"])
+def test_two_cases_deciding_a_moved_pair_one_lesson_each_both_apply(
+    tmp_path, monkeypatch, explicit
+):
+    """Gate S1 R1, its way 1. The model decides the two reconsider inputs
+    of a moved pair -- one predecessor -- with TWO ``kind: resolution``
+    cases, one lesson each. The runner filled the predecessor in as
+    ``supersedes`` on both, and the case writer refused the second (a case
+    is superseded once). Now the runner fills it in on one case only, and
+    not at all when another staged case names it itself (``second-names-
+    it``): both cases record, both lessons are decided."""
+    pair = MovedPair(tmp_path, observed=True, prefix="lrn-cbd0")
+    _notifications(monkeypatch)
+
+    def write(spec):
+        stage = _stage_dir(spec)
+        for n, rid in enumerate(pair.ids, start=1):
+            case = _case([rid], "reject", "reject", scope="user")
+            case["question"] = "decide this moved lesson again?"
+            case["evidence"] = [{"ref": pair.statement, "quote": "near the code"}]
+            case["dependencies"] = {**_NO_DEPS, "statements": [pair.statement]}
+            if explicit and n == 2:
+                case["supersedes"] = pair.moving_case
+            _dump_yaml(stage / "cases" / f"one-{n}.yaml", case)
+            _dump_yaml(stage / "sheets" / f"one-{n}.yaml", {
+                "version": 1, "case": "$CASE_ID", "items": [{"id": rid, "verb": "reject"}],
+            })
+        return Outcome(ok=True, rc=0, stdout="", detail="", failure=None)
+
+    monkeypatch.setattr(steward.invocation, "write_session", write)
+
+    result = steward.run(pair.home)
+
+    packet = _packet(pair.home, result.run_id)
+    # positive control: both inputs carry the same predecessor to fill in
+    assert {(row["kind"], row.get("predecessor")) for row in packet["inputs"]} == {
+        ("reconsider", pair.moving_case)}
+    assert {packet["dispositions"][rid]["state"] for rid in pair.ids} == {"applied"}
+    assert sorted(result.decided) == sorted(pair.ids)
+    assert {_status(pair.home, rid) for rid in pair.ids} == {"rejected"}
+    deciding = {row["records"][0]: row for row in cases.list_cases(pair.home)
+                if row["case"] in packet["case_ids"]}
+    assert set(deciding) == set(pair.ids)
+    supersedes = {rid: row.get("supersedes") for rid, row in deciding.items()}
+    assert sorted(supersedes.values(), key=str) == sorted([None, pair.moving_case], key=str)
+    if explicit:
+        assert supersedes[pair.ids[1]] == pair.moving_case, "the model's own choice stands"
+    (moving,) = [row for row in cases.list_cases(pair.home) if row["case"] == pair.moving_case]
+    assert moving["superseded_by"] in packet["case_ids"]

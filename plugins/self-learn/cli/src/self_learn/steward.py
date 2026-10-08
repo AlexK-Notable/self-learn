@@ -2003,6 +2003,17 @@ def _prepared_recipe(
     #: prepared text refused every case of the packet over one of them.
     refused_rows: dict[str, dict] = {}
     versions = {row["record"]: row.get("version") for row in packet.get("inputs") or []}
+    #: 2026-10-07 (gate S1, way 1): the predecessors a staged case of this
+    #: packet already names. A case is superseded once -- `cases.record`
+    #: refuses a second successor -- so the runner fills a predecessor in
+    #: on ONE case: never on a case when another staged case names it
+    #: itself, and never on two. Before, two cases deciding a moved pair one
+    #: lesson each were both filled in, and the second was refused.
+    claimed = {
+        str(data["supersedes"])
+        for data in (_read_yaml(path) for path in sorted((stage / "cases").glob("*.yaml")))
+        if isinstance(data, dict) and data.get("supersedes")
+    }
     for case_path in sorted((stage / "cases").glob("*.yaml")):
         stem = case_path.stem
         sheet_path = stage / "sheets" / f"{stem}.yaml"
@@ -2029,7 +2040,10 @@ def _prepared_recipe(
                 f"{case_path.name}: records span more than one predecessor case"
             )
         if predecessor_ids and not case_data.get("supersedes"):
-            case_data["supersedes"] = next(iter(predecessor_ids))
+            predecessor = next(iter(predecessor_ids))
+            if predecessor not in claimed:
+                case_data["supersedes"] = predecessor
+                claimed.add(predecessor)
         parking_reason = _forced_parking_reason(
             home, sheet_path, _reconsidered_by(case_data)
         )
@@ -3390,6 +3404,59 @@ def _notify_parked_now(home: Path, run_id: str, parked: list[tuple[str, str]]) -
             "status": "notify-failed", "error": _short_cause(exc)})
 
 
+def _commit_park_now(
+    home: Path,
+    run_dir: Path,
+    run_id: str,
+    packet_index: int,
+    case_id: str,
+    rows: dict[str, dict],
+    pending: dict[str, str],
+    *,
+    retry_outside: bool,
+    closed_phase: str,
+) -> tuple[list[tuple[str, str]], bool]:
+    """S-71 §4.5 for one case whose disposition rows were just committed:
+    park each record of *pending* NOW, not at the cap -- a retry cannot fix
+    its refusal, and a fresh decision was already refused once or cannot be
+    asked for. The record's committed row, with the ledger's words, is the
+    successor's evidence. Then commit the `abandoned` rows that landed and
+    the case's phase: *closed_phase* once none of its records is left
+    open, else `unfinished` (the case is re-driven).
+
+    Returns the `(record, kind)` pairs to tell the user about, and False
+    when the run record could not be written (the caller stops the packet,
+    as for any failed run-record write)."""
+    landed, errors = _park_now(home, run_dir, run_id, packet_index, pending)
+    if errors:
+        _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+            "status": "park-now-failed", "case": case_id, "errors": errors})
+    still_open = retry_outside or any(
+        row["state"] == "unfinished" and rid not in landed
+        for rid, row in rows.items()
+    )
+    final_phase = "unfinished" if still_open else closed_phase
+    if not landed:
+        return [], True
+    try:
+        _update_manifest(
+            home, run_id,
+            reason=f"case {case_id} parked {len(landed)} lesson(s) now",
+            update=lambda current: (
+                current["cases"][case_id].update(phase=final_phase),
+                current["packets"][packet_index - 1]["dispositions"].update(landed),
+            ),
+        )
+    except gitops.GitOpsError as exc:
+        _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
+            "status": "dirty-refused", "paths": _dirty_truth_paths(home),
+            "error": str(exc)})
+        return [], False
+    # Told about once its row says so: a re-drive after a failed row write
+    # reuses the successor, and is told then.
+    return [(rid, pending[rid]) for rid in landed], True
+
+
 def _apply_packet(
     home: Path, run_id: str, packet_index: int
 ) -> tuple[list[str], int, int | None, list[tuple[str, str]]]:
@@ -3430,13 +3497,60 @@ def _apply_packet(
             error = refusal_text(exc)
             _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "refused",
                 "stage_file": case_path.name, "error": error})
-            _update_manifest(home, run_id, reason=f"case {case_id} refused", update=lambda current: (
-                current["cases"][case_id].update(phase="refused", error=error),
-                current["packets"][packet_index - 1]["dispositions"].update({
-                    rid: {"state": "refused", "input_version": inputs[rid], "reason": error}
-                    for rid in (refused_records or [])
-                }),
-            ))
+            # 2026-10-07 (gate S1 R1): the case writer refused the case, so
+            # it is not in the ledger. Its lessons were written a bare
+            # `refused` row -- no kind, no case -- which no S-71 rule reads
+            # and which `_terminal_versions` counts as a decision: a lesson
+            # input refused here (say its case named a predecessor an
+            # earlier case had already superseded) was stranded for good.
+            # The refusal now takes its S-71 kind as every refusal does,
+            # from the exception's type (`batch.refusal_kind`; the table
+            # names no `cases.CaseError`, so it is `unclassified` unless a
+            # typed cause lies under it), and the lessons follow §4.2 as
+            # for a case the preview holds back: `unclassified` parks them
+            # now for the overseer; a `git` cause is retried. No row names
+            # the case and nothing is receipted: there is no case to
+            # receipt on, or to add the park's later observation to
+            # (`_close_out_record`). The phase stays `refused`, which says
+            # exactly that.
+            kind = batch.refusal_kind(exc, rc=1, state="refused")
+            case_records = (
+                [str(rid) for rid in dict.fromkeys(refused_records)]
+                if isinstance(refused_records, list) else []
+            )
+            settled_rows = _case_dispositions(
+                home, manifest, manifest["packets"][packet_index - 1], case_id, case_records,
+                [
+                    {"id": rid, "verb": "case", "rc": 1, "state": "refused",
+                     "detail": error, "kind": kind}
+                    for rid in case_records
+                ],
+                held=True,
+            )
+            rows = {
+                rid: {key: value for key, value in row.items() if key != "case"}
+                for rid, row in settled_rows.rows.items()
+            }
+            phase = "unfinished" if settled_rows.retry_outside or any(
+                row["state"] == "unfinished" for row in rows.values()
+            ) else "refused"
+            try:
+                _update_manifest(home, run_id, reason=f"case {case_id} refused", update=lambda current: (
+                    current["cases"][case_id].update(phase=phase, error=error),
+                    current["packets"][packet_index - 1]["dispositions"].update(rows),
+                ))
+            except gitops.GitOpsError as write_error:
+                _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "dirty-refused",
+                    "paths": _dirty_truth_paths(home), "error": str(write_error)})
+                return list(dict.fromkeys(decided)), refused, gitops.EXIT_GIT_FAILED, parked_now
+            if settled_rows.park_now:
+                told, written = _commit_park_now(
+                    home, run_dir, run_id, packet_index, case_id, rows, settled_rows.park_now,
+                    retry_outside=settled_rows.retry_outside, closed_phase="refused",
+                )
+                if not written:
+                    return list(dict.fromkeys(decided)), refused, gitops.EXIT_GIT_FAILED, parked_now
+                parked_now.extend(told)
             continue
         #: (kind, the ledger's words) when `verbs.reconsider` refused this case
         reconsider_refusal: tuple[str, str] | None = None
@@ -3665,37 +3779,13 @@ def _apply_packet(
                 "paths": _dirty_truth_paths(home), "error": str(exc)})
             return list(dict.fromkeys(decided)), refused, gitops.EXIT_GIT_FAILED, parked_now
         if pending:
-            # S-71 §4.5: parked NOW, not at the cap -- a retry cannot fix
-            # this refusal, and a fresh decision was already refused once
-            # or cannot be asked for. The record's row, committed just
-            # above with the ledger's words, is the successor's evidence.
-            landed, errors = _park_now(home, run_dir, run_id, packet_index, pending)
-            if errors:
-                _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
-                    "status": "park-now-failed", "case": case_id, "errors": errors})
-            still_open = retry_outside or any(
-                row["state"] == "unfinished" and rid not in landed
-                for rid, row in rows.items()
+            told, written = _commit_park_now(
+                home, run_dir, run_id, packet_index, case_id, rows, pending,
+                retry_outside=retry_outside, closed_phase="complete",
             )
-            final_phase = "unfinished" if still_open else "complete"
-            if landed:
-                try:
-                    _update_manifest(
-                        home, run_id,
-                        reason=f"case {case_id} parked {len(landed)} lesson(s) now",
-                        update=lambda current: (
-                            current["cases"][case_id].update(phase=final_phase),
-                            current["packets"][packet_index - 1]["dispositions"].update(landed),
-                        ),
-                    )
-                except gitops.GitOpsError as exc:
-                    _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
-                        "status": "dirty-refused", "paths": _dirty_truth_paths(home),
-                        "error": str(exc)})
-                    return list(dict.fromkeys(decided)), refused, gitops.EXIT_GIT_FAILED, parked_now
-                # Told about once its row says so: a re-drive after a
-                # failed row write reuses the successor, and is told then.
-                parked_now.extend((rid, pending[rid]) for rid in landed)
+            if not written:
+                return list(dict.fromkeys(decided)), refused, gitops.EXIT_GIT_FAILED, parked_now
+            parked_now.extend(told)
         # Only a ledger STOP (5/6/7, "nothing written, safe to retry") or a
         # bookkeeping halt stops the cases behind this one. Exit 8 means
         # "some items applied, some refused" -- a finished sheet with a
