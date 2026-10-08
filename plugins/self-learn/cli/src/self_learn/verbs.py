@@ -5947,8 +5947,13 @@ def _execute_route(
             # round; a host phase run without the ledger lock takes one host
             # lock (plus, under G1, the lock of another repository only for
             # a file a symlink takes there -- bounded by the lock timeout).
+            # `_ledger_write` is already held here (a re-entrant
+            # pass-through); naming it first in the same `with` keeps the
+            # order written down where §4.5b's pin reads it.
             old_ref_spec = old_retire.reference[1]
-            with gitops.host_lock(old_ref_spec.host_path, old_ref_spec.mode):
+            with _ledger_write(home), gitops.host_lock(
+                old_ref_spec.host_path, old_ref_spec.mode
+            ):
                 touched = touched + _shelf_retirement_records(
                     home,
                     old_retire.reference,
