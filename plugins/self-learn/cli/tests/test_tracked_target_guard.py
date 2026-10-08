@@ -1368,3 +1368,54 @@ def test_a_shelf_retirement_ignores_a_tracked_claude_md_that_no_longer_points_at
     assert _record(home, rid).status == "superseded"
     assert (host / "CLAUDE.md").read_bytes() == claude_md
     assert _status(host) == ""
+
+
+def test_a_file_tracked_mid_supersede_gets_the_removal_wording(tmp_path, monkeypatch):
+    """Gate G1 N1, supersede's own host phase (it recompiles the OLD
+    lesson's target without it): a file tracked since the pre-flight is
+    refused as a removal, never with "choose a destination"."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    old = _lesson(home, host, "lrn-9a000030")
+    new = _lesson(home, host, "lrn-9a000031")
+    verbs.route(home, old, dest="claude-md", no_push=True)
+    git(host, "add", "-f", "--", "CLAUDE.md")
+    git(host, "commit", "-q", "-m", "track CLAUDE.md")
+    claude_md = (host / "CLAUDE.md").read_bytes()
+    assert old.encode() in claude_md  # control
+    monkeypatch.setattr(
+        verbs, "_refuse_unsafe_plain_write", lambda spec, removal=False: None, raising=False
+    )
+
+    result = verbs.supersede(home, old, new, no_push=True)
+
+    (failed,) = [w for w in result.warnings if "HOST PHASE FAILED" in w]
+    assert "CLAUDE.md is tracked by git" in failed
+    assert "Taking this lesson out would change that file" in failed
+    assert "Choose a destination" not in failed
+    assert (host / "CLAUDE.md").read_bytes() == claude_md
+    assert _status(host) == ""
+
+
+def test_a_reference_route_that_creates_its_pointer_file_gives_it_a_line_first(tmp_path):
+    """Gate G1 D1's other edge: with no CLAUDE.md at all, `apply_pointer`
+    CREATES it, so the pointer surface is judged and ignored before it is
+    written. (Behaviour ac85669 already had -- this test passes there; it
+    holds the new "only when it would write" rule to the creation case.)"""
+    home = make_env(tmp_path).ledger
+    host = tmp_path / "bare-host"
+    init_repo(host)
+    (host / "README").write_text("bare\n", encoding="utf-8")
+    commit_all(host, "seed")
+    _write_operator_lines(host)
+    host_add(home, host, "project", mode="plain")
+    assert not (host / "CLAUDE.md").exists()  # control
+    rid = _lesson(home, host, "lrn-9a000032")
+
+    result = verbs.route(home, rid, dest="reference", no_push=True)
+
+    assert not any("HOST PHASE FAILED" in w for w in result.warnings), result.warnings
+    assert b"references/LEARNINGS.md" in (host / "CLAUDE.md").read_bytes()
+    assert _ignored(host, "CLAUDE.md") and _ignored(host, "references/LEARNINGS.md")
+    assert _status(host) == ""
+    assert _block(host) == ["/CLAUDE.md", "/references/LEARNINGS.md"]
