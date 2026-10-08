@@ -379,7 +379,8 @@ the overseer to decide the lesson itself, with the recorded failure reason
 as its evidence — the ledger's own refusal text when that is what stopped
 it. When you never examined the record it carries no tentative answer from
 you; when the ledger refused your decision, your case and sheet stay on
-record beside it. Do not write such a case yourself, and never assign a
+record beside it, unless it refused the case itself before recording it.
+Do not write such a case yourself, and never assign a
 substantive decision or an invented parking reason to a record a failed
 attempt left unexamined (§13).
 
