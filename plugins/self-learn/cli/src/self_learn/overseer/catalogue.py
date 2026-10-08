@@ -66,12 +66,12 @@ from .health import _replacement_successors
 #: discovery's window can change without moving the health row.
 FIRE_WINDOW_DAYS = 30
 
-#: Record statuses that count as "placed". A record is also left out when
-#: ``superseded_by`` is set (``domain.is_canon_live`` is the compiler's own
-#: test for "still the current canon"; this set is the knob for the status
-#: half of it). Pending, deferred, rejected and superseded lessons are not
-#: placed anywhere, so they are not listed.
-PLACED_STATUSES: frozenset[str] = frozenset({"routed"})
+# Which lessons count as "placed" is deliberately NOT a knob. A lesson is
+# listed exactly when ``domain.is_canon_live`` holds (routed, and no
+# ``superseded_by``): the compiler's own test for what it compiles. A knob
+# here used to hold the statuses; widening it would have made the catalogue
+# list lessons the compiler never compiles, so the discovery step would
+# reason about lines no session ever loads. That is a trap, not a setting.
 
 #: The per-lesson numbers shown under each line, in order: ``(attribute of
 #: PlacedLesson, label)``. The label may use ``{window}`` for the fire window.
@@ -362,10 +362,6 @@ def _claude_dir(claude_dir: Path | str | None) -> Path:
     return claude_runtime_dir()
 
 
-def _is_placed(record: Record) -> bool:
-    return record.status in PLACED_STATUSES and record.superseded_by is None
-
-
 def _walk_ledger(home: Path, claude_dir: Path) -> _Walk:
     """Read every ``resolved/`` record once; place the ones that are placed."""
     walk = _Walk()
@@ -379,7 +375,7 @@ def _walk_ledger(home: Path, claude_dir: Path) -> _Walk:
             except UNREADABLE_RECORD_ERRORS:
                 walk.unreadable.append(f"{bucket.scope}/{bucket.name}/{path.name}")
                 continue
-            if not _is_placed(record):
+            if not domain.is_canon_live(record):
                 continue
             place, why = _place(home, bucket, record, claude_dir)
             if place is None:
@@ -572,7 +568,9 @@ def _surface_key(label: str, target: Path, *, digest_chars: int | None = None) -
 
 
 def _fires_by_record(home: Path, now: datetime, window_days: int) -> Counter[str]:
-    """Fires per record id in the window, with chain credit.
+    """Fires per record id in the window, with chain credit. A fire counts
+    when its time is inside the window and not after *now* (a fire dated in
+    the future is a clock or data error, not a fire in the last N days).
 
     A fire on a lesson that was replaced counts toward every lesson after it
     in the replacement chain -- the overseer's own rule,
@@ -592,7 +590,7 @@ def _fires_by_record(home: Path, now: datetime, window_days: int) -> Counter[str
         if event.get("kind") != "fire" or not isinstance(record_id, str):
             continue
         when = chrono.to_dt(event.get("ts"))
-        if when is not None and when >= since:
+        if when is not None and since <= when <= now:
             own[record_id] += 1
 
     credited: Counter[str] = Counter(own)

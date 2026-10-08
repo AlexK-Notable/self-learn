@@ -507,6 +507,35 @@ def test_rejected_deferred_and_pending_lessons_are_not_listed(world: World) -> N
         assert hidden not in rows, f"{hidden} is listed but is not placed"
 
 
+def test_a_routed_lesson_with_superseded_by_set_is_not_listed(world: World) -> None:
+    # The compiler's test is "routed AND no superseded_by"
+    # (domain.is_canon_live). A record whose two fields drifted apart --
+    # status still routed, superseded_by set -- is not compiled, so it is
+    # not listed.
+    keep = world.lesson(1)
+    drifted = world.lesson(2, trigger="About to do the drifted thing.")
+    # CONTROL: the same lesson is listed while superseded_by is unset.
+    assert drifted in _rows(world.placed())
+
+    world.lesson(2, superseded_by=keep, trigger="About to do the drifted thing.")
+    path = world.home / "user" / "resolved" / f"{drifted}.md"
+    record = Record.from_path(path)
+    assert (record.status, record.superseded_by) == ("routed", keep)  # the drift is on disk
+
+    rows = _rows(world.placed())
+    assert drifted not in rows, "a lesson with superseded_by set is still listed"
+    assert keep in rows
+
+
+def test_a_fire_dated_after_now_does_not_count(world: World) -> None:
+    u1 = world.lesson(1)
+    world.fire(u1, 5)  # inside the window: counts (the CONTROL)
+    world.fire(u1, -5)  # five days AFTER now
+    world.fire(u1, -1)  # one day after now
+
+    assert _rows(world.placed())[u1].fires == 1
+
+
 # ----------------------------------------- (c) a successor carries the fires
 
 
@@ -1078,7 +1107,7 @@ def test_the_knobs_at_the_top_of_the_module_change_the_output(
     world.fire(u1, 5)
     world.fire(u1, 10)
 
-    # Baseline: window 30, only routed lessons, all four columns.
+    # Baseline: window 30, all four columns.
     base = world.placed()
     assert _rows(base)[u1].fires == 2
     assert rejected not in _rows(base)
@@ -1091,10 +1120,6 @@ def test_the_knobs_at_the_top_of_the_module_change_the_output(
     assert _rows(narrow)[u1].fires == 1
     assert "fires in the last 7 days: 1" in catalogue.render_surface(_surface_at(narrow, user_md))
     monkeypatch.setattr(catalogue, "FIRE_WINDOW_DAYS", 30)
-
-    monkeypatch.setattr(catalogue, "PLACED_STATUSES", frozenset({"routed", "rejected"}))
-    assert rejected in _rows(world.placed())
-    monkeypatch.setattr(catalogue, "PLACED_STATUSES", frozenset({"routed"}))
 
     monkeypatch.setattr(catalogue, "LESSON_COLUMNS", (("words", "words"),))
     only_words = catalogue.render_surface(_surface_at(world.placed(), user_md))
