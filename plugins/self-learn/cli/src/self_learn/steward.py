@@ -2444,8 +2444,21 @@ def _maintain_manifest(home: Path, run_id: str, packet_index: int) -> tuple[int,
         )
 
 
+def _excused_after_reopen(shown: batch.DryRunItem, reopened: set[str]) -> bool:
+    """The one refusal a sanctioned ``[reopen X, <verb> X]`` pair excuses
+    on its later line: kind ``status``. The preview cannot see the reopen
+    land, so it checks that line against the lesson's status before the
+    reopen -- a refusal the reopen itself removes. Any other kind (a
+    ``bad-line``, a destination that cannot take it) is the line's own and
+    is a refusal like any other (2026-10-07; gate-l10 probe P3: before,
+    every kind was excused, so a bad line after a reopen never reached the
+    repair turn, and at apply the reopen landed alone)."""
+    return shown.id in reopened and shown.kind == "status"
+
+
 def _preview_is_clean_for_sequence(preview: batch.DryRunResult, items: batch.Sheet) -> bool:
-    """Account for a sanctioned [reopen, verb] sheet's sequential state change."""
+    """Account for a sanctioned [reopen, verb] sheet's sequential state change
+    (:func:`_excused_after_reopen`)."""
     if preview.ok:
         return True
     reopened: set[str] = set()
@@ -2453,7 +2466,7 @@ def _preview_is_clean_for_sequence(preview: batch.DryRunResult, items: batch.She
         if item.verb == "reopen" and shown.state != "would-refuse":
             reopened.add(item.id)
             continue
-        if shown.state == "would-refuse" and item.id not in reopened:
+        if shown.state == "would-refuse" and not _excused_after_reopen(shown, reopened):
             return False
     return True
 
@@ -3254,14 +3267,15 @@ def _held_refusals(preview: batch.DryRunResult, sheet: batch.Sheet) -> list[dict
     """The lines a held-back case's preview says the ledger would refuse,
     shaped like case-result items, with the same sequence rule as
     `_preview_is_clean_for_sequence` (a sanctioned `[reopen, verb]`
-    pair's second line is not a refusal)."""
+    pair's second line is not a refusal when the refusal is the `status`
+    one the reopen removes, :func:`_excused_after_reopen`)."""
     reopened: set[str] = set()
     out: list[dict] = []
     for shown, item in zip(preview.items, sheet, strict=True):
         if item.verb == "reopen" and shown.state != "would-refuse":
             reopened.add(item.id)
             continue
-        if shown.state == "would-refuse" and item.id not in reopened:
+        if shown.state == "would-refuse" and not _excused_after_reopen(shown, reopened):
             out.append({
                 "n": shown.n, "id": shown.id, "verb": shown.verb, "rc": 1,
                 "state": "refused", "detail": shown.detail,

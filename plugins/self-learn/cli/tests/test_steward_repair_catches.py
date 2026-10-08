@@ -320,3 +320,154 @@ def test_a_reconsider_refusal_of_another_shape_carries_its_kind_too(tmp_path, mo
     assert row["state"] == "abandoned" and row["successor_case"], row
     assert row["case"] in _packet(home, result.run_id)["case_ids"]
     assert _status(home, rid) == "rejected"
+
+
+# ------------------------------------- 2. a reopen pair hides no bad line
+
+
+def _rejected(home: Path, rid: str) -> str:
+    _seed(home, rid)
+    verbs.reject(home, rid, by="human", no_push=True)
+    assert _status(home, rid) == "rejected"  # control
+    return rid
+
+
+def _reopen_pair_stage(stage: Path, rid: str, dest: str) -> list[dict]:
+    items = [{"id": rid, "verb": "reopen"}, {"id": rid, "verb": "route", "dest": dest}]
+    _dump_yaml(stage / "cases" / "again.yaml", _case([rid], "route", "route"))
+    _dump_yaml(stage / "sheets" / "again.yaml", {"version": 1, "case": "$CASE_ID", "items": items})
+    return items
+
+
+def _sheet(tmp_path: Path, items: list[dict]) -> batch.Sheet:
+    path = tmp_path / "pair-sheet.yaml"
+    _dump_yaml(path, {"version": 1, "items": items})
+    return batch.load_sheet(path)
+
+
+def _pair_verdicts(tmp_path: Path, rid: str, dest: str):
+    base = tmp_path / dest.replace(":", "-")
+    home = make_env(base).ledger
+    _rejected(home, rid)
+    stage = base / "stage"
+    items = _reopen_pair_stage(stage, rid, dest)
+    sheet = _sheet(base, items)
+    preview = batch.dry_run(home, sheet, actor="steward")
+    assert [item.state for item in preview.items] == ["would-apply", "would-refuse"]  # control
+    return (
+        preview.items[1].kind,
+        steward._ledger_repair_message(home, stage, {rid: "rejected"}),
+        steward._held_refusals(preview, sheet),
+        steward._preview_is_clean_for_sequence(preview, sheet),
+    )
+
+
+def test_only_the_expected_status_refusal_after_a_reopen_is_excused(tmp_path):
+    """Gate-l10 probe P3. In ``[reopen X, route X]`` the preview cannot see
+    the reopen land, so the route previews against the REJECTED lesson
+    and is refused ``status`` -- expected, and still excused (the control,
+    a good destination). A ``bad-line`` on that line (a destination
+    qualifier that does not exist) is the model's own mistake: it reaches
+    the repair turn, and at apply time the case is held rather than
+    letting the reopen land alone."""
+    rid = "lrn-c4d00001"
+    kind, message, held, clean = _pair_verdicts(tmp_path, rid, "skill-md")
+    assert kind == "status"  # control: the expected refusal, and only it
+    assert (message, held, clean) == (None, [], True)
+
+    kind, message, held, clean = _pair_verdicts(tmp_path, rid, "claude-md:bogus")
+    assert kind == "bad-line"  # control: the preview carries the line's own kind
+    assert message is not None and f"- sheets/again.yaml: item 2 (route {rid}): " in message
+    assert "not recognized" in message
+    assert [(row["n"], row["kind"]) for row in held] == [(2, "bad-line")]
+    assert clean is False
+
+
+def _rejected_and_observed(tmp_path: Path, rid: str) -> tuple[Path, str]:
+    """A rejected lesson whose rejecting case's dependency then changed,
+    so the steward is handed it as a reconsider input."""
+    home = make_env(tmp_path).ledger
+    _seed(home, rid)
+    statement = statements.add(home, verbatim="Route it after all.",
+                               source={"message_ref": "transcript:p3#L7"}, recorded_by="human")
+    stage = tmp_path / "rejecting-case.yaml"
+    rejecting = _case([rid], "reject", "reject")
+    rejecting.update(trigger="human", dependencies={**_NO_DEPS, "statements": [statement]})
+    _dump_yaml(stage, rejecting)
+    prior = cases.record(home, stage, actor="human")
+    verbs.reject(home, rid, by="human", no_push=True)
+    cases.observe(home, prior, "statement", text="route it after all", ref=statement, by="steward")
+    _enable_steward(home)
+    return home, statement
+
+
+def _reopen_session(rid: str, statement: str, first: str, repair: str, prompts: list[str]):
+    def write(spec):
+        prompts.append(spec.prompt)
+        dest = repair if _REPAIR_HEADER in spec.prompt else first
+        out = _stage_dir(spec)
+        case = _case([rid], "route", "route")
+        case.update(kind="reconsider", trigger="reconsider",
+                    dependencies={**_NO_DEPS, "statements": [statement]})
+        _dump_yaml(out / "cases" / f"{rid}.yaml", case)
+        _dump_yaml(out / "sheets" / f"{rid}.yaml", {"version": 1, "case": "$CASE_ID", "items": [
+            {"id": rid, "verb": "reopen"}, {"id": rid, "verb": "route", "dest": dest},
+        ]})
+        return Outcome(ok=True, rc=0, stdout="", detail="", failure=None)
+
+    return write
+
+
+def _reopen_run(tmp_path: Path, monkeypatch, rid: str, first: str, repair: str):
+    home, statement = _rejected_and_observed(tmp_path / rid, rid)
+    _notifications(monkeypatch)
+    prompts: list[str] = []
+    monkeypatch.setattr(steward.invocation, "write_session",
+                        _reopen_session(rid, statement, first, repair, prompts))
+    result = steward.run(home)
+    inputs = _packet(home, result.run_id)["inputs"]
+    assert [(row["kind"], row["record_status"]) for row in inputs] == [("reconsider", "rejected")]
+    return home, result, prompts
+
+
+def test_a_reopen_pair_with_a_bad_second_line_is_repaired_in_the_same_run(tmp_path, monkeypatch):
+    """End to end. A rejected lesson comes back as a reconsider input; the
+    model writes ``[reopen, route]``. The control pair (a good destination,
+    whose route previews only the expected ``status`` refusal) spends no
+    repair turn and applies. The bad pair names a destination qualifier
+    that does not exist: before, no repair turn, and at apply the reopen
+    landed alone -- the lesson went back to pending without its
+    re-decision. Now the repair turn names the line, and the fixed pair
+    applies."""
+    home, result, prompts = _reopen_run(tmp_path, monkeypatch, "lrn-c5d00001",
+                                        "skill-md", "skill-md")
+    assert len(prompts) == 1  # control: no repair turn spent on the clean pair
+    assert result.decided == ["lrn-c5d00001"] and _status(home, "lrn-c5d00001") == "routed"
+
+    rid = "lrn-c5d00003"
+    home, result, prompts = _reopen_run(tmp_path, monkeypatch, rid, "claude-md:bogus", "skill-md")
+    assert _status(home, rid) == "routed", "the repaired pair applied"
+    assert result.decided == [rid]
+    assert len(prompts) == 2
+    assert f"- sheets/{rid}.yaml: item 2 (route {rid}): " in _repair_part(prompts[1])
+
+
+def test_a_reopen_pair_whose_second_line_stays_bad_does_not_reopen_alone(tmp_path, monkeypatch):
+    """The model insists on the bad destination in its repair. Apply time
+    holds the whole case, as the repair preview did: the lesson is not
+    reopened without its re-decision (before, it went back to pending and
+    the route was refused)."""
+    rid = "lrn-c5d00002"
+    home, statement = _rejected_and_observed(tmp_path, rid)
+    _notifications(monkeypatch)
+    prompts: list[str] = []
+    monkeypatch.setattr(steward.invocation, "write_session",
+                        _reopen_session(rid, statement, "claude-md:bogus", "claude-md:bogus", prompts))
+
+    result = steward.run(home)
+
+    row = _packet(home, result.run_id)["dispositions"][rid]
+    assert "not recognized" in str(row.get("reason")), row  # positive control
+    assert _status(home, rid) == "rejected", "the reopen did not land alone"
+    assert row["kind"] == "bad-line", row
+    assert len(prompts) == 2, "the line reached the repair turn"
