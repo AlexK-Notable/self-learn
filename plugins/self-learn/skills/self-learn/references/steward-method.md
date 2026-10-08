@@ -489,4 +489,6 @@ A lesson already on a shelf can be taken off it. In a `kind: reconsider`
 case whose `supersedes` names the case that covered it, a `route` line
 moves it to the destination it names, and a `reject` or `defer` line takes
 it off too; either way its entry leaves the shelf file in the same motion.
-The shelf file and its pointer line stay, even when no entry is left.
+Never retire a lesson as covered by a shelf (`covered_by: reference:<file>`):
+the runner refuses that line from you as well, since a shelf nothing reads
+covers nothing.

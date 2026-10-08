@@ -17,6 +17,13 @@ as `human`) is unchanged -- the positive control every refusal here is
 measured against. The agents are told, in their own instructions, where
 such a lesson goes instead.
 
+2026-10-07 (the user: "yes, makes sense"): the same two actors may not
+retire a lesson as covered by a shelf either -- a `retire` or `graduate`
+line whose `covered_by` names `reference:<file>`. A shelf nothing reads
+covers no lesson. Refused by name in the batch's run and its preview, as
+`bad-line`, from the same set (`REFERENCE_REFUSED_ACTORS`); a person's
+same line applies.
+
 Every scenario runs on a sandbox ledger and host (`support.make_env` under
 pytest's tmpdir); no model is called.
 """
@@ -261,6 +268,115 @@ def test_the_stewards_repair_turn_is_told_before_anything_is_applied(tmp_path):
     assert steward._ledger_repair_message(home, stage, {RID: "pending"}) is None
 
 
+# ----------------------------------- a retire covered by a shelf (2026-10-07)
+
+
+def _pending(home: Path, rid: str) -> None:
+    ledger_ops.create_record(home, make_behavior(record_id=rid))
+    commit_all(home, f"seed {rid}")
+
+
+@pytest.mark.parametrize("verb", ["retire", "graduate"])
+@pytest.mark.parametrize("actor", AGENTS)
+def test_an_agent_retire_covered_by_a_shelf_is_refused_by_name_and_a_persons_applies(
+    tmp_path, actor, verb
+):
+    sheet = _sheet(tmp_path, [{"id": RID, "verb": verb, "covered_by": "reference:LEARNINGS.md"}])
+
+    # positive control, first: in a ledger of its own, a person's same line applies
+    control = make_env(tmp_path / "control")
+    _pending(control.ledger, RID)
+    assert batch.dry_run(control.ledger, sheet).items[0].state == "would-apply"
+    applied = batch.run(control.ledger, sheet, no_push=True)
+    assert applied.items[0].state == "applied", applied.items[0].detail
+    assert _record(control.ledger, RID).status == "superseded"
+    assert _record(control.ledger, RID).superseded_by == "covered_by:reference:LEARNINGS.md"
+
+    env = make_env(tmp_path / "agent")
+    _pending(env.ledger, RID)
+    before = last_verb_sha(env.ledger)
+
+    preview = batch.dry_run(env.ledger, sheet, actor=actor)
+    result = batch.run(env.ledger, sheet, no_push=True, actor=actor)
+
+    refused, previewed = result.items[0], preview.items[0]
+    assert (previewed.state, previewed.kind) == ("would-refuse", "bad-line")
+    assert (refused.state, refused.kind) == ("refused", "bad-line"), refused.detail
+    assert refused.detail == previewed.detail  # one sentence, run and preview alike
+    assert f"{verb} covered by a reference shelf is refused for the {actor}" in (
+        refused.detail or ""
+    )
+    assert steward._KIND_ACTIONS[refused.kind] == "return"  # sent back to choose again
+    assert _record(env.ledger, RID).status == "pending"
+    assert last_verb_sha(env.ledger) == before  # no ledger write of any verb
+
+
+@pytest.mark.parametrize("actor", AGENTS)
+def test_a_lines_own_by_does_not_lift_the_refusal_and_a_bare_reference_is_refused_too(
+    tmp_path, actor
+):
+    """The refusal reads the runner's actor, never the line's `by:`, which
+    the sheet itself writes; and a `covered_by` the parser would read as a
+    shelf with no file named is refused by the same sentence."""
+    env = make_env(tmp_path)
+    _pending(env.ledger, RID)
+    for n, line in enumerate((
+        {"id": RID, "verb": "retire", "covered_by": "reference:LEARNINGS.md", "by": "human"},
+        {"id": RID, "verb": "retire", "covered_by": "reference"},
+    )):
+        sheet = _sheet(tmp_path / str(n), [line])
+        preview = batch.dry_run(env.ledger, sheet, actor=actor)
+        result = batch.run(env.ledger, sheet, no_push=True, actor=actor)
+        assert (preview.items[0].state, preview.items[0].kind) == ("would-refuse", "bad-line")
+        assert (result.items[0].state, result.items[0].kind) == ("refused", "bad-line")
+        assert f"refused for the {actor}" in (result.items[0].detail or ""), line
+    assert _record(env.ledger, RID).status == "pending"
+
+
+@pytest.mark.parametrize("actor", AGENTS)
+@pytest.mark.parametrize(
+    "line",
+    [
+        {"verb": "retire", "covered_by": "skill-md:s"},
+        {"verb": "graduate", "covered_by": "claude-md:CLAUDE.md"},
+        {"verb": "graduate"},  # the legacy alias names no surface at all
+    ],
+    ids=["retire-skill-md", "graduate-claude-md", "graduate-legacy"],
+)
+def test_an_agents_retire_covered_by_a_loaded_surface_applies(tmp_path, actor, line):
+    env = make_env(tmp_path)
+    _pending(env.ledger, RID)
+    other = "lrn-5e1f1002"
+    _pending(env.ledger, other)
+    # control: the refusal is live on this fixture and this actor
+    shelf_line = {"id": other, "verb": "retire", "covered_by": "reference:LEARNINGS.md"}
+    assert batch.run(env.ledger, _sheet(tmp_path / "c", [shelf_line]), no_push=True,
+                     actor=actor).items[0].state == "refused"
+
+    sheet = _sheet(tmp_path, [{"id": RID, **line}])
+    assert batch.dry_run(env.ledger, sheet, actor=actor).items[0].state == "would-apply"
+    result = batch.run(env.ledger, sheet, no_push=True, actor=actor)
+    assert result.items[0].state == "applied", result.items[0].detail
+    assert _record(env.ledger, RID).status == "superseded"
+
+
+def test_the_stewards_repair_turn_is_told_about_a_shelf_cover(tmp_path):
+    env = make_env(tmp_path)
+    home = env.ledger
+    _pending(home, RID)
+    stage = tmp_path / "stage"
+    _dump_yaml(stage / "cases" / "cover.yaml", _case([RID], "retire", "retire"))
+    _dump_yaml(stage / "sheets" / "cover.yaml", {"version": 1, "case": "$CASE_ID", "items": [
+        {"id": RID, "verb": "retire", "covered_by": "reference:LEARNINGS.md"}]})
+    message = steward._ledger_repair_message(home, stage, {RID: "pending"})
+    assert message is not None and f"(retire {RID})" in message, message
+    assert "covered by a reference shelf is refused for the steward" in message
+
+    _dump_yaml(stage / "sheets" / "cover.yaml", {"version": 1, "case": "$CASE_ID", "items": [
+        {"id": RID, "verb": "retire", "covered_by": "skill-md:s"}]})
+    assert steward._ledger_repair_message(home, stage, {RID: "pending"}) is None
+
+
 # ------------------------------------------------- what the agents are told
 
 
@@ -284,6 +400,8 @@ def test_the_stewards_examples_and_contract_never_route_to_a_shelf():
     text = " ".join(steward_prompt._render_output_contract().split())
     assert "NEVER `reference` (or `reference:<file name>`)" in text
     assert "takes a lesson off a reference shelf" in text
+    assert ("never `reference:<file name>`, which the runner refuses from you because "
+            "nothing reads a shelf") in text
 
 
 def test_the_stewards_method_says_where_a_shelf_lesson_goes():
@@ -294,6 +412,9 @@ def test_the_stewards_method_says_where_a_shelf_lesson_goes():
         assert phrase in method, phrase
     # the always-loaded test's own wording, which `always_loaded.py` checks, is untouched
     assert "(a path rule, the shelf, a skill)" in method
+    assert ("Never retire a lesson as covered by a shelf (`covered_by: reference:<file>`): "
+            "the runner refuses that line from you as well") in method
+    assert "pointer line stay" not in method  # S-77 (3) as amended: an emptied shelf loses it
 
 
 def test_the_overseer_is_told_and_its_closed_sets_name_the_refusal(tmp_path):
@@ -304,6 +425,8 @@ def test_the_overseer_is_told_and_its_closed_sets_name_the_refusal(tmp_path):
     assert "TO claude-md (any variant), skill-md, hook; never new-skill or reference." in readme
     assert "Never route a lesson to `reference`" in readme
     assert "a `reject` or `defer` line takes it off too" in readme
+    assert ("Never retire a lesson as covered by a shelf either (`covered_by: "
+            "reference:<file>` on a `retire` line): the runner refuses that line too.") in readme
     prompt = overseer_run._phase_b_prompt(tmp_path / "ws", (), ())
     assert "Never route a lesson to `reference`" in " ".join(prompt.split())
 

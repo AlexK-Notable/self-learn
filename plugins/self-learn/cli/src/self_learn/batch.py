@@ -221,6 +221,10 @@ HOOK_ROUTING_ACTORS = frozenset({"overseer", "steward"})
 #: `self-learn route --dest reference` never passes through here.
 #: `_dispatch` and `dry_run` both read this ONE set, so a run and its
 #: preview cannot disagree; the overseer's formats list what it refuses.
+#: 2026-10-07 (the user: "yes, makes sense"): the SAME set refuses a
+#: `retire` / `graduate` whose `covered_by` names a shelf
+#: (`reference:<file>`) -- the same two actors, for the same measurement:
+#: a shelf nothing reads covers no lesson (`_refuse_agent_shelf_cover`).
 REFERENCE_REFUSED_ACTORS = frozenset({"overseer", "steward"})
 
 
@@ -238,6 +242,28 @@ def _refuse_agent_reference(
             "(2026-10-06) — no agent puts a lesson on a shelf; choose a path-scoped "
             "rule (claude-md:rules:<topic>) when it is tied to files, an existing "
             "skill, a warning hook when it is tied to a command, or park or reject it"
+        )
+
+
+def _refuse_agent_shelf_cover(item: "SheetItem", actor: str) -> None:
+    """Raise the refusal of a `retire` / `graduate` line whose `covered_by`
+    names a reference shelf (`reference:<file>`, or a bare `reference`)
+    when *actor* is one :data:`REFERENCE_REFUSED_ACTORS` names -- a
+    :class:`verbs.SheetLineError`, so the kind is `bad-line` and the steward
+    is sent the line back. Keyed on the runner's *actor*, never on the
+    line's own `by:`, which the sheet writes. The kind is read the way
+    `records.build_covered_by` reads it (the text before the first colon),
+    so a line the parser would read as a shelf is refused by name here
+    first. The ONE sentence `_dispatch` and `dry_run` both show."""
+    if actor not in REFERENCE_REFUSED_ACTORS or item.verb not in ("retire", "graduate"):
+        return
+    covered_by = item.fields.get("covered_by")
+    if isinstance(covered_by, str) and covered_by.partition(":")[0] == "reference":
+        raise verbs.SheetLineError(
+            f"{item.id}: a {item.verb} covered by a reference shelf is refused for the "
+            f"{actor} (2026-10-07) — nothing reads a shelf, so it covers no lesson; name "
+            "the loaded surface that covers it (claude-md:<file>, skill-md:<skill>, "
+            "output-style:<style>), or route, park or reject the lesson"
         )
 
 
@@ -1218,7 +1244,11 @@ def _dispatch_retire_or_graduate(
     None`` fed to :func:`verbs.retire`'s required, non-optional
     ``covered_by: str`` is itself a fresh pyright error
     (``reportArgumentType`` — measured while fixing the complexity
-    error above; the FIRST attempt at this extraction hit exactly this)."""
+    error above; the FIRST attempt at this extraction hit exactly this).
+
+    2026-10-07: an agent's line covered by a shelf is refused first
+    (:func:`_refuse_agent_shelf_cover`, which `dry_run` runs too)."""
+    _refuse_agent_shelf_cover(item, actor)
     if verb == "retire":
         return verbs.retire(
             home, item.id, covered_by=f["covered_by"],
@@ -1881,7 +1911,10 @@ def _preview_checks(
     reconsidered: frozenset[str] = frozenset(),
 ) -> None:
     """Run the checks the verb would run for a non-`route` *item*, with
-    the same `by` and `reconsider_case` `_dispatch` would pass it."""
+    the same `by` and `reconsider_case` `_dispatch` would pass it -- after
+    the actor's own refusal of a `covered_by` shelf, as `_dispatch` runs it
+    (2026-10-07)."""
+    _refuse_agent_shelf_cover(item, actor)
     f = item.fields
     if item.verb == "revise":
         by = f.get("by") or (actor if actor != "human" else None)
