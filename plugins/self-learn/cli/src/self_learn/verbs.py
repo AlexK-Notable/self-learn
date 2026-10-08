@@ -9683,6 +9683,21 @@ def _reference_regions_for_adopt(
     return shelves, surfaces
 
 
+def _already_adopted(home: Path, slug: str, key: str, region: str, observed_hash: str) -> bool:
+    """Whether the compile record already accepts this region exactly as it
+    stands (verdict ``clean``). ``recompile --adopt`` of such a region has
+    nothing to accept: re-recording it writes the same entry, and the empty
+    ledger commit that follows fails as half-written (exit 7), telling a
+    person who merely ran the repair twice that the ledger is broken. An
+    unreadable record is not judged here (``False``): the adopt then runs
+    and reports it as before."""
+    try:
+        entry = compiled.entry_for(compiled.load_record(home, slug), key, region=region)
+    except compiled.CompiledRecordError:
+        return False
+    return compiled.verdict_for(entry, observed_hash) == "clean"
+
+
 def recompile(
     home: Path | str,
     *,
@@ -10005,6 +10020,12 @@ def recompile(
             )
             key = compiled.region_key(owner.host_path, surface, "pointer")
             adopted_pointer_surfaces.add(surface)  # only once something is adopted
+            if _already_adopted(home, slug, key, "pointer", compiled.sha256_hex(region)):
+                result.warnings.append(
+                    f"{surface}#pointer: --adopt: already accepted as it stands — nothing to adopt"
+                )
+                result.entries.append(RecompileEntry(target=surface, changed=False))
+                continue
             with _ledger_write(home, earlier_commits=span_commits) as recovered:
                 intents.announce_recovered(recovered)
                 record_path = compiled.adopt_entry(
@@ -10046,6 +10067,12 @@ def recompile(
                 "(user scope — ~/.claude)" if owner.scope_kind == "user" else str(owner.host_path)
             )
             key = compiled.region_key(owner.host_path, shelf, "reference")
+            if _already_adopted(home, slug, key, "reference", compiled.sha256_hex(region)):
+                result.warnings.append(
+                    f"{shelf}: --adopt: already accepted as it stands — nothing to adopt"
+                )
+                result.entries.append(RecompileEntry(target=shelf, changed=False))
+                continue
             with _ledger_write(home, earlier_commits=span_commits) as recovered:
                 intents.announce_recovered(recovered)
                 record_path = compiled.adopt_entry(

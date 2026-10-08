@@ -1323,6 +1323,46 @@ def test_a_refused_retirement_commit_on_another_shelf_blocks_the_pointer_until_a
     assert _status(host) == ""
 
 
+@pytest.mark.parametrize("which", ["pointer", "shelf"])
+def test_running_the_named_adopt_a_second_time_accepts_nothing_and_does_not_fail(
+    tmp_path, which
+):
+    """The failure warning now sends a person to `recompile --adopt`, so it
+    will be run twice. The second run finds the region already accepted as
+    it stands: it says so and writes nothing. (Before, re-recording the same
+    entry left an empty ledger commit, which failed as half-written, exit 7,
+    for the pointer adopt on master as well.) One adopt commit, not two."""
+    home = make_env(tmp_path).ledger
+    host = _project_host(home, tmp_path, "git")
+    claude, shelf = host / "CLAUDE.md", _shelf(host)
+    if which == "pointer":
+        named = _named_shelf(home, host, "git")
+        _shelve(home, host, RID)
+        _lesson(home, host, NEW, supersedes=RID)
+        hook = _refused_commit_hook(host)
+        failed = _failure(verbs.route(home, NEW, dest="reference:git.md", no_push=True))
+        regions = [(shelf, "reference"), (claude, "pointer"), (named, "reference")]
+    else:
+        _shelve(home, host, RID)
+        _lesson(home, host, NEW, supersedes=RID)
+        hook = _refused_commit_hook(host)
+        failed = _failure(verbs.route(home, NEW, dest="reference", no_push=True))
+        regions = [(shelf, "reference"), (claude, "pointer")]
+    hook.unlink()
+    adopt = _blocked_now(failed)
+    assert len(adopt) == 1 and _refused(home, host, *regions)  # control: one region blocked
+
+    _adopted(home, adopt)
+    assert _refused(home, host, *regions) == []
+    head = _head(home)
+
+    again = verbs.recompile(home, no_push=True, adopt=adopt)
+
+    assert any("already accepted as it stands" in w for w in again.warnings), again.warnings
+    assert _head(home) == head  # nothing committed the second time
+    assert _refused(home, host, *regions) == []
+
+
 def test_a_refused_retirement_commit_on_the_same_shelf_blocks_the_shelf_until_adopted(
     tmp_path,
 ):
