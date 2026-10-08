@@ -227,7 +227,7 @@ def credit_replacement_chains(home: Path, fired: set[str]) -> set[str]:
     """*fired* plus every lesson downstream of a fired one in a replacement
     chain (the "fire credit" rule).
 
-    A lesson replaced by ``supersede`` or ``teach --supersedes`` starts at zero
+    A lesson that ``supersede`` or ``teach --supersedes`` replaced starts at zero
     fires under its new id. Without this, a rewrite that shortens a line looks
     dead the next week and invites a wrong retirement. A fire on the old id
     counts toward each lesson after it in the chain, so the live one at the end
