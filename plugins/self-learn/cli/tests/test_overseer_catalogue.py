@@ -590,6 +590,12 @@ def _settings(world: World, **keys: object) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
+def _on_disk(machine: catalogue.SkillsOnMachine) -> list[catalogue.SkillEntry]:
+    """The entries found on disk: everything but the hand-kept built-ins.
+    CONTROL that the built-ins are there at all is in the built-ins test."""
+    return [s for s in machine.skills if s.kind != "built-in"]
+
+
 def test_skills_index_lists_personal_symlinked_plugin_and_host_skills(world: World) -> None:
     # One lesson is compiled into skill s's SKILL.md (plugins/s-plugin/...).
     world.lesson(6, scope="skill:s", destination="skill-md")
@@ -620,8 +626,9 @@ def test_skills_index_lists_personal_symlinked_plugin_and_host_skills(world: Wor
 
     machine = world.machine()
 
-    by_name = {s.name: s for s in machine.skills}
+    by_name = {s.name: s for s in _on_disk(machine)}
     assert set(by_name) == {"personal-one", "bare", "s", "n", "demo:drawing", "hostskill"}
+    assert {s.kind for s in by_name.values()} == {"skill"}
 
     personal = by_name["personal-one"]
     assert personal.where == "personal"
@@ -658,7 +665,10 @@ def test_skills_index_lists_personal_symlinked_plugin_and_host_skills(world: Wor
     assert machine.problems == ()
 
 
-def test_the_skills_index_renders_as_yaml_ready_data(world: World) -> None:
+def test_the_skills_index_renders_as_yaml_ready_data(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(catalogue, "BUILT_IN_SKILLS", ("loop",))
     world.lesson(6, scope="skill:s", destination="skill-md")
     (world.claude / "skills" / "s").symlink_to(world.skill_dir)
     _skill_md(world.claude / "skills" / "personal-one", "A personal skill.", "personal-one")
@@ -675,12 +685,20 @@ def test_the_skills_index_renders_as_yaml_ready_data(world: World) -> None:
 
     rows = {row["name"]: row for row in index["skills"]}
     assert list(rows["s"]) == [
-        "name", "description", "where", "path", "resolves_to", "repo", "lessons",
+        "name", "kind", "description", "where", "path", "resolves_to", "repo", "lessons",
     ]
     assert rows["s"]["lessons"] == 1
     # Empty optional fields are left out of the row.
-    assert list(rows["personal-one"]) == ["name", "description", "where", "path", "lessons"]
-    assert index["counts"] == {"total": 2, "personal": 2}
+    assert list(rows["personal-one"]) == ["name", "kind", "description", "where", "path", "lessons"]
+    # A built-in skill has no file: no path, no description to read.
+    assert rows["loop"] == {
+        "name": "loop", "kind": "built-in", "description": None, "where": "claude-code", "lessons": 0,
+    }
+    assert index["counts"] == {
+        "total": 3,
+        "by_where": {"claude-code": 1, "personal": 2},
+        "by_kind": {"built-in": 1, "skill": 2},
+    }
     assert index["not_loaded"] == [] and index["problems"] == []
 
 
@@ -697,7 +715,7 @@ def test_a_skill_switched_off_is_not_listed_as_loaded(world: World) -> None:
     machine = world.machine()
 
     # CONTROL: the on-skills of the same two places are listed.
-    assert {s.name for s in machine.skills} == {"on", "demo:drawing"}
+    assert {s.name for s in _on_disk(machine)} == {"on", "demo:drawing"}
     assert {n["name"] for n in machine.not_loaded} == {"off", "demo:muted"}
 
 
@@ -706,7 +724,7 @@ def test_a_disabled_plugin_contributes_no_skills(world: World) -> None:
     _plugin(world, "dead@market", {"two": "Dead."})
     _settings(world, enabledPlugins={"live@market": True, "dead@market": False})
 
-    names = {s.name for s in world.machine().skills}
+    names = {s.name for s in _on_disk(world.machine())}
 
     assert names == {"live:one"}  # control: the enabled plugin's skill is there
 
@@ -730,7 +748,7 @@ def test_a_plugin_whose_install_is_not_recorded_is_found_through_its_marketplace
 
     machine = world.machine()
 
-    assert [s.name for s in machine.skills] == ["viaindex:found"]
+    assert [s.name for s in _on_disk(machine)] == ["viaindex:found"]
     # An enabled plugin that cannot be found is named, not skipped in silence.
     assert any("ghost@mkt" in p for p in machine.problems)
 
@@ -763,6 +781,113 @@ def test_personal_skills_match_the_report_skills_index(world: World) -> None:
     assert len(linked[0].also) == 1
 
 
+def _synced_manifest(directory: Path, list_key: str, items: list[dict]) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "manifest.json").write_text(
+        json.dumps({"lastUpdated": 1, list_key: items}), encoding="utf-8"
+    )
+
+
+def _command(path: Path, description: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\ndescription: {description}\n---\n\nDo it.\n", encoding="utf-8")
+
+
+def test_synced_skills_are_listed_under_the_anthropic_skills_name(world: World) -> None:
+    synced = world.claude / "skills" / "synced" / "acct_org"
+    _synced_manifest(synced, "skills", [
+        {"skillId": "pdf", "name": "pdf", "source": "anthropic"},
+        {"skillId": "morning", "name": "morning", "source": "anthropic-example"},
+        {"skillId": "gone", "name": "gone", "source": "anthropic"},
+    ])
+    _skill_md(synced / "pdf", "Read and write PDFs.", "pdf")
+    _skill_md(synced / "morning", "The morning brief.", "morning")
+    # A folder the manifest does not name is not loaded.
+    _skill_md(synced / "stray", "Not in the manifest.", "stray")
+
+    machine = world.machine()
+
+    by_name = {s.name: s for s in _on_disk(machine)}
+    assert set(by_name) == {"anthropic-skills:pdf", "anthropic-skills:morning"}
+    pdf = by_name["anthropic-skills:pdf"]
+    assert (pdf.kind, pdf.where, pdf.path) == ("skill", "synced", str(synced / "pdf"))
+    assert pdf.description == "Read and write PDFs."
+    # A manifest entry with no folder is named, not dropped in silence.
+    assert any("synced skill gone" in problem for problem in machine.problems)
+
+
+def test_a_synced_plugin_loads_the_generation_its_manifest_names(world: World) -> None:
+    synced = world.claude / "plugins" / "synced" / "acct_org"
+    _synced_manifest(synced, "plugins", [
+        {"name": "data", "marketplaceName": "kwp", "generation": 2},
+        {"name": "cowork", "marketplaceName": "kwp"},  # no generation: the plain folder
+    ])
+    # The live generation and a stale one beside it, with different text.
+    _skill_md(synced / "data~g2" / "skills" / "viz", "Live viz.", "viz")
+    _skill_md(synced / "data" / "skills" / "viz", "Stale viz.", "viz")
+    _command(synced / "data~g2" / "commands" / "query.md", "Run a query.")
+    _skill_md(synced / "cowork" / "skills" / "make", "Make a plugin.", "make")
+
+    entries = _on_disk(world.machine())
+
+    by_name = {s.name: s for s in entries}
+    assert set(by_name) == {"data:viz", "data:query", "cowork:make"}
+    viz = by_name["data:viz"]
+    assert viz.description == "Live viz."  # CONTROL for the absence below
+    assert viz.path == str(synced / "data~g2" / "skills" / "viz")
+    assert (viz.kind, viz.where, viz.plugin) == ("skill", "synced-plugin", "data@kwp")
+    assert "Stale viz." not in {s.description for s in entries}
+    assert len([s for s in entries if s.name == "data:viz"]) == 1
+    query = by_name["data:query"]
+    assert (query.kind, query.description) == ("command", "Run a query.")
+    assert by_name["cowork:make"].path == str(synced / "cowork" / "skills" / "make")
+
+
+def test_plugin_commands_and_personal_commands_are_listed(world: World) -> None:
+    root = _plugin(world, "demo@market", {"drawing": "Draw."})
+    _command(root / "commands" / "hello.md", "Say hello.")
+    (root / "commands" / "notes.txt").write_text("not a command\n", encoding="utf-8")
+    _settings(world, enabledPlugins={"demo@market": True})
+    # Personal commands: one in a folder (named <dir>:<name>), one loose,
+    # the folder a symlink into a repo, as on this machine.
+    repo_commands = world.tmp / "a-repo" / "commands"
+    _command(repo_commands / "act.md", "Act on it.")
+    (world.claude / "commands").mkdir()
+    (world.claude / "commands" / "grp").symlink_to(repo_commands)
+    _command(world.claude / "commands" / "top.md", "Top level.")
+
+    by_name = {s.name: s for s in _on_disk(world.machine())}
+
+    assert set(by_name) == {"demo:drawing", "demo:hello", "grp:act", "top"}
+    hello = by_name["demo:hello"]
+    assert (hello.kind, hello.where, hello.plugin) == ("command", "plugin", "demo@market")
+    assert hello.description == "Say hello."
+    assert hello.path == str(root / "commands" / "hello.md")
+    act = by_name["grp:act"]
+    assert (act.kind, act.where) == ("command", "personal")
+    assert act.path == str(world.claude / "commands" / "grp" / "act.md")
+    assert act.resolves_to == str((repo_commands / "act.md").resolve())
+    assert by_name["top"].description == "Top level."
+    assert by_name["top"].resolves_to is None
+    assert by_name["demo:drawing"].kind == "skill"  # CONTROL: the kinds differ
+
+
+def test_skills_built_into_claude_code_come_from_the_hand_kept_list(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The shipped list is listed in full, each as a built-in with no file.
+    built_in = [s for s in world.machine().skills if s.kind == "built-in"]
+    assert [s.name for s in built_in] == sorted(catalogue.BUILT_IN_SKILLS)
+    assert "loop" in catalogue.BUILT_IN_SKILLS  # positive control on the list itself
+    assert {(s.where, s.path, s.description) for s in built_in} == {("claude-code", None, None)}
+    # The knob is the list: change it and the index follows.
+    monkeypatch.setattr(catalogue, "BUILT_IN_SKILLS", ("alpha", "beta"))
+    _settings(world, skillOverrides={"beta": "off"})
+    machine = world.machine()
+    assert [s.name for s in machine.skills if s.kind == "built-in"] == ["alpha"]
+    assert machine.not_loaded == ({"name": "beta", "where": "claude-code"},)
+
+
 # ------------------------------------------------------------ (e) nothing written
 
 
@@ -791,8 +916,17 @@ def test_building_the_catalogue_writes_nothing(world: World) -> None:
     world.lesson(6, destination="hook")
     world.fire(u1, 5)
     (world.claude / "skills" / "s").symlink_to(world.skill_dir)
-    _plugin(world, "demo@market", {"drawing": "Draw."})
+    root = _plugin(world, "demo@market", {"drawing": "Draw."})
+    _command(root / "commands" / "hello.md", "Say hello.")
     _settings(world, enabledPlugins={"demo@market": True})
+    # Every other kind of place the index reads.
+    synced = world.claude / "skills" / "synced" / "acct"
+    _synced_manifest(synced, "skills", [{"name": "pdf"}])
+    _skill_md(synced / "pdf", "PDFs.", "pdf")
+    synced_plugins = world.claude / "plugins" / "synced" / "acct"
+    _synced_manifest(synced_plugins, "plugins", [{"name": "data", "generation": 2}])
+    _skill_md(synced_plugins / "data~g2" / "skills" / "viz", "Viz.", "viz")
+    _command(world.claude / "commands" / "grp" / "act.md", "Act.")
     roots = (world.home, world.host, world.claude, world.cache, world.tmp / "plugin-cache")
 
     before = _snapshot(*roots)
@@ -810,8 +944,11 @@ def test_building_the_catalogue_writes_nothing(world: World) -> None:
     machine = catalogue.skills_on_machine(world.home, claude_dir=world.claude, placed=placed)
     catalogue.render_skills_index(machine)
     built = catalogue.build_catalogue(world.home, claude_dir=world.claude, now=NOW)
-    # CONTROL: the calls did real work.
-    assert built.surfaces and built.skills_index["skills"]
+    # CONTROL: the calls did real work, through every kind of place.
+    assert built.surfaces
+    assert {row["name"] for row in built.skills_index["skills"]} >= {
+        "s", "demo:drawing", "demo:hello", "anthropic-skills:pdf", "data:viz", "grp:act",
+    }
 
     assert _snapshot(*roots) == before
     assert git(world.home, "rev-parse", "HEAD").stdout == head_before
@@ -902,5 +1039,7 @@ def test_the_knobs_at_the_top_of_the_module_change_the_output(
 
     _skill_md(world.claude / "skills" / "personal-one", "A personal skill.", "personal-one")
     monkeypatch.setattr(catalogue, "SKILL_FIELDS", ("name", "where"))
-    row = catalogue.render_skills_index(world.machine())["skills"][0]
-    assert row == {"name": "personal-one", "where": "personal"}
+    rows = catalogue.render_skills_index(world.machine())["skills"]
+    assert [row for row in rows if row["name"] == "personal-one"] == [
+        {"name": "personal-one", "where": "personal"}
+    ]

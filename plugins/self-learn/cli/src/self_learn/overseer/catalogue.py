@@ -29,8 +29,10 @@ Where it differs from the skills index ``report.py`` builds
 environment variable rather than a parameter, and keeps word counts, not
 description text or paths. This module reuses its description extractor
 (:func:`self_learn.report._extract_skill_description`) and its de-duplication
-on the resolved ``SKILL.md`` path, and adds the two kinds of skill that row
-cannot see: enabled plugins' skills and registered hosts' ``.claude/skills``.
+on the resolved ``SKILL.md`` path, and adds the kinds of skill that row
+cannot see: synced skills, enabled and synced plugins' skills and commands,
+personal commands, registered hosts' ``.claude/skills``, and the skills built
+into Claude Code (a hand-kept list, :data:`BUILT_IN_SKILLS`).
 """
 
 from __future__ import annotations
@@ -88,6 +90,7 @@ LESSON_COLUMNS: tuple[tuple[str, str], ...] = (
 #: be read. Valid fields are the attributes of :class:`SkillEntry`.
 SKILL_FIELDS: tuple[str, ...] = (
     "name",
+    "kind",
     "description",
     "where",
     "path",
@@ -99,10 +102,60 @@ SKILL_FIELDS: tuple[str, ...] = (
     "also",
 )
 
-#: Where a skill lives (the ``where`` field).
-WHERE_PERSONAL = "personal"  # ~/.claude/skills/<name>, a folder or a symlink
-WHERE_PLUGIN = "plugin"  # <enabled plugin>/skills/<name>
+#: What an entry is (the ``kind`` field). Claude Code lists all three as
+#: skills in a session: a skill folder, a slash command file, and a skill
+#: built into Claude Code itself.
+KIND_ENTRY_SKILL = "skill"  # a folder holding SKILL.md
+KIND_ENTRY_COMMAND = "command"  # a commands/<name>.md file
+KIND_ENTRY_BUILT_IN = "built-in"  # in Claude Code, nothing on disk
+
+#: Where an entry lives (the ``where`` field).
+WHERE_PERSONAL = "personal"  # ~/.claude/skills/<name> (a folder or a symlink), ~/.claude/commands
+WHERE_SYNCED = "synced"  # ~/.claude/skills/synced/<id>/<name>
+WHERE_PLUGIN = "plugin"  # <enabled plugin>/skills/<name>, <enabled plugin>/commands/<name>.md
+WHERE_SYNCED_PLUGIN = "synced-plugin"  # ~/.claude/plugins/synced/<id>/<plugin>/...
 WHERE_HOST = "host"  # <registered host>/.claude/skills/<name>
+WHERE_BUILT_IN = "claude-code"  # built into Claude Code
+
+#: The name prefix of a synced skill (``~/.claude/skills/synced/<id>/<name>``).
+#: Its ``manifest.json`` carries no namespace field (its entries name
+#: ``skillId``, ``name``, ``description``, ``source``; two different
+#: ``source`` values, ``anthropic`` and ``anthropic-example``, are listed under
+#: the same prefix). The prefix is Claude Code's own constant: in the 2.1.293
+#: binary, ``function $Te(n){return n.startsWith("anthropic-skills:")?n:
+#: `anthropic-skills:${n}`}`` names every synced skill, and a warning there
+#: says synced skills "answer only to anthropic-skills:<name>" when their bare
+#: names cannot be checked. The session listing of 2026-10-08 names all 11
+#: synced skills this way.
+SYNCED_SKILL_NAMESPACE = "anthropic-skills"
+
+#: Skills built into Claude Code: no file on this machine names them, so
+#: they are kept here by hand. Source: the skills a Claude Code 2.1.293
+#: session listed on 2026-10-08 (the gate's ``session_skills.txt``), minus
+#: every name this module finds on disk. REFRESH BY HAND when Claude Code
+#: changes; nothing checks this list against a newer version. (Claude Code
+#: has a ``CLAUDE_CODE_DISABLE_BUNDLED_SKILLS`` switch; when it is set these
+#: are not loaded, and this list does not know.)
+BUILT_IN_SKILLS: tuple[str, ...] = (
+    "artifact-capabilities",
+    "artifact-design",
+    "artifact-diagramming",
+    "claude-api",
+    "claude-in-chrome",
+    "code-review",
+    "dataviz",
+    "fewer-permission-prompts",
+    "init",
+    "keybindings-help",
+    "loop",
+    "plugin-authoring",
+    "run",
+    "schedule",
+    "security-review",
+    "simplify",
+    "update-config",
+    "workflow-authoring",
+)
 
 #: Surface keys. A key is a readable label taken from the surface's file
 #: plus a digest of that file's resolved path, so one file is one key and two
@@ -174,23 +227,30 @@ class PlacedLessons:
 
 @dataclass(frozen=True)
 class SkillEntry:
-    name: str  # as Claude Code names it; a plugin's skill is ``plugin:skill``
+    #: As Claude Code names it in a session: ``<name>`` for a personal or
+    #: host skill, ``plugin:skill`` / ``plugin:command`` for a plugin's,
+    #: ``dir:command`` for a personal command in a folder, and
+    #: ``anthropic-skills:<name>`` for a synced skill.
+    name: str
     description: str | None  # None when no description could be read
     where: str  # WHERE_*
-    path: str  # the skill folder, as Claude Code finds it
-    resolves_to: str | None = None  # the real folder, when ``path`` is a symlink
+    #: The skill folder or the command file, as Claude Code finds it; None for
+    #: a built-in skill, which has no file here.
+    path: str | None
+    kind: str = KIND_ENTRY_SKILL  # KIND_ENTRY_*
+    resolves_to: str | None = None  # the real folder or file, when ``path`` goes through a symlink
     repo: str | None = None  # the registered skills root it lives in, by name
-    plugin: str | None = None  # ``plugin@marketplace``, for a plugin skill
+    plugin: str | None = None  # ``plugin@marketplace``, for a plugin's skill or command
     host: str | None = None  # the registered host, for a host skill
     lessons: int = 0  # routed lessons compiled into its SKILL.md
-    also: tuple[str, ...] = ()  # other folders that reach the same SKILL.md
+    also: tuple[str, ...] = ()  # other folders or files that reach the same file
 
 
 @dataclass(frozen=True)
 class SkillsOnMachine:
     skills: tuple[SkillEntry, ...]
-    #: Skills switched off by ``skillOverrides`` in settings.json: ``name`` and
-    #: ``path``. Present on the machine, not loaded.
+    #: Entries switched off by ``skillOverrides`` in settings.json: ``name``,
+    #: ``where`` and (unless built in) ``path``. Present, not loaded.
     not_loaded: tuple[dict[str, str], ...] = ()
     #: Things that could not be read, one sentence each.
     problems: tuple[str, ...] = ()
@@ -587,16 +647,34 @@ def skills_on_machine(
     claude_dir: Path | str | None = None,
     placed: PlacedLessons | None = None,
 ) -> SkillsOnMachine:
-    """Every skill Claude Code loads on this machine.
+    """Every skill Claude Code loads on this machine, named as a session
+    lists it.
 
-    Three places, in this order: ``<claude_dir>/skills/*`` (folders and
-    symlinks), the ``skills/*`` of each enabled plugin, and
-    ``.claude/skills/*`` of each registered host. A skill reached by more than
-    one folder is listed once, under the first, with the others in ``also``
-    (de-duplicated on the resolved ``SKILL.md``, as report.py does). A skill
-    switched off in settings.json is listed in ``not_loaded`` instead.
-    *placed* is the result of :func:`placed_lessons`, used for the lesson
-    counts; it is computed when not given.
+    Seven places, in this order:
+
+    1. personal skills, ``<claude_dir>/skills/*`` (folders and symlinks);
+    2. synced skills, ``<claude_dir>/skills/synced/<id>/<name>``, named
+       ``anthropic-skills:<name>`` (:data:`SYNCED_SKILL_NAMESPACE`);
+    3. each enabled plugin's ``skills/*`` and ``commands/*.md``;
+    4. each synced plugin's (``<claude_dir>/plugins/synced/<id>/<plugin>``)
+       ``skills/*`` and ``commands/*.md``;
+    5. personal commands, ``<claude_dir>/commands/<name>.md`` and
+       ``<claude_dir>/commands/<dir>/<name>.md`` (named ``<dir>:<name>``);
+    6. each registered host's ``.claude/skills/*``;
+    7. the skills built into Claude Code (:data:`BUILT_IN_SKILLS`).
+
+    A synced skill or plugin is read off its folder's ``manifest.json``: only
+    the folder the manifest names is loaded, which for an entry with a
+    ``generation`` above 1 is ``<name>~g<generation>`` (Claude Code 2.1.293,
+    ``function Jno(e,n,i){...return n<=1?r:p(i,`${L(r)}~g${n}`)}``); an older
+    generation's folder left beside it is not listed.
+
+    A file reached from more than one place is listed once, under the first,
+    with the others in ``also`` (de-duplicated on the resolved file, as
+    report.py does for ``SKILL.md``). An entry switched off in settings.json
+    is listed in ``not_loaded`` instead. *placed* is the result of
+    :func:`placed_lessons`, used for the lesson counts; it is computed when
+    not given.
     """
     from ..report import _extract_skill_description
 
@@ -620,52 +698,72 @@ def skills_on_machine(
     found: dict[Path, SkillEntry] = {}
     not_loaded: list[dict[str, str]] = []
 
-    def add(folder: Path, name: str, where: str, **extra: str | None) -> None:
-        skill_md = folder / "SKILL.md"
-        if not skill_md.is_file():
+    def listing(directory: Path) -> list[Path]:
+        if not directory.is_dir():
+            return []
+        try:
+            return sorted(directory.iterdir())
+        except OSError as exc:
+            problems.append(f"{directory} could not be listed: {exc}")
+            return []
+
+    def add(entry_file: Path, listed: Path, name: str, where: str, kind: str, **extra: str | None) -> None:
+        """*entry_file* is the SKILL.md or the command file; *listed* is the
+        path the entry is listed under (the skill folder, or the command
+        file)."""
+        if not entry_file.is_file():
             return
-        real = _resolved(skill_md)
+        real = _resolved(entry_file)
         if real in found:
             known = found[real]
-            if str(folder) != known.path and str(folder) not in known.also:
-                found[real] = replace(known, also=known.also + (str(folder),))
+            if str(listed) != known.path and str(listed) not in known.also:
+                found[real] = replace(known, also=known.also + (str(listed),))
             return
         if instrument.skill_overrides.get(name) == "off":
-            not_loaded.append({"name": name, "path": str(folder)})
+            not_loaded.append({"name": name, "where": where, "path": str(listed)})
             return
         try:
-            description, _tier = _extract_skill_description(skill_md.read_text(encoding="utf-8"))
+            description, _tier = _extract_skill_description(entry_file.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError):
             description = None
-        real_folder = real.parent
+        real_listed = real.parent if kind == KIND_ENTRY_SKILL else real
         in_root = skills_root is not None and (
-            real_folder == skills_root or skills_root in real_folder.parents
+            real_listed == skills_root or skills_root in real_listed.parents
         )
-        repo = skills_root.name if in_root and skills_root is not None else None
         found[real] = SkillEntry(
             name=name,
             description=description.strip() if isinstance(description, str) else None,
             where=where,
-            path=str(folder),
-            resolves_to=str(real_folder) if folder.is_symlink() else None,
-            repo=repo,
+            path=str(listed),
+            kind=kind,
+            resolves_to=str(real_listed) if real_listed != listed.absolute() else None,
+            repo=skills_root.name if in_root and skills_root is not None else None,
             plugin=extra.get("plugin"),
             host=extra.get("host"),
             lessons=lesson_counts.get(real, 0),
         )
 
-    # 1. personal: <claude_dir>/skills/*
-    personal = claude / "skills"
-    if personal.is_dir():
-        try:
-            folders = sorted(personal.iterdir())
-        except OSError as exc:
-            folders = []
-            problems.append(f"{personal} could not be listed: {exc}")
-        for folder in folders:
-            add(folder, folder.name, WHERE_PERSONAL)
+    def add_plugin(root: Path, plugin_name: str, key: str, where: str) -> None:
+        for folder in listing(root / "skills"):
+            add(folder / "SKILL.md", folder, f"{plugin_name}:{folder.name}", where,
+                KIND_ENTRY_SKILL, plugin=key)
+        for file in listing(root / "commands"):
+            if file.suffix == ".md":
+                add(file, file, f"{plugin_name}:{file.stem}", where, KIND_ENTRY_COMMAND, plugin=key)
 
-    # 2. enabled plugins
+    # 1. personal skills: <claude_dir>/skills/*
+    for folder in listing(claude / "skills"):
+        add(folder / "SKILL.md", folder, folder.name, WHERE_PERSONAL, KIND_ENTRY_SKILL)
+
+    # 2. synced skills: <claude_dir>/skills/synced/<id>/<name>
+    for folder, item in _synced_entries(claude / "skills" / "synced", "skills", problems):
+        if not (folder / "SKILL.md").is_file():
+            problems.append(f"synced skill {item['name']}: no SKILL.md at {folder}")
+            continue
+        add(folder / "SKILL.md", folder, f"{SYNCED_SKILL_NAMESPACE}:{item['name']}",
+            WHERE_SYNCED, KIND_ENTRY_SKILL)
+
+    # 3. enabled plugins
     installed = _installed_plugin_roots(claude)
     for key, enabled in sorted(instrument.enabled_plugins.items()):
         if not enabled:
@@ -680,31 +778,94 @@ def skills_on_machine(
             problems.append(f"enabled plugin {key}: its folder could not be found")
             continue
         for root in roots:
-            skills_dir = root / "skills"
-            if not skills_dir.is_dir():
-                continue
-            for folder in sorted(skills_dir.iterdir()):
-                add(folder, f"{plugin_name}:{folder.name}", WHERE_PLUGIN, plugin=key)
+            add_plugin(root, plugin_name, key, WHERE_PLUGIN)
 
-    # 3. registered hosts' .claude/skills
+    # 4. synced plugins: <claude_dir>/plugins/synced/<id>/<plugin>
+    for root, item in _synced_entries(claude / "plugins" / "synced", "plugins", problems):
+        if not root.is_dir():
+            problems.append(f"synced plugin {item['name']}: no folder at {root}")
+            continue
+        marketplace = item.get("marketplaceName")
+        key = f"{item['name']}@{marketplace}" if isinstance(marketplace, str) and marketplace else item["name"]
+        add_plugin(root, item["name"], key, WHERE_SYNCED_PLUGIN)
+
+    # 5. personal commands: <claude_dir>/commands/<name>.md, .../<dir>/<name>.md
+    for entry in listing(claude / "commands"):
+        if entry.is_dir():
+            for file in listing(entry):
+                if file.suffix == ".md":
+                    add(file, file, f"{entry.name}:{file.stem}", WHERE_PERSONAL, KIND_ENTRY_COMMAND)
+        elif entry.suffix == ".md":
+            add(entry, entry, entry.stem, WHERE_PERSONAL, KIND_ENTRY_COMMAND)
+
+    # 6. registered hosts' .claude/skills
     if registry is not None:
         # A repo registered as both a project and the skills root is one host.
         hosts: dict[Path, Path] = {}
         for host in [*registry.projects, *([registry.skills_root] if registry.skills_root else [])]:
             hosts.setdefault(_resolved(host), host)
         for host in hosts.values():
-            skills_dir = host / ".claude" / "skills"
-            if not skills_dir.is_dir():
-                continue
-            for folder in sorted(skills_dir.iterdir()):
-                add(folder, folder.name, WHERE_HOST, host=str(host))
+            for folder in listing(host / ".claude" / "skills"):
+                add(folder / "SKILL.md", folder, folder.name, WHERE_HOST, KIND_ENTRY_SKILL,
+                    host=str(host))
 
-    skills = tuple(sorted(found.values(), key=lambda s: (s.name, s.path)))
+    # 7. built into Claude Code: names only, kept by hand
+    built_in: list[SkillEntry] = []
+    for name in BUILT_IN_SKILLS:
+        if instrument.skill_overrides.get(name) == "off":
+            not_loaded.append({"name": name, "where": WHERE_BUILT_IN})
+            continue
+        built_in.append(SkillEntry(
+            name=name, description=None, where=WHERE_BUILT_IN, path=None, kind=KIND_ENTRY_BUILT_IN,
+        ))
+
+    skills = tuple(sorted([*found.values(), *built_in], key=lambda s: (s.name, s.path or "")))
     return SkillsOnMachine(
         skills=skills,
-        not_loaded=tuple(sorted(not_loaded, key=lambda n: (n["name"], n["path"]))),
+        not_loaded=tuple(sorted(not_loaded, key=lambda n: (n["name"], n.get("path", "")))),
         problems=tuple(problems),
     )
+
+
+def _synced_entries(
+    base: Path, list_key: str, problems: list[str]
+) -> list[tuple[Path, dict[str, Any]]]:
+    """``(folder, manifest entry)`` for each skill or plugin a synced
+    folder's ``manifest.json`` lists (*list_key* is ``skills`` or
+    ``plugins``), ``base/<id>/manifest.json`` for every ``<id>``. The folder
+    is the one Claude Code loads: ``<name>``, or ``<name>~g<generation>``
+    when the entry's ``generation`` is above 1. A name that is not one plain
+    folder name is skipped."""
+    if not base.is_dir():
+        return []
+    try:
+        buckets = sorted(path for path in base.iterdir() if path.is_dir())
+    except OSError as exc:
+        problems.append(f"{base} could not be listed: {exc}")
+        return []
+    entries: list[tuple[Path, dict[str, Any]]] = []
+    for bucket in buckets:
+        manifest = bucket / "manifest.json"
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            problems.append(f"{manifest} could not be read ({exc}); its {list_key} are not listed")
+            continue
+        items = data.get(list_key) if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            problems.append(f"{manifest} has no {list_key} list; none are listed")
+            continue
+        for item in items:
+            name = item.get("name") if isinstance(item, dict) else None
+            if not isinstance(name, str) or not name or "/" in name or name in (".", ".."):
+                continue
+            generation = item.get("generation")
+            if isinstance(generation, int) and not isinstance(generation, bool) and generation > 1:
+                folder = bucket / f"{name}~g{generation}"
+            else:
+                folder = bucket / name
+            entries.append((folder, item))
+    return entries
 
 
 def _resolved(path: Path) -> Path:
@@ -763,9 +924,14 @@ def render_skills_index(machine: SkillsOnMachine) -> dict[str, Any]:
                 row[name] = value
         rows.append(row)
     where_counts = Counter(skill.where for skill in machine.skills)
+    kind_counts = Counter(skill.kind for skill in machine.skills)
     return {
         "skills": rows,
-        "counts": {"total": len(rows), **dict(sorted(where_counts.items()))},
+        "counts": {
+            "total": len(rows),
+            "by_where": dict(sorted(where_counts.items())),
+            "by_kind": dict(sorted(kind_counts.items())),
+        },
         "not_loaded": [dict(item) for item in machine.not_loaded],
         "problems": list(machine.problems),
     }
