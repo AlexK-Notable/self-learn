@@ -394,6 +394,104 @@ def test_d_removing_one_registration_counts_only_that_registration_s_lessons(
     assert load_hosts(home).skills_root is not None
 
 
+# ------------------------------- (e) the skills root's own claude-md
+
+
+def test_e_the_skills_root_claude_md_is_refused_by_name_while_double_registered(tmp_path):
+    """(e) Red on master: the route went through and committed the shared
+    CLAUDE.md in git mode, the plain project's section with it."""
+    env = _double(tmp_path)
+    home, repo = env.ledger, env.host
+    rid = _skill_lesson(home, "lrn-8b000008")
+    claude_md = (repo / "CLAUDE.md").read_bytes()
+    ledger_head, host_head = last_verb_sha(home), _head(repo)
+
+    with pytest.raises(verbs.DestinationUnavailable) as caught:
+        verbs.route(home, rid, dest="claude-md", no_push=True)
+
+    message = str(caught.value)
+    assert f"{repo} is also registered as a project host (plain mode)" in message
+    assert "skills root is git mode" in message
+    assert "skill-md" in message  # what to do instead
+    assert _record(home, rid).status == "pending"
+    assert last_verb_sha(home) == ledger_head
+    assert (repo / "CLAUDE.md").read_bytes() == claude_md
+    assert _head(repo) == host_head and _status(repo) == ""
+
+
+def test_e_the_refusal_reaches_a_sheet_as_destination_unavailable(tmp_path):
+    env = _double(tmp_path)
+    home = env.ledger
+    rid = _skill_lesson(home, "lrn-8b000009")
+    sheet = _sheet(tmp_path, rid, "route", "claude-md")
+
+    preview = batch.dry_run(home, sheet, actor="steward")
+    result = batch.run(home, sheet, no_push=True, actor="steward")
+
+    (pitem,), (item,) = preview.items, result.items
+    assert (pitem.state, pitem.kind) == ("would-refuse", "destination-unavailable"), pitem.detail
+    assert (item.state, item.kind) == ("refused", "destination-unavailable"), item.detail
+    assert "also registered as a project host" in (item.detail or "")
+    assert _record(home, rid).status == "pending"
+
+
+@pytest.mark.parametrize(
+    ("root", "project"),
+    [("git", None), ("git", "git"), ("plain", "plain")],
+    ids=["no-project-entry", "same-mode-git", "same-mode-plain"],
+)
+def test_e_the_skills_root_claude_md_still_resolves_without_two_modes(tmp_path, root, project):
+    """*control*: with no project entry, or with both registrations in
+    one mode (one coherent posture, `make_env`'s default), the skills
+    root's claude-md resolves exactly as on master."""
+    env = _double(tmp_path, root=root, project=project)
+    home, repo = env.ledger, env.host
+    if root == "plain":
+        git(repo, "rm", "-q", "--cached", "CLAUDE.md")  # a plain host takes only ignored files
+        git(repo, "commit", "-q", "-m", "untrack CLAUDE.md")
+    rid = _skill_lesson(home, "lrn-8b00000a")
+
+    result = verbs.route(home, rid, dest="claude-md", no_push=True)
+
+    assert result.mode == root
+    assert rid in (repo / "CLAUDE.md").read_text(encoding="utf-8")
+    if root == "git":
+        assert result.host_commit_sha is not None
+        assert _commit_files(repo, result.host_commit_sha) == ["CLAUDE.md"]
+    else:
+        assert result.host_commit_sha is None
+
+
+def _lesson_left_on_the_root_claude_md(tmp_path: Path):
+    """A skill lesson routed to the skills root's own claude-md while the
+    repo was registered once (git), THEN the plain project registration
+    added: the double registration in two modes, with a lesson already on
+    the destination it refuses."""
+    env = _double(tmp_path, root="git", project=None)
+    home, repo = env.ledger, env.host
+    rid = _skill_lesson(home, "lrn-8b00000b")
+    verbs.route(home, rid, dest="claude-md", no_push=True)
+    assert rid in (repo / "CLAUDE.md").read_text(encoding="utf-8")  # control: it landed
+    (repo / MARKER_FILENAME).write_text("plain registration\n", encoding="utf-8")
+    _exclude(repo).write_text(f"/{MARKER_FILENAME}\n", encoding="utf-8")
+    host_add(home, repo, "project", mode="plain")
+    return env, rid
+
+
+def test_e_recompile_warns_and_skips_a_lesson_already_on_the_refused_destination(tmp_path):
+    """Recompile names the refusal and leaves the shared file alone."""
+    env, rid = _lesson_left_on_the_root_claude_md(tmp_path)
+    repo = env.host
+    claude_md = (repo / "CLAUDE.md").read_bytes()
+    host_head = _head(repo)
+
+    result = verbs.recompile(env.ledger, no_push=True)
+
+    assert any(rid in w and "also registered as a project host" in w for w in result.warnings)
+    assert (repo / "CLAUDE.md").read_bytes() == claude_md
+    assert _head(repo) == host_head
+
+
 # ----------------------------------------------- moving the repo (rebind)
 
 

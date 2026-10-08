@@ -2303,6 +2303,27 @@ def _resolve_target_unguarded(
         root = _gate_host(home, hosts.skills_root, "skills-root")
         target = root / "CLAUDE.md"
         mode = host_mode(home, root, registration="skills-root")
+        if is_project_host(hosts, root):
+            # S-82: the same repo is also a registered project host, and
+            # the project's `claude-md` leg writes this very file -- one
+            # managed section compiled from both legs' lessons
+            # (`_compile_set`). Under two modes, a git-mode commit of it
+            # would commit the plain registration's lessons too, and a
+            # plain write would leave the root's uncommitted. Refused by
+            # name in every resolution (a recompile warns and skips it).
+            # Same mode both ways (one coherent posture) still resolves.
+            project_mode = host_mode(home, root, registration="project")
+            if project_mode != mode:
+                raise DestinationUnavailable(
+                    f"the skills root's own claude-md ({target}) is refused: "
+                    f"{root} is also registered as a project host "
+                    f"({project_mode} mode) while the skills root is "
+                    f"{mode} mode, and both registrations' claude-md would "
+                    "write that one file under two modes. A lesson about "
+                    "one skill goes to its SKILL.md (skill-md); a lesson "
+                    "about the whole repo belongs to that project (project "
+                    "scope, claude-md:local)"
+                )
         spec = TargetSpec("claude-md", "skill-root", bucket_dir, target, root, mode=mode)
         if check_dirty:
             _abort_if_unsound(
