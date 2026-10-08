@@ -1190,7 +1190,9 @@ def apply_pointer(
 
 
 def _reference_block(record: Record, *, on: date | None = None) -> str:
-    """A dated entry block: id + full trigger/fact + instruction/context."""
+    """A dated entry block: id + full trigger/fact + instruction, then the
+    ``## Context`` when the record has one (either type -- E0: a behavior
+    record may carry one too, and the journal is where it is kept in view)."""
     routed_at = (record.routing or {}).get("routed_at")
     day = _iso(routed_at)[:10] if routed_at else (on or date.today()).isoformat()
     sections = _body_sections(record)
@@ -1201,10 +1203,10 @@ def _reference_block(record: Record, *, on: date | None = None) -> str:
         lines.append(f"**Instruction:** {sections.get('Instruction', '').strip()}")
     else:
         lines.append(f"**Fact:** {sections.get('Fact', '').strip()}")
-        context = sections.get("Context", "").strip()
-        if context:
-            lines.append("")
-            lines.append(f"**Context:** {context}")
+    context = sections.get("Context", "").strip()
+    if context:
+        lines.append("")
+        lines.append(f"**Context:** {context}")
     return "\n".join(lines)
 
 

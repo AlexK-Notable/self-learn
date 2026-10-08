@@ -27,9 +27,9 @@ import re
 import pytest
 from ruamel.yaml import YAML
 
-from self_learn import batch, cli, compilers, verbs
+from self_learn import batch, cli, compilers, records, verbs
 from self_learn.ledger_ops import create_record, find_record_path
-from self_learn.records import Record
+from self_learn.records import Record, ValidationError
 from self_learn.scan import refusal_text
 from support import commit_all, git, last_verb_sha, make_behavior, make_env
 
@@ -396,3 +396,138 @@ def test_a_route_to_skill_md_writes_the_line_without_when_when(sandbox):
     # entry (the shelf) keeps the trigger word for word
     routed = Record.from_path(find_record_path(env.ledger, GOOD))
     assert "**Trigger:** When about to edit .storage." in compilers._reference_block(routed)
+
+
+# ------------------------- an optional Context on a behavior lesson (item 3)
+
+MARK = "CONTEXT-ONLY-MARKER-7f3a"
+CONTEXT = f"Why this matters, line one.\nLine two keeps {MARK}."
+
+
+def _with_context(context=CONTEXT, rid="lrn-0e000003", **kwargs):
+    return Record.create(
+        type="behavior",
+        scope="skill:s",
+        source="teach",
+        kind="anti-pattern",
+        trigger=kwargs.pop("trigger", "About to edit X."),
+        instruction=kwargs.pop("instruction", "Stop first."),
+        context=context,
+        record_id=rid,
+    )
+
+
+def _routed(record, destination="skill-md"):
+    record.set_routing(
+        {"routed_at": "2026-07-13T18:02:00Z", "destination": destination, "by": "human"}
+    )
+    record.set_status("routed")
+    return record
+
+
+def test_rewrite_is_a_record_source():
+    assert "rewrite" in records.SOURCES
+    # the source set is still closed
+    with pytest.raises(ValidationError, match="source"):
+        Record.create(type="behavior", scope="skill:s", source="bogus", kind="anti-pattern",
+                      trigger="About to edit X.", instruction="Stop first.")
+    record = Record.create(
+        type="behavior", scope="skill:s", source="rewrite", kind="anti-pattern",
+        trigger="About to edit X.", instruction="Stop first.", record_id="lrn-0e000004",
+    )
+    assert record.source == "rewrite"
+    # and a record file that names it reads back
+    assert Record.from_text(record.to_text()).source == "rewrite"
+    with pytest.raises(ValidationError, match="source"):
+        Record.from_text(record.to_text().replace("source: rewrite", "source: bogus"))
+    # the setter reads the same closed set
+    other = _behavior()
+    other.set_source("rewrite")
+    assert other.source == "rewrite"
+    with pytest.raises(ValidationError, match="source"):
+        other.set_source("bogus")
+
+
+def test_a_behavior_lesson_keeps_an_optional_context_in_the_record():
+    plain = _behavior()
+    assert "## Context" not in plain.body  # optional: absent when not given
+    record = _with_context()
+    assert f"## Context\n{CONTEXT}" in record.body
+    # the file reads back whole, and the section is not one of the loaded ones
+    again = Record.from_text(record.to_text())
+    assert again.body == record.body
+    assert MARK in again.body
+
+
+def test_a_second_context_section_on_a_behavior_lesson_is_refused():
+    body = _with_context().body
+    records.validate_body("behavior", body)  # one Context is fine
+    with pytest.raises(ValidationError, match="duplicate optional '## Context'"):
+        records.validate_body("behavior", body.rstrip("\n") + "\n\n## Context\nand again\n")
+    record = _with_context()
+    with pytest.raises(ValidationError, match="Context"):
+        record.set_body(record.body.rstrip("\n") + "\n\n## Context\nand again\n")
+
+
+@pytest.mark.parametrize("kind", ["behavior", "knowledge"])
+def test_context_is_never_compiled_into_a_managed_line(kind):
+    if kind == "behavior":
+        record = _routed(_with_context())
+    else:
+        record = _routed(_knowledge(context=CONTEXT))
+    assert MARK in record.body  # positive control: the text is in the record ...
+    line = compilers.entry_line(record)
+    assert record.id in line and MARK not in line  # ... and not in its managed line
+    result = compilers.compile_managed_text("# skill\n", [record])
+    assert record.id in result.text and MARK not in result.text
+    # a multi-line Context is not a reason to refuse the route
+    assert compilers.loaded_text_problem(record, "skill-md") is None
+
+
+def test_the_reference_journal_includes_a_behavior_lessons_context():
+    record = _routed(_with_context(), destination="reference")
+    block = compilers._reference_block(record)
+    assert "**Trigger:** About to edit X." in block
+    assert "**Instruction:** Stop first." in block
+    assert f"**Context:** {CONTEXT}" in block
+    # the order is Trigger, Instruction, Context
+    assert block.index("**Instruction:**") < block.index("**Context:**")
+    # a behavior lesson with no Context writes exactly what it always did
+    bare = compilers._reference_block(_routed(_behavior(), destination="reference"))
+    assert bare == (
+        "## 2026-07-13 — lrn-0e000001\n\n**Trigger:** About to edit X.\n\n"
+        "**Instruction:** Stop first."
+    )
+    # and a knowledge lesson's block is unchanged
+    fact = compilers._reference_block(_routed(_knowledge(context="why"), destination="reference"))
+    assert fact.endswith("**Fact:** X reloads without re-reading.\n\n**Context:** why")
+
+
+def test_the_episode_brief_still_stays_out_of_every_compile_target():
+    brief = "EPISODE-BRIEF-MARKER-91c2"
+    record = _with_context()
+    record.set_body(record.body.rstrip("\n") + f"\n\n## Episode brief\n{brief}\n")
+    _routed(record)
+    assert brief in record.body and MARK in record.body  # both are in the record
+    block = compilers._reference_block(record)
+    assert MARK in block  # the Context joins the journal ...
+    assert brief not in block  # ... the brief never does
+    assert brief not in compilers.entry_line(record)
+
+
+def test_a_behavior_lesson_with_context_routes_to_a_line_and_to_a_shelf(sandbox):
+    env = sandbox
+    create_record(env.ledger, _with_context(rid=GOOD))
+    create_record(env.ledger, _with_context(rid=CUT))
+    commit_all(env.ledger, "seed")
+
+    verbs.route(env.ledger, GOOD, dest="skill-md", no_push=True)
+    skill = env.skill_md.read_text(encoding="utf-8")
+    assert f"*({GOOD})*" in skill  # the line is there ...
+    assert MARK not in skill  # ... and the Context is not
+    kept = find_record_path(env.ledger, GOOD).read_text(encoding="utf-8")
+    assert MARK in kept  # it stays in the routed record
+
+    verbs.route(env.ledger, CUT, dest="reference", no_push=True)
+    shelf = (env.skill_dir / "references" / "LEARNINGS.md").read_text(encoding="utf-8")
+    assert f"— {CUT}" in shelf and f"**Context:** {CONTEXT}" in shelf
