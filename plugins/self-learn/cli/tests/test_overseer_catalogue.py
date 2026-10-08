@@ -33,7 +33,7 @@ from ruamel.yaml import YAML
 
 from self_learn import hosts, report, verbs
 from self_learn.ledger import Bucket, discover_buckets
-from self_learn.overseer import catalogue
+from self_learn.overseer import catalogue, health
 from self_learn.records import Record, format_covered_by
 from support import commit_all, git, iso, make_home
 
@@ -554,6 +554,70 @@ def test_a_replaced_lessons_successor_carries_its_fires(world: World) -> None:
     # The replaced lessons themselves are not listed.
     for gone in (old1, x, y, old3, retired):
         assert gone not in rows
+
+
+def test_chain_credit_reads_the_ledger_once_and_keeps_the_exact_counts(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # x -> y -> z with fires on every link (x 1, y 2, z 4): z carries 7,
+    # each fire counted once.
+    x, y = _ID.format(0x101), _ID.format(0x102)
+    z = world.lesson(0x103, trigger="About to do the third thing.")
+    world.lesson(0x102, status="superseded", superseded_by=z)
+    world.lesson(0x101, status="superseded", superseded_by=y)
+    world.fire(x, 1)
+    world.fire(y, 2)
+    world.fire(y, 3)
+    for days in (1, 2, 3, 4):
+        world.fire(z, days)
+    # A merge: two old lessons replaced by one. Each fire credits it once.
+    m1, m2 = _ID.format(0x201), _ID.format(0x202)
+    merged = world.lesson(0x203, trigger="About to do the merged thing.")
+    world.lesson(0x201, status="superseded", superseded_by=merged)
+    world.lesson(0x202, status="superseded", superseded_by=merged)
+    world.fire(m1, 1)
+    world.fire(m2, 1)
+    # A retirement INTO skill s fires; skill s's own lesson gets nothing.
+    s_live = world.lesson(0x301, scope="skill:s", destination="skill-md")
+    retired = _ID.format(0x302)
+    world.lesson(0x302, scope="skill:s", destination="skill-md", status="superseded",
+                 superseded_by=format_covered_by("skill-md", "s"))
+    world.fire(retired, 1)
+    # A cycle and a dangling successor: the walk ends, nothing leaks.
+    a, b = _ID.format(0x401), _ID.format(0x402)
+    world.lesson(0x401, status="superseded", superseded_by=b)
+    world.lesson(0x402, status="superseded", superseded_by=a)
+    world.fire(a, 1)
+    dangling = _ID.format(0x501)
+    world.lesson(0x501, status="superseded", superseded_by=_ID.format(0xDEAD))
+    world.fire(dangling, 1)
+    quiet = world.lesson(0x601, trigger="About to do the quiet thing.")
+
+    # Count every ledger walk the credit makes.
+    walks = []
+    real_discover = health.discover_buckets
+
+    def counting(home):  # noqa: ANN001, ANN202 - a spy with the real signature
+        walks.append(home)
+        return real_discover(home)
+
+    monkeypatch.setattr(health, "discover_buckets", counting)
+    credited = catalogue._fires_by_record(world.home, NOW, 30)
+    assert len(walks) == 1, f"the credit walked the ledger {len(walks)} times"
+
+    assert credited[z] == 7
+    assert credited[merged] == 2
+    assert credited[s_live] == 0
+    assert credited[quiet] == 0
+    # The same ids as the overseer's own rule, asked over every fired id.
+    fired = {x, y, z, m1, m2, retired, a, dangling}
+    assert {i for i, n in credited.items() if n > 0} == health.credit_replacement_chains(
+        world.home, fired
+    )
+    # And the catalogue shows the same numbers.
+    monkeypatch.setattr(health, "discover_buckets", real_discover)
+    rows = _rows(world.placed())
+    assert (rows[z].fires, rows[merged].fires, rows[s_live].fires, rows[quiet].fires) == (7, 2, 0, 0)
 
 
 # ------------------------------------------------------- (d) skills on the machine

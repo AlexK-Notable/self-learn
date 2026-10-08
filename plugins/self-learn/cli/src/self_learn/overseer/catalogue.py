@@ -52,7 +52,7 @@ from ..ledger import Bucket, discover_buckets
 from ..ledger_ops import UNREADABLE_RECORD_ERRORS, bucket_project_path
 from ..primitives import chrono
 from ..records import Record
-from .health import _replacement_successors, credit_replacement_chains
+from .health import _replacement_successors
 
 # ============================================================== THE KNOBS ==
 # Everything the discovery step's view of the machine depends on is in this
@@ -575,11 +575,15 @@ def _fires_by_record(home: Path, now: datetime, window_days: int) -> Counter[str
     """Fires per record id in the window, with chain credit.
 
     A fire on a lesson that was replaced counts toward every lesson after it
-    in the replacement chain (:func:`health.credit_replacement_chains`, the
-    overseer's own rule), so a rewrite keeps the fires of the lesson it
-    replaced. That function answers with a set, so it is asked once for each
-    fired id that has a successor; an id with none is its own chain.
-    Each such question reads the ledger's resolved records again.
+    in the replacement chain -- the overseer's own rule,
+    :func:`health.credit_replacement_chains` -- so a rewrite keeps the fires
+    of the lesson it replaced. That function answers with a SET of ids, which
+    cannot carry how many fires each one gets, so the same walk runs here
+    with a counter: the successor map is read from the ledger ONCE
+    (:func:`health._replacement_successors`), and each fired id's chain is
+    walked forward on it with that function's bounds (stop at the end of the
+    chain, at an id with no record, and on revisiting an id). A test pins that
+    the two credit the same ids.
     """
     since = now - timedelta(days=window_days)
     own: Counter[str] = Counter()
@@ -594,10 +598,15 @@ def _fires_by_record(home: Path, now: datetime, window_days: int) -> Counter[str
     credited: Counter[str] = Counter(own)
     successors = _replacement_successors(home) if own else {}
     for record_id, count in own.items():
-        if record_id not in successors:
-            continue
-        for downstream in credit_replacement_chains(home, {record_id}) - {record_id}:
-            credited[downstream] += count
+        seen = {record_id}
+        current = record_id
+        while True:
+            following = successors.get(current)
+            if following is None or following in seen:
+                break
+            credited[following] += count
+            seen.add(following)
+            current = following
     return credited
 
 
