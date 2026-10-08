@@ -9,10 +9,11 @@ routes are corrected by hand"); a reconsider's `route` line already moved
 one (`verbs.reroute`, RER6). Now both do, for the steward and the overseer:
 the lesson's entry block leaves the shelf file in the same locked section
 the status flips in, its compile-record entry rides the same ledger commit,
-and a plain host's file is changed and recorded but never committed. The
-file and its pointer line stay even when no entry is left (the choice this
-build made; see `verbs._RECONSIDER_RETIREABLE_DESTINATIONS`). The hook half
-stays refused (`test_preview_parity.py`'s hook rows pin that wording).
+and a plain host's file is changed and recorded but never committed. When
+no entry is left, the shelf loses its pointer line and its header-only file
+too (S-77 (3) as amended, 2026-10-07; every leg, in
+`test_empty_shelf_pointer.py`). The hook half stays refused
+(`test_preview_parity.py`'s hook rows pin that wording).
 
 Every scenario runs on a sandbox ledger and host (`support.make_env` under
 pytest's tmpdir); the batch, the verbs, the cases and the overseer's runner
@@ -27,7 +28,6 @@ from pathlib import Path
 import pytest
 
 from self_learn import batch, cases, compiled, gitops, steward, verbs
-from self_learn.compilers import _LEARNINGS_HEADER
 from self_learn.hosts import host_add, host_slug
 from self_learn.ledger_ops import create_record, find_record_path
 from self_learn.overseer import run as overseer_run
@@ -69,11 +69,17 @@ def _project_host(home: Path, tmp_path: Path, mode: str) -> Path:
     """A git repository registered as a project host in *mode* (`host add
     --mode`; a plain host gets its marker file). Plain hosts are git
     repositories too on this user's machine; self-learn just never
-    commits to them, and that is what this file checks."""
+    commits to them, and that is what this file checks. A plain host's
+    CLAUDE.md is left untracked: the pointer block in it is written and
+    removed here, and a tracked file of a plain host is not self-learn's
+    to write (the G1 lane, 2026-10-07)."""
     host = tmp_path / f"{mode}-host"
     init_repo(host)
-    (host / "CLAUDE.md").write_text(CLAUDE_MD_SEED, encoding="utf-8")
+    (host / "README.md").write_text("host\n", encoding="utf-8")
     commit_all(host, "host seed")
+    (host / "CLAUDE.md").write_text(CLAUDE_MD_SEED, encoding="utf-8")
+    if mode == "git":
+        commit_all(host, "claude seed")
     host_add(home, host, "project", mode=mode)
     return host
 
@@ -128,20 +134,23 @@ def _reference_entry(home: Path, host: Path, shelf: Path) -> tuple[dict, dict | 
 
 
 def _assert_host_side(host: Path, mode: str, host_before: str, rid: str) -> None:
-    """git mode commits the shelf's change in the host; plain mode leaves
-    it changed and uncommitted there (PLAIN11/H-j)."""
+    """git mode commits the shelf's change in the host -- here, the emptied
+    shelf's removal and its pointer's; plain mode leaves it changed and
+    uncommitted there (PLAIN11/H-j)."""
     status = git(host, "status", "--porcelain").stdout
-    tracked = git(host, "ls-files", "references").stdout
     if mode == "git":
         assert _head(host) != host_before
         subject = git(host, "log", "-1", "--format=%s").stdout.strip()
         assert subject == f"self-learn: apply {rid} → references/LEARNINGS.md (reference retired)"
-        assert "references/" not in status, status
-        assert tracked == "references/LEARNINGS.md\n"  # the control for the plain leg below
+        assert status == "", status
+        # control for the removal: the shelf was tracked before this commit
+        assert git(host, "ls-tree", "-r", "--name-only", "HEAD~1", "references").stdout
+        assert git(host, "ls-files", "references").stdout == ""
+        assert git(host, "show", "HEAD:CLAUDE.md").stdout == CLAUDE_MD_SEED
     else:
         assert _head(host) == host_before, "a plain host is never committed to"
-        assert tracked == "", tracked  # the shelf never entered the host's history
-        assert "references/" in status, status  # control: the shelf is on disk, uncommitted
+        assert git(host, "ls-files", "CLAUDE.md", "references").stdout == ""
+        assert "?? CLAUDE.md" in status, status  # control: on disk, never committed
 
 
 # ------------------------------------------------ reject / defer off a shelf
@@ -167,20 +176,19 @@ def test_a_reconsider_reject_or_defer_takes_the_lesson_off_its_shelf(tmp_path, v
     assert result.items[0].state == "applied", result.items[0].detail
 
     assert _record(home, RID).status == _GONE[verb]
-    text = shelf.read_text(encoding="utf-8")
-    assert f"— {RID}" not in text
-    # The empty-shelf choice: the file stays, holding only its header, and
-    # the pointer line naming it stays untouched.
-    assert text == _LEARNINGS_HEADER
-    assert (host / "CLAUDE.md").read_text(encoding="utf-8") == pointer_before
-    # The compile record learned the shelf's new bytes in the SAME ledger
+    # S-77 (3) as amended: its last entry gone, the shelf loses its pointer
+    # (the block leaves CLAUDE.md as it was before the route) and its
+    # header-only file.
+    assert not shelf.exists()
+    assert (host / "CLAUDE.md").read_text(encoding="utf-8") == CLAUDE_MD_SEED
+    # The compile record dropped both regions' entries in the SAME ledger
     # commit as the status flip, in the host's own mode.
     slug = host_slug(home, host, scope_kind="project")
     assert f"compiled/{slug}.yaml" in verb_files(home)
     data, entry = _reference_entry(home, host, shelf)
-    assert entry is not None
-    assert entry["sha256"] == hashlib.sha256(shelf.read_bytes()).hexdigest()
-    assert entry["by"] == f"{verb} {RID}"  # written by this verb, not left from the route
+    assert entry is None
+    pointer_key = compiled.region_key(host, host / "CLAUDE.md", "pointer")
+    assert compiled.entry_for(data, pointer_key, region="pointer") is None
     assert data["mode"] == mode
     _assert_host_side(host, mode, host_before, RID)
 
@@ -235,8 +243,11 @@ def test_the_shelfs_compile_record_names_the_bytes_it_was_based_on(tmp_path, ver
     `based_on_sha256` matches the file as `stale` and lets the next writer
     through; with no `based_on_sha256` the same file reads `edited` and
     refuses it. The value is checked against the hash taken here, off the
-    file, before the verb runs -- never against a field merely present."""
+    file, before the verb runs -- never against a field merely present.
+    A second lesson stays on the shelf, so the shelf (and its entry) stays."""
     home, host, shelf, prior = _shelved(tmp_path, mode)
+    _project_lesson(home, host, OTHER)
+    verbs.route(home, OTHER, dest="reference", no_push=True)
     before = hashlib.sha256(shelf.read_bytes()).hexdigest()
     # control: the route left an entry whose hash is the file's, so `before`
     # is what the compile record knew the shelf as
@@ -297,7 +308,8 @@ def test_an_agent_moves_a_lesson_off_its_shelf_and_cannot_put_it_back(tmp_path, 
     assert result.items[0].state == "applied", result.items[0].detail
     routing = _record(home, RID).routing or {}
     assert (routing.get("destination"), routing.get("rules_topic")) == ("claude-md", "moved-off")
-    assert f"— {RID}" not in shelf.read_text(encoding="utf-8")
+    assert not shelf.exists()  # its only entry gone, the shelf goes with its pointer
+    assert (host / "CLAUDE.md").read_text(encoding="utf-8") == CLAUDE_MD_SEED
     assert RID in (host / ".claude" / "rules" / "moved-off.md").read_text(encoding="utf-8")
     if mode == "plain":
         assert _head(host) == host_before, "a plain host is never committed to"
@@ -311,7 +323,7 @@ def test_an_agent_moves_a_lesson_off_its_shelf_and_cannot_put_it_back(tmp_path, 
     assert result.items[0].detail == preview.items[0].detail
     assert f"refused for the {actor}" in (result.items[0].detail or "")
     assert (_record(home, RID).routing or {}).get("rules_topic") == "moved-off"
-    assert f"— {RID}" not in shelf.read_text(encoding="utf-8")
+    assert not shelf.exists()
 
 
 # ------------------------------------------ the overseer, under S-76
@@ -352,6 +364,7 @@ def test_the_overseer_takes_a_steward_shelved_lesson_off_its_shelf(tmp_path, mon
     assert reconsider_id
     assert cases.show(home, reconsider_id, evidence_only=False).frontmatter["actor"] == "overseer"
     assert _record(home, RID).status == "rejected"
-    assert shelf.read_text(encoding="utf-8") == _LEARNINGS_HEADER
+    assert not shelf.exists()
+    assert (host / "CLAUDE.md").read_text(encoding="utf-8") == CLAUDE_MD_SEED
     assert _head(host) == host_before  # plain host: changed, never committed
     assert last_verb_sha(home)  # the ledger carries the reject
