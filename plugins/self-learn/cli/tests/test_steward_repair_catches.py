@@ -502,15 +502,15 @@ def test_a_stubborn_reconsider_is_sent_back_twice_then_parked_and_never_has_two_
     assert {_status(pair.home, rid) for rid in pair.ids} == {"pending"}
 
 
-def _secret_session(pair: MovedPair, prompts: list[str]):
-    """A decision whose case text the secret scan refuses, first pass and
-    repair alike: its lessons get a bare `refused` row at their version,
-    which decides that version (built at runtime, never a literal)."""
+def _parking_session(pair: MovedPair, prompts: list[str]):
+    """A decision the model parks for the overseer: its lessons get a
+    `parked` row at their version, which decides that version."""
     def write(spec):
         prompts.append(spec.prompt)
         stage = _stage_dir(spec)
-        case = _decide_pair(pair, kind="resolution")
-        case["decision"]["because"] = "token ghp_" + "Ab1" * 12
+        case = _decide_pair(pair, kind="parked")
+        case.update(outcome="parked", parked_for="overseer", parked_reason="authority-unclear")
+        case["decision"]["confidence"] = "provisional"
         _dump_yaml(stage / "cases" / "moved-pair.yaml", case)
         _dump_yaml(stage / "sheets" / "moved-pair.yaml", {
             "version": 1, "case": "$CASE_ID",
@@ -521,22 +521,42 @@ def _secret_session(pair: MovedPair, prompts: list[str]):
     return write
 
 
+def _overseer_decides(home: Path, parked_case: str, records: list[str], tmp: Path) -> str:
+    """The overseer's decision of a parked case, as the overseer's runner
+    records one: a successor case that supersedes it (here it leaves the
+    lessons as they are). S-80: this is what lifts the hold."""
+    stage = tmp / f"overseer-decides-{parked_case}.yaml"
+    case = _case(list(records), "no-action", "defer")
+    case.update(trigger="weekly", question="the overseer's answer to the parked question")
+    case["supersedes"] = parked_case
+    _dump_yaml(stage, case)
+    return cases.record(home, stage, actor="overseer")
+
+
 def test_a_pending_reconsider_input_is_sent_back_only_when_the_next_run_selects_it(
     tmp_path, monkeypatch
 ):
     """The rule behind D1 is "decided by no one", read from the selection
     itself (`steward._selected_again`). A pending reconsider input whose
     lesson the next run will select is sent back. One whose record version
-    a committed run already decided -- here a bare secret-scan `refused`
-    row, which strands a lesson for good -- is not selected again, so it is
-    still parked now for the overseer: sent back, nobody would decide it."""
+    a committed run already decided -- here a `parked` row the model wrote,
+    whose parked case the overseer then decided leaving the lesson pending
+    -- is not selected again, so it is still parked now for the overseer:
+    sent back, nobody would decide it. (Before gate S1b F6 the "decided"
+    control was a bare secret-scan `refused` row; that row now sends the
+    lesson back, so it no longer decides the version.)"""
     decided = MovedPair(tmp_path / "decided", observed=False, prefix="lrn-c8d0")
     sent = _notifications(monkeypatch)
     prompts: list[str] = []
-    monkeypatch.setattr(steward.invocation, "write_session", _secret_session(decided, prompts))
+    monkeypatch.setattr(steward.invocation, "write_session", _parking_session(decided, prompts))
     first = steward.run(decided.home)
     rows = _packet(decided.home, first.run_id)["dispositions"]
-    assert {rows[rid]["state"] for rid in decided.ids} == {"refused"}  # control: decided
+    assert {rows[rid]["state"] for rid in decided.ids} == {"parked"}  # control: decided
+    (parked,) = [row["case"] for row in cases.list_cases(decided.home, record_id=decided.ids[0],
+                                                          parked_for="overseer")]
+    _overseer_decides(decided.home, parked, list(decided.ids), tmp_path)
+    assert not [row for row in cases.list_cases(decided.home, parked_for="overseer")
+                if not row.get("superseded_by")]  # control: the overseer let them go
     assert not {entry.record.id for entry, _row in steward._eligible_lessons(decided.home)} & set(
         decided.ids)
     cases.observe(decided.home, decided.moving_case, "statement",

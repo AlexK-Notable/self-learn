@@ -167,10 +167,17 @@ def test_a_secret_still_there_after_the_repair_refuses_only_that_case(tmp_path, 
     packet = manifest["packets"][0]
     rows = packet["dispositions"]
     assert rows[good]["state"] == "applied", rows
-    assert rows[bad]["state"] == "refused", rows
+    # Gate S1b F6: a hit in the steward's own text is `bad-line`, sent back
+    # once (no longer a bare `refused` row, which decided the version).
+    assert (rows[bad]["state"], rows[bad].get("kind")) == ("returned", "bad-line"), rows
+    assert "case" not in rows[bad], rows
     assert "secret scan:" in rows[bad]["reason"] and "[withheld]" in rows[bad]["reason"]
     assert packet["phase"] == "complete"
-    assert len(packet["case_ids"]) == 1
+    # ... its case frozen as a stub that holds no text, and never recorded
+    (stub,) = [manifest["cases"][cid] for cid in packet["case_ids"]
+               if manifest["cases"][cid].get("unrecorded_refusal")]
+    assert (stub["case"], stub["sheet"], stub["phase"]) == ("", "", "refused")
+    assert len(packet["case_ids"]) == 2
     assert [c["records"] for c in cases.list_cases(home)] == [[good]]
     # Positive control: the grep reaches the committed run record.
     assert any(p.endswith(f"cases/runs/{result.run_id}.json") for p in _ledger_files_with(home, bad))
