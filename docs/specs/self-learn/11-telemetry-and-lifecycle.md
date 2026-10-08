@@ -103,6 +103,18 @@ A new capture that matches an **already-routed** lesson is a
   provisional user-model entries no examination has touched. The nudge is
   information only, never a forced draw — the overseer still chooses its
   own sample (`S-66`).
+  *Amended 2026-10-07 (fire credit):* a fire is counted along a
+  replacement chain. A lesson replaced by `supersede` or
+  `teach --supersedes` starts at zero fires under its new id, so without
+  this a rewritten line would draw a false "never fired" nudge and invite a
+  wrong retirement. Each surface first applies its own window (the nudge:
+  since the overseer's last run; the catalogue-health row: 30 days), then a
+  fire on any lesson credits every lesson after it, following the old
+  record's `superseded_by` forward when it names a record id. A retirement
+  (`covered_by:<kind>:<name>`, or the legacy `canon`) names a surface, not
+  a lesson, and earns no credit. The walk stops at the chain's end, at an id
+  with no record, and on a revisit (`overseer/health.py`,
+  `credit_replacement_chains`).
 - **Confirmation** is human work: a routed record with suspects
   surfaces in review as a **"not holding" card**: *"Routed <date>.
   Sighted N times since. Revise, escalate, tolerate, or retire?"*

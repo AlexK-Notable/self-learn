@@ -17,7 +17,7 @@ from ruamel.yaml import YAML
 from .. import conditions, gitops, report, settings, telemetry
 from ..always_loaded import is_always_loaded
 from ..ledger import discover_buckets
-from ..records import Record, RecordError
+from ..records import Record, RecordError, is_replacement
 
 
 #: How far back a fire counts when the row asks which always-loaded lines have
@@ -71,7 +71,8 @@ def never_fired_always_loaded(
     return {
         "kind": "no-fire-always-loaded",
         "label": (
-            f"Always-loaded CLAUDE.md lines with no recorded fire in the last {window_days} days"
+            f"Always-loaded CLAUDE.md lines with no recorded fire in the last {window_days} days "
+            "(a replaced lesson's fires count)"
         ),
         "window_days": window_days,
         "value": sorted({record_id for record_id in always_loaded if record_id not in fired}),
@@ -196,6 +197,62 @@ def _always_loaded_ids(home: Path) -> list[str]:
     return ids
 
 
+def _replacement_successors(home: Path) -> dict[str, str]:
+    """``{old record id: its replacement's id}`` for every record in any
+    bucket's ``resolved/`` whose ``superseded_by`` names a record id.
+
+    That is what ``supersede`` and ``teach --supersedes`` both leave on the OLD
+    record. A retirement (``covered_by:<kind>:<name>``, or the legacy
+    ``canon``) names a surface, not a lesson, and is left out
+    (:func:`self_learn.records.is_replacement` is the one test for the
+    difference). A file that does not read back is skipped, as in
+    :func:`_always_loaded_ids`."""
+    successors: dict[str, str] = {}
+    for bucket in discover_buckets(home):
+        directory = bucket.path / "resolved"
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("lrn-*.md")):
+            try:
+                record = Record.from_path(path)
+            except (RecordError, OSError, UnicodeDecodeError):
+                continue
+            successor = record.superseded_by
+            if is_replacement(successor):
+                successors[record.id] = str(successor)
+    return successors
+
+
+def credit_replacement_chains(home: Path, fired: set[str]) -> set[str]:
+    """*fired* plus every lesson downstream of a fired one in a replacement
+    chain (the "fire credit" rule).
+
+    A lesson replaced by ``supersede`` or ``teach --supersedes`` starts at zero
+    fires under its new id. Without this, a rewrite that shortens a line looks
+    dead the next week and invites a wrong retirement. A fire on the old id
+    counts toward each lesson after it in the chain, so the live one at the end
+    is credited. The walk goes forward through the old record's
+    ``superseded_by`` only, never backward through ``supersedes``.
+
+    The walk is bounded: it stops at the end of a chain, at an id with no
+    record (a dangling ``superseded_by``), and on revisiting an id (a cycle or
+    a self-reference). The caller applies its own time window to *fired*
+    BEFORE calling, so a fire outside the window credits nothing."""
+    successors = _replacement_successors(home)
+    credited = set(fired)
+    for record_id in fired:
+        seen = {record_id}
+        current = record_id
+        while True:
+            following = successors.get(current)
+            if following is None or following in seen:
+                break
+            credited.add(following)
+            seen.add(following)
+            current = following
+    return credited
+
+
 def _current_condition_items(home: Path) -> list[Any]:
     items: list[Any] = list(conditions.feed(home))
     observed_at = items[0].observed_at if items else datetime.now(timezone.utc).isoformat()
@@ -227,6 +284,8 @@ def gather(home: Path | str) -> list[dict[str, Any]]:
         and isinstance(event.get("record"), str)
         and str(event.get("ts", "")) >= str(since)
     }
+    # A lesson replaced inside the window keeps its fires.
+    fired = credit_replacement_chains(resolved, fired)
     current = _current_condition_items(resolved)
     baseline = _last_overseer_commit(resolved)
     condition_row = conditions_diff(
