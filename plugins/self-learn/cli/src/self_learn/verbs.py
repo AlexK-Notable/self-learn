@@ -9829,7 +9829,16 @@ def recompile(
                 and spec.pointer_surface.resolve() in adopted_pointer_surfaces
             )
             pointer_refusal: str | None = None
-            if spec.mode == "plain" and spec.pointer_surface is not None and not skip_pointer:
+            # Gate G1b F1: the pointer file is judged only when this recompile
+            # would WRITE it -- the route's own rule (`_pointer_write_needed`).
+            # A tracked pointer that already names the shelf is left alone, so
+            # a route and the recompile its crash recovery runs agree.
+            if (
+                spec.mode == "plain"
+                and spec.pointer_surface is not None
+                and not skip_pointer
+                and _pointer_write_needed(spec)
+            ):
                 try:
                     _refuse_unsafe_plain_paths(
                         [spec.pointer_surface], skills_root=_skills_root_of(spec)
@@ -9893,7 +9902,10 @@ def recompile(
                             [probe]
                             + (
                                 [spec.pointer_surface]
-                                if spec.pointer_surface is not None and not skip_pointer
+                                if spec.pointer_surface is not None
+                                and not skip_pointer
+                                # asked again under the lock (G1b F1)
+                                and _pointer_write_needed(spec)
                                 else []
                             ),
                             skills_root=_skills_root_of(spec),

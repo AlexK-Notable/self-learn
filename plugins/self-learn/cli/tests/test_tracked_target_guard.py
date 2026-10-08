@@ -1072,9 +1072,11 @@ def test_recompile_rebuilds_a_lost_shelf_pointer_and_lines_without_committing(tm
     assert _block(host) == ["/CLAUDE.md", "/references/LEARNINGS.md"]
 
 
-def test_recompile_repairs_the_shelf_when_only_its_pointer_file_is_tracked(tmp_path):
-    """The pointer's CLAUDE.md is tracked now; the shelf is not. The shelf
-    is still repaired; the pointer is skipped loudly, CLAUDE.md untouched."""
+def test_recompile_repairs_the_shelf_and_leaves_a_tracked_pointer_that_names_it(tmp_path):
+    """The pointer's CLAUDE.md is tracked now and already names the shelf;
+    the shelf is not tracked. The shelf is repaired, and CLAUDE.md -- which
+    the recompile does not write -- is neither judged nor touched (gate G1b
+    F1: recompile asks the route's own `_pointer_write_needed`)."""
     home = make_env(tmp_path).ledger
     host = _plain_repo_host(home, tmp_path, track_claude_md=False)
     rid = _lesson(home, host, "lrn-9a000027")
@@ -1086,6 +1088,36 @@ def test_recompile_repairs_the_shelf_when_only_its_pointer_file_is_tracked(tmp_p
     pointer_bytes = (host / "CLAUDE.md").read_bytes()
     head = _head(host)
 
+    assert b"references/LEARNINGS.md" in pointer_bytes  # control: it names the shelf
+
+    result = verbs.recompile(home, no_push=True)
+
+    assert rid in shelf.read_text(encoding="utf-8")
+    assert verbs.RecompileEntry(target=shelf, changed=True) in result.entries
+    assert [e for e in result.entries if e.skipped] == []
+    assert (host / "CLAUDE.md").read_bytes() == pointer_bytes
+    assert _head(host) == head
+    assert _status(host) == ""
+
+
+def test_recompile_skips_a_tracked_pointer_file_it_would_have_to_write(tmp_path):
+    """The other direction of G1b F1: the tracked CLAUDE.md does NOT name
+    the shelf, so restoring the pointer would change a tracked file. The
+    shelf is still repaired; the pointer is skipped loudly; CLAUDE.md is
+    untouched."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a000040")
+    verbs.route(home, rid, dest="reference", no_push=True)
+    (host / "CLAUDE.md").write_text(CLAUDE_MD_SEED, encoding="utf-8")
+    git(host, "add", "-f", "--", "CLAUDE.md")
+    git(host, "commit", "-q", "-m", "track CLAUDE.md without the pointer")
+    shelf = host / "references" / "LEARNINGS.md"
+    shelf.unlink()
+    pointer_bytes = (host / "CLAUDE.md").read_bytes()
+    assert b"references/LEARNINGS.md" not in pointer_bytes  # control: a write is needed
+    head = _head(host)
+
     result = verbs.recompile(home, no_push=True)
 
     assert rid in shelf.read_text(encoding="utf-8")
@@ -1095,6 +1127,31 @@ def test_recompile_repairs_the_shelf_when_only_its_pointer_file_is_tracked(tmp_p
     assert "is tracked by git" in (skipped.skipped or "")
     assert (host / "CLAUDE.md").read_bytes() == pointer_bytes
     assert _head(host) == head
+    assert _status(host) == ""
+
+
+def test_a_recovery_recompile_refuses_nothing_after_a_route_whose_pointer_needed_no_write(tmp_path):
+    """Gate G1b F1 (its probe Q1b): both runners' crash recovery runs
+    `recompile(only_records=[id])` and reads `recompile_refusals`. A
+    reference route into a plain host whose TRACKED CLAUDE.md already names
+    the shelf applies without touching CLAUDE.md, so the recovery must find
+    nothing to refuse -- before the fold it named CLAUDE.md, and the runner
+    marked an applied route `unresolved-host`."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path)  # CLAUDE.md tracked
+    with (host / "CLAUDE.md").open("a", encoding="utf-8") as fh:
+        fh.write("\nOlder lessons: see references/LEARNINGS.md.\n")
+    git(host, "commit", "-q", "-am", "point at the shelf by hand")
+    claude_md = (host / "CLAUDE.md").read_bytes()
+    rid = _lesson(home, host, "lrn-9a000041")
+    result = verbs.route(home, rid, dest="reference", no_push=True)
+    assert not any("HOST PHASE FAILED" in w for w in result.warnings), result.warnings
+    assert rid in (host / "references" / "LEARNINGS.md").read_text(encoding="utf-8")  # control
+
+    recovery = verbs.recompile(home, no_push=True, only_records=[rid])
+
+    assert verbs.recompile_refusals(recovery, rid) == []
+    assert (host / "CLAUDE.md").read_bytes() == claude_md
     assert _status(host) == ""
 
 
