@@ -1259,7 +1259,9 @@ def test_a_hostile_draft_is_a_bounded_problem_not_an_exception(label: str, monke
 @pytest.mark.parametrize(
     ("body", "bound"),
     [
-        ("[a](<" * 15_000, 5.0),
+        # Few starts and a long tail: an unbounded run rescans the tail from
+        # every start, while the bounded pattern reads 999 characters.
+        ("[a](<" * 2_000 + "b" * 500_000, 1.0),
         ("[x]: <\n" * 20_000, 1.0),
         ("[" * 150_000, 1.0),
         ("[a][" * 30_000, 1.0),
@@ -1278,15 +1280,18 @@ def test_the_link_patterns_do_not_rescan_the_file_from_every_bracket(body: str, 
     # An unbounded run (`<([^>]*)>`) rescans the rest of the text from every
     # `[a](<`: 7 s on 50 KB before the fold; bounded, a fraction of a second.
     # The body is not frontmatter, so no cap applies and no rule id can
-    # stand in for the time. Measured idle (2026-10-08, fold 2, best of 7):
-    # angle links 0.43 s, definitions 0.008 s, brackets 0.084 s, refs
-    # 0.001 s, brackets after a definition 1.08 s. Each bound is at least
-    # 10 times its case's idle time, and never under 1 s; an unbounded run
-    # over these sizes takes far longer (quadratic in the length): on
-    # 02a9a5c, before the fold bounded the patterns, angle links took 15.4 s
-    # and brackets 5.9 s. PINS: definitions, refs and brackets after a
-    # definition already passed on 02a9a5c (it had no reference-style
-    # patterns to slow down); they guard the patterns the fold added.
+    # stand in for the time. Measured idle (2026-10-08, fold 2, best of 5
+    # or 7): angle links 0.059 s, definitions 0.008 s, brackets 0.084 s,
+    # refs 0.001 s, brackets after a definition 1.08 s. Each bound is at
+    # least 10 times its case's idle time, and never under 1 s. An
+    # unbounded run is far slower on these shapes: the angle-link mutant
+    # took 5.4 s (92 times idle; on the old shape, '[a](<' x 15,000, it was
+    # only 8 times, so no 10x bound could catch it), an unbounded shortcut
+    # label 37 s after a definition, and on 02a9a5c, before the fold
+    # bounded the patterns, brackets took 5.9 s. PINS: definitions, refs
+    # and brackets after a definition already passed on 02a9a5c (it had no
+    # reference-style patterns to slow down); they guard the patterns the
+    # fold added.
     started = time.perf_counter()
     assert skill_scaffold._linked_targets(body) == set()
     assert time.perf_counter() - started < bound
