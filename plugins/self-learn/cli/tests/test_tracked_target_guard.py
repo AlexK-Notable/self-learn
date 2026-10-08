@@ -821,3 +821,89 @@ def test_the_steward_s_repair_turn_sees_the_refusal_and_its_fix_applies(
     assert _status(host) == ""
     assert (host / "CLAUDE.md").read_bytes() == claude_md
     assert _head(host) == host_head
+
+
+def test_deleting_an_untracked_script_needs_no_ignore_line(tmp_path):
+    """Deleting a file git does not track changes nothing git shows, so a
+    retired hook's script is removed even where the repo's own rules have
+    since re-admitted it (only TRACKED refuses a deletion)."""
+    home, repo = _plain_skills_root(tmp_path)
+    rid = _hook_lesson(home, "lrn-9a00001a")
+    script = verbs.route(home, rid, dest="hook", no_push=True).target
+    assert script is not None and script.is_file()
+    (repo / ".gitignore").write_text("!/plugins/*/hooks/*.sh\n", encoding="utf-8")
+    git(repo, "add", "--", ".gitignore")  # the script itself stays untracked
+    git(repo, "commit", "-q", "-m", "re-admit hook scripts")
+    rel = script.relative_to(repo).as_posix()
+    assert not _ignored(repo, rel)  # control: re-admitted ...
+    assert f"?? {rel}" in _status(repo)  # ... and untracked, so a deletion is safe
+
+    verbs.graduate(home, rid, no_push=True)
+
+    assert not script.exists()
+    record = _record(home, rid)
+    assert (record.status, record.superseded_by) == ("superseded", "canon")
+
+
+def test_a_host_whose_path_holds_glob_characters_gets_a_line_for_exactly_its_file(
+    tmp_path,
+):
+    """A plain project host in a subdirectory of a bigger repo, named with
+    the characters a gitignore pattern treats as special. Its line must
+    name that one file: an unescaped `[1]*?\\` would match `pkg1xb/...`
+    instead and leave the real file showing in `git status`."""
+    home = make_env(tmp_path).ledger
+    outer = tmp_path / "mono"
+    init_repo(outer)
+    (outer / "README").write_text("mono\n", encoding="utf-8")
+    commit_all(outer, "seed")
+    host = outer / "pkg[1]*?\\b"
+    host.mkdir()
+    sibling = outer / "pkg1xb"
+    sibling.mkdir()
+    (sibling / "CLAUDE.local.md").write_text("someone else's\n", encoding="utf-8")
+    _write_operator_lines(outer)
+    host_add(home, host, "project", mode="plain")
+    rid = _lesson(home, host, "lrn-9a00001c")
+
+    verbs.route(home, rid, dest="claude-md:local", no_push=True)
+
+    rel = f"{host.name}/CLAUDE.local.md"
+    assert rid in (host / "CLAUDE.local.md").read_text(encoding="utf-8")
+    assert _ignored(outer, rel)  # the positive control, before the absences
+    # -z: git C-quotes a path holding a backslash in plain porcelain output.
+    raw = git(outer, "status", "--porcelain", "-z", "--untracked-files=all").stdout
+    shown = [entry[3:] for entry in raw.split("\0") if entry]
+    assert "pkg1xb/CLAUDE.local.md" in shown  # control: the listing is read right
+    assert rel not in shown
+    assert not _ignored(outer, "pkg1xb/CLAUDE.local.md")  # ... and nothing else
+    assert _block(outer) == ["/pkg\\[1]\\*\\?\\\\b/CLAUDE.local.md"]  # a lone ] is literal
+
+
+def test_an_ignore_line_keeps_a_trailing_space_in_a_file_name(tmp_path):
+    """Git drops an unescaped trailing space from a pattern. No target name
+    self-learn writes today ends in one (each is fixed or generated), so
+    this pins the helper directly: a NEW helper, so on 0fd0c4e this test
+    fails by AttributeError, not by behaviour."""
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    (repo / "seed").write_text("seed\n", encoding="utf-8")
+    commit_all(repo, "seed")
+    line = gitops.exclude_pattern("trailing ")
+    assert line == "/trailing\\ "
+    assert gitops.ignored_with_line(repo, "trailing ", line)
+    assert not gitops.ignored_with_line(repo, "trailing", line)
+
+
+def test_a_malformed_self_learn_block_stops_the_write_and_says_so(tmp_path):
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path)
+    broken = OPERATOR_LINES + "# self-learn:begin (half a block)\n/CLAUDE.local.md\n"
+    _exclude(host).write_text(broken, encoding="utf-8")
+    rid = _lesson(home, host, "lrn-9a00001b")
+
+    result = verbs.route(home, rid, dest="claude-md:local", no_push=True)
+
+    assert any("HOST PHASE FAILED" in w and "malformed" in w for w in result.warnings)
+    assert not (host / "CLAUDE.local.md").exists()
+    assert _exclude(host).read_text(encoding="utf-8") == broken
