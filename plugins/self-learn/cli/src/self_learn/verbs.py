@@ -120,6 +120,7 @@ from .compilers import (
     CompileError,
     PathsResult,
     SectionResult,
+    ShelfRetirement,
     apply_paths_frontmatter,
     apply_pointer,
     compile_managed_file,
@@ -128,17 +129,23 @@ from .compilers import (
     compile_reference,
     has_paths_key,
     loaded_text_problem,
+    plan_shelf_retirement,
     pointer_line,
     pointer_token,
     read_paths_frontmatter,
     reference_target_path,
+    retire_empty_shelf,
     retire_reference,
     surface_names_target,
 )
 # REC7: reference/pointer prediction reuses compilers.py's own private
 # helpers directly (never reimplemented) so this module's prediction and
 # the real write cannot drift apart.
-from .compilers import _LEARNINGS_HEADER, _reference_block, _retire_reference_text
+from .compilers import (
+    _LEARNINGS_HEADER,
+    _reference_block,
+    _text_names_target,
+)
 from .hosts import (
     HostsError,
     ancestors_of,
@@ -3683,6 +3690,7 @@ def _retirement_preflight(
     warnings: list[str],
     *,
     user_claude_md: Path | str | None = None,
+    after_route: "tuple[TargetSpec, Record] | None" = None,
 ) -> _Retirement:
     """Resolve a retiring record's host-side cleanup BEFORE any commit
     (doc 13 §4 step c — the standalone supersede verb has always done
@@ -3698,7 +3706,15 @@ def _retirement_preflight(
     longer append-only for their own lifetime (§3.5): a
     graduate/supersede/reroute now retires the record's own entry block
     through the SAME shared path every other destination already used,
-    never a per-verb branch (the M46 mutation's own wrong shape)."""
+    never a per-verb branch (the M46 mutation's own wrong shape).
+
+    SH2 + S-80: that branch's tracked-file check is the shelf retirement's
+    own (:func:`_refuse_unsafe_shelf_retirement`), on the plan the ledger's
+    prediction and the host write share (:func:`_shelf_retirement_plan`):
+    it refuses here, before the ledger commit, exactly when the host write
+    would -- the pointer file whose pointer an emptied shelf loses
+    included. *after_route* is the route completing a ``teach
+    --supersedes`` (its spec and record), whose own write lands first."""
     if record.status != "routed":
         return _Retirement()
     routing = record.routing or {}
@@ -3743,7 +3759,10 @@ def _retirement_preflight(
             )
         return _Retirement(removal=removal)
     if destination == "reference":
-        ref_spec = _resolve_target(
+        # Unguarded: the registry and region gates only. Its G1 step would
+        # judge the shelf alone; the shelf retirement's own check, below,
+        # judges exactly what this retirement changes.
+        ref_spec = _resolve_target_unguarded(
             home,
             bucket_dir,
             record.scope,
@@ -3754,7 +3773,6 @@ def _retirement_preflight(
             # variant/rules_topic only — never rules_paths.
             variant=routing.get("variant"),
             rules_topic=routing.get("rules_topic"),
-            removal=True,  # G1: as the managed branch above
         )
         # `TargetSpec.target` is None for a reference spec (the file is
         # resolved through `refs_dir`/`ref_name` — see `_resolve_target`'s
@@ -3770,22 +3788,241 @@ def _retirement_preflight(
         # managed branches; this documents the reference one.
         assert ref_spec.refs_dir is not None
         ref_path = reference_target_path(ref_spec.refs_dir, ref_spec.ref_name)
-        return _Retirement(reference=(ref_path, ref_spec))
+        reference = (ref_path, ref_spec)
+        _refuse_unsafe_shelf_retirement(
+            reference,
+            _shelf_retirement_plan(home, reference, record.id, after_route=after_route),
+        )
+        return _Retirement(reference=reference)
     return _Retirement()
 
 
-def _predicted_retired_reference_region(ref_path: Path, record_id: str) -> bytes | None:
-    """REC7's own discipline, applied to a reference RETIREMENT (RER5/
-    RER7's same-commit prediction, mirroring `_expected_reference_region`'s
-    write-side contract): predict :func:`compilers.retire_reference`'s
-    final bytes for THIS removal, without writing, via the SAME pure
-    text transform (:func:`compilers._retire_reference_text`) the real
-    removal calls — prediction and the write cannot drift."""
-    if not ref_path.is_file():
-        return None
-    text = ref_path.read_text(encoding="utf-8")
-    new_text, _removed = _retire_reference_text(text, record_id)
-    return new_text.encode("utf-8")
+def _default_shelf(ref_path: Path, spec: TargetSpec) -> bool:
+    """Whether *ref_path* is the shelf :func:`compilers.compile_reference`
+    creates itself (``references/LEARNINGS.md``, the destination a bare
+    ``reference`` resolves to) rather than a named one a person made."""
+    return spec.refs_dir is not None and ref_path == reference_target_path(spec.refs_dir, None)
+
+
+def _read_text_or_none(path: Path | None) -> str | None:
+    return path.read_text(encoding="utf-8") if path is not None and path.is_file() else None
+
+
+def _predicted_pointer_text(
+    home: Path, spec: TargetSpec, reference_path: Path, text: str | None
+) -> str:
+    """:func:`compilers.apply_pointer`'s final text for *spec*'s surface,
+    computed over *text* (``None``: the surface does not exist yet, which
+    apply_pointer creates empty) without writing -- its idempotence leg,
+    then the same block arithmetic, with the ANC8 preamble choice the real
+    write makes (:func:`_pointer_names_base`). Used only where a pointer
+    write and an emptied shelf's pointer removal land on ONE surface in one
+    motion, so the compile record can hold what the two leave together."""
+    assert spec.pointer_surface is not None
+    current = text or ""
+    if _text_names_target(current, spec.pointer_surface, reference_path):
+        return current
+    line = pointer_line(
+        pointer_token(spec.pointer_surface, reference_path), POINTER_LABELS[spec.scope_kind]
+    )
+    return compile_pointer_text(current, line, names_base=_pointer_names_base(home, spec))[0]
+
+
+def _shelf_retirement_plan(
+    home: Path,
+    reference: tuple[Path, TargetSpec],
+    record_id: str,
+    *,
+    after_route: "tuple[TargetSpec, Record] | None" = None,
+    then_route: "tuple[TargetSpec, Path] | None" = None,
+) -> ShelfRetirement:
+    """THE decision of a shelf retirement (REC7/REC9, S-77 (3) as amended,
+    S-80): what taking *record_id*'s entry off its shelf writes -- the
+    shelf's bytes afterwards, its pointer, its file -- over the shelf and its
+    pointer surface as they are now (:func:`compilers.plan_shelf_retirement`,
+    the same pure transforms the host write applies). Three callers, which
+    must agree: the retirement pre-flight judges the files it changes before
+    any lock (:func:`_retirement_preflight`), the ledger's prediction records
+    them (:func:`_plan_shelf_retirement`), and the host phase judges them
+    again and writes them (:func:`_retire_reference_host_phase`).
+
+    Two callers write the SAME region in the same motion as the retirement,
+    and the plan must hold what both writes leave:
+
+    - *after_route* ``(spec, routed_record)``: the route that completes a
+      ``teach --supersedes`` writes its own target FIRST (its host phase
+      runs before the old record's retirement): onto the same shelf, its
+      entry is appended before this one leaves -- so that shelf is never
+      emptied, and its pointer file is never changed; onto the same pointer
+      surface, its line is added before this one's goes. The pre-flight
+      passes it too, so it judges what the host write will really change.
+    - *then_route* ``(spec, reference_path)``: ``reroute`` retires the old
+      placement FIRST and writes the new one after; when the new one is a
+      shelf behind the same pointer surface, its line is added to the
+      surface this removal leaves. That changes only the bytes recorded,
+      never WHICH files the retirement changes, so the pre-flight (run
+      before the new spec resolves) does without it.
+    """
+    ref_path, spec = reference
+    surface = spec.pointer_surface
+    shelf_text = _read_text_or_none(ref_path)
+    surface_text = _read_text_or_none(surface)
+    if after_route is not None:
+        new_spec, routed = after_route
+        if new_spec.destination == "reference" and new_spec.refs_dir is not None:
+            new_ref = reference_target_path(new_spec.refs_dir, new_spec.ref_name)
+            if new_ref == ref_path:
+                appended = _expected_reference_region(new_spec, routed, new_ref)
+                if appended is not None:
+                    shelf_text = appended.decode("utf-8")
+            if surface is not None and new_spec.pointer_surface == surface:
+                surface_text = _predicted_pointer_text(home, new_spec, new_ref, surface_text)
+    retirement = plan_shelf_retirement(
+        ref_path,
+        shelf_text,
+        record_id,
+        surface,
+        surface_text,
+        default_shelf=_default_shelf(ref_path, spec),
+        shelf_is_link=ref_path.is_symlink(),
+    )
+    if then_route is not None and retirement.empty.surface_changed:
+        new_spec, new_ref = then_route
+        if surface is not None and new_spec.pointer_surface == surface:
+            composed = _predicted_pointer_text(
+                home, new_spec, new_ref, retirement.empty.surface_text
+            )
+            retirement = replace(
+                retirement, empty=replace(retirement.empty, surface_text=composed)
+            )
+    return retirement
+
+
+def _plan_shelf_retirement(
+    home: Path,
+    reference: tuple[Path, TargetSpec],
+    record_id: str,
+    *,
+    after_route: "tuple[TargetSpec, Record] | None" = None,
+    then_route: "tuple[TargetSpec, Path] | None" = None,
+) -> ShelfRetirement:
+    """The ledger-side PREDICTION of a shelf retirement's host write, made
+    inside the leg's ledger write under the shelf host's lock (REC12):
+    :func:`_shelf_retirement_plan`, the one decision the pre-flight and the
+    host phase make too. Its own name, so a test can tell the prediction
+    from those two."""
+    return _shelf_retirement_plan(
+        home, reference, record_id, after_route=after_route, then_route=then_route
+    )
+
+
+def _refuse_unsafe_shelf_retirement(
+    reference: tuple[Path, TargetSpec], retirement: ShelfRetirement
+) -> list[tuple[Path, str]]:
+    """S-80 for a shelf retirement, judged on exactly the files it CHANGES
+    (:meth:`compilers.ShelfRetirement.changes`): the shelf it rewrites and
+    the pointer file whose pointer it removes must be files git ignores --
+    each gets its line first, and is refused when git tracks it or the
+    repo re-admits it; the shelf it DELETES is asked only whether git
+    tracks it, since an untracked file's deletion publishes nothing. Every
+    refusal is a removal (``needs-person``): no choice of destination moves
+    lines that already sit in a file. A ``git`` host is not judged. Pure;
+    returns the ``(repo, line)`` pairs the write needs first."""
+    ref_path, spec = reference
+    if spec.mode != "plain":
+        return []
+    rewritten, deleted = retirement.changes(ref_path, spec.pointer_surface)
+    return _refuse_unsafe_plain_paths(
+        rewritten, removal=True, deleted=deleted, skills_root=_skills_root_of(spec)
+    )
+
+
+def _shelf_retirement_records(
+    home: Path,
+    reference: tuple[Path, TargetSpec],
+    record_id: str,
+    *,
+    by: str,
+    intent: "intents.Intent | None" = None,
+    after_route: "tuple[TargetSpec, Record] | None" = None,
+    then_route: "tuple[TargetSpec, Path] | None" = None,
+) -> list[Path]:
+    """The compile-record entries a shelf retirement owes, written into the
+    caller's ledger commit (REC9) before the host write, for every leg that
+    takes an entry off a shelf (retire/graduate, supersede, reroute, a
+    route completing ``teach --supersedes``, a reconsider's reject/defer).
+    Both regions follow :func:`_plan_shelf_retirement`: the shelf's entry is
+    rewritten to its new bytes, or DELETED when the shelf file goes; the
+    pointer surface's entry is rewritten when the pointer changes, or
+    DELETED when the whole block goes (a region that is gone keeps no
+    entry, so the next write reads ``fresh``, never ``missing``/``edited``
+    -- :func:`_resync_region_entry`'s ``delete``). Recorded in either host
+    mode (a plain host's files are changed and recorded, never committed).
+
+    S-80 (the gate's handoff note): the prediction applies the host write's
+    own tracked-file check (:func:`_refuse_unsafe_shelf_retirement`) to the
+    same plan. The pre-flight already refused every file it saw tracked;
+    one tracked between the pre-flight and this prediction is refused here
+    as the host write will refuse it -- the host write writes nothing -- so
+    nothing is recorded either, and record and disk still agree. (A git
+    failure while checking records nothing too: raising here, inside the
+    ledger write, would strand its half-made commit.)
+
+    One window is left (gate SH2b F4): a file tracked AFTER this prediction,
+    between the ledger commit and the host write. The record already says
+    the new state while the host write's check keeps every file as it was,
+    so a region whose entry was dropped here reads ``unknown`` -- refused by
+    every later write in a plain host -- and one re-recorded reads
+    ``stale``, which passes. The repair is ``self-learn recompile --adopt
+    <shelf>`` (``#pointer`` for the pointer surface), which accepts the
+    region as it stands; the failure warning names each refused region
+    (:func:`_refused_regions`)."""
+    ref_path, spec = reference
+    ref_observed = _observe_region_hash_at(ref_path, "reference")
+    retirement = _plan_shelf_retirement(
+        home, reference, record_id, after_route=after_route, then_route=then_route
+    )
+    try:
+        _refuse_unsafe_shelf_retirement(reference, retirement)
+    except (VerbError, gitops.GitOpsError):
+        return []
+    plan = retirement.empty
+    post = retirement.shelf_text.encode("utf-8") if retirement.shelf_text is not None else None
+    touched: list[Path] = []
+    path = _resync_region_entry(
+        home,
+        host_path=spec.host_path,
+        scope_kind=spec.scope_kind,
+        mode=spec.mode,
+        target=ref_path,
+        region_kind="reference",
+        expected=post,
+        observed_hash=ref_observed,
+        by=by,
+        delete=plan.delete_shelf,
+        intent=intent,
+    )
+    if path is not None:
+        touched.append(path)
+    surface = spec.pointer_surface
+    if plan.surface_changed and surface is not None and plan.surface_text is not None:
+        region = compiled.region_bytes(plan.surface_text, "pointer")
+        path = _resync_region_entry(
+            home,
+            host_path=spec.host_path,
+            scope_kind=spec.scope_kind,
+            mode=spec.mode,
+            target=surface,
+            region_kind="pointer",
+            expected=region,
+            observed_hash=_observe_region_hash_at(surface, "pointer"),
+            by=by,
+            delete=region is None,
+            intent=intent,
+        )
+        if path is not None and path not in touched:
+            touched.append(path)
+    return touched
 
 
 def _retire_reference_host_phase(
@@ -3796,48 +4033,232 @@ def _retire_reference_host_phase(
     note: str | None,
     warnings: list[str],
 ) -> str | None:
-    """Host phase of a REFERENCE retirement (U-verbs S-54 / RER2):
-    removes the record's own entry block from its references file
-    (:func:`compilers.retire_reference` — the real write; the ledger
+    """Host phase of a REFERENCE retirement (U-verbs S-54 / RER2): takes
+    the record's own entry block off its references file (the ledger
     commit already carried the SAME-commit compile-record prediction,
-    same shape the hook-removal leg uses). Self-contained (REC12: takes
-    its OWN host lock, like :func:`_remove_hook_script` — this call site
-    is not lexically inside the caller's :func:`_ledger_write` block by
-    the time it runs). git mode commits (pinned subject `... (reference
-    retired)`); plain mode degrades to an uncommitted write, the same
-    posture every other plain-host write takes (PLAIN11/H-j)."""
+    :func:`_shelf_retirement_records`). When that leaves the shelf EMPTY --
+    nothing but self-learn's header on it (S-77 (3) as amended,
+    2026-10-07) -- its pointer line leaves the pointer surface, the whole
+    block when no line is left, and a default shelf named by nothing is
+    deleted outright, in the same host lock and the same host commit. What
+    it writes is decided first (:func:`_shelf_retirement_plan`, the
+    decision the pre-flight and the prediction made), then judged (S-80,
+    :func:`_refuse_unsafe_shelf_retirement`: a plain host's rewritten files
+    get their ignore lines, a tracked one refuses the whole write), then
+    written. Self-contained (REC12: takes its OWN host lock, like
+    :func:`_remove_hook_script` — this call site is not lexically inside
+    the caller's :func:`_ledger_write` block by the time it runs). git mode
+    commits (pinned subject `... (reference retired)`; a deleted shelf is
+    committed as a deletion by the pathspec commit); plain mode degrades to
+    an uncommitted write, the same posture every other plain-host write
+    takes (PLAIN11/H-j).
+
+    A refused git commit (a pre-commit hook, a stale ``index.lock``) is
+    undone the way :func:`_host_phase` undoes its own (Sweep 2, R3,
+    :func:`_undo_host_write`): every file this write touched is put back and
+    unstaged, so nothing a person did not make is left in their tree and no
+    later write reads the file as busy (``target-busy``, retried forever).
+    That leaves the compile record -- committed with the ledger, before
+    this -- describing the retired state while the host holds the old one.
+    For a retirement run by itself that is the safer of the two wrong
+    states: a region whose entry was dropped reads ``unknown`` and one
+    re-recorded reads ``stale`` (its ``based_on_sha256`` is the restored
+    bytes), and :func:`compiled.refuses` lets both through in git mode;
+    leaving the write staged instead blocks every later write to the file
+    and rides the person's next commit. It is NOT harmless when the
+    retirement completes a ``teach --supersedes`` route (gate SH2b F2): the
+    ``based_on_sha256`` hashes were observed before that route's own write,
+    so the restored bytes -- which hold the route's write -- match neither
+    hash and the region reads ``edited``, refused by every later write in
+    either mode: the pointer when the old and new lessons sit on two
+    shelves behind one CLAUDE.md, the shelf when they share it. ``self-learn
+    recompile --adopt <shelf>`` (``#pointer`` for the pointer surface)
+    accepts such a region as it stands, and the failure warning names each
+    refused one (:func:`_refused_regions`). Re-recording the regions after
+    the undo would avoid the refusal, but needs a ledger write after the
+    host phase; that is not done here. Neither state is repaired by plain
+    ``recompile``, which never takes a retired lesson out (it re-adds routed
+    ones) -- the warning says so, and how to finish by hand."""
     ref_path, spec = reference
     # `refs_dir` is `Path | None` generically; this function only ever
     # receives a reference-destination `TargetSpec` (the caller's own
     # `_Retirement.reference` leg), so it is never None here -- same
     # invariant as `_retirement_preflight`'s own reference branch.
     assert spec.refs_dir is not None
+    surface = spec.pointer_surface
+    changed: list[Path] = []
+    leaves_pointer = False
+    step = "check"  # how far the host write got, for the failure warning
     try:
         with gitops.host_lock(spec.host_path, spec.mode):
+            retirement = _shelf_retirement_plan(home, reference, record_id)
+            rewritten, deleted = retirement.changes(ref_path, surface)
+            changed = rewritten + deleted
+            leaves_pointer = retirement.empty.surface_changed
             if spec.mode == "plain":
-                _ensure_plain_excludes(  # G1
-                    [ref_path], removal=True, skills_root=_skills_root_of(spec)
+                # S-80: judged again under the lock (a file's tracking can
+                # change since the pre-flight), each rewritten file's line
+                # first; a refusal here writes nothing at all.
+                _ensure_plain_excludes(
+                    rewritten, removal=True, deleted=deleted, skills_root=_skills_root_of(spec)
                 )
-            result = retire_reference(spec.refs_dir, record_id, dest=spec.ref_name)
-            if not result.applied or spec.mode != "git":
+            snapshot = _snapshot_host_files(changed) if spec.mode == "git" else {}
+            step = "write"
+            if ref_path in rewritten:
+                retire_reference(spec.refs_dir, record_id, dest=spec.ref_name)
+            retire_empty_shelf(ref_path, surface, retirement.empty)
+            if retirement.empty.note is not None:
+                warnings.append(retirement.empty.note)
+            if leaves_pointer and surface is not None:
+                warnings.append(
+                    f"reference pointer to {ref_path.name} removed from {surface} "
+                    "(nothing but its header is left on the shelf)"
+                )
+            if deleted:
+                warnings.append(f"removed {ref_path} (it held only its header)")
+            if spec.mode != "git" or not gitops.known_paths(spec.host_path, changed):
                 return None
-            gitops.stage(spec.host_path, [ref_path])
-            rel = ref_path.relative_to(spec.host_path)
-            return gitops.commit(
-                spec.host_path,
-                f"self-learn: apply {record_id} → {rel} (reference retired)",
-                body=note,
-                paths=[ref_path],
-            )
+            step = "commit"
+            try:
+                gitops.stage(spec.host_path, changed)  # a deleted shelf is skipped here ...
+                rel = ref_path.relative_to(spec.host_path)
+                return gitops.commit(  # ... and its deletion committed by the pathspec
+                    spec.host_path,
+                    f"self-learn: apply {record_id} → {rel} (reference retired)",
+                    body=note,
+                    paths=changed,
+                )
+            except gitops.GitOpsError as exc:
+                undone = _undo_host_write(spec.host_path, snapshot, changed)
+                raise gitops.GitOpsError(f"{exc} — {undone}") from exc
     except (gitops.GitOpsError, OSError, VerbError) as exc:
-        warning = (
-            f"REFERENCE RETIREMENT FAILED after the ledger commit ({exc}) "
-            f"— {ref_path} is stale, never lost (H-2); run `self-learn "
-            "recompile` to repair"
+        warning = _reference_retirement_failure(
+            exc, record_id, ref_path, surface if leaves_pointer else None,
+            changed, step=step, git=spec.mode == "git",
+            blocked=_refused_regions(
+                home, spec,
+                [(ref_path, "reference")]
+                + ([(surface, "pointer")] if surface is not None else []),
+            ),
         )
         print(f"self-learn: {warning}", file=sys.stderr)
         warnings.append(warning)
         return None
+
+
+def _refused_regions(
+    home: Path, spec: TargetSpec, regions: list[tuple[Path, str]]
+) -> list[tuple[Path, str, str]]:
+    """Which of *regions* (``(file, region kind)``) the compile-record check
+    would refuse right now in *spec*'s host -- ``(file, kind, verdict)``
+    each -- read the way :func:`_abort_if_region_unsound` reads them. Only
+    a failure warning asks this, after its host lock is released: a region
+    it cannot read or judge, for any reason, is left out, so the warning
+    itself never fails."""
+    refused: list[tuple[Path, str, str]] = []
+    for target, kind in regions:
+        try:
+            if not target.is_file():
+                continue
+            region = compiled.region_bytes(target.read_text(encoding="utf-8"), kind)
+            if region is None:
+                continue
+            entry = compiled.entry_for(
+                compiled.load_record(
+                    home, host_slug(home, spec.host_path, scope_kind=spec.scope_kind)
+                ),
+                compiled.region_key(spec.host_path, target, kind),
+                region=kind,
+            )
+            verdict = compiled.verdict_for(entry, compiled.sha256_hex(region))
+        except Exception:  # noqa: BLE001 -- the failure path must still warn
+            continue
+        if compiled.refuses(verdict, spec.mode):
+            refused.append((target, kind, verdict))
+    return refused
+
+
+def _adopt_argument(target: Path, kind: str) -> str:
+    """The ``recompile --adopt`` argument that names this region."""
+    return f"--adopt {target}#pointer" if kind == "pointer" else f"--adopt {target}"
+
+
+def _reference_retirement_failure(
+    exc: BaseException,
+    record_id: str,
+    shelf: Path,
+    surface: Path | None,
+    changed: list[Path],
+    *,
+    step: str,
+    git: bool,
+    blocked: list[tuple[Path, str, str]] | None = None,
+) -> str:
+    """The warning a failed shelf-retirement host phase leaves (gate SH2
+    finding 2, gate SH2b F1). It names every file the write touched, and
+    then only repairs measured to work (``test_empty_shelf_pointer.py``,
+    one test per failure shape):
+
+    - the retirement itself cannot be run again -- the lesson is already
+      retired, so any "re-run" in the cause's own text does not apply --
+      and ``recompile`` never takes a retired lesson out;
+    - *blocked* is each region the compile-record check refuses NOW
+      (:func:`_refused_regions`): a refused commit's undo can leave one
+      ``edited``, and a file tracked after the prediction leaves one
+      ``unknown`` in a plain host. ``recompile --adopt`` accepts exactly
+      those, as they stand on disk; with none, nothing later is blocked;
+    - the retired entry (and its pointer line, when the shelf was to go
+      empty) is taken out by hand, committed in a git host, and the edited
+      files are then adopted the same way.
+
+    It never advises deleting a shelf: one may hold a person's text."""
+    blocked = blocked or []
+    files = ", ".join(str(p) for p in changed) or str(shelf)
+    lesson = f"{record_id}'s entry is still on {shelf}" + (
+        f", and its pointer in {surface}" if surface is not None else ""
+    )
+    if step == "check":
+        happened = f"nothing was written; {lesson}"
+    elif step == "commit":
+        happened = (
+            f"{files} were put back as they were and unstaged; {lesson}"
+            if "NOT fully undone" not in str(exc)
+            else f"{files} could not all be put back -- check them; {lesson} or partly removed"
+        )
+    else:
+        happened = f"the write stopped part-way through {files} -- check them"
+    if blocked:
+        named = " and ".join(
+            f"{target}{'#pointer' if kind == 'pointer' else ''} reads `{verdict}`"
+            for target, kind, verdict in blocked
+        )
+        adopt_now = " ".join(_adopt_argument(target, kind) for target, kind, _v in blocked)
+        now = (
+            f"Blocked now: {named}, so every later write to "
+            f"{'it' if len(blocked) == 1 else 'them'} is refused until accepted as "
+            f"{'it stands' if len(blocked) == 1 else 'they stand'}: "
+            f"`self-learn recompile {adopt_now}`."
+        )
+    else:
+        now = (
+            "Nothing later is blocked: the compile-record check lets every later write "
+            "to these files through."
+        )
+    by_hand = [(shelf, "reference")] + ([(surface, "pointer")] if surface is not None else [])
+    for target, kind, _v in blocked:
+        if (target, kind) not in by_hand:
+            by_hand.append((target, kind))
+    adopt_after = " ".join(_adopt_argument(target, kind) for target, kind in by_hand)
+    pointer_line = f" and its pointer line from {surface}" if surface is not None else ""
+    commit = " and commit" if git else ""
+    return (
+        f"REFERENCE RETIREMENT FAILED after the ledger commit ({exc}) — {happened}. "
+        f"{record_id} stays retired in the ledger, so this retirement cannot be run "
+        "again and no \"re-run\" above applies; `self-learn recompile` never takes a "
+        f"retired lesson out. {now} To take the entry out as well, once the cause is "
+        f"fixed: remove {record_id}'s entry block from {shelf}{pointer_line} by "
+        f"hand{commit}, then run `self-learn recompile {adopt_after}`."
+    )
 
 
 def _retirement_host_phase(
@@ -4200,9 +4621,11 @@ def _plain_guard_candidates(spec: TargetSpec, *, removal: bool = False) -> list[
     """Gate G1 D1: the host files a write of *spec* will actually CHANGE --
     what the plain-host guard judges and gives ignore lines. That is
     :func:`_host_write_candidates` less a reference spec's pointer
-    surface when the write leaves it alone: a reference RETIREMENT
-    (*removal*) takes its entry off the shelf only, and a reference ROUTE
-    writes no pointer when the surface already names the shelf.
+    surface when the write leaves it alone: a reference ROUTE writes no
+    pointer when the surface already names the shelf. (*removal* drops the
+    surface too; a reference RETIREMENT is no longer judged here but on
+    its own plan, which knows whether the shelf empties and the pointer
+    goes -- :func:`_refuse_unsafe_shelf_retirement`, SH2.)
     (:func:`_host_write_candidates` itself stays whole: the git-mode
     snapshot wants every file the compile COULD touch.)"""
     paths = _host_write_candidates(spec)
@@ -4267,10 +4690,16 @@ def _refuse_unsafe_plain_paths(
     removal: bool = False,
     deleting: bool = False,
     skills_root: Path | None = None,
+    deleted: Iterable[Path] = (),
 ) -> list[tuple[Path, str]]:
     """G1: run :func:`_plain_write_check` over every path ONE write
     touches; raise when any is refused, naming every refused path. Returns
     the ``(repo, line)`` pairs the write needs in place first.
+
+    *deleting* asks the deletion's question (tracked?) of every one of
+    *paths*; *deleted* names the files a write that ALSO rewrites others
+    deletes (an emptied shelf, SH2), each asked that question alone and
+    needing no line, in the same one refusal.
 
     The refusal's kind (S-71) follows what could fix it. An ADDITION is
     :class:`DestinationUnavailable` -- another destination, or another
@@ -4297,6 +4726,10 @@ def _refuse_unsafe_plain_paths(
             problems.append(problem)
         elif repo is not None and line is not None:
             lines.append((repo, line))
+    for path in deleted:
+        problem = _plain_write_check(path, deleting=True)[2]
+        if problem is not None:
+            problems.append(problem)
     if not problems:
         return lines
     found = "; ".join(problems)
@@ -4355,16 +4788,21 @@ def _refuse_unsafe_plain_write(spec: TargetSpec, *, removal: bool = False) -> No
 
 
 def _ensure_plain_excludes(
-    paths: Iterable[Path], *, removal: bool = False, skills_root: Path | None = None
+    paths: Iterable[Path],
+    *,
+    removal: bool = False,
+    skills_root: Path | None = None,
+    deleted: Iterable[Path] = (),
 ) -> None:
     """G1, the write half: re-run the check (a file's tracking can change
     between pre-flight and write), then put each file's line in its repo's
     self-learn ``info/exclude`` block (:func:`gitops.ensure_excluded`,
     which takes that repo's lock). Called for plain hosts only, under the
-    host lock, just before the files are written."""
+    host lock, just before the files are written. A file the write deletes
+    (*deleted*) is checked too, and needs no line."""
     by_repo: dict[Path, list[str]] = {}
     for repo, line in _refuse_unsafe_plain_paths(
-        paths, removal=removal, skills_root=skills_root
+        paths, removal=removal, skills_root=skills_root, deleted=deleted
     ):
         by_repo.setdefault(repo, []).append(line)
     for repo, lines in by_repo.items():
@@ -4759,8 +5197,10 @@ def route_dry_run(
     # `would-refuse` here instead of `would-apply` followed by a real
     # refusal (that gap is what let the steward's 2026-09-21 sheet past
     # `batch --dry-run`).
+    old_record: Record | None = None
+    old_path: Path | None = None
     try:
-        _supersede_completion_preflight(home, record_id, record)
+        _, old_record, old_path = _supersede_completion_preflight(home, record_id, record)
     except (VerbError, LedgerOpsError) as exc:
         would_refuse.append(refusal_text(exc))
         errors.append(exc)
@@ -4867,6 +5307,21 @@ def route_dry_run(
         routing["variant"] = resolved_dest.variant
     simulated.set_routing(routing)
     simulated.set_status("routed")
+
+    # Gate SH2b F3(a): the predecessor's retirement pre-flight, run as the
+    # real route runs it (`_execute_route`, with this route's own write as
+    # `after_route`), so a predecessor whose shelf or pointer file the
+    # retirement cannot change -- tracked by git in a plain host -- refuses
+    # here exactly as it refuses the run. Reads only, like every check here.
+    if old_record is not None and old_path is not None:
+        try:
+            _retirement_preflight(
+                home, old_record, old_path.parent.parent, [],
+                user_claude_md=user_claude_md, after_route=(spec, simulated),
+            )
+        except (VerbError, LedgerOpsError) as exc:
+            would_refuse.append(refusal_text(exc))
+            errors.append(exc)
 
     region_kind = _region_kind_for(spec)
     unified, added, removed = "", 0, 0
@@ -5388,6 +5843,10 @@ def _execute_route(
             old_path.parent.parent,
             warnings,
             user_claude_md=user_claude_md,
+            # S-80: this route's own write lands first (onto the same shelf,
+            # it keeps that shelf from emptying), so the old shelf's check
+            # judges what the retirement will really change.
+            after_route=(spec, record),
         )
         old_observed_hash = _observe_retirement_region(old_retire)
 
@@ -5590,6 +6049,39 @@ def _execute_route(
             verb_label=verb_label,
             intent=intent,
         )
+        if old_retire is not None and old_retire.reference is not None and old_id is not None:
+            # The superseded record's shelf (S-77 (3) as amended): its
+            # entry leaves at the retirement host phase below, AFTER this
+            # route's own host write -- so these entries are written after
+            # `_resync_three_regions`'s and predict what both writes leave
+            # when they share the shelf or its pointer surface.
+            #
+            # Gate SH2 finding 3: the old shelf may live in ANOTHER host
+            # (a project lesson superseding a skill lesson), whose files
+            # are read here for the prediction -- so under THAT host's
+            # lock, as its removal below is. Taken last, inside the ledger
+            # lock and this route's host lock: ledger before host, the one
+            # order (re-entrant when both hosts share a repository). The
+            # two host locks nest under the ledger lock, which one process
+            # holds at a time, so no other route can hold them the other way
+            # round; a host phase run without the ledger lock takes one host
+            # lock (plus, under G1, the lock of another repository only for
+            # a file a symlink takes there -- bounded by the lock timeout).
+            # `_ledger_write` is already held here (a re-entrant
+            # pass-through); naming it first in the same `with` keeps the
+            # order written down where §4.5b's pin reads it.
+            old_ref_spec = old_retire.reference[1]
+            with _ledger_write(home), gitops.host_lock(
+                old_ref_spec.host_path, old_ref_spec.mode
+            ):
+                touched = touched + _shelf_retirement_records(
+                    home,
+                    old_retire.reference,
+                    old_id,
+                    by=f"{verb_label} {record_id} (supersedes {old_id})",
+                    intent=intent,
+                    after_route=(spec, routed_record),
+                )
 
         if intent is not None and execution is not None:
             # Collapse roll-forward commits use the intent's pinned subject
@@ -6382,8 +6874,9 @@ def commit_drift(
 #: leaving the references file in the SAME locked section the status
 #: flips in (the leg `retire`/`graduate` already take, `_retire_impl`;
 #: tested under reject and defer, both host modes, in
-#: `tests/test_reconsider_off_shelf.py`). The file and its pointer line
-#: stay even when no entry is left, as after every other retirement. A
+#: `tests/test_reconsider_off_shelf.py`). When nothing but self-learn's
+#: header is left, the shelf loses its pointer line, as after every other
+#: retirement (S-77 (3) as amended, 2026-10-07; `_retire_reference_host_phase`). A
 #: hook-routed record's reconsider correction still refuses by name: its
 #: removal leg is untested under a non-graduating resolution (U5's own
 #: gate tested only the managed-target shape, `build-u5.md` test 3).
@@ -6558,8 +7051,9 @@ def _reconsider_retirement_records(
     read the retirement's own change as a hand edit. A managed target goes
     through :func:`_write_retirement_compile_record`; a reference shelf
     (2026-10-06) through the same prediction `_retire_impl` makes for it,
-    :func:`_predicted_retired_reference_region` — the pure transform the
-    real removal applies, so prediction and write cannot drift. Recorded in
+    :func:`_shelf_retirement_records` — the pure transforms the real
+    removal applies (its emptied pointer included, 2026-10-07), so
+    prediction and write cannot drift. Recorded in
     either host mode: a plain host's file is changed and recorded, never
     committed there (PLAIN11/H-j)."""
     record_path = _write_retirement_compile_record(home, retire, observed_hash, by=by)
@@ -6567,19 +7061,7 @@ def _reconsider_retirement_records(
         return [record_path]
     if retire.reference is None:
         return []
-    ref_path, ref_spec = retire.reference
-    ref_record_path = _resync_region_entry(
-        home,
-        host_path=ref_spec.host_path,
-        scope_kind=ref_spec.scope_kind,
-        mode=ref_spec.mode,
-        target=ref_path,
-        region_kind="reference",
-        expected=_predicted_retired_reference_region(ref_path, record_id),
-        observed_hash=_observe_region_hash_at(ref_path, "reference"),
-        by=by,
-    )
-    return [ref_record_path] if ref_record_path is not None else []
+    return _shelf_retirement_records(home, retire.reference, record_id, by=by)
 
 
 def reject(
@@ -7793,22 +8275,19 @@ def reroute(
             if old_record_path is not None:
                 touched = touched + [old_record_path]
             elif old_retire.reference is not None:
-                old_ref_path, old_ref_spec = old_retire.reference
-                old_ref_observed = _observe_region_hash_at(old_ref_path, "reference")
-                old_ref_expected = _predicted_retired_reference_region(old_ref_path, record_id)
-                old_ref_record_path = _resync_region_entry(
-                    home,
-                    host_path=old_ref_spec.host_path,
-                    scope_kind=old_ref_spec.scope_kind,
-                    mode=old_ref_spec.mode,
-                    target=old_ref_path,
-                    region_kind="reference",
-                    expected=old_ref_expected,
-                    observed_hash=old_ref_observed,
-                    by=message,
+                # Written AFTER the new target's entries above: when the
+                # new target is a shelf behind the same pointer surface,
+                # the old shelf's emptying and the new line land on one
+                # region, and this entry holds what the two writes leave
+                # (the host phase below runs them old-first).
+                new_shelf = (
+                    (spec, reference_target_path(spec.refs_dir, spec.ref_name))
+                    if spec.destination == "reference" and spec.refs_dir is not None
+                    else None
                 )
-                if old_ref_record_path is not None:
-                    touched = touched + [old_ref_record_path]
+                touched = touched + _shelf_retirement_records(
+                    home, old_retire.reference, record_id, by=message, then_route=new_shelf
+                )
 
             staged, sha = _commit_ledger(home, touched, message, note)
 
@@ -8137,25 +8616,13 @@ def _retire_impl(
                 # U-verbs S-54 (RER6/RER7): same same-commit-prediction
                 # shape as the managed branch above — `_write_retirement_
                 # compile_record` only ever covers `retirement.spec`, so a
-                # reference retirement's compile-record entry is resynced
-                # here, predicted via the SAME pure text transform the
+                # reference retirement's compile-record entries (the
+                # shelf's, and its pointer's when the shelf empties) are
+                # resynced here, predicted via the SAME pure transforms the
                 # real removal (host phase, below) applies.
-                ref_path, ref_spec = retirement.reference
-                ref_observed = _observe_region_hash_at(ref_path, "reference")
-                ref_expected = _predicted_retired_reference_region(ref_path, record_id)
-                ref_record_path = _resync_region_entry(
-                    home,
-                    host_path=ref_spec.host_path,
-                    scope_kind=ref_spec.scope_kind,
-                    mode=ref_spec.mode,
-                    target=ref_path,
-                    region_kind="reference",
-                    expected=ref_expected,
-                    observed_hash=ref_observed,
-                    by=f"{verb_word} {record_id}",
+                touched = touched + _shelf_retirement_records(
+                    home, retirement.reference, record_id, by=f"{verb_word} {record_id}"
                 )
-                if ref_record_path is not None:
-                    touched = touched + [ref_record_path]
             elif retirement.removal is not None:
                 # D-3 completion (code gate r1 fold, coordinator
                 # ruling 2026-08-28): same shape as `supersede`'s
@@ -8350,24 +8817,11 @@ def supersede(
             elif reference is not None:
                 # U-verbs S-54 (RER6/RER7): same same-commit prediction
                 # shape as `graduate`'s reference leg — predicted via the
-                # SAME pure text transform the real removal (host phase,
-                # below) applies.
-                ref_path, ref_spec = reference
-                ref_observed = _observe_region_hash_at(ref_path, "reference")
-                ref_expected = _predicted_retired_reference_region(ref_path, old_id)
-                ref_record_path = _resync_region_entry(
-                    home,
-                    host_path=ref_spec.host_path,
-                    scope_kind=ref_spec.scope_kind,
-                    mode=ref_spec.mode,
-                    target=ref_path,
-                    region_kind="reference",
-                    expected=ref_expected,
-                    observed_hash=ref_observed,
-                    by=f"supersede {old_id} → {new_id}",
+                # SAME pure transforms the real removal (host phase,
+                # below) applies, the emptied shelf's pointer included.
+                touched = touched + _shelf_retirement_records(
+                    home, reference, old_id, by=f"supersede {old_id} → {new_id}"
                 )
-                if ref_record_path is not None:
-                    touched = touched + [ref_record_path]
             elif removal is not None:
                 # D-3 completion (code gate r1 fold, coordinator
                 # ruling 2026-08-28): a hook-routed record's script
@@ -9185,6 +9639,65 @@ def host_refusal_causes(skipped: Iterable[str]) -> list[str]:
     return causes
 
 
+def _reference_regions_for_adopt(
+    home: Path, user_claude_md: Path | str | None
+) -> tuple[dict[Path, TargetSpec], dict[Path, TargetSpec]]:
+    """Every shelf, and every pointer surface, that a reference-routed
+    lesson was EVER routed to -- live or retired -- each mapped to the
+    spec that owns it: ``(shelves, surfaces)``. Only ``recompile --adopt``
+    reads this (gate SH2b F1/F4). The compile below enumerates live
+    lessons only, which is right for writing; adopting is the repair for
+    a region a FAILED retirement left refused, and that region can belong
+    to a shelf with no live lesson left on it. Resolved exactly as the
+    compile resolves a live lesson; a lesson that no longer resolves (its
+    host unregistered) contributes nothing. Pure: writes nothing."""
+    shelves: dict[Path, TargetSpec] = {}
+    surfaces: dict[Path, TargetSpec] = {}
+    for bucket in discover_buckets(home):
+        resolved = bucket.path / "resolved"
+        if not resolved.is_dir():
+            continue
+        for path in sorted(resolved.glob("lrn-*.md")):
+            try:
+                record = Record.from_path(path)
+            except ledger_ops.UNREADABLE_RECORD_ERRORS:
+                continue  # the compile below names it
+            routing = record.routing or {}
+            if routing.get("destination") != "reference":
+                continue
+            try:
+                spec = _resolve_target(
+                    home, bucket.path, record.scope, "reference",
+                    routing.get("reference_file"),
+                    user_claude_md=user_claude_md, check_dirty=False,
+                    variant=routing.get("variant"), rules_topic=routing.get("rules_topic"),
+                )
+            except VerbError:
+                continue
+            if spec.refs_dir is not None:
+                shelves.setdefault(
+                    reference_target_path(spec.refs_dir, spec.ref_name).resolve(), spec
+                )
+            if spec.pointer_surface is not None:
+                surfaces.setdefault(spec.pointer_surface.resolve(), spec)
+    return shelves, surfaces
+
+
+def _already_adopted(home: Path, slug: str, key: str, region: str, observed_hash: str) -> bool:
+    """Whether the compile record already accepts this region exactly as it
+    stands (verdict ``clean``). ``recompile --adopt`` of such a region has
+    nothing to accept: re-recording it writes the same entry, and the empty
+    ledger commit that follows fails as half-written (exit 7), telling a
+    person who merely ran the repair twice that the ledger is broken. An
+    unreadable record is not judged here (``False``): the adopt then runs
+    and reports it as before."""
+    try:
+        entry = compiled.entry_for(compiled.load_record(home, slug), key, region=region)
+    except compiled.CompiledRecordError:
+        return False
+    return compiled.verdict_for(entry, observed_hash) == "clean"
+
+
 def recompile(
     home: Path | str,
     *,
@@ -9219,6 +9732,15 @@ def recompile(
     are separate entries). Adopt both by naming both. A pointer adopt
     leaves that surface's pointer block alone for the rest of the run, the
     same as a managed adopt leaves its region.
+
+    A reference shelf is a region too (gate SH2b F1): ``<shelf>`` (or
+    ``<shelf>#reference``) re-records the whole shelf file as it stands on
+    disk, so a shelf a person edited by hand -- the repair a failed
+    retirement asks for -- can be accepted. A shelf and a pointer surface
+    are adoptable whenever a lesson was ever routed to that shelf, live or
+    retired (:func:`_reference_regions_for_adopt`), because the failure
+    that needs the adopt can leave no live lesson there. A bare path is a
+    shelf when it is one, otherwise a managed target.
 
     References are append-only, which is exactly why they belong here
     (audit 2026-07-16 BLOCKER 2): a ``reference`` route interrupted
@@ -9451,27 +9973,36 @@ def recompile(
         # so it is resolved once, ahead of the mode split below.
         adopt_managed: set[Path] = set()
         adopt_pointer: set[Path] = set()
+        adopt_reference: set[Path] = set()
+        adopt_bare: list[Path] = []
         for raw in _adopt_list(adopt):
             text_ = str(raw)
             if text_.endswith("#pointer"):
                 adopt_pointer.add(Path(text_[: -len("#pointer")]).resolve())
+            elif text_.endswith("#reference"):
+                adopt_reference.add(Path(text_[: -len("#reference")]).resolve())
+            elif text_.endswith("#managed"):
+                adopt_managed.add(Path(text_[: -len("#managed")]).resolve())
             else:
-                if text_.endswith("#managed"):
-                    text_ = text_[: -len("#managed")]
-                adopt_managed.add(Path(text_).resolve())
+                adopt_bare.append(Path(text_).resolve())
+        # Gate SH2b F1/F4: a shelf, and a pointer surface, are adoptable
+        # whenever a lesson was EVER routed to that shelf -- live or
+        # retired. A failed retirement can leave either region refused
+        # with no live lesson left on it, and adopting is then the repair.
+        # A bare path names a shelf when it is one, else a managed target.
+        adopt_shelves, adopt_surfaces = (
+            _reference_regions_for_adopt(home, user_claude_md)
+            if adopt_pointer or adopt_reference or adopt_bare
+            else ({}, {})
+        )
+        for bare in adopt_bare:
+            (adopt_reference if bare in adopt_shelves else adopt_managed).add(bare)
         adopt_matched_managed: set[Path] = set()
         adopted_pointer_surfaces: set[Path] = set()
-        for surface in sorted({
-            spec.pointer_surface.resolve()
-            for spec, _records in ref_work.values()
-            if spec.pointer_surface is not None
-        }):
+        for surface in sorted(adopt_surfaces):
             if surface not in adopt_pointer:
                 continue
-            owner = next(
-                spec for spec, _r in ref_work.values()
-                if spec.pointer_surface is not None and spec.pointer_surface.resolve() == surface
-            )
+            owner = adopt_surfaces[surface]
             try:
                 region = compiled.region_bytes(surface.read_text(encoding="utf-8"), "pointer")
             except (OSError, UnicodeDecodeError, compiled.CompiledRecordError) as exc:
@@ -9489,6 +10020,12 @@ def recompile(
             )
             key = compiled.region_key(owner.host_path, surface, "pointer")
             adopted_pointer_surfaces.add(surface)  # only once something is adopted
+            if _already_adopted(home, slug, key, "pointer", compiled.sha256_hex(region)):
+                result.warnings.append(
+                    f"{surface}#pointer: --adopt: already accepted as it stands — nothing to adopt"
+                )
+                result.entries.append(RecompileEntry(target=surface, changed=False))
+                continue
             with _ledger_write(home, earlier_commits=span_commits) as recovered:
                 intents.announce_recovered(recovered)
                 record_path = compiled.adopt_entry(
@@ -9500,14 +10037,56 @@ def recompile(
                 _commit_ledger(home, [record_path], adopt_subject)
             span_commits.append(adopt_subject)
             result.entries.append(RecompileEntry(target=surface, changed=True, commit_sha=None))
-        known_surfaces = {
-            spec.pointer_surface.resolve()
-            for spec, _records in ref_work.values()
-            if spec.pointer_surface is not None
-        }
-        for missing in sorted(adopt_pointer - known_surfaces):
+        for missing in sorted(adopt_pointer - set(adopt_surfaces)):
             result.warnings.append(
                 f"{missing}#pointer: --adopt: no reference-routed pointer surface at this "
+                "path — nothing adopted"
+            )
+        # Gate SH2b F1: a shelf's whole file is its `reference` region. Its
+        # on-disk bytes are re-recorded exactly as a pointer adopt records
+        # its block: the record entry only, in its own ledger commit, never
+        # the file. A shelf holding a live lesson is still appended to by
+        # the reference leg below (that lesson belongs there); the record
+        # then follows the bytes that leg leaves, as on every recompile.
+        for shelf in sorted(adopt_reference & set(adopt_shelves)):
+            owner = adopt_shelves[shelf]
+            if not shelf.is_file():
+                result.warnings.append(
+                    f"{shelf}: --adopt: no shelf file on disk — nothing to adopt"
+                )
+                continue
+            try:
+                region = compiled.region_bytes(shelf.read_text(encoding="utf-8"), "reference")
+            except (OSError, UnicodeDecodeError, compiled.CompiledRecordError) as exc:
+                result.entries.append(RecompileEntry(target=shelf, changed=False, skipped=str(exc)))
+                result.warnings.append(f"{shelf}: --adopt: {exc}")
+                continue
+            assert region is not None  # a whole-file region is never absent
+            slug = host_slug(home, owner.host_path, scope_kind=owner.scope_kind)
+            host_label = (
+                "(user scope — ~/.claude)" if owner.scope_kind == "user" else str(owner.host_path)
+            )
+            key = compiled.region_key(owner.host_path, shelf, "reference")
+            if _already_adopted(home, slug, key, "reference", compiled.sha256_hex(region)):
+                result.warnings.append(
+                    f"{shelf}: --adopt: already accepted as it stands — nothing to adopt"
+                )
+                result.entries.append(RecompileEntry(target=shelf, changed=False))
+                continue
+            with _ledger_write(home, earlier_commits=span_commits) as recovered:
+                intents.announce_recovered(recovered)
+                record_path = compiled.adopt_entry(
+                    home, slug, key, region="reference",
+                    observed_hash=compiled.sha256_hex(region), nbytes=len(region),
+                    host=host_label, mode=owner.mode,
+                )
+                adopt_subject = f"self-learn: recompile --adopt {key}"
+                _commit_ledger(home, [record_path], adopt_subject)
+            span_commits.append(adopt_subject)
+            result.entries.append(RecompileEntry(target=shelf, changed=True, commit_sha=None))
+        for missing in sorted(adopt_reference - set(adopt_shelves)):
+            result.warnings.append(
+                f"{missing}#reference: --adopt: no lesson was ever routed to a shelf at this "
                 "path — nothing adopted"
             )
         for (host_repo, target), spec in sorted(

@@ -78,6 +78,17 @@ def redirect(tmp_path, monkeypatch):
     monkeypatch.setenv("SELF_LEARN_ACTOR", "testhost")
 
 
+def _keep_the_shelf(home: Path, rid: str = "lrn-0000dddd") -> None:
+    """A second lesson on skill a's shelf, so the shelf (and its compile-
+    record entry) outlives the retirement a test checks: since S-77 (3)'s
+    amendment (2026-10-07) a shelf whose last entry leaves loses its
+    pointer and its header-only file, which `test_empty_shelf_pointer.py`
+    covers; these RER checks are about the entry's own removal."""
+    create_record(home, make_behavior(record_id=rid, scope="skill:a"))
+    commit_all(home, f"keeper {rid}")
+    verbs.route(home, rid, dest="reference", no_push=True)
+
+
 # =================================================================== RER
 
 
@@ -138,6 +149,7 @@ class TestRER2RetiresAndCompilesOneMotion:
 
     def test_reroute_retires_and_compiles_reference_to_claude_md(self, env2):
         rid = "lrn-0000bbbb"
+        _keep_the_shelf(env2.home)
         create_record(env2.home, make_behavior(record_id=rid, scope="skill:a"))
         write_proposal(env2.home, rid, proposal_dict(scope="skill:a"))
         commit_all(env2.home, "pending")
@@ -279,6 +291,7 @@ class TestRER5RetireReference:
 class TestRER6GraduateAndSupersedeRetireReference:
     def test_graduate_retires_reference(self, env2):
         rid = "lrn-0000aaaa"
+        _keep_the_shelf(env2.home)
         create_record(env2.home, make_behavior(record_id=rid, scope="skill:a"))
         write_proposal(env2.home, rid, proposal_dict(scope="skill:a"))
         commit_all(env2.home, "pending")
@@ -291,6 +304,7 @@ class TestRER6GraduateAndSupersedeRetireReference:
 
     def test_supersede_retires_reference(self, env2):
         old_id, new_id = "lrn-0000bbbb", "lrn-0000cccc"
+        _keep_the_shelf(env2.home)
         create_record(env2.home, make_behavior(record_id=old_id, scope="skill:a"))
         write_proposal(env2.home, old_id, proposal_dict(scope="skill:a"))
         create_record(env2.home, make_behavior(record_id=new_id, scope="skill:a"))
@@ -308,6 +322,7 @@ class TestRER7ReferenceRetirementWritesCompileRecord:
         import hashlib
 
         rid = "lrn-0000aaaa"
+        _keep_the_shelf(env2.home)
         create_record(env2.home, make_behavior(record_id=rid, scope="skill:a"))
         write_proposal(env2.home, rid, proposal_dict(scope="skill:a"))
         commit_all(env2.home, "pending")

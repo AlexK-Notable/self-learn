@@ -1275,7 +1275,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "(no --force is offered). TARGET names the region as the compile "
         "record's keys do: PATH (or PATH#managed) is the managed region, "
         "PATH#pointer the pointer region of a file that also holds a "
-        "managed one; repeat --adopt to adopt both",
+        "managed one, and a reference shelf's PATH (or PATH#reference) the "
+        "whole shelf; repeat --adopt to adopt several",
     )
 
     sentinel_p = sub.add_parser(

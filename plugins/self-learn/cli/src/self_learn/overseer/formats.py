@@ -301,6 +301,8 @@ def _rules(phase: str) -> str:
             "Never route a lesson to `reference` (a references/ shelf file such as",
             "references/LEARNINGS.md): the runner refuses that line from you, whether",
             "it is a fresh route or a re-decision (closed-sets.yaml, sheet.refused_dests).",
+            "Never retire a lesson as covered by a shelf either (`covered_by:",
+            "reference:<file>` on a `retire` line): the runner refuses that line too.",
             "A shelf is reached only through a pointer that names no subject, and none",
             "had ever been read when this was measured. A lesson you would have put on a",
             "shelf goes to a path-scoped rule when it is tied to files, an existing",
