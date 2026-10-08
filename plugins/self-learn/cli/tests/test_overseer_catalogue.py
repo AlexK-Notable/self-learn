@@ -707,6 +707,12 @@ def test_skills_index_lists_personal_symlinked_plugin_and_host_skills(world: Wor
     _skill_md(n_dir, "The n skill.", "n")
     (world.claude / "skills" / "n").symlink_to(n_dir)
     world.lesson(9, destination="new-skill", new_skill="n")
+    # ...and so does a skill-md route of skill n: the two routes reach ONE
+    # file, so they are ONE surface (the union the compiler writes).
+    world.lesson(10, scope="skill:n", destination="skill-md")
+    n_surface = _surface_at(world.placed(), n_dir / "SKILL.md")
+    assert [x.id for x in n_surface.lessons] == [_ID.format(9), _ID.format(10)]
+    assert n_surface.owners == ("skill n (skill-md)", "user (new-skill n)")
     # A superseded lesson routed there must not count (control: it was counted
     # in the ledger before it was superseded, see the superseded test).
     world.lesson(8, scope="skill:s", destination="skill-md", status="superseded", superseded_by=_ID.format(6))
@@ -744,7 +750,7 @@ def test_skills_index_lists_personal_symlinked_plugin_and_host_skills(world: Wor
     assert linked.repo == "host-repo"
     assert linked.description == "The s skill, for fixtures."
     assert linked.lessons == 1
-    assert by_name["n"].lessons == 1
+    assert by_name["n"].lessons == 2
 
     plugin = by_name["demo:drawing"]
     assert plugin.where == "plugin"
@@ -870,7 +876,7 @@ def test_personal_skills_match_the_report_skills_index(world: World) -> None:
     in_catalogue = {
         Path(s.path).name
         for s in machine.skills
-        if s.where == "personal" and s.description is not None
+        if s.where == "personal" and s.kind == "skill" and s.description is not None
     }
     assert in_report, "positive control: the report index found skills"
     assert in_report == in_catalogue
