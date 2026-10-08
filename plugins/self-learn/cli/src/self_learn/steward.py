@@ -990,6 +990,46 @@ def _suspected_violation_inputs(home: Path, exclude: set[str] | None = None) -> 
     return out
 
 
+#: A reconsider input's card line (`_reconsider_proposals`): the lesson an
+#: earlier case placed, rejected or deferred is re-decided ...
+_RECONSIDER_UNRESOLVED = "Re-decide against the new statement or dependency observation."
+#: ... and one that is pending was not: it is decided, not reconsidered
+#: (2026-10-07, run-9858d321b158: the model read "reconsider" and wrote a
+#: `kind: reconsider` case for two pending lessons, which the ledger
+#: refused).
+_PENDING_UNRESOLVED = (
+    "This lesson is pending: it is not placed, rejected or deferred, so there is no "
+    "earlier decision to reconsider. Decide it with a `kind: resolution` case, not "
+    "`kind: reconsider`."
+)
+
+
+def _reconsider_status_refusal(home: Path, record_id: str) -> ledger_ops.StatusRefusal | None:
+    """The refusal `verbs.reconsider` would give *record_id* NOW for its
+    status, from the verb's own check (`ledger_ops.require_status` over
+    `RECONSIDERABLE_STATUSES`), or `None` when its status admits a
+    reconsider or the record cannot be read (2026-10-07)."""
+    try:
+        ledger_ops.require_status(
+            home, record_id, ledger_ops.RECONSIDERABLE_STATUSES, verb="reconsider"
+        )
+    except ledger_ops.StatusRefusal as exc:
+        return exc
+    except ledger_ops.LedgerOpsError:
+        return None
+    return None
+
+
+def _reconsider_unresolved(home: Path, record: Record) -> str:
+    """The card line a reconsider input comes with: for a PENDING lesson,
+    which the reconsider verb refuses, that it takes a resolution case;
+    otherwise the line every reconsider input carried before. The status is
+    read the way the repair turn reads it (:func:`_reconsider_status_refusal`)."""
+    if record.status == "pending" and _reconsider_status_refusal(home, record.id) is not None:
+        return _PENDING_UNRESOLVED
+    return _RECONSIDER_UNRESOLVED
+
+
 def _reconsider_proposals(home: Path) -> tuple[list[tuple[_QueuedProposal, dict]], dict[str, str]]:
     all_cases = cases.list_cases(home, only_ok=True)
     superseded = {row.get("supersedes") for row in all_cases if row.get("supersedes")}
@@ -1041,7 +1081,7 @@ def _reconsider_proposals(home: Path) -> tuple[list[tuple[_QueuedProposal, dict]
                         "id": rid,
                         "card": {
                             "headline": "A dependency of the prior decision changed.",
-                            "unresolved": "Re-decide against the new statement or dependency observation.",
+                            "unresolved": _reconsider_unresolved(home, record),
                         },
                         "recommendation": "reconsider",
                     },
@@ -1639,15 +1679,8 @@ def _reconsider_status_problem(
     is left to apply time, as every `status` refusal of one is (S-71 §4.2)."""
     if not _status_unchanged(home, record_id, selected_status):
         return None
-    try:
-        ledger_ops.require_status(
-            home, record_id, ledger_ops.RECONSIDERABLE_STATUSES, verb="reconsider"
-        )
-    except ledger_ops.StatusRefusal as exc:
-        return refusal_text(exc)
-    except ledger_ops.LedgerOpsError:
-        return None
-    return None
+    refusal = _reconsider_status_refusal(home, record_id)
+    return refusal_text(refusal) if refusal is not None else None
 
 
 def _ledger_repair_message(

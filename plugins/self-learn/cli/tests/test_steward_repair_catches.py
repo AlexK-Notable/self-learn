@@ -130,6 +130,45 @@ def _pair_session(pair: MovedPair, first_kind: str, repair_kind: str, prompts: l
     return write
 
 
+# ------------------------- 1.4 the input itself says which kind it takes
+
+_OLD_LINE = "Re-decide against the new statement or dependency observation."
+_PENDING_LINE = "Decide it with a `kind: resolution` case, not `kind: reconsider`."
+
+
+def test_a_pending_reconsider_input_is_told_it_takes_a_resolution_case(tmp_path):
+    """The card a reconsider input comes with (`_reconsider_proposals`) is
+    what the brief shows as "[why it is back]". It said "Re-decide ..." for
+    every lesson, which is what the live model read before writing a
+    `kind: reconsider` case for two PENDING lessons. Control first: a
+    lesson an earlier case PLACED keeps that line. A pending one is told
+    plainly that it takes a resolution case."""
+    home = make_env(tmp_path / "placed").ledger
+    rid = _seed(home, "lrn-c6d00001")
+    statement = statements.add(home, verbatim="Route it to the skill.",
+                               source={"message_ref": "transcript:card#L7"}, recorded_by="human")
+    stage = tmp_path / "placed" / "routing-case.yaml"
+    routing = _case([rid], "route", "route")
+    routing["dependencies"] = {**_NO_DEPS, "statements": [statement]}
+    _dump_yaml(stage, routing)
+    prior = cases.record(home, stage, actor="steward")
+    verbs.route(home, rid, dest="skill-md", by="steward", no_push=True)
+    cases.observe(home, prior, "statement", text="the user said more", ref=statement, by="steward")
+    ((entry, card),) = steward._reconsider_proposals(home)[0]
+    assert (entry.record.id, entry.record.status) == (rid, "routed")  # control: the shape
+    assert card["card"]["unresolved"] == _OLD_LINE
+
+    pair = MovedPair(tmp_path / "pending", observed=True, prefix="lrn-c6e0")
+    found = steward._reconsider_proposals(pair.home)[0]
+    assert sorted(entry.record.id for entry, _card in found) == sorted(pair.ids)
+    for entry, card in found:
+        assert entry.record.status == "pending"
+        line = card["card"]["unresolved"]
+        assert line.startswith("This lesson is pending: it is not placed, rejected or deferred")
+        assert _PENDING_LINE in line
+        assert _OLD_LINE not in line
+
+
 # --------------------------------- 1.1 the repair turn catches the mistake
 
 
@@ -158,6 +197,9 @@ def test_a_reconsider_case_naming_pending_lessons_reaches_the_repair_turn(
     assert {row["kind"] for row in inputs.values()} == {expected_kind}
     assert {row["record_status"] for row in inputs.values()} == {"pending"}
     assert sorted(_ids(prompts[0])) == sorted(pair.ids)
+    if observed:
+        # the card line a pending reconsider input comes with reaches the brief
+        assert prompts[0].count(_PENDING_LINE) == 2, prompts[0]
 
     assert len(prompts) == 2, "the repair turn was offered"
     repair = _repair_part(prompts[1])
