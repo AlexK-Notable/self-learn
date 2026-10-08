@@ -1181,7 +1181,8 @@ def test_selftest_row_present_and_rc1_on_unreachable(env, tmp_path, monkeypatch,
         line for line in out.splitlines()
         if line.startswith("selftest: PASS ") or line.startswith("selftest: FAIL ")
     ]
-    assert len(lines) == 9
+    # S-82 (GM, 2026-10-08): the `hosts` row joined the selftest (9 -> 10).
+    assert len(lines) == 10
     assert any(" surface " in line for line in lines)
     assert rc == 1
 

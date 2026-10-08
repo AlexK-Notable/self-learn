@@ -73,9 +73,15 @@ UNMEASURED; else 0:
         positively confirmed reachable);
     (f) sentinel writability — hold + release a probe at the real
         cache-path resolution; a pre-existing LIVE sentinel (another
-        flow's hold) is heartbeated, never deleted.
+        flow's hold) is heartbeated, never deleted;
+    (g) hosts (S-82) — the registry, showing a repo registered twice (the
+        skills root and a project host) with each registration's mode;
+        FAILs on an unreadable ``hosts.yaml`` and on routed skill lessons
+        left on the skills root's own ``claude-md`` while the two modes
+        differ (that destination is refused then); UNMEASURED with no
+        ``hosts.yaml``.
 
-    There is no ``(g) worker`` row (fold r1, 2026-09-04 — M-K originally
+    There is no ``worker`` row (fold r1, 2026-09-04 — M-K originally
     shipped one as a real, COUNTED UNMEASURED entry reading
     ``worker — M2 — not checked``). UNMEASURED means an instrument
     EXISTS and could not look; M2 has no instrument at all — nothing was
@@ -673,7 +679,11 @@ def _check_drift(
             host_path = _managed_host_for(
                 home, bucket, record, user_claude_md=user_claude_md
             )
-            if host_path is not None and host_mode(home, host_path) != "git":
+            registration = "skills-root" if bucket.scope == "skill" else "project"
+            if (
+                host_path is not None
+                and host_mode(home, host_path, registration=registration) != "git"
+            ):
                 try:
                     region = compiled.region_bytes(text, "managed")
                 except compiled.CompiledRecordError:
@@ -1145,6 +1155,92 @@ def _check_surface(home: Path, claude_dir: Path) -> tuple[Verdict, str]:
     return Verdict.PASS, msg
 
 
+def _check_hosts(home: Path) -> tuple[Verdict, str]:
+    """(g) hosts (S-82): the registry, with a repo registered twice -- as
+    the skills root and as a project host -- shown once with each
+    registration's own mode (claude-skills: ``skills-root=git,
+    project=plain``). Such a repo is legitimate; a write follows the mode
+    of the registration it goes through (``hosts.host_mode``).
+
+    FAILs when ``hosts.yaml`` will not parse, and when a repo registered
+    twice in two modes still has routed skill lessons on the skills
+    root's own ``claude-md`` -- that destination is refused there
+    (``verbs._resolve_target_unguarded``), so ``recompile`` warns and
+    skips them and their lines are no longer managed. The FAIL names the
+    way out for the root's mode: under a git root, move each lesson to
+    its SKILL.md (a removal is never refused); under a plain root, whose
+    SKILL.md files git tracks, switch the root to git mode. UNMEASURED
+    with no ``hosts.yaml`` (nothing registered to show), like the drift
+    row."""
+    state = home_state(home)
+    if state in ("missing", "not-a-repo"):
+        return Verdict.FAIL, home_state_message(state, home)
+    if not hosts_path(home).is_file():
+        return Verdict.UNMEASURED, "hosts.yaml absent — no registrations to show"
+    try:
+        hosts = load_hosts(home)
+    except HostsError as exc:
+        return Verdict.FAIL, f"hosts.yaml unreadable: {exc}"
+    count = len(hosts.projects) + (1 if hosts.skills_root is not None else 0)
+    root = hosts.skills_root
+    if root is None or not any(
+        Path(p).expanduser().resolve() == Path(root).expanduser().resolve()
+        for p in hosts.projects
+    ):
+        return Verdict.PASS, f"{count} registration(s); no repo is registered twice"
+    resolved_root = Path(root).expanduser().resolve()
+    root_mode = host_mode(home, resolved_root, registration="skills-root")
+    project_mode = host_mode(home, resolved_root, registration="project")
+    shown = (
+        f"{count} registration(s); {resolved_root} is registered twice: "
+        f"skills-root={root_mode}, project={project_mode}"
+    )
+    if root_mode == project_mode:
+        return Verdict.PASS, shown
+    stranded: list[str] = []
+    for bucket in discover_buckets(home):
+        if bucket.scope != "skill":
+            continue
+        resolved_dir = bucket.path / "resolved"
+        if not resolved_dir.is_dir():
+            continue
+        for path in sorted(resolved_dir.glob("lrn-*.md")):
+            try:
+                record = Record.from_path(path)
+            except (RecordError, UnicodeDecodeError):
+                continue  # the drift row names an unreadable record
+            routing = record.routing or {}
+            if domain.is_canon_live(record) and routing.get("destination") == "claude-md":
+                stranded.append(record.id)
+    if stranded:
+        if root_mode == "git":
+            # A removal is never refused there (S-82), and a git skills
+            # root takes the lesson in its SKILL.md.
+            advice = (
+                "move each to its SKILL.md (`self-learn reroute <id> --dest "
+                "skill-md`), or retire it"
+            )
+        else:
+            # A plain skills root's SKILL.md is tracked by git, so it takes
+            # no lesson either (S-80): a reroute there is refused too. With
+            # the root in git mode the two modes agree (the project is git)
+            # and the destination is no longer refused.
+            advice = (
+                "a plain skills root's SKILL.md takes no lesson while git "
+                "tracks it (S-80), so a reroute is refused too; switch the "
+                f"skills root to git mode (`self-learn host remove {resolved_root} "
+                f"--skills-root --gate-only`, then `self-learn host add "
+                f"{resolved_root} --skills-root --mode git`), after which the "
+                "two modes agree and the destination is no longer refused"
+            )
+        return Verdict.FAIL, (
+            f"{shown} — {len(stranded)} routed skill lesson(s) on the skills "
+            f"root's own claude-md ({', '.join(stranded[:5])}), refused while the "
+            f"two registrations' modes differ; {advice}"
+        )
+    return Verdict.PASS, shown
+
+
 def _check_sentinel() -> tuple[Verdict, str]:
     """(d) Hold + release a probe at the real cache-path resolution. A
     pre-existing LIVE sentinel belongs to another flow: heartbeat it as
@@ -1193,8 +1289,8 @@ def run_selftest(home: Path) -> int:
     time this function actually RUNS, :mod:`cli` has always finished
     loading) on any UNMEASURED with no FAIL; else 0.
 
-    Nine checks, not ten (fold r1, 2026-09-04): there is no ``worker``
-    row. M-K originally shipped one as an unconditional, COUNTED
+    Ten checks since S-82 added ``hosts`` (2026-10-08). There is no
+    ``worker`` row (fold r1, 2026-09-04). M-K originally shipped one as an unconditional, COUNTED
     UNMEASURED entry, which made every home — healthy or not — exit 9
     forever, since UNMEASURED means an instrument exists and could not
     look, and no instrument for the worker (M2) has ever been built.
@@ -1222,6 +1318,7 @@ def run_selftest(home: Path) -> int:
         ("reach", *_check_reach(home)),
         ("hooks", *_check_hooks(home, claude_runtime_dir())),
         ("surface", *_check_surface(home, claude_runtime_dir())),
+        ("hosts", *_check_hosts(home)),
         ("sentinel", *_check_sentinel()),
         ("invocation", *_check_invocation(home)),
     ]

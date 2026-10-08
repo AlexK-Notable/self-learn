@@ -1205,6 +1205,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "remove", help="deregister a host (records and buckets are untouched)"
     )
     hrm.add_argument("path", metavar="PATH")
+    hrm_which = hrm.add_mutually_exclusive_group()
+    hrm_which.add_argument(
+        "--skills-root",
+        action="store_const",
+        const="skills-root",
+        dest="registration",
+        help="S-82: remove only PATH's skills-root registration and keep its "
+        "project entry (one repo may be registered both ways, each in its "
+        "own mode). Without --skills-root or --project, both go.",
+    )
+    hrm_which.add_argument(
+        "--project",
+        action="store_const",
+        const="project",
+        dest="registration",
+        help="S-82: remove only PATH's project registration and keep the "
+        "skills root.",
+    )
     hrm.add_argument(
         "--gate-only",
         action="store_true",
@@ -1275,7 +1293,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "(no --force is offered). TARGET names the region as the compile "
         "record's keys do: PATH (or PATH#managed) is the managed region, "
         "PATH#pointer the pointer region of a file that also holds a "
-        "managed one; repeat --adopt to adopt both",
+        "managed one, and a reference shelf's PATH (or PATH#reference) the "
+        "whole shelf; repeat --adopt to adopt several",
     )
 
     sentinel_p = sub.add_parser(
@@ -2887,18 +2906,24 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
         # returns the fact (records_targeting), this CLI layer owns the
         # terminal note — computed BEFORE the call so a --gate-only run
         # can name the exact count it is bypassing (HOST2).
+        registration = getattr(args, "registration", None)
         bypassed = (
-            hosts_mod.records_targeting(home, args.path) if gate_only else []
+            hosts_mod.records_targeting(home, args.path, registration=registration)
+            if gate_only
+            else []
         )
         try:
-            registry = hosts_mod.host_remove(home, args.path, gate_only=gate_only)
+            registry = hosts_mod.host_remove(
+                home, args.path, gate_only=gate_only, registration=registration
+            )
         except hosts_mod.HostRemoveRefused as exc:
             print(f"self-learn host remove: {exc}", file=sys.stderr)
             return 1
         except hosts_mod.HostsError as exc:
             print(f"self-learn host remove: {exc}", file=sys.stderr)
             return EXIT_USAGE
-        print(f"host remove: {Path(args.path).expanduser().resolve()}")
+        which = f"{registration} " if registration is not None else ""
+        print(f"host remove: {which}{Path(args.path).expanduser().resolve()}")
         print(
             f"  registry: skills_root={registry.skills_root or '(none)'} · "
             f"{len(registry.projects)} project host(s)"
@@ -2957,7 +2982,8 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
         return EXIT_OK
     print(
         "usage: self-learn host add <path> [--skills-root] | "
-        "host rebind <slug-or-old-path> <new-path> | host remove <path> | "
+        "host rebind <slug-or-old-path> <new-path> | "
+        "host remove <path> [--skills-root | --project] | "
         "host commit-drift <id> [--dest TARGET] [--dry-run] [--json] | "
         "host list",
         file=sys.stderr,
@@ -3012,7 +3038,7 @@ def _host_line(home, path, kind: str) -> str:
     if path is None:
         return "(none registered)"
     problem = hosts_mod.host_path_problem(home, path, kind)
-    mode = hosts_mod.host_mode(home, path)
+    mode = hosts_mod.host_mode(home, path, registration=kind)
     mode_suffix = f"  [mode={mode}]" if mode != "git" else ""
     if problem is None:
         return f"{path}{mode_suffix}"

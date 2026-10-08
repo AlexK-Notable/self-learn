@@ -1213,7 +1213,11 @@ that target REFUSES, naming this repair: `self-learn recompile --adopt
 bytes on disk, only the ledger's own record of what is "clean" going
 forward. There is no `--force` anywhere in this path, by design:
 adopting is the one human decision the refusal names, never a way to
-skip it.
+skip it. A reference shelf is adopted by its path (`recompile --adopt
+<shelf>`, or `<shelf>#reference`); that is also the repair a failed
+shelf retirement's warning names (S-75 (2) as amended, S-77 (5)). Adopting
+a region the record already accepts as it stands says so and commits
+nothing.
 
 `unknown provenance` (a plain host's target already carries content with
 no compile record yet) is now split in two, not a blanket refusal: when

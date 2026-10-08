@@ -198,10 +198,14 @@ the record is re-decided (decided at U5's gate, 2026-09-14). A record
 routed to a `hook` destination cannot yet be corrected this way
 (`reject`/`defer` under a reconsider case) and the verb refuses by name.
 A record routed to `reference` can (2026-10-06): its entry block leaves
-the shelf file in the same locked section the status flips in. In a plain
-host the file is changed and the compile record updated, never committed
-there. The shelf file and its pointer line stay even when no entry is
-left.
+the shelf file in the same locked section the status flips in. When
+nothing but self-learn's header is then left on the shelf, its pointer
+line leaves the always-loaded file too (the whole block when no other
+line is left), and a default `references/LEARNINGS.md` that nothing names
+any more is deleted; a shelf holding a person's own text keeps both. In a
+plain host the files are changed and the compile record updated, never
+committed there, and only files git ignores are written: a shelf or
+pointer file git tracks refuses the line (`needs-person`).
 
 **Moving a placed lesson to a different destination (U3b, S-72,
 2026-09-28).** Under the same `kind: reconsider` case, a `route` line on

@@ -798,7 +798,7 @@ def _resolve_project_rows(home: Path) -> list[dict]:
         target = host_repo / "CLAUDE.md"
         spec = TargetSpec(
             "claude-md", "project", home, target, host_repo,
-            mode=host_mode(home, host_repo),
+            mode=host_mode(home, host_repo, registration="project"),
         )
         if not target.is_file():
             rows.append({

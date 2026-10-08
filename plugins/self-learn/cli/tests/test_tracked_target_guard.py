@@ -584,10 +584,17 @@ def test_recompile_never_deletes_a_retired_hook_script_its_owner_tracks(tmp_path
 
 
 def test_a_reference_retirement_puts_the_shelf_s_line_back_first(tmp_path):
+    """A second lesson stays on the shelf, so the retirement REWRITES it
+    (SH2: the last entry leaving deletes a header-only shelf instead, and
+    rewrites CLAUDE.md -- that variant, CLAUDE.md's line put back first, is
+    `test_empty_shelf_pointer.py`'s
+    `test_the_pointer_file_gets_its_ignore_line_back_before_the_pointer_leaves`)."""
     home = make_env(tmp_path).ledger
     host = _plain_repo_host(home, tmp_path, track_claude_md=False)
     rid = _lesson(home, host, "lrn-9a000019")
+    other = _lesson(home, host, "lrn-9a000039")
     verbs.route(home, rid, dest="reference", no_push=True)
+    verbs.route(home, other, dest="reference", no_push=True)
     assert _block(host) == ["/CLAUDE.md", "/references/LEARNINGS.md"]
     _write_operator_lines(host)  # the block is lost
     assert not _ignored(host, "references/LEARNINGS.md")  # control
@@ -595,7 +602,8 @@ def test_a_reference_retirement_puts_the_shelf_s_line_back_first(tmp_path):
     verbs.graduate(home, rid, no_push=True)
 
     shelf = host / "references" / "LEARNINGS.md"
-    assert rid not in shelf.read_text(encoding="utf-8")
+    text = shelf.read_text(encoding="utf-8")
+    assert rid not in text and other in text
     assert _block(host) == ["/references/LEARNINGS.md"]
     assert _ignored(host, "references/LEARNINGS.md")
 
@@ -1160,14 +1168,21 @@ def test_a_recovery_recompile_refuses_nothing_after_a_route_whose_pointer_needed
 
 def test_a_shelf_retirement_never_judges_the_pointer_file_it_does_not_write(tmp_path):
     """Gate G1 D1 (probe P1). The owner tracked CLAUDE.md after the
-    lesson's pointer went in; the shelf stayed untracked. A retirement
-    takes the entry off the SHELF only, so it goes ahead, and CLAUDE.md is
-    untouched. (The other direction -- a TRACKED shelf refuses -- is
-    `test_a_reference_retirement_from_a_tracked_shelf_is_refused_for_a_person`.)"""
+    lesson's pointer went in; the shelf stayed untracked. With a second
+    lesson left on the shelf, the retirement takes the entry off the SHELF
+    only, so it goes ahead, and CLAUDE.md is untouched. (The other
+    direction -- a TRACKED shelf refuses -- is
+    `test_a_reference_retirement_from_a_tracked_shelf_is_refused_for_a_person`.
+    SH2: when the LAST entry leaves, the pointer in CLAUDE.md would go too,
+    so that retirement does judge CLAUDE.md and waits for a person --
+    `test_empty_shelf_pointer.py`'s
+    `test_the_last_entry_leaving_a_shelf_whose_pointer_file_git_tracks_waits_for_a_person`.)"""
     home = make_env(tmp_path).ledger
     host = _plain_repo_host(home, tmp_path, track_claude_md=False)
     rid = _lesson(home, host, "lrn-9a000028")
+    other = _lesson(home, host, "lrn-9a00003a")
     verbs.route(home, rid, dest="reference", no_push=True)
+    verbs.route(home, other, dest="reference", no_push=True)
     shelf = host / "references" / "LEARNINGS.md"
     assert rid in shelf.read_text(encoding="utf-8")  # control
     git(host, "add", "-f", "--", "CLAUDE.md")
@@ -1408,11 +1423,16 @@ def test_a_shelf_retirement_ignores_a_tracked_claude_md_that_no_longer_points_at
     """Gate G1 D1, the retirement rule itself: the owner took the pointer
     out of CLAUDE.md by hand and tracked the file. A route would write a
     pointer there (and be refused); a retirement never does, so it judges
-    the shelf alone and goes ahead, CLAUDE.md untouched."""
+    the shelf alone and goes ahead, CLAUDE.md untouched. SH2: the lesson
+    was the shelf's last, so the header-only shelf -- untracked, and named
+    by nothing -- is deleted; CLAUDE.md, which no longer names it, is still
+    neither judged nor touched."""
     home = make_env(tmp_path).ledger
     host = _plain_repo_host(home, tmp_path, track_claude_md=False)
     rid = _lesson(home, host, "lrn-9a00002f")
     verbs.route(home, rid, dest="reference", no_push=True)
+    shelf = host / "references" / "LEARNINGS.md"
+    assert rid in shelf.read_text(encoding="utf-8")  # control
     (host / "CLAUDE.md").write_text(CLAUDE_MD_SEED, encoding="utf-8")
     git(host, "add", "-f", "--", "CLAUDE.md")
     git(host, "commit", "-q", "-m", "track CLAUDE.md without the pointer")
@@ -1421,7 +1441,7 @@ def test_a_shelf_retirement_ignores_a_tracked_claude_md_that_no_longer_points_at
 
     verbs.graduate(home, rid, no_push=True)
 
-    assert rid not in (host / "references" / "LEARNINGS.md").read_text(encoding="utf-8")
+    assert not shelf.exists()
     assert _record(home, rid).status == "superseded"
     assert (host / "CLAUDE.md").read_bytes() == claude_md
     assert _status(host) == ""

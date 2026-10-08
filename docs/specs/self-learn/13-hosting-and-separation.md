@@ -227,6 +227,19 @@ revert). Doc 13 promotes that to the general rule:
    a retired hook record whose script is still on disk is what
    `recompile` removes; until it can commit, `recompile` reports that
    script as skipped ("hook removal not done — still owed").
+   *Amended 2026-10-08 (S-77 (3)):* the same holds when a retirement
+   leaves a reference shelf empty, meaning nothing but self-learn's
+   header is left on it. Its pointer line, or the whole block when no
+   line is left, is removed from the always-loaded surface, and a default
+   `references/LEARNINGS.md` that nothing names and that is not a symlink
+   is deleted, in the retirement's own host lock and its one `(reference
+   retired)` commit (the deletion committed by the pathspec commit). A
+   refused commit puts every touched file back and unstages it, as above;
+   unlike a managed target, `recompile` never takes a retired lesson out,
+   so the warning names the hand repair and the `recompile --adopt` that
+   accepts each region left refused. The compile record drops the entry
+   of each gone region (`CLAUDE.md#pointer`, the shelf's) in the ledger
+   commit, so the next route reads `fresh`, never `missing`.
 3. **The rejected-proposal digest moves its grep to the ledger repo**
    (resolution commits live there now).
 4. **The sentinel contract SHRINKS.** The ledger repo has no watcher
@@ -305,7 +318,24 @@ revert). Doc 13 promotes that to the general rule:
    lesson's addition into a plain skills root, and any removal, as
    `needs-person`. Lines outside the block are the operator's and are never
    touched. The block only grows, and recompile restores a lost line. One
-   repository holds one lock, whatever its registrations.
+   repository holds one lock, whatever its registrations. A shelf
+   retirement is judged on the files it changes, decided before it
+   writes: a rewritten shelf, and the pointer file an emptied shelf's
+   pointer leaves, get their line first and are refused when tracked; a
+   deleted shelf is asked only whether it is tracked. The pre-flight, the
+   ledger's prediction and the write apply the same check (S-77 (5)).
+
+   **One repository, two registrations (S-82).** claude-skills is the
+   skills root in `git` mode and a project host in `plain` mode. Every
+   write takes the mode of the registration it goes through: a lesson for
+   one skill compiles into its `SKILL.md` and self-learn commits it (under
+   the autosync pause); a project lesson for the whole repository writes
+   only files git ignores. `host remove <path> --skills-root | --project`
+   drops one registration and keeps the other. The skills root's own
+   `claude-md` takes no new lesson while the two modes differ, because
+   both legs would write the same `CLAUDE.md`; a lesson already there can
+   always be moved off. The `hosts` selftest row shows each registration's
+   mode.
 
 ## 5. Producers commit their own writes
 
