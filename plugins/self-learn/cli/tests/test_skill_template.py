@@ -494,6 +494,17 @@ CASES: dict[str, Case] = {
         ),
         {"frontmatter-anchor-alias": "anchor or alias"},
     ),
+    # ---- fence lines and line-break characters, both readers (fold 2, F2)
+    "opening-fence-ending-in-a-lone-carriage-return": Case(
+        with_skill_md(skill()["SKILL.md"].replace("---\n", "---\r", 1)),
+        {"frontmatter-fence-line": "opening"},
+    ),
+    "next-line-character-inside-a-plain-value": Case(
+        with_skill_md(
+            f"---\nname: {NAME}\ndescription: Draws a\x85diagram.\n---\n\n" + BODY
+        ),
+        {"frontmatter-forbidden-character": "U+0085 on line 3"},
+    ),
     # ---- the caps checked before any YAML parse (fold 2, F1)
     "frontmatter-over-the-size-cap": Case(
         skill(front={"metadata": json.dumps({"note": "x" * 4100})}),
@@ -804,22 +815,40 @@ def test_a_reference_link_may_carry_a_dot_prefix_fragment_or_title():
 
 # ------------------------------------------- K1-1: the frontmatter, both readers
 
+#: JavaScript's ``\s`` (ECMA-262 WhiteSpace and LineTerminator), written
+#: out: Python's ``\s`` is a different set (it has ``\x1c``-``\x1f`` and
+#: U+0085, and lacks U+FEFF), so the port never uses it (fold 2, F2).
+JS_WHITESPACE = (
+    r"[\t\n\x0b\x0c\r \xa0  -     　﻿]"
+)
+
 #: Claude Code 2.1.293's frontmatter match, ported (its source is
-#: ``/^---\s*\n([\s\S]*?)---\s*\n?/``, after stripping a BOM). The first
-#: ``---`` anywhere after the opening line ends the block; ``...`` never does.
-CLAUDE_CODE_FRONTMATTER_RE = re.compile(r"^---\s*\n([\s\S]*?)---\s*\n?")
+#: ``/^---\s*\n([\s\S]*?)---\s*\n?/``, after stripping a BOM, and only when
+#: ``text.indexOf("---", 3) >= 0``). The first ``---`` anywhere after the
+#: opening line ends the block; ``...`` never does.
+CLAUDE_CODE_FRONTMATTER_RE = re.compile(
+    f"---{JS_WHITESPACE}*\n(.*?)---{JS_WHITESPACE}*\n?", re.DOTALL
+)
 
 
 def claude_code_block(text: str) -> str | None:
     text = text[1:] if text.startswith("﻿") else text
+    if text.find("---", 3) < 0:
+        return None
     match = CLAUDE_CODE_FRONTMATTER_RE.match(text)
     return match.group(1) if match else None
 
 
 def _without_leading_blank_lines(text: str) -> str:
-    """The opener's ``---\\s*\\n`` swallows whitespace-only lines before the
-    first real line; the compilers' reader keeps them. YAML ignores both."""
-    return re.sub(r"\A(?:[ \t\f\v\r]*\n)+", "", text)
+    """``text`` (the inner text K1a parsed) as Claude Code captures it. The
+    opener's ``\\s*`` runs as far as it can and then needs a ``\\n``, so it
+    also swallows every leading line of the inner text made only of
+    (JavaScript) whitespace; the compilers' reader keeps those lines. YAML
+    reads them as blank (a line ruamel would not read as blank is refused
+    as unparseable), and the tests compare the loaded mappings too."""
+    lead = re.match(f"{JS_WHITESPACE}*", text)
+    assert lead is not None
+    return text[lead.group(0).rfind("\n") + 1 :]
 
 
 def _valid_drafts() -> dict[str, str]:
@@ -856,6 +885,17 @@ def _valid_drafts() -> dict[str, str]:
         )["SKILL.md"],
         "indented dots in a block scalar": skill(
             front={"when_to_use": "|\n  first\n  ...\n  last"}
+        )["SKILL.md"],
+        # Fold 2 (F2): a first line that is only a BOM (JavaScript's \s has
+        # U+FEFF, Python's does not; ruamel skips it), CRLF with padding on
+        # both fences, and an ideographic space inside a value (an ordinary
+        # character in CJK text, not a refused one).
+        "a BOM-only first line": "---\n﻿\n" + skill()["SKILL.md"][4:],
+        "CRLF with padded fences": skill()["SKILL.md"]
+        .replace("\n", "\r\n")
+        .replace("---\r\n", "--- \t\r\n", 2),
+        "an ideographic space in a value": skill(
+            front={"description": '"Draws　diagrams when asked."'}
         )["SKILL.md"],
     }
     return drafts
@@ -900,7 +940,30 @@ def test_the_two_readers_disagree_on_the_drafts_that_are_refused():
     )
 
 
-_FUZZ_OPENERS = ["---", "--- ", "---\t"]
+#: The 14 opening lines the 2026-10-08 gate found that the compilers' reader
+#: takes as a fence and Claude Code does not (it needs a literal ``\n``
+#: after ``---`` and JavaScript whitespace): ``---`` ended by a lone CR,
+#: ``\x0b``, ``\x0c``, ``\x1c``-``\x1e``, U+0085, U+2028 or U+2029, or by
+#: ``\x1c``-``\x1f`` or U+0085 and then a line feed (fold 2, F2).
+GATE_OPENERS = [
+    "---\r",
+    "---\x0b",
+    "---\x0c",
+    "---\x1c",
+    "---\x1d",
+    "---\x1e",
+    "---\x85",
+    "--- ",
+    "--- ",
+    "---\x1c\n",
+    "---\x1d\n",
+    "---\x1e\n",
+    "---\x1f\n",
+    "---\x85\n",
+]
+#: Opening lines, each with its own line break.
+_FUZZ_GOOD_OPENERS = ["---\n", "--- \n", "---\t\n", "---\r\n", "--- \t\r\n"]
+_FUZZ_OTHER_OPENERS = ["---\xa0\n", "---　\n", "----\n", "---x\n", "﻿---\n"]
 _FUZZ_LINES = [
     "name: drawing-diagrams",
     'description: "Draws a diagram."',
@@ -926,26 +989,74 @@ _FUZZ_LINES = [
     "# ...",
     'q: "..."',
     "name: drawing-diagrams # --- ",
+    # Fold 2 (F2): characters the two line readers treat differently, and
+    # whitespace-only lines the opener's \s*\n swallows.
+    "x: a\x85b",
+    "x: a b",
+    "x: a\rb",
+    "x: a\x0bb",
+    "x: a\x1fb",
+    "﻿",
+    "　",
+    "  ",
 ]
-_FUZZ_CLOSERS = ["---", "--- ", "...", "---  ", "  ---", "----", "-- -", "... ", "--- #"]
-_FUZZ_BODIES = ["", "# T\n", "hooks:\n---\n", "...\n", "x --- y\n"]
+#: Closing lines, each with its own line break (or none: the text ends).
+_FUZZ_CLOSERS = [
+    "---\n",
+    "--- \n",
+    "...\n",
+    "---  \n",
+    "  ---\n",
+    "----\n",
+    "-- -\n",
+    "... \n",
+    "--- #\n",
+    "---\r\n",
+    "--- \t\r\n",
+    "---",
+    "---\xa0\n",
+    "---　\n",
+    "---\x85\n",
+    "---\x1f\n",
+    "---\r",
+]
+_FUZZ_BODIES = ["", "# T\n", "hooks:\n---\n", "...\n", "x --- y\n", "a\x85b\n"]
+
+#: The refusals that are about how the block is read, not what is in it.
+_READING_RULES = (
+    "frontmatter-fence-line",
+    "frontmatter-forbidden-character",
+    "frontmatter-closed-by-dots",
+    "frontmatter-contains-fence",
+)
 
 
 def test_whatever_k1a_accepts_reads_identically_in_claude_code():
-    """The property, over a seeded sweep of tricky frontmatters: if K1a's
-    reader accepts a draft, Claude Code's reader captures the same block.
-    The positive controls make the sweep mean something: some drafts differ
-    between the two readers, and every one of those is refused."""
+    """The property, over a seeded sweep of tricky frontmatters: if K1a
+    accepts a draft, Claude Code's reader (the JavaScript port above)
+    captures exactly the inner text K1a parsed, less the leading blank lines
+    its opener swallows, and it loads to the same mapping; and every draft
+    that opens with one of the gate's 14 lines is refused. The positive
+    controls make the sweep mean something: many drafts are accepted, many
+    differ between the compilers' reader and Claude Code's, every one of
+    those is refused, and each of the 14 openers was tried."""
     rng = random.Random(20261008)
-    accepted = diverging = diverging_and_refused = refused_by_fence_rules = 0
-    for _ in range(3000):
+    accepted = diverging = diverging_and_refused = refused_by_reading_rules = 0
+    gate_openers_tried: set[str] = set()
+    for _ in range(4000):
+        if rng.random() < 0.5:
+            opener = rng.choice(_FUZZ_GOOD_OPENERS)
+        else:
+            opener = rng.choice(GATE_OPENERS + _FUZZ_OTHER_OPENERS)
+        eol = rng.choice(["\n", "\n", "\r\n"])
         lines = [rng.choice(_FUZZ_LINES) for _ in range(rng.randint(0, 6))]
+        if opener == "---\r" and lines[:1] == [""] and eol == "\n":
+            # '---\r' then an empty line is a CRLF opener, not the gate's.
+            lines[0] = "name: drawing-diagrams"
         text = (
-            rng.choice(_FUZZ_OPENERS)
-            + "\n"
-            + "".join(f"{ln}\n" for ln in lines)
+            opener
+            + "".join(f"{ln}{eol}" for ln in lines)
             + rng.choice(_FUZZ_CLOSERS)
-            + "\n"
             + rng.choice(_FUZZ_BODIES)
         )
         frontmatter = _read_frontmatter(text)
@@ -959,21 +1070,38 @@ def test_whatever_k1a_accepts_reads_identically_in_claude_code():
         )
         if frontmatter.finding is None:
             accepted += 1
-            assert frontmatter.inner is not None and captured is not None, text
-            assert _without_leading_blank_lines(frontmatter.inner) == captured, text
+            assert frontmatter.inner is not None and captured is not None, repr(text)
+            assert _without_leading_blank_lines(frontmatter.inner) == captured, repr(text)
+            assert YAML(typ="safe").load(captured) in (frontmatter.mapping, None), repr(text)
+        if opener in GATE_OPENERS:
+            gate_openers_tried.add(opener)
+            assert frontmatter.finding is not None, repr(text)
+            assert frontmatter.finding.rule == "frontmatter-fence-line", repr(text)
         if differs:
             diverging += 1
             if frontmatter.finding is not None:
                 diverging_and_refused += 1
-        if frontmatter.finding is not None and frontmatter.finding.rule in (
-            "frontmatter-closed-by-dots",
-            "frontmatter-contains-fence",
-        ):
-            refused_by_fence_rules += 1
-    assert accepted > 100
-    assert diverging > 100
+        if frontmatter.finding is not None and frontmatter.finding.rule in _READING_RULES:
+            refused_by_reading_rules += 1
+    assert accepted > 100, accepted
+    assert diverging > 100, diverging
     assert diverging_and_refused == diverging  # no divergence is accepted
-    assert refused_by_fence_rules > 100
+    assert refused_by_reading_rules > 100
+    assert gate_openers_tried == set(GATE_OPENERS)
+
+
+def test_the_javascript_port_is_not_pythons_whitespace():
+    # The oracle's own control: on the gate's openers Python's \s regex
+    # (the fold's old oracle) finds a block, the JavaScript port does not.
+    pythons = re.compile(r"^---\s*\n([\s\S]*?)---\s*\n?")
+    for opener in ("---\x1c\n", "---\x85\n", "---\x1f\n"):
+        text = opener + f"name: {NAME}\n---\n"
+        assert pythons.match(text) is not None, repr(opener)
+        assert claude_code_block(text) is None, repr(opener)
+    # ... and on U+FEFF the other way round.
+    text = "---﻿\nname: x\n---\n"
+    assert pythons.match(text) is None
+    assert claude_code_block(text) == "name: x\n"
 
 
 # ----------------------------------------------- K1-2: never raise, bounded
@@ -1373,3 +1501,115 @@ def test_the_caps_are_read_from_the_module_constants(monkeypatch):
     # The control has one '[' (paths) and one '{' (metadata).
     monkeypatch.setattr(skill_scaffold, "SKILL_FRONTMATTER_MAX_FLOW_DEPTH", 1)
     assert run(skill()).problem_rules == ("frontmatter-flow-too-deep",)
+
+
+# ------------------------------- F2: the frontmatter as Claude Code reads it
+
+
+def _with_opener(opener: str) -> dict[str, str]:
+    """The valid skill with its opening line ``---\\n`` replaced."""
+    text = skill()["SKILL.md"]
+    assert text.startswith("---\n")
+    return with_skill_md(opener + text[4:])
+
+
+@pytest.mark.parametrize("opener", GATE_OPENERS, ids=[repr(o) for o in GATE_OPENERS])
+def test_each_of_the_gates_opening_lines_is_refused(opener: str):
+    files = _with_opener(opener)
+    text = files["SKILL.md"]
+    # Why: the compilers' reader finds a block here, and Claude Code none.
+    assert _find_leading_block(text) is not None
+    assert claude_code_block(text) is None
+    result = run(files)
+    assert result.problem_rules == ("frontmatter-fence-line",)
+    assert "opening '---' line" in result.problems[0].message
+
+
+@pytest.mark.parametrize(
+    "opener",
+    ["---\xa0\n", "---　\n", "---  \n", "----\n", "---x\n", "---"],
+    ids=["nbsp", "ideographic space", "em space after a space", "four dashes", "text", "no line break"],
+)
+def test_an_opening_line_with_anything_but_spaces_or_tabs_is_refused(opener: str):
+    # Stricter than both readers: Claude Code and the compilers' reader both
+    # read some of these (a no-break space is whitespace to both).
+    result = run(_with_opener(opener) if opener != "---" else {"SKILL.md": "---"})
+    assert result.problem_rules == ("frontmatter-fence-line",)
+
+
+@pytest.mark.parametrize(
+    "closer",
+    ["---\xa0\n", "---　\n", "---  \n", "---　"],
+    ids=["nbsp", "ideographic space", "em space after a space", "ideographic space at the end"],
+)
+def test_a_closing_line_with_anything_but_spaces_or_tabs_is_refused(closer: str):
+    text = skill()["SKILL.md"].replace("\n---\n", "\n" + closer, 1)
+    if not closer.endswith("\n"):
+        text = text.split(closer)[0] + closer  # the closing line ends the text
+    files = {"SKILL.md": text}
+    result = run(files)
+    assert result.problem_rules == ("frontmatter-fence-line",)
+    assert "closing '---' line" in result.problems[0].message
+
+
+def test_fence_lines_of_dashes_spaces_tabs_and_crlf_pass():
+    # Positive controls for the two tests above.
+    for opener in _FUZZ_GOOD_OPENERS:
+        assert run(_with_opener(opener)).problems == (), repr(opener)
+    front = f"---\nname: {NAME}\ndescription: {q(DESCRIPTION)}\n"
+    for closer in ("---", "--- \t", "---\n", "---\t\r\n"):
+        assert run({"SKILL.md": front + closer}).problems == (), repr(closer)
+
+
+#: Where a refused character can sit, and the line it is on.
+_FORBIDDEN_PLACES = {
+    "between two keys": (f"---\nname: {NAME}{{c}}description: {q(DESCRIPTION)}\n---\n", 2),
+    "inside a plain value": (f"---\nname: {NAME}\ndescription: Draws a{{c}}diagram.\n---\n", 3),
+    "on the closing line": (f"---\nname: {NAME}\ndescription: {q(DESCRIPTION)}\n---{{c}}", 4),
+}
+
+
+@pytest.mark.parametrize("place", list(_FORBIDDEN_PLACES))
+@pytest.mark.parametrize(
+    "char",
+    ["\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x1f", "\x85", " ", " "],
+    ids=["lone CR", "VT", "FF", "FS", "GS", "RS", "US", "NEL", "LS", "PS"],
+)
+def test_a_line_break_character_the_readers_disagree_on_is_refused(char: str, place: str):
+    assert char in skill_scaffold.SKILL_FRONTMATTER_FORBIDDEN_CHARS
+    template, line = _FORBIDDEN_PLACES[place]
+    # The closing line ends the text, so a lone CR there has no LF after it.
+    text = template.format(c=char) + ("" if place == "on the closing line" else "\n# T\n")
+    result = run({"SKILL.md": text})
+    assert result.problem_rules == ("frontmatter-forbidden-character",), [
+        str(p) for p in result.problems
+    ]
+    assert f"U+{ord(char):04X}" in result.problems[0].message
+    assert f"on line {line}" in result.problems[0].message
+
+
+@pytest.mark.parametrize(
+    "char",
+    ["\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x1f", "\x85", " ", " "],
+    ids=["lone CR", "VT", "FF", "FS", "GS", "RS", "US", "NEL", "LS", "PS"],
+)
+def test_the_same_characters_in_the_body_are_fine(char: str):
+    # Positive control: only the frontmatter (through its closing fence) is
+    # read two ways; the body is not.
+    body = f"# T\n\nA line with {char} in it.\n"
+    assert run({"SKILL.md": f"---\nname: {NAME}\ndescription: {q(DESCRIPTION)}\n---\n{body}"}).problems == ()
+
+
+def test_crlf_line_endings_are_not_a_lone_carriage_return():
+    text = f"---\r\nname: {NAME}\r\ndescription: {q(DESCRIPTION)}\r\n---\r\n# T\r\n"
+    assert run({"SKILL.md": text}).problems == ()
+    # Positive control: one CR without its LF is refused.
+    lone = text.replace("\r\ndescription", "\rdescription", 1)
+    assert run({"SKILL.md": lone}).problem_rules == ("frontmatter-forbidden-character",)
+
+
+def test_the_gates_next_line_value_difference_is_refused():
+    # U+0085 in a plain value: ruamel reads 'a b', Claude Code 'a\x85b'.
+    text = f"---\nname: {NAME}\ndescription: a\x85b\n---\n# T\n"
+    assert YAML(typ="safe").load(f"description: a\x85b\n") == {"description": "a b"}
+    assert run({"SKILL.md": text}).problem_rules == ("frontmatter-forbidden-character",)

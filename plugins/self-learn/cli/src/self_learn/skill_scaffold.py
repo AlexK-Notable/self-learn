@@ -45,6 +45,8 @@ __all__ = [
     "SKILL_FILE_PATH_FORBIDDEN_SEGMENTS",
     "SKILL_FRONTMATTER_ALLOWED_KEYS",
     "SKILL_FRONTMATTER_FENCE",
+    "SKILL_FRONTMATTER_FENCE_PADDING",
+    "SKILL_FRONTMATTER_FORBIDDEN_CHARS",
     "SKILL_FRONTMATTER_MAX_CHARS",
     "SKILL_FRONTMATTER_MAX_FLOW_DEPTH",
     "SKILL_FRONTMATTER_REFUSED_CLOSER",
@@ -256,6 +258,43 @@ SKILL_FILE_PATH_FORBIDDEN_SEGMENTS: tuple[str, ...] = ("", ".", "..")
 SKILL_FRONTMATTER_FENCE = "---"
 SKILL_FRONTMATTER_REFUSED_CLOSER = "..."
 
+#: The fence LINES. Claude Code 2.1.293 needs a literal ``\n`` right after
+#: the opening ``---`` and its whitespace (``\s`` there is JavaScript's:
+#: tab, line feed, vertical tab, form feed, carriage return, the Unicode
+#: spaces, U+2028, U+2029 and U+FEFF). The compilers' reader splits lines
+#: with Python's ``splitlines()`` and compares ``rstrip()``, which also
+#: split at a lone ``\r``, ``\x0b``, ``\x0c``, ``\x1c``-``\x1e``, U+0085,
+#: U+2028 and U+2029, and also strip ``\x1c``-``\x1f`` and U+0085. The
+#: 2026-10-08 gate found 14 opening lines (``---`` then one of those) that
+#: this check accepted and Claude Code read as NO frontmatter. So, stricter
+#: than both readers: a fence line must be exactly ``---``, then only these
+#: padding characters, then ``\n`` or ``\r\n`` (the closing fence may end
+#: the text instead). ``---`` itself is the readers' own literal (both
+#: hard-code it); ``SKILL_FRONTMATTER_FENCE`` names it for the inside check
+#: and the messages.
+SKILL_FRONTMATTER_FENCE_PADDING = " \t"
+
+#: Refused anywhere from the start of SKILL.md through the closing fence:
+#: every character ``splitlines()`` breaks a line at other than ``\n`` and
+#: ``\r\n``, and ``\x1f``, which ``rstrip()`` strips and JavaScript does
+#: not. ``"\r"`` counts only when no ``\n`` follows it (``\r\n`` line
+#: endings are fine). With these gone, the compilers' reader and Claude
+#: Code split the frontmatter into the same lines, and a value cannot read
+#: differently because of them (U+0085 inside a plain value is a line break
+#: to ruamel and an ordinary character to Claude Code).
+SKILL_FRONTMATTER_FORBIDDEN_CHARS: tuple[str, ...] = (
+    "\r",
+    "\x0b",
+    "\x0c",
+    "\x1c",
+    "\x1d",
+    "\x1e",
+    "\x1f",
+    "\x85",
+    " ",
+    " ",
+)
+
 #: The two caps checked BEFORE any YAML parse. ruamel's pure-Python parser
 #: costs time quadratic in how deeply ``[``/``{`` collections nest (the
 #: 2026-10-08 gate: 4 KB of ``[`` took about 2 s, 30 KB about 30 s), so a
@@ -331,6 +370,8 @@ RULE_SKILL_MD_MISSING = "skill-md-missing"
 RULE_FILE_KEY_NOT_TEXT = "file-key-not-text"
 RULE_FILE_NOT_TEXT = "file-not-text"
 RULE_FRONTMATTER_UNPARSEABLE = "frontmatter-unparseable"
+RULE_FRONTMATTER_FENCE_LINE = "frontmatter-fence-line"
+RULE_FRONTMATTER_FORBIDDEN_CHAR = "frontmatter-forbidden-character"
 RULE_FRONTMATTER_CLOSED_BY_DOTS = "frontmatter-closed-by-dots"
 RULE_FRONTMATTER_CONTAINS_FENCE = "frontmatter-contains-fence"
 RULE_FRONTMATTER_TOO_LONG = "frontmatter-too-long"
@@ -372,6 +413,8 @@ SKILL_RULE_IDS: tuple[str, ...] = (
     RULE_FILE_KEY_NOT_TEXT,
     RULE_FILE_NOT_TEXT,
     RULE_FRONTMATTER_UNPARSEABLE,
+    RULE_FRONTMATTER_FENCE_LINE,
+    RULE_FRONTMATTER_FORBIDDEN_CHAR,
     RULE_FRONTMATTER_CLOSED_BY_DOTS,
     RULE_FRONTMATTER_CONTAINS_FENCE,
     RULE_FRONTMATTER_TOO_LONG,
@@ -541,19 +584,87 @@ class _Frontmatter(NamedTuple):
     finding: SkillFinding | None
 
 
+def _fence_line_ok(line: str, *, closing: bool) -> bool:
+    """``line`` (with its line break, if it has one) is exactly ``---``, then
+    only :data:`SKILL_FRONTMATTER_FENCE_PADDING`, then ``\\n`` or ``\\r\\n``;
+    the closing fence may also have no line break (it ends the text)."""
+    if not line.startswith("---"):
+        return False
+    rest = line[3:]
+    if rest.endswith("\r\n"):
+        rest = rest[:-2]
+    elif rest.endswith("\n"):
+        rest = rest[:-1]
+    elif not closing:
+        return False
+    return rest.strip(SKILL_FRONTMATTER_FENCE_PADDING) == ""
+
+
+def _first_forbidden_char(region: str) -> tuple[int, str] | None:
+    """The first :data:`SKILL_FRONTMATTER_FORBIDDEN_CHARS` character in
+    ``region`` and its offset (a ``\\r`` only when no ``\\n`` follows)."""
+    first: tuple[int, str] | None = None
+    for char in SKILL_FRONTMATTER_FORBIDDEN_CHARS:
+        if char == "\r":
+            lone = re.search(r"\r(?!\n)", region)
+            at = lone.start() if lone else -1
+        else:
+            at = region.find(char)
+        if at >= 0 and (first is None or at < first[0]):
+            first = (at, char)
+    return first
+
+
+def _char_name(char: str) -> str:
+    code = f"U+{ord(char):04X}"
+    if char == "\r":
+        return f"a carriage return ({code}) with no line feed after it"
+    return f"the character {code}"
+
+
 def _read_frontmatter(text: str) -> _Frontmatter:
     """Read SKILL.md's frontmatter, strictly. A refusal here stops the
     frontmatter checks (they would be about a block Claude Code does not
-    read). Refused: no block, an unclosed block, a block closed by the
-    refused closer, a block with the fence inside it, anchors and aliases,
-    anything that is not YAML (an unquoted ``: `` in a value is one), and a
-    block that is not a mapping. Same fence rules and same safe YAML loader
-    the compilers use for ``paths:``; the anchor test reads the parser's own
-    events, never the text."""
+    read). Refused: no block, an unclosed block, a fence line that is not
+    exactly ``---`` plus spaces or tabs plus a line break, a character
+    the two line readers treat differently, a block closed by the refused
+    closer, a block with the fence inside it, a block over either cap,
+    anchors and aliases, anything that is not YAML (an unquoted ``: `` in a
+    value is one), and a block that is not a mapping. Same block reader and
+    same safe YAML loader the compilers use for ``paths:``; the anchor test
+    reads the parser's own events, never the text. What passes, Claude Code
+    reads as the same block (the property test pins this)."""
 
     def refuse(rule: str, message: str, body: str) -> _Frontmatter:
         return _Frontmatter(None, None, body, SkillFinding(rule, message))
 
+    def bad_fence_line(which: str, line: str, body: str) -> _Frontmatter:
+        # Both callers pass a line that starts with '---'.
+        rest = line[3:].lstrip(SKILL_FRONTMATTER_FENCE_PADDING)
+        shown = _shown(rest[:1]) if rest else "nothing (the text ends there)"
+        return refuse(
+            RULE_FRONTMATTER_FENCE_LINE,
+            f"the {which} '{SKILL_FRONTMATTER_FENCE}' line must be exactly "
+            f"'{SKILL_FRONTMATTER_FENCE}', then only spaces or tabs, then a "
+            "line break ('\\n' or '\\r\\n'), but after the "
+            f"'{SKILL_FRONTMATTER_FENCE}' and any spaces or tabs it has "
+            f"{shown}; Claude Code would read the block differently or not "
+            "at all",
+            body,
+        )
+
+    if not text.startswith("---"):
+        return refuse(
+            RULE_FRONTMATTER_UNPARSEABLE,
+            f"{SKILL_ENTRY_FILE} cannot be read: there is no frontmatter block "
+            f"(the file must start with a '{SKILL_FRONTMATTER_FENCE}' line)",
+            text,
+        )
+    # The opening line as Claude Code sees it: up to the first '\n'.
+    first_newline = text.find("\n")
+    opening = text if first_newline < 0 else text[: first_newline + 1]
+    if not _fence_line_ok(opening, closing=False):
+        return bad_fence_line("opening", opening, text)
     try:
         block = _find_leading_block(text)
     except CompileError:
@@ -564,7 +675,7 @@ def _read_frontmatter(text: str) -> _Frontmatter:
             f"by a '{SKILL_FRONTMATTER_FENCE}' line",
             text,
         )
-    if block is None:
+    if block is None:  # not reached: the opening line was checked above
         return refuse(
             RULE_FRONTMATTER_UNPARSEABLE,
             f"{SKILL_ENTRY_FILE} cannot be read: there is no frontmatter block "
@@ -573,8 +684,26 @@ def _read_frontmatter(text: str) -> _Frontmatter:
         )
     inner, end = block
     body = text[end:]
-    closer = text[:end].splitlines()[-1].strip()
-    if closer == SKILL_FRONTMATTER_REFUSED_CLOSER:
+    # From the start of the text through the closing fence.
+    region = text[:end]
+    forbidden = _first_forbidden_char(region)
+    if forbidden is not None:
+        at, char = forbidden
+        return refuse(
+            RULE_FRONTMATTER_FORBIDDEN_CHAR,
+            f"the frontmatter has {_char_name(char)} on line "
+            f"{region.count(chr(10), 0, at) + 1}; this check and Claude Code "
+            "split lines differently there, so the skill could load with a "
+            "different frontmatter or none. Before the closing "
+            f"'{SKILL_FRONTMATTER_FENCE}', break lines only with '\\n' or "
+            "'\\r\\n' and use no other control or separator character",
+            body,
+        )
+    # No forbidden character: every line in the region ends in '\n'
+    # (or '\r\n'), so the closing line starts after the last '\n' before
+    # its own.
+    closing = region[region.rfind("\n", 0, len(region) - 1) + 1 :]
+    if closing.strip() == SKILL_FRONTMATTER_REFUSED_CLOSER:
         return refuse(
             RULE_FRONTMATTER_CLOSED_BY_DOTS,
             f"the frontmatter is closed by a '{SKILL_FRONTMATTER_REFUSED_CLOSER}' "
@@ -583,6 +712,8 @@ def _read_frontmatter(text: str) -> _Frontmatter:
             f"frontmatter. Close it with '{SKILL_FRONTMATTER_FENCE}'",
             body,
         )
+    if not _fence_line_ok(closing, closing=True):
+        return bad_fence_line("closing", closing, body)
     if SKILL_FRONTMATTER_FENCE in inner:
         # Line 1 is the opening fence; the inner text starts on line 2.
         line_no = next(
