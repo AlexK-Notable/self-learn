@@ -60,7 +60,10 @@ RECORD_ID_RE = re.compile(r"^lrn-[0-9a-f]{8}$")
 
 TYPES = frozenset({"behavior", "knowledge"})
 KINDS = frozenset({"anti-pattern", "surface-rule", "reasoning-pattern"})
-SOURCES = frozenset({"teach", "auto-memory", "backlog", "session"})
+#: ``rewrite`` (E0, D-AUTHOR §6.2): written by the steward, the overseer or a
+#: person through ``replace``, which makes a successor lesson that supersedes
+#: the old one. The actor stays in ``routing.by`` and the case.
+SOURCES = frozenset({"teach", "auto-memory", "backlog", "session", "rewrite"})
 STATUSES = frozenset({"pending", "routed", "rejected", "deferred", "superseded"})
 
 #: 11 §3: capture-time grounding classes. The strongest known predictor of
@@ -111,8 +114,12 @@ HISTORY_EVENTS = frozenset(
 #: by ``_validate_body`` once registered here like any other optional
 #: section. Producer-side convention (miner writes it only for
 #: ``source: session``), not a validator or render gate (02 §1).
+#: *Widened 2026-10-07 (E0, D-AUTHOR §2.12):* a behavior record may carry an
+#: optional ``## Context`` of any number of lines, as a knowledge record
+#: always could -- the part of a lesson that is kept and never loaded. No
+#: managed line reads it; the reference journal writes it.
 OPTIONAL_SECTIONS = {
-    "behavior": ("Episode brief",),
+    "behavior": ("Context", "Episode brief"),
     "knowledge": ("Context", "Episode brief"),
 }
 
@@ -365,6 +372,8 @@ class Record:
             if not trigger or not instruction:
                 raise ValidationError("behavior records need trigger and instruction")
             sections = [("Trigger", trigger), ("Instruction", instruction)]
+            if context:
+                sections.append(("Context", context))
         elif type == "knowledge":
             if not fact:
                 raise ValidationError("knowledge records need a fact")

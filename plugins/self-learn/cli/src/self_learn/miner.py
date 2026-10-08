@@ -47,6 +47,8 @@ import sys
 import time
 import traceback
 import uuid
+from collections import Counter
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -185,6 +187,25 @@ SELF_PROMPT_HEADERS = (
 #: Self-learn command spans inside otherwise-minable sessions (M-5).
 _COMMAND_SPAN_RE = re.compile(r"<command-name>/?self-learn:")
 
+#: Sessions a scheduler started are not mined unless the user names the job
+#: (M-5; the user, 2026-10-07: "scheduled jobs maybe not unless i explicitly
+#: ask for coverage. background jobs yes."). Claude Desktop's scheduled tasks
+#: open the session's first user turn with this tag, which names the task:
+#: ``<scheduled-task name="<task>" file="…/scheduled-tasks/<task>/SKILL.md">``
+#: (measured 2026-10-07: 38 of 38 such sessions, and no session of any other
+#: kind). Claude Code's background sessions carry no such tag and are mined
+#: as before. A ``claude -p`` that a systemd timer starts has no marker in its
+#: transcript at all, so this rule cannot see it. Changing this opening changes
+#: the scheduled-job fingerprint, and :func:`halt_tracked_scheduled_sessions`
+#: then checks the tracked files once more.
+SCHEDULED_JOB_OPENING = "<scheduled-task"
+_SCHEDULED_TAG_RE = re.compile(re.escape(SCHEDULED_JOB_OPENING) + r"(?=[\s/>])[^>]*")
+_TAG_NAME_RE = re.compile(r'\sname="([^"]*)"')
+#: Reasons a session is halted, as the run's log names them.
+HALT_SELF_PROMPT = "self-learn prompt"
+HALT_SELF_COMMAND = "self-learn command"
+HALT_SCHEDULED_JOB = "scheduled job"
+
 OUTPUT_BASENAME = "mine-output.json"
 
 
@@ -268,6 +289,19 @@ def transcripts_root(home: Path | str | None = None) -> Path:
     return Path(cast(str, raw)).expanduser()
 
 
+def mined_scheduled_jobs(home: Path | str | None = None) -> frozenset[str]:
+    """The scheduled jobs whose sessions are mined anyway: the registry's
+    ``miner.mined_scheduled_jobs`` (config.yaml > env > none), comma-separated
+    job names. A job is named as its scheduler names it, the ``name`` in the
+    session's opening ``<scheduled-task name="...">`` tag (for Claude Desktop,
+    the task's folder under ``~/.claude/scheduled-tasks/``). Blank entries are
+    ignored; every other scheduled job's session is halted (M-5)."""
+    raw, _source = settings.resolve_setting(
+        home if home is not None else resolve_home(), settings.by_name("miner.mined_scheduled_jobs")
+    )
+    return frozenset(name.strip() for name in str(raw or "").split(",") if name.strip())
+
+
 def last_run_iso() -> str | None:
     try:
         mtime = (miner_dir() / "miner.last-run").stat().st_mtime
@@ -348,6 +382,9 @@ class SessionSlice:
     lines: list[str]
     stat_size: int = 0  # file size observed BEFORE the read (skip basis;
     # taken pre-read so an append racing the read forces a re-read next run)
+    #: Why :func:`digest_transcript` halted this session (one of the
+    #: ``HALT_*`` reasons), for the run's log; None while it is not halted.
+    halt_reason: str | None = None
 
 
 def _cursors_path() -> Path:
@@ -407,26 +444,53 @@ def _is_self_prompt(user_text: str) -> bool:
     return user_text.strip().startswith(SELF_PROMPT_HEADERS)
 
 
+def _scheduled_job_name(user_text: str) -> str | None:
+    """The job a session belongs to when its first user turn `user_text` is a
+    scheduler's: the text BEGINS with the ``<scheduled-task`` tag (as
+    :func:`_is_self_prompt` requires of a header, so a person who pastes the tag
+    into their own message is not a job). The name is the tag's ``name``
+    attribute, '' when it has none. None for any other session."""
+    tag = _SCHEDULED_TAG_RE.match(user_text.strip())
+    if tag is None:
+        return None
+    name = _TAG_NAME_RE.search(tag.group(0))
+    return name.group(1).strip() if name else ""
+
+
+def _is_skipped_scheduled_job(user_text: str, mined: frozenset[str]) -> bool:
+    """True when a session whose first user turn is `user_text` is a scheduled
+    job's and the job is not one of `mined` (M-5)."""
+    name = _scheduled_job_name(user_text)
+    return name is not None and name not in mined
+
+
+def _first_user_text_of(rows: Iterable[str]) -> str:
+    """The first user turn that carries text among transcript `rows`, or ''.
+    Stops there. A row of any odd shape (not JSON, JSON too deep to parse, a
+    user row whose message is not a dict) is "no text here" and is skipped,
+    never an exception."""
+    for raw in rows:
+        try:
+            entry = json.loads(raw)
+            if not isinstance(entry, dict) or entry.get("type") != "user":
+                continue
+            text = _user_turn_text(entry.get("message"))
+        except Exception:  # noqa: BLE001 -- a row of any shape is only "no text here"
+            continue
+        if text.strip():
+            return text
+    return ""
+
+
 def _first_user_text(path: Path) -> str:
     """The transcript's first user turn that carries text, or '' when the
     file has none. Streams the file and stops there: the prompt is among its
     first lines, and a transcript can be tens of MiB. A row of any odd shape
-    (not JSON, JSON too deep to parse, a user row whose message is not a dict)
-    is "no text here" and is skipped, never an exception. A file that cannot be
+    is skipped (:func:`_first_user_text_of`). A file that cannot be
     opened or read raises :class:`OSError`; what that means is the caller's to
     say (bytes that are not UTF-8 are read as replacement characters instead)."""
     with path.open(encoding="utf-8", errors="replace") as fh:
-        for raw in fh:
-            try:
-                entry = json.loads(raw)
-                if not isinstance(entry, dict) or entry.get("type") != "user":
-                    continue
-                text = _user_turn_text(entry.get("message"))
-            except Exception:  # noqa: BLE001 -- a row of any shape is only "no text here"
-                continue
-            if text.strip():
-                return text
-    return ""
+        return _first_user_text_of(fh)
 
 
 #: The cursor file's record of which header list its tracked sessions were
@@ -438,12 +502,65 @@ def _headers_fingerprint() -> str:
     return hashlib.sha256("\n".join(SELF_PROMPT_HEADERS).encode("utf-8")).hexdigest()[:16]
 
 
+#: The cursor file's record of which scheduled-job rule its tracked sessions
+#: were last checked against: a fingerprint of the opening and of the jobs
+#: named in ``miner.mined_scheduled_jobs``.
+_SCHEDULED_CHECKED_KEY = "__scheduled_jobs__"
+
+
+def _scheduled_fingerprint(mined: frozenset[str]) -> str:
+    """Changes when the opening changes or when a job is named or unnamed in
+    the opt-in, so that an unnamed job's tracked sessions are checked again."""
+    rule = "\n".join((SCHEDULED_JOB_OPENING, *sorted(mined)))
+    return hashlib.sha256(rule.encode("utf-8")).hexdigest()[:16]
+
+
 class SweepResult(NamedTuple):
-    """What :func:`halt_tracked_self_sessions` did: how many sessions it halted,
+    """What a pass over the tracked sessions (:func:`halt_tracked_self_sessions`,
+    :func:`halt_tracked_scheduled_sessions`) did: how many sessions it halted,
     and how many it could not check this time."""
 
     halted: int
     unchecked: int
+
+
+def _halt_tracked(checked_key: str, fingerprint: str, halts: Callable[[str], bool]) -> SweepResult:
+    """Halt every tracked, unhalted session whose first user turn `halts`, once
+    per `fingerprint`, recorded in the cursor file under `checked_key`. The
+    rules of the pass are :func:`halt_tracked_self_sessions`'s."""
+    cursors = _load_cursors()
+    if cursors.get(checked_key) == fingerprint:
+        return SweepResult(0, 0)
+    halted = unchecked = 0
+    for key, entry in cursors.items():
+        if not isinstance(entry, dict) or entry.get("halt"):
+            continue
+        try:
+            text = _first_user_text(Path(key))
+        except FileNotFoundError:
+            continue
+        except Exception:  # noqa: BLE001 -- one file never stops the pass
+            unchecked += 1
+            continue
+        if halts(text):
+            entry["halt"] = True
+            halted += 1
+    if not unchecked:
+        cursors[checked_key] = fingerprint
+    _save_cursors(cursors)
+    return SweepResult(halted, unchecked)
+
+
+def halt_tracked_scheduled_sessions(mined: frozenset[str]) -> SweepResult:
+    """Halt every tracked session of a scheduled job that is not one of
+    `mined`, once per rule (:func:`_scheduled_fingerprint`): the same pass as
+    :func:`halt_tracked_self_sessions`, for the scheduled-job opening. It
+    catches the sessions tracked before this rule existed, and those of a job
+    removed from ``miner.mined_scheduled_jobs``. A job added there later is not
+    un-halted: its earlier sessions are reachable through ``--since``."""
+    return _halt_tracked(
+        _SCHEDULED_CHECKED_KEY, _scheduled_fingerprint(mined), lambda text: _is_skipped_scheduled_job(text, mined)
+    )
 
 
 def halt_tracked_self_sessions() -> SweepResult:
@@ -468,43 +585,23 @@ def halt_tracked_self_sessions() -> SweepResult:
     is then NOT recorded, so the next run checks the tracked files again, until
     a pass finishes with nothing unchecked. That costs one more read of each
     tracked file's first lines per run while a file stays unreadable."""
-    fingerprint = _headers_fingerprint()
-    cursors = _load_cursors()
-    if cursors.get(_HEADERS_CHECKED_KEY) == fingerprint:
-        return SweepResult(0, 0)
-    halted = unchecked = 0
-    for key, entry in cursors.items():
-        if not isinstance(entry, dict) or entry.get("halt"):
-            continue
-        try:
-            text = _first_user_text(Path(key))
-        except FileNotFoundError:
-            continue
-        except Exception:  # noqa: BLE001 -- one file never stops the pass
-            unchecked += 1
-            continue
-        if _is_self_prompt(text):
-            entry["halt"] = True
-            halted += 1
-    if not unchecked:
-        cursors[_HEADERS_CHECKED_KEY] = fingerprint
-    _save_cursors(cursors)
-    return SweepResult(halted, unchecked)
+    return _halt_tracked(_HEADERS_CHECKED_KEY, _headers_fingerprint(), _is_self_prompt)
 
 
 def initialized() -> bool:
     return bool(_load_cursors().get("__initialized__"))
 
 
-def initialize_cursors() -> int:
+def initialize_cursors(mined_scheduled: frozenset[str] = frozenset()) -> int:
     """First-activation forward-only pin (doc 12 §8 R2, audit B2): seed
     every EXISTING transcript's cursor at its current end so night one
     mines nothing — history is reachable only through the deliberate
     ``--since`` backfill. Files containing self-learn machinery markers
     anywhere in their existing history are halted outright (M-5: an
     in-flight review/worker session's tail must not become minable just
-    because the cursor was seeded past its header). Returns the number of
-    files seeded."""
+    because the cursor was seeded past its header), and so are the
+    sessions of a scheduled job not in `mined_scheduled`, judged by their
+    first user turn only. Returns the number of files seeded."""
     root = transcripts_root()
     cursors = _load_cursors()
     seeded = 0
@@ -518,14 +615,17 @@ def initialize_cursors() -> int:
             if lines is None:
                 continue
             entry: dict = {"lines": len(lines), "size": size}
-            if _contains_self_learn("\n".join(lines)):
+            if _contains_self_learn("\n".join(lines)) or _is_skipped_scheduled_job(
+                _first_user_text_of(lines), mined_scheduled
+            ):
                 entry["halt"] = True
             cursors[str(path)] = entry
             seeded += 1
     cursors["__initialized__"] = _now_iso()
-    # The seeding above halted by the same headers: nothing for
-    # `halt_tracked_self_sessions` to catch up on.
+    # The seeding above halted by the same headers and the same scheduled-job
+    # rule: nothing for the passes over tracked sessions to catch up on.
     cursors[_HEADERS_CHECKED_KEY] = _headers_fingerprint()
+    cursors[_SCHEDULED_CHECKED_KEY] = _scheduled_fingerprint(mined_scheduled)
     _save_cursors(cursors)
     return seeded
 
@@ -666,7 +766,12 @@ def _slice_cwd(s: SessionSlice) -> str | None:
     return None
 
 
-def digest_transcript(s: SessionSlice, limits: DigestLimits | None = None) -> tuple[str | None, bool]:
+def digest_transcript(
+    s: SessionSlice,
+    limits: DigestLimits | None = None,
+    *,
+    mined_scheduled: frozenset[str] = frozenset(),
+) -> tuple[str | None, bool]:
     """(digest-or-None, halt) for one session slice, sized against
     `limits` (the built-in defaults when omitted).
 
@@ -675,14 +780,17 @@ def digest_transcript(s: SessionSlice, limits: DigestLimits | None = None) -> tu
     Dropped: tool-result bodies and tool-use payloads.
 
     halt=True means the REST of this session — including future appends —
-    must never be mined; the caller persists it into the cursor. Two
+    must never be mined; the caller persists it into the cursor. Three
     halters (M-5, tightened by audit 2026-07-15): a self-prompt header
-    (the system's own claude -p machinery), and ANY self-learn command
+    (the system's own claude -p machinery); a scheduled job's opening
+    (:data:`SCHEDULED_JOB_OPENING`, 2026-10-07) unless the job is one of
+    `mined_scheduled` (none when omitted); and ANY self-learn command
     tag — the old "span ends at the next genuine user turn" rule
     collapsed on the first review reply, feeding every card's lesson text
     (which the reader would dutifully match against the ledger) back into
     the miner as fake sightings. Recall loss from over-exclusion is cheap;
-    evidence corruption is not.
+    evidence corruption is not. The reason is left on ``s.halt_reason``
+    for the run's log.
     """
     limits = limits if limits is not None else DigestLimits()
     out: list[str] = []
@@ -709,8 +817,13 @@ def digest_transcript(s: SessionSlice, limits: DigestLimits | None = None) -> tu
                 if not first_user_seen:
                     first_user_seen = True
                     if _is_self_prompt(user_text):
+                        s.halt_reason = HALT_SELF_PROMPT
                         return None, True  # own machinery: halt forever
+                    if _is_skipped_scheduled_job(user_text, mined_scheduled):
+                        s.halt_reason = HALT_SCHEDULED_JOB
+                        return None, True  # a scheduler's session: halt forever
                 if _COMMAND_SPAN_RE.search(user_text):
+                    s.halt_reason = HALT_SELF_COMMAND
                     halt = True
                     break  # everything after the tag is off-limits
                 out.append(f"[user L{lineno}] {_clip(user_text, limits.message_chars)}")
@@ -2237,11 +2350,14 @@ def _run_locked(
     except gitops.GitOpsError as exc:
         log(f"run {run_id}: reconcile step skipped ({exc})")
 
+    # Read once: one run, one opt-in (M-5, scheduled jobs).
+    mined_scheduled = mined_scheduled_jobs(home)
+
     # First-activation forward-only pin (§8 R2, audit B2): seed cursors at
     # the current end of every existing transcript and stop — history is
     # reachable only through the deliberate --since backfill.
     if not initialized():
-        seeded = initialize_cursors()
+        seeded = initialize_cursors(mined_scheduled)
         (miner_dir() / "miner.last-run").touch()
         _journal({**base, "status": "initialized", "files_seeded": seeded,
                   "duration_secs": round(time.time() - t0, 1)})
@@ -2260,6 +2376,18 @@ def _run_locked(
             f"run {run_id}: {swept.unchecked} tracked sessions could not be checked "
             "against the self-learn prompts this time; they are checked again next run"
         )
+    swept = halt_tracked_scheduled_sessions(mined_scheduled)
+    if swept.halted:
+        log(
+            f"run {run_id}: halted {swept.halted} tracked sessions of scheduled jobs "
+            "not named in miner.mined_scheduled_jobs: never mined"
+        )
+    if swept.unchecked:
+        # a count only, as above
+        log(
+            f"run {run_id}: {swept.unchecked} tracked sessions were not checked for "
+            "scheduled jobs this time; they are checked again next run"
+        )
 
     slices = walk(since)
     digests: list[str] = []
@@ -2276,7 +2404,7 @@ def _run_locked(
     deferred_files = 0
     limits = digest_limits(home)  # read once: one run, one set of limits
     for s in slices:
-        digest, halt = digest_transcript(s, limits)
+        digest, halt = digest_transcript(s, limits, mined_scheduled=mined_scheduled)
         if digest is None:
             excluded += 1
             processed.append((s, halt))  # nothing minable — cursor advances
@@ -2291,6 +2419,17 @@ def _run_locked(
         cwd = _slice_cwd(s)
         if cwd:
             cwds[s.session_id] = cwd
+    halted_by_reason: Counter[str] = Counter()
+    for s, halt in processed:
+        if halt and s.halt_reason:
+            halted_by_reason[s.halt_reason] += 1
+    if halted_by_reason:
+        # counts by reason only: never a path, a job's name, or a session's text
+        log(
+            f"run {run_id}: halted {sum(halted_by_reason.values())} sessions, the rest of each never mined ("
+            + ", ".join(f"{reason}: {n}" for reason, n in sorted(halted_by_reason.items()))
+            + ")"
+        )
 
     result = MineResult(
         status="idle", run_id=run_id, sessions_scanned=len(digests)
