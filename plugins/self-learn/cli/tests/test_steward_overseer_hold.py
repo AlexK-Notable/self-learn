@@ -368,11 +368,12 @@ def test_a_line_on_a_held_lesson_is_refused_at_preview_and_at_run(tmp_path, monk
     assert f"- {held}: {parked} (authority-unclear)" in brief
     assert len(prompts) == 2, "the repair turn was offered"
     repair = prompts[1].split(_REPAIR_HEADER, 1)[1]
-    assert f"- sheets/dupe.yaml: item 2 (reject {held}): {held}: the overseer holds this lesson" in repair
+    assert f"- sheets/dupe.yaml: item 2 (reject {held}): the overseer holds {held}" in repair
     assert f"(parked case {parked} (authority-unclear))" in repair
     row = packet["dispositions"][free]
     assert (row["state"], row.get("kind")) == ("returned", "bad-line"), row
-    assert f"{held}: the overseer holds this lesson" in row["reason"]
+    assert f"reject {held}: the overseer holds {held} (parked case {parked}" in row["reason"]
+    assert f"{held}: {held}:" not in row["reason"], "gate S1c nit: the id is not repeated"
     assert "case" not in row, "the case was refused before it was recorded"
     (case_id,) = packet["case_ids"]
     assert case_id not in {row["case"] for row in cases.list_cases(home)}
@@ -397,12 +398,15 @@ def test_the_held_check_names_a_supersede_successor_too(tmp_path):
     assert parked in line["detail"]
 
 
-def test_a_lesson_held_after_selection_is_sent_back_never_parked_twice(tmp_path, monkeypatch):
+def test_a_lesson_held_after_selection_is_left_to_the_overseer_never_parked_twice(
+    tmp_path, monkeypatch
+):
     """A person parks one of the pair (X) while the steward is deciding it.
-    At apply the line on X is refused by the hold; the case's action is a
-    return, and for X -- a reconsider input that, held, no run selects -- it
-    would become a park. It is not parked a second time: sent back, with the
-    person's parked case its one open case."""
+    At apply the line on X is refused by the hold, so the case is refused
+    whole. X -- a reconsider input that, held, no run selects -- is not
+    parked a second time, nor sent back: since the ledger-level round it
+    gets a `held` row naming the person's case (gate S1c D4), its one open
+    case. Y, the case's other lesson, is sent back to be decided again."""
     pair = MovedPair(tmp_path, observed=True, prefix="lrn-daa0")
     x, y = pair.ids
     _notifications(monkeypatch)
@@ -425,7 +429,7 @@ def test_a_lesson_held_after_selection_is_sent_back_never_parked_twice(tmp_path,
 
     rows = _packet(pair.home, result.run_id)["dispositions"]
     assert rows[x]["input_version"].startswith("observation:")  # control: the park-prone shape
-    assert (rows[x]["state"], rows[x].get("kind")) == ("returned", "bad-line"), rows[x]
+    assert (rows[x]["state"], rows[x].get("held_by")) == ("held", by_hand), rows[x]
     assert [row["case"] for row in _open_parked(pair.home, x)] == by_hand
     assert rows[y]["state"] == "returned", rows[y]
     assert {_status(pair.home, rid) for rid in pair.ids} == {"pending"}
@@ -550,6 +554,11 @@ def test_the_scheduler_is_not_due_for_a_lesson_the_overseer_holds(tmp_path, monk
         assert serve._steward_is_due(home, cache, 10_000.0) is False
 
     _overseer_decides(home, parked, [rid], tmp_path)
+    # Gate S1c nit: with no run before, this `True` comes from "no prior
+    # run" alone. That the release ITSELF makes the steward due after a
+    # prior run is pinned by test_steward_ledger_hold.py::
+    # test_risk_3_the_overseers_release_makes_the_steward_due.
+    assert steward.last_run_iso(home) is None
     assert serve._steward_is_due(home, cache, 10_000.0) is True
 
 

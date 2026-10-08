@@ -260,8 +260,11 @@ def test_open_cases_excludes_tampered_and_shows_intact(tmp_path):
         tmp_path, home, kind="parked", outcome="parked",
         overrides={"parked_for": "overseer", "parked_reason": "authority-unclear"},
     )
+    # S-81: the steward may not park a lesson already held, so this second
+    # parked case for the same lesson is a person's (the rendering is the
+    # point here, not who parked it).
     tampered_id = _record_case(
-        tmp_path, home, kind="parked", outcome="parked",
+        tmp_path, home, kind="parked", outcome="parked", actor="human",
         overrides={"parked_for": "overseer", "parked_reason": "hook"},
     )
     path = next((home / "cases").glob(f"*/{tampered_id}.md"))
@@ -275,7 +278,12 @@ def test_open_cases_excludes_tampered_and_shows_intact(tmp_path):
     open_cases_text = dict(packet.blocks)["open_cases"]
 
     assert intact_id in open_cases_text
-    assert tampered_id not in open_cases_text
+    # The tampered case is never rendered as a case. Since S-81's gate S1c
+    # R4 it is not silent either: it still holds its lesson, and the held
+    # list names it with the reason only a person can fix.
+    assert f"case: {tampered_id}" not in open_cases_text
+    assert f"case {tampered_id}: unavailable" not in open_cases_text
+    assert f"{tampered_id} (hook; its file fails its freeze-hash check)" in open_cases_text
     assert "1 cases excluded: freeze hash mismatch" in open_cases_text
 
 
@@ -290,8 +298,11 @@ def test_negative_control_including_tampered_rows_fails_the_exclusion_check(tmp_
         tmp_path, home, kind="parked", outcome="parked",
         overrides={"parked_for": "overseer", "parked_reason": "authority-unclear"},
     )
+    # S-81: the steward may not park a lesson already held, so this second
+    # parked case for the same lesson is a person's (the rendering is the
+    # point here, not who parked it).
     tampered_id = _record_case(
-        tmp_path, home, kind="parked", outcome="parked",
+        tmp_path, home, kind="parked", outcome="parked", actor="human",
         overrides={"parked_for": "overseer", "parked_reason": "hook"},
     )
     path = next((home / "cases").glob(f"*/{tampered_id}.md"))
@@ -316,7 +327,8 @@ def test_negative_control_including_tampered_rows_fails_the_exclusion_check(tmp_
     packet = steward_prompt.assemble(home, tmp_path / "cache", run, [])
     open_cases_text = dict(packet.blocks)["open_cases"]
     assert intact_id in open_cases_text
-    assert tampered_id in open_cases_text  # RED: the tampered case now surfaces
+    # RED for the test above: the tampered case now surfaces as a case.
+    assert f"case {tampered_id}: unavailable" in open_cases_text
 
 
 # ------------------------------------------------------- test 8: withheld
@@ -525,8 +537,10 @@ def test_superseded_parked_case_is_not_rendered_only_the_successor_is(tmp_path):
         tmp_path, home, kind="parked", outcome="parked",
         overrides={"parked_for": "overseer", "parked_reason": "authority-unclear"},
     )
+    # S-81: only the overseer's decision -- or a person -- supersedes an
+    # open parked case; the steward is refused it (`cases.record`).
     second = _record_case(
-        tmp_path, home, kind="parked", outcome="parked", supersedes=first,
+        tmp_path, home, kind="parked", outcome="parked", supersedes=first, actor="human",
         overrides={"parked_for": "overseer", "parked_reason": "authority-unclear"},
     )
     run = _run(tmp_path)

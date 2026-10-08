@@ -44,7 +44,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, cast
 
-from . import gitops, intents, miner, overseer, settings, steward, worker
+from . import cases, gitops, intents, miner, overseer, settings, steward, worker
 from .overseer import notify as overseer_notify
 from .overseer import run as overseer_run
 from .primitives import chrono, fsops
@@ -808,7 +808,36 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
         return False
     if unfinished or reconsider or violations:
         return True
-    return any(_input_commit_epoch(home, path) > last_epoch for path in input_paths)
+    released = _release_epochs(home)
+    return any(
+        _input_commit_epoch(home, path) > last_epoch
+        # Not before the last run's end: both clocks count whole seconds,
+        # and an eligible lesson the overseer let go no earlier than that
+        # end is one no run has had the chance to select.
+        or released.get(path.stem, -1.0) >= last_epoch
+        for path in input_paths
+    )
+
+
+def _release_epochs(home: Path) -> dict[str, float]:
+    """S-81 (gate S1c R3): lesson id -> when the overseer last let it go --
+    the commit of its decision that superseded a parked case naming the
+    lesson (the same commit rewrites that parked case's `superseded_by`,
+    so the parked case file's last commit is the release). An undecided
+    lesson released after the steward's last run is new work for the
+    steward: before, its record file was older than that run, so nothing
+    made the steward due for it until some unrelated input arrived."""
+    released: dict[str, float] = {}
+    for row in cases.list_cases(home, parked_for="overseer"):
+        if not row.get("superseded_by"):
+            continue
+        case_path = next((home / "cases").glob(f"*/{row.get('case')}.md"), None)
+        if case_path is None:
+            continue
+        epoch = _input_commit_epoch(home, case_path)
+        for record_id in row.get("records") or []:
+            released[str(record_id)] = max(released.get(str(record_id), 0.0), epoch)
+    return released
 
 
 def _overseer_target_for(now: float) -> float:

@@ -763,8 +763,12 @@ def _render_held(home: Path) -> str | None:
         return None
     lines = [HELD_TITLE, HELD_INSTRUCTION]
     for record_id in sorted(held):
+        # Gate S1c R4: a parked case whose file fails its freeze-hash check
+        # holds its lesson too, and says so -- only a person can repair it.
         named = ", ".join(
-            f"{row.get('case')} ({row.get('parked_reason') or 'no reason given'})"
+            f"{row.get('case')} ({row.get('parked_reason') or 'no reason given'}"
+            + ("; its file fails its freeze-hash check" if row.get("frozen_ok") is False else "")
+            + ")"
             for row in held[record_id]
         )
         lines.append(f"- {record_id}: {named}")

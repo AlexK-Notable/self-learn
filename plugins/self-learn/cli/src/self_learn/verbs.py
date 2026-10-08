@@ -608,7 +608,19 @@ def _scan_or_refuse(
     """(a) Full-record-file secret scan (P2-7) + the note text + any other
     caller text the verb writes (``texts``: ``(label, text)`` pairs, e.g.
     dismiss-suspect's ``--why``). A hit refuses the verb with span + rule;
-    nothing has been written yet."""
+    nothing has been written yet.
+
+    S-81 (2026-10-08): *paths* is the set of record files this verb is
+    about to rewrite, so it is also where the ledger refuses the steward a
+    lesson the overseer holds (:func:`ledger_ops.refuse_held`) -- a
+    collapse's losers, a predecessor a route supersedes, a note -- before
+    the scan and before anything is written. Kind ``bad-line``."""
+    try:
+        ledger_ops.refuse_held(
+            None, [path.stem for path in paths if RECORD_ID_RE.fullmatch(path.stem)]
+        )
+    except ledger_ops.HeldLessonRefusal as exc:
+        raise SheetLineError(str(exc)) from exc
     findings: list[tuple[str, list]] = []
     for path in paths:
         hits = secret_scan(path.read_text(encoding="utf-8"))

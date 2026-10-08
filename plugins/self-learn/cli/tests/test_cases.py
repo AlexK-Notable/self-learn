@@ -972,7 +972,9 @@ def test_r2_s2_crash_between_successor_and_predecessor_write_recovers_fully(tmp_
     assert parked_view.frontmatter["superseded_by"] is None
 
     # a later unrelated record must see exactly the surviving population
-    other = _record(tmp_path, home)
+    # (a person's: the parked case above holds the fixture's lesson, and
+    # S-81 refuses the steward a case about a lesson the overseer holds)
+    other = _record(tmp_path, home, actor="human")
     rows = cases.list_cases(home)
     assert {r["case"] for r in rows} == {parked, other}
 

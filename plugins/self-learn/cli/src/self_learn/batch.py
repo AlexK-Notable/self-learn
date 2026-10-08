@@ -52,6 +52,7 @@ from .ledger_ops import (
     SheetLineRefusal,
     StatusRefusal,
     UnreadableRecord,
+    acting_as,
     defer_until,
     find_record_path,
     read_record_or_refuse,
@@ -2048,6 +2049,25 @@ def dry_run(
     hook_activation: bool = False,
     reconsidered: frozenset[str] | set[str] = frozenset(),
 ) -> DryRunResult:
+    """:func:`_dry_run_items` under an actor scope for *actor*
+    (:func:`ledger_ops.acting_as`, S-81): the preview runs the verbs' own
+    checks, so it refuses what the run would -- a lesson the overseer
+    holds, when the steward previews."""
+    with acting_as(actor, home):
+        return _dry_run_items(
+            home, items, actor=actor, hook_activation=hook_activation,
+            reconsidered=reconsidered,
+        )
+
+
+def _dry_run_items(
+    home: Path | str,
+    items: list[SheetItem],
+    *,
+    actor: str = "human",
+    hook_activation: bool = False,
+    reconsidered: frozenset[str] | set[str] = frozenset(),
+) -> DryRunResult:
     """BAT9: writes nothing at all — ledger AND hosts (O-2b: this
     includes the runtime directory — a hook item's preview below never
     calls :func:`self_learn.hook_activation.activate`, only labels what
@@ -2246,6 +2266,29 @@ def dry_run(
 
 
 def run(
+    home: Path | str,
+    items: list[SheetItem],
+    *,
+    no_push: bool = False,
+    actor: str = "human",
+    hook_activation: bool = False,
+    continuation: BatchContinuation | None = None,
+    checkpoint: Callable[[BatchResult], dict | None] | None = None,
+) -> BatchResult:
+    """:func:`_run_items` under an actor scope for *actor*
+    (:func:`ledger_ops.acting_as`, S-81, 2026-10-08): the runner's own
+    validated actor -- never a sheet line's ``by`` -- is who the ledger
+    sees acting, so a steward run is refused a lesson the overseer holds
+    at the ledger itself, whichever verb or key reaches it."""
+    with acting_as(actor, home):
+        return _run_items(
+            home, items, no_push=no_push, actor=actor,
+            hook_activation=hook_activation, continuation=continuation,
+            checkpoint=checkpoint,
+        )
+
+
+def _run_items(
     home: Path | str,
     items: list[SheetItem],
     *,

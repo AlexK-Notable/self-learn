@@ -81,7 +81,13 @@ from ruamel.yaml.error import YAMLError
 
 from . import always_loaded, gitops, intents, sentinel, user_model
 from .ledger import discover_buckets
-from .ledger_ops import LedgerOpsError, find_record_path
+from .ledger_ops import (
+    HeldLessonRefusal,
+    LedgerOpsError,
+    find_record_path,
+    held_text,
+    steward_acting_home,
+)
 from .primitives import chrono, fsops
 from .primitives.yamlio import rt_yaml
 from .records import Record, RecordError
@@ -101,6 +107,7 @@ __all__ = [
     "CASE_ID_RE",
     "CaseError",
     "CaseUsageError",
+    "HeldCaseError",
     "CaseView",
     "record",
     "require_reconsider_case",
@@ -109,6 +116,7 @@ __all__ = [
     "list_cases",
     "awaiting_overseer",
     "held_lessons",
+    "tampered_parked",
     "rebuild_index",
     "receipt",
     "observe",
@@ -198,6 +206,14 @@ class CaseUsageError(CaseError):
     "An unknown record id is 64 (usage), not 1.")."""
 
     exit_code = 64
+
+
+class HeldCaseError(CaseError):
+    """S-81 (2026-10-08, the ledger-level fix): the steward's case names a
+    lesson the overseer holds, or supersedes a case that does -- the
+    overseer's own open parked case among them. Raised from a
+    ``ledger_ops.HeldLessonRefusal`` (``raise ... from``), so a runner
+    reads its S-71 kind, ``bad-line``, off the cause."""
 
 
 # ------------------------------------------------------------- helpers
@@ -684,6 +700,59 @@ def check_case_data(data: dict, *, withhold_spans: bool = False) -> CaseFields:
     )
 
 
+def _refuse_steward_case_on_held(
+    home: Path,
+    records: list[str],
+    supersedes: str | None,
+    predecessor_records: object,
+    predecessor_parked_for: object,
+) -> None:
+    """S-81 (2026-10-08, the ledger-level fix), checked by :func:`record`
+    for a case the steward records, before anything is written. The
+    steward may not decide a lesson the overseer holds, so it may not:
+
+    * record a case about one (a decision, a reconsider, or a second
+      parked case for a lesson that already waits -- gate S1c R1's
+      ``parked.yaml``, model-parked and cap close-out paths alike);
+    * supersede the overseer's own open parked case, which closes the
+      overseer's question (gate S1c D1); nor
+    * supersede any case about a lesson the overseer holds, which consumes
+      that case for every lesson it names (D1's second shape, R2).
+
+    The rule the overseer's own successors are held to (its
+    ``_validate_successor``) is the mirror: the overseer may supersede
+    only a parked case. A re-driven case already in the ledger never
+    reaches here (:func:`record` returns its reserved id first). Raises
+    :class:`HeldCaseError` from a ``ledger_ops.HeldLessonRefusal``."""
+    held = held_lessons(home)
+    for record_id in records:
+        if record_id in held:
+            cause = HeldLessonRefusal(
+                held_text(record_id, held[record_id]), record_id=record_id,
+                cases=[str(row.get("case")) for row in held[record_id]],
+            )
+            raise HeldCaseError(f"case record: {cause}") from cause
+    if supersedes is None:
+        return
+    named = [str(rid) for rid in predecessor_records] if isinstance(predecessor_records, list) else []
+    if predecessor_parked_for == "overseer":
+        cause = HeldLessonRefusal(
+            f"{supersedes} is a parked case the overseer has yet to decide; only the "
+            "overseer's decision supersedes it",
+            record_id=named[0] if named else "", cases=[supersedes],
+        )
+        raise HeldCaseError(f"case record: {cause}") from cause
+    for record_id in named:
+        if record_id in held:
+            cause = HeldLessonRefusal(
+                f"{supersedes} is a case about {record_id}, and "
+                + held_text(record_id, held[record_id]),
+                record_id=record_id,
+                cases=[str(row.get("case")) for row in held[record_id]],
+            )
+            raise HeldCaseError(f"case record: {cause}") from cause
+
+
 def record(
     home: Path | str,
     stage_file: Path | str,
@@ -821,6 +890,12 @@ def record(
                         f"case record: {supersedes} is already superseded by "
                         f"{sup_fm['superseded_by']}"
                     )
+            if actor == "steward" or steward_acting_home() is not None:
+                _refuse_steward_case_on_held(
+                    home, list(records_field), supersedes,
+                    sup_fm.get("records") if sup_fm is not None else None,
+                    sup_fm.get("parked_for") if sup_fm is not None else None,
+                )
 
             message = f"self-learn: case record {case_id} ({outcome})"
 
@@ -1347,15 +1422,37 @@ def awaiting_overseer(home: Path | str) -> list[dict]:
     ]
 
 
+def tampered_parked(home: Path | str) -> list[dict]:
+    """S-81 (gate S1c R4): the parked cases for the overseer, not
+    superseded, whose file fails its freeze-hash check (``frozen_ok:
+    false``). :func:`awaiting_overseer` leaves them out -- the overseer
+    cannot decide a case it cannot trust, and the case writer refuses to
+    supersede one -- so before this nothing held their lessons and nothing
+    said so: the steward decided the lesson as if it had never been
+    parked. Now the hold keeps them (:func:`held_lessons`), and the
+    steward names them in its brief and tells the user once
+    (`steward._tell_tampered_holds`): only a person can repair the file."""
+    return [
+        row for row in list_cases(home, parked_for="overseer")
+        if row.get("frozen_ok") is False and not row.get("superseded_by")
+    ]
+
+
 def held_lessons(home: Path | str) -> dict[str, list[dict]]:
     """S-81: every lesson a case :func:`awaiting_overseer` names, with
     those cases. The overseer holds such a lesson: the steward selects it
     for no decision and refuses any sheet line on it, and may only add a
     note to its case (the user's words, 2026-10-08). The hold lifts when
     the overseer's decision supersedes the case. Whoever parked the case
-    -- the steward, its runner or a person -- the lesson is held alike."""
+    -- the steward, its runner or a person -- the lesson is held alike.
+
+    Gate S1c R4: a parked case whose file fails its freeze-hash check
+    (:func:`tampered_parked`) holds its lessons too -- fail closed, never
+    "hidden from both sides": the overseer's queue leaves it out, so the
+    steward must not take its lessons over unannounced. Its rows carry
+    ``frozen_ok: false``, which the held sentence names."""
     held: dict[str, list[dict]] = {}
-    for row in awaiting_overseer(home):
+    for row in [*awaiting_overseer(home), *tampered_parked(home)]:
         for record_id in row.get("records") or []:
             held.setdefault(str(record_id), []).append(row)
     return held
