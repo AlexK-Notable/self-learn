@@ -482,6 +482,14 @@ def test_a_plain_skills_root_takes_a_new_hook_script_ignored_and_refuses_a_track
     assert _block(repo) == [f"/{rel}"]
     assert _head(repo) == head
 
+    # Recompile's hook leg: the script and its line both lost, both back.
+    script.unlink()
+    _write_operator_lines(repo)
+    verbs.recompile(home, no_push=True)
+    assert script.is_file()
+    assert _block(repo) == [f"/{rel}"]
+    assert _ignored(repo, rel) and _status(repo) == ""
+
     # The removal leg: once its owner tracks the script, retiring the hook
     # would delete a tracked file -- refused, the script stays.
     git(repo, "add", "-f", "--", rel)
@@ -492,6 +500,92 @@ def test_a_plain_skills_root_takes_a_new_hook_script_ignored_and_refuses_a_track
     assert script.is_file()
     assert _record(home, hook).status == "routed"
     assert _status(repo) == ""
+
+
+def _plain_skills_root(tmp_path: Path):
+    """`make_env`'s host re-registered as a PLAIN skills root only."""
+    env = make_env(tmp_path)
+    home, repo = env.ledger, env.host
+    (home / "hosts.yaml").write_text(
+        f"skills_root:\n  path: {repo}\n  mode: plain\nprojects: []\n", encoding="utf-8"
+    )
+    commit_all(home, "the skills root is plain")
+    (repo / MARKER_FILENAME).write_text("plain skills root\n", encoding="utf-8")
+    _write_operator_lines(repo)
+    return home, repo
+
+
+def _hook_lesson(home: Path, rid: str) -> str:
+    create_record(home, make_behavior(scope="skill:s", record_id=rid))
+    write_proposal(
+        home, rid,
+        proposal_dict(scope="skill:s", destination="hook", alternates=["skill-md"],
+                      **hook_proposal_fields()),
+    )
+    stamp_proposal(home, rid)
+    commit_all(home, f"seed {rid}")
+    return rid
+
+
+def test_a_hook_script_the_skills_repo_re_admits_is_refused_before_anything_is_written(
+    tmp_path,
+):
+    home, repo = _plain_skills_root(tmp_path)
+    (repo / ".gitignore").write_text("!/plugins/*/hooks/*.sh\n", encoding="utf-8")
+    commit_all(repo, "re-admit hook scripts")
+    rid = _hook_lesson(home, "lrn-9a000017")
+    ledger_head = last_verb_sha(home)
+
+    with pytest.raises(verbs.DestinationUnavailable) as caught:
+        verbs.route(home, rid, dest="hook", no_push=True)
+
+    assert "would still not be ignored by git" in str(caught.value)
+    assert not list(repo.glob("plugins/*/hooks/*.sh"))
+    assert _record(home, rid).status == "pending"
+    assert last_verb_sha(home) == ledger_head  # a telemetry flush may ride on top
+    assert _block(repo) is None
+
+
+def test_recompile_never_deletes_a_retired_hook_script_its_owner_tracks(tmp_path):
+    """A retired hook's script is back on disk (an interrupted removal, or
+    a restore) and its owner tracks it: recompile's removal repair leaves
+    it alone and says the removal is still owed."""
+    home, repo = _plain_skills_root(tmp_path)
+    rid = _hook_lesson(home, "lrn-9a000018")
+    script = verbs.route(home, rid, dest="hook", no_push=True).target
+    assert script is not None
+    text = script.read_text(encoding="utf-8")
+    verbs.graduate(home, rid, no_push=True)
+    assert not script.exists()  # control: the untracked script was removed
+    script.write_text(text, encoding="utf-8")
+    rel = script.relative_to(repo).as_posix()
+    git(repo, "add", "-f", "--", rel)
+    git(repo, "commit", "-q", "-m", "keep the guard script")
+
+    result = verbs.recompile(home, no_push=True)
+
+    assert script.read_text(encoding="utf-8") == text
+    (entry,) = [e for e in result.entries if e.target == script]
+    assert entry.skipped == "hook removal not done — still owed"
+    assert any(f"{rel} is tracked by git" in w for w in result.warnings), result.warnings
+    assert _status(repo) == ""
+
+
+def test_a_reference_retirement_puts_the_shelf_s_line_back_first(tmp_path):
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a000019")
+    verbs.route(home, rid, dest="reference", no_push=True)
+    assert _block(host) == ["/CLAUDE.md", "/references/LEARNINGS.md"]
+    _write_operator_lines(host)  # the block is lost
+    assert not _ignored(host, "references/LEARNINGS.md")  # control
+
+    verbs.graduate(home, rid, no_push=True)
+
+    shelf = host / "references" / "LEARNINGS.md"
+    assert rid not in shelf.read_text(encoding="utf-8")
+    assert _block(host) == ["/references/LEARNINGS.md"]
+    assert _ignored(host, "references/LEARNINGS.md")
 
 
 def test_a_renamed_away_path_still_counts_as_tracked_until_the_rename_is_committed(
