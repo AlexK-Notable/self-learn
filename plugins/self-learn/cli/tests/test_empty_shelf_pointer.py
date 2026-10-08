@@ -317,7 +317,7 @@ def test_the_pointer_stays_while_one_entry_is_left(tmp_path, mode):
     _assert_pointer_and_shelf_gone(home, host)
 
 
-def _named_shelf(home: Path, host: Path, mode: str) -> Path:
+def _named_shelf(home: Path, host: Path, mode: str, header: str = NAMED_HEADER) -> Path:
     """A named shelf a person made by hand (self-learn never creates one).
     A git host's history is its provenance; a plain host refuses a file the
     compile record has never seen (`unknown`), and `recompile --adopt` has
@@ -325,7 +325,7 @@ def _named_shelf(home: Path, host: Path, mode: str) -> Path:
     written here directly."""
     named = _shelf(host, "git.md")
     named.parent.mkdir(parents=True, exist_ok=True)
-    named.write_text(NAMED_HEADER, encoding="utf-8")
+    named.write_text(header, encoding="utf-8")
     if mode == "git":
         commit_all(host, "a named shelf")
     else:
@@ -372,10 +372,15 @@ def test_another_shelfs_line_keeps_the_block_and_its_record_stays_true(tmp_path,
 
 
 @pytest.mark.parametrize("mode", ["git", "plain"])
-def test_a_named_shelf_loses_its_line_and_keeps_its_file(tmp_path, mode):
+@pytest.mark.parametrize("header", ["own", "self-learn's"])
+def test_a_named_shelf_loses_its_line_and_keeps_its_file(tmp_path, mode, header):
+    """A named shelf is a file a person made (self-learn never creates one,
+    and a later `reference:<file>` route needs it to exist), so it stays
+    even when it holds nothing but a copy of self-learn's own header."""
+    text = NAMED_HEADER if header == "own" else _LEARNINGS_HEADER
     home = make_env(tmp_path).ledger
     host = _project_host(home, tmp_path, mode)
-    named = _named_shelf(home, host, mode)
+    named = _named_shelf(home, host, mode, header=text)
     _shelve(home, host, RID, dest="reference:git.md")
     claude = host / "CLAUDE.md"
     assert "`references/git.md`" in (_block(claude.read_text(encoding="utf-8")) or "")
@@ -383,7 +388,7 @@ def test_a_named_shelf_loses_its_line_and_keeps_its_file(tmp_path, mode):
     verbs.retire(home, RID, covered_by="claude-md:CLAUDE.md", no_push=True)
 
     assert claude.read_text(encoding="utf-8") == CLAUDE_MD_SEED
-    assert named.read_text(encoding="utf-8") == NAMED_HEADER  # a person's file stays
+    assert named.read_text(encoding="utf-8") == text  # a person's file stays
     entry = _entry(home, host, named, "reference")
     assert entry is not None and entry["sha256"] == _region_sha(named, "reference")
     assert _entry(home, host, claude, "pointer") is None
@@ -522,6 +527,39 @@ def test_a_route_that_supersedes_onto_the_same_shelf_records_the_shelf_it_leaves
     assert f"— {OTHER}" in shelf.read_text(encoding="utf-8")
 
 
+def test_a_fresh_block_after_the_move_keeps_the_ancestry_sentence_in_the_record(tmp_path):
+    """On a host with a registered descendant, a pointer block is written
+    with ANC8's base sentence. Moving the only shelf lesson to a named shelf
+    removes the block and writes a fresh one, base sentence included; the
+    record must predict that sentence too. (The first shelf route on such a
+    host records its pointer without the sentence -- a separate, earlier
+    defect -- so the person adopts the region first, as the refusal says.)"""
+    home = make_env(tmp_path).ledger
+    host = _project_host(home, tmp_path, "git")
+    inner = host / "inner"
+    inner.mkdir()
+    (inner / "README.md").write_text("inner\n", encoding="utf-8")
+    commit_all(host, "a nested project")
+    host_add(home, inner, "project", mode="plain")
+    named = _named_shelf(home, host, "git")
+    _shelve(home, host, RID)
+    claude = host / "CLAUDE.md"
+    base = "paths are relative to the directory containing this file"
+    assert base in claude.read_text(encoding="utf-8")  # control: ANC8 applies here
+    verbs.recompile(home, no_push=True, adopt=f"{claude}#pointer")
+
+    verbs.reroute(home, RID, dest="reference:git.md", no_push=True)
+
+    block = _block(claude.read_text(encoding="utf-8"))
+    assert block is not None and base in block and "`references/git.md`" in block
+    assert SHELF_LINE not in block
+    pointer = _entry(home, host, claude, "pointer")
+    assert pointer is not None and pointer["sha256"] == _region_sha(claude, "pointer")
+    _lesson(home, host, OTHER)
+    verbs.route(home, OTHER, dest="reference:git.md", no_push=True)  # not `edited`
+    assert f"— {OTHER}" in named.read_text(encoding="utf-8")
+
+
 # ------------------------------------------------ the pure text transforms
 
 
@@ -570,11 +608,15 @@ def test_only_the_named_shelfs_line_leaves_and_text_outside_the_block_is_untouch
 
 
 def test_a_block_holding_anything_but_the_preamble_is_kept():
+    """Only pointer lines (the `pointer_line` grammar) leave; a person's own
+    line inside the block stays even when it names the same shelf, and it
+    keeps the block."""
+    note = "A note a person left: references/LEARNINGS.md is long."
     text = _bootstrapped("# host\n")
-    text = text.replace(SHELF_LINE, "A note a person left here.\n" + SHELF_LINE)
+    text = text.replace(SHELF_LINE, note + "\n" + SHELF_LINE)
     after, block_removed = compilers._retire_pointer_text(text, SURFACE, TARGET)
     assert block_removed is False
-    assert POINTER_BEGIN_MARKER in after and "A note a person left here." in after
+    assert POINTER_BEGIN_MARKER in after and note in after
     assert SHELF_LINE not in after
 
 
