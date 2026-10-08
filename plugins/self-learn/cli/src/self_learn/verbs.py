@@ -2027,9 +2027,12 @@ def _resolve_local_target(
     )
     if check_dirty:
         # U-hostmode PLAIN9/§4.11: check_ignore is a GIT-tracking privacy
-        # guard (P-A3) — a plain host tracks NOTHING, so nothing can be
-        # published by being tracked; the hazard cannot occur. Skipped
-        # for plain, unchanged (and still refusing) for git.
+        # guard (P-A3), skipped for plain and unchanged (still refusing)
+        # for git. Its old premise for skipping -- "a plain host tracks
+        # NOTHING" -- stopped being true once plain hosts were git repos;
+        # a plain host's target is now held by the plain-host write guard
+        # (`_refuse_unsafe_plain_write`, run by `_resolve_target`), which
+        # also writes the ignore line this check could only demand.
         if mode == "git" and not gitops.check_ignore(host, target):
             raise DestinationUnavailable(
                 f"{target} is not gitignored in {host} — add "
@@ -2142,6 +2145,42 @@ def _resolve_rules_target(
 
 
 def _resolve_target(
+    home: Path,
+    bucket_dir: Path,
+    scope: str,
+    destination: str,
+    ref_name: str | None,
+    *,
+    user_claude_md: Path | str | None = None,
+    project_path: Path | None = None,
+    check_dirty: bool = True,
+    variant: str | None = None,
+    rules_topic: str | None = None,
+    rules_paths: list[str] | tuple[str, ...] | None = None,
+    allow_empty_glob: bool = False,
+    removal: bool = False,
+) -> TargetSpec:
+    """PRE-FLIGHT target resolution: :func:`_resolve_target_unguarded`
+    (see it for the registry and dirty gates), then -- whenever
+    ``check_dirty`` asks for the write-time gates -- the plain-host write
+    guard (G1, D-DEPLOY §1.1): a plain host's files must be ones git
+    ignores (:func:`_refuse_unsafe_plain_write`). ``removal`` says the
+    write only takes a lesson's lines OUT of the target (a retirement),
+    which changes the refusal's kind, never whether it refuses. Pure —
+    writes nothing; ``check_dirty=False`` (recompile, ``list --json``,
+    commit-drift) resolves exactly as before and runs its own checks."""
+    spec = _resolve_target_unguarded(
+        home, bucket_dir, scope, destination, ref_name,
+        user_claude_md=user_claude_md, project_path=project_path,
+        check_dirty=check_dirty, variant=variant, rules_topic=rules_topic,
+        rules_paths=rules_paths, allow_empty_glob=allow_empty_glob,
+    )
+    if check_dirty:
+        _refuse_unsafe_plain_write(spec, removal=removal)
+    return spec
+
+
+def _resolve_target_unguarded(
     home: Path,
     bucket_dir: Path,
     scope: str,
@@ -2450,7 +2489,9 @@ def _resolve_hook_target(home: Path, record: Record, bucket_dir: Path) -> Target
             "overwrite; supersede the record that owns it first"
         )
     scope_kind = _hook_scope_kind(record)
-    return TargetSpec("hook", scope_kind, bucket_dir, target, root, mode=host_mode(home, root))
+    spec = TargetSpec("hook", scope_kind, bucket_dir, target, root, mode=host_mode(home, root))
+    _refuse_unsafe_plain_write(spec)  # G1: a plain host's new script must be ignorable
+    return spec
 
 
 def _replay_hook_examples(
@@ -3162,6 +3203,9 @@ def _remove_hook_script(
     try:
         with gitops.host_lock(host_repo, mode):
             if mode != "git":
+                # G1: never delete a file git tracks in a plain host (the
+                # pre-flight refused it; its tracking may have changed).
+                _refuse_unsafe_plain_paths([script], removal=True, deleting=True)
                 script.unlink()
                 return None
             snapshot = _snapshot_host_files([script])
@@ -3197,7 +3241,7 @@ def _remove_hook_script(
                 print(f"self-learn: {warning}", file=sys.stderr)
                 warnings.append(warning)
                 return None
-    except (gitops.GitOpsError, OSError) as exc:
+    except (gitops.GitOpsError, OSError, VerbError) as exc:
         warning = (
             f"HOOK REMOVAL FAILED after the ledger commit ({exc}) — remove "
             f"{script} by hand; the ledger stays truth (H-2)"
@@ -3638,6 +3682,7 @@ def _retirement_preflight(
                 # retirement preflight's.
                 variant=routing.get("variant"),
                 rules_topic=routing.get("rules_topic"),
+                removal=True,  # G1: taking lines out is still a write
             )
         )
     if destination == "hook":
@@ -3648,6 +3693,10 @@ def _retirement_preflight(
             removal = _hook_script_location(home, record, warnings)
         except HostsError as exc:
             raise _hosts_unreadable(exc) from exc
+        if removal is not None and removal[3] == "plain":
+            # G1: deleting a file git tracks in a plain host is a change
+            # git shows; deleting an untracked one is not.
+            _refuse_unsafe_plain_paths([removal[1]], removal=True, deleting=True)
         return _Retirement(removal=removal)
     if destination == "reference":
         ref_spec = _resolve_target(
@@ -3661,6 +3710,7 @@ def _retirement_preflight(
             # variant/rules_topic only — never rules_paths.
             variant=routing.get("variant"),
             rules_topic=routing.get("rules_topic"),
+            removal=True,  # G1: as the managed branch above
         )
         # `TargetSpec.target` is None for a reference spec (the file is
         # resolved through `refs_dir`/`ref_name` — see `_resolve_target`'s
@@ -4074,6 +4124,105 @@ def _host_write_candidates(spec: TargetSpec) -> list[Path]:
         )
         paths.append(spec.host_path / ".claude-plugin" / "marketplace.json")
     return paths
+
+
+# ------------------------------------- G1: a plain host receives ignored files
+
+
+def _plain_write_check(
+    path: Path, *, deleting: bool = False
+) -> tuple[Path | None, str | None, str | None]:
+    """D-DEPLOY §1.1's check for ONE file a plain-host write touches,
+    asked of the file's REAL path (a write through a symlink lands, and is
+    judged, where the link points). Returns ``(repo, ignore line,
+    problem)``: ``(None, None, None)`` outside every git work tree (nothing
+    there can be published, so it passes and needs no line -- user scope,
+    ``~/.claude``, is this case); otherwise the problem is ``None`` when
+    the file may be written, and the line is the one its repo's
+    ``info/exclude`` must carry first.
+
+    Refused: a file git tracks (index or ``HEAD``, so a renamed-away path
+    still counts), for an addition and a removal alike; and a file the
+    repo's own ignore rules would still re-admit with its line in place
+    (§0.5's probe). *deleting* (a file being removed, never rewritten)
+    asks only the first: an untracked file's deletion changes nothing git
+    shows. Writes nothing anywhere."""
+    real = Path(os.path.realpath(path))
+    repo = gitops.work_tree_of(real)
+    if repo is None:
+        return None, None, None
+    rel = real.relative_to(repo).as_posix()
+    shown = str(path) if real == Path(path).absolute() else f"{path} (really {real})"
+    if gitops.in_index_or_head(repo, rel):
+        return repo, None, f"{shown} is tracked by git in {repo}"
+    if deleting:
+        return repo, None, None
+    if "\n" in rel or "\r" in rel:
+        return repo, None, f"{shown} has a line break in its name, which no ignore line can name"
+    line = gitops.exclude_pattern(rel)
+    if not gitops.ignored_with_line(repo, rel, line):
+        return repo, line, (
+            f"{shown} would still not be ignored by git in {repo} with the line "
+            f"{line!r} in {gitops.git_path(repo, 'info/exclude')} -- the repo's "
+            "own ignore rules re-admit it"
+        )
+    return repo, line, None
+
+
+_PLAIN_RULE = (
+    "a plain-mode host receives only files git ignores (self-learn writes the "
+    "file's ignore line first), so nothing was written"
+)
+
+
+def _refuse_unsafe_plain_paths(
+    paths: Iterable[Path], *, removal: bool = False, deleting: bool = False
+) -> list[tuple[Path, str]]:
+    """G1: run :func:`_plain_write_check` over every path ONE write
+    touches; raise when any is refused, naming every refused path. Returns
+    the ``(repo, line)`` pairs the write needs in place first.
+
+    The refusal's kind (S-71) follows what could fix it. An ADDITION is
+    :class:`DestinationUnavailable` -- another destination, or another
+    rules topic name, can take the lesson the same night (the steward's
+    repair turn, D-DEPLOY §1.1). A REMOVAL (*removal*: a retirement only
+    takes a lesson's lines out of a file that stays where it is) is
+    :class:`NeedsPerson` -- no choice of destination changes where the
+    lines already sit; a person moves or untracks that file first (the
+    later migration unit)."""
+    problems: list[str] = []
+    lines: list[tuple[Path, str]] = []
+    for path in paths:
+        repo, line, problem = _plain_write_check(path, deleting=deleting)
+        if problem is not None:
+            problems.append(problem)
+        elif repo is not None and line is not None:
+            lines.append((repo, line))
+    if not problems:
+        return lines
+    found = "; ".join(problems)
+    if removal:
+        raise NeedsPerson(
+            f"{found} -- {_PLAIN_RULE}. Taking this lesson out would change that "
+            "file; move or untrack it first, then re-run"
+        )
+    raise DestinationUnavailable(
+        f"{found} -- {_PLAIN_RULE}. Choose a destination whose file git does not "
+        "track (a project lesson: claude-md:local; a rules lesson: a topic name "
+        "with no tracked file), or untrack the file first"
+    )
+
+
+def _refuse_unsafe_plain_write(spec: TargetSpec, *, removal: bool = False) -> None:
+    """G1, the pre-flight half (D-DEPLOY §1.1): for a ``plain``-mode
+    spec, every file its write can touch (:func:`_host_write_candidates`)
+    must pass :func:`_plain_write_check`. Pure -- writes nothing in the
+    host or the ledger. A ``git``-mode spec is unaffected: git mode
+    commits its targets. The mode is the spec's, so the check keys off
+    the REGISTRATION the write goes through, never the repo's path."""
+    if spec.mode != "plain":
+        return
+    _refuse_unsafe_plain_paths(_host_write_candidates(spec), removal=removal)
 
 
 def _snapshot_host_files(paths: list[Path]) -> _HostSnapshot:
@@ -9254,6 +9403,22 @@ def recompile(
                 # that can see a committed-equivalent hand edit
                 # (REC2/REC4), and recompile must never guess past one
                 # (H-3) — `--adopt`, just above, is the named repair.
+                #
+                # G1 (D-DEPLOY §1.1): recompile is a writer like any other
+                # -- a plain host's target git tracks (or would not ignore)
+                # is left alone, loudly, before anything is read or written.
+                try:
+                    _refuse_unsafe_plain_write(spec)
+                except VerbError as exc:
+                    # `specs` holds skill-md/claude-md/new-skill specs only
+                    # (references go to `ref_work`), and each of those
+                    # always resolves a target.
+                    assert target is not None
+                    result.entries.append(
+                        RecompileEntry(target=target, changed=False, skipped=str(exc))
+                    )
+                    result.warnings.append(f"{target}: {exc}")
+                    continue
                 if region_kind is not None:
                     try:
                         _abort_if_unsound(
@@ -9438,7 +9603,20 @@ def recompile(
         for (host_repo, probe), (spec, records) in sorted(
             ref_work.items(), key=lambda kv: str(kv[0][1])
         ):
-            if probe.is_file() and gitops.paths_dirty(host_repo, probe):
+            # G1: a plain host has no `git status` to consult (the managed
+            # leg above never asks it either) -- its gate is the plain-host
+            # write guard instead, for the shelf here and the pointer
+            # surface below.
+            if spec.mode == "plain":
+                try:
+                    _refuse_unsafe_plain_paths([probe])
+                except VerbError as exc:
+                    result.entries.append(
+                        RecompileEntry(target=probe, changed=False, skipped=str(exc))
+                    )
+                    result.warnings.append(f"{probe}: {exc}")
+                    continue
+            elif probe.is_file() and gitops.paths_dirty(host_repo, probe):
                 result.entries.append(
                     RecompileEntry(target=probe, changed=False, skipped="dirty")
                 )
@@ -9456,8 +9634,24 @@ def recompile(
                 spec.pointer_surface is not None
                 and spec.pointer_surface.resolve() in adopted_pointer_surfaces
             )
-            if (
-                spec.pointer_surface is not None
+            pointer_refusal: str | None = None
+            if spec.mode == "plain" and spec.pointer_surface is not None and not skip_pointer:
+                try:
+                    _refuse_unsafe_plain_paths([spec.pointer_surface])
+                except VerbError as exc:
+                    pointer_refusal = str(exc)
+            if pointer_refusal is not None:
+                assert spec.pointer_surface is not None  # set with pointer_refusal above
+                result.entries.append(
+                    RecompileEntry(
+                        target=spec.pointer_surface, changed=False, skipped=pointer_refusal
+                    )
+                )
+                result.warnings.append(f"{spec.pointer_surface}: {pointer_refusal}")
+                skip_pointer = True
+            elif (
+                spec.mode == "git"
+                and spec.pointer_surface is not None
                 and spec.pointer_surface.is_file()
                 and gitops.paths_dirty(host_repo, spec.pointer_surface)
             ):
