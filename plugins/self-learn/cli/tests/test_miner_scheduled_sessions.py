@@ -230,6 +230,11 @@ def test_the_job_name_is_read_from_the_opening_tag():
     # a different tag that shares the prefix, and plain text, are not jobs
     assert miner._scheduled_job_name('<scheduled-tasks name="news-digest">') is None
     assert miner._scheduled_job_name("scheduled-task news-digest") is None
+    # only the name attribute itself counts, trimmed: a look-alike such as
+    # data-name or filename is never read as the job's name
+    assert miner._scheduled_job_name('<scheduled-task data-name="decoy" name="real">\nbody') == "real"
+    assert miner._scheduled_job_name('<scheduled-task filename="a.md">\nbody') == ""
+    assert miner._scheduled_job_name('<scheduled-task name="  padded  ">\nbody') == "padded"
 
 
 # ------------------------------------------------------ a whole night
@@ -263,13 +268,24 @@ def test_the_run_logs_its_halts_by_reason_and_names_nothing(home, transcripts, m
         [user_row("You are the self-learn transcript miner. Below are digests.", promptSource="sdk"), assistant_row("x")],
     )
     write_session(transcripts, WORK_FOLDER, "sess-typed", typed_lines())
+    write_session(
+        transcripts, WORK_FOLDER, "sess-review",
+        [
+            user_row("tidy the parser module", **TYPED_ROW),
+            assistant_row("done"),
+            user_row("<command-name>/self-learn:review</command-name> go", **TYPED_ROW),
+        ],
+    )
     shim_reader(monkeypatch)
 
     assert miner.run(home).status == "ok"
 
     text = log_text()
-    assert "halted 3 sessions, the rest of each never mined (scheduled job: 2, self-learn prompt: 1)" in text
-    for secret in ("news-digest", "notes-sync", "sess-news", SCHEDULED_FOLDER, SCHEDULED_TAIL):
+    assert (
+        "halted 4 sessions, the rest of each never mined "
+        "(scheduled job: 2, self-learn command: 1, self-learn prompt: 1)"
+    ) in text
+    for secret in ("news-digest", "notes-sync", "sess-news", "sess-review", SCHEDULED_FOLDER, SCHEDULED_TAIL):
         assert secret not in text
 
 
