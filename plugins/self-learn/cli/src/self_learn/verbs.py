@@ -128,6 +128,7 @@ from .compilers import (
     compile_pointer_text,
     compile_reference,
     has_paths_key,
+    loaded_text_problem,
     pointer_line,
     pointer_token,
     read_paths_frontmatter,
@@ -1496,6 +1497,16 @@ def _abort_if_unscopes_rules_file(
         )
 
 
+def _abort_if_loaded_text_cut(record: Record, destination: str) -> None:
+    """Refuses a route whose lesson would head into a managed line with a
+    multi-line Trigger, Instruction or Fact (:func:`loaded_text_problem`).
+    A :class:`SheetLineError`, so an agent's refusal is a ``bad-line`` and
+    the steward is sent the line back to correct."""
+    problem = loaded_text_problem(record, destination)
+    if problem is not None:
+        raise SheetLineError(problem)
+
+
 def _resolve_destination(
     bucket_dir: Path, record_id: str, dest: str | None,
     rules_paths: list[str] | None = None,
@@ -1777,6 +1788,35 @@ def _project_host_or_refuse(
     return _gate_host(home, host, "project")
 
 
+def _project_mode(home: Path, host: Path) -> str:
+    """G1 (2026-10-07): the mode of *host*'s PROJECT registration -- the
+    registration a project-scope write goes through. ``hosts.host_mode``
+    answers by path and checks ``skills_root`` first, so for one repo
+    registered as BOTH the skills root and a project host (claude-skills
+    on the maintainer's machine) it returns the skills root's mode for
+    either kind of write. Once the skills root is ``git`` and the project
+    entry ``plain``, a project-scope write into that repo's
+    ``CLAUDE.md``/``CLAUDE.local.md`` would follow git rules (committed,
+    and skipped by the plain-host write guard). The answer is read from
+    the registry's own project entry; any path the registry does not list
+    as a project falls back to ``hosts.host_mode``, unchanged. (Its
+    natural home is a ``kind=`` parameter on ``hosts.host_mode``; that
+    file is outside this unit's lane.)"""
+    hosts = _load_hosts_or_refuse(home)
+    try:
+        target = Path(host).expanduser().resolve()
+    except OSError:
+        return host_mode(home, host)
+    for p in hosts.projects:
+        try:
+            resolved = Path(p).expanduser().resolve()
+        except OSError:
+            continue
+        if resolved == target:
+            return hosts.project_modes.get(str(resolved), "git")
+    return host_mode(home, host)
+
+
 def _decode_claude_md_qualifier(qualifier: str) -> tuple[str, str | None]:
     """A2 §4.4B: the ONE decode point for a bare ``--dest``'s claude-md
     qualifier (``_parse_dest``'s ``"local"`` / ``"rules:<topic>"``
@@ -2024,7 +2064,7 @@ def _resolve_local_target(
         )
     host = _project_host_or_refuse(home, bucket_dir, project_path)
     target = host / "CLAUDE.local.md"
-    mode = host_mode(home, host)
+    mode = _project_mode(home, host)
     # N-4 (code gate r3 fold): ONE `TargetSpec` for both the check_dirty
     # and no-check_dirty legs — r1/r2 built it twice, byte-identically,
     # once inside the `if check_dirty:` branch and once again as the
@@ -2035,9 +2075,12 @@ def _resolve_local_target(
     )
     if check_dirty:
         # U-hostmode PLAIN9/§4.11: check_ignore is a GIT-tracking privacy
-        # guard (P-A3) — a plain host tracks NOTHING, so nothing can be
-        # published by being tracked; the hazard cannot occur. Skipped
-        # for plain, unchanged (and still refusing) for git.
+        # guard (P-A3), skipped for plain and unchanged (still refusing)
+        # for git. Its old premise for skipping -- "a plain host tracks
+        # NOTHING" -- stopped being true once plain hosts were git repos;
+        # a plain host's target is now held by the plain-host write guard
+        # (`_refuse_unsafe_plain_write`, run by `_resolve_target`), which
+        # also writes the ignore line this check could only demand.
         if mode == "git" and not gitops.check_ignore(host, target):
             raise DestinationUnavailable(
                 f"{target} is not gitignored in {host} — add "
@@ -2133,7 +2176,7 @@ def _resolve_rules_target(
         return spec
     host = _project_host_or_refuse(home, bucket_dir, project_path)
     target = _project_rules_dir(host) / f"{rules_topic}.md"
-    mode = host_mode(home, host)
+    mode = _project_mode(home, host)
     bypassed_reason = None
     if check_dirty and paths_tuple:
         bypassed_reason = _validate_rules_globs((host,), paths_tuple, allow_empty_glob)
@@ -2150,6 +2193,42 @@ def _resolve_rules_target(
 
 
 def _resolve_target(
+    home: Path,
+    bucket_dir: Path,
+    scope: str,
+    destination: str,
+    ref_name: str | None,
+    *,
+    user_claude_md: Path | str | None = None,
+    project_path: Path | None = None,
+    check_dirty: bool = True,
+    variant: str | None = None,
+    rules_topic: str | None = None,
+    rules_paths: list[str] | tuple[str, ...] | None = None,
+    allow_empty_glob: bool = False,
+    removal: bool = False,
+) -> TargetSpec:
+    """PRE-FLIGHT target resolution: :func:`_resolve_target_unguarded`
+    (see it for the registry and dirty gates), then -- whenever
+    ``check_dirty`` asks for the write-time gates -- the plain-host write
+    guard (G1, D-DEPLOY §1.1): a plain host's files must be ones git
+    ignores (:func:`_refuse_unsafe_plain_write`). ``removal`` says the
+    write only takes a lesson's lines OUT of the target (a retirement),
+    which changes the refusal's kind, never whether it refuses. Pure —
+    writes nothing; ``check_dirty=False`` (recompile, ``list --json``,
+    commit-drift) resolves exactly as before and runs its own checks."""
+    spec = _resolve_target_unguarded(
+        home, bucket_dir, scope, destination, ref_name,
+        user_claude_md=user_claude_md, project_path=project_path,
+        check_dirty=check_dirty, variant=variant, rules_topic=rules_topic,
+        rules_paths=rules_paths, allow_empty_glob=allow_empty_glob,
+    )
+    if check_dirty:
+        _refuse_unsafe_plain_write(spec, removal=removal)
+    return spec
+
+
+def _resolve_target_unguarded(
     home: Path,
     bucket_dir: Path,
     scope: str,
@@ -2235,7 +2314,7 @@ def _resolve_target(
         if scope == "project":
             host = _project_host_or_refuse(home, bucket_dir, project_path)
             target = host / "CLAUDE.md"
-            mode = host_mode(home, host)
+            mode = _project_mode(home, host)
             spec = TargetSpec("claude-md", "project", bucket_dir, target, host, mode=mode)
             if check_dirty:
                 _abort_if_unsound(
@@ -2344,7 +2423,7 @@ def _resolve_target(
         # lives" (compilers.reference_target_path's docstring). This site
         # re-implemented it with its own "LEARNINGS.md" literal (audit
         # 2026-07-16 MINOR 7): two copies of one rule, free to drift.
-        ref_mode = host_mode(home, host)
+        ref_mode = _project_mode(home, host) if kind == "project" else host_mode(home, host)
         probe = reference_target_path(refs_dir, ref_name)
         if check_dirty:
             _abort_if_unsound(home, host, ref_mode, probe, "reference", scope_kind=kind)
@@ -2458,7 +2537,9 @@ def _resolve_hook_target(home: Path, record: Record, bucket_dir: Path) -> Target
             "overwrite; supersede the record that owns it first"
         )
     scope_kind = _hook_scope_kind(record)
-    return TargetSpec("hook", scope_kind, bucket_dir, target, root, mode=host_mode(home, root))
+    spec = TargetSpec("hook", scope_kind, bucket_dir, target, root, mode=host_mode(home, root))
+    _refuse_unsafe_plain_write(spec)  # G1: a plain host's new script must be ignorable
+    return spec
 
 
 def _replay_hook_examples(
@@ -3170,6 +3251,11 @@ def _remove_hook_script(
     try:
         with gitops.host_lock(host_repo, mode):
             if mode != "git":
+                # G1: never delete a file git tracks in a plain host (the
+                # pre-flight refused it; its tracking may have changed).
+                _refuse_unsafe_plain_paths(
+                    [script], removal=True, deleting=True, skills_root=host_repo
+                )
                 script.unlink()
                 return None
             snapshot = _snapshot_host_files([script])
@@ -3205,7 +3291,7 @@ def _remove_hook_script(
                 print(f"self-learn: {warning}", file=sys.stderr)
                 warnings.append(warning)
                 return None
-    except (gitops.GitOpsError, OSError) as exc:
+    except (gitops.GitOpsError, OSError, VerbError) as exc:
         warning = (
             f"HOOK REMOVAL FAILED after the ledger commit ({exc}) — remove "
             f"{script} by hand; the ledger stays truth (H-2)"
@@ -3646,6 +3732,7 @@ def _retirement_preflight(
                 # retirement preflight's.
                 variant=routing.get("variant"),
                 rules_topic=routing.get("rules_topic"),
+                removal=True,  # G1: taking lines out is still a write
             )
         )
     if destination == "hook":
@@ -3656,6 +3743,12 @@ def _retirement_preflight(
             removal = _hook_script_location(home, record, warnings)
         except HostsError as exc:
             raise _hosts_unreadable(exc) from exc
+        if removal is not None and removal[3] == "plain":
+            # G1: deleting a file git tracks in a plain host is a change
+            # git shows; deleting an untracked one is not.
+            _refuse_unsafe_plain_paths(
+                [removal[1]], removal=True, deleting=True, skills_root=removal[0]
+            )
         return _Retirement(removal=removal)
     if destination == "reference":
         ref_spec = _resolve_target(
@@ -3669,6 +3762,7 @@ def _retirement_preflight(
             # variant/rules_topic only — never rules_paths.
             variant=routing.get("variant"),
             rules_topic=routing.get("rules_topic"),
+            removal=True,  # G1: as the managed branch above
         )
         # `TargetSpec.target` is None for a reference spec (the file is
         # resolved through `refs_dir`/`ref_name` — see `_resolve_target`'s
@@ -3891,6 +3985,10 @@ def _retire_reference_host_phase(
     assert spec.refs_dir is not None
     try:
         with gitops.host_lock(spec.host_path, spec.mode):
+            if spec.mode == "plain":
+                _ensure_plain_excludes(  # G1
+                    [ref_path], removal=True, skills_root=_skills_root_of(spec)
+                )
             result = retire_reference(spec.refs_dir, record_id, dest=spec.ref_name)
             shelf = retire_empty_shelf(
                 ref_path, spec.pointer_surface, default_shelf=_default_shelf(ref_path, spec)
@@ -3916,7 +4014,7 @@ def _retire_reference_host_phase(
                 body=note,
                 paths=changed,
             )
-    except (gitops.GitOpsError, OSError) as exc:
+    except (gitops.GitOpsError, OSError, VerbError) as exc:
         warning = (
             f"REFERENCE RETIREMENT FAILED after the ledger commit ({exc}) "
             f"— {ref_path} is stale, never lost (H-2); run `self-learn "
@@ -3957,6 +4055,7 @@ def _retirement_host_phase(
             message=message,
             warnings=warnings,
             user_push=user_push,
+            removal=True,
         )
         return host_sha, retirement.spec.host_path
     if retirement.removal is not None:
@@ -4261,6 +4360,202 @@ def _host_write_candidates(spec: TargetSpec) -> list[Path]:
     return paths
 
 
+def _pointer_write_needed(spec: TargetSpec) -> bool:
+    """Gate G1 D1: whether a reference route's host phase will write its
+    pointer surface. Mirrors :func:`compilers.apply_pointer`'s first two
+    legs: an absent surface is created (a write); a surface that already
+    names the references file (``surface_names_target`` -- a hand-written
+    mention counts) is left alone, ``changed=False``. Anything this
+    cannot read answers "a write" -- the guard then judges the surface,
+    as before."""
+    surface = spec.pointer_surface
+    if surface is None:
+        return False
+    if not surface.is_file() or spec.refs_dir is None:
+        return True
+    try:
+        return not surface_names_target(
+            surface, reference_target_path(spec.refs_dir, spec.ref_name)
+        )
+    except (CompileError, OSError, UnicodeDecodeError):
+        return True
+
+
+def _plain_guard_candidates(spec: TargetSpec, *, removal: bool = False) -> list[Path]:
+    """Gate G1 D1: the host files a write of *spec* will actually CHANGE --
+    what the plain-host guard judges and gives ignore lines. That is
+    :func:`_host_write_candidates` less a reference spec's pointer
+    surface when the write leaves it alone: a reference RETIREMENT
+    (*removal*) takes its entry off the shelf only, and a reference ROUTE
+    writes no pointer when the surface already names the shelf.
+    (:func:`_host_write_candidates` itself stays whole: the git-mode
+    snapshot wants every file the compile COULD touch.)"""
+    paths = _host_write_candidates(spec)
+    surface = spec.pointer_surface
+    if surface is not None and (removal or not _pointer_write_needed(spec)):
+        paths = [p for p in paths if p != surface]
+    return paths
+
+
+# ------------------------------------- G1: a plain host receives ignored files
+
+
+def _plain_write_check(
+    path: Path, *, deleting: bool = False
+) -> tuple[Path | None, str | None, str | None]:
+    """D-DEPLOY §1.1's check for ONE file a plain-host write touches,
+    asked of the file's REAL path (a write through a symlink lands, and is
+    judged, where the link points). Returns ``(repo, ignore line,
+    problem)``: ``(None, None, None)`` outside every git work tree (nothing
+    there can be published, so it passes and needs no line -- user scope,
+    ``~/.claude``, is this case); otherwise the problem is ``None`` when
+    the file may be written, and the line is the one its repo's
+    ``info/exclude`` must carry first.
+
+    Refused: a file git tracks (index or ``HEAD``, so a renamed-away path
+    still counts), for an addition and a removal alike; and a file the
+    repo's own ignore rules would still re-admit with its line in place
+    (§0.5's probe). *deleting* (a file being removed, never rewritten)
+    asks only the first: an untracked file's deletion changes nothing git
+    shows. Writes nothing anywhere."""
+    real = Path(os.path.realpath(path))
+    repo = gitops.work_tree_of(real)
+    if repo is None:
+        return None, None, None
+    rel = real.relative_to(repo).as_posix()
+    shown = str(path) if real == Path(path).absolute() else f"{path} (really {real})"
+    if gitops.in_index_or_head(repo, rel):
+        return repo, None, f"{shown} is tracked by git in {repo}"
+    if deleting:
+        return repo, None, None
+    if "\n" in rel or "\r" in rel:
+        return repo, None, f"{shown} has a line break in its name, which no ignore line can name"
+    line = gitops.exclude_pattern(rel)
+    if not gitops.ignored_with_line(repo, rel, line):
+        return repo, line, (
+            f"{shown} would still not be ignored by git in {repo} with the line "
+            f"{line!r} in {gitops.git_path(repo, 'info/exclude')} -- the repo's "
+            "own ignore rules re-admit it"
+        )
+    return repo, line, None
+
+
+_PLAIN_RULE = (
+    "a plain-mode host receives only files git ignores (self-learn writes the "
+    "file's ignore line first), so nothing was written"
+)
+
+
+def _refuse_unsafe_plain_paths(
+    paths: Iterable[Path],
+    *,
+    removal: bool = False,
+    deleting: bool = False,
+    skills_root: Path | None = None,
+) -> list[tuple[Path, str]]:
+    """G1: run :func:`_plain_write_check` over every path ONE write
+    touches; raise when any is refused, naming every refused path. Returns
+    the ``(repo, line)`` pairs the write needs in place first.
+
+    The refusal's kind (S-71) follows what could fix it. An ADDITION is
+    :class:`DestinationUnavailable` -- another destination, or another
+    rules topic name, can take the lesson the same night (the steward's
+    repair turn, D-DEPLOY §1.1). A REMOVAL (*removal*: a retirement only
+    takes a lesson's lines out of a file that stays where it is) is
+    :class:`NeedsPerson` -- no choice of destination changes where the
+    lines already sit; a person moves or untracks that file first (the
+    later migration unit).
+
+    *skills_root* (gate G1 R1) names the skills root the file lives in
+    when no destination OUTSIDE it can take the lesson -- a skill lesson
+    (skill-md, new-skill, a skill-scope reference or claude-md, a skill's
+    hook script) -- and, for a removal, any file under the skills root.
+    While that root is registered plain, every skill file in it is
+    tracked, so "choose another destination" has no right answer there:
+    an addition is :class:`NeedsPerson` too (the steward parks it at
+    once), and the advice names the two real ways out."""
+    problems: list[str] = []
+    lines: list[tuple[Path, str]] = []
+    for path in paths:
+        repo, line, problem = _plain_write_check(path, deleting=deleting)
+        if problem is not None:
+            problems.append(problem)
+        elif repo is not None and line is not None:
+            lines.append((repo, line))
+    if not problems:
+        return lines
+    found = "; ".join(problems)
+    if removal:
+        way_out = (
+            f"a person switches the skills root at {skills_root} to git mode, or "
+            "moves or untracks that file, then re-runs"
+            if skills_root is not None
+            else "move or untrack it first, then re-run"
+        )
+        raise NeedsPerson(
+            f"{found} -- {_PLAIN_RULE}. Taking this lesson out would change that "
+            f"file; {way_out}"
+        )
+    if skills_root is not None:
+        raise NeedsPerson(
+            f"{found} -- {_PLAIN_RULE}. The skills root at {skills_root} is "
+            "registered plain, and a skill's files there are tracked by git, so "
+            "no other destination for this skill lesson is free either. The "
+            "lesson waits for a person: switch that skills root to git mode "
+            "(self-learn then commits its own changes there), or untrack the file"
+        )
+    raise DestinationUnavailable(
+        f"{found} -- {_PLAIN_RULE}. Choose a destination whose file git does not "
+        "track (a project lesson: claude-md:local; a rules lesson: a topic name "
+        "with no tracked file), or untrack the file first"
+    )
+
+
+def _skills_root_of(spec: TargetSpec) -> Path | None:
+    """Gate G1 R1: the skills root a write of *spec* lands in when the
+    lesson has no destination outside it -- a skill-scope spec (skill-md,
+    a skill reference, a skill's hook script), the skills root's own
+    ``claude-md``, or a new skill -- else ``None``. Keyed off the spec's
+    scope, never the path: claude-skills' PROJECT registration writes
+    into the same repo, and a project lesson has ``claude-md:local``."""
+    if spec.destination == "new-skill" or spec.scope_kind in ("skill", "skill-root"):
+        return spec.host_path
+    return None
+
+
+def _refuse_unsafe_plain_write(spec: TargetSpec, *, removal: bool = False) -> None:
+    """G1, the pre-flight half (D-DEPLOY §1.1): for a ``plain``-mode
+    spec, every file its write will change (:func:`_plain_guard_candidates`)
+    must pass :func:`_plain_write_check`. Pure -- writes nothing in the
+    host or the ledger. A ``git``-mode spec is unaffected: git mode
+    commits its targets. The mode is the spec's, so the check keys off
+    the REGISTRATION the write goes through, never the repo's path."""
+    if spec.mode != "plain":
+        return
+    _refuse_unsafe_plain_paths(
+        _plain_guard_candidates(spec, removal=removal),
+        removal=removal,
+        skills_root=_skills_root_of(spec),
+    )
+
+
+def _ensure_plain_excludes(
+    paths: Iterable[Path], *, removal: bool = False, skills_root: Path | None = None
+) -> None:
+    """G1, the write half: re-run the check (a file's tracking can change
+    between pre-flight and write), then put each file's line in its repo's
+    self-learn ``info/exclude`` block (:func:`gitops.ensure_excluded`,
+    which takes that repo's lock). Called for plain hosts only, under the
+    host lock, just before the files are written."""
+    by_repo: dict[Path, list[str]] = {}
+    for repo, line in _refuse_unsafe_plain_paths(
+        paths, removal=removal, skills_root=skills_root
+    ):
+        by_repo.setdefault(repo, []).append(line)
+    for repo, lines in by_repo.items():
+        gitops.ensure_excluded(repo, lines)
+
+
 def _snapshot_host_files(paths: list[Path]) -> _HostSnapshot:
     """The bytes and mode of each of *paths* right now (``None`` = absent),
     so a host write whose commit is refused can be put back exactly."""
@@ -4330,6 +4625,7 @@ def _host_phase(
     message: str,
     warnings: list[str],
     user_push: bool = True,
+    removal: bool = False,
 ) -> tuple[object | None, str | None]:
     """Steps (e): compile + HOST commit under the sentinel hold. On ANY
     failure after the ledger commit: loud drift warning naming
@@ -4360,6 +4656,18 @@ def _host_phase(
     (``gitops._held_locks``)."""
     try:
         with gitops.host_lock(spec.host_path, spec.mode):
+            if spec.mode == "plain":
+                # G1 (D-DEPLOY §1.1): the ignore line goes in first, under
+                # this lock, just before the file is written -- and the
+                # guard runs once more here, since the file's tracking can
+                # change between the pre-flight and this write. *removal*
+                # (a retirement's recompile) keeps a file tracked since the
+                # pre-flight on the removal wording and kind (gate G1 N1).
+                _ensure_plain_excludes(
+                    _plain_guard_candidates(spec, removal=removal),
+                    removal=removal,
+                    skills_root=_skills_root_of(spec),
+                )
             snapshot = (
                 _snapshot_host_files(_host_write_candidates(spec))
                 if spec.mode == "git"
@@ -4573,14 +4881,31 @@ def route_dry_run(
     hook_input: dict | None = None,
     rules_paths: list[str] | None = None,
     allow_unpathed: bool = False,
+    record_override: Record | None = None,
 ) -> RouteDryRunResult:
     """U-verbs §4.3: runs every preflight the real `route` runs, in the
     SAME order, and computes the bytes the compiler would write instead
     of writing them. Reuses U-hostmode's own `_expected_*_region`
     helpers verbatim (`DRY2`) — nothing here recomputes canon bytes a
     second way. Takes NO lock, holds NO sentinel, mutates nothing
-    (`DRY3`) — every record touched is a fresh in-memory copy."""
+    (`DRY3`) — every record touched is a fresh in-memory copy.
+
+    *record_override* (S-79 as amended, E0b): the lesson as the earlier
+    lines of the same sheet would leave it -- ``batch.dry_run``'s
+    in-memory copy after a ``revise`` that would apply. When given, it
+    stands in for the record read from disk in every check below that
+    reads the record (the loaded-text check, a hook's ``record_sha`` and
+    script, the supersede and rules-glob preflights, the target's scope)
+    and in the byte prediction, exactly as the real `route` reads the
+    revised file once the revise has run. The secret scan of the record
+    file and the status gate still read the disk: a revise changes no
+    status, and its own preview scanned its text. Never written; a copy
+    is taken, so the caller's record is never mutated."""
     home = Path(home)
+    if record_override is not None and record_override.id != record_id:
+        raise ValueError(
+            f"route_dry_run: record_override is {record_override.id}, not {record_id}"
+        )
     path = find_record_path(home, record_id)  # unknown id: bare LedgerOpsError, 64
 
     # DRY4: every failed preflight is REPORTED, not just the first — so
@@ -4610,6 +4935,8 @@ def route_dry_run(
         would_refuse.append(refusal_text(exc))
         errors.append(exc)
         record = Record.from_path(path)  # still needed below (scope)
+    if record_override is not None:
+        record = Record.from_text(record_override.to_text())
 
     # The predecessor preflight the real `route` runs — previewed through
     # the SAME helper, so a `teach --supersedes` record whose predecessor
@@ -4668,6 +4995,14 @@ def route_dry_run(
             would_refuse=would_refuse, refusal_errors=errors,
         )
 
+    # Its own try (E0 gate F7): a dry run reports every failed check, so a
+    # lesson that would be cut is named even when the target cannot resolve.
+    try:
+        _abort_if_loaded_text_cut(record, destination)
+    except VerbError as exc:
+        would_refuse.append(refusal_text(exc))
+        errors.append(exc)
+
     spec: TargetSpec | None = None
     resolved_dest = _inherit_rules_paths(home, record, resolved_dest, bucket_dir)
     try:
@@ -4698,8 +5033,12 @@ def route_dry_run(
         )
 
     # The AS-IF-ROUTED record the byte prediction is computed from — a
-    # fresh in-memory copy; the file on disk is never touched.
-    simulated = Record.from_path(path)
+    # fresh in-memory copy; the file on disk is never touched. With an
+    # override, a copy of the lesson as the earlier lines leave it.
+    simulated = (
+        Record.from_path(path) if record_override is None
+        else Record.from_text(record_override.to_text())
+    )
     routed_at = _now_iso()
     resolved_by = by if by is not None else ("human" if dest is not None else "analyst")
     routing: dict = {
@@ -5753,6 +6092,7 @@ def route(
             )
             spec = replace(spec, rules_paths_from=resolved_dest.rules_paths_from)
             _abort_if_unscopes_rules_file(spec, record_id, allow_unpathed=allow_unpathed)
+            _abort_if_loaded_text_cut(record, destination)
 
         # §2.3, corrected by FW-64: `routing.by` names the actor that CHOSE
         # THE DESTINATION. The premise this comment used to state — "the
@@ -5956,6 +6296,7 @@ def route_direct(
             )
             spec = replace(spec, rules_paths_from=direct_dest.rules_paths_from)
             _abort_if_unscopes_rules_file(spec, record.id, allow_unpathed=allow_unpathed)
+            _abort_if_loaded_text_cut(record, destination)
 
         # dict[str, object]: mixes str/dict/list values below (hook is a
         # dict, rules_paths is a list) — a narrower inferred type makes
@@ -7445,6 +7786,7 @@ def _reroute_plan(
         )
         spec = replace(spec, rules_paths_from=resolved_dest.rules_paths_from)
         _abort_if_unscopes_rules_file(spec, record_id, allow_unpathed=allow_unpathed)
+        _abort_if_loaded_text_cut(record, destination)
 
     # RER3: the idempotency refusal, decided by resolved FILE
     # identity — the one comparison that cannot be fooled by two
@@ -8236,6 +8578,7 @@ def supersede(
                     message=message,
                     warnings=warnings,
                     user_push=not no_push,
+                    removal=True,
                 )
             elif removal is not None:
                 host_sha = _remove_hook_script(
@@ -9415,6 +9758,22 @@ def recompile(
                 # that can see a committed-equivalent hand edit
                 # (REC2/REC4), and recompile must never guess past one
                 # (H-3) — `--adopt`, just above, is the named repair.
+                #
+                # G1 (D-DEPLOY §1.1): recompile is a writer like any other
+                # -- a plain host's target git tracks (or would not ignore)
+                # is left alone, loudly, before anything is read or written.
+                try:
+                    _refuse_unsafe_plain_write(spec)
+                except VerbError as exc:
+                    # `specs` holds skill-md/claude-md/new-skill specs only
+                    # (references go to `ref_work`), and each of those
+                    # always resolves a target.
+                    assert target is not None
+                    result.entries.append(
+                        RecompileEntry(target=target, changed=False, skipped=str(exc))
+                    )
+                    result.warnings.append(f"{target}: {exc}")
+                    continue
                 if region_kind is not None:
                     try:
                         _abort_if_unsound(
@@ -9599,7 +9958,20 @@ def recompile(
         for (host_repo, probe), (spec, records) in sorted(
             ref_work.items(), key=lambda kv: str(kv[0][1])
         ):
-            if probe.is_file() and gitops.paths_dirty(host_repo, probe):
+            # G1: a plain host has no `git status` to consult (the managed
+            # leg above never asks it either) -- its gate is the plain-host
+            # write guard instead, for the shelf here and the pointer
+            # surface below.
+            if spec.mode == "plain":
+                try:
+                    _refuse_unsafe_plain_paths([probe], skills_root=_skills_root_of(spec))
+                except VerbError as exc:
+                    result.entries.append(
+                        RecompileEntry(target=probe, changed=False, skipped=str(exc))
+                    )
+                    result.warnings.append(f"{probe}: {exc}")
+                    continue
+            elif probe.is_file() and gitops.paths_dirty(host_repo, probe):
                 result.entries.append(
                     RecompileEntry(target=probe, changed=False, skipped="dirty")
                 )
@@ -9617,8 +9989,35 @@ def recompile(
                 spec.pointer_surface is not None
                 and spec.pointer_surface.resolve() in adopted_pointer_surfaces
             )
+            pointer_refusal: str | None = None
+            # Gate G1b F1: the pointer file is judged only when this recompile
+            # would WRITE it -- the route's own rule (`_pointer_write_needed`).
+            # A tracked pointer that already names the shelf is left alone, so
+            # a route and the recompile its crash recovery runs agree.
             if (
-                spec.pointer_surface is not None
+                spec.mode == "plain"
+                and spec.pointer_surface is not None
+                and not skip_pointer
+                and _pointer_write_needed(spec)
+            ):
+                try:
+                    _refuse_unsafe_plain_paths(
+                        [spec.pointer_surface], skills_root=_skills_root_of(spec)
+                    )
+                except VerbError as exc:
+                    pointer_refusal = str(exc)
+            if pointer_refusal is not None:
+                assert spec.pointer_surface is not None  # set with pointer_refusal above
+                result.entries.append(
+                    RecompileEntry(
+                        target=spec.pointer_surface, changed=False, skipped=pointer_refusal
+                    )
+                )
+                result.warnings.append(f"{spec.pointer_surface}: {pointer_refusal}")
+                skip_pointer = True
+            elif (
+                spec.mode == "git"
+                and spec.pointer_surface is not None
                 and spec.pointer_surface.is_file()
                 and gitops.paths_dirty(host_repo, spec.pointer_surface)
             ):
@@ -9653,7 +10052,31 @@ def recompile(
                 if spec.pointer_surface is not None
                 else None
             )
-            with gitops.commit_lock(host_repo):  # ledger→host order
+            # `host_lock` is `commit_lock`'s own file for a git host (UN8);
+            # for a plain host it is the host's real lock (G1: `commit_lock`
+            # refuses outright on a plain host outside any repo).
+            with gitops.host_lock(host_repo, spec.mode):  # ledger→host order
+                if spec.mode == "plain":
+                    # G1: each file's ignore line before its first write.
+                    try:
+                        _ensure_plain_excludes(
+                            [probe]
+                            + (
+                                [spec.pointer_surface]
+                                if spec.pointer_surface is not None
+                                and not skip_pointer
+                                # asked again under the lock (G1b F1)
+                                and _pointer_write_needed(spec)
+                                else []
+                            ),
+                            skills_root=_skills_root_of(spec),
+                        )
+                    except (VerbError, gitops.GitOpsError) as exc:
+                        result.entries.append(
+                            RecompileEntry(target=probe, changed=False, skipped=str(exc))
+                        )
+                        result.warnings.append(f"{probe}: {exc}")
+                        continue
                 ref_snapshot = _snapshot_host_files(
                     [probe]
                     + ([spec.pointer_surface] if spec.pointer_surface is not None else [])
@@ -9708,7 +10131,20 @@ def recompile(
                 # `host_repo` on EITHER commit — a leg that skips this
                 # would leave the whole backfill committed and never
                 # pushed (r2 NOTE 9, criterion E8).
-                if applied:
+                if spec.mode != "git":
+                    # G1: a plain host is never committed to (PLAIN11/H-j)
+                    # -- this leg used to stage and commit regardless of
+                    # mode, which in a plain host that is a git repo
+                    # committed the shelf into the user's history, and with
+                    # the shelf now ignored would fail and undo the repair.
+                    if applied:
+                        result.entries.append(RecompileEntry(target=probe, changed=True))
+                    if pointer_changed:
+                        assert spec.pointer_surface is not None
+                        result.entries.append(
+                            RecompileEntry(target=spec.pointer_surface, changed=True)
+                        )
+                elif applied:
                     rel = probe.relative_to(host_repo)
                     try:
                         gitops.stage(host_repo, [probe])
@@ -9731,7 +10167,7 @@ def recompile(
                         if host_repo not in touched_hosts:
                             touched_hosts.append(host_repo)
 
-                if pointer_changed:
+                if pointer_changed and spec.mode == "git":
                     pointer_surface = spec.pointer_surface
                     assert pointer_surface is not None
                     prel = pointer_surface.relative_to(host_repo)
@@ -9860,6 +10296,22 @@ def recompile(
             # own path (UN8) — this widens to plain without moving the
             # git-mode lock at all.
             with gitops.host_lock(host_repo, hook_mode):  # ledger→host order
+                if hook_mode == "plain":
+                    # G1: a plain host's script must be one git ignores --
+                    # its line first, or the script is left alone, loudly.
+                    try:
+                        _ensure_plain_excludes(
+                            [script_abs],
+                            skills_root=(
+                                host_repo if _hook_scope_kind(record) == "skill" else None
+                            ),
+                        )
+                    except (VerbError, gitops.GitOpsError) as exc:
+                        result.entries.append(
+                            RecompileEntry(target=script_abs, changed=False, skipped=str(exc))
+                        )
+                        result.warnings.append(f"{script_abs}: {exc}")
+                        continue
                 hook_snapshot = _snapshot_host_files([script_abs])
                 apply_result = _write_hook_script(
                     script_abs, (record.routing or {})["hook"]["script"]
@@ -10482,10 +10934,21 @@ def _preflight_revise(
     text: str,
     because: str,
     by: str | None,
-) -> Path:
+    record_override: Record | None = None,
+) -> tuple[Path, Record]:
     """S-71 §6: `revise`'s checks before any lock (fields, scans, status, the
     splice, the simulated body) — moved here verbatim so the verb and
-    `batch.dry_run` run the SAME checks, in the same order."""
+    `batch.dry_run` run the SAME checks, in the same order.
+
+    Returns the record file's path and the simulated record: an in-memory
+    copy carrying the revised body, which ``batch.dry_run`` keeps so the
+    later lines of the same sheet are previewed against it (S-79 as
+    amended, E0b). *record_override* is that copy from an EARLIER revise of
+    the same lesson in the same preview; the splice and the "nothing to
+    revise" check then start from it instead of the file on disk. The
+    status gate and the secret scan of the record file still read the disk:
+    a revise changes no status, and the earlier revise's own preview
+    scanned its text. The verb passes none."""
     if not isinstance(section, str) or not section.strip():
         raise SheetLineUsageError("revise needs --section")
     if not isinstance(text, str) or not text.strip():
@@ -10502,7 +10965,7 @@ def _preflight_revise(
     # never a lying "not found" for an existing but wrongly-staged id.
     _scan_or_refuse([path], text)
     _scan_or_refuse([], because)  # P2-7: `because` rides the commit body
-    record = Record.from_path(path)
+    record = Record.from_path(path) if record_override is None else record_override
     try:
         require_status(home, record_id, records_mod.DRAFT_STATUSES, verb="revise")
     except LedgerOpsError as exc:
@@ -10526,7 +10989,7 @@ def _preflight_revise(
         raise SheetLineError(
             f"record {record_id} cannot revise {section!r}: {exc}"
         ) from exc
-    return path
+    return path, sim
 
 
 def revise(
@@ -10584,7 +11047,7 @@ def revise(
     saw the new wording, so re-stamping it fresh would misreport the
     proposal as re-validated against text it was not."""
     home = Path(home)
-    path = _preflight_revise(
+    path, _revised = _preflight_revise(
         home, record_id, section=section, text=text, because=because, by=by
     )
 

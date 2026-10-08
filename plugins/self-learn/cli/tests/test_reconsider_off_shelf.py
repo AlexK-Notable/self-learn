@@ -71,8 +71,8 @@ def _project_host(home: Path, tmp_path: Path, mode: str) -> Path:
     repositories too on this user's machine; self-learn just never
     commits to them, and that is what this file checks. A plain host's
     CLAUDE.md is left untracked: the pointer block in it is written and
-    removed here, and a tracked file of a plain host is not self-learn's
-    to write (the G1 lane, 2026-10-07)."""
+    removed here, and since G1 (2026-10-07) self-learn writes a plain
+    host's file only once git ignores it, and never one git tracks."""
     host = tmp_path / f"{mode}-host"
     init_repo(host)
     (host / "README.md").write_text("host\n", encoding="utf-8")
@@ -136,7 +136,7 @@ def _reference_entry(home: Path, host: Path, shelf: Path) -> tuple[dict, dict | 
 def _assert_host_side(host: Path, mode: str, host_before: str, rid: str) -> None:
     """git mode commits the shelf's change in the host -- here, the emptied
     shelf's removal and its pointer's; plain mode leaves it changed and
-    uncommitted there (PLAIN11/H-j)."""
+    uncommitted there (PLAIN11/H-j), and ignored (G1)."""
     status = git(host, "status", "--porcelain").stdout
     if mode == "git":
         assert _head(host) != host_before
@@ -149,8 +149,16 @@ def _assert_host_side(host: Path, mode: str, host_before: str, rid: str) -> None
         assert git(host, "show", "HEAD:CLAUDE.md").stdout == CLAUDE_MD_SEED
     else:
         assert _head(host) == host_before, "a plain host is never committed to"
-        assert git(host, "ls-files", "CLAUDE.md", "references").stdout == ""
-        assert "?? CLAUDE.md" in status, status  # control: on disk, never committed
+        tracked = git(host, "ls-files", "references").stdout
+        assert tracked == "", tracked  # the shelf never entered the host's history
+        assert git(host, "ls-files", "CLAUDE.md").stdout == ""
+        # G1: CLAUDE.md is on disk and uncommitted, and ignored through the
+        # self-learn block of the host's info/exclude (its pointer line went
+        # in first, and the block only grows), so `git status` shows neither
+        # it nor the shelf. The control comes first: the file is on disk.
+        assert (host / "CLAUDE.md").is_file()
+        git(host, "check-ignore", "-q", "--", "CLAUDE.md")
+        assert "CLAUDE.md" not in status and "references/" not in status, status
 
 
 # ------------------------------------------------ reject / defer off a shelf

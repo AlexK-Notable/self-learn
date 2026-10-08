@@ -295,6 +295,18 @@ revert). Doc 13 promotes that to the general rule:
    checkouts). A user whose host content wants history should use `git`
    mode, which is why it is the default.
 
+   **A plain host inside a git repository receives only files git ignores
+   (S-80).** Before self-learn writes a file there, under the host lock, it
+   adds the file's line to a self-learn block of the repository's
+   `info/exclude`, which every worktree shares. It refuses, for every actor,
+   any file it would change that git tracks or that the repository's own
+   `.gitignore` would re-admit, judged at the file's real path. A project
+   lesson's addition is refused as `destination-unavailable`; a skill
+   lesson's addition into a plain skills root, and any removal, as
+   `needs-person`. Lines outside the block are the operator's and are never
+   touched. The block only grows, and recompile restores a lost line. One
+   repository holds one lock, whatever its registrations.
+
 ## 5. Producers commit their own writes
 
 Every ledger mutation already flows through the CLI (teach, import,
@@ -1704,3 +1716,6 @@ whatever destination grammar exists at build time.
   is the clean, unwrapped form.)
 - **H-6** · Migration preserves resolution-commit history (the
   analyst's negative exemplars are part of the system's memory).
+- **H-7** · In a plain host inside a git repository, self-learn never
+  writes a file git would track or publish. The check runs in the CLI, on
+  the real path, for every actor, on the files the write changes (S-80).

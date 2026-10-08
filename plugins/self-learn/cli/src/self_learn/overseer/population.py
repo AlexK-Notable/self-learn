@@ -63,7 +63,7 @@ from ..records import Record, RecordError
 from ..report import recurrence_suspects
 from .. import telemetry
 from .. import user_model as user_model_mod
-from .health import _always_loaded_ids
+from .health import _always_loaded_ids, credit_replacement_chains
 
 __all__ = [
     "OUTCOMES",
@@ -338,6 +338,12 @@ def _always_loaded_zero_fire_nudges(home: Path, week: str) -> list[dict]:
             rid = event.get("record")
             if isinstance(rid, str):
                 fired_ids.add(rid)
+
+        # A lesson that `supersede` or `teach --supersedes` replaced keeps its
+        # fires: a fire on any lesson in a replacement chain counts toward the
+        # live lesson at its end, so a rewritten line does not draw a false
+        # "never fired" nudge under its new id.
+        fired_ids = credit_replacement_chains(home, fired_ids)
 
         # ONE definition of "an always-loaded lesson": the helper the
         # catalogue-health row uses (a routed user-scope record whose

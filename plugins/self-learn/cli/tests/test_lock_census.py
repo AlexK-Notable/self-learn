@@ -51,6 +51,10 @@ _CENSUS: dict[tuple[str, str], str] = {
     ("intents", "clear_stopped"): "ledger-exempt",
     ("ledger", "init_home"): "ledger-exempt",
     ("gitops", "push_with_retry"): "host-repo",
+    # G1 (2026-10-07): the repo is the work tree a plain HOST's file really
+    # sits in; it writes only that repo's private info/exclude, never the
+    # ledger's.
+    ("gitops", "ensure_excluded"): "host-repo",
     ("verbs", "commit_drift"): "host-repo",
     ("verbs", "recompile"): "host-repo",
 }

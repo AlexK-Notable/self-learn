@@ -140,6 +140,7 @@ __all__ = [
     "PathsResult",
     "PointerResult",
     "entry_line",
+    "loaded_text_problem",
     "compile_managed_text",
     "compile_managed_file",
     "compile_reference",
@@ -286,16 +287,83 @@ def _lower_first(text: str) -> str:
     return text
 
 
+#: A trigger's own leading "When" (any case, repeated or not, followed by
+#: whitespace, a comma, or nothing): the entry line writes its own, so
+#: keeping this one rendered "When when ..." -- only the WORD, never
+#: "Whenever" or "Somewhen".
+_LEADING_WHEN_RE = re.compile(r"^(?:when(?:[\s,]+|$))+", re.IGNORECASE)
+
+
 def entry_line(record: Record) -> str:
     """One tight managed-section line for a record (02 §4, trigger-first)."""
     sections = _body_sections(record)
     if record.type == "behavior":
-        trigger = _one_liner(sections.get("Trigger", ""))
+        trigger = _LEADING_WHEN_RE.sub("", _one_liner(sections.get("Trigger", "")))
         trigger = trigger[:-1].rstrip() if trigger.endswith(".") else trigger
         instruction = _lower_first(_one_liner(sections.get("Instruction", "")))
         return f"- **When {_lower_first(trigger)}:** {instruction} *({record.id})*"
     fact = _one_liner(sections.get("Fact", ""))
     return f"- {fact} *({record.id})*"
+
+
+#: Destinations whose compile turns a lesson into ONE managed line
+#: (:func:`entry_line`), which keeps only the first line of each loaded
+#: section. A destination is named by its base: ``claude-md:local`` and
+#: ``claude-md:rules:<topic>`` are ``claude-md``; ``new-skill:<name>`` is
+#: ``new-skill``.
+_MANAGED_LINE_DESTINATIONS = frozenset({"claude-md", "skill-md", "new-skill"})
+#: Destinations that keep the lesson whole (the reference journal) or read
+#: none of its text as a line (a hook's script).
+_WHOLE_TEXT_DESTINATIONS = frozenset({"reference", "hook"})
+
+
+def loaded_text_problem(record: Record, destination: str) -> str | None:
+    """What stops *record* heading into a managed line as it stands, or
+    ``None``. A pure check; nothing is read from disk or written.
+
+    A managed line carries one line of the Trigger and one of the
+    Instruction (or one of the Fact), and :func:`_one_liner` drops every
+    later line without a word. So a section that runs to more than one
+    non-empty line is REFUSED here by name, and the writer is pointed to
+    ``## Context`` for the rest -- the section a lesson keeps but never
+    loads. Blank lines at the edges of a section are not a second line; a
+    blank line between two paragraphs is, since the second paragraph is
+    the part that would be cut.
+
+    The reference journal (:func:`_reference_block`) writes the whole text,
+    and a hook's script reads none of it as a line, so ``reference`` and
+    ``hook`` return ``None``. *destination* may carry a qualifier
+    (``claude-md:local``, ``new-skill:<name>``); only its base is read.
+    A destination this function does not know is an error, not a pass: a
+    check that cannot see its target must not read as "fine".
+
+    The compile itself still never refuses (a lesson routed before this
+    check existed keeps compiling to its first line); the refusal belongs
+    to the moment a lesson is routed."""
+    base = destination.split(":", 1)[0]
+    if base in _WHOLE_TEXT_DESTINATIONS:
+        return None
+    if base not in _MANAGED_LINE_DESTINATIONS:
+        raise ValueError(
+            f"loaded_text_problem: unknown destination {destination!r} -- expected one "
+            f"of {sorted(_MANAGED_LINE_DESTINATIONS | _WHOLE_TEXT_DESTINATIONS)}"
+        )
+    sections = _body_sections(record)
+    names = ("Trigger", "Instruction") if record.type == "behavior" else ("Fact",)
+    over = []
+    for name in names:
+        lines = [ln for ln in sections.get(name, "").splitlines() if ln.strip()]
+        if len(lines) > 1:
+            over.append(f"{name} ({len(lines)} lines)")
+    if not over:
+        return None
+    return (
+        f"{record.id}: the {' and the '.join(over)} {'spans' if len(over) == 1 else 'span'} "
+        f"more than one line, but a lesson routed to {destination} is loaded as ONE line "
+        "and only the first is kept -- the rest would be dropped without a word "
+        "(02-schema §4). Put the text to load on one line and move the rest under a "
+        "'## Context' section: it stays in the record and is never loaded"
+    )
 
 
 def _iso(value: object) -> str:
@@ -1213,7 +1281,9 @@ def _retire_pointer_text(
 
 
 def _reference_block(record: Record, *, on: date | None = None) -> str:
-    """A dated entry block: id + full trigger/fact + instruction/context."""
+    """A dated entry block: id + full trigger/fact + instruction, then the
+    ``## Context`` when the record has one (either type -- E0: a behavior
+    record may carry one too, and the journal is where it is kept in view)."""
     routed_at = (record.routing or {}).get("routed_at")
     day = _iso(routed_at)[:10] if routed_at else (on or date.today()).isoformat()
     sections = _body_sections(record)
@@ -1224,10 +1294,10 @@ def _reference_block(record: Record, *, on: date | None = None) -> str:
         lines.append(f"**Instruction:** {sections.get('Instruction', '').strip()}")
     else:
         lines.append(f"**Fact:** {sections.get('Fact', '').strip()}")
-        context = sections.get("Context", "").strip()
-        if context:
-            lines.append("")
-            lines.append(f"**Context:** {context}")
+    context = sections.get("Context", "").strip()
+    if context:
+        lines.append("")
+        lines.append(f"**Context:** {context}")
     return "\n".join(lines)
 
 
