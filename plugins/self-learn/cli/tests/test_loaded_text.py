@@ -22,6 +22,7 @@ Every scenario that touches the ledger runs on a sandbox ledger and host
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 import pytest
@@ -531,3 +532,76 @@ def test_a_behavior_lesson_with_context_routes_to_a_line_and_to_a_shelf(sandbox)
     verbs.route(env.ledger, CUT, dest="reference", no_push=True)
     shelf = (env.skill_dir / "references" / "LEARNINGS.md").read_text(encoding="utf-8")
     assert f"— {CUT}" in shelf and f"**Context:** {CONTEXT}" in shelf
+
+
+# ------------------------------------------------------- reroute (item 4)
+
+
+def _on_a_shelf(env, rid, **kwargs):
+    """A routed lesson on the reference shelf: the one place a multi-line
+    lesson can sit, since a reference keeps whole text."""
+    _seed(env, rid, **kwargs)
+    verbs.route(env.ledger, rid, dest="reference", no_push=True)
+    assert Record.from_path(find_record_path(env.ledger, rid)).status == "routed"
+
+
+def _sha(path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("dest", ["claude-md", "skill-md"])
+def test_reroute_refuses_a_routed_lesson_whose_loaded_text_would_be_cut(sandbox, dest):
+    env = sandbox
+    host_file = env.host / "CLAUDE.md" if dest == "claude-md" else env.skill_md
+    _on_a_shelf(env, GOOD)
+    _on_a_shelf(env, CUT, instruction=TWO_LINES)
+    shelf = env.skill_dir / "references" / "LEARNINGS.md"
+
+    # positive control: the one-line lesson moves from the shelf to the managed line
+    assert f"*({GOOD})*" not in host_file.read_text(encoding="utf-8")
+    verbs.reroute(env.ledger, GOOD, dest=dest, no_push=True)
+    assert f"*({GOOD})*" in host_file.read_text(encoding="utf-8")
+
+    record_path = find_record_path(env.ledger, CUT)
+    before = {
+        "target": _sha(host_file), "record": _sha(record_path), "shelf": _sha(shelf),
+        "ledger": _head(env),
+    }
+    with pytest.raises(verbs.SheetLineError) as excinfo:
+        verbs.reroute(env.ledger, CUT, dest=dest, no_push=True)
+    message = refusal_text(excinfo.value)
+    assert "Instruction" in message and "## Context" in message and CUT in message
+    after = {
+        "target": _sha(host_file), "record": _sha(record_path), "shelf": _sha(shelf),
+        "ledger": _head(env),
+    }
+    assert after == before  # target, record, shelf and ledger history are all as they were
+    assert Record.from_path(record_path).routing["destination"] == "reference"
+
+    # the preview a reconsider sheet gets runs the same preflight, and says the same
+    refused = batch._preview_reroute(
+        env.ledger, batch.SheetItem(1, CUT, "route", {"dest": dest}), "steward", False
+    )
+    assert (refused.state, refused.kind) == ("would-refuse", "bad-line")
+    assert refused.detail == message
+    other = "skill-md" if dest == "claude-md" else "claude-md"  # control: the one-line lesson
+    applies = batch._preview_reroute(
+        env.ledger, batch.SheetItem(2, GOOD, "route", {"dest": other}), "steward", False
+    )
+    assert applies.state == "would-apply", applies.detail
+
+
+def test_reroute_into_a_reference_is_not_refused(sandbox):
+    env = sandbox
+    _on_a_shelf(env, CUT, instruction=TWO_LINES)
+    # a named references file is never created: it must already exist, committed
+    (env.skill_dir / "references" / "Other.md").write_text("# Other shelf\n", encoding="utf-8")
+    commit_all(env.host, "an existing second shelf")
+    # the same lesson is refused where the line is cut (control) ...
+    with pytest.raises(verbs.SheetLineError, match="Instruction"):
+        verbs.reroute(env.ledger, CUT, dest="skill-md", no_push=True)
+    # ... and moves to another reference file, whole
+    verbs.reroute(env.ledger, CUT, dest="reference:Other.md", no_push=True)
+    other = (env.skill_dir / "references" / "Other.md").read_text(encoding="utf-8")
+    assert "First line, the loaded sentence." in other
+    assert "Second line, which would be cut." in other

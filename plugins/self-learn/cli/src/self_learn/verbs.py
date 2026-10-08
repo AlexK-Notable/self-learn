@@ -7270,6 +7270,7 @@ def _reroute_plan(
         )
         spec = replace(spec, rules_paths_from=resolved_dest.rules_paths_from)
         _abort_if_unscopes_rules_file(spec, record_id, allow_unpathed=allow_unpathed)
+        _abort_if_loaded_text_cut(record, destination)
 
     # RER3: the idempotency refusal, decided by resolved FILE
     # identity — the one comparison that cannot be fooled by two
