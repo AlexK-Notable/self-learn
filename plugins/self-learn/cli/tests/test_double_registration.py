@@ -264,6 +264,30 @@ def test_the_readers_report_the_project_registration_s_own_mode(tmp_path, monkey
     assert canon["host"] == str(repo) and canon["mode"] == "plain"
 
 
+def test_the_plain_project_is_gated_by_its_marker_while_the_root_is_git(
+    tmp_path, monkeypatch, capsys
+):
+    """A host is checked as the registration it is asked about: the plain
+    project needs its marker (U-hostmode §4.4) even though the same path
+    is a git skills root. Red on master: the path-only lookup read the
+    root's `git`, found a git repo and passed the project with no marker."""
+    env = _double(tmp_path)
+    home, repo = env.ledger, env.host
+    rid = _project_lesson(home, repo, "lrn-8b000012")
+    (repo / MARKER_FILENAME).unlink()
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+    capsys.readouterr()
+
+    assert cli.main(["host", "list"]) == 0
+    out = capsys.readouterr().out
+    assert f"skills_root: {repo}\n" in out  # control: the git root is sound
+    assert f"  - {repo}  [mode=plain]  ⚠ BROKEN — " in out
+    assert f"carries no {MARKER_FILENAME} marker" in out
+    with pytest.raises(verbs.NeedsPerson, match="carries no .* marker"):
+        verbs.route(home, rid, dest="claude-md:local", no_push=True)
+    assert _record(home, rid).status == "pending"
+
+
 def test_re_adding_the_plain_project_is_idempotent_while_the_root_is_git(tmp_path):
     """MODE6 compares a re-add with the registration it re-adds. Red on
     master: the project re-add read the root's `git` and refused as a mode
