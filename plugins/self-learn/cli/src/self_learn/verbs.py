@@ -1769,6 +1769,35 @@ def _project_host_or_refuse(
     return _gate_host(home, host, "project")
 
 
+def _project_mode(home: Path, host: Path) -> str:
+    """G1 (2026-10-07): the mode of *host*'s PROJECT registration -- the
+    registration a project-scope write goes through. ``hosts.host_mode``
+    answers by path and checks ``skills_root`` first, so for one repo
+    registered as BOTH the skills root and a project host (claude-skills
+    on the maintainer's machine) it returns the skills root's mode for
+    either kind of write. Once the skills root is ``git`` and the project
+    entry ``plain``, a project-scope write into that repo's
+    ``CLAUDE.md``/``CLAUDE.local.md`` would follow git rules (committed,
+    and skipped by the plain-host write guard). The answer is read from
+    the registry's own project entry; any path the registry does not list
+    as a project falls back to ``hosts.host_mode``, unchanged. (Its
+    natural home is a ``kind=`` parameter on ``hosts.host_mode``; that
+    file is outside this unit's lane.)"""
+    hosts = _load_hosts_or_refuse(home)
+    try:
+        target = Path(host).expanduser().resolve()
+    except OSError:
+        return host_mode(home, host)
+    for p in hosts.projects:
+        try:
+            resolved = Path(p).expanduser().resolve()
+        except OSError:
+            continue
+        if resolved == target:
+            return hosts.project_modes.get(str(resolved), "git")
+    return host_mode(home, host)
+
+
 def _decode_claude_md_qualifier(qualifier: str) -> tuple[str, str | None]:
     """A2 §4.4B: the ONE decode point for a bare ``--dest``'s claude-md
     qualifier (``_parse_dest``'s ``"local"`` / ``"rules:<topic>"``
@@ -2016,7 +2045,7 @@ def _resolve_local_target(
         )
     host = _project_host_or_refuse(home, bucket_dir, project_path)
     target = host / "CLAUDE.local.md"
-    mode = host_mode(home, host)
+    mode = _project_mode(home, host)
     # N-4 (code gate r3 fold): ONE `TargetSpec` for both the check_dirty
     # and no-check_dirty legs — r1/r2 built it twice, byte-identically,
     # once inside the `if check_dirty:` branch and once again as the
@@ -2128,7 +2157,7 @@ def _resolve_rules_target(
         return spec
     host = _project_host_or_refuse(home, bucket_dir, project_path)
     target = _project_rules_dir(host) / f"{rules_topic}.md"
-    mode = host_mode(home, host)
+    mode = _project_mode(home, host)
     bypassed_reason = None
     if check_dirty and paths_tuple:
         bypassed_reason = _validate_rules_globs((host,), paths_tuple, allow_empty_glob)
@@ -2266,7 +2295,7 @@ def _resolve_target_unguarded(
         if scope == "project":
             host = _project_host_or_refuse(home, bucket_dir, project_path)
             target = host / "CLAUDE.md"
-            mode = host_mode(home, host)
+            mode = _project_mode(home, host)
             spec = TargetSpec("claude-md", "project", bucket_dir, target, host, mode=mode)
             if check_dirty:
                 _abort_if_unsound(
@@ -2375,7 +2404,7 @@ def _resolve_target_unguarded(
         # lives" (compilers.reference_target_path's docstring). This site
         # re-implemented it with its own "LEARNINGS.md" literal (audit
         # 2026-07-16 MINOR 7): two copies of one rule, free to drift.
-        ref_mode = host_mode(home, host)
+        ref_mode = _project_mode(home, host) if kind == "project" else host_mode(home, host)
         probe = reference_target_path(refs_dir, ref_name)
         if check_dirty:
             _abort_if_unsound(home, host, ref_mode, probe, "reference", scope_kind=kind)

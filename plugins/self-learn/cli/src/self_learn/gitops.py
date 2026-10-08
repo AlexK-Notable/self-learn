@@ -517,16 +517,30 @@ def host_lock_path(path: Path, mode: str) -> Path:
     ``<git-common-dir>/self-learn.commit.lock``, derived from the repo
     itself.
 
-    ``mode == "plain"`` — a plain host has no ``.git`` to hold a lock
-    file, so the lock moves to the global cache dir, keyed by the SAME
-    slug shape ``hosts.slug_for`` uses (the sentinel's own reasoning,
-    ``sentinel.py``: global and NOT ledger-home-namespaced, because a host
-    can be registered by more than one ledger home and the contended
-    resource is the HOST's file, not any one home's view of it):
-    ``${XDG_CACHE_HOME:-~/.cache}/self-learn/host-<slug>.commit.lock``."""
+    ``mode == "plain"`` — a plain host OUTSIDE any git work tree has no
+    ``.git`` to hold a lock file, so the lock moves to the global cache
+    dir, keyed by the SAME slug shape ``hosts.slug_for`` uses (the
+    sentinel's own reasoning, ``sentinel.py``: global and NOT
+    ledger-home-namespaced, because a host can be registered by more than
+    one ledger home and the contended resource is the HOST's file, not
+    any one home's view of it):
+    ``${XDG_CACHE_HOME:-~/.cache}/self-learn/host-<slug>.commit.lock``.
+
+    A plain host INSIDE a git work tree (every live plain host, G1
+    2026-10-07) locks at :func:`commit_lock_path` -- the same file a
+    git-mode registration of that repo uses. Keyed by the old slug path,
+    one repo registered twice in two modes (claude-skills: the skills root
+    and a project host), or as a main checkout plus a linked worktree,
+    held two different locks, so two self-learn writers into one repo
+    (and into its one shared ``info/exclude``) shared none. The mode is
+    not read from here: this only chooses where the lock FILE lives. A
+    path with no ``.git`` above it never runs git at all (PLAIN4)."""
     if mode == "git":
         return commit_lock_path(Path(path))
     if mode == "plain":
+        if _git_marker_above(Path(path).expanduser().resolve()) is not None:
+            with contextlib.suppress(GitOpsError):
+                return commit_lock_path(Path(path))
         # N-1 (code gate r1 fold): `hosts.slug_for` used to be
         # duplicated here verbatim (as `_plain_host_cache_key`) to dodge
         # a `gitops`<->`hosts` import cycle (`hosts.py` already imports
