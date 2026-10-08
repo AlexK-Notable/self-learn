@@ -4364,10 +4364,8 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
 
         # This read is deliberately after coverage was written.  It is the
         # whole verified parked queue; no count or prompt budget truncates it.
-        parked_rows = [
-            row for row in cases.list_cases(home, parked_for="overseer", only_ok=True)
-            if not row.get("superseded_by")
-        ]
+        # S-80: the one definition the steward's hold reads too.
+        parked_rows = cases.awaiting_overseer(home)
         try:
             model_doc = _full_inputs(home, stage, selected, parked_rows)
         except Exception as exc:  # noqa: BLE001 -- counted and traced, never escapes

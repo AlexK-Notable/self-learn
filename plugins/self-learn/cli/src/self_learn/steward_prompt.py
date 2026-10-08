@@ -173,6 +173,7 @@ OUTPUT_CONTRACT: dict[str, str] = {
     "statements.yaml": "optional: something the user said, pointed at where they said it",
     "model-updates.yaml": "optional: a provisional reading of the user, or a lapse of an existing entry",
     "parked.yaml": "optional: a further question for the overseer",
+    "overseer-notes.yaml": "optional: a note for the overseer on a lesson it holds",
 }
 
 #: `parked_reason` values a RUNNER writes and a model never chooses
@@ -744,13 +745,40 @@ def _later_observations(home: Path, case_id: str, since: str | None) -> list[str
     return out
 
 
+#: S-80: the title of the list of lessons the overseer holds, at the top of
+#: the open-cases block, and the one sentence under it.
+HELD_TITLE = "LESSONS THE OVERSEER HOLDS"
+HELD_INSTRUCTION = (
+    "Each waits for the overseer to decide its parked case. You may read it and add a "
+    "note to that case in overseer-notes.yaml; write no sheet line for it."
+)
+
+
+def _render_held(home: Path) -> str | None:
+    """S-80: each lesson an open parked case holds (`cases.held_lessons`,
+    the set the steward selects none of), with each case's id and reason;
+    `None` when there is none."""
+    held = cases.held_lessons(home)
+    if not held:
+        return None
+    lines = [HELD_TITLE, HELD_INSTRUCTION]
+    for record_id in sorted(held):
+        named = ", ".join(
+            f"{row.get('case')} ({row.get('parked_reason') or 'no reason given'})"
+            for row in held[record_id]
+        )
+        lines.append(f"- {record_id}: {named}")
+    return "\n".join(lines)
+
+
 def _render_open_cases(home: Path, run: RunContext) -> str:
     all_rows = cases.list_cases(home, parked_for="overseer", only_ok=False)
     ok_rows = [r for r in all_rows if r.get("frozen_ok", True)]
     excluded = len(all_rows) - len(ok_rows)
     open_rows = [r for r in ok_rows if not r.get("superseded_by")]
 
-    blocks: list[str] = []
+    held = _render_held(home)
+    blocks: list[str] = [held] if held is not None else []
     for row in open_rows:
         case_id = row["case"]
         try:
@@ -1047,6 +1075,13 @@ def _render_output_contract() -> str:
         "  this packet. `entries:` list. Each entry is a case mapping with the keys above, minus",
         "  kind, outcome and parked_for (the runner sets them), plus a `parked_reason` you may",
         "  choose. An entry here does NOT count toward the every-lesson-in-one-case rule.",
+        "",
+        f"A LESSON THE OVERSEER HOLDS ({HELD_TITLE}, top of the open-cases block) waits for the",
+        "  overseer to decide its parked case. A sheet line that names it (`id`, or a `supersede`'s",
+        "  `new_id`) is refused, and its whole case with it. What you may do is add a note:",
+        "overseer-notes.yaml -- `entries:` list. Each entry: `case` (the parked case's id) and",
+        "  `text` (one line: what you found). The runner adds it to that case as an `examined`",
+        "  observation by the steward, for the overseer to read.",
         "",
         "EXAMPLES (all ids and text invented)",
     ]

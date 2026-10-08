@@ -107,6 +107,8 @@ __all__ = [
     "require_reconsider_predecessor",
     "show",
     "list_cases",
+    "awaiting_overseer",
+    "held_lessons",
     "rebuild_index",
     "receipt",
     "observe",
@@ -1331,6 +1333,32 @@ def list_cases(
     if record_id is not None:
         rows = [r for r in rows if record_id in (r.get("records") or [])]
     return sorted(rows, key=lambda r: r["case"])
+
+
+def awaiting_overseer(home: Path | str) -> list[dict]:
+    """The parked cases the overseer has not yet decided: parked for it,
+    intact (``only_ok``), and not superseded. The ONE definition both the
+    overseer's queue (`overseer.run`) and the steward's hold
+    (:func:`held_lessons`) read, so the two can never disagree about which
+    lessons the overseer holds (S-80, 2026-10-08)."""
+    return [
+        row for row in list_cases(home, parked_for="overseer", only_ok=True)
+        if not row.get("superseded_by")
+    ]
+
+
+def held_lessons(home: Path | str) -> dict[str, list[dict]]:
+    """S-80: every lesson a case :func:`awaiting_overseer` names, with
+    those cases. The overseer holds such a lesson: the steward selects it
+    for no decision and refuses any sheet line on it, and may only add a
+    note to its case (the user's words, 2026-10-08). The hold lifts when
+    the overseer's decision supersedes the case. Whoever parked the case
+    -- the steward, its runner or a person -- the lesson is held alike."""
+    held: dict[str, list[dict]] = {}
+    for row in awaiting_overseer(home):
+        for record_id in row.get("records") or []:
+            held.setdefault(str(record_id), []).append(row)
+    return held
 
 
 # -------------------------------------------------------------- receipt

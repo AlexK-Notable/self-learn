@@ -918,10 +918,18 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
 
     U3a (2026-09-27): no analyst proposal is needed. The worker still
     writes proposals for now (U5 retires it); nothing here reads them
-    except to recognise a version a run decided before this change."""
+    except to recognise a version a run decided before this change.
+
+    S-80 (2026-10-08): a lesson the overseer holds (`cases.held_lessons`)
+    is not selected, whatever parked it; once the overseer's decision
+    supersedes its parked case it is selected again if its version is
+    still undecided."""
+    held = cases.held_lessons(home)
     entries: list[ledger_ops.QueueEntry] = []
     for bucket in discover_buckets(home):
-        entries.extend(ledger_ops.queue(bucket))
+        entries.extend(
+            entry for entry in ledger_ops.queue(bucket) if entry.record.id not in held
+        )
     entries.sort(
         key=lambda entry: (
             chrono.to_dt(entry.record.created_at)
@@ -962,14 +970,16 @@ def _suspected_violation_inputs(home: Path, exclude: set[str] | None = None) -> 
     abandoned -- is never offered them again, and a later fire makes a
     new version. An event a record entry already handled
     (`confirm-recurrence` / `dismiss-suspect` wrote its nonce) is dropped
-    before the version is taken."""
+    before the version is taken. A lesson the overseer holds is not
+    offered (S-80)."""
     found = steward_inputs.suspected_violations(home, _find_record)
     if not found:
         return []
     terminal = _terminal_versions(home)
+    held = cases.held_lessons(home)
     out: list[dict] = []
     for rid, events in found.items():
-        if exclude and rid in exclude:
+        if (exclude and rid in exclude) or rid in held:
             continue
         version = steward_inputs.fires_version(events)
         if (rid, version) in terminal:
@@ -1031,8 +1041,12 @@ def _reconsider_unresolved(home: Path, record: Record) -> str:
 
 
 def _reconsider_proposals(home: Path) -> tuple[list[tuple[_QueuedProposal, dict]], dict[str, str]]:
+    """Every lesson a case's new statement or dependency observation brings
+    back, as a reconsider input. A lesson the overseer holds is not (S-80):
+    its observation stays unconsumed."""
     all_cases = cases.list_cases(home, only_ok=True)
     superseded = {row.get("supersedes") for row in all_cases if row.get("supersedes")}
+    held = cases.held_lessons(home)
     selected: list[tuple[_QueuedProposal, dict]] = []
     predecessors: dict[str, str] = {}
     seen: set[str] = set()
@@ -1060,7 +1074,7 @@ def _reconsider_proposals(home: Path) -> tuple[list[tuple[_QueuedProposal, dict]
         if not matches:
             continue
         for rid in row.get("records") or []:
-            if rid in seen:
+            if rid in seen or rid in held:
                 continue
             try:
                 record_path = ledger_ops.find_record_path(home, rid)
@@ -1683,6 +1697,72 @@ def _reconsider_status_problem(
     return refusal_text(refusal) if refusal is not None else None
 
 
+#: S-80: the sheet keys that name a lesson a line acts on -- the item's own
+#: `id`, and a `supersede`'s `new_id` (the lesson named its replacement).
+_HELD_LINE_KEYS = ("id", "new_id")
+
+
+def _held_sentence(record_id: str, rows: list[dict]) -> str:
+    """S-80: why a line on *record_id* is refused, naming each parked case
+    that holds it and that case's reason."""
+    named = ", ".join(
+        f"{row.get('case')} ({row.get('parked_reason') or 'no reason given'})" for row in rows
+    )
+    return (
+        f"{record_id}: the overseer holds this lesson (parked case {named}); write no "
+        "line for it until the overseer decides -- you may add a note to that case in "
+        "overseer-notes.yaml"
+    )
+
+
+def _held_lines(
+    home: Path, items: object, held: dict[str, list[dict]] | None = None
+) -> list[dict]:
+    """S-80: the lines of a sheet (its raw `items` list) that name a lesson
+    the overseer holds (`cases.held_lessons`), shaped like case-result
+    items: kind `bad-line` -- the steward's own line is the mistake -- and
+    :func:`_held_sentence` as the detail. The one check behind the repair
+    turn's preview (:func:`_ledger_repair_message`) and apply time
+    (:func:`_apply_packet`)."""
+    if not isinstance(items, list):
+        return []
+    if held is None:
+        held = cases.held_lessons(home)
+    out: list[dict] = []
+    for n, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        named = next(
+            (str(item[key]) for key in _HELD_LINE_KEYS if str(item.get(key)) in held), None
+        )
+        if named is not None:
+            out.append({
+                "n": n, "id": named, "verb": str(item.get("verb")), "rc": 1,
+                "state": "refused", "detail": _held_sentence(named, held[named]),
+                "kind": "bad-line",
+            })
+    return out
+
+
+def _holds_for(home: Path, case_id: str, case_records: list[str]) -> dict[str, list[dict]]:
+    """S-80: the holds a case's lines are checked against at apply time.
+    A case already in the ledger is being re-driven (a park or a receipt
+    that did not land, a retried line): its decision predates any hold on
+    its OWN lessons, which only its own outcome can have caused -- a lesson
+    it parked now -- so those are not held against it, and every other
+    line is checked as on the first apply."""
+    held = cases.held_lessons(home)
+    if any(row.get("case") == case_id for row in cases.list_cases(home)):
+        return {rid: rows for rid, rows in held.items() if rid not in case_records}
+    return held
+
+
+def _sheet_items(sheet_path: Path) -> object:
+    """A staged sheet's raw `items`, or `None` when it has none."""
+    raw = _read_yaml(sheet_path)
+    return raw.get("items") if isinstance(raw, dict) else None
+
+
 def _ledger_repair_message(
     home: Path, stage: Path, selected: dict[str, object], skip: frozenset[str] | set[str] = frozenset(),
 ) -> str | None:
@@ -1710,9 +1790,14 @@ def _ledger_repair_message(
     (:func:`_reconsider_status_problem`). Before, a reconsider case naming
     a PENDING lesson passed every check here and was refused only at apply
     time, after the one repair turn was gone (run-9858d321b158: two
-    pending lessons an earlier case had moved)."""
+    pending lessons an earlier case had moved).
+
+    S-80 (2026-10-08): a line naming a lesson the overseer holds is
+    flagged by name (:func:`_held_lines`), before the ledger preview of
+    that sheet; apply time refuses the whole case for it."""
     found: list[str] = []
     case_found: list[str] = []
+    held = cases.held_lessons(home)
     for case_path in sorted((stage / "cases").glob("*.yaml")):
         if case_path.stem in skip:
             continue
@@ -1731,6 +1816,12 @@ def _ledger_repair_message(
             problem = _reconsider_status_problem(home, record_id, selected.get(record_id))
             if problem is not None:
                 case_found.append(f"- cases/{case_path.name}: {problem}")
+        held_lines = _held_lines(home, _sheet_items(sheet_path), held)
+        found.extend(
+            f"- sheets/{sheet_path.name}: item {line['n']} ({line['verb']} {line['id']}): "
+            f"{line['detail']}"
+            for line in held_lines
+        )
         sheet = _sheet_without_case(sheet_path)
         preview = batch.dry_run(
             home, sheet, actor="steward",
@@ -1738,6 +1829,8 @@ def _ledger_repair_message(
             reconsidered=reconsidered,
         )
         for line in _held_refusals(preview, sheet):
+            if line.get("n") in {held_line["n"] for held_line in held_lines}:
+                continue  # named above, by the hold
             kind = line.get("kind")
             record_id = str(line.get("id"))
             if kind == "status":
@@ -1982,6 +2075,52 @@ def _withheld_refusal(texts: list[str]) -> str | None:
     return format_refusal([dataclass_replace(hit, span="[withheld]") for hit in hits])
 
 
+def _predecessor_fill(home: Path, stage: Path, predecessors: dict) -> dict[str, str]:
+    """Which staged case the runner names as the successor of its lessons'
+    predecessor case (`supersedes`), by stem. A case is superseded once --
+    `cases.record` refuses a second successor -- so a predecessor is filled
+    in on ONE case at most (2026-10-07, gate S1 way 1), and on none when:
+
+    * a staged case names it itself;
+    * the ledger shows it superseded already -- an earlier attempt of the
+      same packet decided another of its lessons (2026-10-08, gate S1b F2:
+      filled in again, the case writer refused the case);
+    * the case's records span more than one predecessor (refused later,
+      by `_prepared_recipe`).
+
+    When two staged cases could take it, a ``kind: reconsider`` case does,
+    since it cannot record without one; a ``resolution`` case records
+    either way (gate S1b F3: file-name order decided, and a reconsider
+    case that sorted second was refused). Cases of one kind go in file
+    order."""
+    staged = [
+        (path.stem, _read_yaml(path)) for path in sorted((stage / "cases").glob("*.yaml"))
+    ]
+    claimed = {
+        str(data["supersedes"])
+        for _stem, data in staged
+        if isinstance(data, dict) and data.get("supersedes")
+    }
+    claimed |= {str(row.get("case")) for row in cases.list_cases(home) if row.get("superseded_by")}
+    fill: dict[str, str] = {}
+    for reconsider_first in (True, False):
+        for stem, data in staged:
+            if not isinstance(data, dict) or data.get("supersedes"):
+                continue
+            if (data.get("kind") == "reconsider") is not reconsider_first:
+                continue
+            named = {
+                predecessors[rid] for rid in data.get("records") or [] if rid in predecessors
+            }
+            if len(named) != 1:
+                continue
+            (predecessor,) = named
+            if predecessor not in claimed:
+                fill[stem] = str(predecessor)
+                claimed.add(str(predecessor))
+    return fill
+
+
 def _prepared_recipe(
     home: Path,
     stage: Path,
@@ -1998,22 +2137,8 @@ def _prepared_recipe(
     packet_case_ids: list[str] = list(packet.get("case_ids") or [])
     earlier_maintenance: list[dict] = list(packet.get("maintenance") or [])
     dropped_rows: list[dict] = []
-    #: 2026-09-26: a secret-scan hit costs the case (or maintenance
-    #: operation) it is in, never the packet. Before, one scan over every
-    #: prepared text refused every case of the packet over one of them.
-    refused_rows: dict[str, dict] = {}
     versions = {row["record"]: row.get("version") for row in packet.get("inputs") or []}
-    #: 2026-10-07 (gate S1, way 1): the predecessors a staged case of this
-    #: packet already names. A case is superseded once -- `cases.record`
-    #: refuses a second successor -- so the runner fills a predecessor in
-    #: on ONE case: never on a case when another staged case names it
-    #: itself, and never on two. Before, two cases deciding a moved pair one
-    #: lesson each were both filled in, and the second was refused.
-    claimed = {
-        str(data["supersedes"])
-        for data in (_read_yaml(path) for path in sorted((stage / "cases").glob("*.yaml")))
-        if isinstance(data, dict) and data.get("supersedes")
-    }
+    fill = _predecessor_fill(home, stage, predecessors)
     for case_path in sorted((stage / "cases").glob("*.yaml")):
         stem = case_path.stem
         sheet_path = stage / "sheets" / f"{stem}.yaml"
@@ -2039,11 +2164,8 @@ def _prepared_recipe(
             raise ValueError(
                 f"{case_path.name}: records span more than one predecessor case"
             )
-        if predecessor_ids and not case_data.get("supersedes"):
-            predecessor = next(iter(predecessor_ids))
-            if predecessor not in claimed:
-                case_data["supersedes"] = predecessor
-                claimed.add(predecessor)
+        if predecessor_ids and not case_data.get("supersedes") and stem in fill:
+            case_data["supersedes"] = fill[stem]
         parking_reason = _forced_parking_reason(
             home, sheet_path, _reconsidered_by(case_data)
         )
@@ -2082,17 +2204,39 @@ def _prepared_recipe(
             [case_text, sheet_text, *(row["ref"] for row in dropped_evidence)]
         )
         if refusal is not None:
-            # Nothing of this case is frozen into the run record: its text
-            # holds the hit. Its lessons get the refused row a case refused
-            # at apply time gets, with the scan's rule and offsets.
+            # Nothing of this case's text is frozen into the run record: it
+            # holds the hit. 2026-10-08 (gate S1b F6): its lessons used to
+            # get a bare `refused` row here -- no kind, no case -- which
+            # `_terminal_versions` counts as a decision, so a LESSON input
+            # was stranded for good. A hit in the steward's own text is S-71's
+            # `bad-line` (`batch._typed_kind`: a secret in the line, not the
+            # record), so the case is frozen as a stub -- its records and the
+            # scan's rule and offsets, no text -- that apply time settles as
+            # a case refused before it was recorded
+            # (:func:`_refuse_unrecorded_case`): sent back once, parked on a
+            # second refusal of the same version.
             _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
                 "status": "refused", "stage_file": case_path.name, "error": refusal})
-            refused_rows.update({
-                str(rid): {"state": "refused", "input_version": versions.get(rid),
-                    "reason": refusal}
-                for rid in case_data.get("records") or []
+            stub_records = [
+                str(rid) for rid in dict.fromkeys(case_data.get("records") or [])
                 if rid in versions
-            })
+            ]
+            recipes[case_id] = {
+                "case": "", "sheet": "", "sheet_name": sheet_path.name,
+                "sheet_sha": None, "sheet_digest": None, "items": [],
+                "maintenance": [], "dispositions": [], "packet": packet["index"],
+                "phase": "prepared", "parking_reason": None, "dropped_evidence": [],
+                "unrecorded_refusal": {
+                    "records": stub_records,
+                    "lines": [
+                        {"id": rid, "verb": "case", "rc": 1, "state": "refused",
+                         "detail": refusal, "kind": "bad-line"}
+                        for rid in stub_records
+                    ],
+                    "error": refusal,
+                },
+            }
+            packet_case_ids.append(case_id)
             continue
         dropped_rows.extend(
             {"case": case_id, "stage_file": case_path.name, **row} for row in dropped_evidence
@@ -2121,6 +2265,8 @@ def _prepared_recipe(
         ("statement", "statements.yaml"),
         ("model", "model-updates.yaml"),
         ("parked-case", "parked.yaml"),
+        # S-80: a note for the overseer on a lesson it holds.
+        ("note", _NOTES_FILE),
     ):
         for item in _stage_entries(stage / filename):
             payload = dict(item)
@@ -2175,7 +2321,7 @@ def _prepared_recipe(
     packet["phase"] = "prepared"
     packet["failure"] = None
     packet["bound"] = None
-    packet["dispositions"] = {**(packet.get("dispositions") or {}), **refused_rows}
+    packet["dispositions"] = dict(packet.get("dispositions") or {})
 
 
 _RECEIPT_RE = re.compile(
@@ -2356,6 +2502,52 @@ def _model_entries(home: Path) -> list[dict]:
     ]
 
 
+#: S-80: the stage file of the steward's notes for the overseer, one entry
+#: per note, on a lesson the overseer holds (`steward_prompt.OUTPUT_CONTRACT`).
+_NOTES_FILE = "overseer-notes.yaml"
+#: ... the observation kind a note is recorded as (`cases.OBSERVE_KINDS`):
+#: `examined`, what the steward did. Never `statement` or
+#: `dependency-moved`, which with a `ref` would queue the case for a
+#: reconsider (`_reconsider_proposals`), and none of the others fits.
+_NOTE_KIND = "examined"
+#: ... and its longest text, the bound of a committed failure detail.
+_NOTE_MAX = _FAILURE_DETAIL_MAX
+
+
+def _note_observation_id(case_id: str, operation_id: str) -> str:
+    """The reserved id of a note's observation, so a re-driven operation
+    lands it once (as `_observe_abandonment` does)."""
+    return "obs-" + hashlib.sha256(f"{case_id}:{operation_id}".encode("utf-8")).hexdigest()[:8]
+
+
+def _add_overseer_note(home: Path, payload: dict, operation_id: str) -> str:
+    """S-80: one entry of `overseer-notes.yaml` -- ``{case, text}`` -- as an
+    `examined` later observation by the steward on that case, which must be
+    one the overseer has yet to decide (`cases.awaiting_overseer`). The
+    only thing the steward may do about a lesson the overseer holds (the
+    user's words, 2026-10-08: "it can add notes for the overseer if it
+    wants to"). The text is folded to one line; `cases.observe` scans it
+    and refuses a heading line. Returns the observation id."""
+    unknown = sorted(set(payload) - {"case", "text"})
+    if unknown:
+        raise ValueError(f"{_NOTES_FILE}: unknown key(s) {unknown}; an entry is case and text")
+    case_id, text = payload.get("case"), payload.get("text")
+    flat = " ".join(str(text).split()) if isinstance(text, str) else ""
+    if not isinstance(case_id, str) or not flat:
+        raise ValueError(f"{_NOTES_FILE}: every entry needs a case id and a non-empty text")
+    if len(flat) > _NOTE_MAX:
+        raise ValueError(f"{_NOTES_FILE}: a note is at most {_NOTE_MAX} characters")
+    if case_id not in {row.get("case") for row in cases.awaiting_overseer(home)}:
+        raise ValueError(
+            f"{_NOTES_FILE}: {case_id} is not a parked case the overseer has yet to "
+            "decide; a note goes only on one of those"
+        )
+    return cases.observe(
+        home, case_id, _NOTE_KIND, text=flat, by="steward",
+        reserved_id=_note_observation_id(case_id, operation_id),
+    )
+
+
 def _maintenance_result(home: Path, operation: dict) -> dict | None:
     """Recognize an owner commit that landed before its manifest result."""
     payload = dict(operation["payload"])
@@ -2393,6 +2585,18 @@ def _maintenance_result(home: Path, operation: dict) -> dict | None:
         reserved = operation.get("reserved_case_id")
         if any(row.get("case") == reserved for row in cases.list_cases(home, only_ok=True)):
             return {"state": "applied", "id": reserved, "recovered": True}
+    elif operation["kind"] == "note":
+        # Landed before the overseer decided the case, then the run died:
+        # the note is on the case, whatever the case is now.
+        case_id = payload.get("case")
+        if isinstance(case_id, str) and cases.CASE_ID_RE.fullmatch(case_id):
+            reserved = _note_observation_id(case_id, str(operation["id"]))
+            try:
+                view = cases.show(home, case_id, evidence_only=False)
+            except (cases.CaseError, OSError):
+                return None
+            if f"- {reserved} " in view.sections.get("Later observations", ""):
+                return {"state": "applied", "id": reserved, "recovered": True}
     return None
 
 
@@ -2457,6 +2661,11 @@ def _maintain_manifest(home: Path, run_id: str, packet_index: int) -> tuple[int,
                         recovered = {"state": "applied", "id": entry_id}
                     else:
                         raise user_model.UserModelUsageError(f"model-updates.yaml: unknown action {action!r}")
+                elif operation["kind"] == "note":
+                    recovered = {
+                        "state": "applied",
+                        "id": _add_overseer_note(home, payload, str(operation["id"])),
+                    }
                 else:
                     payload.update(kind="parked", outcome="parked", parked_for="overseer", run_id=run_id)
                     run_dir = _project_manifest(home, manifest)
@@ -2476,9 +2685,10 @@ def _maintain_manifest(home: Path, run_id: str, packet_index: int) -> tuple[int,
             # the run record (2026-09-26).
             error = refusal_text(exc)
             recovered = {"state": "refused", "error": error}
-            status = {"statement": "statement-refused", "model": "model-update-refused"}.get(
-                operation["kind"], "parked-case-refused"
-            )
+            status = {
+                "statement": "statement-refused", "model": "model-update-refused",
+                "note": "note-refused",
+            }.get(operation["kind"], "parked-case-refused")
             _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": status, "error": error})
         operation_id = operation["id"]
         assert recovered is not None
@@ -2925,14 +3135,28 @@ def _cap_close_out_texts(
     )
 
 
-def _park_now_texts(record_id: str, kind: str) -> tuple[str, str]:
-    """S-71 §4.5: the question and `because` of a `ledger-refused` successor."""
+def _park_now_texts(record_id: str, kind: str, *, recorded: bool = True) -> tuple[str, str]:
+    """S-71 §4.5: the question and `because` of a `ledger-refused` successor.
+
+    *recorded* says whether the steward's case reached the ledger. When it
+    did not -- the case writer refused it, a line named a lesson the
+    overseer holds, or its text matched the secret scan -- no case or sheet
+    of it is on record, and the text says so (2026-10-08, gate S1b nit c:
+    it said they were "on record beside it" either way)."""
+    if recorded:
+        return (
+            f"the steward decided {record_id} but the ledger refused the decision's "
+            "line for a reason neither a retry nor a fresh decision can fix "
+            f"({kind}); decide this lesson yourself, using the ledger's words as "
+            "evidence (the steward's own case and sheet are on record beside it)",
+            f"the ledger, not the merits, stopped this decision: {kind}",
+        )
     return (
-        f"the steward decided {record_id} but the ledger refused the decision's "
-        "line for a reason neither a retry nor a fresh decision can fix "
-        f"({kind}); decide this lesson yourself, using the ledger's words as "
-        "evidence (the steward's own case and sheet are on record beside it)",
-        f"the ledger, not the merits, stopped this decision: {kind}",
+        f"the steward decided {record_id} but its case was refused before it was "
+        "recorded, for a reason neither a retry nor a fresh decision can fix "
+        f"({kind}); decide this lesson yourself, using the refusal as evidence "
+        "(the steward's case and sheet are not on record)",
+        f"the refusal, not the merits, stopped this decision: {kind}",
     )
 
 
@@ -3266,6 +3490,7 @@ def _case_dispositions(
     )
     everything = [refusal for found in refusals.values() for refusal in found]
     case_best = _deciding(everything) if held and everything else None
+    held_now = cases.held_lessons(home) if failed else {}
     rows: dict[str, dict] = {}
     park_now: dict[str, str] = {}
     for rid in case_records:
@@ -3306,12 +3531,25 @@ def _case_dispositions(
             # comes back as an ordinary lesson input at its record's
             # version (:func:`_selected_again`). Otherwise, sent back, it
             # would be decided by no one, and it is parked now instead.
-            # (2026-10-07, gate S1 D1: parking a lesson that comes back
-            # anyway gave it two deciders, the overseer and the steward.)
+            # (2026-10-07, gate S1 D1.) Since S-80 a parked lesson is never
+            # selected while its parked case is open, so parking here is
+            # safe on any path; sending it back is kept because a fresh
+            # steward decision is cheaper than the overseer's.
             or (version.startswith("observation:") and not _selected_again(home, rid))
             or _returned_before(home, rid, version, case_id)
         ):
             action = "park"
+        if action == "park" and rid in held_now and any(
+            row.get("case") != _successor_case_for(home, str(manifest.get("run_id")), rid)
+            for row in held_now[rid]
+        ):
+            # S-80: another parked case holds it already (it was parked
+            # after this run selected it). A second one would only ask the
+            # same question again; it is sent back, and decided -- by the
+            # overseer, or by a later run once the overseer lets it go. A
+            # successor this run wrote for it is not another: a re-drive
+            # reuses that one (`_close_out_record`).
+            action = "return"
         if action == "close":
             rows[rid] = {**row, "state": "overtaken", "reason": best.moved}
         elif action == "refused":
@@ -3353,11 +3591,15 @@ def _park_now(
     run_id: str,
     packet_index: int,
     pending: dict[str, str],
+    *,
+    recorded: bool = True,
 ) -> tuple[dict[str, dict], list[str]]:
     """S-71 §4.5: write each record's `ledger-refused` successor case now,
     through the cap close-out's own writer. Returns the `abandoned` rows
     that landed and one error line per record that did not; a record whose
-    write failed keeps its `unfinished` row, so its case is re-driven."""
+    write failed keeps its `unfinished` row, so its case is re-driven.
+    *recorded*: whether the case that decided them is in the ledger
+    (:func:`_park_now_texts`)."""
     manifest = execution_evidence.read_manifest(home, run_id, at="HEAD")
     packet = manifest["packets"][packet_index - 1]
     relative = f"cases/runs/{run_id}.json"
@@ -3368,7 +3610,7 @@ def _park_now(
     errors: list[str] = []
     for record_id, kind in pending.items():
         row = dict((packet.get("dispositions") or {}).get(record_id) or {})
-        question, because = _park_now_texts(record_id, kind)
+        question, because = _park_now_texts(record_id, kind, recorded=recorded)
         try:
             successor = _close_out_record(
                 home, run_dir, run_id, packet, packet_index, record_id,
@@ -3415,6 +3657,7 @@ def _commit_park_now(
     *,
     retry_outside: bool,
     closed_phase: str,
+    recorded: bool = True,
 ) -> tuple[list[tuple[str, str]], bool]:
     """S-71 §4.5 for one case whose disposition rows were just committed:
     park each record of *pending* NOW, not at the cap -- a retry cannot fix
@@ -3426,8 +3669,9 @@ def _commit_park_now(
 
     Returns the `(record, kind)` pairs to tell the user about, and False
     when the run record could not be written (the caller stops the packet,
-    as for any failed run-record write)."""
-    landed, errors = _park_now(home, run_dir, run_id, packet_index, pending)
+    as for any failed run-record write). *recorded*: whether the case is
+    in the ledger (:func:`_park_now_texts`)."""
+    landed, errors = _park_now(home, run_dir, run_id, packet_index, pending, recorded=recorded)
     if errors:
         _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
             "status": "park-now-failed", "case": case_id, "errors": errors})
@@ -3455,6 +3699,64 @@ def _commit_park_now(
     # Told about once its row says so: a re-drive after a failed row write
     # reuses the successor, and is told then.
     return [(rid, pending[rid]) for rid in landed], True
+
+
+def _refuse_unrecorded_case(
+    home: Path,
+    run_dir: Path,
+    run_id: str,
+    packet_index: int,
+    manifest: dict,
+    case_id: str,
+    case_records: list[str],
+    items: list[dict],
+    error: str,
+    *,
+    journal: bool = True,
+) -> tuple[list[tuple[str, str]], bool]:
+    """A case refused BEFORE it reached the ledger: the case writer refused
+    it (2026-10-07, gate S1 R1), a sheet line names a lesson the overseer
+    holds (S-80), or its text matched the secret scan when it was prepared
+    (gate S1b F6). Nothing of it is in the ledger or dispatched; *items*
+    are the refused lines, each with its S-71 kind. Its lessons follow
+    §4.2 as for a case the preview holds back -- every one takes the
+    case's most severe action: sent back, parked now, or retried -- and no
+    row names the case, since there is no case to receipt on or to add
+    the park's later observation to. Its phase is `refused` once none of
+    its lessons is left open. Returns what :func:`_commit_park_now` does.
+    *journal*: whether to write the refusal's journal row (a refusal on
+    record already has one)."""
+    if journal:
+        _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "refused",
+            "stage_file": f"{case_id}.yaml", "error": error})
+    settled = _case_dispositions(
+        home, manifest, manifest["packets"][packet_index - 1], case_id, case_records,
+        items, held=True,
+    )
+    rows = {
+        rid: {key: value for key, value in row.items() if key != "case"}
+        for rid, row in settled.rows.items()
+    }
+    phase = "unfinished" if settled.retry_outside or any(
+        row["state"] == "unfinished" for row in rows.values()
+    ) else "refused"
+    try:
+        _update_manifest(home, run_id, reason=f"case {case_id} refused", update=lambda current: (
+            current["cases"][case_id].update(phase=phase, error=error, unrecorded_refusal={
+                "records": list(case_records), "lines": list(items), "error": error,
+            }),
+            current["packets"][packet_index - 1]["dispositions"].update(rows),
+        ))
+    except gitops.GitOpsError as write_error:
+        _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "dirty-refused",
+            "paths": _dirty_truth_paths(home), "error": str(write_error)})
+        return [], False
+    if not settled.park_now:
+        return [], True
+    return _commit_park_now(
+        home, run_dir, run_id, packet_index, case_id, rows, settled.park_now,
+        retry_outside=settled.retry_outside, closed_phase="refused", recorded=False,
+    )
 
 
 def _apply_packet(
@@ -3485,72 +3787,77 @@ def _apply_packet(
         recipe = manifest["cases"][case_id]
         if recipe.get("phase") in {"complete", "parked", "refused"}:
             continue
+        stored = recipe.get("unrecorded_refusal")
+        if isinstance(stored, dict):
+            # A case already refused before it was recorded, re-driven to
+            # park a lesson whose park did not land -- or a case whose
+            # prepared text matched the secret scan, frozen as a stub
+            # (`_prepared_recipe`, gate S1b F6). Its refusal is the one on
+            # record: re-deciding it now could apply a case once refused.
+            stored_records = [str(rid) for rid in stored.get("records") or []]
+            refused += max(1, len(stored_records))
+            told, written = _refuse_unrecorded_case(
+                home, run_dir, run_id, packet_index, manifest, case_id, stored_records,
+                [dict(line) for line in stored.get("lines") or [] if isinstance(line, dict)],
+                str(stored.get("error") or ""), journal=False,
+            )
+            if not written:
+                return list(dict.fromkeys(decided)), refused, gitops.EXIT_GIT_FAILED, parked_now
+            parked_now.extend(told)
+            continue
         case_path, sheet_path = _write_recipe_stage(run_dir, packet_index, case_id, recipe)
         case_data = _read_yaml(case_path)
-        try:
-            cases.record(home, case_path, actor="steward", reserved_id=case_id)
-        except cases.CaseError as exc:
-            refused_records = case_data.get("records") if isinstance(case_data, dict) else None
-            refused += max(1, len(refused_records) if isinstance(refused_records, list) else 1)
-            # The reason is a sent-back row the next brief shows the model:
-            # a secret-scan span is withheld (2026-09-26).
-            error = refusal_text(exc)
-            _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "refused",
-                "stage_file": case_path.name, "error": error})
-            # 2026-10-07 (gate S1 R1): the case writer refused the case, so
-            # it is not in the ledger. Its lessons were written a bare
-            # `refused` row -- no kind, no case -- which no S-71 rule reads
-            # and which `_terminal_versions` counts as a decision: a lesson
-            # input refused here (say its case named a predecessor an
-            # earlier case had already superseded) was stranded for good.
-            # The refusal now takes its S-71 kind as every refusal does,
-            # from the exception's type (`batch.refusal_kind`; the table
-            # names no `cases.CaseError`, so it is `unclassified` unless a
-            # typed cause lies under it), and the lessons follow §4.2 as
-            # for a case the preview holds back: `unclassified` parks them
-            # now for the overseer; a `git` cause is retried. No row names
-            # the case and nothing is receipted: there is no case to
-            # receipt on, or to add the park's later observation to
-            # (`_close_out_record`). The phase stays `refused`, which says
-            # exactly that.
-            kind = batch.refusal_kind(exc, rc=1, state="refused")
-            case_records = (
-                [str(rid) for rid in dict.fromkeys(refused_records)]
-                if isinstance(refused_records, list) else []
-            )
-            settled_rows = _case_dispositions(
-                home, manifest, manifest["packets"][packet_index - 1], case_id, case_records,
-                [
+        records_named = case_data.get("records") if isinstance(case_data, dict) else None
+        named_records = (
+            [str(rid) for rid in dict.fromkeys(records_named)]
+            if isinstance(records_named, list) else []
+        )
+        # S-80 (2026-10-08): a line on a lesson the overseer holds is
+        # refused by name before anything of the case applies -- the case
+        # is not recorded, so no reconsider widens it and no line
+        # dispatches -- unless the case is parked, whose sheet never
+        # applies. Kind `bad-line`: the steward's own line is the mistake,
+        # so its lessons are sent back to be decided again without it
+        # (parked on a second refusal, as ever).
+        refused_lines = (
+            _held_lines(home, _sheet_items(sheet_path), _holds_for(home, case_id, named_records))
+            if recipe.get("parking_reason") is None else []
+        )
+        error = "; ".join(dict.fromkeys(str(line["detail"]) for line in refused_lines))
+        unrecorded = bool(refused_lines)
+        if not unrecorded:
+            try:
+                cases.record(home, case_path, actor="steward", reserved_id=case_id)
+            except cases.CaseError as exc:
+                # 2026-10-07 (gate S1 R1): the case writer refused the case,
+                # so it is not in the ledger. Its lessons were written a
+                # bare `refused` row -- no kind, no case -- which no S-71
+                # rule reads and which `_terminal_versions` counts as a
+                # decision: a lesson input refused here was stranded for
+                # good. The refusal now takes its S-71 kind from the
+                # exception's type (`batch.refusal_kind`; the table names no
+                # `cases.CaseError`, so it is `unclassified` unless a typed
+                # cause lies under it): `unclassified` parks the lessons
+                # now; a `git` cause is retried. The reason is a sent-back
+                # row the next brief shows the model: a secret-scan span is
+                # withheld (2026-09-26).
+                unrecorded = True
+                error = refusal_text(exc)
+                kind = batch.refusal_kind(exc, rc=1, state="refused")
+                refused_lines = [
                     {"id": rid, "verb": "case", "rc": 1, "state": "refused",
                      "detail": error, "kind": kind}
-                    for rid in case_records
-                ],
-                held=True,
+                    for rid in named_records
+                ]
+        if unrecorded:
+            refused += max(1, len(named_records))
+            told, written = _refuse_unrecorded_case(
+                home, run_dir, run_id, packet_index, manifest, case_id, named_records,
+                refused_lines, error,
             )
-            rows = {
-                rid: {key: value for key, value in row.items() if key != "case"}
-                for rid, row in settled_rows.rows.items()
-            }
-            phase = "unfinished" if settled_rows.retry_outside or any(
-                row["state"] == "unfinished" for row in rows.values()
-            ) else "refused"
-            try:
-                _update_manifest(home, run_id, reason=f"case {case_id} refused", update=lambda current: (
-                    current["cases"][case_id].update(phase=phase, error=error),
-                    current["packets"][packet_index - 1]["dispositions"].update(rows),
-                ))
-            except gitops.GitOpsError as write_error:
-                _journal(home, {"ts": chrono.now_iso(), "run_id": run_id, "status": "dirty-refused",
-                    "paths": _dirty_truth_paths(home), "error": str(write_error)})
+            if not written:
                 return list(dict.fromkeys(decided)), refused, gitops.EXIT_GIT_FAILED, parked_now
-            if settled_rows.park_now:
-                told, written = _commit_park_now(
-                    home, run_dir, run_id, packet_index, case_id, rows, settled_rows.park_now,
-                    retry_outside=settled_rows.retry_outside, closed_phase="refused",
-                )
-                if not written:
-                    return list(dict.fromkeys(decided)), refused, gitops.EXIT_GIT_FAILED, parked_now
-                parked_now.extend(told)
+            parked_now.extend(told)
             continue
         #: (kind, the ledger's words) when `verbs.reconsider` refused this case
         reconsider_refusal: tuple[str, str] | None = None

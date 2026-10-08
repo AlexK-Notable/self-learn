@@ -135,7 +135,8 @@ You write only the staged artifacts declared for this run — one case and
 one sheet for each coherent decision, the sheet linked to its case and
 every item attributed to `steward` — plus statement and user-model changes
 through their own declared stage formats (`cases/*.yaml`, `sheets/*.yaml`,
-`parked.yaml`, `revisions.yaml`, `model-updates.yaml`, `statements.yaml`).
+`parked.yaml`, `revisions.yaml`, `model-updates.yaml`, `statements.yaml`,
+`overseer-notes.yaml`).
 The exact shape of each file — every key and every allowed word, with worked
 examples of a decided case, a parked case, their sheets, a revision, a
 statement and a user-model update — is the output contract block, after the conditions, generated from the same
@@ -389,6 +390,17 @@ earlier case and the ledger's words: decide it again differently — a
 different line, destination or verb, or park the case with the reason that
 names its question — and never write the same line again, since a second
 refusal parks it with `ledger-refused`.
+
+**A lesson the overseer holds.** Once a lesson is parked — by you, by
+your runner, or by a person — it is the overseer's to decide, and it
+stays so until the overseer's decision replaces the parked case. Your
+brief lists such lessons, each with its parked case and reason, under
+LESSONS THE OVERSEER HOLDS. You may read one, and when you find
+something the overseer should know, add a note to its parked case in
+`overseer-notes.yaml`. Nothing else: no case of yours decides it and no
+sheet line names it — the runner refuses such a line, and its whole case
+with it. Once the overseer has decided, the lesson comes back to you if
+it still needs a decision.
 
 ## 13. Stopping
 
