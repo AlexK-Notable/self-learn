@@ -317,6 +317,83 @@ def test_c_the_two_registrations_share_one_lock(tmp_path):
             assert str(git_lock) in gitops._held_locks
 
 
+# --------------------------------------------- (d) remove one registration
+
+
+def test_d_host_remove_skills_root_keeps_the_project_and_project_keeps_the_root(
+    tmp_path, monkeypatch, capsys
+):
+    """(d) Red on master: there was no `--skills-root` / `--project`, and
+    one `host remove` dropped both registrations."""
+    env = _double(tmp_path)
+    home, repo = env.ledger, env.host
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+
+    assert cli.main(["host", "remove", str(repo), "--skills-root"]) == 0
+    after = load_hosts(home)
+    assert after.skills_root is None
+    assert [Path(p).resolve() for p in after.projects] == [repo.resolve()]
+    assert after.project_modes == {str(repo.resolve()): "plain"}  # its mode kept
+    subject = git(home, "log", "-1", "--format=%s", last_verb_sha(home)).stdout.strip()
+    assert subject == f"self-learn: host remove skills-root {repo.resolve()}"
+    assert (repo / MARKER_FILENAME).is_file()  # GATE5: the marker stays
+
+    # the switch the orchestrator runs (O3): the root comes back in git mode
+    host_add(home, repo, "skills-root", mode="git")
+    assert host_mode(home, repo, registration="skills-root") == "git"
+    assert host_mode(home, repo, registration="project") == "plain"
+
+    assert cli.main(["host", "remove", str(repo), "--project"]) == 0
+    after = load_hosts(home)
+    assert after.skills_root is not None and after.skills_root.resolve() == repo.resolve()
+    assert after.skills_root_mode == "git" and after.projects == []
+
+    capsys.readouterr()
+    assert cli.main(["host", "remove", str(repo), "--project"]) == 64  # no project entry left
+    assert "is not a registered project host" in capsys.readouterr().err
+    assert load_hosts(home).skills_root is not None  # nothing changed
+
+    # control: the bare verb still drops every registration of the path
+    host_add(home, repo, "project", mode="plain")
+    assert cli.main(["host", "remove", str(repo)]) == 0
+    after = load_hosts(home)
+    assert after.skills_root is None and after.projects == []
+
+
+def test_d_removing_one_registration_counts_only_that_registration_s_lessons(
+    tmp_path, monkeypatch, capsys
+):
+    """The routed-lesson refusal of `host remove` counts what the named
+    registration compiles: skill lessons for the root, project lessons
+    for the project. Red on master (no registration to name)."""
+    env = _double(tmp_path)
+    home, repo = env.ledger, env.host
+    skill = _skill_lesson(home, "lrn-8b000005")
+    verbs.route(home, skill, dest="skill-md", no_push=True)
+    one = _project_lesson(home, repo, "lrn-8b000006")
+    two = _project_lesson(home, repo, "lrn-8b000007")
+    verbs.route(home, one, dest="claude-md:local", no_push=True)
+    verbs.route(home, two, dest="claude-md:local", no_push=True)
+    assert sorted(hosts.records_targeting(home, repo)) == sorted([skill, one, two])  # control
+
+    with pytest.raises(hosts.HostRemoveRefused) as root_refusal:
+        hosts.host_remove(home, repo, registration="skills-root")
+    assert "1 routed record(s)" in str(root_refusal.value)
+    assert skill in str(root_refusal.value) and one not in str(root_refusal.value)
+    with pytest.raises(hosts.HostRemoveRefused) as project_refusal:
+        hosts.host_remove(home, repo, registration="project")
+    assert "2 routed record(s)" in str(project_refusal.value)
+    assert skill not in str(project_refusal.value)
+
+    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+    capsys.readouterr()
+    assert cli.main(["host", "remove", str(repo), "--project", "--gate-only"]) == 0
+    out = capsys.readouterr().out
+    assert f"host remove: project {repo.resolve()}" in out
+    assert "--gate-only: 2 routed record(s)" in out
+    assert load_hosts(home).skills_root is not None
+
+
 # ----------------------------------------------- moving the repo (rebind)
 
 

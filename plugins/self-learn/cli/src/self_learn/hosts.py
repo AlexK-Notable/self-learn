@@ -12,7 +12,8 @@ where canon may land:
 
 Registration is a CLI verb (``self-learn host add <path> [--skills-root]
 [--mode git|plain]``, ``host rebind <slug-or-old-path> <new-path>``,
-``host remove <path>``), never a hand edit the compilers trust blindly —
+``host remove <path> [--skills-root | --project]``), never a hand edit
+the compilers trust blindly —
 :func:`host_add` validates the path (must exist; must be a git repo when
 ``mode == "git"``, the default), rewrites hosts.yaml, and commits it in
 the ledger repo with the pinned subject
@@ -1014,7 +1015,9 @@ def host_rebind(home: Path | str, ref: str, new_path: Path | str) -> Path:
     return new_bucket if new_bucket is not None else target
 
 
-def records_targeting(home: Path | str, path: Path | str) -> list[str]:
+def records_targeting(
+    home: Path | str, path: Path | str, *, registration: str | None = None
+) -> list[str]:
     """Every ROUTED record whose bucket compiles into *path* (U-verbs
     S-54 / HOST1/HOST5): a project bucket whose OWN recorded host
     (``meta.yaml``, via ``ledger_ops.bucket_project_path``) resolves to
@@ -1029,11 +1032,17 @@ def records_targeting(home: Path | str, path: Path | str) -> list[str]:
     compare, so a host reached through a symlink still matches. Local
     imports: :mod:`ledger`/:mod:`ledger_ops` both import THIS module at
     their own top level, so importing either of them back at hosts.py's
-    top level would cycle."""
+    top level would cycle.
+
+    ``registration`` (S-82): count only the records that compile through
+    that one registration -- skill buckets for ``"skills-root"``, project
+    buckets for ``"project"`` -- for a repo registered both ways, whose
+    two registrations are removed one at a time. ``None`` counts both."""
     from .ledger import discover_buckets
     from .ledger_ops import bucket_project_path
     from .records import Record, RecordError
 
+    _check_registration(registration)
     home = Path(home)
     target = Path(path).expanduser().resolve()
     hosts = load_hosts(home)
@@ -1044,6 +1053,10 @@ def records_targeting(home: Path | str, path: Path | str) -> list[str]:
     )
     ids: list[str] = []
     for bucket in discover_buckets(home):
+        if registration is not None and bucket.scope != (
+            "skill" if registration == "skills-root" else "project"
+        ):
+            continue
         if bucket.scope == "project":
             project_path = bucket_project_path(bucket.path)
             if project_path is None:
@@ -1069,7 +1082,11 @@ def records_targeting(home: Path | str, path: Path | str) -> list[str]:
 
 
 def host_remove(
-    home: Path | str, path: Path | str, *, gate_only: bool = False
+    home: Path | str,
+    path: Path | str,
+    *,
+    gate_only: bool = False,
+    registration: str | None = None,
 ) -> Hosts:
     """``host remove <path>``: drop a registered host from hosts.yaml (one
     ledger commit, pinned subject ``self-learn: host remove <path>``). The
@@ -1096,10 +1113,21 @@ def host_remove(
     ``host remove`` documents that only the compile gate closes, never
     the truth on disk).
 
+    ``registration`` (S-82, ``host remove --skills-root | --project``):
+    drop only that one registration of *path* -- the skills root, or the
+    project entry -- and keep the other with its own mode. One repo may be
+    registered both ways in two modes, and MODE is set once per
+    registration (MODE6), so changing one registration's mode is this
+    call followed by ``host add``; without it, a bare ``host remove``
+    dropped both. The routed-record refusal then counts only the records
+    that registration compiles (:func:`records_targeting`). ``None`` (the
+    bare verb) drops every registration of *path*, unchanged.
+
     Lock before the first mutation (audit 2026-07-16 round 7 BLOCKER 1),
     like the other two: hosts.yaml is tracked."""
     from . import gitops
 
+    _check_registration(registration)
     home = Path(home)
     if not home.is_dir():
         raise HostsError(f"ledger home {home} does not exist")
@@ -1108,10 +1136,25 @@ def host_remove(
     projects = [p for p in hosts.projects if Path(p).expanduser().resolve() != target]
     root = hosts.skills_root
     root_hit = root is not None and Path(root).expanduser().resolve() == target
-    if len(projects) == len(hosts.projects) and not root_hit:
+    project_hit = len(projects) != len(hosts.projects)
+    if not project_hit and not root_hit:
         raise HostsError(f"{target} is not a registered host — nothing to remove")
+    if registration == "skills-root":
+        if not root_hit:
+            raise HostsError(
+                f"{target} is not the registered skills root — nothing to "
+                "remove (drop --skills-root to remove its project entry)"
+            )
+        projects = list(hosts.projects)  # the project entry stays
+    elif registration == "project":
+        if not project_hit:
+            raise HostsError(
+                f"{target} is not a registered project host — nothing to "
+                "remove (drop --project to remove the skills root)"
+            )
+        root_hit = False  # the skills root stays
     if not gate_only:
-        routed = records_targeting(home, target)
+        routed = records_targeting(home, target, registration=registration)
         if routed:
             shown = ", ".join(routed[:5])
             more = len(routed) - 5
@@ -1124,14 +1167,22 @@ def host_remove(
                 "first (`self-learn rehome <id> --to <target>`), or pass "
                 "--gate-only to close the compile gate anyway."
             )
-    new_modes = {k: v for k, v in hosts.project_modes.items() if k != str(target)}
+    new_modes = (
+        dict(hosts.project_modes)
+        if registration == "skills-root"
+        else {k: v for k, v in hosts.project_modes.items() if k != str(target)}
+    )
     hosts = Hosts(
         skills_root=None if root_hit else root,
         projects=projects,
         skills_root_mode="git" if root_hit else hosts.skills_root_mode,
         project_modes=new_modes,
     )
-    message = f"self-learn: host remove {target}"
+    message = (
+        f"self-learn: host remove {target}"
+        if registration is None
+        else f"self-learn: host remove {registration} {target}"
+    )
     with intents.ledger_write(home) as recovered:  # BLOCKER 4 + round 7 BLOCKER 1; S-62 checks for a pre-existing STOP first
         intents.announce_recovered(recovered)
         intent = intents.begin(home, "host_remove", [hosts_path(home)], message)
