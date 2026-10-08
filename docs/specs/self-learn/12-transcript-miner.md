@@ -89,11 +89,34 @@ quietly start the miner reading that agent's sessions again
 per header list by `halt_tracked_self_sessions` (its fingerprint is
 kept in `cursors.json`); a file that cannot be read is checked again on
 the next run, and a malformed row is skipped, never raised on.
-Program-run sessions that are not self-learn's own are still mined; skip spans inside `/self-learn:review` and
+Program-run sessions that are not self-learn's own are still mined, except a scheduled job's
+(below); skip spans inside `/self-learn:review` and
 `/self-learn:teach` command execution (identifiable by command tags in
 the transcript) — a review session *discusses* lessons, and mining the
 discussion re-captures them. Phase 3 dedup is the backstop for anything
 the exclusions miss.
+
+**Scheduled jobs (added 2026-10-07).** A rule of its own, not part of
+M-5: a scheduled job is not self-learn. It rests on the user's words of
+2026-10-07: "scheduled jobs maybe not unless i explicitly ask for
+coverage. background jobs yes." A session whose first user turn begins
+with a `<scheduled-task` tag (the opening Claude Desktop's scheduler
+writes: `<scheduled-task name="<task>" file=".../scheduled-tasks/<task>/SKILL.md">`)
+is halted for good, exactly as a self-learn session is, unless the tag's
+`name` attribute is listed in the setting `miner.mined_scheduled_jobs`
+(config `miner.mined_scheduled_jobs`, env
+`SELF_LEARN_MINER_MINED_SCHEDULED_JOBS`; comma-separated; empty by
+default, so every scheduled job is skipped). A Claude Code background
+session and a typed session are mined as before. Sessions the cursor
+file already tracks are checked once per opt-in list by
+`halt_tracked_scheduled_sessions` (fingerprint `__scheduled_jobs__` in
+`cursors.json`), so taking a job off the list halts its tracked
+sessions on the next mine, while adding one does not reopen a session
+already halted. The run log counts halts by reason only (`scheduled
+job`, `self-learn prompt`, `self-learn command`), never a job's name or
+a path. Known limit, shared with the self-prompt rule: "first user
+turn" is the first one in the slice a run reads, so a typed session
+whose later slice opens with the tag is halted too.
 
 **Cap holds (amended by `U-cursorhold`, FW-73).** A candidate refused at
 Phase 4's per-run landing cap holds its originating session's cursor
