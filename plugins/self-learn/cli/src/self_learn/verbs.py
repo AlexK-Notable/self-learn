@@ -127,6 +127,7 @@ from .compilers import (
     compile_pointer_text,
     compile_reference,
     has_paths_key,
+    loaded_text_problem,
     pointer_line,
     pointer_token,
     read_paths_frontmatter,
@@ -1486,6 +1487,16 @@ def _abort_if_unscopes_rules_file(
             "on the CLI), supersede a record that has them, or (CLI only) "
             "pass --allow-unpathed to unscope the file deliberately"
         )
+
+
+def _abort_if_loaded_text_cut(record: Record, destination: str) -> None:
+    """Refuses a route whose lesson would head into a managed line with a
+    multi-line Trigger, Instruction or Fact (:func:`loaded_text_problem`).
+    A :class:`SheetLineError`, so an agent's refusal is a ``bad-line`` and
+    the steward is sent the line back to correct."""
+    problem = loaded_text_problem(record, destination)
+    if problem is not None:
+        raise SheetLineError(problem)
 
 
 def _resolve_destination(
@@ -4483,6 +4494,14 @@ def route_dry_run(
             would_refuse=would_refuse, refusal_errors=errors,
         )
 
+    # Its own try (E0 gate F7): a dry run reports every failed check, so a
+    # lesson that would be cut is named even when the target cannot resolve.
+    try:
+        _abort_if_loaded_text_cut(record, destination)
+    except VerbError as exc:
+        would_refuse.append(refusal_text(exc))
+        errors.append(exc)
+
     spec: TargetSpec | None = None
     resolved_dest = _inherit_rules_paths(home, record, resolved_dest, bucket_dir)
     try:
@@ -5554,6 +5573,7 @@ def route(
             )
             spec = replace(spec, rules_paths_from=resolved_dest.rules_paths_from)
             _abort_if_unscopes_rules_file(spec, record_id, allow_unpathed=allow_unpathed)
+            _abort_if_loaded_text_cut(record, destination)
 
         # §2.3, corrected by FW-64: `routing.by` names the actor that CHOSE
         # THE DESTINATION. The premise this comment used to state — "the
@@ -5757,6 +5777,7 @@ def route_direct(
             )
             spec = replace(spec, rules_paths_from=direct_dest.rules_paths_from)
             _abort_if_unscopes_rules_file(spec, record.id, allow_unpathed=allow_unpathed)
+            _abort_if_loaded_text_cut(record, destination)
 
         # dict[str, object]: mixes str/dict/list values below (hook is a
         # dict, rules_paths is a list) — a narrower inferred type makes
@@ -7256,6 +7277,7 @@ def _reroute_plan(
         )
         spec = replace(spec, rules_paths_from=resolved_dest.rules_paths_from)
         _abort_if_unscopes_rules_file(spec, record_id, allow_unpathed=allow_unpathed)
+        _abort_if_loaded_text_cut(record, destination)
 
     # RER3: the idempotency refusal, decided by resolved FILE
     # identity — the one comparison that cannot be fooled by two

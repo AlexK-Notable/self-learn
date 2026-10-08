@@ -12,7 +12,7 @@ id: lrn-4c1e9a2f
 type: behavior            # behavior | knowledge
 scope: skill:home-assistant   # skill:<name> | project | user
 kind: anti-pattern        # behavior only: anti-pattern | surface-rule | reasoning-pattern
-source: teach             # teach | auto-memory | backlog | session
+source: teach             # teach | auto-memory | backlog | session | rewrite (S-79)
 status: pending           # pending | routed | rejected | deferred | superseded
 created_at: 2026-07-12T09:14:00Z
 sightings: 2              # set when a merge proposal is collapsed at review
@@ -81,7 +81,10 @@ on shutdown, so a live edit is silently clobbered.
 record's real key, written so the model recognizes the moment) + `##
 Instruction` (what to do, carrying the *why*). `knowledge` → `## Fact` +
 optional `## Context`. One lesson per record; a capture containing two
-lessons becomes two records.
+lessons becomes two records. *Amended 2026-10-07 (S-79):* a `behavior`
+record may carry an optional `## Context` too (any number of lines, at
+most one such section), and `source: rewrite` is reserved for a lesson
+written through `replace` (the actor stays in `routing.by` and the case).
 
 **`## Episode brief` — a miner-only, compiler-excluded body section**
 *(added 2026-07-18 — UX survey item 5; doc 12 §11 is the miner-side
@@ -156,7 +159,10 @@ record.)*
   regression test asserts that for a record carrying a `## Episode
   brief`, **no** compiled output (managed section, reference journal,
   hook) contains the brief text. The brief is decision-surface material
-  only (09 §2.3); it must never leak into canon.
+  only (09 §2.3); it must never leak into canon. *Amended 2026-10-07
+  (S-79):* `## Context` is read for either record type, by the reference
+  journal only (after the Instruction or the Fact); the managed-section
+  entry line never reads it.
 
 **The proposal sibling.** The pre-analysis worker writes its analysis to
 `proposals/lrn-<id>.yaml` beside the record — never into the record itself:
@@ -2560,6 +2566,20 @@ Compilers own exactly the region between their markers, and nothing else:
   first — HA rewrites `.storage` on shutdown. *(lrn-4c1e9a2f)*
 <!-- self-learn:end -->
 ```
+
+*Amended 2026-10-07 (S-79, the loaded text is never cut):* an entry keeps
+only the first line of each section it loads, so a lesson's Trigger,
+Instruction or Fact must be one line to head into a managed line. A
+section that spans more than one non-empty line is refused by name at
+routing (`route`, `route --dry-run`, `teach --route`, `reroute`; for an
+agent it is a `bad-line`), and the writer is pointed to `## Context`,
+which the record keeps and no managed line loads. The compile itself
+never refuses: a lesson routed before this keeps compiling to its first
+line. `reference` and `hook` are not refused (the journal keeps the whole
+text; a hook loads none of it as a line). The entry line drops a leading
+"When" (any case, followed by whitespace, a comma or nothing) from the
+trigger before writing its own, so a trigger that begins "When ..." no
+longer renders "When when ...".
 
 Rules: entries are one tight line each, carrying the record id for
 provenance; the compiler regenerates the whole section idempotently from
