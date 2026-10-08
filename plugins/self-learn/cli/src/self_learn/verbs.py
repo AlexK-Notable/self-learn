@@ -1684,7 +1684,8 @@ class TargetSpec:
     #: U-hostmode §4.1: the ONE field that carries a host's posture.
     #: ``"git"`` (default; byte-identical to pre-unit behaviour) or
     #: ``"plain"``. Always set explicitly by every ``TargetSpec(...)``
-    #: construction site via ``hosts.host_mode(home, host_path)`` — the
+    #: construction site via ``hosts.host_mode(home, host_path,
+    #: registration=...)`` (S-82: the registration the write goes through) — the
     #: default here exists only so a stray positional-only construction
     #: fails LOUD elsewhere (a wrong host write) rather than crashing at
     #: import time; MODE9's AST sweep is what actually enforces "every
@@ -1785,35 +1786,6 @@ def _project_host_or_refuse(
     if not is_project_host(_load_hosts_or_refuse(home), host):
         raise NeedsPerson(f"host not registered — self-learn host add {host}")
     return _gate_host(home, host, "project")
-
-
-def _project_mode(home: Path, host: Path) -> str:
-    """G1 (2026-10-07): the mode of *host*'s PROJECT registration -- the
-    registration a project-scope write goes through. ``hosts.host_mode``
-    answers by path and checks ``skills_root`` first, so for one repo
-    registered as BOTH the skills root and a project host (claude-skills
-    on the maintainer's machine) it returns the skills root's mode for
-    either kind of write. Once the skills root is ``git`` and the project
-    entry ``plain``, a project-scope write into that repo's
-    ``CLAUDE.md``/``CLAUDE.local.md`` would follow git rules (committed,
-    and skipped by the plain-host write guard). The answer is read from
-    the registry's own project entry; any path the registry does not list
-    as a project falls back to ``hosts.host_mode``, unchanged. (Its
-    natural home is a ``kind=`` parameter on ``hosts.host_mode``; that
-    file is outside this unit's lane.)"""
-    hosts = _load_hosts_or_refuse(home)
-    try:
-        target = Path(host).expanduser().resolve()
-    except OSError:
-        return host_mode(home, host)
-    for p in hosts.projects:
-        try:
-            resolved = Path(p).expanduser().resolve()
-        except OSError:
-            continue
-        if resolved == target:
-            return hosts.project_modes.get(str(resolved), "git")
-    return host_mode(home, host)
 
 
 def _decode_claude_md_qualifier(qualifier: str) -> tuple[str, str | None]:
@@ -2063,7 +2035,7 @@ def _resolve_local_target(
         )
     host = _project_host_or_refuse(home, bucket_dir, project_path)
     target = host / "CLAUDE.local.md"
-    mode = _project_mode(home, host)
+    mode = host_mode(home, host, registration="project")
     # N-4 (code gate r3 fold): ONE `TargetSpec` for both the check_dirty
     # and no-check_dirty legs — r1/r2 built it twice, byte-identically,
     # once inside the `if check_dirty:` branch and once again as the
@@ -2175,7 +2147,7 @@ def _resolve_rules_target(
         return spec
     host = _project_host_or_refuse(home, bucket_dir, project_path)
     target = _project_rules_dir(host) / f"{rules_topic}.md"
-    mode = _project_mode(home, host)
+    mode = host_mode(home, host, registration="project")
     bypassed_reason = None
     if check_dirty and paths_tuple:
         bypassed_reason = _validate_rules_globs((host,), paths_tuple, allow_empty_glob)
@@ -2213,7 +2185,9 @@ def _resolve_target(
     guard (G1, D-DEPLOY §1.1): a plain host's files must be ones git
     ignores (:func:`_refuse_unsafe_plain_write`). ``removal`` says the
     write only takes a lesson's lines OUT of the target (a retirement),
-    which changes the refusal's kind, never whether it refuses. Pure —
+    which changes the plain-host refusal's kind, never whether it
+    refuses; it also lets a lesson leave the skills root's own
+    ``claude-md`` while that destination refuses additions (S-82). Pure —
     writes nothing; ``check_dirty=False`` (recompile, ``list --json``,
     commit-drift) resolves exactly as before and runs its own checks."""
     spec = _resolve_target_unguarded(
@@ -2221,6 +2195,7 @@ def _resolve_target(
         user_claude_md=user_claude_md, project_path=project_path,
         check_dirty=check_dirty, variant=variant, rules_topic=rules_topic,
         rules_paths=rules_paths, allow_empty_glob=allow_empty_glob,
+        removal=removal,
     )
     if check_dirty:
         _refuse_unsafe_plain_write(spec, removal=removal)
@@ -2241,10 +2216,12 @@ def _resolve_target_unguarded(
     rules_topic: str | None = None,
     rules_paths: list[str] | tuple[str, ...] | None = None,
     allow_empty_glob: bool = False,
+    removal: bool = False,
 ) -> TargetSpec:
     """PRE-FLIGHT target resolution (doc 13 §4 step c): registry gates
     (H-3) + dirty checks against the HOST repo, all raising BEFORE any
-    commit. Pure — writes nothing.
+    commit. Pure — writes nothing. ``removal``: see
+    :func:`_resolve_target` (the S-82 refusal below spares a removal).
 
     A2 §4.4: ``variant``/``rules_topic``/``rules_paths`` are the
     structured params a proposal-sourced route carries (threaded by
@@ -2268,7 +2245,7 @@ def _resolve_target_unguarded(
                 f"no SKILL.md at {target} — the compiler never creates "
                 "target files, only the section inside an existing one"
             )
-        mode = host_mode(home, root)
+        mode = host_mode(home, root, registration="skills-root")
         spec = TargetSpec("skill-md", "skill", bucket_dir, target, root, mode=mode)
         if check_dirty:
             _abort_if_unsound(
@@ -2313,7 +2290,7 @@ def _resolve_target_unguarded(
         if scope == "project":
             host = _project_host_or_refuse(home, bucket_dir, project_path)
             target = host / "CLAUDE.md"
-            mode = _project_mode(home, host)
+            mode = host_mode(home, host, registration="project")
             spec = TargetSpec("claude-md", "project", bucket_dir, target, host, mode=mode)
             if check_dirty:
                 _abort_if_unsound(
@@ -2330,7 +2307,32 @@ def _resolve_target_unguarded(
             )
         root = _gate_host(home, hosts.skills_root, "skills-root")
         target = root / "CLAUDE.md"
-        mode = host_mode(home, root)
+        mode = host_mode(home, root, registration="skills-root")
+        if is_project_host(hosts, root):
+            # S-82: the same repo is also a registered project host, and
+            # the project's `claude-md` leg writes this very file -- one
+            # managed section compiled from both legs' lessons
+            # (`_compile_set`). Under two modes, a git-mode commit of it
+            # would commit the plain registration's lessons too, and a
+            # plain write would leave the root's uncommitted. Refused by
+            # name for every write that ADDS to it (a route; a recompile
+            # warns and skips the section), never for a REMOVAL (retire,
+            # supersede, a reroute's old placement, a reconsider's
+            # reject/defer: `_retirement_preflight` passes `removal`), so
+            # a lesson already there can always be moved off it. Same
+            # mode both ways (one coherent posture) still resolves.
+            project_mode = host_mode(home, root, registration="project")
+            if project_mode != mode and not removal:
+                raise DestinationUnavailable(
+                    f"the skills root's own claude-md ({target}) is refused: "
+                    f"{root} is also registered as a project host "
+                    f"({project_mode} mode) while the skills root is "
+                    f"{mode} mode, and both registrations' claude-md would "
+                    "write that one file under two modes. A lesson about "
+                    "one skill goes to its SKILL.md (skill-md); a lesson "
+                    "about the whole repo belongs to that project (project "
+                    "scope, claude-md:local)"
+                )
         spec = TargetSpec("claude-md", "skill-root", bucket_dir, target, root, mode=mode)
         if check_dirty:
             _abort_if_unsound(
@@ -2375,7 +2377,7 @@ def _resolve_target_unguarded(
                     "SKILL.md) — refusing to inject (M3-9); pick another "
                     "name or route to its skill-md through review"
                 )
-        new_skill_mode = host_mode(home, root)
+        new_skill_mode = host_mode(home, root, registration="skills-root")
         if check_dirty and new_skill_mode == "git":
             # U-hostmode §8 OUT-7: new-skill scaffolds are explicitly NOT
             # covered by the compile record (created once, whole files) —
@@ -2422,7 +2424,9 @@ def _resolve_target_unguarded(
         # lives" (compilers.reference_target_path's docstring). This site
         # re-implemented it with its own "LEARNINGS.md" literal (audit
         # 2026-07-16 MINOR 7): two copies of one rule, free to drift.
-        ref_mode = _project_mode(home, host) if kind == "project" else host_mode(home, host)
+        ref_mode = host_mode(
+            home, host, registration="project" if kind == "project" else "skills-root"
+        )
         probe = reference_target_path(refs_dir, ref_name)
         if check_dirty:
             _abort_if_unsound(home, host, ref_mode, probe, "reference", scope_kind=kind)
@@ -2536,7 +2540,10 @@ def _resolve_hook_target(home: Path, record: Record, bucket_dir: Path) -> Target
             "overwrite; supersede the record that owns it first"
         )
     scope_kind = _hook_scope_kind(record)
-    spec = TargetSpec("hook", scope_kind, bucket_dir, target, root, mode=host_mode(home, root))
+    spec = TargetSpec(
+        "hook", scope_kind, bucket_dir, target, root,
+        mode=host_mode(home, root, registration="skills-root"),
+    )
     _refuse_unsafe_plain_write(spec)  # G1: a plain host's new script must be ignorable
     return spec
 
@@ -2943,7 +2950,7 @@ def _hook_script_location(
             "remove; self-learn host add <path> --skills-root"
         )
     root = _gate_host(home, hosts.skills_root, "skills-root")
-    return root, root / rel, rel, host_mode(home, root)
+    return root, root / rel, rel, host_mode(home, root, registration="skills-root")
 
 
 def _residual_notes(exc: BaseException) -> list[str]:
@@ -5445,7 +5452,10 @@ def _show_canon_info(home: Path, bucket, record: Record) -> dict:
     if host is not None:
         info["host"] = str(host)
         try:
-            info["mode"] = host_mode(home, host)
+            info["mode"] = host_mode(
+                home, host,
+                registration="skills-root" if bucket.scope == "skill" else "project",
+            )
         except Exception:  # noqa: BLE001 — a resolution problem here must
             info["mode"] = None  # never break a read-only detail view
     if target is not None:
@@ -9450,9 +9460,6 @@ def push_pending(home: Path | str) -> PushReport:
         if problem is not None:
             print(f"self-learn push: skipping {repo} — {problem}", file=sys.stderr)
             continue
-        if repo in seen:
-            continue
-        seen.add(repo)
         # U-hostmode M-5 (code gate r1 fold, PLAIN10): a plain host has no
         # `git status` to consult at all — `unpushed_commits` is a raw
         # git subprocess, so calling it against a plain host's directory
@@ -9460,9 +9467,16 @@ def push_pending(home: Path | str) -> PushReport:
         # ancestor of it, or fail outright. Skip SILENTLY (never a print
         # — a plain host publishing nothing to push is the expected,
         # every-run state, not an anomaly worth a line) and never touch
-        # `unpushed_commits` for it.
-        if host_mode(home, repo) == "plain":
+        # `unpushed_commits` for it. S-82: the mode is THIS
+        # registration's, and a plain registration is skipped before the
+        # repo counts as seen, so a repo registered twice (a git skills
+        # root, a plain project) is pushed through its git registration
+        # whichever order the two are listed in.
+        if host_mode(home, repo, registration=kind) == "plain":
             continue
+        if repo in seen:
+            continue
+        seen.add(repo)
         if gitops.unpushed_commits(repo):
             entries.append((repo, gitops.push_if_remote(repo)))
     return PushReport(entries)

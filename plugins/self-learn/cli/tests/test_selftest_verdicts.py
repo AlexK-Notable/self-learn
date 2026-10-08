@@ -90,13 +90,14 @@ def test_healthy_home_exits_0_no_worker_placeholder_row(env, capsys):
     real check PASS, and there is no `worker` row at all any more (M-K
     originally shipped one as an unconditional, COUNTED UNMEASURED
     entry — reporting a verdict for a check that was never run, which
-    made every home exit 9 forever). Nine real checks, all PASS: exit 0.
+    made every home exit 9 forever). Ten real checks since S-82's `hosts`
+    row (nine before, 2026-10-08), all PASS: exit 0.
 
     Mutation witness the gate can use: re-adding the dropped
     `("worker", Verdict.UNMEASURED, "M2 — not checked")` tuple to
     `run_selftest`'s ``results`` list reddens this test on the exit-code
     assertion alone (rc goes back to 9), and also on the summary-line
-    assertion (the count changes from 9 to 10 total, 1 unmeasured).
+    assertion (the count changes from 10 to 11 total, 1 unmeasured).
     Separately, reverting `cli.EXIT_UNMEASURED` from 9 to 0 (or
     `run_selftest`'s `return EXIT_UNMEASURED` back to `return 0`) would
     make ANY future genuine UNMEASURED silently read as success — that
@@ -108,7 +109,8 @@ def test_healthy_home_exits_0_no_worker_placeholder_row(env, capsys):
     assert rc == 0
     assert "FAIL" not in out
     assert "worker" not in out
-    assert "9 passed, 0 unmeasured, 0 failed" in out
+    # S-82 (GM, 2026-10-08): the `hosts` row joined the selftest, one more PASS.
+    assert "10 passed, 0 unmeasured, 0 failed" in out
 
 
 def test_hosts_yaml_absent_is_unmeasured_not_a_silent_pass(tmp_path, monkeypatch):

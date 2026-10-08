@@ -109,7 +109,8 @@ def test_selftest_exits_9_on_healthy_sandbox_no_real_claude_dir(env, capsys):
         assert f"PASS {check}" in out
     assert "worker" not in out
     assert "UNMEASURED surface" in out
-    assert "8 passed, 1 unmeasured, 0 failed" in out
+    # S-82 (GM, 2026-10-08): the `hosts` row joined the selftest, one more PASS.
+    assert "9 passed, 1 unmeasured, 0 failed" in out
 
 
 def test_selftest_green_on_empty_home(env, capsys):
@@ -742,7 +743,8 @@ def test_selftest_reports_nine_checks_criterion_12(env, capsys):
     # the summary line has one fewer UNMEASURED than before (1, not 2).
     assert rc == 9
     assert "PASS reach" in out
-    assert "8 passed, 1 unmeasured, 0 failed" in out
+    # S-82 (GM, 2026-10-08): the `hosts` row joined the selftest, one more PASS.
+    assert "9 passed, 1 unmeasured, 0 failed" in out
 
 
 # --------------------------------------------------- FW-66: decode safety
@@ -812,9 +814,9 @@ def test_reach_undecodable_resolved_record_skipped_not_crashed(env):
     assert "1 reference-routed record(s) reachable" in reason
 
 
-def test_selftest_survives_corrupt_resolved_record_prints_all_nine_rows(env, capsys):
+def test_selftest_survives_corrupt_resolved_record_prints_every_row(env, capsys):
     """The end-to-end proof: `_section_targets` (feeding checks (b)/(c),
-    called BEFORE the nine-check loop even runs) shares the identical
+    called BEFORE the check loop even runs) shares the identical
     from_path/RecordError gap — left unfixed, a corrupt resolved record
     file killed `--selftest` before it printed a single row, not just the
     reach/drift ones. Exercised through the full `cli.main(["--selftest"])`
@@ -830,9 +832,13 @@ def test_selftest_survives_corrupt_resolved_record_prints_all_nine_rows(env, cap
     # to skill-md/claude-md here means every real check PASSes (the
     # corrupt resolved record is skipped, not counted) -- exit 0.
     assert rc == 0
-    assert "9 passed, 0 unmeasured, 0 failed" in out
+    # S-82 (GM, 2026-10-08): the `hosts` row joined the selftest, one more PASS.
+    assert "10 passed, 0 unmeasured, 0 failed" in out
+    # S-82 (GM fold, 2026-10-08): the `hosts` row is named here too, not
+    # only counted, and the test no longer says "nine rows".
     for check in (
-        "capture", "compiler", "markers", "drift", "reach", "hooks", "surface", "sentinel",
+        "capture", "compiler", "markers", "drift", "reach", "hooks", "surface",
+        "hosts", "sentinel",
     ):
         assert f"PASS {check}" in out
 

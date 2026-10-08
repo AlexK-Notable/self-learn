@@ -325,6 +325,18 @@ revert). Doc 13 promotes that to the general rule:
    deleted shelf is asked only whether it is tracked. The pre-flight, the
    ledger's prediction and the write apply the same check (S-77 (5)).
 
+   **One repository, two registrations (S-82).** claude-skills is the
+   skills root in `git` mode and a project host in `plain` mode. Every
+   write takes the mode of the registration it goes through: a lesson for
+   one skill compiles into its `SKILL.md` and self-learn commits it (under
+   the autosync pause); a project lesson for the whole repository writes
+   only files git ignores. `host remove <path> --skills-root | --project`
+   drops one registration and keeps the other. The skills root's own
+   `claude-md` takes no new lesson while the two modes differ, because
+   both legs would write the same `CLAUDE.md`; a lesson already there can
+   always be moved off. The `hosts` selftest row shows each registration's
+   mode.
+
 ## 5. Producers commit their own writes
 
 Every ledger mutation already flows through the CLI (teach, import,
