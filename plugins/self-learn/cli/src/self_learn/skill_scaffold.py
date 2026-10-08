@@ -299,8 +299,8 @@ SKILL_FRONTMATTER_FORBIDDEN_CHARS: tuple[str, ...] = (
     "\x1e",
     "\x1f",
     "\x85",
-    " ",
-    " ",
+    "\u2028",
+    "\u2029",
 )
 
 #: The two caps checked BEFORE any YAML parse. ruamel's pure-Python parser
@@ -1253,7 +1253,8 @@ def _check_support_files(
                 SkillFinding(
                     RULE_REFERENCE_NOT_LINKED,
                     f"reference {_shown(path)} is not linked from SKILL.md; "
-                    f"add a markdown link such as [text]({path})",
+                    "add a markdown link to that path, such as [text]("
+                    f"{SKILL_REFERENCES_DIR}/<name>{SKILL_SUPPORT_FILE_SUFFIX})",
                     path,
                 )
             )

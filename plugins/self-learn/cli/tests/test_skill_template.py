@@ -820,7 +820,7 @@ def test_a_reference_link_may_carry_a_dot_prefix_fragment_or_title():
 #: out: Python's ``\s`` is a different set (it has ``\x1c``-``\x1f`` and
 #: U+0085, and lacks U+FEFF), so the port never uses it (fold 2, F2).
 JS_WHITESPACE = (
-    r"[\t\n\x0b\x0c\r \xa0  -     　﻿]"
+    r"[\t\n\x0b\x0c\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]"
 )
 
 #: Claude Code 2.1.293's frontmatter match, ported (its source is
@@ -833,7 +833,7 @@ CLAUDE_CODE_FRONTMATTER_RE = re.compile(
 
 
 def claude_code_block(text: str) -> str | None:
-    text = text[1:] if text.startswith("﻿") else text
+    text = text[1:] if text.startswith("\ufeff") else text
     if text.find("---", 3) < 0:
         return None
     match = CLAUDE_CODE_FRONTMATTER_RE.match(text)
@@ -887,16 +887,18 @@ def _valid_drafts() -> dict[str, str]:
         "indented dots in a block scalar": skill(
             front={"when_to_use": "|\n  first\n  ...\n  last"}
         )["SKILL.md"],
-        # Fold 2 (F2): a first line that is only a BOM (JavaScript's \s has
-        # U+FEFF, Python's does not; ruamel skips it), CRLF with padding on
-        # both fences, and an ideographic space inside a value (an ordinary
-        # character in CJK text, not a refused one).
-        "a BOM-only first line": "---\n﻿\n" + skill()["SKILL.md"][4:],
+        # Fold 2 (F2), CONTROLS that pass on c7fd5f8 too: a first line that
+        # is only a BOM (JavaScript's \s has U+FEFF, Python's does not;
+        # ruamel skips it; the old oracle's blank-line rule did not strip
+        # it), CRLF with padding on both fences, and an ideographic space
+        # inside a value (an ordinary character in CJK text, not a refused
+        # one).
+        "a BOM-only first line": "---\n\ufeff\n" + skill()["SKILL.md"][4:],
         "CRLF with padded fences": skill()["SKILL.md"]
         .replace("\n", "\r\n")
         .replace("---\r\n", "--- \t\r\n", 2),
         "an ideographic space in a value": skill(
-            front={"description": '"Draws　diagrams when asked."'}
+            front={"description": '"Draws\u3000diagrams when asked."'}
         )["SKILL.md"],
     }
     return drafts
@@ -954,8 +956,8 @@ GATE_OPENERS = [
     "---\x1d",
     "---\x1e",
     "---\x85",
-    "--- ",
-    "--- ",
+    "---\u2028",
+    "---\u2029",
     "---\x1c\n",
     "---\x1d\n",
     "---\x1e\n",
@@ -964,7 +966,7 @@ GATE_OPENERS = [
 ]
 #: Opening lines, each with its own line break.
 _FUZZ_GOOD_OPENERS = ["---\n", "--- \n", "---\t\n", "---\r\n", "--- \t\r\n"]
-_FUZZ_OTHER_OPENERS = ["---\xa0\n", "---　\n", "----\n", "---x\n", "﻿---\n"]
+_FUZZ_OTHER_OPENERS = ["---\xa0\n", "---\u3000\n", "----\n", "---x\n", "\ufeff---\n"]
 _FUZZ_LINES = [
     "name: drawing-diagrams",
     'description: "Draws a diagram."',
@@ -993,12 +995,12 @@ _FUZZ_LINES = [
     # Fold 2 (F2): characters the two line readers treat differently, and
     # whitespace-only lines the opener's \s*\n swallows.
     "x: a\x85b",
-    "x: a b",
+    "x: a\u2028b",
     "x: a\rb",
     "x: a\x0bb",
     "x: a\x1fb",
-    "﻿",
-    "　",
+    "\ufeff",
+    "\u3000",
     "  ",
 ]
 #: Closing lines, each with its own line break (or none: the text ends).
@@ -1016,7 +1018,7 @@ _FUZZ_CLOSERS = [
     "--- \t\r\n",
     "---",
     "---\xa0\n",
-    "---　\n",
+    "---\u3000\n",
     "---\x85\n",
     "---\x1f\n",
     "---\r",
@@ -1092,15 +1094,16 @@ def test_whatever_k1a_accepts_reads_identically_in_claude_code():
 
 
 def test_the_javascript_port_is_not_pythons_whitespace():
-    # The oracle's own control: on the gate's openers Python's \s regex
-    # (the fold's old oracle) finds a block, the JavaScript port does not.
+    # The oracle's own control (it tests the test, so it passes on any
+    # product code): on the gate's openers Python's \s regex (the fold's old
+    # oracle) finds a block, the JavaScript port does not.
     pythons = re.compile(r"^---\s*\n([\s\S]*?)---\s*\n?")
     for opener in ("---\x1c\n", "---\x85\n", "---\x1f\n"):
         text = opener + f"name: {NAME}\n---\n"
         assert pythons.match(text) is not None, repr(opener)
         assert claude_code_block(text) is None, repr(opener)
     # ... and on U+FEFF the other way round.
-    text = "---﻿\nname: x\n---\n"
+    text = "---\ufeff\nname: x\n---\n"
     assert pythons.match(text) is None
     assert claude_code_block(text) == "name: x\n"
 
@@ -1217,9 +1220,18 @@ def _hostile_drafts() -> dict[str, tuple[dict, frozenset[str]]]:
             ),
             too_long,
         ),
+        # PINS, not new behaviour: "huge file key" and the three body cases
+        # ("unclosed ...") already passed on 02a9a5c, the code before the
+        # first fold. They guard against a regression.
         "huge file key": (
             skill(files={"r" * 200_000: "x"}),
             frozenset({"file-outside-references", "file-not-markdown"}),
+        ),
+        # Under references/, so the "not linked" sentence is reached (fold 2,
+        # nit: it used to print the whole path).
+        "huge reference key": (
+            skill(files={f"references/{'a' * 200_000}.md": "x"}),
+            unlinked,
         ),
         "huge unknown key": (skill(front={"k" * 200_000: "1"}), too_long),
         "unclosed links": (skill(body="[a](<" * 12_000), unlinked),
@@ -1270,7 +1282,11 @@ def test_the_link_patterns_do_not_rescan_the_file_from_every_bracket(body: str, 
     # angle links 0.43 s, definitions 0.008 s, brackets 0.084 s, refs
     # 0.001 s, brackets after a definition 1.08 s. Each bound is at least
     # 10 times its case's idle time, and never under 1 s; an unbounded run
-    # over these sizes takes far longer (quadratic in the length).
+    # over these sizes takes far longer (quadratic in the length): on
+    # 02a9a5c, before the fold bounded the patterns, angle links took 15.4 s
+    # and brackets 5.9 s. PINS: definitions, refs and brackets after a
+    # definition already passed on 02a9a5c (it had no reference-style
+    # patterns to slow down); they guard the patterns the fold added.
     started = time.perf_counter()
     assert skill_scaffold._linked_targets(body) == set()
     assert time.perf_counter() - started < bound
@@ -1311,6 +1327,8 @@ def test_when_to_use_and_description_at_exactly_the_listing_limit_pass():
 
 
 def test_when_to_use_is_optional_and_may_be_empty_text():
+    # A PIN, not new behaviour: this already passed on 02a9a5c. It is the
+    # control for the when_to_use refusals the fold added.
     assert run(skill(drop_front=("when_to_use",))).problems == ()
     assert run(skill(front={"when_to_use": q("")})).problems == ()
 
@@ -1344,8 +1362,12 @@ LINKED_BODIES = {
     "autolink": "See <references/format.md>.\n",
     "normalised through ..": "See [x](references/../references/format.md).\n",
     "normalised through .": "See [x](references/./format.md).\n",
+    # A PIN: percent-escaped already linked on 02a9a5c.
     "percent-escaped": "See [x](references/format%2Emd).\n",
 }
+#: CONTROLS for the link styles above, and pins: all seven were already
+#: refused on 02a9a5c. They show the wider link recognition the fold added
+#: does not count these as links.
 UNLINKED_BODIES = {
     "a definition nothing uses": "\n[n]: references/format.md\n",
     "a link that normalises elsewhere": "See [x](references/../format.md).\n",
@@ -1564,7 +1586,7 @@ def test_each_of_the_gates_opening_lines_is_refused(opener: str):
 
 @pytest.mark.parametrize(
     "opener",
-    ["---\xa0\n", "---　\n", "---  \n", "----\n", "---x\n", "---"],
+    ["---\xa0\n", "---\u3000\n", "--- \u2003\n", "----\n", "---x\n", "---"],
     ids=["nbsp", "ideographic space", "em space after a space", "four dashes", "text", "no line break"],
 )
 def test_an_opening_line_with_anything_but_spaces_or_tabs_is_refused(opener: str):
@@ -1576,7 +1598,7 @@ def test_an_opening_line_with_anything_but_spaces_or_tabs_is_refused(opener: str
 
 @pytest.mark.parametrize(
     "closer",
-    ["---\xa0\n", "---　\n", "---  \n", "---　"],
+    ["---\xa0\n", "---\u3000\n", "--- \u2003\n", "---\u3000"],
     ids=["nbsp", "ideographic space", "em space after a space", "ideographic space at the end"],
 )
 def test_a_closing_line_with_anything_but_spaces_or_tabs_is_refused(closer: str):
@@ -1590,7 +1612,8 @@ def test_a_closing_line_with_anything_but_spaces_or_tabs_is_refused(closer: str)
 
 
 def test_fence_lines_of_dashes_spaces_tabs_and_crlf_pass():
-    # Positive controls for the two tests above.
+    # Positive controls for the two tests above (so they pass on c7fd5f8
+    # and 02a9a5c too: these drafts were always accepted).
     for opener in _FUZZ_GOOD_OPENERS:
         assert run(_with_opener(opener)).problems == (), repr(opener)
     front = f"---\nname: {NAME}\ndescription: {q(DESCRIPTION)}\n"
@@ -1609,7 +1632,7 @@ _FORBIDDEN_PLACES = {
 @pytest.mark.parametrize("place", list(_FORBIDDEN_PLACES))
 @pytest.mark.parametrize(
     "char",
-    ["\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x1f", "\x85", " ", " "],
+    ["\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x1f", "\x85", "\u2028", "\u2029"],
     ids=["lone CR", "VT", "FF", "FS", "GS", "RS", "US", "NEL", "LS", "PS"],
 )
 def test_a_line_break_character_the_readers_disagree_on_is_refused(char: str, place: str):
@@ -1627,12 +1650,12 @@ def test_a_line_break_character_the_readers_disagree_on_is_refused(char: str, pl
 
 @pytest.mark.parametrize(
     "char",
-    ["\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x1f", "\x85", " ", " "],
+    ["\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x1f", "\x85", "\u2028", "\u2029"],
     ids=["lone CR", "VT", "FF", "FS", "GS", "RS", "US", "NEL", "LS", "PS"],
 )
 def test_the_same_characters_in_the_body_are_fine(char: str):
     # Positive control: only the frontmatter (through its closing fence) is
-    # read two ways; the body is not.
+    # read two ways; the body is not. (Passes on c7fd5f8 and 02a9a5c too.)
     body = f"# T\n\nA line with {char} in it.\n"
     assert run({"SKILL.md": f"---\nname: {NAME}\ndescription: {q(DESCRIPTION)}\n---\n{body}"}).problems == ()
 
