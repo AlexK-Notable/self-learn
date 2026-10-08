@@ -15,11 +15,13 @@ module never touches git.
 from __future__ import annotations
 
 import json
+import posixpath
 import re
+import reprlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import unquote
 
 from ruamel.yaml import YAML
@@ -39,12 +41,20 @@ __all__ = [
     "SKILL_BODY_SOFT_MAX_LINES",
     "SKILL_DESCRIPTION_MAX_CHARS",
     "SKILL_ENTRY_FILE",
+    "SKILL_FILE_PATH_FORBIDDEN_CHARS",
+    "SKILL_FILE_PATH_FORBIDDEN_SEGMENTS",
     "SKILL_FRONTMATTER_ALLOWED_KEYS",
+    "SKILL_FRONTMATTER_FENCE",
+    "SKILL_FRONTMATTER_REFUSED_CLOSER",
     "SKILL_FRONTMATTER_REFUSED_KEYS",
+    "SKILL_LISTING_MAX_CHARS",
     "SKILL_NAME_MAX_CHARS",
     "SKILL_NAME_RESERVED_WORDS",
     "SKILL_NOTE_IDS",
+    "SKILL_PATHS_ABSOLUTE_PREFIXES",
+    "SKILL_PATHS_PARENT_SEGMENT",
     "SKILL_REFERENCES_DIR",
+    "SKILL_REFERENCES_MAX_DEPTH",
     "SKILL_RULE_IDS",
     "SKILL_RUNNER_METADATA_KEY",
     "SKILL_SUPPORT_FILE_SUFFIX",
@@ -169,8 +179,13 @@ def marketplace_with_entry(
 # refusal message and a test may name them, so rename one only on purpose.
 # =============================================================================
 
-#: ``name``: the directory name. Anthropic's skill best practices: "Maximum
-#: 64 characters".
+#: ``name``: the directory name, kebab-case. The kebab-case rule is
+#: ``SKILL_NAME_RE`` (defined at the top of this module, where
+#: ``validate_skill_name`` and the rules-topic checks already read it; it is
+#: referenced here, not moved). ``check_skill`` also requires a ``fullmatch``
+#: of it, because its ``$`` alone lets a trailing newline through.
+#:
+#: Anthropic's skill best practices: "Maximum 64 characters".
 SKILL_NAME_MAX_CHARS = 64
 
 #: ``name`` may not contain any of these, in any case. Anthropic's rule:
@@ -189,10 +204,24 @@ SKILL_BODY_SOFT_MAX_LINES = 500
 #: ``report.DESCRIPTION_SOFT_MAX_WORDS``, read at call time so the catalogue
 #: report and this check always use the same number.
 
-#: ``name`` and ``description`` may not contain an XML tag (Anthropic: "Cannot
-#: contain XML tags"). A tag is ``<`` or ``</`` straight into a letter, up to
-#: the next ``>``; a bare comparison such as ``a < 5 and b > 3`` is not one.
-SKILL_XML_TAG_RE = re.compile(r"</?[A-Za-z][^<>]*>")
+#: ``description`` and ``when_to_use`` together are what the skill listing
+#: shows, and Claude Code truncates that combined text at 1,536 characters
+#: (D-AUTHOR §3.1, line 556: "the combined `description` and `when_to_use`
+#: text is truncated at 1,536 characters in the skill listing to reduce
+#: context usage"). The check counts the plain sum of the two lengths; the
+#: quoted sentence does not say how Claude Code joins them.
+SKILL_LISTING_MAX_CHARS = 1536
+
+#: ``name``, ``description`` and ``when_to_use`` may not contain an XML tag
+#: (Anthropic: "Cannot contain XML tags"; ``when_to_use`` is listed beside
+#: ``description``, so the same reason applies). Matched: ``<`` or ``</``
+#: straight into a letter or ``_`` (any script) up to the next ``>``; a
+#: comment opener ``<!--``; ``<![CDATA[``; ``<!DOCTYPE ...>``; ``<?...>``. A
+#: bare comparison such as ``a < 5 and b > 3`` is not one, and ``<b and c>``
+#: is.
+SKILL_XML_TAG_RE = re.compile(
+    r"</?[^\W\d][^<>]*>|<!--|<!\[CDATA\[|<![A-Za-z][^<>]*>|<\?[^<>]*>"
+)
 
 #: The one file every skill has, and the one folder for supporting files.
 SKILL_ENTRY_FILE = "SKILL.md"
@@ -200,6 +229,36 @@ SKILL_REFERENCES_DIR = "references"
 #: Supporting files are markdown only. No scripts, no executables, no other
 #: file type.
 SKILL_SUPPORT_FILE_SUFFIX = ".md"
+#: How many levels a supporting file may sit below ``references/`` (the file
+#: itself counts as one): ``references/x.md`` is depth 1, so
+#: ``references/a/b.md`` is refused. Anthropic: "Keep references one level
+#: deep from SKILL.md".
+SKILL_REFERENCES_MAX_DEPTH = 1
+
+#: A supporting file's path (a key of ``files``) may not contain any of
+#: these characters or have any of these segments (split on ``/``): that
+#: would be an absolute path, a path that climbs out of the skill's folder,
+#: or one that is not a plain file name.
+SKILL_FILE_PATH_FORBIDDEN_CHARS: tuple[str, ...] = ("\\", "\x00")
+SKILL_FILE_PATH_FORBIDDEN_SEGMENTS: tuple[str, ...] = ("", ".", "..")
+
+#: The frontmatter is read the way Claude Code reads it, or refused.
+#: Claude Code 2.1.293 finds the block with ``/^---\s*\n([\s\S]*?)---\s*\n?/``:
+#: the FIRST ``---`` anywhere after the opening line ends it (even mid-line,
+#: even inside a quoted value), and ``...`` never does. The compilers'
+#: reader (which this check also uses) ends it at the first line that is
+#: exactly ``---`` or ``...``. So the check is STRICTER than both: a
+#: frontmatter whose inner text contains the fence anywhere, or that is
+#: closed by the refused closer, is refused, and whatever passes reads
+#: identically in all three.
+SKILL_FRONTMATTER_FENCE = "---"
+SKILL_FRONTMATTER_REFUSED_CLOSER = "..."
+
+#: ``paths`` entries: a leading character that makes a glob absolute or
+#: home-relative (never fires against a project tree), and the segment that
+#: climbs out. Both refused.
+SKILL_PATHS_ABSOLUTE_PREFIXES: tuple[str, ...] = ("/", "~")
+SKILL_PATHS_PARENT_SEGMENT = ".."
 
 #: Frontmatter keys a draft may carry. Anything else is refused by name.
 SKILL_FRONTMATTER_ALLOWED_KEYS: tuple[str, ...] = (
@@ -242,7 +301,12 @@ SKILL_MANAGED_BEGIN_PREFIX = BEGIN_MARKER.split(" (", 1)[0]
 # ------------------------------------------------------------------- rule ids
 
 RULE_SKILL_MD_MISSING = "skill-md-missing"
+RULE_FILE_KEY_NOT_TEXT = "file-key-not-text"
+RULE_FILE_NOT_TEXT = "file-not-text"
 RULE_FRONTMATTER_UNPARSEABLE = "frontmatter-unparseable"
+RULE_FRONTMATTER_CLOSED_BY_DOTS = "frontmatter-closed-by-dots"
+RULE_FRONTMATTER_CONTAINS_FENCE = "frontmatter-contains-fence"
+RULE_FRONTMATTER_ANCHOR = "frontmatter-anchor-alias"
 RULE_FRONTMATTER_KEY_REFUSED = "frontmatter-key-refused"
 RULE_FRONTMATTER_KEY_UNKNOWN = "frontmatter-key-unknown"
 RULE_NAME_MISSING = "name-missing"
@@ -256,6 +320,9 @@ RULE_NAME_DIR_MISMATCH = "name-dir-mismatch"
 RULE_DESCRIPTION_EMPTY = "description-empty"
 RULE_DESCRIPTION_TOO_LONG = "description-too-long"
 RULE_DESCRIPTION_XML_TAG = "description-xml-tag"
+RULE_WHEN_TO_USE_NOT_TEXT = "when-to-use-not-text"
+RULE_WHEN_TO_USE_XML_TAG = "when-to-use-xml-tag"
+RULE_LISTING_TOO_LONG = "listing-text-too-long"
 RULE_METADATA_NOT_MAPPING = "metadata-not-mapping"
 RULE_METADATA_SELF_LEARN = "metadata-self-learn"
 RULE_PATHS_SHAPE = "paths-shape"
@@ -273,7 +340,12 @@ RULE_REFERENCE_NOT_LINKED = "reference-not-linked"
 #: Problems: each REFUSES the write. The order is the order the checks run.
 SKILL_RULE_IDS: tuple[str, ...] = (
     RULE_SKILL_MD_MISSING,
+    RULE_FILE_KEY_NOT_TEXT,
+    RULE_FILE_NOT_TEXT,
     RULE_FRONTMATTER_UNPARSEABLE,
+    RULE_FRONTMATTER_CLOSED_BY_DOTS,
+    RULE_FRONTMATTER_CONTAINS_FENCE,
+    RULE_FRONTMATTER_ANCHOR,
     RULE_FRONTMATTER_KEY_REFUSED,
     RULE_FRONTMATTER_KEY_UNKNOWN,
     RULE_NAME_MISSING,
@@ -287,6 +359,9 @@ SKILL_RULE_IDS: tuple[str, ...] = (
     RULE_DESCRIPTION_EMPTY,
     RULE_DESCRIPTION_TOO_LONG,
     RULE_DESCRIPTION_XML_TAG,
+    RULE_WHEN_TO_USE_NOT_TEXT,
+    RULE_WHEN_TO_USE_XML_TAG,
+    RULE_LISTING_TOO_LONG,
     RULE_METADATA_NOT_MAPPING,
     RULE_METADATA_SELF_LEARN,
     RULE_PATHS_SHAPE,
@@ -357,58 +432,177 @@ class SkillCheck:
 #: "No such frontmatter key", told apart from a key that is present and null.
 _ABSENT: Any = object()
 
+#: The link patterns below bound every run (``{0,999}``, the CommonMark label
+#: limit) so that text of many unclosed ``[`` or ``<`` cannot make a match
+#: attempt rescan the rest of the file each time (an unbounded ``[^>]*`` took
+#: seconds on 50 KB).
+#:
 #: A markdown inline link: ``[text](target)``, target optionally in angle
 #: brackets and optionally followed by a quoted title.
 _MD_LINK_RE = re.compile(
-    r"\[[^\]]*\]\(\s*(?:<([^>]*)>|([^)\s]+))(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)"
+    r"\[[^\]]{0,999}\]\(\s*(?:<([^>\n]{0,999})>|([^)\s]{1,999}))"
+    r"(?:\s+(?:\"[^\"]{0,999}\"|'[^']{0,999}'))?\s*\)"
 )
+#: A link reference definition line, ``[label]: target "optional title"``.
+_MD_REF_DEF_RE = re.compile(
+    r"^ {0,3}\[([^\]]{1,999})\]:[ \t]*(?:<([^>\n]{0,999})>|(\S{1,999}))"
+    r"(?:[ \t]+(?:\"[^\"]{0,999}\"|'[^']{0,999}'|\([^)]{0,999}\)))?[ \t]*$",
+    re.MULTILINE,
+)
+#: ``[text][label]`` (full) and ``[label][]`` (collapsed) reference links.
+_MD_REF_USE_RE = re.compile(r"\[([^\]]{0,999})\]\[([^\]]{0,999})\]")
+#: ``[label]`` on its own (shortcut), not followed by ``[``, ``(`` or ``:``.
+_MD_SHORTCUT_RE = re.compile(r"\[([^\]]{1,999})\](?![\[(:])")
+#: ``<references/x.md>``.
+_MD_AUTOLINK_RE = re.compile(r"<([^<>\s]{1,999})>")
+
+#: How much of an offending value a sentence shows. Every value that reaches
+#: a message goes through :func:`_shown` / :func:`_clip`, so a hostile or
+#: huge draft cannot make the check build a huge string.
+_SHOWN_LIMIT = 80
+_SHOWN_ITEMS = 5
+
+_BOUNDED_REPR = reprlib.Repr()
+_BOUNDED_REPR.maxstring = _BOUNDED_REPR.maxother = _BOUNDED_REPR.maxlong = _SHOWN_LIMIT
+_BOUNDED_REPR.maxlist = _BOUNDED_REPR.maxtuple = _BOUNDED_REPR.maxdict = _SHOWN_ITEMS
+_BOUNDED_REPR.maxset = _BOUNDED_REPR.maxfrozenset = _SHOWN_ITEMS
+_BOUNDED_REPR.maxdeque = _BOUNDED_REPR.maxarray = _SHOWN_ITEMS
+_BOUNDED_REPR.maxlevel = 3
 
 
-def _shown(value: object, limit: int = 80) -> str:
-    """``repr`` of an offending value, cut so a long one stays readable."""
-    shown = repr(value)
-    return shown if len(shown) <= limit else shown[: limit - 3] + "..."
+def _shown(value: object) -> str:
+    """A bounded ``repr`` of an offending value: ``reprlib`` slices a string
+    before it builds the repr and stops at a fixed nesting depth and item
+    count, so the cost does not grow with the value. Never raises (a repr
+    that fails, such as an integer too long to print, shows its type)."""
+    try:
+        return _BOUNDED_REPR.repr(value)
+    except Exception:
+        return f"<{type(value).__name__}>"
 
 
-def _read_frontmatter(text: str) -> tuple[dict[Any, Any] | None, str, str | None]:
-    """``(mapping, body, problem)``. ``problem`` is a plain reason, set (and
-    ``mapping`` None) when the frontmatter is absent, unterminated, not
-    YAML, or not a mapping. ``body`` is the text after the frontmatter
-    (the whole text when there is no readable block). The same fence rules
-    and the same safe YAML loader the compilers use for ``paths:``."""
+def _shown_list(items: Iterable[object]) -> str:
+    """The first few items, each bounded, then how many more there were."""
+    listed: list[str] = []
+    more = 0
+    for item in items:
+        if len(listed) < _SHOWN_ITEMS:
+            listed.append(_shown(item))
+        else:
+            more += 1
+    return ", ".join(listed) + (f" (and {more} more)" if more else "")
+
+
+def _clip(text: str, limit: int = 200) -> str:
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+class _Frontmatter(NamedTuple):
+    """What :func:`_read_frontmatter` read: ``mapping`` and ``inner`` (the
+    text between the fences) when it is acceptable, ``finding`` (the one
+    problem that stops the frontmatter checks) when it is not, and the
+    ``body`` after the frontmatter (the whole text when there is no readable
+    block)."""
+
+    mapping: dict[Any, Any] | None
+    inner: str | None
+    body: str
+    finding: SkillFinding | None
+
+
+def _read_frontmatter(text: str) -> _Frontmatter:
+    """Read SKILL.md's frontmatter, strictly. A refusal here stops the
+    frontmatter checks (they would be about a block Claude Code does not
+    read). Refused: no block, an unclosed block, a block closed by the
+    refused closer, a block with the fence inside it, anchors and aliases,
+    anything that is not YAML (an unquoted ``: `` in a value is one), and a
+    block that is not a mapping. Same fence rules and same safe YAML loader
+    the compilers use for ``paths:``; the anchor test reads the parser's own
+    events, never the text."""
+
+    def refuse(rule: str, message: str, body: str) -> _Frontmatter:
+        return _Frontmatter(None, None, body, SkillFinding(rule, message))
+
     try:
         block = _find_leading_block(text)
     except CompileError:
-        return (
-            None,
+        return refuse(
+            RULE_FRONTMATTER_UNPARSEABLE,
+            f"{SKILL_ENTRY_FILE} cannot be read: the leading "
+            f"'{SKILL_FRONTMATTER_FENCE}' frontmatter block is never closed "
+            f"by a '{SKILL_FRONTMATTER_FENCE}' line",
             text,
-            "the leading '---' frontmatter block is never closed by a '---' line",
         )
     if block is None:
-        return (
-            None,
+        return refuse(
+            RULE_FRONTMATTER_UNPARSEABLE,
+            f"{SKILL_ENTRY_FILE} cannot be read: there is no frontmatter block "
+            f"(the file must start with a '{SKILL_FRONTMATTER_FENCE}' line)",
             text,
-            "there is no frontmatter block (the file must start with a '---' line)",
         )
     inner, end = block
     body = text[end:]
-    try:
-        loaded = YAML(typ="safe").load(inner)
-    except Exception as exc:  # any loader failure is the same refusal
-        detail = " ".join(
-            ln.strip() for ln in str(exc).splitlines() if ln.strip()
-        )[:200]
-        return (
-            None,
+    closer = text[:end].splitlines()[-1].strip()
+    if closer == SKILL_FRONTMATTER_REFUSED_CLOSER:
+        return refuse(
+            RULE_FRONTMATTER_CLOSED_BY_DOTS,
+            f"the frontmatter is closed by a '{SKILL_FRONTMATTER_REFUSED_CLOSER}' "
+            f"line; Claude Code ends the frontmatter only at "
+            f"'{SKILL_FRONTMATTER_FENCE}', so the skill would load with no "
+            f"frontmatter. Close it with '{SKILL_FRONTMATTER_FENCE}'",
             body,
-            f"the frontmatter is not valid YAML ({detail}); put any value "
-            "that contains ': ' in double quotes",
+        )
+    if SKILL_FRONTMATTER_FENCE in inner:
+        # Line 1 is the opening fence; the inner text starts on line 2.
+        line_no = next(
+            n
+            for n, ln in enumerate(inner.splitlines(), start=2)
+            if SKILL_FRONTMATTER_FENCE in ln
+        )
+        return refuse(
+            RULE_FRONTMATTER_CONTAINS_FENCE,
+            f"the frontmatter contains '{SKILL_FRONTMATTER_FENCE}' on line "
+            f"{line_no}; Claude Code ends the frontmatter at the first "
+            f"'{SKILL_FRONTMATTER_FENCE}' anywhere, even inside a value, so "
+            "the skill would load cut short. Reword it",
+            body,
+        )
+    try:
+        # Events first: syntax errors surface here, and anchors and aliases
+        # are seen BEFORE anything is built (an alias can expand a small
+        # draft into an enormous structure).
+        anchored = any(
+            getattr(event, "anchor", None) is not None
+            for event in YAML(typ="safe").parse(inner)
+        )
+        if anchored:
+            return refuse(
+                RULE_FRONTMATTER_ANCHOR,
+                "the frontmatter uses a YAML anchor or alias (&name or "
+                "*name); a skill has no use for them, so they are refused",
+                body,
+            )
+        loaded = YAML(typ="safe").load(inner)
+    except Exception as exc:  # any parser or loader failure is the same refusal
+        detail = _clip(
+            " ".join(ln.strip() for ln in str(exc).splitlines() if ln.strip())
+        )
+        return refuse(
+            RULE_FRONTMATTER_UNPARSEABLE,
+            f"{SKILL_ENTRY_FILE} cannot be read: the frontmatter is not valid "
+            f"YAML ({detail}); put any value that contains ': ' in double quotes",
+            body,
         )
     if loaded is None:
         loaded = {}
     if not isinstance(loaded, dict):
-        return None, body, "the frontmatter is not a mapping of keys to values"
-    return loaded, body, None
+        return refuse(
+            RULE_FRONTMATTER_UNPARSEABLE,
+            f"{SKILL_ENTRY_FILE} cannot be read: the frontmatter is not a "
+            "mapping of keys to values",
+            body,
+        )
+    return _Frontmatter(loaded, inner, body, None)
 
 
 def _check_name(
@@ -539,6 +733,44 @@ def _check_description(raw: object) -> list[SkillFinding]:
     return out
 
 
+def _check_when_to_use(mapping: dict[Any, Any]) -> list[SkillFinding]:
+    """``when_to_use``, when present: text, no XML tag, and together with
+    ``description`` within the skill listing's limit."""
+    if "when_to_use" not in mapping:
+        return []
+    raw = mapping["when_to_use"]
+    if not isinstance(raw, str):
+        return [
+            SkillFinding(
+                RULE_WHEN_TO_USE_NOT_TEXT,
+                f"when_to_use must be text, got {_shown(raw)}",
+            )
+        ]
+    out: list[SkillFinding] = []
+    found = SKILL_XML_TAG_RE.search(raw)
+    if found:
+        out.append(
+            SkillFinding(
+                RULE_WHEN_TO_USE_XML_TAG,
+                f"when_to_use contains an XML tag, {_shown(found.group(0))}",
+            )
+        )
+    description = mapping.get("description")
+    if isinstance(description, str):
+        total = len(description) + len(raw)
+        if total > SKILL_LISTING_MAX_CHARS:
+            out.append(
+                SkillFinding(
+                    RULE_LISTING_TOO_LONG,
+                    f"description ({len(description)} characters) and "
+                    f"when_to_use ({len(raw)}) total {total}; the skill "
+                    f"listing keeps only {SKILL_LISTING_MAX_CHARS} of them "
+                    "together",
+                )
+            )
+    return out
+
+
 def _check_keys(mapping: dict[Any, Any]) -> list[SkillFinding]:
     out: list[SkillFinding] = []
     for key in mapping:
@@ -565,8 +797,8 @@ def _check_keys(mapping: dict[Any, Any]) -> list[SkillFinding]:
 
 
 def _check_metadata(mapping: dict[Any, Any]) -> list[SkillFinding]:
-    if "metadata" not in mapping:
-        return []
+    if mapping.get("metadata") is None:
+        return []  # absent, or an empty ``metadata:``: no metadata
     meta = mapping["metadata"]
     if not isinstance(meta, dict):
         return [
@@ -603,22 +835,24 @@ def _check_paths(mapping: dict[Any, Any]) -> list[SkillFinding]:
             )
         ]
     out: list[SkillFinding] = []
-    absolute = [p for p in value if p.startswith(("/", "~"))]
+    absolute = [p for p in value if p.startswith(SKILL_PATHS_ABSOLUTE_PREFIXES)]
     if absolute:
         out.append(
             SkillFinding(
                 RULE_PATHS_ABSOLUTE,
                 "paths entries must be relative globs, but these are "
-                "absolute or home-relative: " + ", ".join(_shown(p) for p in absolute),
+                "absolute or home-relative: " + _shown_list(absolute),
             )
         )
-    parent = [p for p in value if ".." in re.split(r"[\\/]", p)]
+    parent = [
+        p for p in value if SKILL_PATHS_PARENT_SEGMENT in re.split(r"[\\/]", p)
+    ]
     if parent:
         out.append(
             SkillFinding(
                 RULE_PATHS_PARENT,
-                "paths entries may not climb out with '..': "
-                + ", ".join(_shown(p) for p in parent),
+                f"paths entries may not climb out with "
+                f"'{SKILL_PATHS_PARENT_SEGMENT}': " + _shown_list(parent),
             )
         )
     # The glob translator the rules-glob checks use (``ledger_ops``), called
@@ -629,14 +863,17 @@ def _check_paths(mapping: dict[Any, Any]) -> list[SkillFinding]:
         try:
             _compile_glob_pattern(pattern)
         except ProposalError as exc:
-            out.append(SkillFinding(RULE_PATHS_SHAPE, f"paths: {exc}"))
+            out.append(SkillFinding(RULE_PATHS_SHAPE, f"paths: {_clip(str(exc))}"))
     return out
 
 
 def _check_managed_section(text: str) -> list[SkillFinding]:
     """Exactly one managed section, at the end, or none. Counted the way
-    ``compilers.compile_managed_text`` counts (exact marker lines), plus the
-    begin prefix so a damaged marker is not mistaken for no section."""
+    ``compilers.compile_managed_text`` counts: ``str.count`` of the marker
+    TEXT anywhere in the file (a substring count, not a count of whole
+    lines, so a marker quoted in prose counts too). On top of that, the begin
+    PREFIX is counted so a damaged begin marker is not mistaken for no
+    section."""
     prefix_begins = text.count(SKILL_MANAGED_BEGIN_PREFIX)
     begins = text.count(BEGIN_MARKER)
     ends = text.count(END_MARKER)
@@ -673,27 +910,61 @@ def _check_managed_section(text: str) -> list[SkillFinding]:
     return []
 
 
+def _normalise_link_target(raw: str) -> str | None:
+    """A link target as the file path it lands on: percent escapes decoded,
+    ``#fragment`` and ``?query`` dropped, then ``posixpath.normpath`` (so
+    ``./references/x.md`` and ``references/../references/x.md`` both become
+    ``references/x.md``). ``None`` when nothing is left."""
+    target = unquote(raw.strip())
+    target = re.split(r"[#?]", target, maxsplit=1)[0]
+    if not target:
+        return None
+    normal = posixpath.normpath(target)
+    return None if normal == "." else normal
+
+
+def _label(raw: str) -> str:
+    """A link label as markdown matches it: case-folded, whitespace folded."""
+    return " ".join(raw.split()).casefold()
+
+
 def _linked_targets(body: str) -> set[str]:
-    """Relative paths SKILL.md links to with a markdown inline link,
-    normalised: ``./`` prefix, ``#fragment`` and ``?query`` dropped, percent
-    escapes decoded. A bare mention of a path in prose is NOT a link."""
-    out: set[str] = set()
+    """Relative paths SKILL.md links to, each normalised
+    (:func:`_normalise_link_target`). A link is an inline link
+    ``[text](path)``, a reference link (``[text][n]``, ``[n][]`` or ``[n]``
+    with a ``[n]: path`` definition), or an autolink ``<path>``. A bare
+    mention of a path in prose, and a definition nothing uses, are NOT
+    links. A link lands on a file under ``references/`` only if its
+    normalised path IS that file's path."""
+    raw_targets: list[str] = []
     for match in _MD_LINK_RE.finditer(body):
-        target = unquote(match.group(1) or match.group(2) or "")
-        target = re.split(r"[#?]", target, maxsplit=1)[0]
-        while target.startswith("./"):
-            target = target[2:]
-        if target:
-            out.add(target)
+        raw_targets.append(match.group(1) or match.group(2) or "")
+    definitions = {
+        _label(m.group(1)): (m.group(2) or m.group(3) or "")
+        for m in _MD_REF_DEF_RE.finditer(body)
+    }
+    if definitions:
+        prose = _MD_REF_DEF_RE.sub("", body)
+        used = [_label(m.group(2) or m.group(1)) for m in _MD_REF_USE_RE.finditer(prose)]
+        used += [_label(m.group(1)) for m in _MD_SHORTCUT_RE.finditer(prose)]
+        raw_targets += [definitions[label] for label in used if label in definitions]
+    raw_targets += [m.group(1) for m in _MD_AUTOLINK_RE.finditer(body)]
+    out: set[str] = set()
+    for raw in raw_targets:
+        normal = _normalise_link_target(raw)
+        if normal is not None:
+            out.add(normal)
     return out
 
 
 def _path_is_unsafe(path: str) -> bool:
-    """Not a plain relative path: empty, absolute, a backslash, a NUL, or an
-    empty / ``.`` / ``..`` segment."""
-    if not path or path.startswith("/") or "\\" in path or "\x00" in path:
+    """Not a plain relative path: it holds a forbidden character
+    (:data:`SKILL_FILE_PATH_FORBIDDEN_CHARS`) or a forbidden segment
+    (:data:`SKILL_FILE_PATH_FORBIDDEN_SEGMENTS`: empty, ``.``, ``..``; an
+    absolute path starts with an empty segment)."""
+    if any(char in path for char in SKILL_FILE_PATH_FORBIDDEN_CHARS):
         return True
-    return any(seg in ("", ".", "..") for seg in path.split("/"))
+    return any(seg in SKILL_FILE_PATH_FORBIDDEN_SEGMENTS for seg in path.split("/"))
 
 
 def _check_support_files(
@@ -715,7 +986,8 @@ def _check_support_files(
             )
             continue
         parts = path.split("/")
-        in_references = parts[0] == SKILL_REFERENCES_DIR and len(parts) > 1
+        depth = len(parts) - 1  # levels below the first segment
+        in_references = parts[0] == SKILL_REFERENCES_DIR and depth >= 1
         is_markdown = PurePosixPath(path).suffix == SKILL_SUPPORT_FILE_SUFFIX
         if not in_references:
             out.append(
@@ -737,12 +1009,13 @@ def _check_support_files(
                     path,
                 )
             )
-        if in_references and len(parts) > 2:
+        if in_references and depth > SKILL_REFERENCES_MAX_DEPTH:
             out.append(
                 SkillFinding(
                     RULE_FILE_NESTED,
-                    f"file {_shown(path)} is nested below "
-                    f"{SKILL_REFERENCES_DIR}/; references stay one level deep "
+                    f"file {_shown(path)} is {depth} levels below "
+                    f"{SKILL_REFERENCES_DIR}/; the limit is "
+                    f"{SKILL_REFERENCES_MAX_DEPTH} "
                     f"({SKILL_REFERENCES_DIR}/<name>{SKILL_SUPPORT_FILE_SUFFIX})",
                     path,
                 )
@@ -750,7 +1023,7 @@ def _check_support_files(
         if (
             linked is not None
             and in_references
-            and len(parts) == 2
+            and depth <= SKILL_REFERENCES_MAX_DEPTH
             and is_markdown
             and path not in linked
         ):
@@ -763,6 +1036,37 @@ def _check_support_files(
                 )
             )
     return out
+
+
+def _text_files(
+    files: Mapping[Any, Any],
+) -> tuple[dict[str, str], list[SkillFinding]]:
+    """Keep the files that are text under a text path. A key that is not
+    text, or a value that is not text (bytes, None, a number), is a problem
+    and the file is left out of every other check."""
+    kept: dict[str, str] = {}
+    problems: list[SkillFinding] = []
+    for key, value in files.items():
+        if not isinstance(key, str):
+            problems.append(
+                SkillFinding(
+                    RULE_FILE_KEY_NOT_TEXT,
+                    f"a file key must be a path as text, got {_shown(key)}",
+                    _shown(key),
+                )
+            )
+        elif not isinstance(value, str):
+            problems.append(
+                SkillFinding(
+                    RULE_FILE_NOT_TEXT,
+                    f"file {_shown(key)} must hold text, got a "
+                    f"{type(value).__name__}",
+                    key,
+                )
+            )
+        else:
+            kept[key] = value
+    return kept, problems
 
 
 def check_skill(
@@ -785,33 +1089,36 @@ def check_skill(
     them by accident. ``expected_name``, when the caller knows the skill's
     directory name, makes a different frontmatter ``name`` a problem.
 
-    Every problem is collected; a draft with two faults reports both. The
-    secret scan the design also requires is the writer's job, not this
-    function's."""
+    Every problem is collected; a draft with two faults reports both. A file
+    key or value that is not text is a problem too, and every offending
+    value in a sentence is bounded, so a hostile draft cannot make this
+    raise or build a huge string. The secret scan the design also requires
+    is the writer's job, not this function's."""
     loaded = frozenset(n.casefold() for n in loaded_names)
     vetoed = frozenset(n.casefold() for n in vetoed_names)
-    problems: list[SkillFinding] = []
     notes: list[SkillFinding] = []
+    entry_given = SKILL_ENTRY_FILE in files  # even a non-text one
+    files, problems = _text_files(files)
 
     entry = files.get(SKILL_ENTRY_FILE)
     link_source: set[str] | None = None
     if entry is None:
-        problems.append(
-            SkillFinding(
-                RULE_SKILL_MD_MISSING,
-                f"there is no {SKILL_ENTRY_FILE}; every skill has one",
-            )
-        )
-    else:
-        mapping, body, fm_problem = _read_frontmatter(entry)
-        link_source = _linked_targets(body)
-        if mapping is None:
+        # A SKILL.md that was given but is not text is already a problem
+        # (``file-not-text``); it is not also "missing".
+        if not entry_given:
             problems.append(
                 SkillFinding(
-                    RULE_FRONTMATTER_UNPARSEABLE,
-                    f"{SKILL_ENTRY_FILE} cannot be read: {fm_problem}",
+                    RULE_SKILL_MD_MISSING,
+                    f"there is no {SKILL_ENTRY_FILE}; every skill has one",
                 )
             )
+    else:
+        frontmatter = _read_frontmatter(entry)
+        mapping, body = frontmatter.mapping, frontmatter.body
+        link_source = _linked_targets(body)
+        if mapping is None:
+            assert frontmatter.finding is not None
+            problems.append(frontmatter.finding)
         else:
             problems += _check_name(
                 mapping.get("name", _ABSENT),
@@ -820,6 +1127,7 @@ def check_skill(
                 expected_name=expected_name,
             )
             problems += _check_description(mapping.get("description", _ABSENT))
+            problems += _check_when_to_use(mapping)
             problems += _check_keys(mapping)
             problems += _check_metadata(mapping)
             problems += _check_paths(mapping)
