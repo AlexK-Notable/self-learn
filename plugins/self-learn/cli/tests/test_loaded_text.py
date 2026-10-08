@@ -28,7 +28,7 @@ import re
 import pytest
 from ruamel.yaml import YAML
 
-from self_learn import batch, cli, compilers, records, verbs
+from self_learn import batch, cli, compilers, ledger_ops, records, verbs
 from self_learn.ledger_ops import create_record, find_record_path
 from self_learn.records import Record, ValidationError
 from self_learn.scan import refusal_text
@@ -123,6 +123,12 @@ def test_every_offending_section_is_named_in_one_message():
     )
     assert problem is not None
     assert "Trigger" in problem and "Instruction" in problem
+    # each section is named with its own count of lines
+    problem = compilers.loaded_text_problem(
+        _behavior(trigger=TWO_LINES, instruction="one\ntwo\nthree"), "skill-md"
+    )
+    assert problem is not None
+    assert "Trigger (2 lines)" in problem and "Instruction (3 lines)" in problem
 
 
 def test_a_blank_line_does_not_hide_a_second_paragraph_and_blank_edges_are_not_a_second_line():
@@ -158,6 +164,13 @@ def test_an_unknown_destination_is_an_error_not_a_pass():
     # fail closed: a destination the check does not know must not read as "fine"
     with pytest.raises(ValueError):
         compilers.loaded_text_problem(_behavior(trigger=TWO_LINES), "somewhere-else")
+
+
+def test_the_check_knows_every_destination_a_proposal_can_name():
+    # the ValueError above stays unreachable only while these two agree
+    assert set(ledger_ops.PROPOSAL_DESTINATIONS) == (
+        compilers._MANAGED_LINE_DESTINATIONS | compilers._WHOLE_TEXT_DESTINATIONS
+    )
 
 
 # ------------------------------------------ the route preflight wiring (item 1)
@@ -214,6 +227,21 @@ def test_preview_and_run_refuse_the_same_multi_line_route_and_write_nothing(sand
     assert find_record_path(env.ledger, CUT).parent.name == "pending"
     assert _head(env) == head_before
     assert host_file.read_bytes() == host_before
+
+
+def test_the_preview_names_the_cut_beside_an_earlier_refusal(sandbox):
+    """A dry run reports every check that fails: a lesson that would be cut
+    is named even when its target cannot be resolved either."""
+    env = sandbox
+    rid = "lrn-0e00a011"
+    create_record(
+        env.ledger,
+        Record.create(type="knowledge", scope="user", source="teach", fact=TWO_LINES, record_id=rid),
+    )
+    commit_all(env.ledger, f"seed {rid}")
+    preview = verbs.route_dry_run(env.ledger, rid, dest="new-skill:nowhere")
+    assert len(preview.would_refuse) == 2, preview.would_refuse
+    assert sum("## Context" in text for text in preview.would_refuse) == 1
 
 
 def test_a_person_teach_route_gets_the_message_and_the_lesson_is_kept_in_pending(
@@ -337,6 +365,7 @@ def _says_when_when(line: str) -> bool:
         ("When   about to edit X", "about to edit X"),
         ("When when about to edit X", "about to edit X"),  # the prefix repeated
         ("When About to Edit X", "about to Edit X"),
+        ("When, during a deploy, X", "during a deploy, X"),  # a comma after the word
     ],
 )
 def test_the_entry_line_drops_a_leading_when_from_the_trigger(trigger, loaded):

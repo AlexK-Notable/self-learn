@@ -4494,6 +4494,14 @@ def route_dry_run(
             would_refuse=would_refuse, refusal_errors=errors,
         )
 
+    # Its own try (E0 gate F7): a dry run reports every failed check, so a
+    # lesson that would be cut is named even when the target cannot resolve.
+    try:
+        _abort_if_loaded_text_cut(record, destination)
+    except VerbError as exc:
+        would_refuse.append(refusal_text(exc))
+        errors.append(exc)
+
     spec: TargetSpec | None = None
     resolved_dest = _inherit_rules_paths(home, record, resolved_dest, bucket_dir)
     try:
@@ -4513,7 +4521,6 @@ def route_dry_run(
         )
         spec = replace(spec, rules_paths_from=resolved_dest.rules_paths_from)
         _abort_if_unscopes_rules_file(spec, record_id, allow_unpathed=allow_unpathed)
-        _abort_if_loaded_text_cut(record, destination)
     except VerbError as exc:
         would_refuse.append(refusal_text(exc))
         errors.append(exc)

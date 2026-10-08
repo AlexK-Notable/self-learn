@@ -261,10 +261,11 @@ def _lower_first(text: str) -> str:
     return text
 
 
-#: A trigger's own leading "When " (any case, repeated or not): the entry
-#: line writes its own, so keeping this one rendered "When when ..." --
-#: only the WORD, never "Whenever" or "Somewhen".
-_LEADING_WHEN_RE = re.compile(r"^(?:when\s+)+", re.IGNORECASE)
+#: A trigger's own leading "When" (any case, repeated or not, followed by
+#: whitespace, a comma, or nothing): the entry line writes its own, so
+#: keeping this one rendered "When when ..." -- only the WORD, never
+#: "Whenever" or "Somewhen".
+_LEADING_WHEN_RE = re.compile(r"^(?:when(?:[\s,]+|$))+", re.IGNORECASE)
 
 
 def entry_line(record: Record) -> str:
