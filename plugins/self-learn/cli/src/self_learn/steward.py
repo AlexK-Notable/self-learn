@@ -1777,8 +1777,26 @@ def _holds_for(home: Path, case_id: str) -> dict[str, list[dict]]:
     return cases.held_lessons(home)
 
 
+def _ended_for_run(row: object) -> bool:
+    """S-81 (gate S1d D1): a disposition that ends its lesson for this run
+    while leaving it to someone else -- `held` (the overseer came to hold
+    it), or a park-now's `abandoned` naming its successor case. Such a
+    lesson is decided again only by a fresh session in a later run, which
+    sees the overseer's ruling."""
+    return isinstance(row, dict) and (row.get("state") == "held" or _parked_already(row))
+
+
+def _ended_lessons(packet: dict) -> set[str]:
+    """The lessons of *packet* whose row ends them for this run."""
+    return {
+        str(rid) for rid, row in (packet.get("dispositions") or {}).items()
+        if _ended_for_run(row)
+    }
+
+
 def _without_held_lines(
-    home: Path, items: batch.Sheet, completed: dict[int, batch.ItemResult]
+    home: Path, items: batch.Sheet, completed: dict[int, batch.ItemResult],
+    ended: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[batch.Sheet, list[str]]:
     """S-81 (gate S1c D3): a re-driven case's sheet minus each line whose
     own lesson the overseer holds now and that has not applied yet, and
@@ -1786,9 +1804,18 @@ def _without_held_lines(
     took only the successful receipts as done, so a line refused once
     (busy, needs a person) was sent again after a person -- or the run
     itself -- had parked its lesson. The sheet keeps its identity and item
-    numbers, as a resumed sheet does."""
+    numbers, as a resumed sheet does.
+
+    Gate S1d D1: also each line whose lesson this run has already ended
+    (*ended*, :func:`_ended_lessons`) -- held, or parked now -- whether or
+    not it is still held. Once the overseer lets such a lesson go, the
+    line written before its ruling must not apply: the row says "done for
+    this run, decided again by a later run"."""
     held = cases.held_lessons(home)
-    skipped = [item for item in items if item.id in held and item.n not in completed]
+    skipped = [
+        item for item in items
+        if (item.id in held or item.id in ended) and item.n not in completed
+    ]
     if not skipped:
         return items, []
     kept = batch.Sheet(
@@ -3049,8 +3076,8 @@ def _tell_tampered_holds(home: Path) -> list[str]:
     summary = (
         f"self-learn steward: {len(ids)} parked case(s) fail their freeze-hash check "
         f"({', '.join(ids)}), so the overseer cannot decide them and their lesson(s) "
-        "stay held -- a person must restore each case file (git log -p on it) or "
-        "decide the lesson by hand"
+        "stay held until a person restores each case file from git history "
+        "(git log -p on the file shows the edit to undo)"
     )
     try:
         overseer_notify.send(home, "routine", summary, lessons or ids)
@@ -3711,10 +3738,13 @@ def _case_dispositions(
     for rid in case_records:
         version = (selected.get(rid) or {}).get("version")
         existing = (packet.get("dispositions") or {}).get(rid)
-        if _parked_already(existing):
+        if _ended_for_run(existing):
             # Parked by an earlier attempt at this same case (the case was
             # re-driven for another of its lessons): keep the row, never
-            # park or notify twice.
+            # park or notify twice. S-81 (gate S1d D1): likewise a `held`
+            # row -- its line is no longer sent (`_without_held_lines`),
+            # even once the overseer has let the lesson go, so the row
+            # stands and the next run decides the lesson afresh.
             assert isinstance(existing, dict)
             rows[rid] = existing
             continue
@@ -4188,7 +4218,9 @@ def _apply_packet(
             # overseer holds now are not previewed either -- they will not
             # be sent (`_without_held_lines`), and the ledger would refuse
             # each, holding the whole case back with them.
-            previewed, _held_ids = _without_held_lines(home, items, {})
+            previewed, _held_ids = _without_held_lines(
+                home, items, {}, _ended_lessons(manifest["packets"][packet_index - 1]),
+            )
             preview = batch.dry_run(
                 home, previewed, actor="steward",
                 hook_activation=config.hook_activation_enabled(home),
@@ -4242,9 +4274,13 @@ def _apply_packet(
                 checkpoint = lambda partial, name=str(recipe["sheet_name"]): batch.write_receipt(
                     home, partial, name, no_push=True, prefix=True
                 )
-                # S-81 (gate S1c D3): a line whose lesson the overseer holds
-                # now is not sent again; the lesson's row says why.
-                items, skipped = _without_held_lines(home, items, dict(completed))
+                # S-81 (gate S1c D3, gate S1d D1): a line whose lesson the
+                # overseer holds now, or that this run already ended (held,
+                # parked now), is not sent again; the lesson's row says why.
+                items, skipped = _without_held_lines(
+                    home, items, dict(completed),
+                    _ended_lessons(manifest["packets"][packet_index - 1]),
+                )
                 if skipped:
                     _journal(home, {"ts": chrono.now_iso(), "run_id": run_id,
                         "status": "held-skipped", "case": case_id, "records": skipped})
