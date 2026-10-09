@@ -30,6 +30,7 @@ texts are synthetic. No real model call.
 from __future__ import annotations
 
 import ast
+import shutil
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -53,6 +54,7 @@ from self_learn.ledger_ops import create_record, find_record_path, write_proposa
 from self_learn.records import Record
 from support import commit_all, git, make_behavior, make_env, merge_proposal_text, proposal_dict
 from test_steward import (
+    SimulatedKill,
     _dump_yaml,
     _enable_steward,
     _head_manifest,
@@ -498,6 +500,29 @@ def test_the_walker_drives_every_steward_write_path_the_code_has():
     assert _called(funcs, "batch", "cases") == set(_BATCH_CASES_CALLS)
     assert _called(funcs, "verbs", "cases") == set(_VERBS_CASES_CALLS)
 
+    # Gate S1d N3: and no direct call from the steward or its batch runner
+    # into a `ledger_ops` record writer -- `move_record` and `reopen_record`
+    # check no status, so such a call would pass both gates. Control: the
+    # walk does see those two as writers.
+    assert _reaches_record_write(funcs, "ledger_ops.move_record")
+    assert _reaches_record_write(funcs, "ledger_ops.reopen_record")
+    imported = {
+        alias.name
+        for module in ("steward", "batch")
+        for node in ast.walk(ast.parse((SRC / f"{module}.py").read_text(encoding="utf-8")))
+        if isinstance(node, ast.ImportFrom) and node.module == "ledger_ops"
+        for alias in node.names
+    }
+    to_ledger_ops = (
+        _called(funcs, "steward", "ledger_ops") | _called(funcs, "batch", "ledger_ops") | imported
+    )
+    assert {"find_record_path", "require_status"} <= to_ledger_ops  # control: calls are seen
+    direct_writers = {
+        fn for fn in to_ledger_ops
+        if f"ledger_ops.{fn}" in _RECORD_WRITERS or _reaches_record_write(funcs, f"ledger_ops.{fn}")
+    }
+    assert direct_writers == set(), direct_writers
+
 
 @pytest.mark.parametrize("row", sorted(_ROWS))
 def test_the_ledger_refuses_the_steward_every_write_to_a_held_lesson(
@@ -798,26 +823,35 @@ def test_finding_2_a_line_cannot_change_a_held_lesson_without_naming_it(
 def test_finding_3a_a_redrive_never_applies_a_line_whose_lesson_a_person_parked(
     tmp_path, monkeypatch
 ):
-    """Gate S1c D3 (person): X's line was busy, so the recorded case is
-    re-driven; a person parks X between the runs. The re-drive used to apply
-    the line (the case's own lessons were exempt from the hold). Now the
-    line is skipped -- the case is not refused whole -- X keeps its parked
-    case and gets a `held` row; X stays pending."""
+    """Gate S1c D3 (person): one case on X and Y, both lines busy once, so
+    the recorded case is re-driven; a person parks X between the runs. The
+    re-drive used to apply X's line (the case's own lessons were exempt
+    from the hold). Now X's line is skipped -- the case is not refused
+    whole -- so X keeps its parked case, gets a `held` row and stays
+    pending, while Y's line applies.
+
+    Gate S1d N4: with X alone in the case the skip could not be told from
+    the backstops behind it (the preview, then the ledger, refuse X's line
+    and give X the same `held` row). Y is what tells them apart: without
+    the skip the preview holds the WHOLE case back, so Y is sent back
+    instead of applied."""
     home = make_env(tmp_path).ledger
     x = _seed(home, "lrn-f3a00001")
+    y = _seed(home, "lrn-f3a00002")
     _enable_steward(home)
     _notifications(monkeypatch)
 
     def write(spec):
-        _write_pair(_stage_dir(spec), "x", _case([x], "reject", "reject"),
-                    [{"id": x, "verb": "reject"}])
+        _write_pair(_stage_dir(spec), "both", _case([x, y], "reject", "reject"),
+                    [{"id": x, "verb": "reject"}, {"id": y, "verb": "reject"}])
         return _ok()
 
     monkeypatch.setattr(steward.invocation, "write_session", write)
     _dispatch_with(monkeypatch, lambda item, count: (
         _refused(item, "target-busy", "simulated: uncommitted edits") if count == 1 else None))
     first = steward.run(home)
-    assert _packet(home, first.run_id)["dispositions"][x]["state"] == "unfinished"  # control
+    rows = _packet(home, first.run_id)["dispositions"]
+    assert {rows[x]["state"], rows[y]["state"]} == {"unfinished"}  # control
     parked = _person_parks(home, [x], tmp_path)
     monkeypatch.setattr(steward.invocation, "write_session",
                         lambda spec: pytest.fail("a re-drive never asks the model"))
@@ -825,9 +859,11 @@ def test_finding_3a_a_redrive_never_applies_a_line_whose_lesson_a_person_parked(
     second = steward.run(home)
 
     assert second.run_id == first.run_id
-    row = _packet(home, first.run_id)["dispositions"][x]
-    assert (row["state"], row.get("held_by")) == ("held", [parked]), row
+    rows = _packet(home, first.run_id)["dispositions"]
+    assert (rows[x]["state"], rows[x].get("held_by")) == ("held", [parked]), rows[x]
     assert _status(home, x) == "pending"
+    assert rows[y]["state"] == "applied", rows[y]
+    assert _status(home, y) == "rejected"
     assert _awaiting(home) == [parked]
     assert _head_manifest(home, first.run_id)["status"] == "complete"
 
@@ -1151,6 +1187,10 @@ def test_risk_4_a_tampered_parked_case_still_holds_its_lesson_and_says_so(
         in prompts[0]
     told = [summary for _cue, summary, _ids_ in sent if "freeze-hash" in summary]
     assert len(told) == 1 and parked in told[0], sent  # once, not every run
+    # gate S1d N1: the one repair that works, and only that -- deciding the
+    # lesson does not lift the hold, and nobody can supersede the case
+    assert "restores each case file from git history" in told[0], told[0]
+    assert "by hand" not in told[0], told[0]
     assert _status(home, held) == "pending"
 
 
@@ -1177,3 +1217,384 @@ def test_nit_a_refused_note_does_not_make_the_run_partial(tmp_path, monkeypatch)
     assert note["state"] == "refused"  # positive control: the note was refused
     assert (result.status, result.refused) == ("applied", 0), result
     assert _status(home, free) == "rejected"
+
+
+# ================================ 3. the gate's findings on 0694eb0 (gate S1d)
+
+
+def _two_lesson_case(x: str, y: str):
+    def write(spec):
+        _write_pair(_stage_dir(spec), "both", _case([x, y], "reject", "reject"),
+                    [{"id": x, "verb": "reject"}, {"id": y, "verb": "reject"}])
+        return _ok()
+
+    return write
+
+
+def _no_model(spec):
+    pytest.fail("a re-drive never asks the model")
+
+
+def test_s1d_d1_a_redrive_after_the_release_never_sends_the_pre_hold_line(
+    tmp_path, monkeypatch
+):
+    """Gate S1d D1 (its probe P1): one case on X and Y, re-driven twice (X
+    busy once, Y twice). A person parks X after run 1, so run 2 skips X's
+    line and gives X `held`. The overseer then decides X's parked case,
+    leaving X pending. Run 3 -- the same run, re-driven again -- used to
+    send X's line from before the hold: X rejected by a decision no session
+    made after the overseer's ruling, its `held` row overwritten. Now the
+    line is never sent again, X keeps `held` and stays pending (the next
+    run decides it afresh), and Y applies."""
+    home = make_env(tmp_path).ledger
+    x = _seed(home, "lrn-fa100001")
+    y = _seed(home, "lrn-fa100002")
+    _enable_steward(home)
+    _notifications(monkeypatch)
+    monkeypatch.setattr(steward.invocation, "write_session", _two_lesson_case(x, y))
+    seen = _dispatch_with(monkeypatch, lambda item, count: (
+        _refused(item, "target-busy", "simulated: uncommitted edits")
+        if (item.id == x and count == 1) or (item.id == y and count <= 2) else None))
+    first = steward.run(home)
+    parked = _person_parks(home, [x], tmp_path)
+    monkeypatch.setattr(steward.invocation, "write_session", _no_model)
+    steward.run(home)
+    row = _packet(home, first.run_id)["dispositions"][x]
+    assert (row["state"], row.get("held_by")) == ("held", [parked]), row  # control
+    _overseer_decides(home, parked, [x], tmp_path)
+    assert x in _eligible(home)  # control: released and undecided
+
+    third = steward.run(home)
+
+    assert third.run_id == first.run_id
+    rows = _packet(home, first.run_id)["dispositions"]
+    assert (rows[x]["state"], rows[x].get("held_by")) == ("held", [parked]), rows[x]
+    assert _status(home, x) == "pending"
+    assert rows[y]["state"] == "applied" and _status(home, y) == "rejected"
+    assert seen[f"1:{x}"] == 1, seen  # X's line went out in run 1 only
+    assert _head_manifest(home, first.run_id)["status"] == "complete"
+    assert x in _eligible(home)  # the next run decides it, seeing the ruling
+
+
+def test_s1d_d1_a_redrive_after_the_overseer_decides_an_own_park_never_sends_the_line(
+    tmp_path, monkeypatch
+):
+    """Gate S1d D1 (its probe P1b): this run parked X itself (needs a
+    person), Y was busy, so the case is re-driven. Before the re-drive the
+    overseer decides X's successor case leaving X pending, and the person
+    has fixed what X needed. The re-drive used to send X's line: X rejected
+    while the run record still said `abandoned` with its successor -- the
+    record and the ledger disagreed. Now X's line is not sent: X stays
+    pending with its `abandoned` row, the two agree, and Y applies."""
+    home = make_env(tmp_path).ledger
+    x = _seed(home, "lrn-fa1b0001")
+    y = _seed(home, "lrn-fa1b0002")
+    _enable_steward(home)
+    _notifications(monkeypatch)
+    monkeypatch.setattr(steward.invocation, "write_session", _two_lesson_case(x, y))
+    fixed: list[bool] = []
+    seen = _dispatch_with(monkeypatch, lambda item, count: (
+        (_refused(item, "needs-person", "simulated: a person must fix this") if not fixed else None)
+        if item.id == x
+        else _refused(item, "target-busy", "simulated: uncommitted edits") if count == 1 else None))
+    first = steward.run(home)
+    successor = _packet(home, first.run_id)["dispositions"][x]["successor_case"]  # control
+    _overseer_decides(home, successor, [x], tmp_path)
+    fixed.append(True)
+    monkeypatch.setattr(steward.invocation, "write_session", _no_model)
+
+    steward.run(home)
+
+    rows = _packet(home, first.run_id)["dispositions"]
+    assert (rows[x]["state"], rows[x]["successor_case"]) == ("abandoned", successor), rows[x]
+    assert _status(home, x) == "pending"  # the ledger agrees with the row
+    assert rows[y]["state"] == "applied" and _status(home, y) == "rejected"
+    assert seen[f"1:{x}"] == 1, seen
+
+
+def test_s1d_r1_a_held_lesson_is_decided_after_the_overseer_lets_it_go(tmp_path, monkeypatch):
+    """Gate S1d R1 (its probe P5): the central promise of `held` -- "the
+    version undecided, so the next run selects it again". A person parks X
+    while the model decides X and Y; X gets `held`. The overseer decides
+    the parked case leaving X pending: X is eligible again, the scheduler is
+    due, and the next run decides it. (Counting `held` as a decision would
+    leave every lesson ever held unselected for good.)"""
+    home = make_env(tmp_path).ledger
+    x = _seed(home, "lrn-fa500001")
+    _seed(home, "lrn-fa500002")
+    _enable_steward(home)
+    _notifications(monkeypatch)
+    by_hand: list[str] = []
+
+    def write(spec):
+        if not by_hand:
+            by_hand.append(_person_parks(home, [x], tmp_path))
+        stage = _stage_dir(spec)
+        for rid in _ids(spec.prompt):
+            if rid not in cases.held_lessons(home):
+                _write_pair(stage, rid, _case([rid], "reject", "reject"),
+                            [{"id": rid, "verb": "reject"}])
+        return _ok()
+
+    monkeypatch.setattr(steward.invocation, "write_session", write)
+    first = steward.run(home)
+    assert _packet(home, first.run_id)["dispositions"][x]["state"] == "held"  # control
+    assert x not in _eligible(home)  # control: held, not selectable
+    time.sleep(1.1)
+    _overseer_decides(home, by_hand[0], [x], tmp_path)
+
+    assert x in _eligible(home)
+    cache = tmp_path / "serve-cache"
+    cache.mkdir()
+    assert serve._steward_is_due(home, cache, time.time() + 7 * 86400) is True
+    second = steward.run(home)
+    assert second.run_id != first.run_id
+    assert _status(home, x) == "rejected"
+
+
+def test_s1d_r2_a_release_while_a_run_is_unfinished_makes_the_steward_due(
+    tmp_path, monkeypatch
+):
+    """Gate S1d R2 (its probe P8): X is held; the run on Y is left
+    unfinished (busy). The overseer lets X go while that run is unfinished;
+    the next run resumes it (selecting nothing new), applies Y and writes
+    the last-run marker. The due check measured from that END, after the
+    release, so X waited for an unrelated input. Now it measures from the
+    last run that SELECTED inputs: the steward is due for X."""
+    home = make_env(tmp_path).ledger
+    x = _seed(home, "lrn-fa800001")
+    _seed(home, "lrn-fa800002")
+    parked = _person_parks(home, [x], tmp_path)
+    _enable_steward(home)
+    _notifications(monkeypatch)
+    monkeypatch.setattr(steward.invocation, "write_session", _write_decision_stage)
+    _dispatch_with(monkeypatch, lambda item, count: (
+        _refused(item, "target-busy", "simulated: uncommitted edits") if count == 1 else None))
+    time.sleep(1.1)
+    first = steward.run(home)
+    assert _head_manifest(home, first.run_id)["status"] != "complete"  # control: unfinished
+    time.sleep(1.1)
+    _overseer_decides(home, parked, [x], tmp_path)
+    time.sleep(1.1)
+    second = steward.run(home)
+    assert second.run_id == first.run_id  # control: a resume, which selects nothing
+    assert _head_manifest(home, first.run_id)["status"] == "complete"
+    assert x in _eligible(home)
+    cache = tmp_path / "serve-cache"
+    cache.mkdir()
+
+    assert serve._steward_is_due(home, cache, time.time() + 7 * 86400) is True
+
+
+def test_s1d_r2_a_completed_run_with_nothing_new_is_not_due(tmp_path, monkeypatch):
+    """The control for R2's change: measuring from the last selection must
+    not make the steward due for work every run already saw. A run selects
+    X and sends it back (a bad line); nothing else changes: not due, even a
+    week later. And a lesson committed after that run started is new
+    work."""
+    home = make_env(tmp_path).ledger
+    x = _seed(home, "lrn-fa810001")
+    _enable_steward(home)
+    _notifications(monkeypatch)
+    time.sleep(1.1)
+    monkeypatch.setattr(steward.invocation, "write_session", _write_decision_stage)
+    _dispatch_with(monkeypatch, lambda item, count: _refused(item, "bad-line", "simulated"))
+    first = steward.run(home)
+    assert _packet(home, first.run_id)["dispositions"][x]["state"] == "returned"  # control
+    assert x in _eligible(home)  # still to decide, but already seen
+    cache = tmp_path / "serve-cache"
+    cache.mkdir()
+    later = time.time() + 7 * 86400
+    assert serve._steward_is_due(home, cache, later) is False
+
+    time.sleep(1.1)
+    _seed(home, "lrn-fa810002")
+    assert serve._steward_is_due(home, cache, later) is True
+
+
+def test_s1d_n5_release_epochs_read_only_the_eligible_lessons_cases(tmp_path, monkeypatch):
+    """Gate S1d N5: the release times are computed for the eligible inputs'
+    lessons only -- a released parked case about a lesson a person has
+    since decided is never read on a tick. Control: the eligible lesson's
+    released case is read."""
+    home = make_env(tmp_path).ledger
+    free = _seed(home, "lrn-fa5a0001")
+    gone = _seed(home, "lrn-fa5a0002")
+    p_free = _person_parks(home, [free], tmp_path)
+    p_gone = _person_parks(home, [gone], tmp_path)
+    _overseer_decides(home, p_free, [free], tmp_path)
+    _overseer_decides(home, p_gone, [gone], tmp_path)
+    verbs.reject(home, gone, no_push=True)
+    assert free in _eligible(home) and gone not in _eligible(home)  # control
+    read: list[str] = []
+    real = serve._input_commit_epoch
+
+    def recording(home_, path):
+        read.append(path.name)
+        return real(home_, path)
+
+    monkeypatch.setattr(serve, "_input_commit_epoch", recording)
+
+    epochs = serve._release_epochs(home, {free})
+
+    assert f"{p_free}.md" in read  # control: the eligible lesson's case is read
+    assert f"{p_gone}.md" not in read, read
+    assert set(epochs) == {free}
+
+
+def test_s1d_n4_a_line_applied_before_the_hold_stays_applied(tmp_path, monkeypatch):
+    """Gate S1d N4 (its M19): X's line applies in run 1; Y's is busy, so the
+    case is re-driven; a person then parks X (already rejected). The
+    re-drive must keep X `applied` -- its line landed before any hold --
+    not turn it into `held`."""
+    home = make_env(tmp_path).ledger
+    x = _seed(home, "lrn-fa190001")
+    y = _seed(home, "lrn-fa190002")
+    _enable_steward(home)
+    _notifications(monkeypatch)
+    monkeypatch.setattr(steward.invocation, "write_session", _two_lesson_case(x, y))
+    _dispatch_with(monkeypatch, lambda item, count: (
+        _refused(item, "target-busy", "simulated: uncommitted edits")
+        if item.id == y and count == 1 else None))
+    first = steward.run(home)
+    rows = _packet(home, first.run_id)["dispositions"]
+    assert rows[x]["state"] == "applied" and rows[y]["state"] == "unfinished"  # control
+    parked = _person_parks(home, [x], tmp_path)
+    assert x in cases.held_lessons(home)  # control: X is held at the re-drive
+    monkeypatch.setattr(steward.invocation, "write_session", _no_model)
+
+    steward.run(home)
+
+    rows = _packet(home, first.run_id)["dispositions"]
+    assert rows[x]["state"] == "applied", rows[x]
+    assert rows[y]["state"] == "applied"
+    assert _status(home, x) == "rejected"
+    assert _awaiting(home) == [parked]
+
+
+def test_s1d_n4_the_repair_turn_names_a_case_the_case_writer_would_refuse(
+    tmp_path, monkeypatch
+):
+    """Gate S1d N4 (its M22): the steward's case on FREE supersedes the
+    overseer's parked case on HELD (finding 1's shape). Before the case
+    writer refuses it at apply time, the repair turn tells the model why,
+    under its own heading, so the model can drop the `supersedes`."""
+    home, held, free, parked = _held_and_free(tmp_path, "lrn-fa22")
+    _notifications(monkeypatch)
+    prompts: list[str] = []
+
+    def write(spec):
+        prompts.append(spec.prompt)
+        case = _case([free], "reject", "reject")
+        case["supersedes"] = parked
+        _write_pair(_stage_dir(spec), "free", case, [{"id": free, "verb": "reject"}])
+        return _ok()
+
+    monkeypatch.setattr(steward.invocation, "write_session", write)
+    steward.run(home)
+
+    assert len(prompts) == 2, len(prompts)  # control: a repair turn was asked for
+    repair = prompts[1].split("=== repair ===", 1)[1]
+    assert "The case writer would refuse these cases as written:" in repair
+    assert f"supersedes {parked}, a case about {held}, which the overseer holds" in repair
+
+
+def test_s1d_n4_a_redriven_reconsider_case_skips_the_held_lesson_and_applies_the_rest(
+    tmp_path, monkeypatch
+):
+    """Gate S1d N4 (its M23): a `kind: reconsider` case on B and A is
+    recorded, and the run is killed after B's reconsider entry landed and
+    before A's. A person parks A; the run is resumed. The reconsider loop
+    skips A -- it never asks the ledger to mark a held lesson reconsidered
+    (the ledger would refuse, and with it the whole case) -- so B's lines
+    apply and A's are skipped, A taking `held`."""
+    home = make_env(tmp_path).ledger
+    a = _seed(home, "lrn-fa230001")
+    b = _seed(home, "lrn-fa230002")
+    statement = statements.add(home, verbatim="Changed dependency.",
+                               source={"message_ref": "transcript:reconsider#L1"},
+                               recorded_by="human")
+    stage = tmp_path / "prior.yaml"
+    prior = _case([a, b], "reject", "reject")
+    prior.update(trigger="human", evidence=[{"ref": statement, "quote": "old"}],
+                 dependencies={**_NO_DEPS, "statements": [statement]})
+    _dump_yaml(stage, prior)
+    prior_id = cases.record(home, stage, actor="human")
+    for rid in (a, b):
+        verbs.reject(home, rid, by="human", no_push=True)
+    cases.observe(home, prior_id, "statement", text="changed", ref=statement, by="steward")
+    _enable_steward(home)
+    _notifications(monkeypatch)
+
+    def write(spec):
+        case = _case([b, a], "defer", "defer")
+        case.update(kind="reconsider", trigger="reconsider",
+                    evidence=[{"ref": statement, "quote": "changed"}],
+                    dependencies={**_NO_DEPS, "statements": [statement]})
+        _write_pair(_stage_dir(spec), "both", case, [
+            {"id": b, "verb": "reopen"}, {"id": b, "verb": "defer"},
+            {"id": a, "verb": "reopen"}, {"id": a, "verb": "defer"},
+        ])
+        return _ok()
+
+    real_reconsider = steward.verbs.reconsider
+    marked: list[str] = []
+
+    def kill_after_first(home_, rid, **kwargs):
+        outcome = real_reconsider(home_, rid, **kwargs)
+        marked.append(rid)
+        if len(marked) == 1:
+            raise SimulatedKill()
+        return outcome
+
+    monkeypatch.setattr(steward.invocation, "write_session", write)
+    monkeypatch.setattr(steward.verbs, "reconsider", kill_after_first)
+    with pytest.raises(SimulatedKill):
+        steward.run(home)
+    assert marked == [b]  # control: B marked, A not yet
+    shutil.rmtree(steward.cache_dir(home))
+    parked = _person_parks(home, [a], tmp_path)
+    monkeypatch.setattr(steward.invocation, "write_session", _no_model)
+
+    result = steward.run(home)
+
+    assert _status(home, b) == "deferred", result
+    assert _status(home, a) == "rejected"
+    row = _packet(home, result.run_id)["dispositions"][a]
+    assert (row["state"], row.get("held_by")) == ("held", [parked]), row
+    history = Record.from_path(find_record_path(home, a)).history
+    assert not any(event.get("event") == "reconsidered" for event in history)
+
+
+def test_s1d_n4_a_lesson_sent_back_then_parked_does_not_hold_the_redrive_back(
+    tmp_path, monkeypatch
+):
+    """The other half of the re-drive skip: a lesson held NOW whose row
+    this run did not end. X's line is the steward's mistake (sent back,
+    `returned`) and Y's target is busy, so the case is re-driven; a person
+    then parks X. X's line is not sent again -- were it previewed, the
+    ledger would refuse it as held and the preview would hold the whole
+    case back, sending Y back with it. Y applies; X takes `held`."""
+    home = make_env(tmp_path).ledger
+    x = _seed(home, "lrn-fa3c0001")
+    y = _seed(home, "lrn-fa3c0002")
+    _enable_steward(home)
+    _notifications(monkeypatch)
+    monkeypatch.setattr(steward.invocation, "write_session", _two_lesson_case(x, y))
+    _dispatch_with(monkeypatch, lambda item, count: (
+        _refused(item, "bad-line", "simulated: the steward's own mistake") if item.id == x
+        else _refused(item, "target-busy", "simulated: uncommitted edits") if count == 1
+        else None))
+    first = steward.run(home)
+    rows = _packet(home, first.run_id)["dispositions"]
+    assert (rows[x]["state"], rows[y]["state"]) == ("returned", "unfinished")  # control
+    parked = _person_parks(home, [x], tmp_path)
+    monkeypatch.setattr(steward.invocation, "write_session", _no_model)
+
+    steward.run(home)
+
+    rows = _packet(home, first.run_id)["dispositions"]
+    assert rows[y]["state"] == "applied", rows[y]
+    assert _status(home, y) == "rejected"
+    assert (rows[x]["state"], rows[x].get("held_by")) == ("held", [parked]), rows[x]
+    assert _status(home, x) == "pending"
