@@ -24,11 +24,14 @@ worker-run-sequence step 2 / P2-4):
 
 from __future__ import annotations
 
+import contextlib
 import glob as glob_mod
 import io
 import os
 import re
 import time
+from collections.abc import Iterable, Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
@@ -53,6 +56,7 @@ __all__ = [
     "DEFAULT_DEFER_DAYS",
     "DEFAULT_GLOB_PROBE_BUDGET_S",
     "GLOB_PROBE_BUDGET_ENV",
+    "HeldLessonRefusal",
     "LedgerOpsError",
     "ProposalError",
     "PROPOSAL_DESTINATIONS",
@@ -62,6 +66,10 @@ __all__ = [
     "StatusRefusal",
     "UNREADABLE_RECORD_ERRORS",
     "UnreadableRecord",
+    "acting_as",
+    "held_text",
+    "refuse_held",
+    "steward_acting_home",
     "TRACE_FLAGS",
     "TRACE_FS_VERDICTS",
     "TRACE_OUTCOMES",
@@ -312,6 +320,106 @@ class SheetLineRefusal(LedgerOpsError):
     kind ``bad-line``): a defer date in the past, a supersession onto itself
     or into a cycle, a link to a record that does not exist. A
     :class:`LedgerOpsError` so every existing exit code is unchanged."""
+
+
+class HeldLessonRefusal(SheetLineRefusal):
+    """S-81 (2026-10-08, the ledger-level fix): the steward asked the ledger
+    to change a lesson the overseer holds -- one an open parked case names
+    (``cases.held_lessons``). Raised by :func:`refuse_held`, before anything
+    is written, whichever verb or sheet key led there. S-71 kind
+    ``bad-line``: the steward's own request is the mistake."""
+
+    def __init__(self, message: str, *, record_id: str, cases: Iterable[str]) -> None:
+        super().__init__(message)
+        self.record_id = record_id
+        self.cases = tuple(cases)
+
+
+# ------------------------------------------------- who is acting (S-81)
+
+#: S-81 (2026-10-08): who is acting on the ledger right now, innermost
+#: last, as ``(actor, home)`` pairs. A runner that knows its actor opens a
+#: scope (:func:`acting_as`): the steward's whole run (`steward.run`) and
+#: every batch run or preview (`batch.run` / `batch.dry_run`, from their
+#: own validated ``actor``). Never read off a verb's ``by`` -- a sheet line
+#: may name its own ``by``. A ContextVar, not a module flag, so a scope
+#: never outlives its run and never reaches another thread.
+_ACTING: ContextVar[tuple[tuple[str, str], ...]] = ContextVar(
+    "self_learn_acting", default=()
+)
+
+
+@contextlib.contextmanager
+def acting_as(actor: str, home: Path | str) -> Iterator[None]:
+    """Open an actor scope for *home* (see :data:`_ACTING`). Scopes nest
+    and only add: a scope opened inside the steward's never lifts its
+    hold, whatever actor it names."""
+    token = _ACTING.set(_ACTING.get() + ((actor, str(home)),))
+    try:
+        yield
+    finally:
+        _ACTING.reset(token)
+
+
+def steward_acting_home() -> Path | None:
+    """The ledger home of the innermost steward scope, or ``None`` when
+    the steward is not acting (a person, the overseer, the miner)."""
+    for actor, home in reversed(_ACTING.get()):
+        if actor == "steward":
+            return Path(home)
+    return None
+
+
+def held_text(record_id: str, rows: Iterable[dict]) -> str:
+    """S-81: the one sentence for a lesson the overseer holds, naming each
+    parked case that holds it with that case's reason -- the ledger's
+    refusal and the steward's own (`steward._held_sentence`) alike. It
+    names the lesson once, after "holds", so a caller that prefixes the
+    line's own id does not repeat it at the start (gate S1c nit)."""
+    named = ", ".join(
+        f"{row.get('case')} ({row.get('parked_reason') or 'no reason given'}"
+        + ("; its file fails its freeze-hash check" if row.get("frozen_ok") is False else "")
+        + ")"
+        for row in rows
+    )
+    return (
+        f"the overseer holds {record_id} (parked case {named}); the steward may change "
+        "nothing of it until the overseer decides -- it may add a note to that case in "
+        "overseer-notes.yaml"
+    )
+
+
+def refuse_held(home: Path | str | None, record_ids: Iterable[str]) -> None:
+    """S-81, the ledger refuses (2026-10-08, the user's "a, go ahead with
+    the ledger-level fix"): while the steward is acting
+    (:func:`steward_acting_home`), raise :class:`HeldLessonRefusal` for the
+    first of *record_ids* the overseer holds (``cases.held_lessons`` --
+    the one definition the overseer's queue reads too). A no-op for every
+    other actor: a person and the overseer are never refused here.
+
+    Called from the two gates every write to a lesson record passes before
+    anything is written: :func:`require_status` (each record a verb
+    changes the status of, or names as a replacement) and
+    ``verbs._scan_or_refuse`` (P2-7: every record file a verb rewrites --
+    a collapse's losers, a completed ``supersedes:``, a note). *home*
+    ``None`` reads the steward scope's own home."""
+    acting = steward_acting_home()
+    if acting is None:
+        return
+    ids = [str(rid) for rid in record_ids if rid]
+    if not ids:
+        return
+    from . import cases  # deferred: `cases` imports this module
+
+    held = cases.held_lessons(home if home is not None else acting)
+    for record_id in ids:
+        rows = held.get(record_id)
+        if rows:
+            raise HeldLessonRefusal(
+                held_text(record_id, rows),
+                record_id=record_id,
+                cases=[str(row.get("case")) for row in rows],
+            )
 
 
 # --------------------------------------------------------------------- yaml
@@ -638,8 +746,13 @@ def require_status(
     recurrence` / `dismiss-suspect` route through this SAME helper while
     keeping their pre-existing, differently-worded refusal messages
     byte-identical (pinned verbatim by `test_dismiss_suspect.py`).
-    Absent, the tail is generic and names *verb* itself."""
+    Absent, the tail is generic and names *verb* itself.
+
+    S-81 (2026-10-08): while the steward acts, a lesson the overseer holds
+    is refused here first (:func:`refuse_held`), whatever its status --
+    this is one of the two gates the ledger-level hold sits on."""
     path = find_record_path(home, record_id)
+    refuse_held(home, [record_id])
     record = Record.from_path(path)
     if record.status not in allowed:
         detail = (

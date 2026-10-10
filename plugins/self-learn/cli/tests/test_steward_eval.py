@@ -202,7 +202,7 @@ def test_steward_decision_shape_and_named_mutation(fixture, tmp_path, monkeypatc
     assert result.calls == len(prompts) and result.calls in (1, 2)
     if result.calls == 2:
         repair = prompts[1].split("=== repair ===", 1)[1]
-        assert "The ledger would refuse these lines of your sheets as written:" in repair
+        assert "The ledger would refuse these" in repair
     stage = captured["stage"]
     run_dir = stage.parents[1]
     projected = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))

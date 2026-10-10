@@ -1297,12 +1297,12 @@ line's format (`… → <state> (exit N)`) is unchanged. Concretely:
   terminal for the run, but the input version stays eligible for a new
   decision — once: when a committed run record already holds `returned` for
   the same record and input version, a second refusal parks the lesson
-  instead (`parked_reason: ledger-refused`). **`overtaken`** is terminal: the
+  instead (`parked_reason: ledger-refused`). *(Amended 2026-10-08, S-81.)* A `returned` row that names no case comes from a case refused before it was recorded, and counts as a different case. A lesson refused at its `observation:` version (a `reconsider` input) is sent back only when the next run will select its lesson as a `lesson` input (`steward._selected_again`); otherwise it is parked now. A lesson held when its case's action would park it gets `held` instead, unless the only case holding it is the successor this run wrote for it (a re-drive reuses that one). **`overtaken`** is terminal: the
   lesson changed status since the run selected it (or no longer exists), so
   nothing is left to decide. A run's `refused` count includes its
   `returned` dispositions — a lesson sent back is a line the ledger refused
   — so a run that sent a lesson back never reports plain success;
-  `overtaken` counts as neither decided nor refused.
+  `overtaken` counts as neither decided nor refused. *(Added 2026-10-08, S-81.)* **`held`** is terminal for the run: the overseer came to hold the lesson after the run selected it (§3a.8). The row names the parked cases holding it (`held_by`, a list of case ids) and the ledger's sentence as `reason`. It counts as neither decided nor refused and never as a return, and the input version stays undecided: the next run selects the lesson again once the overseer's decision lifts the hold.
 - An overseer recipe's `dispositions` rows may carry `kind` when an item
   failed. A resumed overseer run reads it: a receipted refusal of kind `git`
   or `target-busy` is dispatched again, as a `stopped` item is; a refusal of
@@ -1344,9 +1344,18 @@ own rules, run on every staged case and parked.yaml entry through
 secret scan of every free-text field (the matched span withheld), and the
 `## ` heading refusal. An evidence item the runner will drop is not a
 violation, and a parked case is checked with the fields the runner sets for
-it. A case still in violation after the turn is refused alone -- its lessons
-get the refused row a case refused at apply time gets -- and every other case
-and maintenance operation of the packet proceeds. The prepared-text secret
+it. A case still in violation after the turn is refused alone, before it is recorded, and every other case and
+maintenance operation of the packet proceeds. *(Amended 2026-10-08, S-81.)* Nothing of the case is in the
+ledger or dispatched. Its lessons are settled as §4.2 settles a case the preview holds back: each takes the
+case's most severe action, and no disposition row names the case. The kind decides the action:
+- The prepared-text secret scan catches a secret still in the case's own text: `bad-line`. The run record
+  keeps only the case's lessons and the scan's rule and offsets, never the text.
+- A case on, or superseding a case on, a lesson the overseer holds (§3a.8): `bad-line`, refused by the case
+  writer itself for the steward.
+- Any other case-writer refusal takes its kind from `batch.refusal_kind`: `unclassified` (parked now) unless a
+  typed cause lies underneath.
+
+The parked case written for such a lesson says that the steward's case and sheet are not on record. The prepared-text secret
 scan runs per case (and per maintenance operation, whose payload is then not
 frozen) instead of once over the packet.
 
@@ -1510,9 +1519,7 @@ PDT: "fix the rest of 3".)*
   steward has no such case: a dropped steward case is counted `refused`.
 - *Steward reconsider misfit (audit finding 10).* When `verbs.reconsider`
   refuses a reconsider case the case writer accepted (its outcome does not
-  apply to the lesson's status, or the lesson is gone), that case is
-  refused like one the case writer refuses — its sheet not applied, its
-  lessons `refused` with the reason — and the run goes on; before, the
+  apply to the lesson's status, or the lesson is gone), that case's sheet is receipted refused and nothing of it is dispatched. The refusal takes its S-71 kind from the exception's type: the verb's status check is `status`, and a raise site that names no type is `unclassified`. Each of the case's lessons follows §4.2 with the case named, and the run goes on. *(Amended 2026-10-08.)*; before, the
   error escaped the run after the case was committed.
 - *The overseer's lock through phase B (audit finding 12) is kept.* The
   run's intent (coverage written first, put back on every failure) spans
@@ -2174,8 +2181,43 @@ when a record's `recurrences[]` or `dismissed_suspects[]` holds its nonce;
 handled events are dropped before the version is taken, so a new fire about
 the same record is a new input carrying only itself, and a run that decided
 an input's events (applied, parked, refused, abandoned) is never offered
-them again. A record is in at most one input per run (reconsider first,
-then lesson, then suspected violation).
+them again. A record is in at most one input per run (reconsider first, then lesson, then suspected violation).
+
+**A lesson the overseer holds** *(2026-10-08, S-81)* is no input of any kind. A lesson is held while a parked
+case for the overseer that has not been superseded names it, whoever parked it: an intact one
+(`cases.awaiting_overseer`, the same function the overseer's queue reads), or one whose file fails its
+freeze-hash check, which the overseer cannot take and only a person can repair. The scheduler's due check
+reads the same three selections, so a held lesson never makes the steward due; the overseer's release does
+(its decision's commit, not older than the start of the newest run -- the moment a run selects its inputs;
+a resumed run selects none, so new work is never measured from a run's end). A case naming a held lesson is not proposed
+for reconsider, for any of its lessons.
+
+While the steward acts (its run, or a batch whose runner actor is `steward`), the ledger refuses any change
+to a held lesson's record before anything is written, whichever verb or sheet key reaches it (a line's `id`,
+a `supersede` line's `new_id`, a collapse's losers, the old record a route supersedes), and the case writer
+refuses the steward a case that names a held lesson or supersedes a case about one, the overseer's own parked
+case included. Kind `bad-line`. A person and the overseer are never refused by this.
+
+A lesson that becomes held during a run leaves the run's remaining inputs with the disposition `held`
+(§3a.2), and the stage check does not count it as a lesson no case covers, so no repair turn asks for one; a
+re-driven case skips the lines on lessons held since it was recorded, and the lines of every lesson this run
+already ended (`held`, or parked now), held or not: a line written before the overseer's ruling never applies
+after it. The steward's brief lists
+held lessons under LESSONS THE OVERSEER HOLDS, with each one's parked case and reason, and marks a case whose
+file fails its freeze-hash check. Each run journals such a case (`held-tampered`) and the user is told once
+per new set of them.
+
+The steward's only act on a held lesson is a note: one entry of the declared stage file
+`overseer-notes.yaml` (`entries:` of `{case, text}`, the text folded to one line and at most 2000
+characters). The runner records it on that parked case as an `examined` observation by `steward`, and it
+goes into the run record as a maintenance operation of kind `note`. A note on any other case is refused and
+journaled `note-refused`; it does not count as a refused unit. The overseer reads each parked case through
+`cases.show`, so it sees the note under "Later observations".
+
+When a staged case's lessons share one predecessor case and the case names no `supersedes`, the runner fills
+that predecessor in. It does so on at most one staged case. It skips a predecessor that another staged case
+names, and one the ledger already shows as superseded. When two staged cases could take the predecessor, a
+`kind: reconsider` case takes it first, because it cannot be recorded without one. *(2026-10-08, S-81.)*
 
 One observation, one nonce: the miner's legacy backfill spooled a
 `recurrence-suspect` (its own nonce, basis `fire-violated`) for each pre-U6

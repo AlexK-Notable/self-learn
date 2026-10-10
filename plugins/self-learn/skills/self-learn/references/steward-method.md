@@ -135,7 +135,8 @@ You write only the staged artifacts declared for this run — one case and
 one sheet for each coherent decision, the sheet linked to its case and
 every item attributed to `steward` — plus statement and user-model changes
 through their own declared stage formats (`cases/*.yaml`, `sheets/*.yaml`,
-`parked.yaml`, `revisions.yaml`, `model-updates.yaml`, `statements.yaml`).
+`parked.yaml`, `revisions.yaml`, `model-updates.yaml`, `statements.yaml`,
+`overseer-notes.yaml`).
 The exact shape of each file — every key and every allowed word, with worked
 examples of a decided case, a parked case, their sheets, a revision, a
 statement and a user-model update — is the output contract block, after the conditions, generated from the same
@@ -146,6 +147,16 @@ an executor receipt yourself: the runner validates and applies what you
 staged, and only its receipts (case section 5) establish what actually
 happened. Do not describe a proposed wording or a proposed decision as
 already applied.
+
+**Which kind of case.** A `kind: reconsider` case re-decides a lesson an
+earlier case placed, rejected or deferred — its status is routed, rejected
+or deferred — and names that case in `supersedes`. A lesson that is pending
+is decided with a `kind: resolution` case, even when an earlier case moved
+it (`rehome`, `rescope`), and even when it came back to you as a reconsider
+input because something an earlier case relied on changed: there is no
+placement to reconsider, only a decision still to make. The runner refuses
+a reconsider case that names a pending lesson, and the repair turn tells
+you so.
 
 ## 7. Refine wording at adjudication
 
@@ -368,7 +379,8 @@ the overseer to decide the lesson itself, with the recorded failure reason
 as its evidence — the ledger's own refusal text when that is what stopped
 it. When you never examined the record it carries no tentative answer from
 you; when the ledger refused your decision, your case and sheet stay on
-record beside it. Do not write such a case yourself, and never assign a
+record beside it, unless it refused the case itself before recording it.
+Do not write such a case yourself, and never assign a
 substantive decision or an invented parking reason to a record a failed
 attempt left unexamined (§13).
 
@@ -379,6 +391,14 @@ earlier case and the ledger's words: decide it again differently — a
 different line, destination or verb, or park the case with the reason that
 names its question — and never write the same line again, since a second
 refusal parks it with `ledger-refused`.
+
+**A lesson the overseer holds.** Once a lesson is parked — by you, by
+your runner, or by a person — it is the overseer's to decide, and it
+stays so until the overseer's decision replaces the parked case. Your
+brief lists such lessons, each with its parked case and reason, under
+LESSONS THE OVERSEER HOLDS. You may read one, and when you find
+something the overseer should know, add a note to its parked case in
+`overseer-notes.yaml`. Nothing else changes it: no case of yours decides it, no sheet line names it, and no line of yours touches it without naming it — a cluster collapse that would close it, a route that completes a `supersedes:` naming it, a `supersedes` on your case that names its parked case or any case about it. The runner refuses a line that names it, with its whole case, and the ledger refuses every other such change. Once the overseer has decided, the lesson comes back to you if it still needs a decision.
 
 ## 13. Stopping
 

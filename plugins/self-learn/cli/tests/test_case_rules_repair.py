@@ -23,7 +23,13 @@ from support import make_env
 from test_heading_evidence import KEPT_ITEM, _case, _journal_rows, _ledger_files_with
 from test_secret_evidence import _fake_github_token
 from test_steward import _dump_yaml, _enable_steward, _head_manifest, _stage_dir
-from test_steward_refusals import _REPAIR_HEADER, _dispositions, _notifications, _seed
+from test_steward_refusals import (
+    _REPAIR_HEADER,
+    _assert_parked_now_by_case_writer,
+    _dispositions,
+    _notifications,
+    _seed,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -103,9 +109,16 @@ def test_a_heading_still_there_after_the_repair_refuses_only_that_case(tmp_path,
     assert _CASE_RULES in _repair_part(prompts)
     rows = _dispositions(home, result.run_id)
     assert rows[good]["state"] == "applied", rows
-    assert rows[bad]["state"] == "refused", rows
+    # 2026-10-07 (gate S1 R1): the refused case's lesson is parked now, not
+    # left a kindless `refused` row (which stranded it for good)
+    successor = _assert_parked_now_by_case_writer(home, bad, rows[bad])
     assert "heading injection" in rows[bad]["reason"]
-    assert [c["records"] for c in cases.list_cases(home)] == [[good]]
+    # the refused case was never recorded: the ledger holds the good
+    # lesson's case and the bad lesson's park, nothing else
+    assert sorted(
+        (c["kind"], tuple(c["records"]), c.get("parked_reason")) for c in cases.list_cases(home)
+    ) == [("parked", (bad,), "ledger-refused"), ("resolution", (good,), None)]
+    assert {c["case"] for c in cases.list_cases(home, record_id=bad)} == {successor}
     assert result.decided == [good]
 
 
@@ -154,10 +167,17 @@ def test_a_secret_still_there_after_the_repair_refuses_only_that_case(tmp_path, 
     packet = manifest["packets"][0]
     rows = packet["dispositions"]
     assert rows[good]["state"] == "applied", rows
-    assert rows[bad]["state"] == "refused", rows
+    # Gate S1b F6: a hit in the steward's own text is `bad-line`, sent back
+    # once (no longer a bare `refused` row, which decided the version).
+    assert (rows[bad]["state"], rows[bad].get("kind")) == ("returned", "bad-line"), rows
+    assert "case" not in rows[bad], rows
     assert "secret scan:" in rows[bad]["reason"] and "[withheld]" in rows[bad]["reason"]
     assert packet["phase"] == "complete"
-    assert len(packet["case_ids"]) == 1
+    # ... its case frozen as a stub that holds no text, and never recorded
+    (stub,) = [manifest["cases"][cid] for cid in packet["case_ids"]
+               if manifest["cases"][cid].get("unrecorded_refusal")]
+    assert (stub["case"], stub["sheet"], stub["phase"]) == ("", "", "refused")
+    assert len(packet["case_ids"]) == 2
     assert [c["records"] for c in cases.list_cases(home)] == [[good]]
     # Positive control: the grep reaches the committed run record.
     assert any(p.endswith(f"cases/runs/{result.run_id}.json") for p in _ledger_files_with(home, bad))

@@ -236,7 +236,9 @@ def test_steward_still_refuses_a_secret_as_the_only_evidence(tmp_path, monkeypat
     result = steward.run(home)
 
     row = _dispositions(home, result.run_id)[rid]
-    assert row["state"] == "refused", row
+    # Gate S1b F6: the case is still refused (never recorded); its lesson is
+    # sent back with S-71's `bad-line`, no longer a bare `refused` row.
+    assert (row["state"], row.get("kind")) == ("returned", "bad-line"), row
     assert "secret scan" in row["reason"]
     assert cases.list_cases(home, record_id=rid) == []
     assert _ledger_files_with(home, token) == []
@@ -255,7 +257,9 @@ def test_steward_still_refuses_a_secret_in_because(tmp_path, monkeypatch):
     result = steward.run(home)
 
     row = _dispositions(home, result.run_id)[rid]
-    assert row["state"] == "refused", row
+    # Gate S1b F6: the case is still refused (never recorded); its lesson is
+    # sent back with S-71's `bad-line`, no longer a bare `refused` row.
+    assert (row["state"], row.get("kind")) == ("returned", "bad-line"), row
     assert "secret scan" in row["reason"]
     assert cases.list_cases(home, record_id=rid) == []
     assert _ledger_files_with(home, token) == []

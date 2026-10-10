@@ -44,7 +44,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, cast
 
-from . import gitops, intents, miner, overseer, settings, steward, worker
+from . import cases, gitops, intents, miner, overseer, settings, steward, worker
 from .overseer import notify as overseer_notify
 from .overseer import run as overseer_run
 from .primitives import chrono, fsops
@@ -808,7 +808,50 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
         return False
     if unfinished or reconsider or violations:
         return True
-    return any(_input_commit_epoch(home, path) > last_epoch for path in input_paths)
+    # S-81 (gate S1d R2): an input is new work when no run has SELECTED
+    # inputs since its record -- or the overseer's release of it -- was
+    # committed. A run selects its inputs when it starts (`started_at`); a
+    # run resumed later selects none, so measuring from the last run's END
+    # left a lesson committed or released while an earlier run was
+    # unfinished behind that end, waiting for an unrelated input.
+    starts = [str(row.get("started_at")) for row in manifests if row.get("started_at")]
+    selected_epoch = _attempt_epoch(max(starts), now) if starts else last_epoch
+    released = _release_epochs(home, {path.stem for path in input_paths})
+    return any(
+        _input_commit_epoch(home, path) > selected_epoch
+        # Not before the last selection: both clocks count whole seconds,
+        # and an eligible lesson the overseer let go no earlier than that
+        # selection is one no run has had the chance to select.
+        or released.get(path.stem, -1.0) >= selected_epoch
+        for path in input_paths
+    )
+
+
+def _release_epochs(home: Path, lessons: set[str]) -> dict[str, float]:
+    """S-81 (gate S1c R3): lesson id -> when the overseer last let it go --
+    the commit of its decision that superseded a parked case naming the
+    lesson (the same commit rewrites that parked case's `superseded_by`,
+    so the parked case file's last commit is the release). An undecided
+    lesson released after the steward's last selection is new work for
+    the steward: before, its record file was older than that run, so
+    nothing made the steward due for it until some unrelated input
+    arrived. Gate S1d N5: only for *lessons* (the eligible inputs), so a
+    tick reads no case file that cannot change the answer."""
+    released: dict[str, float] = {}
+    if not lessons:
+        return released
+    for row in cases.list_cases(home, parked_for="overseer"):
+        if not row.get("superseded_by"):
+            continue
+        if not {str(rid) for rid in row.get("records") or []} & lessons:
+            continue
+        case_path = next((home / "cases").glob(f"*/{row.get('case')}.md"), None)
+        if case_path is None:
+            continue
+        epoch = _input_commit_epoch(home, case_path)
+        for record_id in row.get("records") or []:
+            released[str(record_id)] = max(released.get(str(record_id), 0.0), epoch)
+    return released
 
 
 def _overseer_target_for(now: float) -> float:

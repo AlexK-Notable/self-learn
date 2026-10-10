@@ -21,7 +21,13 @@ from self_learn.invocation.contract import Outcome
 from support import make_env
 from test_heading_evidence import KEPT_ITEM, _case
 from test_steward import _dump_yaml, _enable_steward, _head_manifest, _stage_dir
-from test_steward_refusals import _REPAIR_HEADER, _dispositions, _notifications, _seed
+from test_steward_refusals import (
+    _REPAIR_HEADER,
+    _assert_parked_now_by_case_writer,
+    _dispositions,
+    _notifications,
+    _seed,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -87,8 +93,9 @@ def test_a_failed_repair_call_keeps_the_valid_first_pass(tmp_path, monkeypatch):
     # Positive control: the lesson the first pass decided validly applied.
     assert states[good] == "applied"
     assert good in result.decided
-    # Only what the first pass still flags is refused.
-    assert states[bad] == "refused"
+    # Only what the first pass still flags is refused: the case writer's
+    # refusal parks its lesson now (2026-10-07, gate S1 R1).
+    _assert_parked_now_by_case_writer(home, bad, _dispositions(home, result.run_id)[bad])
 
 
 def test_a_repair_that_breaks_a_valid_case_is_undone(tmp_path, monkeypatch):
@@ -110,7 +117,8 @@ def test_a_repair_that_breaks_a_valid_case_is_undone(tmp_path, monkeypatch):
     result = steward.run(home)
     states = _states(home, result.run_id)
     assert states[good] == "applied"
-    assert states[bad] == "refused"
+    # the case writer's refusal parks its lesson now (2026-10-07, gate S1 R1)
+    _assert_parked_now_by_case_writer(home, bad, _dispositions(home, result.run_id)[bad])
 
 
 def test_a_repair_that_fixes_the_flagged_case_is_kept(tmp_path, monkeypatch):
