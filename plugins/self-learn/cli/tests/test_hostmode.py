@@ -2476,8 +2476,10 @@ class TestRecompileAdopt:
         after the call returned, and a FOLLOWING plain `recompile` call
         re-refused "edited" — an infinite loop `--adopt` exists
         specifically to break). Fixed in `verbs.py`'s `recompile()` by
-        `continue`-ing past the render leg once a target has been
-        adopted this run (see the comment there dated at the fix)."""
+        `continue`-ing past the render leg once a target had been
+        adopted that run; since S-83 (user, 2026-10-08: --adopt
+        re-records only that target and stops) an adopt run returns
+        before any render at all."""
         env = make_env(tmp_path)
         plain_host = tmp_path / "adopt-plain"
         plain_host.mkdir()
@@ -3007,11 +3009,12 @@ class TestN6RecompileBatchesResyncIntoOneCommit:
         `recompile()` sees real drift (canonical now includes rec2 too)
         and renders + resyncs exactly once for this host. (An earlier
         version of this helper called `recompile(adopt=...)` per host —
-        wrong: recompile renders EVERY drifted host it finds, adopted
-        target or not, so adopting host A as a side effect already
-        fixed host A's drift before host B was even set up, leaving
-        only ONE host actually drifted by the time the real,
-        under-test `recompile()` call ran.)"""
+        wrong then: recompile rendered EVERY drifted host it found,
+        adopted target or not, so adopting host A as a side effect
+        already fixed host A's drift before host B was even set up,
+        leaving only ONE host actually drifted by the time the real,
+        under-test `recompile()` call ran. Since S-83 an adopt run
+        renders nothing.)"""
         target = host / "CLAUDE.md"
         rec1 = make_behavior(scope="project", record_id=rec1_id)
         create_record(env.ledger, rec1, project_path=host)

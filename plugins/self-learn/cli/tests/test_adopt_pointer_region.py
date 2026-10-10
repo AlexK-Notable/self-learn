@@ -141,10 +141,14 @@ def test_naming_an_absent_pointer_region_warns_and_writes_nothing(env):
 
     assert any("no pointer region on disk" in w for w in result.warnings), result.warnings
     after = _entry(env, "pointer")
-    assert after["sha256"] == before["sha256"]  # the restored block is the one first recorded
+    assert after["sha256"] == before["sha256"]  # the record is untouched
     assert after["by"] != "recompile --adopt"  # and no adopt wrote it
-    # nothing was adopted, so the run still restores the block (as a plain recompile does)
+    # S-83 (user, 2026-10-08: --adopt re-records only that target and stops): the
+    # adopt run restores nothing, even when it adopted nothing; a plain recompile does.
+    assert POINTER_BEGIN_MARKER not in claude.read_text(encoding="utf-8")
+    verbs.recompile(env.ledger, no_push=True)
     assert POINTER_BEGIN_MARKER in claude.read_text(encoding="utf-8")
+    assert _entry(env, "pointer")["sha256"] == before["sha256"]  # the block first recorded
 
 
 def test_a_refused_pointer_names_the_pointer_selector(env):
