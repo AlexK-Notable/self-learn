@@ -1643,11 +1643,14 @@ class TestBatch:
         # the human path) alongside the pre-existing seven -- one more
         # `("cli", "_main")` entry, bumping that arm's own count below
         # from 5 to 6.
+        # S-81 (2026-10-08): `batch.run` became a thin wrapper that opens
+        # the runner's actor scope and calls `batch._run_items` once; the
+        # body, and with it the single epilogue call, moved there.
         EXPECTED_EPILOGUE_SITES = [
             ("cli", "_cmd_report"),
             ("cli", "_main"), ("cli", "_main"), ("cli", "_main"), ("cli", "_main"), ("cli", "_main"),
             ("cli", "_main"),
-            ("batch", "run"),
+            ("batch", "_run_items"),
         ]
         sites = []
         for path, modname in (
