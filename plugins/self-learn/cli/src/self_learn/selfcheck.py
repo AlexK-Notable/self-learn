@@ -511,25 +511,57 @@ def _check_reach(home: Path) -> tuple[Verdict, str]:
     )
 
 
-def _section_targets(home: Path) -> dict[Path, list[Record]]:
+def _section_targets(
+    home: Path, skipped: list[str] | None = None
+) -> dict[Path, list[Record]]:
     """Managed-section targets that SHOULD have a section: target file →
     the resolved records routed to it (any record whose routing names the
-    destination — graduated entries keep their markers, so presence still
-    counts). Targets resolve via hosts.yaml; unresolvable records are
-    skipped here (the drift check reports them)."""
+    destination — graduated and superseded entries keep their markers, so
+    presence still counts).
+
+    Skill- and user-scope targets resolve via hosts.yaml (unresolvable
+    records are skipped here; the drift check reports them). A PROJECT
+    bucket does not: :func:`verbs.managed_target_for` resolves it through
+    the bucket's own ``meta.yaml`` path. So a bucket whose host is no
+    longer registered in hosts.yaml (``host remove``, then the clone
+    deleted) would owe a section in a file nobody manages any more, with
+    no verb that can clear it. Every record of such a bucket is skipped
+    here, and its bucket name is appended to *skipped* (when given) so the
+    caller can say the skip happened. Only a bucket that would have owed a
+    section is listed. A hosts.yaml that cannot be read skips nothing."""
+    try:
+        registered: set[Path] | None = {
+            Path(p).expanduser().resolve() for p in load_hosts(home).projects
+        }
+    except HostsError:
+        registered = None
     targets: dict[Path, list[Record]] = {}
     for bucket in discover_buckets(home):
         resolved = bucket.path / "resolved"
         if not resolved.is_dir():
             continue
+        unregistered = False
+        if bucket.scope == "project" and registered is not None:
+            host = bucket_project_path(bucket.path)
+            unregistered = (
+                host is not None
+                and Path(host).expanduser().resolve() not in registered
+            )
+        bucket_skipped = False
         for path in sorted(resolved.glob("lrn-*.md")):
             try:
                 record = Record.from_path(path)
             except (RecordError, UnicodeDecodeError):
                 continue  # unparseable resolved files are T3's problem, not (c)'s
             target = _target_for(home, bucket, record)
-            if target is not None:
-                targets.setdefault(target, []).append(record)
+            if target is None:
+                continue
+            if unregistered:
+                bucket_skipped = True
+                continue
+            targets.setdefault(target, []).append(record)
+        if bucket_skipped and skipped is not None:
+            skipped.append(bucket.name)
     return targets
 
 
@@ -835,9 +867,15 @@ def _check_compiler(targets: dict[Path, list[Record]]) -> tuple[Verdict, str]:
     return Verdict.PASS, f"regenerated {n} managed section{'s' if n != 1 else ''} in-memory"
 
 
-def _check_markers(targets: dict[Path, list[Record]]) -> tuple[Verdict, str]:
+def _check_markers(
+    targets: dict[Path, list[Record]], skipped: list[str] | None = None
+) -> tuple[Verdict, str]:
     """(c) 02 §4: flag ONLY targets that should have a section but have a
     missing/broken marker pair.
+
+    *skipped* names the project buckets :func:`_section_targets` left out
+    because their host is no longer registered; a PASS says so, so a skip
+    never reads as a plain all-clear.
 
     FW-66: an undecodable target FAILs naming the file (same treatment as
     the missing-file branch just above it), never a raw traceback."""
@@ -864,9 +902,16 @@ def _check_markers(targets: dict[Path, list[Record]]) -> tuple[Verdict, str]:
             failures.append(f"{target} ({why}): end marker precedes begin marker")
     if failures:
         return Verdict.FAIL, "; ".join(failures)
+    note = ""
+    if skipped:
+        k = len(skipped)
+        note = (
+            f"; {k} project bucket{'s' if k != 1 else ''} of an unregistered "
+            f"host not checked ({', '.join(sorted(skipped))})"
+        )
     if not targets:
-        return Verdict.PASS, "no routed records — no section owed anywhere"
-    return Verdict.PASS, f"marker pairs intact on {len(targets)} target(s)"
+        return Verdict.PASS, "no routed records — no section owed anywhere" + note
+    return Verdict.PASS, f"marker pairs intact on {len(targets)} target(s)" + note
 
 
 def claude_runtime_dir() -> Path:
@@ -1309,11 +1354,12 @@ def run_selftest(home: Path) -> int:
         )
         return 1
 
-    targets = _section_targets(home)
+    skipped_buckets: list[str] = []
+    targets = _section_targets(home, skipped_buckets)
     results: list[tuple[str, Verdict, str]] = [
         ("capture", *_check_capture(home)),
         ("compiler", *_check_compiler(targets)),
-        ("markers", *_check_markers(targets)),
+        ("markers", *_check_markers(targets, skipped_buckets)),
         ("drift", *_check_drift(home)),
         ("reach", *_check_reach(home)),
         ("hooks", *_check_hooks(home, claude_runtime_dir())),
