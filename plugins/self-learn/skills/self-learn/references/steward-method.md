@@ -398,10 +398,7 @@ stays so until the overseer's decision replaces the parked case. Your
 brief lists such lessons, each with its parked case and reason, under
 LESSONS THE OVERSEER HOLDS. You may read one, and when you find
 something the overseer should know, add a note to its parked case in
-`overseer-notes.yaml`. Nothing else: no case of yours decides it and no
-sheet line names it — the runner refuses such a line, and its whole case
-with it. Once the overseer has decided, the lesson comes back to you if
-it still needs a decision.
+`overseer-notes.yaml`. Nothing else changes it: no case of yours decides it, no sheet line names it, and no line of yours touches it without naming it — a cluster collapse that would close it, a route that completes a `supersedes:` naming it, a `supersedes` on your case that names its parked case or any case about it. The runner refuses a line that names it, with its whole case, and the ledger refuses every other such change. Once the overseer has decided, the lesson comes back to you if it still needs a decision.
 
 ## 13. Stopping
 
