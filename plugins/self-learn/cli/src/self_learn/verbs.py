@@ -10177,6 +10177,16 @@ def recompile(
                 else str(spec.host_path)
             )
             key = compiled.region_key(spec.host_path, target, region_kind)
+            # The pointer and shelf passes' no-op, here too: re-recording a
+            # region the record already accepts only moves `at:`, so the
+            # commit is either empty (same second: exit 6, half-written) or
+            # a redundant adopt commit the run would also push.
+            if _already_adopted(home, slug, key, region_kind, compiled.sha256_hex(region)):
+                result.warnings.append(
+                    f"{target}: --adopt: already accepted as it stands — nothing to adopt"
+                )
+                result.entries.append(RecompileEntry(target=target, changed=False))
+                continue
             with _ledger_write(home, earlier_commits=span_commits) as recovered:
                 intents.announce_recovered(recovered)
                 record_path = compiled.adopt_entry(

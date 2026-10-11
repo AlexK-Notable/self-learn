@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import cli, compiled, gitops, verbs
+from self_learn import cli, compiled, gitops, sentinel, verbs
 from self_learn.compilers import _LEARNINGS_HEADER, BEGIN_MARKER, POINTER_BEGIN_MARKER
 from self_learn.hosts import host_add, host_slug
 from self_learn.ledger_ops import create_record
@@ -397,3 +397,140 @@ def test_a_plain_recompile_still_self_adopts_and_proceeds(env, tmp_path, capsys)
     assert git_claude.read_bytes() != before["git_bytes"]  # the run went on
     assert _head(env.host) != before["git_head"]
     assert result.adopt_only is False
+
+
+# ------------------------------------------- fold r1: the managed no-op
+
+
+def _managed_adopt_setup(env, tmp_path) -> Path:
+    plain = _plain_host(env, tmp_path)
+    _route(env, plain, "lrn-0ad0a401", "claude-md")
+    target = plain / "CLAUDE.md"
+    _hand_edit(target, BEGIN_MARKER)
+    _snapshot(env)  # commits the setup
+    return target
+
+
+@pytest.mark.parametrize("clock", ["same second", "later second"])
+def test_adopting_a_managed_region_twice_commits_once(env, tmp_path, monkeypatch, capsys, clock):
+    """The managed pass has the pointer and shelf passes' "already accepted
+    as it stands" no-op. Without it the second adopt rewrote the entry: in
+    the same second the ledger commit had nothing to commit (exit 6,
+    HalfWrittenError); in a later second only `at:` moved, a redundant
+    `recompile --adopt` commit that an adopt run also pushes."""
+    # S-83 (user, 2026-10-08): --adopt re-records only that target and stops.
+    target = _managed_adopt_setup(env, tmp_path)
+    ticks = iter(["2026-10-09T10:00:00Z", "2026-10-09T10:00:00Z" if clock == "same second"
+                  else "2026-10-09T10:00:07Z"])
+    monkeypatch.setattr(compiled, "_now_iso", lambda: next(ticks))
+    base = _head(env.ledger)
+
+    first = cli.main(["recompile", "--no-push", "--adopt", str(target)])
+    assert first == 0
+    assert "adopted (its own ledger commit)" in capsys.readouterr().out  # control
+    second = cli.main(["recompile", "--no-push", "--adopt", str(target)])
+
+    captured = capsys.readouterr()
+    assert second == 0, captured.err
+    assert f"recompile: {target} — already accepted as it stands" in captured.out
+    assert "already accepted as it stands — nothing to adopt" in captured.err
+    assert "nothing was adopted" in captured.out
+    key = compiled.region_key(target.parent, target, "managed")
+    assert _subjects_since(env.ledger, base) == [f"self-learn: recompile --adopt {key}"]
+
+
+# ------------------------------------------------ fold r2/r3: the push pins
+
+
+def _push_spy(monkeypatch, ok: bool = True) -> list[Path]:
+    pushed: list[Path] = []
+
+    def spy(repo, *, is_ledger=False):
+        pushed.append(Path(repo).resolve())
+        return gitops.PushResult(ok=ok, detail="" if ok else "refused")
+
+    monkeypatch.setattr(gitops, "push_if_remote", spy)
+    return pushed
+
+
+def test_an_adopt_run_under_no_push_has_no_ledger_push(env, tmp_path, monkeypatch):
+    # S-83 (user, 2026-10-08): --adopt re-records only that target and stops.
+    target = _managed_adopt_setup(env, tmp_path)
+    pushed = _push_spy(monkeypatch)
+    base = _head(env.ledger)
+
+    result = verbs.recompile(env.ledger, no_push=True, adopt=target)
+
+    assert len(_subjects_since(env.ledger, base)) == 1  # control: a commit landed
+    assert pushed == []
+    assert result.ledger_push is None
+
+
+def test_the_cli_says_an_adopt_under_no_push_was_not_pushed(env, tmp_path, monkeypatch, capsys):
+    # S-83 (user, 2026-10-08): --adopt re-records only that target and stops.
+    target = _managed_adopt_setup(env, tmp_path)
+    pushed = _push_spy(monkeypatch)
+
+    rc = cli.main(["recompile", "--no-push", "--adopt", str(target)])
+
+    assert rc == 0
+    assert pushed == []
+    assert "1 region(s) adopted (ledger not pushed — --no-push)" in capsys.readouterr().out
+
+
+def test_a_failed_ledger_push_after_an_adopt_is_the_exit_status(
+    env, tmp_path, monkeypatch, capsys
+):
+    # S-83 (user, 2026-10-08): --adopt re-records only that target and stops.
+    target = _managed_adopt_setup(env, tmp_path)
+    pushed = _push_spy(monkeypatch, ok=False)
+
+    rc = cli.main(["recompile", "--adopt", str(target)])
+
+    out = capsys.readouterr().out
+    assert "adopted (its own ledger commit)" in out  # control: the adopt landed
+    assert pushed == [env.ledger.resolve()]  # control: the push was tried
+    assert rc == gitops.EXIT_PUSH_FAILED
+    assert "PUSH FAILED" in out
+
+
+# ------------------------------------------------ fold n1: the sentinel hold
+
+
+def test_an_adopt_run_releases_the_sentinel_hold(env, tmp_path, monkeypatch):
+    # S-83 (user, 2026-10-08): --adopt re-records only that target and stops.
+    target = _managed_adopt_setup(env, tmp_path)
+    assert not sentinel.is_live()  # control: nobody holds it before
+    live_during: list[bool] = []
+    real_adopt_entry = compiled.adopt_entry
+
+    def spy(*args, **kwargs):
+        live_during.append(sentinel.is_live())
+        return real_adopt_entry(*args, **kwargs)
+
+    monkeypatch.setattr(compiled, "adopt_entry", spy)
+
+    result = verbs.recompile(env.ledger, no_push=True, adopt=target)
+
+    assert result.adopt_only is True
+    assert live_during == [True]  # control: the run held it while adopting
+    assert not sentinel.is_live()
+
+
+def test_an_adopt_run_that_raises_releases_the_sentinel_hold(env, tmp_path, monkeypatch):
+    # S-83 (user, 2026-10-08): --adopt re-records only that target and stops.
+    target = _managed_adopt_setup(env, tmp_path)
+    assert not sentinel.is_live()  # control: nobody holds it before
+    live_during: list[bool] = []
+
+    def boom(*args, **kwargs):
+        live_during.append(sentinel.is_live())
+        raise OSError("adopt entry write failed")
+
+    monkeypatch.setattr(compiled, "adopt_entry", boom)
+
+    with pytest.raises(OSError, match="adopt entry write failed"):
+        verbs.recompile(env.ledger, no_push=True, adopt=target)
+
+    assert live_during == [True]  # control: the run held it when it raised
+    assert not sentinel.is_live()
