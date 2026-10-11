@@ -244,14 +244,16 @@ HOOK_ROUTING_ACTORS = frozenset({"overseer", "steward"})
 #: a shelf nothing reads covers no lesson (`_refuse_agent_shelf_cover`).
 REFERENCE_REFUSED_ACTORS = frozenset({"overseer", "steward"})
 #: E1 fold 1 (2026-10-11, gate R1): the actors a `replace` line is refused
-#: for, until E3b writes the agents' instructions for it. Neither agent has
-#: been told what `replace` is for, when to merge with `also`, or that its
-#: case owes a `decision.rewrite`, so the verb is closed to both by name,
-#: and hidden from both generated contracts (the steward's sheet-verb list,
-#: the overseer's `closed-sets.yaml`), which read this ONE set through
-#: :func:`agent_refused_verbs`. E3b empties it, in one edit. A person's
-#: sheet (`human`) and `self-learn replace` never pass through here.
-REPLACE_REFUSED_ACTORS = frozenset({"overseer", "steward"})
+#: for by name, and for whom it is hidden from the generated contract (the
+#: steward's sheet-verb list, the overseer's `closed-sets.yaml`), which read
+#: this ONE set through :func:`agent_refused_verbs`. E1 closed it to both
+#: agents until their instructions existed; E3b (2026-10-11) wrote them --
+#: the steward's and the overseer's limits under D-AUTHOR §2.8, the
+#: runners' "rewrite required" and records checks -- and emptied it. The
+#: mechanism stays: a name put back here closes the verb to that agent
+#: again, in the run, the preview and the contract alike. A person's sheet
+#: (`human`) and `self-learn replace` never pass through here.
+REPLACE_REFUSED_ACTORS: frozenset[str] = frozenset()
 
 
 def agent_refused_verbs(actor: str) -> frozenset[str]:
@@ -270,9 +272,9 @@ def _refuse_agent_replace(item: "SheetItem", actor: str) -> None:
     anything."""
     if item.verb == "replace" and actor in REPLACE_REFUSED_ACTORS:
         raise verbs.SheetLineError(
-            f"{item.id}: `replace` is refused for the {actor} (E1, 2026-10-11) -- the "
-            "agents' instructions for it are not built yet (E3b); decide this lesson "
-            "with route, revise, supersede, retire, reject or defer, or park it"
+            f"{item.id}: `replace` is refused for the {actor} "
+            "(batch.REPLACE_REFUSED_ACTORS); decide this lesson with route, revise, "
+            "supersede, retire, reject or defer, or park it"
         )
 
 
@@ -1397,15 +1399,31 @@ def _dispatch_replace(
     _refuse_agent_reference(
         item.id, verbs.replace_destination(home, item.id, f.get("dest")), actor
     )
-    result = verbs.replace_lesson(
-        home, item.id, because=f["because"], also=f.get("also"),
-        trigger=f.get("trigger"), instruction=f.get("instruction"),
-        fact=f.get("fact"), context=f.get("context"), text_from=f.get("text_from"),
-        type=f.get("type"), kind=f.get("kind"), to=f.get("to"), dest=f.get("dest"),
-        rules_paths=f.get("rules_paths"), note=f.get("note"),
-        by=(f.get("by") or (actor if actor != "human" else None)),
-        no_push=True, execution=execution, actor=actor,
-    )
+    try:
+        result = verbs.replace_lesson(
+            home, item.id, because=f["because"], also=f.get("also"),
+            trigger=f.get("trigger"), instruction=f.get("instruction"),
+            fact=f.get("fact"), context=f.get("context"), text_from=f.get("text_from"),
+            type=f.get("type"), kind=f.get("kind"), to=f.get("to"), dest=f.get("dest"),
+            rules_paths=f.get("rules_paths"), note=f.get("note"),
+            by=(f.get("by") or (actor if actor != "human" else None)),
+            no_push=True, execution=execution, actor=actor,
+        )
+    except (verbs.VerbError, LedgerOpsError) as exc:
+        made = getattr(exc, "replace_made", None)
+        if not isinstance(made, str):
+            raise
+        # E3b fold (gate R3): an `also` leg refused after the primary
+        # commit landed. The refusal is the leg's, as before; the detail
+        # (the report) and the receipt's evidence also say that the new
+        # lesson exists, where it is, and which lessons it did not
+        # supersede -- before, the case said only `refused`.
+        rc = exc.exit_code if isinstance(exc, verbs.VerbError) else 64
+        return ItemResult(
+            n=item.n, id=item.id, verb=item.verb, rc=rc, state="refused",
+            detail=f"{refusal_text(exc)} -- {made}", evidence=made,
+            kind=refusal_kind(exc, rc=rc, state="refused"),
+        )
     return ItemResult(
         n=item.n, id=item.id, verb=item.verb, rc=0, sha=result.commit_sha,
         state="applied", warnings=list(result.warnings),

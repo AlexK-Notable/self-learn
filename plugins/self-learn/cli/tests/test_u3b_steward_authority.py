@@ -775,16 +775,55 @@ def test_the_authority_examples_cover_items_1_3_4_and_5():
         assert f"--- {name}" in text
 
 
+#: E3b fold (gate N6): each authority example's lesson at the status and
+#: placement its case describes -- pending, or placed where its evidence
+#: says -- so the steward's placed-lesson rule and the placement resolver
+#: run on the examples as they would on a real ledger.
+_AUTHORITY_LESSONS = {
+    "lrn-4e5f6a7b": None,  # every-session: pending
+    "lrn-5f6a7b8c": None,  # guard-the-database: pending
+    "lrn-6a7b8c9d": ("skill-md", None),  # move-off-the-shelf: placed (a reconsider moves it)
+    "lrn-7b8c9d0e": None,  # rule-for-migrations: pending
+    "lrn-8c9d0e1f": None,  # correct-the-lesson: pending
+    # widen-the-trigger: placed by rule-for-migrations' route, with its globs
+    "lrn-9d0e1f2a": ("claude-md:rules:migrations", ["db/migrations/**/*.sql", "**/migrations/*.py"]),
+}
+
+
+def _authority_ledger(tmp_path: Path) -> Path:
+    from self_learn import verbs
+    from test_replace import Env, _seed as _seed_lesson
+
+    env = Env(tmp_path / "ledger-sandbox")
+    for name in ("db/migrations/0001_init.sql", "app/migrations/0001_initial.py"):
+        (env.host / name).parent.mkdir(parents=True, exist_ok=True)
+        (env.host / name).write_text("-- applied\n", encoding="utf-8")
+    for rid, placed in _AUTHORITY_LESSONS.items():
+        if placed is not None and placed[0].startswith("claude-md"):
+            _project_lesson(type("E", (), {"ledger": env.home, "host": env.host})(), rid)
+            verbs.route(env.home, rid, dest=placed[0], rules_paths=placed[1], no_push=True)
+        else:
+            _seed_lesson(env.home, rid)
+            if placed is not None:
+                verbs.route(env.home, rid, dest=placed[0], no_push=True)
+    return env.home
+
+
 @pytest.mark.parametrize("stem", _authority_pairs())
-def test_each_authority_example_passes_the_runners_checks(stem, tmp_path):
+def test_each_authority_example_passes_the_runners_checks(stem, tmp_path, monkeypatch):
     from self_learn import batch
 
+    # A user-scope placement compiles into ~/.claude: never the real one.
+    monkeypatch.setenv("HOME", str(tmp_path / "fake-home"))
+    home = _authority_ledger(tmp_path)
+    for rid, placed in _AUTHORITY_LESSONS.items():  # positive control: the ledger is as described
+        assert _status(home, rid).status == ("pending" if placed is None else "routed"), rid
     stage = tmp_path / "stage"
     for kind in ("cases", "sheets"):
         path = stage / kind / f"{stem}.yaml"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(steward_prompt.AUTHORITY_EXAMPLES[f"{kind}/{stem}.yaml"], encoding="utf-8")
-    assert steward._pair_problem(stage, stage / "cases" / f"{stem}.yaml") is None
+    assert steward._pair_problem(stage, stage / "cases" / f"{stem}.yaml", home) is None
     case = YAML(typ="safe").load((stage / "cases" / f"{stem}.yaml").read_text(encoding="utf-8"))
     cases.check_case_data(steward._as_recorded(case))
     sheet = YAML(typ="safe").load((stage / "sheets" / f"{stem}.yaml").read_text(encoding="utf-8"))
@@ -799,8 +838,24 @@ def test_each_authority_example_passes_the_runners_checks(stem, tmp_path):
         item.pop("rules_paths", None)
     _dump_yaml(stage / "cases" / f"{stem}.yaml", case)
     _dump_yaml(stage / "sheets" / f"{stem}.yaml", sheet)
-    assert "always-loaded line" in (steward._pair_problem(stage, stage / "cases" / f"{stem}.yaml") or "")
+    assert "always-loaded line" in (
+        steward._pair_problem(stage, stage / "cases" / f"{stem}.yaml", home) or "")
     assert batch  # imported for the sheet schema the pair check runs
+
+
+def test_fold_n2_widen_the_trigger_keeps_every_glob_its_rule_had():
+    """Gate N2: `widen-the-trigger` says the rule's own globs already load
+    it for Python migrations, yet its sheet set `["db/migrations/**"]` in
+    place of `rule-for-migrations`' globs, so a model copying it narrowed
+    the rule (an `app/migrations/*.py` file no longer loaded it). Its globs
+    now cover every one the placing example gave the rule."""
+    def globs(stem: str) -> list[str]:
+        (item,) = YAML(typ="safe").load(steward_prompt.AUTHORITY_EXAMPLES[f"sheets/{stem}.yaml"])["items"]
+        return item["rules_paths"]
+
+    placing = globs("rule-for-migrations")
+    assert placing == ["db/migrations/**/*.sql", "**/migrations/*.py"]  # control: the old globs
+    assert set(globs("widen-the-trigger")) >= set(placing)
 
 
 def test_a_broken_hook_example_would_fail_its_replay():

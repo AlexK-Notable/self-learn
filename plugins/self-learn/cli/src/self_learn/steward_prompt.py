@@ -364,6 +364,11 @@ entries:
 #: (one coherent packet the whole-stage check validates together); each
 #: pair here is fed through the same checkers in
 #: `tests/test_u3b_steward_authority.py`.
+#: E3b (2026-10-11, D-AUTHOR §2.13): two pairs for `replace` --
+#: `correct-the-lesson` (a pending lesson whose claim is wrong, replaced by
+#: the form its evidence shows) and `widen-the-trigger` (a reconsider of
+#: the case that placed a lesson, from a fire, replacing that lesson). Both
+#: carry `decision.rewrite`, which the runner requires of a replace.
 AUTHORITY_EXAMPLES: dict[str, str] = {
     "cases/every-session.yaml": """\
 kind: resolution
@@ -527,6 +532,107 @@ items:
     rules_paths: ["db/migrations/**/*.sql", "**/migrations/*.py"]
     note: loads when a migration file is read
 """,
+    "cases/correct-the-lesson.yaml": """\
+kind: resolution
+trigger: nightly
+outcome: replaced
+records: [lrn-8c9d0e1f]
+scope: skill:release-tools
+question: >-
+  The lesson says the release script needs a clean tree; the transcript shows it needs a pushed
+  tag. Should the lesson be replaced by what the evidence shows?
+evidence:
+  - ref: "ledger@4f2a9c1:skills/release-tools/pending/lrn-8c9d0e1f.md#L14-15"
+    quote: "the release script refuses to run on a dirty working tree"
+  - ref: "transcript:example-session#L77"
+    quote: "error: tag v2.3.0 not found on origin -- push the tag first"
+decision:
+  verb: replace
+  because: >-
+    The lesson is right that the script refuses, and wrong about why: the refusal in the
+    transcript names an unpushed tag, and the tree was clean. A revise may not change what a
+    lesson claims, so the corrected form is a new lesson that replaces it.
+  confidence: settled
+  rewrite:
+    ideas:
+      - idea: "the release script refuses to run in some state"
+        now: loaded
+      - idea: "the state is a dirty working tree"
+        now: dropped
+        why: "wrong: the transcript's refusal names an unpushed tag, on a clean tree"
+      - idea: "the session that hit it lost an hour retrying"
+        now: context
+dependencies:
+  statements: []
+  user_model: []
+  conditions: []
+  capabilities: []
+""",
+    "sheets/correct-the-lesson.yaml": """\
+version: 1
+case: $CASE_ID
+items:
+  - id: lrn-8c9d0e1f
+    verb: replace
+    trigger: "About to run the release script for a version whose tag was made locally."
+    instruction: "Push the tag to origin first; the script looks the tag up there and stops if it is missing."
+    context: "The first form of this lesson blamed a dirty working tree. The transcript shows a clean tree and an unpushed tag; the session retried for an hour before reading the error."
+    dest: skill-md
+    because: the claim was wrong; the evidence shows the real cause
+""",
+    "cases/widen-the-trigger.yaml": """\
+kind: reconsider
+trigger: nightly
+outcome: replaced
+records: [lrn-9d0e1f2a]
+scope: "project:/srv/example-repo"
+supersedes: case-2b3c4d5e
+question: >-
+  The rule loaded and was broken: its trigger names SQL migrations, and the session edited an
+  applied Python migration, read the rule as not applying, and broke the same thing. Should the
+  trigger name every migration?
+evidence:
+  - ref: "case-2b3c4d5e"
+    quote: "routed to claude-md:rules:migrations"
+  - ref: "ledger@4f2a9c1:projects/example-repo/resolved/lrn-9d0e1f2a.md#L14-15"
+    quote: "About to edit a .sql migration that has already been applied"
+  - ref: "transcript:example-session#L141"
+    quote: "the rule is about .sql files, so editing this applied migration in place is fine"
+decision:
+  verb: replace
+  because: >-
+    The rule's instruction is right and its trigger is too narrow: the fire shows the same
+    mistake in a Python migration, which the rule's own globs already load it for. A wider
+    trigger, in the same file, would have stopped it.
+  confidence: settled
+  rewrite:
+    ideas:
+      - idea: "an applied migration is never edited in place; write a new one"
+        now: loaded
+      - idea: "the rule is about .sql migration files"
+        now: dropped
+        why: "wrong: the fire is the same mistake in a Python migration"
+      - idea: "the incident that taught it, a production database left half-migrated"
+        now: context
+dependencies:
+  statements: []
+  user_model: []
+  conditions: []
+  capabilities: []
+""",
+    "sheets/widen-the-trigger.yaml": """\
+version: 1
+case: $CASE_ID
+items:
+  - id: lrn-9d0e1f2a
+    verb: replace
+    trigger: "About to edit a migration that has already been applied, SQL or Python."
+    instruction: "Write a new migration instead; an applied one has run, and editing it changes nothing in the databases it ran on."
+    context: "The first trigger named .sql files only; a session editing an applied Python migration read the rule as not applying (the fire in this case's evidence)."
+    dest: claude-md:rules:migrations
+    rules_paths: ["db/migrations/**/*.sql", "**/migrations/*.py"]
+    because: the trigger was too narrow for the moment the fire shows
+""",
 }
 
 
@@ -607,11 +713,39 @@ def _render_standing_rulings() -> str:
     return "\n".join(lines)
 
 
+def _replace_lines() -> list[str]:
+    """E3b (D-AUTHOR §2.8, the steward's column): `replace` in the output
+    contract -- what it does, the case it goes in, and the two refusals the
+    runner's stage check makes of the steward (`steward._steward_replace_problem`),
+    with `decision.rewrite`'s shape read from the case writer's own sets."""
+    fields = ", ".join(sorted(cases.REWRITE_FIELDS))
+    return [
+        "  REWRITING A LESSON'S WORDS (`replace`; method sections 7, 10 and 11). A `replace` line",
+        "  writes a new lesson from its `trigger` and `instruction` (or `fact`), with an optional",
+        "  `context`, that takes over from the line's `id` and from each lesson its `also` names (a",
+        "  merge), in one motion; `because` is required. The old lessons stay, marked replaced.",
+        "  The case names every lesson the line changes in `records`, and its decision carries",
+        "  `rewrite`: `ideas:`, one entry per idea of the old text, each `{idea, now, why}` --",
+        "  `now` is `loaded`, `context`, `dropped`, or `field:<name>` with <name> one of",
+        # E3b fold (gate N4): the field list on its own line, so no
+        # rendered line runs past the contract's width.
+        f"  {fields};",
+        "  a dropped idea needs `why`. A pending or deferred lesson",
+        "  whose claim is wrong: a `kind: resolution` case, outcome `replaced`; name a `dest` to",
+        "  place the new lesson, or leave it out and it stays pending. Pending lessons of this",
+        "  packet that say one thing: one case, one `replace` line on the first, the rest in",
+        "  `also`. A placed lesson: only in a `kind: reconsider` case whose `supersedes` names the",
+        "  case that covered it, to correct or widen it -- never to shorten it, and never merged",
+        "  through `also`; the runner refuses a replace of a placed lesson in any other case, and",
+        "  any merge of one. Park those (`authority-unclear`) with your tentative answer.",
+    ]
+
+
 def _render_lesson_writing() -> str:
     """The shared passage on writing a lesson (E3a), inlined between its
     markers and read from the canonical file at build time. Never a pointer
     to the file: an agent would have to choose to open it."""
-    return lesson_writing.inlined() + "\n\n" + lesson_writing.AGENT_INTERIM
+    return lesson_writing.inlined() + "\n\n" + lesson_writing.AGENT_SHEET_NOTE
 
 
 def _render_method() -> str:
@@ -878,8 +1012,8 @@ def _sheet_verb_lines() -> list[str]:
     lines = []
     for verb in sorted(batch.PERMITTED_KEYS):
         # E1 fold 1: a verb the batch refuses the steward by name
-        # (`replace` until E3b) is not shown either; read at call time, so
-        # emptying `batch.REPLACE_REFUSED_ACTORS` lists it again.
+        # (`batch.REPLACE_REFUSED_ACTORS`, empty since E3b) is not shown
+        # either; read at call time, so the list follows that set.
         if verb in _UNLISTED_SHEET_VERBS or verb in batch.agent_refused_verbs("steward"):
             continue
         required = sorted(batch.REQUIRED_KEYS.get(verb, frozenset()))
@@ -922,7 +1056,8 @@ def _render_output_contract() -> str:
         "  - Every lesson in this packet appears in the `records:` of EXACTLY ONE case --",
         "    not zero, not two. Lessons that share one decision may share one case.",
         "  - Every lesson in a case has its own item in that case's sheet. A lesson the case",
-        "    covers and the sheet forgets is refused.",
+        "    covers and the sheet forgets is refused. A lesson a `replace` line merges through",
+        "    `also` counts as having one, and must be in the case's `records` like the line's id.",
         "  - File names are yours to choose (`<lesson id>.yaml` is fine).",
         "",
         "cases/<name>.yaml -- a YAML mapping with exactly these keys:",
@@ -942,8 +1077,9 @@ def _render_output_contract() -> str:
         "  evidence       non-empty list of {ref, quote}; both required; quote is verbatim",
         "  decision       mapping: `because` (required), `confidence` (required:",
         f"                 {_words(cases.CONFIDENCE_VALUES)}), `verb`, `what_would_change` (list of",
-        "                 strings), for a retire `covered_by`, and for a route to an",
-        "                 always-loaded line `always_loaded` (below)",
+        "                 strings), for a retire `covered_by`, for a route to an",
+        "                 always-loaded line `always_loaded` (below), and for a case with a",
+        "                 `replace` line `rewrite` (below)",
         "  dependencies   mapping of four lists of strings: statements, user_model, conditions,",
         "                 capabilities (use [] for none)",
         "  supersedes     optional: the id of a case this one replaces (case- plus 8 hex digits)",
@@ -1035,6 +1171,7 @@ def _render_output_contract() -> str:
         "  the shelf file, so a `route`, `reject` or `defer` line each takes a lesson off a reference",
         "  shelf. A lesson routed to a hook cannot be rejected or deferred this way; move it with a",
         "  `route` line instead.",
+        *_replace_lines(),
         "  `rehome` and `rescope` both move a pending or deferred lesson to another",
         "  registered scope (`to`: `user`, `skill:<name>`, or a project path). `reopen` returns a",
         "  rejected or superseded lesson to pending. A lesson you rehome or rescope comes back to",
@@ -1044,6 +1181,7 @@ def _render_output_contract() -> str:
         "  a refusal naming the real status, and the lesson comes back to you as below):",
         f"    route, reject, defer, rehome, rescope, revise:  {_words(ledger_ops.LIVE_STATUSES)}",
         f"    retire, supersede (the old and the new lesson):  {_words(ledger_ops.RESOLVABLE_STATUSES)}",
+        f"    replace (the line's id and each id in also):  {_words(ledger_ops.RESOLVABLE_STATUSES)}",
         f"    undefer:  {_words(ledger_ops.DEFERRED_ONLY)}      reopen:  {_words(verbs.REOPEN_ADMITTED_STATUSES)}",
         "    confirm-recurrence, dismiss-suspect:  routed",
         f"    every lesson a `kind: reconsider` case names:  {_words(ledger_ops.RECONSIDERABLE_STATUSES)}",

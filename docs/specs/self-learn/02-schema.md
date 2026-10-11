@@ -398,8 +398,10 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   `revise` may also add a `## Context` section a pending or deferred lesson lacks.
 - **`replace`** *(S-85)*: keys `also, trigger, instruction, fact, context, text_from, type, kind, to, dest,
   rules_paths, because, note, by` (`because` required). The default placement is the first lesson's current one.
-  Refusals and S-76 as in S-85; S-76 binds every placed lesson the replace moves. Refused to the steward and the
-  overseer by name until E3b (`batch.REPLACE_REFUSED_ACTORS`, which E3b empties). Idempotence: applied iff the
+  Refusals and S-76 as in S-85; S-76 binds every placed lesson the replace moves. Open to the steward and the
+  overseer since E3b (S-86: `batch.REPLACE_REFUSED_ACTORS` is empty), each within its column of D-AUTHOR §2.8; the
+  steward replaces a placed lesson only in a `kind: reconsider` case and never merges into or from one. Idempotence:
+  applied iff the
   first lesson's `superseded_by` is a lesson that `supersedes` it with this text and every `also` lesson reads
   `superseded_by` that same lesson; recovery and the post-run recompile read it by the same state read. Carried
   fields as in S-85. Commit subject `self-learn: replace lrn-old → lrn-new (<dest>)`, with `because` (and `note`)
@@ -1055,7 +1057,10 @@ exactly as before. *(Added 2026-10-11, S-85.)* `decision.rewrite`
 when dropped) and `decision.skill` (`{name, why, lessons?}`) are shape-checked, rendered under
 Decision ('Rewrite (where each idea of the old text went):', 'Skill: name — why'), and are in
 the freeze hash and the free-text scan. A case with any other key under `decision` is refused by
-name. A case with a `replace` item needs `decision.rewrite` (the runner's check; E3b wires it).
+name. A case with a `replace` item needs `decision.rewrite`, and every lesson the item changes (its id and each
+`also` id) is in the case's `records`; the steward's stage check and the overseer's pair loop refuse such a pair by
+name (`cases.replace_items_problem`, S-86). In the steward's coverage rule an `also` id counts as an item of its
+sheet, so a merge case's `records` are exactly `{id} ∪ also`.
 The always-loaded test reads `replace` items, a dest-less one through the first lesson's placement.
 
 **Section 4, Dependencies** — everything the decision rests on, each cited
@@ -1514,7 +1519,17 @@ PDT: "fix the rest of 3".)*
   recorded by a person; a reconsider whose preview refuses a line; a
   `supersedes` that is not one case id — S-76),
   the sheet's schema (an unknown or missing item key, `close_call` not a
-  boolean), an empty successor sheet, a caseless non-empty sheet. A pair
+  boolean), an empty successor sheet, a caseless non-empty sheet, and
+  *(S-86)* a `replace` item whose case lacks `decision.rewrite` or whose
+  `records` omit a lesson it changes, and *(S-86)* a pair touching a lesson
+  an open parked case holds, unless it is that case's successor (S-81).
+  *(S-86, named maintenance pairs:)* a
+  pair is a successor or a maintenance pair by its case's `kind`:
+  `case.yaml` and every named `case-<name>.yaml` whose `kind` is
+  `maintenance` take the maintenance rules (no `supersedes`, never
+  parked), so the overseer may record several `kind: maintenance` cases in
+  one run, each in its own named pair, beside its successors; every other
+  named case is a successor (`SUCCESSOR_CASE_FIELDS`, unchanged). A pair
   is one decision, so it is dropped whole, never item by item. A
   secret-scan hit in a pair's case or sheet drops that pair — nothing of
   it reaches the ledger. *(2026-09-28, follow-up 3)* A hit in

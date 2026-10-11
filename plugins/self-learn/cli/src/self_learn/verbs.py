@@ -5775,6 +5775,19 @@ def _resync_three_regions(
     return touched
 
 
+def _supersede_precheck(home: Path, old_id: str, new_id: str, *, verb: str) -> None:
+    """E3b (the E1 gate's D2): every refusal :func:`ledger_ops.supersede_record`
+    would give *old_id* -- a self-cycle, a longer cycle, its status, and,
+    while the steward acts, the overseer's hold (``require_status`` runs
+    ``refuse_held``) -- asked with nothing written. A caller that writes a
+    new record before it supersedes the old one asks this first, under the
+    same lock, so a refusal there leaves nothing on disk. Pure."""
+    if old_id == new_id:
+        raise ledger_ops.SheetLineRefusal(f"record {old_id} cannot supersede itself")
+    supersede_cycle_check(home, old_id, new_id)
+    require_status(home, old_id, RESOLVABLE_STATUSES, verb=verb)
+
+
 def _execute_route(
     home: Path,
     record: Record,
@@ -5937,6 +5950,17 @@ def _execute_route(
         # THIS write is based on, never a later re-read (U-hostmode
         # §4.5b/REC12/REC13).
         observed_hash = _observe_region_hash(spec)
+
+        if old_id is not None:
+            # E3b (the E1 gate's D2): the predecessor's own refusals --
+            # status, cycle and the S-81 hold -- are read HERE, under the
+            # lock and before the first write. `supersede_record` below
+            # makes the same checks, but only after the new record is on
+            # disk, so a hold appearing after the pre-lock checks used to
+            # leave an uncommitted, live record behind. E3b fold (gate N5):
+            # before the collapse intent opens too, so a refusal here
+            # leaves no open intent behind.
+            _supersede_precheck(home, old_id, record_id, verb="route")
 
         # M-W (D7): collapse folds several files (the survivor's merge
         # write, its git-mv into resolved/, a supersede-git-mv per
@@ -7275,6 +7299,37 @@ def replace_destination(home: Path | str, record_id: str, dest: str | None) -> t
         return None
 
 
+def replace_route_preview(
+    home: Path | str, record_id: str, *, dest: str | None, to: str | None
+) -> dict | None:
+    """Where a ``replace`` line's new lesson would be written, in the three
+    keys a route's preview carries for it (``RouteDryRunResult.to_json``:
+    ``host``, ``mode``, ``target``), or ``None`` when it lands pending or
+    the place cannot be resolved. Read-only: the target is resolved without
+    the write-time gates (``check_dirty=False``), so a file those gates
+    refuse is still named, as a refused route's preview names it. The
+    steward's forced parking reads it (E3b: a replace into a file a plain
+    host's git tracks is parked as a route into one is)."""
+    home = Path(home)
+    resolved = replace_destination(home, record_id, dest)
+    if resolved is None:
+        return None
+    destination, ref_name = resolved
+    try:
+        scope, bucket_dir, project_path = _replace_bucket(
+            home, find_record_path(home, record_id), to
+        )
+        spec = _resolve_target(
+            home, bucket_dir, scope, destination, ref_name,
+            project_path=project_path, check_dirty=False,
+        )
+    except (VerbError, LedgerOpsError, OSError, ValueError):
+        return None
+    if spec.target is None:
+        return None
+    return {"host": str(spec.host_path), "mode": spec.mode, "target": str(spec.target)}
+
+
 def _replace_subject(first_id: str, new_id: str, where: str) -> str:
     """The commit subject (D-AUTHOR §6.2, as built): ``self-learn: replace
     lrn-old → lrn-new (<where>)``. The old id is followed by a space, so a
@@ -7307,6 +7362,9 @@ def _replace_pending(
     try:
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
+            # E3b (the E1 gate's D2): the first lesson's refusals, under the
+            # lock, before the new record is created (see `_execute_route`).
+            _supersede_precheck(home, plan.first_id, record.id, verb="replace")
             path = create_record(home, record, project_path=plan.project_path)
             touched = [path]
             meta = path.parent.parent / "meta.yaml"
@@ -7405,11 +7463,22 @@ def replace_lesson(
                 home, plan, body=body, no_push=no_push, execution=execution
             )
         warnings += result.warnings
-    for also_id in plan.also_todo:
-        merged = supersede(
-            home, also_id, plan.new_id, note=f"merged into {plan.new_id} by replace {record_id}",
-            by=by, no_push=no_push, user_claude_md=user_claude_md,
-        )
+    for n, also_id in enumerate(plan.also_todo):
+        # E3b (the E1 gate's R1 item 3): each leg carries the line's own
+        # execution trailers, so each leg's commit is attributable to it.
+        try:
+            merged = supersede(
+                home, also_id, plan.new_id,
+                note=f"merged into {plan.new_id} by replace {record_id}",
+                by=by, no_push=no_push, user_claude_md=user_claude_md, execution=execution,
+            )
+        except (VerbError, LedgerOpsError) as exc:
+            # E3b fold (gate R3): the new lesson exists and is live; say so
+            # where the refusal is reported (`batch._dispatch_replace`).
+            setattr(exc, "replace_made", _half_merge_note(
+                home, plan.new_id, plan.also_todo[n:]
+            ))
+            raise
         warnings += merged.warnings
         result = result or merged
     assert result is not None
@@ -7418,6 +7487,21 @@ def replace_lesson(
     destination = (made.routing or {}).get("destination") if made.status == "routed" else None
     return replace_result(result, record_id=record_id, made=made, destination=destination,
                           warnings=warnings)
+
+
+def _half_merge_note(home: Path, new_id: str, not_superseded: list[str]) -> str:
+    """E3b fold (gate R3): what a refused ``also`` leg leaves, in words: the
+    new lesson was made and where it is placed, and the lessons not yet
+    superseded by it. A re-run of the line finishes the merge."""
+    try:
+        made = Record.from_path(find_record_path(home, new_id))
+        where = (made.routing or {}).get("destination") if made.status == "routed" else None
+    except (LedgerOpsError, RecordError, OSError):
+        where = None
+    return (
+        f"made {new_id} ({'placed: ' + str(where) if where else 'pending'}) before this "
+        f"refusal; not superseded by it: {', '.join(not_superseded)}"
+    )
 
 
 def replace_result(

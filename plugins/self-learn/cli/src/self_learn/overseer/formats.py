@@ -30,6 +30,8 @@ FORMATS_DIR = "formats"
 EXAMPLE_RECORD = "lrn-0000000a"
 EXAMPLE_PARKED_CASE = "case-0000000a"
 EXAMPLE_CASE = "case-0000000b"
+#: E3b: the lessons a merge example folds into EXAMPLE_RECORD's successor.
+EXAMPLE_MERGED = ("lrn-0000000b", "lrn-0000000c")
 
 #: S-73: a WARNING hook's compile input, as a sheet line carries it (the
 #: shape `batch.HOOK_INPUT_KEYS` and `ledger_ops._validate_hook_extension`
@@ -158,8 +160,9 @@ def closed_sets() -> dict[str, Any]:
                 }
                 for verb, keys in sorted(batch.PERMITTED_KEYS.items())
                 if verb not in batch.SHEET_VERB_ALIASES
-                # E1 fold 1: `replace` is refused the overseer until E3b
-                # (`batch.REPLACE_REFUSED_ACTORS`), so it is not offered.
+                # E1 fold 1: a verb the batch refuses the overseer by name
+                # (`batch.REPLACE_REFUSED_ACTORS`, empty since E3b) is not
+                # offered.
                 and verb not in batch.agent_refused_verbs("overseer")
             },
             "item_keys_on_every_verb": ["id", "verb", "close_call"],
@@ -234,6 +237,38 @@ def user_model_one_line_rule() -> str:
     )
 
 
+#: E3b (D-AUTHOR §2.8, the overseer's column, and §2.13): how the overseer
+#: rewrites a lesson's words. Phase B's README only.
+_REPLACE_RULES = (
+    "Rewriting a lesson's words: a `replace` line writes a new lesson that takes over",
+    "from the line's lesson, and from each lesson its `also` names (a merge), in one",
+    "motion; the old lessons stay in the ledger, marked replaced. The new lesson goes",
+    "where the line's lesson is placed now unless the line names a `dest`. If it",
+    "lands on an always-loaded line -- an always-loaded `dest`, or no `dest` and a",
+    "lesson placed in a CLAUDE.md itself (not a rules file) -- the case needs the",
+    "combined test, as a route there does. Use it to correct",
+    "or widen a placed lesson, to shorten one, or to merge several into one. To correct",
+    "a lesson a case the steward or you recorded covers, write a kind: reconsider",
+    "successor of that case; for anything else -- a shortening, a merge, a lesson no",
+    "correctable case covers -- write a named kind: maintenance pair. Never a lesson",
+    "routed to a hook: move it with `route`.",
+    "The case's records name every lesson the line changes (its id and each id in",
+    "also), and its decision carries `rewrite`: each idea of the old text, in a few",
+    "words, with where it is now -- loaded, context, field:<name>, or dropped with a",
+    "why (wrong, out of date, or said by another lesson you name). Quote the old text",
+    "in the evidence. A replace case without `rewrite`, or naming a lesson its records",
+    "do not, is dropped with its sheet. Shortening is yours to do when the line is",
+    "longer than its moment needs; what matters is that no useful meaning is lost,",
+    "and `rewrite` is where you show it. See case-rewrite-example.yaml (a",
+    "shortening), case-merge-example.yaml (a merge) and",
+    "case-correct-lesson-example.yaml (a correction of a placed lesson no case",
+    "covers), each with its sheet-*.yaml. The shortening's lesson is placed in a",
+    "user CLAUDE.md, so its case carries `always_loaded`; the merge's and the",
+    "correction's lessons are placed in a SKILL.md, which needs none -- a merge or",
+    "correction of a CLAUDE.md lesson carries it as the shortening does.",
+)
+
+
 def _rules(phase: str) -> str:
     from . import run
 
@@ -246,7 +281,8 @@ def _rules(phase: str) -> str:
         "",
         "Rules the runner enforces:",
         "",
-        "- " + " ".join(run._YAML_TEXT_RULE.split()),
+        # E3b fold (gate N1): phase B's rule names its two exceptions.
+        "- " + " ".join((run._YAML_TEXT_RULE_B if phase == "B" else run._YAML_TEXT_RULE).split()),
         "- Every file you write stays in this workspace; nothing outside it can be",
         "  read or written.",
     ]
@@ -270,8 +306,12 @@ def _rules(phase: str) -> str:
             "  and was recorded by the steward or the overseer, never by a person. See",
             "  case-correct-example.yaml. Each case-<name>.yaml pairs with a",
             "  sheet-<name>.yaml; a successor's sheet is never empty.",
-            "- A catalogue change that decides no parked case is case.yaml (kind:",
-            "  maintenance, no supersedes) with sheet.yaml.",
+            "- A catalogue change that decides no parked case is a kind: maintenance",
+            "  case with no supersedes. Write each one as its own named pair,",
+            "  case-<name>.yaml with sheet-<name>.yaml, as many as the run needs and",
+            "  beside your successors; the single case.yaml with sheet.yaml still works",
+            "  for one. The runner tells a named maintenance pair from a successor by",
+            "  its kind.",
             *textwrap.wrap(
                 user_model_one_line_rule(), width=78,
                 initial_indent="- ", subsequent_indent="  ",
@@ -344,10 +384,12 @@ def _rules(phase: str) -> str:
             "must hold; a case missing one is dropped. See",
             "case-always-loaded-example.yaml.",
             "",
+            *_REPLACE_RULES,
+            "",
             # E3a: the passage on writing a lesson, inlined (never a pointer).
             # Phase B only: phase A selects cases and writes no lesson text.
             lesson_writing.inlined(),
-            lesson_writing.AGENT_INTERIM,
+            lesson_writing.AGENT_SHEET_NOTE,
         ]
     return "\n".join(lines) + "\n"
 
@@ -486,6 +528,117 @@ def phase_b_examples() -> dict[str, str]:
                     for key in always_loaded.TEST_KEYS
                 },
             },
+        }),
+        # E3b (D-AUTHOR §2.13): three named maintenance pairs that rewrite
+        # lessons' words -- a shortening, a merge, and a correction of a
+        # placed lesson no correctable case covers -- each with the
+        # `decision.rewrite` the runner requires of a replace.
+        "case-rewrite-example.yaml": _dump({
+            "kind": "maintenance", "trigger": "weekly", "outcome": "replaced",
+            "records": [EXAMPLE_RECORD], "scope": "user",
+            "question": "This always-loaded line carries its whole story; can it be shorter without losing meaning?",
+            "evidence": [{"ref": f"record:{EXAMPLE_RECORD}", "quote": (
+                "Instruction: stop when the yield per round is flat, because in the March review "
+                "the fourth round found one nit and the fifth found the same nit again"
+            )}],
+            "decision": {
+                "verb": "replace",
+                "because": "The rule and its reason stay loaded; the story of the March review moves to Context.",
+                "confidence": "settled",
+                "rewrite": {"ideas": [
+                    {"idea": "stop when the yield per round is flat", "now": "loaded"},
+                    {"idea": "a flat yield is a steady state, not convergence", "now": "loaded"},
+                    {"idea": "the March review: round four and five found the same nit", "now": "context"},
+                ]},
+                # E3b fold (gate D1): a dest-less replace keeps its lesson's
+                # placement -- here a user CLAUDE.md, always loaded -- so the
+                # case meets the combined test exactly as a route there does.
+                "always_loaded": {
+                    key: {"because": f"why {key} holds, in one sentence",
+                          "refs": [f"record:{EXAMPLE_RECORD}"]}
+                    for key in always_loaded.TEST_KEYS
+                },
+            },
+        }),
+        "sheet-rewrite-example.yaml": _dump({
+            "version": 1,
+            "items": [{
+                "id": EXAMPLE_RECORD, "verb": "replace",
+                "trigger": DoubleQuotedScalarString("About to run another round of the same review."),
+                "instruction": DoubleQuotedScalarString(
+                    "Stop when the yield per round is flat: that is a steady state, not convergence."
+                ),
+                "context": DoubleQuotedScalarString(
+                    "In the March review the fourth round found one nit and the fifth found the same nit again."
+                ),
+                "because": DoubleQuotedScalarString("shorter; the story moves to Context"),
+                "close_call": False,
+            }],
+        }),
+        "case-merge-example.yaml": _dump({
+            "kind": "maintenance", "trigger": "weekly", "outcome": "replaced",
+            "records": [EXAMPLE_RECORD, *EXAMPLE_MERGED], "scope": "skill:example",
+            "question": "Three lessons in one skill say the same rule about test timing; should they be one?",
+            "evidence": [
+                {"ref": f"record:{rid}", "quote": "Instruction: rerun a timing-sensitive failure before trusting it"}
+                for rid in (EXAMPLE_RECORD, *EXAMPLE_MERGED)
+            ],
+            "decision": {
+                "verb": "replace",
+                "because": "One rule said three times loads three times; one line keeps every idea the three carried.",
+                "confidence": "settled",
+                "rewrite": {"ideas": [
+                    {"idea": "rerun a timing-sensitive failure before trusting it", "now": "loaded"},
+                    {"idea": "a browser test that failed once under load", "now": "context"},
+                    {"idea": "the same advice for benchmarks", "now": "dropped",
+                     "why": f"said by {EXAMPLE_RECORD}'s new line, which names benchmarks"},
+                ]},
+            },
+        }),
+        "sheet-merge-example.yaml": _dump({
+            "version": 1,
+            "items": [{
+                "id": EXAMPLE_RECORD, "verb": "replace", "also": list(EXAMPLE_MERGED),
+                "trigger": DoubleQuotedScalarString(
+                    "About to trust one failing run of a timing-sensitive test or benchmark."
+                ),
+                "instruction": DoubleQuotedScalarString(
+                    "Rerun it before acting: one failure under load is a lead, not a result."
+                ),
+                "because": DoubleQuotedScalarString("three lessons with one rule become one"),
+                "close_call": False,
+            }],
+        }),
+        "case-correct-lesson-example.yaml": _dump({
+            "kind": "maintenance", "trigger": "weekly", "outcome": "replaced",
+            "records": [EXAMPLE_RECORD], "scope": "skill:example",
+            "question": "This placed lesson names the wrong command; no case the steward or the overseer recorded covers it. Should it be corrected?",
+            "evidence": [
+                {"ref": f"record:{EXAMPLE_RECORD}", "quote": "Instruction: restart the service with systemctl restart"},
+                {"ref": "transcript:example-session#L52", "quote": "a user unit needs systemctl --user restart"},
+            ],
+            "decision": {
+                "verb": "replace",
+                "because": "The lesson is right about restarting and wrong about the command; the evidence shows the right one.",
+                "confidence": "settled",
+                "rewrite": {"ideas": [
+                    {"idea": "restart the service after changing its unit", "now": "loaded"},
+                    {"idea": "the command is systemctl restart", "now": "dropped",
+                     "why": "wrong: it is a user unit, so the command is systemctl --user restart"},
+                ]},
+            },
+        }),
+        "sheet-correct-lesson-example.yaml": _dump({
+            "version": 1,
+            "items": [{
+                "id": EXAMPLE_RECORD, "verb": "replace",
+                "trigger": DoubleQuotedScalarString("About to apply a change to the sync service's user unit."),
+                "instruction": DoubleQuotedScalarString(
+                    "Restart it with systemctl --user restart; it is a user unit."
+                ),
+                "because": DoubleQuotedScalarString("the command was wrong"),
+                "close_call": False,
+            }],
         }),
         "maintenance-case.yaml": _dump({
             "kind": "maintenance", "trigger": "weekly", "outcome": "no-action",

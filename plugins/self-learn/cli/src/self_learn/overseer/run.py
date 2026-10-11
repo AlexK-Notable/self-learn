@@ -666,6 +666,23 @@ refuses).
 """
 
 
+#: E3b (2026-10-11), folded (gate N1): phase B's form of the rule, which
+#: names BOTH exceptions in one sentence -- phase B writes the user-model
+#: delta and the sheets; phase A writes neither, so it keeps the rule
+#: above. A loaded value written as a block scalar keeps its line breaks,
+#: and the route then refuses the lesson `bad-line` (run 854639e4's
+#: revise, wrapped onto five lines).
+_YAML_TEXT_RULE_B = """In every YAML file you write, write each free-text value either as a block scalar (`text: |`
+with the text indented on the lines below it) or as a double-quoted string: a bare value that
+contains ": " does not parse, and the runner cannot use a file that does not parse.
+There are two exceptions, each written as a double-quoted string on one line, never a block scalar
+or a wrapped line (a block scalar keeps a line break): every free-text value in
+user-model-delta.yaml (the user model refuses a line break), and every loaded value on a sheet
+line -- trigger, instruction, fact, and a revise line's text for one of those sections (a lesson
+whose loaded text spans lines is refused when it is placed).
+"""
+
+
 #: 2026-09-28: both phase prompts point at the workspace's formats folder.
 _FORMATS_LINE = f"""The exact shape of every file you write, the value sets you pick from, and the rules the
 runner enforces are in {formats.FORMATS_DIR}/ here: read {formats.FORMATS_DIR}/README.md before you write anything.
@@ -708,11 +725,14 @@ case you decide. To correct a case that is not parked (for example a decision wh
 ledger refused), write a kind: reconsider successor that supersedes it, provided that case covers
 every record the reconsider names, has not been superseded, passes its freeze hash, and was
 recorded by the steward or the overseer, never by a person (formats/case-correct-example.yaml).
+A catalogue change that decides no parked case (a shortening, a merge, a correction no case
+covers) is a kind: maintenance case in its own case-<name>.yaml/sheet-<name>.yaml pair, as many
+as you need; a `replace` line rewrites a lesson's words (formats/README.md says how).
 The runner alone records cases and applies sheets. Never run a verb.
 Never route a lesson to `reference` (a references/ shelf file): the runner refuses it from you.
 {formats.FORMATS_DIR}/README.md says where such a lesson goes instead, and how a lesson already
 on a shelf is taken off it.
-{_YAML_TEXT_RULE}In a case file no line of any text field may start with `## `. To quote a heading line, quote
+{_YAML_TEXT_RULE_B}In a case file no line of any text field may start with `## `. To quote a heading line, quote
 it from after the `## ` (for `## 2026-08-19 — lrn-b197d06b` quote `2026-08-19 — lrn-b197d06b`):
 an evidence item with such a line is dropped, and any other field with one refuses the case.
 Every text field is secret-scanned: an evidence item whose quote or ref matches is dropped (with
@@ -1542,10 +1562,81 @@ def _refuse_doomed_reconsider(
     )
 
 
+def _is_maintenance_pair(case_file: Path) -> bool:
+    """Which validator a staged case takes (E3b, D-AUTHOR §2.8): the lone
+    ``case.yaml`` always, and a named ``case-<name>.yaml`` whose ``kind`` is
+    ``maintenance`` -- a catalogue change (a shortening, a merge, a lesson no
+    correctable case covers), which decides no parked case and supersedes
+    none. Every other named case is a successor."""
+    return case_file.name == "case.yaml" or _yaml_mapping(case_file).get("kind") == "maintenance"
+
+
+#: E3b fold (gate R1): every sheet key that names a lesson a verb changes
+#: or reads -- the classification `tests/test_steward_ledger_hold.py`'s
+#: `_SHEET_KEYS` keeps for the steward's hold.
+_LESSON_KEYS = ("id", "new_id", "target", "text_from")
+
+
+def _held_pair_problem(
+    label: str, lines: list[dict], held: dict[str, list[dict]], predecessor: str | None
+) -> str | None:
+    """E3b fold (gate R1, S-81 for the overseer's own pairs): a pair whose
+    sheet touches a lesson an open parked case is waiting on -- through any
+    line's `id`, `new_id`, `target`, `text_from` or `also` -- is dropped
+    unless the pair IS that parked case's successor (it supersedes one of
+    the cases holding the lesson). Before, a named maintenance pair could
+    replace such a lesson: the parked case stayed open on a superseded id,
+    and a pending successor was not held, so the steward could decide it.
+    A successor of one parked case could likewise change a lesson another
+    parked case holds (nothing checks a successor's sheet against its
+    records). A parked case is decided through its own successor."""
+    for line in lines:
+        named = [line.get(key) for key in _LESSON_KEYS]
+        also = line.get("also")
+        named += also if isinstance(also, list) else []
+        for rid in (str(value) for value in named if value):
+            rows = held.get(rid)
+            holders = sorted({str(row.get("case")) for row in rows or []})
+            if holders and predecessor not in holders:
+                return (
+                    f"{label}: touches {rid}, which the open parked case(s) "
+                    f"{', '.join(holders)} hold for your decision -- decide it through "
+                    "that parked case's successor (a case whose supersedes names it), "
+                    "not through another case"
+                )
+    return None
+
+
+def _pair_rules_problem(
+    case_file: Path, sheet: batch.Sheet, home: Path, *,
+    held: dict[str, list[dict]] | None = None, predecessor: str | None = None,
+) -> str | None:
+    """The rules a pair breaks that need its case and its sheet together:
+    the S-81 hold over the pair's lessons (E3b fold, `_held_pair_problem`;
+    *held* is `cases.held_lessons` read once for the run's phase B), U3b's
+    always-loaded combined test (the steward's rule, one copy), then E3b's
+    two `replace` rules (`cases.replace_items_problem`: every lesson a
+    replace line changes is in the case's records, and the case accounts
+    for the old text in `decision.rewrite`)."""
+    case_data = _yaml_mapping(case_file)
+    lines = [{"id": item.id, "verb": item.verb, **item.fields} for item in sheet]
+    return _held_pair_problem(
+        case_file.name, lines, held if held is not None else {}, predecessor
+    ) or always_loaded.route_problem(
+        case_data, lines,
+        resolve=always_loaded.proposal_resolver(home),
+        placement=always_loaded.placement_resolver(home),
+        label=case_file.name,
+    ) or cases.replace_items_problem(case_data, lines, label=case_file.name)
+
+
 def _validate_maintenance_case(path: Path) -> None:
     """A9 / O-7.3: the case paired with a CASELESS sheet is a catalogue
     change, not a decision on a delegated question, so its `kind` must be
-    `maintenance`.
+    `maintenance`. E3b (D-AUTHOR §2.8): a NAMED pair whose case is
+    `kind: maintenance` is validated here too (`_is_maintenance_pair`), so
+    the overseer may write several catalogue changes in one run, each in its
+    own pair, beside its successors.
 
     The caseless half of O-7.3 ("refuse a catalogue-change sheet lacking a
     top-level case") shipped; this is the half `build-lane-b.md:24-31`
@@ -1562,7 +1653,7 @@ def _validate_maintenance_case(path: Path) -> None:
         raise OverseerError(f"{path.name}: missing case field(s) {missing!r}")
     if data.get("kind") != "maintenance":
         raise OverseerError(
-            f"{path.name}: a caseless sheet's paired case must be "
+            f"{path.name}: a catalogue change (case.yaml, beside sheet.yaml) must be "
             f"kind: maintenance, not {data.get('kind')!r}"
         )
     if data.get("outcome") == "parked" or data.get("supersedes") is not None:
@@ -4731,6 +4822,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
             preview_apply = 0
             preview_refused = 0
             seen_predecessors: set[str] = set()
+            held_now = cases.held_lessons(home)
             for case_file, sheet_file in pairs:
                 # 2026-09-27 (run c2b9192b): a case or sheet file that does
                 # not parse costs that pair alone, named by file and parse
@@ -4767,10 +4859,11 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                 # of a decision is not the decision the model made.
                 try:
                     predecessor: str | None = None
-                    if case_file is not None and case_file.name == "case.yaml":
+                    if case_file is not None and _is_maintenance_pair(case_file):
                         # A9: the caseless sheet's pair is catalogue maintenance;
                         # it supersedes nothing, so the successor rules below
                         # cannot apply to it and it has rules of its own.
+                        # E3b: so is a named pair whose case is maintenance.
                         _validate_maintenance_case(case_file)
                         rule = _case_rule_problem(case_file, run_id)
                         if rule is not None:
@@ -4817,16 +4910,13 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                             "be kind: maintenance"
                         )
                     # U3b: an always-loaded route needs the combined test,
-                    # evidenced in the case -- the steward's rule, one copy.
-                    always = always_loaded.route_problem(
-                        _yaml_mapping(case_file),
-                        [{"id": item.id, "verb": item.verb, **item.fields} for item in sheet],
-                        resolve=always_loaded.proposal_resolver(home),
-                        placement=always_loaded.placement_resolver(home),
-                        label=case_file.name,
+                    # evidenced in the case -- the steward's rule, one copy;
+                    # E3b: and a replace line's records and rewrite account.
+                    rules = _pair_rules_problem(
+                        case_file, sheet, home, held=held_now, predecessor=predecessor
                     )
-                    if always is not None:
-                        raise OverseerError(always)
+                    if rules is not None:
+                        raise OverseerError(rules)
                     from ..steward import _reconsidered_by  # one definition, the steward's
 
                     preview = batch.dry_run(

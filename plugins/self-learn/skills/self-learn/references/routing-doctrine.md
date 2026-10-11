@@ -852,7 +852,9 @@ gates:
 Managed-section entries compile as **"When ⟨trigger⟩: ⟨instruction⟩"** —
 never a bare imperative. A rule that names its firing condition is one a
 model can recognize *in the moment*. When you assess (or, in Discuss
-edits, help rewrite) a record:
+edits, help the human rewrite) a record — you never rewrite one yourself;
+a placed lesson's words change only by `replace`, which a person, the
+overseer, or the steward under the case that covers it makes (S-85):
 
 - `## Trigger` must describe a recognizable situation — "about to edit a
   `.storage/*.json` while HA is running", not "when working with HA".

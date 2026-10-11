@@ -390,6 +390,8 @@ _STEWARD_CASES_CALLS = {
     **{name: "read" for name in (
         "awaiting_overseer", "check_case_data", "held_lessons", "list_cases", "show",
         "split_runner_evidence", "tampered_parked",
+        # E3b (2026-10-11): a pure check of a staged case and its sheet
+        "replace_items_problem",
     )},
 }
 
@@ -562,11 +564,9 @@ def test_the_ledger_refuses_the_steward_every_write_to_a_held_lesson(
     and nothing changed -- neither repo's HEAD or working tree, the hook
     directory, or the lesson's record -- and the parked case still waits.
 
-    E1 fold 1 (2026-10-11): `batch` refuses `replace` to the steward by
-    name until E3b (`batch.REPLACE_REFUSED_ACTORS`); the two `replace` rows
-    test the hold E3b inherits, so they run with that set empty."""
-    if row.startswith("replace"):
-        monkeypatch.setattr(batch, "REPLACE_REFUSED_ACTORS", frozenset())
+    E1 fold 1 (2026-10-11): `batch` refused `replace` to the steward by
+    name until E3b; E3b emptied `batch.REPLACE_REFUSED_ACTORS`, so the two
+    `replace` rows test the hold under the shipped set."""
     setup = _ROWS[row]
     free_env = make_env(tmp_path / "free")
     line, _lesson, case = setup(free_env, tmp_path / "free")

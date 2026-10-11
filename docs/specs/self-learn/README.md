@@ -85,6 +85,7 @@ passes the same compile+commit path this sentence's own paragraph names.
 
 ## Revision log
 
+- **2026-10-11 — (batch, verbs, cases, steward, steward_prompt, overseer, writing) S-86: the steward and the overseer may use `replace` (E3b).** `batch.REPLACE_REFUSED_ACTORS` is empty; both runners refuse a replace pair without `decision.rewrite` or naming a lesson outside its `records`; the steward counts `also` as coverage, replaces a placed lesson only under a reconsider and never merges into or from one, and parks a replace into a plain host's tracked file; the overseer may write several named `kind: maintenance` pairs, with three new workspace examples (a shortening, a merge, a correction); two new steward authority examples; S-84's interim sentence replaced by `AGENT_SHEET_NOTE`, with the one-physical-line rule. From the E1 gate: D2 fixed (`_supersede_precheck` under the lock), and each `also` leg carries the execution trailers. Amends S-85, S-84. Branch `e3b-agents`; tests `test_overseer_named_maintenance.py`, `test_e3b_agents_replace.py`.
 - **2026-10-11 — (verbs, batch, cases, cli, always_loaded, steward, overseer) S-85: `replace`.** A successor lesson takes over from named lessons
   in one motion (`source: rewrite`; the first lesson superseded in the route's own commit, each `also` lesson, in any
   bucket, by `supersede` after the new line is placed). The case writer gains `decision.rewrite` and `decision.skill`

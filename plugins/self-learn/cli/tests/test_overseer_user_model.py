@@ -344,12 +344,54 @@ def test_the_general_yaml_rule_names_the_user_model_exception(tmp_path):
         "The one exception is user-model-delta.yaml: there, write each free-text value as a "
         "double-quoted string on one line, never a block scalar"
     )
+    # E3b fold (gate N1): phase B writes the sheets too, so its form of the
+    # rule names both exceptions in one sentence (`_YAML_TEXT_RULE_B`);
+    # phase A writes neither and keeps the one-exception form.
+    exceptions_b = (
+        "There are two exceptions, each written as a double-quoted string on one line, never "
+        "a block scalar or a wrapped line (a block scalar keeps a line break): every free-text "
+        "value in user-model-delta.yaml"
+    )
     texts = {
-        "phase A prompt": overseer_run._phase_a_prompt(tmp_path, 1, 0),
-        "phase B prompt": overseer_run._phase_b_prompt(tmp_path, (), ()),
-        "formats README": (formats.write(tmp_path / "ws", "B") / "README.md").read_text(encoding="utf-8"),
+        "phase A prompt": (overseer_run._phase_a_prompt(tmp_path, 1, 0), exception),
+        "phase A README": (
+            (formats.write(tmp_path / "wa", "A") / "README.md").read_text(encoding="utf-8"), exception
+        ),
+        "phase B prompt": (overseer_run._phase_b_prompt(tmp_path, (), ()), exceptions_b),
+        "formats README": (
+            (formats.write(tmp_path / "ws", "B") / "README.md").read_text(encoding="utf-8"), exceptions_b
+        ),
     }
-    for name, text in texts.items():
+    for name, (text, wanted) in texts.items():
         assert "block scalar (`text: |`" in text, name  # control: the general rule is there
-        assert exception in flat(text), name
+        assert wanted in flat(text), name
+        if wanted is exceptions_b:
+            assert "The one exception" not in text, name  # the two rules no longer disagree
     assert overseer_run._YAML_TEXT_RULE not in steward_prompt._render_output_contract()
+
+
+def test_phase_b_names_the_one_line_rule_for_loaded_values_on_a_sheet_line(tmp_path):
+    """E3b fold (gate N1, mutation M14 survived): phase B's YAML rule names
+    the second exception -- a loaded value on a sheet line is one
+    double-quoted string on one line -- in the prompt and the phase B
+    README alike. A loaded value written as a block scalar keeps its line
+    breaks and the route refuses the lesson (run 854639e4). Phase A writes
+    no sheet and its README must not say "sheet" (the control)."""
+    from self_learn.overseer import formats
+
+    def flat(text: str) -> str:
+        return " ".join(text.split())
+
+    clause = (
+        "every loaded value on a sheet line -- trigger, instruction, fact, and a revise "
+        "line's text for one of those sections (a lesson whose loaded text spans lines is "
+        "refused when it is placed)"
+    )
+    prompt_b = overseer_run._phase_b_prompt(tmp_path, (), ())
+    readme_b = (formats.write(tmp_path / "wb", "B") / "README.md").read_text(encoding="utf-8")
+    for name, text in (("phase B prompt", prompt_b), ("phase B README", readme_b)):
+        assert "There are two exceptions" in flat(text), name  # control: the rule is there
+        assert clause in flat(text), name
+    readme_a = (formats.write(tmp_path / "wa", "A") / "README.md").read_text(encoding="utf-8")
+    assert "sheet" not in readme_a.lower()
+    assert clause not in flat(overseer_run._phase_a_prompt(tmp_path, 1, 0))
