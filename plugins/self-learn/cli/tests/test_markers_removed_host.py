@@ -16,7 +16,7 @@ import pytest
 
 from self_learn import hosts as hosts_mod
 from self_learn import selfcheck
-from self_learn.compilers import compile_managed_file
+from self_learn.compilers import BEGIN_MARKER, compile_managed_file
 from self_learn.hosts import slug_for
 from self_learn.selfcheck import Verdict
 
@@ -38,7 +38,7 @@ def cache_dir(tmp_path, monkeypatch):
 
 def _bucket(home, host):
     bucket = home / "projects" / slug_for(host)
-    (bucket / "resolved").mkdir(parents=True)
+    (bucket / "resolved").mkdir(parents=True, exist_ok=True)
     (bucket / "meta.yaml").write_text(f"path: {host}\n", encoding="utf-8")
     return bucket
 
@@ -133,3 +133,146 @@ def test_run_selftest_row_carries_the_skip_notice(two_hosts, monkeypatch, capsys
     )
     assert row.startswith("selftest: PASS markers")
     assert "unregistered host not checked" in row
+
+
+# ---------------------------------------------------------------- fold r1
+
+
+def _project_hosts_yaml(home, *hosts):
+    (home / "hosts.yaml").write_text(
+        "projects:\n" + "".join(f"  - path: {h}\n" for h in hosts), encoding="utf-8"
+    )
+
+
+@pytest.fixture
+def skills_root_and_project(tmp_path):
+    """Skills root S (with a proj-skill SKILL.md that has a managed section
+    owed by a lesson of project P's bucket, routed new-skill) + project P."""
+    env = make_env(tmp_path)
+    root = tmp_path / "skills-root"
+    init_repo(root)
+    proj = tmp_path / "proj-p"
+    init_repo(proj)
+    (proj / "README").write_text("p\n", encoding="utf-8")
+    commit_all(proj, "seed")
+    skill_md = root / "plugins" / "proj-skill" / "skills" / "proj-skill" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text("# proj-skill\n", encoding="utf-8")
+    record = make_behavior(scope="project", record_id="lrn-5e000001")
+    record.set_routing(
+        {
+            "routed_at": "2026-07-13T18:02:00Z",
+            "destination": "new-skill",
+            "new_skill": "proj-skill",
+            "by": "human",
+        }
+    )
+    record.set_status("routed")
+    record.write(_bucket(env.ledger, proj) / "resolved" / f"{record.id}.md")
+    compile_managed_file(skill_md, [record])
+    # project P is deregistered (its clone deleted); the skills root stays
+    (env.ledger / "hosts.yaml").write_text(f"skills_root: {root}\n", encoding="utf-8")
+    shutil.rmtree(proj)
+    return env.ledger, skill_md
+
+
+def test_new_skill_target_of_a_removed_host_bucket_stays_checked_intact(
+    skills_root_and_project,
+):
+    home, skill_md = skills_root_and_project
+    (verdict, reason), targets, skipped = _markers(home)
+    assert verdict is Verdict.PASS, reason
+    assert list(targets) == [skill_md.resolve()]  # counted, not skipped
+    assert skipped == []
+    assert "marker pairs intact on 1 target(s)" in reason
+
+
+def test_new_skill_target_of_a_removed_host_bucket_fails_when_marker_broken(
+    skills_root_and_project,
+):
+    home, skill_md = skills_root_and_project
+    skill_md.write_text(
+        skill_md.read_text(encoding="utf-8").replace(BEGIN_MARKER, ""), encoding="utf-8"
+    )
+    (verdict, reason), targets, skipped = _markers(home)
+    assert verdict is Verdict.FAIL
+    assert "SKILL.md" in reason and "broken markers" in reason
+
+
+def test_missing_hosts_yaml_skips_nothing(two_hosts):
+    home, host_a, host_b = two_hosts
+    _seed(home, host_a, "lrn-4c75079e", status="routed", write_target=False)
+    (home / "hosts.yaml").unlink()
+    (verdict, reason), targets, skipped = _markers(home)
+    assert skipped == []
+    assert verdict is Verdict.FAIL and "file missing" in reason
+
+
+def test_unparseable_hosts_yaml_skips_nothing(two_hosts):
+    home, host_a, host_b = two_hosts
+    _seed(home, host_a, "lrn-4c75079e", status="routed", write_target=False)
+    (home / "hosts.yaml").write_text("projects: [unclosed\n", encoding="utf-8")
+    (verdict, reason), targets, skipped = _markers(home)
+    assert skipped == []
+    assert verdict is Verdict.FAIL and "file missing" in reason
+
+
+def test_registration_through_a_symlink_is_not_skipped(two_hosts, tmp_path):
+    home, host_a, host_b = two_hosts
+    link = tmp_path / "link-to-a"
+    link.symlink_to(host_a, target_is_directory=True)
+    assert link != link.resolve()  # positive control: resolve() changes it
+    _seed(home, host_a, "lrn-4c75079e", status="routed", write_target=False)
+    _project_hosts_yaml(home, link, host_b)
+    (verdict, reason), targets, skipped = _markers(home)
+    assert skipped == []
+    assert verdict is Verdict.FAIL and "file missing" in reason
+
+
+def test_registration_with_dotdot_segment_is_not_skipped(two_hosts):
+    home, host_a, host_b = two_hosts
+    dotted = f"{host_a}/../{host_a.name}"
+    assert dotted != str(host_a)
+    _seed(home, host_a, "lrn-4c75079e", status="routed", write_target=False)
+    _project_hosts_yaml(home, dotted, host_b)
+    (verdict, reason), targets, skipped = _markers(home)
+    assert skipped == []
+    assert verdict is Verdict.FAIL and "file missing" in reason
+
+
+def test_unregistered_bucket_that_resolves_no_target_is_not_listed(two_hosts):
+    home, host_a, host_b = two_hosts
+    record = make_behavior(scope="project", record_id="lrn-4c75079e")
+    routing = dict(ROUTING)
+    del routing["rules_topic"]  # rules variant without a topic: no target
+    record.set_routing(routing)
+    record.set_status("routed")
+    record.write(_bucket(home, host_a) / "resolved" / "lrn-4c75079e.md")
+    _project_hosts_yaml(home, host_b)  # A unregistered
+    (verdict, reason), targets, skipped = _markers(home)
+    assert targets == {} and skipped == []
+    assert "not checked" not in reason
+    # positive control: the same bucket WITH a resolvable target is listed
+    _seed(home, host_a, "lrn-4c75079f", status="routed")
+    _, _, skipped = _markers(home)
+    assert skipped == [slug_for(host_a)]
+
+
+def test_skip_note_rides_a_fail_verdict(two_hosts):
+    home, host_a, host_b = two_hosts
+    _seed(home, host_a, "lrn-4c75079e", status="routed")  # A: will be unregistered
+    _seed(home, host_b, "lrn-b0000001", status="routed", write_target=False)
+    _project_hosts_yaml(home, host_b)
+    (verdict, reason), targets, skipped = _markers(home)
+    assert verdict is Verdict.FAIL and "file missing" in reason
+    assert "1 project bucket of an unregistered host not checked" in reason
+
+
+def test_nothing_owed_but_a_skip_does_not_claim_no_routed_records(two_hosts):
+    home, host_a, host_b = two_hosts
+    _seed(home, host_a, "lrn-4c75079e", status="routed")
+    _project_hosts_yaml(home, host_b)
+    (verdict, reason), targets, skipped = _markers(home)
+    assert verdict is Verdict.PASS and targets == {}
+    assert reason.startswith("no section owed on a registered host")
+    assert "not checked" in reason

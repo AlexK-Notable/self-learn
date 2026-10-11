@@ -521,20 +521,26 @@ def _section_targets(
 
     Skill- and user-scope targets resolve via hosts.yaml (unresolvable
     records are skipped here; the drift check reports them). A PROJECT
-    bucket does not: :func:`verbs.managed_target_for` resolves it through
-    the bucket's own ``meta.yaml`` path. So a bucket whose host is no
-    longer registered in hosts.yaml (``host remove``, then the clone
-    deleted) would owe a section in a file nobody manages any more, with
-    no verb that can clear it. Every record of such a bucket is skipped
-    here, and its bucket name is appended to *skipped* (when given) so the
-    caller can say the skip happened. Only a bucket that would have owed a
-    section is listed. A hosts.yaml that cannot be read skips nothing."""
-    try:
-        registered: set[Path] | None = {
-            Path(p).expanduser().resolve() for p in load_hosts(home).projects
-        }
-    except HostsError:
-        registered = None
+    ``claude-md`` record (plain, ``local`` or ``rules``) does not:
+    :func:`verbs.managed_target_for` resolves it through the bucket's own
+    ``meta.yaml`` path. So when that host is no longer registered in
+    hosts.yaml (``host remove``, then the clone deleted) the record would
+    owe a section in a file nobody manages, with no verb that can clear
+    it. Exactly those records are skipped here, per RECORD: any other
+    record of the same bucket (a ``new-skill`` target on the still-
+    registered skills root, say) resolves through hosts.yaml and still
+    counts. The bucket name is appended to *skipped* (when given), once,
+    if at least one of its records was skipped. Only an existing,
+    parseable hosts.yaml can mark a host unregistered; a missing or
+    unreadable one skips nothing."""
+    registered: set[Path] | None = None
+    if hosts_path(home).is_file():
+        try:
+            registered = {
+                Path(p).expanduser().resolve() for p in load_hosts(home).projects
+            }
+        except HostsError:
+            registered = None
     targets: dict[Path, list[Record]] = {}
     for bucket in discover_buckets(home):
         resolved = bucket.path / "resolved"
@@ -556,7 +562,11 @@ def _section_targets(
             target = _target_for(home, bucket, record)
             if target is None:
                 continue
-            if unregistered:
+            if (
+                unregistered
+                and record.scope == "project"
+                and (record.routing or {}).get("destination") == "claude-md"
+            ):
                 bucket_skipped = True
                 continue
             targets.setdefault(target, []).append(record)
@@ -900,8 +910,6 @@ def _check_markers(
             )
         elif text.index(END_MARKER) < text.index(BEGIN_MARKER):
             failures.append(f"{target} ({why}): end marker precedes begin marker")
-    if failures:
-        return Verdict.FAIL, "; ".join(failures)
     note = ""
     if skipped:
         k = len(skipped)
@@ -909,8 +917,12 @@ def _check_markers(
             f"; {k} project bucket{'s' if k != 1 else ''} of an unregistered "
             f"host not checked ({', '.join(sorted(skipped))})"
         )
+    if failures:
+        return Verdict.FAIL, "; ".join(failures) + note
     if not targets:
-        return Verdict.PASS, "no routed records — no section owed anywhere" + note
+        if skipped:
+            return Verdict.PASS, "no section owed on a registered host" + note
+        return Verdict.PASS, "no routed records — no section owed anywhere"
     return Verdict.PASS, f"marker pairs intact on {len(targets)} target(s)" + note
 
 
