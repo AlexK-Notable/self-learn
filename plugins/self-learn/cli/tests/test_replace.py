@@ -1067,10 +1067,10 @@ def test_the_post_run_recompile_writes_a_replace_whose_host_write_failed(env, mo
 
     owed = [batch_mod.ItemResult(n=1, id=old, verb="replace", rc=1, state="unresolved-host")]
     ids = verbs.host_result_ids(owed, env.home)
-    assert ids == [new, old]
     verbs.post_run_recompile(env.home, ids)
     assert f"*({new})*" in env.claude_md.read_text(encoding="utf-8")
     assert f"*({old})*" not in env.skill_md.read_text(encoding="utf-8")
+    assert ids == [new, old]
 
 
 @pytest.mark.usefixtures("agents_may_replace")
@@ -1155,3 +1155,49 @@ def test_a_pending_replacement_carries_because_as_its_resolution_note(env):
                                because="it is a fact", note="from the review", no_push=True
                                ).new_record_id
     assert _rec(env.home, new).resolution_note == "it is a fact\n\nfrom the review"
+
+
+@pytest.mark.usefixtures("agents_may_replace")
+def test_the_steward_recovery_recompiles_a_replace_whose_host_write_failed(
+    env, tmp_path, monkeypatch
+):
+    """Fold item 2: the steward's recovery of a replace whose ledger commit
+    landed and whose host write failed recompiles the NEW lesson's target
+    and the old one's -- here a move from SKILL.md to CLAUDE.md, so keying
+    the recompile to the item's own id (the old lesson) alone would leave
+    the new line unwritten -- and records the item applied."""
+    from self_learn import execution_evidence, gitops, steward
+
+    old = _seed(env.home, "lrn-e1f00081")
+    _place(env.home, old, "skill-md")
+    start = gitops.head_sha(env.home)
+    ref = execution_evidence.ExecutionRef(
+        run_id="run-fold1", case_id="case-0000beef", sheet_sha="0123abcd",
+        sheet_digest="0" * 64, item=1, record_id=old, verb="replace", actor="steward",
+    )
+
+    def boom(*_a, **_k):
+        raise RuntimeError("simulated host-phase failure")
+
+    monkeypatch.setattr(verbs, "_host_phase", boom)
+    with pytest.raises(RuntimeError):
+        verbs.replace_lesson(env.home, old, trigger=NEW_TRIGGER, instruction=NEW_INSTRUCTION,
+                             to=str(env.host), dest="claude-md", because="moves",
+                             no_push=True, execution=ref, actor="steward")
+    monkeypatch.undo()
+    monkeypatch.setattr(batch, "REPLACE_REFUSED_ACTORS", frozenset())
+    new = _rec(env.home, old).superseded_by
+    assert f"*({new})*" not in env.claude_md.read_text(encoding="utf-8")  # control
+
+    sheet = _sheet(tmp_path, [{"id": old, "verb": "replace", "trigger": NEW_TRIGGER,
+                               "instruction": NEW_INSTRUCTION, "to": str(env.host),
+                               "dest": "claude-md", "because": "moves"}], case="case-0000beef")
+    monkeypatch.setattr(steward, "_committed_receipts", lambda *a_, **k: {})
+    monkeypatch.setattr(execution_evidence, "validate_manifest_ref", lambda *a_, **k: None)
+    done = steward._recovered_items(
+        env.home, {"run_id": "run-fold1", "start_head": start}, "case-0000beef",
+        {"sheet_sha": "0123abcd", "sheet_digest": "0" * 64}, sheet,
+    )
+    assert (done[1].state, done[1].rc) == ("applied", 0), done[1].detail
+    assert f"*({new})*" in env.claude_md.read_text(encoding="utf-8")
+    assert f"*({old})*" not in env.skill_md.read_text(encoding="utf-8")
