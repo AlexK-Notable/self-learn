@@ -85,6 +85,13 @@ passes the same compile+commit path this sentence's own paragraph names.
 
 ## Revision log
 
+- **2026-10-11 — (verbs, batch, cases, cli, always_loaded, steward, overseer) S-85: `replace`.** A successor lesson takes over from named lessons
+  in one motion (`source: rewrite`; the first lesson superseded in the route's own commit, each `also` lesson, in any
+  bucket, by `supersede` after the new line is placed). The case writer gains `decision.rewrite` and `decision.skill`
+  and refuses unknown decision keys by name. `revise` may add a Context section. The always-loaded test reads
+  `replace` lines. Until E3b the steward and the overseer are refused `replace` by name and do not see it in their
+  contracts; their recovery readers and the post-run recompile already handle it (blind gate D1 folded). Amends
+  S-79. 18 sheet verbs. Branch `e1-replace`; tests `test_replace.py` (46), `test_cases_rewrite.py` (24).
 - **2026-10-11 — (writing, teach, steward, overseer) S-84: one shared passage on writing a lesson, inlined into each writer.** The user
   asked for the core of a lesson in the loaded text and the background in notes ("we need the core of a lesson, not all
   of the background ..."), and answered "i agree." to the orchestrator's recommendation to install the guidance now in
