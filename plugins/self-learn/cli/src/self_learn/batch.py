@@ -1014,7 +1014,7 @@ def classify(
     if verb == "replace":
         # E1 (D-AUTHOR §2.2): applied iff the line's lesson reads
         # `superseded_by` a lesson that `supersedes` it with this line's
-        # text, and every `also` lesson is replaced by that same lesson. A
+        # text, and every `also` lesson reads `superseded_by` that same lesson. A
         # half-applied merge is not applied: the verb finishes it.
         made = verbs.replace_applied_as(home, item.id, f)
         if made is None:

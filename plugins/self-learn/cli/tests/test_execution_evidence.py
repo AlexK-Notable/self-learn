@@ -202,6 +202,9 @@ _THREADED_VERBS = (
     "dismiss-suspect",
     "link-contradicts",
     "revise",
+    # E1 (2026-10-10): replace threads the execution ref to its own route
+    # commit, whose subject starts `self-learn: replace <first id> `.
+    "replace",
 )
 
 
@@ -274,6 +277,18 @@ def _invoke_threaded_verb(home, verb: str):
     elif verb == "link-contradicts":
         result = verbs.link_contradicts(
             home, rid, other, no_push=True, execution=ref
+        )
+    elif verb == "replace":
+        result = verbs.replace_lesson(
+            home,
+            rid,
+            because="one shorter line says it",
+            trigger="When a check runs",
+            instruction="read its own pass line.",
+            dest="skill-md",
+            no_push=True,
+            execution=ref,
+            actor="steward",
         )
     else:
         assert verb == "revise"

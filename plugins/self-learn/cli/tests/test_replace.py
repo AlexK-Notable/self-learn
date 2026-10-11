@@ -513,7 +513,7 @@ def test_a_lesson_already_replaced_by_another_text_is_refused(env):
     with pytest.raises(verbs.VerbError) as exc:
         verbs.replace_lesson(env.home, old, trigger=NEW_TRIGGER,
                              instruction="A different instruction.", because="b", no_push=True)
-    assert f"already replaced by {first.new_record_id}" in str(exc.value)
+    assert f"already superseded by {first.new_record_id}" in str(exc.value)
     assert batch.refusal_kind(exc.value, rc=1, state="refused") == "status"
     # the same text again: nothing left to do, refused cleanly
     with pytest.raises(verbs.VerbError) as exc:

@@ -5859,7 +5859,7 @@ def _execute_route(
     did, and simply hands the three results through.
 
     ``subject`` (E1): the commit subject in place of the pinned ``route``
-    one, for :func:`replace`, whose commit is the old lesson's correction
+    one, for :func:`replace_lesson`, whose commit is the old lesson's correction
     (``self-learn: replace lrn-old → lrn-new (<dest>)``): a steward
     re-drive finds a line's proof commit by ``self-learn: <verb> <id>``
     (`execution_evidence._subject_matches`). ``None`` keeps the route
@@ -6486,6 +6486,9 @@ def route_direct(
     allow_empty_glob: bool = False,
     rules_paths: list[str] | None = None,
     allow_unpathed: bool = False,
+    one_motion_gate: bool = True,
+    subject: str | None = None,
+    execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
     """``teach --route``'s writer (02 §2 lifecycle note): the composed,
     not-yet-on-disk record is written DIRECTLY into its bucket's
@@ -6517,44 +6520,21 @@ def route_direct(
     ``analyst.analyze()``) now threads ``by="analyst"`` explicitly at its
     call site (``teach.py``) — this default only still covers
     ``teach --route --dest X``, where an explicit --dest typed at the
-    terminal genuinely is the human's own choice."""
-    return _route_direct_core(
-        home, record, dest=dest, by=by, note=note, no_push=no_push,
-        user_claude_md=user_claude_md, project_path=project_path,
-        hook_input=hook_input, follow_up=follow_up,
-        allow_empty_glob=allow_empty_glob, rules_paths=rules_paths,
-        allow_unpathed=allow_unpathed, one_motion_gate=True,
-    )
+    terminal genuinely is the human's own choice.
 
-
-def _route_direct_core(
-    home: Path | str,
-    record: Record,
-    *,
-    dest: str,
-    by: str,
-    note: str | None,
-    no_push: bool,
-    user_claude_md: Path | str | None,
-    project_path: Path | None,
-    hook_input: dict | None,
-    follow_up: dict | None,
-    allow_empty_glob: bool,
-    rules_paths: list[str] | None,
-    allow_unpathed: bool,
-    one_motion_gate: bool,
-    subject: str | None = None,
-    execution: execution_evidence.ExecutionRef | None = None,
-) -> VerbResult:
-    """:func:`route_direct`'s gates and its call into :func:`_execute_route`
-    -- one copy, two entries (E1, D-AUTHOR §2.2). ``route_direct`` (``teach
-    --route``) passes ``one_motion_gate=True``. :func:`replace` passes
-    ``False``: it refuses a hook itself and admits ``new-skill:<name>`` only
-    into a skill self-learn already made, so the S-10 gate, which guards a
-    person's one-motion capture from scaffolding a skill or writing a hook
-    script unreviewed, would only stop the merge of lessons that already
-    live in such a skill. Every other gate runs, in the same order, for
-    both. ``subject`` and ``execution`` are threaded to the core."""
+    E1 (D-AUTHOR §2.2): :func:`replace_lesson` is this function's second
+    caller -- "the same function ``teach --route`` uses" -- and passes the
+    three keyword-only parameters no other caller sets.
+    ``one_motion_gate=False`` skips the S-10 one-motion gate only: replace
+    refuses a hook itself and admits ``new-skill:<name>`` only into a skill
+    self-learn already made, so that gate, which guards a person's
+    one-motion capture from scaffolding a skill or writing a hook script
+    unreviewed, would only stop the merge of lessons already living in
+    such a skill. ``teach`` and the CLI never pass it, so for them the
+    committed config.yaml opt-in stays the only door. ``subject`` replaces
+    the route commit subject (``self-learn: replace lrn-old → lrn-new
+    (<dest>)``) and ``execution`` threads the steward's execution ref to
+    :func:`_execute_route`; every other gate runs, in the same order."""
     home = Path(home)
     if by not in ROUTING_BY_VALUES:
         raise VerbError(
@@ -6764,14 +6744,14 @@ REPLACE_TEXT_KEYS = ("trigger", "instruction", "fact", "context")
 
 @dataclass
 class _ReplacePlan:
-    """What :func:`_preflight_replace` resolved, for :func:`replace` (and
+    """What :func:`_preflight_replace` resolved, for :func:`replace_lesson` (and
     `batch.dry_run`, which stops here). ``record`` is the composed new
     lesson, in memory only, or ``None`` when an earlier run already placed
     it (``primary_done``; ``new_id`` is then that lesson's id). ``dest`` is
     the destination the new lesson routes to, or ``None`` when it lands
     pending (D-AUTHOR §2.2: the first lesson is pending or deferred and no
     ``dest`` is named). ``also_todo`` are the ``also`` lessons not yet
-    replaced by ``new_id``."""
+    superseded by ``new_id``."""
 
     first_id: str
     first: Record
@@ -7040,8 +7020,8 @@ def _preflight_replace(
        ``require_status`` (pending, deferred or routed). While the steward
        acts, a lesson the overseer holds is refused here, as the main id
        or as an ``also`` id alike.
-    4. A hook lesson is refused by name; a lesson already replaced by a
-       different lesson is refused by status; one already replaced by this
+    4. A hook lesson is refused by name; a lesson already superseded by a
+       different lesson is refused by status; one already superseded by this
        very text is the idempotence read, and its successor is reused.
     5. The composed record, its whole-record scan (kind ``secret-record``),
        and the destination's own pre-flight: the target, the rules globs,
@@ -7098,7 +7078,7 @@ def _preflight_replace(
     if done is None:
         if first.status == "superseded" and first.superseded_by:
             raise VerbError(
-                f"replace: {record_id} was already replaced by {first.superseded_by} "
+                f"replace: {record_id} was already superseded by {first.superseded_by} "
                 "-- replace that lesson instead"
             ) from StatusRefusal(
                 f"record {record_id} is 'superseded'", record_id=record_id,
@@ -7309,7 +7289,7 @@ def replace_lesson(
     * With a destination -- ``dest``, or by default the place the first
       lesson has now -- the new lesson is written straight into
       ``resolved/`` as routed through the route core's direct path
-      (:func:`_route_direct_core`, every gate of ``route_direct`` but the
+      (:func:`route_direct`, every gate but the
       one-motion gate), and the first lesson is superseded in that same
       commit: the old line goes and the new one comes in one locked step.
     * Without one (the first lesson is pending or deferred), the new lesson
@@ -7337,7 +7317,7 @@ def replace_lesson(
     )
     if plan.primary_done and not plan.also_todo:
         raise VerbError(
-            f"replace: {record_id} is already replaced by {plan.new_id} with this text, "
+            f"replace: {record_id} is already superseded by {plan.new_id} with this text, "
             "and every lesson in also with it -- nothing to do"
         )
     body = because.strip() + (f"\n\n{note.strip()}" if note and note.strip() else "")
@@ -7346,7 +7326,7 @@ def replace_lesson(
     if not plan.primary_done:
         assert plan.record is not None
         if plan.dest is not None:
-            result = _route_direct_core(
+            result = route_direct(
                 home, plan.record, dest=plan.dest, by=by or "human", note=body,
                 no_push=no_push, user_claude_md=user_claude_md,
                 project_path=plan.project_path, hook_input=None,
