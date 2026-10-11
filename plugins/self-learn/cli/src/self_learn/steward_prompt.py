@@ -540,7 +540,7 @@ records: [lrn-8c9d0e1f]
 scope: skill:release-tools
 question: >-
   The lesson says the release script needs a clean tree; the transcript shows it needs a pushed
-  tag. Should the lesson be replaced by what the evidence shows?
+  tag. Should a new lesson that says what the evidence shows take its place?
 evidence:
   - ref: "ledger@4f2a9c1:skills/release-tools/pending/lrn-8c9d0e1f.md#L14-15"
     quote: "the release script refuses to run on a dirty working tree"
