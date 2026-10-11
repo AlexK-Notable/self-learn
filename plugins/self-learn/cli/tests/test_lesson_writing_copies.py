@@ -209,34 +209,57 @@ def test_context_with_a_fact_is_still_a_knowledge_record(ledger):
     assert record.type == "knowledge" and "## Context" in record.body
 
 
-# ------------------------------------------------- the interim note (agents only)
+# --------------------------------------------- the sheet note (agents only)
+#
+# E3b (2026-10-11): S-84's interim note ("`revise` cannot add a `## Context`
+# section"), false since S-85, is replaced by `AGENT_SHEET_NOTE`: where
+# background goes in sheet terms, and the one-physical-line rule for loaded
+# values. Both agents read it after the passage; teach does not.
 
 
-def test_steward_and_overseer_prompts_carry_the_interim_note_after_the_passage(tmp_path):
+def test_steward_and_overseer_prompts_carry_the_sheet_note_after_the_passage(tmp_path):
     copies = _copies(tmp_path)
     for name in ("steward", "overseer"):
         document = copies[name]
-        assert document.count(lesson_writing.AGENT_INTERIM) == 1, name
+        assert document.count(lesson_writing.AGENT_SHEET_NOTE) == 1, name
         after_end = document[document.index(lesson_writing.END) + len(lesson_writing.END):]
-        assert after_end.lstrip("\n").startswith(lesson_writing.AGENT_INTERIM), name
+        assert after_end.lstrip("\n").startswith(lesson_writing.AGENT_SHEET_NOTE), name
         # the passage itself is unchanged by it
         assert lesson_writing.extract(document) == _canon()
 
 
-def test_teach_copy_has_no_interim_note(tmp_path):
-    """Teach CAN write `## Context`, so it is not told to use a note instead."""
+def test_teach_copy_has_no_sheet_note(tmp_path):
+    """Teach writes no sheet and can write `## Context` itself (`--context`)."""
     teach = _copies(tmp_path)["teach"]
-    assert lesson_writing.AGENT_INTERIM not in teach
-    assert "`revise` cannot add" not in teach
+    assert lesson_writing.AGENT_SHEET_NOTE not in teach
+    assert "ONE physical line" not in teach
 
 
-def test_the_interim_note_names_a_verb_both_agents_have():
-    """`note` is a sheet verb (what the note tells them to use) and `append`
-    is its required key."""
+def test_the_sheet_note_is_true_for_both_agents_and_names_their_sheet_keys():
+    """In sheet terms, not CLI flags: a `revise` line's `section: Context`
+    and a `replace` line's `context:`, both real sheet keys; it no longer
+    says `revise` cannot add Context (S-85 made that false), and it does
+    not tell both agents to `replace` a placed lesson (the steward may only
+    under a reconsider, D-AUTHOR §2.8)."""
     from self_learn import batch
 
-    assert "note" in batch.PERMITTED_KEYS and "append" in batch.REQUIRED_KEYS["note"]
-    assert "`note`" in lesson_writing.AGENT_INTERIM and "`append:`" in lesson_writing.AGENT_INTERIM
+    note = lesson_writing.AGENT_SHEET_NOTE
+    assert {"section", "text"} <= batch.PERMITTED_KEYS["revise"]
+    assert "context" in batch.PERMITTED_KEYS["replace"]
+    assert "`section: Context`" in note and "`context:`" in note
+    assert "cannot add" not in note
+    assert "placed" not in note.split("\n\n")[0]
+    assert "--context" not in note
+
+
+def test_the_sheet_note_carries_the_one_physical_line_rule_and_teach_does_not_need_it():
+    """The backlog's rule (run 854639e4: a revise wrapped onto five lines,
+    the route refused `bad-line`): each loaded value is ONE physical line.
+    Teach's copy of the canonical passage already says each loaded section
+    is one line, and teach writes no YAML."""
+    note = lesson_writing.AGENT_SHEET_NOTE
+    assert "ONE physical line" in note and "`|` block" in note
+    assert "Each\nof Trigger, Instruction and Fact is one line" in _canon()
 
 
 def test_teach_evidence_bullet_keeps_evidence_out_of_the_loaded_text():

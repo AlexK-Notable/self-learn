@@ -7297,6 +7297,37 @@ def replace_destination(home: Path | str, record_id: str, dest: str | None) -> t
         return None
 
 
+def replace_route_preview(
+    home: Path | str, record_id: str, *, dest: str | None, to: str | None
+) -> dict | None:
+    """Where a ``replace`` line's new lesson would be written, in the three
+    keys a route's preview carries for it (``RouteDryRunResult.to_json``:
+    ``host``, ``mode``, ``target``), or ``None`` when it lands pending or
+    the place cannot be resolved. Read-only: the target is resolved without
+    the write-time gates (``check_dirty=False``), so a file those gates
+    refuse is still named, as a refused route's preview names it. The
+    steward's forced parking reads it (E3b: a replace into a file a plain
+    host's git tracks is parked as a route into one is)."""
+    home = Path(home)
+    resolved = replace_destination(home, record_id, dest)
+    if resolved is None:
+        return None
+    destination, ref_name = resolved
+    try:
+        scope, bucket_dir, project_path = _replace_bucket(
+            home, find_record_path(home, record_id), to
+        )
+        spec = _resolve_target(
+            home, bucket_dir, scope, destination, ref_name,
+            project_path=project_path, check_dirty=False,
+        )
+    except (VerbError, LedgerOpsError, OSError, ValueError):
+        return None
+    if spec.target is None:
+        return None
+    return {"host": str(spec.host_path), "mode": spec.mode, "target": str(spec.target)}
+
+
 def _replace_subject(first_id: str, new_id: str, where: str) -> str:
     """The commit subject (D-AUTHOR §6.2, as built): ``self-learn: replace
     lrn-old → lrn-new (<where>)``. The old id is followed by a space, so a

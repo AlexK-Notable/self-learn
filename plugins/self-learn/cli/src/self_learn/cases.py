@@ -114,6 +114,8 @@ __all__ = [
     "REWRITE_FIELDS",
     "REWRITE_NOW_VALUES",
     "rewrite_required_problem",
+    "replace_records_problem",
+    "replace_items_problem",
     "CASE_ID_RE",
     "CaseError",
     "CaseUsageError",
@@ -658,6 +660,41 @@ def rewrite_required_problem(case_data: dict, items: object, *, label: str = "ca
         )
     problem = _rewrite_problem(block)
     return f"{label}: {problem}" if problem is not None else None
+
+
+def replace_records_problem(case_data: dict, items: object, *, label: str = "case") -> str | None:
+    """Why a runner refuses this case, or ``None`` (E3b, the E1 gate's R1
+    item 3): every lesson a ``replace`` line changes -- its own id and each
+    ``also`` id -- must be among the case's ``records``. Without it a case
+    on A could retire B, and no case would name B (its only trace the
+    ``supersede`` commit). With the steward's coverage rule (each record has
+    an item, an ``also`` id counting as one) a merge case's ``records`` is
+    exactly ``{id} | also``. Pure; asked by the steward's stage check and
+    the overseer's pair loop, beside :func:`rewrite_required_problem`."""
+    records = case_data.get("records")
+    named = {str(rid) for rid in records} if isinstance(records, list) else set()
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or item.get("verb") != "replace":
+            continue
+        also = item.get("also")
+        changed = [item.get("id"), *(also if isinstance(also, list) else [])]
+        missing = [str(rid) for rid in changed if str(rid) not in named]
+        if missing:
+            return (
+                f"{label}: replace {item.get('id')} changes {missing}, which the case's "
+                "records do not name -- a case names every lesson its sheet replaces or "
+                "merges (the line's id and each id in also)"
+            )
+    return None
+
+
+def replace_items_problem(case_data: dict, items: object, *, label: str = "case") -> str | None:
+    """The two runner checks of a case's ``replace`` lines, in order: the
+    records (:func:`replace_records_problem`), then the rewrite account
+    (:func:`rewrite_required_problem`). ``None`` when both pass."""
+    return replace_records_problem(case_data, items, label=label) or rewrite_required_problem(
+        case_data, items, label=label
+    )
 
 
 def _decision_block_texts(decision: dict) -> list[str]:

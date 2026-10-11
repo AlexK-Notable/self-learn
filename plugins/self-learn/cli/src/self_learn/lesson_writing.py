@@ -19,14 +19,32 @@ END = "<!-- lesson-writing:end -->"
 
 
 #: Said right after the passage, OUTSIDE the markers (the copy stays
-#: byte-identical), to the two writers that cannot yet create a `## Context`
-#: section: `revise` refuses a section the record lacks and any text with a
-#: `## ` heading (verbs.py), and the overseer's case files forbid lines that
-#: start with `## `. `note` is a sheet verb for both (`batch.PERMITTED_KEYS`).
-#: Teach can write `## Context` (`--context`), so its copy has no such line.
-AGENT_INTERIM = (
-    "For now, attach background to an existing lesson with a `note` line on the sheet "
-    "(`append:`); `revise` cannot add a `## Context` section a lesson does not already have."
+#: byte-identical), to the two writers that write sheets: the steward and
+#: the overseer. E3b (2026-10-11) replaced S-84's interim sentence (that
+#: `revise` cannot add a `## Context` section, false since S-85) with two
+#: paragraphs true for BOTH agents under D-AUTHOR §2.8:
+#:
+#: * where background goes, in sheet terms -- a `revise` line's `section:
+#:   Context` writes the section (adding it when the lesson lacks one), a
+#:   `replace` line's `context:` carries it -- leaving WHICH line an agent
+#:   may write for a given lesson to its own method or README (the steward
+#:   may not replace a placed lesson outside a reconsider, so a shared "use
+#:   `replace` for a placed lesson" would be false for it);
+#: * the backlog's rule: a loaded value is ONE physical line, never
+#:   hard-wrapped (run 854639e4's overseer wrapped a revise onto 5 lines and
+#:   the route was refused `bad-line`). Teach does not get it: it writes no
+#:   YAML, and the canonical passage already says each loaded section is one
+#:   line.
+AGENT_SHEET_NOTE = (
+    "On a sheet, a lesson's background goes under `## Context`: a `revise` line with "
+    "`section: Context` writes that section (and adds it when the lesson has none), and a "
+    "`replace` line carries it as `context:`. Which of the two you may write for a given "
+    "lesson, your method says.\n\n"
+    "Each loaded value on a sheet line -- `trigger`, `instruction` and `fact`, and a "
+    "`revise` line's `text` for one of those sections -- is ONE physical line. Write it as "
+    "a single quoted line: never wrap it across lines, and never as a `|` block, which "
+    "keeps every line break. A lesson whose loaded value spans lines is refused "
+    "(`bad-line`) when it is placed; what does not fit on one line goes in Context."
 )
 
 

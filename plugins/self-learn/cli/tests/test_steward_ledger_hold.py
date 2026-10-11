@@ -390,6 +390,8 @@ _STEWARD_CASES_CALLS = {
     **{name: "read" for name in (
         "awaiting_overseer", "check_case_data", "held_lessons", "list_cases", "show",
         "split_runner_evidence", "tampered_parked",
+        # E3b (2026-10-11): a pure check of a staged case and its sheet
+        "replace_items_problem",
     )},
 }
 

@@ -1249,9 +1249,16 @@ def _pair_problem(stage: Path, case_path: Path, home: Path | None = None) -> str
     # a lesson with no item was recorded as handled with nothing done to it
     # (seen in the real run of 2026-09-19: a two-lesson case, one item).
     items = raw.get("items")
-    item_ids = {
-        item.get("id") for item in (items if isinstance(items, list) else [])
-        if isinstance(item, dict)
+    lines = items if isinstance(items, list) else []
+    item_ids = {item.get("id") for item in lines if isinstance(item, dict)}
+    # E3b (D-AUTHOR §2.8): a merge is ONE `replace` line, on the first
+    # lesson, with the others in `also` -- they cannot have items of their
+    # own (the new lesson's id is not minted yet), so each id in `also`
+    # counts as an item of this sheet. A lesson in neither is still refused.
+    item_ids |= {
+        rid for item in lines
+        if isinstance(item, dict) and item.get("verb") == "replace"
+        for rid in _listed(item.get("also"))
     }
     without_item = [
         str(rid) for rid in (case_data.get("records") or []) if rid not in item_ids
@@ -1261,6 +1268,14 @@ def _pair_problem(stage: Path, case_path: Path, home: Path | None = None) -> str
             f"{case_path.name}: every lesson in a case needs its own item in "
             f"sheets/{case_path.name}; no item for {without_item}"
         )
+    # E3b: every lesson a `replace` line changes is in `records` (the E1
+    # gate's R1 item 3), and its case accounts for the old text in
+    # `decision.rewrite`; then the steward's own limits on `replace` (§2.8).
+    replace_problem = cases.replace_items_problem(case_data, lines, label=case_path.name)
+    if replace_problem is None and home is not None:
+        replace_problem = _steward_replace_problem(home, case_data, lines, label=case_path.name)
+    if replace_problem is not None:
+        return replace_problem
     return always_loaded.route_problem(
         case_data,
         items if isinstance(items, list) else [],
@@ -1268,6 +1283,60 @@ def _pair_problem(stage: Path, case_path: Path, home: Path | None = None) -> str
         placement=always_loaded.placement_resolver(home) if home is not None else None,
         label=case_path.name,
     )
+
+
+def _listed(value: object) -> list:
+    """*value* when it is a list, else an empty one (a sheet's own YAML)."""
+    return value if isinstance(value, list) else []
+
+
+def _lesson_status(home: Path, record_id: str) -> str | None:
+    """The lesson's current status, or ``None`` when it cannot be read
+    (the batch refuses such a line by name at preview and apply)."""
+    try:
+        return ledger_ops.read_record_or_refuse(
+            ledger_ops.find_record_path(home, record_id)
+        ).status
+    except (ledger_ops.LedgerOpsError, RecordError, OSError):
+        return None
+
+
+def _steward_replace_problem(
+    home: Path, case_data: dict, items: list, *, label: str
+) -> str | None:
+    """E3b, D-AUTHOR §2.8 ("Who may do what"), the steward's column, as far
+    as code can tell it: a placed (routed) lesson is replaced only by a
+    `kind: reconsider` case -- the correction of the case that placed it,
+    which the case writer checks covers it -- and a placed lesson is never
+    merged into another (`also`): shortening and merging placed lessons is
+    the overseer's, so the steward parks such a case with a tentative
+    answer. Whether a reconsider's rewrite corrects or merely shortens is a
+    judgement no check can make; the method says it (§7, §11). A parked
+    case is never applied, so its tentative `replace` is not judged here.
+    Which lessons a case may cover at all -- only this packet's -- is
+    `_check_stage`'s rule, and the S-81 hold is the ledger's."""
+    if case_data.get("kind") == "parked":
+        return None
+    for item in items:
+        if not isinstance(item, dict) or item.get("verb") != "replace":
+            continue
+        rid = str(item.get("id"))
+        also = _listed(item.get("also"))
+        placed = [str(other) for other in also if _lesson_status(home, str(other)) == "routed"]
+        if placed:
+            return (
+                f"{label}: replace {rid} merges {placed}, which are placed -- the steward "
+                "does not merge or shorten placed lessons; park the case (authority-unclear) "
+                "with the merge as your tentative answer"
+            )
+        if case_data.get("kind") != "reconsider" and _lesson_status(home, rid) == "routed":
+            return (
+                f"{label}: replace {rid}: {rid} is placed -- the steward corrects a placed "
+                "lesson only through a kind: reconsider case that supersedes the case that "
+                "placed it; with no such case, park this one (authority-unclear) with your "
+                "tentative answer"
+            )
+    return None
 
 
 def _validate_declared_stage(stage: Path) -> None:
@@ -1669,9 +1738,19 @@ def _forced_parking_reason(
         hook_activation=config.hook_activation_enabled(home),
         reconsidered=reconsidered,
     )
-    for item in preview.items:
-        route = item.route_preview or {}
-        if item.verb != "route" or route.get("mode") != "plain":
+    previews = [item.route_preview or {} for item in preview.items if item.verb == "route"]
+    # E3b: a `replace` line writes its new lesson the way a route does, so
+    # the same rule parks one whose target is a file a plain host's git
+    # tracks (`verbs.replace_route_preview`: the same three keys).
+    previews += [
+        verbs.replace_route_preview(
+            home, str(line.get("id")), dest=line.get("dest"), to=line.get("to")
+        ) or {}
+        for line in _listed(raw.get("items"))
+        if isinstance(line, dict) and line.get("verb") == "replace"
+    ]
+    for route in previews:
+        if route.get("mode") != "plain":
             continue
         host_value, target_value = route.get("host"), route.get("target")
         if not isinstance(host_value, str) or not isinstance(target_value, str):
