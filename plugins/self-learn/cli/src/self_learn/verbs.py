@@ -5775,6 +5775,19 @@ def _resync_three_regions(
     return touched
 
 
+def _supersede_precheck(home: Path, old_id: str, new_id: str, *, verb: str) -> None:
+    """E3b (the E1 gate's D2): every refusal :func:`ledger_ops.supersede_record`
+    would give *old_id* -- a self-cycle, a longer cycle, its status, and,
+    while the steward acts, the overseer's hold (``require_status`` runs
+    ``refuse_held``) -- asked with nothing written. A caller that writes a
+    new record before it supersedes the old one asks this first, under the
+    same lock, so a refusal there leaves nothing on disk. Pure."""
+    if old_id == new_id:
+        raise ledger_ops.SheetLineRefusal(f"record {old_id} cannot supersede itself")
+    supersede_cycle_check(home, old_id, new_id)
+    require_status(home, old_id, RESOLVABLE_STATUSES, verb=verb)
+
+
 def _execute_route(
     home: Path,
     record: Record,
@@ -5995,6 +6008,15 @@ def _execute_route(
             if collapse.merge_path.exists():
                 intent_paths.append(collapse.merge_path)
             intent = intents.begin(home, "collapse", intent_paths, message)
+
+        if old_id is not None:
+            # E3b (the E1 gate's D2): the predecessor's own refusals --
+            # status, cycle and the S-81 hold -- are read HERE, under the
+            # lock and before the first write. `supersede_record` below
+            # makes the same checks, but only after the new record is on
+            # disk, so a hold appearing after the pre-lock checks used to
+            # leave an uncommitted, live record behind.
+            _supersede_precheck(home, old_id, record_id, verb="route")
 
         if merged is not None:
             merged.write(collapse.pending_path)  # type: ignore[union-attr]
@@ -7307,6 +7329,9 @@ def _replace_pending(
     try:
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
+            # E3b (the E1 gate's D2): the first lesson's refusals, under the
+            # lock, before the new record is created (see `_execute_route`).
+            _supersede_precheck(home, plan.first_id, record.id, verb="replace")
             path = create_record(home, record, project_path=plan.project_path)
             touched = [path]
             meta = path.parent.parent / "meta.yaml"
@@ -7406,9 +7431,12 @@ def replace_lesson(
             )
         warnings += result.warnings
     for also_id in plan.also_todo:
+        # E3b (the E1 gate's R1 item 3): each leg carries the line's own
+        # execution trailers, so a re-drive proves it by its `supersede`
+        # subject (`execution_evidence.find_mutation_commit`).
         merged = supersede(
             home, also_id, plan.new_id, note=f"merged into {plan.new_id} by replace {record_id}",
-            by=by, no_push=no_push, user_claude_md=user_claude_md,
+            by=by, no_push=no_push, user_claude_md=user_claude_md, execution=execution,
         )
         warnings += merged.warnings
         result = result or merged
