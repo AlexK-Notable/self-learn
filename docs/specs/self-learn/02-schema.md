@@ -2630,7 +2630,7 @@ touched. **Bootstrap rule** *(implementability review 2026-07-12 — no
 target file has markers today, so the very first route hits this)*: on the
 first route to a target with no markers, the compiler appends the marker
 pair at end-of-file and proceeds; `--selftest` flags only targets that
-*should* have a section (≥1 record routed to them) but lack markers. Entries are **trigger-first** — "**When ⟨trigger⟩:** ⟨instruction⟩",
+*should* have a section (≥1 record routed to them) but lack markers. A project `claude-md` lesson whose host is no longer registered owes none; the check skips it and says so. Entries are **trigger-first** — "**When ⟨trigger⟩:** ⟨instruction⟩",
 never a bare imperative: the record's `## Trigger` section exists precisely
 to be compiled this way, and a rule that names its firing condition is one
 the model can recognize *in the moment* (Devin's trigger-description
