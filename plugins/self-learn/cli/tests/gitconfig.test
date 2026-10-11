@@ -1,0 +1,10 @@
+# The global git config every test process sees (set by ../conftest.py).
+# It replaces the developer's own ~/.gitconfig for tests only, so a global
+# core.hooksPath (a gitleaks pre-commit, say) never runs on the thousands
+# of scratch commits the suite makes. Repos the fixtures create still set
+# their own identity (support.py); this one only covers repos they don't.
+[user]
+	name = self-learn tests
+	email = tests@example.invalid
+[init]
+	defaultBranch = main
