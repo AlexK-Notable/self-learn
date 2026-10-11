@@ -347,10 +347,11 @@ def test_a_steward_replace_naming_a_held_lesson_is_refused_by_name_at_the_case(e
     """S-81 (the user's steward rule, 2026-10-08): a lesson an open case
     awaits the overseer on is not transformed by the steward. The ledger
     refuses the line itself (`test_replace.py`'s held tests, under the
-    shipped set); and since every lesson a replace changes is now in its
-    case's `records`, the steward's case-level hold check names a held
-    `also` lesson too, before anything is recorded. Control: nothing held,
-    no problem."""
+    shipped set). This test is a CONTROL of existing behaviour, green
+    before E3b too: the case-level hold check names a held lesson of the
+    case's `records`. What makes it reach a held `also` lesson is the
+    records rule (`cases.replace_records_problem`), which other tests pin
+    and mutate. Control: nothing held, no problem."""
     from self_learn import steward
 
     a, b = _seed(env.home, "lrn-e3b0c301"), _seed(env.home, "lrn-e3b0c302")
