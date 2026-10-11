@@ -12,7 +12,7 @@ id: lrn-4c1e9a2f
 type: behavior            # behavior | knowledge
 scope: skill:home-assistant   # skill:<name> | project | user
 kind: anti-pattern        # behavior only: anti-pattern | surface-rule | reasoning-pattern
-source: teach             # teach | auto-memory | backlog | session | rewrite (S-79)
+source: teach             # teach | auto-memory | backlog | session | rewrite (S-79, S-85: written through replace)
 status: pending           # pending | routed | rejected | deferred | superseded
 created_at: 2026-07-12T09:14:00Z
 sightings: 2              # set when a merge proposal is collapsed at review
@@ -83,8 +83,8 @@ Instruction` (what to do, carrying the *why*). `knowledge` → `## Fact` +
 optional `## Context`. One lesson per record; a capture containing two
 lessons becomes two records. *Amended 2026-10-07 (S-79):* a `behavior`
 record may carry an optional `## Context` too (any number of lines, at
-most one such section), and `source: rewrite` is reserved for a lesson
-written through `replace` (the actor stays in `routing.by` and the case). *Amended (S-84):* `teach --context` writes that section for a
+most one such section), and `source: rewrite` marks a lesson
+written through `replace` (S-85; the actor stays in `routing.by` and the case). *Amended (S-84):* `teach --context` writes that section for a
 behavior lesson as it does for a knowledge lesson; the loaded text (Trigger and
 Instruction, or Fact) is the core of the lesson and `## Context` holds the
 background, as `skills/self-learn/references/lesson-writing.md` tells every writer.
@@ -393,7 +393,18 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   deferred edit through a scanned verb — for refining a lesson's wording
   at adjudication
   without changing what it claims; a routed record still admits no edit but
-  `reconsider` (§3a).
+  `reconsider` (§3a). *(S-85:)* a routed lesson's text changes only by `replace`, which writes a
+  successor and supersedes the old record in one motion; the frozen record is never edited.
+  `revise` may also add a `## Context` section a pending or deferred lesson lacks.
+- **`replace`** *(S-85)*: keys `also, trigger, instruction, fact, context, text_from, type, kind, to, dest,
+  rules_paths, because, note, by` (`because` required). The default placement is the first lesson's current one.
+  Refusals and S-76 as in S-85; S-76 binds every placed lesson the replace moves. Refused to the steward and the
+  overseer by name until E3b (`batch.REPLACE_REFUSED_ACTORS`, which E3b empties). Idempotence: applied iff the
+  first lesson's `superseded_by` is a lesson that `supersedes` it with this text and every `also` lesson reads
+  `superseded_by` that same lesson; recovery and the post-run recompile read it by the same state read. Carried
+  fields as in S-85. Commit subject `self-learn: replace lrn-old → lrn-new (<dest>)`, with `because` (and `note`)
+  as the body. A merge may leave the merged line and a not-yet-retired old line loaded together for the seconds
+  between commits, never neither. `replace` is the 18th sheet verb.
 - **`evidence` is append-only** — it may *gain* entries (cluster merges add
   the merged record's provenance) but existing entries are never rewritten
   or removed. *(Draft 1 listed `evidence` as immutable while also having the
@@ -1039,7 +1050,13 @@ tested through the destination its proposal names. When present the block
 renders after the labelled lines as "Always-loaded test (all three must
 hold):", one line per test, and every text in it is secret-scanned and
 heading-checked like the other decision fields; a case without it renders
-exactly as before.
+exactly as before. *(Added 2026-10-11, S-85.)* `decision.rewrite`
+(`{ideas: [{idea, now: loaded|context|field:<name>|dropped, why?}]}`, `why` required
+when dropped) and `decision.skill` (`{name, why, lessons?}`) are shape-checked, rendered under
+Decision ('Rewrite (where each idea of the old text went):', 'Skill: name — why'), and are in
+the freeze hash and the free-text scan. A case with any other key under `decision` is refused by
+name. A case with a `replace` item needs `decision.rewrite` (the runner's check; E3b wires it).
+The always-loaded test reads `replace` items, a dest-less one through the first lesson's placement.
 
 **Section 4, Dependencies** — everything the decision rests on, each cited
 from the evidence table:
@@ -1062,6 +1079,8 @@ executor never reached:
 ```
 Receipt states mirror `ItemResult.state` (`applied | already-applied |
 refused | stopped`) plus `not-attempted`, for items after `stopped_at`.
+For a `replace` item *(S-85)*, an `applied` or `already-applied` receipt appends
+`; made <new id>; line: <compiled line>`.
 
 **Committed delegated-run recipe and continuation.** A delegated runner
 that may need to survive interruption commits one JSON manifest at

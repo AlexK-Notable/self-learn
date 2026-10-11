@@ -51,6 +51,12 @@ CASE FILE's shape, not the CLI's input format for ``case record``):
       because: <the deciding reason>
       confidence: settled | provisional
       what_would_change: [<bullet>, ...]
+      always_loaded: {...}             # U3b, S-72: the three tests
+      rewrite:                         # E1: a case with a `replace` line
+        ideas:
+          - {idea: <text>, now: loaded | context | field:<name> | dropped,
+             why: <text>}              # `why` required for dropped
+      skill: {name: <kebab>, why: <text>, lessons: [lrn-...]}
     dependencies:
       statements: [stmt-...]
       user_model: [um-...@r...]
@@ -104,6 +110,10 @@ __all__ = [
     "PRESENTED_OUTCOMES",
     "COVERING_VALUES",
     "VIA_VALUES",
+    "DECISION_KEYS",
+    "REWRITE_FIELDS",
+    "REWRITE_NOW_VALUES",
+    "rewrite_required_problem",
     "CASE_ID_RE",
     "CaseError",
     "CaseUsageError",
@@ -160,6 +170,30 @@ PARKED_REASONS = frozenset(
     }
 )
 CONFIDENCE_VALUES = frozenset({"settled", "provisional"})
+#: E1 (2026-10-10, D-AUTHOR §8 / build plan SP-E): the CLOSED set of keys a
+#: case's ``decision`` may carry. Before this set a key the case writer did
+#: not know was accepted, never rendered, never hashed and never scanned --
+#: a ``decision.rewrite`` written before this build would have vanished
+#: without a word. Now an unknown key is refused by name, like an unknown
+#: sheet key (BAT1).
+DECISION_KEYS = frozenset(
+    {
+        "verb", "covered_by", "because", "confidence", "what_would_change",
+        always_loaded.DECISION_KEY, "rewrite", "skill",
+    }
+)
+#: E1: where an idea of a rewritten lesson's old text went
+#: (``decision.rewrite.ideas[].now``). ``field:<name>`` names one of
+#: :data:`REWRITE_FIELDS`.
+REWRITE_NOW_VALUES = frozenset({"loaded", "context", "dropped"})
+#: E1: the record fields an idea may move to (``now: field:<name>``) -- the
+#: grounding fields ``replace`` carries over (D-AUTHOR §2.11) and the
+#: lesson's notes (the build plan's amended writing guidance, §1.4: "a note
+#: attached to the lesson").
+REWRITE_FIELDS = frozenset(
+    {"verified_how", "incident_cost", "env", "generality", "evidence", "follow_up", "notes"}
+)
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 OBSERVE_KINDS = frozenset(
     {
         "examined", "presented", "statement", "corrected",
@@ -504,6 +538,24 @@ def _render_decision(decision: dict) -> str:
                 continue
             refs = ", ".join(str(ref) for ref in entry.get("refs") or [])
             lines.append(f"- {headline} {entry.get('because')} (evidence: {refs})")
+    rewrite = decision.get("rewrite")
+    if isinstance(rewrite, dict) and rewrite.get("ideas"):
+        # E1: rendered only when present, so a case without the block
+        # renders (and freeze-hashes) exactly as it did before.
+        lines.append("")
+        lines.append("Rewrite (where each idea of the old text went):")
+        for idea in rewrite["ideas"]:
+            why = idea.get("why")
+            lines.append(
+                f"- {idea.get('idea')} → {idea.get('now')}"
+                + (f" (why: {why})" if why else "")
+            )
+    skill = decision.get("skill")
+    if isinstance(skill, dict) and skill:
+        lines.append("")
+        lines.append(f"Skill: {skill.get('name')} — {skill.get('why')}")
+        if skill.get("lessons"):
+            lines.append(f"- lessons: {', '.join(str(r) for r in skill['lessons'])}")
     wwc = decision.get("what_would_change") or []
     if wwc:
         lines.append("")
@@ -511,6 +563,117 @@ def _render_decision(decision: dict) -> str:
         for bullet in wwc:
             lines.append(f"- {bullet}")
     return "\n".join(lines) + "\n"
+
+
+def _rewrite_problem(block: object) -> str | None:
+    """What is wrong with the SHAPE of a ``decision.rewrite`` block, or
+    ``None`` (E1, D-AUTHOR §2.4). Shape only: a non-empty ``ideas`` list,
+    each ``{idea, now, why?}`` with ``now`` from the closed set and a
+    ``why`` for every dropped idea. It never counts words or judges
+    meaning; whether an idea that mattered went missing is the overseer's
+    examination."""
+    if not isinstance(block, dict) or set(block) != {"ideas"}:
+        return "decision.rewrite must be a mapping with one key, ideas"
+    ideas = block.get("ideas")
+    if not isinstance(ideas, list) or not ideas:
+        return "decision.rewrite.ideas must be a non-empty list"
+    for n, idea in enumerate(ideas, start=1):
+        if not isinstance(idea, dict):
+            return f"decision.rewrite.ideas[{n}] must be a mapping of idea, now, why"
+        unknown = sorted(str(k) for k in idea if k not in ("idea", "now", "why"))
+        if unknown:
+            return (
+                f"decision.rewrite.ideas[{n}] has unknown key(s) {unknown}; "
+                "allowed: ['idea', 'now', 'why']"
+            )
+        text = idea.get("idea")
+        if not isinstance(text, str) or not text.strip():
+            return f"decision.rewrite.ideas[{n}].idea is required text"
+        now = idea.get("now")
+        field_name = (
+            now[len("field:"):] if isinstance(now, str) and now.startswith("field:") else None
+        )
+        if now not in REWRITE_NOW_VALUES and field_name not in REWRITE_FIELDS:
+            return (
+                f"decision.rewrite.ideas[{n}].now must be one of "
+                f"{sorted(REWRITE_NOW_VALUES)} or field:<name> with <name> in "
+                f"{sorted(REWRITE_FIELDS)}, got {now!r}"
+            )
+        why = idea.get("why")
+        if why is not None and not isinstance(why, str):
+            return f"decision.rewrite.ideas[{n}].why must be text"
+        if now == "dropped" and not (isinstance(why, str) and why.strip()):
+            return (
+                f"decision.rewrite.ideas[{n}] is dropped and needs a why (wrong, out of "
+                "date, or said by another lesson you name)"
+            )
+    return None
+
+
+def _skill_problem(block: object) -> str | None:
+    """What is wrong with the SHAPE of a ``decision.skill`` block, or
+    ``None`` (E1, D-AUTHOR §6.2; the build plan's K2 adds ``lessons``)."""
+    if not isinstance(block, dict):
+        return "decision.skill must be a mapping of name, why, lessons"
+    unknown = sorted(str(k) for k in block if k not in ("name", "why", "lessons"))
+    if unknown:
+        return f"decision.skill has unknown key(s) {unknown}; allowed: ['lessons', 'name', 'why']"
+    name = block.get("name")
+    if not isinstance(name, str) or not _SKILL_NAME_RE.match(name):
+        return f"decision.skill.name must be a kebab-case skill name, got {name!r}"
+    why = block.get("why")
+    if not isinstance(why, str) or not why.strip():
+        return "decision.skill.why is required text"
+    lessons = block.get("lessons")
+    if lessons is not None and (
+        not isinstance(lessons, list)
+        or not all(isinstance(r, str) and _RECORD_ID_RE.match(r) for r in lessons)
+    ):
+        return "decision.skill.lessons must be a list of lrn-... ids"
+    return None
+
+
+def rewrite_required_problem(case_data: dict, items: object, *, label: str = "case") -> str | None:
+    """Why a runner refuses this case, or ``None`` (E1, D-AUTHOR §6.2
+    "required on a case with a `replace` item"): a case whose sheet carries
+    a ``replace`` line must account for the old text in
+    ``decision.rewrite``. Pure; the case writer cannot see the sheet, so the
+    runner that holds both (the steward's stage check, the overseer's pair
+    loop) asks this. A parked case is never applied, so it is never asked."""
+    if case_data.get("kind") == "parked":
+        return None
+    replaced = [
+        str(item.get("id")) for item in (items if isinstance(items, list) else [])
+        if isinstance(item, dict) and item.get("verb") == "replace"
+    ]
+    if not replaced:
+        return None
+    decision = case_data.get("decision")
+    block = decision.get("rewrite") if isinstance(decision, dict) else None
+    if block is None:
+        return (
+            f"{label}: replaces {sorted(set(replaced))}, which needs decision.rewrite: "
+            "account for every idea of the old text (loaded, context, field:<name>, "
+            "or dropped with a why)"
+        )
+    problem = _rewrite_problem(block)
+    return f"{label}: {problem}" if problem is not None else None
+
+
+def _decision_block_texts(decision: dict) -> list[str]:
+    """Every free text of the E1 blocks, for the secret scan and the
+    heading refusal (the ``always_loaded`` pattern)."""
+    out: list[str] = []
+    rewrite = decision.get("rewrite")
+    if isinstance(rewrite, dict):
+        for idea in rewrite.get("ideas") or []:
+            if isinstance(idea, dict):
+                out += [str(idea[k]) for k in ("idea", "now", "why") if idea.get(k) is not None]
+    skill = decision.get("skill")
+    if isinstance(skill, dict):
+        out += [str(skill[k]) for k in ("name", "why") if skill.get(k) is not None]
+        out += [str(r) for r in skill.get("lessons") or []]
+    return out
 
 
 def _render_dependencies(deps: dict) -> str:
@@ -641,6 +804,18 @@ def check_case_data(data: dict, *, withhold_spans: bool = False) -> CaseFields:
     decision = data.get("decision")
     if not isinstance(decision, dict) or not decision.get("because"):
         raise CaseUsageError("case record: decision.because is required")
+    unknown_decision = sorted(str(key) for key in decision if key not in DECISION_KEYS)
+    if unknown_decision:
+        # E1 (SP-E): refused by name, never accepted and silently dropped.
+        raise CaseUsageError(
+            f"case record: decision has unknown key(s) {unknown_decision}; "
+            f"allowed: {sorted(DECISION_KEYS)}"
+        )
+    for key, problem_of in (("rewrite", _rewrite_problem), ("skill", _skill_problem)):
+        if decision.get(key) is not None:
+            problem = problem_of(decision[key])
+            if problem is not None:
+                raise CaseUsageError(f"case record: {problem}")
     confidence = decision.get("confidence")
     if confidence not in CONFIDENCE_VALUES:
         raise CaseUsageError(
@@ -678,6 +853,7 @@ def check_case_data(data: dict, *, withhold_spans: bool = False) -> CaseFields:
         free_texts.append(str(decision["covered_by"]))
     free_texts += [str(b) for b in what_would_change]
     free_texts += always_loaded.block_texts(decision.get(always_loaded.DECISION_KEY))
+    free_texts += _decision_block_texts(decision)
     for item in evidence:
         free_texts.append(str(item.get("ref", "")))
         free_texts.append(str(item.get("quote", "")))
@@ -1602,9 +1778,19 @@ def receipt(home: Path | str, case_id: str, batch_result: dict) -> str:
                         f"unresolved-host: {detail}{warning_suffix}{evidence_suffix}"
                     )
                 else:
+                    # E1 (D-AUTHOR §2.4): a replace line names the lesson it
+                    # made and the line the compiler wrote -- the case's
+                    # after-text, rendered by the program, never retyped.
+                    detail = item.get("detail")
+                    made_suffix = (
+                        f"; {' '.join(str(detail).split())}"
+                        if verb == "replace" and detail
+                        and state in ("applied", "already-applied")
+                        else ""
+                    )
                     new_by_key[key] = (
                         f"- {at} sheet={sheet}#{sheet_sha} item={n} {rid} {verb} → "
-                        f"{state} (exit {rc}){warning_suffix}{evidence_suffix}"
+                        f"{state} (exit {rc}){made_suffix}{warning_suffix}{evidence_suffix}"
                     )
     new_lines = list(new_by_key.values())
 

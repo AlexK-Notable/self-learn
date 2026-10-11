@@ -126,8 +126,11 @@ def supply_mix(home: Path | str) -> dict[str, int]:
 #: hidden alias's own commits (unchanged subject, `self-learn: graduate
 #: <id>`) still need to read as a resolution here, or `ledger_metrics`'s
 #: time-to-triage/routed_and_corrected counters silently drop every one.
+#: E1: `replace` joins (`self-learn: replace lrn-old → lrn-new (<dest>)`):
+#: the commit that resolves the old lesson and, with a destination, routes
+#: the new one.
 _RESOLUTION_SUBJECT_RE = re.compile(
-    r"^self-learn: (?:route|reject|graduate|retire|supersede) "
+    r"^self-learn: (?:route|reject|graduate|retire|supersede|replace) "
 )
 _LRN_ID_RE = re.compile(r"lrn-[0-9a-f]{8}")
 
