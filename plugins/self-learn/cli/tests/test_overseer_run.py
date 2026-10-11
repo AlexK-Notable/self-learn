@@ -422,7 +422,12 @@ def test_coverage_precedes_uncapped_parked_intake(tmp_path, monkeypatch):
         if kwargs.get("parked_for") == "overseer":
             assert (overseer_run.workspace_dir(home) / "coverage.yaml").is_file()
             assert (home / "overseer" / "coverage.yaml").is_file()
-            assert kwargs.get("only_ok") is True
+            if kwargs.get("only_ok") is not True:
+                # E3b fold (gate R1): the pair loop reads `cases.held_lessons`,
+                # whose `tampered_parked` half lists every parked case to find
+                # the ones failing their freeze hash; none here. The queue
+                # itself must still come from the verified read (below).
+                return []
             return parked
         return real_list(given_home, **kwargs)
 
