@@ -1306,15 +1306,19 @@ def _steward_replace_problem(
 ) -> str | None:
     """E3b, D-AUTHOR §2.8 ("Who may do what"), the steward's column, as far
     as code can tell it: a placed (routed) lesson is replaced only by a
-    `kind: reconsider` case -- the correction of the case that placed it,
-    which the case writer checks covers it -- and a placed lesson is never
-    merged into another (`also`): shortening and merging placed lessons is
-    the overseer's, so the steward parks such a case with a tentative
-    answer. Whether a reconsider's rewrite corrects or merely shortens is a
-    judgement no check can make; the method says it (§7, §11). A parked
-    case is never applied, so its tentative `replace` is not judged here.
-    Which lessons a case may cover at all -- only this packet's -- is
-    `_check_stage`'s rule, and the S-81 hold is the ledger's."""
+    `kind: reconsider` case -- the correction of the case that placed it;
+    that the predecessor covers the lesson is checked by `verbs.reconsider`
+    when the case is applied, not when it is recorded -- and no merge
+    touches a placed lesson: none in `also`, and (E3b fold, gate R2) no
+    `also` at all on a placed line, whatever those lessons' status.
+    Shortening and merging placed lessons is the overseer's; this check
+    refuses the pair and its message tells the model to park the case,
+    with the merge as its tentative answer. Whether a reconsider's rewrite
+    corrects or merely shortens is a judgement no check can make; the
+    method says it (§7, §11). A parked case is never applied, so its
+    tentative `replace` is not judged here. Which lessons a case may cover
+    at all -- only this packet's -- is `_check_stage`'s rule, and the
+    S-81 hold is the ledger's."""
     if case_data.get("kind") == "parked":
         return None
     for item in items:
@@ -1328,6 +1332,13 @@ def _steward_replace_problem(
                 f"{label}: replace {rid} merges {placed}, which are placed -- the steward "
                 "does not merge or shorten placed lessons; park the case (authority-unclear) "
                 "with the merge as your tentative answer"
+            )
+        if also and _lesson_status(home, rid) == "routed":
+            return (
+                f"{label}: replace {rid} merges {[str(other) for other in also]} into "
+                f"{rid}, which is placed -- the steward does not merge into a placed "
+                "lesson; park the case (authority-unclear) with the merge as your "
+                "tentative answer"
             )
         if case_data.get("kind") != "reconsider" and _lesson_status(home, rid) == "routed":
             return (

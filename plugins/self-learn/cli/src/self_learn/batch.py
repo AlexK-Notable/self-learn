@@ -1399,15 +1399,31 @@ def _dispatch_replace(
     _refuse_agent_reference(
         item.id, verbs.replace_destination(home, item.id, f.get("dest")), actor
     )
-    result = verbs.replace_lesson(
-        home, item.id, because=f["because"], also=f.get("also"),
-        trigger=f.get("trigger"), instruction=f.get("instruction"),
-        fact=f.get("fact"), context=f.get("context"), text_from=f.get("text_from"),
-        type=f.get("type"), kind=f.get("kind"), to=f.get("to"), dest=f.get("dest"),
-        rules_paths=f.get("rules_paths"), note=f.get("note"),
-        by=(f.get("by") or (actor if actor != "human" else None)),
-        no_push=True, execution=execution, actor=actor,
-    )
+    try:
+        result = verbs.replace_lesson(
+            home, item.id, because=f["because"], also=f.get("also"),
+            trigger=f.get("trigger"), instruction=f.get("instruction"),
+            fact=f.get("fact"), context=f.get("context"), text_from=f.get("text_from"),
+            type=f.get("type"), kind=f.get("kind"), to=f.get("to"), dest=f.get("dest"),
+            rules_paths=f.get("rules_paths"), note=f.get("note"),
+            by=(f.get("by") or (actor if actor != "human" else None)),
+            no_push=True, execution=execution, actor=actor,
+        )
+    except (verbs.VerbError, LedgerOpsError) as exc:
+        made = getattr(exc, "replace_made", None)
+        if not isinstance(made, str):
+            raise
+        # E3b fold (gate R3): an `also` leg refused after the primary
+        # commit landed. The refusal is the leg's, as before; the detail
+        # (the report) and the receipt's evidence also say that the new
+        # lesson exists, where it is, and which lessons it did not
+        # supersede -- before, the case said only `refused`.
+        rc = exc.exit_code if isinstance(exc, verbs.VerbError) else 64
+        return ItemResult(
+            n=item.n, id=item.id, verb=item.verb, rc=rc, state="refused",
+            detail=f"{refusal_text(exc)} -- {made}", evidence=made,
+            kind=refusal_kind(exc, rc=rc, state="refused"),
+        )
     return ItemResult(
         n=item.n, id=item.id, verb=item.verb, rc=0, sha=result.commit_sha,
         state="applied", warnings=list(result.warnings),

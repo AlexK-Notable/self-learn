@@ -630,7 +630,7 @@ items:
     instruction: "Write a new migration instead; an applied one has run, and editing it changes nothing in the databases it ran on."
     context: "The first trigger named .sql files only; a session editing an applied Python migration read the rule as not applying (the fire in this case's evidence)."
     dest: claude-md:rules:migrations
-    rules_paths: ["db/migrations/**"]
+    rules_paths: ["db/migrations/**/*.sql", "**/migrations/*.py"]
     because: the trigger was too narrow for the moment the fire shows
 """,
 }
@@ -727,7 +727,10 @@ def _replace_lines() -> list[str]:
         "  The case names every lesson the line changes in `records`, and its decision carries",
         "  `rewrite`: `ideas:`, one entry per idea of the old text, each `{idea, now, why}` --",
         "  `now` is `loaded`, `context`, `dropped`, or `field:<name>` with <name> one of",
-        f"  {fields}; a dropped idea needs `why`. A pending or deferred lesson",
+        # E3b fold (gate N4): the field list on its own line, so no
+        # rendered line runs past the contract's width.
+        f"  {fields};",
+        "  a dropped idea needs `why`. A pending or deferred lesson",
         "  whose claim is wrong: a `kind: resolution` case, outcome `replaced`; name a `dest` to",
         "  place the new lesson, or leave it out and it stays pending. Pending lessons of this",
         "  packet that say one thing: one case, one `replace` line on the first, the rest in",

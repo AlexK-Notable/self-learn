@@ -670,7 +670,16 @@ def replace_records_problem(case_data: dict, items: object, *, label: str = "cas
     ``supersede`` commit). With the steward's coverage rule (each record has
     an item, an ``also`` id counting as one) a merge case's ``records`` is
     exactly ``{id} | also``. Pure; asked by the steward's stage check and
-    the overseer's pair loop, beside :func:`rewrite_required_problem`."""
+    the overseer's pair loop, beside :func:`rewrite_required_problem`.
+
+    E3b fold (gate D2): a parked case is never applied, so -- like every
+    other pair rule (`rewrite_required_problem`, `always_loaded.route_problem`,
+    the steward's placed-lesson rule) -- it is not asked. The steward's
+    method has it park "a pending one should fold into a placed one" with
+    the merge as its tentative sheet, and the placed lesson is usually not
+    an input it may name in `records`."""
+    if case_data.get("kind") == "parked":
+        return None
     records = case_data.get("records")
     named = {str(rid) for rid in records} if isinstance(records, list) else set()
     for item in items if isinstance(items, list) else []:

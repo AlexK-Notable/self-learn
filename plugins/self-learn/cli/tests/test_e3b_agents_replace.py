@@ -387,3 +387,193 @@ def test_a_steward_replace_into_a_file_a_plain_host_tracks_is_parked(tmp_path):
     git(host, "rm", "--cached", "-q", "CLAUDE.md")
     git(host, "commit", "-q", "-m", "untrack")
     assert steward._forced_parking_reason(home, sheet) is None
+
+
+# ============================================================ E3b fold 1
+
+
+def _input(home: Path, rid: str) -> str:
+    """A pending lesson with a stamped proposal: an input of the steward's
+    next packet."""
+    from support import commit_all, make_behavior, proposal_dict
+
+    ledger_ops.create_record(home, make_behavior(record_id=rid))
+    ledger_ops.write_proposal(home, rid, proposal_dict())
+    ledger_ops.stamp_proposal(home, rid)
+    commit_all(home, f"seed {rid}")
+    return rid
+
+
+def test_fold_d2_the_steward_parks_a_fold_into_a_placed_lesson_it_was_not_given(
+    env, tmp_path, monkeypatch
+):
+    """Gate D2 (probe p6g), the real steward run: method §11 says "a pending
+    one should fold into a placed one -- notice it and park the case
+    (`authority-unclear`) with the merge as your tentative answer". The
+    placed lesson X is not an input of the run, so the case's records can
+    name only the pending input P, and its tentative sheet is `replace X
+    also: [P]`. Before the fold the records rule judged parked cases too
+    and refused this pair ("changes [X], which the case's records do not
+    name"); after the repair turn it was set aside and nothing was parked.
+    Now the case is recorded parked for the overseer, X is untouched and P
+    is held."""
+    from self_learn import steward
+    from test_steward import _dump_yaml, _enable_steward
+
+    pend = _input(env.home, "lrn-e3bf0201")
+    placed = _seed(env.home, "lrn-e3bf0202")
+    _place(env.home, placed, "skill-md")
+    _enable_steward(env.home)
+    case = _steward_case([pend])
+    case.update(kind="parked", outcome="parked", parked_for="overseer",
+                parked_reason="authority-unclear")
+    case["decision"]["confidence"] = "provisional"
+    turns: list[str] = []
+
+    def session(spec):
+        from self_learn.invocation.contract import Outcome
+
+        turns.append(spec.prompt)
+        stage = _stage_of(spec)
+        _dump_yaml(stage / "cases" / "park.yaml", case)
+        _dump_yaml(stage / "sheets" / "park.yaml", {
+            "version": 1, "case": "$CASE_ID", "items": [_replace_line(placed, also=[pend])],
+        })
+        return Outcome(ok=True, rc=0, stdout="", detail="", failure=None)
+
+    monkeypatch.setattr(steward.invocation, "write_session", session)
+    steward.run(env.home, dry_run=False)
+
+    assert len(turns) == 1, "a repair turn means the pair was refused"
+    parked = [row for row in cases.list_cases(env.home, only_ok=True)
+              if row.get("parked_for") == "overseer"]
+    assert [(row["records"], row.get("parked_reason")) for row in parked] == [
+        ([pend], "authority-unclear")]
+    assert _rec(env.home, placed).status == "routed"
+    assert _rec(env.home, pend).status == "pending"
+    assert pend in cases.held_lessons(env.home)
+
+
+def test_fold_r2_the_steward_does_not_merge_a_deferred_lesson_into_a_placed_one(env, tmp_path):
+    """Gate R2 (probe p6d): a reconsider case covering a routed L and a
+    deferred D, `replace L also: [D]`, used to pass -- only routed `also`
+    ids were refused -- and the placed line became a merged line. Now a
+    routed `id` with any `also` is refused, whatever the `also` lessons'
+    status, and the message tells the model to park. The reconsider
+    replace of L with no `also` still passes (the control)."""
+    from self_learn import steward
+
+    placed, deferred = _seed(env.home, "lrn-e3bf0401"), _seed(env.home, "lrn-e3bf0402")
+    _place(env.home, placed, "skill-md")
+    verbs.defer(env.home, deferred, by="steward", no_push=True)
+    assert (_rec(env.home, placed).status, _rec(env.home, deferred).status) == ("routed", "deferred")
+    stage = tmp_path / "stage"
+    merge = _stage_pair(stage, "merge", _steward_case(
+        [placed, deferred], kind="reconsider", supersedes="case-0000f401"),
+        [_replace_line(placed, also=[deferred])])
+    problem = steward._pair_problem(stage, merge, env.home) or ""
+    assert problem.startswith(
+        f"merge.yaml: replace {placed} merges ['{deferred}'] into {placed}, which is placed")
+    assert "authority-unclear" in problem
+
+    alone = _stage_pair(stage, "alone", _steward_case(
+        [placed], kind="reconsider", supersedes="case-0000f401"), [_replace_line(placed)])
+    assert steward._pair_problem(stage, alone, env.home) is None  # control
+
+
+def test_fold_r3_a_refused_also_leg_says_the_new_lesson_exists(env, tmp_path, monkeypatch):
+    """Gate R3 (probe p2b): an `also` leg refused after the primary commit
+    landed used to be receipted `refused` with no word that the new lesson
+    exists and is placed. Now the item's detail (what both runners report)
+    and the case's receipt name the new lesson, where it was placed, and
+    the lesson the line did not supersede. A plain refusal is unchanged
+    (the control: nothing was made, nothing is claimed)."""
+    from test_replace import _human_case
+
+    a, b = _seed(env.home, "lrn-e3bf0501"), _seed(env.home, "lrn-e3bf0502")
+    for rid in (a, b):
+        _place(env.home, rid, "skill-md")
+    case_id = _human_case(env.home, tmp_path, a)
+    real = verbs.supersede
+
+    def refused(*_a, **_k):
+        raise verbs.DestinationUnavailable("simulated refusal of the also leg")
+
+    monkeypatch.setattr(verbs, "supersede", refused)
+    sheet = _sheet(tmp_path, [{"id": a, "verb": "replace", "also": [b], "trigger": NEW_TRIGGER,
+                               "instruction": NEW_INSTRUCTION, "because": "merge"}], case=case_id)
+    result = batch.run(env.home, sheet, no_push=True, actor="steward")
+    monkeypatch.setattr(verbs, "supersede", real)
+
+    (item,) = result.items
+    new = _rec(env.home, a).superseded_by
+    assert new and _rec(env.home, b).status == "routed"  # control: the half-applied shape
+    assert item.state == "refused"
+    said = f"made {new} (placed: skill-md) before this refusal; not superseded by it: {b}"
+    assert said in (item.detail or ""), item.detail
+    assert "simulated refusal of the also leg" in (item.detail or "")
+    assert batch.write_receipt(env.home, result, "sheet.yaml", no_push=True) == {
+        "state": "ok", "pushed": None}
+    application = cases.show(env.home, case_id, evidence_only=False).sections["Application"]
+    assert f"{a} replace → refused (exit" in application
+    assert f"evidence: {said}" in application
+
+    # control: a refusal before anything was made claims nothing
+    c = _seed(env.home, "lrn-e3bf0503")
+    plain = _sheet(tmp_path, [{"id": c, "verb": "replace", "also": [a], "trigger": NEW_TRIGGER,
+                               "instruction": NEW_INSTRUCTION, "because": "merge"}], name="plain")
+    (none,) = batch.run(env.home, plain, no_push=True, actor="steward").items
+    assert none.state == "refused" and "made " not in (none.detail or "")
+    assert none.evidence is None
+
+
+def test_fold_n5_a_refused_collapse_route_leaves_no_open_intent(env, tmp_path, monkeypatch):
+    """Gate N5: on a collapse route whose survivor supersedes a third
+    lesson, the predecessor pre-check ran after `intents.begin` opened the
+    collapse intent, so its refusal left an open intent behind. It now runs
+    first: the refused route leaves no intent and a clean ledger."""
+    from self_learn import intents
+    from support import commit_all, make_behavior, merge_proposal_text
+
+    def pending(rid: str, supersedes: str | None = None) -> str:
+        record = make_behavior(record_id=rid)
+        if supersedes is not None:
+            record.set_supersedes(supersedes)
+        ledger_ops.create_record(env.home, record)
+        return rid
+
+    old = pending("lrn-e3bf0800")
+    survivor = pending("lrn-e3bf0801", supersedes=old)
+    loser = pending("lrn-e3bf0802")
+    proposals = env.home / "skills" / "s" / "proposals"
+    proposals.mkdir(parents=True, exist_ok=True)
+    (proposals / "merge-e3bf0801.yaml").write_text(
+        merge_proposal_text("merge-e3bf0801", [survivor, loser], survivor), encoding="utf-8")
+    commit_all(env.home, "seed cluster")
+    real = verbs._execute_route
+    moved: list[str] = []
+
+    def late_reject(*args, **kwargs):
+        # After the pre-lock checks: the predecessor is decided elsewhere.
+        if not moved:
+            moved.append(old)
+            verbs.reject(env.home, old, note="decided elsewhere", no_push=True)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(verbs, "_execute_route", late_reject)
+    with pytest.raises((verbs.VerbError, ledger_ops.LedgerOpsError)):
+        verbs.route(env.home, survivor, dest="skill-md", collapse="merge-e3bf0801", no_push=True)
+    assert moved  # positive control: the late change happened
+    assert list(intents.intents_dir(env.home).glob("*.json")) == []
+    assert _porcelain(env.home) == ""
+    assert _rec(env.home, survivor).status == "pending"
+
+
+def test_fold_n4_no_line_of_the_replace_contract_runs_past_its_width():
+    """Gate N4: the `REWRITE_FIELDS` line rendered about 120 characters
+    wide; the field list now sits on its own line."""
+    from self_learn import steward_prompt
+
+    lines = steward_prompt._replace_lines()
+    assert any("field:<name>" in line for line in lines)  # control: the passage is there
+    assert max(len(line) for line in lines) <= 92, max(lines, key=len)
