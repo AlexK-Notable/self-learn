@@ -63,6 +63,7 @@ from . import batch
 from . import cases
 from . import conditions
 from . import ledger_ops
+from . import lesson_writing
 from . import records
 from . import verbs
 from . import statements
@@ -606,9 +607,22 @@ def _render_standing_rulings() -> str:
     return "\n".join(lines)
 
 
+def _render_lesson_writing() -> str:
+    """The shared passage on writing a lesson (E3a), inlined between its
+    markers and read from the canonical file at build time. Never a pointer
+    to the file: an agent would have to choose to open it."""
+    return lesson_writing.inlined()
+
+
 def _render_method() -> str:
     path = worker.package_skill_refs() / "steward-method.md"
-    return path.read_bytes().decode("utf-8").rstrip("\n") + "\n\n" + _render_standing_rulings()
+    return (
+        path.read_bytes().decode("utf-8").rstrip("\n")
+        + "\n\n"
+        + _render_standing_rulings()
+        + "\n\n"
+        + _render_lesson_writing()
+    )
 
 
 def _render_user_model_entry(container: str, entry: dict) -> str:
