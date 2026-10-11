@@ -6894,6 +6894,61 @@ def _human_case_on(home: Path, record_id: str) -> str | None:
     return None
 
 
+def _inherited_dest(routing: dict) -> str:
+    """The ``dest`` a ``replace`` inherits from a placed lesson's stored
+    routing. As :func:`_routing_dest_label`, except that a lesson on its
+    bucket's default reference shelf (``reference_file: None``) gives a bare
+    ``reference``, so the new lesson stores ``reference_file: None`` as a
+    route there does (E1 fold 1, gate N1)."""
+    if routing.get("destination") == "reference" and not routing.get("reference_file"):
+        return "reference"
+    return _routing_dest_label(routing)
+
+
+def _placement_key(dest: str | None) -> tuple[str, str | None] | None:
+    """A ``dest`` as ``(destination, qualifier)``, the default reference
+    shelf spelled out, so ``reference`` and ``reference:LEARNINGS.md``
+    compare equal. ``None`` for no dest."""
+    if dest is None:
+        return None
+    destination, ref_name = _parse_dest(dest)
+    if destination == "reference" and ref_name is None:
+        ref_name = DEFAULT_REFERENCE_BASENAME
+    return destination, ref_name
+
+
+def _refuse_moving_a_person_s_lesson(
+    home: Path,
+    lessons: "list[tuple[Record, Path]]",
+    *,
+    dest: str | None,
+    bucket_dir: Path,
+    actor: str,
+) -> None:
+    """S-76 / D-AUTHOR §2.10, on every lesson the replace moves (E1 fold 1,
+    gate R2: the first lesson AND each ``also`` lesson). When an agent runs
+    the replace, a placed lesson covered by an open case a person recorded
+    keeps its placement: the new lesson must land where that lesson is now
+    (the same destination, in the same bucket), or the replace is refused
+    as :class:`NeedsPerson` before anything is written. A person's own
+    replace (``actor == "human"``) is never refused here."""
+    if actor == "human":
+        return
+    for lesson, path in lessons:
+        if lesson.status != "routed":
+            continue
+        human_case = _human_case_on(home, lesson.id)
+        if human_case is None:
+            continue
+        inherited = _inherited_dest(lesson.routing or {})
+        if _placement_key(dest) != _placement_key(inherited) or bucket_dir != path.parent.parent:
+            raise NeedsPerson(
+                f"replace: {lesson.id} is covered by {human_case}, a case a person "
+                f"recorded; its replacement keeps its placement ({inherited}, "
+                f"{path.parent.parent.name}) -- moving it is the user's call (S-76)"
+            )
+
+
 def _replace_bucket(
     home: Path, first_path: Path, to: str | None
 ) -> tuple[str, Path, Path | None]:
@@ -7092,6 +7147,7 @@ def _preflight_replace(
     new_id = done.id if done is not None else records_mod.generate_id()
 
     also_records: list[Record] = []
+    also_moved: list[tuple[Record, Path]] = []
     also_todo: list[str] = []
     for rid, path in zip(also_ids, also_paths):
         rec = read_record_or_refuse(path)
@@ -7103,6 +7159,7 @@ def _preflight_replace(
             raise VerbError(str(exc)) from exc
         _refuse_hook_lesson(rec)
         also_records.append(rec)
+        also_moved.append((rec, path))
         also_todo.append(rid)
         # Each later `supersede` retires its old placement; its host-side
         # pre-flight runs now, so a refusal lands before the first commit.
@@ -7111,6 +7168,14 @@ def _preflight_replace(
         )
 
     if done is not None:
+        # A retry: the new lesson is placed already; each `also` lesson still
+        # to retire keeps a person's placement, as on the first run.
+        done_path = find_record_path(home, done.id)
+        _refuse_moving_a_person_s_lesson(
+            home, also_moved,
+            dest=_inherited_dest(done.routing or {}) if done.status == "routed" else None,
+            bucket_dir=done_path.parent.parent, actor=actor,
+        )
         return _ReplacePlan(
             first_id=record_id, first=first, new_id=new_id, record=None, dest=None,
             destination=None, ref_name=None, project_path=None, follow_up=None,
@@ -7125,22 +7190,17 @@ def _preflight_replace(
     )
     follow_up = _merged_follow_up([first, *also_records])
     if dest is None and first.status == "routed":
-        dest = _routing_dest_label(first.routing or {})
+        dest = _inherited_dest(first.routing or {})
     placed = [rec.id for rec in (first, *also_records) if rec.status == "routed"]
     if dest is None and placed:
         raise SheetLineError(
             f"replace: the new lesson would land pending while {', '.join(placed)} is "
             "placed -- name a dest, so its line is never left unloaded"
         )
-    human_case = _human_case_on(home, record_id) if actor != "human" else None
-    if human_case is not None and first.status == "routed":
-        inherited = _routing_dest_label(first.routing or {})
-        if dest != inherited or bucket_dir != first_path.parent.parent:
-            raise NeedsPerson(
-                f"replace: {record_id} is covered by {human_case}, a case a person "
-                f"recorded; its replacement keeps its placement ({inherited}, "
-                f"{first_path.parent.parent.name}) -- moving it is the user's call (S-76)"
-            )
+    _refuse_moving_a_person_s_lesson(
+        home, [(first, first_path), *also_moved],
+        dest=dest, bucket_dir=bucket_dir, actor=actor,
+    )
     findings = secret_scan(record.to_text())
     if findings:
         raise SecretRefusal(
@@ -7175,12 +7235,14 @@ def _preflight_replace(
                 "made -- replace never scaffolds one; create it first"
             )
         _abort_if_unscopes_rules_file(spec, new_id, allow_unpathed=False)
-        simulated = Record.from_text(record.to_text())
-        simulated.set_routing({"routed_at": _now_iso(), "destination": destination, "by": by or "human"})
-        simulated.set_status("routed")
+        # The first lesson's retirement pre-flight, with this replace's own
+        # write landing first (`after_route`), as `_execute_route` runs it at
+        # its predecessor pre-flight. The composed record goes in unrouted:
+        # the shelf's prediction reads its routing only for the day heading,
+        # which no refusal depends on (E1 fold 1, gate R3).
         _retirement_preflight(
             home, first, first_path.parent.parent, warnings,
-            user_claude_md=user_claude_md, after_route=(spec, simulated),
+            user_claude_md=user_claude_md, after_route=(spec, record),
         )
     else:
         _abort_if_loaded_text_cut(record, "claude-md")
@@ -7208,7 +7270,7 @@ def replace_destination(home: Path | str, record_id: str, dest: str | None) -> t
     if first.status != "routed":
         return None
     try:
-        return _parse_dest(_routing_dest_label(first.routing or {}))
+        return _parse_dest(_inherited_dest(first.routing or {}))
     except VerbError:
         return None
 
@@ -7236,6 +7298,9 @@ def _replace_pending(
     write (the merge-collapse loser's shape, `02-schema.md` §2)."""
     assert plan.record is not None
     record = plan.record
+    # E1 fold 1 (gate N3): `because` (+ `note`) is the new lesson's
+    # resolution_note on this path too, as on the routed one.
+    record.set_resolution_note(body)
     message = _replace_subject(plan.first_id, record.id, "pending")
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -10265,17 +10330,88 @@ def recompile_refusals(result: RecompileResult, record_id: str) -> list[str]:
 HOST_RESULT_VERBS = frozenset({"route", "rehome", "rescope"})
 
 
-def host_result_ids(items: Iterable[object]) -> list[str]:
-    """The record ids of *items* (sheet item results) whose host result a
-    post-run recompile should establish: a :data:`HOST_RESULT_VERBS` item
-    that applied, or that left its host result owed (``unresolved-host``)."""
+def replace_host_records(
+    home: Path | str, first_id: str
+) -> tuple[list[str], list[tuple[str, Path]]]:
+    """What a recompile must establish for a ``replace`` whose first lesson
+    is *first_id* (E1 fold 1, gate D1): ``(ids, retired)``. *ids* are the
+    new lesson -- the line the replace writes -- and every lesson it
+    superseded; *retired* is ``(id, bucket)`` for each superseded lesson,
+    for :func:`recompile`'s ``moved_from``, so the target its line sat in
+    is compiled too and the line leaves, even when the new lesson went to
+    another file. A sheet item names only the first lesson, so the rest
+    are read from the ledger (every lesson whose ``superseded_by`` is the
+    new one). Both empty when *first_id* is not superseded by a lesson.
+    Reads only."""
+    home = Path(home)
+    try:
+        first_path = find_record_path(home, first_id)
+        first = read_record_or_refuse(first_path)
+    except (LedgerOpsError, VerbError):
+        return [], []
+    new_id = first.superseded_by
+    if (
+        first.status != "superseded"
+        or not isinstance(new_id, str)
+        or not RECORD_ID_RE.fullmatch(new_id)
+    ):
+        return [], []
+    retired: list[tuple[str, Path]] = [(first_id, first_path.parent.parent)]
+    for bucket in discover_buckets(home):
+        resolved = bucket.path / "resolved"
+        if not resolved.is_dir():
+            continue
+        for path in sorted(resolved.glob("lrn-*.md")):
+            if path.stem == first_id:
+                continue
+            try:
+                rec = Record.from_path(path)
+            except ledger_ops.UNREADABLE_RECORD_ERRORS:
+                continue
+            if rec.status == "superseded" and rec.superseded_by == new_id:
+                retired.append((rec.id, bucket.path))
+    return [new_id, *(rid for rid, _bucket in retired)], retired
+
+
+def _host_result_items(items: Iterable[object]) -> list[object]:
     return [
-        str(getattr(item, "id"))
-        for item in items
-        if getattr(item, "verb", None) in HOST_RESULT_VERBS
+        item for item in items
+        if getattr(item, "verb", None) in HOST_RESULT_VERBS | {"replace"}
         and getattr(item, "state", None) in ("applied", "unresolved-host")
         and getattr(item, "id", None)
     ]
+
+
+def host_result_ids(items: Iterable[object], home: Path | str | None = None) -> list[str]:
+    """The record ids of *items* (sheet item results) whose host result a
+    post-run recompile should establish: a :data:`HOST_RESULT_VERBS` item
+    that applied, or that left its host result owed (``unresolved-host``).
+
+    E1 fold 1: a ``replace`` item too, when *home* is given -- not by its
+    own id (the first lesson, retired) but by :func:`replace_host_records`:
+    the new lesson and every lesson it superseded, whose old targets
+    :func:`host_result_origins` names."""
+    out: list[str] = []
+    for item in _host_result_items(items):
+        if getattr(item, "verb", None) == "replace":
+            if home is not None:
+                out.extend(replace_host_records(home, str(getattr(item, "id")))[0])
+            continue
+        out.append(str(getattr(item, "id")))
+    return out
+
+
+def host_result_origins(home: Path | str, items: Iterable[object]) -> list[tuple[str, Path]]:
+    """``(record id, bucket)`` of each lesson an applied ``replace`` item
+    superseded (E1 fold 1), for :func:`post_run_recompile`'s *moved_from*:
+    the target each one's line sat in is compiled too, so the line leaves.
+    Read AFTER the sheet applied, unlike :func:`move_origins` -- a
+    superseded lesson stays in its bucket."""
+    out: list[tuple[str, Path]] = []
+    for item in _host_result_items(items):
+        if getattr(item, "verb", None) == "replace":
+            out.extend(replace_host_records(home, str(getattr(item, "id")))[1])
+    return out
 
 
 #: The move verbs whose record leaves a bucket (2026-09-28, follow-up 1):
@@ -10642,8 +10778,11 @@ def recompile(
         destination = routing.get("destination")
         if destination not in ("skill-md", "claude-md", "new-skill"):
             continue  # references are append-only; hooks are not a doc target
-        if now_path.parent.parent == old_bucket:
+        if now_path.parent.parent == old_bucket and record.status != "superseded":
             continue  # it did not move
+        # E1 fold 1: a lesson a `replace` superseded did not move, but its
+        # line must leave the target it sat in (`host_result_origins`); the
+        # compile set below no longer holds it, so the line goes.
         try:
             spec = _resolve_target(
                 home,

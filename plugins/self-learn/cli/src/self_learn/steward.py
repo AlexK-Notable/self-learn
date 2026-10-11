@@ -483,9 +483,12 @@ _HOST_RESULT_IDS: list[str] | None = None
 _MOVED_FROM: list[tuple[str, Path]] | None = None
 
 
-def _note_host_results(result: batch.BatchResult) -> None:
+def _note_host_results(result: batch.BatchResult, home: Path) -> None:
     if _HOST_RESULT_IDS is not None:
-        _HOST_RESULT_IDS.extend(verbs.host_result_ids(result.items))
+        _HOST_RESULT_IDS.extend(verbs.host_result_ids(result.items, home))
+    # E1 fold 1: the targets a `replace` item's superseded lessons sat in.
+    if _MOVED_FROM is not None:
+        _MOVED_FROM.extend(verbs.host_result_origins(home, result.items))
 
 
 def _note_move_origins(home: Path, items: Iterable[object]) -> None:
@@ -2477,6 +2480,9 @@ def _verify_mutation_commit(
         "undefer": "pending",
         "retire": "superseded",
         "supersede": "superseded",
+        # E1 fold 1 (gate R4): the commit must supersede the first lesson;
+        # whether the whole line applied is `_recovered_items`' state read.
+        "replace": "superseded",
     }.get(ref.verb)
     for rel in reversed(paths):
         shown = gitops._git(home, "show", f"{sha}:{rel}")  # noqa: SLF001
@@ -2543,6 +2549,31 @@ def _recovered_items(
             except execution_evidence.ExecutionEvidenceError:
                 sha = None
         if sha is None or not _verify_mutation_commit(home, sha, ref, item):
+            continue
+        if item.verb == "replace":
+            # E1 fold 1 (gate D1): a proof commit shows only that the first
+            # lesson was superseded. The line is established only when the
+            # SAME state read `batch.classify` makes says applied -- every
+            # `also` lesson superseded by the same new lesson. A half-applied
+            # merge is left out of `completed`, so the retry re-dispatches
+            # the line and the verb's own idempotence read finishes it.
+            made = batch.replace_made(home, item.id, item.fields)
+            if made is None:
+                continue
+            ids, retired = verbs.replace_host_records(home, item.id)
+            host = verbs.recompile(
+                home, no_push=True, only_records=ids, moved_from=retired
+            )
+            refused = verbs.recompile_refusals(host, made.id)
+            completed[item.n] = batch.ItemResult(
+                n=item.n, id=item.id, verb=item.verb, rc=1 if refused else 0, sha=sha,
+                state="unresolved-host" if refused else "applied",
+                detail=refused[0] if refused else None,
+                evidence=(
+                    "ledger mutation proven; host result established by recompile"
+                    if refused else "ledger mutation and host result established by recompile"
+                ),
+            )
             continue
         if item.verb in {"route", "rehome", "rescope"}:
             # Sweep 2, R2 (2026-09-27): judge THIS record's own target(s)
@@ -4307,7 +4338,7 @@ def _apply_packet(
                     receipt_ok = False
                     phase = "unfinished"
                     halt_code = result.process_code or 8
-                _note_host_results(result)
+                _note_host_results(result, home)
         failed = [item for item in result.items if item.state in _FAILED_ITEM_STATES]
         refused += len(failed)
         successful = {item.id for item in result.items if item.state in _SUCCESS_RECEIPT_STATES}

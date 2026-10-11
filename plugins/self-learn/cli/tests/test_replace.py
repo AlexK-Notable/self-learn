@@ -125,6 +125,14 @@ def env(tmp_path):
     return Env(tmp_path)
 
 
+@pytest.fixture
+def agents_may_replace(monkeypatch):
+    """E1 fold 1: `batch.REPLACE_REFUSED_ACTORS` refuses `replace` to the
+    steward and the overseer until E3b. A test of what an agent's replace
+    does once E3b empties the set runs with it empty here."""
+    monkeypatch.setattr(batch, "REPLACE_REFUSED_ACTORS", frozenset())
+
+
 # ---------------------------------------------------- the swap, one file
 
 
@@ -558,6 +566,7 @@ def _human_case(home: Path, tmp_path: Path, rid: str) -> str:
     return cases.record(home, stage, actor="human")
 
 
+@pytest.mark.usefixtures("agents_may_replace")
 def test_a_lesson_a_person_s_case_covers_keeps_its_placement(env, tmp_path):
     """D-AUTHOR §2.10 (S-76): when an open case a person recorded covers the
     first lesson, an agent's replacement keeps that lesson's placement
@@ -605,6 +614,7 @@ def _token() -> str:
     return "ghp_" + "Zx9" * 12
 
 
+@pytest.mark.usefixtures("agents_may_replace")
 def test_a_secret_in_the_line_is_the_line_s_and_in_the_record_is_refused(env, tmp_path):
     """D-AUTHOR §2.6 / S-71: the line's own text is scanned first -- a hit is
     `bad-line` (the steward's repair turn); a hit in a record the call
@@ -647,6 +657,7 @@ def _hold(home: Path, tmp_path: Path, rid: str) -> str:
     return cases.record(home, stage, actor="steward")
 
 
+@pytest.mark.usefixtures("agents_may_replace")
 @pytest.mark.parametrize("held_as", ["main", "also"])
 def test_a_steward_replace_touching_a_held_lesson_is_refused_with_nothing_written(
     env, tmp_path, held_as
@@ -719,6 +730,7 @@ def test_the_sheet_grammar_admits_replace_and_checks_its_shape(tmp_path):
                            "because": "b", "covered_by": "claude-md:user"}])
 
 
+@pytest.mark.usefixtures("agents_may_replace")
 def test_the_preview_names_what_the_run_would_do_and_writes_nothing(env, tmp_path):
     old = _seed(env.home, "lrn-e1000093")
     _place(env.home, old, "skill-md")
@@ -735,6 +747,7 @@ def test_the_preview_names_what_the_run_would_do_and_writes_nothing(env, tmp_pat
         "would-refuse", "destination-unavailable")
 
 
+@pytest.mark.usefixtures("agents_may_replace")
 def test_an_agent_replace_onto_a_reference_shelf_is_refused(env, tmp_path):
     """S-77: no agent puts a lesson on a shelf -- not by `replace` either."""
     old = _seed(env.home, "lrn-e1000094")
@@ -856,3 +869,289 @@ def test_the_ledger_metrics_read_a_replace_commit_as_a_resolution(env):
     dates = report._resolution_dates(env.home)
     assert old in dates  # control: its route commit already counted
     assert new in dates
+    # Fold item 5, N5: and it is the REPLACE commit that resolves both --
+    # a route subject also names both ids, so the dates alone cannot tell.
+    subject = _subjects(env.home, 1)[0]
+    assert subject == f"self-learn: replace {old} → {new} (skill-md)"
+    assert report._RESOLUTION_SUBJECT_RE.match(subject)
+
+
+# =========================================================== E1 fold 1
+#
+# 2026-10-11, the blind gate's D1/R1-R4/N1/N3/N5. Until E3b writes the
+# agents' instructions for `replace`, `batch` refuses it to the steward and
+# the overseer by name and their contracts do not show it
+# (`batch.REPLACE_REFUSED_ACTORS`). The recovery readers and the post-run
+# recompile already know it, so E3b only empties that set; those tests run
+# with it empty (`agents_may_replace`).
+
+
+def _merge_sheet(tmp_path: Path, a: str, b: str, *, name: str = "merge") -> batch.Sheet:
+    return _sheet(tmp_path, [{"id": a, "verb": "replace", "also": [b], "trigger": NEW_TRIGGER,
+                              "instruction": NEW_INSTRUCTION, "because": "merge"}],
+                  case="case-0000beef", name=name)
+
+
+@pytest.mark.parametrize("actor", ["steward", "overseer"])
+def test_an_agent_replace_is_refused_by_name_until_e3b_with_nothing_written(
+    env, tmp_path, actor
+):
+    """Fold item 1 (gate R1): the line is refused by name, `bad-line`, in
+    the preview and the run alike, before the verb reads anything; the
+    ledger and the host are untouched. The same sheet run by a person
+    applies (the control)."""
+    a, b = _seed(env.home, "lrn-e1f00001"), _seed(env.home, "lrn-e1f00002")
+    for rid in (a, b):
+        _place(env.home, rid, "skill-md")
+    sheet = _merge_sheet(tmp_path, a, b)
+    head, host_tree = _head(env.home), _tree(env.host)
+
+    (pitem,) = batch.dry_run(env.home, sheet, actor=actor).items
+    assert (pitem.state, pitem.kind) == ("would-refuse", "bad-line"), pitem.detail
+    (item,) = batch.run(env.home, sheet, no_push=True, actor=actor).items
+    assert (item.state, item.kind) == ("refused", "bad-line"), item.detail
+    for detail in (pitem.detail, item.detail):
+        assert f"`replace` is refused for the {actor}" in (detail or "")
+        assert "not built yet (E3b)" in (detail or "")
+    assert not any(s.startswith("self-learn: replace") for s in _subjects(env.home, 5))
+    assert git(env.home, "rev-list", "--count", f"{head}..HEAD", "--", "skills").stdout.strip() == "0"
+    assert _tree(env.host) == host_tree
+    assert (_rec(env.home, a).status, _rec(env.home, b).status) == ("routed", "routed")
+
+    (applied,) = batch.run(env.home, sheet, no_push=True, actor="human").items
+    assert applied.state == "applied", applied.detail
+    assert _rec(env.home, b).status == "superseded"
+
+
+def test_the_agents_contracts_do_not_offer_replace_until_e3b(monkeypatch):
+    """Fold item 1: the steward's sheet-verb list and the overseer's
+    closed sets leave `replace` out while the batch refuses it to them, and
+    list it again the moment E3b empties the set (the control)."""
+    from self_learn import steward_prompt
+    from self_learn.overseer import formats
+
+    def offered() -> tuple[bool, bool, bool, bool]:
+        lines = steward_prompt._sheet_verb_lines()
+        closed = formats.closed_sets()["sheet"]["verbs"]
+        return (
+            any(line.split()[0] == "replace" for line in lines),
+            "replace" in closed,
+            any(line.split()[0] == "revise" for line in lines),
+            "revise" in closed,
+        )
+
+    assert offered() == (False, False, True, True)  # revise: the positive control
+    assert "replace" in batch.PERMITTED_KEYS  # a person's sheet keeps it
+    monkeypatch.setattr(batch, "REPLACE_REFUSED_ACTORS", frozenset())
+    assert offered() == (True, True, True, True)
+
+
+def _half_applied_merge(env, monkeypatch, a: str, b: str):
+    """The steward's line `replace a also: [b]`: the primary commit lands
+    (with the execution trailers), then the `also` supersede is refused --
+    the shape that halts a host-outcome verb after its ledger commit."""
+    from self_learn import execution_evidence, gitops
+
+    for rid in (a, b):
+        _place(env.home, rid, "skill-md")
+    start = gitops.head_sha(env.home)
+    real = verbs.supersede
+
+    def refused(*_a, **_k):
+        raise verbs.DestinationUnavailable("simulated refusal of the also leg")
+
+    monkeypatch.setattr(verbs, "supersede", refused)
+    ref = execution_evidence.ExecutionRef(
+        run_id="run-fold1", case_id="case-0000beef", sheet_sha="0123abcd",
+        sheet_digest="0" * 64, item=1, record_id=a, verb="replace", actor="steward",
+    )
+    with pytest.raises(verbs.DestinationUnavailable):
+        verbs.replace_lesson(env.home, a, also=[b], trigger=NEW_TRIGGER,
+                             instruction=NEW_INSTRUCTION, because="merge", no_push=True,
+                             execution=ref, actor="steward")
+    monkeypatch.setattr(verbs, "supersede", real)
+    assert _rec(env.home, a).status == "superseded"  # control: the primary landed
+    assert _rec(env.home, b).status == "routed"
+    return start
+
+
+@pytest.mark.usefixtures("agents_may_replace")
+def test_the_steward_retry_finishes_a_half_applied_merge(env, tmp_path, monkeypatch):
+    """Fold item 2 (gate D1, probe P8): the recovery reader proves the
+    primary commit, but the line is established only when the state read
+    `batch.classify` makes says applied. Half-applied, it is NOT recovered,
+    so the retry re-dispatches it and the verb finishes the merge: B is
+    superseded by the new lesson and its line leaves SKILL.md. Once
+    finished, the same reader recovers it as applied (the control)."""
+    from self_learn import execution_evidence, steward
+
+    a, b = _seed(env.home, "lrn-e1f00011"), _seed(env.home, "lrn-e1f00012")
+    start = _half_applied_merge(env, monkeypatch, a, b)
+    sheet = _merge_sheet(tmp_path, a, b)
+    monkeypatch.setattr(steward, "_committed_receipts", lambda *a_, **k: {})
+    monkeypatch.setattr(execution_evidence, "validate_manifest_ref", lambda *a_, **k: None)
+    manifest = {"run_id": "run-fold1", "start_head": start}
+    recipe = {"sheet_sha": "0123abcd", "sheet_digest": "0" * 64}
+    assert batch.classify(env.home, sheet[0]) is False
+
+    assert steward._recovered_items(env.home, manifest, "case-0000beef", recipe, sheet) == {}
+
+    (item,) = batch.run(env.home, sheet, no_push=True, actor="steward").items
+    assert item.state == "applied", item.detail
+    new = _rec(env.home, a).superseded_by
+    assert batch.classify(env.home, sheet[0]) is True
+    assert (_rec(env.home, b).status, _rec(env.home, b).superseded_by) == ("superseded", new)
+    text = env.skill_md.read_text(encoding="utf-8")
+    assert f"*({b})*" not in text and f"*({new})*" in text
+
+    done = steward._recovered_items(env.home, manifest, "case-0000beef", recipe, sheet)
+    assert (done[1].state, done[1].rc) == ("applied", 0), done[1].detail
+
+
+@pytest.mark.usefixtures("agents_may_replace")
+def test_the_overseer_resume_of_a_half_applied_merge_re_dispatches_it(env, tmp_path, monkeypatch):
+    """Fold item 2 (gate D1): before, `_candidate_establishes` had no
+    `replace` branch and every resume raised `OverseerError`, walking the
+    attempt cap to a question. Now a half-applied merge is left out of the
+    completed items (re-dispatched, as the steward's is), and a finished one
+    is recovered as applied."""
+    from self_learn.overseer import run as orun
+
+    a, b = _seed(env.home, "lrn-e1f00021"), _seed(env.home, "lrn-e1f00022")
+    start = _half_applied_merge(env, monkeypatch, a, b)
+    sheet_text = (f"version: 1\ncase: case-0000beef\nitems:\n  - id: {a}\n    verb: replace\n"
+                  f"    also: [{b}]\n    trigger: \"{NEW_TRIGGER}\"\n"
+                  f"    instruction: \"{NEW_INSTRUCTION}\"\n    because: merge\n")
+    recipe = {"sheet_sha": "0123abcd", "sheet_digest": "0" * 64, "sheet": sheet_text,
+              "items": [{"n": 1, "id": a, "verb": "replace"}]}
+    proof = git(env.home, "log", "-1", "--format=%H", f"--grep=^self-learn: replace {a}").stdout.strip()
+    assert proof  # control: the proof commit exists
+    monkeypatch.setattr(orun, "_manifest_introduction", lambda *a_, **k: start)
+    from self_learn import execution_evidence
+    monkeypatch.setattr(execution_evidence, "find_mutation_commit", lambda *a_, **k: proof)
+
+    assert orun._mutation_proven_completed(
+        env.home, {"run_id": "run-fold1"}, "case-0000beef", recipe, {}) == {}
+
+    path = tmp_path / "resume.yaml"
+    path.write_text(sheet_text, encoding="utf-8")
+    (item,) = batch.run(env.home, batch.load_sheet(path), no_push=True, actor="overseer").items
+    assert item.state == "applied", item.detail
+    out = orun._mutation_proven_completed(
+        env.home, {"run_id": "run-fold1"}, "case-0000beef", recipe, {})
+    assert (out[1].state, out[1].rc) == ("applied", 0)
+
+
+def test_the_post_run_recompile_writes_a_replace_whose_host_write_failed(env, monkeypatch):
+    """Fold item 2: a replace whose ledger commit landed and whose host
+    write failed is recompiled by the runners' post-run pass -- keyed to the
+    NEW lesson (the item's own id is the retired one) and to the target the
+    old line sat in, so a moved line both arrives and leaves."""
+    from self_learn import batch as batch_mod
+
+    old = _seed(env.home, "lrn-e1f00031")
+    _place(env.home, old, "skill-md")
+    assert f"*({old})*" in env.skill_md.read_text(encoding="utf-8")  # control
+
+    def boom(*_a, **_k):
+        raise RuntimeError("simulated host-phase failure")
+
+    monkeypatch.setattr(verbs, "_host_phase", boom)
+    with pytest.raises(RuntimeError):
+        verbs.replace_lesson(env.home, old, trigger=NEW_TRIGGER, instruction=NEW_INSTRUCTION,
+                             to=str(env.host), dest="claude-md", because="moves", no_push=True)
+    monkeypatch.undo()
+    new = _rec(env.home, old).superseded_by
+    assert new and f"*({old})*" in env.skill_md.read_text(encoding="utf-8")  # the host write failed
+    assert f"*({new})*" not in env.claude_md.read_text(encoding="utf-8")
+
+    owed = [batch_mod.ItemResult(n=1, id=old, verb="replace", rc=1, state="unresolved-host")]
+    ids = verbs.host_result_ids(owed, env.home)
+    assert ids[:2] == [new, old]
+    verbs.post_run_recompile(env.home, ids, verbs.host_result_origins(env.home, owed))
+    assert f"*({new})*" in env.claude_md.read_text(encoding="utf-8")
+    assert f"*({old})*" not in env.skill_md.read_text(encoding="utf-8")
+
+
+@pytest.mark.usefixtures("agents_may_replace")
+def test_an_agent_replace_may_not_retire_an_also_lesson_a_person_s_case_covers(env, tmp_path):
+    """Fold item 3 (gate R2, probe P5): S-76 binds every lesson the replace
+    moves, not only the first. B is placed in CLAUDE.md under an open case a
+    person recorded; an agent merging B into A (in SKILL.md) is refused as
+    needs-person, before anything is written. A person's own merge applies."""
+    a = _seed(env.home, "lrn-e1f00041")
+    _place(env.home, a, "skill-md")
+    b = _seed(env.home, "lrn-e1f00042", scope="project", project_path=env.host)
+    _place(env.home, b, "claude-md")
+    case_id = _human_case(env.home, tmp_path, b)
+    sheet = _merge_sheet(tmp_path, a, b)
+    head, host_tree = _head(env.home), _tree(env.host)
+
+    (pitem,) = batch.dry_run(env.home, sheet, actor="overseer").items
+    assert (pitem.state, pitem.kind) == ("would-refuse", "needs-person"), pitem.detail
+    (item,) = batch.run(env.home, sheet, no_push=True, actor="overseer").items
+    assert (item.state, item.kind) == ("refused", "needs-person"), item.detail
+    assert f"{b} is covered by {case_id}" in (item.detail or "")
+    assert git(env.home, "rev-list", "--count", f"{head}..HEAD", "--", "skills", "projects").stdout.strip() == "0"
+    assert _tree(env.host) == host_tree
+    assert _rec(env.home, b).status == "routed"
+
+    (applied,) = batch.run(env.home, sheet, no_push=True, actor="human").items
+    assert applied.state == "applied", applied.detail
+    assert f"*({b})*" not in env.claude_md.read_text(encoding="utf-8")
+
+
+def test_the_preview_refuses_a_replace_whose_old_line_sits_on_a_tracked_plain_shelf(tmp_path):
+    """Fold item 4 (gate R3): the first lesson's retirement pre-flight runs
+    in the preview with the composed record, unrouted, as `after_route` (no
+    simulated routed copy, no second `_DRY_RUN_EXEMPT` entry). Moving a
+    lesson off a shelf its plain host keeps in git would rewrite that
+    tracked shelf: refused, needs-person, in the preview and the run alike,
+    by that pre-flight alone (the new line's own target, the host's
+    untracked CLAUDE.md, is fine); nothing changes. (A same-shelf rewrite
+    there is refused earlier, by the new line's own target check.)"""
+    from support import make_env as _make_env
+    from test_tracked_target_guard import _lesson
+
+    home = _make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-e1f00051")
+    verbs.route(home, rid, dest="reference", no_push=True)
+    git(host, "add", "-f", "--", "references/LEARNINGS.md")
+    git(host, "commit", "-q", "-m", "keep the shelf in history")
+    shelf = (host / "references" / "LEARNINGS.md").read_bytes()
+    assert rid.encode() in shelf  # control
+    sheet = _sheet(tmp_path, [{"id": rid, "verb": "replace", "trigger": NEW_TRIGGER,
+                               "instruction": NEW_INSTRUCTION, "because": "shorter",
+                               "dest": "claude-md"}])
+
+    (pitem,) = batch.dry_run(home, sheet, actor="human").items
+    assert (pitem.state, pitem.kind) == ("would-refuse", "needs-person"), pitem.detail
+    assert "LEARNINGS.md is tracked by git" in (pitem.detail or "")
+    (item,) = batch.run(home, sheet, no_push=True, actor="human").items
+    assert (item.state, item.kind) == ("refused", "needs-person"), item.detail
+    assert _rec(home, rid).status == "routed"
+    assert (host / "references" / "LEARNINGS.md").read_bytes() == shelf
+
+
+def test_a_replace_on_the_default_shelf_stores_the_shelf_as_a_route_does(env):
+    """Fold item 5, N1: a lesson on its bucket's default reference shelf
+    stores `reference_file: None`; a replace inheriting that placement
+    stores the same, not the file name spelled out."""
+    old = _seed(env.home, "lrn-e1f00061")
+    _place(env.home, old, "reference")
+    assert (_rec(env.home, old).routing or {}).get("reference_file") is None  # control
+    new = verbs.replace_lesson(env.home, old, trigger=NEW_TRIGGER, instruction=NEW_INSTRUCTION,
+                               because="shorter", no_push=True).new_record_id
+    routing = _rec(env.home, new).routing or {}
+    assert (routing.get("destination"), routing.get("reference_file")) == ("reference", None)
+
+
+def test_a_pending_replacement_carries_because_as_its_resolution_note(env):
+    """Fold item 5, N3: on the pending path too, `because` (with `note`
+    after it) is the new lesson's resolution_note, as on the routed path."""
+    old = _seed(env.home, "lrn-e1f00071")
+    new = verbs.replace_lesson(env.home, old, fact="The yield per round decides it.",
+                               because="it is a fact", note="from the review", no_push=True
+                               ).new_record_id
+    assert _rec(env.home, new).resolution_note == "it is a fact\n\nfrom the review"

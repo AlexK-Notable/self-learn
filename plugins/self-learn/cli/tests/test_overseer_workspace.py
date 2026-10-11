@@ -72,7 +72,12 @@ def test_phase_b_formats_hold_every_file_the_run_writes(formats_dir):
     assert sets["initial_views"]["confidence"] == list(overseer_run.INITIAL_CONFIDENCE)
     assert sets["report_headings_in_order"] == list(overseer_run._REPORT_SECTIONS)
     from self_learn import batch
-    assert set(sets["sheet"]["verbs"]) == set(batch.PERMITTED_KEYS) - set(batch.SHEET_VERB_ALIASES)
+    # E1 fold 1 (2026-10-11): less the verbs the batch refuses the overseer
+    # by name (`replace` until E3b; test_replace.py pins both directions).
+    assert set(sets["sheet"]["verbs"]) == (
+        set(batch.PERMITTED_KEYS) - set(batch.SHEET_VERB_ALIASES)
+        - batch.agent_refused_verbs("overseer")
+    )
 
 
 def test_formats_scan_clean(formats_dir):

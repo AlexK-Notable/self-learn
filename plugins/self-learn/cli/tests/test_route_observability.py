@@ -750,16 +750,6 @@ def _route_sites(
         # at all), so `followup_add` was rewritten to match rather
         # than kept as a second, weaker exemption. This set stays at
         # its original one entry.
-        #
-        # E1 (2026-10-10): `verbs._preflight_replace` is the second
-        # entry, for route_dry_run's own reason. It calls `set_routing()`
-        # on `simulated`, an in-memory, never-persisted copy of the new
-        # lesson, only so the first lesson's retirement pre-flight can
-        # judge a same-shelf rewrite as the real route will leave the
-        # shelf (`after_route`, the shape route_dry_run builds too). It
-        # writes nothing and spools nothing; the real write is
-        # `route_direct`, which this walk still collects and checks.
-        "_preflight_replace",
     }
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):

@@ -560,7 +560,13 @@ def test_the_ledger_refuses_the_steward_every_write_to_a_held_lesson(
     the same state, a person parks that lesson: the same line is refused
     by the ledger (`bad-line`, the hold's sentence naming the parked case)
     and nothing changed -- neither repo's HEAD or working tree, the hook
-    directory, or the lesson's record -- and the parked case still waits."""
+    directory, or the lesson's record -- and the parked case still waits.
+
+    E1 fold 1 (2026-10-11): `batch` refuses `replace` to the steward by
+    name until E3b (`batch.REPLACE_REFUSED_ACTORS`); the two `replace` rows
+    test the hold E3b inherits, so they run with that set empty."""
+    if row.startswith("replace"):
+        monkeypatch.setattr(batch, "REPLACE_REFUSED_ACTORS", frozenset())
     setup = _ROWS[row]
     free_env = make_env(tmp_path / "free")
     line, _lesson, case = setup(free_env, tmp_path / "free")

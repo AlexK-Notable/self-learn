@@ -292,9 +292,12 @@ _HOST_RESULT_IDS: list[str] | None = None
 _MOVED_FROM: list[tuple[str, Path]] | None = None
 
 
-def _note_host_results(result: batch.BatchResult) -> None:
+def _note_host_results(result: batch.BatchResult, home: Path) -> None:
     if _HOST_RESULT_IDS is not None:
-        _HOST_RESULT_IDS.extend(verbs.host_result_ids(result.items))
+        _HOST_RESULT_IDS.extend(verbs.host_result_ids(result.items, home))
+    # E1 fold 1: the targets a `replace` item's superseded lessons sat in.
+    if _MOVED_FROM is not None:
+        _MOVED_FROM.extend(verbs.host_result_origins(home, result.items))
 
 
 def _note_move_origins(home: Path, items: Iterable[object]) -> None:
@@ -3102,6 +3105,11 @@ def _candidate_establishes(
         )
     if verb == "revise":
         return cast(str, item.get("text") or "") in record.body
+    if verb == "replace":
+        # E1 fold 1 (gate D1): the proof commit superseded the first lesson.
+        # Whether the whole line applied is `_mutation_proven_completed`'s
+        # state read (`batch.replace_made`), never this commit's.
+        return record.status == "superseded" and bool(record.superseded_by)
     if verb == "note":
         key = item.get("key")
         return key is not None and record.note_has_key(cast(str, key))
@@ -3171,6 +3179,30 @@ def _mutation_proven_completed(
                 f"mutation proof {sha[:8]} does not establish original item {n}"
             )
         evidence = "ledger mutation verified against original item"
+        if row["verb"] == "replace":
+            # E1 fold 1 (gate D1): established only when the state read
+            # `batch.classify` makes says applied. A half-applied merge is
+            # left out of `completed` -- not raised -- so the resumed sheet
+            # re-dispatches the line and the verb finishes the merge.
+            made = batch.replace_made(home, row["id"], fields)
+            if made is None:
+                continue
+            ids, retired = verbs.replace_host_records(home, row["id"])
+            recomp = verbs.recompile(
+                home, no_push=True, only_records=ids, moved_from=retired
+            )
+            refused = verbs.recompile_refusals(recomp, made.id)
+            if refused:
+                completed[n] = batch.ItemResult(
+                    n=n, id=row["id"], verb=row["verb"], rc=1,
+                    state="unresolved-host", detail="; ".join(refused),
+                )
+                continue
+            completed[n] = batch.ItemResult(
+                n=n, id=row["id"], verb=row["verb"], rc=0, sha=sha,
+                state="applied", evidence="host result established by recompile",
+            )
+            continue
         if row["verb"] in batch._HOST_OUTCOME_VERBS:  # noqa: SLF001 -- shared executor contract
             # Sweep 2, R2 (2026-09-27): this item's own target(s) only --
             # see steward._recovered_items.
@@ -3608,7 +3640,7 @@ def _execute_manifest(
             manifest["remaining"] = order[position:]
             break
         codes.append(result.process_code)
-        _note_host_results(result)
+        _note_host_results(result, home)
         recipe["dispositions"] = [
             {
                 "n": item.n,

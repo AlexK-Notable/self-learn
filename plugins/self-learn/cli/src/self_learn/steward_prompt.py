@@ -863,7 +863,10 @@ def _sheet_verb_lines() -> list[str]:
     checks an item against. `by` is left out: the runner writes it."""
     lines = []
     for verb in sorted(batch.PERMITTED_KEYS):
-        if verb in _UNLISTED_SHEET_VERBS:
+        # E1 fold 1: a verb the batch refuses the steward by name
+        # (`replace` until E3b) is not shown either; read at call time, so
+        # emptying `batch.REPLACE_REFUSED_ACTORS` lists it again.
+        if verb in _UNLISTED_SHEET_VERBS or verb in batch.agent_refused_verbs("steward"):
             continue
         required = sorted(batch.REQUIRED_KEYS.get(verb, frozenset()))
         optional = sorted(batch.PERMITTED_KEYS[verb] - set(required) - {"by"})

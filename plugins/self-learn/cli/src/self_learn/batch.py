@@ -71,6 +71,7 @@ __all__ = [
     "PERMITTED_VERBS",
     "REFUSAL_KINDS",
     "REFUSED_HOOK_DESTINATION",
+    "REPLACE_REFUSED_ACTORS",
     "BatchError",
     "BatchContinuation",
     "BookkeepingHalt",
@@ -81,11 +82,13 @@ __all__ = [
     "Sheet",
     "SheetItem",
     "UnreadableRecord",
+    "agent_refused_verbs",
     "classify",
     "decision_code",
     "dry_run",
     "load_sheet",
     "refusal_kind",
+    "replace_made",
     "run",
     "write_receipt",
 ]
@@ -240,6 +243,37 @@ HOOK_ROUTING_ACTORS = frozenset({"overseer", "steward"})
 #: (`reference:<file>`) -- the same two actors, for the same measurement:
 #: a shelf nothing reads covers no lesson (`_refuse_agent_shelf_cover`).
 REFERENCE_REFUSED_ACTORS = frozenset({"overseer", "steward"})
+#: E1 fold 1 (2026-10-11, gate R1): the actors a `replace` line is refused
+#: for, until E3b writes the agents' instructions for it. Neither agent has
+#: been told what `replace` is for, when to merge with `also`, or that its
+#: case owes a `decision.rewrite`, so the verb is closed to both by name,
+#: and hidden from both generated contracts (the steward's sheet-verb list,
+#: the overseer's `closed-sets.yaml`), which read this ONE set through
+#: :func:`agent_refused_verbs`. E3b empties it, in one edit. A person's
+#: sheet (`human`) and `self-learn replace` never pass through here.
+REPLACE_REFUSED_ACTORS = frozenset({"overseer", "steward"})
+
+
+def agent_refused_verbs(actor: str) -> frozenset[str]:
+    """The sheet verbs refused for *actor* by name, and so left out of the
+    contract its runner shows it: ``replace`` while
+    :data:`REPLACE_REFUSED_ACTORS` names the actor (E1 fold 1)."""
+    return frozenset({"replace"}) if actor in REPLACE_REFUSED_ACTORS else frozenset()
+
+
+def _refuse_agent_replace(item: "SheetItem", actor: str) -> None:
+    """Raise the refusal of a ``replace`` line for an actor
+    :data:`REPLACE_REFUSED_ACTORS` names -- a :class:`verbs.SheetLineError`,
+    kind ``bad-line``, so the line is sent back to be decided another way.
+    Keyed on the runner's *actor*, never the line's ``by:``. The ONE
+    sentence `_dispatch` and `dry_run` both show, before the verb reads
+    anything."""
+    if item.verb == "replace" and actor in REPLACE_REFUSED_ACTORS:
+        raise verbs.SheetLineError(
+            f"{item.id}: `replace` is refused for the {actor} (E1, 2026-10-11) -- the "
+            "agents' instructions for it are not built yet (E3b); decide this lesson "
+            "with route, revise, supersede, retire, reject or defer, or park it"
+        )
 
 
 def _refuse_agent_reference(
@@ -839,6 +873,29 @@ def _hook_activation_registered(record: Record) -> bool | None:
     return "delegated" not in note
 
 
+def replace_made(home: Path | str, record_id: str, fields: dict) -> Record | None:
+    """The lesson a ``replace`` line made, iff the line is fully applied
+    (E1, D-AUTHOR §2.2) -- else ``None``. Applied means: *record_id* reads
+    ``superseded_by`` a lesson that ``supersedes`` it with this line's text
+    (:func:`verbs.replace_applied_as`), and every ``also`` lesson reads
+    ``superseded_by`` that same lesson. A half-applied merge is not
+    applied: re-dispatched, the verb finishes it. The ONE state read
+    :func:`classify` makes, and the steward's and the overseer's recovery
+    readers make (E1 fold 1, gate D1), so the three cannot disagree."""
+    home = Path(home)
+    made = verbs.replace_applied_as(home, record_id, fields)
+    if made is None:
+        return None
+    for also_id in fields.get("also") or []:
+        try:
+            also_record = read_record_or_refuse(find_record_path(home, also_id))
+        except LedgerOpsError:
+            return None
+        if also_record.superseded_by != made.id:
+            return None
+    return made
+
+
 def classify(
     home: Path, item: SheetItem, *, actor: str = "human",
     hook_activation: bool = False,
@@ -1016,17 +1073,7 @@ def classify(
         # `superseded_by` a lesson that `supersedes` it with this line's
         # text, and every `also` lesson reads `superseded_by` that same lesson. A
         # half-applied merge is not applied: the verb finishes it.
-        made = verbs.replace_applied_as(home, item.id, f)
-        if made is None:
-            return False
-        for also_id in f.get("also") or []:
-            try:
-                also_record = read_record_or_refuse(find_record_path(home, also_id))
-            except LedgerOpsError:
-                return False
-            if also_record.superseded_by != made.id:
-                return False
-        return True
+        return replace_made(home, item.id, f) is not None
     if verb == "revise":
         # U3 (carried from the U4 gate, gate-u4-r1.md F5): `revise` was
         # added to PERMITTED_VERBS by U4 without a `classify` branch, so
@@ -1345,6 +1392,7 @@ def _dispatch_replace(
     new lesson would take (S-77), as for a route. ``by`` defaults to the
     runner's actor for a non-human runner, as on `route`. A refusal raises
     to :func:`_dispatch`, which maps it like every other verb's."""
+    _refuse_agent_replace(item, actor)
     f = item.fields
     _refuse_agent_reference(
         item.id, verbs.replace_destination(home, item.id, f.get("dest")), actor
@@ -2084,6 +2132,7 @@ def _preview_checks(
     frontmatter, which a revise never changes. Returns what the check
     returns: for a `revise`, the lesson as it would leave it."""
     _refuse_agent_shelf_cover(item, actor)
+    _refuse_agent_replace(item, actor)
     f = item.fields
     if item.verb == "replace":
         _refuse_agent_reference(
