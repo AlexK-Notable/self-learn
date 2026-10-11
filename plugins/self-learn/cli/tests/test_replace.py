@@ -527,11 +527,13 @@ def test_a_lesson_already_replaced_by_another_text_is_refused(env):
 
 def test_text_from_restores_the_original_text_byte_for_byte(env):
     """D-AUTHOR §2.7: the undo of a bad rewrite is a further `replace` that
-    copies the original's sections exactly from `resolved/`."""
+    copies the original's sections exactly from `resolved/`. The Context
+    here starts with a blank line and an indent, bytes a re-render from the
+    stripped sections would not keep, so only a byte copy passes."""
     original = _seed(env.home, "lrn-e1000051")
     path = find_record_path(env.home, original)
     record = Record.from_path(path)
-    record.set_body(record.body + "\n## Context\nwhy the long form mattered\n   with odd  spacing\n")
+    record.set_body(record.body + "\n## Context\n\n   why the long form mattered\n   with odd  spacing\n")
     record.write(path)
     commit_all(env.home, "context")
     _place(env.home, original, "skill-md")
