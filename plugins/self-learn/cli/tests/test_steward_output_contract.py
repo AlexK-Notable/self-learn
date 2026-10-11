@@ -79,7 +79,8 @@ def test_every_sheet_verb_is_listed_with_exactly_the_keys_the_checker_allows():
     assert batch.SHEET_VERB_ALIASES and batch.SHEET_VERB_ALIASES < set(batch.PERMITTED_KEYS)  # the control
     listed = set(batch.PERMITTED_KEYS) - batch.SHEET_VERB_ALIASES  # `retire`'s pre-rename alias (S-67)
     # E1 fold 1 (2026-10-11): less the verbs the batch refuses the steward by
-    # name (`replace` until E3b); test_replace.py pins both directions.
+    # name (`batch.REPLACE_REFUSED_ACTORS`, empty since E3b, so `replace` is
+    # listed); test_replace.py pins both directions.
     listed -= batch.agent_refused_verbs("steward")
     assert set(lines) == listed
     for verb in listed:

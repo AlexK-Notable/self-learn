@@ -158,8 +158,9 @@ def closed_sets() -> dict[str, Any]:
                 }
                 for verb, keys in sorted(batch.PERMITTED_KEYS.items())
                 if verb not in batch.SHEET_VERB_ALIASES
-                # E1 fold 1: `replace` is refused the overseer until E3b
-                # (`batch.REPLACE_REFUSED_ACTORS`), so it is not offered.
+                # E1 fold 1: a verb the batch refuses the overseer by name
+                # (`batch.REPLACE_REFUSED_ACTORS`, empty since E3b) is not
+                # offered.
                 and verb not in batch.agent_refused_verbs("overseer")
             },
             "item_keys_on_every_verb": ["id", "verb", "close_call"],

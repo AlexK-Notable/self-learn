@@ -244,14 +244,16 @@ HOOK_ROUTING_ACTORS = frozenset({"overseer", "steward"})
 #: a shelf nothing reads covers no lesson (`_refuse_agent_shelf_cover`).
 REFERENCE_REFUSED_ACTORS = frozenset({"overseer", "steward"})
 #: E1 fold 1 (2026-10-11, gate R1): the actors a `replace` line is refused
-#: for, until E3b writes the agents' instructions for it. Neither agent has
-#: been told what `replace` is for, when to merge with `also`, or that its
-#: case owes a `decision.rewrite`, so the verb is closed to both by name,
-#: and hidden from both generated contracts (the steward's sheet-verb list,
-#: the overseer's `closed-sets.yaml`), which read this ONE set through
-#: :func:`agent_refused_verbs`. E3b empties it, in one edit. A person's
-#: sheet (`human`) and `self-learn replace` never pass through here.
-REPLACE_REFUSED_ACTORS = frozenset({"overseer", "steward"})
+#: for by name, and for whom it is hidden from the generated contract (the
+#: steward's sheet-verb list, the overseer's `closed-sets.yaml`), which read
+#: this ONE set through :func:`agent_refused_verbs`. E1 closed it to both
+#: agents until their instructions existed; E3b (2026-10-11) wrote them --
+#: the steward's and the overseer's limits under D-AUTHOR §2.8, the
+#: runners' "rewrite required" and records checks -- and emptied it. The
+#: mechanism stays: a name put back here closes the verb to that agent
+#: again, in the run, the preview and the contract alike. A person's sheet
+#: (`human`) and `self-learn replace` never pass through here.
+REPLACE_REFUSED_ACTORS: frozenset[str] = frozenset()
 
 
 def agent_refused_verbs(actor: str) -> frozenset[str]:
@@ -270,9 +272,9 @@ def _refuse_agent_replace(item: "SheetItem", actor: str) -> None:
     anything."""
     if item.verb == "replace" and actor in REPLACE_REFUSED_ACTORS:
         raise verbs.SheetLineError(
-            f"{item.id}: `replace` is refused for the {actor} (E1, 2026-10-11) -- the "
-            "agents' instructions for it are not built yet (E3b); decide this lesson "
-            "with route, revise, supersede, retire, reject or defer, or park it"
+            f"{item.id}: `replace` is refused for the {actor} "
+            "(batch.REPLACE_REFUSED_ACTORS); decide this lesson with route, revise, "
+            "supersede, retire, reject or defer, or park it"
         )
 
 

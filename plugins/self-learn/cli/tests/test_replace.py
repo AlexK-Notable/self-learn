@@ -127,9 +127,10 @@ def env(tmp_path):
 
 @pytest.fixture
 def agents_may_replace(monkeypatch):
-    """E1 fold 1: `batch.REPLACE_REFUSED_ACTORS` refuses `replace` to the
-    steward and the overseer until E3b. A test of what an agent's replace
-    does once E3b empties the set runs with it empty here."""
+    """E1 fold 1: `batch.REPLACE_REFUSED_ACTORS` refused `replace` to the
+    steward and the overseer until E3b, which emptied it (2026-10-11). The
+    tests of what an agent's replace does keep pinning the set empty, so a
+    name put back there cannot quietly turn them into refusal tests."""
     monkeypatch.setattr(batch, "REPLACE_REFUSED_ACTORS", frozenset())
 
 
@@ -878,12 +879,13 @@ def test_the_ledger_metrics_read_a_replace_commit_as_a_resolution(env):
 
 # =========================================================== E1 fold 1
 #
-# 2026-10-11, the blind gate's D1/R1-R4/N1/N3/N5. Until E3b writes the
-# agents' instructions for `replace`, `batch` refuses it to the steward and
-# the overseer by name and their contracts do not show it
-# (`batch.REPLACE_REFUSED_ACTORS`). The recovery readers and the post-run
-# recompile already know it, so E3b only empties that set; those tests run
-# with it empty (`agents_may_replace`).
+# 2026-10-11, the blind gate's D1/R1-R4/N1/N3/N5. Until E3b, `batch`
+# refused `replace` to the steward and the overseer by name and their
+# contracts did not show it (`batch.REPLACE_REFUSED_ACTORS`). E3b emptied
+# that set (2026-10-11): the refusal is now shown only under a set put back
+# by monkeypatch, and the agents' lines apply. The recovery readers and the
+# post-run recompile already knew the verb; those tests pin the set empty
+# (`agents_may_replace`).
 
 
 def _merge_sheet(tmp_path: Path, a: str, b: str, *, name: str = "merge") -> batch.Sheet:
@@ -893,13 +895,17 @@ def _merge_sheet(tmp_path: Path, a: str, b: str, *, name: str = "merge") -> batc
 
 
 @pytest.mark.parametrize("actor", ["steward", "overseer"])
-def test_an_agent_replace_is_refused_by_name_until_e3b_with_nothing_written(
-    env, tmp_path, actor
+def test_an_agent_replace_is_refused_by_name_only_while_the_set_names_it(
+    env, tmp_path, monkeypatch, actor
 ):
-    """Fold item 1 (gate R1): the line is refused by name, `bad-line`, in
-    the preview and the run alike, before the verb reads anything; the
-    ledger and the host are untouched. The same sheet run by a person
-    applies (the control)."""
+    """Fold item 1 (gate R1), inverted by E3b: the set is empty, so the
+    mechanism is shown with the agents put back in it -- the line is then
+    refused by name, `bad-line`, in the preview and the run alike, before
+    the verb reads anything; the ledger and the host are untouched. The
+    same sheet run by a person applies, and so does the agent's own once
+    the set is the shipped one (the controls)."""
+    assert batch.REPLACE_REFUSED_ACTORS == frozenset()  # E3b: the shipped set
+    monkeypatch.setattr(batch, "REPLACE_REFUSED_ACTORS", frozenset({"overseer", "steward"}))
     a, b = _seed(env.home, "lrn-e1f00001"), _seed(env.home, "lrn-e1f00002")
     for rid in (a, b):
         _place(env.home, rid, "skill-md")
@@ -912,7 +918,7 @@ def test_an_agent_replace_is_refused_by_name_until_e3b_with_nothing_written(
     assert (item.state, item.kind) == ("refused", "bad-line"), item.detail
     for detail in (pitem.detail, item.detail):
         assert f"`replace` is refused for the {actor}" in (detail or "")
-        assert "not built yet (E3b)" in (detail or "")
+        assert "batch.REPLACE_REFUSED_ACTORS" in (detail or "")
     assert not any(s.startswith("self-learn: replace") for s in _subjects(env.home, 5))
     assert git(env.home, "rev-list", "--count", f"{head}..HEAD", "--", "skills").stdout.strip() == "0"
     assert _tree(env.host) == host_tree
@@ -922,11 +928,21 @@ def test_an_agent_replace_is_refused_by_name_until_e3b_with_nothing_written(
     assert applied.state == "applied", applied.detail
     assert _rec(env.home, b).status == "superseded"
 
+    # the agent's own line, under the shipped (empty) set, applies too
+    monkeypatch.setattr(batch, "REPLACE_REFUSED_ACTORS", frozenset())
+    c, d = _seed(env.home, "lrn-e1f00003"), _seed(env.home, "lrn-e1f00004")
+    for rid in (c, d):
+        _place(env.home, rid, "skill-md")
+    (own,) = batch.run(env.home, _merge_sheet(tmp_path, c, d, name="own"),
+                       no_push=True, actor=actor).items
+    assert own.state == "applied", own.detail
+    assert _rec(env.home, d).superseded_by == _rec(env.home, c).superseded_by
 
-def test_the_agents_contracts_do_not_offer_replace_until_e3b(monkeypatch):
-    """Fold item 1: the steward's sheet-verb list and the overseer's
-    closed sets leave `replace` out while the batch refuses it to them, and
-    list it again the moment E3b empties the set (the control)."""
+
+def test_the_agents_contracts_offer_replace_unless_the_set_names_them(monkeypatch):
+    """Fold item 1, inverted by E3b: the steward's sheet-verb list and the
+    overseer's closed sets list `replace` now that the set is empty, and
+    leave it out again the moment a name is put back (the mechanism)."""
     from self_learn import steward_prompt
     from self_learn.overseer import formats
 
@@ -940,10 +956,10 @@ def test_the_agents_contracts_do_not_offer_replace_until_e3b(monkeypatch):
             "revise" in closed,
         )
 
-    assert offered() == (False, False, True, True)  # revise: the positive control
+    assert offered() == (True, True, True, True)  # revise: the positive control
     assert "replace" in batch.PERMITTED_KEYS  # a person's sheet keeps it
-    monkeypatch.setattr(batch, "REPLACE_REFUSED_ACTORS", frozenset())
-    assert offered() == (True, True, True, True)
+    monkeypatch.setattr(batch, "REPLACE_REFUSED_ACTORS", frozenset({"overseer", "steward"}))
+    assert offered() == (False, False, True, True)
 
 
 def _half_applied_merge(env, monkeypatch, a: str, b: str):

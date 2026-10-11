@@ -878,8 +878,8 @@ def _sheet_verb_lines() -> list[str]:
     lines = []
     for verb in sorted(batch.PERMITTED_KEYS):
         # E1 fold 1: a verb the batch refuses the steward by name
-        # (`replace` until E3b) is not shown either; read at call time, so
-        # emptying `batch.REPLACE_REFUSED_ACTORS` lists it again.
+        # (`batch.REPLACE_REFUSED_ACTORS`, empty since E3b) is not shown
+        # either; read at call time, so the list follows that set.
         if verb in _UNLISTED_SHEET_VERBS or verb in batch.agent_refused_verbs("steward"):
             continue
         required = sorted(batch.REQUIRED_KEYS.get(verb, frozenset()))
