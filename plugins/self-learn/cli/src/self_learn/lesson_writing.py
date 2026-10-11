@@ -18,6 +18,18 @@ BEGIN = "<!-- lesson-writing:begin (a copy of skills/self-learn/references/lesso
 END = "<!-- lesson-writing:end -->"
 
 
+#: Said right after the passage, OUTSIDE the markers (the copy stays
+#: byte-identical), to the two writers that cannot yet create a `## Context`
+#: section: `revise` refuses a section the record lacks and any text with a
+#: `## ` heading (verbs.py), and the overseer's case files forbid lines that
+#: start with `## `. `note` is a sheet verb for both (`batch.PERMITTED_KEYS`).
+#: Teach can write `## Context` (`--context`), so its copy has no such line.
+AGENT_INTERIM = (
+    "For now, attach background to an existing lesson with a `note` line on the sheet "
+    "(`append:`); `revise` cannot add a `## Context` section a lesson does not already have."
+)
+
+
 def path() -> Path:
     # src/self_learn/lesson_writing.py -> parents[3] is plugins/self-learn
     return (

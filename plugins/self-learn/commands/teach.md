@@ -36,9 +36,9 @@ to stop the container").
     **Instruction** (what to do, carrying the *why*). Pick `--kind`:
     `anti-pattern` (a mistake to prevent), `surface-rule` (a rule about a
     specific surface — the default), or `reasoning-pattern`.
-  - knowledge → compose **Fact** + optional **Context**.
-  - Either type may carry a **Context**: the background that is kept in the
-    record and never loaded (`--context`).
+  - knowledge → compose **Fact**.
+  - Either type may also carry a **Context** (`--context`): the background,
+    kept in the record and never loaded.
 - **Scope** — `--skill <name>` if the lesson belongs to a skill that was
   active or under discussion; `--project` for this repo; `--user` only
   for genuinely universal conduct. Prefer the narrowest scope that still
@@ -48,7 +48,7 @@ to stop the container").
   never anything that could contain a secret), plus the current session
   id. Pass them as `--quote` + `--session` (they go together; if you do
   not know the session id, omit both and fold the evidence into the
-  Instruction/Context text instead).
+  Context text instead — never into the loaded Trigger, Instruction or Fact).
 - **Supersession** — if this lesson *corrects* an already-routed record
   you know of, add `--supersedes <lrn-id>`.
 - **Capture-time grounding (11 §3 — infer, don't interrogate).** You hold

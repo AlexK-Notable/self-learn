@@ -344,6 +344,7 @@ def _rules(phase: str) -> str:
             # E3a: the passage on writing a lesson, inlined (never a pointer).
             # Phase B only: phase A selects cases and writes no lesson text.
             lesson_writing.inlined(),
+            lesson_writing.AGENT_INTERIM,
         ]
     return "\n".join(lines) + "\n"
 

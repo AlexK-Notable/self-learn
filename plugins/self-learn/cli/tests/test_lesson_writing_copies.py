@@ -175,8 +175,76 @@ def test_the_compiled_line_never_carries_the_context(ledger):
     assert "clobbered" not in compiled
 
 
-def test_context_alone_still_means_a_knowledge_record(ledger):
-    """The pre-E3a reading of `--context` with no behavior flag is kept."""
+def test_context_with_free_text_and_no_fact_is_a_knowledge_record(ledger):
+    """`--context` with a free-text lesson and no `--fact`: type resolution
+    must reach the `--context` rule. The text opens like a rule ("Never ..."),
+    so without that rule it would be read as a behavior lesson, which needs a
+    --trigger; with it, the text is the Fact."""
+    text = "Never edit .storage while HA is running."
+    assert cli.main(["teach", "--skill", "s", text, "--context", CONTEXT]) == 0
+    record = Record.from_path(_only(ledger, "pending"))
+    assert record.type == "knowledge"
+    assert text in record.body and "## Fact" in record.body
+    assert CONTEXT in record.body and "## Context" in record.body
+
+
+def test_free_text_alone_is_read_as_behavior_the_control(ledger, capsys):
+    """Control for the test above: the same text without `--context` is read
+    as a behavior lesson, which is why that test can tell the rule is there."""
+    text = "Never edit .storage while HA is running."
+    assert cli.main(["teach", "--skill", "s", text]) != 0
+    assert "behavior records need --trigger" in capsys.readouterr().err
+
+
+def test_context_with_no_text_at_all_is_refused_for_want_of_a_fact(ledger, capsys):
+    assert cli.main(["teach", "--skill", "s", "--context", CONTEXT]) != 0
+    err = capsys.readouterr().err
+    assert "knowledge records need a fact" in err
+    assert list((ledger.ledger / "skills" / "s" / "pending").glob("lrn-*.md")) == []
+
+
+def test_context_with_a_fact_is_still_a_knowledge_record(ledger):
     assert cli.main(["teach", "--skill", "s", "--fact", "A fact.", "--context", CONTEXT]) == 0
     record = Record.from_path(_only(ledger, "pending"))
     assert record.type == "knowledge" and "## Context" in record.body
+
+
+# ------------------------------------------------- the interim note (agents only)
+
+
+def test_steward_and_overseer_prompts_carry_the_interim_note_after_the_passage(tmp_path):
+    copies = _copies(tmp_path)
+    for name in ("steward", "overseer"):
+        document = copies[name]
+        assert document.count(lesson_writing.AGENT_INTERIM) == 1, name
+        after_end = document[document.index(lesson_writing.END) + len(lesson_writing.END):]
+        assert after_end.lstrip("\n").startswith(lesson_writing.AGENT_INTERIM), name
+        # the passage itself is unchanged by it
+        assert lesson_writing.extract(document) == _canon()
+
+
+def test_teach_copy_has_no_interim_note(tmp_path):
+    """Teach CAN write `## Context`, so it is not told to use a note instead."""
+    teach = _copies(tmp_path)["teach"]
+    assert lesson_writing.AGENT_INTERIM not in teach
+    assert "`revise` cannot add" not in teach
+
+
+def test_the_interim_note_names_a_verb_both_agents_have():
+    """`note` is a sheet verb (what the note tells them to use) and `append`
+    is its required key."""
+    from self_learn import batch
+
+    assert "note" in batch.PERMITTED_KEYS and "append" in batch.REQUIRED_KEYS["note"]
+    assert "`note`" in lesson_writing.AGENT_INTERIM and "`append:`" in lesson_writing.AGENT_INTERIM
+
+
+def test_teach_evidence_bullet_keeps_evidence_out_of_the_loaded_text():
+    document = TEACH_MD.read_text(encoding="utf-8")
+    # control: the bullet is there and says where the evidence goes instead
+    assert "fold the evidence into the" in document
+    assert "Context text instead" in document
+    assert "Instruction/Context text instead" not in document
+    # one statement that either type may carry a Context, not two
+    assert "knowledge → compose **Fact**." in document
+    assert "optional **Context**" not in document

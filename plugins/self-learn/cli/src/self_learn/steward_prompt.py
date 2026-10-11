@@ -611,7 +611,7 @@ def _render_lesson_writing() -> str:
     """The shared passage on writing a lesson (E3a), inlined between its
     markers and read from the canonical file at build time. Never a pointer
     to the file: an agent would have to choose to open it."""
-    return lesson_writing.inlined()
+    return lesson_writing.inlined() + "\n\n" + lesson_writing.AGENT_INTERIM
 
 
 def _render_method() -> str:
