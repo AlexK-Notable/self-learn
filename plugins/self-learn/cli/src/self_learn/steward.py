@@ -1265,6 +1265,7 @@ def _pair_problem(stage: Path, case_path: Path, home: Path | None = None) -> str
         case_data,
         items if isinstance(items, list) else [],
         resolve=always_loaded.proposal_resolver(home) if home is not None else None,
+        placement=always_loaded.placement_resolver(home) if home is not None else None,
         label=case_path.name,
     )
 

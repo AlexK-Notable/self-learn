@@ -4786,6 +4786,7 @@ def _run(home: Path, *, dry_run: bool, no_push: bool, manual: bool = False) -> R
                         _yaml_mapping(case_file),
                         [{"id": item.id, "verb": item.verb, **item.fields} for item in sheet],
                         resolve=always_loaded.proposal_resolver(home),
+                        placement=always_loaded.placement_resolver(home),
                         label=case_file.name,
                     )
                     if always is not None:

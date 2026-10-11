@@ -43,6 +43,7 @@ __all__ = [
     "missing_tests",
     "route_problem",
     "proposal_resolver",
+    "placement_resolver",
 ]
 
 #: Where a case carries the evidence: ``decision.always_loaded``.
@@ -169,6 +170,7 @@ def route_problem(
     items: Iterable[dict],
     *,
     resolve: Callable[[str], Any] | None = None,
+    placement: Callable[[str], Any] | None = None,
     label: str = "case",
 ) -> str | None:
     """Why the runner refuses this case, or `None`: a decided case whose
@@ -178,16 +180,28 @@ def route_problem(
     *items* are the sheet's item mappings. A ``route`` with no ``dest``
     takes the destination the lesson's proposal names; *resolve* (given
     the lesson id, returns ``(destination, variant)`` or `None`) lets the
-    caller find it, so a dest-less route cannot slip past the test."""
+    caller find it, so a dest-less route cannot slip past the test.
+
+    E1 (D-AUTHOR §2.9): a ``replace`` line writes a new lesson into a
+    placement too, so it is read here as well -- a rewrite placed back into
+    a CLAUDE.md meets the test again. Its explicit ``dest`` is read like a
+    route's; with none, the new lesson takes the placement its first
+    lesson has now, which *placement* (given the lesson id, returns
+    ``(destination, variant)``, or `None` for a lesson that is not placed)
+    reads. Without *placement* a dest-less ``replace`` counts as always-
+    loaded: a check that cannot see where the line goes must not pass it."""
     if case_data.get("kind") == "parked":
         return None
     routed: list[str] = []
     for item in items:
-        if not isinstance(item, dict) or item.get("verb") != "route":
+        if not isinstance(item, dict) or item.get("verb") not in ("route", "replace"):
             continue
         dest = item.get("dest")
         if dest is not None:
             hit = dest_is_always_loaded(dest)
+        elif item.get("verb") == "replace":
+            placed = placement(str(item.get("id"))) if placement is not None else ("claude-md", None)
+            hit = placed is not None and is_always_loaded(*placed)
         elif resolve is not None:
             resolved = resolve(str(item.get("id")))
             hit = resolved is not None and is_always_loaded(*resolved)
@@ -226,3 +240,27 @@ def proposal_resolver(home: Any) -> Callable[[str], tuple[object, object] | None
         return resolved.destination, resolved.variant
 
     return resolve
+
+
+def placement_resolver(home: Any) -> Callable[[str], tuple[object, object] | None]:
+    """E1: for a dest-less ``replace`` line, the (destination, variant) its
+    first lesson is placed at now -- the placement the new lesson inherits
+    (`verbs._inherited_dest`) -- or `None` when that lesson is not routed
+    (the replacement then lands pending) or cannot be read."""
+    from pathlib import Path
+
+    from . import ledger_ops
+
+    def placement(record_id: str) -> tuple[object, object] | None:
+        try:
+            record = ledger_ops.read_record_or_refuse(
+                ledger_ops.find_record_path(Path(home), record_id)
+            )
+        except Exception:  # noqa: BLE001 -- unreadable: the verb refuses it by name
+            return None
+        routing = record.routing or {}
+        if record.status != "routed" or not routing.get("destination"):
+            return None
+        return routing.get("destination"), routing.get("variant")
+
+    return placement
