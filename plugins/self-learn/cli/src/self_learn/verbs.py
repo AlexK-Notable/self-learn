@@ -10903,8 +10903,8 @@ def recompile(
         # N-6 (code gate r2 fold): the ONE combined resync commit for
         # this ENTIRE invocation — every write accumulated above
         # (managed, reference, pointer, hook re-apply, hook removal-
-        # repair; an `--adopt` run never gets here, S-83). A no-op run (nothing drifted) commits nothing, same
-        # as always. `compiled/*.yaml` is inside `_RECONCILABLE_HOME` (RCN1),
+        # repair; an `--adopt` run never gets here, S-83). A no-op run
+        # (nothing drifted) commits nothing, same as always. `compiled/*.yaml` is inside `_RECONCILABLE_HOME` (RCN1),
         # so a failure between one entry's write and this final commit
         # leaves an uncommitted record file the reconcile mechanism
         # sweeps — never a lost write, same failure-mode reasoning the
