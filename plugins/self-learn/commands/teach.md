@@ -36,7 +36,9 @@ to stop the container").
     **Instruction** (what to do, carrying the *why*). Pick `--kind`:
     `anti-pattern` (a mistake to prevent), `surface-rule` (a rule about a
     specific surface — the default), or `reasoning-pattern`.
-  - knowledge → compose **Fact** + optional **Context**.
+  - knowledge → compose **Fact**.
+  - Either type may also carry a **Context** (`--context`): the background,
+    kept in the record and never loaded.
 - **Scope** — `--skill <name>` if the lesson belongs to a skill that was
   active or under discussion; `--project` for this repo; `--user` only
   for genuinely universal conduct. Prefer the narrowest scope that still
@@ -46,7 +48,7 @@ to stop the container").
   never anything that could contain a secret), plus the current session
   id. Pass them as `--quote` + `--session` (they go together; if you do
   not know the session id, omit both and fold the evidence into the
-  Instruction/Context text instead).
+  Context text instead — never into the loaded Trigger, Instruction or Fact).
 - **Supersession** — if this lesson *corrects* an already-routed record
   you know of, add `--supersedes <lrn-id>`.
 - **Capture-time grounding (11 §3 — infer, don't interrogate).** You hold
@@ -79,6 +81,38 @@ to stop the container").
   lesson to route. It is never inferred or paraphrased — capture it only
   when you can quote it, and only the words actually said.
 
+<!-- lesson-writing:begin (a copy of skills/self-learn/references/lesson-writing.md) -->
+**Writing a lesson**
+
+A lesson has two readers. The first is an agent in the middle of some other task, at the moment the lesson
+fires. It reads only the loaded text: the Trigger and the Instruction (or the Fact). In a CLAUDE.md file that
+text is read in every session, so every word costs something every time. The second reader is whoever
+maintains the lesson later: the steward, the overseer, or the user. That reader sees the whole record.
+
+The loaded text is the core of the lesson, not its background. Write it for the first reader. Keep what
+changes what the agent does at that moment: the situation it is in, what to do, and the reason that stops the
+rule being misapplied. If the agent is likely to try something that does not work, saying so belongs here too
+("changing paths does not help"). Of each clause, ask: would an agent at this moment act differently without
+it? If not, it belongs to the second reader.
+
+Give the second reader everything else, and as much of it as you like: the background, the story of what
+happened and what was tried, your fuller reasoning. That goes under `## Context`, or in a note attached to
+the lesson. How the lesson was checked goes in `verified_how`; what the mistake cost in `incident_cost`; the
+versions it depends on in `env`; the quote that proves it in the evidence. None of this is ever loaded, and
+none of it is lost: whoever maintains the lesson reads it.
+
+Short is a result, not a target. There is no word limit. A lesson that is a whole procedure, a format, or
+several steps of judgment may need more words; then ask whether it belongs in a skill instead of a line. Each
+of Trigger, Instruction and Fact is one line: a second line is not loaded.
+
+Make the Trigger a situation the agent can recognise from inside it: name the file, the command, the error
+text, what the user says. Do not start it with "When"; the line adds that word. Keep the user's own words
+exactly when they are the point, and quote them; never put your paraphrase in quote marks.
+
+When you rewrite an existing lesson, account for every idea in the old text: still loaded, moved to Context
+or a field, or dropped. A dropped idea needs a reason (wrong, out of date, or said by another lesson you name).
+<!-- lesson-writing:end -->
+
 ## 3. Echo and confirm — never silently capture
 
 Show the user exactly what you are about to store — type, kind, scope,
@@ -106,8 +140,9 @@ self-learn teach --skill home-assistant \
   --quote "never edit .storage while HA is running" --session <session-id>
 ```
 
-(knowledge records: `--fact` / `--context` instead of
-`--trigger` / `--instruction`; no `--kind`.)
+(knowledge records: `--fact` instead of `--trigger` / `--instruction`; no
+`--kind`. `--context "<background>"` goes with either type and is written
+as the record's `## Context`; it is never loaded.)
 
 The record lands in `pending/` for later review — that is the default and
 usually the right end state. **Offer `--route --dest <target>` in the same

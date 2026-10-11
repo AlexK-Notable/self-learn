@@ -22,6 +22,8 @@ from typing import Any
 from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
+from .. import lesson_writing
+
 FORMATS_DIR = "formats"
 
 #: Example ids: well-formed, and never a real record or case.
@@ -338,6 +340,11 @@ def _rules(phase: str) -> str:
             "{because, refs} where refs are the case's own evidence refs. All three",
             "must hold; a case missing one is dropped. See",
             "case-always-loaded-example.yaml.",
+            "",
+            # E3a: the passage on writing a lesson, inlined (never a pointer).
+            # Phase B only: phase A selects cases and writes no lesson text.
+            lesson_writing.inlined(),
+            lesson_writing.AGENT_INTERIM,
         ]
     return "\n".join(lines) + "\n"
 

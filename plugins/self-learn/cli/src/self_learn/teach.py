@@ -15,7 +15,9 @@ Flag surface (01 §3.2 + 08 §1 pins):
     behavior   ``--trigger <text>`` (always required — the firing
                condition is the record's real key) ·
                ``--instruction <text>``
-    knowledge  ``--fact <text>`` · ``--context <text>``
+    knowledge  ``--fact <text>``
+    context    ``--context <text>`` — either type; written as the record's
+               ``## Context``, which is kept and never loaded
     evidence   ``--quote <text>`` + ``--session <id>``
                (``--evidence-session`` is an alias for ``--session`` —
                01 §3.2 names the long form)
@@ -168,7 +170,7 @@ def add_teach_parser(sub) -> argparse.ArgumentParser:
     p.add_argument("--trigger", metavar="TEXT", help="behavior: the firing condition")
     p.add_argument("--instruction", metavar="TEXT", help="behavior: what to do (and why)")
     p.add_argument("--fact", metavar="TEXT", help="knowledge: the fact")
-    p.add_argument("--context", metavar="TEXT", help="knowledge: optional context")
+    p.add_argument("--context", metavar="TEXT", help="optional background, either type: written as ## Context, kept in the record and never loaded")
     p.add_argument("--quote", metavar="TEXT", help="evidence quote (needs --session)")
     p.add_argument(
         "--session",
@@ -478,9 +480,9 @@ def run_teach(args: argparse.Namespace) -> int:
         for name, value in (("--trigger", trigger), ("--instruction", instruction), ("--kind", args.kind))
         if value
     ]
-    knowledge_flags = [
-        name for name, value in (("--fact", fact), ("--context", context)) if value
-    ]
+    # --context belongs to neither family: either type may carry one (E3a),
+    # so it neither conflicts with the behavior flags nor decides the type.
+    knowledge_flags = [name for name, value in (("--fact", fact),) if value]
     if behavior_flags and knowledge_flags:
         return _fail(
             f"conflicting structured flags: {'/'.join(behavior_flags)} are behavior "
@@ -495,6 +497,9 @@ def run_teach(args: argparse.Namespace) -> int:
     elif behavior_flags:
         rtype, inferred = "behavior", True
     elif knowledge_flags:
+        rtype, inferred = "knowledge", True
+    elif context:
+        # --context with no behavior flag: the pre-E3a reading, a knowledge record
         rtype, inferred = "knowledge", True
     elif lesson:
         rtype, inferred = infer_type(lesson), True
@@ -557,6 +562,7 @@ def run_teach(args: argparse.Namespace) -> int:
                 kind=kind,
                 trigger=trigger,
                 instruction=body_instruction,
+                context=context,
             )
         else:
             body_fact = fact or lesson
