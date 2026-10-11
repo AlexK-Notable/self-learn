@@ -295,3 +295,100 @@ def test_the_rewrite_merge_and_correct_examples_are_named_maintenance_pairs_that
     assert merge_sheet["items"][0]["also"] == list(formats.EXAMPLE_MERGED)
     merge["records"] = [formats.EXAMPLE_RECORD]
     assert "records do not name" in (cases.replace_items_problem(merge, merge_sheet["items"]) or "")
+
+
+# ============================================================ E3b fold 1
+
+
+@pytest.mark.parametrize("placed_in", ["user-claude-md", "skill-md"])
+def test_fold_d1_each_rewrite_example_meets_the_pair_rules_where_the_readme_says(
+    tmp_path, monkeypatch, placed_in
+):
+    """Gate D1: a `replace` with no `dest` keeps its lesson's placement, so
+    under an always-loaded placement it meets the combined test, exactly as
+    a route there does. The shortening example -- an always-loaded line --
+    failed `_pair_rules_problem` when its lesson sat in a user CLAUDE.md.
+    It now carries `decision.always_loaded`. The merge and the correction
+    show lessons placed in a SKILL.md, and the README says so plainly (the
+    choice this fold made, rather than giving them the block too): they
+    pass there, and under a CLAUDE.md placement they are refused by the
+    combined test, which is what the README tells the model."""
+    from self_learn import always_loaded
+
+    placement = ("claude-md", None) if placed_in == "user-claude-md" else ("skill-md", None)
+    monkeypatch.setattr(always_loaded, "placement_resolver", lambda _home: lambda _rid: placement)
+    root = formats.write(tmp_path / "ws", "B")
+    readme = " ".join((root / "README.md").read_text(encoding="utf-8").split())
+    assert ("If it lands on an always-loaded line -- an always-loaded `dest`, or no `dest` and a "
+            "lesson placed in a CLAUDE.md itself (not a rules file) -- the case needs the combined "
+            "test, as a route there does.") in readme
+    assert ("the merge's and the correction's lessons are placed in a SKILL.md, which needs none"
+            in readme)
+    home = tmp_path / "home"
+    for stem in ("rewrite", "merge", "correct-lesson"):
+        case_file = root / f"case-{stem}-example.yaml"
+        sheet = overseer_run._load_sheet_allow_empty(root / f"sheet-{stem}-example.yaml", home)
+        assert sheet is not None
+        assert all("dest" not in item.fields for item in sheet), stem  # dest-less: inherits
+        problem = overseer_run._pair_rules_problem(case_file, sheet, home)
+        if placed_in == "skill-md" or stem == "rewrite":
+            assert problem is None, (stem, problem)
+        else:
+            assert "to an always-loaded line" in (problem or ""), (stem, problem)
+    # the broken twin: the shortening without its block, in a CLAUDE.md
+    case_file = root / "case-rewrite-example.yaml"
+    case = overseer_run._yaml_mapping(case_file)
+    assert set(case["decision"]["always_loaded"]) == set(always_loaded.TEST_KEYS)
+    del case["decision"]["always_loaded"]
+    _dump(case_file, case)
+    sheet = overseer_run._load_sheet_allow_empty(root / "sheet-rewrite-example.yaml", home)
+    assert sheet is not None
+    problem = overseer_run._pair_rules_problem(case_file, sheet, home)
+    if placed_in == "user-claude-md":
+        assert "to an always-loaded line" in (problem or ""), problem
+    else:
+        assert problem is None
+
+
+def test_fold_r1_a_pair_touching_a_lesson_another_case_holds_is_dropped(
+    env, tmp_path, monkeypatch
+):
+    """Gate R1 (probe p7), the real overseer run and the real batch: S-81's
+    hold binds the overseer's own pairs. A lesson an open parked case is
+    waiting on is decided through THAT case's successor only:
+
+    * a maintenance pair whose line replaces W (held by P1) is dropped;
+    * a maintenance merge with W in `also` is dropped;
+    * a successor of P2 whose sheet also rejects W is dropped too -- before
+      the fold nothing compared a successor's sheet with another parked
+      case's lessons, so it applied;
+
+    each named in "Refused / could not do", pointing at the parked case's
+    successor. The control: P1's own successor rejects W and applies."""
+    _enabled(monkeypatch)
+    a = _seed(env.home, "lrn-e3bf0301")
+    _place(env.home, a, "skill-md")
+    w, v = "lrn-e3bf0302", "lrn-e3bf0303"
+    p1 = _seed_parked(env.home, tmp_path, w, "p1")
+    p2 = _seed_parked(env.home, tmp_path, v, "p2")
+    assert {w, v} <= set(cases.held_lessons(env.home))  # positive control: both held
+
+    _run(env.home, monkeypatch, {
+        "mreplace": (_maintenance([w], rewrite=_rewrite("x")), _replace_sheet(w, NEW_A)),
+        "malso": (_maintenance([a, w], rewrite=_rewrite("x")), _replace_sheet(a, NEW_B, also=[w])),
+        "p2cross": (_successor(v, p2), {"version": 1, "items": [
+            {"id": v, "verb": "reject"}, {"id": w, "verb": "reject"}]}),
+        "p1own": (_successor(w, p1), {"version": 1, "items": [{"id": w, "verb": "reject"}]}),
+    })
+
+    refused = _refused_section(env.home)
+    for name in ("mreplace", "malso", "p2cross"):
+        assert f"case-{name}.yaml: dropped with sheet-{name}.yaml" in refused, (name, refused)
+    assert refused.count(f"touches {w}, which the open parked case(s) {p1} hold") == 3, refused
+    assert "decide it through that parked case's successor" in refused
+    assert "case-p1own.yaml" not in refused, refused
+    assert _rec(env.home, w).status == "rejected"  # control: P1's own successor applied
+    assert _rec(env.home, a).status == "routed"
+    assert _rec(env.home, v).status == "pending"  # P2's successor was dropped whole
+    still = {row["case"] for row in cases.awaiting_overseer(env.home)}
+    assert p2 in still and p1 not in still

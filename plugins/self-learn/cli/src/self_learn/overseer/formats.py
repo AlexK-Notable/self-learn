@@ -243,8 +243,10 @@ _REPLACE_RULES = (
     "Rewriting a lesson's words: a `replace` line writes a new lesson that takes over",
     "from the line's lesson, and from each lesson its `also` names (a merge), in one",
     "motion; the old lessons stay in the ledger, marked replaced. The new lesson goes",
-    "where the line's lesson is placed now unless the line names a `dest` (an",
-    "always-loaded dest needs the combined test, as a route does). Use it to correct",
+    "where the line's lesson is placed now unless the line names a `dest`. If it",
+    "lands on an always-loaded line -- an always-loaded `dest`, or no `dest` and a",
+    "lesson placed in a CLAUDE.md itself (not a rules file) -- the case needs the",
+    "combined test, as a route there does. Use it to correct",
     "or widen a placed lesson, to shorten one, or to merge several into one. To correct",
     "a lesson a case the steward or you recorded covers, write a kind: reconsider",
     "successor of that case; for anything else -- a shortening, a merge, a lesson no",
@@ -260,7 +262,10 @@ _REPLACE_RULES = (
     "and `rewrite` is where you show it. See case-rewrite-example.yaml (a",
     "shortening), case-merge-example.yaml (a merge) and",
     "case-correct-lesson-example.yaml (a correction of a placed lesson no case",
-    "covers), each with its sheet-*.yaml.",
+    "covers), each with its sheet-*.yaml. The shortening's lesson is placed in a",
+    "user CLAUDE.md, so its case carries `always_loaded`; the merge's and the",
+    "correction's lessons are placed in a SKILL.md, which needs none -- a merge or",
+    "correction of a CLAUDE.md lesson carries it as the shortening does.",
 )
 
 
@@ -276,7 +281,8 @@ def _rules(phase: str) -> str:
         "",
         "Rules the runner enforces:",
         "",
-        "- " + " ".join(run._YAML_TEXT_RULE.split()),
+        # E3b fold (gate N1): phase B's rule names its two exceptions.
+        "- " + " ".join((run._YAML_TEXT_RULE_B if phase == "B" else run._YAML_TEXT_RULE).split()),
         "- Every file you write stays in this workspace; nothing outside it can be",
         "  read or written.",
     ]
@@ -544,6 +550,14 @@ def phase_b_examples() -> dict[str, str]:
                     {"idea": "a flat yield is a steady state, not convergence", "now": "loaded"},
                     {"idea": "the March review: round four and five found the same nit", "now": "context"},
                 ]},
+                # E3b fold (gate D1): a dest-less replace keeps its lesson's
+                # placement -- here a user CLAUDE.md, always loaded -- so the
+                # case meets the combined test exactly as a route there does.
+                "always_loaded": {
+                    key: {"because": f"why {key} holds, in one sentence",
+                          "refs": [f"record:{EXAMPLE_RECORD}"]}
+                    for key in always_loaded.TEST_KEYS
+                },
             },
         }),
         "sheet-rewrite-example.yaml": _dump({
@@ -597,7 +611,7 @@ def phase_b_examples() -> dict[str, str]:
         }),
         "case-correct-lesson-example.yaml": _dump({
             "kind": "maintenance", "trigger": "weekly", "outcome": "replaced",
-            "records": [EXAMPLE_RECORD], "scope": "user",
+            "records": [EXAMPLE_RECORD], "scope": "skill:example",
             "question": "This placed lesson names the wrong command; no case the steward or the overseer recorded covers it. Should it be corrected?",
             "evidence": [
                 {"ref": f"record:{EXAMPLE_RECORD}", "quote": "Instruction: restart the service with systemctl restart"},
