@@ -84,7 +84,10 @@ optional `## Context`. One lesson per record; a capture containing two
 lessons becomes two records. *Amended 2026-10-07 (S-79):* a `behavior`
 record may carry an optional `## Context` too (any number of lines, at
 most one such section), and `source: rewrite` is reserved for a lesson
-written through `replace` (the actor stays in `routing.by` and the case).
+written through `replace` (the actor stays in `routing.by` and the case). *Amended (S-84):* `teach --context` writes that section for a
+behavior lesson as it does for a knowledge lesson; the loaded text (Trigger and
+Instruction, or Fact) is the core of the lesson and `## Context` holds the
+background, as `skills/self-learn/references/lesson-writing.md` tells every writer.
 
 **`## Episode brief` — a miner-only, compiler-excluded body section**
 *(added 2026-07-18 — UX survey item 5; doc 12 §11 is the miner-side

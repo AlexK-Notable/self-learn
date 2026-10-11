@@ -85,6 +85,16 @@ passes the same compile+commit path this sentence's own paragraph names.
 
 ## Revision log
 
+- **2026-10-11 — (writing, teach, steward, overseer) S-84: one shared passage on writing a lesson, inlined into each writer.** The user
+  asked for the core of a lesson in the loaded text and the background in notes ("we need the core of a lesson, not all
+  of the background ..."), and answered "i agree." to the orchestrator's recommendation to install the guidance now in
+  the steward, the overseer and teach (the miner after the old/new comparison). `skills/self-learn/references/lesson-writing.md`
+  holds the passage; `commands/teach.md` §2, the steward's method block and the overseer's phase B README each carry it in
+  full between `<!-- lesson-writing:begin ... -->` / `<!-- lesson-writing:end -->`, read from the file when the prompt is built
+  (steward, overseer) or checked byte for byte by `tests/test_lesson_writing_copies.py` (teach). `teach --context` is now
+  accepted for a behavior lesson and written as `## Context`. The miner and the analyst do not get the passage. Amends S-79.
+  Files: `lesson_writing.py` (new), `teach.py`, `steward_prompt.py`, `overseer/formats.py`, `commands/teach.md`,
+  `skills/self-learn/SKILL.md` (the `teach` row).
 - **2026-10-09 — (verbs, cli) S-83: `recompile --adopt` re-records only the named region(s) and stops.** The user,
   2026-10-08 17:49, approved the fix ("yes to both small fixes"). An adopt run now makes one ledger commit per
   adopted region (managed, pointer, shelf) and returns: no render, reference re-append, pointer write, hook re-apply,
