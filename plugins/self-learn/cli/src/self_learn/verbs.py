@@ -10330,33 +10330,30 @@ def recompile_refusals(result: RecompileResult, record_id: str) -> list[str]:
 HOST_RESULT_VERBS = frozenset({"route", "rehome", "rescope"})
 
 
-def replace_host_records(
-    home: Path | str, first_id: str
-) -> tuple[list[str], list[tuple[str, Path]]]:
-    """What a recompile must establish for a ``replace`` whose first lesson
-    is *first_id* (E1 fold 1, gate D1): ``(ids, retired)``. *ids* are the
-    new lesson -- the line the replace writes -- and every lesson it
-    superseded; *retired* is ``(id, bucket)`` for each superseded lesson,
-    for :func:`recompile`'s ``moved_from``, so the target its line sat in
-    is compiled too and the line leaves, even when the new lesson went to
-    another file. A sheet item names only the first lesson, so the rest
-    are read from the ledger (every lesson whose ``superseded_by`` is the
-    new one). Both empty when *first_id* is not superseded by a lesson.
-    Reads only."""
+def replace_host_records(home: Path | str, first_id: str) -> list[str]:
+    """The record ids a recompile must establish for a ``replace`` whose
+    first lesson is *first_id* (E1 fold 1, gate D1): the new lesson -- the
+    line the replace writes -- and every lesson it superseded. A retired
+    record still owns the doc target it was compiled into (`recompile`
+    enumerates retired records' targets), so naming it compiles that
+    target and its line leaves, even when the new lesson went to another
+    file. A sheet item names only the first lesson, so the rest are read
+    from the ledger (every lesson whose ``superseded_by`` is the new one).
+    Empty when *first_id* is not superseded by a lesson. Reads only."""
     home = Path(home)
     try:
         first_path = find_record_path(home, first_id)
         first = read_record_or_refuse(first_path)
     except (LedgerOpsError, VerbError):
-        return [], []
+        return []
     new_id = first.superseded_by
     if (
         first.status != "superseded"
         or not isinstance(new_id, str)
         or not RECORD_ID_RE.fullmatch(new_id)
     ):
-        return [], []
-    retired: list[tuple[str, Path]] = [(first_id, first_path.parent.parent)]
+        return []
+    retired = [first_id]
     for bucket in discover_buckets(home):
         resolved = bucket.path / "resolved"
         if not resolved.is_dir():
@@ -10369,8 +10366,8 @@ def replace_host_records(
             except ledger_ops.UNREADABLE_RECORD_ERRORS:
                 continue
             if rec.status == "superseded" and rec.superseded_by == new_id:
-                retired.append((rec.id, bucket.path))
-    return [new_id, *(rid for rid, _bucket in retired)], retired
+                retired.append(rec.id)
+    return [new_id, *retired]
 
 
 def _host_result_items(items: Iterable[object]) -> list[object]:
@@ -10388,29 +10385,17 @@ def host_result_ids(items: Iterable[object], home: Path | str | None = None) -> 
     that applied, or that left its host result owed (``unresolved-host``).
 
     E1 fold 1: a ``replace`` item too, when *home* is given -- not by its
-    own id (the first lesson, retired) but by :func:`replace_host_records`:
-    the new lesson and every lesson it superseded, whose old targets
-    :func:`host_result_origins` names."""
+    own id alone (the first lesson, retired) but by
+    :func:`replace_host_records`: the new lesson and every lesson it
+    superseded, so both the target the new line goes to and each one an
+    old line leaves are compiled."""
     out: list[str] = []
     for item in _host_result_items(items):
         if getattr(item, "verb", None) == "replace":
             if home is not None:
-                out.extend(replace_host_records(home, str(getattr(item, "id")))[0])
+                out.extend(replace_host_records(home, str(getattr(item, "id"))))
             continue
         out.append(str(getattr(item, "id")))
-    return out
-
-
-def host_result_origins(home: Path | str, items: Iterable[object]) -> list[tuple[str, Path]]:
-    """``(record id, bucket)`` of each lesson an applied ``replace`` item
-    superseded (E1 fold 1), for :func:`post_run_recompile`'s *moved_from*:
-    the target each one's line sat in is compiled too, so the line leaves.
-    Read AFTER the sheet applied, unlike :func:`move_origins` -- a
-    superseded lesson stays in its bucket."""
-    out: list[tuple[str, Path]] = []
-    for item in _host_result_items(items):
-        if getattr(item, "verb", None) == "replace":
-            out.extend(replace_host_records(home, str(getattr(item, "id")))[1])
     return out
 
 
@@ -10778,11 +10763,8 @@ def recompile(
         destination = routing.get("destination")
         if destination not in ("skill-md", "claude-md", "new-skill"):
             continue  # references are append-only; hooks are not a doc target
-        if now_path.parent.parent == old_bucket and record.status != "superseded":
+        if now_path.parent.parent == old_bucket:
             continue  # it did not move
-        # E1 fold 1: a lesson a `replace` superseded did not move, but its
-        # line must leave the target it sat in (`host_result_origins`); the
-        # compile set below no longer holds it, so the line goes.
         try:
             spec = _resolve_target(
                 home,

@@ -1067,8 +1067,8 @@ def test_the_post_run_recompile_writes_a_replace_whose_host_write_failed(env, mo
 
     owed = [batch_mod.ItemResult(n=1, id=old, verb="replace", rc=1, state="unresolved-host")]
     ids = verbs.host_result_ids(owed, env.home)
-    assert ids[:2] == [new, old]
-    verbs.post_run_recompile(env.home, ids, verbs.host_result_origins(env.home, owed))
+    assert ids == [new, old]
+    verbs.post_run_recompile(env.home, ids)
     assert f"*({new})*" in env.claude_md.read_text(encoding="utf-8")
     assert f"*({old})*" not in env.skill_md.read_text(encoding="utf-8")
 

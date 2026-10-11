@@ -295,9 +295,6 @@ _MOVED_FROM: list[tuple[str, Path]] | None = None
 def _note_host_results(result: batch.BatchResult, home: Path) -> None:
     if _HOST_RESULT_IDS is not None:
         _HOST_RESULT_IDS.extend(verbs.host_result_ids(result.items, home))
-    # E1 fold 1: the targets a `replace` item's superseded lessons sat in.
-    if _MOVED_FROM is not None:
-        _MOVED_FROM.extend(verbs.host_result_origins(home, result.items))
 
 
 def _note_move_origins(home: Path, items: Iterable[object]) -> None:
@@ -3187,9 +3184,8 @@ def _mutation_proven_completed(
             made = batch.replace_made(home, row["id"], fields)
             if made is None:
                 continue
-            ids, retired = verbs.replace_host_records(home, row["id"])
             recomp = verbs.recompile(
-                home, no_push=True, only_records=ids, moved_from=retired
+                home, no_push=True, only_records=verbs.replace_host_records(home, row["id"])
             )
             refused = verbs.recompile_refusals(recomp, made.id)
             if refused:
