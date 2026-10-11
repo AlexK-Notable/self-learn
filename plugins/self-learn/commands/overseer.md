@@ -17,7 +17,8 @@ the statement store.
 This is not a review session. Nothing here approves a lesson, a route, or
 a hook — those are decisions the overseer (or, since S-72, the steward:
 always-loaded lines under the combined test, hooks, moving a placed lesson,
-a rule's own globs) already made; its own report
+a rule's own globs; since E3b both rewrite lessons' words with `replace`,
+each case accounting for every idea of the old text) already made; its own report
 separately states what its runner actually did with each one, including
 anything refused, partially applied, or not attempted. A receipt records
 an attempt and its result — its existence alone is never proof that the

@@ -557,6 +557,20 @@ marker are projections and never recovery authority.
   lessons stay open for a later run, and the packet's other cases apply.
   The overseer corrects a wrong one afterwards; the same rule holds for its
   own successor cases.
+- *(E3b, 2026-10-11)* The steward rewrites a lesson's words with `replace`
+  (`03-decisions.md` S-85): a new lesson that takes over from the line's
+  lesson, and from each lesson in its `also` (a merge), with the old ones
+  kept as replaced. It replaces a pending or deferred lesson whose claim is
+  wrong (a `kind: resolution` case, outcome `replaced`) and merges pending
+  lessons of its own packet; a placed lesson only through a `kind:
+  reconsider` case of the case that covers it, and only to correct or widen
+  it. A shortening or a merge of placed lessons it parks for the overseer
+  (`authority-unclear`) with its tentative answer. The runner refuses, pair
+  by pair: a replace case without `decision.rewrite` (every idea of the old
+  text, and where it went), a line whose id or `also` id is not in the
+  case's `records`, and, for the steward, a placed lesson replaced in any
+  other case or merged through `also`. A lesson the overseer holds is never
+  replaced by the steward (S-81).
 - A route to a path-scoped rule (`claude-md:rules:<topic>`) may name its own
   globs on the sheet line (`rules_paths: [...]`, U3b / S-72); they win over
   an analyst proposal's and are checked the same way — the proposal's shape

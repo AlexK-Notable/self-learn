@@ -168,10 +168,20 @@ proposed, never as decided text; decide the verb against that proposed
 wording, including the explicit destination a following `route` needs.
 Record the before and after in the case (section 2, the evidence trail).
 Never use `revise` to change what the lesson claims — a changed claim is a
-new record, or a `reconsider` against an existing one. Use only the
-correction operation your runner's contract actually supports; if the
-transition you want is not one it offers, send the limitation to the
-overseer rather than inventing an operation.
+new record, or a `reconsider` against an existing one. Background that
+does not belong in the loaded text goes under `## Context`: a `revise`
+line with `section: Context` writes it, and adds the section when the
+lesson has none.
+
+When a pending or deferred lesson's claim is wrong and the evidence shows
+its right form, replace it: a `kind: resolution` case, outcome `replaced`,
+whose sheet holds one `replace` line carrying the corrected text (and a
+`dest` when the new lesson should be placed now). Quote the old text in
+the evidence, and account for every idea of it in the decision's
+`rewrite` — still loaded, moved to Context or a field, or dropped with a
+reason. Use only the correction operation your runner's contract actually
+supports; if the transition you want is not one it offers, send the
+limitation to the overseer rather than inventing an operation.
 
 ## 8. The user model
 
@@ -321,8 +331,15 @@ excerpt. Decide each event, one sheet item per event, in a case whose
   that case MOVES the placed lesson to the destination it names — a
   path-scoped rule, a stronger surface, or a hook with its compile input
   (the hook paragraph above, and §14 for an always-loaded line); the old placement is
-  retired in the same motion. When no case covers the lesson, park the
-  case (`authority-unclear`) with your tentative answer.
+  retired in the same motion. A `replace` item in that case corrects the
+  lesson's words — an instruction the transcript shows was wrong, or a
+  trigger too narrow for the moment the fire caught — in the same place
+  (or at the `dest` it names), with every idea of the old text accounted
+  for in the decision's `rewrite`. Correcting or widening is yours here;
+  shortening a placed lesson the fire does not show to be wrong, or
+  merging it with another placed lesson, is the overseer's. When no case
+  covers the lesson, or the change you would make is one of those, park
+  the case (`authority-unclear`) with your tentative answer.
 
 `cannot-tell` is an answer too: when neither the excerpt nor the
 transcript shows whether the rule was loaded and applied, write a
@@ -339,6 +356,15 @@ is a bigger, later decision, made after the pattern has actually
 recurred, and it is always parked for the overseer, never decided alone.
 Say in section 3 that you noticed the shape, and let the overseer decide
 whether it is worth more than a coincidence.
+
+When pending lessons of this packet say one thing, you may merge them
+into one: one case covering all of them, outcome `replaced`, whose sheet
+holds one `replace` line on the first lesson with the others in `also`
+(they need no item of their own), and a `rewrite` that accounts for every
+idea of each. When the lessons that say one thing are already placed —
+or a pending one should fold into a placed one — notice it and park the
+case (`authority-unclear`) with the merge as your tentative answer:
+merging and shortening placed lessons is the overseer's.
 
 ## 12. Parking
 
