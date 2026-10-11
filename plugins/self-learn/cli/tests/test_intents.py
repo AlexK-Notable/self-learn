@@ -645,19 +645,28 @@ elif KILL_AFTER == "stop-first":
             stop_message="intent STOP before item 1",
         )
     overseer_run.batch.run = run
-elif KILL_AFTER == "partial-first":
-    sheet_calls = []
+elif KILL_AFTER == "merits-8-first":
+    # Both sheets go through the REAL batch.run. Sheet a's item 2 (reject
+    # RID1) is refused on its merits (rc 1, a final kind), so sheet a ends
+    # 8 with no stop -- a finished sheet; sheet b (reject RID2) is untouched.
+    real_dispatch = batch._dispatch
+    def dispatch(given_home, item, **kwargs):
+        if item.verb == "reject" and item.id == RID1:
+            return batch.ItemResult(
+                n=item.n, id=item.id, verb=item.verb, rc=1, state="refused",
+                detail="refused item on its merits", kind="bad-line",
+            )
+        return real_dispatch(given_home, item, **kwargs)
+    batch._dispatch = dispatch
+    real_run = batch.run
     def run(*args, **kwargs):
-        sheet_calls.append(getattr(args[1], "case", None))
-        assert len(sheet_calls) == 1, "a later sheet ran after aggregate exit 8"
-        return batch.BatchResult(
-            items=[
-                batch.ItemResult(n=1, id=RID1, verb="revise", rc=0, state="applied"),
-                batch.ItemResult(n=2, id=RID1, verb="reject", rc=1, state="refused", detail="refused item"),
-            ],
-            process_code=8, case=getattr(args[1], "case", None),
-            sheet_sha=getattr(args[1], "sheet_sha", None), actor="overseer",
-        )
+        result = real_run(*args, **kwargs)
+        print("SHEET " + json.dumps({
+            "code": result.process_code, "stopped_at": result.stopped_at,
+            "stop_message": result.stop_message,
+            "states": [[item.verb, item.id, item.state] for item in result.items],
+        }, sort_keys=True))
+        return result
     overseer_run.batch.run = run
 elif KILL_AFTER == "item-stop-first":
     sheet_calls = []
@@ -882,28 +891,68 @@ def test_overseer_whole_sheet_stop_halts_later_sheets_and_finalization(tmp_path)
     assert not (home / "overseer" / "open-questions.yaml").exists()
 
 
-def test_overseer_aggregate_exit_8_halts_later_sheets(tmp_path):
+def test_overseer_exit_8_without_a_stop_lets_later_sheets_run(tmp_path):
+    """A sheet that ends 8 because one item applied and another was refused
+    on its merits is a FINISHED sheet (S-54), not a halt: the later sheet
+    runs in the same attempt and the run completes. Until 2026-10-11 the
+    overseer halted on any 8 (a builder's choice in 5812cd4, which the
+    steward reversed on 2026-09-21); live run 854639e4 left a finished
+    sheet unfinished for two hours. A stop still halts (the `stop-first`
+    and `item-stop-first` scenarios beside this one)."""
     home = make_home(tmp_path)
     rid1, rid2, parked1, parked2 = _seed_overseer_crash_run(home, tmp_path)
     proc = _run_child(
         _OVERSEER_CRASH_CHILD,
         {
             "SELF_LEARN_HOME": str(home),
-            "XDG_CACHE_HOME": str(tmp_path / "overseer-partial-cache"),
+            "XDG_CACHE_HOME": str(tmp_path / "overseer-merits-8-cache"),
             "SELF_LEARN_CLAUDE_DIR": str(tmp_path / "isolated-claude"),
             "RID1": rid1, "RID2": rid2,
             "PARKED1": parked1, "PARKED2": parked2,
-            "KILL_AFTER": "partial-first",
+            "KILL_AFTER": "merits-8-first",
         },
-        tmp_path / "unused-partial-barrier",
+        tmp_path / "unused-merits-8-barrier",
     )
     assert proc.returncode == 0, (proc.stdout, proc.stderr)
+    sheets = [
+        json.loads(line[len("SHEET "):])
+        for line in proc.stdout.splitlines() if line.startswith("SHEET ")
+    ]
+    # The shape under test, read off the real batch: sheet a exits 8 with
+    # no stop, and sheet b -- the later sheet -- ran and applied.
+    assert len(sheets) == 2, proc.stdout
+    assert (sheets[0]["code"], sheets[0]["stopped_at"], sheets[0]["stop_message"]) == (
+        8, None, None
+    ), sheets[0]
+    assert sheets[0]["states"] == [
+        ["revise", rid1, "applied"], ["reject", rid1, "refused"]
+    ], sheets[0]
+    assert (sheets[1]["code"], sheets[1]["states"]) == (
+        0, [["reject", rid2, "applied"]]
+    ), sheets[1]
     result = json.loads(proc.stdout.splitlines()[-1])
+    # 8 for the run too: the ledger changed and one item was refused.
     assert (result["status"], result["code"]) == ("partial", 8)
     assert len([
         row for row in cases.list_cases(home, only_ok=True)
         if row.get("actor") == "overseer"
-    ]) == 1
+    ]) == 2
+    assert subjects(home).count(f"self-learn: revise {rid1}") == 1
+    assert subjects(home).count(f"self-learn: reject {rid1}") == 0
+    assert subjects(home).count(f"self-learn: reject {rid2}") == 1
+    manifest_rel = git(
+        home, "ls-tree", "-r", "--name-only", "HEAD", "--", "cases/runs"
+    ).stdout.strip()
+    manifest = json.loads(git(home, "show", f"HEAD:{manifest_rel}").stdout)
+    assert manifest["status"] == "complete", (manifest["status"], manifest.get("remaining"))
+    assert manifest["remaining"] == []
+    assert manifest["attempt_count"] == 1
+    # Post-sheet work ran in this attempt: the observation and finalization.
+    observations = cases.show(home, parked1, evidence_only=False).sections[
+        "Later observations"
+    ]
+    assert observations.count("overseer examined: evidence held") == 1
+    assert (home / "overseer" / "open-questions.yaml").exists()
 
 
 @pytest.mark.parametrize("scenario", ["item-stop-first", "raise-after-successor"])
