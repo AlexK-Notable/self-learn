@@ -82,10 +82,18 @@ def test_the_stage_check_refuses_an_unknown_decision_key_too(tmp_path):
     assert "'rewrites'" in str(exc.value)
 
 
-@pytest.mark.parametrize("key", sorted(cases.DECISION_KEYS - {"because", "confidence"}))
+_OPTIONAL_KEYS = ("always_loaded", "covered_by", "rewrite", "skill", "verb", "what_would_change")
+
+
+def test_the_closed_set_is_exactly_the_keys_the_writer_reads():
+    assert cases.DECISION_KEYS == frozenset({"because", "confidence", *_OPTIONAL_KEYS})
+
+
+@pytest.mark.parametrize("key", _OPTIONAL_KEYS)
 def test_every_known_decision_key_is_still_accepted(tmp_path, key):
     """The closed set is not narrower than what the writer already read:
-    each known key, given a well-formed value, records."""
+    each known key, given a well-formed value, records (on master the first
+    four are controls; `rewrite` and `skill` were silently dropped)."""
     values = {
         "verb": "reject",
         "covered_by": "claude-md:user",
