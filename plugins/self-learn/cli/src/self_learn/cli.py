@@ -1294,7 +1294,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "record's keys do: PATH (or PATH#managed) is the managed region, "
         "PATH#pointer the pointer region of a file that also holds a "
         "managed one, and a reference shelf's PATH (or PATH#reference) the "
-        "whole shelf; repeat --adopt to adopt several",
+        "whole shelf; repeat --adopt to adopt several. With --adopt the run "
+        "does only that: one ledger commit per region (pushed unless "
+        "--no-push), nothing else recompiled, no host committed or pushed; "
+        "run a plain `self-learn recompile` afterwards for the rest",
     )
 
     sentinel_p = sub.add_parser(
@@ -3076,6 +3079,8 @@ def _cmd_recompile(args: argparse.Namespace) -> int:
         return EXIT_GIT_FAILED
     for warning in result.warnings:
         print(f"recompile: WARNING {warning}", file=sys.stderr)
+    if result.adopt_only:
+        return _report_adopt_only(result)
     if not result.entries:
         print("recompile: no managed targets (no routed records)")
         return EXIT_OK
@@ -3091,6 +3096,37 @@ def _cmd_recompile(args: argparse.Namespace) -> int:
         else:
             state = "up to date"
         print(f"recompile: {entry.target} — {state}")
+    return EXIT_OK
+
+
+def _report_adopt_only(result: verbs.RecompileResult) -> int:
+    """S-83: an ``--adopt`` run re-records the named regions and stops, so
+    its output says that and nothing that reads as a recompile: each entry
+    is ``adopted`` (its own ledger commit), ``already accepted`` or
+    ``skipped``, then one line naming what was not run and the command that
+    runs it. A failed ledger push is the exit status, as for any verb."""
+    adopted = 0
+    for entry in result.entries:
+        if entry.skipped:
+            state = f"skipped ({entry.skipped})"
+        elif entry.changed:
+            adopted += 1
+            state = "adopted (its own ledger commit)"
+        else:
+            state = "already accepted as it stands"
+        print(f"recompile: {entry.target} — {state}")
+    done = (
+        f"{adopted} region(s) adopted (ledger {_phase_note(result.ledger_push)})"
+        if adopted
+        else "nothing was adopted"
+    )
+    print(
+        f"recompile: --adopt only — {done}; the rest of the recompile was not "
+        "run (no other target rendered, no host committed or pushed) — run "
+        "`self-learn recompile` for it"
+    )
+    if result.ledger_push is not None and not result.ledger_push.ok:
+        return result.ledger_push.exit_code
     return EXIT_OK
 
 

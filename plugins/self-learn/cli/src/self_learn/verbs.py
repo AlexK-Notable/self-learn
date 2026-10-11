@@ -9541,6 +9541,14 @@ class RecompileEntry:
 class RecompileResult:
     entries: list[RecompileEntry] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: S-83: the run was a ``--adopt`` run -- only the named regions were
+    #: re-recorded; nothing was rendered, committed in a host, or pushed to
+    #: one. In such a run every ``changed`` entry is an adopt commit.
+    adopt_only: bool = False
+    #: S-83: the ledger push after an adopt run's commit(s), as any
+    #: single-commit verb pushes; None under ``no_push``, when nothing was
+    #: committed, and on every ordinary recompile (which pushes hosts only).
+    ledger_push: gitops.PushResult | None = None
 
     @property
     def committed(self) -> int:
@@ -9745,19 +9753,25 @@ def recompile(
 
     ``adopt`` (REC11, U-hostmode §4.5a): when given, the ON-DISK managed
     region at that resolved target path is re-recorded as authoritative
-    IN THE COMPILE RECORD before this run's own soundness check — the one
-    human decision an ``edited``/``unknown provenance`` refusal names.
-    Adopting writes and commits ONLY the record entry; it never changes
-    the target's bytes. ``--force`` is deliberately not offered anywhere
-    in this path.
+    IN THE COMPILE RECORD — the one human decision an ``edited``/``unknown
+    provenance`` refusal names. Adopting writes and commits ONLY the
+    record entry; it never changes the target's bytes. ``--force`` is
+    deliberately not offered anywhere in this path.
+
+    An adopt run does ONLY that and returns (S-83, the user 2026-10-08:
+    "re-records only that target and stops"): one ledger commit per
+    adopted region, then the ledger push any single-commit verb makes
+    (``no_push`` skips it) — no render, no reference re-append, no
+    pointer write, no hook re-apply, no resync batch commit, no host
+    commit and no host push, for the named targets or any other. The
+    result says so (``adopt_only``). The next plain ``recompile`` (or the
+    route the refusal stopped) then proceeds against the adopted record.
 
     ``adopt`` takes one target or several, and each names a REGION the way
     the compile record's keys do: ``<path>`` (or ``<path>#managed``) is the
     managed region, ``<path>#pointer`` the pointer region of a reference-
     routed host's CLAUDE.md/SKILL.md (S-74: one file holds both, and they
-    are separate entries). Adopt both by naming both. A pointer adopt
-    leaves that surface's pointer block alone for the rest of the run, the
-    same as a managed adopt leaves its region.
+    are separate entries). Adopt both by naming both.
 
     A reference shelf is a region too (gate SH2b F1): ``<shelf>`` (or
     ``<shelf>#reference``) re-records the whole shelf file as it stands on
@@ -9783,10 +9797,11 @@ def recompile(
     home = Path(home)
     result = RecompileResult()
     # Gate r1 MAJOR-1 (§7.2a.5(4), multi-span): `recompile` takes several
-    # sequential OUTERMOST ledger spans in one invocation (the `--adopt`
-    # commit below, then a later per-target span, then the final resync
-    # batch) -- a concurrent producer crashing between two of THIS run's
-    # own spans must not be reported as "this verb wrote nothing" when an
+    # sequential OUTERMOST ledger spans in one invocation (one per adopted
+    # region in an `--adopt` run; per-target spans, then the final resync
+    # batch, in a plain run) -- a concurrent producer crashing between two
+    # of THIS run's own spans must not be reported as "this verb wrote
+    # nothing" when an
     # earlier span of the SAME invocation plainly did. Appended once,
     # right after `_commit_ledger` lands, at every span that actually
     # commits (the ones that only stage a record entry for the later
@@ -9989,19 +10004,23 @@ def recompile(
         # ledger commit, so a large repair run could emit many resync
         # commits in a single invocation. ONE combined commit fires at
         # the end of this function instead (right before the push loop),
-        # covering everything this run touched. `--adopt`'s own commit
-        # (just below) is a SEPARATE, deliberate single-target human
-        # action — never batched in here.
+        # covering everything this run touched. `--adopt`'s own commits
+        # (just below) are SEPARATE, deliberate single-region human
+        # actions, one commit each — never batched in here, and an adopt
+        # run returns before this batch exists (S-83).
         resync_touched: list[Path] = []
         # REC11: an --adopt target re-records the ON-DISK region as
-        # authoritative before this run's own soundness check runs — the
-        # write is mode-agnostic (REC4: the record covers git hosts too),
-        # so it is resolved once, ahead of the mode split below.
+        # authoritative — the write is mode-agnostic (REC4: the record
+        # covers git hosts too). S-83 (the user, 2026-10-08: "re-records
+        # only that target and stops"): when any target is named, the
+        # three adopt passes below are the WHOLE run; it returns after
+        # them, before any render, append, pointer, hook or host leg.
         adopt_managed: set[Path] = set()
         adopt_pointer: set[Path] = set()
         adopt_reference: set[Path] = set()
         adopt_bare: list[Path] = []
-        for raw in _adopt_list(adopt):
+        adopt_requested = _adopt_list(adopt)
+        for raw in adopt_requested:
             text_ = str(raw)
             if text_.endswith("#pointer"):
                 adopt_pointer.add(Path(text_[: -len("#pointer")]).resolve())
@@ -10024,7 +10043,6 @@ def recompile(
         for bare in adopt_bare:
             (adopt_reference if bare in adopt_shelves else adopt_managed).add(bare)
         adopt_matched_managed: set[Path] = set()
-        adopted_pointer_surfaces: set[Path] = set()
         for surface in sorted(adopt_surfaces):
             if surface not in adopt_pointer:
                 continue
@@ -10045,7 +10063,6 @@ def recompile(
                 "(user scope — ~/.claude)" if owner.scope_kind == "user" else str(owner.host_path)
             )
             key = compiled.region_key(owner.host_path, surface, "pointer")
-            adopted_pointer_surfaces.add(surface)  # only once something is adopted
             if _already_adopted(home, slug, key, "pointer", compiled.sha256_hex(region)):
                 result.warnings.append(
                     f"{surface}#pointer: --adopt: already accepted as it stands — nothing to adopt"
@@ -10071,9 +10088,12 @@ def recompile(
         # Gate SH2b F1: a shelf's whole file is its `reference` region. Its
         # on-disk bytes are re-recorded exactly as a pointer adopt records
         # its block: the record entry only, in its own ledger commit, never
-        # the file. A shelf holding a live lesson is still appended to by
-        # the reference leg below (that lesson belongs there); the record
-        # then follows the bytes that leg leaves, as on every recompile.
+        # the file. S-83: the adopt run stops after this, so a live
+        # lesson's entry missing from the adopted shelf is NOT appended
+        # back here; the next plain `recompile`'s reference leg appends it
+        # (it has no verdict gate; `compile_reference` is idempotent per
+        # record id) and re-records the shelf from the adopted hash, so
+        # record and disk agree again (`test_adopt_scope.py`).
         for shelf in sorted(adopt_reference & set(adopt_shelves)):
             owner = adopt_shelves[shelf]
             if not shelf.is_file():
@@ -10115,82 +10135,100 @@ def recompile(
                 f"{missing}#reference: --adopt: no lesson was ever routed to a shelf at this "
                 "path — nothing adopted"
             )
+        # The managed adopt finds its target by walking `specs` -- the
+        # routed records' targets: that is what decides a path IS a
+        # managed target, and yields its host, scope and mode. Only the
+        # named specs are touched.
         for (host_repo, target), spec in sorted(
             specs.items(), key=lambda kv: str(kv[0][1])
         ):
             region_kind = _region_kind_for(spec)
-            if (
+            if not (
                 adopt_managed
                 and region_kind is not None
                 and target is not None
                 and target.resolve() in adopt_managed
             ):
-                adopt_matched_managed.add(target.resolve())
-                try:
-                    text = target.read_text(encoding="utf-8")
-                    region = compiled.region_bytes(text, region_kind)
-                except (
-                    OSError,
-                    UnicodeDecodeError,
-                    compiled.CompiledRecordError,
-                ) as exc:
-                    result.entries.append(
-                        RecompileEntry(target=target, changed=False, skipped=str(exc))
-                    )
-                    result.warnings.append(f"{target}: --adopt: {exc}")
-                    continue
-                if region is None:
-                    result.warnings.append(
-                        f"{target}: --adopt: no {region_kind} region on disk "
-                        "— nothing to adopt"
-                    )
-                else:
-                    slug = host_slug(home, spec.host_path, scope_kind=spec.scope_kind)
-                    host_label = (
-                        "(user scope — ~/.claude)"
-                        if spec.scope_kind == "user"
-                        else str(spec.host_path)
-                    )
-                    key = compiled.region_key(spec.host_path, target, region_kind)
-                    with _ledger_write(home, earlier_commits=span_commits) as recovered:
-                        intents.announce_recovered(recovered)
-                        record_path = compiled.adopt_entry(
-                            home,
-                            slug,
-                            key,
-                            region=region_kind,
-                            observed_hash=compiled.sha256_hex(region),
-                            nbytes=len(region),
-                            host=host_label,
-                            mode=spec.mode,
-                        )
-                        adopt_subject = f"self-learn: recompile --adopt {key}"
-                        _commit_ledger(home, [record_path], adopt_subject)
-                    span_commits.append(adopt_subject)
-                    # target is non-None here: adopt_matched only sets
-                    # when region_kind is not None, which _region_kind_for
-                    # only returns for a spec carrying a real target.
-                    assert target is not None
-                    result.entries.append(
-                        RecompileEntry(target=target, changed=True, commit_sha=None)
-                    )
-                    # REC11: adopting means the ON-DISK region — just
-                    # re-recorded above as authoritative — IS the new
-                    # reference; falling through into the render leg
-                    # below would immediately re-derive canonical
-                    # content from the ledger and overwrite the very
-                    # bytes this block just adopted, leaving the
-                    # compile record's `sha256` pointing at bytes the
-                    # target no longer holds (a real bug this fix
-                    # closes: confirmed by writing a hand edit, running
-                    # `recompile --adopt`, and observing the entry's
-                    # `sha256` no longer matched the post-call on-disk
-                    # region before this `continue` was added). One
-                    # `recompile --adopt <target>` call fully settles
-                    # THAT target; other targets in the same run are
-                    # untouched by this `continue` and still recompile
-                    # normally below.
-                    continue
+                continue
+            adopt_matched_managed.add(target.resolve())
+            try:
+                text = target.read_text(encoding="utf-8")
+                region = compiled.region_bytes(text, region_kind)
+            except (
+                OSError,
+                UnicodeDecodeError,
+                compiled.CompiledRecordError,
+            ) as exc:
+                result.entries.append(
+                    RecompileEntry(target=target, changed=False, skipped=str(exc))
+                )
+                result.warnings.append(f"{target}: --adopt: {exc}")
+                continue
+            if region is None:
+                result.warnings.append(
+                    f"{target}: --adopt: no {region_kind} region on disk "
+                    "— nothing to adopt"
+                )
+                continue
+            slug = host_slug(home, spec.host_path, scope_kind=spec.scope_kind)
+            host_label = (
+                "(user scope — ~/.claude)"
+                if spec.scope_kind == "user"
+                else str(spec.host_path)
+            )
+            key = compiled.region_key(spec.host_path, target, region_kind)
+            # The pointer and shelf passes' no-op, here too: re-recording a
+            # region the record already accepts only moves `at:`, so the
+            # commit is either empty (same second: exit 6, half-written) or
+            # a redundant adopt commit the run would also push.
+            if _already_adopted(home, slug, key, region_kind, compiled.sha256_hex(region)):
+                result.warnings.append(
+                    f"{target}: --adopt: already accepted as it stands — nothing to adopt"
+                )
+                result.entries.append(RecompileEntry(target=target, changed=False))
+                continue
+            with _ledger_write(home, earlier_commits=span_commits) as recovered:
+                intents.announce_recovered(recovered)
+                record_path = compiled.adopt_entry(
+                    home,
+                    slug,
+                    key,
+                    region=region_kind,
+                    observed_hash=compiled.sha256_hex(region),
+                    nbytes=len(region),
+                    host=host_label,
+                    mode=spec.mode,
+                )
+                adopt_subject = f"self-learn: recompile --adopt {key}"
+                _commit_ledger(home, [record_path], adopt_subject)
+            span_commits.append(adopt_subject)
+            result.entries.append(
+                RecompileEntry(target=target, changed=True, commit_sha=None)
+            )
+        for missing in sorted(adopt_managed - adopt_matched_managed):
+            result.warnings.append(
+                f"{missing}: --adopt: no routed managed target at this "
+                "path — nothing adopted"
+            )
+        if adopt_requested:
+            # S-83 (the user, 2026-10-08: "`recompile --adopt <target>`
+            # re-records only that target and stops"). Stopping here is
+            # also what keeps an adopted region's bytes: a render after the
+            # adopt would re-derive canonical content over the very bytes
+            # just accepted, leaving the record's `sha256` naming bytes the
+            # target no longer holds (REC11's original bug). The ledger
+            # commit(s) are pushed as any single-commit verb pushes its own;
+            # no host is committed to or pushed. A plain `recompile` does
+            # the rest, against the adopted record.
+            result.adopt_only = True
+            if span_commits:
+                result.ledger_push = _push_ledger(home, no_push)
+            return result
+
+        for (host_repo, target), spec in sorted(
+            specs.items(), key=lambda kv: str(kv[0][1])
+        ):
+            region_kind = _region_kind_for(spec)
             if spec.mode != "git":
                 # U-hostmode §4.8.1: every plain host (user scope included)
                 # repairs through the SAME general path — no
@@ -10201,7 +10239,7 @@ def recompile(
                 # consult, so the compile record is the only instrument
                 # that can see a committed-equivalent hand edit
                 # (REC2/REC4), and recompile must never guess past one
-                # (H-3) — `--adopt`, just above, is the named repair.
+                # (H-3) — `--adopt` (its own run, S-83) is the named repair.
                 #
                 # G1 (D-DEPLOY §1.1): recompile is a writer like any other
                 # -- a plain host's target git tracks (or would not ignore)
@@ -10386,12 +10424,6 @@ def recompile(
             if host_repo not in touched_hosts:
                 touched_hosts.append(host_repo)
 
-        for missing in sorted(adopt_managed - adopt_matched_managed):
-            result.warnings.append(
-                f"{missing}: --adopt: no routed managed target at this "
-                "path — nothing adopted"
-            )
-
         # Reference targets: re-append every routed record (idempotent per
         # record id), commit the file ONCE if anything landed; ALSO the
         # backfill mechanism (U-pointer §3.7): every host visited here
@@ -10428,11 +10460,9 @@ def recompile(
             # proceed — the two repairs are independent, and a human's
             # uncommitted SKILL.md edit is no reason to withhold canon
             # from LEARNINGS.md.
-            # a pointer region adopted this run is frozen as adopted
-            skip_pointer = (
-                spec.pointer_surface is not None
-                and spec.pointer_surface.resolve() in adopted_pointer_surfaces
-            )
+            # (An adopted pointer region needs no skip here: an adopt run
+            # returns before this leg, S-83.)
+            skip_pointer = False
             pointer_refusal: str | None = None
             # Gate G1b F1: the pointer file is judged only when this recompile
             # would WRITE it -- the route's own rule (`_pointer_write_needed`).
@@ -10883,9 +10913,8 @@ def recompile(
         # N-6 (code gate r2 fold): the ONE combined resync commit for
         # this ENTIRE invocation — every write accumulated above
         # (managed, reference, pointer, hook re-apply, hook removal-
-        # repair; `--adopt`'s own commit above is separate and already
-        # landed). A no-op run (nothing drifted) commits nothing, same
-        # as always. `compiled/*.yaml` is inside `_RECONCILABLE_HOME` (RCN1),
+        # repair; an `--adopt` run never gets here, S-83). A no-op run
+        # (nothing drifted) commits nothing, same as always. `compiled/*.yaml` is inside `_RECONCILABLE_HOME` (RCN1),
         # so a failure between one entry's write and this final commit
         # leaves an uncommitted record file the reconcile mechanism
         # sweeps — never a lost write, same failure-mode reasoning the

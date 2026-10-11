@@ -333,25 +333,21 @@ class TestStopMessageCompleteness:
 
 
 class TestMultiSpanRefusal:
-    """Gate r1 MAJOR-1 (§7.2a.5(4)): `recompile --adopt` commits under
-    one outer lock span and takes another later for a different target
-    -- if a concurrent producer crashes an intent between those two
-    spans, the LATER span's refusal must report the earlier span's
-    commit and exit 8, never claim "this verb wrote nothing" at exit 6.
+    """Gate r1 MAJOR-1 (§7.2a.5(4)): `recompile --adopt` naming two
+    regions commits each under its own outer lock span -- if a concurrent
+    producer crashes an intent between those two spans, the LATER span's
+    refusal must report the earlier span's commit and exit 8, never claim
+    "this verb wrote nothing" at exit 6.
 
-    The second span: route a record into `env.host` (a GIT-mode host,
-    already registered) normally, letting it render once -- then revert
-    the target's tracked content back to its PRE-render bytes and
-    commit that reversion. `compiled.verdict_for`'s own table makes this
-    "stale" (`observed_hash == based_on_sha256`), never "edited" (which
-    would refuse) -- a legitimate drift shape recompile is SUPPOSED to
-    repair by re-rendering, which is exactly the second real ledger span
-    this test needs, with no refusal of its own in the way."""
+    S-83 (user, 2026-10-08: --adopt re-records only that target and
+    stops): an adopt run no longer goes on to render other targets, so the
+    second span is a second ADOPT -- a hand edit inside `env.host`'s (a
+    GIT-mode host, already registered) managed region, committed there --
+    where it used to be a later render of a drifted target."""
 
     def _setup(self, env, tmp_path):
         home = env.ledger
         from self_learn.compilers import BEGIN_MARKER
-        from support import CLAUDE_MD_SEED
 
         plain_a = tmp_path / "adopt-plain"
         plain_a.mkdir()
@@ -368,13 +364,18 @@ class TestMultiSpanRefusal:
         record_b = make_behavior(scope="project", record_id="lrn-0000000b")
         create_record(home, record_b, project_path=env.host)
         verbs.route(home, record_b.id, dest="claude-md", no_push=True)
-        # Revert the host's CLAUDE.md to its pre-render bytes and commit
-        # that -- `observed_hash` now equals the entry's own
-        # `based_on_sha256`, the "stale" verdict, not "edited".
-        (env.host / "CLAUDE.md").write_text(CLAUDE_MD_SEED, encoding="utf-8")
+        # S-83: the second span is a second adopt -- a committed hand
+        # edit inside the git host's managed region.
+        target_b = env.host / "CLAUDE.md"
+        target_b.write_text(
+            target_b.read_text(encoding="utf-8").replace(
+                BEGIN_MARKER, BEGIN_MARKER + "\nhand edit"
+            ),
+            encoding="utf-8",
+        )
         git(env.host, "add", "-A")
-        git(env.host, "commit", "-q", "-m", "revert to force a stale verdict")
-        return target_a
+        git(env.host, "commit", "-q", "-m", "hand edit in the managed region")
+        return [target_a, target_b]
 
     def _spy(self, monkeypatch, home):
         real_ledger_write = verbs._ledger_write
@@ -384,8 +385,8 @@ class TestMultiSpanRefusal:
             calls.append(list(earlier_commits or []))
             if len(calls) == 2:
                 # A concurrent producer crashes its own intent right
-                # between the adopt span (already committed) and this
-                # second target's own span -- same unresolvable-anywhere
+                # between the first adopt span (already committed) and
+                # the second adopt's own span -- same unresolvable-anywhere
                 # recipe `_plant_stop` uses above, against an UNRELATED
                 # probe file (never one of recompile's own targets).
                 probe = _probe_file(home_arg, "between-spans.txt")
@@ -398,14 +399,14 @@ class TestMultiSpanRefusal:
     def test_a_stop_planted_between_two_recompile_spans_reports_the_earlier_commit(
         self, env, tmp_path, monkeypatch
     ):
-        target_a = self._setup(env, tmp_path)
+        targets = self._setup(env, tmp_path)
         calls = self._spy(monkeypatch, env.ledger)
 
         with pytest.raises(intents.LedgerStoppedError) as excinfo:
-            verbs.recompile(env.ledger, no_push=True, adopt=target_a)
+            verbs.recompile(env.ledger, no_push=True, adopt=targets)
 
         assert len(calls) == 2, calls
-        assert calls[0] == []  # the adopt span itself has nothing earlier
+        assert calls[0] == []  # the first adopt span has nothing earlier
         assert calls[1] and "recompile --adopt" in calls[1][0]
         message = str(excinfo.value)
         assert "no further requested writes; earlier commits:" in message
@@ -418,10 +419,10 @@ class TestMultiSpanRefusal:
         through to the generic `GitOpsError` catch, which would have
         double-prefixed the message AND always returned 6. Same plant
         as above, driven through `run_cli`."""
-        target_a = self._setup(env, tmp_path)
+        target_a, target_b = self._setup(env, tmp_path)
         self._spy(monkeypatch, env.ledger)
 
-        rc = run_cli(["recompile", "--adopt", str(target_a)])
+        rc = run_cli(["recompile", "--adopt", str(target_a), "--adopt", str(target_b)])
 
         assert rc == 8
         err = capsys.readouterr().err
