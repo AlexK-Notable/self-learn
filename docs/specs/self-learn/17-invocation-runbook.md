@@ -1215,9 +1215,15 @@ forward. There is no `--force` anywhere in this path, by design:
 adopting is the one human decision the refusal names, never a way to
 skip it. A reference shelf is adopted by its path (`recompile --adopt
 <shelf>`, or `<shelf>#reference`); that is also the repair a failed
-shelf retirement's warning names (S-75 (2) as amended, S-77 (5)). Adopting
-a region the record already accepts as it stands says so and commits
-nothing.
+shelf retirement's warning names (S-75 (2) as amended, S-77 (5)).
+Adopting a region the record already accepts as it stands says so and
+commits nothing. An adopt run does only that: one ledger commit per
+named region, pushed as any single-commit verb's commit is (`--no-push`
+skips the push), and then it stops. No other target is recompiled,
+nothing is committed to or pushed in any host, and the output ends with
+a line saying so. Run a plain `self-learn recompile` afterwards (or
+re-run the route the refusal stopped) for the rest; a shelf adopted
+without a live lesson's entry gets that entry back on that run (S-83).
 
 `unknown provenance` (a plain host's target already carries content with
 no compile record yet) is now split in two, not a blanket refusal: when

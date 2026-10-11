@@ -85,6 +85,19 @@ passes the same compile+commit path this sentence's own paragraph names.
 
 ## Revision log
 
+- **2026-10-09 — (verbs, cli) S-83: `recompile --adopt` re-records only the named region(s) and stops.** The user,
+  2026-10-08 17:49, approved the fix ("yes to both small fixes"). An adopt run now makes one ledger commit per
+  adopted region (managed, pointer, shelf) and returns: no render, reference re-append, pointer write, hook re-apply,
+  resync batch commit, host commit or host push. The ledger commit(s) are pushed as a single-commit verb's are
+  (`--no-push` skips it; `recompile` never pushed the ledger before). `RecompileResult` gains `adopt_only` and
+  `ledger_push`; the CLI prints each region as `adopted` and a closing line that the rest was not run and that a
+  plain `self-learn recompile` runs it. A managed path matching no routed target still warns. A managed adopt of a
+  region the record already accepts says "already accepted as it stands" and commits nothing, as pointer and shelf
+  adopts already did. The automatic adopt of matching `unknown provenance` content still proceeds. Amends REC11 and
+  S-75 (2); `17-invocation-runbook.md`'s adopt paragraph and `13-hosting-and-separation.md` §7.2a.5(4) amended.
+  Rewritten to the new contract: `test_adopt_pointer_region.py`'s absent-pointer test and `test_recover_or_refuse.py`'s
+  `TestMultiSpanRefusal`. Blind gate on `91fd03c` (nothing blocking), folded in `a3306d1`. Tests:
+  `tests/test_adopt_scope.py` (18). Pyright 49, unchanged.
 - **2026-10-09 — (selfcheck) `--selftest`'s `markers` row stops counting lessons of a removed host.** A project
   `claude-md` record resolves its target through its bucket's own `meta.yaml` path, so a host removed with `host
   remove` and then deleted left a lesson owing a section in a file nobody manages: `markers` failed "file missing"

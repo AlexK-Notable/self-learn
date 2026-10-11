@@ -1133,9 +1133,10 @@ refusal. (c) A recovery attempt that partially mutated (a restore write
 or a roll-forward commit failed midway, §7.2a.3), or whose failure
 could not be durably recorded: reported as such, naming the path it
 failed at, the intent left in place. **Multi-span verbs, stated
-explicitly.** A verb with several outer lock spans (`recompile --adopt`
-commits under one span and takes another later) is refused at the span
-where the STOP appears. The commits of its earlier spans are the verb's
+explicitly.** A verb with several outer lock spans (`recompile` takes
+per-target spans and then its resync batch; `recompile --adopt` naming
+several regions takes one span per region) is refused at the span where
+the STOP appears. The commits of its earlier spans are the verb's
 own work: they stand — a later STOP does not un-write them — and the
 refusal carries them beside the recovery outcomes, printed as `no
 further requested writes; earlier commits: <subjects>`. The process
