@@ -85,6 +85,18 @@ passes the same compile+commit path this sentence's own paragraph names.
 
 ## Revision log
 
+- **2026-10-09 — (selfcheck) `--selftest`'s `markers` row stops counting lessons of a removed host.** A project
+  `claude-md` record resolves its target through its bucket's own `meta.yaml` path, so a host removed with `host
+  remove` and then deleted left a lesson owing a section in a file nobody manages: `markers` failed "file missing"
+  on every run, and no verb could clear it. `selfcheck._section_targets` now skips, per record, a project `claude-md`
+  record whose host is not registered in `hosts.yaml` (a lesson of the same bucket routed `new-skill` onto the
+  registered skills root still counts), and only when `hosts.yaml` exists and parses. The row names the skipped
+  buckets on PASS and on FAIL ("N project bucket(s) of an unregistered host not checked"), so a skip never reads as
+  a plain all-clear. The `compiler` row shares the target set. The drift check is unchanged (it walks only live
+  records). The user approved the change, 2026-10-08 17:49 ("yes to both small fixes"). Blind gate on `f7ee048`
+  found the skip keyed per bucket (a `new-skill` target on the skills root dropped out) and a missing `hosts.yaml`
+  skipping everything; folded in `af4f4b9` and checked by the orchestrator with the gate's own probes.
+  Tests: `tests/test_markers_removed_host.py` (13).
 - **2026-10-08 — (steward, cases, ledger_ops, verbs, batch, serve) S-81: the overseer holds a parked lesson
   alone; the steward may only add a note to it, and the ledger itself refuses the steward every other
   change.** New decision row **S-81** in `03-decisions.md`. Rounds 1-3 refused the sheet lines that NAME a
