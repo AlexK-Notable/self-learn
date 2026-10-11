@@ -45,7 +45,7 @@ this is what happens on the nights and weeks nobody opens either one.
 | Verb | Semantics (one line) |
 |---|---|
 | `status` / `list` | Pending overview / queued records; `--json`; `list --include-deferred` |
-| `teach` | Capture ONE lesson into `pending/` (scan-then-write). Scope: `--skill <name>` \| `--project` \| `--user`; type: `--type behavior --trigger … --instruction …` or `--type knowledge --fact … [--context …]`; `--route [--dest …]` resolves immediately. Capture-time grounding (optional-but-offered, 11 §3): `--verified [--verified-how …]`, `--incident-cost …`, `--generality environment-specific\|general-practice\|uncertain`, `--env COMP=VER` (repeatable) |
+| `teach` | Capture ONE lesson into `pending/` (scan-then-write). Scope: `--skill <name>` \| `--project` \| `--user`; type: `--type behavior --trigger … --instruction …` or `--type knowledge --fact …`; `--context …` (either type) is the background, written as `## Context` and never loaded; `--route [--dest …]` resolves immediately. Capture-time grounding (optional-but-offered, 11 §3): `--verified [--verified-how …]`, `--incident-cost …`, `--generality environment-specific\|general-practice\|uncertain`, `--env COMP=VER` (repeatable) |
 | `route <id> [--dest …]` | Compile the record into its destination (proposal or override), commit + push. Known-partial coverage: `--follow-up <action> [--unblocks-on <gate>] [--follow-up-note …]` rides the routing block |
 | `followup done <id> [--note …]` | Clear a routed record's open follow-up into a dated `follow_up_done` block |
 | `telemetry note <kind> [--reason …]` | Spool one offer-ledger event (`offer-made` \| `offer-declined`, reason enum: not-durable\|wrong\|duplicate\|private\|later\|other). Cache-only — no repo write, no commit |
