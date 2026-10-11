@@ -233,13 +233,19 @@ class TestPhaseBoundary:
         release; PERMITTED_KEYS carries both). Not a Phase-2 verb
         either (`phase2_verbs` below is unchanged) -- the SAME
         self-verifying membership-pin discipline the two additions
-        above already established."""
+        above already established.
+
+        E1 (2026-10-10, D-AUTHOR §2.13, build plan SP-E): 17 grows to 18
+        -- `replace` joins, the first sheet verb that writes a NEW lesson
+        (a successor that supersedes the named ones). Not a Phase-2 verb;
+        the same membership pin sits beside the count."""
         phase2_verbs = {"reroute", "followup-add", "reclassify", "host remove", "bucket prune"}
         assert "followup-add" in phase2_verbs  # gate r2 m-2: pins the spelling itself
         assert not (batch.PERMITTED_VERBS & phase2_verbs)
         assert "revise" in batch.PERMITTED_VERBS  # U4: the one deliberate addition
         assert "retire" in batch.PERMITTED_VERBS  # S-67: the other deliberate addition
-        assert len(batch.PERMITTED_VERBS) == 17
+        assert "replace" in batch.PERMITTED_VERBS  # E1 (2026-10-10): the third
+        assert len(batch.PERMITTED_VERBS) == 18
 
     def test_phase1_touches_no_host(self, tmp_path, monkeypatch):
         """PH2: a fixture with a registered host (env's ``host_a``) runs

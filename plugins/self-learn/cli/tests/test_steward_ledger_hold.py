@@ -295,6 +295,24 @@ def _row_revise(env, tmp):
             "text": "About to edit the store while it runs.", "because": "clearer"}, A, None
 
 
+def _row_replace(env, tmp):
+    """E1 (2026-10-10): `replace` rewrites its own lesson (superseded in the
+    route's commit)."""
+    return {"id": _routed(env, A), "verb": "replace", "because": "shorter",
+            "trigger": "About to edit the store while it runs.",
+            "instruction": "Stop the container first."}, A, None
+
+
+def _row_replace_also(env, tmp):
+    """E1: a merge rewrites every lesson its `also` names -- the held one
+    here is not the line's own id."""
+    _routed(env, A)
+    _routed(env, B)
+    return {"id": A, "verb": "replace", "also": [B], "because": "one lesson",
+            "trigger": "About to edit the store while it runs.",
+            "instruction": "Stop the container first."}, B, None
+
+
 _ROWS = {
     "route": _row_route,
     "route-collapse-loser": _row_route_collapse_loser,
@@ -318,6 +336,8 @@ _ROWS = {
     "link-contradicts": _row_link_contradicts,
     "followup-done": _row_followup_done,
     "revise": _row_revise,
+    "replace": _row_replace,
+    "replace-also": _row_replace_also,
 }
 
 #: The `verbs` function behind each row the batch runner dispatches. Pinned,
@@ -342,6 +362,7 @@ _DISPATCH_FN_ROWS = {
     "link_contradicts": ["link-contradicts"],
     "followup_done": ["followup-done"],
     "revise": ["revise"],
+    "replace_lesson": ["replace", "replace-also"],
 }
 
 #: Every sheet key, by what it names. A key that names another lesson is
@@ -351,10 +372,13 @@ _SHEET_KEYS = {
     "new_id": "another lesson -- row supersede-new",
     "collapse": "a cluster whose losers are rewritten -- row route-collapse-loser",
     "target": "another lesson, read for its existence only (never written)",
+    "also": "other lessons a replace supersedes -- row replace-also",
+    "text_from": "another lesson, read for its text only (never written)",
     **{key: "no lesson" for key in (
         "dest", "by", "follow_up", "unblocks_on", "follow_up_note", "allow_empty_glob",
         "note", "hook", "rules_paths", "until", "covered_by", "to", "append", "key",
         "event", "tolerate", "why", "section", "text", "because",
+        "trigger", "instruction", "fact", "context", "type", "kind",
     )},
 }
 
@@ -379,7 +403,10 @@ _BATCH_CASES_CALLS = {
     "require_reconsider_case": "read",
     "_case_path_for_id": "read",
 }
-_VERBS_CASES_CALLS = {"require_reconsider_case": "read"}
+_VERBS_CASES_CALLS = {
+    "require_reconsider_case": "read",
+    "list_cases": "read (E1: `replace` looks for a person's case, S-76)",
+}
 
 
 def _functions() -> dict[str, ast.FunctionDef]:
@@ -475,7 +502,7 @@ def test_the_walker_drives_every_steward_write_path_the_code_has():
 
     driven_verbs = {line_verb for line_verb in batch.PERMITTED_VERBS}
     row_verbs = {
-        name.split("-")[0] if name.startswith(("route", "supersede")) else
+        name.split("-")[0] if name.startswith(("route", "supersede", "replace")) else
         ("route" if name == "reroute" else name)
         for name in _ROWS
     }

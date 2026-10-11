@@ -724,7 +724,8 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         metavar="NAME",
         help="the body section heading to replace (e.g. Trigger, "
-        "Instruction, Fact, Context) — must already exist in the record",
+        "Instruction, Fact, Context) — must already exist in the record, "
+        "except Context, which a lesson without one gains",
     )
     revise_p.add_argument(
         "--text",
@@ -776,6 +777,51 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="no_push",
         help="commit exactly as pinned, skip only the push",
+    )
+
+    replace_p = _verb(
+        "replace",
+        "write a new lesson that takes over from ID (and every --also lesson) "
+        "in one motion: the old line out, the new line in (E1, D-AUTHOR §2.2)",
+        json_flag=True,
+    )
+    replace_p.add_argument("id", metavar="ID", help="the lesson replaced: pending, deferred or routed")
+    replace_p.add_argument(
+        "--also", action="append", metavar="ID", default=None,
+        help="another lesson merged into the new one (repeatable; any bucket)",
+    )
+    replace_p.add_argument("--trigger", metavar="TEXT", help="behavior: the new Trigger, one line")
+    replace_p.add_argument("--instruction", metavar="TEXT", help="behavior: the new Instruction, one line")
+    replace_p.add_argument("--fact", metavar="TEXT", help="knowledge: the new Fact, one line")
+    replace_p.add_argument(
+        "--context", metavar="TEXT", help="kept in the lesson, never loaded (any number of lines)"
+    )
+    replace_p.add_argument(
+        "--text-from", dest="text_from", metavar="ID",
+        help="instead of the text flags: copy that lesson's text exactly (the undo of a rewrite)",
+    )
+    replace_p.add_argument("--type", choices=sorted(verbs.records_mod.TYPES), default=None)
+    replace_p.add_argument("--kind", choices=sorted(verbs.records_mod.KINDS), default=None)
+    replace_p.add_argument(
+        "--to", metavar="TARGET",
+        help="the new lesson's bucket, in rehome's grammar (default: the first lesson's)",
+    )
+    replace_p.add_argument(
+        "--dest", metavar="TARGET",
+        help="where the new lesson goes (default: where the first lesson is placed now; "
+        "a pending first lesson with no --dest gives a pending replacement); never hook",
+    )
+    replace_p.add_argument(
+        "--rules-path", action="append", dest="rules_paths", metavar="GLOB",
+        help="claude-md:rules:<topic> only, as on route (repeatable)",
+    )
+    replace_p.add_argument(
+        "--because", required=True, metavar="TEXT",
+        help="why the lesson's words change → commit body (required)",
+    )
+    replace_p.add_argument(
+        "--by", choices=sorted(verbs.ROUTING_BY_VALUES),
+        help="names the actor that chose the placement (default human)",
     )
 
     supersede = _verb("supersede", "mark OLD superseded by NEW (metadata only)")
@@ -2490,6 +2536,9 @@ def _verb_envelope(result: verbs.VerbResult) -> dict:
         # (register=False) activation — never the full script body,
         # which stays the route/Apply step's and the overseer's O-5
         # display's job.
+        # E1: `replace` only -- the lesson it made and its compiled line.
+        "new_record_id": result.new_record_id,
+        "compiled_line": result.compiled_line,
         "hook_registered_entry": result.hook_registered_entry,
         "hook_script_path": result.hook_script_path,
         "hook_script_sha256": result.hook_script_sha256,
@@ -2748,6 +2797,17 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 no_push=args.no_push,
             )
             return _finish_verb(result, "reclassified")
+        if args.command == "replace":
+            result = verbs.replace_lesson(
+                home, args.id, because=args.because, also=args.also,
+                trigger=args.trigger, instruction=args.instruction, fact=args.fact,
+                context=args.context, text_from=args.text_from, type=args.type,
+                kind=args.kind, to=args.to, dest=args.dest, rules_paths=args.rules_paths,
+                note=args.note, by=args.by, no_push=args.no_push,
+            )
+            return _finish_verb(
+                result, result.new_record_id or "replaced", as_json=args.as_json
+            )
         if args.command == "revise":
             result = verbs.revise(
                 home, args.id, section=args.section, text=args.text,
@@ -4098,6 +4158,8 @@ VERB_COMMANDS = frozenset(
         # U5: reconsider dispatches through the SAME `_cmd_verb` ladder
         # too — no new caller of the epilogue.
         "reconsider",
+        # E1: replace dispatches through the SAME `_cmd_verb` ladder too.
+        "replace",
     }
 )
 

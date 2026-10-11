@@ -156,6 +156,16 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
     # by S-71 §6's `_PREVIEW_CHECKS`) is U3's own
     # (lane so-batch, this build).
     "revise": frozenset({"section", "text", "because", "by"}),
+    # E1 (D-AUTHOR §2.2, SP-E): a new lesson that takes over from the line's
+    # lesson and every lesson in `also` (any bucket). The text keys, or
+    # `text_from` to copy a replaced lesson's text exactly (undo); `to` in
+    # the rehome grammar; `dest` and `rules_paths` as on `route`.
+    "replace": frozenset(
+        {
+            "also", "trigger", "instruction", "fact", "context", "text_from",
+            "type", "kind", "to", "dest", "rules_paths", "because", "note", "by",
+        }
+    ),
 }
 PERMITTED_VERBS = frozenset(PERMITTED_KEYS)
 #: Verbs that are only a second spelling of another verb (S-67:
@@ -193,6 +203,9 @@ REQUIRED_KEYS: dict[str, frozenset[str]] = {
     # optional `note` -- it plays `note`'s exact role (commit body) for
     # this verb and has no optional counterpart, so it is never absent.
     "revise": frozenset({"section", "text", "because"}),
+    # E1: `because` plays revise's role (the commit body); the one-of check
+    # on the text keys is the verb's (`verbs._replace_text_sections`).
+    "replace": frozenset({"because"}),
 }
 
 #: S-29 / Y-17: never accepted inside a sheet, by name — a hook route
@@ -718,9 +731,13 @@ def load_sheet(path: Path | str, *, home: Path | str | None = None) -> Sheet:
                 f"batch {path}: item {n} ({verb}) has by={by_val!r}, must "
                 f"be one of {sorted(verbs.ROUTING_BY_VALUES)}"
             )
-        shape = _route_shape_problem(raw) if verb == "route" else None
+        shape = (
+            _route_shape_problem(raw) if verb == "route"
+            else _replace_shape_problem(raw) if verb == "replace"
+            else None
+        )
         if shape is not None:
-            raise BatchError(f"batch {path}: item {n} (route): {shape}")
+            raise BatchError(f"batch {path}: item {n} ({verb}): {shape}")
         fields = {k: v for k, v in raw.items() if k not in ("id", "verb")}
         items.append(SheetItem(n=n, id=rid, verb=verb, fields=fields))
     return Sheet(
@@ -755,6 +772,25 @@ def _route_shape_problem(raw: dict) -> str | None:
                 f"`hook` has unknown key(s) {unknown} / is missing {missing}; "
                 f"it holds {sorted(HOOK_INPUT_KEYS)} ({sorted(HOOK_INPUT_REQUIRED)} required)"
             )
+    return None
+
+
+def _replace_shape_problem(raw: dict) -> str | None:
+    """E1: the SHAPE of a replace line's keys, checked with the rest of the
+    sheet (BAT1) -- the verb checks their content."""
+    also = raw.get("also")
+    if also is not None and (
+        not isinstance(also, list) or not all(isinstance(r, str) and RECORD_ID_RE.match(r) for r in also)
+    ):
+        return f"`also` must be a list of lesson ids, got {also!r}"
+    for key in ("trigger", "instruction", "fact", "context", "text_from", "type", "kind", "to", "dest"):
+        value = raw.get(key)
+        if value is not None and not isinstance(value, str):
+            return f"`{key}` must be text, got {value!r}"
+    if raw.get("rules_paths") is not None:
+        problem = verbs.sheet_rules_paths_problem(raw.get("dest"), raw.get("rules_paths"))
+        if problem is not None:
+            return problem
     return None
 
 
@@ -975,6 +1011,22 @@ def classify(
         return target in record.contradicts
     if verb == "followup-done":
         return record.follow_up is None and record.follow_up_done is not None
+    if verb == "replace":
+        # E1 (D-AUTHOR §2.2): applied iff the line's lesson reads
+        # `superseded_by` a lesson that `supersedes` it with this line's
+        # text, and every `also` lesson is replaced by that same lesson. A
+        # half-applied merge is not applied: the verb finishes it.
+        made = verbs.replace_applied_as(home, item.id, f)
+        if made is None:
+            return False
+        for also_id in f.get("also") or []:
+            try:
+                also_record = read_record_or_refuse(find_record_path(home, also_id))
+            except LedgerOpsError:
+                return False
+            if also_record.superseded_by != made.id:
+                return False
+        return True
     if verb == "revise":
         # U3 (carried from the U4 gate, gate-u4-r1.md F5): `revise` was
         # added to PERMITTED_VERBS by U4 without a `classify` branch, so
@@ -1279,6 +1331,79 @@ def _dispatch_retire_or_graduate(
     )
 
 
+def _dispatch_replace(
+    home: Path,
+    item: SheetItem,
+    *,
+    actor: str,
+    execution: execution_evidence.ExecutionRef | None,
+) -> "ItemResult":
+    """E1: the ``replace`` leg of :func:`_dispatch`, factored out for the
+    same reason its siblings were (pyright's per-function complexity
+    ceiling: even building its own result inline there tripped it). The
+    actor's refusal of a reference shelf runs first, on the destination the
+    new lesson would take (S-77), as for a route. ``by`` defaults to the
+    runner's actor for a non-human runner, as on `route`. A refusal raises
+    to :func:`_dispatch`, which maps it like every other verb's."""
+    f = item.fields
+    _refuse_agent_reference(
+        item.id, verbs.replace_destination(home, item.id, f.get("dest")), actor
+    )
+    result = verbs.replace_lesson(
+        home, item.id, because=f["because"], also=f.get("also"),
+        trigger=f.get("trigger"), instruction=f.get("instruction"),
+        fact=f.get("fact"), context=f.get("context"), text_from=f.get("text_from"),
+        type=f.get("type"), kind=f.get("kind"), to=f.get("to"), dest=f.get("dest"),
+        rules_paths=f.get("rules_paths"), note=f.get("note"),
+        by=(f.get("by") or (actor if actor != "human" else None)),
+        no_push=True, execution=execution, actor=actor,
+    )
+    return ItemResult(
+        n=item.n, id=item.id, verb=item.verb, rc=0, sha=result.commit_sha,
+        state="applied", warnings=list(result.warnings),
+        detail=_replace_detail(result.new_record_id, result.compiled_line),
+    )
+
+
+def _sheet_follow_up(f: dict) -> dict | None:
+    """A route line's follow-up keys as the verb's ``follow_up`` mapping
+    (moved out of :func:`_dispatch` unchanged, E1: its `replace` branch
+    put that function over pyright's per-function complexity ceiling)."""
+    if f.get("follow_up") is None:
+        return None
+    follow_up = {"action": f["follow_up"]}
+    if f.get("unblocks_on") is not None:
+        follow_up["unblocks_on"] = f["unblocks_on"]
+    if f.get("follow_up_note") is not None:
+        follow_up["note"] = f["follow_up_note"]
+    return follow_up
+
+
+def _replace_detail(new_id: str | None, line: str | None) -> str | None:
+    """E1 (D-AUTHOR §2.4): what a replace item's receipt line carries -- the
+    lesson it made and, for a managed destination, the line the compiler
+    wrote -- so the case shows the after-text the program rendered."""
+    if new_id is None:
+        return None
+    return f"made {new_id}" + (f"; line: {line}" if line else "")
+
+
+def _replace_applied_detail(home: Path, item: SheetItem) -> str | None:
+    """The same detail for a replace item found already applied, by the
+    same state read `classify` made: a re-run of the sheet re-renders the
+    case's receipt line (S-65 F1), and it keeps naming the lesson."""
+    if item.verb != "replace":
+        return None
+    made = verbs.replace_applied_as(home, item.id, item.fields)
+    if made is None:
+        return None
+    destination = (made.routing or {}).get("destination") if made.status == "routed" else None
+    from .compilers import entry_line
+
+    line = entry_line(made) if destination in ("claude-md", "skill-md", "new-skill") else None
+    return _replace_detail(made.id, line)
+
+
 def _dispatch(
     home: Path,
     item: SheetItem,
@@ -1383,13 +1508,7 @@ def _dispatch(
                     home, item, actor=actor, hook_activation=hook_activation,
                     is_hook_dest=is_hook_dest,
                 )
-            follow_up = None
-            if f.get("follow_up") is not None:
-                follow_up = {"action": f["follow_up"]}
-                if f.get("unblocks_on") is not None:
-                    follow_up["unblocks_on"] = f["unblocks_on"]
-                if f.get("follow_up_note") is not None:
-                    follow_up["note"] = f["follow_up_note"]
+            follow_up = _sheet_follow_up(f)
             result = verbs.route(
                 home, item.id,
                 dest=f.get("dest"),
@@ -1526,6 +1645,8 @@ def _dispatch(
                 home, item.id, note=f.get("note"), no_push=True,
                 execution=execution,
             )
+        elif verb == "replace":
+            return _dispatch_replace(home, item, actor=actor, execution=execution)
         elif verb == "revise":
             # U3 (carried from the U4 gate): U4 added `revise` to
             # PERMITTED_VERBS/PERMITTED_KEYS/REQUIRED_KEYS but this
@@ -1608,7 +1729,9 @@ _STOP_CODES = frozenset({5, 6, 7})
 # These verbs can return only after a ledger commit and one or more host
 # effects. Their owner-returned result must be receipted before a dependent
 # item starts; a mutation trailer proves only the ledger leg.
-_HOST_OUTCOME_VERBS = frozenset({"route", "reject", "retire", "graduate", "supersede"})
+_HOST_OUTCOME_VERBS = frozenset(
+    {"route", "reject", "retire", "graduate", "supersede", "replace"}
+)
 
 
 def _validate_continuation(
@@ -1893,6 +2016,23 @@ def _preview_revise(
     return revised
 
 
+def _preview_replace(
+    home: Path, item: SheetItem, by: str | None, rc: str | None,
+    actor: str = "human",
+) -> None:
+    """E1: the replace's own pre-lock checks (`verbs._preflight_replace`),
+    the S-81 gates on every lesson it rewrites included. *actor* as
+    `_dispatch_replace` passes it (:func:`_preview_checks` gives it)."""
+    f = item.fields
+    verbs._preflight_replace(
+        home, item.id, also=f.get("also"), trigger=f.get("trigger"),
+        instruction=f.get("instruction"), fact=f.get("fact"), context=f.get("context"),
+        text_from=f.get("text_from"), type=f.get("type"), kind=f.get("kind"),
+        to=f.get("to"), dest=f.get("dest"), rules_paths=f.get("rules_paths"),
+        because=f["because"], note=f.get("note"), by=by, actor=actor,
+    )
+
+
 #: Each check raises the verb's refusal or returns; only `revise` returns
 #: something, the lesson as it would leave it (E0b).
 _PreviewCheck = Callable[[Path, SheetItem, str | None, str | None], Record | None]
@@ -1914,6 +2054,7 @@ _PREVIEW_CHECKS: dict[str, _PreviewCheck] = {
     "link-contradicts": _preview_link_contradicts,
     "followup-done": _preview_followup_done,
     "revise": _preview_revise,
+    "replace": _preview_replace,
 }
 
 #: What `_dispatch` turns into a refused item — a preview check raising one
@@ -1944,7 +2085,11 @@ def _preview_checks(
     returns: for a `revise`, the lesson as it would leave it."""
     _refuse_agent_shelf_cover(item, actor)
     f = item.fields
-    if item.verb == "revise":
+    if item.verb == "replace":
+        _refuse_agent_reference(
+            item.id, verbs.replace_destination(home, item.id, f.get("dest")), actor
+        )
+    if item.verb in ("revise", "replace"):
         by = f.get("by") or (actor if actor != "human" else None)
     else:
         by = f.get("by") or actor
@@ -1955,6 +2100,8 @@ def _preview_checks(
         return _preview_revise(
             home, item, by, reconsider_case, record_override=record_override
         )
+    if item.verb == "replace":
+        return _preview_replace(home, item, by, reconsider_case, actor=actor)
     return _PREVIEW_CHECKS[item.verb](home, item, by, reconsider_case)
 
 
@@ -2482,6 +2629,7 @@ def _run_items(
                                     verb=item.verb,
                                     rc=0,
                                     state="already-applied",
+                                    detail=_replace_applied_detail(home, item),
                                 )
                             )
                             assert checkpoint is not None
@@ -2503,7 +2651,8 @@ def _run_items(
                 if continuation is None:
                     result.items.append(
                         ItemResult(n=item.n, id=item.id, verb=item.verb, rc=0,
-                                   state="already-applied")
+                                   state="already-applied",
+                                   detail=_replace_applied_detail(home, item))
                     )
                 continue
             dispatch_span = (

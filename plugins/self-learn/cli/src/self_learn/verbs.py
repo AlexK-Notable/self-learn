@@ -143,6 +143,7 @@ from .compilers import (
 # the real write cannot drift apart.
 from .compilers import (
     _LEARNINGS_HEADER,
+    _body_sections,
     _reference_block,
     _text_names_target,
 )
@@ -172,8 +173,10 @@ from .ledger_ops import (
     REOPENABLE_STATUSES,
     RESOLVABLE_STATUSES,
     ROUTED_ONLY,
+    StatusRefusal,
     bucket_dir_for_scope,
     bucket_project_path,
+    create_record,
     defer_record,
     ensure_project_meta,
     find_record_path,
@@ -257,6 +260,9 @@ __all__ = [
     "recompile",
     "rehome",
     "reopen",
+    "replace_destination",
+    "replace_lesson",
+    "replace_applied_as",
     "reroute",
     "rescope",
     "reject",
@@ -584,6 +590,13 @@ class VerbResult:
     # exists there).
     hook_replay: str | None = None
     hook_reload_caveat: str | None = None
+    # E1 (D-AUTHOR §2.4): `replace`-only. The lesson the verb made, and the
+    # line the compiler wrote for it (a managed destination only) -- the
+    # batch receipt carries both into the case's Application section, so
+    # the case shows the after-text without a model retyping it. `None`
+    # for every other verb.
+    new_record_id: str | None = None
+    compiled_line: str | None = None
 
 
 # ------------------------------------------------------------------ helpers
@@ -5784,6 +5797,7 @@ def _execute_route(
     collapse: "_CollapseCtx | None" = None,
     capture_diff: bool = False,
     execution: execution_evidence.ExecutionRef | None = None,
+    subject: str | None = None,
 ) -> VerbResult:
     """THE pinned route sequence (M-R, lane L7): every step `route`
     (pending-file input, git-mv) and `route_direct` (in-memory record,
@@ -5842,7 +5856,14 @@ def _execute_route(
     regardless of where inside the `try` a refusal fires) but a real
     ordering deviation from a documented invariant; each adapter keeps
     doing this preflight itself, at the same pre-sentinel point it always
-    did, and simply hands the three results through."""
+    did, and simply hands the three results through.
+
+    ``subject`` (E1): the commit subject in place of the pinned ``route``
+    one, for :func:`replace`, whose commit is the old lesson's correction
+    (``self-learn: replace lrn-old → lrn-new (<dest>)``): a steward
+    re-drive finds a line's proof commit by ``self-learn: <verb> <id>``
+    (`execution_evidence._subject_matches`). ``None`` keeps the route
+    subject byte-for-byte."""
     home = Path(home)
     record_id = record.id
 
@@ -5881,7 +5902,7 @@ def _execute_route(
     message_target = (
         f"new-skill:{spec.new_skill}" if spec.destination == "new-skill" else spec.destination
     )
-    message = f"self-learn: route {record_id} → {message_target}{suffix}"
+    message = subject or f"self-learn: route {record_id} → {message_target}{suffix}"
     routed_at = _now_iso()
 
     merged: Record | None = None
@@ -6497,6 +6518,43 @@ def route_direct(
     call site (``teach.py``) — this default only still covers
     ``teach --route --dest X``, where an explicit --dest typed at the
     terminal genuinely is the human's own choice."""
+    return _route_direct_core(
+        home, record, dest=dest, by=by, note=note, no_push=no_push,
+        user_claude_md=user_claude_md, project_path=project_path,
+        hook_input=hook_input, follow_up=follow_up,
+        allow_empty_glob=allow_empty_glob, rules_paths=rules_paths,
+        allow_unpathed=allow_unpathed, one_motion_gate=True,
+    )
+
+
+def _route_direct_core(
+    home: Path | str,
+    record: Record,
+    *,
+    dest: str,
+    by: str,
+    note: str | None,
+    no_push: bool,
+    user_claude_md: Path | str | None,
+    project_path: Path | None,
+    hook_input: dict | None,
+    follow_up: dict | None,
+    allow_empty_glob: bool,
+    rules_paths: list[str] | None,
+    allow_unpathed: bool,
+    one_motion_gate: bool,
+    subject: str | None = None,
+    execution: execution_evidence.ExecutionRef | None = None,
+) -> VerbResult:
+    """:func:`route_direct`'s gates and its call into :func:`_execute_route`
+    -- one copy, two entries (E1, D-AUTHOR §2.2). ``route_direct`` (``teach
+    --route``) passes ``one_motion_gate=True``. :func:`replace` passes
+    ``False``: it refuses a hook itself and admits ``new-skill:<name>`` only
+    into a skill self-learn already made, so the S-10 gate, which guards a
+    person's one-motion capture from scaffolding a skill or writing a hook
+    script unreviewed, would only stop the merge of lessons that already
+    live in such a skill. Every other gate runs, in the same order, for
+    both. ``subject`` and ``execution`` are threaded to the core."""
     home = Path(home)
     if by not in ROUTING_BY_VALUES:
         raise VerbError(
@@ -6514,7 +6572,7 @@ def route_direct(
     except LedgerOpsError as exc:
         raise VerbError(str(exc)) from exc
     destination, ref_name = _parse_dest(dest)
-    if not one_motion_allowed(home, destination):
+    if one_motion_gate and not one_motion_allowed(home, destination):
         # The DEFAULT posture (S-10 amendment 2026-07-16): refuse with the
         # pinned message; a committed config.yaml opt-in is the only door.
         hint = (
@@ -6680,9 +6738,660 @@ def route_direct(
             project_path=project_path,
             user_claude_md=user_claude_md,
             capture_diff=True,
+            execution=execution,
+            subject=subject,
         )
     finally:
         hold.release()  # (g) release iff owned
+
+
+# ------------------------------------------------------------- E1 replace
+#
+# D-AUTHOR §2.2-2.11 (build plan E1 / SP-E): `replace` writes a NEW lesson
+# that takes over from one or more named lessons. The first named lesson is
+# superseded in the route's own commit (the swap `teach --supersedes --route`
+# already makes, through the route core's direct path); each further one
+# (`also`) by the existing `supersede`, each its own transaction, after the
+# new line is placed (D-AUTHOR §2.3 M2: duplicate guidance for the seconds
+# between commits, never missing guidance). The old lessons stay in the
+# ledger, byte for byte, as replaced. Undo is a further `replace` with
+# `text_from`.
+
+#: The text keys of a `replace` line (D-AUTHOR §2.2): the new loaded text,
+#: each one line, and the optional Context (kept, never loaded).
+REPLACE_TEXT_KEYS = ("trigger", "instruction", "fact", "context")
+
+
+@dataclass
+class _ReplacePlan:
+    """What :func:`_preflight_replace` resolved, for :func:`replace` (and
+    `batch.dry_run`, which stops here). ``record`` is the composed new
+    lesson, in memory only, or ``None`` when an earlier run already placed
+    it (``primary_done``; ``new_id`` is then that lesson's id). ``dest`` is
+    the destination the new lesson routes to, or ``None`` when it lands
+    pending (D-AUTHOR §2.2: the first lesson is pending or deferred and no
+    ``dest`` is named). ``also_todo`` are the ``also`` lessons not yet
+    replaced by ``new_id``."""
+
+    first_id: str
+    first: Record
+    new_id: str
+    record: Record | None
+    dest: str | None
+    destination: str | None
+    ref_name: str | None
+    project_path: Path | None
+    follow_up: dict | None
+    primary_done: bool
+    also_todo: list[str]
+    warnings: list[str] = field(default_factory=list)
+
+
+def _replace_text_sections(
+    home: Path,
+    *,
+    trigger: str | None,
+    instruction: str | None,
+    fact: str | None,
+    context: str | None,
+    text_from: str | None,
+    type: str | None,
+) -> tuple[str, dict[str, str], Record | None]:
+    """The new lesson's type and its sections (heading -> stripped text) as
+    the line names them, or -- with ``text_from`` -- as the named lesson
+    holds them, plus that lesson (the runner copies its body byte for byte,
+    D-AUTHOR §2.7). Refuses a line whose text keys are missing, mixed with
+    ``text_from``, or of two types at once. Reads only."""
+    given = {
+        key: value for key, value in (
+            ("trigger", trigger), ("instruction", instruction),
+            ("fact", fact), ("context", context),
+        ) if value is not None
+    }
+    for key, value in given.items():
+        if not isinstance(value, str) or not value.strip():
+            raise SheetLineUsageError(f"replace: {key} must be non-empty text")
+    if text_from is not None:
+        if given:
+            raise SheetLineUsageError(
+                "replace: text_from copies a lesson's text exactly; it cannot be "
+                f"mixed with {sorted(given)}"
+            )
+        if not isinstance(text_from, str) or not RECORD_ID_RE.match(text_from):
+            raise SheetLineUsageError(f"replace: text_from must be a lesson id, got {text_from!r}")
+        source = read_record_or_refuse(find_record_path(home, text_from))
+        if type is not None and type != source.type:
+            raise SheetLineError(
+                f"replace: text_from {text_from} is a {source.type} lesson, not {type}"
+            )
+        return source.type, _body_sections(source), source
+    behavior = "trigger" in given or "instruction" in given
+    if behavior and "fact" in given:
+        raise SheetLineUsageError(
+            "replace: a lesson is behavior (trigger + instruction) or knowledge "
+            "(fact), never both"
+        )
+    if behavior:
+        if "trigger" not in given or "instruction" not in given:
+            raise SheetLineUsageError("replace: a behavior lesson needs both trigger and instruction")
+        new_type = "behavior"
+        sections = {"Trigger": given["trigger"].strip(), "Instruction": given["instruction"].strip()}
+    elif "fact" in given:
+        new_type = "knowledge"
+        sections = {"Fact": given["fact"].strip()}
+    else:
+        raise SheetLineUsageError(
+            "replace needs the new text (trigger + instruction, or fact) or text_from"
+        )
+    if type is not None and type != new_type:
+        raise SheetLineError(f"replace: the text given is a {new_type} lesson, not {type}")
+    if "context" in given:
+        sections["Context"] = given["context"].strip()
+    return new_type, sections, None
+
+
+def _replaced_by_this_text(
+    home: Path, first: Record, sections: dict[str, str], source: Record | None
+) -> Record | None:
+    """The idempotence read (D-AUTHOR §2.2, S-54 "total, by a state read"):
+    the lesson that already replaced *first* with this line's text, or
+    ``None``. It qualifies when *first* reads ``superseded_by`` it, it reads
+    ``supersedes`` *first*, and its text equals the line's (sections
+    compared stripped; with ``text_from``, the whole body byte for byte).
+    Reads only; never raises for a missing or unreadable successor."""
+    successor_id = first.superseded_by
+    if first.status != "superseded" or not isinstance(successor_id, str):
+        return None
+    if not RECORD_ID_RE.match(successor_id):
+        return None
+    try:
+        successor = read_record_or_refuse(find_record_path(home, successor_id))
+    except (LedgerOpsError, VerbError):
+        return None
+    if successor.supersedes != first.id:
+        return None
+    if source is not None:
+        return successor if successor.body == source.body else None
+    return successor if _body_sections(successor) == sections else None
+
+
+def replace_applied_as(home: Path | str, record_id: str, fields: dict) -> Record | None:
+    """``batch.classify``'s state read for a ``replace`` line: the lesson
+    that already replaced *record_id* with the line's text, or ``None``.
+    Never raises for a line whose text is malformed (that is the verb's
+    refusal, at dispatch)."""
+    home = Path(home)
+    try:
+        first = read_record_or_refuse(find_record_path(home, record_id))
+        _type, sections, source = _replace_text_sections(
+            home, **{key: fields.get(key) for key in REPLACE_TEXT_KEYS},
+            text_from=fields.get("text_from"), type=fields.get("type"),
+        )
+    except (LedgerOpsError, VerbError):
+        return None
+    return _replaced_by_this_text(home, first, sections, source)
+
+
+def _refuse_hook_lesson(record: Record) -> None:
+    if (record.routing or {}).get("destination") == "hook" and record.status == "routed":
+        raise SheetLineError(
+            f"replace: {record.id} is routed to a hook -- a hook lesson is corrected "
+            "through its hook route, not its text"
+        )
+
+
+def _human_case_on(home: Path, record_id: str) -> str | None:
+    """S-76 / D-AUTHOR §2.10: an open (not superseded) case a person
+    recorded that names *record_id*, or ``None``. A ``replace`` of such a
+    lesson keeps its placement; moving it is asked of the user."""
+    try:
+        rows = cases.list_cases(home, record_id=record_id)
+    except (cases.CaseError, OSError, ValueError):
+        return None
+    for row in rows:
+        if row.get("actor") == "human" and not row.get("superseded_by"):
+            return str(row.get("case"))
+    return None
+
+
+def _replace_bucket(
+    home: Path, first_path: Path, to: str | None
+) -> tuple[str, Path, Path | None]:
+    """``(scope, bucket, project_path)`` for the new lesson: ``to`` in the
+    rehome/rescope grammar, or by default the first lesson's own bucket."""
+    if to is not None:
+        return _resolve_move_target(home, to)
+    bucket = first_path.parent.parent
+    literal = _bucket_scope_literal(home, bucket)
+    if literal == "project":
+        project_path = bucket_project_path(bucket)
+        if project_path is None:
+            raise NeedsPerson(
+                f"replace: the project bucket {bucket.name} has no readable meta.yaml "
+                "-- name `to:` or repair the bucket"
+            )
+        return "project", bucket, project_path
+    return literal, bucket, None
+
+
+def _merged_follow_up(records: list[Record]) -> dict | None:
+    """The one open follow-up the merged lessons carry, or ``None``
+    (D-AUTHOR §2.11). Two different open ones refuse by name: close one
+    first."""
+    open_ups: list[tuple[str, dict]] = []
+    for rec in records:
+        fu = rec.follow_up if rec.status == "routed" else None
+        if fu and all(dict(fu) != dict(other) for _rid, other in open_ups):
+            open_ups.append((rec.id, dict(fu)))
+    if len(open_ups) > 1:
+        named = ", ".join(rid for rid, _fu in open_ups)
+        raise SheetLineError(
+            f"replace: the merged lessons carry different open follow-ups ({named}); "
+            "close all but one first (`followup-done`)"
+        )
+    return open_ups[0][1] if open_ups else None
+
+
+def _compose_replacement(
+    first: Record,
+    also: list[Record],
+    *,
+    scope: str,
+    new_type: str,
+    kind: str | None,
+    sections: dict[str, str],
+    source: Record | None,
+    record_id: str,
+) -> Record:
+    """The new lesson, in memory (D-AUTHOR §2.11): ``source: rewrite``,
+    ``supersedes`` the first lesson, its text, and what carries over --
+    every merged lesson's evidence (a union, append-only), the first
+    lesson's grounding fields, and the merged sightings (the collapse
+    precedent). Never written here."""
+    evidence: list[dict] = []
+    for rec in (first, *also):
+        for entry in rec.evidence:
+            plain = dict(entry)
+            if plain not in evidence:
+                evidence.append(plain)
+    if new_type == "behavior":
+        if kind is None and first.type == "behavior":
+            kind = first.kind
+        record = Record.create(
+            type="behavior", scope=scope, source="rewrite", kind=kind,
+            trigger=sections.get("Trigger"), instruction=sections.get("Instruction"),
+            context=sections.get("Context"), evidence=evidence, record_id=record_id,
+        )
+    else:
+        if kind is not None:
+            raise SheetLineError("replace: kind applies to behavior lessons only")
+        record = Record.create(
+            type="knowledge", scope=scope, source="rewrite", fact=sections.get("Fact"),
+            context=sections.get("Context"), evidence=evidence, record_id=record_id,
+        )
+    if source is not None:
+        # D-AUTHOR §2.7: an undo copies the original's text byte for byte.
+        record.set_body(source.body)
+    record.set_supersedes(first.id)
+    if first.verified is not None:
+        record.set_verified(first.verified, first.verified_how)
+    if first.incident_cost is not None:
+        record.set_incident_cost(first.incident_cost)
+    if first.generality is not None:
+        record.set_generality(first.generality)
+    if first.env is not None:
+        record.set_env(dict(first.env))
+    record.set_sightings(sum(rec.sightings for rec in (first, *also)))
+    return record
+
+
+def _preflight_replace(
+    home: Path,
+    record_id: str,
+    *,
+    also: list[str] | None,
+    trigger: str | None,
+    instruction: str | None,
+    fact: str | None,
+    context: str | None,
+    text_from: str | None,
+    type: str | None,
+    kind: str | None,
+    to: str | None,
+    dest: str | None,
+    rules_paths: list[str] | None,
+    because: str,
+    note: str | None,
+    by: str | None,
+    user_claude_md: Path | str | None = None,
+    actor: str = "human",
+) -> _ReplacePlan:
+    """Every check `replace` makes before any lock, in the order the verb
+    runs them -- shared with ``batch.dry_run`` (S-71 §6), so the preview
+    refuses what the run would. Writes nothing.
+
+    1. The line itself: ``because``, ``by``, ``also``, the text keys
+       (:func:`_replace_text_sections`), a ``dest`` that names a hook.
+    2. The line's own text is secret-scanned FIRST (D-AUTHOR §2.6): a hit
+       is the line's (``SecretRefusal(where="item")``, kind ``bad-line``).
+    3. Every record this call rewrites -- the first lesson and each
+       ``also`` lesson -- passes the two S-81 gates before anything is
+       written: ``_scan_or_refuse`` (its file's secret scan) and
+       ``require_status`` (pending, deferred or routed). While the steward
+       acts, a lesson the overseer holds is refused here, as the main id
+       or as an ``also`` id alike.
+    4. A hook lesson is refused by name; a lesson already replaced by a
+       different lesson is refused by status; one already replaced by this
+       very text is the idempotence read, and its successor is reused.
+    5. The composed record, its whole-record scan (kind ``secret-record``),
+       and the destination's own pre-flight: the target, the rules globs,
+       the loaded-text check, the S-76 placement rule, and each old
+       placement's retirement pre-flight.
+
+    *actor* is the runner's own validated actor (``batch.run``'s, never a
+    sheet line's ``by``, which the line writes): the S-76 placement rule
+    binds the steward and the overseer, not the person whose case it is."""
+    if not isinstance(because, str) or not because.strip():
+        raise SheetLineUsageError("replace needs `because` (it rides the commit body)")
+    if by is not None and by not in ROUTING_BY_VALUES:
+        raise VerbUsageError(f"by must be one of {sorted(ROUTING_BY_VALUES)}, got {by!r}")
+    also_ids = list(also or [])
+    if not all(isinstance(rid, str) and RECORD_ID_RE.match(rid) for rid in also_ids):
+        raise SheetLineUsageError(f"replace: also must be a list of lesson ids, got {also!r}")
+    if record_id in also_ids or len(set(also_ids)) != len(also_ids):
+        raise SheetLineUsageError(
+            "replace: each lesson is named once -- the first as the line's id, the rest in also"
+        )
+    if dest is not None:
+        if not isinstance(dest, str) or not dest:
+            raise SheetLineUsageError(f"replace: dest must be a destination, got {dest!r}")
+        if _parse_dest(dest)[0] == "hook":
+            raise SheetLineError(
+                "replace: a hook is written from a hook route's compile input, never "
+                "from lesson text -- route the new lesson to a hook by `route`"
+            )
+    if rules_paths is not None:
+        problem = sheet_rules_paths_problem(dest, rules_paths)
+        if problem is not None:
+            raise SheetLineError(f"replace {record_id}: {problem}")
+    new_type, sections, source = _replace_text_sections(
+        home, trigger=trigger, instruction=instruction, fact=fact, context=context,
+        text_from=text_from, type=type,
+    )
+    # (2) The line's own text, first: a hit is the line's mistake.
+    _scan_or_refuse([], note, texts=(
+        *((key, value) for key, value in (
+            ("trigger", trigger), ("instruction", instruction),
+            ("fact", fact), ("context", context),
+        )), ("because", because),
+    ))
+
+    # (3) The S-81 gates, on every record this call rewrites, before any write.
+    first_path = find_record_path(home, record_id)
+    also_paths = [find_record_path(home, rid) for rid in also_ids]
+    _scan_or_refuse([first_path, *also_paths], None)
+    first = read_record_or_refuse(first_path)
+    warnings: list[str] = []
+
+    # (4) The first lesson: the idempotence read, else the status gate.
+    done = _replaced_by_this_text(home, first, sections, source)
+    if done is None:
+        if first.status == "superseded" and first.superseded_by:
+            raise VerbError(
+                f"replace: {record_id} was already replaced by {first.superseded_by} "
+                "-- replace that lesson instead"
+            ) from StatusRefusal(
+                f"record {record_id} is 'superseded'", record_id=record_id,
+                current_status="superseded", allowed=RESOLVABLE_STATUSES,
+            )
+        try:
+            _, first = require_status(home, record_id, RESOLVABLE_STATUSES, verb="replace")
+        except LedgerOpsError as exc:
+            raise VerbError(str(exc)) from exc
+        _refuse_hook_lesson(first)
+    new_id = done.id if done is not None else records_mod.generate_id()
+
+    also_records: list[Record] = []
+    also_todo: list[str] = []
+    for rid, path in zip(also_ids, also_paths):
+        rec = read_record_or_refuse(path)
+        if rec.status == "superseded" and rec.superseded_by == new_id:
+            continue  # an earlier run of this line already replaced it
+        try:
+            _, rec = require_status(home, rid, RESOLVABLE_STATUSES, verb="replace")
+        except LedgerOpsError as exc:
+            raise VerbError(str(exc)) from exc
+        _refuse_hook_lesson(rec)
+        also_records.append(rec)
+        also_todo.append(rid)
+        # Each later `supersede` retires its old placement; its host-side
+        # pre-flight runs now, so a refusal lands before the first commit.
+        _retirement_preflight(
+            home, rec, path.parent.parent, warnings, user_claude_md=user_claude_md
+        )
+
+    if done is not None:
+        return _ReplacePlan(
+            first_id=record_id, first=first, new_id=new_id, record=None, dest=None,
+            destination=None, ref_name=None, project_path=None, follow_up=None,
+            primary_done=True, also_todo=also_todo, warnings=warnings,
+        )
+
+    # (5) The new lesson and where it goes.
+    scope, bucket_dir, project_path = _replace_bucket(home, first_path, to)
+    record = _compose_replacement(
+        first, also_records, scope=scope, new_type=new_type, kind=kind,
+        sections=sections, source=source, record_id=new_id,
+    )
+    follow_up = _merged_follow_up([first, *also_records])
+    if dest is None and first.status == "routed":
+        dest = _routing_dest_label(first.routing or {})
+    placed = [rec.id for rec in (first, *also_records) if rec.status == "routed"]
+    if dest is None and placed:
+        raise SheetLineError(
+            f"replace: the new lesson would land pending while {', '.join(placed)} is "
+            "placed -- name a dest, so its line is never left unloaded"
+        )
+    human_case = _human_case_on(home, record_id) if actor != "human" else None
+    if human_case is not None and first.status == "routed":
+        inherited = _routing_dest_label(first.routing or {})
+        if dest != inherited or bucket_dir != first_path.parent.parent:
+            raise NeedsPerson(
+                f"replace: {record_id} is covered by {human_case}, a case a person "
+                f"recorded; its replacement keeps its placement ({inherited}, "
+                f"{first_path.parent.parent.name}) -- moving it is the user's call (S-76)"
+            )
+    findings = secret_scan(record.to_text())
+    if findings:
+        raise SecretRefusal(
+            "secret scan hit in the composed lesson -- refusing this replace "
+            "(P2-7; no bypass):\n" + format_refusal(findings),
+            findings,
+        )
+    destination: str | None = None
+    ref_name: str | None = None
+    if dest is not None:
+        destination, ref_name = _parse_dest(dest)
+        _abort_if_loaded_text_cut(record, destination)
+        resolved = _inherit_rules_paths(
+            home, record,
+            _Destination(destination, ref_name,
+                         rules_paths=list(rules_paths) if rules_paths is not None else None),
+            bucket_dir,
+        )
+        spec = _resolve_target(
+            home, bucket_dir, record.scope, destination, ref_name,
+            user_claude_md=user_claude_md, project_path=project_path,
+            rules_paths=resolved.rules_paths,
+            allow_empty_glob=resolved.rules_paths_from is not None,
+        )
+        spec = replace(spec, rules_paths_from=resolved.rules_paths_from)
+        if destination == "new-skill" and not (
+            spec.target is not None and spec.target.is_file()
+            and BEGIN_MARKER in spec.target.read_text(encoding="utf-8")
+        ):
+            raise DestinationUnavailable(
+                f"replace: new-skill:{spec.new_skill} does not exist as a skill self-learn "
+                "made -- replace never scaffolds one; create it first"
+            )
+        _abort_if_unscopes_rules_file(spec, new_id, allow_unpathed=False)
+        simulated = Record.from_text(record.to_text())
+        simulated.set_routing({"routed_at": _now_iso(), "destination": destination, "by": by or "human"})
+        simulated.set_status("routed")
+        _retirement_preflight(
+            home, first, first_path.parent.parent, warnings,
+            user_claude_md=user_claude_md, after_route=(spec, simulated),
+        )
+    else:
+        _abort_if_loaded_text_cut(record, "claude-md")
+    return _ReplacePlan(
+        first_id=record_id, first=first, new_id=new_id, record=record, dest=dest,
+        destination=destination, ref_name=ref_name, project_path=project_path,
+        follow_up=follow_up, primary_done=False, also_todo=also_todo, warnings=warnings,
+    )
+
+
+def replace_destination(home: Path | str, record_id: str, dest: str | None) -> tuple[str, str | None] | None:
+    """The ``(destination, qualifier)`` a ``replace`` line's new lesson
+    takes -- its ``dest``, or the first lesson's placement -- or ``None``
+    when it lands pending or cannot be read. ``batch`` reads it for the
+    actor's refusal of a reference shelf (S-77), as it does a route's."""
+    if dest is not None:
+        try:
+            return _parse_dest(dest)
+        except VerbError:
+            return None
+    try:
+        first = read_record_or_refuse(find_record_path(Path(home), record_id))
+    except (LedgerOpsError, VerbError):
+        return None
+    if first.status != "routed":
+        return None
+    try:
+        return _parse_dest(_routing_dest_label(first.routing or {}))
+    except VerbError:
+        return None
+
+
+def _replace_subject(first_id: str, new_id: str, where: str) -> str:
+    """The commit subject (D-AUTHOR §6.2, as built): ``self-learn: replace
+    lrn-old → lrn-new (<where>)``. The old id is followed by a space, so a
+    re-drive finds the proof commit by ``self-learn: replace <id>``
+    (`execution_evidence._subject_matches`); the ``also`` lessons each get
+    their own ``supersede`` commit."""
+    return f"self-learn: replace {first_id} → {new_id} ({where})"
+
+
+def _replace_pending(
+    home: Path,
+    plan: _ReplacePlan,
+    *,
+    body: str,
+    no_push: bool,
+    execution: execution_evidence.ExecutionRef | None,
+) -> VerbResult:
+    """D-AUTHOR §2.2 step 4: the first lesson is a draft and no ``dest`` is
+    named -- the new lesson is captured to ``pending/`` and the first one is
+    superseded, in ONE ledger commit, under the ledger lock from the first
+    write (the merge-collapse loser's shape, `02-schema.md` §2)."""
+    assert plan.record is not None
+    record = plan.record
+    message = _replace_subject(plan.first_id, record.id, "pending")
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        with _ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
+            path = create_record(home, record, project_path=plan.project_path)
+            touched = [path]
+            meta = path.parent.parent / "meta.yaml"
+            if meta.is_file():
+                touched.append(meta)
+            touched = touched + supersede_record(home, plan.first_id, record.id, verb="replace")
+            staged, sha = _commit_ledger(
+                home, touched, message, _body_with_by_trailer(body, None, execution)
+            )
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="replace", record_id=plan.first_id, commit_message=message,
+            commit_sha=sha, staged=staged, push=push, sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()
+
+
+def replace_lesson(
+    home: Path | str,
+    record_id: str,
+    *,
+    because: str,
+    also: list[str] | None = None,
+    trigger: str | None = None,
+    instruction: str | None = None,
+    fact: str | None = None,
+    context: str | None = None,
+    text_from: str | None = None,
+    type: str | None = None,
+    kind: str | None = None,
+    to: str | None = None,
+    dest: str | None = None,
+    rules_paths: list[str] | None = None,
+    note: str | None = None,
+    by: str | None = None,
+    no_push: bool = False,
+    user_claude_md: Path | str | None = None,
+    execution: execution_evidence.ExecutionRef | None = None,
+    actor: str = "human",
+) -> VerbResult:
+    """``self-learn replace`` (D-AUTHOR §2.2, E1): write a new lesson that
+    takes over from *record_id* (and every ``also`` lesson), in one motion.
+
+    * With a destination -- ``dest``, or by default the place the first
+      lesson has now -- the new lesson is written straight into
+      ``resolved/`` as routed through the route core's direct path
+      (:func:`_route_direct_core`, every gate of ``route_direct`` but the
+      one-motion gate), and the first lesson is superseded in that same
+      commit: the old line goes and the new one comes in one locked step.
+    * Without one (the first lesson is pending or deferred), the new lesson
+      is captured to ``pending/`` and the first is superseded, in one
+      ledger commit (:func:`_replace_pending`).
+    * Each ``also`` lesson is then superseded by the existing
+      :func:`supersede`, one transaction each, which retires its line. A
+      refusal there leaves the merged line and the not-yet-retired old line
+      both loaded -- never neither -- and a re-run finishes the merge: the
+      idempotence read finds the new lesson and reuses it.
+
+    ``because`` rides the primary commit's body and the new lesson's
+    ``resolution_note`` (with ``note``, when given, after it). ``by`` names
+    who chose the placement (``routing.by``, default ``human``); *actor* is
+    the runner's (``batch.run``'s), for the S-76 placement rule. The
+    returned :class:`VerbResult` names the new lesson (``new_record_id``)
+    and, for a managed destination, the line the compiler wrote
+    (``compiled_line``) -- the case's after-text (D-AUTHOR §2.4)."""
+    home = Path(home)
+    plan = _preflight_replace(
+        home, record_id, also=also, trigger=trigger, instruction=instruction,
+        fact=fact, context=context, text_from=text_from, type=type, kind=kind,
+        to=to, dest=dest, rules_paths=rules_paths, because=because, note=note,
+        by=by, user_claude_md=user_claude_md, actor=actor,
+    )
+    if plan.primary_done and not plan.also_todo:
+        raise VerbError(
+            f"replace: {record_id} is already replaced by {plan.new_id} with this text, "
+            "and every lesson in also with it -- nothing to do"
+        )
+    body = because.strip() + (f"\n\n{note.strip()}" if note and note.strip() else "")
+    warnings = list(plan.warnings)
+    result: VerbResult | None = None
+    if not plan.primary_done:
+        assert plan.record is not None
+        if plan.dest is not None:
+            result = _route_direct_core(
+                home, plan.record, dest=plan.dest, by=by or "human", note=body,
+                no_push=no_push, user_claude_md=user_claude_md,
+                project_path=plan.project_path, hook_input=None,
+                follow_up=plan.follow_up, allow_empty_glob=False,
+                rules_paths=rules_paths, allow_unpathed=False, one_motion_gate=False,
+                subject=_replace_subject(record_id, plan.new_id, plan.dest),
+                execution=execution,
+            )
+        else:
+            result = _replace_pending(
+                home, plan, body=body, no_push=no_push, execution=execution
+            )
+        warnings += result.warnings
+    for also_id in plan.also_todo:
+        merged = supersede(
+            home, also_id, plan.new_id, note=f"merged into {plan.new_id} by replace {record_id}",
+            by=by, no_push=no_push, user_claude_md=user_claude_md,
+        )
+        warnings += merged.warnings
+        result = result or merged
+    assert result is not None
+    new_path = find_record_path(home, plan.new_id)
+    made = Record.from_path(new_path)
+    destination = (made.routing or {}).get("destination") if made.status == "routed" else None
+    return replace_result(result, record_id=record_id, made=made, destination=destination,
+                          warnings=warnings)
+
+
+def replace_result(
+    result: VerbResult,
+    *,
+    record_id: str,
+    made: Record,
+    destination: str | None,
+    warnings: list[str],
+) -> VerbResult:
+    """The returned :class:`VerbResult`, carrying the new lesson's id and,
+    for a managed destination, its compiled line."""
+    from .compilers import entry_line
+
+    line = entry_line(made) if destination in ("claude-md", "skill-md", "new-skill") else None
+    return replace(
+        result, action="replace", record_id=record_id, warnings=warnings,
+        new_record_id=made.id, compiled_line=line,
+    )
 
 
 # --------------------------------------------------------- U20 commit-drift
@@ -11349,7 +12058,10 @@ def _revise_body(record: Record, section: str, text: str) -> str:
 
     *section* must already be a heading in *record*'s body -- an
     unrecognized name refuses rather than growing the body (a revise
-    edits what is already claimed; it never adds a claim). *text* may
+    edits what is already claimed; it never adds a claim). The one
+    exception is ``Context`` (E1): a lesson without one gains it, appended
+    after its last section, since Context is never loaded and so claims
+    nothing. *text* may
     not itself contain a ``## `` heading line -- the same boundary from
     the other direction: smuggling a second heading through the
     free-text field would let a wording-fix verb add a whole section no
@@ -11377,6 +12089,12 @@ def _revise_body(record: Record, section: str, text: str) -> str:
     body = record.body
     matches = list(text_mod.HEADING_RE.finditer(body))
     headings = [m.group(1) for m in matches]
+    if section == "Context" and section not in headings:
+        # E1 (D-AUTHOR §2.12, S-79's deferred gap): `## Context` is the one
+        # section a revise may ADD -- the kept, never-loaded home for what a
+        # multi-line Trigger, Instruction or Fact must move out of the loaded
+        # text. It claims nothing new: no managed line reads it.
+        return body.rstrip("\n") + f"\n\n## Context\n{text}\n"
     if section not in headings:
         raise SheetLineError(
             f"record {record.id} has no {section!r} section to revise "

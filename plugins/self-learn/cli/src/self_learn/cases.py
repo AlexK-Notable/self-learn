@@ -1778,9 +1778,19 @@ def receipt(home: Path | str, case_id: str, batch_result: dict) -> str:
                         f"unresolved-host: {detail}{warning_suffix}{evidence_suffix}"
                     )
                 else:
+                    # E1 (D-AUTHOR §2.4): a replace line names the lesson it
+                    # made and the line the compiler wrote -- the case's
+                    # after-text, rendered by the program, never retyped.
+                    detail = item.get("detail")
+                    made_suffix = (
+                        f"; {' '.join(str(detail).split())}"
+                        if verb == "replace" and detail
+                        and state in ("applied", "already-applied")
+                        else ""
+                    )
                     new_by_key[key] = (
                         f"- {at} sheet={sheet}#{sheet_sha} item={n} {rid} {verb} → "
-                        f"{state} (exit {rc}){warning_suffix}{evidence_suffix}"
+                        f"{state} (exit {rc}){made_suffix}{warning_suffix}{evidence_suffix}"
                     )
     new_lines = list(new_by_key.values())
 
