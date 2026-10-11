@@ -73,19 +73,39 @@ def test_a_stopped_item_beside_a_final_refusal_is_retried_and_both_are_reported(
 def test_a_receipted_final_refusal_is_reported_when_nothing_is_run_again(
     tmp_path, monkeypatch
 ):
-    """Item 1 applies and item 2 is refused (bad-line), so run 1 ends with
-    exit 8 and stays unfinished (N12). The resume dispatches nothing, and
-    its report -- the week's last -- still names item 2's refusal (before,
-    a receipted item carried no detail and the section said none)."""
+    """Item 1 applies and item 2 is refused (bad-line): the sheet is
+    finished (exit 8, no stop), but run 1 halts AFTER it -- here its
+    user-model maintenance stops once -- so it stays unfinished. The resume
+    dispatches nothing of the sheet, and its report -- the week's last --
+    still names item 2's refusal (before, a receipted item carried no
+    detail and the section said none).
+
+    2026-10-11: this halt used to come from the sheet's exit 8 itself (N12,
+    noted pre-existing in phase 7 of the refusal-kinds build); exit 8
+    without a stop no longer halts a run (`test_overseer_exit8.py`), so the
+    halt is made after the sheet instead."""
     home = make_home(tmp_path)
     rid, parked = _seed_parked_hook(home, tmp_path)
     _enabled(monkeypatch)
     _fake_hook_phases(monkeypatch, rid, parked, extra_refusal=True)
     _silence_notifications(monkeypatch)
     dispatched = _dispatch_scripted(monkeypatch, {2: (1, "bad-line")})
+    real_maintain = overseer_run._maintain_manifest
+    maintained: list[str] = []
+
+    def stops_once(given_home, run_id):
+        applied, refused, stopped, lines = real_maintain(given_home, run_id)
+        maintained.append(run_id)
+        return applied, refused, stopped or len(maintained) == 1, lines
+
+    monkeypatch.setattr(overseer_run, "_maintain_manifest", stops_once)
     first = overseer_run.run(home, dry_run=False, no_push=True)
     assert dispatched == [1, 2]
-    assert overseer_run.has_unfinished_work(home), "positive control: exit 8 halts (N12)"
+    assert len(maintained) == 1, "positive control: run 1 got past its sheet"
+    assert overseer_run.has_unfinished_work(home), "positive control: run 1 halted"
+    assert execution_evidence.read_manifest(home, first.run)["remaining"] == [
+        "user-model maintenance"
+    ]
     _no_model(monkeypatch)
 
     second = overseer_run.run(home, dry_run=False, no_push=True)

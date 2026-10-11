@@ -3702,10 +3702,18 @@ def _execute_manifest(
             "stopped": result.summary["stopped"], "code": result.process_code,
             "receipt": receipt, "items": result.to_json()["items"],
         })
+        # Only a ledger STOP (5/6/7, "nothing written, safe to retry") or a
+        # batch that stopped halts the run. Exit 8 alone means "some items
+        # applied, some refused" -- a finished sheet with a known result,
+        # not a half-state; a stop after a commit is ALSO 8, and still
+        # halts here through `stopped_at`. Counting 8 as a halt left run
+        # 854639e4 (2026-10-11) unfinished over a sheet nothing remained
+        # of, its post-sheet work waiting two hours for the resume. A
+        # retried-kind refusal keeps the run open through `retry_pending`.
         terminal = (
             result.stop_message is not None
             or result.stopped_at is not None
-            or result.process_code in (5, 6, 7, 8)
+            or result.process_code in (5, 6, 7)
         )
         if terminal:
             halted = True
