@@ -118,6 +118,27 @@ a path. Known limit, shared with the self-prompt rule: "first user
 turn" is the first one in the slice a run reads, so a typed session
 whose later slice opens with the tag is halted too.
 
+**Sessions the user lists (added 2026-10-11).** The user, 2026-10-11:
+"add the ability to create a blacklist of session id's for the miner. that
+feels like it should be trivial". The setting `miner.skip_sessions` (config
+`miner.skip_sessions`, env `SELF_LEARN_MINER_SKIP_SESSIONS`; comma-separated
+session ids, each a transcript's file stem `<project>/<id>.jsonl`; spaces and
+empty items ignored; empty by default) names sessions the walk skips before
+reading them, in the normal cursor path and in the `--since` backfill alike.
+That second branch is the difference from `halt`: a backfill re-reads halted
+files from line 0, but never a listed one. The list is read on every walk and
+nothing is written for it, so taking an id off makes its file minable again
+from its cursor, or from line 0 if it never had one. The use in view is a test
+bed that copies a transcript under new session ids (`claude --resume <id>
+--fork-session --session-id <id>`): each copy has a new id, so landing's
+`transcript:<session id>#L<n>` dedup would not catch its lessons. The list
+reaches only the walk: first activation's seeding (`initialize_cursors`) and
+the passes over tracked sessions (`halt_tracked_self_sessions`,
+`halt_tracked_scheduled_sessions`) still read a listed file's head, and the
+checked-pointer resolver (`refs.py`), through the steward's briefs and the
+offline comparison, still reads it when a lesson cites it or a quote is
+searched for. The run log does not count listed skips.
+
 **Cap holds (amended by `U-cursorhold`, FW-73).** A candidate refused at
 Phase 4's per-run landing cap holds its originating session's cursor
 rather than advancing past it, so the refusal costs a re-read, never the
