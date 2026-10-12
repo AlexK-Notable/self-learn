@@ -132,9 +132,10 @@ from its cursor, or from line 0 if it never had one. The use in view is a test
 bed that copies a transcript under new session ids (`claude --resume <id>
 --fork-session --session-id <id>`): each copy has a new id, so landing's
 `transcript:<session id>#L<n>` dedup would not catch its lessons. The list
-reaches only the walk: first activation's seeding (`initialize_cursors`) and
-the passes over tracked sessions (`halt_tracked_self_sessions`,
-`halt_tracked_scheduled_sessions`) still read a listed file's head, and the
+reaches only the walk: first activation's seeding (`initialize_cursors`)
+still reads a listed file whole, the passes over tracked sessions
+(`halt_tracked_self_sessions`, `halt_tracked_scheduled_sessions`) still read
+the head of a listed file the cursor file tracks, and the
 checked-pointer resolver (`refs.py`), through the steward's briefs and the
 offline comparison, still reads it when a lesson cites it or a quote is
 searched for. The run log does not count listed skips.
