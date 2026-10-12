@@ -302,6 +302,18 @@ def mined_scheduled_jobs(home: Path | str | None = None) -> frozenset[str]:
     return frozenset(name.strip() for name in str(raw or "").split(",") if name.strip())
 
 
+def skip_sessions(home: Path | str | None = None) -> frozenset[str]:
+    """The sessions the miner never reads: the registry's
+    ``miner.skip_sessions`` (config.yaml > env > none), comma-separated
+    session ids, each a transcript's file stem (``<project>/<id>.jsonl``).
+    Blank entries are ignored. :func:`walk` skips a listed file before
+    reading it, on every walk, and persists nothing (2026-10-11)."""
+    raw, _source = settings.resolve_setting(
+        home if home is not None else resolve_home(), settings.by_name("miner.skip_sessions")
+    )
+    return frozenset(sid.strip() for sid in str(raw or "").split(",") if sid.strip())
+
+
 def last_run_iso() -> str | None:
     try:
         mtime = (miner_dir() / "miner.last-run").stat().st_mtime
@@ -635,7 +647,8 @@ def walk(since: str | None = None) -> list[SessionSlice]:
     ``since`` (YYYY-MM-DD) is the deliberate-backfill override: files
     modified on/after that date are re-read from line 0 (origin dedup
     makes landing replays safe). Halted files (self-learn machinery,
-    M-5) are skipped without reading."""
+    M-5) are skipped without reading, and so are the sessions listed in
+    ``miner.skip_sessions`` (:func:`skip_sessions`), in both branches."""
     root = transcripts_root()
     if not root.is_dir():
         return []
@@ -645,6 +658,10 @@ def walk(since: str | None = None) -> list[SessionSlice]:
             datetime.fromisoformat(since).replace(tzinfo=timezone.utc).timestamp()
         )
     cursors = _load_cursors()
+    # Read on every walk and never written to the cursor file: taking an id
+    # off the list makes its file minable again from its cursor, or from
+    # line 0 if it never had one (2026-10-11).
+    skipped = skip_sessions()
     candidates: list[tuple[float, Path, int, int]] = []
     for path in sorted(root.glob("*/*.jsonl")):
         entry = cursors.get(str(path), {})
@@ -653,10 +670,17 @@ def walk(since: str | None = None) -> list[SessionSlice]:
         except OSError:
             continue
         if since_ts is not None:
+            # Unlike `halt`, which this backfill ignores, a listed session
+            # is skipped here too: the list exists to keep copies of a
+            # session from being read at all.
+            if path.stem in skipped:
+                continue
             if st.st_mtime < since_ts:
                 continue
             start = 0
         else:
+            if path.stem in skipped:
+                continue
             if entry.get("halt"):
                 continue
             if st.st_size == entry.get("size"):

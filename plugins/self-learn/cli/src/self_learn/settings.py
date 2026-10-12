@@ -1006,6 +1006,22 @@ REGISTRY: tuple[Setting, ...] = (
             "scheduled-task tag names it; every other scheduled job's session is skipped"
         ),
     ),
+    # 2026-10-11 (the user: "add the ability to create a blacklist of
+    # session id's for the miner"): a listed session's transcript is never
+    # read by the miner's walk, `--since` backfill included. Parsed by
+    # `miner.skip_sessions`.
+    Setting(
+        name="miner.skip_sessions",
+        env_var="SELF_LEARN_MINER_SKIP_SESSIONS",
+        config_section="miner",
+        config_key="skip_sessions",
+        kind="str",
+        default="",
+        description=(
+            "session ids the miner never reads, comma-separated, each the transcript's file name "
+            "without .jsonl; applies to --since backfills too"
+        ),
+    ),
     # ------------------------------------------------------- refs (U1, 2026-09-26)
     Setting(
         name="refs.transcript_roots",
