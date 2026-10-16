@@ -808,7 +808,10 @@ def build_briefs(
             rel = path.resolve().relative_to(home.resolve()).as_posix()
         except ValueError:
             rel = None
-        if kind == INPUT_RECONSIDER and row.get("reason"):
+        # S-88: a lesson input carries a reason only when it is a deferred
+        # lesson no case covers (`steward._deferred_unresolved`): its
+        # deferral came due, and the card says how it is decided.
+        if kind in (INPUT_RECONSIDER, INPUT_LESSON) and row.get("reason"):
             parts.append(f"[why it is back] {_one_line(row['reason'])}")
         parts.append(render_record(record, path=rel, head=head, bucket=_bucket_of(home, path)))
         if kind == INPUT_SUSPECTED_VIOLATION:

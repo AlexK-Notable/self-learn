@@ -956,6 +956,10 @@ def _eligible_lessons(home: Path) -> list[tuple[ledger_ops.QueueEntry, dict]]:
         legacy = identity.get("legacy_version")
         if isinstance(legacy, str) and (rid, legacy) in legacy_terminal:
             continue
+        # S-88: a deferred lesson no case covers says so on its card.
+        reason = _deferred_unresolved(home, entry.record)
+        if reason is not None:
+            identity["reason"] = reason
         out.append((entry, identity))
     return out
 
@@ -1033,6 +1037,57 @@ def _reconsider_status_refusal(home: Path, record_id: str) -> ledger_ops.StatusR
     except ledger_ops.LedgerOpsError:
         return None
     return None
+
+
+#: S-88 (2026-10-16): the card line of a queued DEFERRED lesson no case
+#: covers (:func:`_deferred_unresolved`). A bare `defer` writes no case, so
+#: there is nothing for a `kind: reconsider` case to supersede
+#: (run-85e1b89015c0: the model read "reconsider is for a lesson an earlier
+#: case ... deferred", staged one with `supersedes` unset, and
+#: `verbs.reconsider` refused it after it was recorded).
+_DEFERRED_UNRESOLVED = (
+    "This lesson was deferred without a case: there is no earlier case to reconsider. "
+    "Decide it with a `kind: resolution` case (its `reject`, `defer` or `route` line "
+    "takes a deferred lesson), not `kind: reconsider`."
+)
+
+
+def _reconsider_predecessor_problem(home: Path, supersedes: str, record_id: str) -> str | None:
+    """S-88: why a `kind: reconsider` case superseding *supersedes* could
+    not re-decide *record_id*, or `None` when it could. The test is the one
+    apply time uses -- `cases.require_reconsider_predecessor` (the case
+    exists, passes its freeze-hash check and covers the lesson) -- plus the
+    case writer's own "a case is superseded once" (`cases.record` refuses a
+    successor of a case already superseded). Never "some case names this
+    lesson": a case superseded since names it too."""
+    try:
+        predecessor = cases.require_reconsider_predecessor(home, supersedes, [record_id])
+    except cases.CaseError as exc:
+        return str(exc)
+    except OSError as exc:
+        return f"{supersedes}: {exc}"
+    if predecessor.get("superseded_by"):
+        return f"{supersedes} is already superseded by {predecessor['superseded_by']}"
+    return None
+
+
+def _covering_cases(home: Path, record_id: str) -> list[str]:
+    """S-88: every case a `kind: reconsider` case could name in `supersedes`
+    to re-decide *record_id* (:func:`_reconsider_predecessor_problem`)."""
+    return [
+        str(row["case"])
+        for row in cases.list_cases(home, record_id=record_id, only_ok=True)
+        if isinstance(row.get("case"), str) and not row.get("superseded_by")
+        and _reconsider_predecessor_problem(home, str(row["case"]), record_id) is None
+    ]
+
+
+def _deferred_unresolved(home: Path, record: Record) -> str | None:
+    """S-88: the card line a queued lesson comes with when it is DEFERRED
+    and no case covers it (:func:`_covering_cases`) -- else `None`."""
+    if record.status != "deferred" or _covering_cases(home, record.id):
+        return None
+    return _DEFERRED_UNRESOLVED
 
 
 def _reconsider_unresolved(home: Path, record: Record) -> str:
@@ -1545,16 +1600,20 @@ def _only_uncovered_open(manifest: dict, packet: dict) -> bool:
 
 
 def _stage_repair_message(
-    home: Path, stage: Path, check: _StageCheck, selected_status: dict[str, object]
+    home: Path, stage: Path, check: _StageCheck, selected_status: dict[str, object],
+    *, predecessors: dict[str, str],
 ) -> str | None:
     """Everything the one repair turn is told about a stage that passed as
     a whole: its failing pairs and uncovered lessons, the case writer's
     rules, and the lines the ledger would refuse (pairs that failed are
-    left out of the ledger preview)."""
+    left out of the ledger preview). *predecessors*: the packet's
+    (`packet["predecessors"]`), which the runner fills in as `supersedes`."""
     return "\n\n".join(filter(None, [
         _pair_message(check),
         _case_rule_message(stage),
-        _ledger_repair_message(home, stage, selected_status, skip=set(check.problems)),
+        _ledger_repair_message(
+            home, stage, selected_status, skip=set(check.problems), predecessors=predecessors,
+        ),
     ])) or None
 
 
@@ -1811,6 +1870,33 @@ def _reconsider_status_problem(
     return refusal_text(refusal) if refusal is not None else None
 
 
+def _reconsider_coverage_problem(
+    home: Path, record_id: str, supersedes: object
+) -> str | None:
+    """S-88 (2026-10-16): why a staged `kind: reconsider` case whose
+    `supersedes` is *supersedes* (as it will be recorded) cannot re-decide
+    *record_id* at apply time, or `None` when it can. The predecessor test
+    is apply time's own (:func:`_reconsider_predecessor_problem`). The line
+    says plainly when NO case covers the lesson -- a bare `defer` wrote
+    none -- and otherwise names the case that does."""
+    if supersedes:
+        detail = _reconsider_predecessor_problem(home, str(supersedes), record_id)
+        if detail is None:
+            return None
+        why = f"this `kind: reconsider` case cannot supersede {supersedes} for it ({detail})"
+    else:
+        why = (
+            "this `kind: reconsider` case names no case in `supersedes`, and the runner "
+            "has none to fill in"
+        )
+    covering = _covering_cases(home, record_id)
+    if not covering:
+        return f"record {record_id}: no earlier case covers it -- {why}"
+    return (
+        f"record {record_id}: {why}; the case that covers it is {', '.join(covering)}"
+    )
+
+
 #: S-81: the sheet keys that name a lesson a line acts on -- the item's own
 #: `id`, and a `supersede`'s `new_id` (the lesson named its replacement).
 _HELD_LINE_KEYS = ("id", "new_id")
@@ -1947,6 +2033,7 @@ def _sheet_items(sheet_path: Path) -> object:
 
 def _ledger_repair_message(
     home: Path, stage: Path, selected: dict[str, object], skip: frozenset[str] | set[str] = frozenset(),
+    *, predecessors: dict[str, str] | None = None,
 ) -> str | None:
     """S-71 §5: the lines of the staged sheets the ledger would refuse as
     written, when the refusal is the model's to fix -- or `None`.
@@ -1976,11 +2063,22 @@ def _ledger_repair_message(
 
     S-81 (2026-10-08): a line naming a lesson the overseer holds is
     flagged by name (:func:`_held_lines`), before the ledger preview of
-    that sheet; apply time refuses the whole case for it."""
+    that sheet; apply time refuses the whole case for it.
+
+    S-88 (2026-10-16): a staged `kind: reconsider` case is also held to
+    the predecessor `verbs.reconsider` needs for each lesson it names
+    (:func:`_reconsider_coverage_problem`), read as the case will be
+    recorded -- its own `supersedes`, else the one the runner fills in from
+    *predecessors* (:func:`_predecessor_fill`). Before, a reconsider case
+    for a lesson deferred by a bare `defer` (no case) passed every check
+    here, was recorded, and was refused at apply time ("names no
+    predecessor case"), kind `unclassified`: parked for the overseer, the
+    steward's decision never applied (run-85e1b89015c0)."""
     found: list[str] = []
     case_found: list[str] = []
     held_found: list[str] = []
     held = cases.held_lessons(home)
+    fill = _predecessor_fill(home, stage, predecessors or {})
     for case_path in sorted((stage / "cases").glob("*.yaml")):
         if case_path.stem in skip:
             continue
@@ -1998,10 +2096,13 @@ def _ledger_repair_message(
             continue
         if _refiling_reason(home, sheet_path) is not None:
             continue
+        supersedes = case_data.get("supersedes") or fill.get(case_path.stem)
         for record_id in dict.fromkeys(str(rid) for rid in case_data.get("records") or []):
             if record_id not in reconsidered:
                 continue
             problem = _reconsider_status_problem(home, record_id, selected.get(record_id))
+            if problem is None:
+                problem = _reconsider_coverage_problem(home, record_id, supersedes)
             if problem is not None:
                 case_found.append(f"- cases/{case_path.name}: {problem}")
         held_lines = _held_lines(home, _sheet_items(sheet_path), held)
@@ -2057,14 +2158,17 @@ def _ledger_repair_message(
 
 
 #: What the repair turn says under a `kind: reconsider` case naming a lesson
-#: whose status a reconsider cannot take (2026-10-07). The statuses are the
-#: verb's own (`ledger_ops.RECONSIDERABLE_STATUSES`).
+#: whose status a reconsider cannot take (2026-10-07), or one no case it
+#: could supersede covers (S-88). The statuses are the verb's own
+#: (`ledger_ops.RECONSIDERABLE_STATUSES`).
 _RECONSIDER_REPAIR_ADVICE = (
     "A `kind: reconsider` case is only for a lesson an earlier case placed, rejected or",
-    f"deferred (status {', '.join(sorted(ledger_ops.RECONSIDERABLE_STATUSES))}). A lesson that is",
-    "pending -- even one an earlier case moved, or one that came back to you as a reconsider",
-    "input -- is decided with a `kind: resolution` case: change the case's `kind` to",
-    "`resolution` and keep or fix its sheet. Leave every other file as it is.",
+    f"deferred (status {', '.join(sorted(ledger_ops.RECONSIDERABLE_STATUSES))}), and it names that case in `supersedes`.",
+    "A lesson that is pending -- even one an earlier case moved, or one that came back to you",
+    "as a reconsider input -- and a lesson deferred without a case (a bare `defer`: no earlier",
+    "case covers it) are decided with a `kind: resolution` case: change the case's `kind` to",
+    "`resolution` and keep or fix its sheet. Where a line names the case that covers the",
+    "lesson, name that case in `supersedes` instead. Leave every other file as it is.",
 )
 
 
@@ -5080,6 +5184,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                     if packet_record.get("repair_remaining", 0) > 0:
                         repair_message = _stage_repair_message(
                             home, stage, check, selected_status,
+                            predecessors=packet_record.get("predecessors") or {},
                         )
                         if repair_message is not None:
                             first_flags = _flag_lines(repair_message)
@@ -5139,6 +5244,7 @@ def _run(home: Path, *, dry_run: bool) -> RunResult:
                             assert check is not None
                             after = _flag_lines(_stage_repair_message(
                                 home, stage, check, selected_status,
+                                predecessors=packet_record.get("predecessors") or {},
                             ))
                             worse = _repair_made_worse(first_flags, after)
                             if worse:

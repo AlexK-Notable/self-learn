@@ -154,9 +154,12 @@ or deferred — and names that case in `supersedes`. A lesson that is pending
 is decided with a `kind: resolution` case, even when an earlier case moved
 it (`rehome`, `rescope`), and even when it came back to you as a reconsider
 input because something an earlier case relied on changed: there is no
-placement to reconsider, only a decision still to make. The runner refuses
-a reconsider case that names a pending lesson, and the repair turn tells
-you so.
+placement to reconsider, only a decision still to make. A lesson deferred
+without a case — by a bare `defer` — has no earlier case to name, so it is
+decided with a `kind: resolution` case too (its `reject`, `defer` or `route`
+line takes a deferred lesson); its card says so. The runner refuses a
+reconsider case that names a pending lesson, or whose `supersedes` names no
+case that covers the lesson, and the repair turn tells you so.
 
 ## 7. Refine wording at adjudication
 
