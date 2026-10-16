@@ -245,8 +245,13 @@ def test_a_rules_file_holding_a_persons_text_is_kept(sb, shape):
     else:
         text = text.replace("---\npaths:", "---\n# mine, keep\npaths:", 1)
     target.write_text(text, encoding="utf-8")
-    # accept the hand edit as it stands, so the retirement is not refused
-    assert sb.cli("recompile", "--adopt", str(target), "--no-push") == 0
+    # The person's text sits outside the managed region, which the compile
+    # record does not cover: the region still reads `clean`, so the
+    # retirement proceeds with no adopt.
+    region = compiled.region_bytes(text, "managed")
+    assert region is not None
+    entry = sb.entry(host, target)
+    assert entry is not None and entry["sha256"] == compiled.sha256_hex(region)
 
     sb.retire(rid)
     assert target.is_file()
@@ -448,6 +453,59 @@ def test_recompile_removes_a_leftover_in_a_git_host_and_commits_it(sb):
     assert git(host, "status", "--porcelain").stdout == ""
     assert sb.entry(host, target) is None
     _assert_selftest_clean(sb)
+
+
+def test_recompile_drops_the_entry_of_a_leftover_deleted_and_committed_by_hand(sb):
+    host = sb.host("git-host", mode="git")
+    rid = sb.lesson(host, "topic")
+    target = _leftover(sb, host, rid)
+    rel = ".claude/rules/topic.md"
+    git(host, "rm", "-q", "--", rel)
+    git(host, "commit", "-q", "-m", "drop the empty rules file by hand")
+    # positive control: gone from disk and from HEAD, the tree clean, and
+    # the compile record still holds its entry
+    assert not target.exists()
+    assert git(host, "ls-files", rel).stdout == ""
+    assert git(host, "status", "--porcelain").stdout == ""
+    assert sb.entry(host, target) is not None
+    head = git(host, "rev-parse", "HEAD").stdout.strip()
+
+    assert sb.cli("recompile", "--no-push") == 0, sb.out()
+    assert not target.exists()
+    assert sb.entry(host, target) is None
+    assert git(host, "rev-parse", "HEAD").stdout.strip() == head  # nothing to commit there
+    _assert_selftest_clean(sb)
+
+
+def test_recompile_rewrites_a_stale_leftover_and_re_records_it(sb):
+    """A plain host whose host write never landed: the ledger and the
+    compile record say the lesson left (entry = the bare pair, based on
+    the region that still held it), the file still holds the old region
+    (`stale`). `recompile` does not remove a stale file; it rewrites it to
+    the bare pair and re-records it -- the entry must stay while the file
+    does."""
+    host = sb.host("plain-host")
+    target = _rules(host)
+    rid = sb.lesson(host, "topic")
+    unlanded = target.read_text(encoding="utf-8")
+    _leftover(sb, host, rid)
+    target.write_text(unlanded, encoding="utf-8")  # the write that never landed
+    entry = sb.entry(host, target)
+    region = compiled.region_bytes(unlanded, "managed")
+    assert entry is not None and region is not None
+    # positive control: the region reads `stale` against its entry
+    assert compiled.verdict_for(entry, compiled.sha256_hex(region)) == "stale"
+
+    assert sb.cli("recompile", "--no-push") == 0, sb.out()
+    assert target.read_text(encoding="utf-8") == BARE_PAIR
+    entry = sb.entry(host, target)
+    assert entry is not None
+    assert entry["sha256"] == compiled.sha256_hex(BARE_PAIR.rstrip("\n").encode("utf-8"))
+    _assert_selftest_clean(sb)
+    # and with the record now `clean`, the next recompile removes it
+    assert sb.cli("recompile", "--no-push") == 0, sb.out()
+    assert not target.exists()
+    assert sb.entry(host, target) is None
 
 
 def test_recompile_keeps_an_edited_leftover(sb):
