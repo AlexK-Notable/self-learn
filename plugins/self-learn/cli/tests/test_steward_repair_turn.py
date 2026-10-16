@@ -334,7 +334,14 @@ def test_a_staged_reconsider_case_keeps_its_status_refusal_out_of_the_repair_tur
 
     assert without_case is not None, "positive control: the plain case is collected"
     assert f"(reject {rid})" in without_case and "'routed'" in without_case
-    assert with_case is None
+    # S-88: this reconsider case names no `supersedes` and the lesson was
+    # routed by a bare batch (no case), so the case itself is now flagged
+    # for its missing predecessor -- the region renders (control) -- but its
+    # line's status refusal is still not collected.
+    assert with_case is not None
+    assert f"record {rid}: no earlier case covers it" in with_case
+    assert f"(reject {rid})" not in with_case
+    assert "The ledger would refuse these lines of your sheets as written:" not in with_case
 
 
 def test_a_status_refusal_is_collected_only_when_the_status_is_known_unchanged(tmp_path):

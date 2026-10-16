@@ -25,7 +25,8 @@ ledger, takes no lock, and never reads ``hosts.yaml`` or ``settings.json``
 
 **Input shape.** Each dict in ``inputs`` carries ``"id"`` (the record id)
 and optionally ``"kind"`` (:data:`steward_inputs.INPUT_KINDS`, default
-``lesson``), ``"reason"`` (a reconsider input's) and ``"events"`` (a
+``lesson``), ``"reason"`` (a reconsider input's; since S-88 also a
+deferred lesson's that no case covers) and ``"events"`` (a
 suspected violation's fire events). **Ordering is the caller's job.**
 ``assemble`` renders ``inputs`` in the exact order the caller passes
 them -- it never sorts or reorders.
@@ -1066,6 +1067,13 @@ def _render_output_contract() -> str:
         f"                 deferred (its status is {_words(ledger_ops.RECONSIDERABLE_STATUSES)}). A lesson that is",
         "                 pending is decided with `resolution`, even one an earlier case moved",
         "                 (rehome, rescope) or one that came back to you as a reconsider input.",
+        # S-88 (2026-10-16): run-85e1b89015c0 staged a reconsider case
+        # for a lesson only bare `defer`s had touched; it had no case to
+        # supersede and the ledger refused it after it was recorded.
+        "                 A reconsider case names that earlier case in `supersedes` (the runner",
+        "                 fills it in for a reconsider input). A lesson deferred without a case",
+        "                 (a bare `defer`) has no earlier case to name: it is decided with",
+        "                 `resolution` too. Its card says so.",
         f"  trigger        {_words(cases.TRIGGERS)}   (a scheduled run like this one: nightly)",
         f"  outcome        {_words(cases.OUTCOMES)}",
         "                 The one word that names what this case decides. Nothing checks it",
@@ -1185,7 +1193,9 @@ def _render_output_contract() -> str:
         f"    undefer:  {_words(ledger_ops.DEFERRED_ONLY)}      reopen:  {_words(verbs.REOPEN_ADMITTED_STATUSES)}",
         "    confirm-recurrence, dismiss-suspect:  routed",
         f"    every lesson a `kind: reconsider` case names:  {_words(ledger_ops.RECONSIDERABLE_STATUSES)}",
-        "      (a pending lesson -- even one an earlier case moved -- takes `kind: resolution`)",
+        "      and an earlier case that covers it, named in `supersedes` (a pending lesson -- even",
+        "      one an earlier case moved -- and a deferred lesson no case covers take",
+        "      `kind: resolution`)",
         "  A SUSPECTED VIOLATION input (method section 10) is decided with these two verbs.",
         "  `event` is the nonce of one event its brief lists (`event <nonce>: ...`), one item",
         "  per event you decide. `confirm-recurrence` with `tolerate: true` needs a `note`",
