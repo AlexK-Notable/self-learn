@@ -10729,7 +10729,7 @@ def _recompile_may_remove_rules(home: Path, spec: TargetSpec) -> bool:
     return compiled.verdict_for(entry, compiled.sha256_hex(region)) == "clean"
 
 
-def _drop_rules_entry(home: Path, spec: TargetSpec) -> Path | None:
+def _drop_rules_entry(home: Path, spec: TargetSpec, *, by: str) -> Path | None:
     """S-87: delete the compile-record entry of a rules file ``recompile``
     found gone (:func:`_resync_region_entry`'s ``delete``); ``None`` when
     there was none. Written, never committed: the caller batches it."""
@@ -10743,7 +10743,7 @@ def _drop_rules_entry(home: Path, spec: TargetSpec) -> Path | None:
         region_kind="managed",
         expected=None,
         observed_hash=None,
-        by="recompile",
+        by=by,
         delete=True,
     )
 
@@ -11333,7 +11333,7 @@ def recompile(
                     # every other resync below.
                     with _ledger_write(home, earlier_commits=span_commits) as recovered:
                         intents.announce_recovered(recovered)
-                        record_path = _drop_rules_entry(home, spec)
+                        record_path = _drop_rules_entry(home, spec, by=f"recompile {target}")
                         if record_path is not None and record_path not in resync_touched:
                             resync_touched.append(record_path)
                 elif changed and region_kind is not None:
@@ -11414,7 +11414,7 @@ def recompile(
                         # lesson to put back keeps no compile-record entry.
                         with _ledger_write(home, earlier_commits=span_commits) as recovered:
                             intents.announce_recovered(recovered)
-                            record_path = _drop_rules_entry(home, spec)
+                            record_path = _drop_rules_entry(home, spec, by=f"recompile {target}")
                             if record_path is not None and record_path not in resync_touched:
                                 resync_touched.append(record_path)
                     result.entries.append(
@@ -11454,7 +11454,7 @@ def recompile(
                     intents.announce_recovered(recovered)
                     if rules_go and target is not None and not target.exists():
                         # S-87: the rules file this run removed keeps no entry.
-                        record_path = _drop_rules_entry(home, spec)
+                        record_path = _drop_rules_entry(home, spec, by=f"recompile {target}")
                     else:
                         record_path = _write_compile_record_entry(
                             home, spec, observed_hash, by=f"recompile {target}",
