@@ -1365,6 +1365,25 @@ fail the stage; apply time handles them by kind, as above. A repair turn
 already spent on a format error is not spent again. A dry run does the
 same, writing only to the cache.
 
+*(Amended 2026-10-16, S-88.)* A staged `kind: reconsider` case is also
+checked for the predecessor apply time needs, for each lesson it names,
+read as the case will be recorded: its own `supersedes`, else the one the
+runner fills in from the packet's reconsider inputs (§3a.8, "When a staged
+case's lessons share one predecessor case"). It is flagged when that
+`supersedes` is unset or empty, or names a case a reconsider cannot
+supersede for the lesson: apply time's own test,
+`cases.require_reconsider_predecessor` (the case exists, passes its
+freeze-hash check and covers the lesson), plus "not superseded already"
+(`cases.record` refuses a second successor) -- never "some case names this
+lesson". The line names the lesson and says "no earlier case covers it"
+when none does (a bare `defer` writes no case), or names the case that
+does. The advice says such a lesson is decided with a `kind: resolution`
+case. A reconsider case naming a pending lesson (2026-10-07) is flagged for
+its status first. Before, the case passed, was recorded, and
+`verbs.reconsider` refused it at apply time as `unclassified`, so the
+lesson was parked for the overseer and the steward's decision was lost
+(run `run-85e1b89015c0`).
+
 *(Added 2026-09-26.)* The same repair turn also carries the case writer's
 own rules, run on every staged case and parked.yaml entry through
 `cases.check_case_data` (the one copy `cases.record` uses): its schema, the
@@ -2289,7 +2308,10 @@ the packets are 5 at a time with no relatedness and the run record says so.
 (the shared part — method, conditions, output contract — is unchanged and
 byte-identical across a run's packets). Under `### brief: <id>`:
 
-1. `[input]` — the kind; a reconsider input says why it is back.
+1. `[input]` — the kind; a reconsider input says why it is back. *(S-88,
+   2026-10-16:)* so does a `lesson` input that is deferred and that no case
+   a reconsider could supersede covers (§3a.2's repair-turn test): it was
+   deferred without a case, and is decided with `kind: resolution`.
 2. `[lesson]` / `[routed]` / `[record]` — type, scope, bucket, status,
    sightings, created; where a routed lesson went; the record's path as
    `ledger@<run start commit>:<path>`, then its `Trigger`/`Instruction` or
