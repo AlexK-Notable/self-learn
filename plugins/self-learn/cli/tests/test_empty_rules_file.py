@@ -403,6 +403,17 @@ def test_a_refused_host_commit_puts_the_rules_file_back(sb):
     assert target.read_bytes() == before
     assert git(host, "rev-parse", "HEAD").stdout.strip() == head
     assert git(host, "status", "--porcelain").stdout == ""
+    # The entry left with the ledger commit, so the restored region has no
+    # compile-record entry: the next recompile rewrites it to the empty
+    # region (and records it), and the one after removes it.
+    assert sb.entry(host, target) is None
+    git(host, "config", "--unset", "core.hooksPath")
+    assert sb.cli("recompile", "--no-push") == 0, sb.out()
+    assert target.read_text(encoding="utf-8") == BARE_PAIR
+    assert sb.entry(host, target) is not None
+    assert sb.cli("recompile", "--no-push") == 0, sb.out()
+    assert not target.exists()
+    assert sb.entry(host, target) is None
 
 
 # ------------------------------------------------------- recompile's leftovers
