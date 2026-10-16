@@ -521,6 +521,26 @@ def test_recompile_keeps_an_edited_leftover(sb):
     assert sb.entry(host, target) is not None
 
 
+def test_recompile_in_a_git_host_rewrites_an_edited_leftover_and_never_removes_it(sb):
+    """A git host's recompile has no compile-record refusal (unchanged): an
+    edited region committed there is rewritten to the empty region. S-87
+    only adds that such a file is never removed on that run."""
+    host = sb.host("git-host", mode="git")
+    rid = sb.lesson(host, "topic")
+    target = _leftover(sb, host, rid)
+    edited = BARE_PAIR.replace(END_MARKER, "- my own note\n" + END_MARKER)
+    target.write_text(edited, encoding="utf-8")
+    commit_all(host, "hand edit inside the region")
+    entry = sb.entry(host, target)
+    region = compiled.region_bytes(edited, "managed")
+    assert entry is not None and region is not None
+    assert compiled.verdict_for(entry, compiled.sha256_hex(region)) == "edited"  # control
+
+    assert sb.cli("recompile", "--no-push") == 0, sb.out()
+    assert target.read_text(encoding="utf-8") == BARE_PAIR
+    assert sb.entry(host, target) is not None
+
+
 def test_recompile_keeps_a_leftover_with_no_compile_record_entry(sb):
     host = sb.host("plain-host")
     rid = sb.lesson(host, "topic")
