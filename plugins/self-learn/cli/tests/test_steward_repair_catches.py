@@ -229,9 +229,9 @@ def test_a_reconsider_case_naming_pending_lessons_reaches_the_repair_turn(
         assert not moving.get("superseded_by")
 
 
-def _reconsider_stage(stage: Path, rid: str) -> None:
+def _reconsider_stage(stage: Path, rid: str, supersedes: str) -> None:
     case = _case([rid], "reject", "reject")
-    case.update(kind="reconsider", trigger="reconsider", supersedes="case-0000aaaa")
+    case.update(kind="reconsider", trigger="reconsider", supersedes=supersedes)
     _dump_yaml(stage / "cases" / "again.yaml", case)
     _dump_yaml(stage / "sheets" / "again.yaml",
                {"version": 1, "case": "$CASE_ID", "items": [{"id": rid, "verb": "reject"}]})
@@ -246,11 +246,18 @@ def test_the_check_flags_only_a_lesson_a_reconsider_cannot_take(tmp_path):
     every `status` refusal of a lesson that moved on is."""
     home = make_env(tmp_path).ledger
     placed = _seed(home, "lrn-c1d00009")
-    verbs.route(home, placed, dest="skill-md", by="steward", no_push=True)
     pending = _seed(home, "lrn-c1d0000a")
+    # S-88: the reconsider case names a REAL predecessor that covers both
+    # lessons (it routed the first and left the second pending), so
+    # only the status check speaks here -- a made-up `supersedes` is now
+    # flagged on its own (`test_steward_deferred_no_case.py`).
+    stage = tmp_path / "routing-case.yaml"
+    _dump_yaml(stage, _case([placed, pending], "route", "route"))
+    prior = cases.record(home, stage, actor="steward")
+    verbs.route(home, placed, dest="skill-md", by="steward", no_push=True)
     assert (_status(home, placed), _status(home, pending)) == ("routed", "pending")  # control
-    _reconsider_stage(tmp_path / "placed", placed)
-    _reconsider_stage(tmp_path / "pending", pending)
+    _reconsider_stage(tmp_path / "placed", placed, prior)
+    _reconsider_stage(tmp_path / "pending", pending, prior)
 
     assert steward._ledger_repair_message(home, tmp_path / "placed", {placed: "routed"}) is None
     message = steward._ledger_repair_message(home, tmp_path / "pending", {pending: "pending"})

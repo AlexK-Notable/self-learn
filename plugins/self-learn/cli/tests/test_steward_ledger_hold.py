@@ -392,6 +392,9 @@ _STEWARD_CASES_CALLS = {
         "split_runner_evidence", "tampered_parked",
         # E3b (2026-10-11): a pure check of a staged case and its sheet
         "replace_items_problem",
+        # S-88 (2026-10-16): apply time's predecessor check, read by the
+        # repair turn and the card line of a deferred lesson no case covers
+        "require_reconsider_predecessor",
     )},
 }
 

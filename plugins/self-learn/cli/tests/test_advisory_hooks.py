@@ -511,7 +511,15 @@ def test_the_repair_preview_still_skips_the_plain_status_refusal_for_a_covered_l
     assert f"(defer {other})" in (steward._ledger_repair_message(
         home, uncovered, {other: "rejected"}) or "")
     covered = _stage_reconsider(tmp_path / "c", home, rid, prior, [line], records=[rid, other])
-    assert steward._ledger_repair_message(home, covered, {other: "rejected"}) is None
+    message = steward._ledger_repair_message(home, covered, {other: "rejected"})
+    # S-88: `prior` does not cover `other` (a bare `reject` wrote no case),
+    # so apply time's `verbs.reconsider` would refuse it, and the repair
+    # turn now says so (the region renders: control) -- but the line's
+    # plain status refusal is still skipped for a lesson the case covers.
+    assert message is not None
+    assert f"record {other}: no earlier case covers it" in message
+    assert f"(defer {other})" not in message
+    assert f"record {rid}:" not in message, "`prior` covers the routed lesson"
 
 
 def test_both_previews_widen_the_lines_the_staged_case_covers(tmp_path, monkeypatch):
