@@ -240,6 +240,19 @@ revert). Doc 13 promotes that to the general rule:
    accepts each region left refused. The compile record drops the entry
    of each gone region (`CLAUDE.md#pointer`, the shelf's) in the ledger
    commit, so the next route reads `fresh`, never `missing`.
+   *Amended 2026-10-15 (S-87):* a rules file (`.claude/rules/<topic>.md`,
+   either scope) that a host write would leave holding nothing but
+   self-learn's empty managed region (the marker pair; self-learn's own
+   `paths:` block is already gone once no live lesson is left) is deleted
+   outright in that write's host lock, never rewritten first, and not
+   created when absent; a file holding any text a person wrote, or a
+   symlink, is kept. The ledger commit deletes its compile-record entry,
+   decided on the same bytes as the host write. A git host commits the
+   deletion in the leg's usual host commit, and a refused commit puts the
+   file back and unstages it, as above. `recompile` removes a file
+   emptied before this change only when its region is exactly what the
+   compile record says self-learn wrote (`clean`). `CLAUDE.md` and
+   `CLAUDE.local.md` keep their marker pair.
 3. **The rejected-proposal digest moves its grep to the ledger repo**
    (resolution commits live there now).
 4. **The sentinel contract SHRINKS.** The ledger repo has no watcher
