@@ -10705,8 +10705,11 @@ def _recompile_may_remove_rules(home: Path, spec: TargetSpec) -> bool:
     managed region is exactly what its compile record says self-learn last
     wrote (``clean``). A region the record does not accept as it stands --
     ``edited``, ``stale``, or ``unknown`` provenance with no entry at all,
-    even one an ordinary write adopts (REC5's seventh row) -- keeps its file,
-    rewritten as before. A file with a person's text keeps it anyway
+    even one an ordinary write adopts (REC5's seventh row) -- keeps its file
+    on this run and is handled as before: a plain host refuses an
+    ``edited`` region (the pre-flight runs before this is asked) and
+    rewrites the others; a git host's recompile, which has no compile-record
+    refusal, rewrites every one. A file with a person's text keeps it anyway
     (:func:`compilers.plan_empty_rules_file`)."""
     target = spec.target
     if spec.variant != "rules" or target is None:
