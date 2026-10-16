@@ -164,6 +164,9 @@ __all__ = [
     "plan_empty_shelf",
     "plan_shelf_retirement",
     "retire_empty_shelf",
+    "compile_rules_text",
+    "rules_file_is_markers_only",
+    "plan_empty_rules_file",
 ]
 
 #: Marker pair, exactly per 02 §4.
@@ -1624,3 +1627,50 @@ def retire_empty_shelf(shelf: Path, surface: Path | None, plan: EmptyShelf) -> N
         )
     if plan.delete_shelf:
         shelf.unlink()
+
+
+# -------------------------------------------------- an emptied rules file
+
+
+def compile_rules_text(text: str, records: Sequence[Record]) -> str:
+    """Pure: the rules file *text* as a host write of *records* leaves it --
+    the ``paths:`` pre-pass (:func:`apply_paths_frontmatter`'s transform:
+    rewritten only when :func:`paths_frontmatter_drift` says so) and then
+    the managed section (:func:`compile_managed_text`), in the order the
+    host write runs them. Raises :class:`CompileError` exactly where they
+    do (broken markers, an unterminated or non-mapping leading block)."""
+    if paths_frontmatter_drift(text, records) is not None:
+        text = _rewrite_paths_block(text, _find_leading_block(text), expected_paths(records))
+    return compile_managed_text(text, records).text
+
+
+def rules_file_is_markers_only(text: str) -> bool:
+    """Whether *text* is self-learn's empty managed region and nothing else:
+    the begin and end marker lines, in that order, with only whitespace
+    around them. Any other text -- a frontmatter key or comment a person
+    wrote, a line outside the markers, an entry inside them -- is not, and
+    an empty file is not either (self-learn never left one)."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return lines == [BEGIN_MARKER, END_MARKER]
+
+
+def plan_empty_rules_file(text: str | None, records: Sequence[Record]) -> bool:
+    """Pure (S-87): whether a host write of *records* to a rules file whose
+    current text is *text* (``None``: no file) removes the file instead of
+    writing it. True when what the write would leave
+    (:func:`compile_rules_text`) is nothing but self-learn's own empty
+    region (:func:`rules_file_is_markers_only`). When no live lesson is
+    left, the ``paths:`` pre-pass has already dropped self-learn's own
+    ``paths:`` key (and the fence, when no other key or comment remains),
+    so a fence still standing is a person's and keeps the file, as does any
+    line outside the markers. An absent file plans True with no live
+    lesson: there is nothing to create. The ledger's same-commit prediction
+    and the host write both decide through this, on the same bytes, the way
+    :func:`plan_empty_shelf` decides an emptied shelf. Broken markers or a
+    corrupt leading block plan False, so the ordinary write raises its own
+    error."""
+    try:
+        post = compile_rules_text(text if text is not None else "", records)
+    except CompileError:
+        return False
+    return rules_file_is_markers_only(post)

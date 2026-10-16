@@ -516,8 +516,17 @@ def _section_targets(
 ) -> dict[Path, list[Record]]:
     """Managed-section targets that SHOULD have a section: target file →
     the resolved records routed to it (any record whose routing names the
-    destination — graduated and superseded entries keep their markers, so
-    presence still counts).
+    destination — graduated and superseded entries keep their markers in a
+    file that still holds a live lesson, so presence still counts).
+
+    S-87: a rules file (``.claude/rules/<topic>.md``, either scope) whose
+    records are ALL no longer live (rejected, retired or graduated,
+    superseded, replaced) and which is absent owes nothing: self-learn
+    removes such a file once it holds only its own empty region, and a
+    person may delete it. It is left out (:func:`_rules_target_owes_nothing`).
+    A rules file with one live record still owes its section, so its
+    absence still fails; a ``CLAUDE.md`` / ``CLAUDE.local.md`` / skill
+    target keeps the old rule.
 
     Skill- and user-scope targets resolve via hosts.yaml (unresolvable
     records are skipped here; the drift check reports them). A PROJECT
@@ -572,7 +581,27 @@ def _section_targets(
             targets.setdefault(target, []).append(record)
         if bucket_skipped and skipped is not None:
             skipped.append(bucket.name)
-    return targets
+    return {
+        target: records
+        for target, records in targets.items()
+        if not _rules_target_owes_nothing(target, records)
+    }
+
+
+def _rules_target_owes_nothing(target: Path, records: list[Record]) -> bool:
+    """S-87: *target* is a rules file -- every record routed to it is a
+    ``claude-md`` rules route -- that is absent and holds no live lesson
+    (:func:`domain.is_canon_live`, the compilers' own filter). Such a file
+    owes no section, so its absence is not a failure."""
+    if target.exists() or not records:
+        return False
+    for record in records:
+        routing = record.routing or {}
+        if routing.get("destination") != "claude-md" or routing.get("variant") != "rules":
+            return False
+        if domain.is_canon_live(record):
+            return False
+    return True
 
 
 def _check_drift(

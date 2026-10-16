@@ -129,6 +129,7 @@ from .compilers import (
     compile_reference,
     has_paths_key,
     loaded_text_problem,
+    plan_empty_rules_file,
     plan_shelf_retirement,
     pointer_line,
     pointer_token,
@@ -883,6 +884,29 @@ def _expected_managed_region(
     return compiled.region_bytes(text, "managed")
 
 
+def _rules_file_goes(home: Path, spec: TargetSpec) -> bool:
+    """S-87: whether a host write of *spec* removes its rules file instead
+    of writing it -- the one decision the ledger's same-commit prediction
+    (:func:`_write_compile_record_entry`) and the host write
+    (:func:`_apply_target`) both make, from the file's text as it is now
+    and the ledger's compile set (:func:`compilers.plan_empty_rules_file`).
+    Only a ``rules`` variant target (``.claude/rules/<topic>.md``, either
+    scope) can go -- never a ``CLAUDE.md`` or ``CLAUDE.local.md`` -- and
+    never a symlink (deleting a person's link would end their arrangement,
+    as for a shelf, S-77 (3)). Anything this cannot read plans "stays", so
+    the ordinary write raises its own error."""
+    if spec.destination != "claude-md" or spec.variant != "rules" or spec.target is None:
+        return False
+    target = spec.target
+    try:
+        if target.is_symlink():
+            return False
+        text = target.read_text(encoding="utf-8") if target.is_file() else None
+        return plan_empty_rules_file(text, _compile_set(home, spec))
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
 def _write_compile_record_entry(
     home: Path,
     spec: TargetSpec,
@@ -890,6 +914,7 @@ def _write_compile_record_entry(
     *,
     by: str,
     intent: "intents.Intent | None" = None,
+    predict_removal: bool = True,
 ) -> Path | None:
     """U-hostmode REC1/REC9: write (but do not commit) the compile-record
     entry for ``spec``'s primary target, if it is a region kind this
@@ -911,10 +936,31 @@ def _write_compile_record_entry(
     time, since the slug depends on ``spec``, which is not resolved
     until deep inside ``_execute_route``. A no-op for every other
     caller, since :func:`intents.add_step` itself no-ops on
-    ``intent=None``."""
+    ``intent=None``.
+
+    S-87: a rules file this write REMOVES (:func:`_rules_file_goes`,
+    decided from the file as it stands before the host write) keeps no
+    entry -- it is deleted (:func:`_resync_region_entry`'s ``delete``), so
+    the next route to that topic reads ``fresh``, never ``edited``.
+    *predict_removal* ``False`` is ``recompile``'s, which calls this AFTER
+    its own host write and decides from what that write left on disk."""
     region_kind = _region_kind_for(spec)
     if region_kind is None or spec.target is None:
         return None
+    if predict_removal and _rules_file_goes(home, spec):
+        return _resync_region_entry(
+            home,
+            host_path=spec.host_path,
+            scope_kind=spec.scope_kind,
+            mode=spec.mode,
+            target=spec.target,
+            region_kind=region_kind,
+            expected=None,
+            observed_hash=observed_hash,
+            by=by,
+            delete=True,
+            intent=intent,
+        )
     try:
         if region_kind == "managed":
             expected = _expected_managed_region(home, spec)
@@ -4367,6 +4413,7 @@ def _apply_target(
     message: str | None = None,
     user_push: bool = True,
     notes: list[str] | None = None,
+    keep_empty_rules: bool = False,
 ) -> tuple[object, list[Path]]:
     """HOST-phase compile (doc 13 §4 step e): write the target from the
     committed ledger state. Returns (compile_result, host paths to stage —
@@ -4379,7 +4426,17 @@ def _apply_target(
     (absorption / widening / drift-repaired) append to ``notes`` when the
     caller passes a list; its `changed` flag folds into the returned
     result on the project branch only (user scope commits via
-    ``UserScopeResult.committed``, which never gates on `changed`)."""
+    ``UserScopeResult.committed``, which never gates on `changed`).
+
+    S-87: a ``rules`` target the write would leave holding nothing but
+    self-learn's empty region (:func:`_rules_file_goes`, decided before
+    anything is written) is deleted outright, never rewritten first, and
+    an absent one is not created; the result reads ``changed`` when a file
+    went. A git host commits the deletion through the pathspec commit (the
+    target stays in the returned paths; :func:`gitops.known_paths` carries
+    a tracked path that is gone). *keep_empty_rules* is ``recompile``'s,
+    for a file whose region its compile record does not accept as it
+    stands: that file is rewritten as before, never removed."""
     if spec.destination == "new-skill":
         compile_result, host_paths = _apply_new_skill(home, spec)
     elif spec.destination == "hook":
@@ -4433,6 +4490,20 @@ def _apply_target(
     # USER2/CHEZ0). `host_paths` still ends up unused for it: `_host_phase`
     # only stages/commits when `spec.mode == "git"`, and user scope's mode
     # is always "plain".
+    elif not keep_empty_rules and _rules_file_goes(home, spec):
+        assert spec.target is not None  # _rules_file_goes needs one
+        existed = spec.target.is_file()
+        if existed:
+            spec.target.unlink()
+            if notes is not None:
+                notes.append(
+                    f"removed {spec.target} (no live lesson is left in it, and it "
+                    "held nothing but self-learn's empty managed region)"
+                )
+        compile_result = SectionResult(
+            text="", changed=existed, bootstrapped=False, entry_count=0, word_count=0
+        )
+        host_paths = [spec.target] if existed else []
     else:
         assert spec.target is not None  # skill-md/claude-md/new-skill always resolve one
         if spec.variant in ("rules", "local") and not spec.target.is_file():
@@ -4911,6 +4982,7 @@ def _host_phase(
     warnings: list[str],
     user_push: bool = True,
     removal: bool = False,
+    keep_empty_rules: bool = False,
 ) -> tuple[object | None, str | None]:
     """Steps (e): compile + HOST commit under the sentinel hold. On ANY
     failure after the ledger commit: loud drift warning naming
@@ -4965,6 +5037,7 @@ def _host_phase(
                 message=message,
                 user_push=user_push,
                 notes=warnings,
+                keep_empty_rules=keep_empty_rules,
             )
             host_sha = None
             if spec.mode == "git" and host_paths:
@@ -10626,6 +10699,55 @@ def _already_adopted(home: Path, slug: str, key: str, region: str, observed_hash
     return compiled.verdict_for(entry, observed_hash) == "clean"
 
 
+def _recompile_may_remove_rules(home: Path, spec: TargetSpec) -> bool:
+    """S-87, ``recompile``'s extra condition on removing a rules file: the
+    file is absent (nothing to remove, and nothing is created), or its
+    managed region is exactly what its compile record says self-learn last
+    wrote (``clean``). A region the record does not accept as it stands --
+    ``edited``, ``stale``, or ``unknown`` provenance with no entry at all,
+    even one an ordinary write adopts (REC5's seventh row) -- keeps its file,
+    rewritten as before. A file with a person's text keeps it anyway
+    (:func:`compilers.plan_empty_rules_file`)."""
+    target = spec.target
+    if spec.variant != "rules" or target is None:
+        return False
+    if not target.exists():
+        return True
+    try:
+        region = compiled.region_bytes(target.read_text(encoding="utf-8"), "managed")
+        if region is None:
+            return False
+        entry = compiled.entry_for(
+            compiled.load_record(
+                home, host_slug(home, spec.host_path, scope_kind=spec.scope_kind)
+            ),
+            compiled.region_key(spec.host_path, target, "managed"),
+            region="managed",
+        )
+    except (OSError, UnicodeDecodeError, compiled.CompiledRecordError):
+        return False
+    return compiled.verdict_for(entry, compiled.sha256_hex(region)) == "clean"
+
+
+def _drop_rules_entry(home: Path, spec: TargetSpec) -> Path | None:
+    """S-87: delete the compile-record entry of a rules file ``recompile``
+    found gone (:func:`_resync_region_entry`'s ``delete``); ``None`` when
+    there was none. Written, never committed: the caller batches it."""
+    assert spec.target is not None
+    return _resync_region_entry(
+        home,
+        host_path=spec.host_path,
+        scope_kind=spec.scope_kind,
+        mode=spec.mode,
+        target=spec.target,
+        region_kind="managed",
+        expected=None,
+        observed_hash=None,
+        by="recompile",
+        delete=True,
+    )
+
+
 def recompile(
     home: Path | str,
     *,
@@ -11190,6 +11312,8 @@ def recompile(
                 observed_hash = (
                     _observe_region_hash(spec) if region_kind is not None else None
                 )
+                keep_rules = not _recompile_may_remove_rules(home, spec)
+                rules_go = not keep_rules and _rules_file_goes(home, spec)
                 compile_result, host_sha = _host_phase(
                     home,
                     spec,
@@ -11199,9 +11323,20 @@ def recompile(
                     message=f"self-learn: recompile {target}",
                     warnings=result.warnings,
                     user_push=not no_push,
+                    keep_empty_rules=keep_rules,
                 )
                 changed = bool(getattr(compile_result, "changed", False))
-                if changed and region_kind is not None:
+                if rules_go and region_kind is not None and target is not None and not target.exists():
+                    # S-87: the rules file is gone (removed just now, or
+                    # already absent with no live lesson to put back) --
+                    # its compile-record entry goes too, batched like
+                    # every other resync below.
+                    with _ledger_write(home, earlier_commits=span_commits) as recovered:
+                        intents.announce_recovered(recovered)
+                        record_path = _drop_rules_entry(home, spec)
+                        if record_path is not None and record_path not in resync_touched:
+                            resync_touched.append(record_path)
+                elif changed and region_kind is not None:
                     # The render just made disk and the ledger's
                     # canonical content agree — re-sync the record to
                     # match in the SAME breath, under the ledger's own
@@ -11216,7 +11351,8 @@ def recompile(
                     with _ledger_write(home, earlier_commits=span_commits) as recovered:
                         intents.announce_recovered(recovered)
                         record_path = _write_compile_record_entry(
-                            home, spec, observed_hash, by=f"recompile {target}"
+                            home, spec, observed_hash, by=f"recompile {target}",
+                            predict_removal=False,
                         )
                         # U-hostmode M-10 (code gate r1 fold): §4.5/gate
                         # B-3 rejected a second ledger commit under the
@@ -11254,6 +11390,8 @@ def recompile(
             observed_hash = (
                 _observe_region_hash(spec) if region_kind is not None else None
             )
+            keep_rules = not _recompile_may_remove_rules(home, spec)
+            rules_go = not keep_rules and _rules_file_goes(home, spec)
             # compile→commit under the HOST's lock (see :func:`_host_phase`:
             # the compile writes the managed file into the host worktree, so
             # a racing autostash there would stash it away mid-flight).
@@ -11261,7 +11399,8 @@ def recompile(
                 snapshot = _snapshot_host_files(_host_write_candidates(spec))
                 try:
                     compile_result, host_paths = _apply_target(
-                        home, spec, None, notes=result.warnings
+                        home, spec, None, notes=result.warnings,
+                        keep_empty_rules=keep_rules,
                     )
                 except (CompileError, OSError) as exc:
                     result.entries.append(
@@ -11270,6 +11409,14 @@ def recompile(
                     result.warnings.append(f"{target}: {exc}")
                     continue
                 if not compile_result.changed:
+                    if rules_go and region_kind is not None and target is not None and not target.exists():
+                        # S-87: a rules file already absent with no live
+                        # lesson to put back keeps no compile-record entry.
+                        with _ledger_write(home, earlier_commits=span_commits) as recovered:
+                            intents.announce_recovered(recovered)
+                            record_path = _drop_rules_entry(home, spec)
+                            if record_path is not None and record_path not in resync_touched:
+                                resync_touched.append(record_path)
                     result.entries.append(
                         RecompileEntry(target=target, changed=False)
                     )
@@ -11305,9 +11452,14 @@ def recompile(
             if region_kind is not None:
                 with _ledger_write(home, earlier_commits=span_commits) as recovered:
                     intents.announce_recovered(recovered)
-                    record_path = _write_compile_record_entry(
-                        home, spec, observed_hash, by=f"recompile {target}"
-                    )
+                    if rules_go and target is not None and not target.exists():
+                        # S-87: the rules file this run removed keeps no entry.
+                        record_path = _drop_rules_entry(home, spec)
+                    else:
+                        record_path = _write_compile_record_entry(
+                            home, spec, observed_hash, by=f"recompile {target}",
+                            predict_removal=False,
+                        )
                     # N-6 (code gate r2 fold): batched, not committed here
                     # — see `resync_touched` above.
                     if record_path is not None and record_path not in resync_touched:
