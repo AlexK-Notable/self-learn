@@ -29,6 +29,7 @@ call; ids and texts are synthetic.
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -401,3 +402,168 @@ def test_the_brief_and_the_method_say_a_deferred_lesson_no_case_covers_takes_a_r
     advice = " ".join(" ".join(steward._RECONSIDER_REPAIR_ADVICE).split())
     assert "names that case in `supersedes`" in advice
     assert "deferred without a case" in advice
+
+
+# ------------------------- gate fold F1: two staged cases, one predecessor
+
+
+class SharedPredecessor:
+    """One case P routed two lessons, A and B; a statement P relied on has
+    changed since, so the next run brings both back as RECONSIDER inputs
+    with P as their predecessor (`packet["predecessors"] == {A: P, B: P}`)."""
+
+    def __init__(self, tmp_path: Path, a: str, b: str):
+        self.home = make_env(tmp_path).ledger
+        self.a, self.b = _seed(self.home, a), _seed(self.home, b)
+        self.statement = statements.add(
+            self.home, verbatim="Put both of these in the skill.",
+            source={"message_ref": "transcript:shared#L5"}, recorded_by="human",
+        )
+        stage = tmp_path / "routing-case.yaml"
+        routing = _case([self.a, self.b], "route", "route")
+        routing["dependencies"] = {**_NO_DEPS, "statements": [self.statement]}
+        _dump_yaml(stage, routing)
+        self.prior = cases.record(self.home, stage, actor="steward")
+        for rid in (self.a, self.b):
+            verbs.route(self.home, rid, dest="skill-md", by="steward", no_push=True)
+        cases.observe(self.home, self.prior, "statement", text="the user changed their mind",
+                      ref=self.statement, by="steward")
+        _enable_steward(self.home)
+
+    def case(self, records: list[str], supersedes: str | None) -> dict:
+        case = _reject_case(records[0], kind="reconsider", supersedes=supersedes)
+        case["records"] = list(records)
+        case["question"] = "the user changed their mind about these placed lessons; take them out?"
+        case["evidence"] = [{"ref": self.statement, "quote": "both of these"}]
+        case["dependencies"] = {**_NO_DEPS, "statements": [self.statement]}
+        return case
+
+
+def _shared_session(shared: SharedPredecessor, first_supersedes: str | None, prompts: list[str]):
+    """First pass: one reconsider case per lesson (a.yaml, b.yaml). The
+    repair follows the new advice: ONE reconsider case for both."""
+    def write(spec):
+        prompts.append(spec.prompt)
+        stage = _stage_dir(spec)
+        if _REPAIR_HEADER in spec.prompt:
+            for sub in ("cases", "sheets"):
+                for name in ("a.yaml", "b.yaml"):
+                    (stage / sub / name).unlink()
+            pairs = {"both": [shared.a, shared.b]}
+            supersedes = None
+        else:
+            pairs = {"a": [shared.a], "b": [shared.b]}
+            supersedes = first_supersedes
+        for name, records in pairs.items():
+            _dump_yaml(stage / "cases" / f"{name}.yaml", shared.case(records, supersedes))
+            _dump_yaml(stage / "sheets" / f"{name}.yaml", {
+                "version": 1, "case": "$CASE_ID",
+                "items": [{"id": rid, "verb": "reject"} for rid in records],
+            })
+        return Outcome(ok=True, rc=0, stdout="", detail="", failure=None)
+
+    return write
+
+
+@pytest.mark.parametrize("named", [False, True], ids=["supersedes-unset", "both-name-it"])
+def test_two_reconsider_cases_sharing_one_predecessor_are_told_to_become_one(
+    tmp_path, monkeypatch, named
+):
+    """Gate fold F1. A case is superseded once, so of two staged reconsider
+    cases taking the same predecessor only the first in the order apply
+    time records them (file-name order) can be recorded as its successor.
+
+    * `supersedes` unset: the runner's fill gives P to a.yaml only; b.yaml
+      is flagged, and the line says P is taken by a.yaml and B belongs in
+      that one case (before: "the case that covers it is P", and naming P
+      in b.yaml only moved the flag to a.yaml);
+    * both name P: before, both passed and `cases.record` refused b.yaml
+      ("already superseded"); now b.yaml -- second in apply order -- is
+      flagged, and a.yaml is not.
+
+    The repair follows the advice -- one reconsider case for both lessons --
+    passes, is not restored as "made worse", records as P's successor and
+    applies both lines."""
+    shared = SharedPredecessor(tmp_path, "lrn-d0f00011", "lrn-d0f00012")
+    home, a, b, prior = shared.home, shared.a, shared.b, shared.prior
+    _notifications(monkeypatch)
+    prompts: list[str] = []
+    monkeypatch.setattr(steward.invocation, "write_session",
+                        _shared_session(shared, prior if named else None, prompts))
+
+    result = steward.run(home)
+
+    packet = _packet(home, result.run_id)
+    # positive control: the inputs are the shape the finding is about
+    assert {row["record"]: row["kind"] for row in packet["inputs"]} == {a: "reconsider", b: "reconsider"}
+    assert packet["predecessors"] == {a: prior, b: prior}
+    assert len(prompts) == 2, "the repair turn was offered"
+    repair = _repair_part(prompts[1])
+    assert f"- cases/b.yaml: record {b}: " in repair, repair
+    assert "- cases/a.yaml:" not in repair, "the case apply time would accept is not flagged"
+    if named:
+        assert f"cannot supersede {prior} for it (cases/a.yaml supersedes it first" in repair
+    assert f"the case that covers it is {prior} (which cases/a.yaml supersedes: decide {b} in that one case)" in repair
+    flat = " ".join(repair.split())
+    assert (
+        "A case is superseded once: lessons that share an earlier case are decided in ONE "
+        "`kind: reconsider` case naming it"
+    ) in flat
+    # the repaired stage stood: one case, P's successor, both lessons decided
+    assert {_status(home, rid) for rid in (a, b)} == {"rejected"}
+    assert sorted(result.decided) == sorted([a, b])
+    (successor,) = [row for row in cases.list_cases(home, record_id=a) if row["case"] != prior]
+    assert (successor["kind"], successor["supersedes"]) == ("reconsider", prior)
+    assert sorted(successor["records"]) == sorted([a, b])
+    run_text = git(home, "show", f"HEAD:cases/runs/{result.run_id}.json").stdout
+    assert "the repair turn left more flagged" not in run_text
+
+
+def test_the_claim_goes_to_the_first_case_in_apply_order(tmp_path):
+    """The repair feed directly: of two staged reconsider cases naming the
+    same predecessor, the one apply time records first (file-name order) is
+    not flagged and the other is, whichever lesson each covers."""
+    shared = SharedPredecessor(tmp_path, "lrn-d0f00013", "lrn-d0f00014")
+    home, a, b, prior = shared.home, shared.a, shared.b, shared.prior
+    selected = {a: "routed", b: "routed"}
+    stage = tmp_path / "stage"
+    for name, rid in (("zz-first-lesson", a), ("aa-second-lesson", b)):
+        _dump_yaml(stage / "cases" / f"{name}.yaml", shared.case([rid], prior))
+        _dump_yaml(stage / "sheets" / f"{name}.yaml",
+                   {"version": 1, "case": "$CASE_ID", "items": [{"id": rid, "verb": "reject"}]})
+    message = steward._ledger_repair_message(home, stage, selected)
+    assert message is not None
+    assert f"- cases/zz-first-lesson.yaml: record {a}: " in message
+    assert "- cases/aa-second-lesson.yaml:" not in message
+    # control: one case alone naming P is clean
+    (stage / "cases" / "zz-first-lesson.yaml").unlink()
+    (stage / "sheets" / "zz-first-lesson.yaml").unlink()
+    assert steward._ledger_repair_message(home, stage, selected) is None
+
+
+# ------------------------------- gate fold F2: the live freeze-hash check
+
+
+def test_a_case_tampered_after_indexing_does_not_cover_the_lesson(tmp_path):
+    """The case index's `only_ok` is computed when the index is (re)built;
+    a case file changed afterwards with its mtime set back is still
+    `frozen_ok` there. "Covers" re-reads the file through
+    `cases.require_reconsider_predecessor`, so a tampered predecessor
+    covers nothing: the card line appears."""
+    covered = Covered(tmp_path, "lrn-d0f00015")
+    home, rid = covered.home, covered.rid
+    record = Record.from_path(ledger_ops.find_record_path(home, rid))
+    assert steward._deferred_unresolved(home, record) is None  # control: covered
+    path = next((home / "cases").glob(f"*/{covered.prior}.md"))
+    before = path.stat()
+    text = path.read_text(encoding="utf-8")
+    assert text.count("the evidence settles it") == 1
+    path.write_text(text.replace("the evidence settles it", "the evidence says otherwise"),
+                    encoding="utf-8")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    (row,) = [r for r in cases.list_cases(home, only_ok=True) if r["case"] == covered.prior]
+    assert row.get("frozen_ok", True), "the index still trusts it (the shape under test)"
+    with pytest.raises(cases.CaseError, match="freeze-hash"):
+        cases.require_reconsider_predecessor(home, covered.prior, [rid])
+    line = steward._deferred_unresolved(home, record)
+    assert line is not None and line.startswith(_CARD_LINE)

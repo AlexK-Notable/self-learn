@@ -1870,17 +1870,57 @@ def _reconsider_status_problem(
     return refusal_text(refusal) if refusal is not None else None
 
 
+def _stage_claims(stage: Path, fill: dict[str, str], skip: frozenset[str] | set[str]) -> dict[str, str]:
+    """S-88 gate fold (F1): which staged case each predecessor goes to, by
+    stem -- the first case, in the order apply time records them (file-name
+    order, `_prepared_recipe`), whose `supersedes` names it or that the
+    runner's fill gives it (:func:`_predecessor_fill`). A case is superseded
+    once (`cases.record`), so every later case naming the same predecessor
+    is refused. The fill never gives a predecessor a staged case names
+    itself, and gives each at most once, so "first in file order" is the
+    case apply time accepts."""
+    claims: dict[str, str] = {}
+    for case_path in sorted((stage / "cases").glob("*.yaml")):
+        if case_path.stem in skip:
+            continue
+        data = _read_yaml(case_path)
+        if not isinstance(data, dict):
+            continue
+        supersedes = data.get("supersedes") or fill.get(case_path.stem)
+        if supersedes:
+            claims.setdefault(str(supersedes), case_path.stem)
+    return claims
+
+
 def _reconsider_coverage_problem(
-    home: Path, record_id: str, supersedes: object
+    home: Path, record_id: str, supersedes: object,
+    claims: dict[str, str] | None = None, stem: str | None = None,
 ) -> str | None:
     """S-88 (2026-10-16): why a staged `kind: reconsider` case whose
     `supersedes` is *supersedes* (as it will be recorded) cannot re-decide
     *record_id* at apply time, or `None` when it can. The predecessor test
     is apply time's own (:func:`_reconsider_predecessor_problem`). The line
     says plainly when NO case covers the lesson -- a bare `defer` wrote
-    none -- and otherwise names the case that does."""
+    none -- and otherwise names the case that does.
+
+    Gate fold (F1): *claims* (:func:`_stage_claims`) -- a predecessor
+    another staged case (not *stem*) takes first cannot be superseded by
+    this one either, and a covering case taken that way is named with the
+    case that takes it, so the line says where the lesson belongs."""
+    claims = claims or {}
+
+    def taken_by(case_id: object) -> str | None:
+        other = claims.get(str(case_id))
+        return other if other is not None and other != stem else None
+
     if supersedes:
-        detail = _reconsider_predecessor_problem(home, str(supersedes), record_id)
+        other = taken_by(supersedes)
+        if other is not None:
+            detail: str | None = (
+                f"cases/{other}.yaml supersedes it first, and a case is superseded once"
+            )
+        else:
+            detail = _reconsider_predecessor_problem(home, str(supersedes), record_id)
         if detail is None:
             return None
         why = f"this `kind: reconsider` case cannot supersede {supersedes} for it ({detail})"
@@ -1892,9 +1932,12 @@ def _reconsider_coverage_problem(
     covering = _covering_cases(home, record_id)
     if not covering:
         return f"record {record_id}: no earlier case covers it -- {why}"
-    return (
-        f"record {record_id}: {why}; the case that covers it is {', '.join(covering)}"
-    )
+    named = [
+        f"{case_id} (which cases/{taken_by(case_id)}.yaml supersedes: decide "
+        f"{record_id} in that one case)" if taken_by(case_id) else case_id
+        for case_id in covering
+    ]
+    return f"record {record_id}: {why}; the case that covers it is {', '.join(named)}"
 
 
 #: S-81: the sheet keys that name a lesson a line acts on -- the item's own
@@ -2073,12 +2116,15 @@ def _ledger_repair_message(
     for a lesson deferred by a bare `defer` (no case) passed every check
     here, was recorded, and was refused at apply time ("names no
     predecessor case"), kind `unclassified`: parked for the overseer, the
-    steward's decision never applied (run-85e1b89015c0)."""
+    steward's decision never applied (run-85e1b89015c0). Gate fold (F1): a
+    predecessor another staged case takes first (:func:`_stage_claims`)
+    counts as one this case cannot supersede."""
     found: list[str] = []
     case_found: list[str] = []
     held_found: list[str] = []
     held = cases.held_lessons(home)
     fill = _predecessor_fill(home, stage, predecessors or {})
+    claims = _stage_claims(stage, fill, skip)
     for case_path in sorted((stage / "cases").glob("*.yaml")):
         if case_path.stem in skip:
             continue
@@ -2102,7 +2148,9 @@ def _ledger_repair_message(
                 continue
             problem = _reconsider_status_problem(home, record_id, selected.get(record_id))
             if problem is None:
-                problem = _reconsider_coverage_problem(home, record_id, supersedes)
+                problem = _reconsider_coverage_problem(
+                    home, record_id, supersedes, claims, case_path.stem
+                )
             if problem is not None:
                 case_found.append(f"- cases/{case_path.name}: {problem}")
         held_lines = _held_lines(home, _sheet_items(sheet_path), held)
@@ -2168,7 +2216,14 @@ _RECONSIDER_REPAIR_ADVICE = (
     "as a reconsider input -- and a lesson deferred without a case (a bare `defer`: no earlier",
     "case covers it) are decided with a `kind: resolution` case: change the case's `kind` to",
     "`resolution` and keep or fix its sheet. Where a line names the case that covers the",
-    "lesson, name that case in `supersedes` instead. Leave every other file as it is.",
+    "lesson and no other case of yours names it, name that case in `supersedes` instead.",
+    # S-88 gate fold (F1): naming a predecessor another staged case takes
+    # only moves the refusal to that case.
+    "A case is superseded once: lessons that share an earlier case are decided in ONE",
+    "`kind: reconsider` case naming it (all of them in its `records` and its sheet). A lesson",
+    "that case does not cover goes in its own `kind: resolution` case only if its status takes",
+    "a resolution line (pending or deferred); a routed lesson needs its own covering case.",
+    "Leave every other file as it is.",
 )
 
 

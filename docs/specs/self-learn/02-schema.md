@@ -1375,10 +1375,16 @@ supersede for the lesson: apply time's own test,
 `cases.require_reconsider_predecessor` (the case exists, passes its
 freeze-hash check and covers the lesson), plus "not superseded already"
 (`cases.record` refuses a second successor) -- never "some case names this
-lesson". The line names the lesson and says "no earlier case covers it"
-when none does (a bare `defer` writes no case), or names the case that
-does. The advice says such a lesson is decided with a `kind: resolution`
-case. A reconsider case naming a pending lesson (2026-10-07) is flagged for
+lesson". A predecessor that another case of the same stage takes first
+counts as one this case cannot supersede: "takes" is named in its
+`supersedes` or given by the runner's fill, "first" is the order apply time
+records cases (file-name order), so the case apply time would accept is the
+one left unflagged *(gate fold, 2026-10-16)*. The line names the lesson and
+says "no earlier case covers it" when none does (a bare `defer` writes no
+case), or names the case that does, and the staged case that takes it. The
+advice says such a lesson is decided with a `kind: resolution` case, and
+that lessons sharing an earlier case are decided in one `kind: reconsider`
+case naming it. A reconsider case naming a pending lesson (2026-10-07) is flagged for
 its status first. Before, the case passed, was recorded, and
 `verbs.reconsider` refused it at apply time as `unclassified`, so the
 lesson was parked for the overseer and the steward's decision was lost
