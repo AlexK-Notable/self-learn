@@ -935,6 +935,36 @@ def test_the_last_entry_leaving_a_shelf_whose_pointer_file_git_tracks_takes_the_
     assert _status(host) == " M CLAUDE.md\n"
 
 
+def test_a_shelf_write_that_would_add_to_a_tracked_pointer_file_is_put_back(
+    tmp_path, monkeypatch
+):
+    """S-89's backstop on the shelf leg (gate F3). The pointer file is
+    tracked; a write that would leave it with a line it did not have is
+    undone -- the tracked pointer file AND the untracked shelf it deleted
+    both come back -- and the warning says nothing was written."""
+    home = make_env(tmp_path).ledger
+    host = _plain_shelved(home, tmp_path, RID)
+    _track(host, "CLAUDE.md")
+    claude = host / "CLAUDE.md"
+    claude_bytes, shelf_bytes = claude.read_bytes(), _shelf(host).read_bytes()
+    real_retire = verbs.retire_empty_shelf
+
+    def retire_and_add(shelf, surface, plan):
+        real_retire(shelf, surface, plan)
+        claude.write_bytes(claude.read_bytes() + b"a line nobody asked for\n")
+
+    monkeypatch.setattr(verbs, "retire_empty_shelf", retire_and_add)
+
+    failed = _failure(verbs.graduate(home, RID, no_push=True))
+
+    assert "would gain or change lines" in failed
+    assert "nothing was written" in failed
+    assert "part-way" not in failed
+    assert claude.read_bytes() == claude_bytes
+    assert _shelf(host).read_bytes() == shelf_bytes
+    assert _status(host) == ""
+
+
 def test_a_shelf_git_tracks_is_refused_when_it_would_be_deleted(tmp_path):
     """The shelf itself was tracked. Emptied, it would be DELETED -- a
     deletion asks whether git tracks the file, and it does: refused,

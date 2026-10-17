@@ -127,6 +127,7 @@ from .compilers import (
     compile_managed_text,
     compile_pointer_text,
     compile_reference,
+    compile_rules_text,
     has_paths_key,
     loaded_text_problem,
     plan_empty_rules_file,
@@ -3802,7 +3803,7 @@ def _retirement_preflight(
     routing = record.routing or {}
     destination = routing.get("destination")
     if destination in ("skill-md", "claude-md", "new-skill"):
-        return _Retirement(
+        retiring = _Retirement(
             spec=_resolve_target(
                 home,
                 bucket_dir,
@@ -3825,6 +3826,9 @@ def _retirement_preflight(
                 removal=True,  # G1: taking lines out is still a write
             )
         )
+        assert retiring.spec is not None
+        _refuse_unsafe_tracked_removal(home, retiring.spec, record.id)  # S-89
+        return retiring
     if destination == "hook":
         # S-71 fold: the first hosts.yaml read on this path. Wrapped HERE,
         # not inside `_hook_script_location`, whose other callers (hook
@@ -4186,6 +4190,11 @@ def _retire_reference_host_phase(
                 )
             # S-89: a tracked shelf or pointer file may lose lines, nothing more.
             tracked = _snapshot_tracked_removals(rewritten) if spec.mode == "plain" else {}
+            touched: _TrackedSnapshot = (
+                {p: e for p, e in _snapshot_host_files(changed).items() if e is not None}
+                if tracked
+                else {}
+            )  # a retirement creates no file, so every file it touches existed
             snapshot = _snapshot_host_files(changed) if spec.mode == "git" else {}
             step = "write"
             if ref_path in rewritten:
@@ -4201,7 +4210,11 @@ def _retire_reference_host_phase(
             if deleted:
                 warnings.append(f"removed {ref_path} (it held only its header)")
             if tracked:
-                _settle_tracked_removals(tracked, warnings)
+                try:
+                    _settle_tracked_removals(tracked, warnings, restore=touched)
+                except NeedsPerson:
+                    step = "check"  # every touched file is back as it was
+                    raise
             if spec.mode != "git" or not gitops.known_paths(spec.host_path, changed):
                 return None
             step = "commit"
@@ -4764,8 +4777,11 @@ def _plain_write_check(
     Refused: a file git tracks (index or ``HEAD``, so a renamed-away path
     still counts) -- except that a *removal* (S-89: a write that only takes
     self-learn's own lines out) may REWRITE a tracked file, needing no
-    line, and leaves the change uncommitted for a person (the write checks
-    it took lines out and added none, :func:`_settle_tracked_removals`);
+    line, and leaves the change uncommitted for a person (the pre-flight
+    predicts that it takes lines out and adds none,
+    :func:`_refuse_unsafe_tracked_removal`, and the write checks it,
+    :func:`_settle_tracked_removals`) -- unless the tracked file is not on
+    disk, which the write would re-create;
     and a file the repo's own ignore rules would still re-admit with its
     line in place (§0.5's probe). *deleting* (a file being removed, never
     rewritten) asks only the first, and a tracked file's deletion stays
@@ -4779,6 +4795,11 @@ def _plain_write_check(
     shown = str(path) if real == Path(path).absolute() else f"{path} (really {real})"
     if gitops.in_index_or_head(repo, rel):
         if removal and not deleting:
+            if not real.is_file():  # S-89: taking lines out must not re-create it
+                return repo, None, (
+                    f"{shown} is tracked by git in {repo} but is not on disk, so "
+                    "taking a lesson out would re-create it"
+                )
             return repo, None, None  # S-89: lines out of a tracked file
         return repo, None, f"{shown} is tracked by git in {repo}"
     if deleting:
@@ -4818,7 +4839,10 @@ def _git_tracked(path: Path) -> bool:
     )
 
 
-def _snapshot_tracked_removals(paths: Iterable[Path]) -> _HostSnapshot:
+_TrackedSnapshot = dict[Path, tuple[bytes, int]]
+
+
+def _snapshot_tracked_removals(paths: Iterable[Path]) -> _TrackedSnapshot:
     """S-89, before a plain host's removal writes: the bytes and mode of
     each of *paths* git tracks, for :func:`_settle_tracked_removals`. A
     tracked path that is absent is left out (the write cannot remove lines
@@ -4843,14 +4867,22 @@ def _only_lines_removed(old: bytes, new: bytes) -> bool:
     )
 
 
-def _settle_tracked_removals(snapshot: _HostSnapshot, warnings: list[str]) -> None:
-    """S-89, after a plain host's removal writes: every tracked file in
-    *snapshot* must still exist and hold its old lines with some taken out
-    (:func:`_only_lines_removed`). Otherwise every file in *snapshot* is
-    put back byte for byte and :class:`NeedsPerson` is raised -- a plain
-    host never gains a line in, or loses, a tracked file. Each tracked
-    file the write did change is named in *warnings*: self-learn never
-    commits in a plain host, so its commit is a person's."""
+def _settle_tracked_removals(
+    snapshot: _TrackedSnapshot,
+    warnings: list[str],
+    *,
+    restore: _TrackedSnapshot | None = None,
+) -> None:
+    """S-89, after a plain host's removal writes -- the backstop behind
+    :func:`_refuse_unsafe_tracked_removal`'s prediction: every tracked file
+    in *snapshot* must still exist and hold its old lines with some taken
+    out (:func:`_only_lines_removed`). Otherwise every file in *restore*
+    (default: *snapshot*; a shelf retirement passes every file it touched,
+    a shelf it deleted included) is put back byte for byte and
+    :class:`NeedsPerson` is raised -- a plain host never gains a line in,
+    or loses, a tracked file. Each tracked file the write did change is
+    named in *warnings*: self-learn never commits in a plain host, so its
+    commit is a person's."""
     problems: list[str] = []
     changed: list[Path] = []
     for path, (old, _mode) in snapshot.items():
@@ -4865,13 +4897,12 @@ def _settle_tracked_removals(snapshot: _HostSnapshot, warnings: list[str]) -> No
             problems.append(f"{path} would gain or change lines")
         changed.append(path)
     if problems:
-        for path, (old, mode) in snapshot.items():
-            path.write_bytes(old)
-            os.chmod(path, mode)
+        for path, (data, mode) in (snapshot if restore is None else restore).items():
+            fsops.atomic_write(path, data, mode=mode, fsync=True, follow_symlinks=True)
         raise NeedsPerson(
             f"{'; '.join(problems)}, and git tracks it -- in a plain-mode host "
-            "self-learn only takes its own lines out of a tracked file; the "
-            "file was put back as it was"
+            "self-learn only takes its own lines out of a tracked file; every "
+            "file this write touched was put back as it was"
         )
     for path in changed:
         warnings.append(
@@ -4956,6 +4987,47 @@ def _refuse_unsafe_plain_paths(
         f"{found} -- {_PLAIN_RULE}. Choose a destination whose file git does not "
         "track (a project lesson: claude-md:local; a rules lesson: a topic name "
         "with no tracked file), or untrack the file first"
+    )
+
+
+def _refuse_unsafe_tracked_removal(home: Path, spec: TargetSpec, leaving: str) -> None:
+    """S-89, the pre-flight half: before anything is committed, predict
+    what taking *leaving* out of *spec*'s managed file leaves -- the same
+    regeneration the host write runs (``compile_managed_text`` over the
+    file as it stands and the compile set without *leaving*; for a rules
+    file ``compile_rules_text``, its ``paths:`` pre-pass first) -- and, when
+    git tracks that file in a ``plain`` host, refuse (``needs-person``)
+    unless the prediction is the file's lines with some taken out. The
+    regeneration rewrites the whole region, so a region a person edited
+    and adopted (S-75), or a compiler change since the last write, would
+    rewrite other lessons' lines too. Pure; a ``git`` host, an untracked
+    file, a missing file (the plain-host guard's own refusal), and a file
+    this cannot read pass, leaving the write's own checks to answer."""
+    if spec.mode != "plain" or spec.target is None or spec.destination == "new-skill":
+        return
+    target = spec.target
+    if not _git_tracked(target):
+        return
+    try:
+        old = target.read_text(encoding="utf-8")
+        records = [r for r in _compile_set(home, spec) if r.id != leaving]
+        new = (
+            compile_rules_text(old, records)  # the paths: pre-pass first, as the write runs it
+            if spec.variant == "rules"
+            else compile_managed_text(old, records).text
+        )
+    except (OSError, UnicodeDecodeError, CompileError):
+        return
+    if _only_lines_removed(old.encode("utf-8"), new.encode("utf-8")):
+        return
+    raise NeedsPerson(
+        f"{target} is tracked by git, and taking {leaving} out of it would also "
+        "rewrite lines that are not its own (self-learn regenerates the whole "
+        "managed region, and a line in it no longer reads as self-learn would "
+        "write it -- edited by hand and adopted, or written by an older "
+        "version) -- in a plain-mode host self-learn only takes its own lines "
+        "out of a tracked file, so nothing was written. A person takes the "
+        "line out by hand and commits it, or untracks the file, then re-runs"
     )
 
 

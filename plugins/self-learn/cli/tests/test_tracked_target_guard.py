@@ -753,7 +753,7 @@ def test_a_tracked_rules_file_emptied_by_a_retirement_keeps_its_region(tmp_path)
     assert _status(host) == " M .claude/rules/topic.md\n"
 
 
-@pytest.mark.parametrize("does", ["adds", "deletes"])
+@pytest.mark.parametrize("does", ["adds", "deletes", "moves", "duplicates"])
 def test_a_removal_whose_write_would_do_more_puts_the_tracked_file_back(
     tmp_path, monkeypatch, does
 ):
@@ -764,7 +764,9 @@ def test_a_removal_whose_write_would_do_more_puts_the_tracked_file_back(
     home = make_env(tmp_path).ledger
     host = _plain_repo_host(home, tmp_path, track_claude_md=False)
     rid = _lesson(home, host, "lrn-9a000013")
+    keep = _lesson(home, host, "lrn-9a000019")
     verbs.route(home, rid, dest="claude-md", no_push=True)
+    verbs.route(home, keep, dest="claude-md", no_push=True)
     git(host, "add", "-f", "CLAUDE.md")
     git(host, "commit", "-q", "-m", "track CLAUDE.md")
     claude = host / "CLAUDE.md"
@@ -773,10 +775,17 @@ def test_a_removal_whose_write_would_do_more_puts_the_tracked_file_back(
 
     def apply_and_more(home_, spec, *args, **kwargs):
         out = real_apply(home_, spec, *args, **kwargs)
+        lines = claude.read_bytes().splitlines(keepends=True)
         if does == "adds":
-            claude.write_bytes(claude.read_bytes() + b"a line nobody asked for\n")
-        else:
+            claude.write_bytes(b"".join(lines) + b"a line nobody asked for\n")
+        elif does == "deletes":
             claude.unlink()
+        elif does == "moves":  # the kept lesson's line moved to the top
+            (kept,) = [line for line in lines if keep.encode() in line]
+            claude.write_bytes(kept + b"".join(line for line in lines if line != kept))
+        else:  # the kept lesson's line written twice
+            (kept,) = [line for line in lines if keep.encode() in line]
+            claude.write_bytes(b"".join(lines) + kept)
         return out
 
     monkeypatch.setattr(verbs, "_apply_target", apply_and_more)
@@ -784,10 +793,268 @@ def test_a_removal_whose_write_would_do_more_puts_the_tracked_file_back(
     result = verbs.graduate(home, rid, no_push=True)
 
     (failed,) = [w for w in result.warnings if "HOST PHASE FAILED" in w]
-    why = "would gain or change lines" if does == "adds" else "would be deleted"
+    why = "would be deleted" if does == "deletes" else "would gain or change lines"
     assert why in failed and "put back as it was" in failed
     assert claude.read_bytes() == claude_md
     assert _status(host) == ""
+
+
+def test_a_tracked_file_missing_from_disk_is_not_re_created_by_a_removal(tmp_path):
+    """S-89, gate F1. Git tracks CLAUDE.md, but a person deleted it and has
+    not committed that. Taking a lesson out would re-create it: refused,
+    `needs-person`, before the ledger commit, and the file stays gone."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a00001a")
+    verbs.route(home, rid, dest="claude-md", no_push=True)
+    git(host, "add", "-f", "CLAUDE.md")
+    git(host, "commit", "-q", "-m", "track CLAUDE.md")
+    (host / "CLAUDE.md").unlink()
+    ledger_head = last_verb_sha(home)
+
+    with pytest.raises(verbs.NeedsPerson) as caught:
+        verbs.graduate(home, rid, no_push=True)
+
+    assert "is tracked by git" in str(caught.value)
+    assert "would re-create it" in str(caught.value)
+    assert not (host / "CLAUDE.md").exists()
+    assert _record(home, rid).status == "routed"
+    assert last_verb_sha(home) == ledger_head
+
+
+def test_a_removal_that_would_rewrite_an_adopted_line_is_refused_before_the_commit(tmp_path):
+    """S-89, gate F2. A person reworded another lesson's line inside the
+    region and adopted it (S-75). Retiring a different lesson regenerates
+    the whole region, which would put the reworded line back: refused,
+    `needs-person`, in the preview and the run alike, BEFORE the ledger
+    commit -- the lesson stays routed and the file is untouched."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a00001b")
+    other = _lesson(home, host, "lrn-9a00001c")
+    verbs.route(home, rid, dest="claude-md", no_push=True)
+    verbs.route(home, other, dest="claude-md", no_push=True)
+    claude = host / "CLAUDE.md"
+    lines = claude.read_text(encoding="utf-8").splitlines(keepends=True)
+    claude.write_text(
+        "".join(
+            line.replace("- ", "- (reworded by a person) ", 1) if other in line else line
+            for line in lines
+        ),
+        encoding="utf-8",
+    )
+    verbs.recompile(home, no_push=True, adopt=[str(claude)])
+    git(host, "add", "-f", "CLAUDE.md")
+    git(host, "commit", "-q", "-m", "track CLAUDE.md")
+    claude_md = claude.read_bytes()
+    assert b"(reworded by a person)" in claude_md  # control: the adopted edit is there
+    ledger_head = last_verb_sha(home)
+    sheet = _sheet(tmp_path, [{"id": rid, "verb": "graduate"}])
+
+    preview = batch.dry_run(home, sheet, actor="human")
+    result = batch.run(home, sheet, no_push=True, actor="human")
+
+    (pitem,), (item,) = preview.items, result.items
+    assert (pitem.state, pitem.kind) == ("would-refuse", "needs-person"), pitem.detail
+    assert (item.state, item.kind) == ("refused", "needs-person"), item.detail
+    assert "would also rewrite lines that are not its own" in (item.detail or "")
+    assert _record(home, rid).status == "routed"
+    assert last_verb_sha(home) == ledger_head  # a telemetry flush may ride on top
+    assert claude.read_bytes() == claude_md
+    assert _status(host) == ""
+
+
+def test_a_retiring_lessons_own_adopted_line_still_leaves(tmp_path):
+    """S-89's prediction leaves the retiring lesson out of the compile set:
+    when it is that lesson's OWN line a person reworded and adopted, taking
+    it out is still only a removal -- the reworded line goes, the commit is
+    left for a person."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a00001e")
+    keep = _lesson(home, host, "lrn-9a00001f")
+    verbs.route(home, rid, dest="claude-md", no_push=True)
+    verbs.route(home, keep, dest="claude-md", no_push=True)
+    claude = host / "CLAUDE.md"
+    lines = claude.read_text(encoding="utf-8").splitlines(keepends=True)
+    claude.write_text(
+        "".join(
+            line.replace("- ", "- (reworded by a person) ", 1) if rid in line else line
+            for line in lines
+        ),
+        encoding="utf-8",
+    )
+    verbs.recompile(home, no_push=True, adopt=[str(claude)])
+    git(host, "add", "-f", "CLAUDE.md")
+    git(host, "commit", "-q", "-m", "track CLAUDE.md")
+    assert b"(reworded by a person)" in claude.read_bytes()  # control
+
+    result = verbs.graduate(home, rid, no_push=True)
+
+    assert not [w for w in result.warnings if "FAILED" in w], result.warnings
+    text = claude.read_text(encoding="utf-8")
+    assert rid not in text and "(reworded by a person)" not in text and keep in text
+    assert _record(home, rid).status == "superseded"
+    assert _status(host) == " M CLAUDE.md\n"
+
+
+def test_a_reroute_moves_a_lesson_out_of_a_tracked_file_into_claude_local(tmp_path):
+    """S-89's way to clear a lesson that is still right from a tracked
+    file: `reroute --dest claude-md:local`. Its old placement is a removal
+    (the line leaves the tracked CLAUDE.md, commit left for a person); its
+    new one is CLAUDE.local.md, which gets its ignore line first. Nothing
+    is committed in the host."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a000020")
+    verbs.route(home, rid, dest="claude-md", no_push=True)
+    git(host, "add", "-f", "CLAUDE.md")
+    git(host, "commit", "-q", "-m", "track CLAUDE.md")
+    head = _head(host)
+
+    result = verbs.reroute(home, rid, dest="claude-md:local", no_push=True)
+
+    assert not [w for w in result.warnings if "FAILED" in w], result.warnings
+    assert any("left the change uncommitted" in w for w in result.warnings)
+    assert rid not in (host / "CLAUDE.md").read_text(encoding="utf-8")
+    assert rid in (host / "CLAUDE.local.md").read_text(encoding="utf-8")
+    assert _ignored(host, "CLAUDE.local.md")
+    assert _record(home, rid).status == "routed"
+    assert _head(host) == head
+    assert _status(host) == " M CLAUDE.md\n"
+
+
+def _reword_and_adopt(home: Path, claude: Path, rid: str) -> None:
+    """A person rewords *rid*'s line inside the managed region, then
+    accepts it with `recompile --adopt` (S-75)."""
+    lines = claude.read_text(encoding="utf-8").splitlines(keepends=True)
+    claude.write_text(
+        "".join(
+            line.replace("- ", "- (reworded by a person) ", 1) if rid in line else line
+            for line in lines
+        ),
+        encoding="utf-8",
+    )
+    verbs.recompile(home, no_push=True, adopt=[str(claude)])
+
+
+def test_a_tracked_rules_file_whose_paths_block_was_restyled_is_refused_before_the_commit(
+    tmp_path,
+):
+    """S-89's prediction runs the rules write's own `paths:` pre-pass
+    (`compile_rules_text`; gate N1). A person restyled self-learn's
+    `paths:` list in a tracked rules file; the next retirement would
+    rewrite that block back: refused, `needs-person`, in the preview and
+    the run alike, before the ledger commit."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path)
+    (host / "src").mkdir()
+    (host / "src" / "x.py").write_text("x\n", encoding="utf-8")
+    (host / "docs").mkdir()
+    (host / "docs" / "y.md").write_text("y\n", encoding="utf-8")
+    commit_all(host, "files the globs match")
+    rid = _lesson(home, host, "lrn-9a000021")
+    keep = _lesson(home, host, "lrn-9a000022")
+    verbs.route(home, rid, dest="claude-md:rules:topic", rules_paths=["src/**/*.py"], no_push=True)
+    verbs.route(home, keep, dest="claude-md:rules:topic", rules_paths=["docs/**/*.md"], no_push=True)
+    rules = host / ".claude" / "rules" / "topic.md"
+    block = "paths:\n  - docs/**/*.md\n  - src/**/*.py\n"
+    assert block in rules.read_text(encoding="utf-8")  # control: self-learn's own style
+    rules.write_text(
+        rules.read_text(encoding="utf-8").replace(block, 'paths: ["docs/**/*.md", "src/**/*.py"]\n'),
+        encoding="utf-8",
+    )
+    git(host, "add", "-f", "--", ".claude/rules/topic.md")
+    git(host, "commit", "-q", "-m", "track the restyled rules file")
+    rules_bytes = rules.read_bytes()
+    ledger_head = last_verb_sha(home)
+    sheet = _sheet(tmp_path, [{"id": rid, "verb": "graduate"}])
+
+    preview = batch.dry_run(home, sheet, actor="human")
+    result = batch.run(home, sheet, no_push=True, actor="human")
+
+    (pitem,), (item,) = preview.items, result.items
+    assert (pitem.state, pitem.kind) == ("would-refuse", "needs-person"), pitem.detail
+    assert (item.state, item.kind) == ("refused", "needs-person"), item.detail
+    assert _record(home, rid).status == "routed"
+    assert last_verb_sha(home) == ledger_head
+    assert rules.read_bytes() == rules_bytes
+    assert _status(host) == ""
+
+
+def test_the_tracked_removal_prediction_leaves_untracked_files_alone(tmp_path):
+    """The control for S-89's prediction: in a plain host whose CLAUDE.md
+    git does NOT track, an adopted sibling line is no reason to refuse --
+    the file is self-learn's to rewrite, as before S-89."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a000023")
+    other = _lesson(home, host, "lrn-9a000024")
+    verbs.route(home, rid, dest="claude-md", no_push=True)
+    verbs.route(home, other, dest="claude-md", no_push=True)
+    claude = host / "CLAUDE.md"
+    _reword_and_adopt(home, claude, other)
+    assert b"(reworded by a person)" in claude.read_bytes()  # control
+
+    result = verbs.graduate(home, rid, no_push=True)
+
+    assert not [w for w in result.warnings if "FAILED" in w], result.warnings
+    assert _record(home, rid).status == "superseded"
+    assert rid not in claude.read_text(encoding="utf-8")
+
+
+def test_the_tracked_removal_prediction_leaves_git_hosts_alone(tmp_path):
+    """The other control: a `git` host commits its own writes, so an
+    adopted sibling line in its tracked CLAUDE.md does not refuse a
+    retirement there."""
+    env = make_env(tmp_path)
+    home, host = env.ledger, env.host
+    rid = _lesson(home, host, "lrn-9a000025")
+    other = _lesson(home, host, "lrn-9a000026")
+    verbs.route(home, rid, dest="claude-md", no_push=True)
+    verbs.route(home, other, dest="claude-md", no_push=True)
+    claude = host / "CLAUDE.md"
+    _reword_and_adopt(home, claude, other)
+    git(host, "commit", "-q", "-am", "a person rewords a lesson")
+    assert git(host, "ls-files", "--", "CLAUDE.md").stdout.strip() == "CLAUDE.md"  # control
+
+    result = verbs.graduate(home, rid, no_push=True)
+
+    assert not [w for w in result.warnings if "FAILED" in w], result.warnings
+    assert _record(home, rid).status == "superseded"
+    assert rid not in claude.read_text(encoding="utf-8")
+
+
+def test_a_write_time_refusal_of_a_removal_keeps_the_removal_wording(tmp_path, monkeypatch):
+    """Gate G1 N1's wording, which S-89 keeps: the pre-flight passed (stood
+    in for here); by the write the tracked CLAUDE.md is gone from disk, so
+    the write-time check refuses -- as a REMOVAL, never with the addition's
+    "choose a destination" advice."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a00001d")
+    verbs.route(home, rid, dest="claude-md", no_push=True)
+    git(host, "add", "-f", "--", "CLAUDE.md")
+    git(host, "commit", "-q", "-m", "track CLAUDE.md")
+    monkeypatch.setattr(
+        verbs, "_refuse_unsafe_plain_write", lambda spec, removal=False: None, raising=False
+    )
+    monkeypatch.setattr(verbs, "_refuse_unsafe_tracked_removal", lambda *a, **k: None)
+    real_resolve = verbs.resolve_record
+
+    def delete_then_resolve(*args, **kwargs):
+        (host / "CLAUDE.md").unlink()
+        return real_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(verbs, "resolve_record", delete_then_resolve)
+
+    result = verbs.graduate(home, rid, no_push=True)
+
+    (failed,) = [w for w in result.warnings if "HOST PHASE FAILED" in w]
+    assert "would re-create it" in failed
+    assert "Taking this lesson out would change that file" in failed
+    assert "Choose a destination" not in failed
+    assert not (host / "CLAUDE.md").exists()
 
 
 def test_a_tracked_file_deletion_is_still_refused_for_a_person(tmp_path):
