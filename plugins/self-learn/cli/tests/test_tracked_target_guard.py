@@ -31,8 +31,8 @@ from pathlib import Path
 
 import pytest
 
-from self_learn import batch, cases, cli, gitops, steward, verbs
-from self_learn.hosts import MARKER_FILENAME, host_add
+from self_learn import batch, cases, cli, compiled, gitops, steward, verbs
+from self_learn.hosts import MARKER_FILENAME, host_add, host_slug
 from self_learn.invocation.contract import Outcome
 from self_learn.ledger_ops import create_record, find_record_path, stamp_proposal, write_proposal
 from self_learn.overseer import run as overseer_run
@@ -684,33 +684,131 @@ def test_recompile_repairs_a_plain_hosts_shelf_without_committing_it(tmp_path):
 # ------------------------------------------------------------ removals
 
 
-def test_a_retirement_out_of_a_tracked_file_is_refused_for_a_person(tmp_path):
-    """The lesson was written while CLAUDE.md was untracked; then its
-    owner started tracking it. Taking the lesson out would change a
-    tracked file: refused (`needs-person` -- no choice of destination
-    moves lines that already sit there), nothing written."""
+def test_a_retirement_out_of_a_tracked_file_takes_its_lines_out_and_leaves_the_commit(
+    tmp_path,
+):
+    """S-89. The lesson was written while CLAUDE.md was untracked; then its
+    owner started tracking it. Taking the lesson out removes only its own
+    line from the tracked file, in the preview and the run alike; nothing
+    is committed in the host -- the change is left for a person, and the
+    run says so."""
     home = make_env(tmp_path).ledger
     host = _plain_repo_host(home, tmp_path, track_claude_md=False)
     rid = _lesson(home, host, "lrn-9a000010")
+    keep = _lesson(home, host, "lrn-9a000011")
     verbs.route(home, rid, dest="claude-md", no_push=True)
-    assert rid in (host / "CLAUDE.md").read_text(encoding="utf-8")  # control
+    verbs.route(home, keep, dest="claude-md", no_push=True)
     git(host, "add", "-f", "CLAUDE.md")
     git(host, "commit", "-q", "-m", "track CLAUDE.md after all")
-    claude_md = (host / "CLAUDE.md").read_bytes()
-    ledger_head = last_verb_sha(home)
+    before = (host / "CLAUDE.md").read_text(encoding="utf-8")
+    assert rid in before and keep in before  # control
+    head = _head(host)
     sheet = _sheet(tmp_path, [{"id": rid, "verb": "graduate"}])
 
     preview = batch.dry_run(home, sheet, actor="human")
-    result = batch.run(home, sheet, no_push=True, actor="human")
+    assert (preview.items[0].state, preview.items[0].kind) == ("would-apply", None), (
+        preview.items[0].detail
+    )
+    result = verbs.graduate(home, rid, no_push=True)
 
-    (pitem,), (item,) = preview.items, result.items
-    assert (pitem.state, pitem.kind) == ("would-refuse", "needs-person"), pitem.detail
-    assert (item.state, item.kind) == ("refused", "needs-person"), item.detail
-    assert "CLAUDE.md is tracked by git" in (item.detail or "")
-    assert _record(home, rid).status == "routed"
-    assert last_verb_sha(home) == ledger_head  # a telemetry flush may ride on top
-    assert (host / "CLAUDE.md").read_bytes() == claude_md
+    after = (host / "CLAUDE.md").read_text(encoding="utf-8")
+    assert after == "".join(
+        line for line in before.splitlines(keepends=True) if rid not in line
+    )
+    assert keep in after
+    assert _record(home, rid).status == "superseded"
+    assert not [w for w in result.warnings if "FAILED" in w], result.warnings
+    (left,) = [w for w in result.warnings if "left the change uncommitted" in w]
+    assert f"{host / 'CLAUDE.md'} is tracked by git" in left
+    assert _head(host) == head  # never committed
+    assert _status(host) == " M CLAUDE.md\n"
+
+
+def test_a_tracked_rules_file_emptied_by_a_retirement_keeps_its_region(tmp_path):
+    """S-89 with S-87. The last lesson leaving a rules file would delete
+    it; in a plain host a file git tracks is never deleted, so it keeps
+    self-learn's empty region -- and the ledger's prediction makes the same
+    decision, so its compile-record entry stays and matches the file."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path)
+    rid = _lesson(home, host, "lrn-9a000012")
+    verbs.route(home, rid, dest="claude-md:rules:topic", no_push=True)
+    rules = host / ".claude" / "rules" / "topic.md"
+    assert rid in rules.read_text(encoding="utf-8")  # control
+    git(host, "add", "-f", "--", ".claude/rules/topic.md")
+    git(host, "commit", "-q", "-m", "track the rules file")
+
+    result = verbs.graduate(home, rid, no_push=True)
+
+    assert not [w for w in result.warnings if "FAILED" in w], result.warnings
+    assert rules.is_file()
+    text = rules.read_text(encoding="utf-8")
+    assert rid not in text and "self-learn:begin" in text
+    data = compiled.load_record(home, host_slug(home, host, scope_kind="project"))
+    entry = compiled.entry_for(
+        data, compiled.region_key(host, rules, "managed"), region="managed"
+    )
+    assert entry is not None
+    assert entry["sha256"] == compiled.sha256_hex(compiled.region_bytes(text, "managed"))
+    assert _status(host) == " M .claude/rules/topic.md\n"
+
+
+@pytest.mark.parametrize("does", ["adds", "deletes"])
+def test_a_removal_whose_write_would_do_more_puts_the_tracked_file_back(
+    tmp_path, monkeypatch, does
+):
+    """S-89's write-time half. A retirement may only take lines OUT of a
+    tracked file. A write that would add a line, or delete the file, is
+    undone byte for byte and reported as a host-phase failure naming why;
+    the file and the working tree are as they were."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a000013")
+    verbs.route(home, rid, dest="claude-md", no_push=True)
+    git(host, "add", "-f", "CLAUDE.md")
+    git(host, "commit", "-q", "-m", "track CLAUDE.md")
+    claude = host / "CLAUDE.md"
+    claude_md = claude.read_bytes()
+    real_apply = verbs._apply_target
+
+    def apply_and_more(home_, spec, *args, **kwargs):
+        out = real_apply(home_, spec, *args, **kwargs)
+        if does == "adds":
+            claude.write_bytes(claude.read_bytes() + b"a line nobody asked for\n")
+        else:
+            claude.unlink()
+        return out
+
+    monkeypatch.setattr(verbs, "_apply_target", apply_and_more)
+
+    result = verbs.graduate(home, rid, no_push=True)
+
+    (failed,) = [w for w in result.warnings if "HOST PHASE FAILED" in w]
+    why = "would gain or change lines" if does == "adds" else "would be deleted"
+    assert why in failed and "put back as it was" in failed
+    assert claude.read_bytes() == claude_md
     assert _status(host) == ""
+
+
+def test_a_tracked_file_deletion_is_still_refused_for_a_person(tmp_path):
+    """The control for S-89's limit: a retirement that would DELETE a file
+    git tracks (an emptied shelf) is refused before anything is written,
+    as before. Only lines leave a tracked file, never the file."""
+    home = make_env(tmp_path).ledger
+    host = _plain_repo_host(home, tmp_path, track_claude_md=False)
+    rid = _lesson(home, host, "lrn-9a000014")
+    verbs.route(home, rid, dest="reference", no_push=True)
+    git(host, "add", "-f", "--", "references/LEARNINGS.md")
+    git(host, "commit", "-q", "-m", "keep the shelf in history")
+    shelf = (host / "references" / "LEARNINGS.md").read_bytes()
+
+    with pytest.raises(verbs.NeedsPerson) as caught:
+        verbs.graduate(home, rid, no_push=True)
+
+    assert "LEARNINGS.md is tracked by git" in str(caught.value)
+    assert "never deletes a tracked file" in str(caught.value)
+    assert _record(home, rid).status == "routed"
+    assert (host / "references" / "LEARNINGS.md").read_bytes() == shelf
 
 
 def test_recompile_restores_a_lost_ignore_line_and_leaves_a_tracked_target_alone(tmp_path):
@@ -1315,31 +1413,31 @@ def test_the_overseer_reports_a_skill_lesson_s_refusal_as_needing_a_person(
     assert _status(repo) == ""
 
 
-def test_a_file_tracked_mid_retirement_gets_the_removal_wording(tmp_path, monkeypatch):
-    """Gate G1 N1. The retirement's pre-flight passed (stood in for here);
-    by the host phase the owner has tracked CLAUDE.md. The write-time
-    check refuses as a REMOVAL -- move or untrack the file -- never with
-    the addition's "choose a destination" advice."""
+def test_a_file_tracked_mid_retirement_is_still_only_a_removal(tmp_path, monkeypatch):
+    """Gate G1 N1, as S-89 leaves it. The retirement's pre-flight passed
+    (stood in for here); by the host phase the owner has tracked
+    CLAUDE.md. The write-time check agrees with the pre-flight: a removal
+    may rewrite a tracked file, so the lesson's line goes and the commit
+    is left for a person."""
     home = make_env(tmp_path).ledger
     host = _plain_repo_host(home, tmp_path, track_claude_md=False)
     rid = _lesson(home, host, "lrn-9a00002c")
     verbs.route(home, rid, dest="claude-md", no_push=True)
     git(host, "add", "-f", "--", "CLAUDE.md")
     git(host, "commit", "-q", "-m", "track CLAUDE.md")
-    claude_md = (host / "CLAUDE.md").read_bytes()
-    assert rid.encode() in claude_md  # control
+    assert rid.encode() in (host / "CLAUDE.md").read_bytes()  # control
+    head = _head(host)
     monkeypatch.setattr(
         verbs, "_refuse_unsafe_plain_write", lambda spec, removal=False: None, raising=False
     )
 
     result = verbs.graduate(home, rid, no_push=True)
 
-    (failed,) = [w for w in result.warnings if "HOST PHASE FAILED" in w]
-    assert "CLAUDE.md is tracked by git" in failed
-    assert "Taking this lesson out would change that file" in failed
-    assert "Choose a destination" not in failed
-    assert (host / "CLAUDE.md").read_bytes() == claude_md
-    assert _status(host) == ""
+    assert not [w for w in result.warnings if "FAILED" in w], result.warnings
+    assert any("left the change uncommitted" in w for w in result.warnings)
+    assert rid.encode() not in (host / "CLAUDE.md").read_bytes()
+    assert _head(host) == head
+    assert _status(host) == " M CLAUDE.md\n"
 
 
 def test_an_exclude_file_that_is_not_utf8_stops_the_write_as_a_host_phase_failure(
@@ -1447,10 +1545,10 @@ def test_a_shelf_retirement_ignores_a_tracked_claude_md_that_no_longer_points_at
     assert _status(host) == ""
 
 
-def test_a_file_tracked_mid_supersede_gets_the_removal_wording(tmp_path, monkeypatch):
+def test_a_file_tracked_mid_supersede_is_still_only_a_removal(tmp_path, monkeypatch):
     """Gate G1 N1, supersede's own host phase (it recompiles the OLD
-    lesson's target without it): a file tracked since the pre-flight is
-    refused as a removal, never with "choose a destination"."""
+    lesson's target without it), as S-89 leaves it: a file tracked since
+    the pre-flight loses the old lesson's line, commit left for a person."""
     home = make_env(tmp_path).ledger
     host = _plain_repo_host(home, tmp_path, track_claude_md=False)
     old = _lesson(home, host, "lrn-9a000030")
@@ -1458,20 +1556,17 @@ def test_a_file_tracked_mid_supersede_gets_the_removal_wording(tmp_path, monkeyp
     verbs.route(home, old, dest="claude-md", no_push=True)
     git(host, "add", "-f", "--", "CLAUDE.md")
     git(host, "commit", "-q", "-m", "track CLAUDE.md")
-    claude_md = (host / "CLAUDE.md").read_bytes()
-    assert old.encode() in claude_md  # control
+    assert old.encode() in (host / "CLAUDE.md").read_bytes()  # control
     monkeypatch.setattr(
         verbs, "_refuse_unsafe_plain_write", lambda spec, removal=False: None, raising=False
     )
 
     result = verbs.supersede(home, old, new, no_push=True)
 
-    (failed,) = [w for w in result.warnings if "HOST PHASE FAILED" in w]
-    assert "CLAUDE.md is tracked by git" in failed
-    assert "Taking this lesson out would change that file" in failed
-    assert "Choose a destination" not in failed
-    assert (host / "CLAUDE.md").read_bytes() == claude_md
-    assert _status(host) == ""
+    assert not [w for w in result.warnings if "FAILED" in w], result.warnings
+    assert any("left the change uncommitted" in w for w in result.warnings)
+    assert old.encode() not in (host / "CLAUDE.md").read_bytes()
+    assert _status(host) == " M CLAUDE.md\n"
 
 
 def test_a_reference_route_that_creates_its_pointer_file_gives_it_a_line_first(tmp_path):
