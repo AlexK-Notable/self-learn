@@ -32,11 +32,14 @@ but one of self-learn's own two headers left on it (`retire`, its alias
   recorded, never committed.
 
 In a plain host inside a git repository (S-80), the retirement writes only
-files git ignores: the pointer file it rewrites gets its ignore line first
-and is refused, as a removal (`needs-person`), when git tracks it; the shelf
-it deletes is asked only whether git tracks it. The pre-flight, the ledger's
-prediction and the host write judge the same files, so a file tracked before
-the prediction leaves the compile record true; one tracked after it (or a
+files git ignores, with one exception (S-89): a file git tracks may lose
+self-learn's own lines -- the pointer leaving CLAUDE.md, an entry leaving a
+shelf another entry keeps -- and the change is left uncommitted for a person.
+A tracked file the retirement would DELETE (an emptied shelf) is refused, as
+a removal (`needs-person`); an untracked one it deletes is asked nothing
+more. The pre-flight, the ledger's prediction and the host write judge the
+same files, so a shelf tracked before the prediction leaves the compile
+record true; one tracked after it (or a
 refused `(reference retired)` commit while a route completes `teach
 --supersedes`) leaves a region the record no longer matches, which the
 failure warning names and `recompile --adopt` accepts (gate SH2b). The plain
@@ -900,46 +903,75 @@ def test_the_pointer_file_gets_its_ignore_line_back_before_the_pointer_leaves(tm
     assert _head(host) == head
 
 
-def test_the_last_entry_leaving_a_shelf_whose_pointer_file_git_tracks_waits_for_a_person(
+def test_the_last_entry_leaving_a_shelf_whose_pointer_file_git_tracks_takes_the_pointer_out(
     tmp_path,
 ):
-    """CLAUDE.md, holding the pointer block, was tracked after the route.
-    The last entry leaving would rewrite it: refused as a removal
-    (`needs-person` -- no destination choice moves a pointer that is
-    already there), in the preview and the run alike, BEFORE the ledger
-    commit and before anything in the host is written."""
+    """S-89. CLAUDE.md, holding the pointer block, was tracked after the
+    route. The last entry leaving deletes the untracked shelf and takes the
+    pointer line out of the tracked CLAUDE.md -- the preview says so too --
+    and leaves that change uncommitted for a person. The compile record
+    agrees with what is left."""
     home = make_env(tmp_path).ledger
     host = _plain_shelved(home, tmp_path, RID)
     _track(host, "CLAUDE.md")
-    claude_bytes = (host / "CLAUDE.md").read_bytes()
-    shelf_bytes = _shelf(host).read_bytes()
-    assert SHELF_LINE.encode() in claude_bytes  # control: the pointer is there
-    ledger_head = last_verb_sha(home)
+    claude = host / "CLAUDE.md"
+    assert SHELF_LINE.encode() in claude.read_bytes()  # control: the pointer is there
+    head = _head(host)
     sheet = _sheet(tmp_path, [{"id": RID, "verb": "graduate"}])
 
     preview = batch.dry_run(home, sheet, actor="human")
-    result = batch.run(home, sheet, no_push=True, actor="human")
+    (pitem,) = preview.items
+    assert (pitem.state, pitem.kind) == ("would-apply", None), pitem.detail
+    result = verbs.graduate(home, RID, no_push=True)
 
-    (pitem,), (item,) = preview.items, result.items
-    assert (pitem.state, pitem.kind) == ("would-refuse", "needs-person"), pitem.detail
-    assert (item.state, item.kind) == ("refused", "needs-person"), item.detail
-    assert "CLAUDE.md is tracked by git" in (item.detail or "")
-    assert "Taking this lesson out would change that file" in (item.detail or "")
-    assert _record(home, RID).status == "routed"
-    assert last_verb_sha(home) == ledger_head  # a telemetry flush may ride on top
-    assert (host / "CLAUDE.md").read_bytes() == claude_bytes
+    assert not [w for w in result.warnings if "FAILED" in w], result.warnings
+    (left,) = [w for w in result.warnings if "left the change uncommitted" in w]
+    assert f"{claude} is tracked by git" in left
+    assert claude.read_text(encoding="utf-8") == CLAUDE_MD_SEED
+    assert not _shelf(host).exists()
+    assert _record(home, RID).status == "superseded"
+    assert _refused(home, host, (claude, "pointer"), (_shelf(host), "reference")) == []
+    assert _head(host) == head
+    assert _status(host) == " M CLAUDE.md\n"
+
+
+def test_a_shelf_write_that_would_add_to_a_tracked_pointer_file_is_put_back(
+    tmp_path, monkeypatch
+):
+    """S-89's backstop on the shelf leg (gate F3). The pointer file is
+    tracked; a write that would leave it with a line it did not have is
+    undone -- the tracked pointer file AND the untracked shelf it deleted
+    both come back -- and the warning says nothing was written."""
+    home = make_env(tmp_path).ledger
+    host = _plain_shelved(home, tmp_path, RID)
+    _track(host, "CLAUDE.md")
+    claude = host / "CLAUDE.md"
+    claude_bytes, shelf_bytes = claude.read_bytes(), _shelf(host).read_bytes()
+    real_retire = verbs.retire_empty_shelf
+
+    def retire_and_add(shelf, surface, plan):
+        real_retire(shelf, surface, plan)
+        claude.write_bytes(claude.read_bytes() + b"a line nobody asked for\n")
+
+    monkeypatch.setattr(verbs, "retire_empty_shelf", retire_and_add)
+
+    failed = _failure(verbs.graduate(home, RID, no_push=True))
+
+    assert "would gain or change lines" in failed
+    assert "nothing was written" in failed
+    assert "part-way" not in failed
+    assert claude.read_bytes() == claude_bytes
     assert _shelf(host).read_bytes() == shelf_bytes
     assert _status(host) == ""
 
 
-@pytest.mark.parametrize("left", [0, 1], ids=["deleted", "rewritten"])
-def test_a_shelf_git_tracks_is_refused_whether_it_would_be_deleted_or_rewritten(tmp_path, left):
+def test_a_shelf_git_tracks_is_refused_when_it_would_be_deleted(tmp_path):
     """The shelf itself was tracked. Emptied, it would be DELETED -- a
-    deletion asks whether git tracks the file, and it does; with another
-    entry left it would be REWRITTEN. Both refuse, `needs-person`, with
-    nothing written."""
+    deletion asks whether git tracks the file, and it does: refused,
+    `needs-person`, with nothing written. S-89 lets lines leave a tracked
+    file, never the file itself."""
     home = make_env(tmp_path).ledger
-    host = _plain_shelved(home, tmp_path, RID, *([OTHER] if left else []))
+    host = _plain_shelved(home, tmp_path, RID)
     _track(host, "references/LEARNINGS.md")
     shelf_bytes = _shelf(host).read_bytes()
     claude_bytes = (host / "CLAUDE.md").read_bytes()
@@ -951,6 +983,28 @@ def test_a_shelf_git_tracks_is_refused_whether_it_would_be_deleted_or_rewritten(
     assert _record(home, RID).status == "routed"
     assert _shelf(host).read_bytes() == shelf_bytes
     assert (host / "CLAUDE.md").read_bytes() == claude_bytes
+
+
+def test_a_shelf_git_tracks_loses_only_the_entry_when_another_is_left(tmp_path):
+    """S-89. The tracked shelf keeps another entry, so it is REWRITTEN:
+    the retired entry's lines go, the other entry and the pointer stay,
+    and the change is left uncommitted for a person."""
+    home = make_env(tmp_path).ledger
+    host = _plain_shelved(home, tmp_path, RID, OTHER)
+    _track(host, "references/LEARNINGS.md")
+    claude_bytes = (host / "CLAUDE.md").read_bytes()
+    head = _head(host)
+
+    result = verbs.graduate(home, RID, no_push=True)
+
+    assert not [w for w in result.warnings if "FAILED" in w], result.warnings
+    assert any("left the change uncommitted" in w for w in result.warnings)
+    text = _shelf(host).read_text(encoding="utf-8")
+    assert f"— {RID}" not in text and f"— {OTHER}" in text
+    assert (host / "CLAUDE.md").read_bytes() == claude_bytes
+    assert _record(home, RID).status == "superseded"
+    assert _head(host) == head
+    assert _status(host) == " M references/LEARNINGS.md\n"
 
 
 def test_an_emptied_shelf_git_does_not_track_is_deleted_even_when_the_repo_re_admits_it(
@@ -975,12 +1029,13 @@ def test_an_emptied_shelf_git_does_not_track_is_deleted_even_when_the_repo_re_ad
     assert _status(host) == ""
 
 
-def test_a_pointer_file_tracked_after_the_pre_flight_leaves_the_record_true(
+def test_a_shelf_tracked_after_the_pre_flight_leaves_the_record_true(
     tmp_path, monkeypatch
 ):
     """The gate's handoff note. The pre-flight passed; then, before the
-    ledger's prediction, the owner tracked CLAUDE.md (stood in for here by
-    tracking it as the ledger write begins). The host write refuses it, so
+    ledger's prediction, the owner tracked the shelf this retirement
+    empties (stood in for here by tracking it as the ledger write begins).
+    The host write refuses to delete a tracked file, so
     nothing in the host changes -- and the prediction applies the same
     check, so the compile record does not claim the pointer or the shelf
     changed. Both regions still read `clean` against the record."""
@@ -991,7 +1046,7 @@ def test_a_pointer_file_tracked_after_the_pre_flight_leaves_the_record_true(
     real_resolve = verbs.resolve_record
 
     def track_then_resolve(*args, **kwargs):
-        _track(host, "CLAUDE.md")
+        _track(host, "references/LEARNINGS.md")
         return real_resolve(*args, **kwargs)
 
     monkeypatch.setattr(verbs, "resolve_record", track_then_resolve)
@@ -1000,7 +1055,7 @@ def test_a_pointer_file_tracked_after_the_pre_flight_leaves_the_record_true(
 
     assert _record(home, RID).status == "superseded"  # the ledger commit stands
     (failed,) = [w for w in result.warnings if "REFERENCE RETIREMENT FAILED" in w]
-    assert "CLAUDE.md is tracked by git" in failed  # control: the cause is named
+    assert "LEARNINGS.md is tracked by git" in failed  # control: the cause is named
     # the warning's own words (the embedded refusal says "nothing was written" too)
     assert f"nothing was written; {RID}'s entry is still on {_shelf(host)}" in failed
     assert "Nothing later is blocked" in _own_words(failed)
@@ -1170,8 +1225,8 @@ def test_adopting_a_path_no_lesson_was_routed_to_still_adopts_nothing(tmp_path):
 def test_a_file_tracked_after_the_prediction_is_repaired_by_the_adopt_it_names(
     tmp_path, monkeypatch, repair
 ):
-    """Gate SH2b F4. CLAUDE.md is tracked after the ledger's prediction and
-    before the host write: the prediction dropped both entries (the shelf
+    """Gate SH2b F4. The shelf is tracked after the ledger's prediction and
+    before the host write (so emptying it would delete a tracked file): the prediction dropped both entries (the shelf
     was to go, and the block with it), the host write's own check keeps
     both files as they were, and in a plain host both read `unknown` -- no
     later route to the shelf gets through. No routed lesson is left on that
@@ -1184,7 +1239,7 @@ def test_a_file_tracked_after_the_prediction_is_repaired_by_the_adopt_it_names(
     real_phase = verbs._retire_reference_host_phase
 
     def track_then_write(*args, **kwargs):
-        _track(host, "CLAUDE.md")
+        _track(host, "references/LEARNINGS.md")
         return real_phase(*args, **kwargs)
 
     monkeypatch.setattr(verbs, "_retire_reference_host_phase", track_then_write)
@@ -1201,8 +1256,8 @@ def test_a_file_tracked_after_the_prediction_is_repaired_by_the_adopt_it_names(
     assert adopt == [str(shelf), f"{claude}#pointer"]
     if repair == "by-hand":
         assert f"from {shelf} and its pointer line from {claude} by hand, then" in failed
-        git(host, "rm", "-q", "--cached", "CLAUDE.md")  # the cause, fixed
-        git(host, "commit", "-q", "-m", "untrack CLAUDE.md again")
+        git(host, "rm", "-q", "--cached", "references/LEARNINGS.md")  # the cause, fixed
+        git(host, "commit", "-q", "-m", "untrack the shelf again")
         text = shelf.read_text(encoding="utf-8")
         shelf.write_text(compilers._retire_reference_text(text, RID)[0] + "\n", encoding="utf-8")
         claude.write_text(claude.read_text(encoding="utf-8").replace(SHELF_LINE + "\n", ""),
@@ -1220,6 +1275,8 @@ def test_a_file_tracked_after_the_prediction_is_repaired_by_the_adopt_it_names(
     _adopted(home, adopt)
 
     assert _refused(home, host, *regions) == []
+    git(host, "rm", "-q", "--cached", "references/LEARNINGS.md")  # adding needs it ignored
+    git(host, "commit", "-q", "-m", "untrack the shelf again")
     verbs.route(home, OTHER, dest="reference", no_push=True)
     assert f"— {OTHER}" in shelf.read_text(encoding="utf-8")
     assert _refused(home, host, *regions) == []
@@ -1228,10 +1285,10 @@ def test_a_file_tracked_after_the_prediction_is_repaired_by_the_adopt_it_names(
 def test_a_file_tracked_before_the_prediction_is_finished_by_hand_as_the_warning_says(
     tmp_path, monkeypatch
 ):
-    """Gate SH2b 1a. CLAUDE.md is tracked after the pre-flight, before the
+    """Gate SH2b 1a. The shelf is tracked after the pre-flight, before the
     prediction: nothing is written or recorded, nothing is blocked, and the
     retired entry stays. The warning's own hand repair, done literally --
-    the cause fixed (CLAUDE.md untracked again), the entry and its pointer
+    the cause fixed (the shelf untracked again), the entry and its pointer
     line taken out by hand, then its adopt command -- leaves both regions
     accepted, and the next route to the shelf lands."""
     home = make_env(tmp_path).ledger
@@ -1240,7 +1297,7 @@ def test_a_file_tracked_before_the_prediction_is_finished_by_hand_as_the_warning
     real_resolve = verbs.resolve_record
 
     def track_then_resolve(*args, **kwargs):
-        _track(host, "CLAUDE.md")
+        _track(host, "references/LEARNINGS.md")
         return real_resolve(*args, **kwargs)
 
     monkeypatch.setattr(verbs, "resolve_record", track_then_resolve)
@@ -1254,8 +1311,8 @@ def test_a_file_tracked_before_the_prediction_is_finished_by_hand_as_the_warning
     _never_deletes_a_shelf(failed, shelf)
     regions = [(shelf, "reference"), (claude, "pointer")]
     assert _refused(home, host, *regions) == []
-    git(host, "rm", "-q", "--cached", "CLAUDE.md")
-    git(host, "commit", "-q", "-m", "untrack CLAUDE.md again")
+    git(host, "rm", "-q", "--cached", "references/LEARNINGS.md")
+    git(host, "commit", "-q", "-m", "untrack the shelf again")
     text = shelf.read_text(encoding="utf-8")
     shelf.write_text(compilers._retire_reference_text(text, RID)[0] + "\n", encoding="utf-8")
     claude.write_text(claude.read_text(encoding="utf-8").replace(SHELF_LINE + "\n", ""),
@@ -1522,13 +1579,14 @@ def test_the_failure_warning_survives_a_compile_record_it_cannot_read(tmp_path):
     assert verbs._refused_regions(home, spec, regions) == []
 
 
-@pytest.mark.parametrize("tracked", ["CLAUDE.md", "references/LEARNINGS.md"])
+@pytest.mark.parametrize("tracked", ["references/LEARNINGS.md"])
 def test_the_preview_refuses_a_supersede_whose_old_shelf_cannot_change(tmp_path, tracked):
     """Gate SH2b F3(a). A route that completes `teach --supersedes` retires
-    the old lesson's entry; when that empties a shelf whose pointer file
-    (or the shelf itself) git tracks in a plain host, the run refuses
-    (`needs-person`). The preview runs the same pre-flight, with the
-    route's own write ahead of it, and refuses alike."""
+    the old lesson's entry; when that empties a shelf git tracks in a
+    plain host (so it would be deleted), the run refuses (`needs-person`).
+    The preview runs the same pre-flight, with the route's own write ahead
+    of it, and refuses alike. (A tracked pointer file alone no longer
+    refuses, S-89: the next test.)"""
     home = make_env(tmp_path).ledger
     host = _plain_shelved(home, tmp_path, RID)
     _track(host, tracked)
@@ -1545,6 +1603,28 @@ def test_the_preview_refuses_a_supersede_whose_old_shelf_cannot_change(tmp_path,
     assert f"{Path(tracked).name} is tracked by git" in (pitem.detail or "")
     assert _record(home, RID).status == "routed" and _record(home, NEW).status == "pending"
     assert last_verb_sha(home) == ledger_head
+
+
+def test_a_supersede_that_takes_the_pointer_out_of_a_tracked_file_applies(tmp_path):
+    """S-89 for SH2b F3(a)'s other case: the emptied shelf is untracked and
+    only its pointer file is tracked. The preview and the run both apply;
+    the pointer line leaves CLAUDE.md, uncommitted for a person."""
+    home = make_env(tmp_path).ledger
+    host = _plain_shelved(home, tmp_path, RID)
+    _track(host, "CLAUDE.md")
+    _lesson(home, host, NEW, supersedes=RID)
+    sheet = _sheet(tmp_path, [{"id": NEW, "verb": "route", "dest": "claude-md:local"}])
+
+    preview = batch.dry_run(home, sheet, actor="human")
+    result = batch.run(home, sheet, no_push=True, actor="human")
+
+    (pitem,), (item,) = preview.items, result.items
+    assert (pitem.state, pitem.kind) == ("would-apply", None), pitem.detail
+    assert item.state == "applied", (item.kind, item.detail)
+    assert _record(home, RID).status == "superseded" and _record(home, NEW).status == "routed"
+    assert (host / "CLAUDE.md").read_text(encoding="utf-8") == CLAUDE_MD_SEED
+    assert not _shelf(host).exists()
+    assert " M CLAUDE.md" in _status(host).splitlines()
 
 
 def test_the_preview_of_a_supersede_onto_the_same_shelf_sees_the_shelf_kept(tmp_path):

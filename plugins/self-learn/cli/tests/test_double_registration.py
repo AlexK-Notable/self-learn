@@ -583,8 +583,9 @@ def test_f_a_project_write_into_a_tracked_claude_md_is_refused_and_a_skill_md_co
 ):
     """(f) *control* (G1/S-80 on master). An ADDITION into the tracked
     CLAUDE.md through the plain project registration is S-80's
-    `destination-unavailable`; taking a lesson OUT of it is `needs-person`;
-    the skills root's git registration commits a tracked SKILL.md."""
+    `destination-unavailable`; taking a lesson OUT of it removes its line
+    and leaves the commit to a person (S-89); the skills root's git
+    registration commits a tracked SKILL.md."""
     env = _double(tmp_path)
     home, repo = env.ledger, env.host
     git(repo, "rm", "-q", "--cached", "CLAUDE.md")
@@ -602,10 +603,13 @@ def test_f_a_project_write_into_a_tracked_claude_md_is_refused_and_a_skill_md_co
     assert (pitem.state, pitem.kind) == ("would-refuse", "destination-unavailable"), pitem.detail
     with pytest.raises(verbs.DestinationUnavailable, match="CLAUDE.md is tracked by git"):
         verbs.route(home, added, dest="claude-md", no_push=True)
-    with pytest.raises(verbs.NeedsPerson, match="CLAUDE.md is tracked by git"):
-        verbs.graduate(home, placed, no_push=True)
     assert (repo / "CLAUDE.md").read_bytes() == claude_md
-    assert _record(home, placed).status == "routed"
+    graduated = verbs.graduate(home, placed, no_push=True)
+    assert any("left the change uncommitted" in w for w in graduated.warnings)
+    assert placed not in (repo / "CLAUDE.md").read_text(encoding="utf-8")
+    assert _record(home, placed).status == "superseded"
+    assert _status(repo) == " M CLAUDE.md\n"
+    git(repo, "commit", "-q", "-am", "a person commits the removal")
 
     skill = _skill_lesson(home, "lrn-8b00000e")
     rel = env.skill_md.relative_to(repo).as_posix()
