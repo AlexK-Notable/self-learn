@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from self_learn import miner, provenance, refs
-from self_learn.mining import contract
+from self_learn.mining import compare, contract
 from support import make_home
 
 ORCH = "aaaaaaaa-0000-0000-0000-000000000001"  # the session that sends
@@ -151,6 +151,14 @@ def test_a_short_turn_must_be_a_whole_quoted_argument():
     assert refs.role_of(yes, sent=index((8, ORCH, 'echo yesterday; herdr agent prompt w "go"'))) == "user"
 
 
+def test_a_short_turn_quoted_inside_json_is_a_quoted_argument():
+    """A Codex ``function_call`` carries its command as JSON, so the quotes
+    around a short argument arrive escaped."""
+    raw = json.dumps({"cmd": 'herdr agent prompt w1:p2 "yes"'})
+    assert '"yes"' not in raw and "'yes'" not in raw  # only the escaped form is present
+    assert refs.role_of(typed("yes", 10), sent=index((8, ORCH, raw))) == "agent"
+
+
 def test_quoting_and_escapes_fold_away():
     multi = "First line of the brief, long enough to be matched as a whole.\nSecond line: don't stop."
     shell = "herdr agent prompt w 'First line of the brief, long enough to be matched as a whole.\nSecond line: don'\\''t stop.'"
@@ -190,6 +198,19 @@ def test_only_a_call_that_mentions_herdr_is_a_send(tmp_path):
     assert len(provenance.sweep([root])) == 0
     write(root, ORCH, [bash(f"herdr agent prompt w1:p2 '{BRIEF}'", 8)])  # positive control
     assert len(provenance.sweep([root])) == 1
+
+
+def test_a_codex_function_call_is_read_from_its_arguments(tmp_path):
+    codex_dir = tmp_path / "sessions"
+    codex_dir.mkdir()
+    brief = "A brief a Codex session sent through a function_call to herdr, long enough."
+    call = {"type": "response_item", "timestamp": _ts(20), "payload": {
+        "type": "function_call", "name": "exec_command",
+        "arguments": json.dumps({"cmd": f"herdr agent prompt w1:p3 {json.dumps(brief)}"})}}
+    (codex_dir / "rollout-2026-10-19T12-00-00-y.jsonl").write_text(json.dumps(call) + "\n", encoding="utf-8")
+    sent = provenance.sweep([codex_dir])
+    assert len(sent) == 1
+    assert refs.role_of(typed(brief, 22), sent=sent) == "agent"
 
 
 def test_sender_dirs_adds_codex_only_beside_a_claude_projects_folder(tmp_path):
@@ -243,6 +264,30 @@ def test_a_quote_in_another_sessions_agent_turn_is_still_found(tmp_path):
     assert (v.outcome, v.ref.session, v.ref.role) == ("other_session", WORKER, "agent")
 
 
+def test_a_sent_turn_found_in_another_session_says_agent(tmp_path):
+    """The other-session ref is built against the same roots, so it carries
+    the send sign too (the turn here is untagged)."""
+    root = tmp_path / "projects"
+    sender = "dddddddd-0000-0000-0000-000000000004"  # in another project: outside the quote search
+    write(root, sender, [bash(f'herdr agent prompt w1:p2 "{BRIEF}"', 8, session=sender)], proj="-elsewhere")
+    write(root, ORCH, [asst("nothing relevant here", 1, session=ORCH)])
+    write(root, WORKER, [typed(BRIEF, 10)])
+    v = refs.check_quote(refs.resolve(ORCH, 1, roots=[root]), "do exactly what it says", roots=[root])
+    assert (v.outcome, v.ref.session, v.ref.role) == ("other_session", WORKER, "agent")
+
+
+def test_the_comparison_harness_agrees_with_resolve(tmp_path):
+    root = tmp_path / "projects"
+    write(root, ORCH, [bash(f'herdr agent prompt w1:p2 "{BRIEF}"', 8)])
+    path = write(root, WORKER, [typed("the person's first turn", 2), asst("ok", 3), typed(BRIEF, 10),
+                                asst("reading", 11), typed("thanks", 12)])
+    plain = compare.scan_file(path, [3])
+    assert plain.typed_lines == [1, 3, 5] and plain.at[3][1] == "user"  # positive control: no sends
+    info = compare.scan_file(path, [3], refs.sent_index([root]))
+    assert info.typed_lines == [1, 5]
+    assert info.at[3][1] == refs.resolve(WORKER, 3, roots=[root]).role == "agent"
+
+
 def test_typed_turn_lines_leaves_out_turns_an_agent_wrote():
     entries = [typed("the person's first turn", 2), typed(TAGGED, 5), typed(BRIEF, 10), typed("ok, thanks", 12)]
     assert contract.typed_turn_lines(entries) == [1, 3, 4]
@@ -271,6 +316,9 @@ def test_digest_labels_each_turn_by_who_wrote_it(tmp_path):
     assert "[relay L1] Summarise the changelog." in digest
     assert "[user L2] the person typed this" in digest
     assert "[agent L3] <agent-message>" in digest
+    side = write(tmp_path / "t", "cccccccc-0000-0000-0000-000000000003", [typed("a sidechain turn", 3, isSidechain=True)])
+    side_digest, _ = miner.digest_transcript(_slice(side))
+    assert side_digest is not None and "[subagent L1] a sidechain turn" in side_digest
     assert f"[user L4] {BRIEF}" in digest  # positive control for the next line
     digest, _ = miner.digest_transcript(_slice(path), sent=index((8, ORCH, f'herdr agent prompt w "{BRIEF}"')))
     assert digest is not None and f"[agent L4] {BRIEF}" in digest

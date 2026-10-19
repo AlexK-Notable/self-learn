@@ -38,9 +38,10 @@ text a person or a model reads for that entry --
 **Roles** (:func:`role_of`). The structural split -- a ``user`` row is a
 turn when it carries text and a tool result when it carries a
 ``tool_result`` block -- is the miner's (``miner.digest_transcript``,
-``_blocks``). The miner does NOT read Claude Code's typed-turn marker
-(design note d3inc38bbdON5I__mPgXz); this module does, and every rule
-names the field it reads, first match wins:
+``_blocks``). This module also reads Claude Code's typed-turn marker
+(design note d3inc38bbdON5I__mPgXz), and since S-90 (2026-10-19) the
+miner labels every user text turn of its digest by these rules. Every
+rule names the field it reads, first match wins:
 
 1. file under ``<session>/subagents/`` (``Ref.subagent_file`` set) or the
    entry's ``isSidechain`` is true -> ``subagent``;

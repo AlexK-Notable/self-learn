@@ -2580,7 +2580,8 @@ JSON object) and `turn_of(typed_lines, line)` (typed turns at or before the
 line) are the one definition of a session's `T<k>`, used by the engine's
 spine and by the comparison harness. A turn an agent wrote (role `agent`,
 rule 10) is not a typed turn; `typed_turn_lines(entries, sent=…)` takes the sends
-(`refs.sent_index`) for rule 10's third sign, and the engine passes them.
+(`refs.sent_index`) for rule 10's third sign; the engine and the comparison
+harness (`compare.scan_file`, one sweep of the roots it resolves against) pass them.
 
 **What each field is for.** `shape` — the rubric's four shapes; a
 `correction` needs user evidence. `scope`, `type`, `kind` — the record's

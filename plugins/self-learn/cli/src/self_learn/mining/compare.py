@@ -64,7 +64,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from .. import refs, telemetry
+from .. import provenance, refs, telemetry
 from ..index import fts5
 from ..index.store import LessonIndex, lesson_text
 from ..ledger import discover_buckets, resolve_home
@@ -125,9 +125,12 @@ class FileInfo:
     at: dict[int, tuple[str | None, str | None]]
 
 
-def scan_file(path: Path, wanted: Iterable[int] = ()) -> FileInfo:
+def scan_file(path: Path, wanted: Iterable[int] = (), sent: provenance.SentIndex | None = None) -> FileInfo:
     """One pass over a transcript, one slot per physical line (the same line
-    splitting ``refs`` uses, so line numbers agree)."""
+    splitting ``refs`` uses, so line numbers agree). ``sent`` carries
+    ``refs`` rule 10's third sign (S-90): pass ``refs.sent_index`` of the
+    roots the harness resolves against, so a role here agrees with the
+    ``refs.resolve`` of the same line."""
     text = path.read_text(encoding="utf-8", errors="replace")
     entries: list[dict[str, Any] | None] = []
     for raw in text.splitlines():
@@ -144,10 +147,10 @@ def scan_file(path: Path, wanted: Iterable[int] = ()) -> FileInfo:
             at[ln] = (None, None)
         else:
             uid = e.get("uuid")
-            at[ln] = (uid if isinstance(uid, str) else None, refs.role_of(e))
+            at[ln] = (uid if isinstance(uid, str) else None, refs.role_of(e, sent=sent))
     return FileInfo(
         n_lines=len(entries),
-        typed_lines=contract.typed_turn_lines(entries),
+        typed_lines=contract.typed_turn_lines(entries, sent=sent),
         has_marker=contract.has_typed_turn_marker(entries),
         uuids=uuids,
         at=at,
@@ -338,12 +341,13 @@ def load_testset(root: Path) -> Testset:
 
 def _scan_testset(ts: Testset, extra_wanted: dict[str, set[int]] | None = None) -> dict[str, FileInfo]:
     infos: dict[str, FileInfo] = {}
+    sent = refs.sent_index(ts.roots)
     for sid in sorted(ts.sessions):
         ms = ts.sessions[sid]
         if not ms.path.is_file():
             raise InputError(f"manifest session {sid}: transcript file missing")
         wanted = set(ms.known_lines) | (extra_wanted or {}).get(sid, set())
-        infos[sid] = scan_file(ms.path, wanted)
+        infos[sid] = scan_file(ms.path, wanted, sent)
     return infos
 
 
@@ -725,7 +729,8 @@ def _locate_scan(
         paths[(session, line)] = path
         if path is not None:
             wanted.setdefault(path, set()).add(line)
-    infos = {p: scan_file(p, lines) for p, lines in wanted.items()}
+    sent = refs.sent_index(roots)
+    infos = {p: scan_file(p, lines, sent) for p, lines in wanted.items()}
     out: dict[tuple[str, int], tuple[FileInfo, refs.Ref] | None] = {}
     for pair, ref in resolved.items():
         path = paths[pair]

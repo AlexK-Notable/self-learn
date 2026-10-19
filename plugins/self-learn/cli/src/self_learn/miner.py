@@ -1003,10 +1003,11 @@ def _canon_index(home: Path, corrupt: list[Path] | None = None) -> str:
 
 
 _PROMPT_TEMPLATE = """You are the self-learn transcript miner. Below are structural digests of
-recent Claude Code sessions (tool-result bodies removed; [user]/
-[assistant] turns and error/retry annotations kept, each tagged with its
-transcript line). Your job: find DURABLE lessons — user corrections,
-verified gotchas, stated standing preferences, repeated friction — and
+recent Claude Code sessions (tool-result bodies removed; [user],
+[agent], [relay], [subagent] and [assistant] turns and error/retry
+annotations kept, each tagged with its transcript line). Your job: find
+DURABLE lessons — user corrections, verified gotchas, stated standing
+preferences, repeated friction — and
 observations of routed rules firing. Apply the mining rubric strictly;
 when in doubt, do not emit. A one-off task instruction is never a lesson.
 
