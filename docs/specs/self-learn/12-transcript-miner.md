@@ -151,7 +151,16 @@ exclusion — the hold never overrides the halt.
 Reduce each transcript to an ordered, speaker-tagged skeleton:
 
 - **user turns: kept verbatim** — corrections are speech acts and live
-  here; user turns are a tiny fraction of bytes;
+  here; user turns are a tiny fraction of bytes. Each is labelled by who
+  wrote it, by `refs.role_of` with the run's sends (02 §3a.6 rule 10,
+  S-90): `[user]` for the person, `[agent]` for another agent's text
+  typed in as if by the person, `[relay]` for text the harness or a
+  program put there (a headless `claude -p` or SDK prompt, a task
+  notification, skill text, a compaction summary), `[subagent]` for a
+  sidechain row; a row that also carries a tool result keeps `[user]`.
+  The reader's prompt and the rubric say only a `[user]` line is the
+  person's words. The halts (self-prompt header, scheduled job, command
+  tag) read every user text turn, whoever wrote it;
 - **assistant text turns: kept** (final messages and inter-tool prose —
   where discoveries get stated); tool-call bodies dropped;
 - **tool results: bodies dropped**, keeping status, error flag, and
