@@ -180,6 +180,18 @@ def test_sweep_reads_herdr_calls_from_claude_and_codex(tmp_path):
     assert refs.role_of(typed(codex_brief, 22), sent=sent) == "agent"
 
 
+def test_only_a_call_that_mentions_herdr_is_a_send(tmp_path):
+    """A row whose prose names herdr but whose tool call does not hand
+    anything to it sends nothing."""
+    root = tmp_path / "projects"
+    row = bash(f"echo '{BRIEF}' > notes.txt", 8)
+    row["message"]["content"].insert(0, {"type": "text", "text": "Before I use herdr, a note to myself."})
+    write(root, ORCH, [row])
+    assert len(provenance.sweep([root])) == 0
+    write(root, ORCH, [bash(f"herdr agent prompt w1:p2 '{BRIEF}'", 8)])  # positive control
+    assert len(provenance.sweep([root])) == 1
+
+
 def test_sender_dirs_adds_codex_only_beside_a_claude_projects_folder(tmp_path):
     other = tmp_path / "transcripts"
     assert provenance.sender_dirs([other]) == [other]
