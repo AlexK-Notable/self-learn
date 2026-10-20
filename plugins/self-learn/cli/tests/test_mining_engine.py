@@ -1471,6 +1471,9 @@ def test_a_long_episode_brief_is_cut_to_the_digest_ceiling(home, root, backend, 
     *kept, last = brief.split("\n")
     assert kept and all(f"step {n} " in line for n, line in enumerate(kept, 1))
     assert last.startswith(f"… {6 - len(kept)} more step(s) left out")
+    # the marker's own room is kept: three 395-character lines fit 1,200 alone, not with the marker
+    cut = miner._capped_brief(["y" * 395] * 4)  # pyright: ignore[reportPrivateUsage]
+    assert len(cut) <= miner.MAX_EPISODE_BRIEF_CHARS and cut.count("y" * 395) == 2
 
 
 def test_damaged_stores_past_the_newest_three_are_deleted(home, root, backend, tmp_path):
