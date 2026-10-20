@@ -2557,6 +2557,62 @@ rule. The contract version stays unchanged because no output has yet been
 produced. `steps` still permits zero or 2..6 items; both the validator and
 the model-output schema refuse one item.
 
+**Amendment 2026-10-19 (new miner R1a): the spine, the checks and the
+judged-uuid store** (`mining/spine.py`, `mining/check.py`, `mining/uuids.py`).
+
+- *The spine* (the user message of one session's call) opens with the two
+  lines `mining.spine.SESSION_OPENINGS`: the old miner's self-prompt header
+  and `<command-name>self-learn:session-miner</command-name>`, so
+  `miner.halt_point` halts the session miner's own transcripts whether the
+  spine is the first typed text (header) or follows text Claude Code put
+  ahead of it (tag). Then a header (session, project folder, first `cwd`,
+  typed-turn count, `judged: L<a>–L<b>; T<i>–T<j> are new`, subagent logs),
+  and per typed turn `T<k> · L<line> · new|already mined` and `YOU: <text>`
+  in full, never shortened. Lines are numbered by `refs`' own reader. `YOU:`
+  is only a turn whose role is `user` under the run's sends; a turn an agent
+  wrote (role `agent`, rule 10) shows in its stretch as
+  `AGENT-WRITTEN (L<n>): <text>`, whole up to 2,400 characters and otherwise
+  its first and last 1,200, marked; a compact-provenance note never shows as
+  `YOU:`. Each stretch then shows, in line order, its agent-written turns, its
+  last three relays that are not harness envelopes, skill text, compaction
+  summaries or provenance notes (first 200 characters each), and the agent's
+  last text message, then `FACTS:` (at most 600 characters: tool calls,
+  edited files, failed tool results, retry clusters, subagents launched,
+  `interrupted`, `compacted`) and the rule-situation flags matched there. A
+  subagent log is linked to its launch by the launch's
+  `toolUseResult.agentId`, else by its first user text equalling the
+  launch's prompt. Every piece passes `scan.redact` before any shortening.
+  Over `miner.spine_tokens` (estimated as `ceil(chars / 2.5)`) the spine
+  shortens mined stretches' agent messages to 400 + 400 characters (longest
+  first), then mined stretches' facts to their first part, then new
+  stretches' agent messages to 1,200 + 1,200 (longest first); still over, it
+  is sent with `over_budget` set. A session is skipped, after the halts, as
+  `no-typed-turns`, then `no-marker`, then `nothing-new` (no typed turn or
+  assistant text entry in the judged lines whose uuid is not yet judged).
+- *The checks* follow the old plan's eight steps, with these rules settled:
+  over-count items are cut before validation, first ones kept; an evidence
+  item, or a rule check's situation, whose uuid is already judged is
+  `already-judged` (steps, an incident cost, an action and a verification
+  are not: they may point at earlier moments for context); a lesson or
+  sighting whose surviving evidence all lies before the judged range is
+  dropped as `out-of-range`; a `correction` or `standing-preference` with no
+  evidence item of role `user` is `no-user-evidence` (role `agent` is not
+  `user`); a Trigger, Instruction or Fact with more than one non-empty line
+  is `multi-line-loaded-text`. A kept quote that holds a `[redacted:`
+  placeholder (after the in-place redaction of step 8) keeps its ref and
+  verdict and is stored as `mining.check.QUOTE_WITHHELD` (`"[quote withheld:
+  it held a redaction placeholder]"`), counted for the run record's
+  `quote-redacted`; the engine lands such an item without a `quote`, since
+  the steward's re-check against the raw transcript could never match a
+  placeholder. A checked document that fails `validate_checked_output` is a
+  checker defect and raises `CheckerError`.
+- *The judged-uuid store* is `<cache>/miner/judged-uuids.json`, a JSON object
+  `{uuid: "YYYY-MM-DD"}` (the first date each moment was judged). Entries are
+  added only by an explicit call after a session's output has landed;
+  entries judged more than 120 days ago are pruned once per run; the file is
+  written with `fsops.atomic_write`. A missing file is an empty store; an
+  unreadable one reads as empty and is reported as damaged.
+
 **Run record — `miner-shadow-run/1`** (`runs/<run_id>/run.json`).
 
 ```text
@@ -2602,7 +2658,8 @@ rule 10) is not a typed turn; `typed_turn_lines(entries, sent=…)` takes the se
 harness (`compare.scan_file`, one sweep of the roots it resolves against) pass them.
 
 **What each field is for.** `shape` — the rubric's four shapes; a
-`correction` needs user evidence. `scope`, `type`, `kind` — the record's
+`correction` or a `standing-preference` needs user evidence (amended by R1a,
+below). `scope`, `type`, `kind` — the record's
 frontmatter. `trigger`/`instruction`, `fact`/`context` — the lesson itself.
 `evidence[]` — the moments that show it, each a checked ref with its quote
 (`verdict` and `corrected_from` say how the quote was found). `steps[]` — the
