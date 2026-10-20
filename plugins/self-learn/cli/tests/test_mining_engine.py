@@ -1423,6 +1423,12 @@ def test_a_rejected_lesson_sighted_three_times_resurfaces(home, root, backend, t
     assert outcomes.count("resurfaced") == 1 and len(result.landed) == 1
     (new,) = pending(home)
     assert new.id != rid and "previously rejected" in json.dumps(result.outcomes)
+    # resurfaced once: a later sighting counts nothing and lands nothing
+    late = "s9rejsig-0000"
+    write_session(root, late, session_rows(late, host(tmp_path)))
+    backend.answers[late] = output(sightings=[_sighting(late, rid)])
+    again = run(home)
+    assert again.landed == [] and [o["outcome"] for o in again.outcomes] == ["dropped-rejected"]
 
 
 def test_a_capped_halted_session_advances_to_its_halt(home, root, backend, tmp_path, monkeypatch):
