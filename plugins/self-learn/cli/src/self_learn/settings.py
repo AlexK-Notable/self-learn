@@ -298,6 +298,14 @@ class Setting:
     #: pin) — a future registry entry is tier A unless a reviewer
     #: deliberately marks it otherwise.
     tier: Literal["A", "C"] = "A"
+    #: False: the process override channel (`SELF_LEARN_OVERRIDE_<NAME>`,
+    #: :func:`override`) does not apply to this entry -- its rung is
+    #: skipped as if unset. For a switch only the user flips
+    #: (`miner.engine`, new-miner R2 fix round): agents here export
+    #: `SELF_LEARN_OVERRIDE_*` for read verbs routinely, and an exported
+    #: override would otherwise switch the engine with no flip of the
+    #: user's. :func:`override` refuses such an entry outright.
+    override_channel: bool = True
     #: M-S (S-58 MAJOR-1, code-gate fold r1): the dotted name of this
     #: entry's GENERAL sibling in a specific/general config.yaml pair
     #: (currently only the `invocation.backend_<surface>` entries,
@@ -487,6 +495,8 @@ def _try_override(home: Path | str, setting: Setting) -> tuple[SettingValue, str
     is the witness this preserves. `is_none=True` still bypasses
     parse/validate entirely, exactly as the old `_OVERRIDE_NONE_MARKER`
     branch did."""
+    if not setting.override_channel:
+        return None
     override_var = _override_env_var(setting.name)
     result = config.read_override(setting.name)
     if result is None:
@@ -987,6 +997,7 @@ REGISTRY: tuple[Setting, ...] = (
         accepts=lambda v: v in MINER_ENGINES,
         accepts_hint="digest or session",
         tier="C",
+        override_channel=False,
     ),
     # Both are clamped where they are read (`mining.engine.EngineSettings`),
     # not here: the registry's numeric knobs only refuse a value <= 0.
@@ -1808,6 +1819,8 @@ def override(name: str, value: SettingValue) -> Iterator[None]:
     a hole in the ruling -- but it is a consequence, not something
     this fix set out to add."""
     setting = by_name(name)  # raises KeyError on a typo -- fail loudly, never silently
+    if not setting.override_channel:
+        raise ValueError(f"settings.override: {name} takes no process override (only the user flips it)")
     if value is None and setting.default is not None:
         # MINOR-4 (review r2 2026-09-01): `None` is a legitimate
         # RESOLVED value for exactly one thing in this registry today
@@ -1868,8 +1881,10 @@ def unknown_override_vars() -> list[str]:
     `SELF_LEARN_OVERRIDE_WORKER_Autokick`) did NOTHING -- zero warns,
     zero rows, `doctor settings` rc 0 -- while the identically-shaped
     mistake in config.yaml already got a WARN row. Never warns by
-    itself; `doctor settings` renders one WARN row per hit."""
-    legal = frozenset(_override_env_var(s.name) for s in REGISTRY)
+    itself; `doctor settings` renders one WARN row per hit. An entry that
+    takes no override (``override_channel`` False) is named here too: its
+    var is set and does nothing."""
+    legal = frozenset(_override_env_var(s.name) for s in REGISTRY if s.override_channel)
     return sorted(
         k for k in os.environ
         if k.startswith("SELF_LEARN_OVERRIDE_") and k not in legal

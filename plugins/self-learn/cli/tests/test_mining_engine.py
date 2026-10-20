@@ -1313,3 +1313,33 @@ def test_a_preview_changes_nothing_in_the_cache_outside_its_run_folder(home, roo
     assert lock.stat().st_mtime_ns == 1_700_000_000_000_000_000  # the run lock is not truncated
     assert (folder / "miner.log").is_file() and not (folder / "copies").exists()
     assert backend.specs[0].skip_orphan_sweep is True and backend.specs[0].cwd == folder / "stage"
+
+
+def test_the_override_channel_cannot_switch_the_engine(home, root, tmp_path, monkeypatch):
+    calls: list[str] = []
+
+    def reader(_home, prompt):
+        calls.append(prompt)
+        out = miner.spool_dir() / miner.OUTPUT_BASENAME
+        out.write_text(json.dumps({"candidates": []}))
+        return out
+
+    monkeypatch.setattr(miner, "_invoke_reader", reader)
+    monkeypatch.setattr(miner, "_session_call", lambda spec: pytest.fail("the session engine was called"))
+    from self_learn import config
+
+    var = config.override_env_var("miner.engine")
+    assert var == "SELF_LEARN_OVERRIDE_MINER_ENGINE"
+    monkeypatch.setenv(var, "session")
+    # control: the same channel does move an ordinary entry
+    monkeypatch.setenv("SELF_LEARN_OVERRIDE_MINER_PARALLEL", "3")
+    assert settings.resolve_setting(home, settings.by_name("miner.parallel")) == (3, "override:miner.parallel")
+    assert settings.resolve_setting(home, settings.by_name("miner.engine"))[0] == "digest"
+    sid = "s1ovrrde-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    result = miner.run(home, no_push=True)
+    assert result.status == "ok" and len(calls) == 1 and "engine" not in journal_last()
+    assert var in settings.unknown_override_vars()  # doctor settings names it: set, and doing nothing
+    with pytest.raises(ValueError):
+        with settings.override("miner.engine", "session"):
+            pass
