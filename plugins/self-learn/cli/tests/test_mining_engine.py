@@ -1218,7 +1218,7 @@ def test_a_session_that_keeps_failing_is_given_up_until_its_file_grows(home, roo
     before = len(backend.specs)
     run(home)
     assert len(backend.specs) == before and journal_last()["status"] == "idle"
-    assert journal_last()["given_up"] == 1
+    assert journal_last()["given_up"] == 1 and gave_up[0] in journal_last()["outcomes"]
     # the file grows: judged again
     path.write_text(path.read_text() + json.dumps(typed(bad, 8, "one more thing", host(tmp_path))) + "\n")
     backend.answers[bad] = output([lesson()])
