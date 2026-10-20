@@ -269,3 +269,24 @@ def test_secret_in_an_entry_comes_back_redacted(roots):
     assert "[redacted:github-token]" in texts[1]
     assert token not in refs.entry_text(ref, roots=roots)
     assert refs.check_quote(ref, "env dump", roots=roots).outcome == "exact"  # matching uses raw text
+
+
+@pytest.mark.parametrize("as_blocks", [False, True])
+def test_compact_provenance_note_is_relay_but_quotations_are_user(as_blocks):
+    marker = "[compact-provenance note: written by a mod, not typed by the user]"
+    body = "\n\nA mechanical check could not confirm these items."
+
+    def row(text):
+        content = [{"type": "text", "text": text}] if as_blocks else text
+        return user(content, 1)
+
+    # Positive controls first: the marker, not the body, identifies the mod.
+    assert refs.role_of(row(body)) == "user"
+    assert refs.role_of(row("I am quoting this marker: " + marker + body)) == "user"
+    assert refs.role_of(row(marker + " is the marker I saw" + body)) == "user"
+    assert refs.role_of(row(" " + marker + body)) == "user"
+    assert refs.role_of(row(marker + body) | {"origin": {"kind": "human"}}) == "user"
+    mixed = user([{"type": "text", "text": marker + body},
+                  {"type": "text", "text": "My own comment beside the note."}], 1)
+    assert refs.role_of(mixed) == "user"
+    assert refs.role_of(row(marker + body)) == "relay"

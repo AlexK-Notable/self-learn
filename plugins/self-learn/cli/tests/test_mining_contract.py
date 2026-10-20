@@ -252,7 +252,7 @@ K1_CASES = [
     ("behavior-no-trigger", _set(["lessons", 0, "trigger"], None), "lessons[0].trigger:"),
     ("behavior-no-instruction", _set(["lessons", 0, "instruction"], None), "lessons[0].instruction:"),
     ("behavior-with-fact", _set(["lessons", 0, "fact"], "a fact"), "lessons[0].fact: must be null"),
-    ("behavior-with-context", _set(["lessons", 0, "context"], "ctx"), "lessons[0].context: must be null"),
+    ("behavior-context-wrong-type", _set(["lessons", 0, "context"], 7), "lessons[0].context: not a string or null"),
     ("trigger-too-long", _set(["lessons", 0, "trigger"], "x" * 1001), "lessons[0].trigger: longer than 1000"),
     ("trigger-empty", _set(["lessons", 0, "trigger"], ""), "lessons[0].trigger: shorter than 1"),
     ("instruction-too-long", _set(["lessons", 0, "instruction"], "x" * 1001), "lessons[0].instruction: longer than 1000"),
@@ -393,7 +393,7 @@ def test_k1_every_error_is_a_path_then_a_message():
 
 #: SHA-256 of ``json.dumps(model_output_json_schema(), indent=1, sort_keys=True)``.
 #: A change to the schema is always deliberate: update this constant with it.
-SCHEMA_SHA256 = "3ae98270590b398a71247ed28694d8cf7bc964311856a44ea926870f5dbfb93b"
+SCHEMA_SHA256 = "fe0c7c331adce2a0aa7a6d8d3388c55d749014ad08c9379aa6f2804511238e20"
 
 
 def _schema_text() -> str:
@@ -478,6 +478,51 @@ def test_k2_the_validator_and_a_json_schema_validator_agree():
     assert "640.0" in c.model_output_json_schema()["description"]
 
 
+@pytest.mark.parametrize("context", [None, "Background", "x" * 1000, 7, "", "x" * 1001])
+def test_behavior_context_follows_nullable_text_rules_in_both_layers(context):
+    strict, stock = _json_schema_validators()
+    model, checked = copy.deepcopy(EXAMPLE), checked_example()
+    assert c.validate_model_output(model) == []
+    assert c.validate_checked_output(checked) == []
+    assert strict.is_valid(model) and stock.is_valid(model)
+    _lesson(model)["context"] = context
+    _cl(checked)["context"] = context
+    valid = context is None or isinstance(context, str) and 1 <= len(context) <= 1000
+    assert (c.validate_model_output(model) == []) is valid
+    assert (c.validate_checked_output(checked) == []) is valid
+    assert strict.is_valid(model) is valid
+    assert stock.is_valid(model) is valid
+
+
+def test_one_step_is_refused_by_validator_and_schema():
+    strict, stock = _json_schema_validators()
+    model = copy.deepcopy(EXAMPLE)
+    for count in (0, 2):
+        _lesson(model)["steps"] = copy.deepcopy(_lesson(EXAMPLE)["steps"][:count])
+        assert c.validate_model_output(model) == []
+        assert strict.is_valid(model) and stock.is_valid(model)
+    _lesson(model)["steps"] = copy.deepcopy(_lesson(EXAMPLE)["steps"][:1])
+    assert _has(c.validate_model_output(model), "lessons[0].steps: must hold 0 or 2..6")
+    assert not strict.is_valid(model)
+    assert not stock.is_valid(model)
+
+
+@pytest.mark.parametrize("reason", ["multi-line-loaded-text", "redaction-overflow"])
+def test_multi_line_loaded_text_is_a_closed_drop_reason_and_run_counter(reason):
+    checked, run = checked_example(), run_example()
+    assert c.validate_checked_output(checked) == []
+    assert c.validate_run(run) == []
+    checked["drops"][0]["reason"] = reason
+    run["totals"]["drops"] = {reason: 1}
+    assert reason in c.DROP_REASONS
+    assert c.validate_checked_output(checked) == []
+    assert c.validate_run(run) == []
+    checked["drops"][0]["reason"] = "invented-reason"
+    run["totals"]["drops"] = {"invented-reason": 1}
+    assert _has(c.validate_checked_output(checked), "drops[0].reason:")
+    assert _has(c.validate_run(run), "totals.drops: key not in the closed set")
+
+
 def _lesson_props(schema: dict) -> dict:
     return schema["properties"]["lessons"]["items"]["properties"]
 
@@ -501,8 +546,9 @@ def test_k2_schema_enums_equal_the_constants_and_the_imported_sets():
     assert c.EVIDENCE_VERDICTS == ("exact", "normalised", "nearby", "elsewhere_in_file")
     assert set(c.EVIDENCE_VERDICTS) < set(refs.VERDICTS)
     # the closed set of drop reasons, as the spec lists them
-    assert len(c.DROP_REASONS) == 15 and len(set(c.DROP_REASONS)) == 15
-    assert {"over-count", "bad-output", "not-flagged", "quote-stitched"} <= set(c.DROP_REASONS)
+    assert len(c.DROP_REASONS) == 17 and len(set(c.DROP_REASONS)) == 17
+    assert {"over-count", "bad-output", "not-flagged", "quote-stitched", "multi-line-loaded-text",
+            "redaction-overflow"} <= set(c.DROP_REASONS)
 
 
 def test_k2_schema_limits_and_required_keys_agree_with_the_validator():
