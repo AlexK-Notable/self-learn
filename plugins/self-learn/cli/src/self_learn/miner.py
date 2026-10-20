@@ -2503,7 +2503,7 @@ def _run_locked(
     deferred_files = 0
     limits = digest_limits(home)  # read once: one run, one set of limits
     # refs rule 10 (2026-10-19): text other sessions handed to herdr, read
-    # once per run from the transcripts and the Codex rollouts beside them.
+    # once per run from the transcripts and the sibling Codex, Hermes, agy and pi stores.
     sent = (
         provenance.sweep(provenance.sender_dirs([transcripts_root(home)]))
         if slices
