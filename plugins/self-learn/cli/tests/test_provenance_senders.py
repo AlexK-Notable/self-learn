@@ -177,7 +177,7 @@ def test_regular_bounded_utf8_file_only(tmp_path):
     path = brief_file(tmp_path)
     root = send_file(tmp_path, f'herdr agent prompt worker "$(cat \'{path}\')"')
     assert role(root) == "agent"
-    for data in [b'\xff', b' ' * (1024 * 1024 + 1), b'']:
+    for data in [BRIEF.encode() + b'\xff', BRIEF.encode() + b' ' * (1024 * 1024 + 1), b'']:
         path.write_bytes(data)
         os.utime(path, (p._epoch(_ts(1)), p._epoch(_ts(1))))
         assert role(root) == "user"
