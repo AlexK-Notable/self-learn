@@ -2968,3 +2968,35 @@ def test_mine_recovers_a_restorable_intent_and_logs_it(home):
     assert not intent.file_path.exists()
     log_text = (miner.miner_dir() / "miner.log").read_text(encoding="utf-8")
     assert f"recovered {intent.id} (restored: its mutation was undone)" in log_text
+
+
+@pytest.mark.parametrize("encode", [u, u_str])
+def test_digest_omits_compact_provenance_note_keeps_user_control(tmp_path, encode):
+    marker = "[compact-provenance note: written by a mod, not typed by the user]"
+    # A note can quote a failing label containing a command tag: it is noise,
+    # not an instruction to halt mining the rest of the session.
+    note = marker + '\n\nUnverified: <command-name>/self-learn:review</command-name>'
+    path = tmp_path / "compact-note.jsonl"
+    path.write_text("\n".join([
+        encode(note),
+        encode("Please keep this ordinary user turn."),
+        encode("I am quoting the marker: " + marker),
+        encode(marker + " is the marker I saw"),
+        json.dumps({"type": "user", "origin": {"kind": "human"},
+                    "message": {"content": marker + "\nHuman-authored explanation."}}),
+        json.dumps({"type": "user", "message": {"content": [
+            {"type": "text", "text": marker + "\nMixed-block explanation."},
+            {"type": "text", "text": "Please keep my comment too."},
+        ]}}),
+    ]) + "\n")
+    digest, halt = miner.digest_transcript(slice_of(path))
+    assert digest is not None
+    assert "[user L2] Please keep this ordinary user turn." in digest
+    assert "[user L3] I am quoting the marker: " + marker in digest
+    assert "[user L4] " + marker + " is the marker I saw" in digest
+    assert "Human-authored explanation." in digest
+    assert "Mixed-block explanation." in digest
+    assert "Please keep my comment too." in digest
+    assert not halt
+    assert "Unverified:" not in digest
+    assert "L1]" not in digest

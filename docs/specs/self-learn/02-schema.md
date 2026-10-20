@@ -2043,13 +2043,20 @@ tool call as its name and the string values of its input, an attachment's
    (`<local-command-stdout>`, `<local-command-stderr>`, `<bash-stdout>`,
    `<bash-stderr>`, `<task-notification>`, `<system-reminder>`,
    `[Request interrupted`) → `relay`;
-8. any other `type: user` text row → `user` (the miner's structural rule;
+8. `type: user`, no `origin` object, exactly one text block (or string
+   content), with the exact first line
+   `[compact-provenance note: written by a mod, not typed by the user]`
+   → `relay`. The mod appends this as a separate message, marker first.
+   No leading whitespace is stripped; a mid-text quotation, extra text on
+   the marker line, or a mixed-block message does not match. The digest
+   miner omits matching notes entirely, before checking its halts;
+9. any other `type: user` text row → `user` (the miner's structural rule;
    older transcripts carry no `origin`, and slash commands and `!` inputs
    the person typed land here);
-9. `type: attachment` with `attachment.type: queued_command` and
+10. `type: attachment` with `attachment.type: queued_command` and
    `attachment.origin.kind: human` → `user`; every other attachment,
    `system` row and bookkeeping row → `relay`;
-10. *(S-90, 2026-10-19)* a turn rules 5, 8 or 9 call `user` → `agent` when
+11. *(S-90, 2026-10-19)* a turn rules 5, 9 or 10 call `user` → `agent` when
    an agent wrote it (`provenance.agent_written`). Text another agent types
    into a session's terminal (herdr typing an orchestrator's brief into a
    worker's pane) carries `origin.kind: human`, `promptSource: typed`,
@@ -2075,7 +2082,7 @@ tool call as its name and the string values of its input, an attachment's
    words. Not covered: a brief sent as `"$(cat FILE)"` whose text is only
    in the file, and senders other than Claude Code and Codex.
 
-Rules 3 and 8 are the miner's structural split. Since S-90 the live miner
+Rules 3 and 9 are the miner's structural split. Since S-90 the live miner
 labels every user text turn of its digest by this rule (12 §Phase 1).
 
 **Quote check outcomes**, tried in this order:

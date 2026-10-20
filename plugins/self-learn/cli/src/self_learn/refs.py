@@ -59,14 +59,18 @@ rule names the field it reads, first match wins:
 7. ``type == "user"`` with no ``origin`` whose text starts with a harness
    envelope (:data:`_HARNESS_ENVELOPES`: local-command / bash output,
    task notifications, system reminders, the interrupt notice) -> ``relay``;
-8. any other ``type == "user"`` text row -> ``user`` (the miner's
+8. ``type == "user"`` with no ``origin`` object, exactly one text block
+   (or string content), and the exact compact-provenance marker as its
+   first line -> ``relay`` (:func:`is_compact_provenance_note`); a marker
+   quoted mid-text or followed by other text on the same line is not a note;
+9. any other ``type == "user"`` text row -> ``user`` (the miner's
    structural rule; older transcripts carry no marker, and slash
    commands / ``!`` bash inputs the person typed land here);
-9. ``type == "attachment"`` whose ``attachment.type == "queued_command"``
+10. ``type == "attachment"`` whose ``attachment.type == "queued_command"``
    with ``attachment.origin.kind == "human"`` -> ``user`` (typed while
    the agent was busy); every other attachment, ``system`` row and
    bookkeeping row -> ``relay``;
-10. a turn rules 5, 8 or 9 call ``user`` -> ``agent`` when an agent wrote
+11. a turn rules 5, 9 or 10 call ``user`` -> ``agent`` when an agent wrote
    it (:func:`provenance.agent_written`, 2026-10-19): its whole text is
    an ``<agent-message>`` element, or Claude Code recorded it as an
    accepted suggestion, or -- when the caller passes a
@@ -78,7 +82,7 @@ rule names the field it reads, first match wins:
 
 :func:`resolve`, :func:`check_quote` and :func:`excerpt` sweep the roots
 they read for sends (:func:`provenance.sweep` over
-:func:`provenance.sender_dirs`), so their refs carry rule 10 in full.
+:func:`provenance.sender_dirs`), so their refs carry rule 11 in full.
 """
 
 from __future__ import annotations
@@ -110,6 +114,7 @@ __all__ = [
     "excerpt",
     "fold",
     "locate",
+    "is_compact_provenance_note",
     "resolve",
     "role_of",
     "same_moment",
@@ -330,11 +335,30 @@ def entry_text(ref: Ref, *, roots: Sequence[Path | str] | None = None) -> str:
     return redact(_raw_text(e))[0] if e else ""
 
 
+_COMPACT_PROVENANCE_MARKER = "[compact-provenance note: written by a mod, not typed by the user]"
+
+
+def is_compact_provenance_note(entry: dict) -> bool:
+    """The mod emits a separate, origin-less user message, marker first.
+
+    Accept string content or its single-text-block encoding, never a mixed
+    message: omitting a note must not omit adjacent speech or tool results.
+    """
+    if entry.get("type") != "user" or isinstance(entry.get("origin"), dict):
+        return False
+    blocks = _blocks(entry)
+    return (
+        len(blocks) == 1
+        and blocks[0].get("type") == "text"
+        and str(blocks[0].get("text", "")).split("\n", 1)[0] == _COMPACT_PROVENANCE_MARKER
+    )
+
+
 def role_of(
     entry: dict, *, in_subagent_file: bool = False, sent: provenance.SentIndex | None = None
 ) -> str:
     """The entry's role, by the numbered rules in the module docstring;
-    rule 10's third sign is read only when ``sent`` is given."""
+    rule 11's third sign is read only when ``sent`` is given."""
     if in_subagent_file or entry.get("isSidechain") is True:  # rule 1
         return "subagent"
     etype = entry.get("type")
@@ -354,8 +378,10 @@ def role_of(
             return "relay"
         if text.lstrip().startswith(_HARNESS_ENVELOPES):  # rule 7
             return "relay"
-        return _typed(entry, text, sent)  # rule 8
-    if etype == "attachment":  # rule 9
+        if is_compact_provenance_note(entry):  # rule 8
+            return "relay"
+        return _typed(entry, text, sent)  # rule 9
+    if etype == "attachment":  # rule 10
         att = entry.get("attachment")
         if isinstance(att, dict) and att.get("type") == "queued_command":
             origin = att.get("origin")
@@ -365,12 +391,12 @@ def role_of(
 
 
 def _typed(entry: dict, text: str, sent: provenance.SentIndex | None) -> str:
-    """Rule 10: a typed turn is the person's unless an agent wrote it."""
+    """Rule 11: a typed turn is the person's unless an agent wrote it."""
     return "agent" if provenance.agent_written(entry, text, sent) else "user"
 
 
 def sent_index(roots: Sequence[Path | str] | None = None) -> provenance.SentIndex:
-    """Rule 10's sends, read from ``roots`` (the registry's transcript
+    """Rule 11's sends, read from ``roots`` (the registry's transcript
     roots when omitted) and the Codex rollouts beside them."""
     return provenance.sweep(provenance.sender_dirs(_roots(roots)))
 
@@ -442,7 +468,7 @@ def _ref_at(path: Path, line: int, *, session: str, subagent_file: str | None, r
 
 
 def _role(e: dict, in_subagent_file: bool, roots: list[Path]) -> str:
-    """:func:`role_of` with rule 10 in full: the sends under ``roots`` are
+    """:func:`role_of` with rule 11 in full: the sends under ``roots`` are
     swept only for an entry the other rules call ``user``."""
     role = role_of(e, in_subagent_file=in_subagent_file)
     return role_of(e, in_subagent_file=in_subagent_file, sent=sent_index(roots)) if role == "user" else role

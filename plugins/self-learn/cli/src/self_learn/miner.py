@@ -848,6 +848,8 @@ def digest_transcript(
         if etype == "user":
             results = [b for b in _blocks(message) if b.get("type") == "tool_result"]
             user_text = _user_turn_text(message)
+            if refs.is_compact_provenance_note(entry):
+                continue
             if user_text.strip():
                 if not first_user_seen:
                     first_user_seen = True
