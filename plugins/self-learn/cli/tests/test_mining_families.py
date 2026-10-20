@@ -608,3 +608,33 @@ def test_the_contract_refuses_a_bad_session_row_value(home, root, backend, tmp_p
     assert contract.validate_run(rec) == [] and rec["sessions"][0]["landing"] == "complete"  # control
     bad = dict(rec, sessions=[dict(rec["sessions"][0], **{key: value})])
     assert contract.validate_run(bad) != []
+
+
+def test_a_member_skipped_only_for_its_claimed_moments_holds_with_its_family(home, root, backend, tmp_path):
+    parent, fork = "s1skpclm-0000", "s2skpclm-0000"
+    rows = session_rows(parent, host(tmp_path))
+    pp = write_session(root, parent, rows)
+    fp = write_session(root, fork, [dict(r, sessionId=fork) for r in rows])  # an identical copy
+    backend.answers[parent] = [FakeOutcome(ok=False, failure="exit", detail="boom", rc=1)]
+    first = run(home)
+    assert _called(backend) == [parent] and first.engine["skipped"] == {"nothing-new": 1}  # control
+    assert _rows(first)[fork]["family_held"].startswith(f"{parent}:")
+    assert cursor(pp) is None and cursor(fp) is None
+    backend.answers[parent] = output([lesson()])
+    second = run(home)
+    assert len(second.landed) == 1 and cursor(pp)["lines"] == 7 and cursor(fp)["lines"] == 7
+
+
+def test_a_family_with_a_member_that_failed_before_waits_behind_a_fresh_one(home, root, backend, tmp_path, monkeypatch):
+    monkeypatch.setenv("SELF_LEARN_MINER_MAX_SESSIONS_PER_RUN", "2")
+    parent, fork, fresh = "s1fwaitp-0000", "s2fwaitf-0000", "s3fresh0-0000"
+    rows = session_rows(parent, host(tmp_path))
+    pp = write_session(root, parent, rows)
+    fp = write_session(root, fork, _fork_rows(rows, fork, 8, tmp_path))
+    write_session(root, fresh, session_rows(fresh, host(tmp_path)))
+    data = {str(fp): {"start": 0, "failures": 1}}  # only the fork failed before
+    (miner.miner_dir() / engine.FAILURES_NAME).write_text(json.dumps(data))
+    run(home)
+    assert _called(backend) == [fresh] and cursor(pp) is None and cursor(fp) is None
+    run(home)
+    assert _called(backend, 1) == [parent, fork]
