@@ -1065,17 +1065,20 @@ anything is judged; the moments (`Spine.moment_uuids`) of every session
 already planned for a call in this run are added to the judged set of the
 plans after it, so a fork's copies of its parent's moments read as already
 mined (a fork with nothing else new is `nothing-new`) and its check drops a
-copied moment as `already-judged`.
+copied moment as `already-judged`. That reservation only stops duplicate
+model output within the run; it is never durable by itself (the store rule,
+**After**).
 
 A session that keeps failing does not starve the others. The cache file
 `<cache>/miner/session-failures.json` counts, per transcript file, the runs
 in a row its session failed at one cursor (a failed call, bad output, a
-checker error, a landing that did not complete); a moved cursor or a grown
-file restarts the count, a landing clears it, and a call the runaway guard
-never started counts nothing. Sessions that have failed are planned after
-those that have not; after 3 such runs a session is not called, its cursor
-stays, and the run says so (`given-up` outcome, `given_up` count on the
-journal row, `given_up` rows in `run.json`) until its file grows.
+checker error, a landing of its own that did not complete); sessions that
+have failed are planned after those that have not. A moved cursor restarts
+the count and a landing clears it. A run-wide failure is no session's: a run
+where no call succeeded (logged out, the service down), or where the ledger
+lock was not taken, counts nothing, and neither does a call the runaway guard
+never started. There is no give-up: a failing session is always judged again
+when its turn comes (fix round 2 withdrew the round-1 give-up rule).
 
 **Call.** The shared instructions (the method, the lesson-writing passage
 between its markers, the output schema) are written once per run and passed
@@ -1135,18 +1138,34 @@ sessions land.
 
 **After.** A session's cursor advances when it was skipped, or when it was
 called and `_land_checked` reported its landing complete and the cap did not
-hold it; a failed, bad-output, not-run, deferred, given-up or
-landing-failed session keeps its cursor, and so does every called session
-when the ledger lock could not be taken or the landing stopped part way
-(taking the lock is never read as completion). The judged-uuid store learns a
-whole session's moments (`check.landed_uuids`) only after its landing
-completed and the cap did not hold it; for a session whose landing did not
-complete it learns only the moments the items that did land cite
-(`check.cited_uuids`). A run whose every landing failed is `failed`. The run
-flushes the spool whenever a session landed. The journal row keeps every
-digest-engine key and adds `engine: "session"`, `method_version`,
-`sessions_called`, `sessions_failed`, `sessions_land_failed`, `given_up`,
-`not_run` and `drops` by reason; an idle row carries its outcomes. The run folder `<cache>/miner/runs/<run_id>/`
+hold it; a failed, bad-output, not-run, deferred or landing-failed session
+keeps its cursor, and so does every called session when the ledger lock
+could not be taken or the landing stopped part way (taking the lock is never
+read as completion).
+
+*The store rule.* The judged-uuid store learns only from a session whose
+landing completed: every checked item landed or was dropped on purpose, no
+write failed, and the cap did not hold it. A session that landed partly, or
+not at all, adds nothing; its replay rests on each output's own durable
+deduplication, which holds without the store: a lesson by its known origin,
+a sighting by (record, moment) against the target record's own evidence, a
+fire or recurrence-suspect by `(kind, record, origin)` against the spooled
+and the tracked events. A completed session adds its moments and cited uuids
+(`check.landed_uuids`) minus every moment another session of this run
+claimed at planning and did not complete: a moment is learned only once its
+claimer completed, so a fork never certifies a parent whose call, landing
+or cap left its output unlanded.
+
+A run whose every landing failed is `failed`. The run flushes the spool
+whenever a session landed. The journal row keeps every digest-engine key and
+adds `engine: "session"`, `method_version`, `sessions_called`,
+`sessions_failed`, `sessions_land_failed`, `not_run` and `drops` by reason.
+`run.json` is written after the landing: its status is `failed` when every
+called session failed or every landing failed, each called session's row
+says its `landing` (`complete`, `held` by the cap, `failed`, or `not-landed`
+for output that did not check), and `landed` counts what landed (lessons,
+folds, recurrences, fires, sessions whose landing failed) apart from
+`totals`, which counts what the checks kept. The run folder `<cache>/miner/runs/<run_id>/`
 (mode 0600: `run.json`, `shared-instructions.md`, `plans/`, `raw/`, `out/`,
 `calls/`) keeps the newest 30; the seam's transcript copies of the surface
 (`<cache>/sessions/miner-session/<run_id>/`), which the seam never prunes, are

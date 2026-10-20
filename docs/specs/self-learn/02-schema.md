@@ -2720,16 +2720,19 @@ validated when present (`contract.RUN_OPTIONAL_KEYS`,
 "call_failures", "bad_output", "deferred": int, "flag_modes": { mode: int } }`;
 `"judged_uuids": { "state": "ok" | "locked" | "rebuilt" | "damaged",
 "loaded": int, "aside"?: str | null, "pruned"?: int, "added"?: int,
-"add_failed"?: int }`; `"given_up": [ { "session": str, "failures": int ≥ 1 } ]`
-(sessions not called because they failed three runs in a row at one cursor,
-§13.3 of `12-transcript-miner.md`; R2 fix round); and on a session row `flag_mode`, `flag_note` (the
+"add_failed"?: int }`; `"landed": { "lessons", "folded", "recurrences",
+"fires", "sessions_failed": int }` (what a night run's landing did, apart from
+`totals`, which counts what the checks kept; R2 fix round 2); and on a
+session row `flag_mode`, `flag_note` (the
 `flags.flag_rules` mode and note, `unavailable` when the lesson index could
 not be built), `flags`, `spine_tokens_est`, `over_budget`, `quote_redacted`,
 `cut_to_limit`, and `error` (`call` or `checker-error` for a called session
 whose out status is `failed`; `call` includes a call that raised,
-`checker-error` any exception the check raised). The run status of a night is `ok`,
-`stopped-ceiling` (the runaway guard stopped calls) or `failed` (every
-called session failed); `mode` is `night`.
+`checker-error` any exception the check raised), and `landing` (`complete`,
+`held`, `failed` or `not-landed`, a night run's called session). The run
+status of a night is `ok`, `stopped-ceiling` (the runaway guard stopped
+calls) or `failed` (every called session failed, or every landing failed);
+`mode` is `night`.
 
 `totals` equals what the sessions say (`called`, `skipped` by reason,
 `not_run`), and `load_run` checks the folder against itself: one out file
