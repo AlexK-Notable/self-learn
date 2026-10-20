@@ -399,7 +399,7 @@ def test_facts_are_counted_by_code(root):
         typed("thanks", 17),                                                         # L17
     ]
     path = write(root, rows)
-    write(root, [typed("Look at the tests.", 1)], sub="agent-abc123.jsonl")
+    write(root, [typed("A brief that differs from the launch prompt.", 1)], sub="agent-abc123.jsonl")  # linked by agentId only
     write(root, [{"type": "user", "uuid": "x", "message": {"role": "user", "content": sub_prompt}}],
           sub="agent-def456.jsonl")
     write(root, [typed("never launched here", 1)], sub="agent-zzz999.jsonl")
