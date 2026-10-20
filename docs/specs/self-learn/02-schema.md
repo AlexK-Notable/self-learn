@@ -1791,6 +1791,13 @@ a new line naming the line it amends.
   words typed into the overseer conversation, where no transcript line
   exists at record time — `<obs-id>` is the `presented` observation the
   reply answers). Dedupe key: `(source.message_ref, verbatim)`.
+  On a new write, resolve a `transcript:` ref using the ledger's configured
+  `refs.transcript_roots` (the same roots as steward evidence packs). If it
+  resolves, its evidence role must be `user`; any other role is refused with
+  `StatementUsageError` naming the role. An unresolvable ref (including a
+  deleted session or out-of-range line) remains accepted. `conversation:`
+  refs are unaffected. Existing statements are never rewritten or re-checked,
+  including idempotent additions and steward recovery after an owner commit.
 - `scope.level` ∈ `user | project`; `scope.host` is a registered host path
   when `project`.
 - `uncertainty` is the recorder's doubt about what the words *mean*, kept

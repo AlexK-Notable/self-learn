@@ -21,7 +21,7 @@ import re
 import uuid
 from pathlib import Path
 
-from . import gitops, intents, sentinel
+from . import gitops, intents, refs, sentinel
 from .primitives import chrono, fsops
 from .scan import attach_hits, format_refusal
 from .scan import scan as secret_scan
@@ -172,6 +172,23 @@ def add(
                 raise StatementUsageError(
                     f"statement add: amends references unknown statement {amends}"
                 )
+
+            # Only new writes are checked: dedupe/recovery must remain reads.
+            if message_ref.startswith("transcript:"):
+                session, line_number = message_ref[len("transcript:"):].rsplit("#L", 1)
+                try:
+                    evidence = refs.resolve(
+                        session, line=int(line_number), roots=refs.transcript_roots(home)
+                    )
+                except refs.RefError:
+                    # Old session files disappear; preserve recording from them.
+                    pass
+                else:
+                    if evidence.role != "user":
+                        raise StatementUsageError(
+                            "statement add: transcript evidence role must be user, "
+                            f"found {evidence.role}"
+                        )
 
             stmt_id = _new_stmt_id(existing)
             row = {

@@ -1,0 +1,148 @@
+"""Write-time statement evidence checks, with synthetic transcript roots."""
+import json
+from pathlib import Path
+import re
+
+import pytest
+
+from self_learn import refs, statements, steward, steward_prompt
+from support import commit_all, make_home
+from test_steward import (
+    SimulatedKill, _dump_yaml, _enable_steward, _seed_fresh_proposals,
+    _write_decision_stage,
+)
+
+
+def transcript(home, tmp_path):
+    root = tmp_path / "transcripts"
+    path = root / "project" / "synthetic-stmt.jsonl"
+    path.parent.mkdir(parents=True)
+    entries = [
+        {"type": "user", "message": {"content": "Keep it small."}},
+        {"type": "user", "message": {"content": "<agent-message>Build this.</agent-message>"}},
+        {"type": "user", "isMeta": True, "message": {"content": "Skill instructions."}},
+        {"type": "assistant", "message": {"content": "I will build it."}},
+        {"type": "user", "isSidechain": True, "message": {"content": "Worker reply."}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "content": "result"}]}},
+    ]
+    path.write_text("".join(json.dumps(e) + "\n" for e in entries))
+    with (home / "config.yaml").open("a") as f:
+        f.write(f"\nrefs:\n  transcript_roots: {json.dumps(str(root))}\n")
+    commit_all(home, "configure synthetic transcript roots")
+    assert refs.transcript_roots(home) == [root]
+    return path, root
+
+
+def add(home, ref, text="Keep it small."):
+    return statements.add(home, verbatim=text, source={"message_ref": ref}, recorded_by="human")
+
+
+@pytest.mark.parametrize("line,role", [(2, "agent"), (3, "relay"), (4, "assistant"),
+                                        (5, "subagent"), (6, "tool_result")])
+def test_new_statement_refuses_non_user_after_user_positive_control(tmp_path, line, role):
+    home = make_home(tmp_path)
+    _, root = transcript(home, tmp_path)
+    accepted = add(home, "transcript:synthetic-stmt#L1")
+    assert statements.list_statements(home)[0]["id"] == accepted
+    assert refs.resolve("synthetic-stmt", line=line, roots=[root]).role == role
+    before = (home / "user-statements.jsonl").read_bytes()
+    with pytest.raises(statements.StatementUsageError, match=f"found {role}"):
+        add(home, f"transcript:synthetic-stmt#L{line}")
+    assert (home / "user-statements.jsonl").read_bytes() == before
+
+
+@pytest.mark.parametrize("ref", ["transcript:deleted-session#L1", "transcript:synthetic-stmt#L99",
+                                 "conversation:obs-1234abcd"])
+def test_unresolvable_and_conversation_refs_remain_accepted(tmp_path, ref):
+    home = make_home(tmp_path)
+    transcript(home, tmp_path)
+    first = add(home, "transcript:synthetic-stmt#L1")
+    assert statements.list_statements(home)[0]["id"] == first
+    second = add(home, ref)
+    assert [r["id"] for r in statements.list_statements(home)] == [first, second]
+
+
+def test_existing_statement_read_dedupe_and_recovery_do_not_recheck(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    path, _ = transcript(home, tmp_path)
+    ref = "transcript:synthetic-stmt#L1"
+    sid = add(home, ref)
+    assert statements.list_statements(home)[0]["id"] == sid
+    path.write_text(json.dumps({"type": "assistant", "message": {"content": "Changed."}}) + "\n")
+    before = (home / "user-statements.jsonl").read_bytes()
+
+    def must_not_resolve(*args, **kwargs):
+        pytest.fail("existing statements must never be re-checked")
+
+    monkeypatch.setattr(refs, "resolve", must_not_resolve)
+    assert add(home, ref) == sid
+    operation = {"kind": "statement", "payload": {"verbatim": "Keep it small.",
+                                                 "source": {"message_ref": ref}}}
+    assert steward._maintenance_result(home, operation) == {
+        "state": "applied", "id": sid, "recovered": True}
+    assert (home / "user-statements.jsonl").read_bytes() == before
+
+
+def test_steward_apply_refuses_agent_after_user_positive_control(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+    transcript(home, tmp_path)
+
+    def write_stage(spec):
+        outcome = _write_decision_stage(spec)
+        match = re.search(r"^stage directory \(the only place you may write\): (.+)$", spec.prompt, re.M)
+        assert match
+        _dump_yaml(Path(match[1]) / "statements.yaml", {"items": [
+            {"verbatim": "Keep it small.", "source": {"message_ref": "transcript:synthetic-stmt#L1"}},
+            {"verbatim": "Build this.", "source": {"message_ref": "transcript:synthetic-stmt#L2"}},
+        ]})
+        return outcome
+
+    monkeypatch.setattr(steward.invocation, "write_session", write_stage)
+    result = steward.run(home)
+    rows = statements.list_statements(home)
+    assert len(rows) == 1 and rows[0]["recorded_by"] == "steward"
+    assert rows[0]["source"]["message_ref"] == "transcript:synthetic-stmt#L1"
+    assert result.status == "partial" and result.refused == 1
+    assert "found agent" in steward.journal_path(home).read_text()
+
+
+def test_steward_owner_commit_recovery_survives_changed_role(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    _seed_fresh_proposals(home, 1)
+    _enable_steward(home)
+    path, _ = transcript(home, tmp_path)
+
+    def write_stage(spec):
+        outcome = _write_decision_stage(spec)
+        match = re.search(r"^stage directory \(the only place you may write\): (.+)$", spec.prompt, re.M)
+        assert match
+        _dump_yaml(Path(match[1]) / "statements.yaml", {"items": [
+            {"verbatim": "Keep it small.", "source": {"message_ref": "transcript:synthetic-stmt#L1"}},
+        ]})
+        return outcome
+
+    real_update = steward._update_manifest
+
+    def kill(home_arg, run_id, *, reason, update):
+        if reason.startswith("maintenance result"):
+            raise SimulatedKill()
+        return real_update(home_arg, run_id, reason=reason, update=update)
+
+    monkeypatch.setattr(steward.invocation, "write_session", write_stage)
+    monkeypatch.setattr(steward, "_update_manifest", kill)
+    with pytest.raises(SimulatedKill):
+        steward.run(home)
+    assert len(statements.list_statements(home)) == 1
+    before = (home / "user-statements.jsonl").read_bytes()
+    path.write_text(json.dumps({"type": "assistant", "message": {"content": "Changed."}}) + "\n")
+    monkeypatch.setattr(steward, "_update_manifest", real_update)
+    assert steward.run(home).status == "applied"
+    assert (home / "user-statements.jsonl").read_bytes() == before
+
+
+def test_statement_role_rule_is_in_steward_contract():
+    contract = steward_prompt._render_output_contract()
+    assert "statements.yaml --" in contract
+    assert "A statement’s `transcript:` ref must point to a line whose evidence role is `user`." in contract
