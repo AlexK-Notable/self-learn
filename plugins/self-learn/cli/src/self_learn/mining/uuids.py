@@ -58,11 +58,14 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
-__all__ = ["KEEP_DAYS", "STORE_NAME", "JudgedUuids", "is_lock_timeout", "store_path"]
+__all__ = ["KEEP_DAMAGED", "KEEP_DAYS", "STORE_NAME", "JudgedUuids", "is_lock_timeout", "prune_damaged", "store_path"]
 
 STORE_NAME = "judged-uuids.sqlite"
 #: Rows judged more than this many days ago are pruned.
 KEEP_DAYS = 120
+#: Damaged stores moved aside (:meth:`JudgedUuids.rebuild`) that are kept,
+#: newest first; older ones are deleted.
+KEEP_DAMAGED = 3
 
 _SCHEMA = "CREATE TABLE IF NOT EXISTS judged (uuid TEXT PRIMARY KEY, first_judged TEXT NOT NULL)"
 
@@ -199,3 +202,20 @@ class JudgedUuids:
             return 0
         cutoff = (today - timedelta(days=KEEP_DAYS)).isoformat()
         return self._write("DELETE FROM judged WHERE first_judged < ?", [(cutoff,)])
+
+
+def prune_damaged(path: Path | str, *, keep: int = KEEP_DAMAGED) -> int:
+    """Delete all but the ``keep`` newest damaged stores moved aside next to
+    ``path`` (``<name>.damaged-<UTC time>``, with their journals); returns
+    how many went. The name's time sorts them."""
+    path = Path(path)
+    asides = sorted(
+        (p for p in path.parent.glob(f"{path.name}.damaged-*") if not p.name.endswith("-journal")),
+        key=lambda p: p.name, reverse=True,
+    )
+    gone = 0
+    for aside in asides[keep:]:
+        aside.unlink(missing_ok=True)
+        aside.with_name(aside.name + "-journal").unlink(missing_ok=True)
+        gone += 1
+    return gone

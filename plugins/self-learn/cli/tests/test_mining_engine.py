@@ -1455,3 +1455,34 @@ def test_a_second_file_with_the_same_session_id_waits_for_the_next_run(home, roo
     assert [cursor(a) is None, cursor(b) is None].count(True) == 1  # one judged, one held
     run(home)
     assert len(backend.specs) == 2 and cursor(a) is not None and cursor(b) is not None
+
+
+def test_a_long_episode_brief_is_cut_to_the_digest_ceiling(home, root, backend, tmp_path):
+    sid = "s1longbr-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    words = "the agent says the checks pass and the person asks for the log once more "
+    steps = [{"line": n, "what": (f"step {n} " + words * 4)[:290]} for n in range(1, 7)]
+    backend.answers[sid] = output([lesson(steps=steps)])
+    result = run(home)
+    assert len(result.landed) == 1, result.outcomes
+    (record,) = pending(home)
+    brief = record.body.split("## Episode brief\n", 1)[1].strip("\n")
+    assert len(brief) <= miner.MAX_EPISODE_BRIEF_CHARS < sum(len(s["what"]) for s in steps)
+    *kept, last = brief.split("\n")
+    assert kept and all(f"step {n} " in line for n, line in enumerate(kept, 1))
+    assert last.startswith(f"… {6 - len(kept)} more step(s) left out")
+
+
+def test_damaged_stores_past_the_newest_three_are_deleted(home, root, backend, tmp_path):
+    mdir = miner.miner_dir()
+    names = [f"{uuids.STORE_NAME}.damaged-2026010{d}T000000Z" for d in range(1, 6)]
+    for name in names:
+        (mdir / name).write_bytes(b"old")
+        (mdir / (name + "-journal")).write_bytes(b"old")
+    sid = "s1damprn-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    run(home, preview=True)
+    assert all((mdir / n).exists() for n in names)  # a preview deletes none
+    run(home)
+    left = sorted(p.name for p in mdir.glob(f"{uuids.STORE_NAME}.damaged-*"))
+    assert left == sorted([*names[2:], *(n + "-journal" for n in names[2:])])

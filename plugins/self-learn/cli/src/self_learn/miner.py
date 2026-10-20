@@ -2077,6 +2077,26 @@ def _step_line(step: dict) -> str:
     return f"{where} ({who}): {' '.join(str(step['what']).split())}"
 
 
+def _capped_brief(lines: list[str]) -> str:
+    """The ``## Episode brief`` of a session lesson, at most
+    :data:`MAX_EPISODE_BRIEF_CHARS` (the digest engine's ceiling): whole
+    step lines in order, and a last line saying how many were left out."""
+    whole = "\n".join(lines)
+    if len(whole) <= MAX_EPISODE_BRIEF_CHARS:
+        return whole
+
+    def marker(n: int) -> str:
+        return f"… {n} more step(s) left out at {MAX_EPISODE_BRIEF_CHARS:,} characters"
+
+    room = MAX_EPISODE_BRIEF_CHARS - len(marker(len(lines))) - 1
+    kept: list[str] = []
+    for line in lines:
+        if len("\n".join([*kept, line])) > room:
+            break
+        kept.append(line)
+    return "\n".join([*kept, marker(len(lines) - len(kept))])
+
+
 def _session_record(home: Path, lesson: dict) -> Record:
     """A pending record from a checked lesson (plan §3.6): its loaded text
     and ``## Context``, the steps as ``## Episode brief``, ``verified`` with
@@ -2097,7 +2117,7 @@ def _session_record(home: Path, lesson: dict) -> Record:
             context=(str(lesson["context"]).strip() or None) if lesson.get("context") else None,
         )
     if lesson["steps"]:
-        brief = "\n".join(_step_line(s) for s in lesson["steps"])
+        brief = _capped_brief([_step_line(s) for s in lesson["steps"]])
         record.set_body(record.body.rstrip("\n") + "\n\n## Episode brief\n" + brief + "\n")
     verification = lesson.get("verification")
     if verification:
@@ -3273,6 +3293,11 @@ def _judged_uuids(store: "mining_uuids.JudgedUuids", *, preview: bool) -> tuple[
                 aside = None
             info["state"] = "rebuilt" if aside is not None else "damaged"
             info["aside"] = aside.name if aside is not None else None
+    if not preview:
+        try:
+            mining_uuids.prune_damaged(store.path)
+        except OSError:
+            pass
             log(f"judged-uuid store damaged; {'moved aside to ' + aside.name if aside else 'could not move it'}")
     if not preview and not store.locked and not store.damaged:
         try:
