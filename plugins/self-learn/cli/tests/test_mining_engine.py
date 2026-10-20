@@ -931,6 +931,8 @@ def test_a_damaged_store_is_rebuilt_and_the_run_record_says_so(home, root, backe
     rec = json.loads((run_dir(result) / "run.json").read_text())
     assert rec["judged_uuids"]["state"] == "rebuilt" and rec["judged_uuids"]["aside"].startswith(uuids.STORE_NAME)
     assert (p.parent / rec["judged_uuids"]["aside"]).is_file()
+    assert f"judged-uuid store damaged; moved aside to {rec['judged_uuids']['aside']}" in (
+        miner.miner_dir() / "miner.log").read_text()
 
 
 def test_the_ledger_lock_not_taken_holds_every_called_cursor(home, root, backend, tmp_path, monkeypatch):

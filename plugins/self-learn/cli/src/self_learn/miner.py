@@ -3293,12 +3293,12 @@ def _judged_uuids(store: "mining_uuids.JudgedUuids", *, preview: bool) -> tuple[
                 aside = None
             info["state"] = "rebuilt" if aside is not None else "damaged"
             info["aside"] = aside.name if aside is not None else None
+            log(f"judged-uuid store damaged; {'moved aside to ' + aside.name if aside else 'could not move it'}")
     if not preview:
         try:
             mining_uuids.prune_damaged(store.path)
         except OSError:
             pass
-            log(f"judged-uuid store damaged; {'moved aside to ' + aside.name if aside else 'could not move it'}")
     if not preview and not store.locked and not store.damaged:
         try:
             info["pruned"] = store.prune(datetime.now(timezone.utc).date())
