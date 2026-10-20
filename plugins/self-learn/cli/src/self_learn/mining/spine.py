@@ -29,8 +29,8 @@ its stretch as ``AGENT-WRITTEN``. A compact-provenance note is a relay
 ``T<k>`` up to ``T<k+1>`` (stretch 0 is everything before ``T1``).
 
 Everything entering the spine passes :func:`scan.redact` ("redact at the
-tip"), piece by piece before any shortening, and the assembled text once
-more.
+tip"), piece by piece, before any shortening (a cut never splits a secret
+the scan would have caught whole).
 
 This module reads transcripts only; it writes nothing.
 """
@@ -622,7 +622,6 @@ def build_spine(
                 else:
                     total -= item.shorten(keep)
         text = render()
-    text, final_hits = redact(text)
     tokens = estimate_tokens(text)
     moments = _moment_uuids(session, first_line, last_line, typed)
     return Spine(
@@ -637,6 +636,6 @@ def build_spine(
         flags=tuple(flags),
         tokens_est=tokens,
         over_budget=tokens > spine_tokens,
-        redactions=red.hits + len(final_hits),
+        redactions=red.hits,
         moment_uuids=frozenset(uid for _line, uid in moments if uid is not None),
     )

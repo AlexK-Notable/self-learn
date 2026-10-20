@@ -277,16 +277,27 @@ def test_s4_mined_facts_shorten_to_their_first_part(root):
 
 def test_s5_everything_on_the_spine_is_redacted(root):
     rows = [
-        typed(f"my key is {TOKEN} please rotate it", 1),
+        typed(f"my key is {TOKEN} please rotate it", 1, cwd=f"/work/{TOKEN}"),
         asst(f"rotating {TOKEN} now", 2),
         relay(f"note: {TOKEN} was seen", 3),
-        typed("thanks", 4),
+        typed(f"<agent-message>use {TOKEN} for the deploy</agent-message>", 4),
+        use("Bash", {"command": f"deploy --key {TOKEN}"}, 5, "b1"),
+        result("b1", "denied", 6, error=True),
+        typed("thanks", 7),
     ]
-    sp = whole(write(root, rows))
+    flag = SpineFlag("lrn-19f82fc5", "user", 1, "lexical", f"Fact: the key {TOKEN} expired")
+    sp = whole(write(root, rows), flags=[flag])
+    lines = sp.text.splitlines()
     assert TOKEN not in sp.text
-    assert "YOU: my key is [redacted:github-token] please rotate it" in sp.text  # words around it kept
-    assert "rotating [redacted:github-token] now" in sp.text
-    assert sp.redactions == 3
+    red = "[redacted:github-token]"
+    assert "YOU: my key is [redacted:github-token] please rotate it" in lines  # words around it kept
+    assert f"AGENT (L2): rotating {red} now" in lines
+    assert f"RELAY (L3): note: {red} was seen" in lines
+    assert f"AGENT-WRITTEN (L4): <agent-message>use {red} for the deploy</agent-message>" in lines
+    assert f"FACTS: 1 tool call · FAILED: Bash `deploy --key {red}` (L6)" in lines
+    assert f"FLAG lrn-19f82fc5 (user) matched this stretch [lexical] — Fact: the key {red} expired" in lines
+    assert any(ln.startswith("SESSION ") and f"cwd /work/{red} ·" in ln for ln in lines)
+    assert sp.redactions == 7
 
 
 # ------------------------------------------------------------------ S6'
