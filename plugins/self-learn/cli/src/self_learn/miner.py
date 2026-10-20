@@ -48,7 +48,7 @@ import time
 import traceback
 import uuid
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,6 +62,10 @@ from .hosts import HostsError, capture_host_path, load_hosts
 from .import_common import existing_origins
 from .ledger import discover_buckets, home_state, home_state_message, resolve_home
 from .ledger_ops import LedgerOpsError, create_record, record_title
+from .mining import check as check_mod
+from .mining import engine as engine_mod
+from .mining import tools as mining_tools
+from .mining import uuids as mining_uuids
 from .overseer import run as overseer_run
 from .records import (
     GENERALITIES,
@@ -1279,6 +1283,11 @@ class MineResult:
     #: and before any model session was spent. One `"{id}: {reason}"`
     #: string per offender, mirroring `ReconcileResult.stopped`.
     stopped: list[str] = field(default_factory=list)
+    #: The session engine's counts for this run (R2): what `mine run
+    #: --preview` prints -- sessions by filter reason, calls, drops by
+    #: reason, spine token estimates, cost. Counts and ids only, never
+    #: transcript text. Empty for the digest engine.
+    engine: dict = field(default_factory=dict)
 
 
 def _outcome(result: MineResult, origin: str, outcome: str, **extra) -> None:
@@ -2000,6 +2009,385 @@ def _reconcile_and_land(
         _raise_recurrence_suspect(result, seen_events, rid, origin, _FIRE_VIOLATED_BASIS)
 
 
+# ------------------------------------- the session engine's landing (R2)
+#
+# New-miner plan §3.6. The checked output of the session engine
+# (`miner-output/1`, every pointer a full ref, every quote checked) lands
+# here, rule for rule as `_reconcile_and_land` lands the reader's
+# candidates: a lesson becomes a pending record, a sighting folds into a
+# pending record or spools a recurrence-suspect against a routed one, a
+# rule check spools a `fire`. `_land_checked` runs inside the run's
+# `intents.ledger_write` block, so every write below is under the lock.
+
+#: The ``basis`` of a recurrence-suspect the session engine spools for a
+#: sighting of a routed record: the reader's own label (`_reconcile_and_land`).
+_SIGHTING_BASIS = "miner-match"
+
+
+def _ref_origin(ref: dict) -> str:
+    """The legacy origin string of a checked ref: ``transcript:<session>#L<n>``,
+    and for a line of a subagent's log ``transcript:<session>/subagents/
+    agent-<id>.jsonl#L<n>`` (its line numbers are that file's)."""
+    sub = ref.get("subagent_file")
+    where = f"{ref['session']}/{sub}" if sub else str(ref["session"])
+    return f"transcript:{where}#L{ref['line']}"
+
+
+def _ref_moment(ref: dict) -> tuple:
+    """One transcript moment: the entry's uuid (a fork copies it), else its
+    place."""
+    uid = ref.get("uuid")
+    if isinstance(uid, str) and uid:
+        return ("uuid", uid)
+    return ("at", ref.get("session"), ref.get("subagent_file"), ref.get("line"))
+
+
+def _evidence_entry(item: dict, *, why: str | None = None) -> dict:
+    """A checked evidence item as a record's evidence entry (plan §3.6):
+    ``{ref, quote?, session, ts, origin}``, ``ts`` the entry's own time. A
+    quote the checker withheld (it held a redaction placeholder) is not
+    stored, so the steward reads ``no_quote``, never a false ``not_found``."""
+    ref = dict(item["ref"])
+    entry: dict = {"ref": ref, "session": ref["session"], "origin": _ref_origin(ref)}
+    if ref.get("entry_ts"):
+        entry["ts"] = ref["entry_ts"]
+    quote = item.get("quote")
+    if isinstance(quote, str) and quote and not check_mod.quote_withheld(quote):
+        entry["quote"] = quote
+    if why is not None:
+        entry["why"] = why
+    return entry
+
+
+def _step_line(step: dict) -> str:
+    """One ``## Episode brief`` line: ``L<line> (<role>, T<turn>): <what>``;
+    a step in a subagent's log names it (``agent-<id> L<line>``)."""
+    ref = step["ref"]
+    sub = ref.get("subagent_file")
+    where = f"{Path(sub).stem} L{ref['line']}" if sub else f"L{ref['line']}"
+    turn = step.get("turn")
+    who = f"{ref['role']}, T{turn}" if turn is not None else str(ref["role"])
+    return f"{where} ({who}): {' '.join(str(step['what']).split())}"
+
+
+def _session_record(home: Path, lesson: dict) -> Record:
+    """A pending record from a checked lesson (plan §3.6): its loaded text
+    and ``## Context``, the steps as ``## Episode brief``, ``verified`` with
+    ``verified_how``, ``incident_cost``, ``generality``. Raises RecordError
+    for a scope or field the ledger refuses (the caller drops it)."""
+    scope = str(lesson["scope"])
+    if scope.startswith("skill:") and not _valid_skill_scope(home, scope):
+        raise RecordError(f"unknown skill bucket for scope {scope!r}")
+    if lesson["type"] == "behavior":
+        record = Record.create(
+            type="behavior", scope=scope, source="session", kind=lesson["kind"],
+            trigger=str(lesson["trigger"]).strip(), instruction=str(lesson["instruction"]).strip(),
+            context=(str(lesson["context"]).strip() or None) if lesson.get("context") else None,
+        )
+    else:
+        record = Record.create(
+            type="knowledge", scope=scope, source="session", fact=str(lesson["fact"]).strip(),
+            context=(str(lesson["context"]).strip() or None) if lesson.get("context") else None,
+        )
+    if lesson["steps"]:
+        brief = "\n".join(_step_line(s) for s in lesson["steps"])
+        record.set_body(record.body.rstrip("\n") + "\n\n## Episode brief\n" + brief + "\n")
+    verification = lesson.get("verification")
+    if verification:
+        record.set_verified(True, how=str(verification["how"]))
+    cost = lesson.get("incident_cost")
+    if cost:
+        record.set_incident_cost(str(cost["text"]))
+    if lesson.get("generality") in GENERALITIES:
+        record.set_generality(lesson["generality"])
+    return record
+
+
+def _lesson_entries(lesson: dict) -> list[dict]:
+    """The record's evidence: each evidence item, then the verification's
+    and the incident cost's pointers (``why: verification`` /
+    ``why: incident-cost``)."""
+    entries = [_evidence_entry(item) for item in lesson["evidence"]]
+    if lesson.get("verification"):
+        entries.append(_evidence_entry(lesson["verification"], why="verification"))
+    if lesson.get("incident_cost"):
+        entries.append(_evidence_entry(lesson["incident_cost"], why="incident-cost"))
+    return entries
+
+
+def _held_cursor(result: MineResult, session_id: str, halted: bool) -> str:
+    """U-cursorhold H-2 for a session the engine judged: a halted session
+    advances with its halt kept; any other is held (judged again)."""
+    if halted:
+        return "advanced-halted"
+    result.held_sessions.add(session_id)
+    return "held"
+
+
+def _land_lesson(
+    home: Path,
+    session_id: str,
+    lesson: dict,
+    result: MineResult,
+    cap: int,
+    origins: set[str],
+    cwd: str | None,
+    halted: bool,
+) -> None:
+    ev = lesson["evidence"]
+    main = [e for e in ev if not e["ref"].get("subagent_file")]
+    primary = (main or ev)[0]
+    origin = _ref_origin(primary["ref"])
+    if origin in origins:
+        _outcome(result, origin, "skipped-known-origin")
+        return
+    if len(result.landed) >= cap:
+        result.dropped += 1
+        fields = _snippet_fields(lesson)
+        extra: dict[str, object] = {"snippet": _nearmiss_snippet(fields)} if fields is not None else {}
+        extra["cursor"] = _held_cursor(result, session_id, halted)
+        _outcome(result, origin, "dropped-cap", **extra)
+        return
+    try:
+        record = _session_record(home, lesson)
+    except RecordError as exc:
+        _outcome(result, origin, "dropped-invalid", reason=str(exc)[:200])
+        return
+    except HostsError as exc:
+        # as `_reconcile_and_land`: a hosts.yaml that does not load holds
+        # this lesson's session, named by the error's type, never its text
+        _outcome(
+            result, origin, "dropped-invalid", cursor=_held_cursor(result, session_id, halted),
+            reason=f"hosts.yaml does not load ({type(exc).__name__}); the skill scope could not be checked",
+        )
+        return
+    entries = _lesson_entries(lesson)
+    texts = [record.body, str(lesson.get("why_durable") or "")]
+    texts += [str(e["quote"]) for e in entries if e.get("quote")]
+    if lesson.get("verification"):
+        texts.append(str(lesson["verification"]["how"]))
+    if lesson.get("incident_cost"):
+        texts.append(str(lesson["incident_cost"]["text"]))
+    hits = [h for t in texts if t for h in secret_scan(t)]
+    if hits:
+        _outcome(result, origin, "scan-refused", rule=hits[0].rule)
+        log(f"run: lesson {origin} refused by secret scan ({hits[0].rule})")
+        return
+    project_path = None
+    if record.scope == "project":
+        where = primary["ref"].get("cwd") or cwd
+        if not where:
+            _outcome(result, origin, "dropped-invalid", reason="no cwd for project scope")
+            return
+        project_path = capture_host_path(home, Path(where))  # FW-162
+    for entry in entries:
+        record.append_evidence(entry)
+    try:
+        path = create_record(home, record, project_path=project_path)
+    except LedgerOpsError as exc:
+        _outcome(result, origin, "dropped-land-failed", reason=str(exc)[:200])
+        return
+    result.touched.append(path)
+    meta = path.parent.parent / "meta.yaml"
+    if meta.is_file():
+        result.touched.append(meta)
+    origins.update(e["origin"] for e in entries)
+    result.landed.append(record.id)
+    _outcome(result, origin, "landed", record=record.id, shape=lesson["shape"],
+             why=str(lesson.get("why_durable") or "")[:300])
+    telemetry.spool_quiet("capture", source="session", scope=record.scope, record=record.id)
+    log(f"run: landed {record.id} → {path}")
+
+
+def _find_record_path(home: Path, rid: str) -> tuple[Record, Path] | None:
+    """:func:`_find_record`, with the file it was read from."""
+    if not rid or not RECORD_ID_RE.match(rid):
+        return None
+    for bucket in discover_buckets(home):
+        for sub in ("pending", "resolved"):
+            path = bucket.path / sub / f"{rid}.md"
+            if path.is_file():
+                try:
+                    return Record.from_path(path), path
+                except (RecordError, UnicodeDecodeError):
+                    return None
+    return None
+
+
+def _live_record(home: Path, rid: str) -> tuple[Record, Path] | None:
+    """The record ``rid`` names, ``superseded_by`` followed to its live
+    successor (S-85); None for a missing record, a missing successor or a
+    cycle."""
+    seen: set[str] = set()
+    while rid not in seen:
+        seen.add(rid)
+        found = _find_record_path(home, rid)
+        if found is None:
+            return None
+        successor = found[0].superseded_by
+        if not successor:
+            return found
+        rid = successor
+    return None
+
+
+def _resurface(
+    home: Path,
+    session_id: str,
+    rejected: Record,
+    items: list[dict],
+    n: int,
+    result: MineResult,
+    cap: int,
+    origins: set[str],
+    cwd: str | None,
+    halted: bool,
+) -> None:
+    """Doc 12 §8 Q4 for a sighting: a rejected lesson sighted
+    :data:`REJECTED_RESURFACE_SIGHTINGS` times since is landed again as a
+    new pending record, its text the rejected record's own, its evidence
+    the sighting's."""
+    from .index.store import _sections  # pyright: ignore[reportPrivateUsage]
+
+    sections = _sections(rejected.body)
+    lesson = {
+        "scope": rejected.scope, "type": rejected.type, "kind": rejected.kind,
+        "trigger": sections.get("Trigger"), "instruction": sections.get("Instruction"),
+        "fact": sections.get("Fact"), "context": sections.get("Context"),
+        "steps": [], "verification": None, "incident_cost": None, "generality": None,
+        "evidence": items, "shape": "repeated-friction",
+        "why_durable": f"previously rejected as {rejected.id}; sighted {n}× since — resurfaced per doc 12 §8 Q4",
+    }
+    before = len(result.landed)
+    _land_lesson(home, session_id, lesson, result, cap, origins, cwd, halted)
+    if len(result.landed) > before:
+        _rejected_mark_landed(rejected.id)
+        _outcome(result, _ref_origin(items[0]["ref"]), "resurfaced", record=rejected.id, sightings=n)
+
+
+def _land_sighting(
+    home: Path,
+    session_id: str,
+    sighting: dict,
+    result: MineResult,
+    cap: int,
+    origins: set[str],
+    seen_events: set[tuple[str, str, str]],
+    moments: set[tuple],
+    cwd: str | None,
+    halted: bool,
+) -> None:
+    found = _live_record(home, str(sighting["record"]))
+    first = _ref_origin(sighting["evidence"][0]["ref"])
+    if found is None:
+        _outcome(result, first, "dropped-invalid", reason="the sighted record has no live record in the ledger")
+        return
+    record, path = found
+    # a fork and its parent can both report one moment: it lands once per run
+    items = [e for e in sighting["evidence"] if ("sighting", record.id, _ref_moment(e["ref"])) not in moments]
+    if not items:
+        _outcome(result, first, "skipped-duplicate-moment", record=record.id)
+        return
+    moments.update(("sighting", record.id, _ref_moment(e["ref"])) for e in items)
+    origin = _ref_origin(items[0]["ref"])
+    if record.status == "pending":
+        fresh = [e for e in items if _ref_origin(e["ref"]) not in origins]
+        if not fresh:
+            _outcome(result, origin, "skipped-known-origin", record=record.id)
+            return
+        for item in fresh:
+            entry = _evidence_entry(item)
+            if entry.get("quote") and secret_scan(entry["quote"]):
+                del entry["quote"]
+                _outcome(result, entry["origin"], "fold-quote-scan-refused", record=record.id)
+            record.append_evidence(entry)
+            origins.add(entry["origin"])
+        record.set_sightings(record.sightings + 1)
+        record.write(path)
+        result.folded.append(record.id)
+        result.touched.append(path)
+        _outcome(result, origin, "folded", record=record.id)
+    elif record.status == "routed":
+        key = ("recurrence-suspect", record.id, origin)
+        if key in seen_events:
+            _outcome(result, origin, "recurrence-already-known", record=record.id)
+            return
+        telemetry.spool_quiet("recurrence-suspect", record=record.id, origin=origin, basis=_SIGHTING_BASIS)
+        seen_events.add(key)
+        result.recurrences.append(record.id)
+        _outcome(result, origin, "recurrence", record=record.id)
+    elif record.status == "rejected":
+        n = _rejected_counter_bump(record.id, origin)
+        if n < 0 or n < REJECTED_RESURFACE_SIGHTINGS:
+            # FW-34 §1.1: counts only, never the rejected record's id
+            _outcome(result, origin, "dropped-rejected", sightings=max(n, 0))
+            return
+        _resurface(home, session_id, record, items, n, result, cap, origins, cwd, halted)
+    else:
+        _outcome(result, origin, "skipped-resolved", record=record.id)
+
+
+def _land_rule_check(
+    home: Path,
+    check: dict,
+    result: MineResult,
+    seen_events: set[tuple[str, str, str]],
+    moments: set[tuple],
+) -> None:
+    """A rule check spools a ``fire`` against a routed record only, once per
+    ``(record, origin)`` (as `_reconcile_and_land`), and once per moment in a
+    run. ``action`` is the origin of the agent's action, when the model
+    gave one (telemetry takes any scalar payload key)."""
+    rid = str(check["record"])
+    situation = check["situation"]["ref"]
+    origin = _ref_origin(situation)
+    found = _find_record(home, rid)
+    if found is None or found[0].status != "routed":
+        _outcome(result, origin, "fire-skipped", record=rid, reason="the record is not routed")
+        return
+    moment = ("fire", rid, _ref_moment(situation))
+    if moment in moments:
+        _outcome(result, origin, "skipped-duplicate-moment", record=rid)
+        return
+    moments.add(moment)
+    key = ("fire", rid, origin)
+    if key in seen_events:
+        _outcome(result, origin, "fire-already-known", record=rid)
+        return
+    action = check.get("action")
+    telemetry.spool_quiet(
+        "fire", record=rid, origin=origin, outcome=check["outcome"],
+        action=_ref_origin(action["ref"]) if action else None,
+    )
+    seen_events.add(key)
+    result.fires += 1
+    _outcome(result, origin, "fire-spooled", record=rid, check=check["outcome"])
+
+
+def _land_checked(
+    home: Path,
+    checked: list[tuple[str, dict, str | None, bool]],
+    result: MineResult,
+    cap: int,
+) -> None:
+    """Land the session engine's checked documents, ``(session id, checked
+    document, session cwd, halted)`` each, in order. **The caller holds the
+    ledger lock** (`intents.ledger_write`). Each check drop becomes one
+    ``dropped-check`` outcome."""
+    origins = existing_origins(home)
+    seen_events, _legacy = _event_seen(home)
+    moments: set[tuple] = set()
+    for session_id, doc, cwd, halted in checked:
+        for lesson in doc["lessons"]:
+            _land_lesson(home, session_id, lesson, result, cap, origins, cwd, halted)
+        for sighting in doc["sightings"]:
+            _land_sighting(home, session_id, sighting, result, cap, origins, seen_events, moments, cwd, halted)
+        for rc in doc["rule_checks"]:
+            _land_rule_check(home, rc, result, seen_events, moments)
+        for drop in doc["drops"]:
+            _outcome(result, f"transcript:{session_id}", "dropped-check", reason=drop["reason"], item=drop["item"])
+
+
 # ------------------------------------------------------------ the journal
 
 
@@ -2285,8 +2673,16 @@ def run(
     trigger: str = "manual",
     since: str | None = None,
     no_push: bool | None = None,
+    engine: str | None = None,
+    preview: bool = False,
+    sessions: Sequence[str] = (),
 ) -> MineResult:
-    """``no_push=None`` reads the process boundary once
+    """One mining run. ``engine`` (``digest`` or ``session``) overrides the
+    ``miner.engine`` setting for this run (new-miner plan §3.8);
+    ``preview`` runs the session engine without landing anything, over
+    the ``sessions`` named, or over what the walk would judge.
+
+    ``no_push=None`` reads the process boundary once
     (:func:`worker.no_push_requested`) and threads the answer as a
     parameter from there (BLOCKER D).
 
@@ -2303,6 +2699,13 @@ def run(
     # U-settings Phase 1: resolves through the registry's `miner.enabled`
     # entry (config.yaml `miner.enabled` > env `SELF_LEARN_MINER` > `True`
     # -- U-flip 2026-09-01, S-58: config wins).
+    chosen = engine if engine is not None else str(settings.resolve_setting(home, settings.by_name("miner.engine"))[0])
+    if chosen not in settings.MINER_ENGINES:
+        raise ValueError(f"miner.run: unknown engine {chosen!r}")
+    if (preview or sessions) and chosen != "session":
+        raise ValueError("miner.run: --preview and --session belong to the session engine")
+    if sessions and not preview:
+        raise ValueError("miner.run: --session needs --preview")
     enabled, _source = settings.resolve_setting(home, settings.by_name("miner.enabled"))
     if not enabled:
         return MineResult(status="disabled")
@@ -2315,7 +2718,8 @@ def run(
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return MineResult(status="busy")
-        (miner_dir() / "miner.last-attempt").touch()  # watchdog cool-down
+        if not preview:  # a preview is no attempt at the night's run
+            (miner_dir() / "miner.last-attempt").touch()  # watchdog cool-down
 
         base = {
             "ts": _now_iso(),
@@ -2339,6 +2743,8 @@ def run(
             # today there is only a write.
             "model": provider.model_for("miner-reader", home=home),
         }
+        if chosen == "session":
+            base["model"] = provider.model_for(engine_mod.SURFACE, home=home)
 
         # BLOCKER 11 (audit 2026-07-16): the nightly miner resolves the
         # home too — and a unit resolving a DIFFERENT home than the shell
@@ -2349,19 +2755,23 @@ def run(
         if state in ("missing", "not-a-repo"):
             reason = home_state_message(state, home)
             log(f"run {run_id}: REFUSED — {reason}")
-            _journal({**base, "status": "failed", "reason": reason[:300],
-                      "duration_secs": round(time.time() - t0, 1)})
+            if not preview:
+                _journal({**base, "status": "failed", "reason": reason[:300],
+                          "duration_secs": round(time.time() - t0, 1)})
             return MineResult(status="failed", run_id=run_id)
 
         try:
-            return _run_locked(home, since, t0, run_id, base, no_push=no_push)
+            if preview:
+                return _run_preview(home, since, t0, run_id, base, sessions)
+            return _run_locked(home, since, t0, run_id, base, no_push=no_push, engine=chosen)
         except Exception as exc:  # noqa: BLE001 — A1: EVERY run journals,
             # even a crashed one (audit B1: an uncaught error previously
             # left no journal entry at all — invisible to mine status).
             log(f"run {run_id}: CRASHED — {exc}\n{traceback.format_exc()}")
-            _journal({**base, "status": "failed",
-                      "reason": f"crashed: {exc}"[:300],
-                      "duration_secs": round(time.time() - t0, 1)})
+            if not preview:
+                _journal({**base, "status": "failed",
+                          "reason": f"crashed: {exc}"[:300],
+                          "duration_secs": round(time.time() - t0, 1)})
             return MineResult(status="failed", run_id=run_id)
     finally:
         try:
@@ -2379,6 +2789,7 @@ def _run_locked(
     base: dict,
     *,
     no_push: bool = False,
+    engine: str = "digest",
 ) -> MineResult:
     # SELF-HEALING (audit 2026-07-16 round 7 MAJOR 4). Before mining
     # anything new, commit whatever a previous producer wrote and could
@@ -2509,6 +2920,13 @@ def _run_locked(
         if slices
         else provenance.SentIndex()
     )
+    if engine == "session":
+        # new-miner plan §1: the session engine replaces exactly the digest
+        # step; everything above (lock, healing, seeding, sweeps, walk, the
+        # sends) and the landing commit are shared
+        return _run_session_engine(
+            home, slices, sent, mined_scheduled, run_id, base, t0, preview=False, no_push=no_push
+        )
     for s in slices:
         digest, halt = digest_transcript(s, limits, mined_scheduled=mined_scheduled, sent=sent)
         if digest is None:
@@ -2727,8 +3145,386 @@ def _run_locked(
     return result
 
 
+# ------------------------------------------------ the session engine's run
+
+
+def _session_call(spec: invocation.SessionSpec) -> invocation.Outcome:
+    """The session engine's one seam call (plan §3.5): one session, its
+    final message back as ``stdout``."""
+    return invocation.text_session(spec)
+
+
+def _named_slices(home: Path, session_ids: Iterable[str]) -> tuple[list[SessionSlice], list[str]]:
+    """``mine run --preview --session ID``: each named session's whole file
+    (the larger, when two folders hold one id), and the ids not found. A
+    session on ``miner.skip_sessions`` is never read, named or not."""
+    root = transcripts_root(home)
+    listed = skip_sessions(home)
+    slices: list[SessionSlice] = []
+    missing: list[str] = []
+    for sid in dict.fromkeys(session_ids):
+        if not _SESSION_ID_RE.match(sid) or sid in listed or not root.is_dir():
+            missing.append(sid)
+            continue
+        files = sorted(root.glob(f"*/{sid}.jsonl"), key=lambda p: (p.stat().st_size, str(p)), reverse=True)
+        lines = _complete_lines(files[0]) if files else None
+        if not files or not lines:
+            missing.append(sid)
+            continue
+        path = files[0]
+        slices.append(SessionSlice(path=path, session_id=sid, project=path.parent.name, start_line=0,
+                                   lines=lines, stat_size=path.stat().st_size))
+    return slices, missing
+
+
+def _judged_uuids(store: "mining_uuids.JudgedUuids", *, preview: bool) -> tuple[frozenset[str], dict]:
+    """The judged-uuid store's snapshot for this run, read once before
+    anything is judged, and what the run record says about the store. A
+    damaged store is moved aside (never in a preview, never a locked one);
+    rows past 120 days are pruned (never in a preview)."""
+    info: dict = {"state": "ok", "loaded": 0}
+    if store.damaged:
+        if preview:
+            info["state"] = "damaged"
+        else:
+            try:
+                aside = store.rebuild()
+            except OSError:
+                aside = None
+            info["state"] = "rebuilt" if aside is not None else "damaged"
+            info["aside"] = aside.name if aside is not None else None
+            log(f"judged-uuid store damaged; {'moved aside to ' + aside.name if aside else 'could not move it'}")
+    if not preview and not store.locked and not store.damaged:
+        try:
+            info["pruned"] = store.prune(datetime.now(timezone.utc).date())
+        except Exception as exc:  # noqa: BLE001 -- sqlite3.Error; a prune never fails a run
+            if mining_uuids.is_lock_timeout(exc):
+                store.locked = True
+    snapshot = frozenset() if store.locked or store.damaged else store.snapshot()
+    if store.locked:
+        info["state"] = "locked"
+    info["loaded"] = len(snapshot)
+    return snapshot, info
+
+
+def _run_session_engine(
+    home: Path,
+    slices: list[SessionSlice],
+    sent: provenance.SentIndex,
+    mined_scheduled: frozenset[str],
+    run_id: str,
+    base: dict,
+    t0: float,
+    *,
+    preview: bool,
+    no_push: bool,
+    missing: Sequence[str] = (),
+) -> MineResult:
+    """The session engine in place of the digest step (plan §1): plan each
+    slice, call each session, check each answer, and -- unless ``preview``
+    -- land the checked output under the ledger lock, advance the cursors
+    of the sessions that landed, and add their moments to the judged-uuid
+    store. A preview writes the run folder only: no landing, no cursor, no
+    judged uuid, no journal row. One session's failed call, bad output or
+    checker error never fails the others."""
+    from . import session_copies, steward_inputs
+
+    cfg = engine_mod.EngineSettings.resolve(home)
+    mdir = miner_dir()
+    started = _now_iso()
+    jbase = {**base, "engine": "session"}
+    result = MineResult(status="preview" if preview else "idle", run_id=run_id)
+    summary: dict = {"run_id": run_id, "preview": preview, "missing": len(missing)}
+    result.engine = summary
+
+    def stop(status: str, reason: str) -> MineResult:
+        result.status = status
+        summary["reason"] = reason
+        if not preview:
+            _journal({**jbase, "status": status, "reason": reason[:300],
+                      "duration_secs": round(time.time() - t0, 1)})
+        log(f"run {run_id}: {status} — {reason}")
+        return result
+
+    try:
+        shared_text, method_version = engine_mod.shared_instructions()
+    except engine_mod.EngineError as exc:
+        return stop("failed", str(exc))
+    jbase["method_version"] = method_version
+    summary["method_version"] = method_version
+
+    store = mining_uuids.JudgedUuids.load(mdir / mining_uuids.STORE_NAME)
+    snapshot, uuid_info = _judged_uuids(store, preview=preview)
+
+    # ---- plan
+    plans: list[engine_mod.Plan] = []
+    processed: list[tuple[SessionSlice, bool]] = []  # skipped: their cursors advance
+    to_call: list[tuple[SessionSlice, engine_mod.Plan, bool]] = []
+    deferred = 0
+    seen: set[str] = set()
+    halted_by_reason: Counter[str] = Counter()
+    index, _index_info = steward_inputs.refresh_index(home)
+    try:
+        search_mode = index.mode()[0] if index is not None else "lexical-only"
+        records = mining_tools.load_records(home)
+        for s in slices:
+            if s.session_id in seen or len(to_call) >= cfg.max_sessions:
+                # one file per session id a run (the other is judged next
+                # run), and at most `max_sessions_per_run` calls: the rest
+                # wait behind their cursors
+                deferred += 1
+                continue
+            seen.add(s.session_id)
+            hp = halt_point(s, mined_scheduled=mined_scheduled)
+            if hp.halt:
+                s.halt_reason = hp.reason
+                halted_by_reason[str(hp.reason)] += 1
+            plan = engine_mod.plan_session(
+                s.path, s.start_line, len(s.lines), hp.end, home=home, sent=sent, judged_uuids=snapshot,
+                spine_tokens=cfg.spine_tokens, index=index, records=records,
+            )
+            plans.append(plan)
+            if plan.skip is not None:
+                processed.append((s, hp.halt))
+            else:
+                to_call.append((s, plan, hp.halt))
+    finally:
+        if index is not None:
+            index.close()
+    if halted_by_reason:
+        log(
+            f"run {run_id}: halted {sum(halted_by_reason.values())} sessions, the rest of each never mined ("
+            + ", ".join(f"{reason}: {n}" for reason, n in sorted(halted_by_reason.items()))
+            + ")"
+        )
+    skipped = Counter(p.skip for p in plans if p.skip)
+    summary.update(sessions=len(plans), skipped=dict(sorted(skipped.items())), deferred=deferred,
+                   to_call=len(to_call), judged_uuids=uuid_info)
+
+    if not to_call:
+        if not preview:
+            _advance_cursors(processed)
+            (miner_dir() / "miner.last-run").touch()
+            _journal({**jbase, "status": "idle", "sessions_scanned": 0, "sessions_called": 0,
+                      "excluded": len(processed), "deferred_files": deferred,
+                      "duration_secs": round(time.time() - t0, 1)})
+        log(f"run {run_id}: {'preview: ' if preview else ''}idle (nothing new to call)")
+        return result
+
+    if not preview:
+        # Flood gate (§8 Q3): nothing is called and no cursor moves.
+        total_pending = worker.fast_status(home)["total_pending"]
+        gate = pending_gate(home=home)
+        if total_pending >= gate:
+            result.status = "held-gate"
+            (miner_dir() / "miner.last-run").touch()
+            _journal({**jbase, "status": "held-gate", "pending": total_pending, "gate": gate,
+                      "sessions_ready": len(to_call), "duration_secs": round(time.time() - t0, 1)})
+            log(f"run {run_id}: held — {total_pending} pending ≥ gate {gate}")
+            return result
+
+    # ---- call
+    folder = engine_mod.RunFolder(mdir, run_id)
+    shared_path = folder.put("shared-instructions.md", shared_text)
+    engine_mod.prune_runs(mdir, current=run_id)  # this run's folder is one of the 30
+    engine_mod.prune_session_copies(session_copies.sessions_dir(home))
+    for _s, plan, _halt in to_call:
+        engine_mod.save_plan(folder, plan)
+    stage = mdir / "session-stage"
+    stage.mkdir(parents=True, exist_ok=True)
+    timeout = reader_timeout_secs(home)
+    model = provider.model_for(engine_mod.SURFACE, home=home)
+
+    def make_spec(plan: engine_mod.Plan, k: int) -> invocation.SessionSpec:
+        return engine_mod.session_spec(
+            plan, k, home=home, run_id=run_id, stage=stage, shared=shared_path, timeout=timeout,
+            disallowed_tools=READER_DISALLOWED_TOOLS, log=log,
+        )
+
+    calls, stopped = engine_mod.call_sessions(
+        [plan for _s, plan, _h in to_call], make_spec=make_spec, call=_session_call,
+        parallel=cfg.parallel, max_usd=cfg.max_usd,
+    )
+
+    # ---- check
+    roots = list(dict.fromkeys([transcripts_root(home), *refs.transcript_roots(home)]))
+    results: dict[str, engine_mod.SessionResult] = {}
+    for _s, plan, _halt in to_call:
+        rec = calls[plan.session_id]
+        if not rec.started:
+            continue
+        res = engine_mod.check_session(
+            plan, rec, run_id=run_id, model=model, method_version=method_version, roots=roots,
+            judged_uuids=snapshot, known_records=frozenset(records), search_mode=search_mode, sent=sent,
+        )
+        results[plan.session_id] = res
+        engine_mod.save_result(folder, res)
+    ok = [(s, results[p.session_id], halt) for s, p, halt in to_call
+          if p.session_id in results and results[p.session_id].status == "ok"]
+
+    # ---- land
+    landed_ids: set[str] = set()
+    uuid_info.setdefault("added", 0)
+    if not preview and ok:
+        cap = cap_for(len(results), home=home)
+        hold = sentinel.hold()
+        took_lock = False
+        try:
+            with intents.ledger_write(home) as recovered:  # S-62: the landing lock's own backstop check
+                took_lock = True
+                for intent_id in recovered.rolled_forward:
+                    log(
+                        f"run {run_id}: recovered {intent_id} (rolled forward: its "
+                        "commit landed — the host phase did not run; run "
+                        "'self-learn recompile')"
+                    )
+                for intent_id in recovered.restored:
+                    log(f"run {run_id}: recovered {intent_id} (restored: its mutation was undone)")
+                _land_checked(
+                    home,
+                    [(s.session_id, res.checked, _slice_cwd(s), halt) for s, res, halt in ok],
+                    result, cap,
+                )
+                _commit_landing(home, result, run_id, no_push=no_push, folds_alone=True)
+        except gitops.GitOpsError as exc:
+            # nothing landed when the lock was not taken: every called
+            # session keeps its cursor and is judged again next run
+            result.landing_uncommitted = took_lock and bool(result.landed)
+            log(f"run {run_id}: could not take the ledger lock ({exc})")
+        finally:
+            hold.release()
+        if took_lock:
+            landed_ids = {s.session_id for s, _res, halt in ok if halt or s.session_id not in result.held_sessions}
+        # the judged-uuid store learns a session's moments only once its
+        # output has landed (a held session is judged again: never)
+        today = datetime.now(timezone.utc).date()
+        for s, res, _halt in ok:
+            spine = res.plan.spine
+            if spine is None or s.session_id not in landed_ids or s.session_id in result.held_sessions:
+                continue
+            try:
+                uuid_info["added"] += store.add(check_mod.landed_uuids(spine, res.checked), today)
+            except Exception:  # noqa: BLE001 -- sqlite3.Error: a fork may be judged again, no more
+                uuid_info["add_failed"] = uuid_info.get("add_failed", 0) + 1
+        try:
+            _score_canaries(home, result.landed + result.folded, landed_ids)
+        except Exception as exc:  # noqa: BLE001 — canary scoring never crashes a run
+            log(f"run {run_id}: canary scoring skipped ({exc})")
+
+    # ---- the run record
+    failures = Counter(r.error for r in results.values() if r.error)
+    counts = {
+        "quote_redacted": sum(r.quote_redacted for r in results.values()),
+        "cut_to_limit": sum(r.cut_to_limit for r in results.values()),
+        "checker_errors": failures.get("checker-error", 0),
+        "call_failures": failures.get("call", 0),
+        "bad_output": sum(1 for r in results.values() if r.status == "bad-output"),
+        "deferred": deferred,
+        "flag_modes": dict(Counter(p.flag_mode for _s, p, _h in to_call if p.flag_mode)),
+    }
+    run_status = "stopped-ceiling" if stopped else ("failed" if results and not ok else "ok")
+    run = engine_mod.run_record(
+        run_id=run_id, started_at=started, finished_at=_now_iso(), model=model, method_version=method_version,
+        engine=cfg, search_mode=search_mode, status=run_status, plans=plans, results=results, calls=calls,
+        extra={"preview": preview, "counts": counts, "judged_uuids": uuid_info},
+    )
+    folder.put_json("run.json", run)
+    drops = dict(run["totals"]["drops"])
+    summary.update(
+        called=run["totals"]["called"], not_run=run["totals"]["not_run"], cost_usd=run["totals"]["cost_usd"],
+        lessons=run["totals"]["lessons"], sightings=run["totals"]["sightings"],
+        rule_checks=run["totals"]["rule_checks"], drops=drops, counts=counts, status=run_status,
+        spine_tokens=sorted(p.spine.tokens_est for _s, p, _h in to_call if p.spine),
+        run_folder=f"runs/{run_id}",
+    )
+    if preview:
+        log(f"run {run_id}: preview — {run['totals']['called']} called, nothing landed")
+        return result
+
+    # ---- cursors, journal, telemetry, worker
+    _advance_cursors(processed + [(s, halt) for s, _res, halt in ok if s.session_id in landed_ids])
+    (miner_dir() / "miner.last-run").touch()
+    if results and not ok:
+        result.status = "failed"
+    else:
+        result.status = "landed-uncommitted" if result.landing_uncommitted else "ok"
+    result.sessions_scanned = len(results)
+    enriched = [_enrich_near_miss(o) for o in result.outcomes]
+    _journal({**jbase, "status": result.status,
+              "landing_uncommitted": result.landing_uncommitted,
+              "sessions_scanned": len(results),
+              "sessions_called": len(results),
+              "sessions_failed": sum(1 for r in results.values() if r.status != "ok"),
+              "not_run": run["totals"]["not_run"],
+              "excluded": len(processed),
+              "deferred_files": deferred,
+              "cap": cap_for(len(results), home=home),
+              "landed": len(result.landed),
+              "folded": len(result.folded),
+              "recurrences": len(result.recurrences),
+              "fires": result.fires,
+              "drops": drops,
+              "outcomes": enriched,
+              "near_miss_count": sum(1 for o in enriched if "disposition" in o),
+              "corrupt_records": result.corrupt_records,
+              "cursors_held": len(result.held_sessions),
+              "duration_secs": round(time.time() - t0, 1)})
+    log(
+        f"run {run_id}: {result.status} — {len(results)} sessions called, {len(result.landed)} landed, "
+        f"{len(result.folded)} folded, {len(result.recurrences)} recurrence(s), {result.fires} fire(s)"
+    )
+    if result.landed or result.folded or result.recurrences or result.fires:
+        try:
+            flush_report = telemetry.flush(home)
+        except telemetry.TelemetryError as exc:
+            log(f"run {run_id}: telemetry flush refused ({exc})")
+        else:
+            for intent_id in flush_report.recovered_rolled_forward:
+                log(
+                    f"run {run_id}: recovered {intent_id} (rolled forward: its "
+                    "commit landed — the host phase did not run; run "
+                    "'self-learn recompile')"
+                )
+            for intent_id in flush_report.recovered_restored:
+                log(f"run {run_id}: recovered {intent_id} (restored: its mutation was undone)")
+    if result.landed:
+        worker.kick(home)
+    return result
+
+
+def _run_preview(
+    home: Path,
+    since: str | None,
+    t0: float,
+    run_id: str,
+    base: dict,
+    sessions: Sequence[str],
+) -> MineResult:
+    """``mine run --engine session --preview``: the session engine over the
+    named sessions' whole files, or over what tonight's walk would judge.
+    Nothing a night run writes is written: no reconcile, no cursor seeding
+    or sweep, no landing, no cursor, no judged uuid, no journal row."""
+    if sessions:
+        slices, missing = _named_slices(home, sessions)
+    else:
+        if not initialized():
+            result = MineResult(status="failed", run_id=run_id)
+            result.engine = {"reason": "the miner has no cursors yet; name sessions with --session"}
+            return result
+        slices, missing = walk(since), []
+    sent = (
+        provenance.sweep(provenance.sender_dirs([transcripts_root(home)]))
+        if slices
+        else provenance.SentIndex()
+    )
+    return _run_session_engine(
+        home, slices, sent, mined_scheduled_jobs(home), run_id, base, t0,
+        preview=True, no_push=True, missing=missing,
+    )
+
+
 def _commit_landing(
-    home: Path, result: MineResult, run_id: str, *, no_push: bool
+    home: Path, result: MineResult, run_id: str, *, no_push: bool, folds_alone: bool = False
 ) -> None:
     """The landing commit. **The caller holds the lock** — everything here
     is post-mutation by construction (audit 2026-07-16 round 7).
@@ -2747,16 +3543,20 @@ def _commit_landing(
     becomes ``landed-uncommitted`` and the NEXT run's reconcile step (or
     `self-learn reconcile`) commits the records (round 7 MAJOR 4). Before
     that they were simply lost — the cursors advance regardless, so
-    nothing ever re-mined them."""
-    if not (result.landed and result.touched):
+    nothing ever re-mined them.
+
+    ``folds_alone`` (the session engine, R2): a run that only folded
+    sightings into pending records commits those too. The digest engine
+    keeps its old rule (no landing, no commit; the next run's reconcile
+    commits a fold) unchanged."""
+    if not result.touched or not (result.landed or (folds_alone and result.folded)):
         return
+    subject = f"self-learn: mine {len(result.landed)} candidate(s) ({run_id})"
+    if folds_alone and result.folded:
+        subject = f"self-learn: mine {len(result.landed)} candidate(s), {len(result.folded)} fold(s) ({run_id})"
     try:
         gitops.stage(home, result.touched)
-        gitops.commit(
-            home,
-            f"self-learn: mine {len(result.landed)} candidate(s) ({run_id})",
-            paths=result.touched,
-        )
+        gitops.commit(home, subject, paths=result.touched)
     except gitops.GitOpsError as exc:
         result.landing_uncommitted = True
         log(

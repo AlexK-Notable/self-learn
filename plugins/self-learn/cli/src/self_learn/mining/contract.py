@@ -70,7 +70,12 @@ __all__ = [
     "QUOTE_MAX",
     "RECORD_ID_PATTERN",
     "RUN_CONTRACT",
+    "RUN_COUNT_KEYS",
+    "RUN_OPTIONAL_KEYS",
     "RUN_STATUSES",
+    "SESSION_ERRORS",
+    "SESSION_ROW_OPTIONAL_KEYS",
+    "UUID_STORE_STATES",
     "Run",
     "SEARCH_MODES",
     "SCOPE_PATTERN",
@@ -672,6 +677,73 @@ def validate_checked_output(obj: object) -> list[str]:
 
 # --------------------------------------------------------------- run record
 
+#: Keys the session engine adds to a run record (R2, 2026-10-19), each
+#: optional: ``preview`` (true for a ``mine run --preview``), ``counts``
+#: (:data:`RUN_COUNT_KEYS`, plus ``flag_modes``: sessions by flag mode) and
+#: ``judged_uuids`` (the judged-uuid store as the run found and left it).
+RUN_OPTIONAL_KEYS: tuple[str, ...] = ("preview", "counts", "judged_uuids")
+RUN_COUNT_KEYS: tuple[str, ...] = (
+    "quote_redacted", "cut_to_limit", "checker_errors", "call_failures", "bad_output", "deferred",
+)
+#: The judged-uuid store's states (``mining.uuids``): read as it was; given
+#: up on a lock; damaged and moved aside; damaged and left (a preview never
+#: moves it).
+UUID_STORE_STATES: tuple[str, ...] = ("ok", "locked", "rebuilt", "damaged")
+#: Keys the session engine adds to a session row, each optional.
+SESSION_ROW_OPTIONAL_KEYS: tuple[str, ...] = (
+    "flag_mode", "flag_note", "flags", "spine_tokens_est", "over_budget", "quote_redacted",
+    "cut_to_limit", "error",
+)
+#: Why a called session failed (``error``): its call, or the checker.
+SESSION_ERRORS: tuple[str, ...] = ("call", "checker-error")
+
+
+def _run_extras(v: _V, o: dict[str, Any]) -> None:
+    if "preview" in o:
+        v.boolean("preview", o["preview"])
+    if "counts" in o:
+        c = v.obj("counts", o["counts"], (), (*RUN_COUNT_KEYS, "flag_modes"))
+        if c is not None:
+            for k in RUN_COUNT_KEYS:
+                if k in c:
+                    v.integer(_join("counts", k), c[k], lo=0)
+            modes = c.get("flag_modes")
+            if modes is not None:
+                if not isinstance(modes, dict):
+                    v.err("counts.flag_modes", "not an object")
+                else:
+                    for k, n in modes.items():
+                        if not isinstance(k, str) or not _PLAIN_MODE_RE.fullmatch(k):
+                            v.err("counts.flag_modes", "key is not a mode name")
+                        else:
+                            v.integer(_join("counts.flag_modes", k), n, lo=0)
+    if "judged_uuids" in o:
+        j = v.obj("judged_uuids", o["judged_uuids"], ("state", "loaded"), ("aside", "pruned", "added", "add_failed"))
+        if j is not None:
+            v.enum("judged_uuids.state", j.get("state"), UUID_STORE_STATES)
+            v.integer("judged_uuids.loaded", j.get("loaded"), lo=0)
+            if "aside" in j:
+                v.string("judged_uuids.aside", j["aside"], 1, 300, nullable=True)
+            for k in ("pruned", "added", "add_failed"):
+                if k in j:
+                    v.integer(_join("judged_uuids", k), j[k], lo=0)
+
+
+def _session_row_extras(v: _V, sp: str, so: dict[str, Any]) -> None:
+    for k in ("flag_mode", "flag_note"):
+        if k in so:
+            v.string(_join(sp, k), so[k], 1, 200, nullable=True)
+    for k in ("flags", "spine_tokens_est", "quote_redacted", "cut_to_limit"):
+        if k in so:
+            v.integer(_join(sp, k), so[k], lo=0)
+    if "over_budget" in so:
+        v.boolean(_join(sp, "over_budget"), so["over_budget"])
+    if "error" in so:
+        v.enum(_join(sp, "error"), so["error"], SESSION_ERRORS, nullable=True)
+
+
+_PLAIN_MODE_RE = re.compile(r"[a-z][a-z+-]{0,40}")
+
 
 def validate_run(obj: object) -> list[str]:
     """Messages for every rule ``obj`` breaks; empty means valid."""
@@ -683,10 +755,12 @@ def validate_run(obj: object) -> list[str]:
             "contract", "run_id", "mode", "started_at", "finished_at", "model", "method_version",
             "settings", "testset", "status", "search_mode", "sessions", "totals",
         ),
+        RUN_OPTIONAL_KEYS,
     )
     if o is None:
         return v.errors
     v.const("contract", o.get("contract"), RUN_CONTRACT)
+    _run_extras(v, o)
     v.string("run_id", o.get("run_id"), 1, 200)
     v.enum("mode", o.get("mode"), MODES)
     v.iso("started_at", o.get("started_at"))
@@ -721,9 +795,11 @@ def validate_run(obj: object) -> list[str]:
                 "cost_usd", "turns", "claude_session_id", "usage_first_response", "usage_session",
                 "charter_denials", "duration_secs",
             ),
+            SESSION_ROW_OPTIONAL_KEYS,
         )
         if so is None:
             continue
+        _session_row_extras(v, sp, so)
         if v.string(_join(sp, "session"), so.get("session"), 1, 200):
             if so["session"] in seen_sessions:
                 v.err(_join(sp, "session"), "listed twice")  # one row per session id: load_run never has to choose

@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -1065,6 +1066,29 @@ def _build_parser() -> argparse.ArgumentParser:
         "library's own status string, never a re-derived label; exit "
         "status unchanged (07 §4 contract 2)",
     )
+    # new-miner plan §3.8 (R2): the session engine. `--engine session` lands
+    # nothing without the user's `miner.engine` flip: alone it is refused,
+    # and with `--preview` it lands nothing at all.
+    mrun.add_argument(
+        "--engine",
+        choices=("digest", "session"),
+        default=None,
+        help="this run's engine, over the miner.engine setting; session only with --preview",
+    )
+    mrun.add_argument(
+        "--preview",
+        action="store_true",
+        help="session engine only: call and check, write the run folder, print counts; "
+        "nothing lands, no cursor moves, no judged uuid is stored",
+    )
+    mrun.add_argument(
+        "--session",
+        action="append",
+        default=[],
+        dest="sessions",
+        metavar="ID",
+        help="with --preview: judge this session's whole file (repeatable)",
+    )
     mstatus = mine_sub.add_parser(
         "status", help="last runs, outcomes, and staleness — from the journal"
     )
@@ -1595,6 +1619,7 @@ def _cmd_status_fast() -> int:
 #: fall through silently: `_cmd_mine` raises on anything absent here.
 _MINE_RUN_EXIT = {
     "ok": EXIT_OK,
+    "preview": EXIT_OK,
     "initialized": EXIT_OK,
     "idle": EXIT_HELD,
     "held-gate": EXIT_HELD,
@@ -1651,6 +1676,54 @@ def _print_unattended_stop(surface: str, stopped: list[str]) -> None:
         )
 
 
+def _mine_engine_refusal(home: Path, args: argparse.Namespace) -> str | None:
+    """Why ``mine run``'s engine flags are refused, or None (plan §3.8):
+    ``--engine session`` only with ``--preview`` (only the user's flip of
+    ``miner.engine`` makes the session engine land); ``--preview`` only on
+    the session engine; ``--session`` only with ``--preview``."""
+    if args.engine == "session" and not args.preview:
+        return (
+            "--engine session needs --preview: the session engine lands nothing until "
+            "the user sets miner.engine to session"
+        )
+    if args.sessions and not args.preview:
+        return "--session needs --preview"
+    if args.preview:
+        engine = args.engine
+        if engine is None:
+            engine, _source = settings.resolve_setting(home, settings.by_name("miner.engine"))
+        if engine != "session":
+            return "--preview belongs to the session engine (add --engine session)"
+    for sid in args.sessions:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{3,63}", sid):
+            return f"--session needs a transcript's session id, got {sid[:80]!r}"
+    return None
+
+
+def _preview_lines(result: "miner.MineResult") -> list[str]:
+    """What ``mine run --preview`` prints: counts only, never transcript text."""
+    e = result.engine
+    if result.status != "preview":
+        return [f"mine run --preview: {result.status} — {e.get('reason', 'see the miner log')}"]
+    tokens = e.get("spine_tokens") or []
+    lines = [
+        f"mine run --preview: run {result.run_id} — nothing landed, no cursor moved",
+        f"  sessions: {e.get('sessions', 0)} planned, {e.get('to_call', 0)} to call, "
+        f"{e.get('deferred', 0)} deferred, {e.get('missing', 0)} not found",
+        "  skipped: " + (", ".join(f"{k} {n}" for k, n in sorted((e.get("skipped") or {}).items())) or "none"),
+    ]
+    if "called" in e:
+        lines += [
+            f"  calls: {e['called']} made, {e['not_run']} not run (runaway guard), cost ${e['cost_usd']:.2f}",
+            f"  kept: {e['lessons']} lessons, {e['sightings']} sightings, {e['rule_checks']} rule checks",
+            "  drops: " + (", ".join(f"{k} {n}" for k, n in sorted(e["drops"].items())) or "none"),
+            f"  spine tokens (estimated): min {min(tokens)}, median {tokens[len(tokens) // 2]}, max {max(tokens)}"
+            if tokens else "  spine tokens: none",
+            f"  run folder: <cache>/miner/{e['run_folder']}",
+        ]
+    return lines
+
+
 def _cmd_mine(args: argparse.Namespace) -> int:
     home = resolve_home()
     if args.mine_command == "run":
@@ -1663,6 +1736,10 @@ def _cmd_mine(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return EXIT_USAGE
+        refused = _mine_engine_refusal(home, args)
+        if refused is not None:
+            print(f"self-learn mine: {refused}", file=sys.stderr)
+            return EXIT_USAGE
         # The process boundary is read HERE, at the child's dispatch
         # surface, and travels as a parameter from here on (BLOCKER D).
         result = miner.run(
@@ -1670,6 +1747,9 @@ def _cmd_mine(args: argparse.Namespace) -> int:
             trigger=args.trigger,
             since=args.since,
             no_push=worker.no_push_requested(),
+            engine=args.engine,
+            preview=args.preview,
+            sessions=tuple(args.sessions),
         )
         if getattr(args, "as_json", False):
             # U-verbs §3.7/§4.8: one outcome object, nothing else on
@@ -1693,9 +1773,13 @@ def _cmd_mine(args: argparse.Namespace) -> int:
                         "recurrences": len(result.recurrences),
                         "fires": result.fires,
                         "run_id": result.run_id,
+                        **({"engine": result.engine} if result.engine else {}),
                     }
                 )
             )
+        elif args.preview:
+            for line in _preview_lines(result):
+                print(line)
         else:
             print(
                 f"mine run: {result.status} — {len(result.landed)} landed, "
