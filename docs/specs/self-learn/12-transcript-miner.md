@@ -1036,7 +1036,9 @@ the shared lesson-writing passage and output schema after this method.
 ### 13.3 The session engine in `miner.run` (R2, 2026-10-19)
 
 `miner.engine` (`digest` | `session`, default `digest`, tier C, no environment
-variable) chooses the engine of a run. The session engine replaces exactly the
+variable, and no process override: `SELF_LEARN_OVERRIDE_MINER_ENGINE` is
+ignored, named by `doctor settings` as a var that does nothing, and
+`settings.override` refuses the entry) chooses the engine of a run. The session engine replaces exactly the
 digest step of `_run_locked`: the run lock, reconcile healing, cursor seeding,
 the self-session and scheduled-job sweeps, `walk()`, the run's one sweep of
 sends (`provenance.sweep`), the pending gate, the ledger lock and the landing
@@ -1059,7 +1061,21 @@ the checker would refuse. The lesson index is refreshed once per run
 `unavailable`). At most `miner.max_sessions_per_run` (30) sessions are called;
 the rest, and a second file with a session id already planned, wait behind
 their cursors (`deferred`). The judged-uuid store is read once, before
-anything is judged.
+anything is judged; the moments (`Spine.moment_uuids`) of every session
+already planned for a call in this run are added to the judged set of the
+plans after it, so a fork's copies of its parent's moments read as already
+mined (a fork with nothing else new is `nothing-new`) and its check drops a
+copied moment as `already-judged`.
+
+A session that keeps failing does not starve the others. The cache file
+`<cache>/miner/session-failures.json` counts, per transcript file, the runs
+in a row its session failed at one cursor (a failed call, bad output, a
+checker error, a landing that did not complete); a moved cursor or a grown
+file restarts the count, a landing clears it, and a call the runaway guard
+never started counts nothing. Sessions that have failed are planned after
+those that have not; after 3 such runs a session is not called, its cursor
+stays, and the run says so (`given-up` outcome, `given_up` count on the
+journal row, `given_up` rows in `run.json`) until its file grows.
 
 **Call.** The shared instructions (the method, the lesson-writing passage
 between its markers, the output schema) are written once per run and passed
@@ -1072,10 +1088,10 @@ call runs alone; the rest run `miner.parallel` (4, at most 8) at once. A
 once `spent + in_flight × 0.60 >= miner.max_run_usd` (8.0; a call that reports
 no cost counts as 0.60); a session not started keeps its cursor.
 
-**Check.** `check.check_output` with the run's sends, the store's snapshot and
-the ledger's record ids. A `CheckerError` makes that one session `failed`
-(`error: checker-error`); a failed call makes it `failed` (`error: call`);
-neither touches another session.
+**Check.** `check.check_output` with the run's sends, the plan's judged set and
+the ledger's record ids. Any exception the check raises makes that one
+session `failed` (`error: checker-error`); a failed call, or a call that
+raised, makes it `failed` (`error: call`); neither touches another session.
 
 **Land** (`_land_checked`, inside `intents.ledger_write`). A lesson becomes a
 pending record (`source: session`): its loaded text and `## Context`, its
@@ -1091,30 +1107,51 @@ incident-cost`); a withheld quote (`check.quote_withheld`) is stored without
 quotes, `verified_how`, `incident_cost`, `why_durable`), the cap with its
 near-miss snippet and cursor hold, skill-scope and `hosts.yaml` checks and
 `capture_host_path` for project scope follow the digest engine's landing. A
-sighting follows `superseded_by` to the live record: pending folds (evidence
-appended, sightings +1), routed spools a `recurrence-suspect` (basis
+lesson whose evidence moments were all cited by a lesson landed earlier in
+the run is `skipped-duplicate-moment`. The brief keeps whole step lines up to
+1,200 characters (the digest engine's `MAX_EPISODE_BRIEF_CHARS`) and then
+says how many steps were left out. A sighting follows `superseded_by` to the
+live record: pending folds (evidence appended, sightings +1) unless the
+record's own evidence already holds that moment or origin (replay is keyed by
+record and moment; another record's evidence, or a new lesson's origin, never
+suppresses it), routed spools a `recurrence-suspect` (basis
 `miner-match`), rejected bumps the resurface counter and, at three, lands the
 rejected lesson's own text again as a new pending record, anything else is
 `skipped-resolved`. A rule check spools a `fire` `{record, origin, outcome,
-action?}` against a routed record only, once per `(record, origin)`. Within
+action?}` against a routed record only, once per `(record, origin)`, counting
+the events still in the spool as well as the tracked plane, so a run that
+stopped after its spool and before its flush is not spooled twice on replay.
+Fires and recurrence-suspects are the miner's output, not usage telemetry: a
+spool that fails raises. Within
 one run a sighting or rule check of one record at one moment (a fork and its
 parent) lands once (`skipped-duplicate-moment`). Each check drop becomes a
 `dropped-check` outcome. A run that only folds commits too
 (`_commit_landing(..., folds_alone=True)`; the digest engine's rule is
-unchanged).
+unchanged). `_land_checked` returns each session's landing: complete when
+every item reached its end (landed, folded, spooled, or dropped on purpose),
+or not, when a write raised (a record, a fold, a spool). That session's
+landing stops there with `dropped-land-failed` (cursor `held`); the other
+sessions land.
 
 **After.** A session's cursor advances when it was skipped, or when it was
-called, its output landed and it was not held by the cap; a failed, bad-output,
-not-run or deferred session keeps its cursor, and so does every called session
-when the ledger lock could not be taken. The judged-uuid store learns a
-session's moments (`check.landed_uuids`) only after its output landed and only
-when it was not held. The journal row keeps every digest-engine key and adds
-`engine: "session"`, `method_version`, `sessions_called`, `sessions_failed`,
-`not_run` and `drops` by reason. The run folder `<cache>/miner/runs/<run_id>/`
+called and `_land_checked` reported its landing complete and the cap did not
+hold it; a failed, bad-output, not-run, deferred, given-up or
+landing-failed session keeps its cursor, and so does every called session
+when the ledger lock could not be taken or the landing stopped part way
+(taking the lock is never read as completion). The judged-uuid store learns a
+whole session's moments (`check.landed_uuids`) only after its landing
+completed and the cap did not hold it; for a session whose landing did not
+complete it learns only the moments the items that did land cite
+(`check.cited_uuids`). A run whose every landing failed is `failed`. The run
+flushes the spool whenever a session landed. The journal row keeps every
+digest-engine key and adds `engine: "session"`, `method_version`,
+`sessions_called`, `sessions_failed`, `sessions_land_failed`, `given_up`,
+`not_run` and `drops` by reason; an idle row carries its outcomes. The run folder `<cache>/miner/runs/<run_id>/`
 (mode 0600: `run.json`, `shared-instructions.md`, `plans/`, `raw/`, `out/`,
 `calls/`) keeps the newest 30; the seam's transcript copies of the surface
 (`<cache>/sessions/miner-session/<run_id>/`), which the seam never prunes, are
-kept to 30 groups the same way.
+kept to 30 groups the same way. Judged-uuid stores moved aside as damaged are
+kept to the newest 3.
 
 **CLI.** `self-learn mine run --engine digest|session` overrides the setting
 for one run; `--engine session` is refused without `--preview` (`EXIT_USAGE`),
@@ -1123,6 +1160,13 @@ so only the user's flip of `miner.engine` lands session-engine output.
 prints counts (sessions by filter reason, calls, drops by reason, spine token
 estimates, cost) and never transcript text; it does not reconcile, seed,
 sweep, land, advance a cursor, write or prune the judged-uuid store, journal,
-or touch `miner.last-run`/`miner.last-attempt`. `--session ID` (repeatable,
+or touch `miner.last-run`/`miner.last-attempt`. It changes nothing in the
+cache outside its own run folder: it reads copies of the judged-uuid store
+and the lesson index made inside that folder (a hot journal is rolled back
+in the copy; the index refresh writes the copy) and removes them when done,
+prunes no run folder and no transcript copy, sweeps no orphans, stages its
+calls in the folder, logs to the folder's own `miner.log`, and opens the run
+lock without truncating it. What it may still write outside: the lock file
+when it did not exist, and the seam's own copies and logs of its calls. `--session ID` (repeatable,
 preview only) judges those sessions' whole files (the larger file when two
 folders hold one id; a listed `miner.skip_sessions` id is not read).
