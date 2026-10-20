@@ -35,6 +35,9 @@ StrictValidator = validators.extend(
         "integer", lambda checker, value: isinstance(value, int) and not isinstance(value, bool)
     ),
 )
+#: Hook output these events inject is context the agent read (a reminder in
+#: front of it matters to a rule check), so their ``hook_success`` rows stay.
+_CONTEXT_HOOK_EVENTS = frozenset({"SessionStart", "UserPromptSubmit"})
 _NOISE_ATTACHMENTS = frozenset({
     "hook_success", "total_tokens_reminder", "token_usage_reminder", "usage_reminder",
 })
@@ -266,7 +269,8 @@ class SessionTools:
             role = refs.role_of(e, sent=self.sent)
             attachment = e.get("attachment")
             if role == "tool_result" or (e.get("type") == "attachment"
-                    and isinstance(attachment, dict) and attachment.get("type") in _NOISE_ATTACHMENTS):
+                    and isinstance(attachment, dict) and attachment.get("type") in _NOISE_ATTACHMENTS
+                    and attachment.get("hookEvent") not in _CONTEXT_HOOK_EVENTS):
                 continue
             label = ROLE_LABELS[role]
             if role != "assistant":

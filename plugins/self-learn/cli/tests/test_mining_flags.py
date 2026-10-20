@@ -145,3 +145,23 @@ def test_flag_no_provider_and_model_mismatch(home):
         assert result.flags and result.mode == "lexical-only" and result.note == "embedding model differs from the index"
     finally:
         index.close()
+
+
+def test_flag_embedding_uses_the_short_interactive_call(home, monkeypatch):
+    # Orchestrator fold (gate r1b round 2, finding 2): a timed-out flag embedding
+    # must not keep retrying under the bulk policy.
+    put(home, status="routed")
+    provider = Provider()
+    index = built(home, provider)
+    seen = []
+
+    def fake(prov, texts, *, interactive=False):
+        seen.append(interactive)
+        return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(flags, "embed_documents", fake)
+    try:
+        result = flags.flag_rules(index, work("unrelated words"), cwd=Path("/synthetic"), provider=provider)
+        assert result.mode == "hybrid" and seen == [True]
+    finally:
+        index.close()

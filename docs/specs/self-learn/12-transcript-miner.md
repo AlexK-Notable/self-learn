@@ -956,7 +956,7 @@ class without echoing the exception's potentially sensitive message.
   end footer. Tool inputs, result edges, assistant messages and subagent
   summaries are bounded. Missing results say pending, never success.
   A result appears only inside its TOOL line; there is no duplicate result
-  row. Hook-success and token/usage-reminder attachments are omitted.
+  row. Token/usage-reminder attachments and hook-success rows are omitted, except hook output from `SessionStart` and `UserPromptSubmit`, which injects context the agent read (a reminder in front of it matters to a rule check) and is shown as `RELAY`.
   One-line results are shown once, without a repeated last edge.
 - `find_similar_lessons(draft)` accepts 20–2,000 characters and returns up
   to five records, at most 1,800 characters each and 10,000 overall, with

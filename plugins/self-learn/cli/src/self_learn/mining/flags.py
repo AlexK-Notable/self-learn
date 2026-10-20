@@ -91,7 +91,7 @@ def flag_rules(index: LessonIndex, stretches: Sequence[Stretch], *, cwd: Path,
             mode, note = LEXICAL_ONLY, "routed rule vectors missing"
         else:
             try:
-                embedded = embed_documents(provider, documents)
+                embedded = embed_documents(provider, documents, interactive=True)
                 # Validate against stored dimensions before ranking ANY rule.
                 if any(len(v) != len(embedded[0]) for v in vectors.values()):
                     raise ValueError("dimension mismatch")
