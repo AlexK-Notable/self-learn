@@ -2582,6 +2582,11 @@ judged-uuid store** (`mining/spine.py`, `mining/check.py`, `mining/uuids.py`).
   subagent log is linked to its launch by the launch's
   `toolUseResult.agentId`, else by its first user text equalling the
   launch's prompt. Every piece passes `scan.redact` before any shortening.
+  No shown text may start a line of the spine: every text but a typed turn
+  is put on one line (each line break shown as ` ⏎ `), and a typed turn's
+  continuation lines are indented under `YOU:`, so text inside an agent
+  message, an agent-written turn, a relay, a command or a flag can never
+  read as a `T<k>` or `YOU:` line.
   Over `miner.spine_tokens` (estimated as `ceil(chars / 2.5)`) the spine
   shortens mined stretches' agent messages to 400 + 400 characters (longest
   first), then mined stretches' facts to their first part, then new
@@ -2595,7 +2600,10 @@ judged-uuid store** (`mining/spine.py`, `mining/check.py`, `mining/uuids.py`).
   `already-judged` (steps, an incident cost, an action and a verification
   are not: they may point at earlier moments for context); a lesson or
   sighting whose surviving evidence all lies before the judged range is
-  dropped as `out-of-range`; a `correction` or `standing-preference` with no
+  dropped as `out-of-range`; a quote found only on another line is moved
+  there (`nearby`, `elsewhere_in_file`) only when that line has the cited
+  line's role, so words found only on another speaker's line (a forged
+  `YOU:` inside an agent message) are `quote-not-found`; a `correction` or `standing-preference` with no
   evidence item of role `user` is `no-user-evidence` (role `agent` is not
   `user`); a Trigger, Instruction or Fact with more than one non-empty line
   is `multi-line-loaded-text`. A kept quote that holds a `[redacted:`
