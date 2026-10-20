@@ -1301,6 +1301,8 @@ def test_a_preview_changes_nothing_in_the_cache_outside_its_run_folder(home, roo
     backend.answers[sid] = output([lesson()], sightings=[_sighting(sid, rid)])
     cache = tmp_path / "xdg-cache"
     before = _cache_hashes(cache, runs / "none")
+    lock = miner.miner_dir() / "miner.lock"
+    os.utime(lock, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
     assert journal.stat().st_size > 0 and len(before) > 70  # control: a hot journal and a populated cache
     result = run(home, preview=True)
     folder = run_dir(result)
@@ -1308,5 +1310,6 @@ def test_a_preview_changes_nothing_in_the_cache_outside_its_run_folder(home, roo
     assert out["lessons"] and out["sightings"]  # control: the preview judged the session
     after = _cache_hashes(cache, folder)
     assert after == before
+    assert lock.stat().st_mtime_ns == 1_700_000_000_000_000_000  # the run lock is not truncated
     assert (folder / "miner.log").is_file() and not (folder / "copies").exists()
     assert backend.specs[0].skip_orphan_sweep is True and backend.specs[0].cwd == folder / "stage"
