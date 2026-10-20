@@ -71,9 +71,11 @@ __all__ = [
     "RECORD_ID_PATTERN",
     "RUN_CONTRACT",
     "RUN_COUNT_KEYS",
+    "RUN_LANDED_KEYS",
     "RUN_OPTIONAL_KEYS",
     "RUN_STATUSES",
     "SESSION_ERRORS",
+    "SESSION_LANDINGS",
     "SESSION_ROW_OPTIONAL_KEYS",
     "UUID_STORE_STATES",
     "Run",
@@ -681,10 +683,18 @@ def validate_checked_output(obj: object) -> list[str]:
 #: optional: ``preview`` (true for a ``mine run --preview``), ``counts``
 #: (:data:`RUN_COUNT_KEYS`, plus ``flag_modes``: sessions by flag mode) and
 #: ``judged_uuids`` (the judged-uuid store as the run found and left it).
-RUN_OPTIONAL_KEYS: tuple[str, ...] = ("preview", "counts", "judged_uuids", "given_up")
+RUN_OPTIONAL_KEYS: tuple[str, ...] = ("preview", "counts", "judged_uuids", "landed")
 RUN_COUNT_KEYS: tuple[str, ...] = (
     "quote_redacted", "cut_to_limit", "checker_errors", "call_failures", "bad_output", "deferred",
 )
+#: What a night run's landing did (``landed``), apart from what the checks
+#: kept (``totals``): records landed, folds, recurrence-suspects and fires
+#: spooled, and called sessions whose landing did not complete.
+RUN_LANDED_KEYS: tuple[str, ...] = ("lessons", "folded", "recurrences", "fires", "sessions_failed")
+#: A called session's landing (``landing`` on its row): complete, held by
+#: the cap, failed (a write raised, or the landing stopped part way), or
+#: not landed (a preview, or output that did not check).
+SESSION_LANDINGS: tuple[str, ...] = ("complete", "held", "failed", "not-landed")
 #: The judged-uuid store's states (``mining.uuids``): read as it was; given
 #: up on a lock; damaged and moved aside; damaged and left (a preview never
 #: moves it).
@@ -692,7 +702,7 @@ UUID_STORE_STATES: tuple[str, ...] = ("ok", "locked", "rebuilt", "damaged")
 #: Keys the session engine adds to a session row, each optional.
 SESSION_ROW_OPTIONAL_KEYS: tuple[str, ...] = (
     "flag_mode", "flag_note", "flags", "spine_tokens_est", "over_budget", "quote_redacted",
-    "cut_to_limit", "error",
+    "cut_to_limit", "error", "landing",
 )
 #: Why a called session failed (``error``): its call, or the checker.
 SESSION_ERRORS: tuple[str, ...] = ("call", "checker-error")
@@ -727,13 +737,11 @@ def _run_extras(v: _V, o: dict[str, Any]) -> None:
             for k in ("pruned", "added", "add_failed"):
                 if k in j:
                     v.integer(_join("judged_uuids", k), j[k], lo=0)
-    if "given_up" in o:
-        rows = v.array("given_up", o["given_up"], 0, None)
-        for i, row in enumerate(rows or []):
-            g = v.obj(f"given_up[{i}]", row, ("session", "failures"), ())
-            if g is not None:
-                v.string(f"given_up[{i}].session", g.get("session"), 1, 200)
-                v.integer(f"given_up[{i}].failures", g.get("failures"), lo=1)
+    if "landed" in o:
+        landed = v.obj("landed", o["landed"], RUN_LANDED_KEYS, ())
+        if landed is not None:
+            for k in RUN_LANDED_KEYS:
+                v.integer(_join("landed", k), landed.get(k), lo=0)
 
 
 def _session_row_extras(v: _V, sp: str, so: dict[str, Any]) -> None:
@@ -747,6 +755,8 @@ def _session_row_extras(v: _V, sp: str, so: dict[str, Any]) -> None:
         v.boolean(_join(sp, "over_budget"), so["over_budget"])
     if "error" in so:
         v.enum(_join(sp, "error"), so["error"], SESSION_ERRORS, nullable=True)
+    if "landing" in so:
+        v.enum(_join(sp, "landing"), so["landing"], SESSION_LANDINGS, nullable=True)
 
 
 _PLAIN_MODE_RE = re.compile(r"[a-z][a-z+-]{0,40}")

@@ -171,8 +171,12 @@ def live_record(rid: str, records: Mapping[str, tuple[Bucket, Record]]) -> str |
 class SessionTools:
     def __init__(self, session_file: Path, subagents: Mapping[str, Path], judged_end: int,
                  home: Path, *, sent: SentIndex | None = None,
-                 provider: EmbedProvider | None = FROM_ENV, end_ts: float | None = None) -> None:
+                 provider: EmbedProvider | None = FROM_ENV, end_ts: float | None = None,
+                 index_file: Path | None = None) -> None:
         self.session_file = session_file
+        #: The lesson index ``find_similar_lessons`` reads: the run's own
+        #: (a preview's copy inside its run folder), else the live one.
+        self.index_file = index_file
         self.subagents = dict(subagents)
         self.judged_end = judged_end
         #: A subagent log is cut at its first entry written after this time.
@@ -337,7 +341,10 @@ class SessionTools:
         return "\n".join([*pages[page - 1], footer])
 
     def find_similar_lessons(self, draft: str) -> str:
-        index = LessonIndex.open_existing(self.home)
+        if self.index_file is not None:
+            index = LessonIndex.open_at(self.index_file, self.home) if self.index_file.is_file() else None
+        else:
+            index = LessonIndex.open_existing(self.home)
         if index is None:
             return "search: word match only (index not built)"
         try:
@@ -406,6 +413,7 @@ class SessionTools:
 
 def build_toolset(session_file: Path, subagents: Mapping[str, Path], judged_end: int,
                   home: Path, *, sent: SentIndex | None = None,
-                  provider: EmbedProvider | None = FROM_ENV, end_ts: float | None = None) -> McpToolset:
+                  provider: EmbedProvider | None = FROM_ENV, end_ts: float | None = None,
+                  index_file: Path | None = None) -> McpToolset:
     return SessionTools(session_file, subagents, judged_end, home, sent=sent, provider=provider,
-                        end_ts=end_ts).toolset()
+                        end_ts=end_ts, index_file=index_file).toolset()

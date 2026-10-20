@@ -56,7 +56,6 @@ __all__ = [
     "EngineError",
     "EngineSettings",
     "Failures",
-    "GIVE_UP_AFTER",
     "Plan",
     "RunFolder",
     "SessionResult",
@@ -218,18 +217,17 @@ def prune_session_copies(sessions_dir: Path, *, keep: int = KEEP_RUNS) -> int:
 
 # ------------------------------------------------------- failing sessions
 
-#: Consecutive failed runs at one cursor after which a session is given up
-#: until its file grows (plan §3.5's retry rule, bounded).
-GIVE_UP_AFTER = 3
 FAILURES_NAME = "session-failures.json"
 
 
 class Failures:
     """``<miner dir>/session-failures.json``: per transcript file, how many
     runs in a row its session failed at one cursor (a failed call, bad
-    output, a checker error, a landing that did not complete). Cache state,
-    never the ledger's. A count belongs to the cursor and the file size it
-    was counted at: a moved cursor or a grown file starts again from zero."""
+    output, a checker error, a landing of its own that did not complete).
+    Cache state, never the ledger's. It only orders a run's plans: a
+    session that has failed is planned after those that have not, so it
+    cannot starve newer ones. A count belongs to the cursor it was counted
+    at: a moved cursor starts again from zero, and a landing clears it."""
 
     def __init__(self, path: Path, data: dict[str, dict]) -> None:
         self.path = path
@@ -246,16 +244,16 @@ class Failures:
             data = {}
         return cls(path, {k: v for k, v in data.items() if isinstance(v, dict)})
 
-    def count(self, key: str, start: int, size: int) -> int:
+    def count(self, key: str, start: int) -> int:
         e = self.data.get(key)
-        if not e or e.get("start") != start or not isinstance(e.get("size"), int) or size > e["size"]:
+        if not e or e.get("start") != start:
             return 0
         n = e.get("failures")
         return n if isinstance(n, int) and n > 0 else 0
 
-    def failed(self, key: str, start: int, size: int) -> int:
-        n = self.count(key, start, size) + 1
-        self.data[key] = {"start": start, "size": size, "failures": n}
+    def failed(self, key: str, start: int) -> int:
+        n = self.count(key, start) + 1
+        self.data[key] = {"start": start, "failures": n}
         return n
 
     def cleared(self, key: str) -> None:
@@ -339,6 +337,7 @@ def plan_session(
     index: Any,
     records: Mapping[str, tuple[Any, Record]],
     provider: Any = None,
+    index_file: Path | None = None,
 ) -> Plan:
     """Plan one ``miner.SessionSlice`` (``start_line``, ``len(lines)``),
     cut at ``end`` = ``miner.halt_point(s).end`` (relative to the slice's
@@ -366,7 +365,7 @@ def plan_session(
     )
     subagents = {sid: session.subagent_dir / f"agent-{sid}.jsonl" for sid in plan.spine.subagents}
     plan.toolset = tools_mod.build_toolset(
-        session.path, subagents, last, home, sent=sent, end_ts=plan.spine.end_ts,
+        session.path, subagents, last, home, sent=sent, end_ts=plan.spine.end_ts, index_file=index_file,
         **({} if provider is None else {"provider": provider}),
     )
     return plan
@@ -740,10 +739,14 @@ def run_record(
     results: Mapping[str, SessionResult],
     calls: Mapping[str, CallRecord],
     extra: Mapping[str, Any],
+    landings: Mapping[str, str] | None = None,
 ) -> dict:
     """``miner-shadow-run/1`` (the name is kept until R4) for one run:
     one row per planned session, in plan order; ``extra`` carries the
-    optional ``preview``, ``counts`` and ``judged_uuids`` keys."""
+    optional ``preview``, ``counts``, ``judged_uuids`` and ``landed`` keys;
+    ``landings`` each called session's ``landing``
+    (:data:`contract.SESSION_LANDINGS`). ``totals`` count what the checks
+    kept, never what landed."""
     rows: list[dict] = []
     skipped: dict[str, int] = {}
     totals = {"lessons": 0, "sightings": 0, "rule_checks": 0}
@@ -801,6 +804,8 @@ def run_record(
                     row["quote_redacted"] = res.quote_redacted
                     row["cut_to_limit"] = res.cut_to_limit
                     row["error"] = res.error
+                    if landings is not None:
+                        row["landing"] = landings.get(plan.session_id, "not-landed")
                     for k in totals:
                         totals[k] += len(res.checked[k])
                     for d in res.checked["drops"]:
