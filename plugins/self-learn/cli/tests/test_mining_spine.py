@@ -569,3 +569,25 @@ def test_skip_reasons_come_in_the_plan_s_order(root):
     # no marker and nothing new: no-marker comes first
     old = read_session(write(root, [premarker("an old turn", 1), asst("ok", 2)], session=FORK))
     assert skip_reason(old, 1, 2, judged_uuids={"u-1", "a-2"}) == "no-marker"
+
+
+def test_nothing_new_reads_turns_and_agent_text_only(root):
+    original = [typed("run it", 1), asst("ran it", 2)]
+    store = whole(write(root, original)).moment_uuids
+    fork = read_session(write(root, original + [use("Bash", {"command": "ls"}, 3, "b1"), result("b1", "x", 4)],
+                              session=FORK))
+    assert skip_reason(fork, 1, 4, judged_uuids=store) == "nothing-new"  # only tool traffic is new
+    grown = read_session(write(root, original + [asst("one more thing", 3)], session=SENDER))
+    assert skip_reason(grown, 1, 3, judged_uuids=store) is None  # control: new agent text
+
+
+def test_a_judged_line_without_a_uuid_counts_as_new_when_it_has_text(root):
+    no_uuid = asst("written by an old client", 3)
+    del no_uuid["uuid"]
+    rows = [typed("one", 1), asst("a1", 2), no_uuid, typed("two", 4)]
+    sp = build_spine(read_session(write(root, rows)), 3, 4, judged_uuids={"u-1", "a-2"})
+    assert sp.stretch_new[1] is True
+    blank = {"type": "file-history-snapshot", "messageId": "m"}  # bookkeeping: no uuid, no text
+    sp = build_spine(read_session(write(root, rows[:2] + [blank, rows[3]], session=FORK)), 3, 4,
+                     judged_uuids={"u-1", "a-2"})
+    assert sp.stretch_new[1] is False
