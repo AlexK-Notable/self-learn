@@ -23,23 +23,29 @@ The steps, in order:
    the model.
 3. **Range.** A main-session pointer past the judged range's end:
    ``out-of-range``. A lesson or sighting needs an evidence item inside the
-   range, a rule check's situation must be inside it. A subagent pointer is
-   inside only when its subagent was launched in a new stretch.
-4. **Quotes.** First against the redacted text the model was shown (exact,
-   then folded), then ``refs.check_quote`` against the raw file: ``nearby``
+   range, a rule check's situation must be inside it. A subagent pointer
+   must name a log the spine listed (linked to a launch at or before the
+   judged end, or unlinked but begun by then), must not have been written
+   after the judged end, and is inside only when its subagent was launched
+   in a new stretch.
+4. **Quotes.** A ``⏎`` the spine showed for a line break is read back as
+   one. First against the redacted text the model was shown (exact, then
+   folded), then ``refs.check_quote`` against the raw file: ``nearby``
    and ``elsewhere_in_file`` move the ref (``corrected_from`` keeps the cited
    line) and the moved ref must still pass step 3; ``stitched`` and
    ``not_found`` drop the item. A quote is moved only to a line of the
    same role as the cited one: words found only on another speaker's line
    (a forged ``YOU:`` inside an agent's message, say) are ``quote-not-found``,
-   never the cited speaker's words. A kept quote that holds a ``[redacted:``
-   placeholder keeps its ref but is stored as :data:`QUOTE_WITHHELD`, and is
+   never the cited speaker's words. A kept quote that the raw entry does
+   not hold (it holds a ``[redacted:…]`` placeholder, or the start or end of
+   one) keeps its ref but is stored as :data:`QUOTE_WITHHELD`, and is
    counted (:attr:`CheckResult.quote_redacted`): the steward re-checks
-   stored quotes against the raw transcript, where a placeholder never
-   matches.
+   stored quotes against the raw transcript, where it could never match.
 5. **Moments already judged.** Evidence and a rule check's situation whose
    uuid is in the judged-uuid store: ``already-judged``. A second evidence
-   item of one lesson or sighting at the same moment: ``duplicate``.
+   item of one lesson or sighting at the same moment, a second sighting of
+   one record at a moment an earlier one cites, and a second rule check of
+   one record at the same situation: ``duplicate``.
 6. **Whole items.** No evidence left: ``no-evidence``. A correction or a
    standing preference with no evidence the person typed (role ``user``;
    an agent-written turn is role ``agent``): ``no-user-evidence``. A
@@ -53,7 +59,11 @@ The steps, in order:
 7. **Turns.** A main-session ref gets the number of typed turns at or
    before it; a subagent ref its launch's, when linked.
 8. **Secrets.** Every free-text field passes ``scan.redact``; hits are
-   redacted in place and counted in ``redactions``.
+   redacted in place and counted in ``redactions``. A placeholder can be
+   longer than what it replaced: a field that outgrows its limit is cut back
+   to it and counted (:attr:`CheckResult.cut_to_limit`). No drop reason fits
+   (the contract's reasons all name the model's fault), so the lesson is
+   kept.
 
 This module reads transcripts only; it writes nothing.
 """
@@ -69,13 +79,13 @@ from typing import Any, Container, Sequence
 from .. import refs
 from ..scan import redact
 from . import contract
-from .spine import Spine
+from . import spine as spine_mod
+from .spine import LINE_BREAK, Spine
 
 __all__ = [
     "CheckResult",
     "CheckerError",
     "QUOTE_WITHHELD",
-    "REDACTION_MARK",
     "USER_SHAPES",
     "check_output",
     "empty_output",
@@ -86,8 +96,6 @@ __all__ = [
 #: placeholder (plan §3.5): the ref is kept, the text is not. The engine
 #: stores no quote for such an evidence item when it lands the lesson.
 QUOTE_WITHHELD = "[quote withheld: it held a redaction placeholder]"
-#: How ``scan.redact`` marks what it took out.
-REDACTION_MARK = "[redacted:"
 #: Lesson shapes that are the person's own words: their evidence must hold a
 #: turn the person typed.
 USER_SHAPES: tuple[str, ...] = ("correction", "standing-preference")
@@ -106,10 +114,34 @@ class CheckerError(RuntimeError):
 class CheckResult:
     """``checked`` is the ``miner-output/1`` document; ``quote_redacted``
     counts quotes stored as :data:`QUOTE_WITHHELD` (the run record's
-    ``quote-redacted``)."""
+    ``quote-redacted``); ``cut_to_limit`` counts free-text fields that
+    redaction made longer than their limit and that were cut back to it
+    (for the run record too)."""
 
     checked: dict[str, Any]
     quote_redacted: int
+    cut_to_limit: int = 0
+
+
+def _shown_match(quote: str, shown: str) -> bool:
+    return quote in shown or bool(refs.fold(quote)) and refs.fold(quote) in refs.fold(shown)
+
+
+def _moment(ref: refs.Ref) -> tuple[str | None, ...]:
+    """What makes two refs one moment: the entry's uuid, else its place."""
+    return (ref.uuid,) if ref.uuid is not None else (ref.subagent_file, str(ref.line))
+
+
+def _matches_raw(quote: str, ref: refs.Ref, roots: Sequence[Path]) -> bool:
+    """Would the steward's re-check (``refs.check_quote`` against the raw
+    file) find ``quote`` in ``ref``'s own entry, exactly or folded?"""
+    try:
+        lines = refs._lines(refs.locate(ref, roots=roots))  # pyright: ignore[reportPrivateUsage]
+    except (refs.RefError, OSError):
+        return False
+    entry = refs._entry(lines[ref.line - 1])  # pyright: ignore[reportPrivateUsage]
+    raw = refs._raw_text(entry) if entry else ""  # pyright: ignore[reportPrivateUsage]
+    return refs._match(quote, raw) is not None  # pyright: ignore[reportPrivateUsage]
 
 
 def quote_withheld(quote: object) -> bool:
@@ -233,14 +265,24 @@ class _Checker:
         self.drops: list[dict[str, Any]] = []
         self.redactions = 0
         self.quote_redacted = 0
+        self.cut_to_limit = 0
+        self.sighted: set[tuple[str, tuple[str | None, ...]]] = set()
+        self.ruled: set[tuple[str, tuple[str | None, ...]]] = set()
 
     # ---- helpers
 
-    def text(self, value: Any) -> Any:
+    def text(self, value: Any, limit: int) -> Any:
+        """Step 8 for one free-text field: redacted in place. A placeholder
+        can be longer than what it replaces, so a field the model wrote
+        within its limit can outgrow it: it is then cut to the limit (its
+        last character ``…``) and counted, never refused."""
         if not isinstance(value, str):
             return value
         out, hits = redact(value)
         self.redactions += len(hits)
+        if len(out) > limit:
+            out = out[: limit - 1] + "…"
+            self.cut_to_limit += 1
         return out
 
     def drop(self, item: str, reason: str, detail: str = "") -> None:
@@ -301,8 +343,15 @@ class _Checker:
         return ref
 
     def after_end(self, ref: refs.Ref) -> None:
-        if ref.subagent_file is None and ref.line > self.spine.last_line:
-            raise _Fail("out-of-range", f"line {ref.line} is past the judged range's end (L{self.spine.last_line})")
+        if ref.subagent_file is None:
+            if ref.line > self.spine.last_line:
+                raise _Fail("out-of-range", f"line {ref.line} is past the judged range's end (L{self.spine.last_line})")
+            return
+        # a subagent's log has its own lines: it is cut where the judged range
+        # ends in time (a subagent can outlive a halt of its session)
+        at, end = spine_mod.epoch(ref.entry_ts), self.spine.end_ts
+        if at is not None and end is not None and at > end:
+            raise _Fail("out-of-range", f"subagent line {ref.line} was written after the judged range's end")
 
     def pointer(self, point: dict[str, Any]) -> dict[str, Any]:
         ref = self.resolve(point)
@@ -315,8 +364,12 @@ class _Checker:
         ref = self.resolve(point)
         if moments and self.judged(ref):
             raise _Fail("already-judged", f"line {ref.line} was judged in an earlier run")
+        # the spine shows a line break inside a message as " ⏎ ": a quote
+        # copied across one names the transcript's line break
         quote: str = point["quote"]
         shown = refs.entry_text(ref, roots=self.roots)
+        if LINE_BREAK.strip() in quote and not _shown_match(quote, shown):
+            quote = quote.replace(LINE_BREAK, "\n").replace(LINE_BREAK.strip(), "\n")
         corrected_from = None
         if quote in shown:
             verdict = "exact"
@@ -340,8 +393,10 @@ class _Checker:
                 raise _Fail("quote-stitched", v.detail)
             else:
                 raise _Fail("quote-not-found", f"line {ref.line}")
-        stored = self.text(quote)
-        if REDACTION_MARK in stored:
+        stored = self.text(quote, contract.QUOTE_MAX)
+        if not _matches_raw(stored, ref, self.roots):
+            # it matched only the redacted text (it holds a placeholder, or part
+            # of one): the steward's re-check against the raw file never would
             stored = QUOTE_WITHHELD
             self.quote_redacted += 1
         return (
@@ -402,7 +457,7 @@ class _Checker:
         if ver is not None:
             try:
                 verification, _ref = self.quoted(ver, moments=False)
-                verification["how"] = self.text(ver["how"])
+                verification["how"] = self.text(ver["how"], contract.HOW_MAX)
             except _Fail as f:
                 self.drop(f"{lid}.verification", "verification-unchecked", f.reason)
 
@@ -411,7 +466,7 @@ class _Checker:
         if cost is not None:
             try:
                 incident_cost = self.pointer(cost)
-                incident_cost["text"] = self.text(cost["text"])
+                incident_cost["text"] = self.text(cost["text"], contract.COST_TEXT_MAX)
             except _Fail as f:
                 self.drop(f"{lid}.incident_cost", "incident-cost-unresolved", f.reason)
 
@@ -422,15 +477,16 @@ class _Checker:
             except _Fail as f:
                 self.drop(f"{lid}.steps[{i}]", f.reason, f.detail)
                 continue
-            p["what"] = self.text(step["what"])
+            p["what"] = self.text(step["what"], contract.STEP_WHAT_MAX)
             steps.append(p)
         if lesson["steps"] and len(steps) < contract.MIN_STEPS:
             self.drop(f"{lid}.steps", "steps-unresolved", f"{len(steps)} of {len(lesson['steps'])} steps resolved")
             steps = []
 
         out = dict(lesson)
-        for key in ("trigger", "instruction", "fact", "context", "why_durable"):
-            out[key] = self.text(lesson.get(key))
+        for key in ("trigger", "instruction", "fact", "context"):
+            out[key] = self.text(lesson.get(key), contract.TEXT_MAX)
+        out["why_durable"] = self.text(lesson["why_durable"], contract.WHY_DURABLE_MAX)
         out.update(evidence=evidence, steps=steps, verification=verification, incident_cost=incident_cost)
         return out
 
@@ -442,6 +498,11 @@ class _Checker:
         evidence, ev_refs = self.evidence(base, s["evidence"])
         if not self.whole(base, ev_refs):
             return None
+        keys = {(s["record"], _moment(r)) for r in ev_refs}
+        if keys & self.sighted:
+            self.drop(base, "duplicate", "an earlier sighting of this record cites the same moment")
+            return None
+        self.sighted |= keys
         return {"record": s["record"], "evidence": evidence}
 
     def rule_check(self, i: int, c: dict[str, Any]) -> dict[str, Any] | None:
@@ -461,6 +522,11 @@ class _Checker:
         except _Fail as f:
             self.drop(base, f.reason, f.detail)
             return None
+        key = (c["record"], _moment(ref))
+        if key in self.ruled:
+            self.drop(base, "duplicate", "an earlier rule check of this record names the same situation")
+            return None
+        self.ruled.add(key)
         action = None
         if c.get("action") is not None:
             try:
@@ -521,4 +587,4 @@ def check_output(
     errors = contract.validate_checked_output(checked)
     if errors:
         raise CheckerError("; ".join(errors[:5]))
-    return CheckResult(checked, ck.quote_redacted)
+    return CheckResult(checked, ck.quote_redacted, ck.cut_to_limit)

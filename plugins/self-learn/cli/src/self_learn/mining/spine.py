@@ -41,9 +41,10 @@ This module reads transcripts only; it writes nothing.
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Container, Iterable, Sequence
+from typing import Any, Callable, Container, Iterable, Sequence
 
 from .. import provenance, refs
 from ..scan import redact
@@ -63,6 +64,7 @@ __all__ = [
     "SpineFlag",
     "YOU_INDENT",
     "build_spine",
+    "epoch",
     "estimate_tokens",
     "flatten",
     "indent_typed",
@@ -169,6 +171,39 @@ def judged_range(start_line: int, n_lines: int, end: int | None) -> tuple[int, i
 # --------------------------------------------------------------- subagents
 
 
+def epoch(ts: object) -> float | None:
+    """An entry's ISO ``timestamp`` in epoch seconds; None when absent or bad."""
+    if not isinstance(ts, str):
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _end_ts(entries: Sequence[dict[str, Any] | None]) -> float | None:
+    times = [t for e in entries if e is not None and (t := epoch(e.get("timestamp"))) is not None]
+    return max(times) if times else None
+
+
+def _begun_by(log: Path, end_ts: float | None) -> bool:
+    """An unlinked subagent log is listed only when its first entry was
+    written at or before the judged end (a log begun later is past a halt,
+    or not yet part of what is judged)."""
+    if end_ts is None:
+        return False
+    try:
+        lines = refs._lines(log)  # pyright: ignore[reportPrivateUsage]
+    except OSError:
+        return False
+    for raw in lines:
+        e = refs._entry(raw)  # pyright: ignore[reportPrivateUsage]
+        at = epoch(e.get("timestamp")) if e is not None else None
+        if at is not None:
+            return at <= end_ts
+    return False
+
+
 def _first_user_text(path: Path) -> str | None:
     try:
         lines = refs._lines(path)  # pyright: ignore[reportPrivateUsage]
@@ -241,7 +276,7 @@ def _moment_uuids(
     session: Session, first: int, last: int, typed: Sequence[int]
 ) -> list[tuple[int, str | None]]:
     """(line, uuid) of every typed turn and assistant text entry in the
-    judged lines: the moments the judged-uuid store tracks."""
+    judged lines: what ``nothing-new`` reads."""
     typed_set = set(typed)
     out: list[tuple[int, str | None]] = []
     for i in range(first, last + 1):
@@ -312,16 +347,20 @@ class Spine:
     new_turns: tuple[int, ...]
     #: ``stretch_new[k]``: stretch ``k`` holds a judged line not yet judged.
     stretch_new: tuple[bool, ...]
-    #: ``{subagent id: launch line or None}``.
+    #: ``{subagent id: launch line or None}``: the logs the spine lists --
+    #: launched at or before the judged end, or unlinked but begun by then.
     subagents: dict[str, int | None]
     flags: tuple[SpineFlag, ...]
     tokens_est: int
     over_budget: bool
     redactions: int
-    #: Uuids of the typed turns and assistant text entries in the judged
-    #: lines: what the engine adds to the judged-uuid store once this
-    #: session's output has landed (never earlier).
+    #: Uuids of every entry in the judged lines: what the engine adds to the
+    #: judged-uuid store once this session's output has landed (never
+    #: earlier), so a fork's copy of any of them reads as already judged.
     moment_uuids: frozenset[str] = field(default_factory=frozenset)
+    #: The latest entry time (epoch seconds) at or before the judged end:
+    #: a subagent's log is cut there. None when no entry carries a time.
+    end_ts: float | None = None
 
     @property
     def first_turn(self) -> int | None:
@@ -422,8 +461,11 @@ def _facts(
     lines: Iterable[int],
     cwd: str | None,
     subagents: dict[str, int | None],
+    scrub: Callable[[str], str],
 ) -> list[str]:
-    """The stretch's facts, counted by code (old spec §5.3 item 4)."""
+    """The stretch's facts, counted by code (old spec §5.3 item 4). Every
+    text taken from the transcript passes ``scrub`` (the redactor) before it
+    is cut: a cut first could leave a secret's head too short to be found."""
     calls = 0
     edited: list[str] = []
     failed: list[str] = []
@@ -442,20 +484,20 @@ def _facts(
             bt = b.get("type")
             if etype == "assistant" and bt == "tool_use":
                 calls += 1
-                name = str(b.get("name", "?"))
+                name = scrub(str(b.get("name", "?")))
                 raw_inp = b.get("input")
                 inp: dict[str, Any] = raw_inp if isinstance(raw_inp, dict) else {}
                 key = None
                 shape = name
                 if name == "Bash":
-                    cmd = str(inp.get("command", ""))
+                    cmd = scrub(str(inp.get("command", "")))
                     shape = f"Bash `{_clip(cmd, 80)}`"
                     key = "Bash:" + " ".join(cmd.split()[:2])  # miner._norm_command's shape
                     clusters.setdefault(key, [0, 0])[0] += 1
                 elif name in _EDIT_TOOLS:
                     target = inp.get("file_path") or inp.get("notebook_path")
                     if isinstance(target, str) and target:
-                        rel = _rel(target, cwd)
+                        rel = scrub(_rel(target, cwd))
                         if rel not in edited:
                             edited.append(rel)
                         shape = f"{name} {_clip(rel, 80)}"
@@ -541,16 +583,28 @@ def build_spine(
     red = _Redactor()
     entries = session.entries[:last_line]
     typed = tuple(contract.typed_turn_lines(entries, sent=sent))
-    subagents = subagent_launches(session, last_line)
+    end_ts = _end_ts(entries)
+    subagents = {
+        sid: at
+        for sid, at in subagent_launches(session, last_line).items()
+        if at is not None or _begun_by(session.subagent_dir / f"agent-{sid}.jsonl", end_ts)
+    }
     cwd = next((e["cwd"] for e in entries if e is not None and isinstance(e.get("cwd"), str) and e["cwd"]), None)
 
     def judged(i: int) -> bool:
         return first_line <= i <= last_line
 
     def fresh(i: int) -> bool:
+        """A judged line holding an entry not yet judged: one whose uuid the
+        store lacks (any entry: a fork copies tool results, relays and
+        agent-written turns too), or a uuid-less entry with text."""
         e = session.entries[i - 1]
-        uid = e.get("uuid") if e is not None else None
-        return judged(i) and not (isinstance(uid, str) and uid in judged_uuids)
+        if not judged(i) or e is None:
+            return False
+        uid = e.get("uuid")
+        if isinstance(uid, str):
+            return uid not in judged_uuids
+        return bool(refs._raw_text(e).strip())  # pyright: ignore[reportPrivateUsage]
 
     bounds = [0, *typed, last_line + 1]  # stretch k spans (bounds[k], bounds[k+1])
     stretch_lines = [range(bounds[k] + 1, bounds[k + 1]) for k in range(len(typed) + 1)]
@@ -622,7 +676,7 @@ def build_spine(
         if k == 0 and shown:
             out.append("BEFORE T1:")
         out.extend(shown)
-        parts = [red(x) for x in _facts(session, stretch_lines[k], cwd, subagents)]
+        parts = [flatten(x) for x in _facts(session, stretch_lines[k], cwd, subagents, red.raw)]
         if parts:
             fx = _Facts(parts, k, new)
             facts_all.append(fx)
@@ -656,7 +710,9 @@ def build_spine(
                     total -= item.shorten(keep)
         text = render()
     tokens = estimate_tokens(text)
-    moments = _moment_uuids(session, first_line, last_line, typed)
+    judged_ids = (
+        e.get("uuid") for e in session.entries[first_line - 1 : last_line] if e is not None
+    )
     return Spine(
         text=text,
         session=session,
@@ -670,5 +726,6 @@ def build_spine(
         tokens_est=tokens,
         over_budget=tokens > spine_tokens,
         redactions=red.hits,
-        moment_uuids=frozenset(uid for _line, uid in moments if uid is not None),
+        moment_uuids=frozenset(uid for uid in judged_ids if isinstance(uid, str) and uid),
+        end_ts=end_ts,
     )

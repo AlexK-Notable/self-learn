@@ -354,7 +354,7 @@ def test_s7_a_tagged_agent_turn_is_agent_written_never_you(root):
     assert f"AGENT-WRITTEN (L3): <agent-message>{BRIEF}</agent-message>" in sp.text
     assert you_lines(sp.text) == ["YOU: set up the worker", "YOU: how is it going?"]
     assert "AGENT (L4): working on the brief" in sp.text
-    assert "u-3" not in sp.moment_uuids  # not a typed turn, so not a judged moment
+    assert "u-3" in sp.moment_uuids  # every judged entry is a moment the store will hold
 
 
 def test_s7_a_sent_matched_turn_is_agent_written_only_with_the_sends(root):
@@ -507,3 +507,65 @@ def test_a_sidechain_row_is_never_the_person(root):
     assert "subagent: I typed this" not in sp.text
     plain = whole(write(root, [typed("go", 1), typed("subagent: I typed this", 2)], session=FORK))
     assert "YOU: subagent: I typed this" in plain.text  # control: without the sidechain flag it is a turn
+
+
+# ------------------------------------------------------------ fix round
+
+
+def test_s5_a_secret_straddling_a_facts_cut_is_redacted_before_the_cut(root):
+    cmd = prose("deploy", 70) + " " + TOKEN + " now"          # the token spans character 80
+    path = "/work/repo/" + prose("dir", 66) + "/" + TOKEN + ".py"  # so does this path's
+    rows = [typed("go", 1),
+            use("Bash", {"command": cmd}, 2, "b1"), result("b1", "no", 3, error=True),
+            use("Edit", {"file_path": path}, 4, "e1"), result("e1", "no", 5, error=True),
+            typed("next", 6)]
+    sp = whole(write(root, rows))
+    facts = next(ln for ln in sp.text.splitlines() if ln.startswith("FACTS:"))
+    assert "FAILED: Bash `deploy deploy" in facts and ", Edit dir dir" in facts  # control: both shapes shown
+    assert "ghp_" not in sp.text and TOKEN[:12] not in sp.text
+    assert facts.count("[redacted") == 3  # the edited path, and both shapes (each cut inside its placeholder)
+
+
+def test_a_fork_s_copied_tool_results_relays_and_agent_turns_are_already_mined(root):
+    original = [
+        typed("run the export", 1),                                   # L1 T1
+        use("Bash", {"command": "make export"}, 2, "b1"),             # L2
+        result("b1", "exported", 3),                                  # L3 tool result
+        relay("a coordinator note", 4),                               # L4 relay
+        typed("<agent-message>also check the logs</agent-message>", 5),  # L5 agent-written
+    ]
+    first = whole(write(root, original))
+    assert {"t-3", "r-4", "u-5"} <= first.moment_uuids  # every judged entry, not only turns and text
+    fork = write(root, original + [typed("new in the fork", 6), asst("ok", 7)], session=FORK)
+    sp = whole(fork, judged_uuids=first.moment_uuids)
+    assert sp.stretch_new == (False, False, True)
+    assert sp.new_turns == (2,)
+    plain = whole(fork)
+    assert plain.stretch_new == (False, True, True)  # control: without the store the copy is new
+
+
+def test_a_subagent_log_begun_past_the_judged_end_is_not_listed(root):
+    rows = [typed("go", 1), asst("working", 2), typed("next", 3), asst("done", 4),
+            use("Agent", {"prompt": "Review the change."}, 5, "g1"),         # L5: past the judged end (L4)
+            result("g1", "done", 6, toolUseResult={"agentId": "late01"})]
+    path = write(root, rows)
+    write(root, [typed("Review the change.", 30), asst("looks fine", 31)], sub="agent-late01.jsonl")
+    write(root, [typed("An earlier helper.", 2), asst("helped", 3)], sub="agent-early1.jsonl")  # unlinked, begun in time
+    sp = build_spine(read_session(path), 1, 4)
+    assert sp.subagents == {"early1": None}
+    assert "subagent logs: early1" in sp.text
+    whole_sp = whole(path)
+    assert whole_sp.subagents == {"early1": None, "late01": 5}  # control: judged to the end, it is listed
+
+
+def test_skip_reasons_come_in_the_plan_s_order(root):
+    # no typed turn and no marker: no-typed-turns comes first
+    bare = [{"type": "user", "uuid": "x-1", "timestamp": _ts(1),
+             "message": {"role": "user", "content": "<system-reminder>a harness note</system-reminder>"}},
+            asst("noted", 2)]
+    s = read_session(write(root, bare))
+    assert not contract.has_typed_turn_marker(s.entries)  # it lacks the marker too
+    assert skip_reason(s, 1, 2) == "no-typed-turns"
+    # no marker and nothing new: no-marker comes first
+    old = read_session(write(root, [premarker("an old turn", 1), asst("ok", 2)], session=FORK))
+    assert skip_reason(old, 1, 2, judged_uuids={"u-1", "a-2"}) == "no-marker"

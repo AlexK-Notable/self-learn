@@ -620,3 +620,116 @@ def test_a_subagent_log_row_is_never_the_person(roots):
     gotcha = run(sp, output([lesson(shape="verified-gotcha",
                                     evidence=[{"subagent": "abc123", "line": 2, "quote": "never push to main"}])]), roots)
     assert ev(gotcha)["ref"]["role"] == "subagent"  # control: kept, as the subagent's
+
+
+# ------------------------------------------------------------ fix round
+
+
+def test_redaction_that_outgrows_a_limit_cuts_the_field_and_counts_it(roots):
+    sp = spine_of(roots)
+    secret = "token=abcdefgh"  # 14 characters; its placeholder is 32
+    why = ("Recurs often. " * 30)[: contract.WHY_DURABLE_MAX - len(secret) - 1] + " " + secret
+    instr = ("Run the check first. " * 60)[: contract.TEXT_MAX - len(secret) - 1] + " " + secret
+    assert len(why) == contract.WHY_DURABLE_MAX and len(instr) == contract.TEXT_MAX
+    res = run(sp, output([lesson(why_durable=why, instruction=instr)]), roots)
+    got = res.checked["lessons"][0]
+    assert res.checked["status"] == "ok" and reasons(res) == []
+    assert len(got["why_durable"]) == contract.WHY_DURABLE_MAX and got["why_durable"].endswith("…")
+    assert len(got["instruction"]) == contract.TEXT_MAX and secret not in got["instruction"]
+    assert res.cut_to_limit == 2 and res.checked["redactions"] == 2
+    assert run(sp, output([lesson()]), roots).cut_to_limit == 0  # control
+
+
+def test_a_quote_ending_inside_a_placeholder_is_withheld(roots):
+    sp = spine_of(roots, _secret_rows())
+    for quote in ("stop. you pasted [redacted", "stop. you pasted [reda"):
+        res = run(sp, output([lesson(evidence=[{"line": 12, "quote": quote}])]), roots)
+        assert ev(res)["quote"] == QUOTE_WITHHELD and res.quote_redacted == 1, quote
+    res = run(sp, output([lesson(evidence=[{"line": 12, "quote": "stop. you pasted"}])]), roots)
+    assert ev(res)["quote"] == "stop. you pasted" and res.quote_redacted == 0  # control
+
+
+def test_a_quote_copied_across_a_shown_line_break_is_found(roots):
+    rows = copy.deepcopy(BASE)
+    rows[17] = asst("First line of the report.\nSecond line names the export path.", 18)
+    rows[16] = asst("A real ⏎ sign in the text.", 17)
+    sp = spine_of(roots, rows)
+    assert "AGENT (L18): First line of the report. ⏎ Second line names the export path." in sp.text
+    res = run(sp, output([lesson(shape="verified-gotcha",
+                                 evidence=[{"line": 18, "quote": "the report. ⏎ Second line"},
+                                           {"line": 17, "quote": "A real ⏎ sign"}])]), roots)
+    assert reasons(res) == []
+    first, second = res.checked["lessons"][0]["evidence"]
+    assert (first["verdict"], first["quote"]) == ("exact", "the report.\nSecond line")
+    assert (second["verdict"], second["quote"]) == ("exact", "A real ⏎ sign")  # a real sign is kept as is
+
+
+def test_identical_sightings_and_rule_checks_are_duplicates(roots):
+    flag = SpineFlag(REC, "user", 2, "lexical", "Trigger: t — Instruction: i")
+    sp = spine_of(roots, flags=[flag])
+    s = {"record": REC, "evidence": [{"line": 19, "quote": "always run the checks"}]}
+    other = {"record": REC, "evidence": [{"line": 12, "quote": "you never ran make check"}]}
+    rc = {"record": REC, "outcome": "suspected-violation", "situation": {"line": 11}, "action": None}
+    res = run(sp, output(sightings=[s, dict(s), other], rule_checks=[rc, dict(rc, outcome="cannot-tell"),
+                                                                   dict(rc, situation={"line": 13})]), roots)
+    assert reasons(res) == [("sightings[1]", "duplicate"), ("rule_checks[1]", "duplicate")]
+    assert len(res.checked["sightings"]) == 2 and len(res.checked["rule_checks"]) == 2  # control: others kept
+
+
+def test_a_rule_check_on_a_judged_moment_is_already_judged(roots):
+    flag = SpineFlag(REC, "user", 2, "lexical", "Trigger: t — Instruction: i")
+    sp = spine_of(roots, flags=[flag])
+    out = output(rule_checks=[{"record": REC, "outcome": "cannot-tell", "situation": {"line": 13}, "action": None}])
+    assert reasons(run(sp, out, roots)) == []  # control
+    assert reasons(run(sp, out, roots, judged_uuids={"a-13"})) == [("rule_checks[0]", "already-judged")]
+
+
+def test_a_verification_may_cite_a_judged_moment(roots):
+    sp = spine_of(roots)
+    ver = {"line": 13, "quote": "I did not run it", "how": "the agent admitted it"}
+    res = run(sp, output([lesson(verification=ver)]), roots, judged_uuids={"a-13"})
+    assert reasons(res) == [] and res.checked["lessons"][0]["verification"]["ref"]["line"] == 13
+
+
+def test_over_count_keeps_the_first_lessons_and_evidence(roots):
+    sp = spine_of(roots)
+    many = [lesson(f"L{i}", why_durable=f"lesson number {i}") for i in range(1, 11)]
+    many.append(lesson("L5", why_durable="the eleventh"))
+    res = run(sp, output(many), roots)
+    assert [x["why_durable"] for x in res.checked["lessons"]] == [f"lesson number {i}" for i in range(1, 11)]
+    quotes = [{"line": 12, "quote": "you never ran make check"}, {"line": 13, "quote": "I did not run it"},
+              {"line": 18, "quote": "The check failed"}, {"line": 19, "quote": "always run the checks"},
+              {"line": 11, "quote": "every check passes"}]
+    res = run(sp, output([lesson(evidence=quotes)]), roots)
+    assert reasons(res) == [("L1.evidence[4]", "over-count")]
+    assert [e["ref"]["line"] for e in res.checked["lessons"][0]["evidence"]] == [12, 13, 18, 19]
+
+
+def test_a_copied_tool_result_is_already_judged(roots):
+    rows = copy.deepcopy(BASE)
+    rows[13] = {"type": "user", "uuid": "t-14", "timestamp": _ts(14), "sessionId": SID, "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "x1", "content": "make: *** [check] Error 2"}]}}
+    first = spine_of(roots, rows, first=1)  # an earlier run judged the whole file
+    assert "t-14" in first.moment_uuids
+    sp = spine_of(roots, rows)
+    gotcha = lesson(shape="verified-gotcha", evidence=[{"line": 14, "quote": "Error 2"}])
+    assert reasons(run(sp, output([gotcha]), roots)) == []  # control
+    res = run(sp, output([gotcha]), roots, judged_uuids=first.moment_uuids)
+    assert reasons(res)[0] == ("L1.evidence[0]", "already-judged")
+
+
+def test_a_subagent_log_past_the_judged_end_is_not_evidence(roots):
+    rows = copy.deepcopy(BASE)
+    rows[14] = {"type": "assistant", "uuid": "a-15", "timestamp": _ts(15), "message": {"content": [
+        {"type": "tool_use", "id": "g1", "name": "Agent", "input": {"prompt": "Check the export path."}}]}}
+    path = write(roots[0], rows)
+    write(roots[0], [typed("Check the export path.", 15), asst("The export path is wrong in config.", 16),
+                     asst("Later: the review found more.", 59)], sub="agent-abc123.jsonl")
+    s = read_session(path)
+    gotcha = lambda line, q: lesson(shape="verified-gotcha", evidence=[{"subagent": "abc123", "line": line, "quote": q}])
+    res = run(build_spine(s, 11, 20), output([gotcha(2, "The export path is wrong")]), roots)
+    assert reasons(res) == []  # control: written within the judged range
+    res = run(build_spine(s, 11, 20), output([gotcha(3, "the review found more")]), roots)
+    assert reasons(res)[0] == ("L1.evidence[0]", "out-of-range")  # written after the judged end (L20, 10:00:20)
+    res = run(build_spine(s, 11, 14), output([gotcha(2, "The export path is wrong")]), roots)
+    assert reasons(res)[0] == ("L1.evidence[0]", "line-unresolved")  # launched past the end: not listed

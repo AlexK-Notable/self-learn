@@ -2606,12 +2606,17 @@ judged-uuid store** (`mining/spine.py`, `mining/check.py`, `mining/uuids.py`).
   `interrupted`, `compacted`) and the rule-situation flags matched there. A
   subagent log is linked to its launch by the launch's
   `toolUseResult.agentId`, else by its first user text equalling the
-  launch's prompt. Every piece passes `scan.redact` before any shortening.
-  No shown text may start a line of the spine: every text but a typed turn
+  launch's prompt; the header lists a log only when it was launched at or
+  before the judged end, or is unlinked and its first entry was written by
+  then (a log begun past a halt is never shown). Every piece passes
+  `scan.redact` before any shortening or cut, the command and path shapes of
+  `FACTS` included. No shown text may start a line of the spine: every text but a typed turn
   is put on one line (each line break shown as ` ⏎ `), and a typed turn's
   continuation lines are indented under `YOU:`, so text inside an agent
   message, an agent-written turn, a relay, a command or a flag can never
-  read as a `T<k>` or `YOU:` line.
+  read as a `T<k>` or `YOU:` line. A stretch or typed turn is new when one of
+  its judged lines holds an entry whose uuid the judged-uuid store lacks
+  (any entry, not only typed turns and agent text).
   Over `miner.spine_tokens` (estimated as `ceil(chars / 2.5)`) the spine
   shortens mined stretches' agent messages to 400 + 400 characters (longest
   first), then mined stretches' facts to their first part, then new
@@ -2628,19 +2633,33 @@ judged-uuid store** (`mining/spine.py`, `mining/check.py`, `mining/uuids.py`).
   dropped as `out-of-range`; a quote found only on another line is moved
   there (`nearby`, `elsewhere_in_file`) only when that line has the cited
   line's role, so words found only on another speaker's line (a forged
-  `YOU:` inside an agent message) are `quote-not-found`; a `correction` or `standing-preference` with no
+  `YOU:` inside an agent message) are `quote-not-found`; a ` ⏎ ` the spine
+  showed for a line break is read back as one before a quote is matched,
+  unless the quote matches the entry as written; a `correction` or `standing-preference` with no
   evidence item of role `user` is `no-user-evidence` (role `agent` is not
   `user`); a Trigger, Instruction or Fact with more than one non-empty line
-  is `multi-line-loaded-text`. A kept quote that holds a `[redacted:`
-  placeholder (after the in-place redaction of step 8) keeps its ref and
-  verdict and is stored as `mining.check.QUOTE_WITHHELD` (`"[quote withheld:
+  is `multi-line-loaded-text`. A subagent pointer must name a log the spine
+  listed, and a line of it written after the judged end's time is
+  `out-of-range`. A second sighting of one record citing a moment an earlier
+  one cites, and a second rule check of one record at the same situation,
+  are `duplicate`. Step 8's redaction can make a field longer than its limit
+  (a placeholder can outgrow what it replaced); the field is then cut back
+  to its limit, ending in `…`, and counted (`CheckResult.cut_to_limit`, for
+  the run record): no drop reason fits, since each names a fault of the
+  model's. A kept quote that the raw entry does not hold once redacted (it
+  holds a `[redacted:…]` placeholder, or only the start or end of one)
+  keeps its ref and verdict and is stored as `mining.check.QUOTE_WITHHELD` (`"[quote withheld:
   it held a redaction placeholder]"`), counted for the run record's
   `quote-redacted`; the engine lands such an item without a `quote`, since
   the steward's re-check against the raw transcript could never match a
   placeholder. A checked document that fails `validate_checked_output` is a
-  checker defect and raises `CheckerError`.
+  checker defect and raises `CheckerError`; nothing the model writes within
+  its contract can cause it.
 - *The judged-uuid store* is `<cache>/miner/judged-uuids.json`, a JSON object
-  `{uuid: "YYYY-MM-DD"}` (the first date each moment was judged). Entries are
+  `{uuid: "YYYY-MM-DD"}` (the first date each moment was judged). It holds
+  the uuid of every entry in the judged lines of each landed session
+  (`Spine.moment_uuids`): tool results, relays and agent-written turns too,
+  so a fork's copy of any of them is `already-judged`. Entries are
   added only by an explicit call after a session's output has landed;
   entries judged more than 120 days ago are pruned once per run; the file is
   written with `fsops.atomic_write`. A missing file is an empty store; an
