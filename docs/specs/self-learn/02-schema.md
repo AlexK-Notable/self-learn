@@ -2671,8 +2671,15 @@ judged-uuid store** (`mining/spine.py`, `mining/check.py`, `mining/uuids.py`).
   judged more than 120 days ago are pruned by one `DELETE` per run. Every
   call opens its own connection and closes it, so none is shared between
   threads; a run's spines and checks read one snapshot taken before the run.
-  A missing file is an empty store; an unreadable one reads as empty and is
-  reported as damaged. Measured 2026-10-19 over the last 30 days of
+  A missing file is an empty store. *Amended by R2 (2026-10-19):* a read
+  opens the file read-write without creating it, because a read-only open
+  cannot roll back the hot journal a crash in the middle of an add leaves
+  and read no rows at all; a read that gives up on another process's lock is
+  `locked` (the file is fine, nothing is moved), any other failure is
+  `damaged`. At the start of a night run the engine moves a damaged file
+  aside (`judged-uuids.sqlite.damaged-<UTC time>`, with its journal) and
+  starts empty, never a locked one, and the run record's `judged_uuids` says
+  which happened; a preview never prunes, moves or adds. Measured 2026-10-19 over the last 30 days of
   transcripts (410 files, counts only): 2,898 typed turns and 17,423
   assistant text entries, about 20,300 rows a month before (iii) adds its
   few cited moments; at 120 days about 81,000 rows, an 8.5 MB file whose
@@ -2701,6 +2708,21 @@ Run           = { "contract": "miner-shadow-run/1", "run_id": str, "mode": "test
                   "totals": { "called": int, "skipped": { reason: int }, "not_run": int, "cost_usd": number,
                               "lessons": int, "sightings": int, "rule_checks": int, "drops": { reason: int } } }
 ```
+
+*Amended by R2 (2026-10-19):* the session engine adds optional keys, each
+validated when present (`contract.RUN_OPTIONAL_KEYS`,
+`SESSION_ROW_OPTIONAL_KEYS`): `"preview": bool` (a `mine run --preview`);
+`"counts": { "quote_redacted", "cut_to_limit", "checker_errors",
+"call_failures", "bad_output", "deferred": int, "flag_modes": { mode: int } }`;
+`"judged_uuids": { "state": "ok" | "locked" | "rebuilt" | "damaged",
+"loaded": int, "aside"?: str | null, "pruned"?: int, "added"?: int,
+"add_failed"?: int }`; and on a session row `flag_mode`, `flag_note` (the
+`flags.flag_rules` mode and note, `unavailable` when the lesson index could
+not be built), `flags`, `spine_tokens_est`, `over_budget`, `quote_redacted`,
+`cut_to_limit`, and `error` (`call` or `checker-error` for a called session
+whose out status is `failed`). The run status of a night is `ok`,
+`stopped-ceiling` (the runaway guard stopped calls) or `failed` (every
+called session failed); `mode` is `night`.
 
 `totals` equals what the sessions say (`called`, `skipped` by reason,
 `not_run`), and `load_run` checks the folder against itself: one out file
@@ -2739,8 +2761,9 @@ steward's input). Dropped from the old miner's output: `near_misses`,
 `match.status`, `match.record`, `confidence`, `verified`/`verified_how` (now
 `verification` with a ref), `episode_brief`, the single `quote`+`session`+`line`
 (now `evidence[]`), and the bare `fires` rows (now `rule_checks`). A kept
-lesson becomes a pending record at U5, its evidence items `{ref, quote,
-session, ts: ref.entry_ts, origin}`; that mapping is U5's.
+lesson becomes a pending record, its evidence items `{ref, quote,
+session, ts: ref.entry_ts, origin}`; R2 lands it (`12-transcript-miner.md`
+§13.3).
 
 **The comparison — `miner-compare/1`** (`runs/<run_id>/compare/report.json`,
 written by `python -m self_learn.mining.compare report`, which writes only

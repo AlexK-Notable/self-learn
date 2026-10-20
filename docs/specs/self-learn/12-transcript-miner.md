@@ -1032,3 +1032,97 @@ are their words. Trigger, Instruction and Fact are each one line;
 `verification.how` maps to `verified_how`, `incident_cost.text` to
 `incident_cost`, and `context` to `## Context`. The integration unit inlines
 the shared lesson-writing passage and output schema after this method.
+
+### 13.3 The session engine in `miner.run` (R2, 2026-10-19)
+
+`miner.engine` (`digest` | `session`, default `digest`, tier C, no environment
+variable) chooses the engine of a run. The session engine replaces exactly the
+digest step of `_run_locked`: the run lock, reconcile healing, cursor seeding,
+the self-session and scheduled-job sweeps, `walk()`, the run's one sweep of
+sends (`provenance.sweep`), the pending gate, the ledger lock and the landing
+commit are shared, so a rollback is flipping the setting back. `serve.py` is
+unchanged. `mining/engine.py` plans, calls and checks and writes only the run
+folder; the one seam call (`invocation.text_session`) and every ledger write
+are in `miner.py`.
+
+**Plan.** Each slice is cut at `miner.halt_point(s).end` (relative to the
+slice; `spine.judged_range` adds `s.start_line`). A session is skipped as
+`halted`, `no-typed-turns`, `no-marker` or `nothing-new` (its cursor
+advances), or planned: flags from `flags.flag_rules` over the stretches the
+judged lines reach, mapped to spine flags (`engine.spine_flags`: the record's
+scope, the stretch, `lexical+meaning` when a cosine was computed, the rule's
+Trigger and Instruction or Fact and Context), then the spine and the three
+tools. The tools get the spine's own subagent logs (`Spine.subagents`) and its
+`end_ts`, so `search_subagent` and `open_stretch` never show a log or a line
+the checker would refuse. The lesson index is refreshed once per run
+(`steward_inputs.refresh_index`); without it there are no flags (flag mode
+`unavailable`). At most `miner.max_sessions_per_run` (30) sessions are called;
+the rest, and a second file with a session id already planned, wait behind
+their cursors (`deferred`). The judged-uuid store is read once, before
+anything is judged.
+
+**Call.** The shared instructions (the method, the lesson-writing passage
+between its markers, the output schema) are written once per run and passed
+as `append_system_prompt_file` with `exclude_dynamic_sections`. Call `k` runs
+on `miner-session` in `<cache>/miner/session-stage`, with the reader's
+timeout, `sidecar_key=<run_id>-<k>`, `skip_orphan_sweep=(k != 0)`, the reader's
+disallowed tools, auto-memory off and `transcript_group=<run_id>`. The first
+call runs alone; the rest run `miner.parallel` (4, at most 8) at once. A
+`transient` failure is retried once (the retry never sweeps). No call starts
+once `spent + in_flight × 0.60 >= miner.max_run_usd` (8.0; a call that reports
+no cost counts as 0.60); a session not started keeps its cursor.
+
+**Check.** `check.check_output` with the run's sends, the store's snapshot and
+the ledger's record ids. A `CheckerError` makes that one session `failed`
+(`error: checker-error`); a failed call makes it `failed` (`error: call`);
+neither touches another session.
+
+**Land** (`_land_checked`, inside `intents.ledger_write`). A lesson becomes a
+pending record (`source: session`): its loaded text and `## Context`, its
+steps as `## Episode brief` lines `L<line> (<role>, T<turn>): <what>` (a step
+in a subagent's log names it, `agent-<id> L<line>`), `verified: true` with
+`verified_how`, `incident_cost`, `generality`. Its evidence items are
+`{ref, quote?, session, ts: ref.entry_ts, origin}`, then the verification's
+and the incident cost's pointers (`why: verification`, `why:
+incident-cost`); a withheld quote (`check.quote_withheld`) is stored without
+`quote`. The origin of a subagent line is
+`transcript:<session>/subagents/agent-<id>.jsonl#L<n>`. The known-origin skip
+(the first main-session evidence item's origin), the secret scan (body,
+quotes, `verified_how`, `incident_cost`, `why_durable`), the cap with its
+near-miss snippet and cursor hold, skill-scope and `hosts.yaml` checks and
+`capture_host_path` for project scope follow the digest engine's landing. A
+sighting follows `superseded_by` to the live record: pending folds (evidence
+appended, sightings +1), routed spools a `recurrence-suspect` (basis
+`miner-match`), rejected bumps the resurface counter and, at three, lands the
+rejected lesson's own text again as a new pending record, anything else is
+`skipped-resolved`. A rule check spools a `fire` `{record, origin, outcome,
+action?}` against a routed record only, once per `(record, origin)`. Within
+one run a sighting or rule check of one record at one moment (a fork and its
+parent) lands once (`skipped-duplicate-moment`). Each check drop becomes a
+`dropped-check` outcome. A run that only folds commits too
+(`_commit_landing(..., folds_alone=True)`; the digest engine's rule is
+unchanged).
+
+**After.** A session's cursor advances when it was skipped, or when it was
+called, its output landed and it was not held by the cap; a failed, bad-output,
+not-run or deferred session keeps its cursor, and so does every called session
+when the ledger lock could not be taken. The judged-uuid store learns a
+session's moments (`check.landed_uuids`) only after its output landed and only
+when it was not held. The journal row keeps every digest-engine key and adds
+`engine: "session"`, `method_version`, `sessions_called`, `sessions_failed`,
+`not_run` and `drops` by reason. The run folder `<cache>/miner/runs/<run_id>/`
+(mode 0600: `run.json`, `shared-instructions.md`, `plans/`, `raw/`, `out/`,
+`calls/`) keeps the newest 30; the seam's transcript copies of the surface
+(`<cache>/sessions/miner-session/<run_id>/`), which the seam never prunes, are
+kept to 30 groups the same way.
+
+**CLI.** `self-learn mine run --engine digest|session` overrides the setting
+for one run; `--engine session` is refused without `--preview` (`EXIT_USAGE`),
+so only the user's flip of `miner.engine` lands session-engine output.
+`--preview` (session engine only) calls and checks, writes the run folder and
+prints counts (sessions by filter reason, calls, drops by reason, spine token
+estimates, cost) and never transcript text; it does not reconcile, seed,
+sweep, land, advance a cursor, write or prune the judged-uuid store, journal,
+or touch `miner.last-run`/`miner.last-attempt`. `--session ID` (repeatable,
+preview only) judges those sessions' whole files (the larger file when two
+folders hold one id; a listed `miner.skip_sessions` id is not read).
