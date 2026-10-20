@@ -41,7 +41,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
-from .. import records, refs
+from .. import provenance, records, refs
 from ..scan import redact
 
 __all__ = [
@@ -869,14 +869,19 @@ def has_typed_turn_marker(entries: Sequence[dict[str, Any] | None]) -> bool:
     return False
 
 
-def typed_turn_lines(entries: Sequence[dict[str, Any] | None]) -> list[int]:
+def typed_turn_lines(
+    entries: Sequence[dict[str, Any] | None], sent: provenance.SentIndex | None = None
+) -> list[int]:
     """The 1-based physical lines of the typed turns: entries whose
     ``refs.role_of`` is ``user`` and whose entry text is not blank. ``entries``
     keeps one slot per line (``None`` for a non-object line), so a line number
-    is the slot's position plus one. This is the one definition of ``T<k>``."""
+    is the slot's position plus one. This is the one definition of ``T<k>``.
+    A turn an agent wrote (role ``agent``, ``refs`` rule 10) is not a typed
+    turn; pass ``sent`` (``refs.sent_index``) for rule 10's third sign, the
+    one that covers untagged history."""
     lines: list[int] = []
     for i, e in enumerate(entries, 1):
-        if not isinstance(e, dict) or refs.role_of(e) != "user":
+        if not isinstance(e, dict) or refs.role_of(e, sent=sent) != "user":
             continue
         if refs._raw_text(e).strip():  # pyright: ignore[reportPrivateUsage]
             lines.append(i)

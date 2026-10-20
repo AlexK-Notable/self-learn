@@ -2002,7 +2002,7 @@ from the entry itself.
 | `uuid` | the entry's own `uuid`; absent on bookkeeping rows |
 | `entry_ts` | the entry's own `timestamp` — never the time a tool read it |
 | `cwd` | the entry's `cwd` |
-| `role` | `user` \| `assistant` \| `tool_result` \| `relay` \| `subagent` (below) |
+| `role` | `user` \| `assistant` \| `tool_result` \| `relay` \| `subagent` \| `agent` (below) |
 | `subagent_file` | optional; `subagents/agent-<id>.jsonl`, relative to `<project_dir>/<session>/` |
 
 A ref serialises to a plain mapping with exactly these keys
@@ -2048,13 +2048,35 @@ tool call as its name and the string values of its input, an attachment's
    the person typed land here);
 9. `type: attachment` with `attachment.type: queued_command` and
    `attachment.origin.kind: human` → `user`; every other attachment,
-   `system` row and bookkeeping row → `relay`.
+   `system` row and bookkeeping row → `relay`;
+10. *(S-90, 2026-10-19)* a turn rules 5, 8 or 9 call `user` → `agent` when
+   an agent wrote it (`provenance.agent_written`). Text another agent types
+   into a session's terminal (herdr typing an orchestrator's brief into a
+   worker's pane) carries `origin.kind: human`, `promptSource: typed`,
+   field for field the same as the person typing (measured 2026-09-26 and
+   2026-10-19), so only these signs tell them apart:
+   - **tagged**: the whole text, after at most one `<pasted_content …>`
+     wrapper, is one `<agent-message>…</agent-message>` element (agents
+     tag what they send through herdr since 2026-10-19; a person who
+     writes beside a pasted agent message is not tagged);
+   - **an accepted suggestion**: `promptSource: suggestion_accepted`;
+   - **sent**, read only when the caller passes the sends
+     (`refs.sent_index`, `provenance.sweep`): another session made a tool
+     call whose text mentions herdr at most 30 minutes before the turn
+     (5 seconds after, for clock skew), and that text, with quoting and
+     escapes folded away, holds the turn's whole text; a turn under 40
+     folded characters must sit in it as one quoted argument. Sends are
+     read from every `*.jsonl` under the transcript roots (subagent files
+     included) and from the Codex rollouts beside a `.claude/projects`
+     root (`<home>/.codex/sessions`). `resolve`, `check_quote` and
+     `excerpt` pass the sends of the roots they read.
 
-Rules 3 and 8 are the miner's existing split (`miner.digest_transcript`);
-the `origin`/`promptSource` marker (rules 5–6) is new — the miner does not
-read it. **Known limit (measured):** text another agent types into a
-session's terminal carries `origin.kind: human`, `promptSource: typed`,
-field for field the same as the person typing, so it resolves as `user`.
+   An `agent` turn is context around a moment, never the person's own
+   words. Not covered: a brief sent as `"$(cat FILE)"` whose text is only
+   in the file, and senders other than Claude Code and Codex.
+
+Rules 3 and 8 are the miner's structural split. Since S-90 the live miner
+labels every user text turn of its digest by this rule (12 §Phase 1).
 
 **Quote check outcomes**, tried in this order:
 
@@ -2065,7 +2087,7 @@ field for field the same as the person typing, so it resolves as `user`.
 | `nearby` | in another entry of the same file within 40 lines | corrected (nearest) |
 | `elsewhere_in_file` | in another entry of the same file, farther away | corrected (nearest) |
 | `stitched` | contains `…` or `...`, and every piece between them that has a letter or digit occurs separately in the file | the ref, plus each piece's ref |
-| `other_session` | in a `user` or `assistant` entry of another session file of the ref's project family | that entry |
+| `other_session` | in a `user`, `agent` or `assistant` entry of another session file of the ref's project family | that entry |
 | `not_found` | none of the above | the ref |
 
 The project family is the ref's folder name up to `--claude-worktrees-`:
@@ -2556,7 +2578,10 @@ plans one file per session id.
 not blank; `entries` keeps one slot per line, `None` for a line that is not a
 JSON object) and `turn_of(typed_lines, line)` (typed turns at or before the
 line) are the one definition of a session's `T<k>`, used by the engine's
-spine and by the comparison harness.
+spine and by the comparison harness. A turn an agent wrote (role `agent`,
+rule 10) is not a typed turn; `typed_turn_lines(entries, sent=…)` takes the sends
+(`refs.sent_index`) for rule 10's third sign; the engine and the comparison
+harness (`compare.scan_file`, one sweep of the roots it resolves against) pass them.
 
 **What each field is for.** `shape` — the rubric's four shapes; a
 `correction` needs user evidence. `scope`, `type`, `kind` — the record's

@@ -38,9 +38,10 @@ text a person or a model reads for that entry --
 **Roles** (:func:`role_of`). The structural split -- a ``user`` row is a
 turn when it carries text and a tool result when it carries a
 ``tool_result`` block -- is the miner's (``miner.digest_transcript``,
-``_blocks``). The miner does NOT read Claude Code's typed-turn marker
-(design note d3inc38bbdON5I__mPgXz); this module does, and every rule
-names the field it reads, first match wins:
+``_blocks``). This module also reads Claude Code's typed-turn marker
+(design note d3inc38bbdON5I__mPgXz), and since S-90 (2026-10-19) the
+miner labels every user text turn of its digest by these rules. Every
+rule names the field it reads, first match wins:
 
 1. file under ``<session>/subagents/`` (``Ref.subagent_file`` set) or the
    entry's ``isSidechain`` is true -> ``subagent``;
@@ -64,13 +65,20 @@ names the field it reads, first match wins:
 9. ``type == "attachment"`` whose ``attachment.type == "queued_command"``
    with ``attachment.origin.kind == "human"`` -> ``user`` (typed while
    the agent was busy); every other attachment, ``system`` row and
-   bookkeeping row -> ``relay``.
+   bookkeeping row -> ``relay``;
+10. a turn rules 5, 8 or 9 call ``user`` -> ``agent`` when an agent wrote
+   it (:func:`provenance.agent_written`, 2026-10-19): its whole text is
+   an ``<agent-message>`` element, or Claude Code recorded it as an
+   accepted suggestion, or -- when the caller passes a
+   :class:`provenance.SentIndex` -- another session handed exactly that
+   text to herdr just before. Text another agent types into a session's
+   terminal is recorded field-for-field like the person typing (measured
+   2026-09-26 and 2026-10-19), so these signs are the only way to tell.
+   An ``agent`` turn is context around a moment, never the person's words.
 
-Known limit (measured 2026-09-26): text another agent types into a
-session's terminal (e.g. a coordinating agent driving the pane) is
-recorded with ``origin.kind == "human"``, ``promptSource == "typed"`` --
-field-for-field identical to the person typing. No transcript field
-separates the two, so such turns resolve as ``user``.
+:func:`resolve`, :func:`check_quote` and :func:`excerpt` sweep the roots
+they read for sends (:func:`provenance.sweep` over
+:func:`provenance.sender_dirs`), so their refs carry rule 10 in full.
 """
 
 from __future__ import annotations
@@ -84,7 +92,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Sequence, cast
 
-from . import settings
+from . import provenance, settings
 from .ledger import resolve_home
 from .scan import redact
 
@@ -105,11 +113,12 @@ __all__ = [
     "resolve",
     "role_of",
     "same_moment",
+    "sent_index",
     "transcript_roots",
 ]
 
 #: Who spoke (module docstring, "Roles").
-ROLES: tuple[str, ...] = ("user", "assistant", "tool_result", "relay", "subagent")
+ROLES: tuple[str, ...] = ("user", "assistant", "tool_result", "relay", "subagent", "agent")
 
 #: :func:`check_quote` outcomes, in the order they are tried.
 VERDICTS: tuple[str, ...] = (
@@ -321,8 +330,11 @@ def entry_text(ref: Ref, *, roots: Sequence[Path | str] | None = None) -> str:
     return redact(_raw_text(e))[0] if e else ""
 
 
-def role_of(entry: dict, *, in_subagent_file: bool = False) -> str:
-    """The entry's role, by the numbered rules in the module docstring."""
+def role_of(
+    entry: dict, *, in_subagent_file: bool = False, sent: provenance.SentIndex | None = None
+) -> str:
+    """The entry's role, by the numbered rules in the module docstring;
+    rule 10's third sign is read only when ``sent`` is given."""
     if in_subagent_file or entry.get("isSidechain") is True:  # rule 1
         return "subagent"
     etype = entry.get("type")
@@ -334,22 +346,33 @@ def role_of(entry: dict, *, in_subagent_file: bool = False) -> str:
             return "tool_result"
         if entry.get("isMeta") is True or entry.get("isCompactSummary") is True:  # rule 4
             return "relay"
+        text = "\n".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
         origin = entry.get("origin")
         if isinstance(origin, dict):  # rule 5
-            return "user" if origin.get("kind") == "human" else "relay"
+            return _typed(entry, text, sent) if origin.get("kind") == "human" else "relay"
         if entry.get("promptSource") in ("system", "sdk"):  # rule 6
             return "relay"
-        text = "\n".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text").lstrip()
-        if text.startswith(_HARNESS_ENVELOPES):  # rule 7
+        if text.lstrip().startswith(_HARNESS_ENVELOPES):  # rule 7
             return "relay"
-        return "user"  # rule 8
+        return _typed(entry, text, sent)  # rule 8
     if etype == "attachment":  # rule 9
         att = entry.get("attachment")
         if isinstance(att, dict) and att.get("type") == "queued_command":
             origin = att.get("origin")
             if isinstance(origin, dict) and origin.get("kind") == "human":
-                return "user"
+                return _typed(entry, _raw_text(entry), sent)
     return "relay"
+
+
+def _typed(entry: dict, text: str, sent: provenance.SentIndex | None) -> str:
+    """Rule 10: a typed turn is the person's unless an agent wrote it."""
+    return "agent" if provenance.agent_written(entry, text, sent) else "user"
+
+
+def sent_index(roots: Sequence[Path | str] | None = None) -> provenance.SentIndex:
+    """Rule 10's sends, read from ``roots`` (the registry's transcript
+    roots when omitted) and the Codex rollouts beside them."""
+    return provenance.sweep(provenance.sender_dirs(_roots(roots)))
 
 
 # --------------------------------------------------------- the resolver
@@ -395,7 +418,7 @@ def _uuid_line(lines: Sequence[str], uuid: str) -> int | None:
     return None
 
 
-def _ref_at(path: Path, line: int, *, session: str, subagent_file: str | None) -> Ref:
+def _ref_at(path: Path, line: int, *, session: str, subagent_file: str | None, roots: list[Path]) -> Ref:
     lines = _lines(path)
     if not 1 <= line <= len(lines):
         raise RefError(f"{session}: line {line} is past the end of the file ({len(lines)} lines)")
@@ -413,9 +436,16 @@ def _ref_at(path: Path, line: int, *, session: str, subagent_file: str | None) -
         uuid=uid if isinstance(uid, str) else None,
         entry_ts=ts if isinstance(ts, str) else None,
         cwd=cwd if isinstance(cwd, str) else None,
-        role=role_of(e, in_subagent_file=subagent_file is not None),
+        role=_role(e, subagent_file is not None, roots),
         subagent_file=subagent_file,
     )
+
+
+def _role(e: dict, in_subagent_file: bool, roots: list[Path]) -> str:
+    """:func:`role_of` with rule 10 in full: the sends under ``roots`` are
+    swept only for an entry the other rules call ``user``."""
+    role = role_of(e, in_subagent_file=in_subagent_file)
+    return role_of(e, in_subagent_file=in_subagent_file, sent=sent_index(roots)) if role == "user" else role
 
 
 def resolve(
@@ -467,7 +497,7 @@ def resolve(
             sub = None
             if pool is not pools[0] or subagent_file is not None:
                 sub = str(Path(path).relative_to(path.parents[1]))
-            return _ref_at(path, found_line, session=session, subagent_file=sub)
+            return _ref_at(path, found_line, session=session, subagent_file=sub, roots=rs)
     raise RefError(f"no transcript holds session {session} (line={line}, uuid={uuid})")
 
 
@@ -635,7 +665,7 @@ def check_quote(
         return Verdict(how, ref)
 
     def at(line: int) -> Ref:
-        return _ref_at(path, line, session=ref.session, subagent_file=ref.subagent_file)
+        return _ref_at(path, line, session=ref.session, subagent_file=ref.subagent_file, roots=rs)
 
     hits = [h for h in _find_in(lines, quote) if h != ref.line]
     if hits:
@@ -663,11 +693,11 @@ def check_quote(
     searched = 0
     for f in _other_sessions(ref, rs, other_session_cap):
         searched += 1
-        fh = _find_in(_lines(f), quote, roles=("user", "assistant"))
+        fh = _find_in(_lines(f), quote, roles=("user", "agent", "assistant"))
         if fh:
             return Verdict(
                 "other_session",
-                _ref_at(f, fh[0], session=f.stem, subagent_file=None),
+                _ref_at(f, fh[0], session=f.stem, subagent_file=None, roots=rs),
                 detail=f"found in another session of the project family ({searched} files searched)",
             )
     note = f"; {len(pieces)} ellipsis-joined pieces, piece {unfound_piece} not in the file" if unfound_piece else ""
@@ -716,7 +746,8 @@ def excerpt(
     middle marked ``…[clipped]…``); entries farthest from the ref are
     dropped first until the texts total at most ``total_chars``. The
     ref's own entry is always kept."""
-    path = locate(ref, roots=roots)
+    rs = _roots(roots)
+    path = locate(ref, roots=rs)
     lines = _lines(path)
 
     def text_at(i: int) -> str:
@@ -752,6 +783,9 @@ def excerpt(
     if len(texts[ref.line]) > total_chars:
         texts[ref.line] = texts[ref.line][:total_chars]
     return [
-        (ref if i == ref.line else _ref_at(path, i, session=ref.session, subagent_file=ref.subagent_file), texts[i])
+        (
+            ref if i == ref.line else _ref_at(path, i, session=ref.session, subagent_file=ref.subagent_file, roots=rs),
+            texts[i],
+        )
         for i in sorted(texts)
     ]

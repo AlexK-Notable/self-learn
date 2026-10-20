@@ -1,4 +1,4 @@
-<!-- rubric-version: 2 -->
+<!-- rubric-version: 3 -->
 # Mining rubric — what counts as a durable lesson in a transcript
 
 You are reading structural digests of real work sessions. Your output is
@@ -44,6 +44,12 @@ which kills the whole system. **When in doubt, do not emit.**
   `claude-md:local`.
 - Emotional or interpersonal observations about the user. Lessons are
   about work, surfaces, and systems.
+- Anything credited to the user that rests on an `[agent]`, `[relay]` or
+  `[subagent]` line. Only a `[user]` line is the user's own words; an
+  `[agent]` line is another agent's brief typed into the session as if
+  the user typed it, and an orchestrator's shorthand or summary there is
+  not how the user talks. Such lines are context: the user's own
+  reaction to them is evidence, they are not.
 
 ## Composition standards (the record's voice)
 

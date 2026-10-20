@@ -28,7 +28,7 @@ user-model entries, conditions). The pack is the source window: for every
 evidence item of the record it shows the pointer resolved to the real
 transcript entry (session, project folder, line, the entry's uuid, the
 entry's own time, and who spoke — the user, the assistant, a tool result,
-relayed text, or a subagent), the quote check's verdict, and a short
+relayed text, a subagent, or an agent), the quote check's verdict, and a short
 excerpt of the entries around it with who spoke on each line. Open a
 transcript or a record file yourself (Read, Grep) only when the decision
 turns on context the pack does not contain, and record in the case any
@@ -47,8 +47,11 @@ or on the miner's own account of how it was verified (the pack labels that
 line: it carries no ref), has no evidence yet. Read what the excerpt
 actually shows and decide on that; a lesson whose story the transcript does
 not support is rejected or rewritten, never routed as written. Note who
-spoke: a line marked `relay` or `subagent` is not the user speaking, and an
-assistant's prediction is not an outcome. Two items marked as the same
+spoke: a line marked `relay`, `subagent` or `agent` is not the user
+speaking (`agent` is another agent's text typed into the session as if the
+user typed it: a brief handed over by an orchestrating session, or a
+suggested prompt the user accepted), and an assistant's prediction is not
+an outcome. Two items marked as the same
 transcript moment are one sighting, not two.
 
 **Reading the closest lessons.** They are the lessons nearest in words (and
