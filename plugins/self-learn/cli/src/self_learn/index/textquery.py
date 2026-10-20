@@ -1,12 +1,14 @@
 """Free-text lesson lookup, with document embeddings and explicit degradation."""
 from __future__ import annotations
 
+import copy
 import math
 import queue
 import threading
 
 from ..scan import redact
 from . import fts5
+from .gemini import GeminiEmbedder
 from .hybrid import CANDIDATE_MULTIPLIER, MIN_CANDIDATES, HybridResult, Ranked
 from .protocol import EmbedProvider
 from .registry import load_provider
@@ -17,12 +19,20 @@ from .vectors import cosine
 EMBED_TIMEOUT = 20.0
 
 
-def embed_documents(provider: EmbedProvider, texts: list[str]) -> list[list[float]]:
+def embed_documents(provider: EmbedProvider, texts: list[str], *, interactive: bool = False) -> list[list[float]]:
     """Bound the wait without handing SQLite to another thread.
 
     A timed-out provider cannot be forcibly stopped in Python. The daemon owns
     only its request and queue; its eventual answer is discarded, not cached.
     """
+    if interactive and isinstance(provider, GeminiEmbedder):
+        # Preserve document templates/model identity without mutating the shared
+        # provider's bulk policy (the index/flags may be using it concurrently).
+        provider = copy.copy(provider)
+        provider.bulk = copy.copy(provider.interactive)
+        provider.bulk.timeout = min(5.0, EMBED_TIMEOUT)
+        provider.bulk.max_attempts = 1
+        provider.bulk.paced = False
     answers: queue.Queue = queue.Queue(maxsize=1)
 
     def run() -> None:
@@ -71,7 +81,7 @@ def nearest_text(
             mode, note = LEXICAL_ONLY, "embedding model differs from the index"
         else:
             try:
-                query = embed_documents(provider, [text])[0]
+                query = embed_documents(provider, [text], interactive=True)[0]
                 cosines = {i: cosine(query, v) for i, v in index.current_vectors().items()
                            if i not in exclude_ids}
                 semantic_ids = sorted(cosines, key=lambda i: (-cosines[i], i))[:depth]

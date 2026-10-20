@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import sqlite3
 import threading
@@ -14,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, validators
 
 from .. import refs
 from ..index import fts5, textquery
@@ -26,6 +27,17 @@ from ..provenance import SentIndex
 from ..records import Record
 from ..scan import redact
 from .contract import typed_turn_lines
+
+_log = logging.getLogger(__name__)
+StrictValidator = validators.extend(
+    Draft202012Validator,
+    type_checker=Draft202012Validator.TYPE_CHECKER.redefine(
+        "integer", lambda checker, value: isinstance(value, int) and not isinstance(value, bool)
+    ),
+)
+_NOISE_ATTACHMENTS = frozenset({
+    "hook_success", "total_tokens_reminder", "token_usage_reminder", "usage_reminder",
+})
 
 TOOL_DEFINITIONS = (
     {"name": "open_stretch", "description": "Show the agent's work after one of the user's typed turns, up to the next typed turn: each tool call with its input and whether it failed, the first and last lines of each tool output, the agent's messages in full, relayed messages, and subagent launches with their ids. Line numbers are the session file's. Long stretches come in pages.",
@@ -57,9 +69,14 @@ def read_entries(path: Path, end: int | None = None) -> list[dict | None]:
     return out
 
 
+def display(text: str) -> str:
+    """Content never creates a physical output row; only templates may do that."""
+    return " ⏎ ".join(redact(text)[0].splitlines())
+
+
 def clip(text: str, limit: int) -> str:
-    """Redact BEFORE clipping so clipping cannot hide part of a secret."""
-    text = redact(text)[0]
+    """Redact and flatten BEFORE clipping; preserve head and tail."""
+    text = display(text)
     if len(text) <= limit:
         return text
     head = (limit - 3) // 2
@@ -80,7 +97,11 @@ def strings(value: object) -> list[str]:
 
 def edges(text: str, limit: int = 200) -> str:
     lines = redact(text)[0].splitlines()
-    return "" if not lines else lines[0][:limit] + " ⋯ " + lines[-1][:limit]
+    if not lines:
+        return ""
+    if len(lines) == 1:
+        return lines[0][:limit]
+    return lines[0][:limit] + " ⋯ " + lines[-1][:limit]
 
 
 @dataclass(frozen=True)
@@ -156,7 +177,7 @@ class SessionTools:
         tools = []
         for definition in TOOL_DEFINITIONS:
             name = definition["name"]
-            validator = Draft202012Validator(definition["input_schema"])
+            validator = StrictValidator(definition["input_schema"])
 
             async def handler(args: dict[str, Any], name=name, validator=validator) -> ToolReply:
                 return await asyncio.to_thread(self._dispatch, name, validator, args)
@@ -164,15 +185,19 @@ class SessionTools:
             tools.append(McpTool(name, definition["description"], definition["input_schema"], handler))
         return McpToolset("miner", tuple(tools))
 
-    def _dispatch(self, name: str, validator: Draft202012Validator, args: dict) -> ToolReply:
-        if not validator.is_valid(args):
-            return ToolReply(redact(f"invalid arguments for {name}")[0], is_error=True)
+    def _dispatch(self, name: str, validator: Any, args: dict) -> ToolReply:
+        error = next(validator.iter_errors(args), None)
+        if error is not None:
+            field = ".".join(str(part) for part in error.absolute_path) or "arguments"
+            reason = clip(f"invalid arguments for {name}: {field}: {error.message}", 1000)
+            return ToolReply(reason, is_error=True)
         try:
             text = getattr(self, name)(**args)
             return ToolReply(redact(text)[0])
         except ValueError as exc:
-            return ToolReply(clip(str(exc).replace("\n", " "), 1000), is_error=True)
-        except Exception:
+            return ToolReply(clip(str(exc), 1000), is_error=True)
+        except Exception as exc:
+            _log.error("%s failed unexpectedly (%s)", name, type(exc).__name__)
             return ToolReply(redact(f"{name}: data unavailable")[0], is_error=True)
 
     def _log(self, sid: str) -> tuple[list[dict | None], bytes]:
@@ -223,7 +248,7 @@ class SessionTools:
         entries = read_entries(self.session_file, self.judged_end)
         turns = typed_turn_lines(entries, sent=self.sent)
         if after_turn > len(turns):
-            raise ValueError("unknown after_turn")
+            raise ValueError(f"after_turn must be in range 0..{len(turns)} (got {after_turn})")
         start = turns[after_turn - 1] if after_turn else 0
         end = turns[after_turn] - 1 if after_turn < len(turns) else len(entries)
         results = {}
@@ -239,10 +264,14 @@ class SessionTools:
             if not e:
                 continue
             role = refs.role_of(e, sent=self.sent)
+            attachment = e.get("attachment")
+            if role == "tool_result" or (e.get("type") == "attachment"
+                    and isinstance(attachment, dict) and attachment.get("type") in _NOISE_ATTACHMENTS):
+                continue
             label = ROLE_LABELS[role]
             if role != "assistant":
                 if raw(e):
-                    detail = edges(raw(e)) if role == "tool_result" else clip(raw(e), 300)
+                    detail = clip(raw(e), 300)
                     lines.append(f"L{n} {label}: {detail}")
                 continue
             for b in blocks(e):
@@ -266,7 +295,7 @@ class SessionTools:
                         sid = links[b["id"]]
                         logs, _ = self._log(sid)
                         report = next((raw(x) for x in reversed(logs) if x and x.get("type") == "assistant" and any(z.get("type") == "text" for z in blocks(x))), "")
-                        brief = redact(str(inp.get('prompt', '')))[0][:600]
+                        brief = display(str(inp.get('prompt', '')))[:600]
                         lines.append(f"L{n} SUBAGENT {sid}: brief {brief} … report {clip(report, 603)}")
         # Reserve footer space; never split an entry across pages.
         pages: list[list[str]] = [[]]
@@ -279,7 +308,7 @@ class SessionTools:
             pages[-1].append(line)
             size += len(line) + 1
         if page > len(pages):
-            raise ValueError("unknown page")
+            raise ValueError(f"page must be in range 1..{len(pages)} (got {page})")
         if page < len(pages):
             footer = f"page {page} of {len(pages)} — call open_stretch(after_turn={after_turn}, page={page + 1}) for more"
         elif after_turn < len(turns):
@@ -328,8 +357,8 @@ class SessionTools:
             if item is None:
                 return f"{name}: (none)"
             n, e = item
-            role = ROLE_LABELS[refs.role_of(e, sent=self.sent)]
-            return f"{name}: L{n} SUBAGENT {subagent} / {role}: " + redact(raw(e))[0][:1500]
+            role = ROLE_LABELS[refs.role_of(e, in_subagent_file=True, sent=self.sent)]
+            return f"{name}: L{n} SUBAGENT {display(subagent)} / {role}: " + display(raw(e))[:1500]
         output = [named("BRIEF", brief), named("REPORT", report)]
         query = redact(query)[0]
         phrase = query[1:-1].casefold() if query.startswith('"') and query.endswith('"') else None
@@ -351,9 +380,9 @@ class SessionTools:
             pos = min((p for p in positions if p >= 0), default=0)
             width = len(phrase) if phrase is not None else 50
             excerpt = text[max(0, pos - 150):pos + width + 150]
-            role = ROLE_LABELS[refs.role_of(e, sent=self.sent)]
-            output.append(f"L{n} SUBAGENT {subagent} / {role}: …{excerpt}…")
-        return clip("\n".join(output), 12000)
+            role = ROLE_LABELS[refs.role_of(e, in_subagent_file=True, sent=self.sent)]
+            output.append(f"L{n} SUBAGENT {display(subagent)} / {role}: …{display(excerpt)}…")
+        return "\n".join(output)[:12000]
 
 
 def build_toolset(session_file: Path, subagents: Mapping[str, Path], judged_end: int,

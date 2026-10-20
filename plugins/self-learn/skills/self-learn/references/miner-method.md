@@ -3,7 +3,7 @@
 
 Read one session. Judge only the lines marked new. Find durable lessons,
 sightings of known lessons, and rule checks for the flagged rules. Ignore
- the spine's two fixed opening lines. Candidates are for human review, not
+the spine's two fixed opening lines. Candidates are for human review, not
 canon: err toward precision. When in doubt, do not emit.
 
 ## Units and tools
@@ -20,10 +20,10 @@ Only the person's typed turns (`YOU`, role `user`) are their words.
 `AGENT` means the assistant. `AGENT-WRITTEN` means another agent's text
 recorded as a typed turn, including a dispatched brief or accepted suggestion;
 it is neither the person nor the assistant's own reply. `RELAY`, `TOOL_RESULT`
-and `SUBAGENT` are context, never the person's words. In a subagent log the
-SUBAGENT prefix names the file; its inner role describes the recorded row,
-not proof the person spoke to that subagent. Only the person's own response
-can support a correction or standing preference credited to them.
+and `SUBAGENT` are context, never the person's words. Every row in a subagent log
+has the SUBAGENT role, even if the log omits its sidechain marker. Only the
+person's own response can support a correction or standing preference credited
+to them.
 
 ## The four lesson shapes (emit these)
 
@@ -82,7 +82,13 @@ can support a correction or standing preference credited to them.
 - **Scope** = narrowest that still fires: `skill:<name>` when the lesson
   lives inside one skill's domain, `project` for this repo's practices,
   `user` only for genuinely universal conduct.
+
 ## Pointers and field names
+
+Tool content line breaks are displayed as ` ⏎ ` so content cannot create
+another labelled output row. Only the tool's own labels begin physical lines.
+Quote a span within one displayed content line, stopping before any ` ⏎ `
+marker; the marker is display notation, not verbatim transcript text.
 
 A quote is a verbatim span of the one entry at its line, never text joined
 with "…". Every claimed outcome or verification carries its own line or is

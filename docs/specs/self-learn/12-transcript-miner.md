@@ -941,8 +941,11 @@ sent=…, provider=…)` per call. Its `McpToolset("miner", …)` contains exact
 descriptions and input schemas are constants, pinned together by SHA-256.
 Handlers are async; blocking file, SQLite and embedding operations execute
 in worker threads. Each connection is opened and closed in its owning
-thread. Bad arguments return a one-line error. Every returned text is
-redacted, including errors, and raw text is redacted before shortening.
+thread. Bad arguments return a one-line schema reason, or the valid turn/page
+range. Integer fields reject floats (including `1.0`) and booleans. Every
+returned text is redacted, including errors, and raw text is redacted before
+shortening. Unexpected dispatcher failures are logged by tool and exception
+class without echoing the exception's potentially sensitive message.
 
 ### 13.1 Tools and provenance
 
@@ -952,11 +955,15 @@ redacted, including errors, and raw text is redacted before shortening.
   characters, retain physical line numbers and include a continuation or
   end footer. Tool inputs, result edges, assistant messages and subagent
   summaries are bounded. Missing results say pending, never success.
+  A result appears only inside its TOOL line; there is no duplicate result
+  row. Hook-success and token/usage-reminder attachments are omitted.
+  One-line results are shown once, without a repeated last edge.
 - `find_similar_lessons(draft)` accepts 20–2,000 characters and returns up
   to five records, at most 1,800 characters each and 10,000 overall, with
   status, scope/bucket, placement, loaded sections and the first evidence
   quote (at most 300 characters). It follows `superseded_by`, deduplicates
-  live successors and skips cycles, missing successors and retirements.
+  live successors and skips cycles, missing successors, retirements and
+  superseded records without a successor.
   There is no production mask. The index is refreshed by the engine once
   per run, not by a handler.
 - `search_subagent(subagent, query)` reaches only the supplied session's
@@ -968,12 +975,20 @@ redacted, including errors, and raw text is redacted before shortening.
   connections. Launch links use `toolUseResult.agentId` and tool-result
   ids; an exact first-user-text/input.prompt match is the fallback.
 
-Every transcript row uses `refs.role_of(entry, sent=…)`: `YOU` is the
-person, `AGENT` the assistant, `AGENT-WRITTEN` a provenance-detected typed
-turn another agent wrote, `RELAY` a relayed row, `TOOL_RESULT` a result,
-`SUBAGENT` a sidechain row. Search results additionally name the subagent
-file. Its inner recorded role is not evidence that the person spoke to
-that subagent. Agent-written and relayed text never becomes a typed turn.
+Main-session rows use `refs.role_of(entry, sent=…)`: `YOU` is the person,
+`AGENT` the assistant, `AGENT-WRITTEN` a provenance-detected typed turn
+another agent wrote, `RELAY` a relayed row, `TOOL_RESULT` a result, and
+`SUBAGENT` a sidechain row. Every row read from a subagent file instead uses
+`refs.role_of(entry, in_subagent_file=True, sent=…)`, so its role is always
+`SUBAGENT`, including when the row omits `isSidechain`. Agent-written and
+relayed text never becomes a typed turn.
+
+All content-built output fields replace line breaks with the visible ` ⏎ `
+marker before shortening. Result edges retain their ` ⋯ ` separator.
+Only the tool's templates create physical output rows; embedded text cannot
+forge an `L<n> YOU:` row. The method instructs the model to quote within a
+displayed span, stopping before a line-break marker, which is display notation
+and cannot match the raw transcript verbatim.
 
 `index.textquery.nearest_text(index, text, limit=5, exclude_ids=…,
 provider=…)` returns `HybridResult`. FTS5 and document-form embeddings
@@ -982,7 +997,13 @@ useful independently; the miner passes no mask). A missing provider,
 model mismatch, incomplete vectors, failure or 20-second embedding timeout
 produces lexical-only results with a reason. Timeout bounds the caller's
 wait; Python cannot cancel an already running synchronous provider request.
-That daemon thread owns no SQLite connection or ledger state.
+For Gemini look-alike requests, a private copy of its interactive profile
+uses one attempt, no pacing or retries, and at most a five-second transport
+timeout, while retaining document templates and model identity. The shared
+provider's bulk policy is unchanged. This avoids the bulk policy's minutes
+of retries after a caller has timed out. The waiting daemon owns no SQLite
+connection or ledger state; arbitrary injected providers still own their
+transport cancellation behavior.
 
 ### 13.2 Rule-situation flags and method
 
