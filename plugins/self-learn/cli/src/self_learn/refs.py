@@ -59,6 +59,10 @@ rule names the field it reads, first match wins:
 7. ``type == "user"`` with no ``origin`` whose text starts with a harness
    envelope (:data:`_HARNESS_ENVELOPES`: local-command / bash output,
    task notifications, system reminders, the interrupt notice) -> ``relay``;
+7a. ``type == "user"`` with no ``origin`` object, exactly one text block
+   (or string content), and the exact compact-provenance marker as its
+   first line -> ``relay`` (:func:`is_compact_provenance_note`); a marker
+   quoted mid-text or followed by other text on the same line is not a note;
 8. any other ``type == "user"`` text row -> ``user`` (the miner's
    structural rule; older transcripts carry no marker, and slash
    commands / ``!`` bash inputs the person typed land here);
@@ -109,6 +113,7 @@ __all__ = [
     "entry_text",
     "excerpt",
     "fold",
+    "is_compact_provenance_note",
     "locate",
     "resolve",
     "role_of",
@@ -330,6 +335,25 @@ def entry_text(ref: Ref, *, roots: Sequence[Path | str] | None = None) -> str:
     return redact(_raw_text(e))[0] if e else ""
 
 
+_COMPACT_PROVENANCE_MARKER = "[compact-provenance note: written by a mod, not typed by the user]"
+
+
+def is_compact_provenance_note(entry: dict) -> bool:
+    """The mod emits a separate, origin-less user message, marker first.
+
+    Accept string content or its single-text-block encoding, never a mixed
+    message: omitting a note must not omit adjacent speech or tool results.
+    """
+    if entry.get("type") != "user" or isinstance(entry.get("origin"), dict):
+        return False
+    blocks = _blocks(entry)
+    return (
+        len(blocks) == 1
+        and blocks[0].get("type") == "text"
+        and str(blocks[0].get("text", "")).split("\n", 1)[0] == _COMPACT_PROVENANCE_MARKER
+    )
+
+
 def role_of(
     entry: dict, *, in_subagent_file: bool = False, sent: provenance.SentIndex | None = None
 ) -> str:
@@ -353,6 +377,8 @@ def role_of(
         if entry.get("promptSource") in ("system", "sdk"):  # rule 6
             return "relay"
         if text.lstrip().startswith(_HARNESS_ENVELOPES):  # rule 7
+            return "relay"
+        if is_compact_provenance_note(entry):  # rule 7a
             return "relay"
         return _typed(entry, text, sent)  # rule 8
     if etype == "attachment":  # rule 9

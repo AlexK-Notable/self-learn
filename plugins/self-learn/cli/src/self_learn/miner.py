@@ -812,7 +812,8 @@ def digest_transcript(
     notification, skill text, a compaction summary), ``[subagent L<n>]``
     for a sidechain row. A row that also carries a tool result keeps
     ``[user …]``. The halts below read every user text turn, whoever
-    wrote it.
+    wrote it, except a compact-provenance note (refs rule 7a), which is
+    dropped before them.
 
     halt=True means the REST of this session — including future appends —
     must never be mined; the caller persists it into the cursor. Three
@@ -848,6 +849,8 @@ def digest_transcript(
         if etype == "user":
             results = [b for b in _blocks(message) if b.get("type") == "tool_result"]
             user_text = _user_turn_text(message)
+            if refs.is_compact_provenance_note(entry):
+                continue
             if user_text.strip():
                 if not first_user_seen:
                     first_user_seen = True

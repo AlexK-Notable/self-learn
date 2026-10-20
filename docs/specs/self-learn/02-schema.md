@@ -2043,6 +2043,13 @@ tool call as its name and the string values of its input, an attachment's
    (`<local-command-stdout>`, `<local-command-stderr>`, `<bash-stdout>`,
    `<bash-stderr>`, `<task-notification>`, `<system-reminder>`,
    `[Request interrupted`) → `relay`;
+7a. `type: user`, no `origin` object, exactly one text block (or string
+   content), with the exact first line
+   `[compact-provenance note: written by a mod, not typed by the user]`
+   → `relay`. The mod appends this as a separate message, marker first.
+   No leading whitespace is stripped; a mid-text quotation, extra text on
+   the marker line, or a mixed-block message does not match. The digest
+   miner omits matching notes entirely, before checking its halts;
 8. any other `type: user` text row → `user` (the miner's structural rule;
    older transcripts carry no `origin`, and slash commands and `!` inputs
    the person typed land here);
