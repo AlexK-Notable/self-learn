@@ -117,6 +117,7 @@ DROP_REASONS: tuple[str, ...] = (
     "verification-unchecked",
     "incident-cost-unresolved",
     "steps-unresolved",
+    "multi-line-loaded-text",
     "unknown-record",
     "not-flagged",
     "bad-output",
@@ -393,9 +394,9 @@ def _model_lesson(v: _V, path: str, d: object) -> str | None:
             v.enum(_join(path, "kind"), o.get("kind"), sorted(records.KINDS))
             v.string(_join(path, "trigger"), o.get("trigger"), 1, TEXT_MAX)
             v.string(_join(path, "instruction"), o.get("instruction"), 1, TEXT_MAX)
-            for k in ("fact", "context"):
-                if o.get(k) is not None:
-                    v.err(_join(path, k), "must be null for a behavior lesson")
+            v.string(_join(path, "context"), o.get("context"), 1, TEXT_MAX, nullable=True)
+            if o.get("fact") is not None:
+                v.err(_join(path, "fact"), "must be null for a behavior lesson")
         else:
             if o.get("kind") is not None:
                 v.err(_join(path, "kind"), "must be null for a knowledge lesson")
@@ -956,7 +957,6 @@ def _lesson_schema() -> dict[str, Any]:
                         "trigger": {"type": "string"},
                         "instruction": {"type": "string"},
                         "fact": {"type": "null"},
-                        "context": {"type": "null"},
                     }
                 },
             },
