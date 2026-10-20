@@ -3378,7 +3378,7 @@ def _run_session_engine(
     #: each family's planned members in their fixed order
     family_of: dict[str, str] = {}
     members_of: dict[str, list[str]] = {}
-    over_cap: list[dict] = []
+    over_limit: list[dict] = []
     # one file per session id a run (the other is judged next run)
     unique: list[SessionSlice] = []
     seen: set[str] = set()
@@ -3410,7 +3410,7 @@ def _run_session_engine(
                 break
             fid = fam[0].session_id
             if len(fam) > cfg.max_sessions:
-                over_cap.append({"family": fid, "members": len(fam)})  # first in line: admitted whole
+                over_limit.append({"family": fid, "members": len(fam)})  # first in line: admitted whole
             members_of[fid] = []
             for s in fam:
                 family_of[s.session_id] = fid
@@ -3628,8 +3628,8 @@ def _run_session_engine(
     all_failed = bool(results) and (not ok or (not preview and len(land_failed) == len(ok)))
     run_status = "stopped-ceiling" if stopped else ("failed" if all_failed else "ok")
     extra: dict = {"preview": preview, "counts": counts, "judged_uuids": uuid_info}
-    if over_cap:
-        extra["admitted_over_cap"] = over_cap
+    if over_limit:
+        extra["families_over_limit"] = over_limit
     if not preview:
         extra["landed"] = {"lessons": len(result.landed), "folded": len(result.folded),
                            "recurrences": len(result.recurrences), "fires": result.fires,

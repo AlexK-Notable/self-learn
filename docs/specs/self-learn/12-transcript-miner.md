@@ -1082,7 +1082,7 @@ output within the run and is never durable by itself. At most
 admitted whole or not at all: the first family that does not fit waits,
 with every family after it, behind its cursors (`deferred`); a family larger
 than the limit is admitted whole when it is first in line, and `run.json`
-names it (`admitted_over_cap`).
+names it (`families_over_limit`).
 
 A session that keeps failing does not starve the others. The cache file
 `<cache>/miner/session-failures.json` counts, per transcript file, the runs

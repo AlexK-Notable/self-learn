@@ -683,7 +683,7 @@ def validate_checked_output(obj: object) -> list[str]:
 #: optional: ``preview`` (true for a ``mine run --preview``), ``counts``
 #: (:data:`RUN_COUNT_KEYS`, plus ``flag_modes``: sessions by flag mode) and
 #: ``judged_uuids`` (the judged-uuid store as the run found and left it).
-RUN_OPTIONAL_KEYS: tuple[str, ...] = ("preview", "counts", "judged_uuids", "landed", "admitted_over_cap")
+RUN_OPTIONAL_KEYS: tuple[str, ...] = ("preview", "counts", "judged_uuids", "landed", "families_over_limit")
 RUN_COUNT_KEYS: tuple[str, ...] = (
     "quote_redacted", "cut_to_limit", "checker_errors", "call_failures", "bad_output", "deferred",
 )
@@ -737,13 +737,13 @@ def _run_extras(v: _V, o: dict[str, Any]) -> None:
             for k in ("pruned", "added", "add_failed"):
                 if k in j:
                     v.integer(_join("judged_uuids", k), j[k], lo=0)
-    if "admitted_over_cap" in o:
-        rows = v.array("admitted_over_cap", o["admitted_over_cap"], 0, None)
+    if "families_over_limit" in o:
+        rows = v.array("families_over_limit", o["families_over_limit"], 0, None)
         for i, row in enumerate(rows or []):
-            g = v.obj(f"admitted_over_cap[{i}]", row, ("family", "members"), ())
+            g = v.obj(f"families_over_limit[{i}]", row, ("family", "members"), ())
             if g is not None:
-                v.string(f"admitted_over_cap[{i}].family", g.get("family"), 1, 200)
-                v.integer(f"admitted_over_cap[{i}].members", g.get("members"), lo=2)
+                v.string(f"families_over_limit[{i}].family", g.get("family"), 1, 200)
+                v.integer(f"families_over_limit[{i}].members", g.get("members"), lo=2)
     if "landed" in o:
         landed = v.obj("landed", o["landed"], RUN_LANDED_KEYS, ())
         if landed is not None:

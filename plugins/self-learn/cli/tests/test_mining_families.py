@@ -517,7 +517,7 @@ def test_a_family_larger_than_the_cap_is_admitted_whole_when_first(home, root, b
     result = run(home)
     assert _called(backend) == [parent, fork] and result.engine["deferred"] == 1
     rec = json.loads((run_dir(result) / "run.json").read_text())
-    assert rec["admitted_over_cap"] == [{"family": parent, "members": 2}]
+    assert rec["families_over_limit"] == [{"family": parent, "members": 2}]
     contract.load_run(run_dir(result))
 
 
@@ -594,7 +594,7 @@ def _valid_run(home, root, backend, tmp_path) -> dict:
     {"landed": {"lessons": 1, "folded": 0, "recurrences": 0, "fires": 0}},
     {"landed": {"lessons": -1, "folded": 0, "recurrences": 0, "fires": 0, "sessions_failed": 0}},
     {"landed": {"lessons": 1, "folded": 0, "recurrences": 0, "fires": 0, "sessions_failed": 0, "extra": 1}},
-    {"admitted_over_cap": [{"family": "x", "members": 1}]},
+    {"families_over_limit": [{"family": "x", "members": 1}]},
 ])
 def test_the_contract_refuses_a_malformed_landed_object(home, root, backend, tmp_path, bad):
     rec = _valid_run(home, root, backend, tmp_path)
