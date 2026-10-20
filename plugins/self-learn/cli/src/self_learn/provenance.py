@@ -32,11 +32,11 @@ one of three signs holds (:func:`agent_written`):
 
 Senders are read from Claude Code, Codex, Hermes, agy and pi. JSONL
 files are cached by path, mtime and size, including the stat fingerprints of
-referenced brief files. Hermes is queried read-only on each sweep (SQLite's
-WAL may change without changing the database file).
+referenced brief files. Hermes reads are cached against both the database
+and its WAL, since WAL changes need not change the database file.
 
 Literal file substitutions in a herdr text argument are read only when the
-file has not changed since the send. No shell is executed or variables expanded.
+file has neither an mtime nor a ctime later than the send. No shell is executed or variables expanded.
 """
 
 from __future__ import annotations
@@ -252,8 +252,26 @@ def _codex_sends(raw: dict, session: str, cwd: str | None = None) -> list[Send]:
     return [Send(at, session, text, fold(text), call_cwd, command=command)]
 
 
+# A bad stored row/store must not interrupt unrelated provenance lookups.
+_ROW_ERRORS = (OSError, ValueError, TypeError, AttributeError, OverflowError, RecursionError)
+
+
+def _path_text_ok(value: str) -> bool:
+    return "\0" not in value and not any(0xD800 <= ord(c) <= 0xDFFF for c in value)
+
+
 def _cwd(value: object) -> str | None:
+    if isinstance(value, str) and not _path_text_ok(value):
+        raise ValueError("invalid stored directory")
     return value if isinstance(value, str) and Path(value).is_absolute() else None
+
+
+def _checked_sends(sends: list[Send]) -> list[Send]:
+    for send in sends:
+        if not _path_text_ok(send.raw) or not _path_text_ok(send.command or ""):
+            raise ValueError("invalid stored command")
+        _cwd(send.cwd)
+    return sends
 
 
 def _object(value: object) -> dict:
@@ -298,34 +316,62 @@ def _agy_sends(raw: dict, session: str) -> list[Send]:
     return out
 
 
-def _hermes_sends(path: Path) -> list[Send]:
-    """Read a bounded selection, without creating a DB or ignoring its WAL."""
+def _read_hermes_sends(path: Path) -> list[Send]:
+    """Read only assistant terminal calls; no inferred session directory."""
     out = []
     try:
         db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
         try:
-            rows = db.execute("SELECT m.session_id, m.timestamp, m.tool_calls, s.cwd "
-                              "FROM messages m JOIN sessions s ON s.id=m.session_id "
-                              "WHERE m.role='assistant' AND m.tool_calls LIKE '%herdr%'")
-            for session, at, encoded, cwd in rows:
-                if not isinstance(at, (int, float)) or not math.isfinite(at):
-                    continue
+            rows = db.execute("SELECT session_id, timestamp, tool_calls FROM messages "
+                              "WHERE role='assistant' AND tool_calls LIKE '%herdr%'")
+            for session, at, encoded in rows:
                 try:
+                    if not isinstance(at, (int, float)) or not math.isfinite(at):
+                        continue
                     calls = json.loads(encoded)
-                except (ValueError, TypeError, RecursionError):
+                    row_sends = []
+                    for call in calls if isinstance(calls, list) else []:
+                        fn = _object(_object(call).get("function"))
+                        args = _object(fn.get("arguments"))
+                        cmd = args.get("command")
+                        if fn.get("name") == "terminal" and isinstance(cmd, str) and "herdr" in cmd:
+                            row_sends.append(Send(at, "hermes:" + str(session), cmd, fold(cmd),
+                                                  _cwd(args.get("workdir"))))
+                    out.extend(_checked_sends(row_sends))
+                except _ROW_ERRORS:
                     continue
-                for call in calls if isinstance(calls, list) else []:
-                    fn = _object(_object(call).get("function"))
-                    args = _object(fn.get("arguments"))
-                    cmd = args.get("command")
-                    if fn.get("name") == "terminal" and isinstance(cmd, str) and "herdr" in cmd:
-                        out.append(Send(at, "hermes:" + str(session), cmd, fold(cmd),
-                                        _cwd(args.get("cwd")) or _cwd(cwd)))
         finally:
             db.close()
-    except sqlite3.Error:
+    except (sqlite3.Error, *_ROW_ERRORS):
         return []
     return out
+
+
+DbStamp = tuple[int, int, int] | None
+_HERMES_CACHE: dict[str, tuple[tuple[DbStamp, DbStamp], tuple[Send, ...]]] = {}
+
+
+def _db_stamp(path: Path) -> DbStamp:
+    fp = _fingerprint(path)
+    return (fp[0], fp[1], fp[3]) if fp is not None else None
+
+
+def _hermes_sends(path: Path) -> list[Send]:
+    """Reuse raw sends only while both the main DB and WAL are unchanged.
+
+    File-content expansions are deliberately outside this cache: their own
+    dependencies must still be checked on every sweep.
+    """
+    wal = path.with_name(path.name + "-wal")
+    stamp = (_db_stamp(path), _db_stamp(wal))
+    key = str(path)
+    hit = _HERMES_CACHE.get(key)
+    if hit is not None and hit[0] == stamp:
+        return list(hit[1])
+    found = _read_hermes_sends(path)
+    if stamp == (_db_stamp(path), _db_stamp(wal)):
+        _HERMES_CACHE[key] = (stamp, tuple(found))
+    return found
 
 
 # Only a whole double-quoted substitution in the TEXT argument is eligible.
@@ -394,11 +440,16 @@ def _brief_paths(send: Send) -> list[Path]:
             continue
         if len(names) != 1 or any(c in names[0] for c in "$`*?[]~\n;<>&|") or names[0].startswith("-"):
             continue
+        if not _path_text_ok(names[0]):
+            raise ValueError("invalid stored filename")
         path = Path(names[0])
         if not path.is_absolute():
             if send.cwd is None or changed_dir:
                 continue
-            path = Path(send.cwd) / path
+            cwd = _cwd(send.cwd)
+            if cwd is None:
+                continue
+            path = Path(cwd) / path
         out.append(path)
     return out
 
@@ -410,21 +461,25 @@ def _fingerprint(path: Path) -> Fingerprint | None:
     try:
         st = path.stat()
         return st.st_mtime_ns, st.st_size, st.st_ctime_ns, st.st_ino, st.st_mode
-    except OSError:
+    except (OSError, ValueError):
         return None
 
 
 def _expand_files(sends: Iterable[Send], deps: dict[Path, Fingerprint | None]) -> list[Send]:
     out = []
     for send in sends:
-        for path in _brief_paths(send):
+        try:
+            paths = _brief_paths(send)
+        except _ROW_ERRORS:
+            continue
+        for path in paths:
             before = _fingerprint(path)
             if path in deps and deps[path] != before:
                 # Never retain an earlier payload under a later fingerprint.
                 # Keep the old dependency so the next cache hit re-reads too.
                 return []
             deps[path] = before  # Missing files are dependencies too.
-            if before is None or not stat.S_ISREG(before[4]) or before[0] / 1e9 > send.at:
+            if before is None or not stat.S_ISREG(before[4]) or before[0] / 1e9 > send.at or before[2] / 1e9 > send.at:
                 continue
             # Bound reads and avoid blocking if a regular file becomes a FIFO.
             if before[1] > 1024 * 1024:
@@ -435,7 +490,7 @@ def _expand_files(sends: Iterable[Send], deps: dict[Path, Fingerprint | None]) -
                     if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
                         continue
                     body = fh.read(1024 * 1024 + 1).decode("utf-8").rstrip("\n")
-            except (OSError, UnicodeError):
+            except (OSError, ValueError):
                 continue
             if _fingerprint(path) != before or len(body.encode("utf-8")) > 1024 * 1024:
                 continue
@@ -450,7 +505,7 @@ _CACHE: dict[str, tuple[int, int, tuple[Send, ...], dict[Path, Fingerprint | Non
 def _file_sends(path: Path) -> tuple[Send, ...]:
     try:
         st = path.stat()
-    except OSError:
+    except (OSError, ValueError):
         return ()
     key = str(path)
     hit = _CACHE.get(key)
@@ -477,19 +532,25 @@ def _file_sends(path: Path) -> tuple[Send, ...]:
                     continue
                 if not isinstance(raw, dict):
                     continue
-                if codex:
-                    if raw.get("type") in ("session_meta", "turn_context"):
-                        cwd = _cwd(_object(raw.get("payload")).get("cwd"))
-                    sends += _codex_sends(raw, session, cwd)
-                elif agy:
-                    sends += _agy_sends(raw, session)
-                elif pi:
-                    if raw.get("type") == "session":
-                        cwd = _cwd(raw.get("cwd"))
-                    sends += _pi_sends(raw, session, cwd)
-                else:
-                    sends += _claude_sends(raw, session)
-    except OSError:
+                try:
+                    if codex:
+                        if raw.get("type") in ("session_meta", "turn_context"):
+                            cwd = None
+                            cwd = _cwd(_object(raw.get("payload")).get("cwd"))
+                        row_sends = _codex_sends(raw, session, cwd)
+                    elif agy:
+                        row_sends = _agy_sends(raw, session)
+                    elif pi:
+                        if raw.get("type") == "session":
+                            cwd = None
+                            cwd = _cwd(raw.get("cwd"))
+                        row_sends = _pi_sends(raw, session, cwd)
+                    else:
+                        row_sends = _claude_sends(raw, session)
+                    sends.extend(_checked_sends(row_sends))
+                except _ROW_ERRORS:
+                    continue
+    except (OSError, ValueError):
         return ()
     deps: dict[Path, Fingerprint | None] = {}
     sends += _expand_files(sends, deps)
@@ -502,13 +563,19 @@ def sweep(dirs: Iterable[Path]) -> SentIndex:
     """Read sends from harness stores; absent or malformed stores add nothing."""
     sends: list[Send] = []
     for d in dict.fromkeys(dirs):
-        if not d.is_dir():
+        try:
+            if not d.is_dir():
+                continue
+            if d.name == ".hermes":
+                db_sends = _hermes_sends(d / "state.db")
+                sends += db_sends + _expand_files(db_sends, {})
+                continue
+            pattern = "*/.system_generated/logs/transcript_full.jsonl" if d.name == "brain" else "**/*.jsonl"
+            for path in sorted(d.glob(pattern)):
+                try:
+                    sends += _file_sends(path)
+                except _ROW_ERRORS:
+                    continue
+        except _ROW_ERRORS:
             continue
-        if d.name == ".hermes":
-            db_sends = _hermes_sends(d / "state.db")
-            sends += db_sends + _expand_files(db_sends, {})
-            continue
-        pattern = "*/.system_generated/logs/transcript_full.jsonl" if d.name == "brain" else "**/*.jsonl"
-        for path in sorted(d.glob(pattern)):
-            sends += _file_sends(path)
     return SentIndex(sends)

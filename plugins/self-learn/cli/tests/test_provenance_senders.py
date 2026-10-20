@@ -7,7 +7,21 @@ from pathlib import Path
 import pytest
 
 from self_learn import provenance as p, refs
-from test_provenance import BRIEF, ORCH, bash, typed, write, _ts
+from test_provenance import BRIEF, ORCH, bash as _bash, typed as _typed, write, _ts as _old_ts
+
+
+# File tests need synthetic sends after the real filesystem's immutable ctime.
+# Keep their fixed relative times, without pretending os.utime sets ctime.
+def _ts(sec):
+    return _old_ts(sec).replace("2026-", "2099-")
+
+
+def bash(command, sec, **kwargs):
+    return {**_bash(command, sec, **kwargs), "timestamp": _ts(sec)}
+
+
+def typed(text, sec, **kwargs):
+    return {**_typed(text, sec, **kwargs), "timestamp": _ts(sec)}
 
 
 def brief_file(tmp_path, text=BRIEF):
@@ -129,7 +143,7 @@ def harness(tmp_path, name, command, cwd, *, valid=True):
             db.execute("DELETE FROM sessions")
             db.execute("DELETE FROM messages")
             db.execute("INSERT INTO sessions VALUES (?, ?)", ("example", str(cwd)))
-            calls = [{"function": {"name": "terminal", "arguments": json.dumps({"command": command})}}]
+            calls = [{"function": {"name": "terminal", "arguments": json.dumps({"command": command, "workdir": str(cwd)})}}]
             db.execute("INSERT INTO messages VALUES (?, ?, ?, ?)", ("example", p._epoch(_ts(8)),
                        "assistant" if valid else "user", json.dumps(calls)))
     else:

@@ -2080,18 +2080,25 @@ tool call as its name and the string values of its input, an attachment's
      (`<home>/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript_full.jsonl`,
      planner `run_command` calls), and pi (`<home>/.pi/agent/sessions`,
      assistant `bash` calls). Their recorded call timestamps apply the same
-     window. Hermes is opened read-only and queried afresh, including its WAL.
+     window. Hermes is opened read-only; raw sends are cached against both the
+     database and WAL files (mtime_ns, size, inode), so WAL-only changes invalidate
+     the cache.
      `resolve`, `check_quote` and `excerpt` pass the sends of the roots they read.
    - **file-backed send** (the same sent sign): a whole double-quoted
      `"$(cat FILE)"`, `"$(cat -- FILE)"` or `"$(< FILE)"` TEXT argument to
      `herdr [--session NAME] agent prompt TARGET` or `pane send-text TARGET`
      may supply the text. FILE is one literal path (shell quotes allowed),
      resolved against the call's recorded absolute cwd for relative paths;
-     a preceding directory-changing command makes relative paths ineligible.
+     any possible directory-changing command token anywhere in the call makes
+     relative paths ineligible. Hermes requires an explicit absolute `workdir`
+     in the call arguments; its mutable session cwd is never used.
      No shell execution, variable expansion, glob expansion, stdin assumption
      or inference from a file read elsewhere in the call. Only regular UTF-8
-     files at most 1 MiB whose mtime is no later than the call are read; missing,
-     newer, unreadable or changing files contribute nothing. The turn's whole
+     files at most 1 MiB whose mtime and ctime are both no later than the call
+     are read; missing, newer, unreadable or changing files contribute nothing.
+     NUL and lone-surrogate filenames/directories are rejected before path
+     construction; malformed rows or stores are isolated so unrelated sends
+     remain available. The turn's whole
      folded text must equal the file's whole folded text, including for short
      turns. JSONL cache hits validate every referenced file's stat fingerprint
      (including missing files); changing a brief invalidates its sender entry.
