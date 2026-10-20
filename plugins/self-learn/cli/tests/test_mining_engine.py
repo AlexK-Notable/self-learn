@@ -508,7 +508,9 @@ def test_e7_preview_leaves_the_ledger_cursors_and_uuid_store_byte_identical(home
     sid = "s1hhhhhh-0000"
     write_session(root, sid, session_rows(sid, host(tmp_path)))
     store = uuids.JudgedUuids(miner.miner_dir() / uuids.STORE_NAME)
-    store.add(["an-old-uuid"], miner.datetime.now(miner.timezone.utc).date())
+    from datetime import date
+
+    store.add(["an-old-uuid"], date(2026, 1, 2))  # past 120 days: a night run would prune it
     backend.answers[sid] = output([lesson()], sightings=[_sighting(sid, rid)])
     ledger = _tree_hashes(home)
     head = git(home, "rev-parse", "HEAD").stdout
