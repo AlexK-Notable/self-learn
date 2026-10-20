@@ -397,7 +397,7 @@ def _typed(entry: dict, text: str, sent: provenance.SentIndex | None) -> str:
 
 def sent_index(roots: Sequence[Path | str] | None = None) -> provenance.SentIndex:
     """Rule 10's sends, read from ``roots`` (the registry's transcript
-    roots when omitted) and the Codex rollouts beside them."""
+    roots when omitted) and the sibling Codex, Hermes, agy and pi stores."""
     return provenance.sweep(provenance.sender_dirs(_roots(roots)))
 
 
