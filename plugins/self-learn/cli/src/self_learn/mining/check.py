@@ -29,7 +29,10 @@ The steps, in order:
    then folded), then ``refs.check_quote`` against the raw file: ``nearby``
    and ``elsewhere_in_file`` move the ref (``corrected_from`` keeps the cited
    line) and the moved ref must still pass step 3; ``stitched`` and
-   ``not_found`` drop the item. A kept quote that holds a ``[redacted:``
+   ``not_found`` drop the item. A quote is moved only to a line of the
+   same role as the cited one: words found only on another speaker's line
+   (a forged ``YOU:`` inside an agent's message, say) are ``quote-not-found``,
+   never the cited speaker's words. A kept quote that holds a ``[redacted:``
    placeholder keeps its ref but is stored as :data:`QUOTE_WITHHELD`, and is
    counted (:attr:`CheckResult.quote_redacted`): the steward re-checks
    stored quotes against the raw transcript, where a placeholder never
@@ -324,6 +327,10 @@ class _Checker:
             if v.outcome in _KEEP:
                 verdict = v.outcome
             elif v.outcome in _MOVED:
+                if v.ref.role != ref.role:
+                    # the words are on a line of another speaker: what the model
+                    # cited as one party's words is never moved onto another's
+                    raise _Fail("quote-not-found", f"line {ref.line}; found only on a line of another role")
                 verdict, corrected_from = v.outcome, ref.line
                 ref = v.ref
                 self.after_end(ref)

@@ -12,7 +12,10 @@ as the model first reads it:
    typed turns, the judged range and the subagent logs found;
 3. every typed turn ``T<k>`` the person typed, in full, as ``YOU:`` --
    typed turns are never shortened ("all of my reponses from a given
-   conversation should always be presented");
+   conversation should always be presented"); a typed turn's continuation
+   lines are indented under ``YOU:``, and every other text is put on one
+   line (each line break shown as ``⏎``), so only the spine's own lines
+   start with ``T<k>``, ``YOU:``, ``AGENT`` or ``FACTS``;
 4. after each typed turn, its stretch: turns another agent wrote
    (``AGENT-WRITTEN``), relayed messages (``RELAY``), the agent's last
    message (``AGENT``), all in line order, then ``FACTS`` counted by code;
@@ -51,14 +54,18 @@ __all__ = [
     "CHARS_PER_TOKEN",
     "DEFAULT_SPINE_TOKENS",
     "FACTS_MAX",
+    "LINE_BREAK",
     "RELAYS_PER_STRETCH",
     "RELAY_CHARS",
     "SESSION_OPENINGS",
     "Session",
     "Spine",
     "SpineFlag",
+    "YOU_INDENT",
     "build_spine",
     "estimate_tokens",
+    "flatten",
+    "indent_typed",
     "judged_range",
     "read_session",
     "skip_reason",
@@ -363,14 +370,40 @@ class _Facts:
         return line if len(line) <= FACTS_MAX else line[: FACTS_MAX - 1] + "…"
 
 
+#: What a line break inside a shown text becomes: no text but the spine's
+#: own may start a line, so nothing an agent wrote can pose as ``T<k>`` or
+#: ``YOU:``.
+LINE_BREAK = " ⏎ "
+#: A typed turn keeps its line breaks; its continuation lines are indented
+#: under ``YOU:`` by this much.
+YOU_INDENT = " " * len("YOU: ")
+
+
+def flatten(text: str) -> str:
+    """``text`` on one line: each line break (every one ``str.splitlines``
+    knows) becomes :data:`LINE_BREAK`."""
+    return LINE_BREAK.join(text.splitlines())
+
+
+def indent_typed(text: str) -> str:
+    """A typed turn's text with its continuation lines indented under
+    ``YOU:`` (:data:`YOU_INDENT`): every word kept, none at a line start."""
+    return ("\n" + YOU_INDENT).join(text.splitlines())
+
+
 class _Redactor:
+    """Redacts every piece, then puts it on one line (:func:`flatten`)."""
+
     def __init__(self) -> None:
         self.hits = 0
 
-    def __call__(self, text: str) -> str:
+    def raw(self, text: str) -> str:
         out, hits = redact(text)
         self.hits += len(hits)
         return out
+
+    def __call__(self, text: str) -> str:
+        return flatten(self.raw(text))
 
 
 def _rel(path: str, cwd: str | None) -> str:
@@ -557,7 +590,7 @@ def build_spine(
             assert e is not None
             state = "new" if k in new_turns else "already mined"
             out.append(f"T{k} · L{line} · {state}")
-            out.append("YOU: " + red(refs._raw_text(e)))  # pyright: ignore[reportPrivateUsage]
+            out.append("YOU: " + indent_typed(red.raw(refs._raw_text(e))))  # pyright: ignore[reportPrivateUsage]
         new = stretch_new[k]
         shown: list[Any] = []
         relays: list[_Piece] = []
