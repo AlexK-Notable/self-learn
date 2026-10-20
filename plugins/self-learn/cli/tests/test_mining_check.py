@@ -565,8 +565,8 @@ def test_u1_a_damaged_file_reads_as_empty(tmp_path, body):
     p.parent.mkdir(parents=True)
     p.write_bytes(body)
     store = uuids.JudgedUuids.load(p)
+    assert store.damaged is (body != b"")  # load says so at once; an empty file is an empty database
     assert len(store) == 0 and store.snapshot() == frozenset()
-    assert store.damaged is (body != b"")  # an empty file is an empty database
 
 
 def test_u1_the_store_holds_turns_agent_text_and_cited_moments_only(roots, tmp_path):
