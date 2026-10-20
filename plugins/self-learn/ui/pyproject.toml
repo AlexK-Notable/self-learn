@@ -59,6 +59,12 @@ self-learn-cli = { path = "../cli", editable = true }
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+# tmp_path directories: /tmp is a RAM-backed tmpfs on many Linux desktops.
+# By default pytest keeps every directory of the last 3 runs, which left
+# ~2.4 GB per xdist suite run in RAM. Passing tests' directories now go when
+# they finish, and only the latest run's leftovers are kept.
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 1
 asyncio_mode = "auto"
 markers = [
     "js: browser-driven DOM tests for static/app.js (FW-17). Slower than the unit suite; select with `-m js`, exclude with `-m 'not js'`. FAILS (does not skip) when Playwright's Chromium is not installed, unless SELF_LEARN_UI_NO_BROWSER=1 is set (U-browserfail).",
