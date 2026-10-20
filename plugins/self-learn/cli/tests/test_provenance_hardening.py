@@ -112,7 +112,8 @@ def test_value_errors_in_stat_and_open_are_misses(tmp_path, monkeypatch):
     assert len(p.sweep([root])) == 1
 
 
-def test_bad_store_does_not_abort_other_stores(tmp_path, monkeypatch):
+@pytest.mark.parametrize("error", [TypeError, IndexError])
+def test_bad_store_does_not_abort_other_stores(tmp_path, monkeypatch, error):
     good = send_file(tmp_path / "good", f"herdr agent prompt worker '{BRIEF}'")
     assert role(good) == "agent"
     broken = tmp_path / ".hermes"
@@ -123,11 +124,21 @@ def test_bad_store_does_not_abort_other_stores(tmp_path, monkeypatch):
 
     def read(path):
         if path == bad_file:
-            raise TypeError("malformed store")
+            raise error("malformed store")
         return original(path)
 
     monkeypatch.setattr(p, "_file_sends", read)
-    assert len(p.sweep([broken, Path("bad\0store"), good])) == 1
+    blocked = tmp_path / "unreadable"
+    blocked.mkdir()
+    original_glob = Path.glob
+
+    def glob(target, *args, **kwargs):
+        if target == blocked:
+            raise OSError("unreadable directory")
+        return original_glob(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "glob", glob)
+    assert len(p.sweep([broken, blocked, Path("bad\0store"), good])) == 1
 
 
 def test_old_mtime_with_new_ctime_is_not_historical_evidence(tmp_path):
@@ -175,7 +186,7 @@ def test_filename_character_filter_has_a_real_matching_file(tmp_path, filename):
     assert role(root) == "user"
 
 
-@pytest.mark.parametrize("prefix", ["echo agent prompt", "herdr agent read", "herdr pane prompt"])
+@pytest.mark.parametrize("prefix", ["not-herdr agent prompt", "herdr agent read", "herdr pane prompt"])
 def test_executable_and_verb_are_required_at_the_same_argument_positions(tmp_path, prefix):
     path = brief_file(tmp_path)
     suffix = f' worker "$(cat \'{path}\')"'

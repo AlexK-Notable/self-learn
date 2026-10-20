@@ -253,7 +253,7 @@ def _codex_sends(raw: dict, session: str, cwd: str | None = None) -> list[Send]:
 
 
 # A bad stored row/store must not interrupt unrelated provenance lookups.
-_ROW_ERRORS = (OSError, ValueError, TypeError, AttributeError, OverflowError, RecursionError)
+_ROW_ERRORS = (OSError, ValueError, TypeError, AttributeError, LookupError, OverflowError, RecursionError)
 
 
 def _path_text_ok(value: str) -> bool:
