@@ -1368,3 +1368,84 @@ def test_a_subagent_line_s_origin_is_read_by_the_steward(home, root, tmp_path):
     items, _ = steward_inputs.evidence_pack(record, roots=[root], budget=4000)
     assert items[0].verdict == "exact" and items[0].found is not None
     assert items[0].found.subagent_file == "subagents/agent-a1b2.jsonl" and items[0].found.line == 2
+
+
+# ------------------------------------------- branches the gate found untested
+
+
+def test_a_rule_check_against_a_record_not_routed_spools_no_fire(home, root, backend, tmp_path, monkeypatch):
+    rid = "lrn-0000f1b1"
+    put_record(home, rid)  # pending, not routed
+    _flagged(monkeypatch, rid)
+    sid = "s1notrtd-0000"
+    path = write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output(rule_checks=[{"record": rid, "outcome": "suspected-violation",
+                                                "situation": {"line": 4}, "action": None}])
+    result = run(home)
+    out = json.loads((run_dir(result) / "out" / f"{sid}.json").read_text())
+    assert len(out["rule_checks"]) == 1  # control: the check kept it
+    assert result.fires == 0 and [o["outcome"] for o in result.outcomes] == ["fire-skipped"]
+    assert not [e for e in telemetry.read_spooled(["fire"])] and cursor(path)["lines"] == 7
+
+
+def test_two_transient_failures_in_a_row_make_exactly_one_retry(home, root, backend, tmp_path):
+    sid = "s1twotrn-0000"
+    path = write_session(root, sid, session_rows(sid, host(tmp_path)))
+    busy = FakeOutcome(ok=False, failure="exit", detail="API Error: 529 overloaded", rc=1)
+    backend.answers[sid] = [busy, busy, FakeOutcome(ok=True, stdout=output(), cost_usd=0.1)]
+    result = run(home)
+    assert backend.attempts[sid] == 2 and result.status == "failed" and cursor(path) is None
+    calls = json.loads((run_dir(result) / "calls" / f"{sid}.json").read_text())
+    assert calls["attempts"] == 2 and calls["ok"] is False
+
+
+def test_max_sessions_per_run_defers_the_rest_behind_their_cursors(home, root, backend, tmp_path, monkeypatch):
+    monkeypatch.setenv("SELF_LEARN_MINER_MAX_SESSIONS_PER_RUN", "2")
+    sids = ["s1maxone-0000", "s2maxtwo-0000", "s3maxthr-0000"]
+    paths = [write_session(root, sid, session_rows(sid, host(tmp_path))) for sid in sids]
+    first = run(home)
+    assert _called(backend) == sids[:2] and first.engine["deferred"] == 1
+    assert cursor(paths[2]) is None and cursor(paths[0])["lines"] == 7
+    run(home)
+    assert _called(backend, 2) == sids[2:] and cursor(paths[2])["lines"] == 7
+
+
+def test_a_rejected_lesson_sighted_three_times_resurfaces(home, root, backend, tmp_path):
+    rid = "lrn-0000f1b2"
+    put_record(home, rid, status="rejected")
+    sids = [f"s{i}rejsig-0000" for i in range(1, miner.REJECTED_RESURFACE_SIGHTINGS + 1)]
+    for sid in sids:
+        write_session(root, sid, session_rows(sid, host(tmp_path)))
+        backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+    result = run(home)
+    outcomes = [o["outcome"] for o in result.outcomes]
+    assert outcomes.count("dropped-rejected") == miner.REJECTED_RESURFACE_SIGHTINGS - 1
+    assert outcomes.count("resurfaced") == 1 and len(result.landed) == 1
+    (new,) = pending(home)
+    assert new.id != rid and "previously rejected" in json.dumps(result.outcomes)
+
+
+def test_a_capped_halted_session_advances_to_its_halt(home, root, backend, tmp_path, monkeypatch):
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "0")
+    sid = "s1caphlt-0000"
+    rows = session_rows(sid, host(tmp_path)) + [
+        typed(sid, 8, "<command-name>/self-learn:teach</command-name>", host(tmp_path))]
+    path = write_session(root, sid, rows)
+    backend.answers[sid] = output([lesson()])
+    result = run(home)
+    capped = [o for o in result.outcomes if o["outcome"] == "dropped-cap"]
+    assert [o["cursor"] for o in capped] == ["advanced-halted"]
+    assert sid not in result.held_sessions and cursor(path) is not None
+    assert f"{sid}-u-3" in _store_rows()
+
+
+def test_a_second_file_with_the_same_session_id_waits_for_the_next_run(home, root, backend, tmp_path):
+    sid = "s1twinid-0000"
+    a = write_session(root, sid, session_rows(sid, host(tmp_path)))
+    other = [dict(r, uuid=r["uuid"] + "-b") for r in session_rows(sid, host(tmp_path))]  # not a copy of a
+    b = write_session(root, sid, other, project="-work-other")
+    first = run(home)
+    assert len(backend.specs) == 1 and first.engine["deferred"] == 1
+    assert [cursor(a) is None, cursor(b) is None].count(True) == 1  # one judged, one held
+    run(home)
+    assert len(backend.specs) == 2 and cursor(a) is not None and cursor(b) is not None
