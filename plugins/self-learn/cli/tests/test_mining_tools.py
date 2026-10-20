@@ -111,6 +111,8 @@ def test_t2_stretch_pages_physical_lines_and_judged_end(tmp_path, home):
     entries = [entry("user", "first"), None] + [entry("assistant", f"message-{n}: " + "ordinary prose " * 400 + " tail") for n in range(15)]
     entries += [entry("user", "second"), entry("assistant", "after judged end")]
     ts = kit(tmp_path, home, entries, end=18)
+    path = tmp_path / "main.jsonl"
+    path.write_text(path.read_text().replace("\nnull\n", "\n{malformed JSON\n"))
     first = invoke(ts, "open_stretch", after_turn=1)
     assert not first.is_error and "L3 AGENT: message-0:" in first.text and "tail" in first.text
     assert "page 1 of 3" in first.text
@@ -143,7 +145,7 @@ def test_tools_results_edges_redaction_and_launch_link(tmp_path, home):
     es = [entry("assistant", "preamble"), entry("user", "start"),
           entry("assistant", [{"type": "tool_use", "name": "Bash", "id": "b", "input": {"command": "echo " + token()}},
                               {"type": "tool_use", "name": "Edit", "id": "e", "input": {"file_path": "synthetic.py"}},
-                              {"type": "tool_use", "name": "Agent", "id": "a", "input": {"prompt": prompt}}]),
+                              {"type": "tool_use", "name": "Agent", "id": "a", "input": {"prompt": prompt + " transformed"}}]),
           entry("user", [{"type": "tool_result", "tool_use_id": "b", "content": "first\nmiddle hidden\nlast", "is_error": True}]),
           entry("user", [{"type": "tool_result", "tool_use_id": "a", "content": "finished"}], toolUseResult={"agentId": "a"}),
           entry("user", "relay data", isMeta=True)]
@@ -159,6 +161,7 @@ def test_tools_results_edges_redaction_and_launch_link(tmp_path, home):
     assert "L6 RELAY: relay data" in reply.text
     # No id field: exact prompt fallback must still link.
     es[4].pop("toolUseResult")
+    es[2]["message"]["content"][2]["input"]["prompt"] = prompt
     ts = kit(tmp_path, home, es, {"a": sub})
     assert "L3 SUBAGENT a:" in invoke(ts, "open_stretch", after_turn=1).text
 
@@ -177,9 +180,9 @@ def test_t3_lookup_no_mask_and_metadata(tmp_path, home):
 
 
 def test_t4_subagent_search_bounds_fts_cache_and_redaction(tmp_path, home, monkeypatch):
-    sub = transcript(tmp_path / "agent-a.jsonl", [entry("user", "brief " + "x" * 2000)] +
+    sub = transcript(tmp_path / "agent-a.jsonl", [entry("user", "brief " + "ordinary brief words " * 150)] +
                      [entry("assistant", "before needle phrase " + token() + " after") for _ in range(30)] +
-                     [entry("assistant", "report " + "y" * 2000)])
+                     [entry("assistant", "report " + "ordinary report words " * 150)])
     ts = kit(tmp_path, home, [], {"a": sub})
     unknown = invoke(ts, "search_subagent", subagent="b", query="needle")
     assert unknown.is_error and unknown.text == "unknown subagent; valid ids: a"
@@ -187,7 +190,8 @@ def test_t4_subagent_search_bounds_fts_cache_and_redaction(tmp_path, home, monke
     assert not quoted.is_error and "BRIEF: L1" in quoted.text and "REPORT: L32" in quoted.text
     assert len(quoted.text) <= 12000 and quoted.text.count(" / AGENT: …") == 20
     assert "[redacted:" in quoted.text and token() not in quoted.text
-    assert "x" * 1501 not in quoted.text and "y" * 1501 not in quoted.text
+    assert len(quoted.text.splitlines()[0].split(" / YOU: ", 1)[1]) == 1500
+    assert len(quoted.text.splitlines()[1].split(" / AGENT: ", 1)[1]) == 1500
     monkeypatch.setattr(tools, "read_entries", lambda *a: pytest.fail("subagent log read twice"))
     words = invoke(ts, "search_subagent", subagent="a", query="needles absentword")
     assert not words.is_error and words.text.count(" / AGENT: …") == 20
@@ -252,7 +256,7 @@ def test_t6_degradation(home, monkeypatch, failure, reason):
 def test_t7_supersession_chain_cycles_and_retirement(tmp_path, home):
     put(home, status="superseded", successor="lrn-00000002")
     put(home, "lrn-00000002", status="superseded", successor="lrn-00000003")
-    put(home, "lrn-00000003", trigger="unrelated replacement wording", status="routed")
+    put(home, "lrn-00000003", trigger="unrelated replacement wording", instruction="take the replacement action", status="routed")
     put(home, "lrn-00000004", status="superseded", successor="lrn-00000005")
     put(home, "lrn-00000005", status="superseded", successor="lrn-00000004")
     put(home, "lrn-00000006", status="superseded", successor="lrn-00000009")
