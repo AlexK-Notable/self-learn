@@ -1268,3 +1268,45 @@ def test_a_landing_that_keeps_failing_counts_toward_giving_up(home, root, backen
     last = run(home)
     assert len(backend.specs) == engine.GIVE_UP_AFTER and cursor(path) is None
     assert [o["outcome"] for o in last.outcomes] == ["given-up"]
+
+
+def _cache_hashes(base: Path, skip: Path) -> dict[str, str]:
+    return {str(p.relative_to(base)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(base.rglob("*")) if p.is_file() and skip not in p.parents}
+
+
+def test_a_preview_changes_nothing_in_the_cache_outside_its_run_folder(home, root, backend, tmp_path):
+    from test_mining_check import _crash_image
+
+    rid = "lrn-0000f1a5"
+    put_record(home, rid)
+    run(home)  # an idle night run first: the lock, the log, the index exist as they do on a live host
+    live = miner.miner_dir() / uuids.STORE_NAME
+    crash = _crash_image(tmp_path)
+    live.write_bytes(crash.read_bytes())
+    journal = live.with_name(live.name + "-journal")
+    journal.write_bytes(crash.with_name(crash.name + "-journal").read_bytes())
+    runs = miner.miner_dir() / "runs"
+    for n in range(31):
+        d = runs / f"old-{n:02d}"
+        d.mkdir(parents=True)
+        (d / "run.json").write_text('{"retained":true}')
+        os.utime(d, (1_700_000_000 + n, 1_700_000_000 + n))
+    copies = miner.miner_dir().parent / "sessions" / "miner-session"
+    for n in range(31):
+        (copies / f"g{n:02d}").mkdir(parents=True)
+        (copies / f"g{n:02d}" / "copy.jsonl").write_text("{}\n")
+    sid = "s1prvwhj-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output([lesson()], sightings=[_sighting(sid, rid)])
+    cache = tmp_path / "xdg-cache"
+    before = _cache_hashes(cache, runs / "none")
+    assert journal.stat().st_size > 0 and len(before) > 70  # control: a hot journal and a populated cache
+    result = run(home, preview=True)
+    folder = run_dir(result)
+    out = json.loads((folder / "out" / f"{sid}.json").read_text())
+    assert out["lessons"] and out["sightings"]  # control: the preview judged the session
+    after = _cache_hashes(cache, folder)
+    assert after == before
+    assert (folder / "miner.log").is_file() and not (folder / "copies").exists()
+    assert backend.specs[0].skip_orphan_sweep is True and backend.specs[0].cwd == folder / "stage"

@@ -227,8 +227,15 @@ def _now_iso() -> str:
     return chrono.now_iso()
 
 
+#: Where :func:`log` writes while a preview runs: that run's own folder
+#: (a preview changes nothing outside it); None for every other run.
+_LOG_TO: Path | None = None
+
+
 def log(message: str) -> None:
-    path = miner_dir() / "miner.log"
+    path = _LOG_TO if _LOG_TO is not None else miner_dir() / "miner.log"
+    if _LOG_TO is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(f"{_now_iso()} {message}\n")
     worker._truncate_oldest(path, worker.LOG_CAP_BYTES)
@@ -2778,7 +2785,13 @@ def run(
     t0 = time.time()
     run_id = uuid.uuid4().hex[:8]
 
-    lock_fh = open(miner_dir() / "miner.lock", "w", encoding="utf-8")
+    # a preview opens the lock without truncating it, and logs into its own
+    # run folder: the lock file (created when absent) is all it writes
+    # outside that folder (the seam's own copies and logs aside)
+    lock_fh = open(miner_dir() / "miner.lock", "a" if preview else "w", encoding="utf-8")
+    global _LOG_TO
+    if preview:
+        _LOG_TO = miner_dir() / "runs" / run_id / "miner.log"
     try:
         try:
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -2840,6 +2853,7 @@ def run(
                           "duration_secs": round(time.time() - t0, 1)})
             return MineResult(status="failed", run_id=run_id)
     finally:
+        _LOG_TO = None
         try:
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
         except OSError:
@@ -3319,7 +3333,14 @@ def _run_session_engine(
     jbase["method_version"] = method_version
     summary["method_version"] = method_version
 
-    store = mining_uuids.JudgedUuids.load(mdir / mining_uuids.STORE_NAME)
+    # a preview reads copies inside its own run folder: SQLite rolls back a
+    # crash's hot journal on open, and the index refresh writes -- neither
+    # may touch the live files
+    folder = engine_mod.RunFolder(mdir, run_id)
+    live_store = mdir / mining_uuids.STORE_NAME
+    store = mining_uuids.JudgedUuids.load(
+        engine_mod.copy_sqlite(live_store, folder.path / "copies") if preview else live_store
+    )
     snapshot, uuid_info = _judged_uuids(store, preview=preview)
 
     # ---- plan
@@ -3331,7 +3352,7 @@ def _run_session_engine(
     halted_by_reason: Counter[str] = Counter()
     claimed: frozenset[str] = frozenset()
     plan_judged: dict[str, frozenset[str]] = {}
-    index, _index_info = steward_inputs.refresh_index(home)
+    index, _index_info = steward_inputs.refresh_index(home, copy_to=folder.path / "copies" if preview else None)
     # a session that keeps failing waits behind the others, and after
     # GIVE_UP_AFTER failed runs at one cursor is given up until its file
     # grows (its cursor stays)
@@ -3401,6 +3422,8 @@ def _run_session_engine(
                       "excluded": len(processed), "deferred_files": deferred, "given_up": len(given_up),
                       "outcomes": result.outcomes,
                       "duration_secs": round(time.time() - t0, 1)})
+        else:
+            engine_mod.drop_copies(folder.path / "copies")
         log(f"run {run_id}: {'preview: ' if preview else ''}idle (nothing new to call)")
         return result
 
@@ -3417,13 +3440,13 @@ def _run_session_engine(
             return result
 
     # ---- call
-    folder = engine_mod.RunFolder(mdir, run_id)
     shared_path = folder.put("shared-instructions.md", shared_text)
-    engine_mod.prune_runs(mdir, current=run_id)  # this run's folder is one of the 30
-    engine_mod.prune_session_copies(session_copies.sessions_dir(home))
+    if not preview:  # a preview never prunes another run's folder or copies
+        engine_mod.prune_runs(mdir, current=run_id)  # this run's folder is one of the 30
+        engine_mod.prune_session_copies(session_copies.sessions_dir(home))
     for _s, plan, _halt in to_call:
         engine_mod.save_plan(folder, plan)
-    stage = mdir / "session-stage"
+    stage = folder.path / "stage" if preview else mdir / "session-stage"
     stage.mkdir(parents=True, exist_ok=True)
     timeout = reader_timeout_secs(home)
     model = provider.model_for(engine_mod.SURFACE, home=home)
@@ -3431,7 +3454,7 @@ def _run_session_engine(
     def make_spec(plan: engine_mod.Plan, k: int) -> invocation.SessionSpec:
         return engine_mod.session_spec(
             plan, k, home=home, run_id=run_id, stage=stage, shared=shared_path, timeout=timeout,
-            disallowed_tools=READER_DISALLOWED_TOOLS, log=log,
+            disallowed_tools=READER_DISALLOWED_TOOLS, log=log, sweep=not preview,
         )
 
     calls, stopped = engine_mod.call_sessions(
@@ -3544,6 +3567,7 @@ def _run_session_engine(
         run_folder=f"runs/{run_id}",
     )
     if preview:
+        engine_mod.drop_copies(folder.path / "copies")
         log(f"run {run_id}: preview — {run['totals']['called']} called, nothing landed")
         return result
 

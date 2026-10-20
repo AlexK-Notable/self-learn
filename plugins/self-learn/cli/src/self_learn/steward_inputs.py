@@ -137,13 +137,23 @@ CHECKS_OUT = frozenset({"exact", "normalised"})
 # --------------------------------------------------------------- the index
 
 
-def refresh_index(home: Path) -> tuple[LessonIndex | None, dict]:
+def refresh_index(home: Path, *, copy_to: Path | None = None) -> tuple[LessonIndex | None, dict]:
     """Bring the lesson index up to date (incremental) and return it open,
     with what the run record says about it. Never raises: an index that
     cannot be built is ``None`` and ``mode: unavailable`` says why. With no
-    embedding key the build is word search only (``mode: lexical-only``)."""
+    embedding key the build is word search only (``mode: lexical-only``).
+
+    ``copy_to`` (the miner's preview): copy the index into that folder
+    first and refresh the copy, so the live index is never written; with
+    no live index, the copy is built there from scratch."""
     try:
-        index = LessonIndex.open(home)
+        if copy_to is not None:
+            from .index.store import index_path
+            from .mining.engine import copy_sqlite
+
+            index = LessonIndex.open_at(copy_sqlite(index_path(home), copy_to), home)
+        else:
+            index = LessonIndex.open(home)
     except Exception as exc:  # noqa: BLE001 -- the run goes on without it
         return None, {"mode": "unavailable", "mode_reason": _short(exc)}
     try:

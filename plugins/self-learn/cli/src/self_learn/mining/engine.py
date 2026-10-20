@@ -187,6 +187,28 @@ def prune_runs(miner_dir: Path, *, keep: int = KEEP_RUNS, current: str | None = 
     return _prune_dirs(Path(miner_dir) / "runs", keep, spare=current)
 
 
+_SQLITE_SIDECARS = ("", "-journal", "-wal", "-shm")
+
+
+def copy_sqlite(src: Path, dest_dir: Path) -> Path:
+    """Copy a SQLite file and whichever of its journal, WAL and shared-memory
+    files exist into ``dest_dir``; returns the copy's path (there whether or
+    not ``src`` existed). A preview opens the copy, so a hot journal is
+    rolled back there and the live file is never written."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / src.name
+    for suffix in _SQLITE_SIDECARS:
+        f = src.with_name(src.name + suffix)
+        if f.is_file():
+            shutil.copyfile(f, dest.with_name(dest.name + suffix))
+    return dest
+
+
+def drop_copies(dest_dir: Path) -> None:
+    """Remove a preview's copies (:func:`copy_sqlite`) once it is done."""
+    shutil.rmtree(dest_dir, ignore_errors=True)
+
+
 def prune_session_copies(sessions_dir: Path, *, keep: int = KEEP_RUNS) -> int:
     """Keep the ``keep`` newest groups of the surface's transcript copies
     (``<cache>/sessions/miner-session/<run_id>/``): the seam never prunes
@@ -385,8 +407,11 @@ def session_spec(
     timeout: float,
     disallowed_tools: str,
     log: Callable[[str], None],
+    sweep: bool = True,
 ) -> invocation.SessionSpec:
-    """The ``SessionSpec`` of call ``k`` of a run (plan §3.4)."""
+    """The ``SessionSpec`` of call ``k`` of a run (plan §3.4). Only call 0
+    sweeps the seam's orphans, and with ``sweep`` False (a preview) none
+    does: a preview changes nothing another run left."""
     assert plan.spine is not None and plan.toolset is not None
     return invocation.SessionSpec(
         surface=SURFACE,
@@ -407,7 +432,7 @@ def session_spec(
         transcript_group=run_id,
         mcp_toolset=plan.toolset,
         sidecar_key=f"{run_id}-{k}",
-        skip_orphan_sweep=k != 0,
+        skip_orphan_sweep=k != 0 or not sweep,
     )
 
 
