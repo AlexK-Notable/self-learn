@@ -790,6 +790,63 @@ def _slice_cwd(s: SessionSlice) -> str | None:
     return None
 
 
+class HaltPoint(NamedTuple):
+    """Where :func:`halt_point` stops a session slice.
+
+    ``end`` is how many of the slice's ``lines`` are judged when the slice
+    is cut (``lines[:end]``), None when it is not: 0 for a whole-session
+    halt (nothing of the slice is read, not even lines before the halting
+    turn), the halting line's index for a command tag. ``halt`` is True
+    exactly when ``end`` is not None, and ``reason`` is then one of the
+    ``HALT_*`` constants."""
+
+    end: int | None
+    halt: bool
+    reason: str | None
+
+
+def halt_point(s: SessionSlice, *, mined_scheduled: frozenset[str] = frozenset()) -> HaltPoint:
+    """The halt decision for one session slice (M-5), without a digest:
+    the one predicate both miners read (new-miner plan §3.1).
+
+    The slice's first typed turn is its first ``user`` row that carries
+    text (:func:`_user_turn_text`), whoever wrote it: ``refs.role_of`` is
+    not read, so a relay or agent-written turn counts as it always has
+    (S-90 left halts unchanged). It is counted within ``s.lines``, as
+    :func:`digest_transcript` always counted it. Three halters:
+
+    - that turn begins with a self-prompt header: :data:`HALT_SELF_PROMPT`,
+      the whole session (``end`` 0);
+    - that turn is a scheduled job's opening and the job is not one of
+      `mined_scheduled`: :data:`HALT_SCHEDULED_JOB`, the whole session;
+    - any user text turn holds a self-learn command tag
+      (:data:`_COMMAND_SPAN_RE`): :data:`HALT_SELF_COMMAND`, the slice ends
+      before that line.
+
+    Reads ``s.lines`` only and changes nothing on ``s``. A line that is not
+    JSON, or not a JSON object, is skipped, as the digest skips it."""
+    first_user_seen = False
+    for offset, raw in enumerate(s.lines):
+        try:
+            entry = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "user":
+            continue
+        user_text = _user_turn_text(entry.get("message") or {})
+        if not user_text.strip():
+            continue
+        if not first_user_seen:
+            first_user_seen = True
+            if _is_self_prompt(user_text):
+                return HaltPoint(0, True, HALT_SELF_PROMPT)  # own machinery: halt forever
+            if _is_skipped_scheduled_job(user_text, mined_scheduled):
+                return HaltPoint(0, True, HALT_SCHEDULED_JOB)  # a scheduler's session: halt forever
+        if _COMMAND_SPAN_RE.search(user_text):
+            return HaltPoint(offset, True, HALT_SELF_COMMAND)  # everything from the tag on is off-limits
+    return HaltPoint(None, False, None)
+
+
 def digest_transcript(
     s: SessionSlice,
     limits: DigestLimits | None = None,
@@ -811,31 +868,33 @@ def digest_transcript(
     for text the harness or a program put there (a headless prompt, a task
     notification, skill text, a compaction summary), ``[subagent L<n>]``
     for a sidechain row. A row that also carries a tool result keeps
-    ``[user …]``. The halts below read every user text turn, whoever
-    wrote it.
+    ``[user …]``. The halts read every user text turn, whoever wrote it.
 
     halt=True means the REST of this session — including future appends —
-    must never be mined; the caller persists it into the cursor. Three
-    halters (M-5, tightened by audit 2026-07-15): a self-prompt header
-    (the system's own claude -p machinery); a scheduled job's opening
-    (:data:`SCHEDULED_JOB_OPENING`, 2026-10-07) unless the job is one of
-    `mined_scheduled` (none when omitted); and ANY self-learn command
-    tag — the old "span ends at the next genuine user turn" rule
-    collapsed on the first review reply, feeding every card's lesson text
-    (which the reader would dutifully match against the ledger) back into
-    the miner as fake sightings. Recall loss from over-exclusion is cheap;
-    evidence corruption is not. The reason is left on ``s.halt_reason``
-    for the run's log.
+    must never be mined; the caller persists it into the cursor. The
+    decision is :func:`halt_point`'s, and only the lines before its
+    ``end`` are digested. Three halters (M-5, tightened by audit
+    2026-07-15): a self-prompt header (the system's own claude -p
+    machinery); a scheduled job's opening (:data:`SCHEDULED_JOB_OPENING`,
+    2026-10-07) unless the job is one of `mined_scheduled` (none when
+    omitted); and ANY self-learn command tag — the old "span ends at the
+    next genuine user turn" rule collapsed on the first review reply,
+    feeding every card's lesson text (which the reader would dutifully
+    match against the ledger) back into the miner as fake sightings.
+    Recall loss from over-exclusion is cheap; evidence corruption is not.
+    The reason is left on ``s.halt_reason`` for the run's log.
     """
     limits = limits if limits is not None else DigestLimits()
     out: list[str] = []
-    halt = False
-    first_user_seen = False
+    stop = halt_point(s, mined_scheduled=mined_scheduled)
+    halt = stop.halt
+    if stop.halt:
+        s.halt_reason = stop.reason
     command_counts: dict[str, list[int]] = {}  # norm shape -> [uses, errors]
     last_tool_shape: dict[str, str] = {}  # tool_use id -> display shape
     last_tool_norm: dict[str, str] = {}  # tool_use id -> norm shape
 
-    for offset, raw in enumerate(s.lines):
+    for offset, raw in enumerate(s.lines[: stop.end]):
         lineno = s.start_line + offset + 1  # 1-based, for origins
         try:
             entry = json.loads(raw)
@@ -849,18 +908,6 @@ def digest_transcript(
             results = [b for b in _blocks(message) if b.get("type") == "tool_result"]
             user_text = _user_turn_text(message)
             if user_text.strip():
-                if not first_user_seen:
-                    first_user_seen = True
-                    if _is_self_prompt(user_text):
-                        s.halt_reason = HALT_SELF_PROMPT
-                        return None, True  # own machinery: halt forever
-                    if _is_skipped_scheduled_job(user_text, mined_scheduled):
-                        s.halt_reason = HALT_SCHEDULED_JOB
-                        return None, True  # a scheduler's session: halt forever
-                if _COMMAND_SPAN_RE.search(user_text):
-                    s.halt_reason = HALT_SELF_COMMAND
-                    halt = True
-                    break  # everything after the tag is off-limits
                 role = refs.role_of(entry, sent=sent)
                 label = role if role in ("agent", "relay", "subagent") else "user"
                 out.append(f"[{label} L{lineno}] {_clip(user_text, limits.message_chars)}")
