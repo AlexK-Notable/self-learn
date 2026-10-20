@@ -1,0 +1,137 @@
+{
+ "clipped": {
+  "digest": "=== session clipped project -work-repo ===\n[user L1] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx …[clipped]… xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n[assistant L2] yyyyyyyyyyy\n…[session digest clipped]",
+  "halt": false,
+  "halt_reason": null
+ },
+ "command": {
+  "digest": "=== session command project -work-repo ===\n[user L1] normal work before\n[result L3 Bash:ls ok] a ⋯ b\n[assistant L4] ok",
+  "halt": true,
+  "halt_reason": "self-learn command"
+ },
+ "command-after-assistant": {
+  "digest": "=== session command-after-assistant project -work-repo ===\n[assistant L1] stray",
+  "halt": true,
+  "halt_reason": "self-learn command"
+ },
+ "command-beside-result": {
+  "digest": "=== session command-beside-result project -work-repo ===\n[user L1] go",
+  "halt": true,
+  "halt_reason": "self-learn command"
+ },
+ "command-first-line": {
+  "digest": null,
+  "halt": true,
+  "halt_reason": "self-learn command"
+ },
+ "command-in-assistant": {
+  "digest": "=== session command-in-assistant project -work-repo ===\n[user L1] what is this?\n[assistant L2] <command-name>/self-learn:review</command-name> run it",
+  "halt": false,
+  "halt_reason": null
+ },
+ "command-with-sends": {
+  "digest": "=== session command-with-sends project -work-repo ===\n[relay L1] Summarise the changelog.\n[user L2] the person typed this\n[agent L3] <agent-message>\nRead /work/repo/misc/BRIEF.md in full and do exactly what it says; report when done.\n</agent-message>\n[agent L4] Read /work/repo/misc/BRIEF.md in full and do exactly what it says; report when done.\n[assistant L5] done",
+  "halt": true,
+  "halt_reason": "self-learn command"
+ },
+ "empty": {
+  "digest": null,
+  "halt": false,
+  "halt_reason": null
+ },
+ "no-text": {
+  "digest": null,
+  "halt": false,
+  "halt_reason": null
+ },
+ "ordinary": {
+  "digest": "=== session ordinary project -work-repo ===\n[user L1] please fix the flaky test\n[result L3 Bash:uv run pytest -q ok] noise 0 ⋯ noise 39\n[assistant L4] The root cause was a stale fixture.",
+  "halt": false,
+  "halt_reason": null
+ },
+ "ordinary-from-line-2": {
+  "digest": "=== session ordinary-from-line-2 project -work-repo ===\n[result L3 Bash:uv run pytest -q ok] noise 0 ⋯ noise 39\n[assistant L4] The root cause was a stale fixture.",
+  "halt": false,
+  "halt_reason": null
+ },
+ "retry-cluster": {
+  "digest": "=== session retry-cluster project -work-repo ===\n[retry-cluster Bash:make build ×3, 2 error(s)]\n[result L2 Bash:make build --fast ERROR] boom ⋯ line3\n[result L4 Bash:make build --fast ERROR] boom ⋯ line3\n[result L6 Bash:make build --fast ok] boom ⋯ line3\n[user L7] ugh, again",
+  "halt": false,
+  "halt_reason": null
+ },
+ "roles-no-sends": {
+  "digest": "=== session roles-no-sends project -work-repo ===\n[relay L1] Summarise the changelog.\n[user L2] the person typed this\n[agent L3] <agent-message>\nRead /work/repo/misc/BRIEF.md in full and do exactly what it says; report when done.\n</agent-message>\n[user L4] Read /work/repo/misc/BRIEF.md in full and do exactly what it says; report when done.\n[assistant L5] done",
+  "halt": false,
+  "halt_reason": null
+ },
+ "roles-with-sends": {
+  "digest": "=== session roles-with-sends project -work-repo ===\n[relay L1] Summarise the changelog.\n[user L2] the person typed this\n[agent L3] <agent-message>\nRead /work/repo/misc/BRIEF.md in full and do exactly what it says; report when done.\n</agent-message>\n[agent L4] Read /work/repo/misc/BRIEF.md in full and do exactly what it says; report when done.\n[assistant L5] done",
+  "halt": false,
+  "halt_reason": null
+ },
+ "scheduled": {
+  "digest": null,
+  "halt": true,
+  "halt_reason": "scheduled job"
+ },
+ "scheduled-later": {
+  "digest": "=== session scheduled-later project -work-repo ===\n[user L1] hello\n[user L2] <scheduled-task name=\"news-digest\" file=\"/x/scheduled-tasks/news-digest/SKILL.md\">\nSummarise the news.\n[assistant L3] summary",
+  "halt": false,
+  "halt_reason": null
+ },
+ "scheduled-mined": {
+  "digest": "=== session scheduled-mined project -work-repo ===\n[user L1] <scheduled-task name=\"news-digest\" file=\"/x/scheduled-tasks/news-digest/SKILL.md\">\nSummarise the news.\n[assistant L2] summary",
+  "halt": false,
+  "halt_reason": null
+ },
+ "scheduled-other-mined": {
+  "digest": null,
+  "halt": true,
+  "halt_reason": "scheduled job"
+ },
+ "scheduled-then-command": {
+  "digest": "=== session scheduled-then-command project -work-repo ===\n[user L1] <scheduled-task name=\"news-digest\" file=\"/x/scheduled-tasks/news-digest/SKILL.md\">\nSummarise the news.\n[assistant L2] summary",
+  "halt": true,
+  "halt_reason": "self-learn command"
+ },
+ "self-prompt": {
+  "digest": null,
+  "halt": true,
+  "halt_reason": "self-learn prompt"
+ },
+ "self-prompt-and-command": {
+  "digest": null,
+  "halt": true,
+  "halt_reason": "self-learn prompt"
+ },
+ "self-prompt-in-later-slice": {
+  "digest": null,
+  "halt": true,
+  "halt_reason": "self-learn prompt"
+ },
+ "self-prompt-later": {
+  "digest": "=== session self-prompt-later project -work-repo ===\n[user L1] hello\n[user L2] You are the self-learn transcript miner. x\n[assistant L3] ok",
+  "halt": false,
+  "halt_reason": null
+ },
+ "self-prompt-sdk": {
+  "digest": null,
+  "halt": true,
+  "halt_reason": "self-learn prompt"
+ },
+ "sidechain": {
+  "digest": "=== session sidechain project -work-repo ===\n[subagent L1] a sidechain turn",
+  "halt": false,
+  "halt_reason": null
+ },
+ "string-content": {
+  "digest": "=== session string-content project -work-repo ===\n[user L1] string-content user turn",
+  "halt": false,
+  "halt_reason": null
+ },
+ "text-beside-result": {
+  "digest": "=== session text-beside-result project -work-repo ===\n[user L2] and look\n[result L2 Bash:ls ok] x",
+  "halt": false,
+  "halt_reason": null
+ }
+}
