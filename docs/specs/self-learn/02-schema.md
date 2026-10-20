@@ -2679,7 +2679,11 @@ judged-uuid store** (`mining/spine.py`, `mining/check.py`, `mining/uuids.py`).
   `damaged`. At the start of a night run the engine moves a damaged file
   aside (`judged-uuids.sqlite.damaged-<UTC time>`, with its journal) and
   starts empty, never a locked one, and the run record's `judged_uuids` says
-  which happened; a preview never prunes, moves or adds. Measured 2026-10-19 over the last 30 days of
+  which happened; a preview never prunes, moves or adds (fix round: it reads
+  a copy of the file made inside its run folder, so a hot journal is rolled
+  back in the copy, never in the live file). Every night run keeps the three
+  newest damaged files moved aside and deletes older ones with their
+  journals. Measured 2026-10-19 over the last 30 days of
   transcripts (410 files, counts only): 2,898 typed turns and 17,423
   assistant text entries, about 20,300 rows a month before (iii) adds its
   few cited moments; at 120 days about 81,000 rows, an 8.5 MB file whose
@@ -2716,11 +2720,14 @@ validated when present (`contract.RUN_OPTIONAL_KEYS`,
 "call_failures", "bad_output", "deferred": int, "flag_modes": { mode: int } }`;
 `"judged_uuids": { "state": "ok" | "locked" | "rebuilt" | "damaged",
 "loaded": int, "aside"?: str | null, "pruned"?: int, "added"?: int,
-"add_failed"?: int }`; and on a session row `flag_mode`, `flag_note` (the
+"add_failed"?: int }`; `"given_up": [ { "session": str, "failures": int ≥ 1 } ]`
+(sessions not called because they failed three runs in a row at one cursor,
+§13.3 of `12-transcript-miner.md`; R2 fix round); and on a session row `flag_mode`, `flag_note` (the
 `flags.flag_rules` mode and note, `unavailable` when the lesson index could
 not be built), `flags`, `spine_tokens_est`, `over_budget`, `quote_redacted`,
 `cut_to_limit`, and `error` (`call` or `checker-error` for a called session
-whose out status is `failed`). The run status of a night is `ok`,
+whose out status is `failed`; `call` includes a call that raised,
+`checker-error` any exception the check raised). The run status of a night is `ok`,
 `stopped-ceiling` (the runaway guard stopped calls) or `failed` (every
 called session failed); `mode` is `night`.
 
