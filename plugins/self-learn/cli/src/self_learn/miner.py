@@ -2808,7 +2808,10 @@ def run(
     # a preview opens the lock without truncating it, and logs into its own
     # run folder: the lock file (created when absent) is all it writes
     # outside that folder (the seam's own copies and logs aside)
-    lock_fh = open(miner_dir() / "miner.lock", "a" if preview else "w", encoding="utf-8")
+    if preview:
+        lock_fh = open(miner_dir() / "miner.lock", "a", encoding="utf-8")
+    else:
+        lock_fh = open(miner_dir() / "miner.lock", "w", encoding="utf-8")
     global _LOG_TO
     if preview:
         _LOG_TO = miner_dir() / "runs" / run_id / "miner.log"
