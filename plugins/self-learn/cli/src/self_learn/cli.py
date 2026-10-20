@@ -1773,7 +1773,7 @@ def _cmd_mine(args: argparse.Namespace) -> int:
                         "recurrences": len(result.recurrences),
                         "fires": result.fires,
                         "run_id": result.run_id,
-                        **({"engine": result.engine} if result.engine else {}),
+                        **({"engine": engine_counts} if (engine_counts := getattr(result, "engine", None)) else {}),
                     }
                 )
             )
