@@ -2569,7 +2569,8 @@ holds transcript or quote text. `DROP_REASONS` (closed): `over-count`,
 `line-unresolved`, `out-of-range`, `quote-stitched`, `quote-not-found`,
 `already-judged`, `duplicate`, `no-evidence`, `no-user-evidence`,
 `verification-unchecked`, `incident-cost-unresolved`, `steps-unresolved`,
-`multi-line-loaded-text`, `unknown-record`, `not-flagged`, `bad-output`.
+`multi-line-loaded-text`, `redaction-overflow`, `unknown-record`, `not-flagged`,
+`bad-output`.
 
 **Amendment 2026-10-19 (new miner R0b).** A behaviour lesson may carry
 `context`, with the same nullable 1..1000-character text rule as a knowledge
@@ -2581,6 +2582,102 @@ the drop reason (including in run totals); the checker enforces the line
 rule. The contract version stays unchanged because no output has yet been
 produced. `steps` still permits zero or 2..6 items; both the validator and
 the model-output schema refuse one item.
+
+**Amendment 2026-10-19 (new miner R1a): the spine, the checks and the
+judged-uuid store** (`mining/spine.py`, `mining/check.py`, `mining/uuids.py`).
+
+- *The spine* (the user message of one session's call) opens with the two
+  lines `mining.spine.SESSION_OPENINGS`: the old miner's self-prompt header
+  and `<command-name>self-learn:session-miner</command-name>`, so
+  `miner.halt_point` halts the session miner's own transcripts whether the
+  spine is the first typed text (header) or follows text Claude Code put
+  ahead of it (tag). Then a header (session, project folder, first `cwd`,
+  typed-turn count, `judged: L<a>–L<b>; T<i>–T<j> are new`, subagent logs),
+  and per typed turn `T<k> · L<line> · new|already mined` and `YOU: <text>`
+  in full, never shortened. Lines are numbered by `refs`' own reader. `YOU:`
+  is only a turn whose role is `user` under the run's sends; a turn an agent
+  wrote (role `agent`, rule 10) shows in its stretch as
+  `AGENT-WRITTEN (L<n>): <text>`, whole up to 2,400 characters and otherwise
+  its first and last 1,200, marked; a compact-provenance note never shows as
+  `YOU:`. Each stretch then shows, in line order, its agent-written turns, its
+  last three relays that are not harness envelopes, skill text, compaction
+  summaries or provenance notes (first 200 characters each), and the agent's
+  last text message, then `FACTS:` (at most 600 characters: tool calls,
+  edited files, failed tool results, retry clusters, subagents launched,
+  `interrupted`, `compacted`) and the rule-situation flags matched there. A
+  subagent log is linked to its launch by the launch's
+  `toolUseResult.agentId`, else by its first user text equalling the
+  launch's prompt; the header lists a log only when it was launched at or
+  before the judged end, or is unlinked and its first entry was written by
+  then (a log begun past a halt is never shown). Every piece passes
+  `scan.redact` before any shortening or cut, the command and path shapes of
+  `FACTS` included. No shown text may start a line of the spine: every text but a typed turn
+  is put on one line (each line break shown as ` ⏎ `), and a typed turn's
+  continuation lines are indented under `YOU:`, so text inside an agent
+  message, an agent-written turn, a relay, a command or a flag can never
+  read as a `T<k>` or `YOU:` line. A typed turn is new when its line is
+  judged and the judged-uuid store lacks its uuid; a stretch is new when its
+  typed turn is new or it holds judged assistant text the store lacks (tool
+  rows, relays and agent-written turns alone never make a stretch new).
+  Over `miner.spine_tokens` (estimated as `ceil(chars / 2.5)`) the spine
+  shortens mined stretches' agent messages to 400 + 400 characters (longest
+  first), then mined stretches' facts to their first part, then new
+  stretches' agent messages to 1,200 + 1,200 (longest first); still over, it
+  is sent with `over_budget` set. A session is skipped, after the halts, as
+  `no-typed-turns`, then `no-marker`, then `nothing-new` (no typed turn or
+  assistant text entry in the judged lines whose uuid is not yet judged).
+- *The checks* follow the old plan's eight steps, with these rules settled:
+  over-count items are cut before validation, first ones kept; an evidence
+  item, or a rule check's situation, whose uuid is already judged is
+  `already-judged` (steps, an incident cost, an action and a verification
+  are not: they may point at earlier moments for context); a lesson or
+  sighting whose surviving evidence all lies before the judged range is
+  dropped as `out-of-range`; a quote found only on another line is moved
+  there (`nearby`, `elsewhere_in_file`) only when that line has the cited
+  line's role, so words found only on another speaker's line (a forged
+  `YOU:` inside an agent message) are `quote-not-found`; a ` ⏎ ` the spine
+  showed for a line break is read back as one before a quote is matched,
+  unless the quote matches the entry as written; a `correction` or `standing-preference` with no
+  evidence item of role `user` is `no-user-evidence` (role `agent` is not
+  `user`); a Trigger, Instruction or Fact with more than one non-empty line
+  is `multi-line-loaded-text`. A subagent pointer must name a log the spine
+  listed, and a line of it written after the judged end's time is
+  `out-of-range`. A second sighting of one record citing a moment an earlier
+  one cites, and a second rule check of one record at the same situation,
+  are `duplicate`. Step 8's redaction can make a field longer than its limit
+  (a placeholder can outgrow what it replaced). A loaded field (Trigger,
+  Instruction, Fact) that outgrows it drops that lesson as
+  `redaction-overflow`: loaded text is never cut (S-79), and a cut rule would
+  land broken. Any other free-text field is cut back to its limit, ending in
+  `…`, and counted (`CheckResult.cut_to_limit`, for the run record). A kept quote that the raw entry does not hold once redacted (it
+  holds a `[redacted:…]` placeholder, or only the start or end of one)
+  keeps its ref and verdict and is stored as `mining.check.QUOTE_WITHHELD` (`"[quote withheld:
+  it held a redaction placeholder]"`), counted for the run record's
+  `quote-redacted`; the engine lands such an item without a `quote`, since
+  the steward's re-check against the raw transcript could never match a
+  placeholder. A checked document that fails `validate_checked_output` is a
+  checker defect and raises `CheckerError`; nothing the model writes within
+  its contract can cause it.
+- *The judged-uuid store* is a small SQLite file in the cache,
+  `<cache>/miner/judged-uuids.sqlite`, one table `judged(uuid TEXT PRIMARY
+  KEY, first_judged TEXT)` (the date each moment was first judged). For each
+  landed session it holds (i) the uuids of the typed turns and (ii) of the
+  assistant text entries in its judged lines (`Spine.moment_uuids`), and
+  (iii) every uuid a landed item cited -- evidence, steps, verification,
+  incident cost, a rule check's situation -- which is what stops a fork
+  re-landing a parent's moment of any kind (`check.landed_uuids` gives all
+  three). Rows are added only by an explicit call after a session's output
+  has landed, with `INSERT OR IGNORE` (a moment keeps its first date); rows
+  judged more than 120 days ago are pruned by one `DELETE` per run. Every
+  call opens its own connection and closes it, so none is shared between
+  threads; a run's spines and checks read one snapshot taken before the run.
+  A missing file is an empty store; an unreadable one reads as empty and is
+  reported as damaged. Measured 2026-10-19 over the last 30 days of
+  transcripts (410 files, counts only): 2,898 typed turns and 17,423
+  assistant text entries, about 20,300 rows a month before (iii) adds its
+  few cited moments; at 120 days about 81,000 rows, an 8.5 MB file whose
+  snapshot reads in 0.02 s. Storing every entry instead would have been
+  about 494,000 rows a month.
 
 **Run record — `miner-shadow-run/1`** (`runs/<run_id>/run.json`).
 
@@ -2627,7 +2724,8 @@ rule 10) is not a typed turn; `typed_turn_lines(entries, sent=…)` takes the se
 harness (`compare.scan_file`, one sweep of the roots it resolves against) pass them.
 
 **What each field is for.** `shape` — the rubric's four shapes; a
-`correction` needs user evidence. `scope`, `type`, `kind` — the record's
+`correction` or a `standing-preference` needs user evidence (amended by R1a,
+below). `scope`, `type`, `kind` — the record's
 frontmatter. `trigger`/`instruction`, `fact`/`context` — the lesson itself.
 `evidence[]` — the moments that show it, each a checked ref with its quote
 (`verdict` and `corrected_from` say how the quote was found). `steps[]` — the

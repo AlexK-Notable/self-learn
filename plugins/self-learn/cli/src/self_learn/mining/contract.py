@@ -118,6 +118,7 @@ DROP_REASONS: tuple[str, ...] = (
     "incident-cost-unresolved",
     "steps-unresolved",
     "multi-line-loaded-text",
+    "redaction-overflow",
     "unknown-record",
     "not-flagged",
     "bad-output",
