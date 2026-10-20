@@ -2569,7 +2569,8 @@ holds transcript or quote text. `DROP_REASONS` (closed): `over-count`,
 `line-unresolved`, `out-of-range`, `quote-stitched`, `quote-not-found`,
 `already-judged`, `duplicate`, `no-evidence`, `no-user-evidence`,
 `verification-unchecked`, `incident-cost-unresolved`, `steps-unresolved`,
-`multi-line-loaded-text`, `unknown-record`, `not-flagged`, `bad-output`.
+`multi-line-loaded-text`, `redaction-overflow`, `unknown-record`, `not-flagged`,
+`bad-output`.
 
 **Amendment 2026-10-19 (new miner R0b).** A behaviour lesson may carry
 `context`, with the same nullable 1..1000-character text rule as a knowledge
@@ -2614,9 +2615,10 @@ judged-uuid store** (`mining/spine.py`, `mining/check.py`, `mining/uuids.py`).
   is put on one line (each line break shown as ` ⏎ `), and a typed turn's
   continuation lines are indented under `YOU:`, so text inside an agent
   message, an agent-written turn, a relay, a command or a flag can never
-  read as a `T<k>` or `YOU:` line. A stretch or typed turn is new when one of
-  its judged lines holds an entry whose uuid the judged-uuid store lacks
-  (any entry, not only typed turns and agent text).
+  read as a `T<k>` or `YOU:` line. A typed turn is new when its line is
+  judged and the judged-uuid store lacks its uuid; a stretch is new when its
+  typed turn is new or it holds judged assistant text the store lacks (tool
+  rows, relays and agent-written turns alone never make a stretch new).
   Over `miner.spine_tokens` (estimated as `ceil(chars / 2.5)`) the spine
   shortens mined stretches' agent messages to 400 + 400 characters (longest
   first), then mined stretches' facts to their first part, then new
@@ -2643,10 +2645,11 @@ judged-uuid store** (`mining/spine.py`, `mining/check.py`, `mining/uuids.py`).
   `out-of-range`. A second sighting of one record citing a moment an earlier
   one cites, and a second rule check of one record at the same situation,
   are `duplicate`. Step 8's redaction can make a field longer than its limit
-  (a placeholder can outgrow what it replaced); the field is then cut back
-  to its limit, ending in `…`, and counted (`CheckResult.cut_to_limit`, for
-  the run record): no drop reason fits, since each names a fault of the
-  model's. A kept quote that the raw entry does not hold once redacted (it
+  (a placeholder can outgrow what it replaced). A loaded field (Trigger,
+  Instruction, Fact) that outgrows it drops that lesson as
+  `redaction-overflow`: loaded text is never cut (S-79), and a cut rule would
+  land broken. Any other free-text field is cut back to its limit, ending in
+  `…`, and counted (`CheckResult.cut_to_limit`, for the run record). A kept quote that the raw entry does not hold once redacted (it
   holds a `[redacted:…]` placeholder, or only the start or end of one)
   keeps its ref and verdict and is stored as `mining.check.QUOTE_WITHHELD` (`"[quote withheld:
   it held a redaction placeholder]"`), counted for the run record's
@@ -2655,15 +2658,26 @@ judged-uuid store** (`mining/spine.py`, `mining/check.py`, `mining/uuids.py`).
   placeholder. A checked document that fails `validate_checked_output` is a
   checker defect and raises `CheckerError`; nothing the model writes within
   its contract can cause it.
-- *The judged-uuid store* is `<cache>/miner/judged-uuids.json`, a JSON object
-  `{uuid: "YYYY-MM-DD"}` (the first date each moment was judged). It holds
-  the uuid of every entry in the judged lines of each landed session
-  (`Spine.moment_uuids`): tool results, relays and agent-written turns too,
-  so a fork's copy of any of them is `already-judged`. Entries are
-  added only by an explicit call after a session's output has landed;
-  entries judged more than 120 days ago are pruned once per run; the file is
-  written with `fsops.atomic_write`. A missing file is an empty store; an
-  unreadable one reads as empty and is reported as damaged.
+- *The judged-uuid store* is a small SQLite file in the cache,
+  `<cache>/miner/judged-uuids.sqlite`, one table `judged(uuid TEXT PRIMARY
+  KEY, first_judged TEXT)` (the date each moment was first judged). For each
+  landed session it holds (i) the uuids of the typed turns and (ii) of the
+  assistant text entries in its judged lines (`Spine.moment_uuids`), and
+  (iii) every uuid a landed item cited -- evidence, steps, verification,
+  incident cost, a rule check's situation -- which is what stops a fork
+  re-landing a parent's moment of any kind (`check.landed_uuids` gives all
+  three). Rows are added only by an explicit call after a session's output
+  has landed, with `INSERT OR IGNORE` (a moment keeps its first date); rows
+  judged more than 120 days ago are pruned by one `DELETE` per run. Every
+  call opens its own connection and closes it, so none is shared between
+  threads; a run's spines and checks read one snapshot taken before the run.
+  A missing file is an empty store; an unreadable one reads as empty and is
+  reported as damaged. Measured 2026-10-19 over the last 30 days of
+  transcripts (410 files, counts only): 2,898 typed turns and 17,423
+  assistant text entries, about 20,300 rows a month before (iii) adds its
+  few cited moments; at 120 days about 81,000 rows, an 8.5 MB file whose
+  snapshot reads in 0.02 s. Storing every entry instead would have been
+  about 494,000 rows a month.
 
 **Run record — `miner-shadow-run/1`** (`runs/<run_id>/run.json`).
 

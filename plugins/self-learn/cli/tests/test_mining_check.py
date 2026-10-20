@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import copy
 import json
-import os
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -20,7 +21,6 @@ import pytest
 from self_learn.mining import check, contract, uuids
 from self_learn.mining.check import QUOTE_WITHHELD, check_output
 from self_learn.mining.spine import SpineFlag, build_spine, read_session
-from self_learn.primitives import fsops
 
 SID = "11111111-2222-3333-4444-555555555555"
 SENDER = "99999999-0000-0000-0000-000000000009"
@@ -500,16 +500,16 @@ def test_a_line_without_a_uuid_must_resolve_in_the_judged_folder(roots):
 
 
 def test_the_checker_never_adds_to_the_store(roots, tmp_path):
-    store = uuids.JudgedUuids(uuids.store_path(tmp_path / "cache"))
+    p = uuids.store_path(tmp_path / "cache")
+    store = uuids.JudgedUuids(p)
     store.add(["a-2"], date(2026, 9, 1))
-    store.save()
-    before = uuids.store_path(tmp_path / "cache").read_bytes()
+    before = p.read_bytes()
     sp = spine_of(roots, judged=store)
     res = run(sp, output([lesson()]), roots, judged_uuids=store)
     assert res.checked["lessons"]  # control: something was kept
     assert len(store) == 1 and store.snapshot() == {"a-2"}
-    assert uuids.store_path(tmp_path / "cache").read_bytes() == before
-    assert sp.moment_uuids >= {"u-12", "a-13"}  # what the engine adds after landing
+    assert p.read_bytes() == before
+    assert check.landed_uuids(sp, res.checked) >= {"u-12", "a-13"}  # what the engine adds after landing
 
 
 def test_a_checked_document_that_fails_its_contract_is_a_checker_error(roots, monkeypatch):
@@ -523,71 +523,83 @@ def test_a_checked_document_that_fails_its_contract_is_a_checker_error(roots, mo
 # --------------------------------------------------------------------- U1
 
 
-def test_u1_prune_drops_entries_past_120_days(tmp_path):
+def test_u1_prune_is_one_delete_of_rows_past_120_days(tmp_path):
     today = date(2026, 10, 19)
-    store = uuids.JudgedUuids(tmp_path / "s.json")
+    store = uuids.JudgedUuids(uuids.store_path(tmp_path))
     store.add(["d119"], today - timedelta(days=119))
     store.add(["d120"], today - timedelta(days=120))
-    store.add(["d121"], today - timedelta(days=121))
-    assert store.prune(today) == 1
+    store.add(["d121", "d300"], today - timedelta(days=121))
+    assert store.prune(today) == 2
     assert store.snapshot() == {"d119", "d120"}
+    assert uuids.JudgedUuids(tmp_path / "none.sqlite").prune(today) == 0  # nothing to prune, nothing made
+    assert not (tmp_path / "none.sqlite").exists()
 
 
-def test_u1_add_keeps_the_first_date_and_save_round_trips(tmp_path):
+def test_u1_add_is_insert_or_ignore(tmp_path):
     p = uuids.store_path(tmp_path)
     store = uuids.JudgedUuids.load(p)
-    assert len(store) == 0 and not store.damaged
+    assert len(store) == 0 and not store.damaged and not p.exists()  # reading makes nothing
     assert store.add(["u-1", "u-2"], date(2026, 10, 2)) == 2
-    assert store.add(["u-1", "u-3"], date(2026, 10, 1)) == 1
-    assert store.add(["u-1"], date(2026, 10, 5)) == 0
-    store.save()
+    assert store.add(["u-1", "u-3", "", "u-3"], date(2026, 10, 5)) == 1
     again = uuids.JudgedUuids.load(p)
-    assert again.judged_on("u-1") == date(2026, 10, 1) and again.judged_on("u-2") == date(2026, 10, 2)
-    assert "u-3" in again and "u-9" not in again
-    assert json.loads(p.read_text()) == {"u-1": "2026-10-01", "u-2": "2026-10-02", "u-3": "2026-10-01"}
+    assert again.judged_on("u-1") == date(2026, 10, 2)  # the first judging's date stays
+    assert again.judged_on("u-3") == date(2026, 10, 5) and again.judged_on("u-9") is None
+    assert "u-3" in again and "u-9" not in again and len(again) == 3
+    with sqlite3.connect(p) as db:
+        assert db.execute("SELECT uuid, first_judged FROM judged ORDER BY uuid").fetchall() == [
+            ("u-1", "2026-10-02"), ("u-2", "2026-10-02"), ("u-3", "2026-10-05")]
 
 
-def test_u1_save_writes_atomically(tmp_path, monkeypatch):
-    p = uuids.store_path(tmp_path)
-    store = uuids.JudgedUuids(p)
+def test_u1_each_call_opens_its_own_connection(tmp_path):
+    store = uuids.JudgedUuids(uuids.store_path(tmp_path))
     store.add(["u-1"], date(2026, 10, 1))
-    store.save()
-    calls = []
-    real = fsops.atomic_write
-    monkeypatch.setattr(fsops, "atomic_write", lambda path, data, **kw: calls.append(Path(path)) or real(path, data, **kw))
-    store.add(["u-2"], date(2026, 10, 2))
-    store.save()
-    assert calls == [p]
-    # a write that fails leaves the old file whole
-    old = p.read_bytes()
-
-    def boom(*_a, **_k):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(os, "replace", boom)
-    store.add(["u-3"], date(2026, 10, 3))
-    with pytest.raises(OSError):
-        store.save()
-    assert p.read_bytes() == old
-    assert sorted(x.name for x in p.parent.iterdir()) == [p.name]  # no temp file left behind
+    with ThreadPoolExecutor(2) as pool:  # the same object, used from other threads
+        assert pool.submit(store.add, ["u-2"], date(2026, 10, 2)).result() == 1
+        assert pool.submit(store.snapshot).result() == {"u-1", "u-2"}
+    assert store.snapshot() == {"u-1", "u-2"}
 
 
-def test_u1_loading_and_saving_add_nothing(tmp_path):
+@pytest.mark.parametrize("body", [b"not a database at all, just bytes " * 40, b""])
+def test_u1_a_damaged_file_reads_as_empty(tmp_path, body):
     p = uuids.store_path(tmp_path)
     p.parent.mkdir(parents=True)
-    p.write_text(json.dumps({"u-1": "2026-10-01", "bad": "not a date", "": "2026-10-01"}))
+    p.write_bytes(body)
     store = uuids.JudgedUuids.load(p)
-    assert store.snapshot() == {"u-1"}
-    store.save()
-    assert uuids.JudgedUuids.load(p).snapshot() == {"u-1"}
+    assert len(store) == 0 and store.snapshot() == frozenset()
+    assert store.damaged is (body != b"")  # an empty file is an empty database
 
 
-@pytest.mark.parametrize("body", ["not json", "[1, 2]"])
-def test_u1_a_damaged_file_reads_as_empty(tmp_path, body):
-    p = tmp_path / "s.json"
-    p.write_text(body)
-    store = uuids.JudgedUuids.load(p)
-    assert len(store) == 0 and store.damaged
+def test_u1_the_store_holds_turns_agent_text_and_cited_moments_only(roots, tmp_path):
+    rows = copy.deepcopy(BASE)
+    rows[13] = {"type": "user", "uuid": "t-14", "timestamp": _ts(14), "sessionId": SID, "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "x1", "content": "make: *** [check] Error 2"}]}}
+    rows[14] = {"type": "user", "uuid": "t-15", "timestamp": _ts(15), "sessionId": SID, "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "x2", "content": "an uncited result"}]}}
+    sp = spine_of(roots, rows)
+    res = run(sp, output([lesson(shape="verified-gotcha", evidence=[{"line": 14, "quote": "Error 2"}],
+                                 steps=[{"line": 2, "what": "plan"}, {"line": 11, "what": "claims a pass"}],
+                                 verification={"line": 6, "quote": "filler entry number 6", "how": "read it"},
+                                 incident_cost={"line": 7, "text": "an hour"})],
+                         rule_checks=[]), roots)
+    got = check.landed_uuids(sp, res.checked)
+    assert {"u-12", "u-19"} <= got and {"a-11", "a-13", "a-18", "a-20"} <= got  # (i) typed turns, (ii) agent text
+    assert {"t-14", "a-2", "a-6", "a-7"} <= got  # (iii) every cited moment, before the range too
+    assert "t-15" not in got and "a-3" not in got  # an uncited tool result; agent text outside the range
+    store = uuids.JudgedUuids(uuids.store_path(tmp_path))
+    store.add(got, date(2026, 10, 19))
+    assert store.snapshot() == got
+
+
+def test_u1_a_rule_check_s_situation_is_a_landed_moment(roots):
+    flag = SpineFlag(REC, "user", 2, "lexical", "Trigger: t — Instruction: i")
+    rows = copy.deepcopy(BASE)
+    rows[13] = {"type": "user", "uuid": "t-14", "timestamp": _ts(14), "sessionId": SID, "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "x1", "content": "done"}]}}
+    sp = spine_of(roots, rows, flags=[flag])
+    res = run(sp, output(rule_checks=[{"record": REC, "outcome": "cannot-tell", "situation": {"line": 14},
+                                       "action": None}]), roots)
+    assert "t-14" in check.landed_uuids(sp, res.checked)
+    assert "t-14" not in sp.moment_uuids  # control: only the citation puts it there
 
 
 def test_words_found_only_on_another_speaker_s_line_are_not_moved_there(roots):
@@ -625,19 +637,46 @@ def test_a_subagent_log_row_is_never_the_person(roots):
 # ------------------------------------------------------------ fix round
 
 
-def test_redaction_that_outgrows_a_limit_cuts_the_field_and_counts_it(roots):
+SECRET = "token=abcdefgh"  # 14 characters; its placeholder is 32
+
+
+def _full(seed: str, limit: int) -> str:
+    """Text exactly ``limit`` long that ends in :data:`SECRET`."""
+    return ((seed + " ") * limit)[: limit - len(SECRET) - 1] + " " + SECRET
+
+
+def test_redaction_that_outgrows_a_limit_cuts_an_unloaded_field_and_counts_it(roots):
     sp = spine_of(roots)
-    secret = "token=abcdefgh"  # 14 characters; its placeholder is 32
-    why = ("Recurs often. " * 30)[: contract.WHY_DURABLE_MAX - len(secret) - 1] + " " + secret
-    instr = ("Run the check first. " * 60)[: contract.TEXT_MAX - len(secret) - 1] + " " + secret
-    assert len(why) == contract.WHY_DURABLE_MAX and len(instr) == contract.TEXT_MAX
-    res = run(sp, output([lesson(why_durable=why, instruction=instr)]), roots)
+    why, ctx = _full("Recurs often.", contract.WHY_DURABLE_MAX), _full("Seen twice.", contract.TEXT_MAX)
+    assert len(why) == contract.WHY_DURABLE_MAX and len(ctx) == contract.TEXT_MAX
+    res = run(sp, output([lesson(why_durable=why, context=ctx)]), roots)
     got = res.checked["lessons"][0]
     assert res.checked["status"] == "ok" and reasons(res) == []
     assert len(got["why_durable"]) == contract.WHY_DURABLE_MAX and got["why_durable"].endswith("…")
-    assert len(got["instruction"]) == contract.TEXT_MAX and secret not in got["instruction"]
+    assert len(got["context"]) == contract.TEXT_MAX and SECRET not in got["context"]
     assert res.cut_to_limit == 2 and res.checked["redactions"] == 2
     assert run(sp, output([lesson()]), roots).cut_to_limit == 0  # control
+
+
+@pytest.mark.parametrize("field", ["trigger", "instruction"])
+def test_a_loaded_field_that_redaction_overflows_drops_only_that_lesson(roots, field):
+    sp = spine_of(roots)
+    res = run(sp, output([lesson("L1", **{field: _full("Run the check first.", contract.TEXT_MAX)}),
+                          lesson("L2")]), roots)
+    assert reasons(res) == [("L1", "redaction-overflow")]
+    assert [x["id"] for x in res.checked["lessons"]] == ["L2"] and res.cut_to_limit == 0
+    # control: exactly at the limit once redacted, it fits and is kept whole
+    fits = ("Run the check first. " * 50)[: contract.TEXT_MAX - 32 - 1] + " " + SECRET
+    res = run(sp, output([lesson("L1", **{field: fits})]), roots)
+    assert reasons(res) == [] and res.checked["lessons"][0][field].endswith("[redacted:credential-assignment]")
+
+
+def test_a_fact_that_redaction_overflows_drops_the_lesson(roots):
+    sp = spine_of(roots)
+    kn = dict(shape="verified-gotcha", type="knowledge", kind=None, trigger=None, instruction=None,
+              evidence=[{"line": 18, "quote": "The check failed on the export path."}])
+    res = run(sp, output([lesson("L1", fact=_full("The export fails.", contract.TEXT_MAX), **kn)]), roots)
+    assert reasons(res) == [("L1", "redaction-overflow")]
 
 
 def test_a_quote_ending_inside_a_placeholder_is_withheld(roots):
@@ -705,16 +744,17 @@ def test_over_count_keeps_the_first_lessons_and_evidence(roots):
     assert [e["ref"]["line"] for e in res.checked["lessons"][0]["evidence"]] == [12, 13, 18, 19]
 
 
-def test_a_copied_tool_result_is_already_judged(roots):
+def test_a_fork_cannot_re_land_a_parent_s_cited_tool_result(roots):
     rows = copy.deepcopy(BASE)
     rows[13] = {"type": "user", "uuid": "t-14", "timestamp": _ts(14), "sessionId": SID, "message": {"content": [
         {"type": "tool_result", "tool_use_id": "x1", "content": "make: *** [check] Error 2"}]}}
-    first = spine_of(roots, rows, first=1)  # an earlier run judged the whole file
-    assert "t-14" in first.moment_uuids
-    sp = spine_of(roots, rows)
     gotcha = lesson(shape="verified-gotcha", evidence=[{"line": 14, "quote": "Error 2"}])
-    assert reasons(run(sp, output([gotcha]), roots)) == []  # control
-    res = run(sp, output([gotcha]), roots, judged_uuids=first.moment_uuids)
+    parent = spine_of(roots, rows)
+    landed = check.landed_uuids(parent, run(parent, output([gotcha]), roots).checked)
+    assert "t-14" in landed
+    fork = spine_of(roots, rows)  # the copy, judged again
+    assert reasons(run(fork, output([gotcha]), roots)) == []  # control: without the store
+    res = run(fork, output([gotcha]), roots, judged_uuids=landed)
     assert reasons(res)[0] == ("L1.evidence[0]", "already-judged")
 
 

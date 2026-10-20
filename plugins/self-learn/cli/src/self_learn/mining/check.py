@@ -60,10 +60,10 @@ The steps, in order:
    before it; a subagent ref its launch's, when linked.
 8. **Secrets.** Every free-text field passes ``scan.redact``; hits are
    redacted in place and counted in ``redactions``. A placeholder can be
-   longer than what it replaced: a field that outgrows its limit is cut back
-   to it and counted (:attr:`CheckResult.cut_to_limit`). No drop reason fits
-   (the contract's reasons all name the model's fault), so the lesson is
-   kept.
+   longer than what it replaced. A loaded field (Trigger, Instruction,
+   Fact) that outgrows its limit drops that lesson as ``redaction-overflow``:
+   loaded text is never cut (S-79). Any other field that outgrows its limit
+   is cut back to it and counted (:attr:`CheckResult.cut_to_limit`).
 
 This module reads transcripts only; it writes nothing.
 """
@@ -85,9 +85,11 @@ from .spine import LINE_BREAK, Spine
 __all__ = [
     "CheckResult",
     "CheckerError",
+    "LOADED",
     "QUOTE_WITHHELD",
     "USER_SHAPES",
     "check_output",
+    "landed_uuids",
     "empty_output",
     "quote_withheld",
 ]
@@ -99,6 +101,9 @@ QUOTE_WITHHELD = "[quote withheld: it held a redaction placeholder]"
 #: Lesson shapes that are the person's own words: their evidence must hold a
 #: turn the person typed.
 USER_SHAPES: tuple[str, ...] = ("correction", "standing-preference")
+
+#: A lesson's loaded fields: never cut (S-79).
+LOADED: tuple[str, ...] = ("trigger", "instruction", "fact")
 
 _FENCE = re.compile(r"\A\s*```(?:json)?[ \t]*\n(.*?)\n?```\s*\Z", re.S)
 _KEEP = ("exact", "normalised")
@@ -142,6 +147,31 @@ def _matches_raw(quote: str, ref: refs.Ref, roots: Sequence[Path]) -> bool:
     entry = refs._entry(lines[ref.line - 1])  # pyright: ignore[reportPrivateUsage]
     raw = refs._raw_text(entry) if entry else ""  # pyright: ignore[reportPrivateUsage]
     return refs._match(quote, raw) is not None  # pyright: ignore[reportPrivateUsage]
+
+
+def landed_uuids(spine: Spine, checked: dict[str, Any]) -> frozenset[str]:
+    """What the engine adds to the judged-uuid store once ``checked`` has
+    landed: the spine's typed turns and assistant text in the judged lines
+    (``Spine.moment_uuids``), and every uuid a kept item cites -- evidence,
+    steps, verification, incident cost, a rule check's situation -- so a
+    fork's copy of a cited moment, of whatever kind, is ``already-judged``."""
+    cited: set[str] = set()
+
+    def take(pointer: Any) -> None:
+        if isinstance(pointer, dict) and isinstance(pointer.get("ref"), dict):
+            uid = pointer["ref"].get("uuid")
+            if isinstance(uid, str) and uid:
+                cited.add(uid)
+
+    for lesson in checked.get("lessons", []):
+        for p in [*lesson["evidence"], *lesson["steps"], lesson["verification"], lesson["incident_cost"]]:
+            take(p)
+    for s in checked.get("sightings", []):
+        for p in s["evidence"]:
+            take(p)
+    for c in checked.get("rule_checks", []):
+        take(c["situation"])
+    return spine.moment_uuids | cited
 
 
 def quote_withheld(quote: object) -> bool:
@@ -440,10 +470,16 @@ class _Checker:
 
     def lesson(self, lesson: dict[str, Any]) -> dict[str, Any] | None:
         lid: str = lesson["id"]
-        for key in ("trigger", "instruction", "fact"):
+        for key in LOADED:
             value = lesson.get(key)
             if isinstance(value, str) and sum(1 for ln in value.splitlines() if ln.strip()) > 1:
                 self.drop(lid, "multi-line-loaded-text", f"{key} has more than one line")
+                return None
+        for key in LOADED:
+            value = lesson.get(key)
+            if isinstance(value, str) and len(redact(value)[0]) > contract.TEXT_MAX:
+                # loaded text is never cut (S-79): a cut rule would land broken
+                self.drop(lid, "redaction-overflow", f"{key} outgrows its limit once redacted")
                 return None
         evidence, ev_refs = self.evidence(lid, lesson["evidence"])
         if not self.whole(lid, ev_refs):

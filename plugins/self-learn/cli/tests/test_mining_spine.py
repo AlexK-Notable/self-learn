@@ -354,7 +354,7 @@ def test_s7_a_tagged_agent_turn_is_agent_written_never_you(root):
     assert f"AGENT-WRITTEN (L3): <agent-message>{BRIEF}</agent-message>" in sp.text
     assert you_lines(sp.text) == ["YOU: set up the worker", "YOU: how is it going?"]
     assert "AGENT (L4): working on the brief" in sp.text
-    assert "u-3" in sp.moment_uuids  # every judged entry is a moment the store will hold
+    assert "u-3" not in sp.moment_uuids and "u-1" in sp.moment_uuids  # not a typed turn, so not a moment
 
 
 def test_s7_a_sent_matched_turn_is_agent_written_only_with_the_sends(root):
@@ -526,22 +526,25 @@ def test_s5_a_secret_straddling_a_facts_cut_is_redacted_before_the_cut(root):
     assert facts.count("[redacted") == 3  # the edited path, and both shapes (each cut inside its placeholder)
 
 
-def test_a_fork_s_copied_tool_results_relays_and_agent_turns_are_already_mined(root):
-    original = [
-        typed("run the export", 1),                                   # L1 T1
-        use("Bash", {"command": "make export"}, 2, "b1"),             # L2
-        result("b1", "exported", 3),                                  # L3 tool result
-        relay("a coordinator note", 4),                               # L4 relay
-        typed("<agent-message>also check the logs</agent-message>", 5),  # L5 agent-written
+def test_only_a_new_typed_turn_or_new_agent_text_makes_a_stretch_new(root):
+    rows = [
+        typed("run the export", 1),                                      # L1 T1
+        asst("on it", 2),                                                # L2
+        typed("and the logs", 3),                                        # L3 T2
+        use("Bash", {"command": "make export"}, 4, "b1"),                # L4
+        result("b1", "exported", 5),                                     # L5 tool result
+        relay("a coordinator note", 6),                                  # L6 relay
+        typed("<agent-message>also check the logs</agent-message>", 7),  # L7 agent-written
+        typed("thanks", 8),                                              # L8 T3
     ]
-    first = whole(write(root, original))
-    assert {"t-3", "r-4", "u-5"} <= first.moment_uuids  # every judged entry, not only turns and text
-    fork = write(root, original + [typed("new in the fork", 6), asst("ok", 7)], session=FORK)
-    sp = whole(fork, judged_uuids=first.moment_uuids)
-    assert sp.stretch_new == (False, False, True)
-    assert sp.new_turns == (2,)
-    plain = whole(fork)
-    assert plain.stretch_new == (False, True, True)  # control: without the store the copy is new
+    store = {"u-1", "a-2", "u-3"}  # a fork: the first two turns and the reply were judged
+    sp = whole(write(root, rows), judged_uuids=store)
+    assert sp.new_turns == (3,)
+    assert sp.stretch_new == (False, False, False, True)  # tool rows, a relay, an agent turn: not new
+    assert sp.moment_uuids == {"u-1", "a-2", "u-3", "u-8"}  # (i) typed turns, (ii) agent text; no tool rows
+    texty = rows[:4] + [asst("the export went fine", 5)] + rows[5:]
+    sp = whole(write(root, texty, session=FORK), judged_uuids=store)
+    assert sp.stretch_new == (False, False, True, True)  # control: new agent text makes it new
 
 
 def test_a_subagent_log_begun_past_the_judged_end_is_not_listed(root):
@@ -581,7 +584,7 @@ def test_nothing_new_reads_turns_and_agent_text_only(root):
     assert skip_reason(grown, 1, 3, judged_uuids=store) is None  # control: new agent text
 
 
-def test_a_judged_line_without_a_uuid_counts_as_new_when_it_has_text(root):
+def test_a_judged_line_without_a_uuid_counts_as_new_when_it_is_agent_text(root):
     no_uuid = asst("written by an old client", 3)
     del no_uuid["uuid"]
     rows = [typed("one", 1), asst("a1", 2), no_uuid, typed("two", 4)]

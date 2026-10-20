@@ -3,123 +3,149 @@ already judged (new-miner plan §3.1, "fork de-duplication").
 
 A resumed or forked session file copies earlier entries with their ``uuid``,
 and a miner that reads the copy as new counts the same moment twice. The
-store holds ``{uuid: first-judged date}`` for the typed turns and assistant
-text entries of every session whose output has landed, in
-``<cache>/miner/judged-uuids.json``. The spine shows a typed turn whose uuid
-is here as already mined, and the checker drops evidence that resolves to
-one as ``already-judged``.
+store holds, for every session whose output has landed:
 
-Rules:
+1. the uuid of each typed turn in its judged lines;
+2. the uuid of each assistant text entry in its judged lines;
+3. every uuid a landed item cited (evidence, steps, verification, incident
+   cost, a rule check's situation) -- what stops a fork re-landing a
+   parent's moment, whatever kind of entry it was.
 
-- entries are added only by an explicit :meth:`JudgedUuids.add`, which the
-  engine calls after a session's output has landed (in preview, never);
-  loading, reading and saving add nothing;
-- :meth:`JudgedUuids.prune` removes entries judged more than
+``Spine.moment_uuids`` gives (1) and (2), ``check.landed_uuids`` all three.
+The spine shows a typed turn whose uuid is here as already mined, and the
+checker drops evidence that resolves to one as ``already-judged``.
+
+The store is a small SQLite file in the cache,
+``<cache>/miner/judged-uuids.sqlite``: one table, ``judged(uuid TEXT
+PRIMARY KEY, first_judged TEXT)``, the date as ``YYYY-MM-DD``. Rules:
+
+- rows are added only by an explicit :meth:`JudgedUuids.add` (``INSERT OR
+  IGNORE``: a moment keeps the date it was first judged), which the engine
+  calls after a session's output has landed (in preview, never); reading
+  adds nothing. A run's spines and checks read :meth:`JudgedUuids.snapshot`,
+  taken once before the run, not the store itself (each lookup on the store
+  opens the file);
+- :meth:`JudgedUuids.prune` is one ``DELETE`` of the rows judged more than
   :data:`KEEP_DAYS` days ago; the engine calls it once per run (Claude Code
   removes transcripts well before that);
-- :meth:`JudgedUuids.save` writes with ``fsops.atomic_write``, so a crash
-  leaves the old file or the new one, never half of either.
+- every call opens its own connection and closes it before returning, so a
+  connection is never shared between threads; each write is one
+  transaction.
 
-The file is the cache, not the ledger: a missing or unreadable file reads as
-an empty store (``damaged`` says which), and the worst a lost store costs is
-one fork judged again.
+The file is the cache, not the ledger: a missing file is an empty store, and
+an unreadable one reads as empty (``damaged`` says so). The worst a lost
+store costs is one fork judged again.
 """
 
 from __future__ import annotations
 
-import json
+import sqlite3
+from contextlib import closing
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Iterable
 
-from ..primitives import fsops
-
 __all__ = ["KEEP_DAYS", "STORE_NAME", "JudgedUuids", "store_path"]
 
-STORE_NAME = "judged-uuids.json"
-#: Entries older than this many days are pruned.
+STORE_NAME = "judged-uuids.sqlite"
+#: Rows judged more than this many days ago are pruned.
 KEEP_DAYS = 120
+
+_SCHEMA = "CREATE TABLE IF NOT EXISTS judged (uuid TEXT PRIMARY KEY, first_judged TEXT NOT NULL)"
 
 
 def store_path(cache_dir: Path | str) -> Path:
-    """``<cache>/miner/judged-uuids.json`` for a ledger's cache directory
+    """``<cache>/miner/judged-uuids.sqlite`` for a ledger's cache directory
     (``worker.cache_dir(home)``)."""
     return Path(cache_dir) / "miner" / STORE_NAME
 
 
 class JudgedUuids:
-    """``{uuid: first-judged date}``, read from and written to ``path``."""
+    """``{uuid: first-judged date}`` in the SQLite file at ``path``."""
 
-    def __init__(self, path: Path | str, entries: dict[str, date] | None = None, *, damaged: bool = False) -> None:
+    def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
-        self._entries: dict[str, date] = dict(entries or {})
-        #: True when the file existed but could not be read as a store.
-        self.damaged = damaged
+        #: True when the file exists but could not be read as a store.
+        self.damaged = False
 
     @classmethod
     def load(cls, path: Path | str) -> "JudgedUuids":
-        """The store at ``path``; empty when the file is missing. A file that
-        is not a JSON object of ``uuid: "YYYY-MM-DD"`` reads as empty and
-        ``damaged``; single malformed entries are skipped."""
-        p = Path(path)
-        try:
-            raw = json.loads(p.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return cls(p)
-        except (OSError, ValueError, UnicodeDecodeError):
-            return cls(p, damaged=True)
-        if not isinstance(raw, dict):
-            return cls(p, damaged=True)
-        entries: dict[str, date] = {}
-        for uid, when in raw.items():
-            if not isinstance(uid, str) or not uid or not isinstance(when, str):
-                continue
+        """The store at ``path``, with ``damaged`` set when the file exists
+        but is not a readable store. Writes nothing."""
+        store = cls(path)
+        if store.path.exists():
             try:
-                entries[uid] = date.fromisoformat(when)
-            except ValueError:
-                continue
-        return cls(p, entries)
+                store._read("SELECT count(*) FROM judged")
+            except sqlite3.Error:
+                store.damaged = True
+        return store
+
+    # ---- connections: one per call, closed before it returns
+
+    def _read(self, sql: str, args: tuple = ()) -> list[tuple]:
+        """Rows of a read; none when the file does not exist yet."""
+        if not self.path.exists():
+            return []
+        uri = self.path.resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=5)) as db:
+            try:
+                return db.execute(sql, args).fetchall()
+            except sqlite3.OperationalError as exc:
+                if "no such table" in str(exc):
+                    return []
+                raise
+
+    def _safe_read(self, sql: str, args: tuple = ()) -> list[tuple]:
+        try:
+            return self._read(sql, args)
+        except sqlite3.Error:
+            self.damaged = True
+            return []
+
+    def _write(self, sql: str, rows: list[tuple]) -> int:
+        """Run ``sql`` once per row, in one transaction; how many rows changed."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(str(self.path), timeout=5)) as db:
+            with db:  # one transaction
+                db.execute(_SCHEMA)
+                before = db.total_changes
+                db.executemany(sql, rows)
+                return db.total_changes - before
+
+    # ---- reads
 
     def __contains__(self, uid: object) -> bool:
-        return isinstance(uid, str) and uid in self._entries
+        if not isinstance(uid, str):
+            return False
+        return bool(self._safe_read("SELECT 1 FROM judged WHERE uuid = ?", (uid,)))
 
     def __len__(self) -> int:
-        return len(self._entries)
+        rows = self._safe_read("SELECT count(*) FROM judged")
+        return int(rows[0][0]) if rows else 0
 
     def judged_on(self, uid: str) -> date | None:
-        return self._entries.get(uid)
+        rows = self._safe_read("SELECT first_judged FROM judged WHERE uuid = ?", (uid,))
+        return date.fromisoformat(rows[0][0]) if rows else None
 
     def snapshot(self) -> frozenset[str]:
-        """The uuids judged so far: what a run's spines and checks read,
+        """Every uuid judged so far: what a run's spines and checks read,
         fixed before any session of the run lands."""
-        return frozenset(self._entries)
+        return frozenset(r[0] for r in self._safe_read("SELECT uuid FROM judged"))
+
+    # ---- writes
 
     def add(self, uids: Iterable[str], on: date) -> int:
-        """Record ``uids`` as judged ``on`` (an existing entry keeps its
-        earlier date); returns how many were new. The only way in."""
-        added = 0
-        for uid in uids:
-            if not isinstance(uid, str) or not uid:
-                continue
-            old = self._entries.get(uid)
-            if old is None:
-                added += 1
-                self._entries[uid] = on
-            elif on < old:
-                self._entries[uid] = on
-        return added
+        """Record ``uids`` as judged ``on`` (``INSERT OR IGNORE``: an existing
+        row keeps its date); returns how many were new. The only way in."""
+        rows = sorted({(u, on.isoformat()) for u in uids if isinstance(u, str) and u})
+        if not rows:
+            return 0
+        return self._write("INSERT OR IGNORE INTO judged (uuid, first_judged) VALUES (?, ?)", rows)
 
     def prune(self, today: date) -> int:
-        """Remove entries judged more than :data:`KEEP_DAYS` days before
-        ``today``; returns how many went."""
-        cutoff = today - timedelta(days=KEEP_DAYS)
-        stale = [uid for uid, when in self._entries.items() if when < cutoff]
-        for uid in stale:
-            del self._entries[uid]
-        return len(stale)
-
-    def save(self) -> None:
-        """Write the store atomically (``fsops.atomic_write``)."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        body = json.dumps({uid: when.isoformat() for uid, when in sorted(self._entries.items())}, indent=0)
-        fsops.atomic_write(self.path, body + "\n")
+        """Delete the rows judged more than :data:`KEEP_DAYS` days before
+        ``today``, in one statement; returns how many went."""
+        if not self.path.exists():
+            return 0
+        cutoff = (today - timedelta(days=KEEP_DAYS)).isoformat()
+        return self._write("DELETE FROM judged WHERE first_judged < ?", [(cutoff,)])

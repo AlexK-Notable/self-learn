@@ -507,13 +507,14 @@ def test_one_step_is_refused_by_validator_and_schema():
     assert not stock.is_valid(model)
 
 
-def test_multi_line_loaded_text_is_a_closed_drop_reason_and_run_counter():
+@pytest.mark.parametrize("reason", ["multi-line-loaded-text", "redaction-overflow"])
+def test_multi_line_loaded_text_is_a_closed_drop_reason_and_run_counter(reason):
     checked, run = checked_example(), run_example()
     assert c.validate_checked_output(checked) == []
     assert c.validate_run(run) == []
-    checked["drops"][0]["reason"] = "multi-line-loaded-text"
-    run["totals"]["drops"] = {"multi-line-loaded-text": 1}
-    assert "multi-line-loaded-text" in c.DROP_REASONS
+    checked["drops"][0]["reason"] = reason
+    run["totals"]["drops"] = {reason: 1}
+    assert reason in c.DROP_REASONS
     assert c.validate_checked_output(checked) == []
     assert c.validate_run(run) == []
     checked["drops"][0]["reason"] = "invented-reason"
@@ -545,8 +546,9 @@ def test_k2_schema_enums_equal_the_constants_and_the_imported_sets():
     assert c.EVIDENCE_VERDICTS == ("exact", "normalised", "nearby", "elsewhere_in_file")
     assert set(c.EVIDENCE_VERDICTS) < set(refs.VERDICTS)
     # the closed set of drop reasons, as the spec lists them
-    assert len(c.DROP_REASONS) == 16 and len(set(c.DROP_REASONS)) == 16
-    assert {"over-count", "bad-output", "not-flagged", "quote-stitched", "multi-line-loaded-text"} <= set(c.DROP_REASONS)
+    assert len(c.DROP_REASONS) == 17 and len(set(c.DROP_REASONS)) == 17
+    assert {"over-count", "bad-output", "not-flagged", "quote-stitched", "multi-line-loaded-text",
+            "redaction-overflow"} <= set(c.DROP_REASONS)
 
 
 def test_k2_schema_limits_and_required_keys_agree_with_the_validator():

@@ -345,7 +345,8 @@ class Spine:
     typed_lines: tuple[int, ...]
     #: The ``k`` of every typed turn shown as new.
     new_turns: tuple[int, ...]
-    #: ``stretch_new[k]``: stretch ``k`` holds a judged line not yet judged.
+    #: ``stretch_new[k]``: ``T<k>`` is new, or stretch ``k`` holds assistant
+    #: text in the judged lines that is not yet judged.
     stretch_new: tuple[bool, ...]
     #: ``{subagent id: launch line or None}``: the logs the spine lists --
     #: launched at or before the judged end, or unlinked but begun by then.
@@ -354,9 +355,10 @@ class Spine:
     tokens_est: int
     over_budget: bool
     redactions: int
-    #: Uuids of every entry in the judged lines: what the engine adds to the
-    #: judged-uuid store once this session's output has landed (never
-    #: earlier), so a fork's copy of any of them reads as already judged.
+    #: Uuids of the typed turns and assistant text entries in the judged
+    #: lines: with the uuids the landed items cite (``check.landed_uuids``),
+    #: what the engine adds to the judged-uuid store once this session's
+    #: output has landed (never earlier).
     moment_uuids: frozenset[str] = field(default_factory=frozenset)
     #: The latest entry time (epoch seconds) at or before the judged end:
     #: a subagent's log is cut there. None when no entry carries a time.
@@ -566,8 +568,9 @@ def build_spine(
     ``last_line`` and never past it).
 
     A typed turn is new when its line is judged and its uuid is not in
-    ``judged_uuids``; a stretch when one of its judged lines holds an entry
-    whose uuid is not. ``sent`` is the run's sends (``refs.sent_index``):
+    ``judged_uuids``; a stretch when its typed turn is new or one of its
+    judged lines holds assistant text whose uuid is not (tool rows, relays
+    and agent-written turns alone never make a stretch new). ``sent`` is the run's sends (``refs.sent_index``):
     without it, only tagged and accepted-suggestion turns are recognised as
     agent-written. Over ``spine_tokens`` (estimated, :func:`estimate_tokens`)
     the spine shortens, in this order and until it fits: agent messages of
@@ -595,21 +598,26 @@ def build_spine(
         return first_line <= i <= last_line
 
     def fresh(i: int) -> bool:
-        """A judged line holding an entry not yet judged: one whose uuid the
-        store lacks (any entry: a fork copies tool results, relays and
-        agent-written turns too), or a uuid-less entry with text."""
+        """A judged line whose entry the store lacks (by uuid; an entry
+        without one is not judged yet)."""
         e = session.entries[i - 1]
         if not judged(i) or e is None:
             return False
         uid = e.get("uuid")
-        if isinstance(uid, str):
-            return uid not in judged_uuids
-        return bool(refs._raw_text(e).strip())  # pyright: ignore[reportPrivateUsage]
+        return not (isinstance(uid, str) and uid in judged_uuids)
+
+    def fresh_text(i: int) -> bool:
+        e = session.entries[i - 1]
+        return e is not None and e.get("type") == "assistant" and bool(_assistant_text(e)) and fresh(i)
 
     bounds = [0, *typed, last_line + 1]  # stretch k spans (bounds[k], bounds[k+1])
     stretch_lines = [range(bounds[k] + 1, bounds[k + 1]) for k in range(len(typed) + 1)]
-    stretch_new = tuple(any(fresh(i) for i in r) for r in stretch_lines)
     new_turns = tuple(k for k, line in enumerate(typed, 1) if fresh(line))
+    # a stretch is new when its typed turn or some assistant text in it is:
+    # tool rows, relays and agent-written turns alone never make it new
+    stretch_new = tuple(
+        (k in new_turns) or any(fresh_text(i) for i in r) for k, r in enumerate(stretch_lines)
+    )
 
     # -- header
     ids = sorted(subagents)
@@ -710,9 +718,7 @@ def build_spine(
                     total -= item.shorten(keep)
         text = render()
     tokens = estimate_tokens(text)
-    judged_ids = (
-        e.get("uuid") for e in session.entries[first_line - 1 : last_line] if e is not None
-    )
+    moments = _moment_uuids(session, first_line, last_line, typed)
     return Spine(
         text=text,
         session=session,
@@ -726,6 +732,6 @@ def build_spine(
         tokens_est=tokens,
         over_budget=tokens > spine_tokens,
         redactions=red.hits,
-        moment_uuids=frozenset(uid for uid in judged_ids if isinstance(uid, str) and uid),
+        moment_uuids=frozenset(uid for _line, uid in moments if uid),
         end_ts=end_ts,
     )
