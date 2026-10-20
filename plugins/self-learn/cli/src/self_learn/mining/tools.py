@@ -2,6 +2,11 @@
 
 R2 calls ``build_toolset`` once per session. Paths and the judged end are
 trusted engine inputs, never model arguments. All I/O runs off the event loop.
+
+The engine passes the spine's own subagent logs (``Spine.subagents``), never
+every file it finds, and the spine's ``end_ts``: a subagent's log is shown
+only up to the judged range's end in time, as the spine and the checker
+bound it, so no tool shows a line the checker would refuse as past the end.
 """
 from __future__ import annotations
 
@@ -27,6 +32,7 @@ from ..provenance import SentIndex
 from ..records import Record
 from ..scan import redact
 from .contract import typed_turn_lines
+from .spine import epoch
 
 _log = logging.getLogger(__name__)
 StrictValidator = validators.extend(
@@ -165,10 +171,12 @@ def live_record(rid: str, records: Mapping[str, tuple[Bucket, Record]]) -> str |
 class SessionTools:
     def __init__(self, session_file: Path, subagents: Mapping[str, Path], judged_end: int,
                  home: Path, *, sent: SentIndex | None = None,
-                 provider: EmbedProvider | None = FROM_ENV) -> None:
+                 provider: EmbedProvider | None = FROM_ENV, end_ts: float | None = None) -> None:
         self.session_file = session_file
         self.subagents = dict(subagents)
         self.judged_end = judged_end
+        #: A subagent log is cut at its first entry written after this time.
+        self.end_ts = end_ts
         self.home = home
         self.sent = sent
         self.provider = provider
@@ -207,6 +215,13 @@ class SessionTools:
         with self._lock:
             if sid not in self._logs:
                 entries = read_entries(self.subagents[sid])
+                if self.end_ts is not None:
+                    # cut where the judged range ends in time (spine.Spine.end_ts)
+                    for n, e in enumerate(entries):
+                        at = epoch(e.get("timestamp")) if e else None
+                        if at is not None and at > self.end_ts:
+                            entries = entries[:n]
+                            break
                 conn = sqlite3.connect(":memory:")
                 try:
                     conn.execute(fts5.FTS_DDL)
@@ -391,5 +406,6 @@ class SessionTools:
 
 def build_toolset(session_file: Path, subagents: Mapping[str, Path], judged_end: int,
                   home: Path, *, sent: SentIndex | None = None,
-                  provider: EmbedProvider | None = FROM_ENV) -> McpToolset:
-    return SessionTools(session_file, subagents, judged_end, home, sent=sent, provider=provider).toolset()
+                  provider: EmbedProvider | None = FROM_ENV, end_ts: float | None = None) -> McpToolset:
+    return SessionTools(session_file, subagents, judged_end, home, sent=sent, provider=provider,
+                        end_ts=end_ts).toolset()
