@@ -833,6 +833,8 @@ def halt_point(s: SessionSlice, *, mined_scheduled: frozenset[str] = frozenset()
             continue
         if not isinstance(entry, dict) or entry.get("type") != "user":
             continue
+        if refs.is_compact_provenance_note(entry):
+            continue  # a mod's note is never the opening and never a command (refs rule 7a)
         user_text = _user_turn_text(entry.get("message") or {})
         if not user_text.strip():
             continue
@@ -868,7 +870,8 @@ def digest_transcript(
     for text the harness or a program put there (a headless prompt, a task
     notification, skill text, a compaction summary), ``[subagent L<n>]``
     for a sidechain row. A row that also carries a tool result keeps
-    ``[user …]``. The halts read every user text turn, whoever wrote it.
+    ``[user …]``. The halts read every user text turn, whoever wrote it,
+    except a compact-provenance note (refs rule 7a), which they skip.
 
     halt=True means the REST of this session — including future appends —
     must never be mined; the caller persists it into the cursor. The
@@ -907,6 +910,8 @@ def digest_transcript(
         if etype == "user":
             results = [b for b in _blocks(message) if b.get("type") == "tool_result"]
             user_text = _user_turn_text(message)
+            if refs.is_compact_provenance_note(entry):
+                continue
             if user_text.strip():
                 role = refs.role_of(entry, sent=sent)
                 label = role if role in ("agent", "relay", "subagent") else "user"

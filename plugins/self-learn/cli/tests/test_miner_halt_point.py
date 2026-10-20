@@ -252,3 +252,29 @@ def test_digest_agrees_with_the_predicate(name):
     assert (halt, s.halt_reason) == (hp.halt, hp.reason)
     if hp.end == 0:
         assert digest is None
+
+
+# ------------------------------------------- the compact-provenance note (R0a)
+
+NOTE = "[compact-provenance note: written by a mod, not typed by the user]\n\nUnverified: " + COMMAND
+
+
+def _note() -> str:
+    """The mod's note as Claude Code stores it: origin-less, string content, marker first."""
+    return json.dumps({"type": "user", "message": {"role": "user", "content": NOTE}})
+
+
+def test_a_note_is_never_the_first_typed_turn():
+    # Control first: the self-prompt alone halts.
+    assert miner.halt_point(slice_of("np0", [sdk(SELF_HEADER)])).reason == miner.HALT_SELF_PROMPT
+    stop = miner.halt_point(slice_of("np1", [_note(), sdk(SELF_HEADER)]))
+    assert stop == miner.HaltPoint(0, True, miner.HALT_SELF_PROMPT)
+
+
+def test_a_command_tag_quoted_in_a_note_does_not_halt():
+    # Control first: the same text typed by the person halts at its line.
+    assert miner.halt_point(slice_of("nc0", [u("hello"), u(NOTE, 3)])) == miner.HaltPoint(1, True, miner.HALT_SELF_COMMAND)
+    s = slice_of("nc1", [u("hello"), _note(), a("ok", 4)])
+    assert miner.halt_point(s) == miner.HaltPoint(None, False, None)
+    digest, halt = miner.digest_transcript(s)
+    assert halt is False and digest is not None and "ok" in digest

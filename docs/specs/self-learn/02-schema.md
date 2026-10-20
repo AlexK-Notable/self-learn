@@ -2043,6 +2043,13 @@ tool call as its name and the string values of its input, an attachment's
    (`<local-command-stdout>`, `<local-command-stderr>`, `<bash-stdout>`,
    `<bash-stderr>`, `<task-notification>`, `<system-reminder>`,
    `[Request interrupted`) → `relay`;
+7a. `type: user`, no `origin` object, exactly one text block (or string
+   content), with the exact first line
+   `[compact-provenance note: written by a mod, not typed by the user]`
+   → `relay`. The mod appends this as a separate message, marker first.
+   No leading whitespace is stripped; a mid-text quotation, extra text on
+   the marker line, or a mixed-block message does not match. The digest
+   miner omits matching notes entirely, before checking its halts;
 8. any other `type: user` text row → `user` (the miner's structural rule;
    older transcripts carry no `origin`, and slash commands and `!` inputs
    the person typed land here);
@@ -2473,7 +2480,7 @@ Lesson        = { "id":            "L1".."L10", unique in the output,
                   "trigger":       str 1..1000   if type == "behavior", else null,
                   "instruction":   str 1..1000   if type == "behavior", else null,
                   "fact":          str 1..1000   if type == "knowledge", else null,
-                  "context":       str 1..1000 or null   (null when type == "behavior"),
+                  "context":       str 1..1000 or null   (either lesson type),
                   "evidence":      [QuotedPoint] 1..4,
                   "steps":         [Point + { "what": str 1..300 }]  0, or 2..6, in order of events,
                   "verification":  (QuotedPoint + { "how": str 1..300 }) or null,
@@ -2537,7 +2544,18 @@ holds transcript or quote text. `DROP_REASONS` (closed): `over-count`,
 `line-unresolved`, `out-of-range`, `quote-stitched`, `quote-not-found`,
 `already-judged`, `duplicate`, `no-evidence`, `no-user-evidence`,
 `verification-unchecked`, `incident-cost-unresolved`, `steps-unresolved`,
-`unknown-record`, `not-flagged`, `bad-output`.
+`multi-line-loaded-text`, `unknown-record`, `not-flagged`, `bad-output`.
+
+**Amendment 2026-10-19 (new miner R0b).** A behaviour lesson may carry
+`context`, with the same nullable 1..1000-character text rule as a knowledge
+lesson; it remains a required key in both layers. A lesson whose Trigger,
+Instruction or Fact has more than one non-empty line is dropped by the
+engine checker with reason `multi-line-loaded-text`. Only that lesson is
+dropped; loaded text is never silently cut. The contract validators accept
+the drop reason (including in run totals); the checker enforces the line
+rule. The contract version stays unchanged because no output has yet been
+produced. `steps` still permits zero or 2..6 items; both the validator and
+the model-output schema refuse one item.
 
 **Run record — `miner-shadow-run/1`** (`runs/<run_id>/run.json`).
 
