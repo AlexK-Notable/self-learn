@@ -453,6 +453,11 @@ _LITERAL_CONFIG_FIRST_NAMES = frozenset(
         "miner.transcripts_dir",
         "miner.mined_scheduled_jobs",  # 2026-10-07: scheduled jobs the miner reads anyway
         "miner.skip_sessions",  # 2026-10-11: session ids the miner never reads
+        "miner.engine",  # new miner R2: the runner switch between the two engines
+        "miner.parallel",  # new miner R2
+        "miner.spine_tokens",  # new miner R2
+        "miner.max_sessions_per_run",  # new miner R2
+        "miner.max_run_usd",  # new miner R2
         "refs.transcript_roots",  # U1 (checked pointer), 2026-09-26
         "analyst.timeout_secs",
         "steward.timeout_secs",  # U8
@@ -508,7 +513,7 @@ def test_major2_config_first_literal_complement_27_names_match_the_registry_exac
     still knows the ORIGINAL 16/21 split to compare against."""
     actual = frozenset(s.name for s in settings.REGISTRY if s.direction == "config-first")
     assert actual == _LITERAL_CONFIG_FIRST_NAMES
-    assert len(_LITERAL_CONFIG_FIRST_NAMES) == 44  # U8: 21 -> 26; U10: +3; O-3: +1; O-6: +1; U1: +1; U4: +1; U4c: +1; turns_per_lesson: +1; sizing knobs: +5; refs.transcript_roots: +1; sdk.capture_sessions: +1; miner.mined_scheduled_jobs: +1; miner.skip_sessions: +1
+    assert len(_LITERAL_CONFIG_FIRST_NAMES) == 49  # new miner R2: +5; U8: 21 -> 26; U10: +3; O-3: +1; O-6: +1; U1: +1; U4: +1; U4c: +1; turns_per_lesson: +1; sizing knobs: +5; refs.transcript_roots: +1; sdk.capture_sessions: +1; miner.mined_scheduled_jobs: +1; miner.skip_sessions: +1
     assert _LITERAL_ENV_FIRST_NAMES | _LITERAL_CONFIG_FIRST_NAMES == frozenset(
         s.name for s in settings.REGISTRY
     )

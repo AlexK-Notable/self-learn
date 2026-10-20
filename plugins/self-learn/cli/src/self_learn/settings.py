@@ -177,6 +177,11 @@ Kind = Literal["str", "int", "float", "bool"]
 #: parsed AS that `kind`).
 SettingValue = str | int | float | bool | None
 
+#: `miner.engine`'s two values (new-miner plan §3.8): the digest engine
+#: (one reader call over every session's digest) and the session engine
+#: (one call per session). `miner.run` reads the setting.
+MINER_ENGINES: tuple[str, ...] = ("digest", "session")
+
 
 def _warn(message: str) -> None:
     print(f"self-learn: settings — {message}", file=sys.stderr)
@@ -942,23 +947,74 @@ REGISTRY: tuple[Setting, ...] = (
     sizing_knob(
         "miner.message_chars",
         default=2_000,  # miner.MAX_TEXT_CHARS reads this
-        description="characters kept from one message of a scanned session",
+        description="characters kept from one message of a scanned session (the digest engine only)",
     ),
     sizing_knob(
         "miner.session_chars",
         default=60_000,  # miner.MAX_DIGEST_CHARS reads this
-        description="characters kept from one scanned session; the rest of that session is clipped",
+        description="characters kept from one scanned session; the rest of that session is clipped (the digest engine only)",
     ),
     sizing_knob(
         "miner.run_chars",
         default=400_000,  # miner.MAX_PROMPT_DIGESTS_CHARS reads this
-        description="characters of session digests in one mining run's model call; sessions over it wait for the next run",
+        description="characters of session digests in one mining run's model call; sessions over it wait for the next run (the digest engine only)",
     ),
     sizing_knob(
         "miner.reader_timeout_secs",
         default=900.0,  # miner.INVOKE_TIMEOUT_SECS reads this
         description="subprocess timeout (seconds) for the miner's one reader model call",
         env_var="SELF_LEARN_READER_TIMEOUT_SECS",  # the name it already had
+    ),
+    # The session engine (new-miner plan §3.8, unit R2, 2026-10-19): one
+    # model call per session, with its own tools, landing checked output.
+    # `miner.engine` is the runner switch between the two engines. It is
+    # the user's to flip (tier C, no env var, like `steward.enabled`);
+    # `self-learn mine run --engine session` without `--preview` is refused,
+    # so nothing but this setting makes the session engine land.
+    Setting(
+        name="miner.engine",
+        env_var=None,
+        config_section="miner",
+        config_key="engine",
+        kind="str",
+        default="digest",
+        description=(
+            "which engine a mining run uses: digest (one call over every session's digest) or "
+            "session (one call per session, with its own tools); the user flips it"
+        ),
+        # an unknown value hand-edited into config.yaml reads as the default
+        validate=lambda v: v if v in MINER_ENGINES else "digest",
+        accepts=lambda v: v in MINER_ENGINES,
+        accepts_hint="digest or session",
+        tier="C",
+    ),
+    # Both are clamped where they are read (`mining.engine.EngineSettings`),
+    # not here: the registry's numeric knobs only refuse a value <= 0.
+    sizing_knob(
+        "miner.parallel",
+        default=4,
+        description="session-engine calls at once (at most 8 are used); the first call of a run always runs alone",
+    ),
+    sizing_knob(
+        "miner.spine_tokens",
+        default=20_000,
+        description=(
+            "estimated tokens of one session's spine (chars / 2.5) before the session engine "
+            "shortens agent messages (at least 2,000 are used); typed turns are never shortened"
+        ),
+    ),
+    sizing_knob(
+        "miner.max_sessions_per_run",
+        default=30,
+        description="sessions the session engine calls in one run; the rest wait behind their cursors for the next run",
+    ),
+    sizing_knob(
+        "miner.max_run_usd",
+        default=8.0,
+        description=(
+            "the session engine's runaway guard (notional dollars under the Max plan): no call starts "
+            "once spent + 0.60 per call in flight reaches it; the sessions not started wait for the next run"
+        ),
     ),
     Setting(
         name="miner.enabled",

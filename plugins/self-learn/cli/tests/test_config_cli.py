@@ -158,6 +158,10 @@ class TestConfigGet:
             # U4-seam (17-invocation-runbook.md §1a): the session miner's
             # surface joins the same generated family.
             "invocation.backend_miner-session",
+            # new miner R2 (new-miner plan §3.8): the runner switch between
+            # the digest and the session engine is the user's, like
+            # `steward.enabled`.
+            "miner.engine",
         }
         assert a_names == {s.name for s in settings.REGISTRY} - c_names
 
