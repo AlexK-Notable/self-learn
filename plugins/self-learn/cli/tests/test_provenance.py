@@ -181,7 +181,10 @@ def test_sweep_reads_herdr_calls_from_claude_and_codex(tmp_path):
         "input": f"subprocess.run(['herdr','agent','prompt','w1:p3',{codex_brief!r}])"}}
     (codex_dir / "rollout-2026-10-19T12-00-00-x.jsonl").write_text(json.dumps(call) + "\n", encoding="utf-8")
     dirs = provenance.sender_dirs([claude])
-    assert dirs == [claude, tmp_path / "home" / ".codex" / "sessions"]
+    assert dirs == [claude, tmp_path / "home" / ".codex" / "sessions",
+                    tmp_path / "home" / ".hermes",
+                    tmp_path / "home" / ".gemini" / "antigravity-cli" / "brain",
+                    tmp_path / "home" / ".pi" / "agent" / "sessions"]
     sent = provenance.sweep(dirs)
     assert len(sent) == 2  # the `ls` call carries no herdr
     assert refs.role_of(typed(BRIEF, 10), sent=sent) == "agent"

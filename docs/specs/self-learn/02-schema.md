@@ -2074,13 +2074,38 @@ tool call as its name and the string values of its input, an attachment's
      escapes folded away, holds the turn's whole text; a turn under 40
      folded characters must sit in it as one quoted argument. Sends are
      read from every `*.jsonl` under the transcript roots (subagent files
-     included) and from the Codex rollouts beside a `.claude/projects`
-     root (`<home>/.codex/sessions`). `resolve`, `check_quote` and
-     `excerpt` pass the sends of the roots they read.
+     included) and from sibling harness stores derived from a
+     `.claude/projects` root: Codex (`<home>/.codex/sessions`), Hermes
+     (`<home>/.hermes/state.db`, assistant `terminal` tool calls), agy
+     (`<home>/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript_full.jsonl`,
+     planner `run_command` calls), and pi (`<home>/.pi/agent/sessions`,
+     assistant `bash` calls). Their recorded call timestamps apply the same
+     window. Hermes is opened read-only; raw sends are cached against both the
+     database and WAL files (mtime_ns, size, inode), so WAL-only changes invalidate
+     the cache.
+     `resolve`, `check_quote` and `excerpt` pass the sends of the roots they read.
+   - **file-backed send** (the same sent sign): a whole double-quoted
+     `"$(cat FILE)"`, `"$(cat -- FILE)"` or `"$(< FILE)"` TEXT argument to
+     `herdr [--session NAME] agent prompt TARGET` or `pane send-text TARGET`
+     may supply the text. FILE is one literal path (shell quotes allowed),
+     resolved against the call's recorded absolute cwd for relative paths;
+     any possible directory-changing command token anywhere in the call makes
+     relative paths ineligible. Hermes requires an explicit absolute `workdir`
+     in the call arguments; its mutable session cwd is never used.
+     No shell execution, variable expansion, glob expansion, stdin assumption
+     or inference from a file read elsewhere in the call. Only regular UTF-8
+     files at most 1 MiB whose mtime and ctime are both no later than the call
+     are read; missing, newer, unreadable or changing files contribute nothing.
+     NUL and lone-surrogate filenames/directories are rejected before path
+     construction; malformed rows or stores are isolated so unrelated sends
+     remain available. The turn's whole
+     folded text must equal the file's whole folded text, including for short
+     turns. JSONL cache hits validate every referenced file's stat fingerprint
+     (including missing files); changing a brief invalidates its sender entry.
 
    An `agent` turn is context around a moment, never the person's own
-   words. Not covered: a brief sent as `"$(cat FILE)"` whose text is only
-   in the file, and senders other than Claude Code and Codex.
+   words. Not covered: variable-built paths, shell wrappers or transformations,
+   unavailable or modified historical briefs, and unrecognised harness formats.
 
 Rules 3 and 8 are the miner's structural split. Since S-90 the live miner
 labels every user text turn of its digest by this rule (12 §Phase 1).
