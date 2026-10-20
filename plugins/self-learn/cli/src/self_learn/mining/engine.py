@@ -464,6 +464,23 @@ def _one_call(
     return rec
 
 
+def _crashed(plan: Plan, k: int, exc: BaseException) -> CallRecord:
+    """The record of a call that raised instead of returning an outcome: a
+    failed ``call`` for that session alone (its cursor stays)."""
+    return CallRecord(session_id=plan.session_id, k=k, started=True, ok=False,
+                      failure=f"the call raised {type(exc).__name__}: {exc}"[:300], failure_class="unclassified")
+
+
+def _guarded_call(
+    plan: Plan, k: int, make_spec: Callable[[Plan, int], invocation.SessionSpec], call: Callable[[Any], Any]
+) -> CallRecord:
+    """:func:`_one_call`, an unexpected exception kept to its own session."""
+    try:
+        return _one_call(plan, k, make_spec, call)
+    except Exception as exc:  # noqa: BLE001 -- one session's defect never fails the run
+        return _crashed(plan, k, exc)
+
+
 def call_sessions(
     plans: Sequence[Plan],
     *,
@@ -493,12 +510,12 @@ def call_sessions(
             stopped = True
             out[first.session_id] = CallRecord(session_id=first.session_id, k=-1)
         else:
-            rec = _one_call(first, k, make_spec, call)
+            rec = _guarded_call(first, k, make_spec, call)
             out[first.session_id] = rec
             spent += rec.counted_usd
         k += 1
     with ThreadPoolExecutor(max_workers=max(1, parallel)) as pool:
-        running: dict[Future[CallRecord], Plan] = {}
+        running: dict[Future[CallRecord], tuple[Plan, int]] = {}
         while queue or running:
             while queue and not stopped and len(running) < parallel:
                 with lock:
@@ -506,7 +523,7 @@ def call_sessions(
                         stopped = True
                         break
                 plan = queue.pop(0)
-                running[pool.submit(_one_call, plan, k, make_spec, call)] = plan
+                running[pool.submit(_guarded_call, plan, k, make_spec, call)] = (plan, k)
                 k += 1
             if stopped:
                 for plan in queue:
@@ -516,8 +533,11 @@ def call_sessions(
                 break
             done, _pending = wait(running, return_when=FIRST_COMPLETED)
             for fut in done:
-                plan = running.pop(fut)
-                rec = fut.result()
+                plan, kk = running.pop(fut)
+                try:
+                    rec = fut.result()
+                except Exception as exc:  # noqa: BLE001 -- as `_guarded_call`, for what escapes it
+                    rec = _crashed(plan, kk, exc)
                 out[plan.session_id] = rec
                 with lock:
                     spent += rec.counted_usd
@@ -531,7 +551,8 @@ def call_sessions(
 class SessionResult:
     """A called session after its check: ``status`` is the checked
     document's (``ok``, ``bad-output`` or ``failed``); ``error`` says why a
-    ``failed`` one failed (``call`` or ``checker-error``)."""
+    ``failed`` one failed (``call``, the call raising included, or
+    ``checker-error``, any exception the check raised)."""
 
     plan: Plan
     call: CallRecord
@@ -556,9 +577,9 @@ def check_session(
     sent: provenance.SentIndex,
 ) -> SessionResult:
     """The checked output of one called session. A failed call is a
-    ``failed`` document; so is a :class:`check.CheckerError` (a defect in
-    the checker, never the model's): that one session fails, the run goes
-    on."""
+    ``failed`` document; so is a :class:`check.CheckerError` or any other
+    exception the check raises (a defect in the checker, never the
+    model's): that one session fails, the run goes on."""
     spine = plan.spine
     assert spine is not None
 
@@ -583,7 +604,7 @@ def check_session(
             search_mode=search_mode,
             sent=sent,
         )
-    except check_mod.CheckerError:
+    except Exception:  # noqa: BLE001 -- CheckerError, or any defect: this session fails, the run goes on
         return failed("checker-error")
     return SessionResult(
         plan, rec, res.checked["status"], res.checked, quote_redacted=res.quote_redacted, cut_to_limit=res.cut_to_limit

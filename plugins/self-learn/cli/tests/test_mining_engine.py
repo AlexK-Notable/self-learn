@@ -1154,3 +1154,37 @@ def test_a_replayed_sighting_does_not_fold_twice(home, root, backend, tmp_path, 
     again = run(home)
     assert again.folded == [] and Record.from_path(path).sightings == 2
     assert [o["outcome"] for o in again.outcomes] == ["skipped-known-origin"]
+
+
+@pytest.mark.parametrize("where", ["check", "first-call", "pool-call"])
+def test_an_unexpected_exception_fails_one_session_only(home, root, backend, tmp_path, monkeypatch, where):
+    monkeypatch.setenv("SELF_LEARN_MINER_PARALLEL", "2")
+    sids = ["s1unexpa-0000", "s2unexpb-0000", "s3unexpc-0000"]
+    paths = {sid: write_session(root, sid, session_rows(sid, host(tmp_path))) for sid in sids}
+    for sid in sids:
+        backend.answers[sid] = output([lesson()])
+    bad = {"check": sids[1], "first-call": sids[0], "pool-call": sids[2]}[where]
+    if where == "check":
+        real = check.check_output
+
+        def flaky(text, spine, **kw):
+            if spine.session.session_id == bad:
+                raise KeyError("a defect, not a CheckerError")
+            return real(text, spine, **kw)
+
+        monkeypatch.setattr(engine.check_mod, "check_output", flaky)
+    else:
+        real_call = miner._session_call  # pyright: ignore[reportPrivateUsage]
+
+        def call(spec):
+            if f"SESSION {bad}" in spec.prompt:
+                raise TypeError("a defect in the seam")
+            return real_call(spec)
+
+        monkeypatch.setattr(miner, "_session_call", call)
+    result = run(home)
+    assert result.status == "ok" and len(result.landed) == 2
+    assert cursor(paths[bad]) is None and all(cursor(paths[s])["lines"] == 7 for s in sids if s != bad)
+    rec = json.loads((run_dir(result) / "run.json").read_text())
+    row = {r["session"]: r for r in rec["sessions"]}[bad]
+    assert row["error"] == ("checker-error" if where == "check" else "call")
