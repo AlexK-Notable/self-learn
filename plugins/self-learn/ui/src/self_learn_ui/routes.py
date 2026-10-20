@@ -288,7 +288,9 @@ def near_miss_teach_argv(snippet: dict, origin: str | None) -> list[str] | None:
     match = _ORIGIN_RE.match(origin or "")
     if not match:
         return None
-    session_id = match.group(1)
+    # a line of a subagent's log: `<session>/subagents/agent-<id>.jsonl`
+    # (the session miner's origin); `teach --session` takes the session
+    session_id = match.group(1).split("/", 1)[0]
     scope = snippet.get("scope") or "project"
     if isinstance(scope, str) and scope.startswith("skill:"):
         argv = ["teach", "--skill", scope.partition(":")[2]]

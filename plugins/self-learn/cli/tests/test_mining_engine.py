@@ -1343,3 +1343,28 @@ def test_the_override_channel_cannot_switch_the_engine(home, root, tmp_path, mon
     with pytest.raises(ValueError):
         with settings.override("miner.engine", "session"):
             pass
+
+
+def test_a_subagent_line_s_origin_is_read_by_the_steward(home, root, tmp_path):
+    sid = "s1subagt-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    log = root / PROJECT / sid / "subagents" / "agent-a1b2.jsonl"
+    log.parent.mkdir(parents=True)
+    sub_rows = [dict(asst(sid, 1, "Looking at the export path.", host(tmp_path)), isSidechain=True),
+                dict(asst(sid, 2, "The export path is wrong in the config.", host(tmp_path)), isSidechain=True)]
+    log.write_text("".join(json.dumps(r) + "\n" for r in sub_rows))
+    origin = miner._ref_origin({"session": sid, "subagent_file": "subagents/agent-a1b2.jsonl", "line": 2})  # pyright: ignore[reportPrivateUsage]
+    assert origin == f"transcript:{sid}/subagents/agent-a1b2.jsonl#L2"
+    text, stats = steward_inputs.fire_pack(
+        [{"nonce": "n1", "ts": "2026-10-01T10:00:00Z", "outcome": "suspected-violation", "origin": origin}],
+        roots=[root], budget=4000,
+    )
+    assert "could not be read" not in text and stats["excerpted"] == 1
+    assert "The export path is wrong in the config." in text
+    record = Record.create(type="behavior", scope="user", source="session", kind="anti-pattern",
+                           trigger="About to change the export path", instruction="Read the config first, because it is wrong",
+                           record_id="lrn-0000f1a6",
+                           evidence=[{"origin": origin, "quote": "The export path is wrong in the config."}])
+    items, _ = steward_inputs.evidence_pack(record, roots=[root], budget=4000)
+    assert items[0].verdict == "exact" and items[0].found is not None
+    assert items[0].found.subagent_file == "subagents/agent-a1b2.jsonl" and items[0].found.line == 2
