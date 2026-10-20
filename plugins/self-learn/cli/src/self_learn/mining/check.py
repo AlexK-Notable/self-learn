@@ -149,12 +149,10 @@ def _matches_raw(quote: str, ref: refs.Ref, roots: Sequence[Path]) -> bool:
     return refs._match(quote, raw) is not None  # pyright: ignore[reportPrivateUsage]
 
 
-def landed_uuids(spine: Spine, checked: dict[str, Any]) -> frozenset[str]:
-    """What the engine adds to the judged-uuid store once ``checked`` has
-    landed: the spine's typed turns and assistant text in the judged lines
-    (``Spine.moment_uuids``), and every uuid a kept item cites -- evidence,
-    steps, verification, incident cost, a rule check's situation -- so a
-    fork's copy of a cited moment, of whatever kind, is ``already-judged``."""
+def cited_uuids(checked: dict[str, Any]) -> frozenset[str]:
+    """Every uuid the kept items of ``checked`` cite -- evidence, steps,
+    verification, incident cost, a rule check's situation. A part of a
+    document (``{"lessons": [one]}``) is read the same way."""
     cited: set[str] = set()
 
     def take(pointer: Any) -> None:
@@ -171,7 +169,16 @@ def landed_uuids(spine: Spine, checked: dict[str, Any]) -> frozenset[str]:
             take(p)
     for c in checked.get("rule_checks", []):
         take(c["situation"])
-    return spine.moment_uuids | cited
+    return frozenset(cited)
+
+
+def landed_uuids(spine: Spine, checked: dict[str, Any]) -> frozenset[str]:
+    """What the engine adds to the judged-uuid store once ``checked`` has
+    landed: the spine's typed turns and assistant text in the judged lines
+    (``Spine.moment_uuids``), and every uuid a kept item cites
+    (:func:`cited_uuids`), so a fork's copy of a cited moment, of whatever
+    kind, is ``already-judged``."""
+    return spine.moment_uuids | cited_uuids(checked)
 
 
 def quote_withheld(quote: object) -> bool:

@@ -906,3 +906,206 @@ def test_the_ledger_lock_not_taken_holds_every_called_cursor(home, root, backend
     result = run(home)
     assert result.landed == [] and cursor(path) is None
     assert uuids.JudgedUuids(miner.miner_dir() / uuids.STORE_NAME).snapshot() == frozenset()
+
+
+# ============================================ fix round (gate-r2 findings)
+# Gate probes adapted: a landing that did not complete is held; fires and
+# recurrence-suspects are output; replay dedupes spooled events; sighting
+# replay is per (record, moment).
+
+
+def _store_rows() -> frozenset[str]:
+    return uuids.JudgedUuids(miner.miner_dir() / uuids.STORE_NAME).snapshot()
+
+
+def test_a_record_write_that_fails_holds_the_session_and_lands_next_run(home, root, backend, tmp_path, monkeypatch):
+    sid = "failed-0001"
+    path = write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output([lesson()])
+
+    def refused(*a, **kw):
+        raise miner.LedgerOpsError("synthetic temporary landing failure")
+
+    with monkeypatch.context() as m:
+        m.setattr(miner, "create_record", refused)
+        first = run(home)
+    assert first.landed == [] and first.status == "failed"
+    assert [o["cursor"] for o in first.outcomes if o["outcome"] == "dropped-land-failed"] == ["held"]
+    assert cursor(path) is None and _store_rows() == frozenset()
+    assert journal_last()["sessions_land_failed"] == 1
+    again = run(home)
+    assert len(backend.specs) == 2 and len(again.landed) == 1 and len(pending(home)) == 1
+    assert cursor(path)["lines"] == 7 and f"{sid}-u-3" in _store_rows()
+
+
+def test_a_landing_that_raises_inside_the_lock_judges_nothing(home, root, backend, tmp_path, monkeypatch):
+    from self_learn import gitops
+
+    sid = "partial-0001"
+    path = write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output([lesson()])
+
+    def fail(*a, **kw):
+        raise gitops.GitOpsError("synthetic error inside the acquired lock before the first write")
+
+    with monkeypatch.context() as m:
+        m.setattr(miner, "_land_checked", fail)
+        first = run(home)
+    assert len(backend.specs) == 1  # control: the session was called
+    assert first.landed == [] and cursor(path) is None and _store_rows() == frozenset()
+    again = run(home)
+    assert len(again.landed) == 1 and cursor(path)["lines"] == 7
+
+
+def test_one_session_s_failed_landing_leaves_the_others_landed(home, root, backend, tmp_path, monkeypatch):
+    good, bad = "s1landed-0000", "s2landfl-0000"
+    gp = write_session(root, good, session_rows(good, host(tmp_path)))
+    bp = write_session(root, bad, session_rows(bad, host(tmp_path)))
+    backend.answers[good] = output([lesson()])
+    backend.answers[bad] = output([lesson(scope="user")])
+    real = miner.create_record
+
+    def flaky(home_, record, **kw):
+        if any(e["session"] == bad for e in record.evidence):
+            raise OSError("disk full")
+        return real(home_, record, **kw)
+
+    monkeypatch.setattr(miner, "create_record", flaky)
+    result = run(home)
+    assert result.status == "ok" and len(result.landed) == 1
+    assert cursor(gp)["lines"] == 7 and cursor(bp) is None
+    assert f"{good}-u-1" in _store_rows() and not any(u.startswith(bad) for u in _store_rows())
+
+
+def test_a_partly_landed_session_teaches_the_store_only_what_landed(home, root, backend, tmp_path, monkeypatch):
+    rid = "lrn-0000f1a1"
+    put_record(home, rid, status="routed")
+    sid = "s1partly-0000"
+    path = write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output([lesson()], sightings=[_sighting(sid, rid, line=6, quote="always run the checks")])
+
+    def broken(kind, **kw):
+        raise OSError("synthetic disk full")
+
+    monkeypatch.setattr(telemetry, "spool_event", broken)
+    result = run(home)
+    assert len(result.landed) == 1 and cursor(path) is None  # the lesson landed, the session is held
+    rows = _store_rows()
+    assert {f"{sid}-u-3", f"{sid}-a-2", f"{sid}-a-5"} <= rows  # the landed lesson's moments
+    assert f"{sid}-u-6" not in rows and f"{sid}-u-1" not in rows  # not the unlanded sighting, not the spine
+
+
+def test_a_failed_fire_spool_holds_the_session(home, root, backend, tmp_path, monkeypatch):
+    rid, sid = "lrn-11110003", "spooled-0001"
+    put_record(home, rid, status="routed")
+    _flagged(monkeypatch, rid)
+    path = write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output(rule_checks=[{
+        "record": rid, "outcome": "suspected-violation", "situation": {"line": 4}, "action": None,
+    }])
+    real = telemetry.spool_event
+
+    def broken(kind, **kw):
+        if kind == "fire":
+            raise OSError("synthetic disk full")
+        return real(kind, **kw)
+
+    with monkeypatch.context() as m:
+        m.setattr(telemetry, "spool_event", broken)
+        first = run(home)
+    assert len(backend.specs) == 1 and first.fires == 0
+    assert cursor(path) is None and _store_rows() == frozenset()
+    assert not [e for e in telemetry.read_events(home) if e.get("kind") == "fire"]
+    again = run(home)
+    assert again.fires == 1 and cursor(path)["lines"] == 7
+    assert len([e for e in telemetry.read_events(home) if e.get("kind") == "fire"]) == 1
+
+
+def test_a_failed_recurrence_spool_holds_the_session(home, root, backend, tmp_path, monkeypatch):
+    rid, sid = "lrn-0000f1a2", "s1recurr-0000"
+    put_record(home, rid, status="routed")
+    path = write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+    real = telemetry.spool_event
+
+    def broken(kind, **kw):
+        if kind == "recurrence-suspect":
+            raise OSError("synthetic disk full")
+        return real(kind, **kw)
+
+    with monkeypatch.context() as m:
+        m.setattr(telemetry, "spool_event", broken)
+        first = run(home)
+    assert first.recurrences == [] and cursor(path) is None
+    again = run(home)
+    assert again.recurrences == [rid] and cursor(path)["lines"] == 7
+
+
+@pytest.mark.parametrize("kind", ["fire", "recurrence-suspect"])
+def test_a_crash_after_the_spool_replays_without_a_second_event(home, root, backend, tmp_path, monkeypatch, kind):
+    rid, sid = "lrn-11110004", "crashed-0001"
+    put_record(home, rid, status="routed")
+    path = write_session(root, sid, session_rows(sid, host(tmp_path)))
+    if kind == "fire":
+        _flagged(monkeypatch, rid)
+        backend.answers[sid] = output(rule_checks=[{
+            "record": rid, "outcome": "suspected-violation", "situation": {"line": 4}, "action": None,
+        }])
+    else:
+        backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+
+    def crash(*a, **kw):
+        raise RuntimeError("simulated interruption after the spool, before any progress write")
+
+    with monkeypatch.context() as m:
+        m.setattr(miner, "_commit_landing", crash)
+        first = run(home)
+    assert first.status == "failed" and cursor(path) is None
+    spooled = [e for e in telemetry.read_spooled([kind])]
+    assert len(spooled) == 1  # control: the first run did spool its event
+    second = run(home)
+    assert second.status == "ok" and cursor(path)["lines"] == 7
+    events = [e for e in telemetry.read_events(home) if e.get("kind") == kind]
+    assert [(e["record"], e["origin"]) for e in events] == [(rid, f"transcript:{sid}#L{4 if kind == 'fire' else 3}")]
+
+
+def test_two_records_sighted_at_one_moment_both_fold(home, root, backend, tmp_path):
+    a, b = "lrn-11110001", "lrn-11110002"
+    pa, pb = put_record(home, a), put_record(home, b)
+    sid = "sighting-0001"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output(sightings=[_sighting(sid, a), _sighting(sid, b)])
+    result = run(home)
+    checked = json.loads((run_dir(result) / "out" / f"{sid}.json").read_text())
+    assert len(checked["sightings"]) == 2  # control: both survived the check
+    assert set(result.folded) == {a, b}
+    assert Record.from_path(pa).sightings == 2 and Record.from_path(pb).sightings == 2
+
+
+def test_a_sighting_at_a_new_lesson_s_moment_still_folds(home, root, backend, tmp_path):
+    rid = "lrn-0000f1a3"
+    put_record(home, rid)
+    sid = "s1lesfol-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output([lesson()], sightings=[_sighting(sid, rid)])
+    result = run(home)
+    assert len(result.landed) == 1 and result.folded == [rid]
+
+
+def test_a_replayed_sighting_does_not_fold_twice(home, root, backend, tmp_path, monkeypatch):
+    rid = "lrn-0000f1a4"
+    path = put_record(home, rid)
+    sid = "s1replay-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+
+    def crash(*a, **kw):
+        raise RuntimeError("simulated interruption after the fold, before any progress write")
+
+    with monkeypatch.context() as m:
+        m.setattr(miner, "_commit_landing", crash)
+        run(home)
+    assert Record.from_path(path).sightings == 2  # control: the fold was written
+    again = run(home)
+    assert again.folded == [] and Record.from_path(path).sightings == 2
+    assert [o["outcome"] for o in again.outcomes] == ["skipped-known-origin"]
