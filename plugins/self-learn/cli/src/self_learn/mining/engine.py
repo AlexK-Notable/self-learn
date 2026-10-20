@@ -56,6 +56,7 @@ __all__ = [
     "EngineError",
     "EngineSettings",
     "Failures",
+    "families",
     "Plan",
     "RunFolder",
     "SessionResult",
@@ -213,6 +214,87 @@ def prune_session_copies(sessions_dir: Path, *, keep: int = KEEP_RUNS) -> int:
     (``<cache>/sessions/miner-session/<run_id>/``): the seam never prunes
     them, and a night makes one group of up to 30 sessions."""
     return _prune_dirs(Path(sessions_dir) / SURFACE, keep)
+
+
+# ------------------------------------------------------------- families
+
+
+def _entry_uuids(lines: Sequence[str]) -> set[str]:
+    """Every entry uuid in ``lines`` (raw JSONL), whatever the entry's kind."""
+    out: set[str] = set()
+    for raw in lines:
+        if '"uuid"' not in raw:
+            continue
+        try:
+            entry = json.loads(raw)
+        except ValueError:
+            continue
+        uid = entry.get("uuid") if isinstance(entry, dict) else None
+        if isinstance(uid, str) and uid:
+            out.add(uid)
+    return out
+
+
+def _first_ts(path: Path, lines: Sequence[str], start_line: int) -> str:
+    """The timestamp of a transcript's first entry that has one ("" when
+    none): the first key of a family's fixed order."""
+    def ts_of(raw: str) -> str | None:
+        try:
+            entry = json.loads(raw)
+        except ValueError:
+            return None
+        ts = entry.get("timestamp") if isinstance(entry, dict) else None
+        return ts if isinstance(ts, str) and ts else None
+
+    if start_line == 0:
+        for raw in lines:
+            if (ts := ts_of(raw)) is not None:
+                return ts
+        return ""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                if (ts := ts_of(raw)) is not None:
+                    return ts
+    except OSError:
+        pass
+    return ""
+
+
+def families(slices: Sequence[Any]) -> list[list[Any]]:
+    """The run's families (new-miner R2 fix round 3, the user's design): the
+    connected components of sessions whose new lines (``slice.lines``, the
+    work of this run) share at least one entry uuid, of any kind -- a parent,
+    its forks and their forks are one family; a session that shares nothing
+    is a family of one. Inside a family the members are in a fixed order
+    that never changes from run to run: the transcript's first entry
+    timestamp, then the session id, so the same member always judges the
+    shared stretch. Families come in the order of their first member in
+    ``slices``. ``slices`` hold one file per session id."""
+    n = len(slices)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    owner: dict[str, int] = {}
+    for i, s in enumerate(slices):
+        for uid in _entry_uuids(s.lines):
+            j = owner.setdefault(uid, i)
+            if j != i:
+                a, b = find(i), find(j)
+                if a != b:
+                    parent[max(a, b)] = min(a, b)
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    keyed = {i: (_first_ts(s.path, s.lines, s.start_line), s.session_id) for i, s in enumerate(slices)}
+    out = [sorted(members, key=lambda i: keyed[i]) for members in groups.values()]
+    out.sort(key=lambda members: min(members))
+    return [[slices[i] for i in members] for members in out]
 
 
 # ------------------------------------------------------- failing sessions
@@ -740,13 +822,17 @@ def run_record(
     calls: Mapping[str, CallRecord],
     extra: Mapping[str, Any],
     landings: Mapping[str, str] | None = None,
+    family_of: Mapping[str, str] | None = None,
+    family_held: Mapping[str, str] | None = None,
 ) -> dict:
     """``miner-shadow-run/1`` (the name is kept until R4) for one run:
     one row per planned session, in plan order; ``extra`` carries the
     optional ``preview``, ``counts``, ``judged_uuids`` and ``landed`` keys;
     ``landings`` each called session's ``landing``
-    (:data:`contract.SESSION_LANDINGS`). ``totals`` count what the checks
-    kept, never what landed."""
+    (:data:`contract.SESSION_LANDINGS`); ``family_of`` each planned
+    session's family (its first member's session id) and ``family_held``,
+    for a family that held, why (the first member that did not complete).
+    ``totals`` count what the checks kept, never what landed."""
     rows: list[dict] = []
     skipped: dict[str, int] = {}
     totals = {"lessons": 0, "sightings": 0, "rule_checks": 0}
@@ -770,6 +856,11 @@ def run_record(
             "charter_denials": 0,
             "duration_secs": 0.0,
         }
+        if family_of is not None and plan.session_id in family_of:
+            row["family"] = family_of[plan.session_id]
+            held = (family_held or {}).get(family_of[plan.session_id])
+            if held is not None:
+                row["family_held"] = held[:300]
         if plan.skip is not None:
             skipped[plan.skip] = skipped.get(plan.skip, 0) + 1
         else:

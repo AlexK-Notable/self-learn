@@ -1058,25 +1058,42 @@ tools. The tools get the spine's own subagent logs (`Spine.subagents`) and its
 `end_ts`, so `search_subagent` and `open_stretch` never show a log or a line
 the checker would refuse. The lesson index is refreshed once per run
 (`steward_inputs.refresh_index`); without it there are no flags (flag mode
-`unavailable`). At most `miner.max_sessions_per_run` (30) sessions are called;
-the rest, and a second file with a session id already planned, wait behind
-their cursors (`deferred`). The judged-uuid store is read once, before
-anything is judged; the moments (`Spine.moment_uuids`) of every session
-already planned for a call in this run are added to the judged set of the
-plans after it, so a fork's copies of its parent's moments read as already
-mined (a fork with nothing else new is `nothing-new`) and its check drops a
-copied moment as `already-judged`. That reservation only stops duplicate
-model output within the run; it is never durable by itself (the store rule,
-**After**).
+`unavailable`). A second file with a session id already planned waits
+behind its cursor (`deferred`). The judged-uuid store is read once, before
+anything is judged.
+
+*Families* (fix round 3, the user's design: a parent and its forks are one
+unit). A family is the set of sessions with work this run whose new lines
+(the slice after the cursor) share at least one entry uuid, of any kind --
+typed turns, assistant text, tool results, anything that carries one --
+taken as connected components, so a parent, its fork and the fork's fork are
+one family; a session that shares nothing is a family of one and behaves
+exactly as before (`engine.families`). Inside a family the members are
+planned and called in a fixed order that never changes from run to run: the
+transcript's first entry timestamp, then the session id; it never depends on
+failure history, file mtime or the cap, so the same member always judges the
+shared stretch and a replay produces the same origins. The moments
+(`Spine.moment_uuids`) of each member planned for a call are added to the
+judged set of the members after it, so a fork's copies read as already mined
+(a fork with nothing else new is `nothing-new`) and its check drops a copied
+moment as `already-judged`; that reservation only stops duplicate model
+output within the run and is never durable by itself. At most
+`miner.max_sessions_per_run` (30) sessions are planned, and a family is
+admitted whole or not at all: the first family that does not fit waits,
+with every family after it, behind its cursors (`deferred`); a family larger
+than the limit is admitted whole when it is first in line, and `run.json`
+names it (`admitted_over_cap`).
 
 A session that keeps failing does not starve the others. The cache file
 `<cache>/miner/session-failures.json` counts, per transcript file, the runs
 in a row its session failed at one cursor (a failed call, bad output, a
-checker error, a landing of its own that did not complete); sessions that
-have failed are planned after those that have not. A moved cursor restarts
+checker error, a landing of its own that did not complete); a family any
+member of which has failed is planned after the families none of whose
+members has. A moved cursor restarts
 the count and a landing clears it. A run-wide failure is no session's: a run
 where no call succeeded (logged out, the service down), or where the ledger
-lock was not taken, counts nothing, and neither does a call the runaway guard
+lock was not taken (recorded when it is taken, never read as completion),
+counts nothing for any session, and neither does a call the runaway guard
 never started. There is no give-up: a failing session is always judged again
 when its turn comes (fix round 2 withdrew the round-1 give-up rule).
 
@@ -1136,25 +1153,29 @@ or not, when a write raised (a record, a fold, a spool). That session's
 landing stops there with `dropped-land-failed` (cursor `held`); the other
 sessions land.
 
-**After.** A session's cursor advances when it was skipped, or when it was
-called and `_land_checked` reported its landing complete and the cap did not
-hold it; a failed, bad-output, not-run, deferred or landing-failed session
-keeps its cursor, and so does every called session when the ledger lock
-could not be taken or the landing stopped part way (taking the lock is never
-read as completion).
+**After.** A family completes or holds as a whole. A member is complete
+when it was skipped at planning, or when it was called, its output checked,
+`_land_checked` reported its landing complete, and the cap held nothing of
+it (a halted member follows the existing halt rule: a cap drop advances it
+with its halt kept). Every member's cursor advances only when every member of
+its family is complete; otherwise no member's cursor moves, a member skipped
+only because its moments were claimed included, the members are counted in
+`cursors_held`, and the run journals one `family-held` outcome naming the
+first member that did not complete. Every called session keeps its cursor
+when the ledger lock could not be taken or the landing stopped part way
+(taking the lock is never read as completion). The lesson landing cap may
+hold part of a family's output; the family then holds and completes over
+the following runs, because a lesson that already landed is known by its
+origin on replay before the cap is counted.
 
-*The store rule.* The judged-uuid store learns only from a session whose
-landing completed: every checked item landed or was dropped on purpose, no
-write failed, and the cap did not hold it. A session that landed partly, or
-not at all, adds nothing; its replay rests on each output's own durable
-deduplication, which holds without the store: a lesson by its known origin,
-a sighting by (record, moment) against the target record's own evidence, a
-fire or recurrence-suspect by `(kind, record, origin)` against the spooled
-and the tracked events. A completed session adds its moments and cited uuids
-(`check.landed_uuids`) minus every moment another session of this run
-claimed at planning and did not complete: a moment is learned only once its
-claimer completed, so a fork never certifies a parent whose call, landing
-or cap left its output unlanded.
+*The store rule.* The judged-uuid store learns only from the members of a
+family that completed, each adding its moments and cited uuids
+(`check.landed_uuids`). A held family adds nothing, whatever its members
+did; its replay rests on each output's own durable deduplication, which holds
+without the store and sees the same origins because the family's order is
+fixed: a lesson by its known origin, a sighting by (record, moment) against
+the target record's own evidence, a fire or recurrence-suspect by
+`(kind, record, origin)` against the spooled and the tracked events.
 
 A run whose every landing failed is `failed`. The run flushes the spool
 whenever a session landed. The journal row keeps every digest-engine key and
@@ -1162,8 +1183,11 @@ adds `engine: "session"`, `method_version`, `sessions_called`,
 `sessions_failed`, `sessions_land_failed`, `not_run` and `drops` by reason.
 `run.json` is written after the landing: its status is `failed` when every
 called session failed or every landing failed, each called session's row
-says its `landing` (`complete`, `held` by the cap, `failed`, or `not-landed`
-for output that did not check), and `landed` counts what landed (lessons,
+says its own `landing` (`complete`, `held` by the cap, `failed`, or
+`not-landed` for output that did not check), every planned session's row
+names its `family` (the first member's session id) and, for a family that
+held, `family_held` (the first member that did not complete, and why), and
+`landed` counts what landed (lessons,
 folds, recurrences, fires, sessions whose landing failed) apart from
 `totals`, which counts what the checks kept. The run folder `<cache>/miner/runs/<run_id>/`
 (mode 0600: `run.json`, `shared-instructions.md`, `plans/`, `raw/`, `out/`,

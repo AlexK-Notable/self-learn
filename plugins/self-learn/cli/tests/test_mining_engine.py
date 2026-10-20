@@ -1532,8 +1532,9 @@ def _fork_pair(root: Path, tmp_path: Path) -> tuple[str, str, Path]:
 
 
 @pytest.mark.parametrize("failure", ["call", "landing", "cap"])
-def test_a_fork_never_certifies_moments_its_unlanded_claimer_holds(home, root, backend, tmp_path, monkeypatch, failure):
+def test_a_family_holds_whole_when_its_claimer_did_not_land(home, root, backend, tmp_path, monkeypatch, failure):
     parent, fork, path = _fork_pair(root, tmp_path)
+    fork_path = path.with_name(f"{fork}.jsonl")
     backend.answers[fork] = output([lesson()])
     backend.answers[parent] = output([lesson()])
     if failure == "call":
@@ -1548,20 +1549,17 @@ def test_a_fork_never_certifies_moments_its_unlanded_claimer_holds(home, root, b
         elif failure == "cap":
             m.setenv("SELF_LEARN_MINE_CAP_MAX", "0")
         first = run(home)
-    assert len(backend.specs) == 2 and first.landed == [] and cursor(path) is None
+    assert _called(backend) == [parent, fork] and first.landed == []
     out = json.loads((run_dir(first) / "out" / f"{fork}.json").read_text())
     assert out["lessons"] == []  # control: the fork's copy of the lesson was the parent's to judge
-    rows = _store_rows()
-    assert f"{fork}-u-8" in rows  # the fork's own new turn is learned
-    assert not any(u.startswith(parent) for u in rows)  # the claimer's moments are not
+    # the family holds whole: no cursor moves and the store learns nothing, the fork's own turn included
+    assert cursor(path) is None and cursor(fork_path) is None and _store_rows() == frozenset()
     backend.answers[parent] = output([lesson()])
     second = run(home)
-    assert len(backend.specs) == 3 and len(second.landed) == 1 and len(pending(home)) == 1
-    assert cursor(path)["lines"] == 7
+    assert _called(backend, 2) == [parent, fork] and len(second.landed) == 1 and len(pending(home)) == 1
+    assert cursor(path)["lines"] == 7 and cursor(fork_path)["lines"] == 9
     third = run(home)
     assert third.landed == [] and len(pending(home)) == 1  # exactly once
-
-
 def test_a_halted_session_whose_landing_failed_keeps_its_cursor(home, root, backend, tmp_path, monkeypatch):
     sid = "s1hltfal-0000"
     rows = session_rows(sid, host(tmp_path)) + [

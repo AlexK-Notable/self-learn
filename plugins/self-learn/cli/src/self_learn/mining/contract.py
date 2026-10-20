@@ -683,7 +683,7 @@ def validate_checked_output(obj: object) -> list[str]:
 #: optional: ``preview`` (true for a ``mine run --preview``), ``counts``
 #: (:data:`RUN_COUNT_KEYS`, plus ``flag_modes``: sessions by flag mode) and
 #: ``judged_uuids`` (the judged-uuid store as the run found and left it).
-RUN_OPTIONAL_KEYS: tuple[str, ...] = ("preview", "counts", "judged_uuids", "landed")
+RUN_OPTIONAL_KEYS: tuple[str, ...] = ("preview", "counts", "judged_uuids", "landed", "admitted_over_cap")
 RUN_COUNT_KEYS: tuple[str, ...] = (
     "quote_redacted", "cut_to_limit", "checker_errors", "call_failures", "bad_output", "deferred",
 )
@@ -702,7 +702,7 @@ UUID_STORE_STATES: tuple[str, ...] = ("ok", "locked", "rebuilt", "damaged")
 #: Keys the session engine adds to a session row, each optional.
 SESSION_ROW_OPTIONAL_KEYS: tuple[str, ...] = (
     "flag_mode", "flag_note", "flags", "spine_tokens_est", "over_budget", "quote_redacted",
-    "cut_to_limit", "error", "landing",
+    "cut_to_limit", "error", "landing", "family", "family_held",
 )
 #: Why a called session failed (``error``): its call, or the checker.
 SESSION_ERRORS: tuple[str, ...] = ("call", "checker-error")
@@ -737,6 +737,13 @@ def _run_extras(v: _V, o: dict[str, Any]) -> None:
             for k in ("pruned", "added", "add_failed"):
                 if k in j:
                     v.integer(_join("judged_uuids", k), j[k], lo=0)
+    if "admitted_over_cap" in o:
+        rows = v.array("admitted_over_cap", o["admitted_over_cap"], 0, None)
+        for i, row in enumerate(rows or []):
+            g = v.obj(f"admitted_over_cap[{i}]", row, ("family", "members"), ())
+            if g is not None:
+                v.string(f"admitted_over_cap[{i}].family", g.get("family"), 1, 200)
+                v.integer(f"admitted_over_cap[{i}].members", g.get("members"), lo=2)
     if "landed" in o:
         landed = v.obj("landed", o["landed"], RUN_LANDED_KEYS, ())
         if landed is not None:
@@ -757,6 +764,9 @@ def _session_row_extras(v: _V, sp: str, so: dict[str, Any]) -> None:
         v.enum(_join(sp, "error"), so["error"], SESSION_ERRORS, nullable=True)
     if "landing" in so:
         v.enum(_join(sp, "landing"), so["landing"], SESSION_LANDINGS, nullable=True)
+    for k in ("family", "family_held"):
+        if k in so:
+            v.string(_join(sp, k), so[k], 1, 300)
 
 
 _PLAIN_MODE_RE = re.compile(r"[a-z][a-z+-]{0,40}")

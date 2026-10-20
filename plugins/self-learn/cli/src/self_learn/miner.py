@@ -3368,55 +3368,75 @@ def _run_session_engine(
 
     # ---- plan
     plans: list[engine_mod.Plan] = []
-    processed: list[tuple[SessionSlice, bool]] = []  # skipped: their cursors advance
+    processed: list[tuple[SessionSlice, bool]] = []  # skipped: their cursors advance with their family
     to_call: list[tuple[SessionSlice, engine_mod.Plan, bool]] = []
     deferred = 0
-    seen: set[str] = set()
     halted_by_reason: Counter[str] = Counter()
     claimed: frozenset[str] = frozenset()
-    #: which planned session claimed each moment first: the store learns a
-    #: claimed moment only once its claimer's landing completed
-    claimer: dict[str, str] = {}
     plan_judged: dict[str, frozenset[str]] = {}
-    index, _index_info = steward_inputs.refresh_index(home, copy_to=folder.path / "copies" if preview else None)
-    # a session that failed in earlier runs waits behind those that have not
+    #: each planned session's family (its first member's session id), and
+    #: each family's planned members in their fixed order
+    family_of: dict[str, str] = {}
+    members_of: dict[str, list[str]] = {}
+    over_cap: list[dict] = []
+    # one file per session id a run (the other is judged next run)
+    unique: list[SessionSlice] = []
+    seen: set[str] = set()
+    for s in slices:
+        if s.session_id in seen:
+            deferred += 1
+        else:
+            seen.add(s.session_id)
+            unique.append(s)
+    # A parent and its forks are one family (the user's design, fix round
+    # 3): planned and called in a fixed order, admitted whole, and complete
+    # or held as a whole. A family any member of which failed in an earlier
+    # run waits behind those that have not.
     failing = engine_mod.Failures.load(mdir)
+    fams = sorted(
+        engine_mod.families(unique),
+        key=lambda fam: any(failing.count(str(m.path), m.start_line) > 0 for m in fam),
+    )
+    index, _index_info = steward_inputs.refresh_index(home, copy_to=folder.path / "copies" if preview else None)
     try:
         search_mode = index.mode()[0] if index is not None else "lexical-only"
         records = mining_tools.load_records(home)
-        for s in sorted(slices, key=lambda s: failing.count(str(s.path), s.start_line) > 0):
-            if s.session_id in seen or len(to_call) >= cfg.max_sessions:
-                # one file per session id a run (the other is judged next
-                # run), and at most `max_sessions_per_run` calls: the rest
-                # wait behind their cursors
-                deferred += 1
-                continue
-            seen.add(s.session_id)
-            hp = halt_point(s, mined_scheduled=mined_scheduled)
-            if hp.halt:
-                s.halt_reason = hp.reason
-                halted_by_reason[str(hp.reason)] += 1
-            # a fork copies its parent's entries: the moments of every
-            # session already planned for a call this run read as judged,
-            # so the fork's spine shows them as mined and one lands once
-            judged = snapshot | claimed if claimed else snapshot
-            plan = engine_mod.plan_session(
-                s.path, s.start_line, len(s.lines), hp.end, home=home, sent=sent, judged_uuids=judged,
-                spine_tokens=cfg.spine_tokens, index=index, records=records,
-                # a preview's tools read its own copy of the index, never the live file
-                index_file=(index.path if index is not None else folder.path / "copies" / "no-index")
-                if preview else None,
-            )
-            plans.append(plan)
-            if plan.skip is not None:
-                processed.append((s, hp.halt))
-            else:
-                to_call.append((s, plan, hp.halt))
-                plan_judged[plan.session_id] = judged
-                if plan.spine is not None:
-                    for uid in plan.spine.moment_uuids - judged:
-                        claimer.setdefault(uid, plan.session_id)
-                    claimed |= plan.spine.moment_uuids
+        for n_fam, fam in enumerate(fams):
+            planned = sum(len(m) for m in members_of.values())
+            if planned and planned + len(fam) > cfg.max_sessions:
+                # `max_sessions_per_run` admits a family whole or not at all;
+                # the first family that does not fit waits with all after it
+                deferred += sum(len(f) for f in fams[n_fam:])
+                break
+            fid = fam[0].session_id
+            if len(fam) > cfg.max_sessions:
+                over_cap.append({"family": fid, "members": len(fam)})  # first in line: admitted whole
+            members_of[fid] = []
+            for s in fam:
+                family_of[s.session_id] = fid
+                members_of[fid].append(s.session_id)
+                hp = halt_point(s, mined_scheduled=mined_scheduled)
+                if hp.halt:
+                    s.halt_reason = hp.reason
+                    halted_by_reason[str(hp.reason)] += 1
+                # the family's first member in its fixed order claims the
+                # shared moments: a later member's spine shows them as mined
+                judged = snapshot | claimed if claimed else snapshot
+                plan = engine_mod.plan_session(
+                    s.path, s.start_line, len(s.lines), hp.end, home=home, sent=sent, judged_uuids=judged,
+                    spine_tokens=cfg.spine_tokens, index=index, records=records,
+                    # a preview's tools read its own copy of the index, never the live file
+                    index_file=(index.path if index is not None else folder.path / "copies" / "no-index")
+                    if preview else None,
+                )
+                plans.append(plan)
+                if plan.skip is not None:
+                    processed.append((s, hp.halt))
+                else:
+                    to_call.append((s, plan, hp.halt))
+                    plan_judged[plan.session_id] = judged
+                    if plan.spine is not None:
+                        claimed |= plan.spine.moment_uuids
     finally:
         if index is not None:
             index.close()
@@ -3497,12 +3517,14 @@ def _run_session_engine(
     # ---- land
     landings: dict[str, SessionLanding] = {}
     landed_ids: set[str] = set()
+    took_lock = False
     uuid_info.setdefault("added", 0)
     if not preview and ok:
         cap = cap_for(len(results), home=home)
         hold = sentinel.hold()
         try:
             with intents.ledger_write(home) as recovered:  # S-62: the landing lock's own backstop check
+                took_lock = True  # recorded for the failure count only, never read as completion
                 for intent_id in recovered.rolled_forward:
                     log(
                         f"run {run_id}: recovered {intent_id} (rolled forward: its "
@@ -3526,36 +3548,61 @@ def _run_session_engine(
             log(f"run {run_id}: landing did not complete ({exc})")
         finally:
             hold.release()
+
+    # ---- families: a family completes or holds as a whole
+    family_held: dict[str, str] = {}
+    why: dict[str, str] = {}  # a called member's own reason it did not complete
+    if not preview:
+        for s, plan, halt in to_call:
+            sid = plan.session_id
+            res = results.get(sid)
+            landing = landings.get(sid)
+            if res is None:
+                why[sid] = "not run"
+            elif res.status != "ok":
+                why[sid] = f"its call or check failed ({res.error or res.status})"
+            elif landing is None:
+                why[sid] = "its landing did not run"
+            elif not landing.complete:
+                why[sid] = "its landing failed"
+            elif not halt and sid in result.held_sessions:
+                why[sid] = "the cap held its output"
+        for fid, members in members_of.items():
+            first = next((m for m in members if m in why), None)
+            if first is not None:
+                family_held[fid] = f"{first}: {why[first]}"
+        # a member's cursor moves, and the store learns from it, only when
+        # its whole family completed
         landed_ids = {
-            s.session_id for s, _res, halt in ok
-            if s.session_id in landings and landings[s.session_id].complete
-            and (halt or s.session_id not in result.held_sessions)
+            s.session_id for s, _res, _halt in ok
+            if s.session_id not in why and family_of.get(s.session_id) not in family_held
         }
-        # The store rule: the judged-uuid store learns only from a session
-        # whose landing completed (every item landed or was dropped on
-        # purpose, no write failed, the cap did not hold it); a session that
-        # landed partly or not at all teaches it nothing, and its replay
-        # rests on each output's own durable deduplication (known origin,
-        # the target record's evidence, spooled and tracked events). A
-        # moment another session of this run claimed at planning is learned
-        # only once that claimer completed: a fork never certifies the
-        # copies of a parent whose landing did not.
-        not_done = {plan.session_id for _s, plan, _h in to_call if plan.session_id not in landed_ids}
-        unsafe = frozenset(uid for uid, who in claimer.items() if who in not_done)
+        for fid, reason in family_held.items():
+            result.held_sessions.update(members_of[fid])
+            if len(members_of[fid]) > 1:
+                _outcome(result, f"transcript:{fid}", "family-held", members=len(members_of[fid]),
+                         reason=reason[:200])
+        # The store rule: the judged-uuid store learns only from the members
+        # of a family whose every landing completed (every item landed or
+        # was dropped on purpose, no write failed, the cap held nothing). A
+        # held family teaches it nothing; its replay rests on each output's
+        # own durable deduplication (known origin, the target record's
+        # evidence, spooled and tracked events), which sees the same origins
+        # because the family's order is fixed.
         today = datetime.now(timezone.utc).date()
         for s, res, _halt in ok:
             spine = res.plan.spine
             if spine is None or s.session_id not in landed_ids:
                 continue
-            learn = check_mod.landed_uuids(spine, res.checked) - unsafe
             try:
-                uuid_info["added"] += store.add(learn, today)
+                uuid_info["added"] += store.add(check_mod.landed_uuids(spine, res.checked), today)
             except Exception:  # noqa: BLE001 -- sqlite3.Error: a fork may be judged again, no more
                 uuid_info["add_failed"] = uuid_info.get("add_failed", 0) + 1
-        try:
-            _score_canaries(home, result.landed + result.folded, landed_ids)
-        except Exception as exc:  # noqa: BLE001 — canary scoring never crashes a run
-            log(f"run {run_id}: canary scoring skipped ({exc})")
+        if ok:
+            try:
+                _score_canaries(home, result.landed + result.folded, landed_ids)
+            except Exception as exc:  # noqa: BLE001 — canary scoring never crashes a run
+                log(f"run {run_id}: canary scoring skipped ({exc})")
 
     # ---- the run record (after the landing: it says what landed)
     land_failed = [s.session_id for s, _res, _h in ok
@@ -3565,7 +3612,9 @@ def _run_session_engine(
         landing_of = {}
         for s, _res, _h in ok:
             sid = s.session_id
-            landing_of[sid] = ("complete" if sid in landed_ids else "failed" if sid in land_failed else "held")
+            # the member's own landing; its family's hold is `family_held`
+            landing_of[sid] = ("failed" if sid in land_failed
+                               else "held" if why.get(sid) == "the cap held its output" else "complete")
     failures = Counter(r.error for r in results.values() if r.error)
     counts = {
         "quote_redacted": sum(r.quote_redacted for r in results.values()),
@@ -3579,6 +3628,8 @@ def _run_session_engine(
     all_failed = bool(results) and (not ok or (not preview and len(land_failed) == len(ok)))
     run_status = "stopped-ceiling" if stopped else ("failed" if all_failed else "ok")
     extra: dict = {"preview": preview, "counts": counts, "judged_uuids": uuid_info}
+    if over_cap:
+        extra["admitted_over_cap"] = over_cap
     if not preview:
         extra["landed"] = {"lessons": len(result.landed), "folded": len(result.folded),
                            "recurrences": len(result.recurrences), "fires": result.fires,
@@ -3586,7 +3637,7 @@ def _run_session_engine(
     run = engine_mod.run_record(
         run_id=run_id, started_at=started, finished_at=_now_iso(), model=model, method_version=method_version,
         engine=cfg, search_mode=search_mode, status=run_status, plans=plans, results=results, calls=calls,
-        extra=extra, landings=landing_of,
+        extra=extra, landings=landing_of, family_of=family_of, family_held=family_held,
     )
     folder.put_json("run.json", run)
     drops = dict(run["totals"]["drops"])
@@ -3607,6 +3658,7 @@ def _run_session_engine(
     # service down) or the ledger lock was not taken (no landing result),
     # nothing is counted.
     any_call_ok = any(rec.ok for rec in calls.values())
+    run_wide = not any_call_ok or (bool(ok) and not took_lock)
     for s, plan, _halt in to_call:
         res = results.get(plan.session_id)
         key = str(s.path)
@@ -3614,7 +3666,7 @@ def _run_session_engine(
             continue  # not started (the runaway guard): no verdict
         if s.session_id in landed_ids:
             failing.cleared(key)
-        elif not any_call_ok:
+        elif run_wide:
             continue
         elif res.status != "ok" or (s.session_id in landings and not landings[s.session_id].complete):
             failing.failed(key, s.start_line)
@@ -3624,7 +3676,10 @@ def _run_session_engine(
         log(f"run {run_id}: failing-session counts not saved ({exc})")
 
     # ---- cursors, journal, telemetry, worker
-    _advance_cursors(processed + [(s, halt) for s, _res, halt in ok if s.session_id in landed_ids])
+    _advance_cursors(
+        [(s, halt) for s, halt in processed if family_of.get(s.session_id) not in family_held]
+        + [(s, halt) for s, _res, halt in ok if s.session_id in landed_ids]
+    )
     (miner_dir() / "miner.last-run").touch()
     if all_failed:
         result.status = "failed"

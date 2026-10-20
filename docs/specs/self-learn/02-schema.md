@@ -2722,8 +2722,12 @@ validated when present (`contract.RUN_OPTIONAL_KEYS`,
 "loaded": int, "aside"?: str | null, "pruned"?: int, "added"?: int,
 "add_failed"?: int }`; `"landed": { "lessons", "folded", "recurrences",
 "fires", "sessions_failed": int }` (what a night run's landing did, apart from
-`totals`, which counts what the checks kept; R2 fix round 2); and on a
-session row `flag_mode`, `flag_note` (the
+`totals`, which counts what the checks kept; R2 fix round 2);
+`"admitted_over_cap": [ { "family": str, "members": int ≥ 2 } ]` (a family
+larger than `miner.max_sessions_per_run`, admitted whole because it was
+first in line; fix round 3); and on a session row `family` (its family's
+first member's session id) and `family_held` (for a family that held: the
+first member that did not complete, and why), `flag_mode`, `flag_note` (the
 `flags.flag_rules` mode and note, `unavailable` when the lesson index could
 not be built), `flags`, `spine_tokens_est`, `over_budget`, `quote_redacted`,
 `cut_to_limit`, and `error` (`call` or `checker-error` for a called session
