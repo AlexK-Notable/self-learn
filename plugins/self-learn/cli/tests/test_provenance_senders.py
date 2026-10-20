@@ -250,3 +250,27 @@ def test_file_stat_cache_avoids_reopening_unchanged_transcript(tmp_path, monkeyp
 
     monkeypatch.setattr(Path, "open", forbidden)
     assert role(root) == "agent"
+
+
+def test_repeated_file_dependency_cannot_cache_a_stale_payload(tmp_path, monkeypatch):
+    path = brief_file(tmp_path)
+    cmd = f'herdr agent prompt worker "$(cat \'{path}\')"'
+    root = tmp_path / "transcripts"
+    write(root, ORCH, [bash(cmd, 8), bash(cmd, 9)])
+    assert role(root) == "agent"
+    p._CACHE.clear()
+    original = p._brief_paths
+    reads = 0
+
+    def changing(send):
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            path.write_text("Changed after both sends")
+            os.utime(path, (p._epoch(_ts(11)), p._epoch(_ts(11))))
+        return original(send)
+
+    monkeypatch.setattr(p, "_brief_paths", changing)
+    assert role(root) == "user"
+    assert role(root) == "user"
+    assert reads == 4  # The drifted entry must not be a warm-cache hit.

@@ -419,10 +419,14 @@ def _expand_files(sends: Iterable[Send], deps: dict[Path, Fingerprint | None]) -
     for send in sends:
         for path in _brief_paths(send):
             before = _fingerprint(path)
+            if path in deps and deps[path] != before:
+                # Never retain an earlier payload under a later fingerprint.
+                # Keep the old dependency so the next cache hit re-reads too.
+                return []
             deps[path] = before  # Missing files are dependencies too.
             if before is None or not stat.S_ISREG(before[4]) or before[0] / 1e9 > send.at:
                 continue
-            # Bound reads and avoid blocking if a file is replaced by a FIFO.
+            # Bound reads and avoid blocking if a regular file becomes a FIFO.
             if before[1] > 1024 * 1024:
                 continue
             try:
