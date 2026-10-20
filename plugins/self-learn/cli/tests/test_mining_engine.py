@@ -834,13 +834,58 @@ def test_one_moment_from_a_fork_and_its_parent_lands_once(home, root, backend, t
     write_session(root, fork, [dict(r, sessionId=fork) for r in rows])  # a fork copies uuids
     for sid in (parent, fork):
         backend.answers[sid] = output(
+            [lesson()],
             sightings=[_sighting(sid, rid)],
             rule_checks=[{"record": rule, "outcome": "cannot-tell", "situation": {"line": 4}, "action": None}],
         )
     result = run(home)
-    assert result.folded == [rid] and result.fires == 1
-    dupes = [o for o in result.outcomes if o["outcome"] == "skipped-duplicate-moment"]
-    assert len(dupes) == 2  # the fork's sighting and its rule check
+    # the fork's copies read as judged once the parent is planned: nothing new, never called
+    assert len(backend.specs) == 1 and result.engine["skipped"] == {"nothing-new": 1}
+    assert result.folded == [rid] and result.fires == 1 and len(result.landed) == 1
+
+
+def test_a_fork_with_new_turns_sees_its_parent_s_moments_as_mined(home, root, backend, tmp_path):
+    parent, fork = "s1forkpa-0000", "s2forkch-0000"
+    rows = session_rows(parent, host(tmp_path))
+    write_session(root, parent, rows)
+    extra = [typed(fork, 8, "and add the export to the nightly job", host(tmp_path)),
+             asst(fork, 9, "Added.", host(tmp_path))]
+    write_session(root, fork, [dict(r, sessionId=fork) for r in rows] + extra)
+    for sid in (parent, fork):
+        backend.answers[sid] = output([lesson()])
+    result = run(home)
+    assert len(backend.specs) == 2  # control: the fork has a new turn, so it is called
+    fork_prompt = next(s.prompt for s in backend.specs if f"SESSION {fork}" in s.prompt)
+    parent_prompt = next(s.prompt for s in backend.specs if f"SESSION {parent}" in s.prompt)
+    assert "already mined" in fork_prompt and "already mined" not in parent_prompt
+    assert len(result.landed) == 1 and len(pending(home)) == 1
+    out = json.loads((run_dir(result) / "out" / f"{fork}.json").read_text())
+    assert out["lessons"] == [] and "already-judged" in {d["reason"] for d in out["drops"]}
+
+
+def _checked_lesson(sid: str, uid: str, line: int = 3) -> dict:
+    ref = {"session": sid, "line": line, "uuid": uid, "role": "user", "project_dir": PROJECT,
+           "file": f"{sid}.jsonl", "entry_ts": "2026-10-01T10:00:03.000Z"}
+    item = {"ref": ref, "quote": "you never ran make check"}
+    return {"id": "L1", "shape": "correction", "scope": "user", "type": "behavior", "kind": "anti-pattern",
+            "trigger": "About to tell the person the checks pass without having run them",
+            "instruction": "Run make check and read its log first, because a claimed pass costs a review",
+            "fact": None, "context": None, "evidence": [item], "steps": [], "verification": None,
+            "incident_cost": None, "generality": None, "why_durable": "recurs", "subagent_cause": None}
+
+
+def test_the_landing_lands_one_lesson_per_moment_even_past_the_plan(home):
+    doc = {"lessons": [], "sightings": [], "rule_checks": [], "drops": []}
+    a = dict(doc, lessons=[_checked_lesson("s1landpa-0000", "shared-u-3")])
+    b = dict(doc, lessons=[_checked_lesson("s2landfk-0000", "shared-u-3")])
+    result = miner.MineResult(status="ok")
+    from self_learn import intents
+
+    with intents.ledger_write(home):
+        landings = miner._land_checked(home, [("s1landpa-0000", a, None, False), ("s2landfk-0000", b, None, False)],  # pyright: ignore[reportPrivateUsage]
+                                       result, 10)
+    assert len(result.landed) == 1 and all(x.complete for x in landings.values())
+    assert [o["outcome"] for o in result.outcomes] == ["landed", "skipped-duplicate-moment"]
 
 
 def test_the_store_learns_a_session_only_after_it_landed(home, root, backend, tmp_path, monkeypatch):

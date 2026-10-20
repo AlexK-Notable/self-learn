@@ -3329,6 +3329,8 @@ def _run_session_engine(
     deferred = 0
     seen: set[str] = set()
     halted_by_reason: Counter[str] = Counter()
+    claimed: frozenset[str] = frozenset()
+    plan_judged: dict[str, frozenset[str]] = {}
     index, _index_info = steward_inputs.refresh_index(home)
     try:
         search_mode = index.mode()[0] if index is not None else "lexical-only"
@@ -3345,8 +3347,12 @@ def _run_session_engine(
             if hp.halt:
                 s.halt_reason = hp.reason
                 halted_by_reason[str(hp.reason)] += 1
+            # a fork copies its parent's entries: the moments of every
+            # session already planned for a call this run read as judged,
+            # so the fork's spine shows them as mined and one lands once
+            judged = snapshot | claimed if claimed else snapshot
             plan = engine_mod.plan_session(
-                s.path, s.start_line, len(s.lines), hp.end, home=home, sent=sent, judged_uuids=snapshot,
+                s.path, s.start_line, len(s.lines), hp.end, home=home, sent=sent, judged_uuids=judged,
                 spine_tokens=cfg.spine_tokens, index=index, records=records,
             )
             plans.append(plan)
@@ -3354,6 +3360,9 @@ def _run_session_engine(
                 processed.append((s, hp.halt))
             else:
                 to_call.append((s, plan, hp.halt))
+                plan_judged[plan.session_id] = judged
+                if plan.spine is not None:
+                    claimed |= plan.spine.moment_uuids
     finally:
         if index is not None:
             index.close()
@@ -3421,7 +3430,8 @@ def _run_session_engine(
             continue
         res = engine_mod.check_session(
             plan, rec, run_id=run_id, model=model, method_version=method_version, roots=roots,
-            judged_uuids=snapshot, known_records=frozenset(records), search_mode=search_mode, sent=sent,
+            judged_uuids=plan_judged.get(plan.session_id, snapshot), known_records=frozenset(records),
+            search_mode=search_mode, sent=sent,
         )
         results[plan.session_id] = res
         engine_mod.save_result(folder, res)
