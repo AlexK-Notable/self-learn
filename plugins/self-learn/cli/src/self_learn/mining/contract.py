@@ -681,7 +681,7 @@ def validate_checked_output(obj: object) -> list[str]:
 #: optional: ``preview`` (true for a ``mine run --preview``), ``counts``
 #: (:data:`RUN_COUNT_KEYS`, plus ``flag_modes``: sessions by flag mode) and
 #: ``judged_uuids`` (the judged-uuid store as the run found and left it).
-RUN_OPTIONAL_KEYS: tuple[str, ...] = ("preview", "counts", "judged_uuids")
+RUN_OPTIONAL_KEYS: tuple[str, ...] = ("preview", "counts", "judged_uuids", "given_up")
 RUN_COUNT_KEYS: tuple[str, ...] = (
     "quote_redacted", "cut_to_limit", "checker_errors", "call_failures", "bad_output", "deferred",
 )
@@ -727,6 +727,13 @@ def _run_extras(v: _V, o: dict[str, Any]) -> None:
             for k in ("pruned", "added", "add_failed"):
                 if k in j:
                     v.integer(_join("judged_uuids", k), j[k], lo=0)
+    if "given_up" in o:
+        rows = v.array("given_up", o["given_up"], 0, None)
+        for i, row in enumerate(rows or []):
+            g = v.obj(f"given_up[{i}]", row, ("session", "failures"), ())
+            if g is not None:
+                v.string(f"given_up[{i}].session", g.get("session"), 1, 200)
+                v.integer(f"given_up[{i}].failures", g.get("failures"), lo=1)
 
 
 def _session_row_extras(v: _V, sp: str, so: dict[str, Any]) -> None:

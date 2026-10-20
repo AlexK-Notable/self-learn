@@ -55,6 +55,8 @@ __all__ = [
     "CallRecord",
     "EngineError",
     "EngineSettings",
+    "Failures",
+    "GIVE_UP_AFTER",
     "Plan",
     "RunFolder",
     "SessionResult",
@@ -190,6 +192,56 @@ def prune_session_copies(sessions_dir: Path, *, keep: int = KEEP_RUNS) -> int:
     (``<cache>/sessions/miner-session/<run_id>/``): the seam never prunes
     them, and a night makes one group of up to 30 sessions."""
     return _prune_dirs(Path(sessions_dir) / SURFACE, keep)
+
+
+# ------------------------------------------------------- failing sessions
+
+#: Consecutive failed runs at one cursor after which a session is given up
+#: until its file grows (plan §3.5's retry rule, bounded).
+GIVE_UP_AFTER = 3
+FAILURES_NAME = "session-failures.json"
+
+
+class Failures:
+    """``<miner dir>/session-failures.json``: per transcript file, how many
+    runs in a row its session failed at one cursor (a failed call, bad
+    output, a checker error, a landing that did not complete). Cache state,
+    never the ledger's. A count belongs to the cursor and the file size it
+    was counted at: a moved cursor or a grown file starts again from zero."""
+
+    def __init__(self, path: Path, data: dict[str, dict]) -> None:
+        self.path = path
+        self.data = data
+
+    @classmethod
+    def load(cls, miner_dir: Path) -> "Failures":
+        path = Path(miner_dir) / FAILURES_NAME
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        return cls(path, {k: v for k, v in data.items() if isinstance(v, dict)})
+
+    def count(self, key: str, start: int, size: int) -> int:
+        e = self.data.get(key)
+        if not e or e.get("start") != start or not isinstance(e.get("size"), int) or size > e["size"]:
+            return 0
+        n = e.get("failures")
+        return n if isinstance(n, int) and n > 0 else 0
+
+    def failed(self, key: str, start: int, size: int) -> int:
+        n = self.count(key, start, size) + 1
+        self.data[key] = {"start": start, "size": size, "failures": n}
+        return n
+
+    def cleared(self, key: str) -> None:
+        self.data.pop(key, None)
+
+    def save(self) -> None:
+        keep = {k: v for k, v in sorted(self.data.items()) if Path(k).is_file()}
+        fsops.private_write(self.path, json.dumps(keep, indent=1, sort_keys=True) + "\n")
 
 
 # -------------------------------------------------------------------- plans

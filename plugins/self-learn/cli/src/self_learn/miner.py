@@ -3332,10 +3332,24 @@ def _run_session_engine(
     claimed: frozenset[str] = frozenset()
     plan_judged: dict[str, frozenset[str]] = {}
     index, _index_info = steward_inputs.refresh_index(home)
+    # a session that keeps failing waits behind the others, and after
+    # GIVE_UP_AFTER failed runs at one cursor is given up until its file
+    # grows (its cursor stays)
+    failing = engine_mod.Failures.load(mdir)
+
+    def failed_before(s: SessionSlice) -> int:
+        return failing.count(str(s.path), s.start_line, s.stat_size)
+
+    given_up: list[dict] = []
     try:
         search_mode = index.mode()[0] if index is not None else "lexical-only"
         records = mining_tools.load_records(home)
-        for s in slices:
+        for s in sorted(slices, key=lambda s: failed_before(s) > 0):
+            n_failed = failed_before(s)
+            if n_failed >= engine_mod.GIVE_UP_AFTER:
+                given_up.append({"session": s.session_id, "failures": n_failed})
+                _outcome(result, f"transcript:{s.session_id}", "given-up", failures=n_failed, cursor="held")
+                continue
             if s.session_id in seen or len(to_call) >= cfg.max_sessions:
                 # one file per session id a run (the other is judged next
                 # run), and at most `max_sessions_per_run` calls: the rest
@@ -3374,14 +3388,18 @@ def _run_session_engine(
         )
     skipped = Counter(p.skip for p in plans if p.skip)
     summary.update(sessions=len(plans), skipped=dict(sorted(skipped.items())), deferred=deferred,
-                   to_call=len(to_call), judged_uuids=uuid_info)
+                   to_call=len(to_call), judged_uuids=uuid_info, given_up=len(given_up))
+    if given_up:
+        log(f"run {run_id}: {len(given_up)} session(s) given up after {engine_mod.GIVE_UP_AFTER} failed runs "
+            "at one cursor, until their files grow")
 
     if not to_call:
         if not preview:
             _advance_cursors(processed)
             (miner_dir() / "miner.last-run").touch()
             _journal({**jbase, "status": "idle", "sessions_scanned": 0, "sessions_called": 0,
-                      "excluded": len(processed), "deferred_files": deferred,
+                      "excluded": len(processed), "deferred_files": deferred, "given_up": len(given_up),
+                      "outcomes": result.outcomes,
                       "duration_secs": round(time.time() - t0, 1)})
         log(f"run {run_id}: {'preview: ' if preview else ''}idle (nothing new to call)")
         return result
@@ -3514,7 +3532,7 @@ def _run_session_engine(
     run = engine_mod.run_record(
         run_id=run_id, started_at=started, finished_at=_now_iso(), model=model, method_version=method_version,
         engine=cfg, search_mode=search_mode, status=run_status, plans=plans, results=results, calls=calls,
-        extra={"preview": preview, "counts": counts, "judged_uuids": uuid_info},
+        extra={"preview": preview, "counts": counts, "judged_uuids": uuid_info, "given_up": given_up},
     )
     folder.put_json("run.json", run)
     drops = dict(run["totals"]["drops"])
@@ -3529,11 +3547,26 @@ def _run_session_engine(
         log(f"run {run_id}: preview — {run['totals']['called']} called, nothing landed")
         return result
 
+    # ---- failing sessions: a run's verdict per called session
+    land_failed = [s.session_id for s, _res, _h in ok
+                   if s.session_id not in landings or not landings[s.session_id].complete]
+    for s, plan, _halt in to_call:
+        res = results.get(plan.session_id)
+        key = str(s.path)
+        if res is None:
+            continue  # not started (the runaway guard): no verdict
+        if s.session_id in landed_ids:
+            failing.cleared(key)
+        elif res.status != "ok" or s.session_id in land_failed:
+            failing.failed(key, s.start_line, s.stat_size)
+    try:
+        failing.save()
+    except OSError as exc:
+        log(f"run {run_id}: failing-session counts not saved ({exc})")
+
     # ---- cursors, journal, telemetry, worker
     _advance_cursors(processed + [(s, halt) for s, _res, halt in ok if s.session_id in landed_ids])
     (miner_dir() / "miner.last-run").touch()
-    land_failed = [s.session_id for s, _res, _h in ok
-                   if s.session_id not in landings or not landings[s.session_id].complete]
     if (results and not ok) or (ok and len(land_failed) == len(ok)):
         result.status = "failed"
     else:
@@ -3549,6 +3582,7 @@ def _run_session_engine(
               "not_run": run["totals"]["not_run"],
               "excluded": len(processed),
               "deferred_files": deferred,
+              "given_up": len(given_up),
               "cap": cap_for(len(results), home=home),
               "landed": len(result.landed),
               "folded": len(result.folded),

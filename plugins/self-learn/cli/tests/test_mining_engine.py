@@ -1188,3 +1188,83 @@ def test_an_unexpected_exception_fails_one_session_only(home, root, backend, tmp
     rec = json.loads((run_dir(result) / "run.json").read_text())
     row = {r["session"]: r for r in rec["sessions"]}[bad]
     assert row["error"] == ("checker-error" if where == "check" else "call")
+
+
+def _called(backend: Backend, since: int = 0) -> list[str]:
+    return [re.search(r"^SESSION (\S+)", s.prompt, re.M).group(1) for s in backend.specs[since:]]
+
+
+def test_a_session_that_keeps_failing_is_given_up_until_its_file_grows(home, root, backend, tmp_path):
+    bad, good = "s1keepfl-0000", "s2newone-0000"
+    rows = session_rows(bad, host(tmp_path))
+    path = write_session(root, bad, rows)
+    backend.answers[bad] = "this is not JSON"
+    for n in range(1, engine.GIVE_UP_AFTER + 1):
+        run(home)
+        assert len(backend.specs) == n and cursor(path) is None
+    write_session(root, good, session_rows(good, host(tmp_path)))
+    before = len(backend.specs)
+    result = run(home)
+    assert _called(backend, before) == [good]  # the failing one is not called again
+    assert cursor(path) is None
+    gave_up = [o for o in result.outcomes if o["outcome"] == "given-up"]
+    assert gave_up == [{"origin": f"transcript:{bad}", "outcome": "given-up",
+                        "failures": engine.GIVE_UP_AFTER, "cursor": "held"}]
+    assert journal_last()["given_up"] == 1 and gave_up[0] in journal_last()["outcomes"]
+    contract.load_run(run_dir(result))  # the run record validates with its given_up rows
+    assert json.loads((run_dir(result) / "run.json").read_text())["given_up"] == [
+        {"session": bad, "failures": engine.GIVE_UP_AFTER}]
+    # an idle run journals it too
+    before = len(backend.specs)
+    run(home)
+    assert len(backend.specs) == before and journal_last()["status"] == "idle"
+    assert journal_last()["given_up"] == 1
+    # the file grows: judged again
+    path.write_text(path.read_text() + json.dumps(typed(bad, 8, "one more thing", host(tmp_path))) + "\n")
+    backend.answers[bad] = output([lesson()])
+    again = run(home)
+    assert _called(backend, before) == [bad] and len(again.landed) == 1 and cursor(path)["lines"] == 8
+    assert str(path) not in json.loads((miner.miner_dir() / engine.FAILURES_NAME).read_text())
+
+
+def test_a_failing_session_waits_behind_the_others(home, root, backend, tmp_path, monkeypatch):
+    monkeypatch.setenv("SELF_LEARN_MINER_MAX_SESSIONS_PER_RUN", "1")
+    bad, good = "s1waitbh-0000", "s2getsin-0000"
+    write_session(root, bad, session_rows(bad, host(tmp_path)))
+    gp = write_session(root, good, session_rows(good, host(tmp_path)))
+    backend.answers[bad] = [FakeOutcome(ok=False, failure="exit", detail="boom", rc=1)]
+    first = run(home)
+    assert _called(backend) == [bad] and first.engine["deferred"] == 1  # walk order: the failing one first
+    run(home)
+    assert _called(backend, 1) == [good] and cursor(gp)["lines"] == 7
+
+
+def test_a_ceiling_stop_counts_no_failure(home, root, tmp_path, monkeypatch):
+    b = Backend(cost=3.0)
+    monkeypatch.setattr(invocation.registry, "backend_for", lambda *a, **k: b)
+    monkeypatch.setenv("SELF_LEARN_MINER_MAX_RUN_USD", "2")
+    first, second = "s1ceilfl-0000", "s2ceilnr-0000"
+    p1 = write_session(root, first, session_rows(first, host(tmp_path)))
+    p2 = write_session(root, second, session_rows(second, host(tmp_path)))
+    b.answers[first] = "this is not JSON"
+    run(home)
+    assert len(b.specs) == 1  # control: the guard stopped the second call
+    data = json.loads((miner.miner_dir() / engine.FAILURES_NAME).read_text())
+    assert data[str(p1)]["failures"] == 1 and str(p2) not in data
+
+
+def test_a_landing_that_keeps_failing_counts_toward_giving_up(home, root, backend, tmp_path, monkeypatch):
+    sid = "s1landgu-0000"
+    path = write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output([lesson()])
+
+    def refused(*a, **kw):
+        raise miner.LedgerOpsError("synthetic")
+
+    monkeypatch.setattr(miner, "create_record", refused)
+    for _ in range(engine.GIVE_UP_AFTER):
+        run(home)
+    assert len(backend.specs) == engine.GIVE_UP_AFTER  # control: called each time
+    last = run(home)
+    assert len(backend.specs) == engine.GIVE_UP_AFTER and cursor(path) is None
+    assert [o["outcome"] for o in last.outcomes] == ["given-up"]
