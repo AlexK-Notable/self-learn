@@ -2047,3 +2047,331 @@ def test_a_commit_that_reports_success_but_leaves_the_record_dirty_marks_nothing
     assert [e["state"] for e in a.items] == ["writing"]
     run(home)
     assert _waiting() == [] and len(pending(home)) == 1 and not git(home, "status", "--porcelain").stdout.strip()
+
+
+# ------------------------------------------- round-7 probes (astra7, opus7)
+
+
+def _three_sightings(home, root, backend, tmp_path, monkeypatch, rid, *, lose_mark=False, extra_section=False):
+    """Three sightings of a rejected record, the third resurfacing it; with
+    ``lose_mark`` the rejected record's mark fails once after the copy."""
+    rp = put_record(home, rid, status="pending" if extra_section else "rejected")
+    if extra_section:  # a behaviour record that also has a Fact section
+        with intents.ledger_write(home):
+            rec = Record.from_path(rp)
+            rec.set_body(rec.body + "\n## Fact\nThe release window is Monday.\n")
+            rec.set_status("rejected")
+            dst = home / "user" / "resolved" / rp.name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            rec.write(dst)
+            rp.unlink()
+            rp = dst
+            commit_all(home, "reject a record with an extra section")
+    for i in range(3):
+        sid = f"s{i}owncopy-0000"
+        write_session(root, sid, session_rows(sid, host(tmp_path)))
+        backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+        with monkeypatch.context() as m:
+            if lose_mark and i == 2:
+                m.setattr(miner, "_rejected_mark_landed",
+                          lambda *a: (_ for _ in ()).throw(OSError("synthetic counter write failure")))
+            run(home)
+    return rp
+
+
+def _fourth_sighting(home, root, backend, tmp_path, rid):
+    sid = "s4owncopy-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+    return run(home)
+
+
+@pytest.mark.parametrize("edited", ["copy", "rejected"])
+def test_a_resurfaced_copy_is_recognised_after_either_text_is_edited(home, root, backend, tmp_path, monkeypatch,
+                                                                    edited):
+    rid = "lrn-77770001"
+    rp = _three_sightings(home, root, backend, tmp_path, monkeypatch, rid, lose_mark=True)
+    (copy_rec,) = pending(home)
+    assert len(_waiting()) == 1 and _rejected_marks()[rid] != "landed"  # control: copy landed, mark lost
+    path = miner._find_record_path(home, copy_rec.id)[1] if edited == "copy" else rp  # pyright: ignore[reportPrivateUsage]
+    text = path.read_text()
+    assert "Wait until Monday" in text  # control: the edit changes the text
+    path.write_text(text.replace("Wait until Monday", "Wait until Tuesday"))  # a hand edit (a rejected body is frozen)
+    commit_all(home, "a person edits the text before the replay")
+    again = run(home)
+    assert [o["outcome"] for o in again.outcomes] == ["already-written"]
+    assert _rejected_marks()[rid] == "landed" and _waiting() == []
+    fourth = _fourth_sighting(home, root, backend, tmp_path, rid)
+    assert [o["outcome"] for o in fourth.outcomes] == ["dropped-rejected"] and len(pending(home)) == 1
+
+
+def test_a_resurfaced_copy_of_a_record_with_an_extra_section_is_recognised(home, root, backend, tmp_path,
+                                                                          monkeypatch):
+    rid = "lrn-77770007"
+    rp = _three_sightings(home, root, backend, tmp_path, monkeypatch, rid, lose_mark=True, extra_section=True)
+    (copy_rec,) = pending(home)
+    assert "## Fact" in Record.from_path(rp).body and "## Fact" not in copy_rec.body  # control
+    run(home)
+    assert _rejected_marks()[rid] == "landed" and _waiting() == []
+    fourth = _fourth_sighting(home, root, backend, tmp_path, rid)
+    assert [o["outcome"] for o in fourth.outcomes] == ["dropped-rejected"] and len(pending(home)) == 1
+
+
+def test_a_lesson_with_the_rejected_record_s_words_is_not_its_resurface(home, root, backend, tmp_path):
+    rid = "lrn-77770002"
+    put_record(home, rid, status="rejected")
+    for i in range(2):
+        sid = f"s{i}sametext-0000"
+        write_session(root, sid, session_rows(sid, host(tmp_path)))
+        backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+        run(home)
+    sid = "s2sametext-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    same = lesson(trigger="About to deploy on a Friday", instruction="Wait until Monday, because nobody is around")
+    backend.answers[sid] = output([same], sightings=[_sighting(sid, rid)])
+    third = run(home)
+    assert [o["outcome"] for o in third.outcomes] == ["landed", "skipped-known-origin"]  # control
+    assert _rejected_marks()[rid] != "landed"
+    fourth = _fourth_sighting(home, root, backend, tmp_path, rid)
+    assert [o["outcome"] for o in fourth.outcomes] == ["landed", "resurfaced"] and len(pending(home)) == 2
+
+
+def test_a_copy_resurfacing_another_rejected_record_at_the_moment_is_not_this_one_s(home, root, backend,
+                                                                                   tmp_path):
+    a, b = "lrn-77770011", "lrn-77770012"
+    put_record(home, a, status="rejected")
+    put_record(home, b, status="rejected", trigger="About to merge on a Friday")
+    for i in range(3):
+        sid = f"s{i}tworej-0000"
+        write_session(root, sid, session_rows(sid, host(tmp_path)))
+        backend.answers[sid] = output(sightings=[_sighting(sid, a), _sighting(sid, b)])
+        last = run(home)
+    assert [o["outcome"] for o in last.outcomes] == ["landed", "resurfaced", "skipped-known-origin"]  # control
+    assert _rejected_marks()[a] == "landed" and _rejected_marks()[b] != "landed"
+    sid = "s4tworej-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output(sightings=[_sighting(sid, b)])
+    fourth = run(home)
+    assert [o["outcome"] for o in fourth.outcomes] == ["landed", "resurfaced"] and len(pending(home)) == 2
+
+
+def test_a_writing_resurface_whose_origin_another_record_took_is_dropped_unmarked(home, root, backend, tmp_path,
+                                                                                 monkeypatch):
+    rid = "lrn-77770013"
+    put_record(home, rid, status="rejected")
+    for i in range(3):
+        sid = f"s{i}takenorg-0000"
+        write_session(root, sid, session_rows(sid, host(tmp_path)))
+        backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+        with monkeypatch.context() as m:
+            if i == 2:
+                m.setattr(miner, "create_record",
+                          lambda *a, **kw: (_ for _ in ()).throw(OSError("synthetic write failure")))
+            run(home)
+    (a,) = _waiting()
+    assert a.items[0]["intent"]["output"] == "resurface" and not pending(home)  # control
+    origin = a.items[0]["intent"]["origin"]
+    other = Record.create(type="behavior", scope="user", source="teach", kind="anti-pattern",
+                          trigger="About to ship without a review", instruction="Ask for one, because it catches bugs",
+                          record_id="lrn-77770014", evidence=[{"quote": "a person's note", "origin": origin}])
+    folder = home / "user" / "pending"
+    folder.mkdir(parents=True, exist_ok=True)
+    other.write(folder / "lrn-77770014.md")
+    commit_all(home, "another record takes the origin")
+    again = run(home)
+    assert [o["outcome"] for o in again.outcomes] == ["skipped-known-origin"]
+    assert _rejected_marks()[rid] != "landed" and len(pending(home)) == 1 and _waiting() == []
+
+
+def test_a_replayed_resurface_waits_for_its_copy_to_be_committed(home, root, backend, tmp_path, monkeypatch):
+    rid = "lrn-77770015"
+    put_record(home, rid, status="rejected")
+
+    def stop(*a, **kw):
+        raise gitops.GitOpsError("synthetic stop before the commit")
+
+    for i in range(3):
+        sid = f"s{i}copycmt-0000"
+        write_session(root, sid, session_rows(sid, host(tmp_path)))
+        backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+        with monkeypatch.context() as m:
+            if i == 2:
+                m.setattr(miner, "_commit_landing", stop)
+            run(home)
+    assert [a.items[0]["state"] for a in _waiting()] == ["writing"]
+    assert git(home, "status", "--porcelain").stdout.strip()  # control: the copy is not committed
+    with monkeypatch.context() as m:
+        m.setattr(miner.reconcile_mod, "reconcile", stop)
+        held = run(home)
+    assert [o["outcome"] for o in held.outcomes] == ["already-written"]  # control: the replay found the copy
+    assert [a.items[0]["state"] for a in _waiting()] == ["writing"]
+    run(home)
+    assert _waiting() == [] and len(pending(home)) == 1 and not git(home, "status", "--porcelain").stdout.strip()
+
+
+@pytest.mark.parametrize("bad", ["bool", "negative", "text", "missing"])
+def test_a_resurface_intent_s_count_must_be_a_count(home, root, backend, tmp_path, monkeypatch, bad):
+    rid = "lrn-77770003"
+    put_record(home, rid, status="rejected")
+    for i in range(3):
+        sid = f"s{i}count-0000"
+        write_session(root, sid, session_rows(sid, host(tmp_path)))
+        backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+        with monkeypatch.context() as m:
+            if i == 2:
+                m.setattr(miner, "create_record",
+                          lambda *a, **kw: (_ for _ in ()).throw(OSError("synthetic write failure")))
+            run(home)
+    (a,) = _waiting()
+    assert a.items[0]["intent"]["output"] == "resurface" and a.items[0]["intent"]["sightings"] == 3  # control
+    assert mining_waiting.load_all(miner.miner_dir())[1] == []
+    intent = a.doc["items"][0]["intent"]
+    if bad == "missing":
+        del intent["sightings"]
+    else:
+        intent["sightings"] = {"bool": True, "negative": -1, "text": "three"}[bad]
+    a.path.write_text(json.dumps(a.doc))
+    before = a.path.read_bytes()
+    r = run(home)
+    assert _rec(r)["waiting"]["unreadable"] == [a.path.name]
+    assert a.path.read_bytes() == before and not pending(home)
+
+
+def _fork_sharing_a_moment(home, root, backend, tmp_path, monkeypatch, kind, tool):
+    """A parent and its fork whose L4 (a tool result when ``tool``) is one
+    shared moment uuid; both report the same event there."""
+    rid = "lrn-77770005"
+    put_record(home, rid, status="routed")
+    parent, fork = "s1eventparent-0000", "s2eventfork-0000"
+    rows = session_rows(parent, host(tmp_path))
+    if tool:
+        rows[3] = {"type": "user", "uuid": "shared-tool-result", "timestamp": rows[3]["timestamp"],
+                   "sessionId": parent, "cwd": host(tmp_path), "message": {"content": [
+                       {"type": "tool_result", "tool_use_id": "check-1",
+                        "content": "make check failed on export path"}]}}
+    fork_rows = json.loads(json.dumps(rows))
+    for row in fork_rows:
+        row["sessionId"] = fork
+    fork_rows[5]["uuid"] = fork + "-u-6"
+    write_session(root, parent, rows)
+    write_session(root, fork, fork_rows)
+    if kind == "fire":
+        _flagged(monkeypatch, rid)
+    for sid in (parent, fork):
+        if kind == "fire":
+            backend.answers[sid] = output(rule_checks=[_rc(rid)])
+        elif tool:
+            backend.answers[sid] = output(sightings=[_sighting(sid, rid, line=4,
+                                                               quote="make check failed on export path")])
+        else:
+            backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+    return rid
+
+
+@pytest.mark.parametrize("kind,tool,fault", [("fire", True, True), ("recurrence-suspect", True, True),
+                                             ("fire", True, False), ("fire", False, True),
+                                             ("recurrence-suspect", False, True)])
+def test_one_moment_s_event_is_written_once_across_a_fork_after_a_failed_append(home, root, backend, tmp_path,
+                                                                               monkeypatch, kind, tool, fault):
+    _fork_sharing_a_moment(home, root, backend, tmp_path, monkeypatch, kind, tool)
+    real, failed = telemetry.spool_event, []
+
+    def spool(k, **kw):
+        if k == kind and fault and not failed:
+            failed.append(True)
+            raise OSError("synthetic failed append")
+        return real(k, **kw)
+
+    with monkeypatch.context() as m:
+        m.setattr(telemetry, "spool_event", spool)
+        first = run(home)
+    assert bool(failed) == fault and len(backend.specs) == 2  # control: both sessions were called
+    if tool and fault and kind == "fire":  # control: the fork wrote the moment's event while the parent's waits
+        assert len(_events(home, kind)) == 1 and [a.items[0]["state"] for a in _waiting()] == ["writing"]
+        assert first.outcomes[0]["outcome"] == "land-failed"
+    run(home)
+    run(home)
+    assert len(_events(home, kind)) == 1 and len(backend.specs) == 2 and _waiting() == []
+
+
+@pytest.mark.parametrize("kind", ["fire", "recurrence-suspect"])
+def test_a_tracked_event_is_committed_before_its_item_is_marked(home, root, backend, tmp_path, monkeypatch, kind):
+    rid, sid = "lrn-77770006", "s1trackcommit-0000"
+    put_record(home, rid, status="routed")
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    if kind == "fire":
+        _flagged(monkeypatch, rid)
+        backend.answers[sid] = output(rule_checks=[_rc(rid)])
+    else:
+        backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+    real_commit = gitops.commit
+
+    def no_sync(*a, **kw):
+        raise OSError("synthetic fsync failure after the append")
+
+    def flush_commit_fails(h, subject, *a, **kw):
+        if subject.startswith("self-learn: telemetry flush"):
+            raise gitops.GitOpsError("synthetic telemetry commit failure")
+        return real_commit(h, subject, *a, **kw)
+
+    with monkeypatch.context() as m:
+        m.setattr(mining_waiting, "fsync_file_and_folder", no_sync)
+        m.setattr(gitops, "commit", flush_commit_fails)
+        run(home)
+    (a,) = _waiting()
+    assert a.items[0]["state"] == "writing" and len(_events(home, kind)) == 1  # control
+    assert not telemetry.read_spooled((kind,))  # control: flushed into the tracked plane
+    tracked = [p for p in (home / "telemetry").rglob("*.jsonl") if kind in p.read_text()]
+    assert tracked and any(gitops.paths_dirty(home, p) for p in tracked)  # control: not committed
+    dirty_at_mark: list[list[str]] = []
+    real_mark = mining_waiting.Answer.mark
+
+    def mark(self):
+        if any(e["state"] == "landed" for e in self.items):
+            dirty_at_mark.append([str(p) for p in tracked if gitops.paths_dirty(home, p)])
+        return real_mark(self)
+
+    monkeypatch.setattr(mining_waiting.Answer, "mark", mark)
+    run(home)
+    run(home)
+    assert dirty_at_mark == [[]] and _waiting() == []
+    assert len(_events(home, kind)) == 1 and len(backend.specs) == 1
+
+
+def test_a_replayed_recurrence_finds_its_moment_written_under_another_origin(home, root, backend, tmp_path,
+                                                                            monkeypatch):
+    rid, sid = "lrn-77770016", "s1recmoment-0000"
+    put_record(home, rid, status="routed")
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+    real, failed = telemetry.spool_event, []
+
+    def spool(k, **kw):
+        if k == "recurrence-suspect" and not failed:
+            failed.append(True)
+            raise OSError("synthetic failed append")
+        return real(k, **kw)
+
+    with monkeypatch.context() as m:
+        m.setattr(telemetry, "spool_event", spool)
+        run(home)
+    (a,) = _waiting()
+    uid = a.doc["checked"]["sightings"][0]["evidence"][0]["ref"]["uuid"]
+    assert a.items[0]["state"] == "writing" and uid and not _events(home, "recurrence-suspect")  # control
+    # a fork's copy of that moment, written under the fork's own origin
+    telemetry.spool_event("recurrence-suspect", record=rid, origin="transcript:s2recfork-0000#L3", moment=uid,
+                          basis="miner-match")
+    again = run(home)
+    assert [o["outcome"] for o in again.outcomes] == ["already-written"]
+    assert len(_events(home, "recurrence-suspect")) == 1 and _waiting() == []
+
+
+def test_an_event_carries_its_moment_s_uuid(home, root, backend, tmp_path, monkeypatch):
+    rid, sid = "lrn-77770017", "s1carries-0000"
+    put_record(home, rid, status="routed")
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    _flagged(monkeypatch, rid)
+    backend.answers[sid] = output(rule_checks=[_rc(rid)])
+    run(home)
+    (event,) = _events(home, "fire")
+    assert event["moment"] == f"{sid}-a-4" and event["origin"] == f"transcript:{sid}#L4"

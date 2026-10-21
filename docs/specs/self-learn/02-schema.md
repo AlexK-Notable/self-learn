@@ -2790,7 +2790,9 @@ Intent        = { "output": "lesson" | "resurface" | "fold" | "recurrence-suspec
                                            # recurrence-suspect; rule_checks: fire
                   "record": str | null,    # the target record id, non-empty; null for a lesson only
                   "origin": str,           # transcript:<session>[/subagents/<file>]#L<n>
-                  ... }                    # what replaying the output needs (a resurface's sighting count)
+                  "sightings"?: int,       # a resurface's sighting count: required, an int >= 0
+                                           # and never a bool (fix round 7)
+                  ... }                    # what else replaying the output needs
 ```
 
 `items` holds exactly one entry per lesson, sighting and rule check of
@@ -2803,7 +2805,8 @@ a contract this code does not read, a `checked` that fails
 `lines` or `size` is not a non-negative int or whose `halt` is not a bool, a
 `transcript` that is not a string, an index or count that is a bool, a
 missing, duplicate or out-of-range item, a `writing` item whose intent is
-missing or does not fit its kind, fix round 6) is left
+missing or does not fit its kind, fix round 6; a resurface intent without
+its sighting count, fix round 7) is left
 in place byte-identical, named in the run's journal row, `run.json`
 `waiting.unreadable` and `self-learn doctor miner`, and waits on a manual
 repair. A later change to `miner-output/1` or to this contract must keep
@@ -2838,7 +2841,8 @@ steward's input). Dropped from the old miner's output: `near_misses`,
 `verification` with a ref), `episode_brief`, the single `quote`+`session`+`line`
 (now `evidence[]`), and the bare `fires` rows (now `rule_checks`). A kept
 lesson becomes a pending record, its evidence items `{ref, quote,
-session, ts: ref.entry_ts, origin}`; R2 lands it (`12-transcript-miner.md`
+session, ts: ref.entry_ts, origin}` (a resurfaced copy's also carry
+`resurfaces: <rejected id>`, R2 fix round 7); R2 lands it (`12-transcript-miner.md`
 §13.3).
 
 **The comparison — `miner-compare/1`** (`runs/<run_id>/compare/report.json`,

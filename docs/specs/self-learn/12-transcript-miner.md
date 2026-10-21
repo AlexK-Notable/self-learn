@@ -1155,7 +1155,8 @@ its known origin; a resurfaced lesson by its known origin held by the
 rejected record's own resurfaced copy; a fold only when every one of its
 evidence moments is in the recorded target's own evidence, so a partial
 fold folds what is missing; a fire or recurrence-suspect by `(kind, record,
-origin)` against the spooled and the tracked events), the item is marked
+origin)`, or by `(kind, record, moment uuid)`, against the spooled and the
+tracked events), the item is marked
 `landed` with outcome `already-written`; if it does not, the same output is
 written; if the recorded target is gone, the item is dropped
 (`dropped-invalid`, with the reason). A replayed new lesson or resurface
@@ -1166,18 +1167,35 @@ without a cap place (fix round 6). The replay of a resurface also marks
 the rejected record's counter as landed (`_rejected_mark_landed`, an atomic
 write), so one rejected lesson resurfaces once. A sighting decided again
 whose origin a record already holds marks the rejected record only when
-that record is the rejected record's own resurfaced copy (its loaded text);
-another record at that moment, a lesson from the same answer, leaves the
-counter as it is (fix round 6). Items still `waiting` are checked against
-the ledger as it is now (*Stale items*, below).
+that record is the rejected record's own resurfaced copy; another record at
+that moment, a lesson from the same answer, leaves the counter as it is
+(fix round 6). The copy is known by what it says it is, never by its text
+(fix round 7): every evidence entry of a resurfaced copy carries
+`resurfaces: <rejected id>`, and the copy is the record whose evidence
+entry at that origin names the rejected record. Evidence is append-only,
+so an edit of either record's text, or a section the copy does not carry,
+never hides it, and a lesson that only uses the same words is never taken
+for it.
+
+*One moment, one event* (fix round 7). A fire or recurrence-suspect carries
+its moment's uuid (`moment`) when the moment has one. A parent and its fork
+share a moment's uuid, not its origin, so a replayed event that finds an
+event for the same record at the same moment uuid, spooled or tracked, is
+already written: a parent whose append failed once while its fork wrote the
+moment's event in the same run writes no second event. Items still
+`waiting` are checked against the ledger as it is now (*Stale items*,
+below).
 
 *Durable before marked* (fix round 5). An output is durable before its item
 is marked. A spooled fire or recurrence-suspect is fsynced, and its folder
 too, before `_spool_output` returns, and a replay that finds its event
 already spooled fsyncs the spool files and the folder before the mark (the
-first append's own fsync may have failed); records and folds are written
-whole with fsync and the folder fsynced, and are committed to git by the
-run's landing commit before any item is marked. A terminal mark (`landed`
+first append's own fsync may have failed); a replay that finds its event
+already flushed into a tracked telemetry file that is still uncommitted (the
+flush's commit failed) has the landing commit commit that file too, and
+waits for it to be clean before the mark (fix round 7); records and folds
+are written whole with fsync and the folder fsynced, and are committed to
+git by the run's landing commit before any item is marked. A terminal mark (`landed`
 or `dropped`), and so a file's removal, needs a landing commit that
 succeeded (fix round 6): when `_commit_landing` reports the landing
 uncommitted, no item of the run gets a terminal mark; and an item whose
@@ -1219,7 +1237,8 @@ A lesson becomes a pending record (`source: session`): its loaded text and
 `## Context`, its steps as `## Episode brief` lines `L<line> (<role>, T<turn>):
 <what>` (a step in a subagent's log names it, `agent-<id> L<line>`),
 `verified: true` with `verified_how`, `incident_cost`, `generality`. Its
-evidence items are `{ref, quote?, session, ts: ref.entry_ts, origin}`, then the
+evidence items are `{ref, quote?, session, ts: ref.entry_ts, origin}` (a
+resurfaced copy's also `resurfaces: <rejected id>`, fix round 7), then the
 verification's and the incident cost's pointers (`why: verification`, `why:
 incident-cost`); a withheld quote (`check.quote_withheld`) is stored without
 `quote`. The origin of a subagent line is
@@ -1242,7 +1261,9 @@ suppresses it), routed spools a `recurrence-suspect` (basis `miner-match`),
 rejected bumps the resurface counter and, at three, lands the rejected
 lesson's own text again as a new pending record, anything else is
 `skipped-resolved`. A rule check spools a `fire` `{record, origin, outcome,
-action?}` against a routed record only, once per `(record, origin)`. Fires
+action?, moment?}` against a routed record only, once per `(record,
+origin)`; a recurrence-suspect is `{record, origin, basis, moment?}`
+(`moment`: the moment's uuid, fix round 7). Fires
 and recurrence-suspects are the miner's output, not usage telemetry: a spool
 that fails raises. Within one run a sighting or rule check of one record at
 one moment (a fork and its parent) lands once (`skipped-duplicate-moment`).
