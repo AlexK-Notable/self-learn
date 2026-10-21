@@ -1148,8 +1148,8 @@ def _build_parser() -> argparse.ArgumentParser:
     doctor_p = sub.add_parser(
         "doctor",
         help="read-only diagnostics: invocation (provider/backend config), "
-        "settings (the U-settings registry); bare `doctor` defaults to "
-        "`doctor invocation`",
+        "settings (the U-settings registry), miner (the session miner's "
+        "waiting answers); bare `doctor` defaults to `doctor invocation`",
     )
     doctor_sub = doctor_p.add_subparsers(dest="doctor_command", metavar="[<verb>]")
     doctor_sub.add_parser(
@@ -1161,6 +1161,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "settings",
         help="the U-settings registry: every operator-facing setting, its "
         "resolved value, and its source (env/config.yaml/default)",
+    )
+    doctor_sub.add_parser(
+        "miner",
+        help="the session miner's waiting answers: how many items still "
+        "wait to land, and each stuck one (a write that failed on 3 runs)",
     )
     # Bare `doctor` (no <verb>) behaves exactly as `doctor invocation` —
     # there is only one verb today, and forcing operators to spell it out
@@ -2088,6 +2093,18 @@ def _cmd_doctor_settings(home: Path) -> int:
     return EXIT_OK
 
 
+def _cmd_doctor_miner() -> int:
+    """`doctor miner` (new miner R2, fix round 4): every verdict from
+    :func:`mining.waiting.preflight`. A stuck item is a WARN, never a FAIL
+    (it keeps retrying), so this verb always exits 0. The miner's cache
+    folder is read where `miner.miner_dir` writes it, never created."""
+    from .mining import waiting as mining_waiting
+
+    for row in mining_waiting.preflight(worker.cache_dir() / "miner"):
+        print(f"doctor: {row.verdict} {row.name} — {row.detail}")
+    return EXIT_OK
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     """`Doc-0` -- a THIN PRINTER. Computes no verdict of its own and
     calls no probe directly: every verdict comes from
@@ -2100,6 +2117,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     home = resolve_home()
     if args.doctor_command == "settings":
         return _cmd_doctor_settings(home)
+    if args.doctor_command == "miner":
+        return _cmd_doctor_miner()
     if args.doctor_command != "invocation":
         print("usage: self-learn doctor invocation", file=sys.stderr)
         return EXIT_USAGE

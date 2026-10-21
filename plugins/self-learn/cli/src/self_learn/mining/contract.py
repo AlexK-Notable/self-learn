@@ -74,8 +74,8 @@ __all__ = [
     "RUN_LANDED_KEYS",
     "RUN_OPTIONAL_KEYS",
     "RUN_STATUSES",
+    "RUN_WAITING_KEYS",
     "SESSION_ERRORS",
-    "SESSION_LANDINGS",
     "SESSION_ROW_OPTIONAL_KEYS",
     "UUID_STORE_STATES",
     "Run",
@@ -145,7 +145,7 @@ SESSION_STATUSES: tuple[str, ...] = ("called", "skipped", "not-run")
 #: Why a session was skipped (the run record's ``skipped`` reasons) ...
 SKIP_REASONS: tuple[str, ...] = ("no-marker", "no-typed-turns", "nothing-new", "halted")
 #: ... and why one was planned but not run.
-NOT_RUN_REASONS: tuple[str, ...] = ("spend-ceiling",)
+NOT_RUN_REASONS: tuple[str, ...] = ("spend-ceiling", "pending-gate")
 
 # Count and length limits (the spec's section on the model output).
 MAX_LESSONS = 10
@@ -681,20 +681,29 @@ def validate_checked_output(obj: object) -> list[str]:
 
 #: Keys the session engine adds to a run record (R2, 2026-10-19), each
 #: optional: ``preview`` (true for a ``mine run --preview``), ``counts``
-#: (:data:`RUN_COUNT_KEYS`, plus ``flag_modes``: sessions by flag mode) and
-#: ``judged_uuids`` (the judged-uuid store as the run found and left it).
-RUN_OPTIONAL_KEYS: tuple[str, ...] = ("preview", "counts", "judged_uuids", "landed", "families_over_limit")
+#: (:data:`RUN_COUNT_KEYS`, plus ``flag_modes``: sessions by flag mode),
+#: ``judged_uuids`` (the judged-uuid store as the run found and left it),
+#: ``landed`` and ``waiting`` (a night run's landing).
+RUN_OPTIONAL_KEYS: tuple[str, ...] = ("preview", "counts", "judged_uuids", "landed", "waiting")
 RUN_COUNT_KEYS: tuple[str, ...] = (
     "quote_redacted", "cut_to_limit", "checker_errors", "call_failures", "bad_output", "deferred",
 )
 #: What a night run's landing did (``landed``), apart from what the checks
 #: kept (``totals``): records landed, folds, recurrence-suspects and fires
-#: spooled, and called sessions whose landing did not complete.
-RUN_LANDED_KEYS: tuple[str, ...] = ("lessons", "folded", "recurrences", "fires", "sessions_failed")
-#: A called session's landing (``landing`` on its row): complete, held by
-#: the cap, failed (a write raised, or the landing stopped part way), or
-#: not landed (a preview, or output that did not check).
-SESSION_LANDINGS: tuple[str, ...] = ("complete", "held", "failed", "not-landed")
+#: spooled, whichever run's waiting answer they came from.
+RUN_LANDED_KEYS: tuple[str, ...] = ("lessons", "folded", "recurrences", "fires")
+#: The waiting answers (``waiting``, fix round 4): those found from earlier
+#: runs; items landed from earlier runs' answers and from this run's; items
+#: still waiting after the landing; the stuck items (a write that failed on
+#: ``mining.waiting.STUCK_AFTER`` runs or more); and whether the landing
+#: ran (the ledger lock was taken). Items, never sessions, except ``found``.
+RUN_WAITING_KEYS: tuple[str, ...] = (
+    "found", "landed_earlier", "landed_this_run", "still_waiting", "stuck", "drained",
+)
+#: The kinds of a waiting item (``mining.waiting.ITEM_KINDS``).
+WAITING_ITEM_KINDS: tuple[str, ...] = ("lessons", "sightings", "rule_checks")
+#: A stuck item's write failed on this many runs or more (``mining.waiting``).
+STUCK_AFTER = 3
 #: The judged-uuid store's states (``mining.uuids``): read as it was; given
 #: up on a lock; damaged and moved aside; damaged and left (a preview never
 #: moves it).
@@ -702,7 +711,7 @@ UUID_STORE_STATES: tuple[str, ...] = ("ok", "locked", "rebuilt", "damaged")
 #: Keys the session engine adds to a session row, each optional.
 SESSION_ROW_OPTIONAL_KEYS: tuple[str, ...] = (
     "flag_mode", "flag_note", "flags", "spine_tokens_est", "over_budget", "quote_redacted",
-    "cut_to_limit", "error", "landing", "family", "family_held",
+    "cut_to_limit", "error", "saved",
 )
 #: Why a called session failed (``error``): its call, or the checker.
 SESSION_ERRORS: tuple[str, ...] = ("call", "checker-error")
@@ -728,22 +737,35 @@ def _run_extras(v: _V, o: dict[str, Any]) -> None:
                         else:
                             v.integer(_join("counts.flag_modes", k), n, lo=0)
     if "judged_uuids" in o:
-        j = v.obj("judged_uuids", o["judged_uuids"], ("state", "loaded"), ("aside", "pruned", "added", "add_failed"))
+        j = v.obj(
+            "judged_uuids", o["judged_uuids"], ("state", "loaded"), ("aside", "pruned", "added", "add_failed", "relearned")
+        )
         if j is not None:
             v.enum("judged_uuids.state", j.get("state"), UUID_STORE_STATES)
             v.integer("judged_uuids.loaded", j.get("loaded"), lo=0)
             if "aside" in j:
                 v.string("judged_uuids.aside", j["aside"], 1, 300, nullable=True)
-            for k in ("pruned", "added", "add_failed"):
+            for k in ("pruned", "added", "add_failed", "relearned"):
                 if k in j:
                     v.integer(_join("judged_uuids", k), j[k], lo=0)
-    if "families_over_limit" in o:
-        rows = v.array("families_over_limit", o["families_over_limit"], 0, None)
-        for i, row in enumerate(rows or []):
-            g = v.obj(f"families_over_limit[{i}]", row, ("family", "members"), ())
-            if g is not None:
-                v.string(f"families_over_limit[{i}].family", g.get("family"), 1, 200)
-                v.integer(f"families_over_limit[{i}].members", g.get("members"), lo=2)
+    if "waiting" in o:
+        w = v.obj("waiting", o["waiting"], RUN_WAITING_KEYS, ())
+        if w is not None:
+            for k in ("found", "landed_earlier", "landed_this_run", "still_waiting"):
+                v.integer(_join("waiting", k), w.get(k), lo=0)
+            v.boolean("waiting.drained", w.get("drained"))
+            stuck = v.array("waiting.stuck", w.get("stuck"), 0, None)
+            for i, row in enumerate(stuck or []):
+                sp = _idx("waiting.stuck", i)
+                so = v.obj(sp, row, ("session", "kind", "origin", "failures", "error"), ())
+                if so is not None:
+                    v.string(_join(sp, "session"), so.get("session"), 1, 200)
+                    v.enum(_join(sp, "kind"), so.get("kind"), WAITING_ITEM_KINDS)
+                    v.string(_join(sp, "origin"), so.get("origin"), 1, 10_000)
+                    v.integer(_join(sp, "failures"), so.get("failures"), lo=STUCK_AFTER)
+                    v.string(_join(sp, "error"), so.get("error"), 0, 200)
+            if stuck is not None and isinstance(w.get("still_waiting"), int) and len(stuck) > w["still_waiting"]:
+                v.err("waiting.stuck", "more stuck items than items still waiting")
     if "landed" in o:
         landed = v.obj("landed", o["landed"], RUN_LANDED_KEYS, ())
         if landed is not None:
@@ -762,11 +784,8 @@ def _session_row_extras(v: _V, sp: str, so: dict[str, Any]) -> None:
         v.boolean(_join(sp, "over_budget"), so["over_budget"])
     if "error" in so:
         v.enum(_join(sp, "error"), so["error"], SESSION_ERRORS, nullable=True)
-    if "landing" in so:
-        v.enum(_join(sp, "landing"), so["landing"], SESSION_LANDINGS, nullable=True)
-    for k in ("family", "family_held"):
-        if k in so:
-            v.string(_join(sp, k), so[k], 1, 300)
+    if "saved" in so:
+        v.boolean(_join(sp, "saved"), so["saved"])
 
 
 _PLAIN_MODE_RE = re.compile(r"[a-z][a-z+-]{0,40}")
@@ -854,7 +873,11 @@ def validate_run(obj: object) -> list[str]:
                 v.err(_join(sp, "reason"), "must be null for a called session")
             if so.get("out_status") is None:
                 v.err(_join(sp, "out_status"), "a called session needs an out_status")
+            if so.get("saved") is True and so.get("out_status") != "ok":
+                v.err(_join(sp, "saved"), "only an answer that checked is saved")
         else:
+            if "saved" in so:
+                v.err(_join(sp, "saved"), "only a called session has an answer to save")
             if so.get("out_status") is not None:
                 v.err(_join(sp, "out_status"), "must be null unless the session was called")
             allowed = SKIP_REASONS if st_name == "skipped" else NOT_RUN_REASONS

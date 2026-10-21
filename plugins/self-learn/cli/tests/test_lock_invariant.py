@@ -906,6 +906,9 @@ _ARGV_FOR = {
     # `_cmd_host_inner` below: a read-only helper, never a direct
     # dispatch target, and (like `_cmd_doctor` itself) never touches the
     # ledger's commit_lock at all.
+    "_cmd_doctor_miner": None,  # driven through _cmd_doctor (new miner R2
+    # fix round 4's `doctor miner` verb): reads the cache's waiting
+    # answers only, never the ledger, never its commit_lock.
     "_cmd_followup": [["followup", "done", "lrn-eeee0001"]],
     "_cmd_host": [
         ["host", "add", "{host}"],

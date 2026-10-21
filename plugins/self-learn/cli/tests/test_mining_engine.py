@@ -24,6 +24,7 @@ import pytest
 
 from self_learn import cli, invocation, miner, provenance, settings, steward_inputs, telemetry
 from self_learn.mining import check, contract, engine, flags as flags_mod, tools, uuids
+from self_learn.mining import waiting as mining_waiting
 from self_learn.mining.spine import SESSION_OPENINGS, SpineFlag
 from self_learn.records import Record
 from support import commit_all, git, make_home
@@ -875,20 +876,20 @@ def _checked_lesson(sid: str, uid: str, line: int = 3) -> dict:
 
 
 def test_the_landing_lands_one_lesson_per_moment_even_past_the_plan(home):
-    doc = {"lessons": [], "sightings": [], "rule_checks": [], "drops": []}
-    a = dict(doc, lessons=[_checked_lesson("s1landpa-0000", "shared-u-3")])
-    b = dict(doc, lessons=[_checked_lesson("s2landfk-0000", "shared-u-3")])
+    doc = {"contract": contract.CHECKED_CONTRACT, "lessons": [], "sightings": [], "rule_checks": [], "drops": []}
+    answers = [_save(sid, dict(doc, lessons=[_checked_lesson(sid, "shared-u-3")]))
+               for sid in ("s1landpa-0000", "s2landfk-0000")]
     result = miner.MineResult(status="ok")
     from self_learn import intents
 
     with intents.ledger_write(home):
-        landings = miner._land_checked(home, [("s1landpa-0000", a, None, False), ("s2landfk-0000", b, None, False)],  # pyright: ignore[reportPrivateUsage]
-                                       result, 10)
-    assert len(result.landed) == 1 and all(x.complete for x in landings.values())
+        report = miner._drain_waiting(home, answers, result, 10, "this-run")  # pyright: ignore[reportPrivateUsage]
+    assert len(result.landed) == 1 and report.landed_this_run == 1
     assert [o["outcome"] for o in result.outcomes] == ["landed", "skipped-duplicate-moment"]
+    assert _waiting() == []  # both answers are finished, so both files are gone
 
 
-def test_the_store_learns_a_session_only_after_it_landed(home, root, backend, tmp_path, monkeypatch):
+def test_the_store_learns_from_a_saved_answer_before_it_lands(home, root, backend, tmp_path, monkeypatch):
     sid = "s1qqqqqq-0000"
     write_session(root, sid, session_rows(sid, host(tmp_path)))
     backend.answers[sid] = output([lesson()])
@@ -896,10 +897,15 @@ def test_the_store_learns_a_session_only_after_it_landed(home, root, backend, tm
     order: list[str] = []
     real_add = uuids.JudgedUuids.add
     real_commit = miner._commit_landing  # pyright: ignore[reportPrivateUsage]
-    monkeypatch.setattr(uuids.JudgedUuids, "add", lambda self, u, on: order.append("add") or real_add(self, u, on))
+
+    def add(self, u, on):
+        order.append(f"add:{len(_waiting())}")  # the answer is on disk when the store learns
+        return real_add(self, u, on)
+
+    monkeypatch.setattr(uuids.JudgedUuids, "add", add)
     monkeypatch.setattr(miner, "_commit_landing", lambda *a, **k: order.append("commit") or real_commit(*a, **k))
     result = run(home)
-    assert order == ["commit", "add"]
+    assert order == ["add:1", "commit"]
     assert {f"{sid}-u-3", f"{sid}-a-2", f"{sid}-a-5"} <= store.snapshot()
     rec = json.loads((run_dir(result) / "run.json").read_text())
     assert rec["judged_uuids"]["added"] == len(store.snapshot())
@@ -911,15 +917,19 @@ def test_the_store_learns_a_session_only_after_it_landed(home, root, backend, tm
     assert len(backend.specs) == before and second.engine["skipped"] == {"nothing-new": 1}
 
 
-def test_a_held_session_adds_nothing_to_the_store(home, root, backend, tmp_path, monkeypatch):
-    monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "0")
+def test_a_capped_lesson_waits_and_lands_next_run_without_a_call(home, root, backend, tmp_path, monkeypatch):
     sid = "s1rrrrrr-0000"
     path = write_session(root, sid, session_rows(sid, host(tmp_path)))
     backend.answers[sid] = output([lesson()])
-    result = run(home)
-    assert [o["outcome"] for o in result.outcomes if o["outcome"] == "dropped-cap"] == ["dropped-cap"]
-    assert sid in result.held_sessions and cursor(path) is None
-    assert uuids.JudgedUuids(miner.miner_dir() / uuids.STORE_NAME).snapshot() == frozenset()
+    with monkeypatch.context() as m:
+        m.setenv("SELF_LEARN_MINE_CAP_MAX", "0")
+        first = run(home)
+    assert [o["outcome"] for o in first.outcomes] == ["waiting-cap"] and first.landed == []
+    # the answer is saved, so the cursor moved and the store learned; the lesson waits
+    assert cursor(path)["lines"] == 7 and f"{sid}-u-3" in _store_rows()
+    assert [[e["state"] for e in a.items] for a in _waiting()] == [["waiting"]]
+    second = run(home)
+    assert len(backend.specs) == 1 and len(second.landed) == 1 and _waiting() == []
 
 
 def test_a_damaged_store_is_rebuilt_and_the_run_record_says_so(home, root, backend, tmp_path):
@@ -935,7 +945,7 @@ def test_a_damaged_store_is_rebuilt_and_the_run_record_says_so(home, root, backe
         miner.miner_dir() / "miner.log").read_text()
 
 
-def test_the_ledger_lock_not_taken_holds_every_called_cursor(home, root, backend, tmp_path, monkeypatch):
+def test_a_busy_ledger_lock_leaves_the_waiting_answer_intact(home, root, backend, tmp_path, monkeypatch):
     from self_learn import gitops, intents
 
     sid = "s1tttttt-0000"
@@ -949,23 +959,44 @@ def test_the_ledger_lock_not_taken_holds_every_called_cursor(home, root, backend
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(intents, "ledger_write", lambda h: Busy())
-    result = run(home)
-    assert result.landed == [] and cursor(path) is None
-    assert uuids.JudgedUuids(miner.miner_dir() / uuids.STORE_NAME).snapshot() == frozenset()
+    with monkeypatch.context() as m:
+        m.setattr(intents, "ledger_write", lambda h: Busy())
+        result = run(home)
+    assert result.landed == [] and cursor(path)["lines"] == 7 and f"{sid}-u-3" in _store_rows()
+    (answer,) = _waiting()
+    before = answer.path.read_bytes()
+    rec = json.loads((run_dir(result) / "run.json").read_text())
+    assert rec["waiting"]["drained"] is False and rec["waiting"]["still_waiting"] == 1
+    again = run(home)
+    assert len(backend.specs) == 1 and len(again.landed) == 1 and _waiting() == []
+    assert json.loads(before)["items"][0]["state"] == "waiting"  # control: it waited untouched
 
 
 # ============================================ fix round (gate-r2 findings)
-# Gate probes adapted: a landing that did not complete is held; fires and
-# recurrence-suspects are output; replay dedupes spooled events; sighting
-# replay is per (record, moment).
+# Gate probes adapted (fix round 4: waiting answers): an item whose landing
+# did not complete waits in its saved answer and lands on a later run, never
+# asking the model again; fires and recurrence-suspects are output; replay
+# dedupes spooled events; sighting replay is per (record, moment).
 
 
 def _store_rows() -> frozenset[str]:
     return uuids.JudgedUuids(miner.miner_dir() / uuids.STORE_NAME).snapshot()
 
 
-def test_a_record_write_that_fails_holds_the_session_and_lands_next_run(home, root, backend, tmp_path, monkeypatch):
+def _waiting() -> list[mining_waiting.Answer]:
+    """The waiting answers on disk, oldest first (every file must read)."""
+    answers, broken = mining_waiting.load_all(miner.miner_dir())
+    assert broken == []
+    return answers
+
+
+def _save(sid: str, checked: dict, run_id: str = "this-run") -> mining_waiting.Answer:
+    return mining_waiting.save(miner.miner_dir(), session=sid, transcript=f"/nowhere/{sid}.jsonl", run_id=run_id,
+                               method_version="1", halted=False, cwd=None, cursor={"lines": 1, "size": 1},
+                               learn=(), checked=checked)
+
+
+def test_a_record_write_that_fails_waits_and_lands_next_run_without_a_call(home, root, backend, tmp_path, monkeypatch):
     sid = "failed-0001"
     path = write_session(root, sid, session_rows(sid, host(tmp_path)))
     backend.answers[sid] = output([lesson()])
@@ -976,16 +1007,17 @@ def test_a_record_write_that_fails_holds_the_session_and_lands_next_run(home, ro
     with monkeypatch.context() as m:
         m.setattr(miner, "create_record", refused)
         first = run(home)
-    assert first.landed == [] and first.status == "failed"
-    assert [o["cursor"] for o in first.outcomes if o["outcome"] == "dropped-land-failed"] == ["held"]
-    assert cursor(path) is None and _store_rows() == frozenset()
-    assert journal_last()["sessions_land_failed"] == 1
-    again = run(home)
-    assert len(backend.specs) == 2 and len(again.landed) == 1 and len(pending(home)) == 1
+    assert first.landed == [] and first.status == "ok"  # the session was judged and saved
+    failed = [o for o in first.outcomes if o["outcome"] == "land-failed"]
+    assert [o["failures"] for o in failed] == [1] and "synthetic temporary" in failed[0]["reason"]
     assert cursor(path)["lines"] == 7 and f"{sid}-u-3" in _store_rows()
+    assert journal_last()["sessions_saved"] == 1 and journal_last()["waiting"]["still_waiting"] == 1
+    again = run(home)
+    assert len(backend.specs) == 1 and len(again.landed) == 1 and len(pending(home)) == 1
+    assert json.loads((run_dir(again) / "run.json").read_text())["waiting"]["landed_earlier"] == 1
 
 
-def test_a_landing_that_raises_inside_the_lock_judges_nothing(home, root, backend, tmp_path, monkeypatch):
+def test_a_drain_that_raises_inside_the_lock_leaves_the_answer_waiting(home, root, backend, tmp_path, monkeypatch):
     from self_learn import gitops
 
     sid = "partial-0001"
@@ -996,12 +1028,12 @@ def test_a_landing_that_raises_inside_the_lock_judges_nothing(home, root, backen
         raise gitops.GitOpsError("synthetic error inside the acquired lock before the first write")
 
     with monkeypatch.context() as m:
-        m.setattr(miner, "_land_checked", fail)
+        m.setattr(miner, "_drain_waiting", fail)
         first = run(home)
     assert len(backend.specs) == 1  # control: the session was called
-    assert first.landed == [] and cursor(path) is None and _store_rows() == frozenset()
+    assert first.landed == [] and cursor(path)["lines"] == 7 and len(_waiting()) == 1
     again = run(home)
-    assert len(again.landed) == 1 and cursor(path)["lines"] == 7
+    assert len(backend.specs) == 1 and len(again.landed) == 1 and _waiting() == []
 
 
 def test_one_session_s_failed_landing_leaves_the_others_landed(home, root, backend, tmp_path, monkeypatch):
@@ -1017,14 +1049,18 @@ def test_one_session_s_failed_landing_leaves_the_others_landed(home, root, backe
             raise OSError("disk full")
         return real(home_, record, **kw)
 
-    monkeypatch.setattr(miner, "create_record", flaky)
-    result = run(home)
+    with monkeypatch.context() as m:
+        m.setattr(miner, "create_record", flaky)
+        result = run(home)
     assert result.status == "ok" and len(result.landed) == 1
-    assert cursor(gp)["lines"] == 7 and cursor(bp) is None
-    assert f"{good}-u-1" in _store_rows() and not any(u.startswith(bad) for u in _store_rows())
+    # both were judged: both cursors move, and only the bad one's lesson waits
+    assert cursor(gp)["lines"] == 7 and cursor(bp)["lines"] == 7
+    assert [a.session for a in _waiting()] == [bad]
+    run(home)
+    assert len(backend.specs) == 2 and len(pending(home)) == 2 and _waiting() == []
 
 
-def test_a_failed_fire_spool_holds_the_session(home, root, backend, tmp_path, monkeypatch):
+def test_a_failed_fire_spool_waits_and_spools_once_next_run(home, root, backend, tmp_path, monkeypatch):
     rid, sid = "lrn-11110003", "spooled-0001"
     put_record(home, rid, status="routed")
     _flagged(monkeypatch, rid)
@@ -1042,15 +1078,14 @@ def test_a_failed_fire_spool_holds_the_session(home, root, backend, tmp_path, mo
     with monkeypatch.context() as m:
         m.setattr(telemetry, "spool_event", broken)
         first = run(home)
-    assert len(backend.specs) == 1 and first.fires == 0
-    assert cursor(path) is None and _store_rows() == frozenset()
+    assert len(backend.specs) == 1 and first.fires == 0 and cursor(path)["lines"] == 7
     assert not [e for e in telemetry.read_events(home) if e.get("kind") == "fire"]
     again = run(home)
-    assert again.fires == 1 and cursor(path)["lines"] == 7
+    assert len(backend.specs) == 1 and again.fires == 1
     assert len([e for e in telemetry.read_events(home) if e.get("kind") == "fire"]) == 1
 
 
-def test_a_failed_recurrence_spool_holds_the_session(home, root, backend, tmp_path, monkeypatch):
+def test_a_failed_recurrence_spool_waits_and_spools_once_next_run(home, root, backend, tmp_path, monkeypatch):
     rid, sid = "lrn-0000f1a2", "s1recurr-0000"
     put_record(home, rid, status="routed")
     path = write_session(root, sid, session_rows(sid, host(tmp_path)))
@@ -1065,9 +1100,9 @@ def test_a_failed_recurrence_spool_holds_the_session(home, root, backend, tmp_pa
     with monkeypatch.context() as m:
         m.setattr(telemetry, "spool_event", broken)
         first = run(home)
-    assert first.recurrences == [] and cursor(path) is None
+    assert first.recurrences == [] and cursor(path)["lines"] == 7
     again = run(home)
-    assert again.recurrences == [rid] and cursor(path)["lines"] == 7
+    assert len(backend.specs) == 1 and again.recurrences == [rid]
 
 
 @pytest.mark.parametrize("kind", ["fire", "recurrence-suspect"])
@@ -1084,16 +1119,16 @@ def test_a_crash_after_the_spool_replays_without_a_second_event(home, root, back
         backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
 
     def crash(*a, **kw):
-        raise RuntimeError("simulated interruption after the spool, before any progress write")
+        raise RuntimeError("simulated interruption after the spool, before the commit")
 
     with monkeypatch.context() as m:
         m.setattr(miner, "_commit_landing", crash)
         first = run(home)
-    assert first.status == "failed" and cursor(path) is None
+    assert first.status == "failed" and cursor(path)["lines"] == 7
     spooled = [e for e in telemetry.read_spooled([kind])]
     assert len(spooled) == 1  # control: the first run did spool its event
     second = run(home)
-    assert second.status == "ok" and cursor(path)["lines"] == 7
+    assert second.status == "idle" and len(backend.specs) == 1
     events = [e for e in telemetry.read_events(home) if e.get("kind") == kind]
     assert [(e["record"], e["origin"]) for e in events] == [(rid, f"transcript:{sid}#L{4 if kind == 'fire' else 3}")]
 
@@ -1121,7 +1156,7 @@ def test_a_sighting_at_a_new_lesson_s_moment_still_folds(home, root, backend, tm
     assert len(result.landed) == 1 and result.folded == [rid]
 
 
-def test_a_replayed_sighting_does_not_fold_twice(home, root, backend, tmp_path, monkeypatch):
+def test_a_sighting_folded_before_a_crash_does_not_fold_again(home, root, backend, tmp_path, monkeypatch):
     rid = "lrn-0000f1a4"
     path = put_record(home, rid)
     sid = "s1replay-0000"
@@ -1129,15 +1164,15 @@ def test_a_replayed_sighting_does_not_fold_twice(home, root, backend, tmp_path, 
     backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
 
     def crash(*a, **kw):
-        raise RuntimeError("simulated interruption after the fold, before any progress write")
+        raise RuntimeError("simulated interruption after the fold, before the commit")
 
     with monkeypatch.context() as m:
         m.setattr(miner, "_commit_landing", crash)
         run(home)
     assert Record.from_path(path).sightings == 2  # control: the fold was written
+    assert _waiting() == []  # and marked: its answer was finished
     again = run(home)
-    assert again.folded == [] and Record.from_path(path).sightings == 2
-    assert [o["outcome"] for o in again.outcomes] == ["skipped-known-origin"]
+    assert again.folded == [] and Record.from_path(path).sightings == 2 and len(backend.specs) == 1
 
 
 @pytest.mark.parametrize("where", ["check", "first-call", "pool-call"])
@@ -1350,18 +1385,20 @@ def test_a_rejected_lesson_resurfaces_on_its_third_sighting_and_only_once(home, 
             assert [o["outcome"] for o in result.outcomes] == ["dropped-rejected"]
 
 
-def test_a_capped_halted_session_advances_to_its_halt(home, root, backend, tmp_path, monkeypatch):
-    monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "0")
+def test_a_capped_lesson_of_a_halted_session_waits_too(home, root, backend, tmp_path, monkeypatch):
     sid = "s1caphlt-0000"
     rows = session_rows(sid, host(tmp_path)) + [
         typed(sid, 8, "<command-name>/self-learn:teach</command-name>", host(tmp_path))]
     path = write_session(root, sid, rows)
     backend.answers[sid] = output([lesson()])
-    result = run(home)
-    capped = [o for o in result.outcomes if o["outcome"] == "dropped-cap"]
-    assert [o["cursor"] for o in capped] == ["advanced-halted"]
-    assert sid not in result.held_sessions and cursor(path) is not None
-    assert f"{sid}-u-3" in _store_rows()
+    with monkeypatch.context() as m:
+        m.setenv("SELF_LEARN_MINE_CAP_MAX", "0")
+        result = run(home)
+    assert [o["outcome"] for o in result.outcomes] == ["waiting-cap"]
+    assert cursor(path)["halt"] is True and f"{sid}-u-3" in _store_rows()
+    assert [a.doc["halted"] for a in _waiting()] == [True]
+    again = run(home)
+    assert len(backend.specs) == 1 and len(again.landed) == 1 and _waiting() == []
 
 
 def test_a_second_file_with_the_same_session_id_waits_for_the_next_run(home, root, backend, tmp_path):
@@ -1411,12 +1448,12 @@ def test_damaged_stores_past_the_newest_three_are_deleted(home, root, backend, t
 
 
 # ============================================ fix round 2 (gate-r2 round 2)
-# The store rule: the judged-uuid store learns only from a session whose
-# landing completed, and a moment claimed at planning only once its claimer
-# completed. Each replay below lands the missing output exactly once.
+# Rewritten for fix round 4: the store learns from a saved answer, and a
+# moment claimed at planning only through its claimer's own save. Each
+# replay below lands the missing output exactly once, from the saved answer.
 
 
-def test_a_partly_landed_session_teaches_the_store_nothing(home, root, backend, tmp_path, monkeypatch):
+def test_a_partly_landed_answer_lands_its_rest_next_run(home, root, backend, tmp_path, monkeypatch):
     rid = "lrn-0000f1a1"
     put_record(home, rid, status="routed")
     sid = "s1partly-0000"
@@ -1432,14 +1469,14 @@ def test_a_partly_landed_session_teaches_the_store_nothing(home, root, backend, 
     with monkeypatch.context() as m:
         m.setattr(telemetry, "spool_event", broken)
         first = run(home)
-    assert len(first.landed) == 1 and cursor(path) is None  # control: the lesson landed, the session is held
-    assert _store_rows() == frozenset()
+    assert len(first.landed) == 1 and cursor(path)["lines"] == 7
+    (answer,) = _waiting()
+    assert [e["state"] for e in answer.items] == ["landed", "waiting"]  # the lesson is marked, the sighting waits
     rec = json.loads((run_dir(first) / "run.json").read_text())
-    assert {r["session"]: r for r in rec["sessions"]}[sid]["landing"] == "failed"
-    second = run(home)  # the lesson is known by its origin; the recurrence spools once
-    assert second.landed == [] and second.recurrences == [rid] and len(pending(home)) == 1
-    assert [o["outcome"] for o in second.outcomes] == ["skipped-known-origin", "recurrence"]
-    assert cursor(path)["lines"] == 7 and f"{sid}-u-3" in _store_rows()
+    assert {r["session"]: r for r in rec["sessions"]}[sid]["saved"] is True
+    second = run(home)  # only the waiting item is landed: the lesson is not tried again
+    assert len(backend.specs) == 1 and second.landed == [] and second.recurrences == [rid]
+    assert [o["outcome"] for o in second.outcomes] == ["recurrence"] and len(pending(home)) == 1
 
 
 def test_a_partial_fold_failure_folds_the_other_record_on_retry(home, root, backend, tmp_path, monkeypatch):
@@ -1458,10 +1495,10 @@ def test_a_partial_fold_failure_folds_the_other_record_on_retry(home, root, back
     with monkeypatch.context() as m:
         m.setattr(Record, "write", flaky)
         first = run(home)
-    assert first.folded == [a] and cursor(path) is None
+    assert first.folded == [a] and cursor(path)["lines"] == 7
     assert Record.from_path(pa).sightings == 2 and Record.from_path(pb).sightings == 1
     second = run(home)
-    assert second.folded == [b] and cursor(path)["lines"] == 7
+    assert len(backend.specs) == 1 and second.folded == [b]
     assert Record.from_path(pa).sightings == 2 and Record.from_path(pb).sightings == 2
 
 
@@ -1482,9 +1519,9 @@ def test_a_partial_lesson_landing_whose_fire_failed_spools_it_once(home, root, b
     with monkeypatch.context() as m:
         m.setattr(telemetry, "spool_event", flaky)
         first = run(home)
-    assert len(first.landed) == 1 and first.fires == 0 and cursor(path) is None
+    assert len(first.landed) == 1 and first.fires == 0 and cursor(path)["lines"] == 7
     second = run(home)
-    assert second.landed == [] and second.fires == 1 and cursor(path)["lines"] == 7
+    assert len(backend.specs) == 1 and second.landed == [] and second.fires == 1
     assert len([e for e in telemetry.read_events(home) if e.get("kind") == "fire"]) == 1
     assert len(pending(home)) == 1
 
@@ -1514,9 +1551,9 @@ def test_a_second_fire_that_failed_spools_once_and_the_first_not_again(home, roo
     with monkeypatch.context() as m:
         m.setattr(telemetry, "spool_event", flaky)
         first = run(home)
-    assert first.fires == 1 and cursor(path) is None
+    assert first.fires == 1 and cursor(path)["lines"] == 7
     second = run(home)
-    assert second.fires == 1 and cursor(path)["lines"] == 7
+    assert len(backend.specs) == 1 and second.fires == 1
     fires = sorted(e["record"] for e in telemetry.read_events(home) if e.get("kind") == "fire")
     assert fires == [r1, r2]
 
@@ -1532,7 +1569,8 @@ def _fork_pair(root: Path, tmp_path: Path) -> tuple[str, str, Path]:
 
 
 @pytest.mark.parametrize("failure", ["call", "landing", "cap"])
-def test_a_family_holds_whole_when_its_claimer_did_not_land(home, root, backend, tmp_path, monkeypatch, failure):
+def test_a_claimed_moment_reaches_the_store_only_through_its_claimer(home, root, backend, tmp_path, monkeypatch,
+                                                                    failure):
     parent, fork, path = _fork_pair(root, tmp_path)
     fork_path = path.with_name(f"{fork}.jsonl")
     backend.answers[fork] = output([lesson()])
@@ -1552,15 +1590,21 @@ def test_a_family_holds_whole_when_its_claimer_did_not_land(home, root, backend,
     assert _called(backend) == [parent, fork] and first.landed == []
     out = json.loads((run_dir(first) / "out" / f"{fork}.json").read_text())
     assert out["lessons"] == []  # control: the fork's copy of the lesson was the parent's to judge
-    # the family holds whole: no cursor moves and the store learns nothing, the fork's own turn included
-    assert cursor(path) is None and cursor(fork_path) is None and _store_rows() == frozenset()
+    # the fork saved its answer: its cursor moved and its own turn was learned, the parent's moments were not
+    assert cursor(fork_path)["lines"] == 9 and f"{fork}-u-8" in _store_rows()
+    if failure == "call":
+        assert cursor(path) is None and f"{parent}-u-3" not in _store_rows()
+    else:  # the parent's answer is saved: it waits, and is never asked for again
+        assert cursor(path)["lines"] == 7 and f"{parent}-u-3" in _store_rows()
     backend.answers[parent] = output([lesson()])
     second = run(home)
-    assert _called(backend, 2) == [parent, fork] and len(second.landed) == 1 and len(pending(home)) == 1
-    assert cursor(path)["lines"] == 7 and cursor(fork_path)["lines"] == 9
+    assert _called(backend, 2) == ([parent] if failure == "call" else [])
+    assert len(second.landed) == 1 and len(pending(home)) == 1
     third = run(home)
     assert third.landed == [] and len(pending(home)) == 1  # exactly once
-def test_a_halted_session_whose_landing_failed_keeps_its_cursor(home, root, backend, tmp_path, monkeypatch):
+
+
+def test_a_halted_session_whose_landing_failed_is_not_called_again(home, root, backend, tmp_path, monkeypatch):
     sid = "s1hltfal-0000"
     rows = session_rows(sid, host(tmp_path)) + [
         typed(sid, 8, "<command-name>/self-learn:teach</command-name>", host(tmp_path))]
@@ -1573,10 +1617,10 @@ def test_a_halted_session_whose_landing_failed_keeps_its_cursor(home, root, back
     with monkeypatch.context() as m:
         m.setattr(miner, "create_record", refused)
         first = run(home)
-    assert [o["outcome"] for o in first.outcomes] == ["dropped-land-failed"]  # control: it was called and held
-    assert cursor(path) is None and _store_rows() == frozenset()
+    assert [o["outcome"] for o in first.outcomes] == ["land-failed"]  # control: it was called and saved
+    assert cursor(path)["halt"] is True and f"{sid}-u-3" in _store_rows()
     again = run(home)
-    assert len(again.landed) == 1 and cursor(path) is not None
+    assert len(backend.specs) == 1 and len(again.landed) == 1
 
 
 def test_a_failed_landing_shows_in_the_run_record(home, root, backend, tmp_path, monkeypatch):
@@ -1590,15 +1634,17 @@ def test_a_failed_landing_shows_in_the_run_record(home, root, backend, tmp_path,
     monkeypatch.setattr(miner, "create_record", refused)
     result = run(home)
     rec = json.loads((run_dir(result) / "run.json").read_text())
-    assert result.status == "failed" and rec["status"] == "failed"
+    assert result.status == "ok" and rec["status"] == "ok"  # judged and saved; the landing waits
     assert rec["totals"]["lessons"] == 1  # what the check kept
-    assert rec["landed"] == {"lessons": 0, "folded": 0, "recurrences": 0, "fires": 0, "sessions_failed": 1}
+    assert rec["landed"] == {"lessons": 0, "folded": 0, "recurrences": 0, "fires": 0}
+    assert rec["waiting"] == {"found": 0, "landed_earlier": 0, "landed_this_run": 0, "still_waiting": 1,
+                              "stuck": [], "drained": True}
     (row,) = rec["sessions"]
-    assert row["out_status"] == "ok" and row["landing"] == "failed"
+    assert row["out_status"] == "ok" and row["saved"] is True
     contract.load_run(run_dir(result))
 
 
-def test_a_landed_run_record_names_each_landing(home, root, backend, tmp_path, monkeypatch):
+def test_a_run_record_counts_checked_saved_and_landed_apart(home, root, backend, tmp_path, monkeypatch):
     monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "1")
     sids = ["s1recdon-0000", "s2recapd-0000"]
     for sid in sids:
@@ -1606,9 +1652,15 @@ def test_a_landed_run_record_names_each_landing(home, root, backend, tmp_path, m
         backend.answers[sid] = output([lesson()])
     result = run(home)
     rec = json.loads((run_dir(result) / "run.json").read_text())
-    assert rec["status"] == "ok" and rec["landed"]["lessons"] == 1 and rec["landed"]["sessions_failed"] == 0
-    assert {r["session"]: r["landing"] for r in rec["sessions"]} == {sids[0]: "complete", sids[1]: "held"}
+    assert rec["status"] == "ok" and rec["totals"]["lessons"] == 2 and rec["landed"]["lessons"] == 1
+    assert rec["waiting"]["landed_this_run"] == 1 and rec["waiting"]["still_waiting"] == 1
+    assert {r["session"]: r["saved"] for r in rec["sessions"]} == {sids[0]: True, sids[1]: True}
     contract.load_run(run_dir(result))
+    second = run(home)
+    rec2 = json.loads((run_dir(second) / "run.json").read_text())
+    assert rec2["totals"]["called"] == 0 and rec2["waiting"]["found"] == 1
+    assert rec2["waiting"]["landed_earlier"] == 1 and rec2["landed"]["lessons"] == 1
+    contract.load_run(run_dir(second))
 
 
 def test_a_failing_session_waits_behind_the_others(home, root, backend, tmp_path, monkeypatch):
@@ -1642,9 +1694,11 @@ def test_a_failure_count_belongs_to_its_cursor():
 def test_a_run_whose_lock_was_not_taken_counts_no_failure(home, root, backend, tmp_path, monkeypatch):
     from self_learn import gitops, intents
 
-    sid = "s1lockbs-0000"
-    path = write_session(root, sid, session_rows(sid, host(tmp_path)))
-    backend.answers[sid] = output([lesson()])
+    bad, good = "s1lockbs-0000", "s2lockok-0000"
+    bp = write_session(root, bad, session_rows(bad, host(tmp_path)))
+    gp = write_session(root, good, session_rows(good, host(tmp_path)))
+    backend.answers[bad] = [FakeOutcome(ok=False, failure="exit", detail="synthetic failed call", rc=1)]
+    backend.answers[good] = output([lesson()])
 
     class Busy:
         def __enter__(self):
@@ -1657,10 +1711,12 @@ def test_a_run_whose_lock_was_not_taken_counts_no_failure(home, root, backend, t
         m.setattr(intents, "ledger_write", lambda h: Busy())
         for _ in range(3):
             run(home)
-    assert len(backend.specs) == 3 and cursor(path) is None  # control: called each time, never landed
+    # control: the good session was called once and saved; the bad one was called each run and failed
+    assert _called(backend).count(good) == 1 and _called(backend).count(bad) == 3
+    assert cursor(gp)["lines"] == 7 and cursor(bp) is None and len(_waiting()) == 1
     f = miner.miner_dir() / engine.FAILURES_NAME
-    assert str(path) not in (json.loads(f.read_text()) if f.exists() else {})
-    assert len(run(home).landed) == 1 and cursor(path)["lines"] == 7
+    assert str(bp) not in (json.loads(f.read_text()) if f.exists() else {})
+    assert len(run(home).landed) == 1 and _waiting() == []
 
 
 def test_a_run_where_no_call_succeeded_counts_no_failure(home, root, backend, tmp_path):
