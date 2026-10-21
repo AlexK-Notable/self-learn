@@ -1143,14 +1143,22 @@ def test_landed_lessons_counts_lessons_only_on_a_run_with_folds(home, root, back
 
 
 def test_a_cursor_that_did_not_move_after_a_save_moves_before_the_walk(home, root, backend, tmp_path, monkeypatch):
+    from self_learn.mining import uuids
+
     sid = "s1setcur-0000"
     path = write_session(root, sid, session_rows(sid, host(tmp_path)))
     backend.answers[sid] = output([lesson()])
+
+    def lost(self, u, on):
+        raise uuids.sqlite3.OperationalError("synthetic disk I/O error")
+
+    # the store cannot help here: every write to it fails, this run and the next
+    monkeypatch.setattr(uuids.JudgedUuids, "add", lost)
     with monkeypatch.context() as m:
         m.setattr(intents, "ledger_write", lambda h: _Busy())
         m.setattr(miner, "_advance_cursors", lambda processed: None)  # a stop between the save and the cursor
         run(home)
-    assert cursor(path) is None and len(_waiting()) == 1  # control: saved, the cursor did not move
+    assert cursor(path) is None and len(_waiting()) == 1 and not _store_rows()  # control: saved, nothing moved
     second = run(home)
     assert len(backend.specs) == 1 and len(second.landed) == 1 and cursor(path)["lines"] == 7
 
