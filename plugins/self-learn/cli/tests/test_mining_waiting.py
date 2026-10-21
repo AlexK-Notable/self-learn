@@ -444,11 +444,13 @@ def test_doctor_names_a_waiting_file_that_does_not_read(home, root, backend, tmp
     folder = miner.miner_dir() / "pending"
     folder.mkdir(parents=True)
     (folder / "0001-broken.json").write_text("{not json")
+    (folder / "0002-other.json").write_text(json.dumps({"contract": "something-else", "items": []}))
     lines = _doctor(capsys)
     assert "doctor: OK waiting-answers — 0 waiting answer(s), 0 item(s) still to land" in lines
-    assert any("WARN waiting-answer-unreadable" in ln and "0001-broken.json" in ln for ln in lines)
-    run(home)
-    assert (folder / "0001-broken.json").is_file()  # left in place
+    for name in ("0001-broken.json", "0002-other.json"):
+        assert any("WARN waiting-answer-unreadable" in ln and name in ln for ln in lines)
+    assert run(home).status == "idle"
+    assert (folder / "0001-broken.json").is_file() and (folder / "0002-other.json").is_file()  # left in place
 
 
 # ------------------------------------------------------------- the preview
@@ -1151,6 +1153,34 @@ def test_a_cursor_that_did_not_move_after_a_save_moves_before_the_walk(home, roo
     assert cursor(path) is None and len(_waiting()) == 1  # control: saved, the cursor did not move
     second = run(home)
     assert len(backend.specs) == 1 and len(second.landed) == 1 and cursor(path)["lines"] == 7
+
+
+def test_a_store_write_lost_at_save_is_made_again_from_the_waiting_answer(home, root, backend, tmp_path,
+                                                                          monkeypatch):
+    from self_learn.mining import uuids
+
+    parent, fork = "s1relearn-0000", "s2relearn-0000"
+    rows = session_rows(parent, host(tmp_path))
+    write_session(root, parent, rows)
+    backend.answers[parent] = output([lesson()])
+    real_add = uuids.JudgedUuids.add
+
+    def lost(self, u, on):
+        raise uuids.sqlite3.OperationalError("synthetic disk I/O error")
+
+    with monkeypatch.context() as m:
+        m.setattr(intents, "ledger_write", lambda h: _Busy())
+        m.setattr(uuids.JudgedUuids, "add", lost)
+        first = run(home)
+    assert _rec(first)["judged_uuids"]["add_failed"] == 1 and not _store_rows()  # control: the write was lost
+    assert uuids.JudgedUuids.add is real_add
+    write_session(root, fork, _fork_rows(rows, fork, 8, tmp_path))
+    backend.answers[fork] = output([lesson()])
+    second = run(home)
+    assert _rec(second)["judged_uuids"]["relearned"] >= 1 and f"{parent}-u-3" in _store_rows()
+    out = json.loads((run_dir(second) / "out" / f"{fork}.json").read_text())
+    assert out["lessons"] == []  # the fork's copy read as judged: the parent's moments were learned first
+    assert len(pending(home)) == 1 and len(second.landed) == 1
 
 
 # ------------------------------------------------------------ the contract
