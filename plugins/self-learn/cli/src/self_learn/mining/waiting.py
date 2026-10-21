@@ -34,9 +34,10 @@ items.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -52,6 +53,7 @@ __all__ = [
     "WAITING_CONTRACT",
     "Answer",
     "Stuck",
+    "fsync_file_and_folder",
     "item_origin",
     "load_all",
     "pending_dir",
@@ -65,8 +67,12 @@ PENDING_DIR = "pending"
 #: The kinds of item a checked output holds, in the order they land.
 ITEM_KINDS: tuple[str, ...] = contract.WAITING_ITEM_KINDS
 #: ``waiting`` until it lands (``landed``) or is dropped on purpose
-#: (``dropped``: a duplicate, a stale target, a scan refusal, ...).
-ITEM_STATES: tuple[str, ...] = ("waiting", "landed", "dropped")
+#: (``dropped``: a duplicate, a stale target, a scan refusal, ...);
+#: ``writing`` once what it is about to write is recorded on it, until
+#: that output's mark (fix round 5).
+ITEM_STATES: tuple[str, ...] = ("waiting", "writing", "landed", "dropped")
+#: What a ``writing`` item's intent writes.
+INTENT_OUTPUTS: tuple[str, ...] = ("lesson", "resurface", "fold", "recurrence-suspect", "fire")
 #: An item whose write failed on this many runs is *stuck*: shown by
 #: ``self-learn doctor miner`` and in ``run.json``. It keeps retrying.
 STUCK_AFTER = contract.STUCK_AFTER
@@ -84,6 +90,10 @@ class Answer:
 
     path: Path
     doc: dict[str, Any]
+    #: True once its ``learn`` set is in the judged-uuid store: at its
+    #: save, or re-learned by a later run. Until then a finished answer
+    #: is kept (fix round 5).
+    learned: bool = field(default=False, compare=False)
 
     @property
     def session(self) -> str:
@@ -111,7 +121,9 @@ class Answer:
         return self.doc["checked"][entry["kind"]][entry["index"]]
 
     def waiting(self) -> list[dict[str, Any]]:
-        return [e for e in self.items if e["state"] == "waiting"]
+        """The items not finished: ``waiting``, or ``writing`` (not yet
+        marked ``landed``)."""
+        return [e for e in self.items if e["state"] in ("waiting", "writing")]
 
     def done(self) -> bool:
         return not self.waiting()
@@ -174,25 +186,45 @@ def save(
 
 
 def _valid(doc: object) -> bool:
+    """A file this code reads as a waiting answer: the contract it
+    writes, a ``checked`` part that passes ``miner-output/1``, its
+    ``cursor`` and ``learn``, and exactly one item per checked lesson,
+    sighting and rule check -- none missing, none twice (fix round 5: an
+    answer that lists fewer items would land less than it saved)."""
     if not isinstance(doc, dict) or doc.get("contract") != WAITING_CONTRACT:
         return False
-    if not all(isinstance(doc.get(k), str) and doc[k] for k in ("session", "run_id")):
+    if not all(isinstance(doc.get(k), str) and doc[k] for k in ("session", "run_id", "transcript")):
         return False
     if not isinstance(doc.get("saved_ns"), int) or not isinstance(doc.get("items"), list):
+        return False
+    cursor = doc.get("cursor")
+    if not isinstance(cursor, dict) or not all(isinstance(cursor.get(k), int) for k in ("lines", "size")):
+        return False
+    learn = doc.get("learn")
+    if not isinstance(learn, list) or not all(isinstance(u, str) and u for u in learn):
         return False
     checked = doc.get("checked")
     if contract.validate_checked_output(checked):
         return False
     assert isinstance(checked, dict)
+    expected = {(kind, i) for kind in ITEM_KINDS for i in range(len(checked[kind]))}
+    seen: set[tuple[str, int]] = set()
     for e in doc["items"]:
         if not isinstance(e, dict) or e.get("kind") not in ITEM_KINDS or e.get("state") not in ITEM_STATES:
             return False
         i = e.get("index")
-        if not isinstance(i, int) or not 0 <= i < len(checked[e["kind"]]):
+        if not isinstance(i, int) or (e["kind"], i) not in expected or (e["kind"], i) in seen:
             return False
+        seen.add((e["kind"], i))
         if not isinstance(e.get("failures"), int) or e["failures"] < 0:
             return False
-    return True
+        if e["state"] == "writing":
+            intent = e.get("intent")
+            if (not isinstance(intent, dict) or intent.get("output") not in INTENT_OUTPUTS
+                    or not isinstance(intent.get("origin"), str)
+                    or not isinstance(intent.get("record"), (str, type(None)))):
+                return False
+    return seen == expected
 
 
 def load_all(miner_dir: Path) -> tuple[list[Answer], list[str]]:
@@ -217,6 +249,17 @@ def load_all(miner_dir: Path) -> tuple[list[Answer], list[str]]:
         answers.append(Answer(path, doc))
     answers.sort(key=lambda a: (a.doc["saved_ns"], a.path.name))
     return answers, broken
+
+
+def fsync_file_and_folder(path: Path) -> None:
+    """Make an appended file durable: fsync it, then its folder (which
+    holds its name when the append created it)."""
+    for target, flags in ((Path(path), os.O_RDONLY), (Path(path).parent, os.O_RDONLY)):
+        fd = os.open(target, flags)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
 
 @dataclass(frozen=True)

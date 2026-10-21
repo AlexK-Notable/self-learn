@@ -87,6 +87,20 @@ def _pending_hashes() -> dict[str, str]:
     return {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(folder.iterdir())}
 
 
+def _crash_at_landed_mark(m) -> None:
+    """A stop after an item's write and before its ``landed`` mark: the
+    mark that records ``landed`` raises (the intent mark before the write
+    goes through)."""
+    real = mining_waiting.Answer.mark
+
+    def mark(self):
+        if any(e["state"] == "landed" for e in self.items):
+            raise RuntimeError("simulated crash after the item's write, before its mark")
+        return real(self)
+
+    m.setattr(mining_waiting.Answer, "mark", mark)
+
+
 def _failures() -> dict:
     f = miner.miner_dir() / engine.FAILURES_NAME
     return json.loads(f.read_text()) if f.exists() else {}
@@ -122,7 +136,9 @@ def test_an_answer_is_saved_whole_before_anything_of_it_lands(home, root, backen
     result = run(home)
     assert len(result.landed) == 1 and len(seen) == 1
     (s,) = seen
-    assert s["items"] == ["waiting"] and s["cursor"]["lines"] == 7 and s["mode"] == 0o600
+    # what the write is about to do is on disk before it happens (fix round 5)
+    assert s["items"] == ["writing"] and s["cursor"]["lines"] == 7 and s["mode"] == 0o600
+    assert s["doc"]["items"][0]["intent"] == {"output": "lesson", "record": None, "origin": f"transcript:{sid}#L3"}
     doc = s["doc"]
     assert doc["session"] == sid and doc["transcript"] == str(path) and doc["run_id"] == result.run_id
     assert doc["method_version"] == "1" and doc["halted"] is False and doc["cursor"] == {"lines": 7,
@@ -178,24 +194,18 @@ def test_a_crash_between_an_item_s_write_and_its_mark_replays_as_a_no_op(home, r
         _flagged(monkeypatch, rid)
         backend.answers[sid] = output(rule_checks=[_rc(rid)])
     real_mark = mining_waiting.Answer.mark
-
-    def crash(self):
-        raise RuntimeError("simulated crash after the item's write, before its mark")
-
     with monkeypatch.context() as m:
-        m.setattr(mining_waiting.Answer, "mark", crash)
+        _crash_at_landed_mark(m)
         first = run(home)
     assert first.status == "failed" and cursor(path)["lines"] == 7
     (answer,) = _waiting()
-    assert [e["state"] for e in answer.items] == ["waiting"]  # control: the write happened, the mark did not
+    assert [e["state"] for e in answer.items] == ["writing"]  # control: the write happened, the mark did not
     if kind == "fire-flushed":
         telemetry.flush(home)  # the spooled fire reached the tracked plane before the replay
     assert mining_waiting.Answer.mark is real_mark
     second = run(home)
     assert len(backend.specs) == 1 and _waiting() == []
-    expected = {"lesson": "skipped-known-origin", "fold": "skipped-known-origin", "fire": "fire-already-known",
-                "fire-flushed": "fire-already-known", "recurrence": "recurrence-already-known"}[kind]
-    assert [o["outcome"] for o in second.outcomes] == [expected]
+    assert [o["outcome"] for o in second.outcomes] == ["already-written"]
     if kind == "lesson":
         assert len(pending(home)) == 1
     elif kind == "fold":
@@ -278,7 +288,7 @@ def test_the_flood_gate_holds_waiting_answers_until_it_opens(home, root, backend
     assert gated.landed == [] and not pending(home) and _pending_hashes() == before
     assert _rows(gated)[held]["status"] == "not-run" and _rows(gated)[held]["reason"] == "pending-gate"
     assert _rec(gated)["waiting"] == {"found": 1, "landed_earlier": 0, "landed_this_run": 0, "still_waiting": 1,
-                                      "stuck": [], "drained": False}
+                                      "stuck": [], "drained": False, "unreadable": []}
     assert journal_last()["status"] == "held-gate" and journal_last()["waiting"]["still_waiting"] == 1
     contract.load_run(run_dir(gated))
     opened = run(home)  # the gate is open again: the waiting answer lands, once, and the held session is called
@@ -302,7 +312,7 @@ def test_a_busy_lock_leaves_every_waiting_answer_byte_identical(home, root, back
     after = _pending_hashes()
     assert len(after) == 2 and {k: after[k] for k in before} == before
     assert _rec(second)["waiting"] == {"found": 1, "landed_earlier": 0, "landed_this_run": 0, "still_waiting": 2,
-                                       "stuck": [], "drained": False}
+                                       "stuck": [], "drained": False, "unreadable": []}
     third = run(home)
     assert len(third.landed) == 2 and _waiting() == [] and len(backend.specs) == 2
 
@@ -489,7 +499,10 @@ def test_doctor_names_a_waiting_file_that_does_not_read(home, root, backend, tmp
     assert "doctor: OK waiting-answers — 0 waiting answer(s), 0 item(s) still to land" in lines
     for name in ("0001-broken.json", "0002-other.json"):
         assert any("WARN waiting-answer-unreadable" in ln and name in ln for ln in lines)
-    assert run(home).status == "idle"
+    result = run(home)
+    assert _rec(result)["waiting"]["unreadable"] == ["0001-broken.json", "0002-other.json"]
+    assert [o["outcome"] for o in result.outcomes] == ["waiting-unreadable"] * 2
+    assert journal_last()["waiting"]["unreadable"] == ["0001-broken.json", "0002-other.json"]
     assert (folder / "0001-broken.json").is_file() and (folder / "0002-other.json").is_file()  # left in place
 
 

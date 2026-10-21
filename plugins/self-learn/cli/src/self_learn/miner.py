@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import NamedTuple, cast
 
 from . import gitops, intents, invocation, provenance, provider, refs, sentinel, settings, steward_prompt, telemetry, worker
-from .primitives import chrono
+from .primitives import chrono, fsops
 from . import reconcile as reconcile_mod
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
 from .hosts import HostsError, capture_host_path, load_hosts
@@ -1373,7 +1373,7 @@ def _rejected_counter_bump(rid: str, origin: str) -> int:
     sightings = set(entry or [])
     sightings.add(origin)
     data[rid] = sorted(sightings)
-    path.write_text(json.dumps(data, indent=0, sort_keys=True), encoding="utf-8")
+    fsops.atomic_write(path, json.dumps(data, indent=0, sort_keys=True))  # whole or not at all
     return len(sightings)
 
 
@@ -1384,7 +1384,9 @@ def _rejected_mark_landed(rid: str) -> None:
     except (OSError, ValueError):
         data = {}
     data[rid] = "landed"
-    path.write_text(json.dumps(data, indent=0, sort_keys=True), encoding="utf-8")
+    # atomic (fix round 5): a resurface replayed after a stop marks it
+    # again, and a torn file would forget every other record's count
+    fsops.atomic_write(path, json.dumps(data, indent=0, sort_keys=True))
 
 
 def _valid_skill_scope(home: Path, scope: str) -> bool:
@@ -2192,6 +2194,9 @@ class _Landing:
     origins: set[str]
     seen_events: set[tuple[str, str, str]]
     moments: set[tuple] = field(default_factory=set)
+    #: records what an item is about to write before it writes (the
+    #: drain sets it per item; None outside a drain)
+    intend: Callable[[dict], None] | None = None
 
 
 class _LandingHeld(Exception):
@@ -2207,15 +2212,24 @@ class _LandingHeld(Exception):
 LANDED, DROPPED, CAPPED = "landed", "dropped", "capped"
 
 
+def _intend(st: _Landing, output: str, record: str | None, origin: str, **extra: object) -> None:
+    """Record, on the item being landed, what this attempt is about to
+    write (fix round 5): its output, target record and origin, and mark
+    the item ``writing`` in one atomic rewrite of its waiting answer --
+    before the write. A replay of a ``writing`` item finishes that output
+    and never decides again (:func:`_finish_intent`)."""
+    if st.intend is not None:
+        st.intend({"output": output, "record": record, "origin": origin, **extra})
+
+
 def _land_lesson(st: _Landing, lesson: dict, cwd: str | None) -> str:
     """Land one checked lesson as a pending record: :data:`LANDED`,
     :data:`DROPPED` or :data:`CAPPED`. A write that fails raises (the item
     stays waiting)."""
-    home, result = st.home, st.result
+    result = st.result
     ev = lesson["evidence"]
     main = [e for e in ev if not e["ref"].get("subagent_file")]
-    primary = (main or ev)[0]
-    origin = _ref_origin(primary["ref"])
+    origin = _ref_origin((main or ev)[0]["ref"])
     if origin in st.origins:
         _outcome(result, origin, "skipped-known-origin", reason="a record already holds this origin")
         return DROPPED
@@ -2229,6 +2243,21 @@ def _land_lesson(st: _Landing, lesson: dict, cwd: str | None) -> str:
         # the lesson stays waiting and lands first next run
         _outcome(result, origin, "waiting-cap", reason=f"the run's lesson cap ({st.cap}) was reached")
         return CAPPED
+    return _write_lesson(st, lesson, cwd)
+
+
+def _write_lesson(st: _Landing, lesson: dict, cwd: str | None, *, output: str = "lesson",
+                  target: str | None = None, extra: dict | None = None) -> str:
+    """The write half of a lesson's landing: the record, its scan and
+    scope checks (each a property of the lesson itself), then the intent
+    and ``create_record``. ``output``/``target``: ``resurface`` and the
+    rejected record it resurfaces."""
+    home, result = st.home, st.result
+    ev = lesson["evidence"]
+    main = [e for e in ev if not e["ref"].get("subagent_file")]
+    primary = (main or ev)[0]
+    origin = _ref_origin(primary["ref"])
+    cited = {("lesson", _ref_moment(e["ref"])) for e in ev}
     try:
         record = _session_record(home, lesson)
     except RecordError as exc:
@@ -2260,6 +2289,7 @@ def _land_lesson(st: _Landing, lesson: dict, cwd: str | None) -> str:
         project_path = capture_host_path(home, Path(where))  # FW-162
     for entry in entries:
         record.append_evidence(entry)
+    _intend(st, output, target, origin, **(extra or {}))
     path = create_record(home, record, project_path=project_path)  # LedgerOpsError: the item waits
     result.touched.append(path)
     meta = path.parent.parent / "meta.yaml"
@@ -2307,15 +2337,13 @@ def _live_record(home: Path, rid: str) -> tuple[Record, Path] | None:
     return None
 
 
-def _resurface(st: _Landing, rejected: Record, items: list[dict], n: int, cwd: str | None) -> str:
-    """Doc 12 §8 Q4 for a sighting: a rejected lesson sighted
-    :data:`REJECTED_RESURFACE_SIGHTINGS` times since is landed again as a
-    new pending record, its text the rejected record's own, its evidence
-    the sighting's."""
+def _resurfaced_lesson(rejected: Record, items: list[dict], n: int) -> dict:
+    """Doc 12 §8 Q4: the lesson a rejected record resurfaces as -- its own
+    text, the sighting's evidence."""
     from .index.store import _sections  # pyright: ignore[reportPrivateUsage]
 
     sections = _sections(rejected.body)
-    lesson = {
+    return {
         "scope": rejected.scope, "type": rejected.type, "kind": rejected.kind,
         "trigger": sections.get("Trigger"), "instruction": sections.get("Instruction"),
         "fact": sections.get("Fact"), "context": sections.get("Context"),
@@ -2323,11 +2351,31 @@ def _resurface(st: _Landing, rejected: Record, items: list[dict], n: int, cwd: s
         "evidence": items, "shape": "repeated-friction",
         "why_durable": f"previously rejected as {rejected.id}; sighted {n}× since — resurfaced per doc 12 §8 Q4",
     }
-    landed = _land_lesson(st, lesson, cwd)
+
+
+def _resurface(st: _Landing, rejected: Record, items: list[dict], n: int, cwd: str | None) -> str:
+    """Doc 12 §8 Q4 for a sighting: a rejected lesson sighted
+    :data:`REJECTED_RESURFACE_SIGHTINGS` times since is landed again as a
+    new pending record, and the rejected record is marked resurfaced."""
+    lesson = _resurfaced_lesson(rejected, items, n)
+    origin = _ref_origin(items[0]["ref"])
+    if origin in st.origins:
+        # its lesson already landed (a stop came before the mark): mark it
+        _rejected_mark_landed(rejected.id)
+        _outcome(st.result, origin, "skipped-known-origin", reason="a record already holds this origin")
+        return DROPPED
+    cited = {("lesson", _ref_moment(e["ref"])) for e in items}
+    if cited and cited <= st.moments:
+        _outcome(st.result, origin, "skipped-duplicate-moment", reason="this run already landed a lesson there")
+        return DROPPED
+    if len(st.result.landed) >= st.cap:
+        _outcome(st.result, origin, "waiting-cap", reason=f"the run's lesson cap ({st.cap}) was reached")
+        return CAPPED
+    landed = _write_lesson(st, lesson, cwd, output="resurface", target=rejected.id, extra={"sightings": n})
     if landed != LANDED:
         return landed
     _rejected_mark_landed(rejected.id)
-    _outcome(st.result, _ref_origin(items[0]["ref"]), "resurfaced", record=rejected.id, sightings=n)
+    _outcome(st.result, origin, "resurfaced", record=rejected.id, sightings=n)
     return LANDED
 
 
@@ -2349,8 +2397,37 @@ def _record_moments(record: Record) -> tuple[set[tuple], set[str]]:
 def _spool_output(kind: str, **payload) -> None:
     """A fire or recurrence-suspect is the miner's output, not usage
     telemetry: a spool that fails raises (the item stays waiting and is
-    landed again next run), where `telemetry.spool_quiet` would only warn."""
-    telemetry.spool_event(kind, **payload)
+    landed again next run), where `telemetry.spool_quiet` would only warn.
+    The spool file, and its folder, are fsynced before this returns, so
+    the event is durable before its item is marked (fix round 5)."""
+    path = telemetry.spool_event(kind, **payload)
+    mining_waiting.fsync_file_and_folder(path)
+
+
+def _write_fold(st: _Landing, record: Record, path: Path, fresh: list[dict], origin: str) -> str:
+    """Fold ``fresh`` evidence into ``record``: the intent, then one write."""
+    result = st.result
+    for item in fresh:
+        entry = _evidence_entry(item)
+        if entry.get("quote") and secret_scan(entry["quote"]):
+            del entry["quote"]
+            _outcome(result, entry["origin"], "fold-quote-scan-refused", record=record.id)
+        record.append_evidence(entry)
+    record.set_sightings(record.sightings + 1)
+    _intend(st, "fold", record.id, origin)
+    record.write(path)
+    st.origins.update(_ref_origin(e["ref"]) for e in fresh)
+    result.folded.append(record.id)
+    result.touched.append(path)
+    _outcome(result, origin, "folded", record=record.id)
+    return LANDED
+
+
+def _write_event(st: _Landing, kind: str, rid: str, origin: str, **payload: object) -> None:
+    """Spool a recurrence-suspect or a fire: the intent, then the spool."""
+    _intend(st, kind, rid, origin)
+    _spool_output(kind, record=rid, origin=origin, **payload)
+    st.seen_events.add((kind, rid, origin))
 
 
 def _land_sighting(st: _Landing, sighting: dict, cwd: str | None) -> str:
@@ -2383,27 +2460,13 @@ def _land_sighting(st: _Landing, sighting: dict, cwd: str | None) -> str:
             _outcome(result, origin, "skipped-known-origin", record=record.id,
                      reason="the record already holds this moment")
             return DROPPED
-        for item in fresh:
-            entry = _evidence_entry(item)
-            if entry.get("quote") and secret_scan(entry["quote"]):
-                del entry["quote"]
-                _outcome(result, entry["origin"], "fold-quote-scan-refused", record=record.id)
-            record.append_evidence(entry)
-        record.set_sightings(record.sightings + 1)
-        record.write(path)
-        st.origins.update(_ref_origin(e["ref"]) for e in fresh)
-        result.folded.append(record.id)
-        result.touched.append(path)
-        _outcome(result, origin, "folded", record=record.id)
-        return LANDED
+        return _write_fold(st, record, path, fresh, _ref_origin(fresh[0]["ref"]))
     if record.status == "routed":
-        key = ("recurrence-suspect", record.id, origin)
-        if key in st.seen_events:
+        if ("recurrence-suspect", record.id, origin) in st.seen_events:
             _outcome(result, origin, "recurrence-already-known", record=record.id,
                      reason="this recurrence-suspect is already spooled or tracked")
             return DROPPED
-        _spool_output("recurrence-suspect", record=record.id, origin=origin, basis=_SIGHTING_BASIS)
-        st.seen_events.add(key)
+        _write_event(st, "recurrence-suspect", record.id, origin, basis=_SIGHTING_BASIS)
         result.recurrences.append(record.id)
         _outcome(result, origin, "recurrence", record=record.id)
         return LANDED
@@ -2438,20 +2501,85 @@ def _land_rule_check(st: _Landing, check: dict) -> str:
         _outcome(result, origin, "skipped-duplicate-moment", record=rid,
                  reason="this run already spooled a fire of this record there")
         return DROPPED
-    key = ("fire", rid, origin)
-    if key in st.seen_events:
+    if ("fire", rid, origin) in st.seen_events:
         st.moments.add(moment)
         _outcome(result, origin, "fire-already-known", record=rid, reason="this fire is already spooled or tracked")
         return DROPPED
-    action = check.get("action")
-    _spool_output(
-        "fire", record=rid, origin=origin, outcome=check["outcome"],
-        action=_ref_origin(action["ref"]) if action else None,
-    )
-    st.seen_events.add(key)
+    _write_event(st, "fire", rid, origin, **_fire_payload(check))
     st.moments.add(moment)
     result.fires += 1
     _outcome(result, origin, "fire-spooled", record=rid, check=check["outcome"])
+    return LANDED
+
+
+def _fire_payload(check: dict) -> dict:
+    action = check.get("action")
+    return {"outcome": check["outcome"], "action": _ref_origin(action["ref"]) if action else None}
+
+
+def _finish_intent(st: _Landing, intent: dict, kind: str, item: dict, cwd: str | None) -> str:
+    """Finish an item a stop left ``writing`` (fix round 5): the output its
+    intent recorded, against the target it recorded -- never decided
+    again from that target's current status or successor. The output
+    already exists (the record's evidence for a fold, the spooled or
+    tracked events for a fire or recurrence-suspect, the known origin for
+    a lesson): :data:`LANDED`. It does not: the same output is written,
+    unless the recorded target is gone (:data:`DROPPED`, with the reason)."""
+    home, result = st.home, st.result
+    output, rid, origin = intent["output"], intent.get("record"), intent["origin"]
+    reason_done = "it was written before a stop that came before its mark"
+    if output in ("lesson", "resurface"):
+        if origin in st.origins:
+            if output == "resurface" and rid:
+                _rejected_mark_landed(rid)
+            _outcome(result, origin, "already-written", record=rid, reason=reason_done)
+            return LANDED
+        if output == "lesson":
+            return _write_lesson(st, item, cwd)
+        found = _find_record_path(home, str(rid))
+        if found is None:
+            _outcome(result, origin, "dropped-invalid", record=rid,
+                     reason="the rejected record it resurfaces is gone")
+            return DROPPED
+        recorded = intent.get("sightings")
+        n = recorded if isinstance(recorded, int) else REJECTED_RESURFACE_SIGHTINGS
+        landed = _write_lesson(st, _resurfaced_lesson(found[0], item["evidence"], n), cwd,
+                               output="resurface", target=found[0].id, extra={"sightings": n})
+        if landed == LANDED:
+            _rejected_mark_landed(found[0].id)
+            _outcome(result, origin, "resurfaced", record=found[0].id, sightings=n)
+        return landed
+    found = _find_record_path(home, str(rid))
+    if output == "fold":
+        if found is None:
+            _outcome(result, origin, "dropped-invalid", record=rid, reason="the record it folds into is gone")
+            return DROPPED
+        record, path = found
+        held_moments, held_origins = _record_moments(record)
+        if origin in held_origins:
+            _outcome(result, origin, "already-written", record=rid, reason=reason_done)
+            return LANDED
+        fresh = [e for e in item["evidence"]
+                 if _ref_moment(e["ref"]) not in held_moments and _ref_origin(e["ref"]) not in held_origins]
+        if not fresh:
+            _outcome(result, origin, "already-written", record=rid, reason=reason_done)
+            return LANDED
+        return _write_fold(st, record, path, fresh, origin)
+    # a recurrence-suspect or a fire
+    if (output, rid, origin) in st.seen_events:
+        _outcome(result, origin, "already-written", record=rid, reason=reason_done)
+        return LANDED
+    if found is None:
+        _outcome(result, origin, "dropped-invalid", record=rid, reason=f"the record its {output} names is gone")
+        return DROPPED
+    if output == "fire":
+        _write_event(st, "fire", str(rid), origin, **_fire_payload(item))
+        result.fires += 1
+        _outcome(result, origin, "fire-spooled", record=rid, check=item["outcome"])
+    else:
+        _write_event(st, "recurrence-suspect", str(rid), origin, basis=_SIGHTING_BASIS)
+        result.recurrences.append(str(rid))
+        _outcome(result, origin, "recurrence", record=rid)
     return LANDED
 
 
@@ -2467,9 +2595,14 @@ def _spooled_seen() -> set[tuple[str, str, str]]:
 
 @dataclass
 class DrainReport:
-    """What one drain did (``run.json``'s ``waiting``): the waiting answers
-    it found from earlier runs; items landed from earlier runs' answers and
-    from this run's; items still waiting after it; the stuck ones."""
+    """What one run did with the waiting answers (``run.json``'s
+    ``waiting``): the answers it found from earlier runs; items landed from
+    earlier runs' answers and from this run's; items still waiting after
+    it; the stuck ones; the files that do not read (``unreadable``); and
+    whether it took the ledger lock to land them (``drained``, set the
+    moment the lock is acquired). ``gate_held``: the flood gate kept it
+    from landing any. ``written``: items written this run whose ``landed``
+    mark waits for the landing commit."""
 
     found: int = 0
     landed_earlier: int = 0
@@ -2477,25 +2610,29 @@ class DrainReport:
     still_waiting: int = 0
     stuck: list[dict] = field(default_factory=list)
     drained: bool = False
+    unreadable: list[str] = field(default_factory=list)
+    gate_held: bool = False
+    written: list = field(default_factory=list, repr=False)
 
     def as_dict(self) -> dict:
         return {"found": self.found, "landed_earlier": self.landed_earlier,
                 "landed_this_run": self.landed_this_run, "still_waiting": self.still_waiting,
-                "stuck": self.stuck, "drained": self.drained}
+                "stuck": self.stuck, "drained": self.drained, "unreadable": list(self.unreadable)}
 
 
 def _drain_waiting(
     home: Path, answers: list[mining_waiting.Answer], result: MineResult, cap: int, run_id: str
 ) -> DrainReport:
     """Land the waiting answers, oldest first, one item at a time. **The
-    caller holds the ledger lock** (`intents.ledger_write`). After each
-    item's write completes, its state is written back to its file (one
-    atomic rewrite), so a crash between the two replays the item and the
-    landing's own deduplication makes it a no-op. A write that fails, or
-    an item held for a reason outside it, leaves the item waiting with its
-    failure counted (the model is never asked again); the cap holds an
-    item without counting. A file whose items all landed or were dropped
-    is removed."""
+    caller holds the ledger lock** (`intents.ledger_write`). Before an
+    item's write, what it is about to write is recorded on it (state
+    ``writing``, one atomic rewrite); a ``writing`` item left by a stop is
+    finished, not decided again (:func:`_finish_intent`). A written item
+    is marked ``landed`` only after the landing commit
+    (:func:`_finish_drain`). A dropped item is marked at once. A write that
+    fails, or an item held for a reason outside it, leaves the item
+    unfinished with its failure counted (the model is never asked again);
+    the cap holds an item without counting."""
     seen_events, _legacy = _event_seen(home)
     st = _Landing(home=home, result=result, cap=cap, origins=existing_origins(home),
                   seen_events=seen_events | _spooled_seen())
@@ -2506,47 +2643,80 @@ def _drain_waiting(
             item = answer.item(entry)
             origin = mining_waiting.item_origin(item, entry["kind"])
             mark = len(result.outcomes)
+
+            def intend(intent: dict, entry: dict = entry, answer: mining_waiting.Answer = answer) -> None:
+                entry["intent"] = intent
+                entry["state"] = "writing"
+                answer.mark()
+
+            st.intend = intend
             try:
                 # direct calls, never a table: the lock walker follows calls
-                if entry["kind"] == "lessons":
+                if entry["state"] == "writing":
+                    state = _finish_intent(st, entry["intent"], entry["kind"], item, answer.cwd)
+                elif entry["kind"] == "lessons":
                     state = _land_lesson(st, item, answer.cwd)
                 elif entry["kind"] == "sightings":
                     state = _land_sighting(st, item, answer.cwd)
                 else:
                     state = _land_rule_check(st, item)
-            except Exception as exc:  # noqa: BLE001 -- one item's failed write leaves it waiting, no more
+            except Exception as exc:  # noqa: BLE001 -- one item's failed write leaves it unfinished, no more
                 error = str(exc) if isinstance(exc, _LandingHeld) else f"{type(exc).__name__}: {exc}"
                 entry["failures"] += 1
                 entry["error"] = error[:200]
                 _outcome(result, origin, "land-failed", reason=error[:200], failures=entry["failures"])
                 log(f"run: an item of {answer.session} did not land ({type(exc).__name__}); it stays waiting")
                 state = None
+            finally:
+                st.intend = None
             if earlier:
                 for o in result.outcomes[mark:]:
                     o["waited_from"] = answer.run_id
-            if state in (LANDED, DROPPED):
-                entry["state"] = state
-                last = result.outcomes[-1] if len(result.outcomes) > mark else {}
+            last = result.outcomes[-1] if len(result.outcomes) > mark else {}
+            if state == LANDED:
+                # marked after the landing commit; until then `writing`
+                entry["state"] = "writing"
+                entry["outcome"] = last.get("outcome")
+                report.written.append((answer, entry))
+                if earlier:
+                    report.landed_earlier += 1
+                else:
+                    report.landed_this_run += 1
+                continue
+            if state == DROPPED:
+                entry["state"] = "dropped"
                 entry["outcome"] = last.get("outcome")
                 if last.get("reason"):
                     entry["reason"] = str(last["reason"])[:200]
-                if state == LANDED:
-                    if earlier:
-                        report.landed_earlier += 1
-                    else:
-                        report.landed_this_run += 1
             try:
                 answer.mark()
             except OSError as exc:
                 # the item's state is lost with the file's rewrite: a later
-                # run replays it, and the landing's deduplication catches it
+                # run lands it again, and its own deduplication catches it
                 log(f"run: the state of a waiting answer of {answer.session} was not saved ({exc})")
-        if answer.done():
+    return report
+
+
+def _finish_drain(answers: list[mining_waiting.Answer], report: DrainReport) -> None:
+    """After the landing commit: mark each written item ``landed``, then
+    remove each answer whose items have all landed or been dropped and
+    whose ``learn`` set has reached the store (fix round 5: until then the
+    file is kept, so the next run can teach the store from it)."""
+    marked: dict[int, mining_waiting.Answer] = {}
+    for answer, entry in report.written:
+        entry["state"] = "landed"
+        marked[id(answer)] = answer
+    for answer in marked.values():
+        try:
+            answer.mark()
+        except OSError as exc:
+            log(f"run: the state of a waiting answer of {answer.session} was not saved ({exc})")
+    for answer in answers:
+        if answer.done() and answer.learned:
             try:
                 answer.remove()
             except OSError as exc:
                 log(f"run: a finished waiting answer of {answer.session} was not removed ({exc})")
-    return report
 
 
 # ------------------------------------------------------------ the journal
@@ -3357,15 +3527,19 @@ def _named_slices(home: Path, session_ids: Iterable[str]) -> tuple[list[SessionS
 
 
 def _judged_uuids(
-    store: "mining_uuids.JudgedUuids", *, preview: bool, relearn: Sequence[frozenset[str]] = ()
+    store: "mining_uuids.JudgedUuids", *, preview: bool, relearn: Sequence["mining_waiting.Answer"] = ()
 ) -> tuple[frozenset[str], dict]:
     """The judged-uuid store's snapshot for this run, read once before
     anything is judged, and what the run record says about the store. A
     damaged store is moved aside (never in a preview, never a locked one);
-    rows past 120 days are pruned (never in a preview). ``relearn``: what
-    each waiting answer taught the store at its save, added again (a row
+    rows past 120 days are pruned (never in a preview). ``relearn``: the
+    waiting answers; what each teaches the store is added again (a row
     keeps its first date), so a run that stopped between a save and the
-    store's write, or a store moved aside, still knows those moments."""
+    store's write, or a store moved aside, still knows those moments. An
+    answer whose write succeeds is ``learned`` (a finished one may then be
+    removed); every answer's moments are in the snapshot either way, so a
+    store that cannot be written never lets a saved moment be judged
+    again (fix round 5)."""
     info: dict = {"state": "ok", "loaded": 0}
     if store.damaged:
         if preview:
@@ -3389,13 +3563,23 @@ def _judged_uuids(
         except Exception as exc:  # noqa: BLE001 -- sqlite3.Error; a prune never fails a run
             if mining_uuids.is_lock_timeout(exc):
                 store.locked = True
-    if not preview and not store.locked and not store.damaged and any(relearn):
+    today = datetime.now(timezone.utc).date()
+    for answer in relearn:
+        if not answer.learn:
+            answer.learned = True
+            continue
+        if preview or store.locked or store.damaged:
+            continue
         try:
-            info["relearned"] = store.add(frozenset().union(*relearn), datetime.now(timezone.utc).date())
-        except Exception as exc:  # noqa: BLE001 -- sqlite3.Error; tried again next run
+            info["relearned"] = info.get("relearned", 0) + store.add(answer.learn, today)
+            answer.learned = True
+        except Exception as exc:  # noqa: BLE001 -- sqlite3.Error; the answer is kept and tried again
+            info["relearn_failed"] = info.get("relearn_failed", 0) + 1
             if mining_uuids.is_lock_timeout(exc):
                 store.locked = True
     snapshot = frozenset() if store.locked or store.damaged else store.snapshot()
+    if relearn:
+        snapshot = snapshot.union(*(a.learn for a in relearn))
     if store.locked:
         info["state"] = "locked"
     info["loaded"] = len(snapshot)
@@ -3434,26 +3618,51 @@ def _run_session_engine(
     result = MineResult(status="preview" if preview else "idle", run_id=run_id)
     summary: dict = {"run_id": run_id, "preview": preview, "missing": len(missing)}
     result.engine = summary
-    # the waiting answers earlier runs saved; a preview reads none of them
+    # the waiting answers earlier runs saved; a preview never loads them
+    # (`mining.waiting.load_all` is not called on a preview)
     earlier: list[mining_waiting.Answer] = []
+    unreadable: list[str] = []
     if not preview:
-        earlier, broken = mining_waiting.load_all(mdir)
-        if broken:
-            log(f"run {run_id}: {len(broken)} waiting answer file(s) do not read; they are left in place")
+        earlier, unreadable = mining_waiting.load_all(mdir)
+        for name in unreadable:
+            # its cursor and the store already moved: say so where a person looks
+            _outcome(result, f"pending:{name}", "waiting-unreadable",
+                     reason="this waiting answer does not read; its output waits on a manual repair")
+        if unreadable:
+            log(f"run {run_id}: {len(unreadable)} waiting answer file(s) do not read; they are left in "
+                "place and their output waits on a manual repair (self-learn doctor miner)")
 
-    def drain(new: list[mining_waiting.Answer], cap: int, *, gated: bool = False) -> DrainReport:
+    gate_seen: dict = {}
+
+    def gate_closed() -> bool:
+        """The flood gate (§8 Q3), read once a run: closed when the
+        pending queue is at the gate. It holds every call and every
+        landing of a waiting answer."""
+        if "closed" not in gate_seen:
+            total = worker.fast_status(home)["total_pending"]
+            limit = pending_gate(home=home)
+            gate_seen.update(closed=total >= limit, pending=total, gate=limit)
+            if gate_seen["closed"]:
+                log(f"run {run_id}: held — {total} pending ≥ gate {limit}")
+        return bool(gate_seen["closed"])
+
+    def drain(new: list[mining_waiting.Answer], cap: int) -> DrainReport:
         """Land the waiting answers, earlier runs' first, under the lock.
         Every run that is not a preview drains, whether or not it called
-        anyone; a lock it cannot take leaves every answer waiting. A run
-        the flood gate held drains nothing: landing adds pending records
-        to a review queue that is already full, so the answers wait for
-        the first run after the gate opens."""
+        anyone; a lock it cannot take leaves every answer waiting. Every
+        drain passes the flood gate here: a run the gate holds lands
+        nothing (landing adds pending records to a review queue that is
+        already full), and the answers wait for the first run after it
+        opens."""
         answers = earlier + new
-        report = DrainReport(found=len(earlier))
-        if answers and not gated:
+        report = DrainReport(found=len(earlier), unreadable=list(unreadable))
+        if answers and gate_closed():
+            report.gate_held = True
+        elif answers:
             hold = sentinel.hold()
             try:
                 with intents.ledger_write(home) as recovered:  # S-62: the landing lock's own backstop check
+                    report.drained = True  # the lock is acquired: never read as the drain completing
                     for intent_id in recovered.rolled_forward:
                         log(
                             f"run {run_id}: recovered {intent_id} (rolled forward: its "
@@ -3464,12 +3673,14 @@ def _run_session_engine(
                         log(f"run {run_id}: recovered {intent_id} (restored: its mutation was undone)")
                     landed = _drain_waiting(home, answers, result, cap, run_id)
                     report.landed_earlier, report.landed_this_run = landed.landed_earlier, landed.landed_this_run
-                    report.drained = True
+                    report.written = landed.written
                     _commit_landing(home, result, run_id, no_push=no_push, folds_alone=True)
+                    _finish_drain(answers, report)  # the marks come after the commit
             except gitops.GitOpsError as exc:
-                # the lock was not taken, or the commit did not complete:
-                # what landed is on disk and marked in its waiting answer
-                # (the next run's reconcile commits it); the rest waits
+                # the lock was not taken, or the landing or its commit did
+                # not complete: what was written is on disk with its item
+                # still `writing` (the next run finds it and marks it; its
+                # reconcile commits it); the rest waits
                 result.landing_uncommitted = bool(result.landed or result.folded)
                 log(f"run {run_id}: the waiting answers did not all land ({exc}); the rest wait")
             finally:
@@ -3533,7 +3744,7 @@ def _run_session_engine(
     store = mining_uuids.JudgedUuids.load(
         engine_mod.copy_sqlite(live_store, folder.path / "copies") if preview else live_store
     )
-    snapshot, uuid_info = _judged_uuids(store, preview=preview, relearn=[a.learn for a in earlier])
+    snapshot, uuid_info = _judged_uuids(store, preview=preview, relearn=earlier)
 
     # ---- plan
     plans: list[engine_mod.Plan] = []
@@ -3594,16 +3805,9 @@ def _run_session_engine(
     summary.update(sessions=len(plans), skipped=dict(sorted(skipped.items())), deferred=deferred,
                    to_call=len(to_call), judged_uuids=uuid_info)
 
-    # Flood gate (§8 Q3): nothing is called, no cursor moves, and no
-    # waiting answer lands (it would add to the full review queue)
-    gated = False
-    total_pending = gate = 0
-    if to_call and not preview:
-        total_pending = worker.fast_status(home)["total_pending"]
-        gate = pending_gate(home=home)
-        if total_pending >= gate:
-            gated = True
-            log(f"run {run_id}: held — {total_pending} pending ≥ gate {gate}")
+    # Flood gate (§8 Q3): nothing is called and no cursor moves; no
+    # waiting answer lands either (`drain` checks the gate for every run)
+    gated = bool(to_call) and not preview and gate_closed()
     calling = bool(to_call) and not gated
 
     if not calling and preview:
@@ -3686,7 +3890,8 @@ def _run_session_engine(
                 continue
             try:
                 uuid_info["added"] += store.add(learn, today)
-            except Exception:  # noqa: BLE001 -- sqlite3.Error: learned again from the answer next run
+                saved[sid].learned = True
+            except Exception:  # noqa: BLE001 -- sqlite3.Error: the answer is kept and teaches it next run
                 uuid_info["add_failed"] = uuid_info.get("add_failed", 0) + 1
             _advance_cursors([(s, halt)])
             for drop in res.checked["drops"]:
@@ -3695,7 +3900,7 @@ def _run_session_engine(
             _advance_cursors(processed)
 
         # ---- land: every waiting answer, earlier runs' first
-        report = drain(list(saved.values()), cap_for(len(results), home=home), gated=gated)
+        report = drain(list(saved.values()), cap_for(len(results), home=home))
         after_landing(report, set(saved))
     else:
         report = DrainReport()
@@ -3736,7 +3941,7 @@ def _run_session_engine(
     all_failed = bool(results) and (not ok if preview else not saved)
     run_status = "stopped-ceiling" if stopped else ("failed" if all_failed else "ok")
     run: dict | None = None
-    if calling or report.found:
+    if calling or report.found or report.unreadable:
         extra: dict = {"preview": preview, "counts": counts, "judged_uuids": uuid_info}
         if not preview:
             extra["landed"] = {"lessons": len(result.landed), "folded": len(result.folded),
@@ -3766,13 +3971,13 @@ def _run_session_engine(
     # ---- journal
     (miner_dir() / "miner.last-run").touch()
     waiting = _waiting_counts(report)
-    if gated:
+    if gated or report.gate_held:
         result.status = "held-gate"
-        _journal({**jbase, "status": "held-gate", "pending": total_pending, "gate": gate,
+        _journal({**jbase, "status": "held-gate", "pending": gate_seen.get("pending"), "gate": gate_seen.get("gate"),
                   "sessions_ready": len(to_call), "waiting": waiting,
                   "duration_secs": round(time.time() - t0, 1)})
         return result
-    if not calling and not report.found:
+    if not calling and not report.found and not report.unreadable:
         _journal({**jbase, "status": "idle", "sessions_scanned": 0, "sessions_called": 0,
                   "excluded": len(processed), "deferred_files": deferred,
                   "duration_secs": round(time.time() - t0, 1)})

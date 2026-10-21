@@ -882,8 +882,11 @@ def test_the_landing_lands_one_lesson_per_moment_even_past_the_plan(home):
     result = miner.MineResult(status="ok")
     from self_learn import intents
 
+    for a in answers:
+        a.learned = True  # what it teaches the store is there
     with intents.ledger_write(home):
         report = miner._drain_waiting(home, answers, result, 10, "this-run")  # pyright: ignore[reportPrivateUsage]
+        miner._finish_drain(answers, report)  # pyright: ignore[reportPrivateUsage]
     assert len(result.landed) == 1 and report.landed_this_run == 1
     assert [o["outcome"] for o in result.outcomes] == ["landed", "skipped-duplicate-moment"]
     assert _waiting() == []  # both answers are finished, so both files are gone
@@ -1127,8 +1130,11 @@ def test_a_crash_after_the_spool_replays_without_a_second_event(home, root, back
     assert first.status == "failed" and cursor(path)["lines"] == 7
     spooled = [e for e in telemetry.read_spooled([kind])]
     assert len(spooled) == 1  # control: the first run did spool its event
+    (answer,) = _waiting()
+    assert answer.items[0]["state"] == "writing"  # written, not yet marked: the commit never came
     second = run(home)
-    assert second.status == "idle" and len(backend.specs) == 1
+    assert second.status == "ok" and len(backend.specs) == 1
+    assert [o["outcome"] for o in second.outcomes] == ["already-written"] and _waiting() == []
     events = [e for e in telemetry.read_events(home) if e.get("kind") == kind]
     assert [(e["record"], e["origin"]) for e in events] == [(rid, f"transcript:{sid}#L{4 if kind == 'fire' else 3}")]
 
@@ -1170,9 +1176,10 @@ def test_a_sighting_folded_before_a_crash_does_not_fold_again(home, root, backen
         m.setattr(miner, "_commit_landing", crash)
         run(home)
     assert Record.from_path(path).sightings == 2  # control: the fold was written
-    assert _waiting() == []  # and marked: its answer was finished
+    assert [a.items[0]["state"] for a in _waiting()] == ["writing"]  # not marked before the commit
     again = run(home)
     assert again.folded == [] and Record.from_path(path).sightings == 2 and len(backend.specs) == 1
+    assert [o["outcome"] for o in again.outcomes] == ["already-written"] and _waiting() == []
 
 
 @pytest.mark.parametrize("where", ["check", "first-call", "pool-call"])
@@ -1471,7 +1478,9 @@ def test_a_partly_landed_answer_lands_its_rest_next_run(home, root, backend, tmp
         first = run(home)
     assert len(first.landed) == 1 and cursor(path)["lines"] == 7
     (answer,) = _waiting()
-    assert [e["state"] for e in answer.items] == ["landed", "waiting"]  # the lesson is marked, the sighting waits
+    # the lesson is marked; the sighting's spool was tried (its intent recorded) and failed
+    assert [e["state"] for e in answer.items] == ["landed", "writing"]
+    assert answer.items[1]["intent"]["output"] == "recurrence-suspect" and answer.items[1]["failures"] == 1
     rec = json.loads((run_dir(first) / "run.json").read_text())
     assert {r["session"]: r for r in rec["sessions"]}[sid]["saved"] is True
     second = run(home)  # only the waiting item is landed: the lesson is not tried again
@@ -1638,7 +1647,7 @@ def test_a_failed_landing_shows_in_the_run_record(home, root, backend, tmp_path,
     assert rec["totals"]["lessons"] == 1  # what the check kept
     assert rec["landed"] == {"lessons": 0, "folded": 0, "recurrences": 0, "fires": 0}
     assert rec["waiting"] == {"found": 0, "landed_earlier": 0, "landed_this_run": 0, "still_waiting": 1,
-                              "stuck": [], "drained": True}
+                              "stuck": [], "drained": True, "unreadable": []}
     (row,) = rec["sessions"]
     assert row["out_status"] == "ok" and row["saved"] is True
     contract.load_run(run_dir(result))

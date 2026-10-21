@@ -696,9 +696,11 @@ RUN_LANDED_KEYS: tuple[str, ...] = ("lessons", "folded", "recurrences", "fires")
 #: runs; items landed from earlier runs' answers and from this run's; items
 #: still waiting after the landing; the stuck items (a write that failed on
 #: ``mining.waiting.STUCK_AFTER`` runs or more); and whether the landing
-#: ran (the ledger lock was taken). Items, never sessions, except ``found``.
+#: ran (the ledger lock was taken), and the waiting-answer files that do not
+#: read (``unreadable``, by name: their output waits on a manual repair).
+#: Items, never sessions, except ``found`` and ``unreadable``.
 RUN_WAITING_KEYS: tuple[str, ...] = (
-    "found", "landed_earlier", "landed_this_run", "still_waiting", "stuck", "drained",
+    "found", "landed_earlier", "landed_this_run", "still_waiting", "stuck", "drained", "unreadable",
 )
 #: The kinds of a waiting item (``mining.waiting.ITEM_KINDS``).
 WAITING_ITEM_KINDS: tuple[str, ...] = ("lessons", "sightings", "rule_checks")
@@ -738,14 +740,14 @@ def _run_extras(v: _V, o: dict[str, Any]) -> None:
                             v.integer(_join("counts.flag_modes", k), n, lo=0)
     if "judged_uuids" in o:
         j = v.obj(
-            "judged_uuids", o["judged_uuids"], ("state", "loaded"), ("aside", "pruned", "added", "add_failed", "relearned")
+            "judged_uuids", o["judged_uuids"], ("state", "loaded"), ("aside", "pruned", "added", "add_failed", "relearned", "relearn_failed"),
         )
         if j is not None:
             v.enum("judged_uuids.state", j.get("state"), UUID_STORE_STATES)
             v.integer("judged_uuids.loaded", j.get("loaded"), lo=0)
             if "aside" in j:
                 v.string("judged_uuids.aside", j["aside"], 1, 300, nullable=True)
-            for k in ("pruned", "added", "add_failed", "relearned"):
+            for k in ("pruned", "added", "add_failed", "relearned", "relearn_failed"):
                 if k in j:
                     v.integer(_join("judged_uuids", k), j[k], lo=0)
     if "waiting" in o:
@@ -754,6 +756,9 @@ def _run_extras(v: _V, o: dict[str, Any]) -> None:
             for k in ("found", "landed_earlier", "landed_this_run", "still_waiting"):
                 v.integer(_join("waiting", k), w.get(k), lo=0)
             v.boolean("waiting.drained", w.get("drained"))
+            names = v.array("waiting.unreadable", w.get("unreadable"), 0, None)
+            for i, name in enumerate(names or []):
+                v.string(_idx("waiting.unreadable", i), name, 1, 300)
             stuck = v.array("waiting.stuck", w.get("stuck"), 0, None)
             for i, row in enumerate(stuck or []):
                 sp = _idx("waiting.stuck", i)
