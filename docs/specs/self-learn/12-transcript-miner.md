@@ -1150,24 +1150,41 @@ names the output (`lesson`, `resurface`, `fold`, `recurrence-suspect` or
 the write, the item stays `writing` until the run's landing commit has
 succeeded; only then is it marked `landed`. A replayed `writing` item
 finishes the output it recorded and never decides again from the target's
-current status or successor: if that output already exists (a lesson or a
-resurfaced lesson by its known origin, a fold by the moment in the recorded
-target's own evidence, a fire or recurrence-suspect by `(kind, record,
+current status or successor: if that output already exists (a lesson by
+its known origin; a resurfaced lesson by its known origin held by the
+rejected record's own resurfaced copy; a fold only when every one of its
+evidence moments is in the recorded target's own evidence, so a partial
+fold folds what is missing; a fire or recurrence-suspect by `(kind, record,
 origin)` against the spooled and the tracked events), the item is marked
 `landed` with outcome `already-written`; if it does not, the same output is
 written; if the recorded target is gone, the item is dropped
-(`dropped-invalid`, with the reason). The replay of a resurface also marks
+(`dropped-invalid`, with the reason). A replayed new lesson or resurface
+counts against this run's lesson cap like any other: over it, the item
+stays `writing` with outcome `waiting-cap` and lands on a later run, the
+model never asked again; output that already exists is acknowledged
+without a cap place (fix round 6). The replay of a resurface also marks
 the rejected record's counter as landed (`_rejected_mark_landed`, an atomic
-write), so one rejected lesson resurfaces once. Items still `waiting` are
-checked against the ledger as it is now (*Stale items*, below).
+write), so one rejected lesson resurfaces once. A sighting decided again
+whose origin a record already holds marks the rejected record only when
+that record is the rejected record's own resurfaced copy (its loaded text);
+another record at that moment, a lesson from the same answer, leaves the
+counter as it is (fix round 6). Items still `waiting` are checked against
+the ledger as it is now (*Stale items*, below).
 
 *Durable before marked* (fix round 5). An output is durable before its item
 is marked. A spooled fire or recurrence-suspect is fsynced, and its folder
-too, before `_spool_output` returns; records and folds are written whole
-with fsync and the folder fsynced, and are committed to git by the run's
-landing commit before any item is marked `landed`. A commit that fails leaves
-the items `writing`, and the next run's replay finds the outputs and marks
-them. A file whose items have all landed or been dropped, and whose learning
+too, before `_spool_output` returns, and a replay that finds its event
+already spooled fsyncs the spool files and the folder before the mark (the
+first append's own fsync may have failed); records and folds are written
+whole with fsync and the folder fsynced, and are committed to git by the
+run's landing commit before any item is marked. A terminal mark (`landed`
+or `dropped`), and so a file's removal, needs a landing commit that
+succeeded (fix round 6): when `_commit_landing` reports the landing
+uncommitted, no item of the run gets a terminal mark; and an item whose
+record file, written now or found by a replay, still has uncommitted
+changes (the run's reconcile failed) keeps its state too. The next run's
+reconcile commits the files and its replay marks the items. The digest
+engine is unchanged. A file whose items have all landed or been dropped, and whose learning
 has succeeded (**Save**), is removed. When the lock is not taken, nothing lands
 and every waiting answer stays as it is. `waiting.drained` in `run.json` is
 set the moment the ledger lock is acquired, before the landing starts: a run
@@ -1178,7 +1195,14 @@ round 5).
 `miner-waiting/1`, carry a `checked` part that passes
 `validate_checked_output`, its `cursor` and its `learn`, and hold exactly one
 item per checked lesson, sighting and rule check, with no gap and no
-duplicate. A file that fails any of these stays in place, byte-identical;
+duplicate. Every field is checked as the code that consumes it reads it,
+before cursor settlement, learning or landing (fix round 6): `transcript` a
+string; `cursor.lines` and `cursor.size` non-negative ints and
+`cursor.halt` a bool; indexes and counts ints, never bools; and a `writing`
+item's intent an output its kind can record (a lesson: `lesson`; a sighting:
+`resurface`, `fold` or `recurrence-suspect`; a rule check: `fire`), a
+non-empty target record id for every output but a lesson (which has
+none), and an origin of the transcript shape. A file that fails any of these stays in place, byte-identical;
 nothing of it lands, and its cursor and store rows are not applied from it.
 It is named in the run's journal row and in `run.json`
 (`waiting.unreadable`), the run gives it a `waiting-unreadable` outcome

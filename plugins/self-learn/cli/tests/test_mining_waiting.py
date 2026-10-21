@@ -1646,3 +1646,330 @@ def test_a_kept_answer_s_moments_stay_judged_while_the_store_cannot_be_written(h
     out = json.loads((run_dir(second) / "out" / f"{fork}.json").read_text())
     assert out["lessons"] == []  # the kept answer's moments are in the snapshot though the store has none
     assert len(pending(home)) == 1 and second.landed == []
+
+
+# ------------------------------------------- round-6 probes (astra6, opus6)
+
+
+@pytest.mark.parametrize("kind", ["lesson", "fold"])
+def test_a_landing_commit_that_fails_leaves_its_items_writing(home, root, backend, tmp_path, monkeypatch, kind):
+    sid, rid = "s1commitfail-0000", "lrn-66660001"
+    if kind == "fold":
+        put_record(home, rid)
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output([lesson()]) if kind == "lesson" else output(sightings=[_sighting(sid, rid)])
+    real, calls = gitops.commit, []
+
+    def failed(h, subject, *a, **kw):
+        if subject.startswith("self-learn: mine "):
+            calls.append(subject)
+            raise gitops.GitOpsError("synthetic landing commit failure")
+        return real(h, subject, *a, **kw)
+
+    with monkeypatch.context() as m:
+        m.setattr(gitops, "commit", failed)
+        r = run(home)
+    assert calls and r.landing_uncommitted  # control: the commit failed and the helper swallowed it
+    assert len(r.landed if kind == "lesson" else r.folded) == 1
+    (a,) = _waiting()
+    assert [e["state"] for e in a.items] == ["writing"]
+    again = run(home)  # its reconcile commits the output; the replay acknowledges it
+    assert [o["outcome"] for o in again.outcomes] == ["already-written"]
+    assert len(backend.specs) == 1 and _waiting() == [] and not git(home, "status", "--porcelain").stdout.strip()
+
+
+@pytest.mark.parametrize("kind", ["lesson", "fold"])
+def test_a_replay_keeps_its_answer_while_the_output_is_uncommitted(home, root, backend, tmp_path, monkeypatch,
+                                                                   kind):
+    sid, rid = "s1replaycommit-0000", "lrn-66660006"
+    if kind == "fold":
+        put_record(home, rid)
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output([lesson()]) if kind == "lesson" else output(sightings=[_sighting(sid, rid)])
+
+    def crash(*a, **kw):
+        raise gitops.GitOpsError("synthetic stop before the landing commit")
+
+    with monkeypatch.context() as m:
+        m.setattr(miner, "_commit_landing", crash)
+        run(home)
+    assert [a.items[0]["state"] for a in _waiting()] == ["writing"]
+    assert git(home, "status", "--porcelain").stdout.strip()  # control: the output is not committed
+    with monkeypatch.context() as m:
+        m.setattr(miner.reconcile_mod, "reconcile", crash)
+        held = run(home)
+    assert [o["outcome"] for o in held.outcomes] == ["already-written"]  # control: the replay found it
+    assert git(home, "status", "--porcelain").stdout.strip()
+    (a,) = _waiting()
+    assert [e["state"] for e in a.items] == ["writing"]
+    run(home)
+    assert _waiting() == [] and len(backend.specs) == 1 and not git(home, "status", "--porcelain").stdout.strip()
+
+
+@pytest.mark.parametrize("bad", ["missing-record", "null-record", "wrong-output", "wrong-origin", "bool-index",
+                                 "negative-cursor", "bad-halt", "transcript-not-text"])
+def test_a_field_the_replay_reads_that_is_wrong_makes_the_file_unreadable(home, root, backend, tmp_path,
+                                                                         monkeypatch, bad):
+    sid, rid = "s1badintent-0000", "lrn-66660003"
+    rp = put_record(home, rid)
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+    with monkeypatch.context() as m:
+        m.setattr(Record, "write", lambda *a, **kw: (_ for _ in ()).throw(OSError("synthetic write failure")))
+        run(home)
+    (a,) = _waiting()
+    assert a.items[0]["state"] == "writing" and a.items[0]["intent"]["output"] == "fold"  # control
+    d = json.loads(a.path.read_text())
+    e = d["items"][0]
+    if bad == "missing-record":
+        del e["intent"]["record"]
+    elif bad == "null-record":
+        e["intent"]["record"] = None
+    elif bad == "wrong-output":
+        e["intent"]["output"] = "fire"  # a sighting never spools a fire (opus6 k8)
+    elif bad == "wrong-origin":
+        e["intent"]["origin"] = "not-an-origin"
+    elif bad == "bool-index":
+        e["index"] = False
+    elif bad == "negative-cursor":
+        d["cursor"]["lines"] = -7
+    elif bad == "bad-halt":
+        d["cursor"]["halt"] = "false"
+    else:
+        d["transcript"] = 17
+    a.path.write_text(json.dumps(d))
+    before = a.path.read_bytes()
+    loaded, broken = mining_waiting.load_all(miner.miner_dir())
+    assert loaded == [] and broken == [a.path.name]
+    r = run(home)
+    assert a.path.read_bytes() == before and not r.folded and Record.from_path(rp).sightings == 1
+    assert _rec(r)["waiting"]["unreadable"] == [a.path.name] and _rec(r)["waiting"]["stuck"] == []
+    assert [o["outcome"] for o in r.outcomes] == ["waiting-unreadable"]
+
+
+def test_a_cursor_halt_that_is_not_a_bool_never_halts_the_session(home, root, backend, tmp_path, monkeypatch):
+    sid = "s1badhalt-0000"
+    rows = session_rows(sid, host(tmp_path))
+    path = write_session(root, sid, rows)
+    backend.answers[sid] = output([lesson()])
+
+    class Cut(BaseException):
+        pass
+
+    def cut(*a, **kw):
+        raise Cut()
+
+    with monkeypatch.context() as m:
+        m.setattr(miner, "_advance_cursors", cut)
+        with pytest.raises(Cut):
+            run(home)
+    (a,) = _waiting()
+    assert cursor(path) is None  # control: saved, the cursor never moved
+    a.doc["cursor"]["halt"] = "false"
+    a.path.write_text(json.dumps(a.doc))
+    write_session(root, sid, rows + [typed(sid, 8, "always validate the nightly job", host(tmp_path)),
+                                     asst(sid, 9, "done", host(tmp_path))])
+    backend.answers[sid] = output([lesson(evidence=[{"line": 8, "quote": "validate the nightly job"}], steps=[],
+                                          verification=None, incident_cost=None)])
+    run(home)
+    assert not cursor(path).get("halt") and cursor(path)["lines"] == 9
+
+
+def test_a_fold_is_already_written_only_when_all_its_evidence_is(home, root, backend, tmp_path, monkeypatch):
+    rid, sid = "lrn-66660008", "s1partialfold-0000"
+    rp = put_record(home, rid)
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    sight = _sighting(sid, rid)
+    sight["evidence"].append({"line": 6, "quote": "always run the checks"})
+    backend.answers[sid] = output(sightings=[sight])
+    with monkeypatch.context() as m:
+        m.setattr(Record, "write", lambda *a, **kw: (_ for _ in ()).throw(OSError("synthetic write failure")))
+        run(home)
+    (a,) = _waiting()
+    evidence = a.doc["checked"]["sightings"][0]["evidence"]
+    assert a.items[0]["state"] == "writing" and len(evidence) == 2  # control
+    with intents.ledger_write(home):  # another writer folds only the first of the two moments
+        rec = Record.from_path(rp)
+        rec.append_evidence(miner._evidence_entry(evidence[0]))  # pyright: ignore[reportPrivateUsage]
+        rec.set_sightings(rec.sightings + 1)
+        rec.write(rp)
+        commit_all(home, "fold the first quote")
+    origins = {e.get("origin") for e in Record.from_path(rp).evidence}
+    assert f"transcript:{sid}#L3" in origins and f"transcript:{sid}#L6" not in origins  # control
+    run(home)
+    origins = {e.get("origin") for e in Record.from_path(rp).evidence}
+    assert f"transcript:{sid}#L6" in origins and _waiting() == [] and len(backend.specs) == 1
+
+
+@pytest.mark.parametrize("kind", ["fire", "recurrence-suspect"])
+def test_a_replayed_event_is_synced_before_its_item_is_marked(home, root, backend, tmp_path, monkeypatch, kind):
+    sid, rid = "s1retryfsync-0000", "lrn-66660004"
+    put_record(home, rid, status="routed")
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    if kind == "fire":
+        _flagged(monkeypatch, rid)
+        backend.answers[sid] = output(rule_checks=[_rc(rid)])
+    else:
+        backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+    paths: list = []
+
+    def failed(p):
+        paths.append(p)
+        raise OSError("synthetic fsync failure after the append")
+
+    with monkeypatch.context() as m:
+        m.setattr(mining_waiting, "fsync_file_and_folder", failed)
+        m.setattr(telemetry, "flush", lambda *a, **kw: (_ for _ in ()).throw(telemetry.TelemetryError("held")))
+        run(home)
+    assert paths and len(telemetry.read_spooled((kind,))) == 1  # control: appended, never synced
+    assert _waiting()[0].items[0]["state"] == "writing"
+    synced: list[str] = []
+    marked: list[list[str]] = []
+    real_sync, real_mark = os.fsync, mining_waiting.Answer.mark
+
+    def sync(fd):
+        synced.append(os.readlink(f"/proc/self/fd/{fd}"))
+        return real_sync(fd)
+
+    def mark(a):
+        if any(e["state"] == "landed" for e in a.items):
+            marked.append(list(synced))
+        return real_mark(a)
+
+    monkeypatch.setattr(os, "fsync", sync)
+    monkeypatch.setattr(mining_waiting.Answer, "mark", mark)
+    again = run(home)
+    assert [o["outcome"] for o in again.outcomes] == ["already-written"] and len(marked) == 1
+    assert str(paths[0]) in marked[0] and str(Path(paths[0]).parent) in marked[0]
+    assert len(_events(home, kind)) == 1 and len(backend.specs) == 1
+
+
+def test_replayed_lessons_respect_this_run_s_cap(home, root, backend, tmp_path, monkeypatch):
+    for i in (1, 2):
+        sid = f"s{i}capwrite-0000"
+        write_session(root, sid, session_rows(sid, host(tmp_path)))
+        backend.answers[sid] = output([lesson()])
+    with monkeypatch.context() as m:
+        m.setattr(miner, "create_record", lambda *a, **kw: (_ for _ in ()).throw(OSError("synthetic write failure")))
+        run(home)
+    assert [a.items[0]["state"] for a in _waiting()] == ["writing", "writing"] and not pending(home)  # control
+    with monkeypatch.context() as m:
+        m.setenv("SELF_LEARN_MINE_CAP_MAX", "1")
+        capped = run(home)
+    assert len(capped.landed) == 1 and [o["outcome"] for o in capped.outcomes] == ["landed", "waiting-cap"]
+    (left,) = _waiting()
+    assert [e["state"] for e in left.items] == ["writing"]
+    run(home)
+    assert len(pending(home)) == 2 and len(backend.specs) == 2 and _waiting() == []
+
+
+def test_a_replayed_lesson_pair_in_one_answer_respects_the_cap(home, root, backend, tmp_path, monkeypatch):
+    sid = "s1capwrt-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    l2 = lesson(id="L2", trigger="About to merge without reading the diff",
+                instruction="Read the diff, because merges hide changes",
+                evidence=[{"line": 6, "quote": "always run the checks"}])
+    backend.answers[sid] = output([lesson(), l2])
+    with monkeypatch.context() as m:
+        m.setenv("SELF_LEARN_MINE_CAP_MAX", "5")
+        m.setattr(miner, "create_record", lambda *a, **kw: (_ for _ in ()).throw(OSError("synthetic write failure")))
+        run(home)
+    (a,) = _waiting()
+    assert [e["state"] for e in a.items] == ["writing", "writing"]  # control
+    with monkeypatch.context() as m:
+        m.setenv("SELF_LEARN_MINE_CAP_MAX", "1")
+        capped = run(home)
+    assert len(capped.landed) == 1 and len(pending(home)) == 1
+    run(home)
+    assert len(pending(home)) == 2 and len(backend.specs) == 1 and _waiting() == []
+
+
+def test_a_replayed_resurface_respects_this_run_s_cap(home, root, backend, tmp_path, monkeypatch):
+    rid = "lrn-66660009"
+    put_record(home, rid, status="rejected")
+    for i in range(3):
+        sid = f"s{i}resurcap-0000"
+        write_session(root, sid, session_rows(sid, host(tmp_path)))
+        backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+        with monkeypatch.context() as m:
+            if i == 2:
+                m.setattr(miner, "create_record",
+                          lambda *a, **kw: (_ for _ in ()).throw(OSError("synthetic write failure")))
+            run(home)
+    (a,) = _waiting()
+    assert a.items[0]["intent"]["output"] == "resurface" and not pending(home)  # control
+    with monkeypatch.context() as m:
+        m.setenv("SELF_LEARN_MINE_CAP_MAX", "0")
+        capped = run(home)
+    assert [o["outcome"] for o in capped.outcomes] == ["waiting-cap"] and not pending(home) and len(_waiting()) == 1
+    run(home)
+    assert len(pending(home)) == 1 and len(backend.specs) == 3 and _waiting() == []
+
+
+def _rejected_marks() -> dict:
+    path = miner.miner_dir() / "rejected-sightings.json"
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def test_a_lesson_at_a_rejected_record_s_third_sighting_leaves_it_unmarked(home, root, backend, tmp_path):
+    rid = "lrn-0000abd1"
+    put_record(home, rid, status="rejected")
+    for s in ("s1rjone-0000", "s2rjtwo-0000"):
+        write_session(root, s, session_rows(s, host(tmp_path)))
+        backend.answers[s] = output(sightings=[_sighting(s, rid)])
+    run(home)
+    s3 = "s3rjthr-0000"
+    write_session(root, s3, session_rows(s3, host(tmp_path)))
+    backend.answers[s3] = output([lesson()], sightings=[_sighting(s3, rid)])
+    second = run(home)
+    assert [o["outcome"] for o in second.outcomes] == ["landed", "skipped-known-origin"]  # control
+    assert _rejected_marks()[rid] != "landed" and len(pending(home)) == 1
+    s4 = "s4rjfou-0000"
+    write_session(root, s4, session_rows(s4, host(tmp_path)))
+    backend.answers[s4] = output(sightings=[_sighting(s4, rid)])
+    third = run(home)
+    assert [o["outcome"] for o in third.outcomes] == ["landed", "resurfaced"] and len(pending(home)) == 2
+
+
+def test_a_resurface_decided_again_after_its_mark_was_lost_marks_the_rejected_record(home, root, backend,
+                                                                                    tmp_path, monkeypatch):
+    rid = "lrn-0000abda"
+    put_record(home, rid, status="rejected")
+    sids = [f"s{i}rjlost-0000" for i in range(4)]
+    for s in sids[:3]:
+        write_session(root, s, session_rows(s, host(tmp_path)))
+        backend.answers[s] = output(sightings=[_sighting(s, rid)])
+    with monkeypatch.context() as m:
+        m.setattr(miner, "_rejected_mark_landed", lambda r: (_ for _ in ()).throw(RuntimeError("killed")))
+        run(home)
+    (a,) = _waiting()
+    assert len(pending(home)) == 1 and _rejected_marks()[rid] != "landed"  # control: copy landed, mark lost
+    d = json.loads(a.path.read_text())  # a file from before intents: the item is decided again
+    d["items"][0] = {k: v for k, v in d["items"][0].items() if k not in ("intent", "outcome")} | {"state": "waiting"}
+    a.path.write_text(json.dumps(d))
+    again = run(home)
+    assert [o["outcome"] for o in again.outcomes] == ["skipped-known-origin"]
+    assert _rejected_marks()[rid] == "landed" and _waiting() == []
+    write_session(root, sids[3], session_rows(sids[3], host(tmp_path)))
+    backend.answers[sids[3]] = output(sightings=[_sighting(sids[3], rid)])
+    fourth = run(home)
+    assert [o["outcome"] for o in fourth.outcomes] == ["dropped-rejected"] and len(pending(home)) == 1
+
+
+@pytest.mark.parametrize("field", ["unreadable", "relearn_failed"])
+def test_the_run_record_refuses_a_bad_unreadable_or_relearn_failed(home, root, backend, tmp_path, field):
+    sid = "s1badnewfield-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output([lesson()])
+    doc = _rec(run(home))
+    good = json.loads(json.dumps(doc))
+    if field == "unreadable":
+        good["waiting"]["unreadable"] = ["0001-s1badnewfield-0000.json"]
+    else:
+        good["judged_uuids"]["relearn_failed"] = 2
+    assert contract.validate_run(good) == []  # control: a valid value passes
+    if field == "unreadable":
+        doc["waiting"]["unreadable"] = [17]
+    else:
+        doc["judged_uuids"]["relearn_failed"] = "not an integer"
+    assert contract.validate_run(doc)

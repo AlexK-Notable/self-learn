@@ -2786,8 +2786,10 @@ Waiting       = { "contract": "miner-waiting/1", "session": str, "transcript": s
                                "outcome"?: str, "reason"?: str, "error"?: str } ] }
 
 Intent        = { "output": "lesson" | "resurface" | "fold" | "recurrence-suspect" | "fire",
-                  "record": str | null,    # the target record id; null for a new lesson
-                  "origin": str,
+                                           # lessons: lesson; sightings: resurface | fold |
+                                           # recurrence-suspect; rule_checks: fire
+                  "record": str | null,    # the target record id, non-empty; null for a lesson only
+                  "origin": str,           # transcript:<session>[/subagents/<file>]#L<n>
                   ... }                    # what replaying the output needs (a resurface's sighting count)
 ```
 
@@ -2797,8 +2799,11 @@ Intent        = { "output": "lesson" | "resurface" | "fold" | "recurrence-suspec
 may exist; a replay finishes that recorded output and never decides again
 (12 §13.3 *Intent before write*). A file that does not read as one (bad JSON,
 a contract this code does not read, a `checked` that fails
-`validate_checked_output`, a missing `cursor` or `learn`, a missing,
-duplicate or out-of-range item, a `writing` item without its intent) is left
+`validate_checked_output`, a missing `cursor` or `learn`, a `cursor` whose
+`lines` or `size` is not a non-negative int or whose `halt` is not a bool, a
+`transcript` that is not a string, an index or count that is a bool, a
+missing, duplicate or out-of-range item, a `writing` item whose intent is
+missing or does not fit its kind, fix round 6) is left
 in place byte-identical, named in the run's journal row, `run.json`
 `waiting.unreadable` and `self-learn doctor miner`, and waits on a manual
 repair. A later change to `miner-output/1` or to this contract must keep
