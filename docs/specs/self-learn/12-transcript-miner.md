@@ -1121,24 +1121,75 @@ happens to the landing. A failed call or check saves, moves and teaches
 nothing; that session is called again later. A run that stopped between a
 save and the store or cursor write applies both again from the waiting
 answer: the cursor, forward only, before the next run's walk; the store
-(a row keeps its first date) before the next run's snapshot. A preview saves
-nothing.
+(a row keeps its first date) before the next run's snapshot. A waiting answer
+stays on disk until what it teaches the store is durably written (fix round
+5): if the store write fails, at the save or on a later run's re-learning, the
+file is kept even when every item in it has landed. Every night run re-learns
+from every waiting file it keeps, before its snapshot, and the snapshot
+includes each kept file's `learn` set whether or not that write succeeded;
+a file is removed only once its items are all done and its learning has
+succeeded (`judged_uuids.relearn_failed` counts the files whose re-learning
+failed). A preview saves nothing and never loads the waiting answers.
 
 **Land** (`_drain_waiting`, inside `intents.ledger_write`). Every run that is
 not a preview lands the waiting answers, oldest first (earlier runs' answers,
 then this run's), even when it called no one and when every call failed. A
 run the flood gate held lands nothing: the gate keeps new pending records
 out of a review queue that is already full, so the waiting answers stay as
-they are and land on the first run after it opens. Items
-land one at a time, and each item's state is written back to its file (one
-atomic rewrite) after its write completes. A crash between an item's write
-and its mark replays the item, and the item's own durable deduplication makes
-the replay a no-op: a lesson by its known origin, a sighting by (record,
-moment) against the target record's own evidence, a fire or
-recurrence-suspect by `(kind, record, origin)` against the spooled and the
-tracked events. A file whose items have all landed or been dropped is
-removed. When the lock is not taken, nothing lands and every waiting answer
-stays as it is.
+they are and land on the first run after it opens. The gate is checked in the
+one place every landing goes through (fix round 5), so it holds on a run that
+called no one, on a run whose every session was skipped, and on the failure
+path a run takes when it stops early (the method file does not read); while
+it is closed, `pending/` stays byte-identical.
+
+*Intent before write* (fix round 5). Items land one at a time. Before an
+item's write, the attempt's decision is recorded on the item in one atomic
+rewrite of its file: the item's state becomes `writing`, and its `intent`
+names the output (`lesson`, `resurface`, `fold`, `recurrence-suspect` or
+`fire`), the target record id (none for a new lesson) and the origin. After
+the write, the item stays `writing` until the run's landing commit has
+succeeded; only then is it marked `landed`. A replayed `writing` item
+finishes the output it recorded and never decides again from the target's
+current status or successor: if that output already exists (a lesson or a
+resurfaced lesson by its known origin, a fold by the moment in the recorded
+target's own evidence, a fire or recurrence-suspect by `(kind, record,
+origin)` against the spooled and the tracked events), the item is marked
+`landed` with outcome `already-written`; if it does not, the same output is
+written; if the recorded target is gone, the item is dropped
+(`dropped-invalid`, with the reason). The replay of a resurface also marks
+the rejected record's counter as landed (`_rejected_mark_landed`, an atomic
+write), so one rejected lesson resurfaces once. Items still `waiting` are
+checked against the ledger as it is now (*Stale items*, below).
+
+*Durable before marked* (fix round 5). An output is durable before its item
+is marked. A spooled fire or recurrence-suspect is fsynced, and its folder
+too, before `_spool_output` returns; records and folds are written whole
+with fsync and the folder fsynced, and are committed to git by the run's
+landing commit before any item is marked `landed`. A commit that fails leaves
+the items `writing`, and the next run's replay finds the outputs and marks
+them. A file whose items have all landed or been dropped, and whose learning
+has succeeded (**Save**), is removed. When the lock is not taken, nothing lands
+and every waiting answer stays as it is. `waiting.drained` in `run.json` is
+set the moment the ledger lock is acquired, before the landing starts: a run
+that took the lock and then failed still counts its failed sessions (fix
+round 5).
+
+*Files that do not read* (fix round 5). A waiting file must parse, declare
+`miner-waiting/1`, carry a `checked` part that passes
+`validate_checked_output`, its `cursor` and its `learn`, and hold exactly one
+item per checked lesson, sighting and rule check, with no gap and no
+duplicate. A file that fails any of these stays in place, byte-identical;
+nothing of it lands, and its cursor and store rows are not applied from it.
+It is named in the run's journal row and in `run.json`
+(`waiting.unreadable`), the run gives it a `waiting-unreadable` outcome
+saying its output waits on a manual repair, and `self-learn doctor miner`
+shows it as a WARN. *Manual repair* means a person reads the file, fixes it
+to the contract (or moves it out of `pending/` once its output is otherwise
+in the ledger); the miner never deletes or rewrites it. A later change to
+the checked-output contract (`miner-output/1`) or to `miner-waiting/1` must
+keep reading waiting files written under the earlier version, or migrate
+them in place, so an upgrade never turns saved answers into unreadable
+ones.
 
 A lesson becomes a pending record (`source: session`): its loaded text and
 `## Context`, its steps as `## Episode brief` lines `L<line> (<role>, T<turn>):
@@ -1198,7 +1249,9 @@ them.
 
 **After.** The run flushes the spool whenever it landed waiting answers or
 the spool holds a fire or recurrence-suspect. A run is `failed` when it
-called sessions and saved none of their answers. The journal row keeps every
+called sessions and saved none of their answers. A run that found a waiting
+file that does not read writes `run.json` and journals it even when it
+called no one. The journal row keeps every
 digest-engine key and adds `engine: "session"`, `method_version`,
 `sessions_called`, `sessions_failed`, `sessions_saved`, `not_run`, `drops`
 by reason and `waiting` (the counts below, stuck items counted);
@@ -1215,7 +1268,8 @@ waiting answers found from earlier runs (`found`), the items landed from
 earlier runs' answers (`landed_earlier`) and from this run's
 (`landed_this_run`), the items still waiting after the landing
 (`still_waiting`), the stuck items (`stuck`: session, kind, origin, failures,
-last error), and whether the landing ran (`drained`). The run folder
+last error), the waiting files that do not read (`unreadable`: file names),
+and whether the ledger lock was acquired for the landing (`drained`). The run folder
 `<cache>/miner/runs/<run_id>/` (mode 0600: `run.json`,
 `shared-instructions.md`, `plans/`, `raw/`, `out/`, `calls/`) keeps the
 newest 30; waiting answers are outside it and outlive that prune. The seam's

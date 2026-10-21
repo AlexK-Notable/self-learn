@@ -2725,18 +2725,22 @@ validated when present (`contract.RUN_OPTIONAL_KEYS`,
 "call_failures", "bad_output", "deferred": int, "flag_modes": { mode: int } }`;
 `"judged_uuids": { "state": "ok" | "locked" | "rebuilt" | "damaged",
 "loaded": int, "aside"?: str | null, "pruned"?: int, "added"?: int,
-"add_failed"?: int, "relearned"?: int }` (`relearned`: rows the run added
-again from waiting answers); `"landed": { "lessons", "folded",
+"add_failed"?: int, "relearned"?: int, "relearn_failed"?: int }`
+(`relearned`: rows the run added again from waiting answers;
+`relearn_failed`: waiting files whose re-learning failed, fix round 5); `"landed": { "lessons", "folded",
 "recurrences", "fires": int }` (what a night run landed, whichever run's
 waiting answer it came from, apart from `totals`, which counts what this
 run's checks kept; R2 fix rounds 2 and 4); `"waiting": { "found",
 "landed_earlier", "landed_this_run", "still_waiting": int ≥ 0, "stuck":
 [ { "session": str, "kind": "lessons" | "sightings" | "rule_checks",
-"origin": str, "failures": int ≥ 3, "error": str } ], "drained": bool }`
+"origin": str, "failures": int ≥ 3, "error": str } ], "unreadable": [ str ],
+"drained": bool }`
 (fix round 4: the waiting answers found from earlier runs; items, never
 sessions, landed from earlier runs' answers and from this run's; items still
 waiting after the landing; the stuck items, never more than those still
-waiting; whether the landing ran, the ledger lock taken); and on a session
+waiting; fix round 5: the names of waiting files that do not read, each
+1..300 characters; `drained` is true once the ledger lock was acquired for the landing,
+whether or not the landing then completed); and on a session
 row `saved` (bool, a night run's called session only: its checked answer was
 saved as a waiting answer; never true unless `out_status` is `ok`),
 `flag_mode`, `flag_note` (the
@@ -2766,7 +2770,8 @@ plans one file per session id.
 R2 fix round 4, `mining.waiting`). One file per session answer the checker
 passed, written whole and atomically (temp file, fsync, rename), mode 0600,
 outside every run folder, and removed once every item in it has landed or
-been dropped on purpose:
+been dropped on purpose and what it teaches the judged-uuid store has been
+written (fix round 5):
 
 ```text
 Waiting       = { "contract": "miner-waiting/1", "session": str, "transcript": str, "run_id": str,
@@ -2776,15 +2781,29 @@ Waiting       = { "contract": "miner-waiting/1", "session": str, "transcript": s
                   "learn": [ uuid ],                                       # what the judged-uuid store learns
                   "checked": Checked,                                      # miner-output/1, verbatim
                   "items": [ { "kind": "lessons" | "sightings" | "rule_checks", "index": int,
-                               "state": "waiting" | "landed" | "dropped", "failures": int,
+                               "state": "waiting" | "writing" | "landed" | "dropped", "failures": int,
+                               "intent"?: Intent,                          # required when state is writing
                                "outcome"?: str, "reason"?: str, "error"?: str } ] }
+
+Intent        = { "output": "lesson" | "resurface" | "fold" | "recurrence-suspect" | "fire",
+                  "record": str | null,    # the target record id; null for a new lesson
+                  "origin": str,
+                  ... }                    # what replaying the output needs (a resurface's sighting count)
 ```
 
-`items` holds one entry per lesson, sighting and rule check of `checked`, in
-that order; answers land in `saved_ns` order. A file that does not read as
-one (bad JSON, a wrong contract, a `checked` that fails
-`validate_checked_output`, an item out of range) is left in place and named
-by `self-learn doctor miner`. An item with `failures` ≥ 3 is stuck.
+`items` holds exactly one entry per lesson, sighting and rule check of
+`checked`, with no gap and no duplicate; answers land in `saved_ns` order.
+`writing` (fix round 5) means the item's intent was recorded and its output
+may exist; a replay finishes that recorded output and never decides again
+(12 §13.3 *Intent before write*). A file that does not read as one (bad JSON,
+a contract this code does not read, a `checked` that fails
+`validate_checked_output`, a missing `cursor` or `learn`, a missing,
+duplicate or out-of-range item, a `writing` item without its intent) is left
+in place byte-identical, named in the run's journal row, `run.json`
+`waiting.unreadable` and `self-learn doctor miner`, and waits on a manual
+repair. A later change to `miner-output/1` or to this contract must keep
+reading files written under the earlier version, or migrate them. An item
+with `failures` ≥ 3 is stuck.
 
 **Typed turns.** `has_typed_turn_marker(entries)` (some `user` row carries an
 `origin` object or a `promptSource` key), `typed_turn_lines(entries)` (the

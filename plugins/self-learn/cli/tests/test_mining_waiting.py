@@ -1311,3 +1311,315 @@ def test_the_contract_refuses_saved_on_an_answer_that_did_not_check_or_was_not_c
     base = dict(rec, sessions=[{k: v for k, v in skipped.items() if k != "saved"}], totals=totals)
     assert contract.validate_run(base) == []  # control: a skipped row without `saved`
     assert contract.validate_run(dict(base, sessions=[skipped])) != []
+
+
+# ------------------------------------------- round-5 probes (astra5, opus5)
+
+
+def _saved_while_busy(home, root, backend, tmp_path, monkeypatch, sid="s1edgesv-0000", answer=None):
+    rows = session_rows(sid, host(tmp_path))
+    path = write_session(root, sid, rows)
+    backend.answers[sid] = answer or output([lesson()])
+    with monkeypatch.context() as m:
+        m.setattr(intents, "ledger_write", lambda h: _Busy())
+        run(home)
+    (a,) = _waiting()
+    assert cursor(path)["lines"] == 7  # control: saved, nothing landed
+    return sid, path, rows, a
+
+
+@pytest.mark.parametrize("method_error", [False, True])
+def test_a_closed_gate_holds_waiting_answers_on_a_run_with_nothing_to_call(home, root, backend, tmp_path,
+                                                                          monkeypatch, method_error):
+    sid, _path, _rows, _a = _saved_while_busy(home, root, backend, tmp_path, monkeypatch)
+    before = _pending_hashes()
+    with monkeypatch.context() as m:
+        m.setenv("SELF_LEARN_MINE_PENDING_GATE", "0")
+        if method_error:  # the stop() path: the method file cannot be read
+            def bad():
+                raise engine.EngineError("synthetic unavailable method")
+
+            m.setattr(engine, "shared_instructions", bad)
+        held = run(home)
+    assert _pending_hashes() == before and not pending(home) and held.landed == []
+    assert journal_last()["waiting"]["drained"] is False
+    if not method_error:
+        assert held.status == "held-gate" and journal_last()["status"] == "held-gate"
+    opened = run(home)
+    assert len(opened.landed) == 1 and _called(backend) == [sid] and _waiting() == []
+
+
+def test_the_stop_path_drains_when_the_gate_is_open(home, root, backend, tmp_path, monkeypatch):
+    _saved_while_busy(home, root, backend, tmp_path, monkeypatch)
+
+    def bad():
+        raise engine.EngineError("synthetic unavailable method")
+
+    with monkeypatch.context() as m:
+        m.setattr(engine, "shared_instructions", bad)
+        stopped = run(home)
+    assert stopped.status == "failed" and len(stopped.landed) == 1 and len(pending(home)) == 1
+    assert journal_last()["status"] == "failed" and journal_last()["waiting"]["landed_earlier"] == 1
+
+
+def test_a_gate_at_its_limit_holds_a_waiting_answer_with_no_new_session(home, root, backend, tmp_path, monkeypatch):
+    a, b = "s1gtA-0000", "s1gtB-0000"
+    write_session(root, a, session_rows(a, host(tmp_path)))
+    backend.answers[a] = output([lesson()])
+    assert len(run(home).landed) == 1  # one record pending
+    write_session(root, b, session_rows(b, host(tmp_path)))
+    backend.answers[b] = output([lesson(trigger="About to drain a waiting answer while the gate is shut",
+                                        instruction="Hold it, because the queue is full")])
+    with monkeypatch.context() as m:
+        m.setattr(intents, "ledger_write", lambda h: _Busy())
+        run(home)
+    before = _pending_hashes()
+    assert len(before) == 1 and len(pending(home)) == 1  # control
+    with monkeypatch.context() as m:
+        m.setenv("SELF_LEARN_MINE_PENDING_GATE", "1")
+        held = run(home)
+    assert held.status == "held-gate" and _pending_hashes() == before and len(pending(home)) == 1
+    assert len(run(home).landed) == 1 and len(pending(home)) == 2 and _waiting() == []
+
+
+@pytest.mark.parametrize("when", ["save", "relearn"])
+def test_a_finished_answer_stays_until_the_store_has_learned_it(home, root, backend, tmp_path, monkeypatch, when):
+    from self_learn.mining import uuids
+
+    sid = "s1lostuuid-0000"
+    rows = session_rows(sid, host(tmp_path))
+    write_session(root, sid, rows)
+    backend.answers[sid] = output([lesson()])
+
+    def failed(*a, **kw):
+        raise uuids.sqlite3.OperationalError("synthetic disk I/O error")
+
+    if when == "relearn":
+        with monkeypatch.context() as m:
+            m.setattr(intents, "ledger_write", lambda h: _Busy())
+            m.setattr(uuids.JudgedUuids, "add", failed)
+            run(home)
+        assert len(_waiting()) == 1
+    with monkeypatch.context() as m:
+        m.setattr(uuids.JudgedUuids, "add", failed)
+        landed = run(home)
+    assert len(pending(home)) == 1 and not _store_rows()
+    (kept,) = _waiting()  # every item landed; the store never learned it, so the file stays
+    assert [e["state"] for e in kept.items] == ["landed"]
+    assert _rec(landed)["waiting"]["still_waiting"] == 0
+    fork = "s2lostuuid-0000"
+    write_session(root, fork, [dict(r, sessionId=fork) for r in rows])
+    backend.answers[fork] = output([lesson()])
+    run(home)
+    assert len(pending(home)) == 1 and f"{sid}-u-3" in _store_rows() and _waiting() == []
+
+
+def test_a_fold_replayed_after_its_record_was_routed_is_not_a_recurrence(home, root, backend, tmp_path,
+                                                                        monkeypatch):
+    rid = "lrn-55558801"
+    rp = put_record(home, rid)
+    sid = "s1foldroute-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+    with monkeypatch.context() as m:
+        _crash_at_landed_mark(m)
+        run(home)
+    rec = Record.from_path(rp)
+    assert rec.sightings == 2  # control: the fold was written, its mark was not
+    rec.set_status("routed")
+    rec.set_routing({"routed_at": "2026-01-01T00:00:00Z", "by": "user", "destination": "CLAUDE.md"})
+    dest = rp.parent.parent / "resolved" / rp.name
+    dest.parent.mkdir(exist_ok=True)
+    rec.write(dest)
+    rp.unlink()
+    commit_all(home, "route folded record")
+    again = run(home)
+    assert [o["outcome"] for o in again.outcomes] == ["already-written"]
+    assert not _events(home, "recurrence-suspect") and len(backend.specs) == 1 and _waiting() == []
+
+
+def test_a_recurrence_replayed_after_its_record_was_superseded_is_not_spooled_again(home, root, backend, tmp_path,
+                                                                                   monkeypatch):
+    rid, succ = "lrn-55558802", "lrn-55558803"
+    rp = put_record(home, rid, status="routed")
+    sid = "s1recursup-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+    with monkeypatch.context() as m:
+        _crash_at_landed_mark(m)
+        run(home)
+    assert len(telemetry.read_spooled(("recurrence-suspect",))) == 1  # control
+    put_record(home, succ, status="routed")
+    rec = Record.from_path(rp)
+    rec.set_status("superseded")
+    rec.set_superseded_by(succ)
+    rec.write(rp)
+    commit_all(home, "supersede after spool")
+    again = run(home)
+    events = _events(home, "recurrence-suspect")
+    assert [(e["record"], e["origin"]) for e in events] == [(rid, f"transcript:{sid}#L3")]
+    assert [o["outcome"] for o in again.outcomes] == ["already-written"] and len(backend.specs) == 1
+
+
+@pytest.mark.parametrize("kind", ["fold", "fire"])
+def test_a_writing_item_whose_recorded_target_is_gone_is_dropped_with_a_reason(home, root, backend, tmp_path,
+                                                                             monkeypatch, kind):
+    rid = "lrn-55558809"
+    put_record(home, rid, status="pending" if kind == "fold" else "routed")
+    sid = "s1gonetgt-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    if kind == "fold":
+        backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+        broken = (Record, "write")
+    else:
+        _flagged(monkeypatch, rid)
+        backend.answers[sid] = output(rule_checks=[_rc(rid)])
+        broken = (telemetry, "spool_event")
+    with monkeypatch.context() as m:
+        m.setattr(*broken, lambda *a, **k: (_ for _ in ()).throw(OSError("synthetic write failure")))
+        run(home)
+    (a,) = _waiting()
+    assert a.items[0]["state"] == "writing" and a.items[0]["intent"]["record"] == rid  # control
+    _restatus(home, rid, None)
+    again = run(home)
+    (o,) = again.outcomes
+    assert o["outcome"] == "dropped-invalid" and "gone" in o["reason"] and _waiting() == []
+    assert not _events(home, "fire") and again.folded == []
+
+
+def test_a_resurface_replayed_after_a_stop_before_its_mark_lands_once(home, root, backend, tmp_path, monkeypatch):
+    rid = "lrn-0000abc9"
+    put_record(home, rid, status="rejected")
+    sids = [f"s{i}rejct-0000" for i in range(4)]
+    for s in sids[:3]:
+        write_session(root, s, session_rows(s, host(tmp_path)))
+        backend.answers[s] = output(sightings=[_sighting(s, rid)])
+    with monkeypatch.context() as m:
+        m.setattr(miner, "_rejected_mark_landed", lambda r: (_ for _ in ()).throw(RuntimeError("killed")))
+        first = run(home)
+    assert [o["outcome"] for o in first.outcomes][-2:] == ["landed", "land-failed"]  # control
+    second = run(home)
+    assert [o["outcome"] for o in second.outcomes] == ["already-written"]
+    write_session(root, sids[3], session_rows(sids[3], host(tmp_path)))
+    backend.answers[sids[3]] = output(sightings=[_sighting(sids[3], rid)])
+    third = run(home)
+    assert [o["outcome"] for o in third.outcomes] == ["dropped-rejected"] and len(pending(home)) == 1
+
+
+@pytest.mark.parametrize("kind", ["fire", "recurrence-suspect"])
+def test_an_event_spool_is_durable_before_its_item_is_marked(home, root, backend, tmp_path, monkeypatch, kind):
+    rid, sid = "lrn-55558805", "s1durable-0000"
+    put_record(home, rid, status="routed")
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    if kind == "fire":
+        _flagged(monkeypatch, rid)
+        backend.answers[sid] = output(rule_checks=[_rc(rid)])
+    else:
+        backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+    synced: list[str] = []
+    spooled: list[str] = []
+    seen: list[tuple[str, list[str]]] = []
+    real_sync, real_spool, real_mark = os.fsync, telemetry.spool_event, mining_waiting.Answer.mark
+
+    def fsync(fd):
+        synced.append(os.readlink(f"/proc/self/fd/{fd}"))
+        return real_sync(fd)
+
+    def spool(k, **kw):
+        p = real_spool(k, **kw)
+        if k == kind:
+            spooled.append(str(p))
+        return p
+
+    def mark(a):
+        if any(e["state"] == "landed" for e in a.items):
+            seen.append((spooled[0], list(synced)))
+        return real_mark(a)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(telemetry, "spool_event", spool)
+    monkeypatch.setattr(mining_waiting.Answer, "mark", mark)
+    run(home)
+    assert len(seen) == 1 and len(_events(home, kind)) == 1  # control: one landed mark, one event
+    path, before = seen[0]
+    assert path in before and str(Path(path).parent) in before
+
+
+@pytest.mark.parametrize("bad", ["missing-item", "duplicate-item", "missing-cursor", "missing-learn",
+                                 "future-contract", "bad-json", "unreadable", "checked-invalid"])
+def test_an_invalid_waiting_file_keeps_its_output_and_says_so(home, root, backend, tmp_path, monkeypatch, capsys,
+                                                             bad):
+    _sid, _path, _rows, a = _saved_while_busy(home, root, backend, tmp_path, monkeypatch)
+    d = json.loads(a.path.read_text())
+    if bad == "missing-item":
+        d["items"] = []
+    elif bad == "duplicate-item":
+        d["items"] = d["items"] * 2
+    elif bad == "missing-cursor":
+        del d["cursor"]
+    elif bad == "missing-learn":
+        del d["learn"]
+    elif bad == "future-contract":
+        d["contract"] = "miner-waiting/999"
+    elif bad == "checked-invalid":
+        del d["checked"]["redactions"]  # valid JSON, a checked part that fails miner-output/1
+    if bad != "unreadable":
+        a.path.write_text("{not json" if bad == "bad-json" else json.dumps(d))
+    original = a.path.read_bytes()
+    capsys.readouterr()
+    with monkeypatch.context() as m:
+        if bad == "unreadable":
+            real = Path.read_text
+
+            def unread(p, *args, **kw):
+                if p == a.path:
+                    raise PermissionError("synthetic unreadable pending file")
+                return real(p, *args, **kw)
+
+            m.setattr(Path, "read_text", unread)
+        lines = _doctor(capsys)
+        result = run(home)
+    assert any("WARN waiting-answer-unreadable" in ln and a.path.name in ln for ln in lines)
+    assert a.path.read_bytes() == original and not pending(home)
+    assert _rec(result)["waiting"]["unreadable"] == [a.path.name]
+    assert journal_last()["waiting"]["unreadable"] == [a.path.name]
+    (o,) = [o for o in result.outcomes if o["outcome"] == "waiting-unreadable"]
+    assert "manual repair" in o["reason"]
+
+
+def test_the_lock_flag_means_acquired_even_when_the_drain_then_fails(home, root, backend, tmp_path, monkeypatch):
+    bad, good = "s1locktaken-0000", "s2locktaken-0000"
+    bp = write_session(root, bad, session_rows(bad, host(tmp_path)))
+    write_session(root, good, session_rows(good, host(tmp_path)))
+    backend.answers[bad] = [FakeOutcome(ok=False, failure="exit", detail="synthetic call failure", rc=1)]
+    backend.answers[good] = output([lesson()])
+    reached: list[bool] = []
+
+    def crash(*args):
+        reached.append(True)
+        raise gitops.GitOpsError("synthetic drain failure inside the acquired lock")
+
+    monkeypatch.setattr(miner, "_drain_waiting", crash)
+    result = run(home)
+    assert reached == [True] and len(backend.specs) == 2  # control: the lock was acquired, the drain failed
+    assert _rec(result)["waiting"]["drained"] is True
+    assert _failures()[str(bp)]["failures"] == 1
+
+
+def test_a_preview_never_loads_the_waiting_answers(home, root, backend, tmp_path, monkeypatch):
+    _saved_while_busy(home, root, backend, tmp_path, monkeypatch)
+    other = "s2prvload-0000"
+    write_session(root, other, session_rows(other, host(tmp_path)))
+    backend.answers[other] = output([lesson()])
+    loads: list[str] = []
+    real = mining_waiting.load_all
+
+    def spy(mdir):
+        loads.append("load")
+        return real(mdir)
+
+    monkeypatch.setattr(mining_waiting, "load_all", spy)
+    result = run(home, preview=True)
+    assert _rec(result)["totals"]["called"] == 1 and loads == []  # control: it judged the new session
+    run(home)
+    assert loads  # control: a night run does load them
