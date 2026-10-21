@@ -2201,6 +2201,14 @@ class _Landing:
     #: reads and clears it per item): its terminal mark waits until they
     #: are committed, like a file this run wrote (fix round 6)
     acknowledged: list[Path] = field(default_factory=list)
+    #: ``(kind, record, moment uuid)`` of every fire and recurrence-suspect
+    #: spooled or tracked with its moment: a parent and its fork share a
+    #: moment's uuid, so one moment's event is written once across runs
+    #: (fix round 7)
+    seen_moments: set[tuple[str, str, str]] = field(default_factory=set)
+    #: tracked telemetry files a replay found its event in: the landing
+    #: commit commits them, so they are clean before the mark (fix round 7)
+    commit_also: list[Path] = field(default_factory=list)
 
 
 class _LandingHeld(Exception):
@@ -2292,6 +2300,8 @@ def _write_lesson(st: _Landing, lesson: dict, cwd: str | None, *, output: str = 
             return DROPPED
         project_path = capture_host_path(home, Path(where))  # FW-162
     for entry in entries:
+        if output == "resurface" and target:
+            entry[RESURFACES_KEY] = target  # what the copy is, for a replay (fix round 7)
         record.append_evidence(entry)
     _intend(st, output, target, origin, **(extra or {}))
     path = create_record(home, record, project_path=project_path)  # LedgerOpsError: the item waits
@@ -2376,24 +2386,27 @@ def _origin_holders(home: Path, origin: str) -> list[tuple[Record, Path]]:
     return out
 
 
-def _is_resurface_of(record: Record, rejected: Record) -> bool:
-    """``record`` is ``rejected``'s own resurfaced copy (:func:`_resurfaced_lesson`):
-    another session record of the same type and scope carrying the
-    rejected record's own loaded text."""
-    from .index.store import _sections  # pyright: ignore[reportPrivateUsage]
-
-    if record.id == rejected.id or record.source != "session":
-        return False
-    if record.type != rejected.type or record.scope != rejected.scope:
-        return False
-    mine, theirs = _sections(record.body), _sections(rejected.body)
-    return all(mine.get(k) == theirs.get(k) for k in ("Trigger", "Instruction", "Fact"))
+#: The evidence-entry key a resurfaced copy carries on every evidence
+#: entry it is written with: the rejected record's id (fix round 7). Only
+#: :func:`_write_lesson` writing a ``resurface`` sets it, and evidence is
+#: append-only (02 §2), so an edit of either record's text never removes it.
+RESURFACES_KEY = "resurfaces"
 
 
-def _own_resurface_paths(home: Path, rejected: Record, origin: str) -> list[Path]:
-    """The files of the records holding ``origin`` that are ``rejected``'s
-    own resurfaced copy; empty when another record holds it (fix round 6)."""
-    return [path for record, path in _origin_holders(home, origin) if _is_resurface_of(record, rejected)]
+def _is_resurface_of(record: Record, rejected_id: str, origin: str) -> bool:
+    """``record`` is the rejected record's own resurfaced copy: an evidence
+    entry at ``origin`` that says it resurfaces ``rejected_id`` (fix round
+    7: by what the copy says it is, never by matching its text)."""
+    return record.id != rejected_id and any(
+        isinstance(e, dict) and e.get("origin") == origin and e.get(RESURFACES_KEY) == rejected_id
+        for e in record.evidence
+    )
+
+
+def _own_resurface_paths(home: Path, rejected_id: str, origin: str) -> list[Path]:
+    """The files of the records holding ``origin`` that are the rejected
+    record's own resurfaced copy; empty when another record holds it."""
+    return [path for record, path in _origin_holders(home, origin) if _is_resurface_of(record, rejected_id, origin)]
 
 
 def _resurface(st: _Landing, rejected: Record, items: list[dict], n: int, cwd: str | None) -> str:
@@ -2408,7 +2421,7 @@ def _resurface(st: _Landing, rejected: Record, items: list[dict], n: int, cwd: s
         # landed); another record at this moment -- a lesson from the same
         # answer -- leaves it unmarked, so a later sighting resurfaces it
         # (fix round 6)
-        if _own_resurface_paths(st.home, rejected, origin):
+        if _own_resurface_paths(st.home, rejected.id, origin):
             _rejected_mark_landed(rejected.id)
         _outcome(st.result, origin, "skipped-known-origin", reason="a record already holds this origin")
         return DROPPED
@@ -2479,11 +2492,64 @@ def _write_fold(st: _Landing, record: Record, path: Path, fresh: list[dict], ori
     return LANDED
 
 
-def _write_event(st: _Landing, kind: str, rid: str, origin: str, **payload: object) -> None:
-    """Spool a recurrence-suspect or a fire: the intent, then the spool."""
+def _write_event(st: _Landing, kind: str, rid: str, origin: str, moment: str | None, **payload: object) -> None:
+    """Spool a recurrence-suspect or a fire: the intent, then the spool. The
+    event carries its moment's uuid (``moment``) when the moment has one,
+    so a fork's copy of the moment finds it (fix round 7)."""
     _intend(st, kind, rid, origin)
+    if moment:
+        payload["moment"] = moment
     _spool_output(kind, record=rid, origin=origin, **payload)
     st.seen_events.add((kind, rid, origin))
+    if moment:
+        st.seen_moments.add((kind, rid, moment))
+
+
+def _ref_uuid(ref: dict) -> str | None:
+    """The moment's uuid, when its entry has one (a fork copies it)."""
+    uid = ref.get("uuid")
+    return uid if isinstance(uid, str) and uid else None
+
+
+def _event_moments(home: Path) -> set[tuple[str, str, str]]:
+    """``(kind, record, moment)`` of the fire and recurrence-suspect events,
+    tracked and still spooled, that carry their moment's uuid."""
+    events = [*telemetry.read_events(home, map_legacy_outcome=False),
+              *telemetry.read_spooled(("fire", "recurrence-suspect"))]
+    return {
+        (str(e["kind"]), str(e.get("record")), str(e["moment"]))
+        for e in events
+        if e.get("kind") in ("fire", "recurrence-suspect") and isinstance(e.get("moment"), str) and e["moment"]
+    }
+
+
+def _event_matches(e: dict, kind: str, rid: str, origin: str, moment: str | None) -> bool:
+    return (e.get("kind") == kind and str(e.get("record")) == rid
+            and (str(e.get("origin")) == origin or (moment is not None and e.get("moment") == moment)))
+
+
+def _tracked_event_files(home: Path, kind: str, rid: str, origin: str, moment: str | None) -> list[Path]:
+    """The tracked telemetry files holding this event (by origin, or by its
+    moment's uuid): a replay that finds it there waits for them to be
+    committed before its mark (fix round 7)."""
+    out: list[Path] = []
+    tdir = telemetry.telemetry_dir(home)
+    if not tdir.is_dir():
+        return out
+    for path in sorted(tdir.glob("*.jsonl")):
+        try:
+            lines = path.read_bytes().split(b"\n")
+        except OSError:
+            continue
+        for raw in lines:
+            try:
+                e = json.loads(raw.decode("utf-8")) if raw.strip() else None
+            except (UnicodeDecodeError, ValueError):
+                continue
+            if isinstance(e, dict) and _event_matches(e, kind, rid, origin, moment):
+                out.append(path)
+                break
+    return out
 
 
 def _land_sighting(st: _Landing, sighting: dict, cwd: str | None) -> str:
@@ -2522,7 +2588,8 @@ def _land_sighting(st: _Landing, sighting: dict, cwd: str | None) -> str:
             _outcome(result, origin, "recurrence-already-known", record=record.id,
                      reason="this recurrence-suspect is already spooled or tracked")
             return DROPPED
-        _write_event(st, "recurrence-suspect", record.id, origin, basis=_SIGHTING_BASIS)
+        _write_event(st, "recurrence-suspect", record.id, origin, _ref_uuid(items[0]["ref"]),
+                     basis=_SIGHTING_BASIS)
         result.recurrences.append(record.id)
         _outcome(result, origin, "recurrence", record=record.id)
         return LANDED
@@ -2561,7 +2628,7 @@ def _land_rule_check(st: _Landing, check: dict) -> str:
         st.moments.add(moment)
         _outcome(result, origin, "fire-already-known", record=rid, reason="this fire is already spooled or tracked")
         return DROPPED
-    _write_event(st, "fire", rid, origin, **_fire_payload(check))
+    _write_event(st, "fire", rid, origin, _ref_uuid(situation), **_fire_payload(check))
     st.moments.add(moment)
     result.fires += 1
     _outcome(result, origin, "fire-spooled", record=rid, check=check["outcome"])
@@ -2571,6 +2638,17 @@ def _land_rule_check(st: _Landing, check: dict) -> str:
 def _fire_payload(check: dict) -> dict:
     action = check.get("action")
     return {"outcome": check["outcome"], "action": _ref_origin(action["ref"]) if action else None}
+
+
+def _intent_moment(output: str, item: dict, origin: str) -> str | None:
+    """The moment uuid of a replayed event: a fire's situation, or the
+    sighting's evidence entry at the recorded origin."""
+    if output == "fire":
+        return _ref_uuid(item["situation"]["ref"])
+    for e in item["evidence"]:
+        if _ref_origin(e["ref"]) == origin:
+            return _ref_uuid(e["ref"])
+    return None
 
 
 def _finish_intent(st: _Landing, intent: dict, kind: str, item: dict, cwd: str | None) -> str:
@@ -2605,7 +2683,7 @@ def _finish_intent(st: _Landing, intent: dict, kind: str, item: dict, cwd: str |
             return DROPPED
         rejected = found[0]
         if origin in st.origins:
-            own = _own_resurface_paths(home, rejected, origin)
+            own = _own_resurface_paths(home, rejected.id, origin)
             if not own:
                 _outcome(result, origin, "skipped-known-origin", record=rid,
                          reason="another record already holds this origin")
@@ -2640,23 +2718,31 @@ def _finish_intent(st: _Landing, intent: dict, kind: str, item: dict, cwd: str |
             _outcome(result, origin, "already-written", record=rid, reason=reason_done)
             return LANDED
         return _write_fold(st, record, path, fresh, origin)
-    # a recurrence-suspect or a fire
-    if (output, rid, origin) in st.seen_events:
-        if (output, rid, origin) in _spooled_seen():
+    # a recurrence-suspect or a fire, found by its origin or, across a
+    # fork, by its moment's uuid (fix round 7)
+    moment = _intent_moment(output, item, origin)
+    if (output, rid, origin) in st.seen_events or (moment and (output, str(rid), moment) in st.seen_moments):
+        if any(_event_matches(e, output, str(rid), origin, moment)
+               for e in telemetry.read_spooled(("fire", "recurrence-suspect"))):
             # a readable append is not a durable one (its own fsync may
             # have failed): sync the spool before the mark (fix round 6)
             _sync_spool()
+        # an event already flushed is committed with the landing before
+        # the mark (a failed telemetry commit leaves it uncommitted)
+        tracked = _tracked_event_files(home, output, str(rid), origin, moment)
+        st.acknowledged.extend(tracked)
+        st.commit_also.extend(tracked)
         _outcome(result, origin, "already-written", record=rid, reason=reason_done)
         return LANDED
     if found is None:
         _outcome(result, origin, "dropped-invalid", record=rid, reason=f"the record its {output} names is gone")
         return DROPPED
     if output == "fire":
-        _write_event(st, "fire", str(rid), origin, **_fire_payload(item))
+        _write_event(st, "fire", str(rid), origin, moment, **_fire_payload(item))
         result.fires += 1
         _outcome(result, origin, "fire-spooled", record=rid, check=item["outcome"])
     else:
-        _write_event(st, "recurrence-suspect", str(rid), origin, basis=_SIGHTING_BASIS)
+        _write_event(st, "recurrence-suspect", str(rid), origin, moment, basis=_SIGHTING_BASIS)
         result.recurrences.append(str(rid))
         _outcome(result, origin, "recurrence", record=rid)
     return LANDED
@@ -2682,7 +2768,8 @@ class DrainReport:
     moment the lock is acquired). ``gate_held``: the flood gate kept it
     from landing any. ``terminal``: the items this run landed or dropped,
     whose mark waits for the landing commit (fix round 6), each with the
-    ledger files it wrote or found its output in."""
+    ledger files it wrote or found its output in. ``commit_also``: tracked
+    telemetry files the landing commit takes too (fix round 7)."""
 
     found: int = 0
     landed_earlier: int = 0
@@ -2693,6 +2780,7 @@ class DrainReport:
     unreadable: list[str] = field(default_factory=list)
     gate_held: bool = False
     terminal: list = field(default_factory=list, repr=False)
+    commit_also: list = field(default_factory=list, repr=False)
 
     def as_dict(self) -> dict:
         return {"found": self.found, "landed_earlier": self.landed_earlier,
@@ -2715,7 +2803,7 @@ def _drain_waiting(
     the cap holds an item without counting."""
     seen_events, _legacy = _event_seen(home)
     st = _Landing(home=home, result=result, cap=cap, origins=existing_origins(home),
-                  seen_events=seen_events | _spooled_seen())
+                  seen_events=seen_events | _spooled_seen(), seen_moments=_event_moments(home))
     report = DrainReport(drained=True)
     for answer in answers:
         earlier = answer.run_id != run_id
@@ -2772,6 +2860,7 @@ def _drain_waiting(
                 # the item's state is lost with the file's rewrite: a later
                 # run lands it again, and its own deduplication catches it
                 log(f"run: the state of a waiting answer of {answer.session} was not saved ({exc})")
+    report.commit_also = list(dict.fromkeys(st.commit_also))
     return report
 
 
@@ -3764,7 +3853,8 @@ def _run_session_engine(
                     landed = _drain_waiting(home, answers, result, cap, run_id)
                     report.landed_earlier, report.landed_this_run = landed.landed_earlier, landed.landed_this_run
                     report.terminal = landed.terminal
-                    _commit_landing(home, result, run_id, no_push=no_push, folds_alone=True)
+                    _commit_landing(home, result, run_id, no_push=no_push, folds_alone=True,
+                                    also=landed.commit_also)
                     # the marks come after a commit that succeeded
                     _finish_drain(home, answers, report, committed=not result.landing_uncommitted)
             except gitops.GitOpsError as exc:
@@ -4147,7 +4237,8 @@ def _run_preview(
 
 
 def _commit_landing(
-    home: Path, result: MineResult, run_id: str, *, no_push: bool, folds_alone: bool = False
+    home: Path, result: MineResult, run_id: str, *, no_push: bool, folds_alone: bool = False,
+    also: Sequence[Path] = (),
 ) -> None:
     """The landing commit. **The caller holds the lock** — everything here
     is post-mutation by construction (audit 2026-07-16 round 7).
@@ -4171,15 +4262,22 @@ def _commit_landing(
     ``folds_alone`` (the session engine, R2): a run that only folded
     sightings into pending records commits those too. The digest engine
     keeps its old rule (no landing, no commit; the next run's reconcile
-    commits a fold) unchanged."""
-    if not result.touched or not (result.landed or (folds_alone and result.folded)):
+    commits a fold) unchanged.
+
+    ``also`` (the session engine, fix round 7): tracked telemetry files a
+    replay found its event in; those still uncommitted are committed here
+    too, so the item's mark finds them clean (a failed telemetry commit
+    is otherwise committed only by a later flush that appends to them)."""
+    extra = [p for p in also if gitops.paths_dirty(home, p)]
+    if not extra and (not result.touched or not (result.landed or (folds_alone and result.folded))):
         return
+    touched = [*result.touched, *extra]
     subject = f"self-learn: mine {len(result.landed)} candidate(s) ({run_id})"
     if folds_alone and result.folded:
         subject = f"self-learn: mine {len(result.landed)} candidate(s), {len(result.folded)} fold(s) ({run_id})"
     try:
-        gitops.stage(home, result.touched)
-        gitops.commit(home, subject, paths=result.touched)
+        gitops.stage(home, touched)
+        gitops.commit(home, subject, paths=touched)
     except gitops.GitOpsError as exc:
         result.landing_uncommitted = True
         log(

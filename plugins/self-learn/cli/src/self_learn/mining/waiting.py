@@ -203,7 +203,8 @@ def _int(value: object, *, low: int = 0) -> TypeGuard[int]:
 def _valid_intent(kind: str, intent: object) -> bool:
     """A ``writing`` item's intent, as the replay reads it (fix round 6):
     an output its kind can record, a target record id for every output
-    but a lesson (which has none), and a transcript origin."""
+    but a lesson (which has none), a transcript origin, and on a resurface
+    the sighting count as a non-negative int (fix round 7)."""
     if not isinstance(intent, dict) or intent.get("output") not in INTENT_OUTPUTS_BY_KIND[kind]:
         return False
     record = intent.get("record")
@@ -212,6 +213,8 @@ def _valid_intent(kind: str, intent: object) -> bool:
             return False
     elif not isinstance(record, str) or not record:
         return False
+    if intent["output"] == "resurface" and not _int(intent.get("sightings")):
+        return False  # the count the resurfaced copy is written with (fix round 7)
     origin = intent.get("origin")
     return isinstance(origin, str) and ORIGIN_RE.fullmatch(origin) is not None
 
