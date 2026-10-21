@@ -1995,3 +1995,55 @@ def test_a_writing_lesson_whose_intent_names_a_record_is_unreadable(home, root, 
     r = run(home)
     assert a.path.read_bytes() == before and not pending(home)
     assert _rec(r)["waiting"]["unreadable"] == [a.path.name]
+
+
+def _failing_mine_commit(m, mode: str = "raise") -> list[str]:
+    """``gitops.commit`` fails (``raise``) or reports success without
+    committing (``silent``) for the miner's landing commit only."""
+    real, calls = gitops.commit, []
+
+    def commit(h, subject, *a, **kw):
+        if subject.startswith("self-learn: mine "):
+            calls.append(subject)
+            if mode == "raise":
+                raise gitops.GitOpsError("synthetic landing commit failure")
+            return None
+        return real(h, subject, *a, **kw)
+
+    m.setattr(gitops, "commit", commit)
+    return calls
+
+
+def test_a_failed_landing_commit_marks_no_item_of_the_run(home, root, backend, tmp_path, monkeypatch):
+    fired, deferred, sid = "lrn-66660021", "lrn-66660022", "s1nomarks-0000"
+    put_record(home, fired, status="routed")
+    put_record(home, deferred, status="deferred")
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    _flagged(monkeypatch, fired)
+    backend.answers[sid] = output([lesson()], sightings=[_sighting(sid, deferred)], rule_checks=[_rc(fired)])
+    with monkeypatch.context() as m:
+        calls = _failing_mine_commit(m)
+        r = run(home)
+    assert calls and r.landing_uncommitted  # control: the landing commit failed
+    assert [o["outcome"] for o in r.outcomes] == ["landed", "skipped-resolved", "fire-spooled"]  # control
+    (a,) = _waiting()
+    on_disk = json.loads(a.path.read_text())
+    assert [e["state"] for e in on_disk["items"]] == ["writing", "waiting", "writing"]
+    run(home)
+    assert _waiting() == [] and len(pending(home)) == 1 and len(_events(home, "fire")) == 1
+    assert len(backend.specs) == 1
+
+
+def test_a_commit_that_reports_success_but_leaves_the_record_dirty_marks_nothing(home, root, backend, tmp_path,
+                                                                                monkeypatch):
+    sid = "s1silentcommit-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output([lesson()])
+    with monkeypatch.context() as m:
+        calls = _failing_mine_commit(m, "silent")
+        r = run(home)
+    assert calls and not r.landing_uncommitted and git(home, "status", "--porcelain").stdout.strip()  # control
+    (a,) = _waiting()
+    assert [e["state"] for e in a.items] == ["writing"]
+    run(home)
+    assert _waiting() == [] and len(pending(home)) == 1 and not git(home, "status", "--porcelain").stdout.strip()
