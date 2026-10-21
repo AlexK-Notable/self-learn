@@ -261,13 +261,21 @@ class Row:
     detail: str
 
 
-def preflight(miner_dir: Path) -> list[Row]:
+def preflight(miner_dir: Path, *, engine: str = "session") -> list[Row]:
     """``self-learn doctor miner``: how many answers and items wait, each
     stuck item (it keeps retrying; nothing drops it), and each file in
-    ``pending/`` that does not read as a waiting answer. Reads only."""
+    ``pending/`` that does not read as a waiting answer. ``engine`` is
+    ``miner.engine``: under ``digest`` (a rollback) nothing drains, so
+    waiting answers are a WARN of their own. Reads only."""
     answers, broken = load_all(miner_dir)
     items = sum(len(a.waiting()) for a in answers)
     rows = [Row("OK", "waiting-answers", f"{len(answers)} waiting answer(s), {items} item(s) still to land")]
+    if answers and engine != "session":
+        rows.append(Row(
+            "WARN", "waiting-answers-stranded",
+            f"{len(answers)} waiting answer(s) ({items} item(s)) and miner.engine is {engine}: they land only "
+            "when the session engine runs",
+        ))
     for name in broken:
         rows.append(Row("WARN", "waiting-answer-unreadable",
                         f"{PENDING_DIR}/{name} does not read as a waiting answer; it is left in place"))

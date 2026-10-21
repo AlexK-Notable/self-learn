@@ -260,21 +260,32 @@ def test_a_run_with_no_new_sessions_drains_and_records_it(home, root, backend, t
     assert third.status == "idle" and journal_last()["status"] == "idle"
 
 
-def test_the_flood_gate_holds_calls_but_lands_waiting_answers(home, root, backend, tmp_path, monkeypatch):
+def test_the_flood_gate_holds_waiting_answers_until_it_opens(home, root, backend, tmp_path, monkeypatch):
     sid, held = "s1gatedrn-0000", "s2gatehld-0000"
     write_session(root, sid, session_rows(sid, host(tmp_path)))
     backend.answers[sid] = output([lesson()])
     with monkeypatch.context() as m:
         m.setattr(intents, "ledger_write", lambda h: _Busy())
         run(home)
+    before = _pending_hashes()
+    assert len(before) == 1  # control: an answer waits
     hp = write_session(root, held, session_rows(held, host(tmp_path)))
-    monkeypatch.setenv("SELF_LEARN_MINE_PENDING_GATE", "0")
-    result = run(home)
-    assert result.status == "held-gate" and len(backend.specs) == 1 and cursor(hp) is None
-    assert len(result.landed) == 1 and _waiting() == []
-    assert _rows(result)[held]["status"] == "not-run" and _rows(result)[held]["reason"] == "pending-gate"
-    assert journal_last()["status"] == "held-gate" and journal_last()["waiting"]["landed_earlier"] == 1
-    contract.load_run(run_dir(result))
+    backend.answers[held] = output([lesson()])
+    with monkeypatch.context() as m:
+        m.setenv("SELF_LEARN_MINE_PENDING_GATE", "0")
+        gated = run(home)
+    assert gated.status == "held-gate" and len(backend.specs) == 1 and cursor(hp) is None
+    assert gated.landed == [] and not pending(home) and _pending_hashes() == before
+    assert _rows(gated)[held]["status"] == "not-run" and _rows(gated)[held]["reason"] == "pending-gate"
+    assert _rec(gated)["waiting"] == {"found": 1, "landed_earlier": 0, "landed_this_run": 0, "still_waiting": 1,
+                                      "stuck": [], "drained": False}
+    assert journal_last()["status"] == "held-gate" and journal_last()["waiting"]["still_waiting"] == 1
+    contract.load_run(run_dir(gated))
+    opened = run(home)  # the gate is open again: the waiting answer lands, once, and the held session is called
+    assert _called(backend) == [sid, held] and len(opened.landed) == 2 and _waiting() == []
+    assert _rec(opened)["waiting"]["landed_earlier"] == 1 and len(pending(home)) == 2
+    run(home)
+    assert len(pending(home)) == 2
 
 
 def test_a_busy_lock_leaves_every_waiting_answer_byte_identical(home, root, backend, tmp_path, monkeypatch):
@@ -438,6 +449,35 @@ def test_a_stuck_item_reaches_doctor_and_run_json_and_keeps_retrying(home, root,
     last = run(home)
     assert len(last.landed) == 1 and _waiting() == [] and len(backend.specs) == 1
     assert not [ln for ln in _doctor(capsys) if "waiting-item-stuck" in ln]
+
+
+@pytest.mark.parametrize("engine", ["digest", "session"])
+def test_doctor_warns_when_waiting_answers_are_stranded_by_the_digest_engine(home, root, backend, tmp_path,
+                                                                            monkeypatch, capsys, engine):
+    sid = "s1stranded-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output([lesson()])
+    with monkeypatch.context() as m:
+        m.setattr(intents, "ledger_write", lambda h: _Busy())
+        run(home)
+    assert len(_waiting()) == 1  # control: an answer waits
+    (home / "config.yaml").write_text(f"miner:\n  engine: {engine}\n")
+    capsys.readouterr()
+    lines = _doctor(capsys)
+    assert "doctor: OK waiting-answers — 1 waiting answer(s), 1 item(s) still to land" in lines  # control
+    stranded = [ln for ln in lines if "waiting-answers-stranded" in ln]
+    if engine == "digest":
+        assert stranded == ["doctor: WARN waiting-answers-stranded — 1 waiting answer(s) (1 item(s)) and "
+                            "miner.engine is digest: they land only when the session engine runs"]
+    else:
+        assert stranded == []
+
+
+def test_doctor_is_quiet_about_the_digest_engine_when_nothing_waits(home, root, capsys):
+    (home / "config.yaml").write_text("miner:\n  engine: digest\n")
+    lines = _doctor(capsys)
+    assert "doctor: OK waiting-answers — 0 waiting answer(s), 0 item(s) still to land" in lines  # control
+    assert not [ln for ln in lines if "stranded" in ln]
 
 
 def test_doctor_names_a_waiting_file_that_does_not_read(home, root, backend, tmp_path, capsys):

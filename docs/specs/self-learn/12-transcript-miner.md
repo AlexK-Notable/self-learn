@@ -1126,8 +1126,10 @@ nothing.
 
 **Land** (`_drain_waiting`, inside `intents.ledger_write`). Every run that is
 not a preview lands the waiting answers, oldest first (earlier runs' answers,
-then this run's), even when it called no one, when every call failed, and on
-a flood-gate run (the gate holds calls, not answers already judged). Items
+then this run's), even when it called no one and when every call failed. A
+run the flood gate held lands nothing: the gate keeps new pending records
+out of a review queue that is already full, so the waiting answers stay as
+they are and land on the first run after it opens. Items
 land one at a time, and each item's state is written back to its file (one
 atomic rewrite) after its write completes. A crash between an item's write
 and its mark replays the item, and the item's own durable deduplication makes
@@ -1188,7 +1190,11 @@ waiting, counts one failure for it (`land-failed`, with the error), and the
 run goes on with the next item. An item whose write failed on 3 runs
 (`mining.waiting.STUCK_AFTER`) is *stuck*: `run.json` lists it and
 `self-learn doctor miner` shows it as a WARN (with every waiting-answer file
-that does not read). It keeps retrying every run; nothing drops it.
+that does not read). It keeps retrying every run; nothing drops it. Only the
+session engine lands waiting answers: when `miner.engine` is `digest` (a
+rollback) and any wait, `doctor miner` shows a WARN with their count saying
+they land only when the session engine runs; the digest engine never drains
+them.
 
 **After.** The run flushes the spool whenever it landed waiting answers or
 the spool holds a fire or recurrence-suspect. A run is `failed` when it

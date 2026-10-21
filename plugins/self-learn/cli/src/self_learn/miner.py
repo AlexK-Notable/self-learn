@@ -3441,13 +3441,16 @@ def _run_session_engine(
         if broken:
             log(f"run {run_id}: {len(broken)} waiting answer file(s) do not read; they are left in place")
 
-    def drain(new: list[mining_waiting.Answer], cap: int) -> DrainReport:
+    def drain(new: list[mining_waiting.Answer], cap: int, *, gated: bool = False) -> DrainReport:
         """Land the waiting answers, earlier runs' first, under the lock.
         Every run that is not a preview drains, whether or not it called
-        anyone; a lock it cannot take leaves every answer waiting."""
+        anyone; a lock it cannot take leaves every answer waiting. A run
+        the flood gate held drains nothing: landing adds pending records
+        to a review queue that is already full, so the answers wait for
+        the first run after the gate opens."""
         answers = earlier + new
         report = DrainReport(found=len(earlier))
-        if answers:
+        if answers and not gated:
             hold = sentinel.hold()
             try:
                 with intents.ledger_write(home) as recovered:  # S-62: the landing lock's own backstop check
@@ -3591,8 +3594,8 @@ def _run_session_engine(
     summary.update(sessions=len(plans), skipped=dict(sorted(skipped.items())), deferred=deferred,
                    to_call=len(to_call), judged_uuids=uuid_info)
 
-    # Flood gate (§8 Q3): nothing is called and no cursor moves; the
-    # waiting answers still land (they were judged before the gate closed)
+    # Flood gate (§8 Q3): nothing is called, no cursor moves, and no
+    # waiting answer lands (it would add to the full review queue)
     gated = False
     total_pending = gate = 0
     if to_call and not preview:
@@ -3692,7 +3695,7 @@ def _run_session_engine(
             _advance_cursors(processed)
 
         # ---- land: every waiting answer, earlier runs' first
-        report = drain(list(saved.values()), cap_for(len(results), home=home))
+        report = drain(list(saved.values()), cap_for(len(results), home=home), gated=gated)
         after_landing(report, set(saved))
     else:
         report = DrainReport()
