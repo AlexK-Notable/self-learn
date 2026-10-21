@@ -886,7 +886,8 @@ def test_the_landing_lands_one_lesson_per_moment_even_past_the_plan(home):
         a.learned = True  # what it teaches the store is there
     with intents.ledger_write(home):
         report = miner._drain_waiting(home, answers, result, 10, "this-run")  # pyright: ignore[reportPrivateUsage]
-        miner._finish_drain(answers, report)  # pyright: ignore[reportPrivateUsage]
+        miner._commit_landing(home, result, "this-run", no_push=True, folds_alone=True)  # pyright: ignore[reportPrivateUsage]
+        miner._finish_drain(home, answers, report, committed=True)  # pyright: ignore[reportPrivateUsage]
     assert len(result.landed) == 1 and report.landed_this_run == 1
     assert [o["outcome"] for o in result.outcomes] == ["landed", "skipped-duplicate-moment"]
     assert _waiting() == []  # both answers are finished, so both files are gone

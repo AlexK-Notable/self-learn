@@ -39,7 +39,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, TypeGuard
 
 from ..primitives import chrono, fsops
 from . import contract
@@ -73,6 +73,16 @@ ITEM_KINDS: tuple[str, ...] = contract.WAITING_ITEM_KINDS
 ITEM_STATES: tuple[str, ...] = ("waiting", "writing", "landed", "dropped")
 #: What a ``writing`` item's intent writes.
 INTENT_OUTPUTS: tuple[str, ...] = ("lesson", "resurface", "fold", "recurrence-suspect", "fire")
+#: The intent outputs each item kind can record (fix round 6): a lesson
+#: writes a lesson; a sighting resurfaces, folds or spools a recurrence;
+#: a rule check spools a fire.
+INTENT_OUTPUTS_BY_KIND: dict[str, tuple[str, ...]] = {
+    "lessons": ("lesson",),
+    "sightings": ("resurface", "fold", "recurrence-suspect"),
+    "rule_checks": ("fire",),
+}
+#: The shape of a transcript origin (``miner._ref_origin``).
+ORIGIN_RE = re.compile(r"transcript:[^\s#]+#L[1-9][0-9]*")
 #: An item whose write failed on this many runs is *stuck*: shown by
 #: ``self-learn doctor miner`` and in ``run.json``. It keeps retrying.
 STUCK_AFTER = contract.STUCK_AFTER
@@ -185,20 +195,46 @@ def save(
     return Answer(path, doc)
 
 
+def _int(value: object, *, low: int = 0) -> TypeGuard[int]:
+    """An int that is not a bool, at least ``low``."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= low
+
+
+def _valid_intent(kind: str, intent: object) -> bool:
+    """A ``writing`` item's intent, as the replay reads it (fix round 6):
+    an output its kind can record, a target record id for every output
+    but a lesson (which has none), and a transcript origin."""
+    if not isinstance(intent, dict) or intent.get("output") not in INTENT_OUTPUTS_BY_KIND[kind]:
+        return False
+    record = intent.get("record")
+    if intent["output"] == "lesson":
+        if record is not None:
+            return False
+    elif not isinstance(record, str) or not record:
+        return False
+    origin = intent.get("origin")
+    return isinstance(origin, str) and ORIGIN_RE.fullmatch(origin) is not None
+
+
 def _valid(doc: object) -> bool:
     """A file this code reads as a waiting answer: the contract it
     writes, a ``checked`` part that passes ``miner-output/1``, its
     ``cursor`` and ``learn``, and exactly one item per checked lesson,
     sighting and rule check -- none missing, none twice (fix round 5: an
-    answer that lists fewer items would land less than it saved)."""
+    answer that lists fewer items would land less than it saved). Every
+    field is checked as the code that consumes it reads it -- cursor
+    settlement, learning and the replay (fix round 6): ``lines`` and
+    ``size`` non-negative ints, ``halt`` a bool, indexes and counts ints
+    and never bools, and a ``writing`` item's intent fit for its kind."""
     if not isinstance(doc, dict) or doc.get("contract") != WAITING_CONTRACT:
         return False
     if not all(isinstance(doc.get(k), str) and doc[k] for k in ("session", "run_id", "transcript")):
         return False
-    if not isinstance(doc.get("saved_ns"), int) or not isinstance(doc.get("items"), list):
+    if not _int(doc.get("saved_ns")) or not isinstance(doc.get("items"), list):
         return False
     cursor = doc.get("cursor")
-    if not isinstance(cursor, dict) or not all(isinstance(cursor.get(k), int) for k in ("lines", "size")):
+    if (not isinstance(cursor, dict) or not all(_int(cursor.get(k)) for k in ("lines", "size"))
+            or not isinstance(cursor.get("halt"), bool)):
         return False
     learn = doc.get("learn")
     if not isinstance(learn, list) or not all(isinstance(u, str) and u for u in learn):
@@ -213,17 +249,13 @@ def _valid(doc: object) -> bool:
         if not isinstance(e, dict) or e.get("kind") not in ITEM_KINDS or e.get("state") not in ITEM_STATES:
             return False
         i = e.get("index")
-        if not isinstance(i, int) or (e["kind"], i) not in expected or (e["kind"], i) in seen:
+        if not _int(i) or (e["kind"], i) not in expected or (e["kind"], i) in seen:
             return False
         seen.add((e["kind"], i))
-        if not isinstance(e.get("failures"), int) or e["failures"] < 0:
+        if not _int(e.get("failures")):
             return False
-        if e["state"] == "writing":
-            intent = e.get("intent")
-            if (not isinstance(intent, dict) or intent.get("output") not in INTENT_OUTPUTS
-                    or not isinstance(intent.get("origin"), str)
-                    or not isinstance(intent.get("record"), (str, type(None)))):
-                return False
+        if e["state"] == "writing" and not _valid_intent(e["kind"], e.get("intent")):
+            return False
     return seen == expected
 
 

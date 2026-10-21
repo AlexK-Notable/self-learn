@@ -2197,6 +2197,10 @@ class _Landing:
     #: records what an item is about to write before it writes (the
     #: drain sets it per item; None outside a drain)
     intend: Callable[[dict], None] | None = None
+    #: the ledger files a replay found its output already in (the drain
+    #: reads and clears it per item): its terminal mark waits until they
+    #: are committed, like a file this run wrote (fix round 6)
+    acknowledged: list[Path] = field(default_factory=list)
 
 
 class _LandingHeld(Exception):
@@ -2353,6 +2357,45 @@ def _resurfaced_lesson(rejected: Record, items: list[dict], n: int) -> dict:
     }
 
 
+def _origin_holders(home: Path, origin: str) -> list[tuple[Record, Path]]:
+    """The records whose evidence holds ``origin``, with their files: the
+    record a replay or a known-origin check finds an output already in."""
+    out: list[tuple[Record, Path]] = []
+    for bucket in discover_buckets(home):
+        for sub in ("pending", "resolved"):
+            directory = bucket.path / sub
+            if not directory.is_dir():
+                continue
+            for path in sorted(directory.glob("*.md")):
+                try:
+                    record = Record.from_path(path)
+                except (RecordError, UnicodeDecodeError):
+                    continue
+                if any(isinstance(e, dict) and e.get("origin") == origin for e in record.evidence):
+                    out.append((record, path))
+    return out
+
+
+def _is_resurface_of(record: Record, rejected: Record) -> bool:
+    """``record`` is ``rejected``'s own resurfaced copy (:func:`_resurfaced_lesson`):
+    another session record of the same type and scope carrying the
+    rejected record's own loaded text."""
+    from .index.store import _sections  # pyright: ignore[reportPrivateUsage]
+
+    if record.id == rejected.id or record.source != "session":
+        return False
+    if record.type != rejected.type or record.scope != rejected.scope:
+        return False
+    mine, theirs = _sections(record.body), _sections(rejected.body)
+    return all(mine.get(k) == theirs.get(k) for k in ("Trigger", "Instruction", "Fact"))
+
+
+def _own_resurface_paths(home: Path, rejected: Record, origin: str) -> list[Path]:
+    """The files of the records holding ``origin`` that are ``rejected``'s
+    own resurfaced copy; empty when another record holds it (fix round 6)."""
+    return [path for record, path in _origin_holders(home, origin) if _is_resurface_of(record, rejected)]
+
+
 def _resurface(st: _Landing, rejected: Record, items: list[dict], n: int, cwd: str | None) -> str:
     """Doc 12 §8 Q4 for a sighting: a rejected lesson sighted
     :data:`REJECTED_RESURFACE_SIGHTINGS` times since is landed again as a
@@ -2360,8 +2403,13 @@ def _resurface(st: _Landing, rejected: Record, items: list[dict], n: int, cwd: s
     lesson = _resurfaced_lesson(rejected, items, n)
     origin = _ref_origin(items[0]["ref"])
     if origin in st.origins:
-        # its lesson already landed (a stop came before the mark): mark it
-        _rejected_mark_landed(rejected.id)
+        # the rejected record is marked only when the record holding the
+        # origin is its own resurfaced copy (a mark lost after the copy
+        # landed); another record at this moment -- a lesson from the same
+        # answer -- leaves it unmarked, so a later sighting resurfaces it
+        # (fix round 6)
+        if _own_resurface_paths(st.home, rejected, origin):
+            _rejected_mark_landed(rejected.id)
         _outcome(st.result, origin, "skipped-known-origin", reason="a record already holds this origin")
         return DROPPED
     cited = {("lesson", _ref_moment(e["ref"])) for e in items}
@@ -2402,6 +2450,14 @@ def _spool_output(kind: str, **payload) -> None:
     the event is durable before its item is marked (fix round 5)."""
     path = telemetry.spool_event(kind, **payload)
     mining_waiting.fsync_file_and_folder(path)
+
+
+def _sync_spool() -> None:
+    """Fsync every spool file, then the spool folder: what a replay found
+    already spooled is durable before its item is marked (fix round 6)."""
+    files = sorted(telemetry.spool_dir().glob("*.jsonl"))
+    for path in files:
+        mining_waiting.fsync_file_and_folder(path)
 
 
 def _write_fold(st: _Landing, record: Record, path: Path, fresh: list[dict], origin: str) -> str:
@@ -2521,52 +2577,75 @@ def _finish_intent(st: _Landing, intent: dict, kind: str, item: dict, cwd: str |
     """Finish an item a stop left ``writing`` (fix round 5): the output its
     intent recorded, against the target it recorded -- never decided
     again from that target's current status or successor. The output
-    already exists (the record's evidence for a fold, the spooled or
-    tracked events for a fire or recurrence-suspect, the known origin for
-    a lesson): :data:`LANDED`. It does not: the same output is written,
-    unless the recorded target is gone (:data:`DROPPED`, with the reason)."""
+    already exists (the record's evidence holds every moment of a fold,
+    the spooled or tracked events hold a fire or recurrence-suspect, the
+    known origin a lesson): :data:`LANDED`, and the files it was found in
+    are ``acknowledged`` (their commit gates the mark). It does not: the
+    same output is written, unless the recorded target is gone
+    (:data:`DROPPED`, with the reason), or, for a new lesson or
+    resurface, this run's lesson cap is reached (:data:`CAPPED`; it stays
+    ``writing`` and lands on a later run, fix round 6)."""
     home, result = st.home, st.result
     output, rid, origin = intent["output"], intent.get("record"), intent["origin"]
     reason_done = "it was written before a stop that came before its mark"
-    if output in ("lesson", "resurface"):
+    if output == "lesson":
         if origin in st.origins:
-            if output == "resurface" and rid:
-                _rejected_mark_landed(rid)
-            _outcome(result, origin, "already-written", record=rid, reason=reason_done)
+            st.acknowledged.extend(path for _r, path in _origin_holders(home, origin))
+            _outcome(result, origin, "already-written", reason=reason_done)
             return LANDED
-        if output == "lesson":
-            return _write_lesson(st, item, cwd)
-        found = _find_record_path(home, str(rid))
+        if len(result.landed) >= st.cap:
+            _outcome(result, origin, "waiting-cap", reason=f"the run's lesson cap ({st.cap}) was reached")
+            return CAPPED
+        return _write_lesson(st, item, cwd)
+    found = _find_record_path(home, str(rid))
+    if output == "resurface":
         if found is None:
             _outcome(result, origin, "dropped-invalid", record=rid,
                      reason="the rejected record it resurfaces is gone")
             return DROPPED
+        rejected = found[0]
+        if origin in st.origins:
+            own = _own_resurface_paths(home, rejected, origin)
+            if not own:
+                _outcome(result, origin, "skipped-known-origin", record=rid,
+                         reason="another record already holds this origin")
+                return DROPPED
+            _rejected_mark_landed(rejected.id)
+            st.acknowledged.extend(own)
+            _outcome(result, origin, "already-written", record=rid, reason=reason_done)
+            return LANDED
+        if len(result.landed) >= st.cap:
+            _outcome(result, origin, "waiting-cap", reason=f"the run's lesson cap ({st.cap}) was reached")
+            return CAPPED
         recorded = intent.get("sightings")
         n = recorded if isinstance(recorded, int) else REJECTED_RESURFACE_SIGHTINGS
-        landed = _write_lesson(st, _resurfaced_lesson(found[0], item["evidence"], n), cwd,
-                               output="resurface", target=found[0].id, extra={"sightings": n})
+        landed = _write_lesson(st, _resurfaced_lesson(rejected, item["evidence"], n), cwd,
+                               output="resurface", target=rejected.id, extra={"sightings": n})
         if landed == LANDED:
-            _rejected_mark_landed(found[0].id)
-            _outcome(result, origin, "resurfaced", record=found[0].id, sightings=n)
+            _rejected_mark_landed(rejected.id)
+            _outcome(result, origin, "resurfaced", record=rejected.id, sightings=n)
         return landed
-    found = _find_record_path(home, str(rid))
     if output == "fold":
         if found is None:
             _outcome(result, origin, "dropped-invalid", record=rid, reason="the record it folds into is gone")
             return DROPPED
         record, path = found
         held_moments, held_origins = _record_moments(record)
-        if origin in held_origins:
-            _outcome(result, origin, "already-written", record=rid, reason=reason_done)
-            return LANDED
+        # already written only when every one of its moments is there: one
+        # matching origin is not the whole fold (fix round 6)
         fresh = [e for e in item["evidence"]
                  if _ref_moment(e["ref"]) not in held_moments and _ref_origin(e["ref"]) not in held_origins]
         if not fresh:
+            st.acknowledged.append(path)
             _outcome(result, origin, "already-written", record=rid, reason=reason_done)
             return LANDED
         return _write_fold(st, record, path, fresh, origin)
     # a recurrence-suspect or a fire
     if (output, rid, origin) in st.seen_events:
+        if (output, rid, origin) in _spooled_seen():
+            # a readable append is not a durable one (its own fsync may
+            # have failed): sync the spool before the mark (fix round 6)
+            _sync_spool()
         _outcome(result, origin, "already-written", record=rid, reason=reason_done)
         return LANDED
     if found is None:
@@ -2601,8 +2680,9 @@ class DrainReport:
     it; the stuck ones; the files that do not read (``unreadable``); and
     whether it took the ledger lock to land them (``drained``, set the
     moment the lock is acquired). ``gate_held``: the flood gate kept it
-    from landing any. ``written``: items written this run whose ``landed``
-    mark waits for the landing commit."""
+    from landing any. ``terminal``: the items this run landed or dropped,
+    whose mark waits for the landing commit (fix round 6), each with the
+    ledger files it wrote or found its output in."""
 
     found: int = 0
     landed_earlier: int = 0
@@ -2612,7 +2692,7 @@ class DrainReport:
     drained: bool = False
     unreadable: list[str] = field(default_factory=list)
     gate_held: bool = False
-    written: list = field(default_factory=list, repr=False)
+    terminal: list = field(default_factory=list, repr=False)
 
     def as_dict(self) -> dict:
         return {"found": self.found, "landed_earlier": self.landed_earlier,
@@ -2627,10 +2707,10 @@ def _drain_waiting(
     caller holds the ledger lock** (`intents.ledger_write`). Before an
     item's write, what it is about to write is recorded on it (state
     ``writing``, one atomic rewrite); a ``writing`` item left by a stop is
-    finished, not decided again (:func:`_finish_intent`). A written item
-    is marked ``landed`` only after the landing commit
-    (:func:`_finish_drain`). A dropped item is marked at once. A write that
-    fails, or an item held for a reason outside it, leaves the item
+    finished, not decided again (:func:`_finish_intent`). An item that
+    landed or was dropped gets that terminal mark only after a landing
+    commit that succeeded (:func:`_finish_drain`, fix round 6). A write
+    that fails, or an item held for a reason outside it, leaves the item
     unfinished with its failure counted (the model is never asked again);
     the cap holds an item without counting."""
     seen_events, _legacy = _event_seen(home)
@@ -2643,6 +2723,8 @@ def _drain_waiting(
             item = answer.item(entry)
             origin = mining_waiting.item_origin(item, entry["kind"])
             mark = len(result.outcomes)
+            touched = len(result.touched)
+            st.acknowledged = []
 
             def intend(intent: dict, entry: dict = entry, answer: mining_waiting.Answer = answer) -> None:
                 entry["intent"] = intent
@@ -2673,21 +2755,17 @@ def _drain_waiting(
                 for o in result.outcomes[mark:]:
                     o["waited_from"] = answer.run_id
             last = result.outcomes[-1] if len(result.outcomes) > mark else {}
-            if state == LANDED:
-                # marked after the landing commit; until then `writing`
-                entry["state"] = "writing"
-                entry["outcome"] = last.get("outcome")
-                report.written.append((answer, entry))
-                if earlier:
-                    report.landed_earlier += 1
-                else:
-                    report.landed_this_run += 1
+            if state in (LANDED, DROPPED):
+                # the terminal mark waits for a landing commit that
+                # succeeded; until then the item keeps its state
+                paths = [*result.touched[touched:], *st.acknowledged]
+                report.terminal.append((answer, entry, state, last, paths))
+                if state == LANDED:
+                    if earlier:
+                        report.landed_earlier += 1
+                    else:
+                        report.landed_this_run += 1
                 continue
-            if state == DROPPED:
-                entry["state"] = "dropped"
-                entry["outcome"] = last.get("outcome")
-                if last.get("reason"):
-                    entry["reason"] = str(last["reason"])[:200]
             try:
                 answer.mark()
             except OSError as exc:
@@ -2697,14 +2775,26 @@ def _drain_waiting(
     return report
 
 
-def _finish_drain(answers: list[mining_waiting.Answer], report: DrainReport) -> None:
-    """After the landing commit: mark each written item ``landed``, then
-    remove each answer whose items have all landed or been dropped and
-    whose ``learn`` set has reached the store (fix round 5: until then the
-    file is kept, so the next run can teach the store from it)."""
+def _finish_drain(home: Path, answers: list[mining_waiting.Answer], report: DrainReport, *,
+                  committed: bool) -> None:
+    """After the landing commit: give each landed or dropped item its
+    terminal mark, then remove each answer whose items have all landed or
+    been dropped and whose ``learn`` set has reached the store (fix round
+    5: until then the file is kept, so the next run can teach the store
+    from it). A terminal mark needs a landing commit that succeeded
+    (``committed``) and every ledger file the item wrote or found its
+    output in committed (fix round 6): otherwise the item keeps its state
+    (a written one stays ``writing``), the file stays, and the next run's
+    replay finds the output and marks it."""
     marked: dict[int, mining_waiting.Answer] = {}
-    for answer, entry in report.written:
-        entry["state"] = "landed"
+    for answer, entry, state, last, paths in report.terminal:
+        if not committed or any(gitops.paths_dirty(home, p) for p in paths):
+            continue
+        entry["state"] = "landed" if state == LANDED else "dropped"
+        if last.get("outcome"):
+            entry["outcome"] = last["outcome"]
+        if state == DROPPED and last.get("reason"):
+            entry["reason"] = str(last["reason"])[:200]
         marked[id(answer)] = answer
     for answer in marked.values():
         try:
@@ -3673,9 +3763,10 @@ def _run_session_engine(
                         log(f"run {run_id}: recovered {intent_id} (restored: its mutation was undone)")
                     landed = _drain_waiting(home, answers, result, cap, run_id)
                     report.landed_earlier, report.landed_this_run = landed.landed_earlier, landed.landed_this_run
-                    report.written = landed.written
+                    report.terminal = landed.terminal
                     _commit_landing(home, result, run_id, no_push=no_push, folds_alone=True)
-                    _finish_drain(answers, report)  # the marks come after the commit
+                    # the marks come after a commit that succeeded
+                    _finish_drain(home, answers, report, committed=not result.landing_uncommitted)
             except gitops.GitOpsError as exc:
                 # the lock was not taken, or the landing or its commit did
                 # not complete: what was written is on disk with its item
