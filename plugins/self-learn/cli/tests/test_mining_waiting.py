@@ -2375,3 +2375,35 @@ def test_an_event_carries_its_moment_s_uuid(home, root, backend, tmp_path, monke
     run(home)
     (event,) = _events(home, "fire")
     assert event["moment"] == f"{sid}-a-4" and event["origin"] == f"transcript:{sid}#L4"
+
+
+def test_a_tracked_event_left_uncommitted_by_a_silent_commit_keeps_its_item(home, root, backend, tmp_path,
+                                                                            monkeypatch):
+    rid, sid = "lrn-77770018", "s1tracksilent-0000"
+    put_record(home, rid, status="routed")
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    _flagged(monkeypatch, rid)
+    backend.answers[sid] = output(rule_checks=[_rc(rid)])
+    real_commit = gitops.commit
+
+    def no_sync(*a, **kw):
+        raise OSError("synthetic fsync failure after the append")
+
+    def flush_commit_fails(h, subject, *a, **kw):
+        if subject.startswith("self-learn: telemetry flush"):
+            raise gitops.GitOpsError("synthetic telemetry commit failure")
+        return real_commit(h, subject, *a, **kw)
+
+    with monkeypatch.context() as m:
+        m.setattr(mining_waiting, "fsync_file_and_folder", no_sync)
+        m.setattr(gitops, "commit", flush_commit_fails)
+        run(home)
+    assert [a.items[0]["state"] for a in _waiting()] == ["writing"] and not telemetry.read_spooled(("fire",))
+    with monkeypatch.context() as m:
+        calls = _failing_mine_commit(m, "silent")
+        held = run(home)
+    assert calls and [o["outcome"] for o in held.outcomes] == ["already-written"]  # control: found, "committed"
+    assert git(home, "status", "--porcelain").stdout.strip()  # control: the tracked file is still uncommitted
+    assert [a.items[0]["state"] for a in _waiting()] == ["writing"]
+    run(home)
+    assert _waiting() == [] and len(_events(home, "fire")) == 1 and not git(home, "status", "--porcelain").stdout.strip()
