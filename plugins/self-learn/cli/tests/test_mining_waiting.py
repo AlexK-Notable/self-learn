@@ -1973,3 +1973,25 @@ def test_the_run_record_refuses_a_bad_unreadable_or_relearn_failed(home, root, b
     else:
         doc["judged_uuids"]["relearn_failed"] = "not an integer"
     assert contract.validate_run(doc)
+
+
+@pytest.mark.parametrize("bad", ["lesson-with-record", "failures-bool"])
+def test_a_writing_lesson_whose_intent_names_a_record_is_unreadable(home, root, backend, tmp_path, monkeypatch, bad):
+    sid = "s1lessrec-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output([lesson()])
+    with monkeypatch.context() as m:
+        m.setattr(miner, "create_record", lambda *a, **kw: (_ for _ in ()).throw(OSError("synthetic write failure")))
+        run(home)
+    (a,) = _waiting()
+    assert a.items[0]["intent"]["output"] == "lesson" and a.items[0]["intent"]["record"] is None  # control
+    d = json.loads(a.path.read_text())
+    if bad == "lesson-with-record":
+        d["items"][0]["intent"]["record"] = "lrn-66660011"
+    else:
+        d["items"][0]["failures"] = True
+    a.path.write_text(json.dumps(d))
+    before = a.path.read_bytes()
+    r = run(home)
+    assert a.path.read_bytes() == before and not pending(home)
+    assert _rec(r)["waiting"]["unreadable"] == [a.path.name]
