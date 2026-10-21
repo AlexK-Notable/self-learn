@@ -1623,3 +1623,26 @@ def test_a_preview_never_loads_the_waiting_answers(home, root, backend, tmp_path
     assert _rec(result)["totals"]["called"] == 1 and loads == []  # control: it judged the new session
     run(home)
     assert loads  # control: a night run does load them
+
+
+def test_a_kept_answer_s_moments_stay_judged_while_the_store_cannot_be_written(home, root, backend, tmp_path,
+                                                                              monkeypatch):
+    from self_learn.mining import uuids
+
+    parent, fork = "s1nostore-0000", "s2nostore-0000"
+    rows = session_rows(parent, host(tmp_path))
+    write_session(root, parent, rows)
+    backend.answers[parent] = output([lesson()])
+
+    def failed(*a, **kw):
+        raise uuids.sqlite3.OperationalError("synthetic disk I/O error")
+
+    monkeypatch.setattr(uuids.JudgedUuids, "add", failed)
+    assert len(run(home).landed) == 1 and len(_waiting()) == 1  # control: landed, kept, never learned
+    write_session(root, fork, _fork_rows(rows, fork, 8, tmp_path))
+    backend.answers[fork] = output([lesson()])
+    second = run(home)
+    assert _rec(second)["judged_uuids"]["relearn_failed"] == 1 and not _store_rows()
+    out = json.loads((run_dir(second) / "out" / f"{fork}.json").read_text())
+    assert out["lessons"] == []  # the kept answer's moments are in the snapshot though the store has none
+    assert len(pending(home)) == 1 and second.landed == []
