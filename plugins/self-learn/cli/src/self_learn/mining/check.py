@@ -173,11 +173,12 @@ def cited_uuids(checked: dict[str, Any]) -> frozenset[str]:
 
 
 def landed_uuids(spine: Spine, checked: dict[str, Any]) -> frozenset[str]:
-    """What the engine adds to the judged-uuid store once ``checked`` has
-    landed: the spine's typed turns and assistant text in the judged lines
-    (``Spine.moment_uuids``), and every uuid a kept item cites
-    (:func:`cited_uuids`), so a fork's copy of a cited moment, of whatever
-    kind, is ``already-judged``."""
+    """Every moment ``checked`` judged: the spine's typed turns and assistant
+    text in the judged lines (``Spine.moment_uuids``), and every uuid a kept
+    item cites (:func:`cited_uuids`). The engine teaches the store this at
+    the answer's save, less what its spine showed as judged or another
+    session of the run claimed (fix round 4), so a fork's copy of a cited
+    moment, of whatever kind, is ``already-judged``."""
     return spine.moment_uuids | cited_uuids(checked)
 
 

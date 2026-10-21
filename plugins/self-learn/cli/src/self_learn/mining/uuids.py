@@ -3,15 +3,18 @@ already judged (new-miner plan §3.1, "fork de-duplication").
 
 A resumed or forked session file copies earlier entries with their ``uuid``,
 and a miner that reads the copy as new counts the same moment twice. The
-store holds, for every session whose output has landed:
+store holds, for every session whose checked answer was saved as a waiting
+answer (``mining.waiting``; fix round 4):
 
 1. the uuid of each typed turn in its judged lines;
 2. the uuid of each assistant text entry in its judged lines;
-3. every uuid a landed item cited (evidence, steps, verification, incident
-   cost, a rule check's situation) -- what stops a fork re-landing a
+3. every uuid a kept item cited (evidence, steps, verification, incident
+   cost, a rule check's situation) -- what stops a fork re-judging a
    parent's moment, whatever kind of entry it was.
 
-``Spine.moment_uuids`` gives (1) and (2), ``check.landed_uuids`` all three.
+``Spine.moment_uuids`` gives (1) and (2), ``check.cited_uuids`` (3); a
+moment another session of the same run claimed is left to that session's
+own save (``miner._run_session_engine``).
 The spine shows a typed turn whose uuid is here as already mined, and the
 checker drops evidence that resolves to one as ``already-judged``.
 
@@ -21,7 +24,9 @@ PRIMARY KEY, first_judged TEXT)``, the date as ``YYYY-MM-DD``. Rules:
 
 - rows are added only by an explicit :meth:`JudgedUuids.add` (``INSERT OR
   IGNORE``: a moment keeps the date it was first judged), which the engine
-  calls after a session's output has landed (in preview, never); reading
+  calls once a session's answer is saved, before any of it lands, and again
+  from each waiting answer at the start of a night run (in preview, never);
+  reading
   adds nothing. A run's spines and checks read :meth:`JudgedUuids.snapshot`,
   taken once before the run, not the store itself (each lookup on the store
   opens the file);
