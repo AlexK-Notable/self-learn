@@ -3869,6 +3869,18 @@ class TestNearMissPromote:
         assert "--session" in argv
         assert "--quote" not in argv
 
+    def test_promote_from_a_subagent_line_names_the_session(self, tmp_path: Path, monkeypatch) -> None:
+        """The session miner's origin for a line of a subagent's log is
+        ``transcript:<session>/subagents/agent-<id>.jsonl#L<n>``:
+        ``teach --session`` takes the session id alone."""
+        sb = _sandboxed(tmp_path, monkeypatch)
+        run_id = _seed_miner_run(origin="transcript:sess-nm/subagents/agent-a1b2.jsonl#L4")
+        c, runner = make_client(sb)
+        r = c.post("/mine/near-miss/promote", data={"run_id": run_id, "index": "0"}, headers={"HX-Request": "true"})
+        assert r.status_code == 200 and len(runner.calls) == 1  # control: the promote ran
+        argv = runner.calls[0]
+        assert argv[argv.index("--session") + 1] == "sess-nm"
+
     def test_promote_redirects_to_front(self, tmp_path: Path, monkeypatch) -> None:
         sb = _sandboxed(tmp_path, monkeypatch)
         run_id = _seed_miner_run()

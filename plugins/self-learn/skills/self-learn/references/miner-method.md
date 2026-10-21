@@ -89,6 +89,10 @@ Tool content line breaks are displayed as ` ⏎ ` so content cannot create
 another labelled output row. Only the tool's own labels begin physical lines.
 Quote a span within one displayed content line, stopping before any ` ⏎ `
 marker; the marker is display notation, not verbatim transcript text.
+The spine does the same: a line break inside an agent's message, a relayed
+or agent-written turn, a FACTS line or a FLAG line shows as ` ⏎ `, while a
+typed turn keeps its line breaks, each continuation line indented under
+`YOU:`; quote one of those lines without its indent.
 
 A quote is a verbatim span of the one entry at its line, never text joined
 with "…". Every claimed outcome or verification carries its own line or is

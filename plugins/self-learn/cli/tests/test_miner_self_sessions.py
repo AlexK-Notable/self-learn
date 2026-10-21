@@ -296,6 +296,60 @@ def test_run_halts_new_own_sessions_and_mines_the_ordinary_one(tmp_path, home, t
     assert not cursors[str(ordinary)].get("halt")
 
 
+# ------------------------------------ the session miner's own sessions (R2)
+
+
+def session_miner_prompt(transcripts, home) -> str:
+    """A real spine (`mining.engine.plan_session`), as the session miner
+    sends it: its own session's first user turn."""
+    from self_learn import provenance
+    from self_learn.mining import engine
+
+    src = write_session(transcripts, ORDINARY_FOLDER, "sess-spine-source", ordinary_session_lines("fix the build"))
+    plan = engine.plan_session(src, 0, 2, None, home=home, sent=provenance.SentIndex(), judged_uuids=frozenset(),
+                               spine_tokens=20_000, index=None, records={})
+    assert plan.spine is not None
+    src.unlink()
+    return plan.spine.text
+
+
+@pytest.mark.parametrize("engine_name", ["digest", "session"])
+def test_the_session_miner_s_own_sessions_are_halted_by_both_engines(tmp_path, home, transcripts, monkeypatch,
+                                                                     engine_name):
+    """New-miner plan §3.2: the spine opens with the old header and a
+    self-learn command tag, so a night run of either engine halts the session
+    miner's own transcript (written under its stage folder's slug) and judges
+    the ordinary session beside it."""
+    from self_learn import invocation
+
+    monkeypatch.setenv("SELF_LEARN_EMBED_PROVIDER", "none")
+    stage_folder = "-home-u--cache-self-learn-home-0123abcd-miner-session-stage"
+    (transcripts / stage_folder).mkdir()
+    own = write_session(transcripts, stage_folder, "sess-session-miner",
+                        own_session_lines(session_miner_prompt(transcripts, home)))
+    ordinary = write_session(transcripts, ORDINARY_FOLDER, "sess-ordinary", ordinary_session_lines())
+    captured = shim_reader(monkeypatch)
+    prompts: list[str] = []
+
+    class Backend:
+        def text_session(self, spec):
+            prompts.append(spec.prompt)
+            return invocation.Outcome(ok=True, rc=0, stdout=json.dumps(
+                {"contract": "miner-output-model/1", "lessons": [], "sightings": [], "rule_checks": []}),
+                detail="", failure=None)
+
+    monkeypatch.setattr(invocation.registry, "backend_for", lambda *a, **k: Backend())
+
+    result = miner.run(home, engine=engine_name, no_push=True)
+
+    assert result.status == "ok"
+    seen = captured.get("prompt", "") if engine_name == "digest" else "\n".join(prompts)
+    assert ORDINARY_TAIL in seen  # positive control: the ordinary session was judged
+    assert OWN_TAIL not in seen
+    cursors = miner._load_cursors()
+    assert cursors[str(own)].get("halt") is True and not cursors[str(ordinary)].get("halt")
+
+
 # --------------------------------- sessions the cursor file already tracks
 
 

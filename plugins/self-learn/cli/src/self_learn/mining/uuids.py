@@ -3,15 +3,18 @@ already judged (new-miner plan §3.1, "fork de-duplication").
 
 A resumed or forked session file copies earlier entries with their ``uuid``,
 and a miner that reads the copy as new counts the same moment twice. The
-store holds, for every session whose output has landed:
+store holds, for every session whose checked answer was saved as a waiting
+answer (``mining.waiting``; fix round 4):
 
 1. the uuid of each typed turn in its judged lines;
 2. the uuid of each assistant text entry in its judged lines;
-3. every uuid a landed item cited (evidence, steps, verification, incident
-   cost, a rule check's situation) -- what stops a fork re-landing a
+3. every uuid a kept item cited (evidence, steps, verification, incident
+   cost, a rule check's situation) -- what stops a fork re-judging a
    parent's moment, whatever kind of entry it was.
 
-``Spine.moment_uuids`` gives (1) and (2), ``check.landed_uuids`` all three.
+``Spine.moment_uuids`` gives (1) and (2), ``check.cited_uuids`` (3); a
+moment another session of the same run claimed is left to that session's
+own save (``miner._run_session_engine``).
 The spine shows a typed turn whose uuid is here as already mined, and the
 checker drops evidence that resolves to one as ``already-judged``.
 
@@ -21,7 +24,9 @@ PRIMARY KEY, first_judged TEXT)``, the date as ``YYYY-MM-DD``. Rules:
 
 - rows are added only by an explicit :meth:`JudgedUuids.add` (``INSERT OR
   IGNORE``: a moment keeps the date it was first judged), which the engine
-  calls after a session's output has landed (in preview, never); reading
+  calls once a session's answer is saved, before any of it lands, and again
+  from each waiting answer at the start of a night run (in preview, never);
+  reading
   adds nothing. A run's spines and checks read :meth:`JudgedUuids.snapshot`,
   taken once before the run, not the store itself (each lookup on the store
   opens the file);
@@ -33,25 +38,51 @@ PRIMARY KEY, first_judged TEXT)``, the date as ``YYYY-MM-DD``. Rules:
   transaction.
 
 The file is the cache, not the ledger: a missing file is an empty store, and
-an unreadable one reads as empty (``damaged`` says so). The worst a lost
-store costs is one fork judged again.
+an unreadable one reads as empty. The worst a lost store costs is one fork
+judged again. Two ways a read can fail are told apart (R2, 2026-10-19):
+
+- ``locked``: another process held the file past the busy timeout. The file
+  is fine; this read saw nothing, and the next one will.
+- ``damaged``: the file is not a readable store (not SQLite, or a corrupt
+  image). :meth:`JudgedUuids.rebuild` moves it aside and the store starts
+  empty; a locked file is never rebuilt.
+
+Reads open the file read-write (never creating it). A read-only connection
+cannot roll back the hot journal a crash in the middle of :meth:`add`
+leaves behind, and fails ("attempt to write a readonly database"); read
+-write, SQLite rolls the journal back and the read sees every row the last
+finished write left (measured 2026-10-19).
 """
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from contextlib import closing
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
-__all__ = ["KEEP_DAYS", "STORE_NAME", "JudgedUuids", "store_path"]
+__all__ = ["KEEP_DAMAGED", "KEEP_DAYS", "STORE_NAME", "JudgedUuids", "is_lock_timeout", "prune_damaged", "store_path"]
 
 STORE_NAME = "judged-uuids.sqlite"
 #: Rows judged more than this many days ago are pruned.
 KEEP_DAYS = 120
+#: Damaged stores moved aside (:meth:`JudgedUuids.rebuild`) that are kept,
+#: newest first; older ones are deleted.
+KEEP_DAMAGED = 3
 
 _SCHEMA = "CREATE TABLE IF NOT EXISTS judged (uuid TEXT PRIMARY KEY, first_judged TEXT NOT NULL)"
+
+
+def is_lock_timeout(exc: BaseException) -> bool:
+    """True when ``exc`` is SQLite giving up on a lock another connection
+    holds (``database is locked``, or a busy table) -- never a sign that
+    the file is damaged."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    text = str(exc).lower()
+    return "locked" in text or "busy" in text
 
 
 def store_path(cache_dir: Path | str) -> Path:
@@ -65,19 +96,22 @@ class JudgedUuids:
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
-        #: True when the file exists but could not be read as a store.
+        #: True when the file exists but is not a readable store.
         self.damaged = False
+        #: True when a read gave up on a lock another process held.
+        self.locked = False
+        #: Seconds a connection waits on another's lock before giving up.
+        self.timeout = 5.0
 
     @classmethod
     def load(cls, path: Path | str) -> "JudgedUuids":
         """The store at ``path``, with ``damaged`` set when the file exists
-        but is not a readable store. Writes nothing."""
+        but is not a readable store, and ``locked`` when the read gave up on
+        a lock. Writes nothing of its own (a crash's hot journal is rolled
+        back by SQLite, module docstring)."""
         store = cls(path)
         if store.path.exists():
-            try:
-                store._read("SELECT count(*) FROM judged")
-            except sqlite3.Error:
-                store.damaged = True
+            store._safe_read("SELECT count(*) FROM judged")
         return store
 
     # ---- connections: one per call, closed before it returns
@@ -86,8 +120,10 @@ class JudgedUuids:
         """Rows of a read; none when the file does not exist yet."""
         if not self.path.exists():
             return []
-        uri = self.path.resolve().as_uri() + "?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True, timeout=5)) as db:
+        # read-write, never create: a read-only connection cannot roll back
+        # a crash's hot journal and would read nothing (module docstring)
+        uri = self.path.resolve().as_uri() + "?mode=rw"
+        with closing(sqlite3.connect(uri, uri=True, timeout=self.timeout)) as db:
             try:
                 return db.execute(sql, args).fetchall()
             except sqlite3.OperationalError as exc:
@@ -96,16 +132,21 @@ class JudgedUuids:
                 raise
 
     def _safe_read(self, sql: str, args: tuple = ()) -> list[tuple]:
+        """:meth:`_read`, with a failure read as no rows: ``locked`` when
+        the read gave up on a lock, else ``damaged``."""
         try:
             return self._read(sql, args)
-        except sqlite3.Error:
-            self.damaged = True
+        except sqlite3.Error as exc:
+            if is_lock_timeout(exc):
+                self.locked = True
+            else:
+                self.damaged = True
             return []
 
     def _write(self, sql: str, rows: list[tuple]) -> int:
         """Run ``sql`` once per row, in one transaction; how many rows changed."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(str(self.path), timeout=5)) as db:
+        with closing(sqlite3.connect(str(self.path), timeout=self.timeout)) as db:
             with db:  # one transaction
                 db.execute(_SCHEMA)
                 before = db.total_changes
@@ -134,6 +175,23 @@ class JudgedUuids:
 
     # ---- writes
 
+    def rebuild(self, now: datetime | None = None) -> Path | None:
+        """Move a damaged store aside (``<name>.damaged-<UTC time>``, with
+        its journal) so the next write starts an empty one; returns where it
+        went, or None when there was nothing to move. Only for ``damaged``:
+        a ``locked`` store is a good file someone else is using, and is
+        never moved."""
+        if self.locked or not self.damaged or not self.path.exists():
+            return None
+        stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+        aside = self.path.with_name(f"{self.path.name}.damaged-{stamp}")
+        os.replace(self.path, aside)
+        journal = self.path.with_name(self.path.name + "-journal")
+        if journal.exists():
+            os.replace(journal, aside.with_name(aside.name + "-journal"))
+        self.damaged = False
+        return aside
+
     def add(self, uids: Iterable[str], on: date) -> int:
         """Record ``uids`` as judged ``on`` (``INSERT OR IGNORE``: an existing
         row keeps its date); returns how many were new. The only way in."""
@@ -149,3 +207,20 @@ class JudgedUuids:
             return 0
         cutoff = (today - timedelta(days=KEEP_DAYS)).isoformat()
         return self._write("DELETE FROM judged WHERE first_judged < ?", [(cutoff,)])
+
+
+def prune_damaged(path: Path | str, *, keep: int = KEEP_DAMAGED) -> int:
+    """Delete all but the ``keep`` newest damaged stores moved aside next to
+    ``path`` (``<name>.damaged-<UTC time>``, with their journals); returns
+    how many went. The name's time sorts them."""
+    path = Path(path)
+    asides = sorted(
+        (p for p in path.parent.glob(f"{path.name}.damaged-*") if not p.name.endswith("-journal")),
+        key=lambda p: p.name, reverse=True,
+    )
+    gone = 0
+    for aside in asides[keep:]:
+        aside.unlink(missing_ok=True)
+        aside.with_name(aside.name + "-journal").unlink(missing_ok=True)
+        gone += 1
+    return gone

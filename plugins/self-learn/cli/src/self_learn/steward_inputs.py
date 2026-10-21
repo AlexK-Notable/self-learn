@@ -114,6 +114,19 @@ UNRESOLVABLE = "unresolvable"
 NOT_A_TRANSCRIPT = "not_a_transcript"
 
 _ORIGIN_RE = re.compile(r"^transcript:([^#\s]+)#L(\d+)$")
+#: The ``<where>`` of a subagent line's origin, as the session miner writes
+#: it: ``<session>/subagents/agent-<id>.jsonl`` (its line numbers are that
+#: log's own).
+_SUBAGENT_WHERE_RE = re.compile(r"^([^/\s]+)/(subagents/agent-[^/\s]+\.jsonl)$")
+
+
+def _resolve_origin(where: str, line: int, roots: Sequence[Path]) -> refs.Ref:
+    """``refs.resolve`` for an origin's ``<where>`` and line: a session id,
+    or a session's subagent log (:data:`_SUBAGENT_WHERE_RE`)."""
+    sub = _SUBAGENT_WHERE_RE.match(where)
+    if sub:
+        return refs.resolve(sub.group(1), line, subagent_file=sub.group(2), roots=roots)
+    return refs.resolve(where, line, roots=roots)
 _CORRECTED = frozenset({"nearby", "elsewhere_in_file", "other_session"})
 
 #: What each verdict means, in the words the steward reads.
@@ -137,13 +150,23 @@ CHECKS_OUT = frozenset({"exact", "normalised"})
 # --------------------------------------------------------------- the index
 
 
-def refresh_index(home: Path) -> tuple[LessonIndex | None, dict]:
+def refresh_index(home: Path, *, copy_to: Path | None = None) -> tuple[LessonIndex | None, dict]:
     """Bring the lesson index up to date (incremental) and return it open,
     with what the run record says about it. Never raises: an index that
     cannot be built is ``None`` and ``mode: unavailable`` says why. With no
-    embedding key the build is word search only (``mode: lexical-only``)."""
+    embedding key the build is word search only (``mode: lexical-only``).
+
+    ``copy_to`` (the miner's preview): copy the index into that folder
+    first and refresh the copy, so the live index is never written; with
+    no live index, the copy is built there from scratch."""
     try:
-        index = LessonIndex.open(home)
+        if copy_to is not None:
+            from .index.store import index_path
+            from .mining.engine import copy_sqlite
+
+            index = LessonIndex.open_at(copy_sqlite(index_path(home), copy_to), home)
+        else:
+            index = LessonIndex.open(home)
     except Exception as exc:  # noqa: BLE001 -- the run goes on without it
         return None, {"mode": "unavailable", "mode_reason": _short(exc)}
     try:
@@ -486,7 +509,7 @@ def _cited_ref(item: dict, roots: Sequence[Path]) -> tuple[str, refs.Ref | None,
     if not m:
         return str(origin or "(no pointer)"), None, NOT_A_TRANSCRIPT
     try:
-        return m.group(0), refs.resolve(m.group(1), int(m.group(2)), roots=roots), ""
+        return m.group(0), _resolve_origin(m.group(1), int(m.group(2)), roots), ""
     except (refs.RefError, OSError, ValueError) as exc:
         return m.group(0), None, f"{UNRESOLVABLE}:{exc}"
 
@@ -648,7 +671,7 @@ def fire_pack(events: list[dict], *, roots: Sequence[Path], budget: int) -> tupl
             lines.append("    the pointer is not a transcript line; nothing here checks it")
             continue
         try:
-            ref = refs.resolve(m.group(1), int(m.group(2)), roots=roots)
+            ref = _resolve_origin(m.group(1), int(m.group(2)), roots)
         except (refs.RefError, OSError, ValueError) as exc:
             lines.append(f"    the cited transcript could not be read: {_one_line(exc)}")
             continue

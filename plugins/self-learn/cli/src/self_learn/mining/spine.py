@@ -356,9 +356,9 @@ class Spine:
     over_budget: bool
     redactions: int
     #: Uuids of the typed turns and assistant text entries in the judged
-    #: lines: with the uuids the landed items cite (``check.landed_uuids``),
+    #: lines: with the uuids the kept items cite (``check.cited_uuids``),
     #: what the engine adds to the judged-uuid store once this session's
-    #: output has landed (never earlier).
+    #: answer is saved as a waiting answer (never earlier).
     moment_uuids: frozenset[str] = field(default_factory=frozenset)
     #: The latest entry time (epoch seconds) at or before the judged end:
     #: a subagent's log is cut there. None when no entry carries a time.

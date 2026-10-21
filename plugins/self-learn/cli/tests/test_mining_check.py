@@ -13,7 +13,7 @@ import copy
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -567,6 +567,74 @@ def test_u1_a_damaged_file_reads_as_empty(tmp_path, body):
     store = uuids.JudgedUuids.load(p)
     assert store.damaged is (body != b"")  # load says so at once; an empty file is an empty database
     assert len(store) == 0 and store.snapshot() == frozenset()
+
+
+def _crash_image(tmp_path: Path) -> Path:
+    """A store as a crash in the middle of :meth:`add` leaves it: 2,000 rows
+    committed, then a second transaction whose pages spilled into the file
+    before the copy was taken -- the copy holds a hot journal."""
+    live = tmp_path / "live" / uuids.STORE_NAME
+    live.parent.mkdir(parents=True)
+    db = sqlite3.connect(live)
+    db.execute("CREATE TABLE judged (uuid TEXT PRIMARY KEY, first_judged TEXT NOT NULL)")
+    db.executemany("INSERT INTO judged VALUES (?, ?)", [(f"u{i:05d}", "2026-10-01") for i in range(2000)])
+    db.commit()
+    db.execute("PRAGMA cache_size=1")
+    db.execute("BEGIN")
+    db.executemany("INSERT INTO judged VALUES (?, ?)", [(f"v{i:05d}" + "x" * 200, "2026-10-02") for i in range(3000)])
+    crash = tmp_path / "crash" / uuids.STORE_NAME
+    crash.parent.mkdir()
+    for name in (uuids.STORE_NAME, uuids.STORE_NAME + "-journal"):
+        (crash.parent / name).write_bytes((live.parent / name).read_bytes())
+    db.rollback()
+    db.close()
+    return crash
+
+
+def test_u1_a_crash_mid_add_reads_every_committed_row(tmp_path):
+    """R2 (the R1a gate, round 2): a read-only open cannot roll back a hot
+    journal and read nothing; the store opens read-write and reads all."""
+    crash = _crash_image(tmp_path)
+    assert crash.with_name(crash.name + "-journal").exists()  # control: the journal is really there
+    store = uuids.JudgedUuids.load(crash)
+    assert not store.damaged and not store.locked
+    snap = store.snapshot()
+    assert len(snap) == 2000 and "u01999" in snap and not any(u.startswith("v") for u in snap)
+
+
+def test_u1_a_lock_timeout_is_not_damage_and_is_never_rebuilt(tmp_path):
+    p = uuids.store_path(tmp_path)
+    uuids.JudgedUuids(p).add(["u-1", "u-2"], date(2026, 10, 1))
+    holder = sqlite3.connect(p)
+    holder.execute("BEGIN EXCLUSIVE")
+    try:
+        store = uuids.JudgedUuids(p)
+        store.timeout = 0.05
+        assert store.snapshot() == frozenset()
+        assert store.locked and not store.damaged
+        assert store.rebuild() is None and p.exists()  # a good file someone is using stays put
+        with pytest.raises(sqlite3.OperationalError) as exc:
+            store.add(["u-3"], date(2026, 10, 2))
+        assert uuids.is_lock_timeout(exc.value)
+    finally:
+        holder.rollback()
+        holder.close()
+    assert uuids.JudgedUuids(p).snapshot() == {"u-1", "u-2"}  # control: the same file reads once released
+
+
+def test_u1_a_damaged_store_is_moved_aside_and_starts_empty(tmp_path):
+    p = uuids.store_path(tmp_path)
+    p.parent.mkdir(parents=True)
+    garbage = b"not a database at all, just bytes " * 40
+    p.write_bytes(garbage)
+    store = uuids.JudgedUuids(p)
+    assert store._safe_read("SELECT uuid FROM judged") == []  # pyright: ignore[reportPrivateUsage]
+    assert store.damaged and not store.locked
+    aside = store.rebuild(datetime(2026, 10, 19, 3, 30, tzinfo=timezone.utc))
+    assert aside is not None and aside.name == f"{uuids.STORE_NAME}.damaged-20261019T033000Z"
+    assert aside.read_bytes() == garbage and not p.exists()
+    assert not store.damaged and store.snapshot() == frozenset()
+    assert store.add(["u-1"], date(2026, 10, 19)) == 1 and uuids.JudgedUuids(p).snapshot() == {"u-1"}
 
 
 def test_u1_the_store_holds_turns_agent_text_and_cited_moments_only(roots, tmp_path):
