@@ -2407,3 +2407,66 @@ def test_a_tracked_event_left_uncommitted_by_a_silent_commit_keeps_its_item(home
     assert [a.items[0]["state"] for a in _waiting()] == ["writing"]
     run(home)
     assert _waiting() == [] and len(_events(home, "fire")) == 1 and not git(home, "status", "--porcelain").stdout.strip()
+
+
+@pytest.mark.parametrize("where", ["spool", "tracked"])
+def test_an_event_a_replay_finds_by_its_moment_is_durable_before_the_mark(home, root, backend, tmp_path,
+                                                                         monkeypatch, where):
+    """The fork case: the parent's append failed, the fork wrote the shared
+    moment's event under its own origin, and the parent's replay finds it
+    only by the moment uuid. That event is synced (still spooled) or its
+    tracked file committed (already flushed) before the parent's mark."""
+    _fork_sharing_a_moment(home, root, backend, tmp_path, monkeypatch, "fire", True)
+    real_spool, real_commit, failed = telemetry.spool_event, gitops.commit, []
+
+    def spool(k, **kw):
+        if k == "fire" and not failed:
+            failed.append(True)
+            raise OSError("synthetic failed append")
+        return real_spool(k, **kw)
+
+    def flush_commit_fails(h, subject, *a, **kw):
+        if subject.startswith("self-learn: telemetry flush"):
+            raise gitops.GitOpsError("synthetic telemetry commit failure")
+        return real_commit(h, subject, *a, **kw)
+
+    with monkeypatch.context() as m:
+        m.setattr(telemetry, "spool_event", spool)
+        if where == "spool":
+            m.setattr(telemetry, "flush", lambda *a, **kw: (_ for _ in ()).throw(telemetry.TelemetryError("held")))
+        else:
+            m.setattr(gitops, "commit", flush_commit_fails)
+        run(home)
+    (a,) = _waiting()
+    assert a.items[0]["state"] == "writing" and a.items[0]["intent"]["origin"].startswith("transcript:s1")  # control
+    (event,) = telemetry.read_spooled(("fire",)) if where == "spool" else _events(home, "fire")
+    assert event["origin"].startswith("transcript:s2") and event["moment"] == "shared-tool-result"  # control
+    tracked = [p for p in (home / "telemetry").rglob("*.jsonl") if "shared-tool-result" in p.read_text()]
+    spool_files = sorted(telemetry.spool_dir().glob("*.jsonl"))
+    if where == "spool":
+        assert len(telemetry.read_spooled(("fire",))) == 1 and spool_files  # control: still spooled
+    else:
+        assert not telemetry.read_spooled(("fire",)) and any(gitops.paths_dirty(home, p) for p in tracked)  # control
+    synced: list[str] = []
+    at_mark: list[tuple[list[str], list[str]]] = []
+    real_sync, real_mark = os.fsync, mining_waiting.Answer.mark
+
+    def sync(fd):
+        synced.append(os.readlink(f"/proc/self/fd/{fd}"))
+        return real_sync(fd)
+
+    def mark(self):
+        if any(e["state"] == "landed" for e in self.items):
+            at_mark.append((list(synced), [str(p) for p in tracked if gitops.paths_dirty(home, p)]))
+        return real_mark(self)
+
+    monkeypatch.setattr(os, "fsync", sync)
+    monkeypatch.setattr(mining_waiting.Answer, "mark", mark)
+    again = run(home)
+    assert [o["outcome"] for o in again.outcomes] == ["already-written"] and len(at_mark) == 1
+    synced_before, dirty_at_mark = at_mark[0]
+    if where == "spool":
+        assert str(spool_files[0]) in synced_before
+    else:
+        assert dirty_at_mark == []
+    assert _waiting() == [] and len(_events(home, "fire")) == 1 and len(backend.specs) == 2
