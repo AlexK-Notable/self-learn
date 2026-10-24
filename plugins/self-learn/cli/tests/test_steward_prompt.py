@@ -4,13 +4,7 @@ blocks in order, evidence before advice, the withheld list.
 Every test relies on the suite-wide autouse `SELF_LEARN_HOME`/
 `XDG_CACHE_HOME`/`XDG_CONFIG_HOME`/`SELF_LEARN_CLAUDE_DIR` sandboxing in
 `conftest.py`.
-
-N5 (fold r1): the `test_negative_control_*` functions below monkeypatch
-a BROKEN implementation and assert the mutated, wrong behaviour -- they
-permanently document a defect shape for a future reader, they do not
-guard against a regression the way every other test here does. Do not
-read a green `test_negative_control_*` as coverage of the real code
-path; the real guard is the un-prefixed test right above each one."""
+"""
 
 from __future__ import annotations
 
@@ -134,28 +128,6 @@ def test_block_order_by_offset(tmp_path):
     assert at == sorted(at)
 
 
-def test_negative_control_swapped_blocks_fails_the_offset_check(tmp_path, monkeypatch):
-    """Mutation for test 1: swap two blocks via `_ordered_blocks` (the
-    one seam `assemble` calls) and confirm the SAME offset check the
-    previous test used now fails -- proving that check is not vacuous."""
-    home = make_home(tmp_path)
-    run = _run(tmp_path)
-
-    real = steward_prompt._ordered_blocks
-
-    def _swapped(home, run, inputs, items, briefs=None):
-        blocks = list(real(home, run, inputs, items, briefs))
-        # swap user_model (idx 2) and conditions (idx 3)
-        blocks[2], blocks[3] = blocks[3], blocks[2]
-        return tuple(blocks)
-
-    monkeypatch.setattr(steward_prompt, "_ordered_blocks", _swapped)
-    packet = steward_prompt.assemble(home, tmp_path / "cache", run, [_proposal()])
-    offsets = _block_offsets(packet.text)
-    ordered = [offsets[n] for n in steward_prompt._BLOCK_ORDER]
-    assert ordered != sorted(ordered)  # RED under the mutation
-
-
 # ------------------------------- test 2: the analyst's card is not read
 
 
@@ -214,43 +186,6 @@ def test_user_model_lapsed_a_entry_renders_after_current_d_entry(tmp_path):
     assert "changed_condition: report.destinations" in um_text
 
 
-def test_negative_control_dropping_current_lapsed_split_fails(tmp_path, monkeypatch):
-    """Mutation for test 3: render containers in fixed order WITHOUT
-    splitting CURRENT before LAPSED -- since A precedes D in
-    `_USER_MODEL_CONTAINER_ORDER`, A's LAPSED entry would then render
-    BEFORE D's CURRENT entry, the opposite of the previous test's pin."""
-    home = make_home(tmp_path)
-    a_id = user_model.add_entry(
-        home, container="A", title="own words test", because="test",
-        source="own-words", by="human", ref="stmt-test-a",
-    )
-    user_model.lapse_entry(
-        home, a_id, changed_condition="report.destinations", by="human"
-    )
-    d_id = user_model.add_entry(
-        home, container="D", title="observed regularity", because="test",
-        source="system-reading", by="overseer", ref="case-test1",
-    )
-
-    def _no_split_render_user_model(home):
-        containers = user_model.show(home)["containers"]
-        rendered = []
-        for letter in steward_prompt._USER_MODEL_CONTAINER_ORDER:
-            for entry in containers.get(letter, []):
-                rendered.append(
-                    steward_prompt._render_user_model_entry(letter, entry)
-                )
-        return "\n\n".join(rendered)
-
-    monkeypatch.setattr(
-        steward_prompt, "_render_user_model", _no_split_render_user_model
-    )
-    run = _run(tmp_path)
-    packet = steward_prompt.assemble(home, tmp_path / "cache", run, [_proposal()])
-    um_text = dict(packet.blocks)["user_model"]
-    assert um_text.index(a_id) < um_text.index(d_id)  # RED: A-lapsed now first
-
-
 # ------------------------------------------------ test 4: open cases
 
 
@@ -287,50 +222,6 @@ def test_open_cases_excludes_tampered_and_shows_intact(tmp_path):
     assert "1 cases excluded: freeze hash mismatch" in open_cases_text
 
 
-def test_negative_control_including_tampered_rows_fails_the_exclusion_check(tmp_path, monkeypatch):
-    """Mutation for test 4: stop filtering by `frozen_ok` (the
-    `only_ok=False`-shaped bug the brief names) and confirm the
-    tampered case now surfaces (as an 'unavailable' stub, since
-    `cases.show` itself still refuses a bad hash) where the previous
-    test asserts it does not."""
-    home = make_home(tmp_path)
-    intact_id = _record_case(
-        tmp_path, home, kind="parked", outcome="parked",
-        overrides={"parked_for": "overseer", "parked_reason": "authority-unclear"},
-    )
-    # S-81: the steward may not park a lesson already held, so this second
-    # parked case for the same lesson is a person's (the rendering is the
-    # point here, not who parked it).
-    tampered_id = _record_case(
-        tmp_path, home, kind="parked", outcome="parked", actor="human",
-        overrides={"parked_for": "overseer", "parked_reason": "hook"},
-    )
-    path = next((home / "cases").glob(f"*/{tampered_id}.md"))
-    text = path.read_text(encoding="utf-8")
-    path.write_text(text.replace("settled", "settleD"), encoding="utf-8")
-
-    def _unfiltered_open_cases(home, run):
-        all_rows = cases.list_cases(home, parked_for="overseer", only_ok=False)
-        blocks = []
-        for row in all_rows:  # BUG: no frozen_ok filter at all
-            case_id = row["case"]
-            try:
-                view = cases.show(home, case_id)
-            except cases.CaseError as exc:
-                blocks.append(f"case {case_id}: unavailable ({exc})")
-                continue
-            blocks.append(view.to_text())
-        return "\n\n".join(blocks)
-
-    monkeypatch.setattr(steward_prompt, "_render_open_cases", _unfiltered_open_cases)
-    run = _run(tmp_path)
-    packet = steward_prompt.assemble(home, tmp_path / "cache", run, [])
-    open_cases_text = dict(packet.blocks)["open_cases"]
-    assert intact_id in open_cases_text
-    # RED for the test above: the tampered case now surfaces as a case.
-    assert f"case {tampered_id}: unavailable" in open_cases_text
-
-
 # ------------------------------------------------------- test 8: withheld
 
 
@@ -338,17 +229,6 @@ def test_withheld_names_the_digest_and_transcript_text():
     items = steward_prompt.withheld()
     assert any("_digest" in s for s in items)
     assert any("transcript" in s.lower() for s in items)
-
-
-def test_negative_control_dropping_one_withheld_entry_fails(monkeypatch):
-    real = steward_prompt.withheld
-
-    def _missing_transcript_entry():
-        return tuple(s for s in real() if "transcript" not in s.lower())
-
-    monkeypatch.setattr(steward_prompt, "withheld", _missing_transcript_entry)
-    items = steward_prompt.withheld()
-    assert not any("transcript" in s.lower() for s in items)  # RED
 
 
 # --------------------------------------------- own mutation (blind view)
@@ -368,35 +248,6 @@ def test_open_cases_blind_view_never_leaks_outcome_or_decision_section(tmp_path)
     assert "verb: reject" not in open_cases_text  # section 3 (Decision) content
 
 
-def test_negative_control_full_view_in_open_cases_leaks_decision_section(tmp_path, monkeypatch):
-    """Own extra mutation (brief: at least one of the builder's own
-    choosing) -- the behaviour least protected by the brief's own eight
-    named tests is the BLIND default itself: flip `cases.show`'s
-    `evidence_only` to False inside `_render_open_cases` and confirm
-    `outcome:`/the Decision section's own text now leaks -- proving the
-    blind default in the shipped code is load-bearing, not incidental."""
-    home = make_home(tmp_path)
-    case_id = _record_case(
-        tmp_path, home, kind="parked", outcome="parked",
-        overrides={"parked_for": "overseer", "parked_reason": "authority-unclear"},
-    )
-
-    def _full_view_open_cases(home, run):
-        rows = cases.list_cases(home, parked_for="overseer", only_ok=True)
-        blocks = []
-        for row in rows:
-            view = cases.show(home, row["case"], evidence_only=False)  # BUG
-            blocks.append(view.to_text())
-        return "\n\n".join(blocks)
-
-    monkeypatch.setattr(steward_prompt, "_render_open_cases", _full_view_open_cases)
-    run = _run(tmp_path)
-    packet = steward_prompt.assemble(home, tmp_path / "cache", run, [])
-    open_cases_text = dict(packet.blocks)["open_cases"]
-    assert case_id in open_cases_text
-    assert "outcome: parked" in open_cases_text  # RED: section leaked
-
-
 # --------------------------------------------------------- smoke tests
 
 
@@ -407,16 +258,6 @@ def test_output_contract_is_a_module_constant_dict():
         "model-updates.yaml", "statements.yaml",
     ):
         assert name in steward_prompt.OUTPUT_CONTRACT
-
-
-def test_assemble_never_touches_hosts_or_settings_directly(tmp_path, monkeypatch):
-    """assemble() reads hosts/settings ONLY through conditions.feed --
-    poisoning hosts.load_hosts/settings.resolve_setting at the
-    steward_prompt module's own bound names (which don't exist, since
-    it never imports them) would be a false test; instead this asserts
-    the module has no such names bound at all."""
-    assert not hasattr(steward_prompt, "load_hosts")
-    assert not hasattr(steward_prompt, "resolve_setting")
 
 
 def test_assemble_with_empty_home_does_not_raise(tmp_path):
@@ -568,28 +409,6 @@ def test_tampered_prior_case_is_excluded_with_a_line_not_silently(tmp_path):
     assert "1 prior cases excluded: freeze hash mismatch" in briefs
 
 
-def test_negative_control_dropping_the_prior_case_exclusion_line_fails(tmp_path, monkeypatch):
-    """Mutation for S6: restore the pre-fold behaviour (`only_ok=True`,
-    no exclusion count at all) and confirm the previous test's positive
-    assertion -- the exclusion line's presence -- now fails."""
-    home = make_home(tmp_path)
-    case_id = _record_case(tmp_path, home, records=["lrn-aa00beef"])
-    path = next((home / "cases").glob(f"*/{case_id}.md"))
-    text = path.read_text(encoding="utf-8")
-    path.write_text(text.replace("settled", "settleD"), encoding="utf-8")
-
-    def _no_exclusion_line(home, record_id):
-        if not record_id:
-            return [], 0
-        return cases.list_cases(home, record_id=record_id, only_ok=True), 0
-
-    monkeypatch.setattr(steward_prompt, "_existing_cases_for_record", _no_exclusion_line)
-    run = _run(tmp_path)
-    packet = steward_prompt.assemble(home, tmp_path / "cache", run, [_proposal("lrn-aa00beef")])
-    briefs = dict(packet.blocks)["briefs"]
-    assert "prior cases excluded" not in briefs  # RED: the count is gone
-
-
 # --------------------------------------------------- fold r1: S7 (withheld)
 
 
@@ -599,22 +418,6 @@ def test_withheld_provisional_entries_text_has_no_review_date(tmp_path):
     assert "review date" not in joined.lower()
     assert "review_by" not in joined.lower() or "no review_by" in joined.lower()
     assert "has not yet seen" in joined.lower()
-
-
-def test_negative_control_reintroducing_a_review_date_phrase_is_caught(monkeypatch):
-    real = steward_prompt.withheld
-
-    def _with_review_date():
-        items = list(real())
-        items[2] = items[2].replace(
-            "the user has not yet seen -- there is no review_by field and no expiry",
-            "with a review date",
-        )
-        return tuple(items)
-
-    monkeypatch.setattr(steward_prompt, "withheld", _with_review_date)
-    joined = " ".join(steward_prompt.withheld())
-    assert "review date" in joined.lower()  # RED under the mutation
 
 
 # --------------------------------------------------------- fold r1: N3

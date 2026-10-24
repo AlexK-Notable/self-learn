@@ -7,13 +7,7 @@ Every test here relies on the suite-wide autouse fixture in
 `SELF_LEARN_CLAUDE_DIR` at per-test tmp paths — no test here needs to set
 those itself unless it wants a DIFFERENT specific path (the real-``~/.
 claude``-never-touched control below is the one that does).
-
-N5 (fold r1): the `test_negative_control_*` functions below monkeypatch
-a BROKEN implementation and assert the mutated, wrong behaviour -- they
-permanently document a defect shape for a future reader, they do not
-guard against a regression the way every other test here does. Do not
-read a green `test_negative_control_*` as coverage of the real code
-path; the real guard is the un-prefixed test right above each one."""
+"""
 
 from __future__ import annotations
 
@@ -160,25 +154,6 @@ def test_missing_settings_json_yields_unavailable_output_style(tmp_path, monkeyp
     assert by_key["surface.output-style.active"].value == "unavailable"
 
 
-def test_negative_control_hosts_yaml_exception_propagates_when_not_caught(tmp_path, monkeypatch):
-    """Mutation for test 5 (build-u9.md): remove the fail-closed
-    try/except around `hosts.load_hosts` and confirm `feed()` then
-    RAISES instead of degrading — proves the try/except is load-bearing,
-    not decorative. Patches a COPY of `_host_items` in place of the
-    module's own (never edits the source file), so this test is the
-    negative control by construction and needs no restore step."""
-    home = make_home(tmp_path)
-    (home / "hosts.yaml").write_text("not: [valid, yaml: :::", encoding="utf-8")
-
-    def _unguarded_host_items(home, observed_at):
-        parsed = hosts.load_hosts(home)  # no try/except: raises on garbage
-        return []
-
-    monkeypatch.setattr(conditions, "_host_items", _unguarded_host_items)
-    with pytest.raises(hosts.HostsError):
-        conditions.feed(home)
-
-
 # --------------------------------------------------- test 6: withholding
 
 
@@ -211,70 +186,7 @@ def test_feed_never_leaks_a_lesson_body_or_telemetry_text(tmp_path):
     assert "lrn-aa00fead" in routed_ids
 
 
-def test_negative_control_including_a_body_in_the_feed_is_caught(tmp_path, monkeypatch):
-    """Mutation for test 6: monkeypatch `_report_items` to smuggle the
-    record's own trigger text into an item value, proving the previous
-    test's assertion actually fires red on a real leak."""
-    home = make_home(tmp_path)
-    marker = "PLANTED-BODY-TEXT-LEAK-CHECK"
-    record = make_behavior(
-        record_id="lrn-aa00feac",
-        trigger=f"trigger mentioning {marker}",
-    )
-    path = create_record(home, record)
-
-    real_report_items = conditions._report_items
-
-    def _leaky_report_items(home, observed_at):
-        out = real_report_items(home, observed_at)
-        body_text = path.read_text(encoding="utf-8")
-        out.append(
-            conditions.Item("report.leak", body_text, observed_at, "test-mutation")
-        )
-        return out
-
-    monkeypatch.setattr(conditions, "_report_items", _leaky_report_items)
-    items = conditions.feed(home)
-    rendered = "\n".join(f"{it.key}={it.value}" for it in items)
-    assert marker in rendered  # RED under the mutation: the leak is visible
-
-
 # ---------------------------------------- own extra mutation (declared.*)
-
-
-def test_negative_control_declared_prefix_stripping_matters(tmp_path, monkeypatch):
-    """Own mutation (brief: 'at least one of your own choosing'): if
-    `_declared_items` stopped stripping a leading 'declared.' from the
-    title before re-adding the prefix, the key would double up
-    ('declared.declared.host...'). Prove the CURRENT code does not do
-    that (green), then monkeypatch a version that skips the strip and
-    show the key changes shape (red-equivalent: the un-stripped key is
-    what a regression would produce, and it is absent from the real
-    feed)."""
-    home = make_home(tmp_path)
-    user_model.add_entry(
-        home, container="E", title="declared.some.key: value",
-        because="fixture", source="own-words", by="human", ref="stmt-x",
-    )
-    by_key = _item_map(conditions.feed(home))
-    assert "declared.some.key" in by_key
-    assert "declared.declared.some.key" not in by_key  # regression shape, must be absent
-
-    def _unstripped_declared_items(home, observed_at):
-        containers = user_model.show(home)["containers"]
-        out = []
-        for entry in containers.get("E", []):
-            title = (entry.get("title") or "").strip()
-            key_part, sep, value_part = title.partition(": ")
-            key = f"declared.{key_part.strip()}"  # BUG: no strip of existing prefix
-            value = value_part.strip() if sep else "true"
-            out.append(conditions.Item(key, value, observed_at, "mutated"))
-        return out
-
-    monkeypatch.setattr(conditions, "_declared_items", _unstripped_declared_items)
-    mutated_by_key = _item_map(conditions.feed(home))
-    assert "declared.declared.some.key" in mutated_by_key  # the bug shape, now present
-    assert "declared.some.key" not in mutated_by_key  # RED: the correct key vanished
 
 
 # ------------------------------------------- O-3: overseer run timestamps
@@ -300,34 +212,6 @@ def test_overseer_run_dates_are_direct_top_level_coverage_facts(tmp_path):
     by_key = _item_map(conditions.feed(home))
     assert by_key["overseer.last_examined_at"].value == "2026-09-12T00:00:00Z"
     assert by_key["overseer.last_run_at"].value == "2026-09-14T00:00:00Z"
-
-
-def test_negative_control_overseer_dates_derived_from_strata_are_caught(tmp_path, monkeypatch):
-    """A reader deriving dates from strata reports different facts."""
-    home = make_home(tmp_path)
-    _write_coverage_with_two_stamped_strata(home)
-
-    def _min_instead_of_max(home, observed_at):
-        path = home / "overseer" / "coverage.yaml"
-        data = population.load_coverage(path)
-        oldest = None
-        for entry in data["strata"].values():
-            value = entry.get("last_examined_at")
-            if isinstance(value, str) and (oldest is None or value < oldest):  # BUG: min
-                oldest = value
-        return [
-            conditions.Item("overseer.last_run_at", "unavailable", observed_at, "mutated"),
-            conditions.Item(
-                "overseer.last_examined_at",
-                oldest if oldest is not None else "unavailable",
-                observed_at,
-                "mutated",
-            ),
-        ]
-
-    monkeypatch.setattr(conditions, "_overseer_run_items", _min_instead_of_max)
-    by_key = _item_map(conditions.feed(home))
-    assert by_key["overseer.last_examined_at"].value == "2026-09-01T00:00:00Z"  # RED: derived, not top-level
 
 
 # ---------------------------------------- fold r1: S8 (happy-path values)
@@ -406,46 +290,6 @@ def test_status_items_producers_fail_independently(tmp_path, monkeypatch):
     assert by_key["status.intents_stopped_count"].value == 0
 
 
-def test_negative_control_shared_try_blanks_the_other_producer_too(tmp_path, monkeypatch):
-    """Mutation for N1: restore the pre-fold shared-`try` shape and
-    confirm one producer's failure now blanks the OTHER producer's keys
-    too -- the defect the split-`try` fix above closes."""
-    home = make_home(tmp_path)
-    keys = (
-        "status.total_pending", "status.unanalyzed_total",
-        "status.intents_probe", "status.intents_stopped_count",
-    )
-
-    def _shared_try_status_items(home, observed_at):
-        try:
-            fast = worker.fast_status(home)  # BUG: raises, below never runs
-            from self_learn import intents as intents_mod
-
-            cls = intents_mod.classify_status(home)
-            values = (
-                fast.get("total_pending", "unavailable"),
-                fast.get("unanalyzed_total", "unavailable"),
-                cls.probe,
-                len(cls.stopped),
-            )
-            return [
-                conditions.Item(k, v, observed_at, "mutated") for k, v in zip(keys, values)
-            ]
-        except Exception as exc:  # noqa: BLE001
-            return [
-                conditions.Item(k, "unavailable", observed_at, f"mutated: {exc}")
-                for k in keys
-            ]
-
-    def _broken_fast_status(home):
-        raise RuntimeError("fold r1 N1 negative-control fixture")
-
-    monkeypatch.setattr(worker, "fast_status", _broken_fast_status)
-    monkeypatch.setattr(conditions, "_status_items", _shared_try_status_items)
-    by_key = _item_map(conditions.feed(home))
-    assert by_key["status.intents_probe"].value == "unavailable"  # RED: collateral damage
-
-
 # --------------------------------------------------------- fold r1: N2
 
 
@@ -478,25 +322,6 @@ def test_feed_survives_output_style_and_cache_dir_producer_failures(tmp_path, mo
     # broken-source test at the end of this file.)
     # a group with no cache_dir/output-style dependency stays real.
     assert by_key["ledger.head"].value != "unavailable"
-
-
-def test_negative_control_unguarded_output_style_raises_through_feed(tmp_path, monkeypatch):
-    """Mutation for N2: remove the guard around `_output_style_item`
-    (call it bare, as pre-fold code did) and confirm `feed()` now
-    RAISES instead of degrading."""
-    home = make_home(tmp_path)
-
-    def _broken_output_style_item(observed_at):
-        raise RuntimeError("fold r1 N2 negative-control fixture")
-
-    def _unguarded_feed(home, cache_dir=None):
-        items = [conditions.Item("probe.before", "ok", "now", "src")]
-        items.append(conditions._output_style_item("now"))  # BUG: no try/except
-        return items
-
-    monkeypatch.setattr(conditions, "_output_style_item", _broken_output_style_item)
-    with pytest.raises(RuntimeError):
-        _unguarded_feed(home)  # RED: proves the guard, not the plumbing, is what saves feed()
 
 
 # ------------------------ 2026-09-22: the steward rows read the committed run

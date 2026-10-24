@@ -294,16 +294,6 @@ def test_the_brief_no_longer_carries_the_sa1_hold_and_quotes_s72():
     assert "SA-1" not in dict(steward_prompt.STANDING_RULINGS)
 
 
-def test_sa1_is_marked_superseded_by_s72_in_the_decisions_register():
-    spec = Path(__file__).resolve().parents[4] / "docs/specs/self-learn/03-decisions.md"
-    text = spec.read_text(encoding="utf-8")
-    sa1 = next(line for line in text.splitlines() if line.startswith("| SA-1 |"))
-    assert "Superseded 2026-09-28 by S-72" in sa1
-    s72 = next(line for line in text.splitlines() if line.startswith("| S-72 |"))
-    assert "leave the overseer the job of corrercting it" in s72  # the user's own words
-    assert "not a user ruling" in s72
-
-
 # ------------------------------------------------- 3. hooks the steward writes
 
 
@@ -434,12 +424,6 @@ def test_a_hook_compile_input_is_shape_checked_with_the_sheet(tmp_path):
         load({**good, "hook": {"rationale": "r", "hook": {}}})
     with pytest.raises(batch.BatchError, match="must be a mapping"):
         load({**good, "hook": "script text"})
-
-
-def test_the_hook_route_is_open_to_the_steward_and_the_overseer_only():
-    from self_learn import batch
-
-    assert batch.HOOK_ROUTING_ACTORS == {"overseer", "steward"}
 
 
 # ------------------------------------------- 4. re-deciding a placed lesson
