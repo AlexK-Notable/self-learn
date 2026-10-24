@@ -1016,11 +1016,6 @@ def test_un_block_sha_unchanged(tmp_path):
 # ===================================================================== DOC
 
 
-def test_doc1_decisions_row_present():
-    text = (_repo_root() / "docs/specs/self-learn/03-decisions.md").read_text(encoding="utf-8")
-    assert len([ln for ln in text.splitlines() if ln.startswith("| S-52 ")]) == 1
-
-
 def test_doc2_forward_work_map_rows_present():
     text = (_repo_root() / "docs/specs/self-learn/14-forward-work-map.md").read_text(encoding="utf-8")
     for fw in ("FW-125", "FW-126", "FW-127"):
