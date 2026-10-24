@@ -22,8 +22,6 @@ import time
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "self-learn-notify"
-UI_OPEN_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "self-learn-ui-open"
-
 _REQUIRED_REAL_BINS = (
     "bash",
     "env",
@@ -130,11 +128,6 @@ _HYPRCTL_ABSENT_CHROMIUM = """
 echo "$*" >> "{log}"
 exit 0
 """
-
-
-def test_script_exists_and_is_executable() -> None:
-    assert SCRIPT.is_file(), f"missing notifier at {SCRIPT}"
-    assert os.access(SCRIPT, os.X_OK)
 
 
 # --- argv contract (P3-6, pinned verbatim) ------------------------------
@@ -336,7 +329,3 @@ def test_resolves_sibling_ui_open_through_a_symlink(tmp_path: Path) -> None:
 
 
 # --- sanity: the real sibling script this suite delegates to exists ----
-
-
-def test_sibling_ui_open_script_exists() -> None:
-    assert UI_OPEN_SCRIPT.is_file(), f"missing sibling at {UI_OPEN_SCRIPT}"

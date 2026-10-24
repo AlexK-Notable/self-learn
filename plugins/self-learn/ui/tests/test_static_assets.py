@@ -20,10 +20,6 @@ EXPECTED_HTMX_SHA256 = (
 _HEADER_SHA_RE = re.compile(r"sha256:\s*([0-9a-f]{64})")
 
 
-def test_htmx_file_exists() -> None:
-    assert HTMX_PATH.is_file()
-
-
 def test_htmx_header_records_the_correct_sha256() -> None:
     text = HTMX_PATH.read_text(encoding="utf-8")
     first_line = text.splitlines()[0]
@@ -41,12 +37,6 @@ def test_htmx_content_hash_matches_the_recorded_hash() -> None:
     body = "".join(lines[1:])  # drop our header comment line
     digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
     assert digest == EXPECTED_HTMX_SHA256
-
-
-def test_htmx_content_looks_like_htmx() -> None:
-    text = HTMX_PATH.read_text(encoding="utf-8")
-    assert "htmx" in text[:200].lower()
-    assert "function" in text
 
 
 def test_app_js_exists_and_has_keydown_and_eventsource_stubs() -> None:

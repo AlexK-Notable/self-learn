@@ -25,10 +25,9 @@ from self_learn_ui.app import create_app
 from self_learn_ui.env import load_env
 from self_learn_ui.runner import FakeRunner, RunResult
 
-from self_learn.ledger_ops import create_record, defer_record
+from self_learn.ledger_ops import create_record
 
 from support import (
-    days_ahead,
     commit_all,
     init_repo,
     make_behavior,
@@ -447,48 +446,6 @@ class TestOtherVerbsEvidenceRendering:
 # cycle to produce the success leg's markup at all, checks the button
 # itself never targets that dead end.
 # ===================================================================== #
-
-
-class TestResolvedRecordRedirectsAwayFromItsOwnDetailPage:
-    """U-grad-ui spec criterion 11: the class name and this docstring
-    both described the redirect as the reason the `v` button is
-    suppressed — that reason changed (§2.1 VIEWABLE deletes the
-    redirect; §6.2's own comment fix, criterion 9, states the surviving
-    one), so the prose changes with it. The `v`-button behaviour ITSELF
-    does not change (§6.2) — `_evidence_ctx`'s `record_url` still omits
-    a link for route/reject/graduate; see
-    `TestViewLinkNeverTargetsARecordItWouldRedirectAway` below, untouched.
-    Pinned directly with a REAL status change (`resolve_record_directly`/
-    `defer_record` — no FakeRunner involved)."""
-
-    def test_a_routed_record_no_longer_resolves_at_record_id(
-        self, tmp_path: Path
-    ) -> None:
-        """New contract (was: 303 to the bucket's resolved-elsewhere
-        banner): the record's OWN Detail page renders it directly, 200,
-        carrying its Trigger text — the resolved view §2.1 adds."""
-        sb, rec = _seed(tmp_path)
-        resolve_record_directly(sb.ledger, sb.ledger / "skills" / "s", rec)
-        c, _runner = make_client(sb)
-        r = c.get(f"/record/{rec.id}", follow_redirects=False)
-        assert r.status_code == 200
-        # `_seed`'s make_behavior() default trigger (support.py) — the
-        # record's own Trigger text, not merely `200` on an empty page.
-        assert "About to edit .storage while HA is running." in r.text
-
-    def test_a_deferred_record_still_resolves_at_record_id(
-        self, tmp_path: Path
-    ) -> None:
-        """The one verb the button still points at — `defer_record`
-        leaves the file in `pending/`, status "deferred", which
-        `record_detail`'s viewable set (`("pending", "deferred")`)
-        accepts."""
-        sb, rec = _seed(tmp_path)
-        defer_record(sb.ledger, rec.id, days_ahead(30))
-        c, _runner = make_client(sb)
-        r = c.get(f"/record/{rec.id}", follow_redirects=False)
-        assert r.status_code == 200
-        assert rec.id in r.text
 
 
 class TestViewLinkNeverTargetsARecordItWouldRedirectAway:

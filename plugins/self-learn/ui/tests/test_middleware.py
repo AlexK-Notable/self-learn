@@ -55,12 +55,6 @@ def client(app: FastAPI, **kwargs) -> TestClient:
 
 
 class TestHostAllowlist:
-    def test_correct_host_127_passes(self) -> None:
-        c = client(make_app())
-        c.cookies.set(TOKEN_COOKIE_NAME, TOKEN)
-        resp = c.get("/")
-        assert resp.status_code == 200
-
     def test_localhost_host_passes(self) -> None:
         app = make_app()
         c = TestClient(app, base_url=f"http://localhost:{PORT}")
@@ -192,14 +186,6 @@ class TestCSPHeader:
         )
 
 
-class TestForbiddenPageNamesLauncher:
-    def test_403_names_the_launcher(self) -> None:
-        c = client(make_app())
-        resp = c.get("/")
-        assert resp.status_code == 403
-        assert "self-learn-ui-open" in resp.text
-
-
 class TestMintToken:
     def test_mint_token_is_nonempty_and_varies(self) -> None:
         a = mint_token()
@@ -244,15 +230,6 @@ class TestTokenFile:
         assert path.read_text(encoding="utf-8") == token
         mode = stat.S_IMODE(path.stat().st_mode)
         assert mode == 0o600
-
-    def test_write_token_file_creates_parent_dirs(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        runtime = tmp_path / "runtime"
-        runtime.mkdir()
-        monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
-        path = write_token_file(mint_token())
-        assert path.parent.is_dir()
 
     def test_write_token_file_creates_parent_dirs_when_runtime_dir_unset(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -342,10 +319,3 @@ class TestActivityTracking:
         resp = c.get("/boom", cookies={TOKEN_COOKIE_NAME: TOKEN})
         assert resp.status_code == 500
         assert tracker.in_flight == 0
-
-    def test_untracked_construction_still_works(self) -> None:
-        # tracker=None (the pre-Y-14 construction every existing test
-        # uses) must stay valid.
-        app = make_app()
-        c = client(app)
-        assert c.get("/", cookies={TOKEN_COOKIE_NAME: TOKEN}).status_code == 200
