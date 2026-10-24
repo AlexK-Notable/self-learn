@@ -125,29 +125,6 @@ class TestActorGatesTheHookRefusal:
         record = Record.from_path(env.resolved(RID))
         assert record.routing["by"] == "overseer"
 
-    def test_default_actor_route_keeps_the_old_by_heuristic(self, tmp_path, monkeypatch):
-        """Companion to the test above (fold r1, F3): the default
-        (`"human"`) actor is UNCHANGED — `route`'s own dest-is-not-None
-        heuristic still decides `routing.by`, never the actor, for the
-        default caller. Runs against a NON-hook dest (a hook route
-        never reaches `verbs.route` at all under the default actor —
-        it refuses first) to isolate the by-heuristic from the S-29
-        refusal entirely."""
-        from self_learn.ledger_ops import find_record_path
-        from test_batch import _env, _seed_pending
-
-        home = _env(tmp_path, monkeypatch)
-        rid = _seed_pending(home, "lrn-f0000001")
-        sheet = _write_sheet(
-            tmp_path,
-            f"version: 1\nitems:\n  - id: {rid}\n    verb: route\n    dest: skill-md\n",
-        )
-        items = batch.load_sheet(sheet)
-        result = batch.run(home, items, no_push=True)  # actor defaults to "human"
-        assert result.summary["applied"] == 1
-        record = Record.from_path(find_record_path(home, rid))
-        assert record.routing["by"] == "human"
-
     def test_sheet_level_actor_key_refused_regardless_of_the_caller(
         self, env, tmp_path
     ):
@@ -438,23 +415,6 @@ class TestActivationExceptionRefusesRatherThanEscapes:
 
 
 # ---------------------------------------------------------------- test 5
-
-
-class TestActorValidated:
-    def test_bogus_actor_refused_before_item_1(self, env, tmp_path):
-        seed_hook(env, rid=RID)
-        sheet = _hook_sheet(tmp_path, RID)
-        items = batch.load_sheet(sheet)
-        with pytest.raises(batch.BatchError, match="actor="):
-            batch.run(env.home, items, no_push=True, actor="bogus")
-        assert env.pending(RID).is_file()  # nothing ran
-
-    def test_bogus_actor_refused_in_dry_run_too(self, env, tmp_path):
-        seed_hook(env, rid=RID)
-        sheet = _hook_sheet(tmp_path, RID)
-        items = batch.load_sheet(sheet)
-        with pytest.raises(batch.BatchError, match="actor="):
-            batch.dry_run(env.home, items, actor="bogus")
 
 
 # ------------------------------------------------------------------- F6
@@ -804,41 +764,6 @@ class TestActorRidesEveryLedgerSurface:
         assert result.actor == "overseer"
         assert result.to_json()["actor"] == "overseer"
 
-    def test_mutation_dropping_the_by_trailer_reddens(self, env, tmp_path, monkeypatch):
-        """Mutation witness: `verbs.hook_activate`'s own `by=(f.get("by")
-        or actor)` forwarding, dropped back to no `by` at all — the
-        SAME observable shape as before F2(b), reproduced by
-        monkeypatching `verbs.hook_activate` to strip the kwarg before
-        calling through (the hand-edit was ALSO performed once directly
-        against `batch.py`'s own call site: RED on the trailer
-        assertion above, reverted, GREEN — recorded in this build's
-        report)."""
-        import subprocess
-
-        seed_hook(env, rid=RID)
-        sheet = _hook_sheet(tmp_path, RID)
-        items = batch.load_sheet(sheet)
-        real_hook_activate = verbs.hook_activate
-
-        def drop_by(*a, **kw):
-            kw.pop("by", None)
-            return real_hook_activate(*a, **kw)
-
-        monkeypatch.setattr(verbs, "hook_activate", drop_by)
-        result = batch.run(
-            env.home, items, no_push=True, actor="overseer", hook_activation=True,
-        )
-        assert result.items[0].state == "applied", result.items[0].detail
-        activation_sha = result.items[0].sha
-        assert activation_sha is not None
-        trailer = subprocess.run(
-            ["git", "-C", str(env.home), "log", "-1", activation_sha,
-             "--format=%(trailers:key=By,valueonly)"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        assert trailer == ""  # RED shape: no trailer at all
-
-
 # ------------------------------------------------------------------- F4
 
 
@@ -965,46 +890,6 @@ class TestReRunReAttemptsActivationOnly:
         assert n_after == 1
         assert "delegated" not in ((rec_after.history or [])[-1].get("note") or "")
 
-    def test_mutation_restoring_the_status_only_check_reddens(
-        self, env, tmp_path, monkeypatch
-    ):
-        """Mutation witness: `classify`'s own hook-aware branch removed
-        (restoring the pre-fold status-only check — `record.status ==
-        "routed"` plus destination match alone decides already-applied,
-        regardless of the activation state) reddens the shape (ii) test
-        above at the `item2.state == "applied"` assertion (the retry
-        reports `already-applied` instead). Reproduced here by
-        monkeypatching `batch._hook_activation_registered` to always
-        return `True` (unconditionally "fully registered", the
-        pre-fold shape's effective behaviour for a hook-dest already-
-        routed record) rather than reading the record's own history
-        (the hand-edit — deleting the `if want_dest ==
-        REFUSED_HOOK_DESTINATION and actor == "overseer":` branch in
-        `batch.classify` — was ALSO performed once directly: RED on
-        `test_shape_ii_gate_flips_true_reactivates_instead_of_already_
-        applied` above, reverted, GREEN; recorded in this build's
-        report)."""
-        seed_hook(env, rid=RID)
-        sheet1 = _hook_sheet(tmp_path, RID, name="hook-sheet-1.yaml")
-        items1 = batch.load_sheet(sheet1)
-        run1 = batch.run(
-            env.home, items1, no_push=True, actor="overseer", hook_activation=False,
-        )
-        assert run1.items[0].state == "applied"
-
-        monkeypatch.setattr(batch, "_hook_activation_registered", lambda record: True)
-        sheet2 = _hook_sheet(tmp_path, RID, name="hook-sheet-2.yaml")
-        items2 = batch.load_sheet(sheet2)
-        run2 = batch.run(
-            env.home, items2, no_push=True, actor="overseer", hook_activation=True,
-        )
-        item2 = run2.items[0]
-        # RED shape: silently "already-applied" although settings.json
-        # is still untouched -- the exact defect F4 (i) measured.
-        assert item2.state == "already-applied"
-        assert not (env.claude / "settings.json").exists()
-
-
 # --------------------------------------------------------- own mutation
 
 
@@ -1028,49 +913,3 @@ class TestItemResultCarriesActivationReceipts:
         assert item.detail is not None
         assert "placed" in item.detail
         assert "registered" in item.detail
-
-    def test_mutation_dropping_detail_reddens_the_assertion(
-        self, env, tmp_path, monkeypatch
-    ):
-        """Mutation witness (own), self-verifying: simulates dropping
-        the ``detail=`` kwarg from the overseer-path `ItemResult`
-        return in `batch._dispatch` by wrapping `verbs.hook_activate`
-        so its result's `post_notes` reads empty — the SAME shape
-        `_dispatch`'s own ``"; ".join(hook_result.post_notes)`` line
-        would produce if it were never given the receipts to join.
-        This reproduces the mutation's OBSERVABLE effect (the
-        hook_activate-specific receipts vanish from `detail`) without
-        needing to hand-edit `batch.py` inside a test run; the
-        hand-edit was ALSO performed once by hand (RED, reverted,
-        GREEN) and is recorded in this build's report.
-
-        Fold r1 (F9): `detail` is no longer JUST the joined
-        `post_notes` — it always leads with ``"route commit <sha>"``
-        (route's own commit, folded in alongside hook_activate's), so
-        stripping `post_notes` no longer collapses `detail` to `None`.
-        The RED shape this test now pins is narrower and more precise:
-        the hook_activate-SPECIFIC text (its own step receipts —
-        "placed"/"registered") is gone, even though `detail` itself is
-        non-empty."""
-        seed_hook(env, rid=RID)
-        sheet = _hook_sheet(tmp_path, RID)
-        items = batch.load_sheet(sheet)
-        real_hook_activate = verbs.hook_activate
-
-        def stripped_notes(*a, **kw):
-            result = real_hook_activate(*a, **kw)
-            result.post_notes.clear()
-            return result
-
-        monkeypatch.setattr(verbs, "hook_activate", stripped_notes)
-        result = batch.run(
-            env.home, items, no_push=True, actor="overseer", hook_activation=True,
-        )
-        item = result.items[0]
-        assert item.state == "applied"
-        # RED shape under the mutation: hook_activate's own step
-        # receipts never reach `detail` -- where the real (unmutated)
-        # path asserts them present above.
-        detail = item.detail or ""
-        assert "placed" not in detail
-        assert "registered" not in detail

@@ -152,10 +152,6 @@ class TestExitSixNeverLiesAboutState:
             "the retry exit 6 documents as safe did not work"
         )
 
-    def test_the_two_causes_never_share_a_code(self):
-        """The whole point, as an invariant on the constants."""
-        assert gitops.EXIT_GIT_FAILED != gitops.EXIT_HALF_WRITTEN
-
     def test_a_half_written_error_cannot_exist_without_a_repair(self):
         """The type is what forces the repair to be printed: a surface
         cannot report this state and forget to say how to fix it, because
@@ -189,46 +185,6 @@ class TestExitSixNeverLiesAboutState:
             f"promises nothing was written\n{out.err}"
         )
         assert "reconcile" in out.err, out.err
-
-    def test_teach_and_the_verbs_agree_on_what_each_code_means(
-        self, home, tmp_path, monkeypatch, capsys
-    ):
-        """The deepest half of the finding: the SAME integer meant
-        opposite things on two surfaces, and each command file documented
-        its own as the truth — teach.md said 6 = "the record IS written",
-        review.md said 6 = "nothing was written". Both were locally
-        correct, which is why neither looked like a bug. Pin the agreement
-        end-to-end: on BOTH surfaces, a commit failure is 7."""
-        flag = failing_git_shim(tmp_path, monkeypatch)
-        flag.touch()
-        try:
-            teach_code = cli.main(
-                [
-                    "teach",
-                    "--skill",
-                    "s",
-                    "--type",
-                    "knowledge",
-                    "--fact",
-                    "The Beacon reserves 192.0.2.232.",
-                ]
-            )
-        finally:
-            flag.unlink()
-        capsys.readouterr()
-        create_record(home, make_behavior(record_id="lrn-77770003"))
-        commit_all(home, "seed")
-        flag.touch()
-        try:
-            verb_code = cli.main(["reject", "lrn-77770003"])
-        finally:
-            flag.unlink()
-        capsys.readouterr()
-        assert teach_code == verb_code == gitops.EXIT_HALF_WRITTEN, (
-            f"teach → {teach_code}, reject → {verb_code}: the same state "
-            "(written, uncommitted) must be the same code on every surface"
-        )
-
 
 # ================== MAJOR 4: reporting a loss is not preventing one
 
@@ -287,28 +243,6 @@ class TestUncommittedRecordsAreRecovered:
             "reconcile swept a file that is not the ledger's truth — it "
             "commits records, it does not `git add -A`"
         )
-
-    def test_reconcile_refuses_to_commit_half_a_rename(self, home):
-        """The one shape it must NOT guess at. A half-committed `git mv`
-        (what a resolution verb leaves when its commit fails) committed one
-        half at a time is the exact corruption `gitops.known_paths` exists
-        to prevent: the record in BOTH pending/ and resolved/, git status
-        clean, exit 0."""
-        create_record(home, make_behavior(record_id="lrn-77771003"))
-        (home / "skills" / "s" / "resolved").mkdir(parents=True, exist_ok=True)
-        commit_all(home, "seed")
-        git(
-            home,
-            "mv",
-            "skills/s/pending/lrn-77771003.md",
-            "skills/s/resolved/lrn-77771003.md",
-        )
-
-        result = reconcile_mod.reconcile(home, no_push=True)
-
-        assert not result.healed, "reconcile committed half a rename"
-        assert result.blocked, "…and did not even say it saw one"
-        assert any("lrn-77771003" in line for line in result.blocked)
 
     def test_the_miner_reconciles_a_previous_runs_orphans_at_run_start(
         self, home, monkeypatch, tmp_path

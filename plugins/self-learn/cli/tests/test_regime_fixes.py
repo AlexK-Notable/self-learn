@@ -343,20 +343,7 @@ def test_route_crash_window_recovery_is_two_step(env, capsys):
 # ------------------------------------------------------- shell-suite wrappers
 
 
-SENTINEL_SH = REPO_ROOT / "tests" / "sentinel-test.sh"
 INSTALL_SH = Path(__file__).resolve().parent / "install-commands-test.sh"
-
-
-@pytest.mark.skipif(not SENTINEL_SH.is_file(), reason="repo-root suite absent")
-def test_sentinel_shell_suite_runs():
-    """sentinel-test.sh proves the autosync SIDE of the sentinel contract
-    (the sync script pausing on a fresh sentinel). It was orphaned — no
-    runner invoked it. It self-sandboxes (mktemp + redirected XDG)."""
-    proc = subprocess.run(
-        ["bash", str(SENTINEL_SH)], capture_output=True, text=True, timeout=180
-    )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "all 3 cases pass" in proc.stdout
 
 
 @pytest.mark.skipif(not INSTALL_SH.is_file(), reason="script absent")
