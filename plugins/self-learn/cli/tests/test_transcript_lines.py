@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from self_learn import miner, refs, steward_inputs, transcript_lines
-from self_learn.mining import check, compare, spine
+from self_learn.mining import check, compare, spine, tools
 
 
 def row(n, text, role="user"):
@@ -31,6 +31,7 @@ def test_physical_rows_reach_refs_spine_checker_and_comparison(tmp_path, separat
     assert refs.entry_text(refs.resolve("session", 1, roots=[root]), roots=[root]) == "first" + separator + "turn"
     session = spine.read_session(path)
     assert len(session.lines) == 3 and session.entries[1]["uuid"] == "u-2"
+    assert tools.read_entries(path)[1]["uuid"] == "u-2"
     sp = spine.build_spine(session, 2, 3)
     checker = check._Checker(sp, [root], frozenset(), frozenset())
     assert checker.resolve({"line": 2}).uuid == "u-2"
@@ -82,6 +83,8 @@ def test_only_lf_ends_a_row_and_torn_tail_stays_unread(tmp_path):
     assert len(refs._lines(path)) == 3
     assert miner._complete_lines(path) == ['{"type":"user",\r"uuid":"one"}\r', '{"uuid":"two"}']
     assert refs._entry(refs._lines(path)[0])["uuid"] == "one"
+    assert [e["uuid"] if e else None for e in tools.read_entries(path)] == ["one", "two", None]
+    assert [e["uuid"] for e in tools.read_entries(path, end=1)] == ["one"]
     assert transcript_lines.split("") == []
     assert transcript_lines.split("\n\n") == ["", ""]
     path.write_bytes(b'{"uuid":"tail"}')

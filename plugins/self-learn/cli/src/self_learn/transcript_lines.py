@@ -4,7 +4,8 @@ Do not use universal-newline text I/O before this splitter: a bare CR is
 JSON whitespace, not a row boundary. CRLF's CR is retained for json.loads.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from pathlib import Path
 
 FORMAT = "newline-v1"
 
@@ -15,6 +16,15 @@ def split(text: str, *, complete: bool = False) -> list[str]:
     if complete or rows[-1] == "":
         rows.pop()
     return rows
+
+
+def iter_file(path: Path, *, end: int | None = None) -> Iterator[str]:
+    """Stream LF-delimited rows through the same splitter, with a read bound."""
+    with path.open("rb") as stream:
+        for number, raw in enumerate(stream, 1):
+            if end is not None and number > end:
+                break
+            yield split(raw.decode("utf-8"))[0]
 
 
 def legacy_line(rows: Sequence[str], number: int) -> int | None:

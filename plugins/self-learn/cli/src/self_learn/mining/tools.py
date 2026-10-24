@@ -22,7 +22,7 @@ from typing import Any, Mapping
 
 from jsonschema import Draft202012Validator, validators
 
-from .. import refs
+from .. import refs, transcript_lines
 from ..index import fts5, textquery
 from ..index.protocol import EmbedProvider
 from ..index.store import FROM_ENV, LessonIndex, _sections
@@ -66,15 +66,12 @@ ROLE_LABELS = {"user": "YOU", "agent": "AGENT-WRITTEN", "assistant": "AGENT",
 def read_entries(path: Path, end: int | None = None) -> list[dict | None]:
     """Keep physical line slots, including malformed/non-object JSON."""
     out: list[dict | None] = []
-    with path.open(encoding="utf-8") as stream:
-        for n, line in enumerate(stream, 1):
-            if end is not None and n > end:
-                break
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                entry = None
-            out.append(entry if isinstance(entry, dict) else None)
+    for line in transcript_lines.iter_file(path, end=end):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            entry = None
+        out.append(entry if isinstance(entry, dict) else None)
     return out
 
 
