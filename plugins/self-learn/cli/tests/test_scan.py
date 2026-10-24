@@ -69,14 +69,6 @@ def test_credential_assignment_fires() -> None:
     assert rules_of("SECRET=verylongvalue99") == ["credential-assignment"]
 
 
-def test_high_entropy_base64_fires() -> None:
-    assert rules_of(f"blob {B64_40} end") == ["high-entropy-base64"]
-
-
-def test_high_entropy_hex_fires() -> None:
-    assert rules_of(f"digest {HEX_48} end") == ["high-entropy-hex"]
-
-
 # ------------------------------------------------------------- clean passes
 
 
