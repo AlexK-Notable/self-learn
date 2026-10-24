@@ -2147,6 +2147,7 @@ class TestRoutingByFW64:
             "route", rec.id, "--dest", retry_fields["dest"], "--by", "human", "--json"
         ]
 
+
 class TestDestinationGlosses:
     """F5-9 (feedback round 5, U19 §1.5): Detail's action bar + Why region
     gloss every destination enum through models.py's single-source
@@ -3620,6 +3621,7 @@ class TestForceRunApplyingFeedback:
         assert r.status_code == 200
         assert q.empty()
 
+
 class TestForceRunHeldIsNotFailure:
     """U0 (code gate r1 fold, finding B1): `runner.py`'s `held`
     property (`exit_code == EXIT_HELD`) makes a Force-run route's
@@ -4732,6 +4734,7 @@ class TestA7CycleReachesPathedOptionHttp:
         assert r.status_code == 200
         assert 'data-key-action="cycle_destination"' in r.text
         assert "data-noop-hint" not in r.text
+
 
 class TestA13ByAttributionForRulesProposal:
     """A13 — `by` attribution survives for a RULES proposal specifically

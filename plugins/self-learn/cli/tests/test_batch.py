@@ -737,6 +737,7 @@ class TestRouteReviseActorDefault:
 
         assert "revised_by" not in read_proposal(proposal_path)
 
+
 class TestActorValidated:
     """O-2b test 5: ``actor`` is validated up front, before item 1 —
     the SAME closed set (:data:`verbs.ROUTING_BY_VALUES`) an item's own

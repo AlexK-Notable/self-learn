@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from self_learn import cases, conditions, gitops, hosts, user_model, worker
 from self_learn.ledger_ops import create_record

@@ -1677,6 +1677,7 @@ class TestBatch:
         assert sorted(sites) == sorted(EXPECTED_EPILOGUE_SITES)
         assert sites.count(("cli", "_main")) == 6
 
+
 def _write_sheet(base_dir: Path, items: list[dict]) -> Path:
     import uuid
     lines = ["version: 1", "items:"]

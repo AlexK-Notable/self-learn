@@ -36,7 +36,6 @@ from self_learn.ledger_ops import create_record, write_proposal
 from self_learn.records import Record
 from support import commit_all, force_past_deferred, git, make_behavior, make_env, proposal_dict
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 
 SKILL_MD = "# s skill\n\nAuthored prose stays put.\n"

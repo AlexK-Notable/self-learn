@@ -1298,6 +1298,7 @@ class TestH5A17DeferRecommendationArmsNothing:
         assert dest is None
         assert note == "the analyst recommends deferring this lesson — no destination armed"
 
+
 class TestH5A18DeferredRecommendationEndToEnd:
     """A18 lives in test_routes.py (it needs the CLI's own refusal, end
     to end through the real ASGI app) — this is the model-level sibling

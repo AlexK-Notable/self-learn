@@ -72,6 +72,7 @@ class TestParityAcrossAValueMatrix:
         assert _is_deferred(padded, NOW) is True
         assert _domain_says_deferred(padded, NOW) is True
 
+
 class TestParityAgainstARealRecord:
     """``_is_deferred`` only ever sees the bare VALUE in production (a
     dict lookup) — this proves that value, taken off a REAL ``Record``

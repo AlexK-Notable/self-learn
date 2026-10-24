@@ -350,6 +350,7 @@ class TestMode8SkillsRootShapeValidation:
         with pytest.raises(HostsError, match="skills_root.path must be a path string"):
             load_hosts(env.ledger)
 
+
 class TestHostListModeColumn:
     def test_mode_shown_only_for_non_git(self, tmp_path, capsys, monkeypatch):
         """MODE11: `self-learn host list` renders each host's mode; a
@@ -904,6 +905,7 @@ class TestPlain8SelftestDriftFourVerdicts:
         ok, message = selfcheck._check_drift(env.ledger)
         assert ok is selfcheck.Verdict.FAIL  # THE one verdict that gates the boolean
         assert "hand-edited outside self-learn (edited)" in message
+
 
 class TestRpt1PlainHostInReport:
     def test_plain_host_row_present_in_report_json(self, tmp_path, monkeypatch):
@@ -4979,6 +4981,7 @@ class TestChez5ExceptTuplesShrink:
                     names = [n.id for n in ast.walk(node.type) if isinstance(n, ast.Name)]
                     hits += [n for n in names if needle in n]
             assert hits == [], (mod.__name__, hits)
+
 
 class TestChez6CensusZeroRetiredModuleLiterals:
     def test_census_by_tree(self):

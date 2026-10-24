@@ -33,7 +33,6 @@ from support import (
     make_behavior,
     make_env,
     make_knowledge,
-    resolve_record_directly,
     seed_proposal,
     seed_record,
 )
