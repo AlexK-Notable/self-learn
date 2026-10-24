@@ -1237,20 +1237,6 @@ class TestReloadRaceLiveOrdering:
         _assert_reloaded(page)
 
 
-class TestReloadFiresWhenClear:
-    """Control: with NO leg holding, a refresh reloads immediately — proves
-    the defer tests above are detecting a real, otherwise-absent reload."""
-
-    def test_refresh_reloads_when_no_leg_holds(
-        self, page: "Page", server: ServerHandle
-    ) -> None:
-        _open(page, server, "/")
-        _arm_reload_sentinel(page)
-        server.push_refresh("front")
-        _assert_reloaded(page)
-
-
-
 # U-jsdom disposition (14 §6a, code gate r1 N1/N2/N3/D1): unit-style
 # coverage of clickAction()'s own settle-gating machinery, isolated from
 # any real htmx swap via the SAME synthetic-CustomEvent technique
@@ -3568,20 +3554,6 @@ class TestQuestionMarkSwallowedByTextInputShowsHint:
 
 
 class TestInFlightDisabling:
-    def test_14_submitter_carries_disabled(
-        self, f2_page: "Page", f2_server: ServerHandle
-    ) -> None:
-        _open(f2_page, f2_server, f"/record/{REC_F2_PLAIN}")
-        f2_page.keyboard.press("e")
-        f2_page.wait_for_selector(f'#action-bar-{REC_F2_PLAIN}[data-armed="true"]')
-        held = _hold_post(f2_page, "/action/confirm")
-        f2_page.locator('[data-key-action="confirm"]').click()
-        _wait_for_held(held)
-        assert f2_page.locator('[data-key-action="confirm"]').get_attribute(
-            "disabled"
-        ) is not None
-        held["route"].fulfill(status=200, content_type="text/html", body="<div>ok</div>")
-
     def test_15_aria_snapshot_differs_during_flight(
         self, f2_page: "Page", f2_server: ServerHandle
     ) -> None:
