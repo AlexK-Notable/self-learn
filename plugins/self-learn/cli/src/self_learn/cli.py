@@ -2250,7 +2250,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
     except settings.UnknownSettingError as exc:
         print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    except settings.NoConfigRungError as exc:
+    except (settings.NoConfigRungError, settings.AgentSettingRefusal) as exc:
         print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
         return 1
     except settings.InvalidSettingValueError as exc:
