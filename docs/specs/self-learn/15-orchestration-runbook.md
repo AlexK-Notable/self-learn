@@ -69,6 +69,8 @@ Every substantive unit moves through, in order:
 > UN1/UN3/UN5 criteria stop re-deriving this diff dynamically and
 > pin permanently to that landing's own base/tip commit pair — see
 > `test_armor.py`'s `_LANDING_BASE`/`_LANDING_TIP`.)
+> (Its UN3 test, which added two git worktrees in the live repository
+> on every suite run, was removed on 2026-10-24.)
 >
 >
 > The blindness rules (§4) are unchanged: the reviewer sees the diff and
