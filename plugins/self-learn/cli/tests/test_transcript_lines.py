@@ -92,6 +92,20 @@ def test_only_lf_ends_a_row_and_torn_tail_stays_unread(tmp_path):
     assert miner._complete_lines(path) == []
 
 
+def test_subagent_old_citation_follows_through_pack_and_excerpt(tmp_path):
+    root, path = put(tmp_path, [row(1, "main session")])
+    sub = path.parent / "session" / "subagents" / "agent-child.jsonl"
+    sub.parent.mkdir(parents=True)
+    sub.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in
+                           [row(10, "first\u2028message"), row(11, "subagent report", "assistant")]))
+    origin = "transcript:session/subagents/agent-child.jsonl#L3"
+    cited, ref, failed = steward_inputs._cited_ref({"origin": origin, "quote": "subagent report"}, [root])
+    assert cited == origin and failed == "" and ref is not None
+    assert (ref.line, ref.uuid, ref.role, ref.subagent_file) == (2, "u-11", "subagent", "subagents/agent-child.jsonl")
+    stored = replace(ref, line=3)
+    assert refs.excerpt(stored, before=0, after=0, roots=[root]) == [(ref, "subagent report")]
+
+
 @pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\u0085", ""])
 def test_legacy_walk_preserves_position_and_marks_new_advances(tmp_path, monkeypatch, separator):
     monkeypatch.setenv("SELF_LEARN_HOME", str(tmp_path / "ledger"))
