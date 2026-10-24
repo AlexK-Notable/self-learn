@@ -2393,20 +2393,21 @@ def _origin_holders(home: Path, origin: str) -> list[tuple[Record, Path]]:
 RESURFACES_KEY = "resurfaces"
 
 
-def _is_resurface_of(record: Record, rejected_id: str, origin: str) -> bool:
+def _is_resurface_of(record: Record, rejected_id: str) -> bool:
     """``record`` is the rejected record's own resurfaced copy: an evidence
-    entry at ``origin`` that says it resurfaces ``rejected_id`` (fix round
-    7: by what the copy says it is, never by matching its text)."""
+    entry that says it resurfaces ``rejected_id`` (fix round 7: by what the
+    copy says it is, never by matching its text). The entry need not be the
+    one at the origin being checked: a later fold adds entries without the
+    marker, and the copy is still the rejected record's own (R3)."""
     return record.id != rejected_id and any(
-        isinstance(e, dict) and e.get("origin") == origin and e.get(RESURFACES_KEY) == rejected_id
-        for e in record.evidence
+        isinstance(e, dict) and e.get(RESURFACES_KEY) == rejected_id for e in record.evidence
     )
 
 
 def _own_resurface_paths(home: Path, rejected_id: str, origin: str) -> list[Path]:
     """The files of the records holding ``origin`` that are the rejected
     record's own resurfaced copy; empty when another record holds it."""
-    return [path for record, path in _origin_holders(home, origin) if _is_resurface_of(record, rejected_id, origin)]
+    return [path for record, path in _origin_holders(home, origin) if _is_resurface_of(record, rejected_id)]
 
 
 def _resurface(st: _Landing, rejected: Record, items: list[dict], n: int, cwd: str | None) -> str:

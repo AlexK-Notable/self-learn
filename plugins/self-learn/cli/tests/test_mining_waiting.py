@@ -2237,6 +2237,38 @@ def test_a_resurface_intent_s_count_must_be_a_count(home, root, backend, tmp_pat
     assert a.path.read_bytes() == before and not pending(home)
 
 
+def test_a_copy_holding_the_moment_through_a_later_fold_is_still_the_rejected_record_s_own(home, root, backend,
+                                                                                          tmp_path):
+    """The copy says what it is on the entries it was written with; a fold
+    adds an entry without the marker, and the copy is still the rejected
+    record's own (R3: the marker is not bound to the entry's origin). A
+    hand-built state: the rejected record's mark is lost with no waiting
+    item left to replay it."""
+    rid = "lrn-77770021"
+    put_record(home, rid, status="rejected")
+    for i in range(3):
+        sid = f"s{i}foldcopy-0000"
+        write_session(root, sid, session_rows(sid, host(tmp_path)))
+        backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+        run(home)
+    (copy_rec,) = pending(home)
+    marks = _rejected_marks()
+    assert marks[rid] == "landed" and _waiting() == []  # control: resurfaced, nothing waiting
+    marks[rid] = ["transcript:lost-a#L1", "transcript:lost-b#L1"]  # the mark lost by hand
+    (miner.miner_dir() / "rejected-sightings.json").write_text(json.dumps(marks))
+    sid = "s3foldcopy-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output(sightings=[_sighting(sid, copy_rec.id), _sighting(sid, rid)])
+    fourth = run(home)
+    assert [o["outcome"] for o in fourth.outcomes] == ["folded", "skipped-known-origin"]  # control
+    assert _rejected_marks()[rid] == "landed"
+    sid = "s4foldcopy-0000"
+    write_session(root, sid, session_rows(sid, host(tmp_path)))
+    backend.answers[sid] = output(sightings=[_sighting(sid, rid)])
+    fifth = run(home)
+    assert [o["outcome"] for o in fifth.outcomes] == ["dropped-rejected"] and len(pending(home)) == 1
+
+
 def _fork_sharing_a_moment(home, root, backend, tmp_path, monkeypatch, kind, tool):
     """A parent and its fork whose L4 (a tool result when ``tool``) is one
     shared moment uuid; both report the same event there."""
