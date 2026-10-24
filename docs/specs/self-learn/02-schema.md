@@ -2795,7 +2795,8 @@ written (fix round 5):
 Waiting       = { "contract": "miner-waiting/1", "session": str, "transcript": str, "run_id": str,
                   "method_version": str, "saved_ns": int, "saved_at": iso, "halted": bool,
                   "cwd": str | null,
-                  "cursor": { "lines": int, "size": int, "halt": bool },   # the entry the session's cursor takes
+                  "cursor": { "lines": int, "size": int, "halt": bool,
+                              "line_format": "newline-v1" },   # absent on legacy answers; see doc 12 Phase 0
                   "learn": [ uuid ],                                       # what the judged-uuid store learns
                   "checked": Checked,                                      # miner-output/1, verbatim
                   "items": [ { "kind": "lessons" | "sightings" | "rule_checks", "index": int,
