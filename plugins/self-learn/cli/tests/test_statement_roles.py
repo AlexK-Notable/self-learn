@@ -146,3 +146,123 @@ def test_statement_role_rule_is_in_steward_contract():
     contract = steward_prompt._render_output_contract()
     assert "statements.yaml --" in contract
     assert "A statement’s `transcript:` ref must point to a line whose evidence role is `user`." in contract
+
+
+def question_exchange(home, tmp_path):
+    path, _ = transcript(home, tmp_path)
+    sid = add(home, "transcript:synthetic-stmt#L1")
+    assert statements.list_statements(home)[0]["id"] == sid
+    questions = [{"question": "Which route should we take?", "header": "Route",
+                  "options": [{"label": "Short route", "description": "Cross the bridge."},
+                              {"label": "Long, scenic route", "description": "Follow the river."}],
+                  "multiSelect": False}]
+    rows = [
+        {"type": "user", "message": {"content": "Keep it small."}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "question-1", "name": "AskUserQuestion",
+             "input": {"questions": questions}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "question-1",
+             "content": "User has answered your questions."}]},
+         "toolUseResult": {"questions": questions, "answers": {
+             questions[0]["question"]: "Keep typed words."}, "annotations": {}}},
+    ]
+    return path, rows, questions[0]
+
+
+def write_question_exchange(path, rows):
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+
+@pytest.mark.parametrize("kind", ["other", "multi-other", "notes", "whitespace", "label-in-note"])
+def test_typed_question_answer_is_accepted(tmp_path, kind):
+    home = make_home(tmp_path)
+    path, rows, question = question_exchange(home, tmp_path)
+    result = rows[2]["toolUseResult"]
+    quote = "Keep typed words."
+    if kind == "multi-other":
+        question["multiSelect"] = True
+        result["answers"][question["question"]] = "Short route, Long, scenic route, " + quote
+    elif kind in ("notes", "label-in-note"):
+        result["answers"][question["question"]] = "Short route"
+        if kind == "label-in-note":
+            quote = "Short route"
+        result["annotations"][question["question"]] = {"preview": "model preview", "notes": quote}
+    elif kind == "whitespace":
+        result["answers"][question["question"]] = "Before: Keep\n\t typed   words. After."
+        quote = "Keep  typed\nwords."
+    write_question_exchange(path, rows)
+    assert refs.resolve("synthetic-stmt", line=3, roots=[path.parent.parent]).role == "tool_result"
+    sid = add(home, "transcript:synthetic-stmt#L3", quote)
+    assert statements.list_statements(home)[-1]["id"] == sid
+
+
+@pytest.mark.parametrize("kind", [
+    "label", "description", "question", "multi-label", "preview", "wrapper", "read",
+    "wrong-id", "missing-call", "different-questions", "error", "bad-answers",
+    "case", "punctuation", "cross-answer-note", "overlapping-labels",
+])
+def test_question_non_typed_words_are_refused_after_typed_control(tmp_path, kind):
+    home = make_home(tmp_path)
+    path, rows, question = question_exchange(home, tmp_path)
+    write_question_exchange(path, rows)
+    control = add(home, "transcript:synthetic-stmt#L3", "Keep typed words.")
+    assert statements.list_statements(home)[-1]["id"] == control
+    result = rows[2]["toolUseResult"]
+    block = rows[2]["message"]["content"][0]
+    result["answers"][question["question"]] = "Short route"
+    quote = "Short route"
+    if kind == "description":
+        quote = "Cross the bridge."
+    elif kind == "question":
+        quote = question["question"]
+    elif kind == "multi-label":
+        question["multiSelect"] = True
+        result["answers"][question["question"]] = "Short route, Long, scenic route"
+        quote = "scenic route"
+    elif kind == "preview":
+        quote = "Only model preview."
+        result["annotations"][question["question"]] = {"preview": quote}
+    elif kind == "wrapper":
+        quote = "Only wrapper words."
+        block["content"] = quote
+    elif kind in ("read", "wrong-id", "missing-call", "different-questions", "error", "bad-answers"):
+        quote = "New typed words."
+        result["answers"][question["question"]] = quote
+        if kind == "read":
+            rows[1]["message"]["content"][0]["name"] = "Read"
+            block["content"] = quote
+        elif kind == "wrong-id":
+            block["tool_use_id"] = "unrelated-tool"
+        elif kind == "missing-call":
+            rows[1]["message"]["content"] = []
+        elif kind == "different-questions":
+            result["questions"] = []
+        elif kind == "error":
+            block["is_error"] = True
+        else:
+            result["answers"] = quote
+    elif kind in ("case", "punctuation"):
+        result["answers"][question["question"]] = "Typed exactly!"
+        quote = "typed exactly!" if kind == "case" else "Typed exactly."
+    elif kind == "cross-answer-note":
+        quote = "route Some note"
+        result["annotations"][question["question"]] = {"notes": "Some note"}
+    elif kind == "overlapping-labels":
+        question["multiSelect"] = True
+        question["options"] = [{"label": label, "description": "An option."}
+                               for label in ("A", "A, B", "B, C")]
+        result["answers"][question["question"]] = "A, B, C"
+        quote = "C"
+    write_question_exchange(path, rows)
+    before = (home / "user-statements.jsonl").read_bytes()
+    with pytest.raises(statements.StatementUsageError, match="found tool_result.*not typed by the user"):
+        add(home, "transcript:synthetic-stmt#L3", quote)
+    assert (home / "user-statements.jsonl").read_bytes() == before
+
+
+def test_typed_question_exception_is_in_steward_contract():
+    contract = steward_prompt._render_output_contract()
+    assert "statements.yaml --" in contract
+    assert ("Exception: a matched `AskUserQuestion` tool result may supply only words typed "
+            "in an Other answer or added note, never clicked option text.") in contract

@@ -1219,6 +1219,7 @@ def _render_output_contract() -> str:
         f"  `scope: {{level: {_words(statements.SCOPE_LEVELS)}, host: <path, required for project>}}`, `uncertainty`,",
         "  `amends` (stmt- plus 8 hex digits). Never a sentence you composed.",
         "  A statement’s `transcript:` ref must point to a line whose evidence role is `user`.",
+        "  Exception: a matched `AskUserQuestion` tool result may supply only words typed in an Other answer or added note, never clicked option text.",
         "",
         "model-updates.yaml -- `entries:` list. Each entry has `action: add` or `action: lapse`.",
         "  add:   `container` (you may add to C only), `source: system-reading` (the only source",

@@ -89,6 +89,105 @@ def _new_stmt_id(existing: list[dict]) -> str:
     raise StatementError("statement add: could not allocate a unique id")  # pragma: no cover
 
 
+def _free_answer(answer: str, question: dict) -> str:
+    """Remove clicked labels from CC's comma-separated multi-select answer.
+
+    Single-select Other answers are stored directly; notes have their own
+    field. For overlapping labels, keep only the suffix left by every
+    possible parsing of the selected-label prefixes.
+    """
+    options = question.get("options")
+    if not isinstance(options, list) or not options:
+        return ""
+    if any(not isinstance(o, dict) or not isinstance(o.get("label"), str) for o in options):
+        return ""
+    labels = [o["label"] for o in options if o["label"]]
+    if answer in labels:
+        return ""
+    if question.get("multiSelect") is True:
+        pending, seen, suffixes = [0], set(), []
+        while pending:
+            offset = pending.pop()
+            if offset in seen:
+                continue
+            seen.add(offset)
+            rest = answer[offset:]
+            if rest in labels:
+                return ""
+            prefixes = [s for s in labels if rest.startswith(s + ", ")]
+            if prefixes:
+                pending.extend(offset + len(s) + 2 for s in prefixes)
+            else:
+                suffixes.append(rest)
+        return min(suffixes, key=len, default="")
+    return answer
+
+
+def _typed_answer_contains(evidence: refs.Ref, verbatim: str, roots: list[Path]) -> bool:
+    """Only a linked AskUserQuestion's answer/notes can supply typed words.
+
+    Stream the selected file up to the pointed-at physical row; never infer
+    authorship from the human-readable tool-result wrapper or preview text.
+    """
+    calls: dict[str, dict] = {}
+    entry = None
+    with refs.locate(evidence, roots=roots).open(encoding="utf-8") as stream:
+        for number, raw in enumerate(stream, 1):
+            try:
+                row = json.loads(raw)
+            except ValueError:
+                row = None
+            if number == evidence.line:
+                entry = row
+                break
+            if not isinstance(row, dict) or row.get("type") != "assistant":
+                continue
+            content = row.get("message", {}).get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if (isinstance(block, dict) and block.get("type") == "tool_use"
+                        and block.get("name") == "AskUserQuestion"
+                        and isinstance(block.get("id"), str)
+                        and isinstance(block.get("input"), dict)):
+                    calls[block["id"]] = block["input"]
+    if not isinstance(entry, dict):
+        return False
+    content = entry.get("message", {}).get("content")
+    result = entry.get("toolUseResult")
+    if not isinstance(content, list) or not isinstance(result, dict):
+        return False
+    answers = result.get("answers")
+    if not isinstance(answers, dict):
+        return False
+    quote = " ".join(verbatim.split())
+    for block in content:
+        if (not isinstance(block, dict) or block.get("type") != "tool_result"
+                or block.get("is_error") or not isinstance(block.get("tool_use_id"), str)):
+            continue
+        call = calls.get(block["tool_use_id"])
+        if call is None:
+            continue
+        questions = call.get("questions")
+        if not isinstance(questions, list) or result.get("questions") != questions:
+            continue
+        for question in questions:
+            if not isinstance(question, dict) or not isinstance(question.get("question"), str):
+                continue
+            key = question["question"]
+            answer = answers.get(key)
+            if not isinstance(answer, str):
+                continue
+            typed = [_free_answer(answer, question)]
+            annotations = result.get("annotations")
+            annotation = annotations.get(key) if isinstance(annotations, dict) else None
+            if isinstance(annotation, dict) and isinstance(annotation.get("notes"), str):
+                typed.append(annotation["notes"])
+            if quote and any(quote in " ".join(text.split()) for text in typed):
+                return True
+    return False
+
+
 def add(
     home: Path | str,
     *,
@@ -176,18 +275,24 @@ def add(
             # Only new writes are checked: dedupe/recovery must remain reads.
             if message_ref.startswith("transcript:"):
                 session, line_number = message_ref[len("transcript:"):].rsplit("#L", 1)
+                roots = refs.transcript_roots(home)
                 try:
                     evidence = refs.resolve(
-                        session, line=int(line_number), roots=refs.transcript_roots(home)
+                        session, line=int(line_number), roots=roots
                     )
                 except refs.RefError:
                     # Old session files disappear; preserve recording from them.
                     pass
                 else:
-                    if evidence.role != "user":
+                    if evidence.role != "user" and not (
+                        evidence.role == "tool_result"
+                        and _typed_answer_contains(evidence, verbatim, roots)
+                    ):
                         raise StatementUsageError(
                             "statement add: transcript evidence role must be user, "
                             f"found {evidence.role}"
+                            + ("; quoted words were not typed by the user in a matched "
+                               "AskUserQuestion answer" if evidence.role == "tool_result" else "")
                         )
 
             stmt_id = _new_stmt_id(existing)

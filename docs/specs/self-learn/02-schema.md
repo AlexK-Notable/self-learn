@@ -1794,7 +1794,18 @@ a new line naming the line it amends.
   On a new write, resolve a `transcript:` ref using the ledger's configured
   `refs.transcript_roots` (the same roots as steward evidence packs). If it
   resolves, its evidence role must be `user`; any other role is refused with
-  `StatementUsageError` naming the role. An unresolvable ref (including a
+  `StatementUsageError` naming the role. Exception: a `tool_result` linked by
+  `tool_use_id` to an earlier assistant `AskUserQuestion` call with matching
+  `questions` is accepted only when `verbatim`, after whitespace runs collapse
+  to one space, is an exact substring of text typed in its `answers` (excluding
+  clicked labels, including comma-separated multi-select prefixes) or a single
+  question’s `annotations.notes`, never question/option/preview/wrapper text.
+  Matching preserves case and punctuation and never joins separate answer/note
+  fields; for overlapping multi-select labels retain only the suffix left by
+  every possible parsing of clicked-label prefixes, and refuse text identical
+  to a selected label unless it is also present in an explicit note. A refused multiple-choice result names its
+  role and says the quoted words were not typed by the user.
+  An unresolvable ref (including a
   deleted session or out-of-range line) remains accepted. `conversation:`
   refs are unaffected. Existing statements are never rewritten or re-checked,
   including idempotent additions and steward recovery after an owner commit.
