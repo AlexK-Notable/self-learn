@@ -22,7 +22,7 @@ as the model first reads it:
 5. rule-situation flags, each under the stretch it matched.
 
 Units. Lines are the session file's 1-based physical lines, numbered as
-:mod:`refs` numbers them (``refs._lines``: ``str.splitlines()``), so a line
+:mod:`refs` numbers them (``refs._lines``: LF only), so a line
 on the spine is the line a ref names. ``T<k>`` is
 ``mining.contract.typed_turn_lines`` -- the one definition -- computed with
 the run's sends (``provenance.SentIndex``), so a turn an agent wrote (role

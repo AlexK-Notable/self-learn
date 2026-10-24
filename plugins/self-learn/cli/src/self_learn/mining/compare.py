@@ -131,9 +131,8 @@ def scan_file(path: Path, wanted: Iterable[int] = (), sent: provenance.SentIndex
     ``refs`` rule 10's third sign (S-90): pass ``refs.sent_index`` of the
     roots the harness resolves against, so a role here agrees with the
     ``refs.resolve`` of the same line."""
-    text = path.read_text(encoding="utf-8", errors="replace")
     entries: list[dict[str, Any] | None] = []
-    for raw in text.splitlines():
+    for raw in refs._lines(path):  # pyright: ignore[reportPrivateUsage]
         try:
             e = json.loads(raw)
         except (ValueError, RecursionError):

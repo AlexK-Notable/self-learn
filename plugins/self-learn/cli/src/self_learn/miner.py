@@ -56,6 +56,7 @@ from typing import NamedTuple, cast
 
 from . import gitops, intents, invocation, provenance, provider, refs, sentinel, settings, steward_prompt, telemetry, worker
 from .primitives import chrono, fsops
+from . import transcript_lines
 from . import reconcile as reconcile_mod
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
 from .hosts import HostsError, capture_host_path, load_hosts
@@ -434,15 +435,23 @@ def _complete_lines(path: Path) -> list[str] | None:
     mid-append at walk time must not have its torn tail consumed by the
     cursor — the partial line is left for the next run)."""
     try:
-        text = path.read_text(encoding="utf-8")
+        with path.open(encoding="utf-8", newline="") as fh:
+            text = fh.read()
     except (OSError, UnicodeDecodeError):
         return None
-    if not text:
-        return []
-    if not text.endswith("\n"):
-        cut = text.rfind("\n")
-        text = text[: cut + 1] if cut >= 0 else ""
-    return text.splitlines()
+    return transcript_lines.split(text, complete=True)
+
+
+def _newline_cursor(entry: dict, lines: Sequence[str]) -> dict:
+    """Translate a legacy count in memory; never mutate a saved answer.
+
+    Both engines share this conversion. Persist the marker only when the
+    caller saves a cursor; unchanged files retain the cheap size check.
+    """
+    if entry.get("line_format") == transcript_lines.FORMAT:
+        return dict(entry)
+    count = transcript_lines.legacy_cursor(lines, int(entry.get("lines", 0)))
+    return {**entry, "lines": count, "line_format": transcript_lines.FORMAT}
 
 
 def _contains_self_learn(text: str) -> bool:
@@ -638,7 +647,7 @@ def initialize_cursors(mined_scheduled: frozenset[str] = frozenset()) -> int:
             lines = _complete_lines(path)
             if lines is None:
                 continue
-            entry: dict = {"lines": len(lines), "size": size}
+            entry: dict = {"lines": len(lines), "size": size, "line_format": transcript_lines.FORMAT}
             if _contains_self_learn("\n".join(lines)) or _is_skipped_scheduled_job(
                 _first_user_text_of(lines), mined_scheduled
             ):
@@ -702,7 +711,11 @@ def walk(since: str | None = None) -> list[SessionSlice]:
     slices: list[SessionSlice] = []
     for _mtime, path, start, size in sorted(candidates, key=lambda t: t[0]):
         lines = _complete_lines(path)
-        if lines is None or len(lines) <= start:
+        if lines is None:
+            continue
+        if since_ts is None:
+            start = _newline_cursor(cursors.get(str(path), {}), lines)["lines"]
+        if len(lines) <= start:
             continue
         slices.append(
             SessionSlice(
@@ -731,16 +744,19 @@ def _settle_waiting_cursors(answers: Iterable["mining_waiting.Answer"]) -> int:
         lines, size = entry.get("lines"), entry.get("size")
         if not isinstance(lines, int) or not isinstance(size, int):
             continue
-        current = cursors.get(path, {})
-        have = current.get("lines") if isinstance(current, dict) else None
-        if isinstance(have, int) and have >= lines:
-            continue
         try:
             if Path(path).stat().st_size < size:
                 continue
         except OSError:
             continue
-        new: dict = {"lines": lines, "size": size}
+        rows = _complete_lines(Path(path))
+        if rows is None:
+            continue
+        new = _newline_cursor(entry, rows)
+        current = cursors.get(path, {})
+        have = _newline_cursor(current, rows).get("lines") if isinstance(current, dict) else None
+        if isinstance(have, int) and have >= new["lines"]:
+            continue
         if entry.get("halt") or (isinstance(current, dict) and current.get("halt")):
             new["halt"] = True
         cursors[path] = new
@@ -757,7 +773,8 @@ def _advance_cursors(processed: list[tuple[SessionSlice, bool]]) -> None:
     splits — it was slice-local before)."""
     cursors = _load_cursors()
     for s, halt in processed:
-        entry: dict = {"lines": s.start_line + len(s.lines), "size": s.stat_size}
+        entry: dict = {"lines": s.start_line + len(s.lines), "size": s.stat_size,
+                       "line_format": transcript_lines.FORMAT}
         if halt or cursors.get(str(s.path), {}).get("halt"):
             entry["halt"] = True
         cursors[str(s.path)] = entry
@@ -4064,7 +4081,8 @@ def _run_session_engine(
                 saved[sid] = mining_waiting.save(
                     mdir, session=sid, transcript=str(s.path), run_id=run_id, method_version=method_version,
                     halted=halt, cwd=_slice_cwd(s),
-                    cursor={"lines": s.start_line + len(s.lines), "size": s.stat_size, "halt": bool(halt)},
+                    cursor={"lines": s.start_line + len(s.lines), "size": s.stat_size, "halt": bool(halt),
+                            "line_format": transcript_lines.FORMAT},
                     learn=learn, checked=res.checked,
                 )
             except OSError as exc:

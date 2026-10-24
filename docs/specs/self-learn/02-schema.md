@@ -2009,6 +2009,24 @@ A ref serialises to a plain mapping with exactly these keys
 (`subagent_file` only when set). Its legacy form is
 `transcript:<session>#L<line>`.
 
+**Line numbering (2026-10-24).** `#L<n>` and `Ref.line` count LF (`\n`)
+boundaries only, starting at one, as `grep -n` does. CRLF is accepted (the
+CR is JSON whitespace); bare CR, U+0085, U+2028 and U+2029 never add a row.
+Readers retain a final unterminated row; the miner consumes only terminated
+rows. This applies to subagent files as well as main transcripts.
+
+**Following old citations.** Stored history is never rewritten. A supplied
+entry UUID remains authoritative, including across transcript copies. Without
+a UUID, confirm the newline-numbered row using the stored quote (a statement's
+`verbatim`, a lesson's `evidence[].quote`, or a case's evidence quote). If it
+does not match, map the old Python `splitlines()` position to its containing
+physical row and follow that row only if the quote matches there. Matching
+uses the existing exact/normalised quote comparison. If both match, prefer
+the newline row; if neither matches or no quote is stored, use newline
+numbering (an absent row remains unresolvable). Excerpts, entry text and quote
+checks follow stored structured refs by UUID too. `role_of` classifies the
+selected entry; it does not itself accept or resolve citations.
+
 **Transcript roots.** Registry setting `refs.transcript_roots`
 (`SELF_LEARN_TRANSCRIPT_ROOTS`, `config.yaml` `refs.transcript_roots`),
 `os.pathsep`-separated, each entry `~`-expanded at run time. Default: the

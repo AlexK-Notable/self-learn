@@ -71,11 +71,28 @@ the one judgment layer, and it is an LLM, not a similarity metric (§5).
 ### Phase 0 — walk and cursors
 
 Enumerate `~/.claude/projects/<slug>/*.jsonl` newer than the per-file
-cursor (session id + byte offset, stored in
-`${XDG_CACHE_HOME}/claude-skills/self-learn/miner/cursors.json` — cache,
+cursor (transcript path + consumed line count + observed byte size, stored in
+`${XDG_CACHE_HOME}/self-learn/home-<hash>/miner/cursors.json` — cache,
 never repo). Scope of `<slug>` is a ratification item (§6 Q2: all
 projects vs allowlist). Transcript retention (`cleanupPeriodDays`) plus a
 daily cadence means the cursor never races deletion.
+
+**Newline numbering and legacy cursors (2026-10-24).** Both engines count
+only LF boundaries, agreeing with `#L<n>` in 02-schema §3a.6. A trailing CR
+is retained as JSON whitespace; an unterminated tail stays unread. New cursor
+entries, including the cursor saved inside a session engine waiting answer,
+carry `line_format: newline-v1`. An entry without that marker counts the old
+Python `splitlines()` pieces: on reading a grown file, translate its consumed
+prefix to the equivalent number of physical rows before slicing. Persist the
+new count and marker on the normal cursor advance. Unchanged/skipped files
+keep their cheap size/skip checks and migrate lazily on their next read.
+Waiting-answer replay converts both its saved cursor and the current cursor
+before the forward-only comparison; it never rewrites the saved answer for
+migration. Preview/backfill reads do not migrate files on disk. A malformed
+old count inside a physical row leaves that row unread; a count beyond a
+truncated file preserves the overrun rather than rewinding to its end.
+Quotes/UUIDs follow old citations at read time as specified in 02-schema
+§3a.6; the ledger's historical origin strings remain unchanged.
 
 **Loop exclusions (M-5):** skip transcripts whose opening prompt matches
 one of the system's own prompt openings (the system must not mine its

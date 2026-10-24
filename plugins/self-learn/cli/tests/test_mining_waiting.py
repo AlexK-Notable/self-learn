@@ -143,7 +143,8 @@ def test_an_answer_is_saved_whole_before_anything_of_it_lands(home, root, backen
     assert doc["session"] == sid and doc["transcript"] == str(path) and doc["run_id"] == result.run_id
     assert doc["method_version"] == "1" and doc["halted"] is False and doc["cursor"] == {"lines": 7,
                                                                                          "size": path.stat().st_size,
-                                                                                         "halt": False}
+                                                                                         "halt": False,
+                                                                                         "line_format": "newline-v1"}
     assert doc["checked"] == json.loads((run_dir(result) / "out" / f"{sid}.json").read_text())
     assert f"{sid}-u-3" in doc["learn"]
     # never inside a run folder; and gone once every item landed
