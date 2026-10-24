@@ -98,11 +98,12 @@ def test_t1_definitions_pin():
 def test_method_pin_and_required_parts():
     path = Path(__file__).resolve().parents[2] / "skills/self-learn/references/miner-method.md"
     method = path.read_text()
-    assert hashlib.sha256(method.encode()).hexdigest() == "2bf11e13896c2965c178e2674e2179123076513ba7c58c044597cd95abec9555"
+    assert hashlib.sha256(method.encode()).hexdigest() == "e7f8c0bb4bf62db43992d061d66817d8509e25c0e97424c40a8076aba6196f2d"
     assert method.startswith("<!-- method-version: 1 -->")
     for text in ("within this session", "verification.how", "incident_cost.text", "## Context",
                  "AGENT-WRITTEN", "bad-brief", "left-brief", "unchecked-report", "FLAG",
-                 "suspected-compliance", "suspected-violation", "cannot-tell", "each one line"):
+                 "suspected-compliance", "suspected-violation", "cannot-tell", "each one line",
+                 "indented under\n`YOU:`"):
         assert text in method
     assert "Confidence" not in method
 

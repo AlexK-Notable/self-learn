@@ -101,6 +101,14 @@ ledger on a given host) belong in `CLAUDE.local.md`, which is git-ignored.
   Every case either agent writes is ledger content
   (`$SELF_LEARN_HOME/cases/**`, `$SELF_LEARN_HOME/overseer/**`) and never
   appears in this repository, exactly like every other lesson.
+- The miner's session engine (S-91) is switched by `miner.engine`; agents
+  never set it to `session`, and never run `mine run --preview` outside
+  the test suite: a preview makes real model calls, and both are the
+  human's. The CLI does not
+  refuse an agent's `config set` of a tier-C setting (only the UI does),
+  so this rule is the only guard. Answers the engine saved under
+  `<cache>/miner/pending/` are the miner's to land; never edit or delete
+  one by hand outside a test's scratch cache.
 - Revert probes by inverse edit and verify with `sha256sum` against
   `git show HEAD:<path>`. Never `git checkout --`, `git restore`, `git stash`, or
   `git reset --hard` to undo a probe; they have destroyed uncommitted work here.

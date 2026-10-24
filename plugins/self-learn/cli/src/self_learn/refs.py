@@ -444,7 +444,15 @@ def _uuid_line(lines: Sequence[str], uuid: str) -> int | None:
     return None
 
 
-def _ref_at(path: Path, line: int, *, session: str, subagent_file: str | None, roots: list[Path]) -> Ref:
+def _ref_at(
+    path: Path,
+    line: int,
+    *,
+    session: str,
+    subagent_file: str | None,
+    roots: list[Path],
+    sent: provenance.SentIndex | None = None,
+) -> Ref:
     lines = _lines(path)
     if not 1 <= line <= len(lines):
         raise RefError(f"{session}: line {line} is past the end of the file ({len(lines)} lines)")
@@ -462,16 +470,21 @@ def _ref_at(path: Path, line: int, *, session: str, subagent_file: str | None, r
         uuid=uid if isinstance(uid, str) else None,
         entry_ts=ts if isinstance(ts, str) else None,
         cwd=cwd if isinstance(cwd, str) else None,
-        role=_role(e, subagent_file is not None, roots),
+        role=_role(e, subagent_file is not None, roots, sent),
         subagent_file=subagent_file,
     )
 
 
-def _role(e: dict, in_subagent_file: bool, roots: list[Path]) -> str:
-    """:func:`role_of` with rule 10 in full: the sends under ``roots`` are
-    swept only for an entry the other rules call ``user``."""
+def _role(
+    e: dict, in_subagent_file: bool, roots: list[Path], sent: provenance.SentIndex | None = None
+) -> str:
+    """:func:`role_of` with rule 10 in full: for an entry the other rules
+    call ``user``, the caller's ``sent`` when it passes one (a run that
+    swept its sends once, R2), else the sends under ``roots``, swept now."""
     role = role_of(e, in_subagent_file=in_subagent_file)
-    return role_of(e, in_subagent_file=in_subagent_file, sent=sent_index(roots)) if role == "user" else role
+    if role != "user":
+        return role
+    return role_of(e, in_subagent_file=in_subagent_file, sent=sent if sent is not None else sent_index(roots))
 
 
 def resolve(
@@ -481,6 +494,7 @@ def resolve(
     *,
     subagent_file: str | None = None,
     roots: Sequence[Path | str] | None = None,
+    sent: provenance.SentIndex | None = None,
 ) -> Ref:
     """Find the real file for ``session`` and fill a :class:`Ref`.
 
@@ -491,7 +505,8 @@ def resolve(
     it (its line may differ from ``line``); otherwise the entry at
     ``line``; with neither, line 1 of the largest copy. A uuid missing
     from every top-level copy is looked for in the session's subagent
-    files. Raises :class:`RefError` when nothing matches."""
+    files. Raises :class:`RefError` when nothing matches. ``sent`` is the
+    caller's sends for rule 10 (swept from ``roots`` when omitted)."""
     if line is None and uuid is None:
         line = 1
     rs = _roots(roots)
@@ -523,7 +538,7 @@ def resolve(
             sub = None
             if pool is not pools[0] or subagent_file is not None:
                 sub = str(Path(path).relative_to(path.parents[1]))
-            return _ref_at(path, found_line, session=session, subagent_file=sub, roots=rs)
+            return _ref_at(path, found_line, session=session, subagent_file=sub, roots=rs, sent=sent)
     raise RefError(f"no transcript holds session {session} (line={line}, uuid={uuid})")
 
 
@@ -665,6 +680,7 @@ def check_quote(
     roots: Sequence[Path | str] | None = None,
     nearby_lines: int = NEARBY_LINES,
     other_session_cap: int = OTHER_SESSION_CAP,
+    sent: provenance.SentIndex | None = None,
 ) -> Verdict:
     """Where is ``quote`` relative to ``ref``? Tried in :data:`VERDICTS`
     order: ``exact`` (verbatim substring of the ref's entry text),
@@ -681,7 +697,9 @@ def check_quote(
     that reads a ledger record or a transcript back echoes the quote as a
     tool result (measured 2026-09-26: a mined quote that silently fixed
     the user's typo matched only a later session's listing of the
-    pending queue). Within the ref's own file every role counts."""
+    pending queue). Within the ref's own file every role counts. ``sent``
+    is the caller's sends for the roles of the refs it returns (swept from
+    ``roots`` when omitted)."""
     rs = _roots(roots)
     path = locate(ref, roots=rs)
     lines = _lines(path)
@@ -691,7 +709,7 @@ def check_quote(
         return Verdict(how, ref)
 
     def at(line: int) -> Ref:
-        return _ref_at(path, line, session=ref.session, subagent_file=ref.subagent_file, roots=rs)
+        return _ref_at(path, line, session=ref.session, subagent_file=ref.subagent_file, roots=rs, sent=sent)
 
     hits = [h for h in _find_in(lines, quote) if h != ref.line]
     if hits:
@@ -723,7 +741,7 @@ def check_quote(
         if fh:
             return Verdict(
                 "other_session",
-                _ref_at(f, fh[0], session=f.stem, subagent_file=None, roots=rs),
+                _ref_at(f, fh[0], session=f.stem, subagent_file=None, roots=rs, sent=sent),
                 detail=f"found in another session of the project family ({searched} files searched)",
             )
     note = f"; {len(pieces)} ellipsis-joined pieces, piece {unfound_piece} not in the file" if unfound_piece else ""

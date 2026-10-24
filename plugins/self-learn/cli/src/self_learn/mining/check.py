@@ -76,7 +76,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Container, Sequence
 
-from .. import refs
+from .. import provenance, refs
 from ..scan import redact
 from . import contract
 from . import spine as spine_mod
@@ -149,12 +149,10 @@ def _matches_raw(quote: str, ref: refs.Ref, roots: Sequence[Path]) -> bool:
     return refs._match(quote, raw) is not None  # pyright: ignore[reportPrivateUsage]
 
 
-def landed_uuids(spine: Spine, checked: dict[str, Any]) -> frozenset[str]:
-    """What the engine adds to the judged-uuid store once ``checked`` has
-    landed: the spine's typed turns and assistant text in the judged lines
-    (``Spine.moment_uuids``), and every uuid a kept item cites -- evidence,
-    steps, verification, incident cost, a rule check's situation -- so a
-    fork's copy of a cited moment, of whatever kind, is ``already-judged``."""
+def cited_uuids(checked: dict[str, Any]) -> frozenset[str]:
+    """Every uuid the kept items of ``checked`` cite -- evidence, steps,
+    verification, incident cost, a rule check's situation. A part of a
+    document (``{"lessons": [one]}``) is read the same way."""
     cited: set[str] = set()
 
     def take(pointer: Any) -> None:
@@ -171,7 +169,17 @@ def landed_uuids(spine: Spine, checked: dict[str, Any]) -> frozenset[str]:
             take(p)
     for c in checked.get("rule_checks", []):
         take(c["situation"])
-    return spine.moment_uuids | cited
+    return frozenset(cited)
+
+
+def landed_uuids(spine: Spine, checked: dict[str, Any]) -> frozenset[str]:
+    """Every moment ``checked`` judged: the spine's typed turns and assistant
+    text in the judged lines (``Spine.moment_uuids``), and every uuid a kept
+    item cites (:func:`cited_uuids`). The engine teaches the store this at
+    the answer's save, less what its spine showed as judged or another
+    session of the run claimed (fix round 4), so a fork's copy of a cited
+    moment, of whatever kind, is ``already-judged``."""
+    return spine.moment_uuids | cited_uuids(checked)
 
 
 def quote_withheld(quote: object) -> bool:
@@ -286,8 +294,10 @@ class _Checker:
         roots: Sequence[Path | str] | None,
         judged_uuids: Container[str],
         known_records: Container[str],
+        sent: provenance.SentIndex | None = None,
     ) -> None:
         self.spine = spine
+        self.sent = sent
         self.roots = [Path(r).expanduser() for r in roots] if roots is not None else refs.transcript_roots()
         self.judged_uuids = judged_uuids
         self.known = known_records
@@ -364,7 +374,9 @@ class _Checker:
         uid = entry.get("uuid")
         uid = uid if isinstance(uid, str) else None
         try:
-            ref = refs.resolve(session.session_id, line, uuid=uid, subagent_file=subagent_file, roots=self.roots)
+            ref = refs.resolve(
+                session.session_id, line, uuid=uid, subagent_file=subagent_file, roots=self.roots, sent=self.sent
+            )
         except (refs.RefError, OSError):
             raise _Fail("line-unresolved", f"line {line} does not resolve") from None
         if uid is None and ref.project_dir != session.project_dir:
@@ -406,7 +418,7 @@ class _Checker:
         elif refs.fold(quote) and refs.fold(quote) in refs.fold(shown):
             verdict = "normalised"
         else:
-            v = refs.check_quote(ref, quote, roots=self.roots, other_session_cap=0)
+            v = refs.check_quote(ref, quote, roots=self.roots, other_session_cap=0, sent=self.sent)
             if v.outcome in _KEEP:
                 verdict = v.outcome
             elif v.outcome in _MOVED:
@@ -589,12 +601,15 @@ def check_output(
     known_records: Container[str] = frozenset(),
     search_mode: str = "lexical-only",
     mode: str = "night",
+    sent: provenance.SentIndex | None = None,
 ) -> CheckResult:
     """Turn the model's final message ``text`` for ``spine`` into checked
     output (module docstring, steps 1-8). ``roots`` are the transcript roots
     refs resolve against (the registry's when omitted); ``judged_uuids`` the
     judged-uuid store as it stood before this run; ``known_records`` the
-    ledger's record ids. Reads only; never adds to the judged-uuid store."""
+    ledger's record ids; ``sent`` the run's sends (``provenance.sweep``,
+    swept once per run: without it each ref's role sweeps ``roots`` again).
+    Reads only; never adds to the judged-uuid store."""
     meta = {"run_id": run_id, "model": model, "method_version": method_version, "search_mode": search_mode, "mode": mode}
     obj, problem = _parse(text)
     if problem is None and not isinstance(obj, dict):
@@ -613,7 +628,7 @@ def check_output(
         )
     assert isinstance(obj, dict)
 
-    ck = _Checker(spine, roots, judged_uuids, known_records)
+    ck = _Checker(spine, roots, judged_uuids, known_records, sent)
     ck.drops.extend(over)
     lessons = [x for x in (ck.lesson(lesson) for lesson in obj["lessons"]) if x is not None]
     sightings = [x for x in (ck.sighting(i, s) for i, s in enumerate(obj["sightings"])) if x is not None]

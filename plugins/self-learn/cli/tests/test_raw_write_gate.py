@@ -385,14 +385,6 @@ RAW_WRITE_ALLOWLIST: dict[tuple[str, str, str], tuple[str, object]] = {
         "XDG cache JSON bookkeeping (cursors.json); NOT_REPO_TRUTH",
         "keep",
     ),
-    ("cli", "miner.py", "_rejected_counter_bump"): (
-        "XDG cache JSON bookkeeping (rejected-sightings.json); NOT_REPO_TRUTH",
-        "keep",
-    ),
-    ("cli", "miner.py", "_rejected_mark_landed"): (
-        "XDG cache JSON bookkeeping (rejected-sightings.json); NOT_REPO_TRUTH",
-        "keep",
-    ),
     ("cli", "miner.py", "_save_canaries"): (
         "XDG cache JSON bookkeeping (canaries.json); NOT_REPO_TRUTH",
         "keep",

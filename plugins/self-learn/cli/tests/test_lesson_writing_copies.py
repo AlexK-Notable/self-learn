@@ -1,9 +1,10 @@
 """E3a: one shared passage on writing a lesson, INLINED into each lesson
 writer (never a pointer an agent must choose to open).
 
-(a) the three inlined copies -- the `/self-learn:teach` command, the
-    steward's brief, the overseer's workspace README -- equal the canonical
-    file byte for byte;
+(a) the four inlined copies -- the `/self-learn:teach` command, the
+    steward's brief, the overseer's workspace README, the session miner's
+    shared instructions (new miner R2) -- equal the canonical file byte for
+    byte;
 (b) `teach --context` on a BEHAVIOR lesson writes `## Context`, and the
     line compiled after `--route` never carries that text;
 (c) the byte-for-byte check can fail (a one-character mutation of a copy).
@@ -16,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 from self_learn import cli, lesson_writing, steward_prompt
+from self_learn.mining import engine as mining_engine
 from self_learn.overseer import formats
 from self_learn.records import Record
 from support import make_env, make_home
@@ -54,6 +56,9 @@ def _copies(tmp_path) -> dict[str, str]:
         "teach": TEACH_MD.read_bytes().decode("utf-8"),
         "steward": _steward_shared(tmp_path),
         "overseer": formats._rules("B"),
+        # new-miner plan §4.3: the session miner carries the passage from day
+        # one, in the instructions every call of a run shares
+        "miner": mining_engine.shared_instructions()[0],
     }
 
 
@@ -68,7 +73,7 @@ def test_canonical_file_exists_and_is_the_passage():
     assert text.endswith("said by another lesson you name).\n")
 
 
-@pytest.mark.parametrize("name", ["teach", "steward", "overseer"])
+@pytest.mark.parametrize("name", ["teach", "steward", "overseer", "miner"])
 def test_each_inlined_copy_equals_the_canonical_file(tmp_path, name):
     document = _copies(tmp_path)[name]
     # positive control: the markers and the passage are really in the document,
@@ -103,7 +108,7 @@ def test_overseer_phase_a_readme_carries_no_passage():
 # ---------------------------------------------------------------- (c)
 
 
-@pytest.mark.parametrize("name", ["teach", "steward", "overseer"])
+@pytest.mark.parametrize("name", ["teach", "steward", "overseer", "miner"])
 def test_one_character_drift_in_a_copy_is_caught(tmp_path, name):
     """The comparison in (a) must be able to fail: flip one character inside
     the markers of a copy and the equality no longer holds."""

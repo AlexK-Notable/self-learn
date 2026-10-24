@@ -259,7 +259,13 @@ class LessonIndex:
     @classmethod
     def open(cls, home: Path | str | None = None) -> "LessonIndex":
         home = Path(home).expanduser() if home is not None else resolve_home()
-        path = index_path(home, create=True)
+        return cls.open_at(index_path(home, create=True), home)
+
+    @classmethod
+    def open_at(cls, path: Path, home: Path | str) -> "LessonIndex":
+        """The index at ``path`` (made when absent) for the ledger at
+        ``home``: :meth:`open`'s file, or a copy elsewhere."""
+        home = Path(home).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(path))
         for ddl in _SCHEMA:

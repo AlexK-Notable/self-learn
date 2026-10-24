@@ -37,7 +37,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Iterable
 
 from . import settings
 from .ledger import resolve_home
@@ -232,6 +232,31 @@ def spool_quiet(kind: str, **payload) -> Path | None:
     except (TelemetryError, OSError) as exc:
         print(f"self-learn: telemetry spool failed: {exc}", file=sys.stderr)
         return None
+
+
+def read_spooled(kinds: Iterable[str] | None = None) -> list[dict]:
+    """The events still in this machine's spool (every actor's file), not
+    yet flushed to the tracked plane; ``kinds`` narrows them. Reads only,
+    without the spool lock (an append is one whole line). A line that does
+    not decode or parse is skipped, as :func:`flush` drops it."""
+    sdir = spool_dir()
+    if not sdir.is_dir():
+        return []
+    wanted = set(kinds) if kinds is not None else None
+    out: list[dict] = []
+    for path in sorted(sdir.glob("*.jsonl")):
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        for raw in data.split(b"\n"):
+            try:
+                event = json.loads(raw.decode("utf-8")) if raw.strip() else None
+            except (UnicodeDecodeError, ValueError):
+                continue
+            if isinstance(event, dict) and (wanted is None or event.get("kind") in wanted):
+                out.append(event)
+    return out
 
 
 @dataclass

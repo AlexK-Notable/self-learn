@@ -2668,18 +2668,34 @@ judged-uuid store** (`mining/spine.py`, `mining/check.py`, `mining/uuids.py`).
 - *The judged-uuid store* is a small SQLite file in the cache,
   `<cache>/miner/judged-uuids.sqlite`, one table `judged(uuid TEXT PRIMARY
   KEY, first_judged TEXT)` (the date each moment was first judged). For each
-  landed session it holds (i) the uuids of the typed turns and (ii) of the
-  assistant text entries in its judged lines (`Spine.moment_uuids`), and
-  (iii) every uuid a landed item cited -- evidence, steps, verification,
-  incident cost, a rule check's situation -- which is what stops a fork
-  re-landing a parent's moment of any kind (`check.landed_uuids` gives all
-  three). Rows are added only by an explicit call after a session's output
-  has landed, with `INSERT OR IGNORE` (a moment keeps its first date); rows
+  session whose checked answer was saved as a waiting answer it holds (i)
+  the uuids of the typed turns and (ii) of the assistant text entries in its
+  judged lines (`Spine.moment_uuids`), and (iii) every uuid a kept item
+  cited -- evidence, steps, verification, incident cost, a rule check's
+  situation -- which is what stops a fork re-judging a parent's moment of
+  any kind. *Amended by R2 fix round 4:* rows are added at the answer's save,
+  before any of it lands (12 §13.3 **Save**), never from a moment another
+  session of the same run claimed (that reaches the store only through its
+  claimer's save); the waiting answer keeps what it taught, and a night run
+  adds it again before its snapshot, so a stop between the save and the
+  store write is repaired. Rows are added only by an explicit call, with
+  `INSERT OR IGNORE` (a moment keeps its first date); rows
   judged more than 120 days ago are pruned by one `DELETE` per run. Every
   call opens its own connection and closes it, so none is shared between
   threads; a run's spines and checks read one snapshot taken before the run.
-  A missing file is an empty store; an unreadable one reads as empty and is
-  reported as damaged. Measured 2026-10-19 over the last 30 days of
+  A missing file is an empty store. *Amended by R2 (2026-10-19):* a read
+  opens the file read-write without creating it, because a read-only open
+  cannot roll back the hot journal a crash in the middle of an add leaves
+  and read no rows at all; a read that gives up on another process's lock is
+  `locked` (the file is fine, nothing is moved), any other failure is
+  `damaged`. At the start of a night run the engine moves a damaged file
+  aside (`judged-uuids.sqlite.damaged-<UTC time>`, with its journal) and
+  starts empty, never a locked one, and the run record's `judged_uuids` says
+  which happened; a preview never prunes, moves or adds (fix round: it reads
+  a copy of the file made inside its run folder, so a hot journal is rolled
+  back in the copy, never in the live file). Every night run keeps the three
+  newest damaged files moved aside and deletes older ones with their
+  journals. Measured 2026-10-19 over the last 30 days of
   transcripts (410 files, counts only): 2,898 typed turns and 17,423
   assistant text entries, about 20,300 rows a month before (iii) adds its
   few cited moments; at 120 days about 81,000 rows, an 8.5 MB file whose
@@ -2698,7 +2714,7 @@ Run           = { "contract": "miner-shadow-run/1", "run_id": str, "mode": "test
                   "sessions": [ { "session": str, "file": str,
                                   "status": "called" | "skipped" | "not-run",
                                   "reason": str | null,   # skipped: no-marker | no-typed-turns | nothing-new | halted;
-                                                          # not-run: spend-ceiling; called: null
+                                                          # not-run: spend-ceiling | pending-gate; called: null
                                   "out_status": "ok" | "bad-output" | "failed" | null,   # set when called
                                   "attempts": int, "failure_class": str | null,
                                   "cost_usd": number | null, "turns": int | null,
@@ -2709,6 +2725,44 @@ Run           = { "contract": "miner-shadow-run/1", "run_id": str, "mode": "test
                               "lessons": int, "sightings": int, "rule_checks": int, "drops": { reason: int } } }
 ```
 
+*Amended by R2 (2026-10-19):* the session engine adds optional keys, each
+validated when present (`contract.RUN_OPTIONAL_KEYS`,
+`SESSION_ROW_OPTIONAL_KEYS`): `"preview": bool` (a `mine run --preview`);
+`"counts": { "quote_redacted", "cut_to_limit", "checker_errors",
+"call_failures", "bad_output", "deferred": int, "flag_modes": { mode: int } }`;
+`"judged_uuids": { "state": "ok" | "locked" | "rebuilt" | "damaged",
+"loaded": int, "aside"?: str | null, "pruned"?: int, "added"?: int,
+"add_failed"?: int, "relearned"?: int, "relearn_failed"?: int }`
+(`relearned`: rows the run added again from waiting answers;
+`relearn_failed`: waiting files whose re-learning failed, fix round 5); `"landed": { "lessons", "folded",
+"recurrences", "fires": int }` (what a night run landed, whichever run's
+waiting answer it came from, apart from `totals`, which counts what this
+run's checks kept; R2 fix rounds 2 and 4); `"waiting": { "found",
+"landed_earlier", "landed_this_run", "still_waiting": int ≥ 0, "stuck":
+[ { "session": str, "kind": "lessons" | "sightings" | "rule_checks",
+"origin": str, "failures": int ≥ 3, "error": str } ], "unreadable": [ str ],
+"drained": bool }`
+(fix round 4: the waiting answers found from earlier runs; items, never
+sessions, landed from earlier runs' answers and from this run's; items still
+waiting after the landing; the stuck items, never more than those still
+waiting; fix round 5: the names of waiting files that do not read, each
+1..300 characters; `drained` is true once the ledger lock was acquired for the landing,
+whether or not the landing then completed); and on a session
+row `saved` (bool, a night run's called session only: its checked answer was
+saved as a waiting answer; never true unless `out_status` is `ok`),
+`flag_mode`, `flag_note` (the
+`flags.flag_rules` mode and note, `unavailable` when the lesson index could
+not be built), `flags`, `spine_tokens_est`, `over_budget`, `quote_redacted`,
+`cut_to_limit`, and `error` (`call` or `checker-error` for a called session
+whose out status is `failed`; `call` includes a call that raised,
+`checker-error` any exception the check raised). A session the flood gate
+held is `not-run` with reason `pending-gate` (fix round 4). The run status of
+a night is `ok`, `stopped-ceiling` (the runaway guard stopped calls) or
+`failed` (it called sessions and saved none of their answers); `mode` is
+`night`. Fix round 4 retired `landed.sessions_failed`, the row's `landing`,
+`family` and `family_held`, and `families_over_limit`: the contract refuses
+each.
+
 `totals` equals what the sessions say (`called`, `skipped` by reason,
 `not_run`), and `load_run` checks the folder against itself: one out file
 per called session and no other, each file's `run_id`, `mode` and `status`
@@ -2718,6 +2772,53 @@ once (`sessions[1].session: listed twice` otherwise; the message names the
 row, never the id): the comparison keys its per-session views by id, so a
 second row would change the result with the order of the rows. The engine
 plans one file per session id.
+
+**Waiting answer — `miner-waiting/1`** (`<cache>/miner/pending/<saved_ns>-<session>.json`;
+R2 fix round 4, `mining.waiting`). One file per session answer the checker
+passed, written whole and atomically (temp file, fsync, rename), mode 0600,
+outside every run folder, and removed once every item in it has landed or
+been dropped on purpose and what it teaches the judged-uuid store has been
+written (fix round 5):
+
+```text
+Waiting       = { "contract": "miner-waiting/1", "session": str, "transcript": str, "run_id": str,
+                  "method_version": str, "saved_ns": int, "saved_at": iso, "halted": bool,
+                  "cwd": str | null,
+                  "cursor": { "lines": int, "size": int, "halt": bool },   # the entry the session's cursor takes
+                  "learn": [ uuid ],                                       # what the judged-uuid store learns
+                  "checked": Checked,                                      # miner-output/1, verbatim
+                  "items": [ { "kind": "lessons" | "sightings" | "rule_checks", "index": int,
+                               "state": "waiting" | "writing" | "landed" | "dropped", "failures": int,
+                               "intent"?: Intent,                          # required when state is writing
+                               "outcome"?: str, "reason"?: str, "error"?: str } ] }
+
+Intent        = { "output": "lesson" | "resurface" | "fold" | "recurrence-suspect" | "fire",
+                                           # lessons: lesson; sightings: resurface | fold |
+                                           # recurrence-suspect; rule_checks: fire
+                  "record": str | null,    # the target record id, non-empty; null for a lesson only
+                  "origin": str,           # transcript:<session>[/subagents/<file>]#L<n>
+                  "sightings"?: int,       # a resurface's sighting count: required, an int >= 0
+                                           # and never a bool (fix round 7)
+                  ... }                    # what else replaying the output needs
+```
+
+`items` holds exactly one entry per lesson, sighting and rule check of
+`checked`, with no gap and no duplicate; answers land in `saved_ns` order.
+`writing` (fix round 5) means the item's intent was recorded and its output
+may exist; a replay finishes that recorded output and never decides again
+(12 §13.3 *Intent before write*). A file that does not read as one (bad JSON,
+a contract this code does not read, a `checked` that fails
+`validate_checked_output`, a missing `cursor` or `learn`, a `cursor` whose
+`lines` or `size` is not a non-negative int or whose `halt` is not a bool, a
+`transcript` that is not a string, an index or count that is a bool, a
+missing, duplicate or out-of-range item, a `writing` item whose intent is
+missing or does not fit its kind, fix round 6; a resurface intent without
+its sighting count, fix round 7) is left
+in place byte-identical, named in the run's journal row, `run.json`
+`waiting.unreadable` and `self-learn doctor miner`, and waits on a manual
+repair. A later change to `miner-output/1` or to this contract must keep
+reading files written under the earlier version, or migrate them. An item
+with `failures` ≥ 3 is stuck.
 
 **Typed turns.** `has_typed_turn_marker(entries)` (some `user` row carries an
 `origin` object or a `promptSource` key), `typed_turn_lines(entries)` (the
@@ -2746,8 +2847,10 @@ steward's input). Dropped from the old miner's output: `near_misses`,
 `match.status`, `match.record`, `confidence`, `verified`/`verified_how` (now
 `verification` with a ref), `episode_brief`, the single `quote`+`session`+`line`
 (now `evidence[]`), and the bare `fires` rows (now `rule_checks`). A kept
-lesson becomes a pending record at U5, its evidence items `{ref, quote,
-session, ts: ref.entry_ts, origin}`; that mapping is U5's.
+lesson becomes a pending record, its evidence items `{ref, quote,
+session, ts: ref.entry_ts, origin}` (a resurfaced copy's also carry
+`resurfaces: <rejected id>`, R2 fix round 7); R2 lands it (`12-transcript-miner.md`
+§13.3).
 
 **The comparison — `miner-compare/1`** (`runs/<run_id>/compare/report.json`,
 written by `python -m self_learn.mining.compare report`, which writes only
