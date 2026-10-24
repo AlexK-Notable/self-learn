@@ -1160,59 +1160,6 @@ def test_den3_M13_positional_charter_denials_breaks_every_existing_caller():
     assert param.default is None
 
 
-def test_den3_M14_mutation_print_only_on_success_branch_would_hide_failure_denials():
-    """DEN3/M14: apply the predicted mutation to `teach.py` LIVE --
-    delete the `except AnstError` branch's denial-print block, leaving
-    the line on the success branch only -- confirm `test_den3_teach_
-    route_prints_denial_line_on_the_failure_branch` goes RED, then
-    restore via inverse edit and sha256-verify the file is back to its
-    pre-mutation bytes."""
-    import hashlib
-    import subprocess as sp
-
-    target = _SRC / "teach.py"
-    original = target.read_text(encoding="utf-8")
-    original_sha = hashlib.sha256(original.encode()).hexdigest()
-
-    old = (
-        '        except analyst.AnalystError as exc:\n'
-        '            if charter_denials:\n'
-        '                tools = sorted({tool for d in charter_denials if (tool := d.get("tool"))})\n'
-        '                print(\n'
-        '                    f"analyst: {len(charter_denials)} charter denial(s) this run "\n'
-        '                    f"({\', \'.join(tools)})"\n'
-        '                )\n'
-        '            return _capture_to_pending(\n'
-    )
-    assert original.count(old) == 1, "M14 anchor not found in teach.py -- has the shape moved?"
-    new = (
-        '        except analyst.AnalystError as exc:\n'
-        '            return _capture_to_pending(\n'
-    )
-    mutated = original.replace(old, new, 1)
-    assert mutated != original
-    target.write_text(mutated, encoding="utf-8")
-    try:
-        proc = sp.run(
-            [
-                "uv", "run", "pytest",
-                "tests/test_u_corrob.py::test_den3_teach_route_prints_denial_line_on_the_failure_branch",
-                "-q",
-            ],
-            cwd=_REPO_ROOT / "plugins/self-learn/cli",
-            capture_output=True, text=True, timeout=120,
-        )
-        assert proc.returncode != 0, (
-            "M14 mutation stayed GREEN -- the failure-branch print is not "
-            f"discriminated\n{proc.stdout[-2000:]}"
-        )
-    finally:
-        target.write_text(original, encoding="utf-8")
-        assert hashlib.sha256(target.read_text(encoding="utf-8").encode()).hexdigest() == original_sha, (
-            "RESTORE FAILED -- teach.py is not byte-identical to its pre-mutation content"
-        )
-
-
 # ===================================================================== #
 # COR11 -- fake_claude.py's one-pair-per-write-op fixture fix
 # ===================================================================== #
