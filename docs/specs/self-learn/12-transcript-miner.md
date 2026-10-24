@@ -1171,8 +1171,10 @@ that record is the rejected record's own resurfaced copy; another record at
 that moment, a lesson from the same answer, leaves the counter as it is
 (fix round 6). The copy is known by what it says it is, never by its text
 (fix round 7): every evidence entry of a resurfaced copy carries
-`resurfaces: <rejected id>`, and the copy is the record whose evidence
-entry at that origin names the rejected record. Evidence is append-only,
+`resurfaces: <rejected id>`, and the copy is a record holding that origin
+whose evidence has an entry naming the rejected record; the marked entry
+need not be the one at that origin, since a later fold into the copy adds
+entries without the marker (R3, 2026-10-24). Evidence is append-only,
 so an edit of either record's text, or a section the copy does not carry,
 never hides it, and a lesson that only uses the same words is never taken
 for it.
