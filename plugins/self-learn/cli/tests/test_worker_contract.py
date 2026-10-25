@@ -480,37 +480,8 @@ def _apply_failure_env(kind: str, param: str, *, scratch: Path, monkeypatch) -> 
 # ===================================================================== #
 
 
-def test_pb1_backend_identity_per_param(backend, tmp_path):
-    from self_learn.invocation_sdk import SdkBackend as _IndependentSdkBackend
-
-    # U-cleanup-A COLLAPSE + RE-BASELINE (§8.4b): MAJOR-3's original
-    # first clause read the `backend` fixture's `params=("cli", "sdk")`
-    # marker off `_fixture_function_marker` -- CV2/CB-3 collapsed the
-    # fixture to unparametrized-sdk-only (see `backend`'s own
-    # docstring), so there is no `params` marker left to read; a plain
-    # `@pytest.fixture()` carries no `_fixture_function_marker` at all,
-    # so the old clause would now raise `AttributeError`, not just fail
-    # an assertion. Rebaselined to the surviving half of PB1's intent --
-    # that the fixture yields exactly one identity, sdk, no other pole
-    # reachable through it -- checked directly against `backend.param`
-    # rather than against marker metadata that no longer exists.
-    assert backend.param == "sdk"
-
-    home = tmp_path / "pb1-home"
-    home.mkdir()
-    assert type(invocation.backend_for("worker", home=home)) is _IndependentSdkBackend
-    assert type(invocation.backend_for("worker-repair", home=home)) is _IndependentSdkBackend
 
 
-def test_pb2_driven_outcome_backend_asymmetry(backend, tmp_path, monkeypatch):
-    home = tmp_path / "pb2-home"
-    home.mkdir()
-    spec = _spec_for("worker", home=home, prompt="ok_text")
-    outcome = invocation.write_session(spec)
-    if backend.param == "sdk":
-        assert isinstance(outcome, SdkOutcome)
-    else:
-        assert not isinstance(outcome, SdkOutcome)
 
 
 def test_pb3_sdk_param_always_uses_the_shipped_fake(backend):
@@ -850,40 +821,6 @@ def test_rp1a_repair_round_writes_no_settings_artifact_under_cache_dir(request, 
     )
 
 
-def test_rp2_repair_reaches_same_backend(backend, env, monkeypatch, tmp_path):
-    assert (
-        invocation.SELECTOR_FOR_SURFACE["worker-repair"]
-        == invocation.SELECTOR_FOR_SURFACE["worker"]
-        == "WORKER"
-    )
-    resolved: list[tuple[str, type]] = []
-    real_backend_for = invocation.registry.backend_for
-
-    def spy(surface, **kw):
-        b = real_backend_for(surface, **kw)
-        resolved.append((surface, type(b)))
-        return b
-
-    monkeypatch.setattr(invocation.registry, "backend_for", spy)
-
-    rid = _next_rid()
-    seed_pending(env, rid=rid)
-    # U-cleanup-B DELETE (§8.3): the `if backend.param == "cli":` branch
-    # (bash-shim `CLAUDE_SHIM_SCRIPT_1`/`_2` scripting) is unreachable
-    # dead code -- only the sdk branch's body remains, unconditional.
-    target = worker.stage_dir() / f"{rid}.yaml"
-    counter_file = tmp_path / "rp2-calls"
-    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_write_real")
-    monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(target))
-    monkeypatch.setenv("FAKE_CLAUDE_CALLS", str(counter_file))
-    monkeypatch.setenv("FAKE_CLAUDE_WRITE_BODY_1", _dump_yaml(_t4_missing_target(env, rid)))
-    monkeypatch.setenv("FAKE_CLAUDE_WRITE_BODY_2", _dump_yaml(_t4_target_fixed(env, rid)))
-
-    worker.run(env.home)
-    worker_calls = [b for s, b in resolved if s == "worker"]
-    repair_calls = [b for s, b in resolved if s == "worker-repair"]
-    assert worker_calls and repair_calls
-    assert worker_calls[-1] is repair_calls[-1]
 
 
 def test_rp3_repair_surface_direct_drive(backend, tmp_path, monkeypatch):
@@ -1601,25 +1538,6 @@ def test_ev4_tool_events_string_confined_to_events_module():
 # below.
 
 
-def test_fr3_default_is_now_sdk(tmp_path, monkeypatch, sdk_absent):
-    # U-flip: this criterion was `test_fr3_default_stays_cli` -- the
-    # worker/worker-repair default flipped from "cli" to "sdk" (same
-    # in-code table rung the analyst flip (U-sdka) used). `sdk_absent`
-    # forces the SDK import to fail so the resolved backend is asserted
-    # by the failure mode (`BackendUnavailable`), not by a real
-    # `SdkBackend` construction depending on the host's installed extra.
-    for var in ("SELF_LEARN_BACKEND", "SELF_LEARN_BACKEND_WORKER", "SELF_LEARN_BACKEND_MINER", "SELF_LEARN_BACKEND_ANALYST"):
-        monkeypatch.delenv(var, raising=False)
-    home = tmp_path / "fr3-home"
-    home.mkdir()
-
-    with pytest.raises(invocation.BackendUnavailable):
-        invocation.backend_for("worker", home=home)
-    with pytest.raises(invocation.BackendUnavailable):
-        invocation.backend_for("worker-repair", home=home)
-    # U-cleanup-B: KNOWN_BACKENDS has one member now (§8.1) -- "cli" is
-    # deleted, not merely a second choice this surface avoids.
-    assert invocation.KNOWN_BACKENDS == ("sdk",)
     # instrument half: `git diff 89f8ef7..HEAD -- .../registry.py` empty
     # -- recorded in the build report, not asserted here (`FL-b`).
 

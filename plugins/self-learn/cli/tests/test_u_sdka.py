@@ -32,7 +32,7 @@ from self_learn import analyst, cli as cli_mod, provider
 from self_learn import invocation
 from self_learn.invocation import contract as contract_mod
 from self_learn.invocation import registry as registry_mod
-from self_learn.invocation.contract import DEFAULT_BACKEND_FOR_SURFACE, SURFACES
+from self_learn.invocation.contract import SURFACES
 from self_learn.invocation_sdk import SdkBackend
 from self_learn.invocation_sdk import backend as sdk_backend_mod
 from self_learn.invocation_sdk import charter as charter_mod
@@ -280,8 +280,6 @@ def test_fl1_default_rung_resolves_sdk_for_every_surface(tmp_path, monkeypatch, 
     home = tmp_path / "fl1-home"
     home.mkdir()
 
-    assert set(DEFAULT_BACKEND_FOR_SURFACE) == set(SURFACES)
-
     for surface in (*SURFACES, "nope"):
         with pytest.raises(invocation.BackendUnavailable):
             invocation.backend_for(surface, home=home)
@@ -319,46 +317,8 @@ def test_fl1b_default_rung_returns_a_real_sdkbackend_when_installed(tmp_path, mo
     # module-level `from claude_agent_sdk import ...`.
 
 
-def test_fl6_worker_untouched(env, sdk_fake_worker, monkeypatch):
-    # A REAL worker.run() reaching the repair round (test_invocation.py's
-    # `repair_run` fixture, rebuilt HERE rather than imported -- it
-    # requires a fixture literally named `claude_shim`, and U-fake's `FX4`
-    # legacy-alias guard permits exactly one importer of that name,
-    # test_invocation.py) -- no backend env is set BY THIS TEST BODY.
-    #
-    # U-cleanup-A RE-BASELINE: originally "untouched" meant CLI, because
-    # the bash shim ran unconditionally regardless of which backend
-    # resolved (it just replaced whatever `claude` meant on PATH), so the
-    # suite-wide conftest `cli` pin (AG3) was the only thing setting
-    # `SELF_LEARN_BACKEND_WORKER`. The migrated `sdk_fake_worker`
-    # fixture instead routes through `SdkBackend` -> `fake_claude.py`, so
-    # IT is now the thing setting `SELF_LEARN_BACKEND_WORKER=sdk` for
-    # both surfaces. The assertion still checks something real -- that a
-    # worker.run() reaching BOTH the batch and repair rounds resolved the
-    # SAME (fixture-configured) backend for `worker` and `worker-repair`
-    # end to end -- just against the value the fixture now sets.
-    from self_learn import worker
-
-    rid = seed_pending(env)
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_1", _defect_script(env, rid, _t4_missing_target(env, rid)))
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_2", _defect_script(env, rid, _t4_target_fixed(env, rid)))
-    worker.run(env.home)
-    assert sdk_fake_worker["count"]() == 2  # batch + repair round both spawned the shim
-    for surface in ("worker", "worker-repair"):
-        assert provider.resolve(env.home, surface).backend == "sdk"
 
 
-def test_fl6b_miner_untouched(miner_capture):
-    # Kept in its OWN test (not combined with `test_fl6_worker_untouched`
-    # above): both `env` and `miner_capture` independently overwrite
-    # `SELF_LEARN_HOME` via `monkeypatch.setenv` -- composed in one test,
-    # `miner_capture`'s fixture setup (which also runs the miner reader
-    # invocation) races the worker/repair setup for that ambient var.
-    # U-cleanup-A RE-BASELINE: see `test_fl6_worker_untouched` -- the
-    # migrated `miner_capture` fixture sets `SELF_LEARN_BACKEND_MINER=sdk`
-    # to route through `fake_claude.py`, so that is now the resolved value.
-    assert miner_capture["argv"] != []
-    assert provider.resolve(miner_capture["home"], "miner-reader").backend == "sdk"
 
 
 def test_fl7_missing_extra_never_loses_a_lesson(tmp_path, monkeypatch, sdk_absent, capsys):

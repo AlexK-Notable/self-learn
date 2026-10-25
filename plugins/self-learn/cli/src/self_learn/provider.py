@@ -349,23 +349,9 @@ class ProviderRefused(RuntimeError):
 
 
 def session_env(resolution: ProviderResolution, *, home: Path | str) -> dict[str, str]:
-    """`A-0` -- the total rule, in this order:
-
-    1. `provider != "bedrock"` -> `{}` exactly.
-    2. `backend != "sdk"` (or the backend selection was REFUSED,
-       U-cleanup `MAJOR-5`: a `cli` pin now folds `backend` to `"sdk"`
-       byte-for-byte, so `backend_refused is not None` is what actually
-       distinguishes it) -> `{}` exactly (provider vars do not apply to
-       a surface that will never reach a live sdk session — this is what
-       makes the function total; before this row a `region=None`
-       resolution reached the assembly branch below and produced a
-       non-`str` value in a `dict[str, str]`).
-    3. `refusal is not None` -> raises `ProviderRefused`.
-    4. otherwise, the assembled dict.
-    """
+    """Anthropic needs no provider environment. Bedrock raises a real
+    provider refusal before assembling its SDK environment."""
     if resolution.provider != "bedrock":
-        return {}
-    if resolution.backend != "sdk" or resolution.backend_refused is not None:
         return {}
     if resolution.refusal is not None:
         raise ProviderRefused(resolution.refusal)

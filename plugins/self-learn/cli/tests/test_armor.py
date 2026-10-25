@@ -899,43 +899,7 @@ MEASURED: dict[str, Measured] = {
         value=2,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-10-24 17-invocation-runbook.md §1: SDK fixture census adjusted; now 2. "
-            "2026-10-24 17-invocation-runbook.md §1 and 02-schema.md §2: "
-            "measured 1 after selector-test deletions and the retire CLI conversion. "
-            "2026-09-28, transcribed at ANCHOR 9940b03 from this module's own STALE "
-            "refusal (followups-0928 landing): 2 -> 0, both batch-0928 doors dropped as "
-            "VACUOUS (their edits are at the anchor). Previous entry: "
-            "2026-09-28 batch 0928 part 3 (`13-hosting-and-separation.md` §6): 1 -> 2, "
-            "one door, `test_invocation_sdk.py: func:test_op14_options_kwargs_matches_"
-            "the_object_the_session_ran_on` (the option set gains `thinking`). "
-            "Previous entry: "
-            "2026-09-28 batch 0928 unit A (`13-hosting-and-separation.md` §5): 0 -> 1, "
-            "one door, `test_invocation_sdk.py: func:test_ch14_steward_and_overseer_"
-            "write_stage_only_bash_and_mcp_tools_denied` (the overseer's reads are "
-            "fenced to its workspace). Previous entry: "
-            "2026-09-20, transcribed at ANCHOR 1a0220b from this module's own STALE "
-            "refusal (liveness landing): 11 -> 0. All eleven `edited` doors belonged to "
-            "the steward-overseer landing, which IS the anchor now, so each went VACUOUS "
-            "and was dropped in the same motion. Previous entry: "
-            "2026-09-13 steward-overseer integration (U0 + U8 merged), "
-            "transcribed at ANCHOR a41ddb3: 0 -> 8. FW-85 (U0): one door, "
-            "`test_repair.py: func:test_h1_the_exit_code_contract` (`worker run`'s "
-            "`idle` status now returns EXIT_HELD, not 0). U8 (17-invocation-runbook.md "
-            "§1): seven doors -- six `test_invocation_sdk.py` OP-series tests (the "
-            "surface-tuple collapse; `_U8_FOUR_SURFACES_REASON`) plus one "
-            "`test_invocation.py` test (`func:test_rg1_five_rung_precedence_"
-            "resolves_in_isolation`, the steward/overseer env-leak fix). Each lane "
-            "transcribed its own count alone (1 and 7); the merge carries the sum, "
-            "re-verified by running this file. Previous value 0 (2026-09-11, at a41ddb3). "
-            "2026-09-14 U7 (`01-architecture.md` §3.3 as amended; `03-decisions.md` "
-            "S-26 as amended): 8 -> 9, one more door, `test_composer.py: "
-            "func:test_a12_worker_prompt_ingredients_and_to_text_containment` (the "
-            "M2 batch prompt's rejected-proposal digest assertion is replaced by "
-            "the U7 cases-block assertion). 2026-09-14 U10 (`03-decisions.md` "
-            "S-29 as amended) and O-3 (plan-overseer §O-3 / §5.1): 9 -> 11, the "
-            "invocation seam census in `test_invocation.py` WR7 and "
-            "`test_invocation_sdk.py` PL5 names the steward runner and the overseer "
-            "runner as the fourth and fifth authorized callers (the same two nodes)."
+            '2026-10-24 17-invocation-runbook.md §1 and 02-schema.md §2: measured 2 edited pinned nodes against ANCHOR: the SDK fixture census and retire CLI test.'
         ),
         measure=_measure_census_edited,
     ),
@@ -957,25 +921,7 @@ MEASURED: dict[str, Measured] = {
         value=190,
         scope=_SCOPE_HEAD,
         reason=(
-            "2026-10-24 17-invocation-runbook.md §1: SDK fixture census adjusted; now 190. "
-            "2026-10-24 17-invocation-runbook.md §1 and 02-schema.md §2: "
-            "measured 190 after selector-test deletions and the retire CLI conversion. "
-            "2026-09-28 batch 0928 part 3 (`13-hosting-and-separation.md` §6): "
-            "193 -> 194 -- `test_invocation_sdk.py`'s `test_op14_...` (the option "
-            "set gains `thinking`) now also differs from c3b48e7. Previous entry: "
-            "2026-09-13 U8 (17-invocation-runbook.md §1), HEAD-scoped, "
-            "re-run after this build's own edits against the RETIRED "
-            "control anchor c3b48e7: 186 -> 191, five of this build's seven "
-            "genuinely-edited nodes also differing from c3b48e7 (two of the "
-            "seven already differed from c3b48e7 independently of this "
-            "build and so moved nothing here, unlike at the live ANCHOR). "
-            "Previously 186 (2026-09-04 Sprint 2 integration). 2026-09-14 U7, "
-            "re-run after this build's own edit: 191 -> 192 -- "
-            "`test_composer.py`'s newly-edited `test_a12_...` node also "
-            "differs from c3b48e7. 2026-09-14 U10 (`03-decisions.md` S-29 "
-            "as amended) and O-3 (plan-overseer §O-3 / §5.1), re-run after both "
-            "builds' authorized seam-test edits: 192 -> 193 -- WR7 newly differs "
-            "from c3b48e7 while PL5 already did (the same two nodes for both units)."
+            '2026-10-24 17-invocation-runbook.md §1 and 02-schema.md §2: measured 190 edited control nodes against c3b48e7 after selector-test deletions and retirement conversions.'
         ),
         measure=_measure_control_edited,
     ),

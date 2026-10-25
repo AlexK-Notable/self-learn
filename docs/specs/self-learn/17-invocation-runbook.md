@@ -39,7 +39,12 @@ ignored, regardless of value. Both doctor views name each present retired
 key in a WARN row saying it has no effect; `--selftest` reports WARN for
 such keys, including `cli` pins. WARN is advisory (exit 0 in an otherwise
 healthy selftest); real failures still fail and unmeasured checks still
-exit 9. Existing files are never rewritten to remove the keys.
+exit 9. Diagnostics never rewrite existing files. To remove a retired
+config key, run `self-learn config unset invocation.backend` (or its
+`invocation.backend_<surface>` name); this commits the removal under the
+ordinary unset lock and refusal ordering, and reports names only. Already
+absent keys are a no-op. Environment warnings name the shell `unset`
+command instead; removing a config key cannot remove an exported variable.
 
 The unused `live_run_ids` pruning parameter and function-form
 `sentinel.release` wrapper were removed on 2026-10-24; log retention and

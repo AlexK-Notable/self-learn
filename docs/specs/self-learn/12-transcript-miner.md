@@ -140,6 +140,8 @@ checked-pointer resolver (`refs.py`), through the steward's briefs and the
 offline comparison, still reads it when a lesson cites it or a quote is
 searched for. The run log does not count listed skips.
 
+*2026-10-24: the offline comparison harness (`mining/compare.py`) is retired and removed; references above describe its historical role.*
+
 **Cap holds (amended by `U-cursorhold`, FW-73).** A candidate refused at
 Phase 4's per-run landing cap holds its originating session's cursor
 rather than advancing past it, so the refusal costs a re-read, never the

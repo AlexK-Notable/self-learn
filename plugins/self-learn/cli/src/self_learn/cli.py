@@ -413,12 +413,8 @@ def _build_parser() -> argparse.ArgumentParser:
             # Resolution-evidence unit (§2.1/§3.1): a machine envelope on
             # stdout, populated ONLY on a successful (exit 0) run — never
             # a second outcome channel. Scoped to route/reject/defer/
-            # retire/graduate/reconsider (fold r1, F7: U5 adds
-            # `reconsider` as a fifth `--json` verb; S-67 adds `retire`
-            # as a sixth, `graduate` staying its hidden alias — the
-            # resolution verbs the UI's evidence surface drives) — never
-            # rehome/supersede/confirm-recurrence/confirm-held, which
-            # stay text-only.
+            # retire/reconsider, the resolution verbs the UI evidence
+            # surface drives. Other verbs remain text-only.
             p.add_argument(
                 "--json",
                 action="store_true",
@@ -2131,24 +2127,9 @@ def _cmd_config_set(args: argparse.Namespace, home: Path) -> int:
         print(json.dumps(row))
         return EXIT_OK
     _print_setting_row(row, prefix="config set: ")
-    # M-S (S-58 code-gate fold r1 nit-3, widened by delta gate r2
-    # nit-1): `config_set` already wrote AND committed this value --
-    # but the row above prints whatever ANSWERS the cascade, which is
-    # the just-written config rung ONLY when nothing else masks it.
-    # nit-3's original fix covered exactly one masking source
-    # ("inactive (provider=...)", value silently reads as the entry's
-    # own default). nit-1 (delta gate r2) named a SECOND, structurally
-    # identical case the fold r1 code introduced: a paired entry
-    # (`invocation.backend_worker`) whose active override, env var, or
-    # GENERAL sibling's own rung outranks the key just written --
-    # `SELF_LEARN_BACKEND=sdk config set invocation.backend_worker sdk`
-    # writes the value, but the printed row shows `env:SELF_LEARN_
-    # BACKEND`, not `config:invocation.backend_worker`, with no
-    # confirmation the write landed at all. Both are one fact --
-    # "the source shown is not this key's own config rung" -- so the
-    # gate is that comparison, source-agnostic, rather than a literal
-    # `startswith("inactive")` check that only ever caught the first
-    # instance of it.
+    # A successful write may be masked by an environment override or an
+    # inactive provider setting. Confirm the committed change separately
+    # when the displayed value comes from somewhere else.
     own_rung_source = f"config:{setting.config_section}.{setting.config_key}"
     if cast(str, row["source"]) != own_rung_source:
         print(

@@ -129,8 +129,6 @@ def write_event_log(
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-
-
 def _mtime_or_oldest(path: Path) -> float:
     """A file's mtime, or minus infinity when it is gone: a sibling
     session's prune may unlink it between the glob and this `stat`

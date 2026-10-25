@@ -119,6 +119,8 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
+import shlex
 import socket
 import sys
 from collections.abc import Callable, Iterator
@@ -1704,7 +1706,9 @@ def retired_keys(home: Path | str) -> list[str]:
 
 
 def retired_key_detail(key: str) -> str:
-    return f"{key} is retired and has no effect; every invocation uses sdk"
+    action = (f"self-learn config unset {shlex.quote(key)}"
+              if key.startswith("invocation.") else f"unset {shlex.quote(key)}")
+    return f"{key} is retired and has no effect; every invocation uses sdk; remove it with `{action}`"
 
 
 def unknown_keys(home: Path | str) -> list[str]:
@@ -2302,7 +2306,15 @@ def config_unset(home: Path | str, name: str, *, note: str | None = None) -> tup
     try:
         setting = by_name(name)
     except KeyError:
-        raise UnknownSettingError(name) from None
+        # Removal-only descriptor: never re-register an obsolete setting or
+        # let config set resurrect it. Share all ordinary unset safeguards.
+        if re.fullmatch(r"invocation\.backend(?:_[A-Za-z0-9_-]+)?", name) is None:
+            raise UnknownSettingError(name) from None
+        setting = Setting(
+            name=name, env_var=None, config_section="invocation",
+            config_key=name.partition(".")[2], kind="str", default="",
+            description="retired backend selector", operator_facing=False,
+        )
     if setting.config_section is None or setting.config_key is None:
         raise NoConfigRungError(name)  # MINOR-4, same fix as config_set
 

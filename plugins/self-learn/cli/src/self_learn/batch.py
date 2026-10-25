@@ -102,7 +102,7 @@ __all__ = [
 #: U3 (S-54 as amended / 02-schema.md §3a.1 rule 5): ``by`` is added to
 #: every STATUS-changing (resolution) verb's set -- ``route`` already
 #: had it, ``revise`` (U4) already carries it -- widened here to
-#: ``reject``/``defer``/``undefer``/``reopen``/``graduate``/
+#: ``reject``/``defer``/``undefer``/``reopen``/``retire``/
 #: ``supersede``/``rehome``/``rescope``. The six ANNOTATION verbs
 #: (``note``, ``confirm-recurrence``, ``dismiss-suspect``,
 #: ``confirm-held``, ``link-contradicts``, ``followup-done``) never
@@ -233,7 +233,7 @@ HOOK_ROUTING_ACTORS = frozenset({"overseer", "steward"})
 #: `_dispatch` and `dry_run` both read this ONE set, so a run and its
 #: preview cannot disagree; the overseer's formats list what it refuses.
 #: 2026-10-07 (the user: "yes, makes sense"): the SAME set refuses a
-#: `retire` / `graduate` whose `covered_by` names a shelf
+#: `retire` whose `covered_by` names a shelf
 #: (`reference:<file>`) -- the same two actors, for the same measurement:
 #: a shelf nothing reads covers no lesson (`_refuse_agent_shelf_cover`).
 REFERENCE_REFUSED_ACTORS = frozenset({"overseer", "steward"})
@@ -290,7 +290,7 @@ def _refuse_agent_reference(
 
 
 def _refuse_agent_shelf_cover(item: "SheetItem", actor: str) -> None:
-    """Raise the refusal of a `retire` / `graduate` line whose `covered_by`
+    """Raise the refusal of a `retire` line whose `covered_by`
     names a reference shelf (`reference:<file>`, or a bare `reference`)
     when *actor* is one :data:`REFERENCE_REFUSED_ACTORS` names -- a
     :class:`verbs.SheetLineError`, so the kind is `bad-line` and the steward
@@ -299,7 +299,7 @@ def _refuse_agent_shelf_cover(item: "SheetItem", actor: str) -> None:
     `records.build_covered_by` reads it (the text before the first colon),
     so a line the parser would read as a shelf is refused by name here
     first. The ONE sentence `_dispatch` and `dry_run` both show."""
-    if actor not in REFERENCE_REFUSED_ACTORS or item.verb not in ("retire",):
+    if actor not in REFERENCE_REFUSED_ACTORS or item.verb != "retire":
         return
     covered_by = item.fields.get("covered_by")
     if isinstance(covered_by, str) and covered_by.partition(":")[0] == "reference":
@@ -1584,18 +1584,9 @@ def _dispatch(
                 no_push=True,
                 execution=execution,
             )
-        elif verb in ("retire",):
-            # S-67 (U13): pulled out to `_dispatch_retire`
-            # (below) -- a straight two-branch elif split here (one
-            # `retire`, one `graduate`, mirroring every other verb's own
-            # branch) pushed `_dispatch` itself over pyright's CFG
-            # complexity ceiling (measured: "Code is too complex to
-            # analyze" reportGeneralTypeIssues); MERGING the two
-            # branches into one `elif verb in (...)` with an inline
-            # ternary was not enough on its own -- the node count that
-            # trips the ceiling is per-FUNCTION, so only moving the
-            # branch OUT of `_dispatch` entirely (a real subroutine, not
-            # a same-function merge) actually clears it.
+        elif verb == "retire":
+            # Keep retirement dispatch in a helper to stay within pyright's
+            # per-function control-flow complexity limit.
             result = _dispatch_retire(
                 home, item, f, actor, case, verb, execution
             )

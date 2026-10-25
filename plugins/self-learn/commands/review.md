@@ -598,7 +598,7 @@ marker are projections and never recovery authority.
   does not erase a committed prefix or prevent a later independent packet
   from being decided; a ledger STOP (exit 5, 6 or 7) or a bookkeeping halt
   does stop every later case, packet and maintenance operation. A sheet item
-  the ledger refused with nothing written — a route, reject, retire,
+  the ledger refused with nothing written — a route, reject, defer,
   retire or supersede turned away at preflight included — is receipted
   `refused` and the rest of the sheet, the later cases and maintenance carry
   on; only a host-outcome verb that failed AFTER its ledger commit landed
