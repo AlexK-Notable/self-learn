@@ -686,7 +686,7 @@ def validate_checked_output(obj: object) -> list[str]:
 #: ``landed`` and ``waiting`` (a night run's landing).
 RUN_OPTIONAL_KEYS: tuple[str, ...] = ("preview", "counts", "judged_uuids", "landed", "waiting")
 RUN_COUNT_KEYS: tuple[str, ...] = (
-    "quote_redacted", "cut_to_limit", "checker_errors", "call_failures", "bad_output", "deferred",
+    "quote_redacted", "cut_to_limit", "prose_before_json", "checker_errors", "call_failures", "bad_output", "deferred",
 )
 #: What a night run's landing did (``landed``), apart from what the checks
 #: kept (``totals``): records landed, folds, recurrence-suspects and fires

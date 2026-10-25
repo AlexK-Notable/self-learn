@@ -116,7 +116,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "6a70bce"
+ANCHOR = "9f50345"
 
 
 # ===================================================================== #
@@ -288,34 +288,10 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # were dropped as VACUOUS by this landing's own refusal -- the
     # steward-overseer landing is the anchor itself now, so those edits are
     # anchor-side content and nothing is owed (section 4.7 FW-140).
+    # 2026-10-24, ANCHOR 9f50345 (engine-fix landing): this row's 8 `missing` doors (the test audit's deletions and edits)
+    # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_invocation.py": Behaviour(
-        nodes=94, dump_sha="21ac729b38c2304637bc6e4412c75dd39b37fa405b2ce7377f6142b34f5e7448",
-        missing={
-            'assign:_HY3_SHAS': (
-                '2026-10-24 test audit L1-3 (2026-10-20 audit report); drafts/u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_cn1_every_rendered_rule_has_the_double_slash': (
-                '2026-10-24 test audit L1-4 (2026-10-20 audit report); drafts/u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_cn4_write_exact_sorts_write_globs_does_not': (
-                '2026-10-24 test audit L1-4 (2026-10-20 audit report); drafts/u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_hy3_witness_b_is_sha_pinned': (
-                '2026-10-24 test audit L1-3 (2026-10-20 audit report); drafts/u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_hy4_lock_census_is_root_level_only_and_therefore_blind_to_invocation': (
-                '2026-10-24 test audit L1-2 (2026-10-20 audit report); drafts/u-seam-invocation-seam-spec.md §3.11. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_lg3a_worker_g_format': (
-                '2026-10-24 test audit L1-7 (2026-10-20 audit report); drafts/u-seam-invocation-seam-spec.md §3.6. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_lg3c_timeout_display_is_actually_read': (
-                '2026-10-24 test audit L1-7 (2026-10-20 audit report); drafts/u-seam-invocation-seam-spec.md §3.6. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_rg4_sdk_raises_backend_unavailable_with_install_command': (
-                '2026-10-24 test audit L1-9 (2026-10-20 audit report); drafts/u-sdk-backend-spec.md §3.13. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-        },
+        nodes=86, dump_sha="8e56cf5d5e00491ec8134084b745a0518008fca4da2dd52e910b785e271ac225",
     ),
     # 2026-08-30, ANCHOR ee62df0: RS8's `edited` exemption was dropped as
     # VACUOUS by this landing's refusal -- U-xdist landed, so the widened
@@ -327,74 +303,25 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # 2026-09-28, ANCHOR 9940b03 (followups-0928 landing): the two `edited`
     # doors batch 0928 added (test_ch14, test_op14) were dropped as VACUOUS by
     # this landing's own refusal -- those edits are now at the anchor.
+    # 2026-10-24, ANCHOR 9f50345 (engine-fix landing): this row's 4 `edited`/`missing` doors (the test audit's deletions and edits)
+    # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_invocation_sdk.py": Behaviour(
-        nodes=141, dump_sha="8927c9911327f00d16d4a4c31e08b806bd3e5e32ec33b78d8f90f3e8f4f3850d",
-        missing={
-            'func:test_ev4_nothing_in_the_package_reads_a_tool_events_file': (
-                '2026-10-24 test audit L1-12 (2026-10-20 audit report); drafts/u-sdk-backend-spec.md §3.8. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_pl5_no_other_module_calls_write_session_or_text_session': (
-                '2026-10-24 test audit L1-10 (2026-10-20 audit report); drafts/u-seam-invocation-seam-spec.md §3.9. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_rs8_lockfiles_no_package_added_or_removed_no_version_changed': (
-                '2026-10-24 test audit L1-13 (2026-10-20 audit report); drafts/u-sdk-backend-spec.md §3.11. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-        },
-        edited={
-            'assign:_SIM_2_NINE': (
-                '2026-10-24 test audit L1-9 (2026-10-20 audit report); drafts/u-sdk-backend-spec.md §3.13. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-        },
+        nodes=138, dump_sha="cf0a85b0dde35f88cbe27531bd282d2db780c9430b4874a7b62b77063caa2b84",
     ),
     "test_worker.py": Behaviour(
         nodes=83, dump_sha="0d4ac5f2300dc2f265566bc14b258c0086d7d6b23fd16b0c421d3d995d8e7a46"
     ),
     # 2026-09-20, ANCHOR 1a0220b (liveness landing): H1's `edited` door (FW-85's EXIT_HELD) was dropped
     # as VACUOUS by this landing's own refusal; FW-85 is behind the anchor.
+    # 2026-10-24, ANCHOR 9f50345 (engine-fix landing): this row's 1 `missing` doors (the test audit's deletions and edits)
+    # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_repair.py": Behaviour(
-        nodes=85, dump_sha="15cee52b616e8722eb9cef7e629bcbc56c1356c30dfeaea9aca0d3a2c829530a",
-        missing={
-            'func:test_f6_no_test_invokes_a_real_claude': (
-                '2026-10-24 test audit L1-46 (2026-10-20 audit report); drafts/u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-        },
+        nodes=84, dump_sha="1a6ef0d780035c3565d4c20cf4c6362239e98f0b6fa1f8336c74508952d0fbb3",
     ),
+    # 2026-10-24, ANCHOR 9f50345 (engine-fix landing): this row's 10 `edited`/`missing` doors (the test audit's deletions and edits)
+    # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_attrib.py": Behaviour(
-        nodes=68, dump_sha="9ebb1c1e42628b325b968bc8df082891f3d79946dd8a115b5b28e8f6898831c7",
-        missing={
-            'func:_batch_permissions': (
-                '2026-10-24 test audit L1-49 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.2/§3.7; u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_cp4_the_setj_pin_still_binds': (
-                '2026-10-24 test audit L1-52 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.5. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_cp6_sentinel_reassert_still_happens_g8_unchanged': (
-                '2026-10-24 test audit L1-51 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.5. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_cp8_testworkercontainment_asserts_new_containment_and_h3': (
-                '2026-10-24 test audit L1-49 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.2/§3.7; u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_gr2_batch_invocation_granted_the_stage_and_nothing_else': (
-                '2026-10-24 test audit L1-49 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.2/§3.7; u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_gr4_write_permission_rules_preserved_for_the_fallback': (
-                '2026-10-24 test audit L1-49 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.2/§3.7; u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_hy1_no_test_in_the_suite_invokes_a_real_claude': (
-                '2026-10-24 test audit L1-54 (2026-10-20 audit report); drafts/u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-        },
-        edited={
-            'func:test_gr1_settings_files_enforce_defaultmode': (
-                '2026-10-24 test audit L1-49 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.2/§3.7; u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_sw1_self_learn_stage_0_reverts_the_namespace_end_to_end': (
-                '2026-10-24 test audit L1-49 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.2/§3.7; u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_sw2_self_learn_enforce_scope_0_reverts_enforcement_and_only_that': (
-                '2026-10-24 test audit L1-49 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.2/§3.7; u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-        },
+        nodes=61, dump_sha="d9bd2a6a44e5bc82dda2185492a2ac7cb4cd2276f76d76cf55f25ea455fd4579",
     ),
     "test_route_cli.py": Behaviour(
         nodes=59, dump_sha="c61c80a0b91bc6e10dfc53e81e91549f6c7642f32b3c4a9ea91cbe9bbbd3eaa6",
@@ -405,30 +332,15 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     "test_composer.py": Behaviour(
         nodes=63, dump_sha="95bbfe93d6c00409bee5da686990c40a28cc9e80db6a9f8ed27d32a31a2c702d",
     ),
+    # 2026-10-24, ANCHOR 9f50345 (engine-fix landing): this row's 5 `missing` doors (the test audit's deletions and edits)
+    # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_u_fake.py": Behaviour(
-        nodes=31, dump_sha="4fbcee5f5481c7a339d32fe303760e5ea8a024e647cb2c1a82795da70c942f46",
+        nodes=26, dump_sha="3002f84a40b779129e22acbd441b019678e64abd95276aaf950a124f96bc81fb",
         # 2026-08-30, ANCHOR a768696: the fourteen DS1-era `missing`
         # doors that lived here were dropped as VACUOUS by this
         # landing's own refusal -- u-armor's retirement is now at or
         # behind the anchor, so those nodes are absent ANCHOR-side
         # rather than missing at HEAD (section 4.7 FW-140's fold rule).
-        missing={
-            'assign:MOVE1_TEST_NAMES': (
-                '2026-10-24 test audit L1-30 (2026-10-20 audit report); drafts/u-fake-test-tiers-spec.md §1.3; u-armor-narrow-whole-file-pins-spec.md §4.5. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'assign:PROMPT_ASSERTIONS_BY_LEG': (
-                '2026-10-24 test audit L1-30 (2026-10-20 audit report); drafts/u-fake-test-tiers-spec.md §1.3; u-armor-narrow-whole-file-pins-spec.md §4.5. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_t1a_move1_tests_keep_all_eight_prompt_assertions': (
-                '2026-10-24 test audit L1-30 (2026-10-20 audit report); drafts/u-fake-test-tiers-spec.md §1.3; u-armor-narrow-whole-file-pins-spec.md §4.5. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_t1b_move1_tests_assert_the_fake_was_reached': (
-                '2026-10-24 test audit L1-30 (2026-10-20 audit report); drafts/u-fake-test-tiers-spec.md §1.3; u-armor-narrow-whole-file-pins-spec.md §4.5. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-            'func:test_t1c_move1_tests_keep_the_argv_shape_assertions': (
-                '2026-10-24 test audit L1-30 (2026-10-20 audit report); drafts/u-fake-test-tiers-spec.md §1.3; u-armor-narrow-whole-file-pins-spec.md §4.5. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
-            ),
-        },
     ),
 }
 
@@ -877,9 +789,12 @@ class Measured:
 
 MEASURED: dict[str, Measured] = {
     "BEH7.node_counts": Measured(
-        value=(94, 141, 83, 85, 68, 59, 63, 31),
+        value=(86, 138, 83, 84, 61, 59, 63, 26),
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-10-24, transcribed at ANCHOR 9f50345 from this module's own "
+            "STALE refusal (engine-fix landing): (94, 141, 83, 85, 68, 59, 63, 31) -> (86, 138, 83, 84, 61, 59, 63, 26); the test audit's "
+            "deletions are anchor-side now. Previous entry: "
             "2026-09-20 §4.5/§2.10, transcribed at ANCHOR 1a0220b from this module's "
             "own STALE refusal (liveness landing): test_invocation_sdk.py 137 -> 141, "
             "test_worker.py 80 -> 83, test_composer.py 58 -> 63 -- the top-level nodes "
@@ -895,12 +810,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_node_counts,
     ),
     "BEH7.dump_prefixes": Measured(
-        value=(
-            "21ac729b38c2", "8927c9911327", "0d4ac5f2300d", "15cee52b616e",
-            "9ebb1c1e4262", "c61c80a0b91b", "95bbfe93d6c0", "4fbcee5f5481",
-        ),
+        value=('8e56cf5d5e00', 'cf0a85b0dde3', '0d4ac5f2300d', '1a6ef0d78003', 'd9bd2a6a44e5', 'c61c80a0b91b', '95bbfe93d6c0', '3002f84a40b7'),
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-10-24, transcribed at ANCHOR 9f50345 from this module's own "
+            "STALE refusal (engine-fix landing): ( 21ac729b38c2, 8927c9911327, 0d4ac5f2300d, 15cee52b616e, 9ebb1c1e4262, c61c80a0b91b, 95bbfe93d6c0, 4fbcee5f5481, ) -> (8e56cf5d5e00, cf0a85b0dde3, 0d4ac5f2300d, 1a6ef0d78003, d9bd2a6a44e5, c61c80a0b91b, 95bbfe93d6c0, 3002f84a40b7); the test audit's "
+            "deletions are anchor-side now. Previous entry: "
             "2026-09-28 §4.5/§2.10, transcribed at ANCHOR 9940b03 from this module's "
             "own STALE refusal (followups-0928 landing): test_invocation_sdk.py moved "
             "(05fe6a2bb6f6 -> 8927c9911327) because batch 0928's edits to it "
@@ -921,9 +836,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_dump_prefixes,
     ),
     "BEH7.node_total": Measured(
-        value=624,
+        value=600,
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-10-24, transcribed at ANCHOR 9f50345 from this module's own "
+            "STALE refusal (engine-fix landing): 624 -> 600; the test audit's "
+            "deletions are anchor-side now. Previous entry: "
             "2026-09-20 §4.5/§2.10, transcribed at ANCHOR 1a0220b from this module's "
             "own STALE refusal (liveness landing): 612 -> 624 (137 -> 141, 80 -> 83 and "
             "58 -> 63 above). Previous entry: "
@@ -960,9 +878,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_export_total,
     ),
     "EXM3.census_missing": Measured(
-        value=24,
+        value=0,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-24, transcribed at ANCHOR 9f50345 from this module's own "
+            "STALE refusal (engine-fix landing): 24 -> 0; the test audit's "
+            "deletions are anchor-side now. Previous entry: "
             "2026-10-24 test audit L1/L2, per §4.5/§4.7: 0 -> 24; "
             "measured at unchanged ANCHOR 2c8f8f5 after the authorized deletions. "
             "2026-09-11, transcribed at ANCHOR a41ddb3 from this module's own "
@@ -974,9 +895,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=4,
+        value=0,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-24, transcribed at ANCHOR 9f50345 from this module's own "
+            "STALE refusal (engine-fix landing): 4 -> 0; the test audit's "
+            "deletions are anchor-side now. Previous entry: "
             "2026-10-24 test audit L1/L2, per §4.5/§4.7: 0 -> 4; "
             "measured at unchanged ANCHOR 2c8f8f5 after the authorized edits. "
             "2026-09-28, transcribed at ANCHOR 9940b03 from this module's own STALE "

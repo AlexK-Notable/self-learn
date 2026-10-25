@@ -841,3 +841,50 @@ def test_a_subagent_log_past_the_judged_end_is_not_evidence(roots):
     assert reasons(res)[0] == ("L1.evidence[0]", "out-of-range")  # written after the judged end (L20, 10:00:20)
     res = run(build_spine(s, 11, 14), output([gotcha(2, "The export path is wrong")]), roots)
     assert reasons(res)[0] == ("L1.evidence[0]", "line-unresolved")  # launched past the end: not listed
+
+
+@pytest.mark.parametrize("shape", ["bare", "fence", "plain-fence", "inline-backticks", "prose", "two-fences", "trailing", "prose-only", "unfenced", "bad-contract"])
+def test_final_fence_acceptance_and_count(roots, shape):
+    sp = spine_of(roots)
+    body = output([lesson(context="Use ``` as a marker." if shape == "inline-backticks" else None)])
+    fence = f"```json\n{body}\n```"
+    # Positive control: the same payload keeps real evidence before framing changes.
+    control = run(sp, body, roots)
+    assert control.checked["status"] == "ok" and len(control.checked["lessons"]) == 1
+    assert control.prose_before_json == 0
+    texts = {"bare": body, "fence": "\n" + fence + "\n", "prose": "Here is the result.\n" + fence + "\n  ",
+             "plain-fence": fence.replace("```json", "```"), "inline-backticks": fence,
+             "two-fences": fence + "\n" + fence, "trailing": fence + "\nMore explanation.",
+             "prose-only": "No findings.", "unfenced": "Here is the result.\n" + body,
+             "bad-contract": 'Here is the result.\n```json\n{}\n```'}
+    result = run(sp, texts[shape], roots)
+    if shape in ("bare", "fence", "plain-fence", "inline-backticks", "prose"):
+        assert result.checked["status"] == "ok" and len(result.checked["lessons"]) == 1
+        assert result.prose_before_json == int(shape == "prose")
+    else:
+        assert result.checked["status"] == "bad-output" and result.checked["lessons"] == []
+        assert result.prose_before_json == 0
+
+
+@pytest.mark.parametrize("prefix", ["", "Here is the result.\n"])
+@pytest.mark.parametrize("label", ["json", ""])
+@pytest.mark.parametrize("suffix", ["", "  \n\t"])
+def test_closing_fence_directly_after_object(roots, prefix, label, suffix):
+    sp = spine_of(roots)
+    body = output([lesson()])
+    control = run(sp, body, roots)
+    assert control.checked["status"] == "ok" and len(control.checked["lessons"]) == 1
+    result = run(sp, prefix + f"```{label}\n{body}```" + suffix, roots)
+    assert result.checked == control.checked
+    assert result.prose_before_json == int(bool(prefix))
+
+
+@pytest.mark.parametrize("before_close", ["\n", ""])
+def test_opening_like_prose_line_is_not_discarded(roots, before_close):
+    sp = spine_of(roots)
+    fence = "```json\n" + output([lesson()]) + before_close + "```"
+    control = run(sp, fence, roots)
+    assert control.checked["status"] == "ok" and len(control.checked["lessons"]) == 1
+    result = run(sp, "```is a marker\n" + fence, roots)
+    assert result.checked["status"] == "bad-output" and result.checked["lessons"] == []
+    assert result.prose_before_json == 0
