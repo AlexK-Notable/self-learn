@@ -305,16 +305,10 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # this landing's own refusal -- those edits are now at the anchor.
     # 2026-10-24, ANCHOR 9f50345 (engine-fix landing): this row's 4 `edited`/`missing` doors (the test audit's deletions and edits)
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
+    # 2026-10-24, ANCHOR 99dae24 (cfg-tier-c): this row's 1 `edited` doors (kl8's exec-wait helper and its test edit)
+    # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_invocation_sdk.py": Behaviour(
         nodes=138, dump_sha="cf0a85b0dde35f88cbe27531bd282d2db780c9430b4874a7b62b77063caa2b84",
-        edited={
-            'func:test_kl8_orphan_sweep_kills_matching_and_spares_non_matching': (
-                '2026-10-24 drafts/u-sdk-backend-spec.md §3.7 (K-5): both legs wait until the child has finished exec '
-                '(`_wait_until_execd`) before sweeping; Popen can return while /proc/<pid>/cmdline still reads '
-                'as the parent, and the sweep then rightly declines (8 of 40 runs under load; '
-                'misc/build-2026-10-24/kl8-diag). Test-only; the sweep is unchanged.'
-            ),
-        },
     ),
     "test_worker.py": Behaviour(
         nodes=83, dump_sha="0d4ac5f2300dc2f265566bc14b258c0086d7d6b23fd16b0c421d3d995d8e7a46"
@@ -797,9 +791,12 @@ class Measured:
 
 MEASURED: dict[str, Measured] = {
     "BEH7.node_counts": Measured(
-        value=(86, 138, 83, 84, 61, 59, 63, 26),
+        value=(86, 139, 83, 84, 61, 59, 63, 26),
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-10-24, transcribed at ANCHOR 99dae24 from this module's own "
+            "STALE refusal (cfg-tier-c): (86, 138, 83, 84, 61, 59, 63, 26) -> (86, 139, 83, 84, 61, 59, 63, 26); kl8's exec-wait helper and its test edit "
+            "are anchor-side now. Previous entry: "
             "2026-10-24, transcribed at ANCHOR 9f50345 from this module's own "
             "STALE refusal (engine-fix landing): (94, 141, 83, 85, 68, 59, 63, 31) -> (86, 138, 83, 84, 61, 59, 63, 26); the test audit's "
             "deletions are anchor-side now. Previous entry: "
@@ -818,9 +815,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_node_counts,
     ),
     "BEH7.dump_prefixes": Measured(
-        value=('8e56cf5d5e00', 'cf0a85b0dde3', '0d4ac5f2300d', '1a6ef0d78003', 'd9bd2a6a44e5', 'c61c80a0b91b', '95bbfe93d6c0', '3002f84a40b7'),
+        value=('8e56cf5d5e00', '3681b7d89f5c', '0d4ac5f2300d', '1a6ef0d78003', 'd9bd2a6a44e5', 'c61c80a0b91b', '95bbfe93d6c0', '3002f84a40b7'),
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-10-24, transcribed at ANCHOR 99dae24 from this module's own "
+            "STALE refusal (cfg-tier-c): (8e56cf5d5e00, cf0a85b0dde3, 0d4ac5f2300d, 1a6ef0d78003, d9bd2a6a44e5, c61c80a0b91b, 95bbfe93d6c0, 3002f84a40b7) -> (8e56cf5d5e00, 3681b7d89f5c, 0d4ac5f2300d, 1a6ef0d78003, d9bd2a6a44e5, c61c80a0b91b, 95bbfe93d6c0, 3002f84a40b7); kl8's exec-wait helper and its test edit "
+            "are anchor-side now. Previous entry: "
             "2026-10-24, transcribed at ANCHOR 9f50345 from this module's own "
             "STALE refusal (engine-fix landing): ( 21ac729b38c2, 8927c9911327, 0d4ac5f2300d, 15cee52b616e, 9ebb1c1e4262, c61c80a0b91b, 95bbfe93d6c0, 4fbcee5f5481, ) -> (8e56cf5d5e00, cf0a85b0dde3, 0d4ac5f2300d, 1a6ef0d78003, d9bd2a6a44e5, c61c80a0b91b, 95bbfe93d6c0, 3002f84a40b7); the test audit's "
             "deletions are anchor-side now. Previous entry: "
@@ -844,9 +844,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_dump_prefixes,
     ),
     "BEH7.node_total": Measured(
-        value=600,
+        value=601,
         scope=_SCOPE_ANCHOR,
         reason=(
+            "2026-10-24, transcribed at ANCHOR 99dae24 from this module's own "
+            "STALE refusal (cfg-tier-c): 600 -> 601; kl8's exec-wait helper and its test edit "
+            "are anchor-side now. Previous entry: "
             "2026-10-24, transcribed at ANCHOR 9f50345 from this module's own "
             "STALE refusal (engine-fix landing): 624 -> 600; the test audit's "
             "deletions are anchor-side now. Previous entry: "
@@ -903,9 +906,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=1,
+        value=0,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-24, transcribed at ANCHOR 99dae24 from this module's own "
+            "STALE refusal (cfg-tier-c): 1 -> 0; kl8's exec-wait helper and its test edit "
+            "are anchor-side now. Previous entry: "
             "2026-10-24 kl8 exec race (drafts/u-sdk-backend-spec.md §3.7): 0 -> 1; "
             "test_kl8 gains an `edited` door (both legs wait for exec). Previous entry: "
             "2026-10-24, transcribed at ANCHOR 9f50345 from this module's own "
