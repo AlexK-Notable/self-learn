@@ -116,7 +116,9 @@ def test_legacy_walk_preserves_position_and_marks_new_advances(tmp_path, monkeyp
     legacy = {"lines": len(prefix.splitlines()), "size": path.stat().st_size}
     miner._save_cursors({str(path): legacy})
     cursor_bytes = miner._cursors_path().read_bytes()
-    assert miner.walk() == []  # positive control: existing prefix consumed
+    # Positive control before the empty-walk assertion: the walk can see it.
+    assert len(miner.walk(since="2000-01-01")) == 1
+    assert miner.walk() == []  # the consumed prefix is not replayed
     with path.open("a") as fh:
         fh.write(json.dumps(row(3, "new turn")) + "\n" + '{"uuid":')
     (part,) = miner.walk()
@@ -131,7 +133,8 @@ def test_legacy_walk_preserves_position_and_marks_new_advances(tmp_path, monkeyp
     assert part.start_line == 3 and len(part.lines) == 1 and json.loads(part.lines[0])["uuid"] == "four"
     # First activation writes new-format counts, too.
     miner.initialize_cursors()
-    assert miner._load_cursors()[str(path)]["line_format"] == "newline-v1"
+    seeded = miner._load_cursors()[str(path)]
+    assert seeded["lines"] == 4 and seeded["line_format"] == "newline-v1"
     assert miner.walk() == []
 
 
