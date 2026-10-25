@@ -1785,3 +1785,17 @@ def test_a_preview_s_tools_read_its_own_copy_of_the_lesson_index(home, root, tmp
     tool_opens = [p for p in opened if p.name == live.name]
     assert tool_opens and all(folder in p.parents for p in tool_opens)
     assert live.read_bytes() == before
+
+
+def test_final_fence_count_reaches_run_contract(home, root, backend, tmp_path):
+    for sid, prefix in (("s1fence-0000", "Summary.\n"), ("s2fence-0000", "")):
+        write_session(root, sid, session_rows(sid, host(tmp_path)))
+        backend.answers[sid] = prefix + "```json\n" + output([lesson()]) + "\n```"
+    result = run(home, preview=True)
+    record = json.loads((run_dir(result) / "run.json").read_text())
+    assert record["totals"]["called"] == 2 and record["totals"]["lessons"] == 2
+    assert record["counts"]["prose_before_json"] == 1
+    contract.load_run(run_dir(result))
+    for invalid in (-1, True, "1"):
+        record["counts"]["prose_before_json"] = invalid
+        assert any("counts.prose_before_json" in e for e in contract.validate_run(record))
