@@ -96,22 +96,8 @@ class TestHeadingRePreventsTheMultilineBug:
             "Context",
         ]
 
-    def test_the_old_non_multiline_pattern_misses_non_leading_headings(self):
-        """The exact bug being closed: the SAME pattern text, compiled
-        WITHOUT ``re.MULTILINE`` (``ledger_ops.py``'s old copy), applied
-        the same way (``.findall()`` on a whole body) -- misses every
-        heading after the first, because ``^``/``$`` bind only to the
-        start/end of the WHOLE string, not each line."""
-        old_pattern = re.compile(r"^## +(.+?)\s*$")  # no MULTILINE
-        assert old_pattern.findall(self.BODY) == []  # body doesn't START with ##
-
     def test_heading_re_is_compiled_with_multiline(self):
         assert text.HEADING_RE.flags & re.MULTILINE
-
-    def test_mutation_dropping_multiline_reproduces_the_miss(self, monkeypatch):
-        broken = re.compile(text.HEADING_RE.pattern)  # same text, no flag
-        monkeypatch.setattr(text, "HEADING_RE", broken)
-        assert text.HEADING_RE.findall(self.BODY) == []
 
     def test_compilers_body_sections_already_correct_shares_the_pattern(self):
         """``compilers.py``'s own call site was already right (whole-body
@@ -138,24 +124,6 @@ class TestRtYamlNullPolicy:
         buf = io.StringIO()
         y.dump({"a": None, "b": 1}, buf)
         assert buf.getvalue() == "a: null\nb: 1\n"
-
-    def test_a_bare_yaml_without_the_policy_would_emit_the_empty_form(self):
-        """Positive control: prove the null policy is doing something --
-        an UNCONFIGURED ``YAML(typ="rt")`` (ledger_ops.py's old,
-        divergent shape) renders the SAME dict as a bare empty scalar.
-        This also proves ``rt_yaml``'s null policy is scoped to its own
-        returned instance, never leaked process-wide onto an unrelated
-        bare ``YAML(typ="rt")`` created after it (see
-        ``primitives/yamlio.py``'s "second hazard" -- ``add_representer``
-        would have mutated a class-level dict shared by every instance;
-        this test runs in the SAME process as, and after, the tests
-        above that already called :func:`yamlio.rt_yaml`)."""
-        import io
-
-        y = YAML(typ="rt")
-        buf = io.StringIO()
-        y.dump({"a": None, "b": 1}, buf)
-        assert buf.getvalue() == "a:\nb: 1\n"
 
     def test_mutation_changing_the_representer_changes_every_caller(
         self, monkeypatch
@@ -612,20 +580,6 @@ class TestKnownDivergentSitesLeftAlone:
       (advisor guidance: consolidate an ID-regex duplicate only if
       byte-identical, otherwise leave and list it -- the brief's own
       "two regexes" pairs with the 4 ``_HEADING_RE`` sites, not these)."""
-
-    def test_analyst_py_inline_site_uses_iso_format_and_stays_out_of_scope(self):
-        """M-J fold r2, NIT-3: the literal is gone (chrono.ISO_FORMAT
-        replaces it, closing the duplicate-string gap) but the SITE
-        itself is still an inline ``datetime.now()`` call, not renamed
-        into a ``_now_iso`` facade -- still out of the 12-site
-        migration (the brief never named analyst.py)."""
-        src = (CLI_SRC / "analyst.py").read_text(encoding="utf-8")
-        assert "datetime.now(timezone.utc).strftime(chrono.ISO_FORMAT)" in src
-        assert '"%Y-%m-%dT%H:%M:%SZ"' not in src
-
-    def test_compilers_py_inline_yaml_factory_is_unchanged_and_out_of_scope(self):
-        src = (CLI_SRC / "compilers.py").read_text(encoding="utf-8")
-        assert 'YAML(typ="rt")' in src
 
     def test_report_lrn_id_re_stays_unanchored_and_distinct_from_record_id_re(self):
         from self_learn.records import RECORD_ID_RE

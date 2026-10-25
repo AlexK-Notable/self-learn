@@ -137,13 +137,6 @@ def test_byte_stable_across_repeated_recompiles_with_unchanged_sources(tmp_path:
     assert second.read_bytes() == first_bytes
 
 
-def test_compiled_path_created_under_its_parent_directory(tmp_path: Path) -> None:
-    paths = _sources(tmp_path)
-    assert not paths["compiled_path"].parent.is_dir()
-    compile_doctrine(**paths)
-    assert paths["compiled_path"].is_file()
-
-
 def test_plugin_references_dir_resolves_to_the_real_tracked_skill_dir() -> None:
     """No override — proves the real (default-argument) path resolution
     lands on the actual references dir this branch ships, where

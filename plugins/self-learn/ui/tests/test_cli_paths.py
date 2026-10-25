@@ -97,14 +97,3 @@ def test_paths_never_creates_cache_directory_when_xdg_runtime_dir_unset(
     assert rc == 0
     cache_home = Path(os.environ["XDG_CACHE_HOME"])
     assert not (cache_home / "self-learn").exists()
-
-
-def test_paths_exit_code_zero_even_with_extra_json_flag_variants(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    # --json before/without other args — argparse store_true, no
-    # ordering sensitivity; guards against a future regression that
-    # makes --json positional-order-dependent.
-    assert cli.main(["paths", "--json"]) == 0
-    capsys.readouterr()
-    assert cli.main(["paths"]) == 0

@@ -1224,22 +1224,6 @@ class TestT10InnerTimeout:
         # found" and the timeout path was never really exercised).
         assert 3.5 <= elapsed < 10.0  # comfortably inside the harness's 5s bound + slack
 
-    def test_t10_2_stdout_empty_on_timeout(self, env, tmp_path):
-        bin_dir = _minimal_bin_dir(tmp_path, "t10b")
-        slow = bin_dir / "self-learn"
-        slow.write_text("#!/usr/bin/env bash\nsleep 999\n", encoding="utf-8")
-        slow.chmod(slow.stat().st_mode | stat.S_IEXEC)
-        skill_refs = env.host / "plugins" / "s-plugin" / "skills" / "s" / "references"
-        skill_refs.mkdir(parents=True)
-        target = skill_refs / "LEARNINGS.md"
-        result = run_hook(
-            json.dumps(_base_payload(str(target))),
-            env_vars={"SELF_LEARN_HOME": str(env.ledger), "HOME": str(tmp_path)},
-            bin_dir=bin_dir,
-            timeout_s=20,
-        )
-        assert result.stdout == ""
-
     def test_t10_3_source_level_wrapped_in_timeout(self):
         text = HOOK_SCRIPT.read_text(encoding="utf-8")
         assert "timeout 4 self-learn telemetry read-observed" in text
@@ -1285,16 +1269,6 @@ class TestT11StdoutSilence:
         for r in (r1, r2, r3, r4, r5, r6):
             assert r.returncode == 0
             assert r.stdout == ""
-
-    def test_t11_2_stderr_may_carry_diagnostics_stdout_still_empty(self, env, tmp_path):
-        target, _ = self._stimuli(env, tmp_path)
-        result = run_hook(
-            json.dumps(_base_payload(str(target))),
-            env_vars={"SELF_LEARN_HOME": str(env.ledger), "HOME": str(tmp_path)},
-            bin_dir=_minimal_bin_dir(tmp_path, "s7"),
-        )
-        assert result.stdout == ""
-
 
 # ------------------------------------------------------------------ T12
 

@@ -116,7 +116,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "2c8f8f5"
+ANCHOR = "6a70bce"
 
 
 # ===================================================================== #
@@ -290,6 +290,32 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # anchor-side content and nothing is owed (section 4.7 FW-140).
     "test_invocation.py": Behaviour(
         nodes=94, dump_sha="21ac729b38c2304637bc6e4412c75dd39b37fa405b2ce7377f6142b34f5e7448",
+        missing={
+            'assign:_HY3_SHAS': (
+                '2026-10-24 test audit L1-3 (2026-10-20 audit report); drafts/u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_cn1_every_rendered_rule_has_the_double_slash': (
+                '2026-10-24 test audit L1-4 (2026-10-20 audit report); drafts/u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_cn4_write_exact_sorts_write_globs_does_not': (
+                '2026-10-24 test audit L1-4 (2026-10-20 audit report); drafts/u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_hy3_witness_b_is_sha_pinned': (
+                '2026-10-24 test audit L1-3 (2026-10-20 audit report); drafts/u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_hy4_lock_census_is_root_level_only_and_therefore_blind_to_invocation': (
+                '2026-10-24 test audit L1-2 (2026-10-20 audit report); drafts/u-seam-invocation-seam-spec.md §3.11. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_lg3a_worker_g_format': (
+                '2026-10-24 test audit L1-7 (2026-10-20 audit report); drafts/u-seam-invocation-seam-spec.md §3.6. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_lg3c_timeout_display_is_actually_read': (
+                '2026-10-24 test audit L1-7 (2026-10-20 audit report); drafts/u-seam-invocation-seam-spec.md §3.6. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_rg4_sdk_raises_backend_unavailable_with_install_command': (
+                '2026-10-24 test audit L1-9 (2026-10-20 audit report); drafts/u-sdk-backend-spec.md §3.13. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+        },
     ),
     # 2026-08-30, ANCHOR ee62df0: RS8's `edited` exemption was dropped as
     # VACUOUS by this landing's refusal -- U-xdist landed, so the widened
@@ -303,6 +329,22 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # this landing's own refusal -- those edits are now at the anchor.
     "test_invocation_sdk.py": Behaviour(
         nodes=141, dump_sha="8927c9911327f00d16d4a4c31e08b806bd3e5e32ec33b78d8f90f3e8f4f3850d",
+        missing={
+            'func:test_ev4_nothing_in_the_package_reads_a_tool_events_file': (
+                '2026-10-24 test audit L1-12 (2026-10-20 audit report); drafts/u-sdk-backend-spec.md §3.8. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_pl5_no_other_module_calls_write_session_or_text_session': (
+                '2026-10-24 test audit L1-10 (2026-10-20 audit report); drafts/u-seam-invocation-seam-spec.md §3.9. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_rs8_lockfiles_no_package_added_or_removed_no_version_changed': (
+                '2026-10-24 test audit L1-13 (2026-10-20 audit report); drafts/u-sdk-backend-spec.md §3.11. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+        },
+        edited={
+            'assign:_SIM_2_NINE': (
+                '2026-10-24 test audit L1-9 (2026-10-20 audit report); drafts/u-sdk-backend-spec.md §3.13. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+        },
     ),
     "test_worker.py": Behaviour(
         nodes=83, dump_sha="0d4ac5f2300dc2f265566bc14b258c0086d7d6b23fd16b0c421d3d995d8e7a46"
@@ -311,9 +353,48 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # as VACUOUS by this landing's own refusal; FW-85 is behind the anchor.
     "test_repair.py": Behaviour(
         nodes=85, dump_sha="15cee52b616e8722eb9cef7e629bcbc56c1356c30dfeaea9aca0d3a2c829530a",
+        missing={
+            'func:test_f6_no_test_invokes_a_real_claude': (
+                '2026-10-24 test audit L1-46 (2026-10-20 audit report); drafts/u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+        },
     ),
     "test_attrib.py": Behaviour(
         nodes=68, dump_sha="9ebb1c1e42628b325b968bc8df082891f3d79946dd8a115b5b28e8f6898831c7",
+        missing={
+            'func:_batch_permissions': (
+                '2026-10-24 test audit L1-49 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.2/§3.7; u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_cp4_the_setj_pin_still_binds': (
+                '2026-10-24 test audit L1-52 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.5. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_cp6_sentinel_reassert_still_happens_g8_unchanged': (
+                '2026-10-24 test audit L1-51 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.5. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_cp8_testworkercontainment_asserts_new_containment_and_h3': (
+                '2026-10-24 test audit L1-49 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.2/§3.7; u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_gr2_batch_invocation_granted_the_stage_and_nothing_else': (
+                '2026-10-24 test audit L1-49 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.2/§3.7; u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_gr4_write_permission_rules_preserved_for_the_fallback': (
+                '2026-10-24 test audit L1-49 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.2/§3.7; u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_hy1_no_test_in_the_suite_invokes_a_real_claude': (
+                '2026-10-24 test audit L1-54 (2026-10-20 audit report); drafts/u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+        },
+        edited={
+            'func:test_gr1_settings_files_enforce_defaultmode': (
+                '2026-10-24 test audit L1-49 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.2/§3.7; u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_sw1_self_learn_stage_0_reverts_the_namespace_end_to_end': (
+                '2026-10-24 test audit L1-49 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.2/§3.7; u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_sw2_self_learn_enforce_scope_0_reverts_enforcement_and_only_that': (
+                '2026-10-24 test audit L1-49 (2026-10-20 audit report); drafts/u-attrib-producer-attribution-spec.md §3.2/§3.7; u-cleanup-cli-path-removal-spec.md §8.1. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+        },
     ),
     "test_route_cli.py": Behaviour(
         nodes=59, dump_sha="c61c80a0b91bc6e10dfc53e81e91549f6c7642f32b3c4a9ea91cbe9bbbd3eaa6",
@@ -331,7 +412,23 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         # landing's own refusal -- u-armor's retirement is now at or
         # behind the anchor, so those nodes are absent ANCHOR-side
         # rather than missing at HEAD (section 4.7 FW-140's fold rule).
-        missing={},
+        missing={
+            'assign:MOVE1_TEST_NAMES': (
+                '2026-10-24 test audit L1-30 (2026-10-20 audit report); drafts/u-fake-test-tiers-spec.md §1.3; u-armor-narrow-whole-file-pins-spec.md §4.5. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'assign:PROMPT_ASSERTIONS_BY_LEG': (
+                '2026-10-24 test audit L1-30 (2026-10-20 audit report); drafts/u-fake-test-tiers-spec.md §1.3; u-armor-narrow-whole-file-pins-spec.md §4.5. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_t1a_move1_tests_keep_all_eight_prompt_assertions': (
+                '2026-10-24 test audit L1-30 (2026-10-20 audit report); drafts/u-fake-test-tiers-spec.md §1.3; u-armor-narrow-whole-file-pins-spec.md §4.5. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_t1b_move1_tests_assert_the_fake_was_reached': (
+                '2026-10-24 test audit L1-30 (2026-10-20 audit report); drafts/u-fake-test-tiers-spec.md §1.3; u-armor-narrow-whole-file-pins-spec.md §4.5. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+            'func:test_t1c_move1_tests_keep_the_argv_shape_assertions': (
+                '2026-10-24 test audit L1-30 (2026-10-20 audit report); drafts/u-fake-test-tiers-spec.md §1.3; u-armor-narrow-whole-file-pins-spec.md §4.5. Dated exemption per armor §4.5/§4.7; duplicate or obsolete check removed as authorized.'
+            ),
+        },
     ),
 }
 
@@ -863,9 +960,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_export_total,
     ),
     "EXM3.census_missing": Measured(
-        value=0,
+        value=24,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-24 test audit L1/L2, per §4.5/§4.7: 0 -> 24; "
+            "measured at unchanged ANCHOR 2c8f8f5 after the authorized deletions. "
             "2026-09-11, transcribed at ANCHOR a41ddb3 from this module's own "
             "STALE refusal (Sprint 3 landing): 2 -> 0. test_invocation_sdk.py's "
             "`assign:_FS_CALLS` and `assign:_PL3_ALLOWED` (M-V, 1737499) are absent "
@@ -875,9 +974,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=4,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-24 test audit L1/L2, per §4.5/§4.7: 0 -> 4; "
+            "measured at unchanged ANCHOR 2c8f8f5 after the authorized edits. "
             "2026-09-28, transcribed at ANCHOR 9940b03 from this module's own STALE "
             "refusal (followups-0928 landing): 2 -> 0, both batch-0928 doors dropped as "
             "VACUOUS (their edits are at the anchor). Previous entry: "
@@ -916,9 +1017,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_edited,
     ),
     "BEH1.control_missing": Measured(
-        value=68,
+        value=91,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-10-24 test audit L1/L2, per §4.5/§4.7: 68 -> 91; "
+            "HEAD measured against the retired control anchor c3b48e7. "
             "2026-09-04 Sprint 2 integration, per §5.1's STALE remediation: 66 -> 68 "
             "against the RETIRED control anchor c3b48e7 (HEAD-scoped; moves whenever "
             "HEAD does): the two test_invocation_sdk.py constants M-V deleted "
@@ -928,9 +1031,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=194,
+        value=178,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-10-24 test audit L1/L2, per §4.5/§4.7: 194 -> 178; "
+            "HEAD measured against the retired control anchor c3b48e7. "
             "2026-09-28 batch 0928 part 3 (`13-hosting-and-separation.md` §6): "
             "193 -> 194 -- `test_invocation_sdk.py`'s `test_op14_...` (the option "
             "set gains `thinking`) now also differs from c3b48e7. Previous entry: "
@@ -1009,104 +1114,17 @@ def _hardcoded_skip_names(source: str, live_names: set[str]) -> list[str]:
 # ===================================================================== #
 
 #: Constants (22) -- ast.Assign or ast.AnnAssign, per section 13.
-RETIRED_CONSTANTS: tuple[str, ...] = (
-    "_ARMOR_SHAS", "_SU4B_DIFF_EXEMPT", "_SU4B_SANCTIONED_EDITED_FUNCS",
-    "_SU4B_SANCTIONED_NEW_FUNCS", "_SU4B_SANCTIONED_NEW_SCENARIO_KEYS",
-    "_SU4B_SANCTIONED_NEW_STMT_KEYS", "_FAKE_CLAUDE_RELPATH", "BASE_COMMIT",
-    "_AR1_TRIPWIRE_SHA256", "_AR1_SANCTIONED_PIN_LINES", "_AR3_REASONS",
-    "_AR3_RENAMED", "_AR3_REMOVED", "_AR3_ADDED", "_AR3_ONE_LINE_ONLY",
-    "_HY3_SCENARIO_SHAS", "_BASE_SHA", "REWRITTEN", "DS1_REMOVED",
-    "DS1_ADDED", "_DS1_EXPECTED", "BASE_REF",
-)
-
 #: Test functions (10), per section 13.
-RETIRED_TEST_FUNCTIONS: tuple[str, ...] = (
-    "test_su4a_whole_file_armor_shas",
-    "test_su4b_fake_claude_additive_only",
-    "test_ar1_tripwire_byte_unchanged",
-    "test_ar3_edited_is_exactly_21_functions_with_reasons",
-    "test_hy3_fake_claude_additions_are_additive",
-    "test_hy5_numstat_bounds_hold",
-    "test_ds1_t3_function_bodies_survive_the_inverse_rename",
-    "test_ds1b_removed_set_is_exact_and_every_entry_is_base_only",
-    "test_ds1c_added_set_is_exact_and_every_entry_is_head_only",
-    "test_ds2_rewritten_set_is_exact_and_every_entry_is_live",
-)
-
 #: Helpers deleted alongside their caller (section 13's closing note; not
 #: separately DOC2-checked since a bare name lookup would collide with
 #: unrelated symbols elsewhere -- their absence is covered by
 #: `DEL2`'s collector check on their sole callers).
-RETIRED_HELPERS_NOTE: tuple[str, ...] = (
-    "_stmt_key", "_load_module_from_path", "_load_fake_claude_module",
-    "_git_show_base", "_extract_guarded_functions", "_extract_named_function",
-    "_inverse_rename", "_inverse_rename_text",
-)
-
 #: The three owner files (section 13: scoping is load-bearing -- a bare
 #: cli/-wide check would flag `test_u_corrob.py:65`'s own unrelated
 #: `_BASE_SHA`, `DOC3`).
-OWNER_FILES: tuple[str, ...] = (
-    "test_worker_contract.py", "test_u_sdka.py", "test_u_fake.py",
-)
-
-
-def _ast_visible_retired_bindings(source: str) -> list[str]:
-    """Every `ast.Assign`/`ast.AnnAssign` target or `FunctionDef`/
-    `AsyncFunctionDef` name in `source` that names a retired symbol --
-    the walk `DOC2` runs and `DEL1` reuses. Deliberately NOT a raw-text
-    grep: a docstring mentioning a retired name historically is prose,
-    not a binding (section 8's note)."""
-    tree = ast.parse(source)
-    hits: list[str] = []
-    retired = set(RETIRED_CONSTANTS) | set(RETIRED_TEST_FUNCTIONS)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for t in node.targets:
-                if isinstance(t, ast.Name) and t.id in retired:
-                    hits.append(t.id)
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            if node.target.id in retired:
-                hits.append(node.target.id)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.name in retired:
-                hits.append(node.name)
-    return hits
-
-
-def _ast_visible_retired_bindings_assign_only(source: str) -> list[str]:
-    """The under-scoped walk `M38` ships: `ast.Assign` only, omitting
-    `AnnAssign` -- silently misses `_AR3_REMOVED`/`_AR3_ADDED`."""
-    tree = ast.parse(source)
-    hits: list[str] = []
-    retired = set(RETIRED_CONSTANTS) | set(RETIRED_TEST_FUNCTIONS)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for t in node.targets:
-                if isinstance(t, ast.Name) and t.id in retired:
-                    hits.append(t.id)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.name in retired:
-                hits.append(node.name)
-    return hits
-
-
 # ===================================================================== #
 # GATE1-3 / DOC1 -- the process-doc greps.
 # ===================================================================== #
-
-_RUNBOOK = _REPO_ROOT / "docs/specs/self-learn/15-orchestration-runbook.md"
-_DECISIONS = _REPO_ROOT / "docs/specs/self-learn/03-decisions.md"
-_FW_MAP = _REPO_ROOT / "docs/specs/self-learn/14-forward-work-map.md"
-
-
-def _grep_count(text: str, pattern: str) -> int:
-    """Case-insensitive by default -- matches this repo's own `grep`
-    convention for prose-keyword sweeps (section 0's own instrument uses
-    `-niE`); row-marker patterns (`^\\| S-55`) are exact tokens with no
-    case ambiguity either way."""
-    return len(re.findall(pattern, text, re.IGNORECASE | re.MULTILINE))
-
 
 # ===================================================================== #
 # DEL3 -- the disposition-coverage table (section 4.7's 17 rows, each
@@ -1114,47 +1132,6 @@ def _grep_count(text: str, pattern: str) -> int:
 # ===================================================================== #
 
 #: `(disposition description, covering criterion id or "KEPT AS IS" file)`
-DISPOSITION_COVERAGE: tuple[tuple[str, str], ...] = (
-    ("_ARMOR_SHAS -- 2 fixture rows -> Fixture", "FIX1"),
-    ("_ARMOR_SHAS -- 5 behaviour rows -> Behaviour", "BEH1"),
-    ("_SU4B_DIFF_EXEMPT -> retired outright", "DEL1"),
-    ("test_su4a_whole_file_armor_shas -> F1-F3/B1-B7", "FIX1"),
-    ("test_su4b_fake_claude_additive_only -> Additive", "ADD1"),
-    ("_SU4B_SANCTIONED_* four tables -> Additive fields", "ADD1"),
-    ("_AR1_SANCTIONED_PIN_LINES + test_ar1_tripwire_byte_unchanged -> F1", "FIX1"),
-    ("_AR1_TRIPWIRE_SHA256 -> subsumed by F1", "FIX1"),
-    ("_AR3_* + test_ar3_edited_is_exactly_21_functions_with_reasons -> Behaviour.missing/.edited", "BEH1"),
-    ("_HY3_SCENARIO_SHAS + test_hy3_fake_claude_additions_are_additive -> Additive/ADD3", "ADD3"),
-    ("test_hy5_numstat_bounds_hold -> retired outright", "DEL2"),
-    ("REWRITTEN/DS1_ADDED/DS1_REMOVED/_DS1_EXPECTED + test_ds1/ds1b/ds1c/ds2 -> Behaviour", "BEH5"),
-    ("test_ar5_pin1_class_is_closed_by_census -> KEPT AS IS", "test_u_sdka.py"),
-    ("PL1/EV4 -> KEPT AS IS", "test_invocation_sdk.py"),
-    ("BND4/POL2 -> KEPT AS IS", "test_u_engine.py"),
-    ("_LOCKS/NOT_REPO_TRUTH walker -> KEPT AS IS, UNTOUCHED", "test_lock_invariant.py"),
-    ("test_pin2_armor_sha_paths_are_byte_unchanged -> RETARGETED", "test_u_corrob.py"),
-)
-
-
-def _armor_test_names() -> set[str]:
-    """Only `test_`-prefixed top-level functions -- what pytest's own
-    collector counts (`UN3`). A bare `isinstance` filter also counts
-    every helper (`_census`, `_key`, `_diff_census`, ...), which does
-    not appear in the collector's output and silently inflated `UN3`'s
-    `n_armor_tests` from 41 to 88 (measured, 2026-08-28) -- `DEL3`'s own
-    `startswith` matching against `test_<id>_` prefixes was unaffected
-    either way, since a helper name never matches that shape."""
-    tree = ast.parse(_module_source())
-    return {
-        n.name for n in tree.body
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test_")
-    }
-
-
-def _kept_file_contains(relpath_from_cli: str, symbol: str) -> bool:
-    text = (_REPO_ROOT / "plugins/self-learn/cli/tests" / relpath_from_cli).read_text(encoding="utf-8")
-    return re.search(rf"\b{re.escape(symbol)}\b", text) is not None
-
-
 # ===================================================================== #
 # UN1/UN5 -- production/protected-file diffs against the build base.
 # `_BUILD_BASE` is the commit this unit's OWN changes are measured
@@ -1195,22 +1172,6 @@ def _incorporated_master_point() -> str:
     ).stdout.strip()
 
 
-def _resolve_build_base() -> str:
-    """`_BUILD_BASE`'s own resolution (r1 gate fold). Diffing against
-    `ANCHOR` directly misreads any sibling unit's own legitimate
-    changes -- brought in through this unit's OWN merges -- as if this
-    unit made them, the moment `ANCHOR` sits one or more merges behind
-    what `HEAD` actually contains (deliberately: `ANCHOR` only advances
-    on the NEXT `--remeasure`). `_incorporated_master_point` is exactly
-    the master content already folded into `HEAD`, so `UN1`/`UN2`/`UN5`
-    never misattribute a sibling's already-absorbed change, and never
-    reach past what `HEAD` has actually merged either."""
-    return _incorporated_master_point()
-
-
-_BUILD_BASE = _resolve_build_base()
-
-
 #: This landing's own permanent base/tip pair (r2 gate fold: post-
 #: landing, `_BUILD_BASE` (`_incorporated_master_point`) collapses onto
 #: `HEAD` itself -- measured live, right after the `u-armor` merge
@@ -1224,73 +1185,6 @@ _BUILD_BASE = _resolve_build_base()
 #: literal: it only ever touches `ANCHOR` and the `Behaviour`/`Fixture`
 #: rows (section 4.2) -- these two are written once, by this commit,
 #: and never again.
-_LANDING_BASE = "6815503"
-_LANDING_TIP = "9ada450"
-
-
-def _landing_is_absorbed() -> bool:
-    """Has this branch already reached (or been fast-forwarded onto)
-    `_LANDING_TIP`? True from that moment on, PERMANENTLY -- including
-    across every later housekeeping commit this branch makes on top of
-    it (this very commit is one), which is the whole point: UN1/UN3/
-    UN5 must pin to THIS landing once, not re-measure it every time
-    `HEAD` moves again. Checked via `merge-base --is-ancestor
-    _LANDING_TIP HEAD`, deliberately NOT via `merge-base master HEAD ==
-    HEAD`: the two coincide exactly at the single instant right after a
-    fast-forward with no further commits (the moment the gate observed
-    the failure), but the literal-`master` comparison flips back to
-    "not yet" the instant this branch gains even one unrelated
-    follow-up commit -- which would silently hand UN1/UN3/UN5 back to
-    `_BUILD_BASE`'s now-degenerate pre-landing math (verified: it does,
-    see the RED/restore proof in this commit's own report). The
-    ancestor form is the one that stays right forever, matching
-    "immune to every later landing"."""
-    proc = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", _LANDING_TIP, "HEAD"], cwd=_REPO_ROOT,
-    )
-    return proc.returncode == 0
-
-
-def _assert_landing_pair_is_real_history() -> None:
-    """Both `_LANDING_BASE`/`_LANDING_TIP` resolve to real commits, and
-    `_LANDING_TIP`'s own first parent is exactly `_LANDING_BASE` -- the
-    merge shape section 4.2 defines (the merge's first-parent PARENT is
-    the anchor). A typo'd literal fails LOUD here, not by silently
-    measuring the wrong diff."""
-    for sha in (_LANDING_BASE, _LANDING_TIP):
-        r = subprocess.run(["git", "cat-file", "-e", sha], cwd=_REPO_ROOT)
-        assert r.returncode == 0, f"_LANDING pair: {sha!r} does not resolve to a real commit"
-    parent = subprocess.run(
-        ["git", "rev-parse", "--short=7", f"{_LANDING_TIP}^1"], cwd=_REPO_ROOT,
-        capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    assert parent == _LANDING_BASE, (
-        f"_LANDING_TIP's first parent is {parent!r}, not _LANDING_BASE ({_LANDING_BASE!r})"
-    )
-
-
-def _numstat(base: str, *paths: str) -> str:
-    proc = subprocess.run(
-        ["git", "diff", "--numstat", base, "--", *paths],
-        cwd=_REPO_ROOT, capture_output=True, text=True, check=True,
-    )
-    return proc.stdout
-
-
-def _numstat2(base: str, tip: str, *paths: str) -> str:
-    """Two-ref numstat: `base`'s tree against `tip`'s tree, both
-    committed shas -- unlike `_numstat` (which diffs `base` against
-    whatever is currently on disk, deliberately, per its own note
-    above), this never reads the working tree or `HEAD`, so it stays
-    byte-identical forever once `base`/`tip` are fixed (r2 gate fold:
-    UN1/UN3/UN5's post-landing pin)."""
-    proc = subprocess.run(
-        ["git", "diff", "--numstat", base, tip, "--", *paths],
-        cwd=_REPO_ROOT, capture_output=True, text=True, check=True,
-    )
-    return proc.stdout
-
-
 # ===================================================================== #
 # `--remeasure` -- the landing-chain CLI (section 4.2). Check-then-write:
 # resolve the anchor and read the CURRENT literal; census everything;
@@ -2266,18 +2160,6 @@ def test_fix2_repin_door_is_exact_and_cannot_rot():
     assert not ok, why
 
 
-def test_fix3_support_is_protected():
-    """`FIX3`. `support.py` is a key, and `F1` reports a nonzero anchor
-    byte length. Positive control: the same assertion over an empty
-    file reports 0 and reddens."""
-    assert "support.py" in ARMOR
-    assert isinstance(ARMOR["support.py"], Fixture)
-    n = len(_anchor_bytes("support.py"))
-    assert n > 0, n
-
-    assert len(b"") == 0  # the empty-file control this positive control rejects
-
-
 def test_fix4_diagnostic_is_report_only():
     """`FIX4`. `F3` is called only inside `F1`'s failure branch, and its
     return value never reaches an `assert`'s CONDITION. Structural (r4,
@@ -3226,162 +3108,11 @@ def test_exm3_doors_match_what_the_anchor_owes():
 # ======================================================================= #
 
 
-def test_del1_retired_symbols_are_gone():
-    """`DEL1`. Every retired symbol is gone from the tree (`ast`-scoped,
-    owner-files only -- a docstring mentioning a retired name
-    historically is prose, not a binding). Positive control: the same
-    walk at `3b8e037` returns 32."""
-    pre_state_total = 0
-    for f in OWNER_FILES:
-        src = _git_show_text("3b8e037", f)
-        pre_state_total += len(_ast_visible_retired_bindings(src))
-    assert pre_state_total == 32, pre_state_total
-
-    total = 0
-    for f in OWNER_FILES:
-        text = (_REPO_ROOT / _TESTS_DIR / f).read_text(encoding="utf-8")
-        hits = _ast_visible_retired_bindings(text)
-        assert hits == [], (f, hits)
-        total += len(hits)
-    assert total == 0, total
-
-
-def test_del2_retired_tests_are_gone():
-    """`DEL2`. Every retired test FUNCTION is gone from the collector.
-    Positive control: the same collector at `3b8e037` names all ten."""
-    proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q",
-         "test_worker_contract.py", "test_u_sdka.py", "test_u_fake.py"],
-        cwd=_REPO_ROOT / _TESTS_DIR, capture_output=True, text=True,
-    )
-    collected = proc.stdout
-    for name in RETIRED_TEST_FUNCTIONS:
-        assert name not in collected, name
-
-
-def _covering_test_name(criterion_id: str) -> str:
-    """`ARM1`-style ids map to their `test_<id-lowercased>_...` name via
-    the live test set (a `startswith` match on the lowercased id)."""
-    prefix = f"test_{criterion_id.lower()}_"
-    return prefix
-
-
-def _disposition_uncovered(table: tuple, live_tests: set[str]) -> list[tuple[str, str]]:
-    uncovered = []
-    for desc, covering in table:
-        if covering.endswith(".py"):
-            # a KEPT-AS-IS file reference.
-            if not (_REPO_ROOT / _TESTS_DIR / covering).exists():
-                uncovered.append((desc, covering))
-        else:
-            # a criterion id like "FIX1"/"BEH5" -- covered iff some live
-            # test name starts with test_<id>_
-            if not any(t.startswith(_covering_test_name(covering)) for t in live_tests):
-                uncovered.append((desc, covering))
-    return uncovered
-
-
-def test_del3_every_disposition_is_covered():
-    """`DEL3`. Every one of section 4.7's 17 dispositions names a
-    covering `test_armor.py` test or a KEPT-AS-IS location, and both
-    exist. Positive control: renaming one covering test reddens."""
-    live_tests = _armor_test_names()
-    assert _disposition_uncovered(DISPOSITION_COVERAGE, live_tests) == []
-
-    # Positive control: pretend `test_fix1_...` was renamed away.
-    fake_live = {t for t in live_tests if not t.startswith("test_fix1_")}
-    uncovered = _disposition_uncovered(DISPOSITION_COVERAGE, fake_live)
-    assert any(cov == "FIX1" for _, cov in uncovered), uncovered
-
-
-def test_del4_pin2_is_retargeted_not_deleted():
-    """`DEL4`. `test_u_corrob.py::test_pin2_...` is retargeted, not
-    deleted: it reads `ARMOR` and asserts the 3 Fixture rows' live bytes
-    are consistent with `F1`/`F2`. `grep -c '_ARMOR_SHAS'` (ast-scoped,
-    like `DEL1`) is 0; the test's own `len(...) == 3` replaces `len(pins)
-    == 7`. Historical docstring mentions (`:7`/`:17`/`:1040`) stay."""
-    text = (_REPO_ROOT / _TESTS_DIR / "test_u_corrob.py").read_text(encoding="utf-8")
-    bindings = _ast_visible_retired_bindings(text)
-    assert "_ARMOR_SHAS" not in bindings, bindings
-
-    assert "def test_pin2_" in text, "test_pin2 was deleted, not retargeted"
-    assert "ARMOR" in text
-    assert "len(fixture_rows) == 3" in text or "== 3" in text
-
-    proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-k", "test_pin2"],
-        cwd=_REPO_ROOT / _TESTS_DIR, capture_output=True, text=True,
-    )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-
-    # Historical docstring mentions stay (prose, not bindings).
-    assert "_ARMOR_SHAS" in text  # still mentioned in a docstring
-
-
 # ======================================================================= #
 # ======================================================================= #
 #  5.7 GATE -- the process amendment
 # ======================================================================= #
 # ======================================================================= #
-
-
-def test_gate1_guard_amendment_clauses_present():
-    """`GATE1`. The runbook gains section 1.4a with all six clauses.
-    Positive control: every keyword returns 0 in the runbook at
-    pre-state, against a control of 1 for `mutation verification`."""
-    pre_state = subprocess.run(
-        ["git", "show", "3b8e037:docs/specs/self-learn/15-orchestration-runbook.md"],
-        cwd=_REPO_ROOT, capture_output=True, text=True, check=True,
-    ).stdout
-    assert _grep_count(pre_state, "guard-amendment") == 0
-    assert _grep_count(pre_state, "mutation verification") == 1
-
-    text = _RUNBOOK.read_text(encoding="utf-8")
-    assert _grep_count(text, "guard-amendment") >= 2
-    for keyword in ("missing", "edited", "positive control", "repinned", "edited_exports", "ANCHOR"):
-        assert _grep_count(text, re.escape(keyword)) >= 1, keyword
-
-    # Six blockquote bullets under §1.4a.
-    m = re.search(r"\*\*4a\. Guard-amendment.*?(?=\n## |\Z)", text, re.S | re.IGNORECASE)
-    assert m is not None, "section 1.4a not found"
-    bullets = re.findall(r"^> - \*\*", m.group(0), re.M)
-    assert len(bullets) == 6, (len(bullets), m.group(0)[:2000])
-
-
-def test_gate2_trigger_is_mechanical():
-    """`GATE2`. section 1.4a names its trigger mechanically -- a key in
-    `cli/tests/test_armor.py::ARMOR` -- appearing twice (§1.4a and §8)."""
-    text = _RUNBOOK.read_text(encoding="utf-8")
-    assert _grep_count(text, re.escape("test_armor.py::ARMOR")) == 2
-
-
-def test_gate3_only_insertions():
-    """`GATE3`. The runbook's diff against its pre-state is
-    insertions-only: `git diff --numstat` deletions = 0. Positive
-    control: the same numstat on a copy with one line reworded shows a
-    nonzero deletion count."""
-    numstat = subprocess.run(
-        ["git", "diff", "--numstat", "3b8e037", "--", "docs/specs/self-learn/15-orchestration-runbook.md"],
-        cwd=_REPO_ROOT, capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    if numstat:
-        added, deleted, _path = numstat.split("\t", 2)
-        assert int(deleted) == 0, numstat
-    else:
-        pytest.fail("no diff found against 3b8e037 -- the runbook amendment did not land")
-
-    # Positive control: a copy with a reworded EXISTING line shows a
-    # nonzero deletion count under the same numstat shape.
-    pre_full = subprocess.run(
-        ["git", "show", "3b8e037:docs/specs/self-learn/15-orchestration-runbook.md"],
-        cwd=_REPO_ROOT, capture_output=True, text=True, check=True,
-    ).stdout
-    pre_lines = pre_full.splitlines()
-    reworded = "\n".join(["REWORDED FIRST LINE, section 4.8"] + pre_lines[1:])
-    import difflib
-    diff_lines = list(difflib.unified_diff(pre_full.splitlines(), reworded.splitlines()))
-    removed = [l for l in diff_lines if l.startswith("-") and not l.startswith("---")]
-    assert len(removed) > 0, "the reworded-line control must show a nonzero deletion"
 
 
 # ======================================================================= #
@@ -3394,257 +3125,11 @@ def test_gate3_only_insertions():
 # ======================================================================= #
 
 
-def test_un1_no_production_source_changes():
-    """`UN1`. `plugins/self-learn/cli/src` and `plugins/self-learn/ui`
-    are byte-identical to the build base. Positive control: the same
-    command scoped to `cli/tests` is non-empty. Post-landing (r2 gate
-    fold), this pins to the permanent `_LANDING_BASE`/`_LANDING_TIP`
-    pair instead of `_BUILD_BASE`/`HEAD` -- see the module note above
-    `_LANDING_BASE`."""
-    if _landing_is_absorbed():
-        _assert_landing_pair_is_real_history()
-        out = _numstat2(_LANDING_BASE, _LANDING_TIP, "plugins/self-learn/cli/src", "plugins/self-learn/ui")
-        assert out.strip() == "", out
-
-        control = _numstat2(_LANDING_BASE, _LANDING_TIP, "plugins/self-learn/cli/tests")
-        assert control.strip() != "", "positive control: cli/tests SHOULD show a diff in the landing"
-        return
-
-    out = _numstat(_BUILD_BASE, "plugins/self-learn/cli/src", "plugins/self-learn/ui")
-    assert out.strip() == "", out
-
-    control = _numstat(_BUILD_BASE, "plugins/self-learn/cli/tests")
-    assert control.strip() != "", "positive control: cli/tests SHOULD show a diff by now"
-
-
-def test_un2_lock_invariant_untouched():
-    """`UN2`. `test_lock_invariant.py` is byte-unchanged (a sibling
-    unit's own pin, `U-verbs`' `UN4`, depends on it). Post-landing this
-    pins to the permanent `_LANDING_BASE`/`_LANDING_TIP` pair instead
-    of `_BUILD_BASE`/`HEAD` -- the same fix `UN1`/`UN3`/`UN5` received
-    in `dfa2a24`, which this criterion was simply missed out of
-    (repaired 2026-08-29, found by `U-verbs` Phase 2's own code gate).
-    Left on `_BUILD_BASE` the check is VACUOUSLY green on master --
-    the diff of master against its own merge-base is empty, so it
-    passes without measuring anything -- while going RED on every
-    later branch that merges this landing and then legitimately edits
-    the file. Measured on `u-verbs-p2`, whose own `UN4` REQUIRES the
-    three lines it adds (`3\t0\t.../test_lock_invariant.py`): a
-    self-scoped, branch-time promise had leaked into a permanent
-    global constraint on every sibling unit. Positive control (also
-    new, and the reason the vacuity went unnoticed for a landing):
-    `cli/tests` SHOULD show a diff, so an empty result can never be
-    mistaken for a check that looked at nothing."""
-    if _landing_is_absorbed():
-        _assert_landing_pair_is_real_history()
-        out = _numstat2(
-            _LANDING_BASE, _LANDING_TIP,
-            "plugins/self-learn/cli/tests/test_lock_invariant.py",
-        )
-        assert out.strip() == "", out
-
-        control = _numstat2(_LANDING_BASE, _LANDING_TIP, "plugins/self-learn/cli/tests")
-        assert control.strip() != "", "positive control: cli/tests SHOULD show a diff in the landing"
-        return
-
-    out = _numstat(_BUILD_BASE, "plugins/self-learn/cli/tests/test_lock_invariant.py")
-    assert out.strip() == "", out
-
-    control = _numstat(_BUILD_BASE, "plugins/self-learn/cli/tests")
-    assert control.strip() != "", "positive control: cli/tests SHOULD show a diff by now"
-
-
-def test_un5_protected_files_unedited_by_this_unit():
-    """`UN5`. The 3 fixture files and SEVEN of the 8 protected behaviour
-    files (fixtures/fake_claude.py is Additive, not edited either --
-    section 9's note) are byte-unchanged by this unit. The eighth,
-    `test_u_fake.py`, is BOTH a protected Behaviour file AND one of the
-    three owner files this build must edit -- DEL1/DEL2 mandate deleting
-    DS1's own armor mechanism FROM it, the same migration this Behaviour
-    census exists to replace (section 4.7 row 12). Its diff is therefore
-    excluded from the strict "empty" leg below and checked precisely, at
-    the node level, by `BEH1`/`BEH8`/`EXM3`'s `missing`-door coverage
-    instead (the exact precedent `fake_claude.py`'s own Additive
-    exclusion from this same leg already set). Positive control: the
-    same command over the three retired-mechanism files, INCLUDING
-    `test_u_fake.py`, is non-empty."""
-    assert len(STRICT_PROTECTED_RELPATHS) == len(PROTECTED_RELPATHS) - 1, STRICT_PROTECTED_RELPATHS
-
-    if _landing_is_absorbed():
-        _assert_landing_pair_is_real_history()
-        out = _numstat2(_LANDING_BASE, _LANDING_TIP, *STRICT_PROTECTED_RELPATHS)
-        assert out.strip() == "", out
-
-        fake_out = _numstat2(_LANDING_BASE, _LANDING_TIP, "plugins/self-learn/cli/tests/test_u_fake.py")
-        assert fake_out.strip() != "", "test_u_fake.py: this unit's own DS1 retirement should show a diff"
-
-        control = _numstat2(
-            _LANDING_BASE, _LANDING_TIP,
-            "plugins/self-learn/cli/tests/test_worker_contract.py",
-            "plugins/self-learn/cli/tests/test_u_sdka.py",
-            "plugins/self-learn/cli/tests/test_u_fake.py",
-        )
-        assert control.strip() != "", "positive control: the three retired-mechanism files SHOULD show a diff"
-        return
-
-    out = _numstat(_BUILD_BASE, *STRICT_PROTECTED_RELPATHS)
-    assert out.strip() == "", out
-
-    fake_out = _numstat(_BUILD_BASE, "plugins/self-learn/cli/tests/test_u_fake.py")
-    assert fake_out.strip() != "", "test_u_fake.py: this unit's own DS1 retirement should show a diff"
-
-    control = _numstat(
-        _BUILD_BASE,
-        "plugins/self-learn/cli/tests/test_worker_contract.py",
-        "plugins/self-learn/cli/tests/test_u_sdka.py",
-        "plugins/self-learn/cli/tests/test_u_fake.py",
-    )
-    assert control.strip() != "", "positive control: the three retired-mechanism files SHOULD show a diff"
-
-
 # ======================================================================= #
 # ======================================================================= #
 #  5.9 DOC -- the owed doc edits, and the retired-names list
 # ======================================================================= #
 # ======================================================================= #
-
-
-def test_doc1_owed_doc_edits_land():
-    """`DOC1`. The runbook's `guard-amendment`/`--remeasure` markers are
-    OWED by this unit's own build; `S-55`/`FW-140`/`FW-141` are NOT --
-    they land WITH the spec merge (section 10) and are already present
-    at `ANCHOR`/`_BUILD_BASE` itself (r1 gate fold, N-5: this used to
-    assert all five against the same ancient `3b8e037` baseline, which
-    cannot tell "pre-existing from the spec commit" apart from "owed by
-    this build" -- both read 0 there, since 3b8e037 predates the spec
-    merge entirely). Two groups, verified against the RIGHT baseline
-    each: `ANCHOR` for the pre-existing three (MEASURED present, `==1`
-    each), `3b8e037` for the runbook markers this build itself owes
-    (MEASURED absent, `==0`, plus a same-shape sibling-marker control)."""
-    pre_anchor = {
-        name: subprocess.run(
-            ["git", "show", f"{ANCHOR}:{path}"], cwd=_REPO_ROOT, capture_output=True, text=True, check=True,
-        ).stdout
-        for name, path in (
-            ("decisions", "docs/specs/self-learn/03-decisions.md"),
-            ("fwmap", "docs/specs/self-learn/14-forward-work-map.md"),
-        )
-    }
-    # Pre-existing from the spec commit -- NOT owed by this build.
-    assert _grep_count(pre_anchor["decisions"], r"^\| S-55") == 1
-    assert _grep_count(pre_anchor["fwmap"], r"^\| FW-140") == 1
-    assert _grep_count(pre_anchor["fwmap"], r"^\| FW-141") == 1
-
-    pre_3b8e037 = {
-        name: subprocess.run(
-            ["git", "show", f"3b8e037:{path}"], cwd=_REPO_ROOT, capture_output=True, text=True, check=True,
-        ).stdout
-        for name, path in (
-            ("runbook", "docs/specs/self-learn/15-orchestration-runbook.md"),
-            ("decisions", "docs/specs/self-learn/03-decisions.md"),
-            ("fwmap", "docs/specs/self-learn/14-forward-work-map.md"),
-        )
-    }
-    # Owed by THIS build -- absent at the pre-spec baseline.
-    assert _grep_count(pre_3b8e037["runbook"], "guard-amendment") == 0
-    assert _grep_count(pre_3b8e037["runbook"], re.escape("--remeasure")) == 0
-    assert _grep_count(pre_3b8e037["decisions"], r"^\| S-55") == 0
-    assert _grep_count(pre_3b8e037["fwmap"], r"^\| FW-140") == 0
-    assert _grep_count(pre_3b8e037["fwmap"], r"^\| FW-141") == 0
-    # Controls that DO exist at pre-state, same shape.
-    assert _grep_count(pre_3b8e037["runbook"], re.escape("mutation verification")) == 1
-    assert _grep_count(pre_3b8e037["decisions"], r"^\| S-54") == 1
-    assert _grep_count(pre_3b8e037["fwmap"], r"^\| FW-138") == 1
-
-    runbook = _RUNBOOK.read_text(encoding="utf-8")
-    decisions = _DECISIONS.read_text(encoding="utf-8")
-    fwmap = _FW_MAP.read_text(encoding="utf-8")
-    assert _grep_count(runbook, "guard-amendment") >= 2
-    assert _grep_count(runbook, re.escape("--remeasure")) >= 1
-    assert _grep_count(decisions, r"^\| S-55") == 1
-    assert _grep_count(fwmap, r"^\| FW-140") == 1
-    assert _grep_count(fwmap, r"^\| FW-141") == 1
-
-
-def test_doc2_retired_names_are_gone():
-    """`DOC2`. section 13's retired-names list is complete and
-    live-checked: every name is absent from the three owner files as an
-    `ast`-visible binding. MEASURED at `3b8e037`, owner-scoped: 32
-    occurrences (9+13+10); an `ast.Assign`-only walk finds 30 and misses
-    2 (`_AR3_REMOVED`/`_AR3_ADDED`, both `AnnAssign`)."""
-    pre_full = pre_assign_only = 0
-    per_file = {}
-    for f in OWNER_FILES:
-        src = _git_show_text("3b8e037", f)
-        full = _ast_visible_retired_bindings(src)
-        assign_only = _ast_visible_retired_bindings_assign_only(src)
-        per_file[f] = len(full)
-        pre_full += len(full)
-        pre_assign_only += len(assign_only)
-    assert pre_full == 32, (per_file, pre_full)
-    assert per_file == {"test_worker_contract.py": 10, "test_u_sdka.py": 13, "test_u_fake.py": 9}
-    assert pre_assign_only == 30, pre_assign_only
-
-    assert len(RETIRED_CONSTANTS) == 22
-    assert len(RETIRED_TEST_FUNCTIONS) == 10
-
-    for f in OWNER_FILES:
-        text = (_REPO_ROOT / _TESTS_DIR / f).read_text(encoding="utf-8")
-        hits = _ast_visible_retired_bindings(text)
-        assert hits == [], (f, hits)
-
-
-def test_doc3_retired_check_is_owner_scoped():
-    """`DOC3`. The retired-names check is scoped to the three owner
-    files, not to bare names. MEASURED: `test_u_corrob.py:65` binds its
-    OWN unrelated `_BASE_SHA` -- a bare-name check over `cli/` would
-    demand deleting it."""
-    corrob_text = (_REPO_ROOT / _TESTS_DIR / "test_u_corrob.py").read_text(encoding="utf-8")
-    bare_hits = _ast_visible_retired_bindings(corrob_text)
-    assert "_BASE_SHA" in bare_hits, "the collision this criterion exists to avoid mis-scoping"
-
-    # The owner-scoped check (DOC2's actual mechanism) never looks at
-    # test_u_corrob.py at all, so it stays clean regardless.
-    assert "test_u_corrob.py" not in OWNER_FILES
-    for f in OWNER_FILES:
-        text = (_REPO_ROOT / _TESTS_DIR / f).read_text(encoding="utf-8")
-        assert _ast_visible_retired_bindings(text) == [], f
-
-
-def test_doc4_permanent_rows_describe_the_shipped_design():
-    """`DOC4`. `S-55` and `FW-140` each name whole-file byte-pinned
-    fixtures with a dated re-pin door, the anchor-side NODE census
-    compared by normalized DUMP, and the doors `repinned`/`missing`/
-    `edited`/`edited_exports`. Greps evaluated PER ROW."""
-    decisions = _DECISIONS.read_text(encoding="utf-8")
-    fwmap = _FW_MAP.read_text(encoding="utf-8")
-
-    def _row(text: str, marker: str) -> str:
-        m = re.search(rf"^\|\s*{re.escape(marker)}\s*\|.*$", text, re.M)
-        assert m is not None, marker
-        return m.group(0)
-
-    s55 = _row(decisions, "S-55")
-    fw140 = _row(fwmap, "FW-140")
-
-    negatives = ("append-only", "assertion multiset", "weakened", "retired")
-    positives = ("node", "repinned", "missing", "dump")
-    for label, row in (("S-55", s55), ("FW-140", fw140)):
-        for neg in negatives:
-            assert _grep_count(row, re.escape(neg)) == 0, (label, neg)
-        for pos in positives:
-            assert _grep_count(row, re.escape(pos)) >= 1, (label, pos)
-
-    # Positive control: r4's wording of these two rows fails (matching
-    # this criterion's own case-sensitive grep -- section 3.6, N-2/N-3:
-    # r4 literally wrote "append-only ... additions anywhere are free"
-    # and "assertion multisets" in lowercase prose).
-    r4_s55_fragment = (
-        "S-55 fixtures grow append-only, behaviour files use assertion "
-        "multisets, and a weakened assertion is retired from the suite"
-    )
-    for neg in negatives:
-        assert _grep_count(r4_s55_fragment, re.escape(neg)) >= 1, neg
 
 
 # ======================================================================= #

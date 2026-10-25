@@ -195,10 +195,6 @@ def _lesson(d):  # the one lesson of the example
 # ------------------------------------------------------------------------ K1
 
 
-def test_k1_the_spec_example_validates():
-    assert c.validate_model_output(EXAMPLE) == []
-
-
 def _set(path_keys, value):
     def edit(d):
         node = d
@@ -586,11 +582,6 @@ def test_k2_schema_limits_and_required_keys_agree_with_the_validator():
 
 
 # ------------------------------------------------------------------------ K3
-
-
-def test_k3_checked_output_and_run_record_validate():
-    assert c.validate_checked_output(checked_example()) == []
-    assert c.validate_run(run_example()) == []
 
 
 def _cl(d):
