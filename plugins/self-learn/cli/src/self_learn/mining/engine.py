@@ -636,6 +636,7 @@ class SessionResult:
     checked: dict
     quote_redacted: int = 0
     cut_to_limit: int = 0
+    prose_before_json: int = 0
     error: str | None = None
 
 
@@ -683,7 +684,8 @@ def check_session(
     except Exception:  # noqa: BLE001 -- CheckerError, or any defect: this session fails, the run goes on
         return failed("checker-error")
     return SessionResult(
-        plan, rec, res.checked["status"], res.checked, quote_redacted=res.quote_redacted, cut_to_limit=res.cut_to_limit
+        plan, rec, res.checked["status"], res.checked, quote_redacted=res.quote_redacted, cut_to_limit=res.cut_to_limit,
+        prose_before_json=res.prose_before_json,
     )
 
 

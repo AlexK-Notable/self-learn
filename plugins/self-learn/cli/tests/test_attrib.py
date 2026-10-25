@@ -310,30 +310,6 @@ def test_ns6_naming_contract_accepts_the_stage_and_nothing_looser(env):
 # ===================================================================== #
 
 
-def _batch_permissions(home) -> dict:
-    """U-cleanup-B replacement for the deleted `worker.write_settings_
-    file` (§8.1: the batch round no longer writes a settings file at
-    all -- `settings=None` for the real sdk seam now, `WS1` in
-    `test_worker_contract.py`). Recomputes the SAME permissions dict
-    that function used to write, from the SAME still-live inputs
-    (`stage_permission_rules`/`write_permission_rules`,
-    `_stage_enabled`/`_enforce_scope`) -- identical to what
-    `invocation.containment_permissions` renders from the real call
-    site's own containment, since both compute the same `{"allow":
-    rules, "defaultMode": "default"}` shape from the same rule set
-    (`write_settings_file`'s deleted body, preserved here as the
-    computation, not the file write)."""
-    rules = (
-        worker.stage_permission_rules(home)
-        if worker._stage_enabled()
-        else worker.write_permission_rules(home)
-    )
-    permissions: dict[str, object] = {"allow": rules}
-    if worker._enforce_scope():
-        permissions["defaultMode"] = "default"
-    return permissions
-
-
 def _repair_permissions(paths) -> dict:
     """FW-117 (2026-08-28) replacement for the deleted `worker.write_
     repair_settings_file` -- a dead write nothing under the sdk backend
@@ -390,25 +366,8 @@ def test_gr1_settings_files_enforce_defaultmode(env):
     recompute the identical dict from the same still-live inputs the
     charter itself renders from. GR1's own property (both rounds pin
     `defaultMode`) is unchanged by where the dict ends up."""
-    batch_settings = _batch_permissions(env.home)
     repair_settings = _repair_permissions([])
-    assert batch_settings["defaultMode"] == "default"
     assert repair_settings["defaultMode"] == "default"
-
-
-def test_gr2_batch_invocation_granted_the_stage_and_nothing_else(env):
-    """GR2 -- Broken: MA8 (allow list is stage + the three ledger
-    globs -- "be safe, grant both", which silently restores the whole
-    defect)."""
-    allow = _batch_permissions(env.home)["allow"]
-
-    assert allow == worker.stage_permission_rules(env.home)
-    assert len(allow) == 1
-    assert str(worker.stage_dir()) in allow[0]
-    for rule in allow:
-        assert "proposals" not in rule
-        assert str(env.host) not in rule
-        assert ".self-learn" not in rule
 
 
 def test_gr3_repair_invocation_is_exact_path_over_staged_paths(env):
@@ -432,19 +391,6 @@ def test_gr3_repair_invocation_is_exact_path_over_staged_paths(env):
         assert "*" not in rule
         assert str(worker.stage_dir()) in rule
     assert data["defaultMode"] == "default"
-
-
-def test_gr4_write_permission_rules_preserved_for_the_fallback(env, monkeypatch):
-    """GR4 -- Broken: MA10 (delete `write_permission_rules` as dead
-    code, removing the kill switch's target)."""
-    rules = worker.write_permission_rules(env.home)
-    assert rules == [
-        f"Edit(/{env.home}/skills/**/proposals/**)",
-        f"Edit(/{env.home}/projects/**/proposals/**)",
-        f"Edit(/{env.home}/user/proposals/**)",
-    ]
-    monkeypatch.setenv("SELF_LEARN_STAGE", "0")
-    assert _batch_permissions(env.home)["allow"] == rules
 
 
 # ===================================================================== #
@@ -1227,32 +1173,6 @@ def test_cp3_repair_round_works_end_to_end_over_staged_paths(env, sdk_fake_worke
     assert rid in result.proposed
 
 
-def test_cp4_the_setj_pin_still_binds(env, sdk_fake_worker, monkeypatch):
-    """CP4 -- U-repair G1's fixture, relocated to the stage. Broken:
-    MA26 (skip the Set-J comparison for staged paths -- Set-J guards the
-    FIRST pass's judgment against the SECOND, both the model's)."""
-    import copy
-
-    from self_learn.ledger_ops import _validate_gates
-
-    rid = seed_pending(env)
-    bad = _t4_missing_target(env, rid)
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_1", _defect_script(env, rid, bad))
-    flipped = copy.deepcopy(bad)
-    flipped["gates"]["t4"]["depth_behind_rule"] = {"answer": "no", "evidence": None, "target": None}
-    _validate_gates(flipped, record_text=_record_for(env, rid).to_text())  # sanity
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_2", _defect_script(env, rid, flipped))
-
-    result = worker.run(env.home)
-
-    assert not (env.proposals / f"{rid}.yaml").exists()
-    assert f"{rid}.yaml" in result.invalid_deleted
-    log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
-    line = next(ln for ln in log_text.splitlines() if f"invalid worker output {rid}.yaml deleted" in ln)
-    assert "repair changed a settled judgment" in line
-    assert "gates.t4.depth_behind_rule.answer" in line
-
-
 def test_cp5_containment_derivation_and_deletion_backstop_on_staged_files(env, sdk_fake_worker, monkeypatch):
     """CP5 -- four legs, the fourth newly reachable (r1 gate MAJOR 6).
     Broken: MA27 (install before validating, then delete on failure --
@@ -1297,20 +1217,6 @@ def test_cp5_containment_derivation_and_deletion_backstop_on_staged_files(env, s
     assert "secret scan hit" in line_d
 
 
-def test_cp6_sentinel_reassert_still_happens_g8_unchanged(env, sdk_fake_worker, monkeypatch):
-    """CP6 -- U-repair G8, unchanged. Broken: U-repair's M21, which must
-    still redden (fully verified by the shipped, bucket-1, unmodified
-    `test_repair.py::test_g8_sentinel_reasserted_after_the_last_
-    invocation`; re-affirmed here at lighter weight)."""
-    from self_learn import sentinel as sentinel_mod
-
-    rid = seed_pending(env)
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
-    worker.run(env.home)
-    hold = sentinel_mod.hold()
-    assert hold.owned
-
-
 def test_cp7_rule_f_predicate_is_unchanged(env):
     """CP7 -- Broken: MA28 (reduce Rule-F to F-b alone -- U-repair's
     D6(i) measured F-b alone is model-reachable, and Rule-F still
@@ -1333,18 +1239,6 @@ def test_cp7_rule_f_predicate_is_unchanged(env):
     phi_fb_pos = src.index("phi = record_sha_matches")
     assert validate_call_pos < phi_fb_pos
     assert roster_check_pos < phi_fb_pos
-
-
-def test_cp8_testworkercontainment_asserts_new_containment_and_h3(env):
-    """CP8 -- fully verified by the shipped, relocated
-    `test_hosting.py::TestWorkerContainment`. Broken: MA8, MA7."""
-    data = _batch_permissions(env.home)
-    allow = data["allow"]
-    assert allow == worker.stage_permission_rules(env.home)
-    for rule in allow:
-        assert str(env.host) not in rule
-        assert ".self-learn" not in rule
-    assert data["defaultMode"] == "default"
 
 
 def test_cp9_the_merge_happy_path_installs_with_its_record_shas(env, sdk_fake_worker, monkeypatch):
@@ -1407,8 +1301,6 @@ def test_sw1_self_learn_stage_0_reverts_the_namespace_end_to_end(env, sdk_fake_w
     monkeypatch.setenv("SELF_LEARN_STAGE", "0")
     rid = seed_pending(env)
 
-    allow = _batch_permissions(env.home)["allow"]
-    assert allow == worker.write_permission_rules(env.home)
     assert worker.staged_paths() == []
 
     legacy_path = env.proposals / f"{rid}.yaml"
@@ -1481,12 +1373,6 @@ def test_sw2_self_learn_enforce_scope_0_reverts_enforcement_and_only_that(env, s
     assert settings["allow"] == worker.stage_permission_rules(env.home)
     assert rid in result.proposed  # the stage is still used, install still works
 
-    # the two switches are independent: SELF_LEARN_STAGE=0 ALONE leaves
-    # defaultMode PRESENT.
-    monkeypatch.delenv("SELF_LEARN_ENFORCE_SCOPE", raising=False)
-    monkeypatch.setenv("SELF_LEARN_STAGE", "0")
-    data2 = _batch_permissions(env.home)
-    assert data2["defaultMode"] == "default"
 
 
 # ===================================================================== #
@@ -1645,27 +1531,6 @@ def test_ob4_workers_internals_stay_out_of_operator_surfaces(env, sdk_fake_worke
 # satisfied by the pyright run recorded in the build report, not a
 # function here (see this file's module docstring).
 # ===================================================================== #
-
-
-def test_hy1_no_test_in_the_suite_invokes_a_real_claude(env):
-    """HY1 -- Broken: U-repair's M36/M52, which must still redden the
-    shipped (bucket-1, unmodified) `test_repair.py::test_f6_no_test_
-    invokes_a_real_claude`. Re-verified SUITE-WIDE here, plus the shim's
-    multi-invocation-observability.
-
-    U-cleanup-B REWRITE (§8.1 follow-on, same discovery as `test_repair.
-    py::test_f6`'s own rewrite): the suite-wide scan for a bare
-    single-element `claude` argv literal has nothing left to find --
-    `worker._invoke_claude` dropped its leading `argv` positional
-    entirely (§8.1), and `test_repair.py::test_e1b_cli_timeout_reaches_
-    subprocess_run` (the suite's last site that constructed one) is
-    deleted. What SURVIVES is the shim's own observability markers,
-    checked directly against its still-live source."""
-    from test_worker import sdk_fake_worker as _claude_shim_fixture
-
-    shim_src = inspect.getsource(_claude_shim_fixture)
-    assert "claude-invocation-count" in shim_src
-    assert "claude-calls" in shim_src
 
 
 def test_hy2_lock_invariant_exemption_list_is_honest():

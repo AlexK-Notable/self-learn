@@ -47,12 +47,18 @@ def embed_documents(provider: EmbedProvider, texts: list[str], *, interactive: b
     except queue.Empty:
         raise TimeoutError("embedding timed out") from None
     if error is not None:
-        raise ValueError("embedding failed") from None
+        raise error
     if (not isinstance(vectors, list) or len(vectors) != len(texts)
             or any(len(v) != provider.dim or not all(math.isfinite(x) for x in v)
                    for v in vectors)):
         raise ValueError("invalid embedding response")
     return vectors
+
+
+def embedding_failure_note(exc: Exception) -> str:
+    """Expose the reason class, never provider messages (keys or input text)."""
+    reason = "embedding timed out" if isinstance(exc, TimeoutError) else "embedding failed"
+    return f"{reason}: {type(exc).__name__}"
 
 
 def nearest_text(
@@ -87,7 +93,7 @@ def nearest_text(
                 semantic_ids = sorted(cosines, key=lambda i: (-cosines[i], i))[:depth]
             except Exception as exc:
                 mode = LEXICAL_ONLY
-                note = "embedding timed out" if isinstance(exc, TimeoutError) else "embedding failed"
+                note = embedding_failure_note(exc)
                 cosines = {}
     rankings = [lexical_ids, semantic_ids] if mode == HYBRID else [lexical_ids]
     # Raw BM25 is intentionally not called a normalized lexical score.

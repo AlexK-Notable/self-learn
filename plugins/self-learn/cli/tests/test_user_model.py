@@ -150,21 +150,6 @@ def test_g_mark_seen_refuses_an_own_words_entry(tmp_path):
         user_model.mark_seen(home, entry_id)
 
 
-def test_g_presented_observation_with_no_entries_flips_nothing(tmp_path):
-    """The `cases.observe(kind="presented", entries=[])` half of check
-    (g) is exercised end to end in `test_cases.py`
-    (`test_observe_presented_with_no_entries_flips_nothing`) — this file
-    only owns `user_model.mark_seen` itself, called directly, never with
-    an empty list (there is nothing to call it WITH when entries is
-    empty; `cases.observe`'s loop over `entries` simply does not run)."""
-    home = make_home(tmp_path)
-    entry_id = _seed_provisional_entry(home)
-    # No call to mark_seen at all — the entry must be exactly as seeded.
-    doc = user_model.show(home)
-    still_there = next(e for e in doc["containers"]["C"] if e["id"] == entry_id)
-    assert still_there["provisional"] is True
-
-
 # ----------------------------------------------------------- (h) lapse_entry
 
 

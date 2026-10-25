@@ -62,18 +62,6 @@ def test_run_a_stop_planted_mid_run_reports_stopped_not_failed(env, sdk_fake_wor
     assert planted["intent"].id in result.stopped[0]
 
 
-def test_run_a_healthy_run_is_unaffected_by_the_new_arm(env, sdk_fake_worker, monkeypatch):
-    """Positive control: the SAME wrapper shape, with nothing planted,
-    changes nothing about the ordinary success path."""
-    rid = seed_pending(env)
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
-
-    result = worker.run(env.home)
-
-    assert result.status == "ok"
-    assert result.proposed == [rid]
-
-
 def test_commit_locked_reports_stopped_not_a_commit_failure(tmp_path):
     """`_commit_locked`'s own arm (worker.py ~2452): reached STANDALONE
     via `_commit_run` (its own docstring: "which is why it can still be

@@ -433,17 +433,6 @@ def test_lad3_registry_and_constants_are_the_library_objects_by_identity():
     assert sdk_mod.DEFAULT_INTERRUPT_KILL_SECS is sdk_ladder.KILL_SECS
 
 
-def test_lad3_original_constants_test_still_passes_unmodified():
-    """`LAD3` -- `test_engine_sdk.py::test_default_ladder_constants_
-    match_the_tuned_pin` passes unmodified. Re-run here, inline, as a
-    belt-and-braces proof this file's own suite run witnesses it (the
-    canonical proof is running that file itself, unedited)."""
-    from self_learn_ui.engine.sdk import DEFAULT_INTERRUPT_GRACE_SECS, DEFAULT_INTERRUPT_KILL_SECS
-
-    assert DEFAULT_INTERRUPT_GRACE_SECS == 1.0
-    assert DEFAULT_INTERRUPT_KILL_SECS == 2.5
-
-
 def test_lad4_loop_closing_gates_step_three_both_directions(monkeypatch):
     """`LAD4` -- `R-1`, both directions, driven directly against the
     shared `teardown.run_kill_ladder` (the SAME function `close()`

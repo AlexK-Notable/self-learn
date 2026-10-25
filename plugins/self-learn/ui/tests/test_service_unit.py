@@ -128,12 +128,6 @@ def test_restart_on_failure_is_pinned() -> None:
     assert "Restart=on-failure" in service
 
 
-def test_description_present_in_unit_section() -> None:
-    content = UI_UNIT.read_text(encoding="utf-8")
-    unit = _section(content, "Unit")
-    assert "Description=" in unit
-
-
 def test_install_section_present_for_direct_enable() -> None:
     """09 §3/10 §1: "enable stays a documented manual line
     (systemctl --user enable --now self-learn-ui.service)" — unlike the

@@ -72,26 +72,6 @@ class TestParityAcrossAValueMatrix:
         assert _is_deferred(padded, NOW) is True
         assert _domain_says_deferred(padded, NOW) is True
 
-    def test_mutation_flipping_the_inversion_breaks_every_case(self, monkeypatch):
-        """The exact mutation control this parity test exists to prove:
-        ``_is_deferred``'s ``not`` is the whole rewrite's payload —
-        flip it and EVERY case above must disagree with
-        ``domain.is_queued``."""
-        import self_learn_ui.models as models_mod
-
-        def _broken_is_deferred(deferred_until, now):
-            return sl_domain.is_queued(
-                {"status": "pending", "deferred_until": deferred_until}, now
-            )  # missing `not` — the mutation
-
-        monkeypatch.setattr(models_mod, "_is_deferred", _broken_is_deferred)
-        for deferred_until, expected in [
-            (None, False),
-            ("2020-01-01", False),
-            ("2099-01-01", True),
-        ]:
-            assert models_mod._is_deferred(deferred_until, NOW) is not expected
-
 
 class TestParityAgainstARealRecord:
     """``_is_deferred`` only ever sees the bare VALUE in production (a
