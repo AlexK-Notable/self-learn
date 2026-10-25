@@ -1596,7 +1596,8 @@ def test_the_lock_flag_means_acquired_even_when_the_drain_then_fails(home, root,
     backend.answers[good] = output([lesson()])
     reached: list[bool] = []
 
-    def crash(*args):
+    def crash(*args, sent):
+        assert isinstance(sent, miner.provenance.SentIndex)
         reached.append(True)
         raise gitops.GitOpsError("synthetic drain failure inside the acquired lock")
 

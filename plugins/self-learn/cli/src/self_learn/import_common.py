@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -145,9 +146,13 @@ def commit_import(home: Path, report: ImportReport) -> bool:
 _ORIGIN_RE = re.compile(r"""origin:\s*(?:"([^"]+)"|'([^']+)'|([^,}\s][^,}\n]*))""")
 
 
-def existing_origins(home: Path) -> set[str]:
+def existing_origins(home: Path, *, follow: Callable[[dict], str | None] | None = None) -> set[str]:
     """Every ``evidence.origin`` present in any record, any status, any
     bucket under *home* — THE dedupe index (01 §3.2).
+
+    ``follow`` optionally maps each parsed evidence item to its read-time
+    origin. Corrupt records always contribute their independently extracted
+    raw origins, even when another record translates the same string.
 
     FW-53: bytes that are not valid UTF-8 get the SAME raw-text regex
     fallback as a `RecordError` (malformed frontmatter) already does —
@@ -181,7 +186,7 @@ def existing_origins(home: Path) -> set[str]:
                         origins.add(value.strip())
                     continue
                 for entry in record.evidence:
-                    value = entry.get("origin")
+                    value = follow(entry) if follow is not None else entry.get("origin")
                     if isinstance(value, str) and value:
                         origins.add(value)
     return origins

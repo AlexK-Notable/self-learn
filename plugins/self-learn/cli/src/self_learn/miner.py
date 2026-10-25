@@ -1383,57 +1383,113 @@ def _find_record(home: Path, rid: str) -> tuple[Record, str] | None:
     return None
 
 
-def _follow_origin(origin: str, *, quote: str | None = None, uuid: str | None = None,
-                   legacy: bool = False) -> refs.Ref | None:
-    """Resolve a stored witness, or an explicitly legacy cache position."""
+def _origin_parts(origin: str) -> tuple[str, int, str | None] | None:
+    from .steward_inputs import _SUBAGENT_WHERE_RE
+
     match = re.fullmatch(r"transcript:([^#]+)#L([0-9]+)", origin)
     if match is None:
         return None
-    session, line = match.group(1), int(match.group(2))
-    roots = [transcripts_root()]
+    where, line = match.group(1), int(match.group(2))
+    sub = _SUBAGENT_WHERE_RE.match(where)
+    return (sub.group(1), line, sub.group(2)) if sub else (where, line, None)
+
+
+def _follow_origin(origin: str, *, quote: str | None = None, uuid: str | None = None,
+                   legacy: bool = False, roots: Sequence[Path] | None = None,
+                   sent: provenance.SentIndex | None = None) -> refs.Ref | None:
+    """Resolve a stored witness, or an explicitly legacy cache position.
+
+    Dedupe needs position/UUID, not a new provenance sweep. Landing passes
+    its run's sends; standalone cache calls use an empty sends index.
+    """
+    parts = _origin_parts(origin)
+    if parts is None:
+        return None
+    session, line, subagent = parts
+    roots = list(roots) if roots is not None else [transcripts_root()]
+    sent = sent if sent is not None else provenance.SentIndex()
     try:
         if legacy:
-            first = refs.resolve(session, 1, roots=roots)
+            first = refs.resolve(session, 1, subagent_file=subagent, roots=roots, sent=sent)
             rows = refs._lines(refs.locate(first, roots=roots))
             translated = transcript_lines.legacy_line(rows, line)
             if translated is None:
                 return None
             line = translated
-        return refs.resolve(session, line, uuid, quote=quote, roots=roots)
+        return refs.resolve(session, line, uuid, quote=quote, subagent_file=subagent, roots=roots, sent=sent)
     except (refs.RefError, OSError, ValueError):
         return None
 
 
-def _known_mining_origins(home: Path) -> set[str]:
-    """Read-time aliases for witnessed historical evidence; never edit it.
+class _OriginIndex:
+    """One landing's translation policy for records and tracked/spooled events.
 
-    Keep the raw-origin fallback for corrupt/unavailable records. A witnessed
-    row replaces its old number so the now-different physical row is not
-    mistaken for evidence already landed.
+    Stream each referenced copy once to detect count differences. Clean files
+    never call the resolver. No raw origins are globally discarded: a corrupt
+    record's independent raw evidence remains a dedupe key.
     """
-    origins = existing_origins(home)
-    translated: dict[str, set[str]] = {}
-    for bucket in discover_buckets(home):
-        for sub in ("pending", "resolved"):
-            for path in (bucket.path / sub).glob("*.md"):
+
+    def __init__(self, home: Path | None = None, sent: provenance.SentIndex | None = None):
+        self.roots = [transcripts_root(home)]
+        self.sent = sent if sent is not None else provenance.SentIndex()
+        self._affected: dict[tuple[str, str | None], bool] = {}
+        self._copies: dict[str, list[Path]] = {}
+        self._projects: list[Path] = []
+        for root in self.roots:
+            if root.is_dir():
+                self._projects.extend(p for p in root.iterdir() if p.is_dir())
+        for project in self._projects:
+            for path in project.glob("*.jsonl"):
+                self._copies.setdefault(path.stem, []).append(path)
+
+    def affected(self, session: str, subagent: str | None) -> bool:
+        key = (session, subagent)
+        if key not in self._affected:
+            paths = ([p / session / subagent for p in self._projects] if subagent
+                     else self._copies.get(session, []))
+            differs = False
+            for path in paths:
                 try:
-                    record = Record.from_path(path)
-                except (RecordError, OSError, UnicodeDecodeError):
+                    if any(len((row + "\n").splitlines()) != 1
+                           for row in transcript_lines.iter_file(path, errors="replace")):
+                        differs = True
+                        break
+                except OSError:
                     continue
-                for item in record.evidence:
-                    origin = item.get("origin")
-                    if not isinstance(origin, str) or not origin.startswith("transcript:"):
-                        continue
-                    raw = item.get("ref")
-                    uid = raw.get("uuid") if isinstance(raw, dict) else item.get("uuid")
-                    quote = item.get("quote")
-                    found = _follow_origin(origin, quote=quote if isinstance(quote, str) else None,
-                                           uuid=uid if isinstance(uid, str) else None)
-                    translated.setdefault(origin, set()).add(found.origin if found else origin)
-    for old, followed in translated.items():
-        origins.discard(old)
-        origins.update(followed)
-    return origins
+            self._affected[key] = differs
+        return self._affected[key]
+
+    def origin(self, origin: str, *, quote: str | None = None, uuid: str | None = None,
+               legacy: bool = False) -> str:
+        parts = _origin_parts(origin)
+        if parts is None or not self.affected(parts[0], parts[2]):
+            return origin
+        found = _follow_origin(origin, quote=quote, uuid=uuid, legacy=legacy,
+                               roots=self.roots, sent=self.sent)
+        return _ref_origin(found.to_dict()) if found else origin
+
+    def item(self, item: dict) -> str | None:
+        origin = item.get("origin")
+        if not isinstance(origin, str):
+            return None
+        raw = item.get("ref")
+        uid = raw.get("uuid") if isinstance(raw, dict) else item.get("uuid")
+        quote = item.get("quote")
+        return self.origin(origin, quote=quote if isinstance(quote, str) else None,
+                           uuid=uid if isinstance(uid, str) else None)
+
+    def event(self, event: dict) -> str:
+        origin = str(event.get("origin"))
+        uid = event.get("moment")
+        return self.origin(origin, uuid=uid if isinstance(uid, str) else None,
+                           legacy=not uid and event.get("line_format") != transcript_lines.FORMAT)
+
+
+def _known_mining_origins(home: Path, *, index: _OriginIndex | None = None,
+                          sent: provenance.SentIndex | None = None) -> set[str]:
+    """Both engines' followed evidence, with raw fallback per corrupt record."""
+    index = index if index is not None else _OriginIndex(home, sent)
+    return existing_origins(home, follow=index.item)
 
 
 def _sighting_key(origin: str, *, legacy: bool = False) -> str:
@@ -1447,7 +1503,7 @@ def _sighting_key(origin: str, *, legacy: bool = False) -> str:
     found = _follow_origin(origin, legacy=legacy)
     if found is None:
         return origin if legacy else f"{transcript_lines.FORMAT}:{origin}"
-    return f"uuid:{found.uuid}" if found.uuid else f"{transcript_lines.FORMAT}:{found.origin}"
+    return f"uuid:{found.uuid}" if found.uuid else f"{transcript_lines.FORMAT}:{_ref_origin(found.to_dict())}"
 
 
 def _rejected_counter_bump(rid: str, origin: str) -> int:
@@ -1613,7 +1669,7 @@ _FIRE_VIOLATED_BASIS = "fire-suspected-violation"
 
 
 def _event_seen(
-    home: Path,
+    home: Path, index: _OriginIndex | None = None,
 ) -> tuple[set[tuple[str, str, str]], list[tuple[str, str]]]:
     """(kind, record, origin) for fire/recurrence-suspect events —
     replay dedup (audit: crash-replay and the DOCUMENTED --since replay
@@ -1646,7 +1702,8 @@ def _event_seen(
         if kind not in ("fire", "recurrence-suspect"):
             continue
         record = e.get("record")
-        origin = e.get("origin")
+        origin = (index.event(e) if index is not None and isinstance(e.get("origin"), str)
+                  else e.get("origin"))
         seen.add((kind, str(record), str(origin)))
         if (
             kind == "fire"
@@ -1680,7 +1737,7 @@ def _raise_recurrence_suspect(
     if key in seen_events:
         return
     telemetry.spool_quiet(
-        "recurrence-suspect", record=rid, origin=origin, basis=basis
+        "recurrence-suspect", record=rid, origin=origin, basis=basis, line_format=transcript_lines.FORMAT
     )
     seen_events.add(key)
     result.recurrences.append(rid)
@@ -1854,6 +1911,7 @@ def _reconcile_and_land(
     cap: int,
     cwds: dict[str, str] | None = None,
     digested: dict[str, bool] | None = None,
+    *, sent: provenance.SentIndex | None = None,
 ) -> None:
     """``cwds`` maps session id → that session's transcript ``cwd``; a
     project-scoped candidate lands in the bucket for THAT path (doc 13
@@ -1866,8 +1924,10 @@ def _reconcile_and_land(
     the function stays callable from a test without it."""
     cwds = cwds or {}
     digested = digested or {}
-    origins = _known_mining_origins(home)
-    seen_events, violated_fires = _event_seen(home)
+    origin_index = _OriginIndex(home, sent)
+    origins = _known_mining_origins(home, index=origin_index)
+    seen_events, violated_fires = _event_seen(home, origin_index)
+    seen_events |= _spooled_seen(origin_index)
     candidates = parsed.get("candidates") or []
     if not isinstance(candidates, list):
         candidates = []
@@ -1933,7 +1993,7 @@ def _reconcile_and_land(
                         "recurrence-suspect",
                         record=record.id,
                         origin=origin,
-                        basis="miner-match",
+                        basis="miner-match", line_format=transcript_lines.FORMAT,
                     )
                     seen_events.add(key)
                     result.recurrences.append(record.id)
@@ -2105,7 +2165,7 @@ def _reconcile_and_land(
             if key in seen_events:
                 continue
             telemetry.spool_quiet(
-                "fire", record=rid, origin=origin, outcome=outcome
+                "fire", record=rid, origin=origin, outcome=outcome, line_format=transcript_lines.FORMAT
             )
             seen_events.add(key)
             result.fires += 1
@@ -2285,6 +2345,7 @@ class _Landing:
     cap: int
     origins: set[str]
     seen_events: set[tuple[str, str, str]]
+    origin_index: _OriginIndex = field(default_factory=_OriginIndex)
     moments: set[tuple] = field(default_factory=set)
     #: records what an item is about to write before it writes (the
     #: drain sets it per item; None outside a drain)
@@ -2533,10 +2594,11 @@ def _resurface(st: _Landing, rejected: Record, items: list[dict], n: int, cwd: s
     return LANDED
 
 
-def _record_moments(record: Record) -> tuple[set[tuple], set[str]]:
+def _record_moments(record: Record, index: _OriginIndex | None = None) -> tuple[set[tuple], set[str]]:
     """The transcript moments and origins ``record``'s evidence already
     holds: a sighting replayed after a crash, or reported by a fork, is
     found here, per record."""
+    index = index if index is not None else _OriginIndex()
     moments: set[tuple] = set()
     origins: set[str] = set()
     for entry in record.evidence:
@@ -2544,7 +2606,7 @@ def _record_moments(record: Record) -> tuple[set[tuple], set[str]]:
         if isinstance(ref, dict) and (ref.get("uuid") or ref.get("session")):
             moments.add(_ref_moment(ref))
         if isinstance(entry.get("origin"), str):
-            origins.add(entry["origin"])
+            origins.add(index.item(entry) or entry["origin"])
     return moments, origins
 
 
@@ -2592,7 +2654,7 @@ def _write_event(st: _Landing, kind: str, rid: str, origin: str, moment: str | N
     _intend(st, kind, rid, origin)
     if moment:
         payload["moment"] = moment
-    _spool_output(kind, record=rid, origin=origin, **payload)
+    _spool_output(kind, record=rid, origin=origin, line_format=transcript_lines.FORMAT, **payload)
     st.seen_events.add((kind, rid, origin))
     if moment:
         st.seen_moments.add((kind, rid, moment))
@@ -2668,7 +2730,7 @@ def _land_sighting(st: _Landing, sighting: dict, cwd: str | None) -> str:
     st.moments.update(("sighting", record.id, _ref_moment(e["ref"])) for e in items)
     origin = _ref_origin(items[0]["ref"])
     if record.status == "pending":
-        held_moments, held_origins = _record_moments(record)
+        held_moments, held_origins = _record_moments(record, st.origin_index)
         fresh = [e for e in items
                  if _ref_moment(e["ref"]) not in held_moments and _ref_origin(e["ref"]) not in held_origins]
         if not fresh:
@@ -2801,7 +2863,7 @@ def _finish_intent(st: _Landing, intent: dict, kind: str, item: dict, cwd: str |
             _outcome(result, origin, "dropped-invalid", record=rid, reason="the record it folds into is gone")
             return DROPPED
         record, path = found
-        held_moments, held_origins = _record_moments(record)
+        held_moments, held_origins = _record_moments(record, st.origin_index)
         # already written only when every one of its moments is there: one
         # matching origin is not the whole fold (fix round 6)
         fresh = [e for e in item["evidence"]
@@ -2841,12 +2903,12 @@ def _finish_intent(st: _Landing, intent: dict, kind: str, item: dict, cwd: str |
     return LANDED
 
 
-def _spooled_seen() -> set[tuple[str, str, str]]:
+def _spooled_seen(index: _OriginIndex | None = None) -> set[tuple[str, str, str]]:
     """(kind, record, origin) of the fire and recurrence-suspect events
     still in the spool: written by a run that stopped before its flush.
     Replay dedupes against these as well as the tracked plane."""
     return {
-        (str(e.get("kind")), str(e.get("record")), str(e.get("origin")))
+        (str(e.get("kind")), str(e.get("record")), index.event(e) if index is not None else str(e.get("origin")))
         for e in telemetry.read_spooled(("fire", "recurrence-suspect"))
     }
 
@@ -2882,7 +2944,8 @@ class DrainReport:
 
 
 def _drain_waiting(
-    home: Path, answers: list[mining_waiting.Answer], result: MineResult, cap: int, run_id: str
+    home: Path, answers: list[mining_waiting.Answer], result: MineResult, cap: int, run_id: str,
+    *, sent: provenance.SentIndex | None = None,
 ) -> DrainReport:
     """Land the waiting answers, oldest first, one item at a time. **The
     caller holds the ledger lock** (`intents.ledger_write`). Before an
@@ -2894,9 +2957,11 @@ def _drain_waiting(
     that fails, or an item held for a reason outside it, leaves the item
     unfinished with its failure counted (the model is never asked again);
     the cap holds an item without counting."""
-    seen_events, _legacy = _event_seen(home)
-    st = _Landing(home=home, result=result, cap=cap, origins=existing_origins(home),
-                  seen_events=seen_events | _spooled_seen(), seen_moments=_event_moments(home))
+    origin_index = _OriginIndex(home, sent)
+    seen_events, _legacy = _event_seen(home, origin_index)
+    st = _Landing(home=home, result=result, cap=cap, origins=_known_mining_origins(home, index=origin_index),
+                  origin_index=origin_index, seen_events=seen_events | _spooled_seen(origin_index),
+                  seen_moments=_event_moments(home))
     report = DrainReport(drained=True)
     for answer in answers:
         earlier = answer.run_id != run_id
@@ -3661,7 +3726,7 @@ def _run_locked(
                 )
             for intent_id in recovered.restored:
                 log(f"run {run_id}: recovered {intent_id} (restored: its mutation was undone)")
-            _reconcile_and_land(home, parsed, result, cap, cwds, digested)
+            _reconcile_and_land(home, parsed, result, cap, cwds, digested, sent=sent)
             _commit_landing(home, result, run_id, no_push=no_push)
     except gitops.GitOpsError as exc:
         # BLOCKER B: every GitOpsError is caught — including a lock
@@ -3943,7 +4008,7 @@ def _run_session_engine(
                         )
                     for intent_id in recovered.restored:
                         log(f"run {run_id}: recovered {intent_id} (restored: its mutation was undone)")
-                    landed = _drain_waiting(home, answers, result, cap, run_id)
+                    landed = _drain_waiting(home, answers, result, cap, run_id, sent=sent)
                     report.landed_earlier, report.landed_this_run = landed.landed_earlier, landed.landed_this_run
                     report.terminal = landed.terminal
                     _commit_landing(home, result, run_id, no_push=no_push, folds_alone=True,

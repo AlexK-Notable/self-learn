@@ -100,9 +100,26 @@ remain). Cursor writes omit `halt` when false. The first-user opening scan
 and captured-session entry counts also stream by LF, retaining replacement
 decoding for malformed UTF-8.
 
-Backfill deduplication follows stored evidence quotes/UUIDs into an in-memory
-origin index before comparing new LF-numbered candidates; it does not rewrite
-the evidence. Unreadable records retain the existing raw-origin fallback.
+Both engines' nightly and backfill landing use one in-memory origin index
+that follows stored evidence quotes/UUIDs before comparing LF-numbered
+candidates. The same translation serves lesson dedupe, a sighted record's
+held evidence, and tracked/spooled recurrence-event keys. History is never
+rewritten. Each corrupt record independently retains its raw-origin fallback,
+even when a parsed record translates the same string.
+
+The index streams each referenced transcript copy once per drain to check
+whether its counts differ. Only affected files invoke resolution, reusing the
+run's provenance sends rather than sweeping per user row. The exact test is
+whether any physical row plus LF produces more than one `splitlines()` piece:
+bare CR, VT, FF, U+001C–001E, U+0085, U+2028 or U+2029 can do so; CRLF alone
+cannot. Missing copies keep their raw keys. Subagent origins identify their
+own log and preserve that subagent path when followed.
+
+New miner fire/recurrence events carry `line_format: newline-v1`; event keys
+use `moment` UUIDs when present, otherwise unmarked affected-file positions
+use the legacy count. Marked UUID-less event positions are never translated
+again. No historical telemetry is rewritten.
+
 Rejected-sighting cache lists migrate old origin positions when their source
 is available, replacing each with `uuid:<entry uuid>` or, for UUID-less rows,
 `newline-v1:transcript:<session>#L<n>`. Newly written keys always carry one of
