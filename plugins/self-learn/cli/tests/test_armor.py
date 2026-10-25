@@ -899,7 +899,7 @@ MEASURED: dict[str, Measured] = {
         value=2,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            '2026-10-24 17-invocation-runbook.md §1 and 02-schema.md §2: measured 2 edited pinned nodes against ANCHOR: the SDK fixture census and retire CLI test.'
+            '2026-10-24 17-invocation-runbook.md §1 and 02-schema.md §2: measured 2 edited pinned nodes against ANCHOR 2c8f8f5: the SDK fixture census and retire CLI test.'
         ),
         measure=_measure_census_edited,
     ),
