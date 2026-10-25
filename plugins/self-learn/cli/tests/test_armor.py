@@ -908,9 +908,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_export_total,
     ),
     "EXM3.census_missing": Measured(
-        value=0,
+        value=11,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-24 audit-retire after merging master at ANCHOR 99dae24 (17-invocation-runbook.md §1; 02-schema.md §2): 0 -> 11, the eleven `missing` doors on test_invocation.py (deleted backend-selector tests). "
+            "Previous entry: "
             "2026-10-24, transcribed at ANCHOR 9f50345 from this module's own "
             "STALE refusal (engine-fix landing): 24 -> 0; the test audit's "
             "deletions are anchor-side now. Previous entry: "
@@ -925,9 +927,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=2,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-24 audit-retire after merging master at ANCHOR 99dae24 (17-invocation-runbook.md §1; 02-schema.md §2): 0 -> 2, the `edited` doors on test_invocation_sdk.py `_SIM_2_NINE` and test_route_cli.py `test_graduate_cli`. "
+            "Previous entry: "
             "2026-10-24, transcribed at ANCHOR 99dae24 from this module's own "
             "STALE refusal (cfg-tier-c): 1 -> 0; kl8's exec-wait helper and its test edit "
             "are anchor-side now. Previous entry: "
@@ -976,9 +980,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_edited,
     ),
     "BEH1.control_missing": Measured(
-        value=91,
+        value=97,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-10-24 audit-retire after merging master at ANCHOR 99dae24 (17-invocation-runbook.md §1; 02-schema.md §2): 91 -> 97, the deleted backend-selector tests, counted against the retired control anchor c3b48e7. "
+            "Previous entry: "
             "2026-10-24 test audit L1/L2, per §4.5/§4.7: 68 -> 91; "
             "HEAD measured against the retired control anchor c3b48e7. "
             "2026-09-04 Sprint 2 integration, per §5.1's STALE remediation: 66 -> 68 "
@@ -990,9 +996,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=179,
+        value=175,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-10-24 audit-retire after merging master at ANCHOR 99dae24 (17-invocation-runbook.md §1; 02-schema.md §2): 179 -> 175, the retirement's edits counted against c3b48e7 (nodes it deleted no longer count as edited). "
+            "Previous entry: "
             "2026-10-24 kl8 exec race (drafts/u-sdk-backend-spec.md §3.7): 178 -> 179; "
             "test_kl8 gains an `edited` door (both legs wait for exec). Previous entry: "
             "2026-10-24 test audit L1/L2, per §4.5/§4.7: 194 -> 178; "
