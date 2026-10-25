@@ -106,7 +106,7 @@ USER_SHAPES: tuple[str, ...] = ("correction", "standing-preference")
 #: A lesson's loaded fields: never cut (S-79).
 LOADED: tuple[str, ...] = ("trigger", "instruction", "fact")
 
-_FENCE = re.compile(r"^[ \t]*```(?:json)?[ \t]*\n(.*?)\n[ \t]*```\s*\Z", re.S | re.M)
+_FENCE = re.compile(r"^[ \t]*```(?:json)?[ \t]*\n(.*?)\n?[ \t]*(?P<close>```)\s*\Z", re.S | re.M)
 _FENCE_LINES = re.compile(r"^[ \t]*```", re.M)
 _KEEP = ("exact", "normalised")
 _MOVED = ("nearby", "elsewhere_in_file")
@@ -250,8 +250,10 @@ def _parse(text: str) -> tuple[Any, str | None, int]:
     except (ValueError, RecursionError):
         pass
     # Do not choose between competing blocks or discard trailing prose.
-    m = _FENCE.search(text) if len(_FENCE_LINES.findall(text)) == 2 else None
-    if m:
+    m = _FENCE.search(text)
+    # Count opening-like lines before the matched close, which may follow
+    # the object directly rather than occupying its own line.
+    if m and len(_FENCE_LINES.findall(text[:m.start("close")])) == 1:
         try:
             return json.loads(m.group(1)), None, int(bool(text[:m.start()].strip()))
         except (ValueError, RecursionError):

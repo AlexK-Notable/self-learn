@@ -1108,6 +1108,7 @@ raised, makes it `failed` (`error: call`); neither touches another session.
 The final message must be one JSON object, bare or inside exactly one
 triple-backtick fence (optionally labelled `json`) that ends the message.
 Prose before that fence is tolerated; whitespace after it is allowed.
+The closing backticks may follow the object directly or start their own line.
 Multiple fences, trailing prose, prose without a fence, and prose followed
 by an unfenced object are refused: without a fence there is no explicit
 boundary separating commentary from the answer. The extracted object still

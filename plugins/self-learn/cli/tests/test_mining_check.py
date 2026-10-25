@@ -864,3 +864,27 @@ def test_final_fence_acceptance_and_count(roots, shape):
     else:
         assert result.checked["status"] == "bad-output" and result.checked["lessons"] == []
         assert result.prose_before_json == 0
+
+
+@pytest.mark.parametrize("prefix", ["", "Here is the result.\n"])
+@pytest.mark.parametrize("label", ["json", ""])
+@pytest.mark.parametrize("suffix", ["", "  \n\t"])
+def test_closing_fence_directly_after_object(roots, prefix, label, suffix):
+    sp = spine_of(roots)
+    body = output([lesson()])
+    control = run(sp, body, roots)
+    assert control.checked["status"] == "ok" and len(control.checked["lessons"]) == 1
+    result = run(sp, prefix + f"```{label}\n{body}```" + suffix, roots)
+    assert result.checked == control.checked
+    assert result.prose_before_json == int(bool(prefix))
+
+
+@pytest.mark.parametrize("before_close", ["\n", ""])
+def test_opening_like_prose_line_is_not_discarded(roots, before_close):
+    sp = spine_of(roots)
+    fence = "```json\n" + output([lesson()]) + before_close + "```"
+    control = run(sp, fence, roots)
+    assert control.checked["status"] == "ok" and len(control.checked["lessons"]) == 1
+    result = run(sp, "```is a marker\n" + fence, roots)
+    assert result.checked["status"] == "bad-output" and result.checked["lessons"] == []
+    assert result.prose_before_json == 0
