@@ -1791,6 +1791,37 @@ a new line naming the line it amends.
   words typed into the overseer conversation, where no transcript line
   exists at record time — `<obs-id>` is the `presented` observation the
   reply answers). Dedupe key: `(source.message_ref, verbatim)`.
+  On a new write, resolve a `transcript:` ref using the ledger's configured
+  `refs.transcript_roots` (the same roots as steward evidence packs). If it
+  resolves, its evidence role must be `user`; any other role is refused with
+  `StatementUsageError` naming the role. Exception: a `tool_result` linked by
+  `tool_use_id` to an earlier assistant `AskUserQuestion` call with the same
+  question texts and option labels is accepted only for a whitespace-normalized
+  exact substring of a typed Other answer, a `kind: text | number` answer, an
+  added `annotations.notes` field, or the freeform result `response`, excluding
+  clicked labels and all other tool text.
+  Case and punctuation are preserved; separate answers, notes and responses
+  are never joined. For overlapping multi-select labels retain only the suffix
+  left by every possible parsing of clicked-label prefixes. Notes do not
+  require a string answer. UI-only question metadata may differ between call
+  and result. Refuse SDK-driven results/sessions (rule 6's `promptSource: sdk`
+  or an `entrypoint` starting with `sdk`), system-supplied results, calls whose
+  input already has `answers` or `annotations`, and auto-resolved results with
+  `afkTimeoutMs`; apply rule 10's `provenance.agent_written` to each entire
+  typed field, including the herdr-send sweep, before accepting its substring.
+  A refused multiple-choice result names its role and says the words were not
+  typed by the user. Use refs' own line reader with strict UTF-8 validation;
+  unreadable, damaged, malformed-message or corrupt-target transcripts and
+  files disappearing/changing between reads produce a named
+  `StatementUsageError`, never an implicit acceptance or a transcript traceback.
+  A session absent at initial lookup or an out-of-range line remains accepted.
+  Resolve/check evidence outside the commit lock, deferring a refusal until
+  after locked deduplication: a concurrent duplicate still returns its existing
+  id. An optimistic duplicate lookup is confirmed under the lock before
+  skipping transcript I/O. `conversation:` refs are unaffected. Existing
+  statements are never rewritten or refused on re-addition, including steward
+  recovery after an owner commit.
+
 - `scope.level` ∈ `user | project`; `scope.host` is a registered host path
   when `project`.
 - `uncertainty` is the recorder's doubt about what the words *mean*, kept
@@ -2038,7 +2069,8 @@ tool call as its name and the string values of its input, an attachment's
 4. `type: user` with `isMeta` or `isCompactSummary` true → `relay`;
 5. `type: user` with an `origin` object: `origin.kind: human` → `user`; any
    other kind (`task-notification`, `peer`, `coordinator`, `channel`, …) → `relay`;
-6. `type: user`, no `origin`, `promptSource` `system` or `sdk` → `relay`;
+6. `type: user`, no `origin`, `promptSource` `system` or `sdk`, or an
+   `entrypoint` starting with `sdk` → `relay` (shared SDK marker check);
 7. `type: user`, no `origin`, text starting with a harness envelope
    (`<local-command-stdout>`, `<local-command-stderr>`, `<bash-stdout>`,
    `<bash-stderr>`, `<task-notification>`, `<system-reminder>`,

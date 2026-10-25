@@ -53,7 +53,8 @@ rule names the field it reads, first match wins:
    -> ``user``; any other kind (``task-notification``, ``peer``,
    ``coordinator``, ``channel``, ...) -> ``relay``;
 6. ``type == "user"`` with no ``origin`` and ``promptSource`` of
-   ``"system"`` or ``"sdk"`` -> ``relay`` (a program, or a client
+   ``"system"`` or ``"sdk"``, or an ``entrypoint`` starting with ``"sdk"``
+   -> ``relay`` (a program, or a client
    through the SDK, sent it; the transcript does not say a person typed
    it);
 7. ``type == "user"`` with no ``origin`` whose text starts with a harness
@@ -107,6 +108,7 @@ __all__ = [
     "OTHER_SESSION_CAP",
     "Ref",
     "RefError",
+    "CorruptRefError",
     "Verdict",
     "check_quote",
     "dedupe",
@@ -114,6 +116,7 @@ __all__ = [
     "excerpt",
     "fold",
     "is_compact_provenance_note",
+    "is_sdk",
     "locate",
     "resolve",
     "role_of",
@@ -160,6 +163,10 @@ _ELLIPSES = re.compile(r"\s*(?:…|\.\.\.)\s*")
 
 class RefError(Exception):
     """A session, line or uuid that resolves to no transcript entry."""
+
+
+class CorruptRefError(RefError):
+    """The requested row exists, but is not a JSON object."""
 
 
 @dataclass(frozen=True)
@@ -251,14 +258,17 @@ def _roots(roots: Sequence[Path | str] | None) -> list[Path]:
 
 
 @lru_cache(maxsize=16)
-def _lines_cached(path: str, _mtime_ns: int, _size: int) -> tuple[str, ...]:
-    with open(path, encoding="utf-8", errors="replace") as fh:
+def _lines_cached(
+    path: str, _mtime_ns: int, _size: int, strict: bool = False,
+    _ctime_ns: int = 0, _mode: int = 0,
+) -> tuple[str, ...]:
+    with open(path, encoding="utf-8", errors="strict" if strict else "replace") as fh:
         return tuple(fh.read().splitlines())
 
 
-def _lines(path: Path) -> tuple[str, ...]:
+def _lines(path: Path, *, strict: bool = False) -> tuple[str, ...]:
     st = path.stat()
-    return _lines_cached(str(path), st.st_mtime_ns, st.st_size)
+    return _lines_cached(str(path), st.st_mtime_ns, st.st_size, strict, st.st_ctime_ns, st.st_mode)
 
 
 def _entry(raw: str) -> dict | None:
@@ -354,6 +364,14 @@ def is_compact_provenance_note(entry: dict) -> bool:
     )
 
 
+def is_sdk(entry: dict) -> bool:
+    """Rule 6's SDK markers, also used for tool-result authorship checks."""
+    entrypoint = entry.get("entrypoint")
+    return entry.get("promptSource") == "sdk" or (
+        isinstance(entrypoint, str) and entrypoint.startswith("sdk")
+    )
+
+
 def role_of(
     entry: dict, *, in_subagent_file: bool = False, sent: provenance.SentIndex | None = None
 ) -> str:
@@ -374,7 +392,7 @@ def role_of(
         origin = entry.get("origin")
         if isinstance(origin, dict):  # rule 5
             return _typed(entry, text, sent) if origin.get("kind") == "human" else "relay"
-        if entry.get("promptSource") in ("system", "sdk"):  # rule 6
+        if entry.get("promptSource") == "system" or is_sdk(entry):  # rule 6
             return "relay"
         if text.lstrip().startswith(_HARNESS_ENVELOPES):  # rule 7
             return "relay"
@@ -458,7 +476,7 @@ def _ref_at(
         raise RefError(f"{session}: line {line} is past the end of the file ({len(lines)} lines)")
     e = _entry(lines[line - 1])
     if e is None:
-        raise RefError(f"{session}#L{line}: not a JSON object")
+        raise CorruptRefError(f"{session}#L{line}: not a JSON object")
     project_dir = path.parent.name if subagent_file is None else path.parents[2].name
     ts, cwd, uid = e.get("timestamp"), e.get("cwd"), e.get("uuid")
     if ts is None and isinstance(e.get("attachment"), dict):
