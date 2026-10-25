@@ -947,6 +947,10 @@ class TestDetailPage:
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}")
         assert "no analysis yet" in r.text.lower()
+        # the whole message, `i` instruction included (it carried over from
+        # a removed duplicate, test audit L9, 2026-10-24)
+        from self_learn_ui.models import NO_ANALYSIS_MESSAGE
+        assert NO_ANALYSIS_MESSAGE in r.text
 
     def test_episode_brief_renders_collapsed_below_decision_content(
         self, tmp_path: Path
