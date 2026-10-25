@@ -9,8 +9,9 @@ a verdict. Each failed check drops the smallest unit it concerns and records
 
 The steps, in order:
 
-1. **Parse.** One surrounding ```` ```json ```` fence is stripped; the text
-   must be one JSON object. Items beyond a count limit are dropped as
+1. **Parse.** One JSON object, bare or in a single final fence (optional
+   prose before it). Prose before a valid fenced object is counted. Items
+   beyond a count limit are dropped as
    ``over-count``, the first ones kept; then the document must pass
    ``contract.validate_model_output``. Any failure: status ``bad-output``,
    nothing kept.
@@ -105,7 +106,8 @@ USER_SHAPES: tuple[str, ...] = ("correction", "standing-preference")
 #: A lesson's loaded fields: never cut (S-79).
 LOADED: tuple[str, ...] = ("trigger", "instruction", "fact")
 
-_FENCE = re.compile(r"\A\s*```(?:json)?[ \t]*\n(.*?)\n?```\s*\Z", re.S)
+_FENCE = re.compile(r"^[ \t]*```(?:json)?[ \t]*\n(.*?)\n?[ \t]*(?P<close>```)\s*\Z", re.S | re.M)
+_FENCE_LINES = re.compile(r"^[ \t]*```", re.M)
 _KEEP = ("exact", "normalised")
 _MOVED = ("nearby", "elsewhere_in_file")
 
@@ -121,11 +123,13 @@ class CheckResult:
     counts quotes stored as :data:`QUOTE_WITHHELD` (the run record's
     ``quote-redacted``); ``cut_to_limit`` counts free-text fields that
     redaction made longer than their limit and that were cut back to it
-    (for the run record too)."""
+    (for the run record too). ``prose_before_json`` is one for a valid
+    answer whose final fence was preceded by prose, otherwise zero."""
 
     checked: dict[str, Any]
     quote_redacted: int
     cut_to_limit: int = 0
+    prose_before_json: int = 0
 
 
 def _shown_match(quote: str, shown: str) -> bool:
@@ -239,13 +243,22 @@ def empty_output(
 # ------------------------------------------------------------------ step 1
 
 
-def _parse(text: str) -> tuple[Any, str | None]:
-    m = _FENCE.match(text)
-    body = m.group(1) if m else text
+def _parse(text: str) -> tuple[Any, str | None, int]:
+    # Parse bare JSON first: fence-like text inside a JSON string is data.
     try:
-        return json.loads(body), None
+        return json.loads(text), None, 0
     except (ValueError, RecursionError):
-        return None, "the final message is not JSON"
+        pass
+    # Do not choose between competing blocks or discard trailing prose.
+    m = _FENCE.search(text)
+    # Count opening-like lines before the matched close, which may follow
+    # the object directly rather than occupying its own line.
+    if m and len(_FENCE_LINES.findall(text[:m.start("close")])) == 1:
+        try:
+            return json.loads(m.group(1)), None, int(bool(text[:m.start()].strip()))
+        except (ValueError, RecursionError):
+            pass
+    return None, "the final message is not JSON", 0
 
 
 def _over_count(obj: dict[str, Any]) -> list[dict[str, Any]]:
@@ -612,7 +625,7 @@ def check_output(
     swept once per run: without it each ref's role sweeps ``roots`` again).
     Reads only; never adds to the judged-uuid store."""
     meta = {"run_id": run_id, "model": model, "method_version": method_version, "search_mode": search_mode, "mode": mode}
-    obj, problem = _parse(text)
+    obj, problem, prose_before_json = _parse(text)
     if problem is None and not isinstance(obj, dict):
         problem = "the final message is not a JSON object"
     over: list[dict[str, Any]] = []
@@ -639,4 +652,4 @@ def check_output(
     errors = contract.validate_checked_output(checked)
     if errors:
         raise CheckerError("; ".join(errors[:5]))
-    return CheckResult(checked, ck.quote_redacted, ck.cut_to_limit)
+    return CheckResult(checked, ck.quote_redacted, ck.cut_to_limit, prose_before_json)

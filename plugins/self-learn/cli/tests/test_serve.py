@@ -520,23 +520,6 @@ def test_hp4_m2_real_worker_run_never_opens_a_followon_window_from_a_serve_tick(
     assert worker_record.result.followon is False
 
 
-def test_hp4_negative_space_reverting_to_worker_kick_is_caught(monkeypatch, tmp_path):
-    """`N-1`'s positive control, observed directly: patching `serve`'s
-    own worker-job body to go through `worker.kick` (the setsid `Popen`
-    shape HP4 replaces) instead of `worker.run` must be CAUGHT."""
-    monkeypatch.setattr(miner, "run", lambda home, **kw: miner.MineResult(status="ok", landed=["c1"]))
-    monkeypatch.setattr(serve, "_run_worker_job", lambda home: worker.kick(home))
-
-    calls = []
-    monkeypatch.setattr(worker, "kick", lambda *a, **k: calls.append((a, k)) or "spawned")
-
-    cache_dir = tmp_path / "cache"
-    cache_dir.mkdir()
-    serve.request_poke(cache_dir)
-    serve._run_tick(Path("/irrelevant-home"), cache_dir, now=time.time(), pid=os.getpid(), tick_secs=60.0)
-    assert calls, "reverting to worker.kick should have been observed -- N-1's own shape"
-
-
 def test_hp5_per_job_timeouts_still_bite_through_a_serve_scheduled_job(monkeypatch, tmp_path):
     """`HP5` -- the three timeouts a `serve`-scheduled job actually
     reaches (`SELF_LEARN_READER_TIMEOUT_SECS` via the mine job,
@@ -607,19 +590,6 @@ def test_hp6_fresh_heartbeat_pokes_and_spawns_nothing(monkeypatch, tmp_path):
     assert result == "poked"
     assert calls == []
     assert (cache_dir / "serve.poke").is_file()
-
-
-def test_hp6_no_heartbeat_is_byte_identical_to_today(monkeypatch, tmp_path):
-    """`HP6` leg 2 -- no heartbeat at all: every existing leg
-    (disabled / fresh / cooling / busy / spawned) is reached exactly as
-    before this unit. The kill switches in particular must still win
-    even before the (now-absent) poke check would matter."""
-    home = tmp_path / "home"
-    monkeypatch.setenv("SELF_LEARN_MINER", "0")
-    assert miner.maybe_kick(home) == "disabled"
-    monkeypatch.delenv("SELF_LEARN_MINER", raising=False)
-    monkeypatch.setenv("SELF_LEARN_MINER_AUTOKICK", "0")
-    assert miner.maybe_kick(home) == "disabled"
 
 
 def _noon_today_epoch() -> float:

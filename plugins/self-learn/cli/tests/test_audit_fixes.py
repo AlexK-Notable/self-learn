@@ -179,7 +179,7 @@ def seed_routed_with_followup(env, rid="lrn-0000aaaa"):
 def test_graduation_retires_followup_from_open_list_with_warning(env, capsys):
     rid = seed_routed_with_followup(env)
     capsys.readouterr()
-    assert cli.main(["graduate", rid]) == 0
+    assert cli.main(["retire", rid, "--covered-by", "skill-md:canon"]) == 0
     err = capsys.readouterr().err
     assert "open follow-up" in err and "successor" in err
     assert open_followups(env.home) == []
@@ -187,7 +187,7 @@ def test_graduation_retires_followup_from_open_list_with_warning(env, capsys):
 
 def test_set_follow_up_refuses_non_routed_status(env):
     rid = seed_routed_with_followup(env)
-    assert cli.main(["graduate", rid]) == 0
+    assert cli.main(["retire", rid, "--covered-by", "skill-md:canon"]) == 0
     record = Record.from_path(
         env.bucket / "resolved" / f"{rid}.md"
     )

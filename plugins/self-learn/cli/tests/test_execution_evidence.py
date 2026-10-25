@@ -193,7 +193,6 @@ _THREADED_VERBS = (
     "undefer",
     "reopen",
     "retire",
-    "graduate",
     "supersede",
     "note",
     "followup-done",
@@ -228,7 +227,7 @@ def _invoke_threaded_verb(home, verb: str):
     elif verb == "reopen":
         verbs.reject(home, rid, no_push=True)
         result = verbs.reopen(home, rid, no_push=True, execution=ref)
-    elif verb in {"retire", "graduate"}:
+    elif verb in {"retire"}:
         verbs.route(home, rid, dest="skill-md", no_push=True)
         result = getattr(verbs, verb)(
             home, rid, covered_by="skill-md:s", no_push=True, execution=ref

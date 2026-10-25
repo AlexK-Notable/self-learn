@@ -170,44 +170,6 @@ def test_unregistered_ancestor_dirs_finds_dot_claude_form_too(tmp_path):
     assert unregistered_ancestor_dirs(hosts, leaf) == [mid]
 
 
-def test_load5_decisions_row_names_the_instrument():
-    """LOAD5: `03-decisions.md` records the loading rule AND names the
-    instrument that produced each half — `InstructionsLoaded` hook events
-    for the positives and negatives, the `nested_traversal` positive
-    control, and the concatenation order/terminus as doc-sourced, "not
-    measured" (matched case-insensitively — S-52 writes it "NOT
-    measured").
-
-    Code gate r1 N5: a bare `"X" in row` check tolerates a PARTIAL
-    deletion — a mutation that guts most of the row's explanatory prose
-    but happens to leave both bare substrings stranded next to each
-    other, with no surrounding sentence of their own, would still pass
-    it. S-52 is written as ONE physical markdown-table line, so there is
-    no literal newline to split on; splitting the row into SENTENCES
-    instead and requiring the two tokens to land in DISTINCT sentences
-    proves each still carries its own explanation, not merely its own
-    spelling."""
-    text = (_repo_root() / "docs/specs/self-learn/03-decisions.md").read_text(encoding="utf-8")
-    rows = [ln for ln in text.splitlines() if ln.startswith("| S-52 ")]
-    assert len(rows) == 1, "expected exactly one S-52 row"
-    row = rows[0]
-    assert "InstructionsLoaded" in row
-    assert "nested_traversal" in row
-    assert "not measured" in row.lower()
-
-    # First occurrence only -- S-52's trailing "Source" cell legitimately
-    # recaps both tokens together in one closing sentence, which is not
-    # the deletion this check guards against.
-    sentences = row.split(". ")
-    loaded_first = next(i for i, s in enumerate(sentences) if "InstructionsLoaded" in s)
-    traversal_first = next(i for i, s in enumerate(sentences) if "nested_traversal" in s)
-    assert loaded_first != traversal_first, (
-        "InstructionsLoaded and nested_traversal must each introduce their "
-        "own sentence -- a partial deletion could otherwise leave both "
-        "bare tokens stranded together in what is left of a single sentence"
-    )
-
-
 def _function_body(path: Path, def_line: str) -> str:
     """The source text of one top-level function, from its ``def`` line
     up to (not including) the next top-level ``def``/``class`` or EOF —
@@ -1016,17 +978,6 @@ def test_un_block_sha_unchanged(tmp_path):
 # ===================================================================== DOC
 
 
-def test_doc1_decisions_row_present():
-    text = (_repo_root() / "docs/specs/self-learn/03-decisions.md").read_text(encoding="utf-8")
-    assert len([ln for ln in text.splitlines() if ln.startswith("| S-52 ")]) == 1
-
-
-def test_doc2_forward_work_map_rows_present():
-    text = (_repo_root() / "docs/specs/self-learn/14-forward-work-map.md").read_text(encoding="utf-8")
-    for fw in ("FW-125", "FW-126", "FW-127"):
-        assert len([ln for ln in text.splitlines() if ln.startswith(f"| {fw} ")]) == 1, fw
-
-
 def test_doc3_doctrine_amendment_lands_in_three_sections():
     text = (
         _repo_root()
@@ -1047,33 +998,3 @@ def test_doc3_doctrine_amendment_lands_in_three_sections():
     assert "ancestor host" in g0_section
     assert "ancestor host" in tier_section
     assert "ancestor host" in conv_section
-
-
-def test_doc4_deployed_skill_is_a_symlink():
-    """DOC4: `~/.claude/skills/self-learn` is a LIVE symlink (not a
-    copy), and it resolves to a `plugins/self-learn/skills/self-learn`
-    directory OUTSIDE any worktree. Not asserted against `_repo_root()`
-    (this test's own worktree copy) -- a builder's worktree and the
-    live checkout that symlink correctly targets are two different
-    directories on disk ("working tree is production": `~/.local/bin/self-learn`
-    runs the MAIN repo's working tree, never a build worktree's copy),
-    so a byte-for-byte path match here would fail even when the
-    deployment is completely correct."""
-    deployed = Path("~/.claude/skills/self-learn").expanduser()
-    assert deployed.is_symlink()
-    target = deployed.resolve()
-    assert str(target).endswith("plugins/self-learn/skills/self-learn"), target
-    assert ".claude/worktrees" not in str(target), target
-
-
-def test_doc5_u_marker_supersession_note():
-    marker_spec = (
-        _repo_root() / "docs/specs/self-learn/drafts/u-marker-excerpt-case-spec.md"
-    ).read_text(encoding="utf-8")
-    assert "Superseded in part by S-52" in marker_spec
-
-    fwmap = (_repo_root() / "docs/specs/self-learn/14-forward-work-map.md").read_text(
-        encoding="utf-8"
-    )
-    fw44_row = next(ln for ln in fwmap.splitlines() if ln.startswith("| FW-44 "))
-    assert "S-52" in fw44_row

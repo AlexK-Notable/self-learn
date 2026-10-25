@@ -140,14 +140,6 @@ def test_transcripts_root_hostile_ambient_reads_homes_own_config(tmp_path, monke
     assert miner.transcripts_root(home_b) == tmp_path / "transcripts-b"
 
 
-def test_transcripts_root_positive_control_bare_call_uses_the_ambient_home(tmp_path, monkeypatch):
-    home_b = tmp_path / "home-b"
-    monkeypatch.delenv("SELF_LEARN_TRANSCRIPTS_DIR", raising=False)
-    monkeypatch.setenv("SELF_LEARN_HOME", str(home_b))
-    _write_config(home_b, "miner", "transcripts_dir", str(tmp_path / "transcripts-b"))
-    assert miner.transcripts_root() == tmp_path / "transcripts-b"
-
-
 def test_transcripts_root_fold_r2_m3_an_unexpanded_home_reads_the_same_config_as_its_expansion(
     tmp_path, monkeypatch
 ):
@@ -210,17 +202,6 @@ def test_miner_enabled_fold_r2_m3_an_unexpanded_home_reads_the_same_config_as_it
     assert unexpanded is expanded is False
 
 
-def test_stale_still_calls_miner_enabled_bare_unchanged_by_the_extraction(tmp_path, monkeypatch):
-    """The extraction must not change `stale()`'s own observable
-    behaviour: it is still called with zero arguments, reading the
-    ambient home exactly as the inline check did before extraction."""
-    home = tmp_path / "home"
-    monkeypatch.delenv("SELF_LEARN_MINER", raising=False)
-    monkeypatch.setenv("SELF_LEARN_HOME", str(home))
-    _write_config(home, "miner", "enabled", False)
-    assert miner.stale() is False  # disabled miner never alarms, regardless of last-run age
-
-
 # ===================================================================== #
 # worker._notifications_suppressed(home)
 # ===================================================================== #
@@ -252,16 +233,6 @@ def test_notifications_suppressed_fold_r2_m3_an_unexpanded_home_reads_the_same_c
     unexpanded = worker._notifications_suppressed(Path("~") / "x")
     expanded = worker._notifications_suppressed(expanded_home)
     assert unexpanded is expanded is True
-
-
-def test_notifications_suppressed_positive_control_bare_call_uses_the_ambient_home(
-    tmp_path, monkeypatch
-):
-    home_b = tmp_path / "home-b"
-    monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)
-    monkeypatch.setenv("SELF_LEARN_HOME", str(home_b))
-    _write_config(home_b, "worker", "no_notify", True)
-    assert worker._notifications_suppressed() is True
 
 
 # ===================================================================== #

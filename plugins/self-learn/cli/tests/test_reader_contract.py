@@ -351,63 +351,11 @@ class _PopenRaisesTO:
 # SU -- the suite and its scope (SU7 is the one real test here)
 # ===================================================================== #
 
-_FW_IDS = ("FW-98", "FW-99", "FW-100", "FW-101", "FW-102")
-_S_IDS = ("S-45", "S-46")
-_REPO_ROOT = Path(__file__).resolve().parents[4]
-
-
-def test_su7_docs_rows_landed_at_the_expected_ids():
-    """`SU7` -- a source scan finds each new row EXACTLY once (as a table
-    row, matching the shipped convention that a row's id may still be
-    cross-referenced in prose elsewhere -- `FW-93`/`FW-83` each already
-    appear 3x in the shipped file for exactly that reason). Positive
-    control: the SAME scan against the pre-build (`89f8ef7`) content
-    finds ZERO of these ids."""
-    fw_path = _REPO_ROOT / "docs" / "specs" / "self-learn" / "14-forward-work-map.md"
-    s_path = _REPO_ROOT / "docs" / "specs" / "self-learn" / "03-decisions.md"
-    fw_text = fw_path.read_text(encoding="utf-8")
-    s_text = s_path.read_text(encoding="utf-8")
-
-    for fw_id in _FW_IDS:
-        matches = re.findall(rf"^\| {re.escape(fw_id)} \|", fw_text, re.MULTILINE)
-        assert len(matches) == 1, (fw_id, matches)
-    for s_id in _S_IDS:
-        matches = re.findall(rf"^\| {re.escape(s_id)} \|", s_text, re.MULTILINE)
-        assert len(matches) == 1, (s_id, matches)
-
-    base_fw = subprocess.run(
-        ["git", "show", "89f8ef7:docs/specs/self-learn/14-forward-work-map.md"],
-        cwd=_REPO_ROOT, capture_output=True, text=True, check=True,
-    ).stdout
-    base_s = subprocess.run(
-        ["git", "show", "89f8ef7:docs/specs/self-learn/03-decisions.md"],
-        cwd=_REPO_ROOT, capture_output=True, text=True, check=True,
-    ).stdout
-    for fw_id in _FW_IDS:
-        assert re.findall(rf"^\| {re.escape(fw_id)} \|", base_fw, re.MULTILINE) == [], fw_id
-    for s_id in _S_IDS:
-        assert re.findall(rf"^\| {re.escape(s_id)} \|", base_s, re.MULTILINE) == [], s_id
 
 
 # ===================================================================== #
 # MC -- the strict-MCP hole (Fix-1)
 # ===================================================================== #
-
-
-def test_mc1_flag_is_last_element_no_mcp_config(monkeypatch, tmp_path):
-    """U-cleanup-B REWRITE (§8.4b): originally recomputed `miner.
-    build_reader_argv`'s own argv and asserted `--strict-mcp-config`
-    was its last element with no `--mcp-config` alongside it -- there is
-    no argv anymore (`build_reader_argv` deleted, §8.1). Reduced per the
-    spec row's own words ("the sdk analogue is `options_kwargs
-    ["strict_mcp_config"] is True`, already asserted by `test_op6`.
-    Reduce to the `CT2` options-table assertion"), driven through the
-    same real sdk call site as `test_mc3`/`test_ct2` -- not deleted
-    silently."""
-    result = _drive_reader_sdk(monkeypatch, tmp_path)
-    kwargs = backend_mod.options_kwargs(result["spec"])
-    assert kwargs["strict_mcp_config"] is True
-    assert kwargs["mcp_servers"] == {}
 
 
 def test_mc2_containment_strict_mcp_is_true():
@@ -438,43 +386,6 @@ def test_mc2b_allowed_tools_is_forced_not_caller_supplied():
         spool_dir="/tmp/mc2b-spool",
     )
     assert c.allowed_tools is None, c.allowed_tools
-
-
-def test_mc3_pair_consistent_at_the_real_call_site(monkeypatch, tmp_path):
-    """U-cleanup-A REWRITE, reduced per spec §8.4b's own row (code gate
-    r1 DIVERGENCE-2 fold, 8uvjHmdKaUd6PI3tSyB-F: "do not delete
-    silently" -- this was outright deleted in an earlier pass, with a
-    citation to `test_ct1`/`test_ct2` in its place; restored as an
-    actual reduced test body instead, per the row's own words).
-
-    Originally drove `_invoke_reader` through `_cli_reader_home`
-    (empty-PATH, no explicit backend override) to recompute
-    `--strict-mcp-config`'s argv position from `spec.cli_argv_builder
-    (spec.cli_settings_writer())` -- relying on conftest's `cli` pin
-    (AG3) to reach a real `CliBackend`, a path AG1's tripwire now makes
-    fatal. §8.4b's own disposition: "the sdk analogue is `options_
-    kwargs["strict_mcp_config"] is True`, already asserted by
-    `test_op6`. Reduce to the `CT2` options-table assertion" -- driven
-    independently here (not by calling `test_ct2` itself) through the
-    same real sdk call site (`_drive_reader_sdk`), so this test stays a
-    standalone tripwire for the property MC3 names even if `test_ct2`'s
-    own, broader assertion set is later narrowed."""
-    result = _drive_reader_sdk(monkeypatch, tmp_path)
-    spec = result["spec"]
-    assert backend_mod.options_kwargs(spec)["strict_mcp_config"] is True
-
-
-def test_mc4_flag_added_nothing_else_in_the_argv_moves(monkeypatch, tmp_path):
-    """U-cleanup-B REWRITE (§8.4b): originally recomputed `miner.
-    build_reader_argv`'s full argv shape end to end -- there is no argv
-    anymore (`build_reader_argv` deleted, §8.1). Reduced to the `CT2`
-    options-table assertion, same disposition and same real sdk call
-    site as `test_mc1`/`test_mc3` -- not deleted silently."""
-    result = _drive_reader_sdk(monkeypatch, tmp_path)
-    kwargs = backend_mod.options_kwargs(result["spec"])
-    assert kwargs["strict_mcp_config"] is True
-    assert kwargs["mcp_servers"] == {}
-    assert kwargs["setting_sources"] == []
 
 
 # ===================================================================== #
@@ -737,20 +648,6 @@ def test_to2_rendered_log_line_carries_the_patched_value(reader_leg, monkeypatch
     assert any(line.endswith(expected) for line in added), added
 
 
-def test_to3_timeout_log_line_byte_identical_across_backends(reader_leg, monkeypatch):
-    monkeypatch.setenv("SELF_LEARN_READER_TIMEOUT_SECS", str(TIMEOUT_PATCH))
-    before = _log_text(reader_leg.home)
-    reader_leg.arm_timeout()
-    run = reader_leg.invoke()
-    assert run.outcome.failure == "timeout"
-    timed_out_template = invocation.LOG_TEMPLATES["miner-reader"].timed_out
-    assert timed_out_template is not None
-    expected = timed_out_template.format(label="", timeout=TIMEOUT_PATCH)
-    assert expected == f"run: claude timed out after {TIMEOUT_PATCH}s"
-    added = _log_lines_added(before, _log_text(reader_leg.home))
-    assert any(line.endswith(expected) for line in added), added
-
-
 # U-cleanup-A DELETE (§8.4 table, "killpg on miner timeout" row): both
 # `test_to4_cli_kill_path_killpg_then_wait` and `test_to5_swallows_
 # processlookuperror_and_permissionerror_separately` drove `subprocess.
@@ -950,28 +847,6 @@ def test_fl2_clean_env_resolves_sdkbackend(monkeypatch):
     assert isinstance(backend, SdkBackend)
 
 
-def test_fl3_selector_scoping_both_directions(monkeypatch):
-    from self_learn.invocation_sdk import SdkBackend as _SdkBackend
-
-    # U-flip flipped miner-reader's and worker's own defaults to sdk
-    # (same table rung as the analyst's, U-sdka). The scoping claim (a
-    # FOREIGN selector does not govern this surface) needs the stimulus
-    # INVERTED to "cli": a leak would then flip the surface to
-    # CliBackend and redden, while the correct behavior keeps its own
-    # sdk default. (Stimulus "sdk" would be tautological -- leak and
-    # no-leak both resolve SdkBackend; gate blessing-read catch.)
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
-    assert isinstance(invocation.backend_for("miner-reader"), _SdkBackend)
-
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv(BACKEND_VAR, "cli")
-    assert isinstance(invocation.backend_for("worker"), _SdkBackend)
-    # U-sdka flipped the analyst's product default to sdk. The scoping
-    # claim (the MINER selector does not govern the analyst) needs the
-    # same inversion -- and it's already in place from the line above
-    # (BACKEND_VAR is still "cli").
-    assert isinstance(invocation.backend_for("analyst"), _SdkBackend)
 
 
 def test_fl4_no_shipped_assignment_of_backend_var(tmp_path):

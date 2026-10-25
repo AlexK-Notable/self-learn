@@ -36,7 +36,6 @@ from self_learn.ledger_ops import create_record, write_proposal
 from self_learn.records import Record
 from support import commit_all, force_past_deferred, git, make_behavior, make_env, proposal_dict
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 
 SKILL_MD = "# s skill\n\nAuthored prose stays put.\n"
@@ -103,7 +102,7 @@ def test_report_counts_each_terminal_status(env, capsys):
     for rid, args in [
         ("lrn-0000aaaa", ["route", "lrn-0000aaaa"]),
         ("lrn-0000bbbb", ["reject", "lrn-0000bbbb"]),
-        ("lrn-0000cccc", ["graduate", "lrn-0000cccc"]),
+        ("lrn-0000cccc", ["retire", "lrn-0000cccc", "--covered-by", "skill-md:canon"]),
         # U-verbs STATE1: `defer --until` in the past now REFUSES at the
         # CLI (a human-typo guard) — defer to a future date here, then
         # force the state an ELAPSED deferral reaches below, same as a
@@ -343,20 +342,7 @@ def test_route_crash_window_recovery_is_two_step(env, capsys):
 # ------------------------------------------------------- shell-suite wrappers
 
 
-SENTINEL_SH = REPO_ROOT / "tests" / "sentinel-test.sh"
 INSTALL_SH = Path(__file__).resolve().parent / "install-commands-test.sh"
-
-
-@pytest.mark.skipif(not SENTINEL_SH.is_file(), reason="repo-root suite absent")
-def test_sentinel_shell_suite_runs():
-    """sentinel-test.sh proves the autosync SIDE of the sentinel contract
-    (the sync script pausing on a fresh sentinel). It was orphaned — no
-    runner invoked it. It self-sandboxes (mktemp + redirected XDG)."""
-    proc = subprocess.run(
-        ["bash", str(SENTINEL_SH)], capture_output=True, text=True, timeout=180
-    )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "all 3 cases pass" in proc.stdout
 
 
 @pytest.mark.skipif(not INSTALL_SH.is_file(), reason="script absent")

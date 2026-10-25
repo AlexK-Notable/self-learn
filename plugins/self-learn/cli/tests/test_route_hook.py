@@ -283,7 +283,7 @@ class TestHookRollback:
         # M3-4 names graduation too — there is no section to regenerate,
         # so removal cannot wait for a recompile that never comes.
         script, rel = self.seed_routed(env)
-        result = verbs.graduate(env.home, RID)
+        result = verbs.retire(env.home, RID, covered_by="skill-md:canon")
         assert not script.exists()
         assert env.host_subject() == f"self-learn: apply {RID} → {rel} (hook removed)"
 

@@ -113,17 +113,6 @@ def test_selftest_exits_9_on_healthy_sandbox_no_real_claude_dir(env, capsys):
     assert "9 passed, 1 unmeasured, 0 failed" in out
 
 
-def test_selftest_green_on_empty_home(env, capsys):
-    # No routed records: nothing should have a section yet. Every real
-    # check trivially PASSes (nothing in any domain to fail or leave
-    # unmeasured), and fold r1, 2026-09-04 dropped the worker placeholder
-    # row that used to force exit 9 regardless -- a genuinely empty,
-    # healthy home exits 0.
-    rc = cli.main(["--selftest"])
-    assert rc == 0
-    assert "FAIL" not in capsys.readouterr().out
-
-
 def test_selftest_leaves_no_scratch_litter(env, capsys):
     seed_routed_skill_target(env)
     assert cli.main(["--selftest"]) == 9

@@ -126,7 +126,6 @@ __all__ = [
     "heartbeat",
     "hold",
     "is_live",
-    "release",
     "sentinel_line",
     "sentinel_path",
 ]
@@ -368,8 +367,3 @@ def heartbeat(path: Path | None = None) -> bool:
         return False
     os.utime(path, None)
     return True
-
-
-def release(hold: SentinelHold) -> bool:
-    """Function-form of :meth:`SentinelHold.release`."""
-    return hold.release()

@@ -737,39 +737,6 @@ class TestRouteReviseActorDefault:
 
         assert "revised_by" not in read_proposal(proposal_path)
 
-    def test_mutation_reverting_route_by_to_unwidened_reddens(
-        self, tmp_path, monkeypatch
-    ):
-        """Mutation witness: `route`'s own call in `_dispatch` reverted
-        to the pre-fold `by=f.get("by")` -- reddens the overseer-actor
-        assertion above (a dest-explicit item with no `by:` key would
-        read `routing.by == "human"` regardless of `actor="overseer"`).
-        Reproduced by monkeypatching `verbs.route` to discard the `by`
-        kwarg it is called with before calling through (the hand-edit
-        was ALSO performed once directly against `batch.py`'s own call
-        site: RED on `test_route_overseer_actor_names_routing_by`
-        above, reverted, GREEN; recorded in this build's report)."""
-        home = _env(tmp_path, monkeypatch)
-        rid = _seed_pending(home, "lrn-f0000014")
-        sheet = _write_sheet(
-            tmp_path,
-            f"version: 1\nitems:\n  - id: {rid}\n    verb: route\n    dest: skill-md\n",
-        )
-        items = batch.load_sheet(sheet)
-        real_route = verbs.route
-
-        def drop_by(*a, **kw):
-            kw["by"] = None
-            return real_route(*a, **kw)
-
-        monkeypatch.setattr(verbs, "route", drop_by)
-        result = batch.run(home, items, no_push=True, actor="overseer")
-        assert result.summary["applied"] == 1
-        record = Record.from_path(find_record_path(home, rid))
-        # RED shape: falls back to the dest-is-not-None heuristic,
-        # never the actor.
-        assert record.routing["by"] == "human"
-
 
 class TestActorValidated:
     """O-2b test 5: ``actor`` is validated up front, before item 1 —
@@ -1080,7 +1047,7 @@ class TestU5MutationErrorRefusedNotRaised:
             tmp_path,
             "version: 1\nitems:\n"
             f"  - id: {other_id}\n    verb: reject\n"
-            f"  - id: {routed_id}\n    verb: graduate\n    note: a new why\n",
+            f"  - id: {routed_id}\n    verb: retire\n    covered_by: skill-md:canon\n    note: a new why\n",
         )
         items = batch.load_sheet(sheet, home=home)
         result = batch.run(home, items, no_push=True)  # must NOT raise

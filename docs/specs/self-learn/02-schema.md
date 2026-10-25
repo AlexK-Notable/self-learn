@@ -462,8 +462,8 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   nothing branches on the display word. A legacy record still carrying the
   bare literal `superseded_by: "canon"` is read as a retirement whose
   covering surface is unrecorded — never invented, never blocking the read.
-  `self-learn graduate <id>` stays callable, unchanged, for one release as a
-  hidden alias for `self-learn retire <id> --covered-by <surface>`;
+  The `graduate` alias was removed on 2026-10-24; use
+  `self-learn retire <id> --covered-by <surface>`;
   `self-learn supersede`/`--supersedes` are untouched by this rename (they
   were never the ambiguous word). `reopen` widens to admit a wrong
   **retire** back to `pending`; it stays refused for a **replaced** record,
@@ -1791,6 +1791,37 @@ a new line naming the line it amends.
   words typed into the overseer conversation, where no transcript line
   exists at record time — `<obs-id>` is the `presented` observation the
   reply answers). Dedupe key: `(source.message_ref, verbatim)`.
+  On a new write, resolve a `transcript:` ref using the ledger's configured
+  `refs.transcript_roots` (the same roots as steward evidence packs). If it
+  resolves, its evidence role must be `user`; any other role is refused with
+  `StatementUsageError` naming the role. Exception: a `tool_result` linked by
+  `tool_use_id` to an earlier assistant `AskUserQuestion` call with the same
+  question texts and option labels is accepted only for a whitespace-normalized
+  exact substring of a typed Other answer, a `kind: text | number` answer, an
+  added `annotations.notes` field, or the freeform result `response`, excluding
+  clicked labels and all other tool text.
+  Case and punctuation are preserved; separate answers, notes and responses
+  are never joined. For overlapping multi-select labels retain only the suffix
+  left by every possible parsing of clicked-label prefixes. Notes do not
+  require a string answer. UI-only question metadata may differ between call
+  and result. Refuse SDK-driven results/sessions (rule 6's `promptSource: sdk`
+  or an `entrypoint` starting with `sdk`), system-supplied results, calls whose
+  input already has `answers` or `annotations`, and auto-resolved results with
+  `afkTimeoutMs`; apply rule 10's `provenance.agent_written` to each entire
+  typed field, including the herdr-send sweep, before accepting its substring.
+  A refused multiple-choice result names its role and says the words were not
+  typed by the user. Use refs' own line reader with strict UTF-8 validation;
+  unreadable, damaged, malformed-message or corrupt-target transcripts and
+  files disappearing/changing between reads produce a named
+  `StatementUsageError`, never an implicit acceptance or a transcript traceback.
+  A session absent at initial lookup or an out-of-range line remains accepted.
+  Resolve/check evidence outside the commit lock, deferring a refusal until
+  after locked deduplication: a concurrent duplicate still returns its existing
+  id. An optimistic duplicate lookup is confirmed under the lock before
+  skipping transcript I/O. `conversation:` refs are unaffected. Existing
+  statements are never rewritten or refused on re-addition, including steward
+  recovery after an owner commit.
+
 - `scope.level` ∈ `user | project`; `scope.host` is a registered host path
   when `project`.
 - `uncertainty` is the recorder's doubt about what the words *mean*, kept
@@ -2074,7 +2105,8 @@ tool call as its name and the string values of its input, an attachment's
 4. `type: user` with `isMeta` or `isCompactSummary` true → `relay`;
 5. `type: user` with an `origin` object: `origin.kind: human` → `user`; any
    other kind (`task-notification`, `peer`, `coordinator`, `channel`, …) → `relay`;
-6. `type: user`, no `origin`, `promptSource` `system` or `sdk` → `relay`;
+6. `type: user`, no `origin`, `promptSource` `system` or `sdk`, or an
+   `entrypoint` starting with `sdk` → `relay` (shared SDK marker check);
 7. `type: user`, no `origin`, text starting with a harness envelope
    (`<local-command-stdout>`, `<local-command-stderr>`, `<bash-stdout>`,
    `<bash-stderr>`, `<task-notification>`, `<system-reminder>`,
@@ -2766,7 +2798,7 @@ Run           = { "contract": "miner-shadow-run/1", "run_id": str, "mode": "test
 *Amended by R2 (2026-10-19):* the session engine adds optional keys, each
 validated when present (`contract.RUN_OPTIONAL_KEYS`,
 `SESSION_ROW_OPTIONAL_KEYS`): `"preview": bool` (a `mine run --preview`);
-`"counts": { "quote_redacted", "cut_to_limit", "checker_errors",
+`"counts": { "quote_redacted", "cut_to_limit", "prose_before_json", "checker_errors",
 "call_failures", "bad_output", "deferred": int, "flag_modes": { mode: int } }`;
 `"judged_uuids": { "state": "ok" | "locked" | "rebuilt" | "damaged",
 "loaded": int, "aside"?: str | null, "pruned"?: int, "added"?: int,
@@ -2890,6 +2922,9 @@ lesson becomes a pending record, its evidence items `{ref, quote,
 session, ts: ref.entry_ts, origin}` (a resurfaced copy's also carry
 `resurfaces: <rejected id>`, R2 fix round 7); R2 lands it (`12-transcript-miner.md`
 §13.3).
+
+The offline comparison module `mining/compare.py` and its command were removed
+on 2026-10-24; the following records the historical output format.
 
 **The comparison — `miner-compare/1`** (`runs/<run_id>/compare/report.json`,
 written by `python -m self_learn.mining.compare report`, which writes only

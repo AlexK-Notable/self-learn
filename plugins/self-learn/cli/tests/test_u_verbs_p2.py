@@ -299,7 +299,7 @@ class TestRER6GraduateAndSupersedeRetireReference:
         ref_path = r1.compile_result.path
         assert f"— {rid}" in ref_path.read_text(encoding="utf-8")  # positive control
 
-        verbs.graduate(env2.home, rid, no_push=True)
+        verbs.retire(env2.home, rid, covered_by="skill-md:canon", no_push=True)
         assert f"— {rid}" not in ref_path.read_text(encoding="utf-8")
 
     def test_supersede_retires_reference(self, env2):
@@ -320,6 +320,7 @@ class TestRER6GraduateAndSupersedeRetireReference:
 class TestRER7ReferenceRetirementWritesCompileRecord:
     def test_reference_retirement_writes_compile_record(self, env2):
         import hashlib
+        from self_learn import compiled
 
         rid = "lrn-0000aaaa"
         _keep_the_shelf(env2.home)
@@ -328,16 +329,25 @@ class TestRER7ReferenceRetirementWritesCompileRecord:
         commit_all(env2.home, "pending")
         r1 = verbs.route(env2.home, rid, dest="reference", no_push=True)
         ref_path = r1.compile_result.path
+        before_removal = ref_path.read_bytes()
+        assert rid.encode() in before_removal
 
-        verbs.graduate(env2.home, rid, no_push=True)
+        verbs.retire(env2.home, rid, covered_by="skill-md:canon", no_push=True)
         post_removal_bytes = ref_path.read_bytes()
+        assert post_removal_bytes != before_removal
+        assert rid.encode() not in post_removal_bytes
         post_removal_sha = hashlib.sha256(post_removal_bytes).hexdigest()
 
         compiled_dir = env2.home / "compiled"
         matches = []
         for f in compiled_dir.glob("*.yaml"):
-            text = f.read_text(encoding="utf-8")
-            if "region: reference" in text and post_removal_sha in text:
+            data = compiled.load_record(env2.home, f.stem)
+            key = compiled.region_key(data["host"], ref_path, "reference")
+            entry = compiled.entry_for(data, key, region="reference")
+            # The old file can contain the post-removal hash as its
+            # based_on_sha256. Require this target's CURRENT hash and writer.
+            if (entry is not None and entry["sha256"] == post_removal_sha
+                    and entry["by"] == f"retire {rid}"):
                 matches.append(f)
         assert matches, (
             "no compiled/<slug>.yaml entry carries the post-removal "
@@ -468,7 +478,7 @@ class TestHOST3NoBulkRetirement:
         an open-paren after a word boundary) still stops the FALSE-GREEN
         direction (a real call never satisfies it into passing) but is
         measurably NOT prose-immune the other way -- a `hosts.py`
-        docstring containing the literal text `graduate(record)` (no
+        docstring containing the literal text `retire(record)` (no
         call anywhere) makes that pattern match too, turning a harmless
         prose edit into a false red. Any TEXT pattern over the file's
         bytes has this failure mode by construction; the fix this unit
@@ -506,7 +516,7 @@ class TestHOST3NoBulkRetirement:
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 name = _call_name(node.func)
-                if name in ("graduate", "supersede"):
+                if name in ("retire", "supersede"):
                     called.add(name)
         assert called == set(), (
             f"hosts.py CALLS {sorted(called)} -- HOST3 forbids bulk "
@@ -516,12 +526,12 @@ class TestHOST3NoBulkRetirement:
     def test_hosts_py_graduate_call_reddens_the_ast_leg(self, tmp_path, monkeypatch):
         """gate r2 m-1's own positive control for the AST leg itself,
         matching M50's spirit but proving the NEW check (not the grep)
-        is what fires: a docstring-only occurrence of `graduate(record)`
+        is what fires: a docstring-only occurrence of `retire(record)`
         must NOT redden the AST leg (prose is inert to it), while an
         ACTUAL call parses as a real `ast.Call` and does."""
         src_with_prose_only = (
             'def host_remove():\n'
-            '    """Explains why not: calling graduate(record) here '
+            '    """Explains why not: calling retire(record) here '
             'would be bulk retirement."""\n'
             '    pass\n'
         )
@@ -530,23 +540,23 @@ class TestHOST3NoBulkRetirement:
             _call_name(node.func)
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
-            and _call_name(node.func) in ("graduate", "supersede")
+            and _call_name(node.func) in ("retire", "supersede")
         }
         assert called == set(), "a docstring mentioning the call must stay clean"
 
         src_with_real_call = (
             'def host_remove():\n'
             '    for r in targets:\n'
-            '        graduate(r)\n'
+            '        retire(r)\n'
         )
         tree2 = ast.parse(src_with_real_call)
         called2 = {
             _call_name(node.func)
             for node in ast.walk(tree2)
             if isinstance(node, ast.Call)
-            and _call_name(node.func) in ("graduate", "supersede")
+            and _call_name(node.func) in ("retire", "supersede")
         }
-        assert called2 == {"graduate"}
+        assert called2 == {"retire"}
 
 
 class TestHOST4BucketPrune:

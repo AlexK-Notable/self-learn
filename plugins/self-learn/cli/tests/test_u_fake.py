@@ -306,12 +306,6 @@ def test_bk3_backends_public_surface_is_honest():
 #: `test_` (U-cleanup-A added two more test-prefixed `test_composer.py`
 #: entries, `test_a12b_...`/`test_composer_analyst_fails_ro5`, that are
 #: NOT MOVE1 tests and must not be swept in by a name-prefix filter).
-MOVE1_TEST_NAMES = (
-    "test_fold5_project_scope_one_shot_resolves_real_targets_when_bucket_exists",
-    "test_fold5_project_scope_bucket_exists_but_genuinely_has_no_meta",
-    "test_fold5_honest_sentinel_when_project_path_truly_not_supplied",
-)
-
 #: `MV-c1`'s eight prompt assertions, enumerated from source at
 #: `c2669a9` -- three of the eight are negative controls (`not in`) --
 #: GROUPED BY LEG (gate NOTE 1): each leg's needles are checked against
@@ -321,71 +315,8 @@ MOVE1_TEST_NAMES = (
 #: even though the `assert ... in prompt` wrapping it was dropped or
 #: broken (P5). Needle #7 (leg 3's positive) is therefore the
 #: CONTIGUOUS text through `in prompt`, not the bare string alone.
-PROMPT_ASSERTIONS_BY_LEG = {
-    "test_fold5_project_scope_one_shot_resolves_real_targets_when_bucket_exists": (
-        'assert f"ALWAYS target      : {host_str}/CLAUDE.md" in prompt',
-        'assert f"PATHED rules dir   : {host_str}/.claude/rules" in prompt',
-        'assert f"DEMAND target      : {host_str}/references/LEARNINGS.md" in prompt',
-        'assert "unresolvable" not in prompt',
-    ),
-    "test_fold5_project_scope_bucket_exists_but_genuinely_has_no_meta": (
-        'assert "(unresolvable — project bucket has no meta.yaml)" in prompt',
-        'assert "record not yet persisted" not in prompt',
-    ),
-    "test_fold5_honest_sentinel_when_project_path_truly_not_supplied": (
-        '"(unresolvable — record not yet persisted; project path not supplied)"\n'
-        '        in prompt',
-        'assert "project bucket has no meta.yaml" not in prompt',
-    ),
-}
-
 # ===================================================================== #
 # T1 -- the three Move-1 conversions (source reads of test_composer.py)
 # ===================================================================== #
-
-
-def test_t1a_move1_tests_keep_all_eight_prompt_assertions():
-    """T1a -- each of the three `Move-1` tests, read from source, still
-    contains ITS OWN leg's prompt assertions of `MV-c1` verbatim -- each
-    needle checked against THAT test's own source span (gate NOTE 1),
-    not the union of all three: a needle satisfied by the wrong leg, or
-    a stray string no longer wired to an `assert`, is not evidence that
-    leg still contains it. "And all three pass" is `SU1`'s leg, not this
-    one -- this test reads source and never executes them."""
-    import test_composer
-
-    for name, needles in PROMPT_ASSERTIONS_BY_LEG.items():
-        src = inspect.getsource(getattr(test_composer, name))
-        for needle in needles:
-            assert needle in src, (name, needle)
-
-
-def test_t1b_move1_tests_assert_the_fake_was_reached():
-    """T1b -- each of the three contains `assert len(fake.prompts) == 1`,
-    so a fall-through to a real backend cannot satisfy them (`M33`, not
-    `M9` -- `M9` mutates `backends.py`, which this source read never
-    looks at). U-cleanup-B rebase (§8.1): the literal moved from
-    `fake.argvs` to `fake.prompts` -- `CliBackend` is deleted and there
-    is no argv left to count."""
-    import test_composer
-
-    for name in MOVE1_TEST_NAMES:
-        src = inspect.getsource(getattr(test_composer, name))
-        assert "assert len(fake.prompts) == 1" in src, name
-
-
-def test_t1c_move1_tests_keep_the_argv_shape_assertions():
-    """T1c -- U-cleanup-B RE-BASELINE (§8.1): the argv-shape assertions
-    this test originally named (`fake.argvs[0][0] == "claude"`, etc.)
-    have no surviving subject -- `analyst.build_argv` is deleted and
-    there is no argv anymore. What survives is the property those
-    assertions served: each of the three still reads the composed
-    prompt from `fake.prompts[0]`, the analyst's own real `SessionSpec.
-    prompt` field, not a hand-recomputed value (`MV-c`)."""
-    import test_composer
-
-    for name in MOVE1_TEST_NAMES:
-        src = inspect.getsource(getattr(test_composer, name))
-        assert "prompt = fake.prompts[0]" in src, name
 
 

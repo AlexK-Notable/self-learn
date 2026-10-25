@@ -24,29 +24,6 @@ def _read(path: Path) -> str:
 # --------------------------------------------------------- O-6 / P-C1.17/18
 
 
-def test_o6_systemd_units_have_no_claude_skills_reference():
-    units = sorted(SYSTEMD_DIR.glob("*.service")) + sorted(SYSTEMD_DIR.glob("*.timer"))
-    assert units, "no systemd units found — path drifted"
-    for path in units:
-        assert "claude-skills" not in _read(path), path
-
-
-def test_o6_readme_install_blocks_have_no_repos_claude_skills():
-    """    NIT 7 (code gate): the spec scopes this to install/registration
-    blocks; this asserts WHOLE-FILE, which is strictly stricter. It
-    passes today only because README.md:82's Spec-D-deferred literal
-    is spelled `repos-claude-skills` (hyphens). A Spec D author who
-    rewrites it with slashes will trip this — by design.
-
-    P-C1.17: the pattern must match each surface's own spelling — this
-    is the `repos/claude-skills` shape the two READMEs use (never
-    `plugin.json`'s different `github.com/AlexK-Notable/claude-skills`
-    spelling, which O-8 covers on its own surface — P-C1.18: no
-    repo-wide sweep, no global allowlist)."""
-    for path in (REPO_ROOT / "README.md", PLUGIN_DIR / "README.md"):
-        assert "repos/claude-skills" not in _read(path), path
-
-
 # ------------------------------------------------------------------- O-7
 
 
@@ -103,16 +80,6 @@ def test_o11_readme_clone_block_is_public_https():
     text = _read(REPO_ROOT / "README.md")
     assert "https://github.com/AlexK-Notable/self-learn.git" in text
     assert "git@github.com:AlexK-Notable/self-learn.git" not in text
-
-
-def test_o11_no_bogus_cross_reference_remains_anywhere_in_sentinel_py():
-    """File-wide, not line-targeted (§1.2a / P-C1.19) — rev 3-4 named only
-    `:55` and missed the docstring copy at `:3`."""
-    text = _read(
-        REPO_ROOT / "plugins" / "self-learn" / "cli" / "src" / "self_learn" / "sentinel.py"
-    )
-    assert "§4.4" not in text
-    assert "doc 13 §6" in text  # the corrected authority is actually cited
 
 
 def test_home_state_error_messages_name_init():

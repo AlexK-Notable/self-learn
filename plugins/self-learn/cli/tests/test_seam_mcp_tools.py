@@ -32,7 +32,7 @@ import pytest
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 from mcp import types as mcp_types
 
-from self_learn import invocation, provider, settings, worker
+from self_learn import invocation, provider, worker
 from self_learn.invocation_sdk import backend as backend_mod
 from self_learn.invocation_sdk import charter as charter_mod
 from self_learn.invocation_sdk import lifecycle as lifecycle_mod
@@ -716,16 +716,6 @@ def test_s9_the_new_surface_resolves_like_the_old_miner(tmp_path, monkeypatch):
     (home / "config.yaml").write_text("models:\n  miner: test-miner-model\n", encoding="utf-8")
     assert provider.model_for("miner-reader", home=home) == "test-miner-model"  # the config is read
     assert provider.model_for("miner-session", home=home) == provider.model_for("miner-reader", home=home)
-
-    # One selector for both miners: the backend lever moves both.
-    setting = settings.by_name("invocation.backend_miner-session")
-    assert setting.env_var == "SELF_LEARN_BACKEND_MINER"
-    assert setting.tier == "C"
-    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
-    with pytest.raises(invocation.BackendUnavailable):
-        invocation.backend_for("miner-session", home=home)
-    with pytest.raises(invocation.BackendUnavailable):
-        invocation.backend_for("miner-reader", home=home)
 
     # Its rows in the seam's tables.
     assert invocation.SELECTOR_FOR_SURFACE["miner-session"] == "MINER"

@@ -276,7 +276,7 @@ def _pending(home: Path, rid: str) -> None:
     commit_all(home, f"seed {rid}")
 
 
-@pytest.mark.parametrize("verb", ["retire", "graduate"])
+@pytest.mark.parametrize("verb", ["retire"])
 @pytest.mark.parametrize("actor", AGENTS)
 def test_an_agent_retire_covered_by_a_shelf_is_refused_by_name_and_a_persons_applies(
     tmp_path, actor, verb
@@ -338,10 +338,9 @@ def test_a_lines_own_by_does_not_lift_the_refusal_and_a_bare_reference_is_refuse
     "line",
     [
         {"verb": "retire", "covered_by": "skill-md:s"},
-        {"verb": "graduate", "covered_by": "claude-md:CLAUDE.md"},
-        {"verb": "graduate"},  # the legacy alias names no surface at all
+        {"verb": "retire", "covered_by": "claude-md:CLAUDE.md"},
     ],
-    ids=["retire-skill-md", "graduate-claude-md", "graduate-legacy"],
+    ids=["retire-skill-md", "retire-claude-md"],
 )
 def test_an_agents_retire_covered_by_a_loaded_surface_applies(tmp_path, actor, line):
     env = make_env(tmp_path)

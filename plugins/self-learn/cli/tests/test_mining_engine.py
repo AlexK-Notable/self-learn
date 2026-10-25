@@ -1826,3 +1826,17 @@ def test_newline_cursor_continues_both_engines(home, root, backend, tmp_path, mo
         fh.write(json.dumps(typed(sid, 8, "next turn", host(tmp_path))) + "\n")
     (part,) = original_walk()
     assert part.start_line == 7 and len(part.lines) == 1 and json.loads(part.lines[0])["uuid"] == f"{sid}-u-8"
+
+
+def test_final_fence_count_reaches_run_contract(home, root, backend, tmp_path):
+    for sid, prefix in (("s1fence-0000", "Summary.\n"), ("s2fence-0000", "")):
+        write_session(root, sid, session_rows(sid, host(tmp_path)))
+        backend.answers[sid] = prefix + "```json\n" + output([lesson()]) + "\n```"
+    result = run(home, preview=True)
+    record = json.loads((run_dir(result) / "run.json").read_text())
+    assert record["totals"]["called"] == 2 and record["totals"]["lessons"] == 2
+    assert record["counts"]["prose_before_json"] == 1
+    contract.load_run(run_dir(result))
+    for invalid in (-1, True, "1"):
+        record["counts"]["prose_before_json"] = invalid
+        assert any("counts.prose_before_json" in e for e in contract.validate_run(record))

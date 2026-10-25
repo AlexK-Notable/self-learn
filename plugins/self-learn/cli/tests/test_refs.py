@@ -290,3 +290,13 @@ def test_compact_provenance_note_is_relay_but_quotations_are_user(as_blocks):
                   {"type": "text", "text": "My own comment beside the note."}], 1)
     assert refs.role_of(mixed) == "user"
     assert refs.role_of(row(marker + body)) == "relay"
+
+
+@pytest.mark.parametrize("marker", [{"promptSource": "sdk"}, {"entrypoint": "sdk-py"}, {"entrypoint": "sdk-cli"}])
+def test_sdk_markers_are_shared_with_statement_authorship(marker):
+    entry = {"type": "user", "message": {"content": "A typed answer."}}
+    assert refs.role_of(entry) == "user"
+    assert not refs.is_sdk(entry)
+    entry.update(marker)
+    assert refs.is_sdk(entry)
+    assert refs.role_of(entry) == "relay"

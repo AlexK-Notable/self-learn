@@ -20,7 +20,6 @@ from typing import Any, Callable, Literal, Protocol
 __all__ = [
     "SURFACES",
     "SELECTOR_FOR_SURFACE",
-    "DEFAULT_BACKEND_FOR_SURFACE",
     "Surface",
     "Containment",
     "containment_rules",
@@ -84,26 +83,6 @@ SELECTOR_FOR_SURFACE: dict[str, str] = {
     "overseer": "OVERSEER",
     "miner-session": "MINER",
 }
-
-#: `Flip-1` (U-sdka, U-flip) -- rung 5 of the backend precedence chain,
-#: per surface. The analyst flipped first (attended, lowest volume, and
-#: the flip IS the F3 containment fix); worker/worker-repair/miner-reader
-#: flip together in this wave (user ruling 2026-08-23: burn-in cancelled,
-#: Lane B full steam). Every value must be a member of
-#: `registry.KNOWN_BACKENDS`. `steward`/`overseer` (2026-09-13, S-18 as
-#: amended) ship directly on `sdk` -- there is no `cli` backend left to
-#: default away from (S-49), so unlike the four above there was never a
-#: burn-in period for these two to flip through.
-DEFAULT_BACKEND_FOR_SURFACE: dict[str, str] = {
-    "worker": "sdk",
-    "worker-repair": "sdk",
-    "miner-reader": "sdk",
-    "analyst": "sdk",
-    "steward": "sdk",
-    "overseer": "sdk",
-    "miner-session": "sdk",
-}
-
 
 # ----------------------------------------------------------- Cont-1 (Sec 3.3)
 

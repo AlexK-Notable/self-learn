@@ -133,7 +133,6 @@ NOT_REPO_TRUTH = {
     # contract (doc 13 §4.4). Never in a repo.
     "sentinel.hold": "XDG cache: the autosync-pause sentinel",
     "sentinel.heartbeat": "XDG cache: the autosync-pause sentinel",
-    "sentinel.release": "XDG cache: the autosync-pause sentinel",
     "sentinel.SentinelHold.release": "XDG cache: the autosync-pause sentinel",
     # $XDG_CACHE_HOME/self-learn/home-<sha>/… — the per-home worker cache
     # (doc 13 §6, H-4): windows, logs, settings, the run's own bookkeeping.

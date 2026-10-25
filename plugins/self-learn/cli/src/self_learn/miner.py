@@ -4277,6 +4277,7 @@ def _run_session_engine(
     counts = {
         "quote_redacted": sum(r.quote_redacted for r in results.values()),
         "cut_to_limit": sum(r.cut_to_limit for r in results.values()),
+        "prose_before_json": sum(r.prose_before_json for r in results.values()),
         "checker_errors": failures.get("checker-error", 0),
         "call_failures": failures.get("call", 0),
         "bad_output": sum(1 for r in results.values() if r.status == "bad-output"),

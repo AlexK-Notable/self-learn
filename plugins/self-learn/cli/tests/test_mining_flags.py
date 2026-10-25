@@ -101,7 +101,7 @@ def test_flag_embedding_failure_lexical_fallback(home):
         provider.embed = lambda texts: (_ for _ in ()).throw(ValueError("synthetic failure"))
         result = flags.flag_rules(index, work(), cwd=Path("/synthetic"), provider=provider)
         assert result.flags and result.flags[0].cosine is None
-        assert result.mode == "lexical-only" and result.note == "embedding failed"
+        assert result.mode == "lexical-only" and result.note == "embedding failed: ValueError"
     finally:
         index.close()
 
@@ -163,5 +163,37 @@ def test_flag_embedding_uses_the_short_interactive_call(home, monkeypatch):
     try:
         result = flags.flag_rules(index, work("unrelated words"), cwd=Path("/synthetic"), provider=provider)
         assert result.mode == "hybrid" and seen == [True]
+    finally:
+        index.close()
+
+
+def test_empty_work_stretches_do_not_poison_embeddings_or_move_flags(home):
+    from self_learn.index.gemini import GeminiEmbedder
+
+    put(home, status="routed")
+    provider = Provider()
+    index = built(home, provider)
+    calls = []
+
+    def strict(texts):
+        # Same local preflight that rejected all six real preview batches.
+        GeminiEmbedder._require_nonempty(texts)
+        calls.append(texts)
+        return [[1.0, 0.0] for _ in texts]
+
+    provider.embed = strict
+    try:
+        positive = flags.flag_rules(index, work("unrelated work"), cwd=Path("/synthetic"), provider=provider)
+        assert positive.mode == "hybrid" and positive.flags[0].cosine == 1.0
+        calls.clear()
+        stretches = [tools.Stretch(0, 1, 1, ""), tools.Stretch(1, 3, 5, "unrelated work"),
+                     tools.Stretch(2, 7, 7, " \n\t"), tools.Stretch(3, 9, 12, "other work")]
+        result = flags.flag_rules(index, stretches, cwd=Path("/synthetic"), provider=provider)
+        assert result.mode == "hybrid" and result.note == ""
+        assert calls == [["unrelated work", "other work"]]
+        assert {(f.after_turn, f.start_line, f.end_line) for f in result.flags} == {(1, 3, 5), (3, 9, 12)}
+        calls.clear()
+        empty = flags.flag_rules(index, [stretches[0], stretches[2]], cwd=Path("/synthetic"), provider=provider)
+        assert empty.mode == "hybrid" and empty.flags == () and calls == []
     finally:
         index.close()
