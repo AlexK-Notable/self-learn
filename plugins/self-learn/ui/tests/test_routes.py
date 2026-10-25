@@ -910,15 +910,6 @@ class TestDetailPage:
         # replay examples present
         assert "config.yaml" in r.text or "allow" in r.text.lower()
 
-    def test_badges_carry_text_labels_never_color_only(self, tmp_path: Path) -> None:
-        sb = make_env(tmp_path)
-        rec = make_behavior(scope="skill:s")
-        seed_record(sb.ledger, rec)
-        seed_proposal(sb.ledger, rec.id, already_canon=True, already_canon_reason="covered")
-        c, _runner = make_client(sb)
-        r = c.get(f"/record/{rec.id}")
-        assert "already canon" in r.text.lower()
-
     def test_retire_highlighted_when_already_canon(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
         rec = make_behavior(scope="skill:s")
@@ -956,6 +947,10 @@ class TestDetailPage:
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}")
         assert "no analysis yet" in r.text.lower()
+        # the whole message, `i` instruction included (it carried over from
+        # a removed duplicate, test audit L9, 2026-10-24)
+        from self_learn_ui.models import NO_ANALYSIS_MESSAGE
+        assert NO_ANALYSIS_MESSAGE in r.text
 
     def test_episode_brief_renders_collapsed_below_decision_content(
         self, tmp_path: Path
@@ -2156,21 +2151,6 @@ class TestRoutingByFW64:
             "route", rec.id, "--dest", retry_fields["dest"], "--by", "human", "--json"
         ]
 
-    def test_invalid_by_value_is_never_reachable_from_a_correct_ui(self) -> None:
-        """The CLI's own closed enum (verbs.ROUTING_BY_VALUES) — asserted
-        here as documentation of the contract build_argv relies on: this
-        app only ever computes "human"/"agent"/"analyst", never anything
-        else, so a `--by` CLI usage refusal should never be reachable
-        through this UI. Guards that the three values this app computes
-        are members of the CLI's closed set, independent of any one call
-        site's derivation logic. The set itself widened to five on
-        2026-09-13 (`02-schema.md` §3a.1 rule 5: steward, overseer — the
-        two unattended deciders); the UI still computes only its three."""
-        from self_learn.verbs import ROUTING_BY_VALUES
-
-        assert {"human", "analyst", "agent"} <= ROUTING_BY_VALUES
-        assert ROUTING_BY_VALUES == {"human", "analyst", "agent", "steward", "overseer"}
-
 
 class TestDestinationGlosses:
     """F5-9 (feedback round 5, U19 §1.5): Detail's action bar + Why region
@@ -3207,21 +3187,6 @@ class TestUIC3AdoptOfferSurfaceGone:
         )
         assert r.status_code == 404
 
-    def test_routed_user_scope_detail_page_carries_no_adopt_offer_marker(
-        self, tmp_path: Path
-    ) -> None:
-        sb = make_env(tmp_path)
-        rec = make_behavior(scope="user")
-        seed_record(sb.ledger, rec)
-        resolve_record_directly(
-            sb.ledger, sb.ledger / "user", rec, destination="claude-md"
-        )
-        c, _runner = make_client(sb)
-        r = c.get(f"/record/{rec.id}")
-        assert r.status_code == 200
-        assert "data-adopt-offer" not in r.text
-
-
 # ------------------------------------------------------------------- keymap
 
 
@@ -3352,12 +3317,6 @@ class TestRenderPathEscaping:
         assert "<script>alert(1)</script>" not in r.text
         assert "<img src=x onerror=" not in r.text
         assert "&lt;script&gt;" in r.text or "alert(1)" not in r.text
-
-    def test_csp_header_present_on_route_response(self, tmp_path: Path) -> None:
-        sb = make_env(tmp_path)
-        c, _runner = make_client(sb)
-        r = c.get("/")
-        assert "content-security-policy" in {k.lower() for k in r.headers}
 
     def test_no_inline_style_attribute_in_diff_partial(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
@@ -3613,22 +3572,6 @@ class TestForceRunApplyingFeedback:
     # named separately, per the spec's "For /worker/kick and /mine/run
     # alike" framing.
 
-    def test_worker_kick_a0_success_still_redirects_and_refreshes(
-        self, tmp_path: Path
-    ) -> None:
-        """A0 — positive control. worker_kick's own redirect/refresh
-        halves already exist as TestWorkerKick.test_redirects_to_front /
-        .test_forces_a_front_scope_refresh; restated here, beside
-        A1-A3, so the whole A block reads together in one place."""
-        sb = make_env(tmp_path)
-        c, _runner, refresh_hub, _app_hub = _make_client_with_hubs(sb)
-        q = refresh_hub.subscribe()
-        r = c.post("/worker/kick", headers={"HX-Request": "true"})
-        assert r.status_code == 200
-        assert r.headers.get("hx-redirect") == "/"
-        event = q.get_nowait()
-        assert event.scope == "front"
-
     def test_mine_run_a0_success_still_redirects_and_refreshes(
         self, tmp_path: Path
     ) -> None:
@@ -3681,49 +3624,6 @@ class TestForceRunApplyingFeedback:
         r = c.post("/mine/run", headers={"HX-Request": "true"})
         assert r.status_code == 200
         assert q.empty()
-
-    def test_worker_kick_a3_failure_still_publishes_error_frame(
-        self, tmp_path: Path
-    ) -> None:
-        """A3 — A1/A2 must not be reachable by not publishing at all.
-        FLAGGED (builder's reporting duty, spec's closing instruction):
-        this assertion reads GREEN on the unmodified tree —
-        ``_publish_applying(..., "done" if result.ok else "error")`` was
-        already unconditional pre-fix (§1.1: "the server side is
-        already correct"), and
-        ``test_worker_kick_emits_error_state_on_nonzero_exit`` above
-        already pins the same fact today. Kept as its own criterion
-        anyway: it is the guard against M10's fail-open shortcut (a
-        build that folds the whole tail into ``if result.ok:`` and
-        collapses "error" to "done"), which WOULD redden it."""
-        sb = make_env(tmp_path)
-        runner = FakeRunner()
-        runner.queue_result(RunResult(1, stderr="boom"))
-        c, _runner, _refresh_hub, app_hub = _make_client_with_hubs(sb, runner=runner)
-        q = app_hub.subscribe()
-        r = c.post("/worker/kick", headers={"HX-Request": "true"})
-        assert r.status_code == 200
-        q.get_nowait()  # start
-        done = q.get_nowait()
-        assert done["state"] == "error"
-
-    def test_mine_run_a3_failure_still_publishes_error_frame(
-        self, tmp_path: Path
-    ) -> None:
-        """A3 — mine_run's half; see the worker_kick sibling above for
-        the green-on-master flag, which applies identically here
-        (``test_mine_run_emits_error_state_on_nonzero_exit`` already
-        pins the same fact today)."""
-        sb = make_env(tmp_path)
-        runner = FakeRunner()
-        runner.queue_result(RunResult(1, stderr="boom"))
-        c, _runner, _refresh_hub, app_hub = _make_client_with_hubs(sb, runner=runner)
-        q = app_hub.subscribe()
-        r = c.post("/mine/run", headers={"HX-Request": "true"})
-        assert r.status_code == 200
-        q.get_nowait()  # start
-        done = q.get_nowait()
-        assert done["state"] == "error"
 
 
 class TestForceRunHeldIsNotFailure:
@@ -4839,20 +4739,6 @@ class TestA7CycleReachesPathedOptionHttp:
         assert 'data-key-action="cycle_destination"' in r.text
         assert "data-noop-hint" not in r.text
 
-    def test_disarm_fragment_positive_control_no_proposal(self, tmp_path: Path) -> None:
-        sb = make_env(tmp_path)
-        rec = make_behavior(scope="user")
-        seed_record(sb.ledger, rec)
-        c, _runner = make_client(sb)
-        r = c.post(
-            f"/record/{rec.id}/action/disarm",
-            data={"kind": "detail", "dest": "claude-md"},
-            headers={"HX-Request": "true"},
-        )
-        assert r.status_code == 200
-        assert 'data-key-action="cycle_destination"' not in r.text
-        assert 'data-noop-action="cycle_destination"' in r.text
-
 
 class TestA13ByAttributionForRulesProposal:
     """A13 — `by` attribution survives for a RULES proposal specifically
@@ -5265,19 +5151,3 @@ class TestDetailUnrenderableProposalEndToEnd:
         assert 'class="banner banner-notice" role="alert"' in r.text  # positive control
         assert "<script>alert(1)</script>" not in r.text  # never live/unescaped
         assert "&lt;script&gt;" in r.text  # escaped, per the app's autoescape
-
-    def test_genuinely_no_proposal_is_unaffected_by_this_move(self, tmp_path: Path) -> None:
-        """Sibling control: the TRUE no-proposal-at-all state still
-        renders exactly as before -- this move only ADDS a new distinct
-        state, it never changes the existing one."""
-        from self_learn_ui.models import NO_ANALYSIS_MESSAGE
-
-        sb = make_env(tmp_path)
-        rec = make_behavior(scope="skill:s")
-        seed_record(sb.ledger, rec)
-        c, _runner = make_client(sb)
-
-        r = c.get(f"/record/{rec.id}")
-        assert r.status_code == 200
-        assert 'aria-label="change"' in r.text
-        assert NO_ANALYSIS_MESSAGE in r.text

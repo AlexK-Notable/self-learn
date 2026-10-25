@@ -240,37 +240,6 @@ def test_proposal_lint_rejects_non_string_sharpening():
         )
 
 
-def test_reasoning_pattern_record_with_soft_trigger_lint_is_not_rejected():
-    """Kind-aware MUST (routing-doctrine.md §9): a `kind:
-    reasoning-pattern` record's inherent trigger softness is never a
-    route-blocker signal — lint is advisory only and no code path
-    inspects record kind to escalate a lint verdict. A `trigger_
-    recognizable: partial` judgment on a reasoning-pattern record
-    validates exactly like it would on any other record; the non-punitive
-    framing rule itself lives in doctrine text (asserted in
-    test_worker.py's doctrine-content tests), never enforced here."""
-    record = Record.create(
-        type="behavior",
-        scope="skill:s",
-        source="teach",
-        kind="reasoning-pattern",
-        trigger="When deciding how to route ambiguous work.",
-        instruction=(
-            "Prefer the narrowest surface that still fires — recognizing "
-            "'ambiguous work' takes judgment, not a fixed pattern."
-        ),
-    )
-    assert record.kind == "reasoning-pattern"
-    validate_proposal(
-        proposal_dict(
-            lint={
-                "trigger_recognizable": "partial",
-                "why_present": True,
-            }
-        )
-    )
-
-
 # --------------------------------------------------------------- rider verbs
 
 

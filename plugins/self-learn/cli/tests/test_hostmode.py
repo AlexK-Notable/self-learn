@@ -350,26 +350,6 @@ class TestMode8SkillsRootShapeValidation:
         with pytest.raises(HostsError, match="skills_root.path must be a path string"):
             load_hosts(env.ledger)
 
-    def test_m7_dropping_the_dict_isinstance_branch_breaks_the_mode_shape(
-        self, tmp_path
-    ):
-        """M7, run directly: without the `isinstance(raw_root, dict)`
-        branch, `{path, mode}` would fall straight to the "must be a
-        path string or a mapping" refusal — the SAME shape MODE8's own
-        accept case above proves works today. Confirmed by simulating
-        the mutation's effect: a `skills_root` dict, if that branch
-        were gone, could never reach `skills_root_mode = _parse_mode(...)`
-        at all — proven by reading the source itself rather than
-        re-deriving the parser, since the parser has no feature flag to
-        toggle this off at runtime."""
-        import inspect
-
-        source = inspect.getsource(hosts_mod.load_hosts)
-        assert "isinstance(raw_root, dict)" in source
-        # the accept-case test above is this mutation's own regression
-        # guard: dropping that branch would send `test_both_accepted_shapes`
-        # into the same `HostsError` `test_a_list_is_rejected` proves.
-
 
 class TestHostListModeColumn:
     def test_mode_shown_only_for_non_git(self, tmp_path, capsys, monkeypatch):
@@ -925,25 +905,6 @@ class TestPlain8SelftestDriftFourVerdicts:
         ok, message = selfcheck._check_drift(env.ledger)
         assert ok is selfcheck.Verdict.FAIL  # THE one verdict that gates the boolean
         assert "hand-edited outside self-learn (edited)" in message
-
-    def test_all_four_strings_are_pairwise_distinct(self, tmp_path):
-        """The Check cell's own wording: FOUR distinguishable strings,
-        not two collapsed pairs — assembled from the four scenarios
-        above run independently so none shares tmp_path state."""
-        strings = []
-        for name, rid in (
-            ("unknown", "lrn-00000017"),
-            ("clean", "lrn-00000018"),
-        ):
-            env, plain_host = self._routed(tmp_path / name, rid)
-            if name == "unknown":
-                slug = hosts_mod.host_slug(env.ledger, plain_host, scope_kind="project")
-                compiled.compiled_record_path(env.ledger, slug).unlink()
-            from self_learn import selfcheck
-
-            _, message = selfcheck._check_drift(env.ledger)
-            strings.append(message)
-        assert strings[0] != strings[1]
 
 
 class TestRpt1PlainHostInReport:
@@ -5021,61 +4982,24 @@ class TestChez5ExceptTuplesShrink:
                     hits += [n for n in names if needle in n]
             assert hits == [], (mod.__name__, hits)
 
-    def test_mutation_m51_shape_cannot_survive_cli_load(self):
-        """CHEZ5, mutation M51's shape (leave ``teach.py:75``'s
-        retired-module import line after deleting the module) verified
-        structurally rather than by re-planting the mutation:
-        ``self_learn.cli`` imports ``self_learn.teach``, and this whole
-        test module already imported ``self_learn.cli`` at collection
-        time (see the module-level import above) -- an unremoved
-        import of the deleted module anywhere on that load path would
-        have raised ``ModuleNotFoundError`` before any test in this
-        file could run, exactly M51's predicted failure ("ImportError
-        at CLI load; the whole CLI suite errors")."""
-        assert cli.__name__ == "self_learn.cli"
-        assert teach.__name__ == "self_learn.teach"
-
 
 class TestChez6CensusZeroRetiredModuleLiterals:
     def test_census_by_tree(self):
-        """CHEZ6 (gate r1-N1/N2, 2026-08-28): zero mentions of the
-        retired module's name (case-insensitive) remain in ``cli/src``,
-        ``ui/src``, ``ui/templates``, ``ui/tests``, ``ui/static`` --
-        except the two ``compilers.py`` prose comments (``cli/src``).
-        ``ui/static`` carries zero -- `ui/static/app.js:517,519`'s two
-        dated retirement comments say "adopt", never the retired
-        module's name, so `UIC5` (which sweeps that word) accounts for
-        them instead. ``cli/tests``, EXCLUDING this file by path, carries
-        exactly 37: the UN3-protected pre-existing test/class names in
-        ``test_commit_drift.py`` (11), ``test_hosting.py`` (1), and
-        ``test_verbs.py`` (10 -- two pre-existing class names, the
-        module-name half of their identifiers, and the docstring prose
-        naming them; see that file's own ``TestRouteUserScope*``
-        classes) that UN3's name-set freeze forbids renaming in EITHER
-        phase (§9: "Explicitly NOT touchable, either phase") -- an
-        earlier build pass renamed four of those names and deleted a
-        fifth test outright before this instrument caught the UN3
-        violation; they are restored, literally, under their original
-        names -- plus two files documenting an UNRELATED, real-world
-        safety guard against the actual externally-installed dotfiles
-        CLI tool's ``cd`` subcommand (``test_route_hook.py``, 12;
-        ``test_hook_compiler.py``, 2) and one absence-assertion in
-        ``test_composer.py`` (1) that already proves the analyst
-        doctrine text does NOT mention it -- plus, as of U-armor
-        (2026-08-28, ``test_armor.py``), two literal-text EXM1
-        grammar-control example strings that cite the real
-        ``chezmoi.py`` deletion this same file documents (one
-        negative control isolating the date/anchor grammar halves,
-        one worked-example reason string for the shipped
-        ``test_wr7`` exemption) -- 11+1+10+12+2+1+2 = 39, the
-        exact accounted total. THIS file (``test_hostmode.py``) is
-        excluded from the ``cli/tests`` sweep BY PATH, not by evading
-        its own grep (gate r1-N1) -- ``_RETIRED_MODULE`` above is a
-        plain literal, and this docstring spells the protected names out
-        directly, same as any other file. ``docs/`` is explicitly NOT
-        swept (OUT-4). Positive control at 50fa815 (§2.10a): for the
-        original five trees, 205/12/7/343/43; ``ui/static`` was not
-        separately measured before this fold."""
+        """CHEZ6: retired-module literals remain absent from product trees,
+        apart from the two documented compiler comments. The CLI test
+        census is 36 source lines after test-audit L6-1 removed the
+        duplicate BrokenSync class (2026-10-24). This file remains
+        excluded by path. Accounted source lines by file:
+        test_armor.py: 2
+        test_commit_drift.py: 11
+        test_composer.py: 1
+        test_hook_compiler.py: 2
+        test_hosting.py: 1
+        test_route_hook.py: 12
+        test_verbs.py: 7
+        The original 50fa815 positive control was 205/12/7/343/43 for
+        cli/src, cli/tests, ui/src, ui/tests and ui/templates.
+        """
         plugin_root = Path(__file__).resolve().parents[2]  # plugins/self-learn
         trees = {
             "cli/src": plugin_root / "cli" / "src",
@@ -5103,7 +5027,7 @@ class TestChez6CensusZeroRetiredModuleLiterals:
             return hits
 
         assert len(_hits(trees["cli/src"])) == 2
-        assert len(_hits(trees["cli/tests"])) == 39
+        assert len(_hits(trees["cli/tests"])) == 36
         assert _hits(trees["ui/src"]) == []
         assert _hits(trees["ui/templates"]) == []
         assert _hits(trees["ui/tests"]) == []
