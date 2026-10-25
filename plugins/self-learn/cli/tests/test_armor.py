@@ -307,6 +307,14 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_invocation_sdk.py": Behaviour(
         nodes=138, dump_sha="cf0a85b0dde35f88cbe27531bd282d2db780c9430b4874a7b62b77063caa2b84",
+        edited={
+            'func:test_kl8_orphan_sweep_kills_matching_and_spares_non_matching': (
+                '2026-10-24 drafts/u-sdk-backend-spec.md §3.7 (K-5): both legs wait until the child has finished exec '
+                '(`_wait_until_execd`) before sweeping; Popen can return while /proc/<pid>/cmdline still reads '
+                'as the parent, and the sweep then rightly declines (8 of 40 runs under load; '
+                'misc/build-2026-10-24/kl8-diag). Test-only; the sweep is unchanged.'
+            ),
+        },
     ),
     "test_worker.py": Behaviour(
         nodes=83, dump_sha="0d4ac5f2300dc2f265566bc14b258c0086d7d6b23fd16b0c421d3d995d8e7a46"
@@ -895,9 +903,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=1,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-24 kl8 exec race (drafts/u-sdk-backend-spec.md §3.7): 0 -> 1; "
+            "test_kl8 gains an `edited` door (both legs wait for exec). Previous entry: "
             "2026-10-24, transcribed at ANCHOR 9f50345 from this module's own "
             "STALE refusal (engine-fix landing): 4 -> 0; the test audit's "
             "deletions are anchor-side now. Previous entry: "
@@ -955,9 +965,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=178,
+        value=179,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-10-24 kl8 exec race (drafts/u-sdk-backend-spec.md §3.7): 178 -> 179; "
+            "test_kl8 gains an `edited` door (both legs wait for exec). Previous entry: "
             "2026-10-24 test audit L1/L2, per §4.5/§4.7: 194 -> 178; "
             "HEAD measured against the retired control anchor c3b48e7. "
             "2026-09-28 batch 0928 part 3 (`13-hosting-and-separation.md` §6): "
