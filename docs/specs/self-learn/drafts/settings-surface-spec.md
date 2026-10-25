@@ -431,6 +431,19 @@ claim the ruling made true.
 
 ## 3. The exposure-tier decision table — **RULING REQUIRED**
 
+**Agent-shell writes (2026-10-24).** Registry tier-C settings are the human's
+switches. `settings.config_set` and `settings.config_unset` refuse them before
+requesting the ledger lock or writing, including no-op requests. The CLI prints
+that the setting is the human's switch and asks the human to run the same command
+in their own terminal (not through an agent); exit status is 1, matching other
+business-rule pre-flight refusals. Tier-A writes remain available to agents.
+One detector checks for presence (even empty) of `CLAUDECODE`,
+`CLAUDE_CODE_ENTRYPOINT`, `AI_AGENT`, `CODEX_THREAD_ID`, `CODEX_SESSION_ID`, or
+`HERMES_SESSION_ID`. `HERDR_ENV` is excluded: human terminals also export it.
+There is deliberately no override flag, since an agent could pass one. This is
+an accidental-write guard, not a security boundary: agents can unset markers,
+so the standing rule against changing the human's switches still binds.
+
 This is the user decision `forward/ui-ux.md` §5 and 14 §4 say FW-30
 must route first. The table below is the **author's recommendation**
 per the charter; **the user edits it before build.** Rows are the
