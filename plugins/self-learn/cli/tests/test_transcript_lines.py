@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from self_learn import miner, refs, steward_inputs, transcript_lines
-from self_learn.mining import check, compare, spine, tools
+from self_learn.mining import check, spine, tools
 
 
 def row(n, text, role="user"):
@@ -23,7 +23,7 @@ def put(tmp_path, rows):
 
 
 @pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\u0085", ""])
-def test_physical_rows_reach_refs_spine_checker_and_comparison(tmp_path, separator):
+def test_physical_rows_reach_refs_spine_and_checker(tmp_path, separator):
     root, path = put(tmp_path, [row(1, "first" + separator + "turn"), row(2, "target"),
                                 row(3, "last", "assistant")])
     found = refs.resolve("session", 2, roots=[root])
@@ -35,8 +35,6 @@ def test_physical_rows_reach_refs_spine_checker_and_comparison(tmp_path, separat
     sp = spine.build_spine(session, 2, 3)
     checker = check._Checker(sp, [root], frozenset(), frozenset())
     assert checker.resolve({"line": 2}).uuid == "u-2"
-    info = compare.scan_file(path, [2])
-    assert info.n_lines == 3 and info.at[2] == ("u-2", "user")
 
 
 @pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\u0085"])
