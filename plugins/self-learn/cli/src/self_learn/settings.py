@@ -2147,9 +2147,14 @@ AGENT_CALLER_MARKERS = (
 )
 
 
+def agent_caller_markers() -> tuple[str, ...]:
+    """Detected names only, in stable registry order; never expose env values."""
+    return tuple(marker for marker in AGENT_CALLER_MARKERS if marker in os.environ)
+
+
 def agent_caller() -> bool:
     """Best-effort shell detection, not a security boundary: env can be unset."""
-    return any(marker in os.environ for marker in AGENT_CALLER_MARKERS)
+    return bool(agent_caller_markers())
 
 
 class AgentSettingRefusal(SettingsError):
@@ -2158,7 +2163,8 @@ class AgentSettingRefusal(SettingsError):
     def __init__(self, name: str) -> None:
         super().__init__(
             f"{name} is the human's switch; run the same command in your own "
-            "terminal (not through an agent)"
+            "terminal (not through an agent) "
+            f"(agent shell detected: {', '.join(agent_caller_markers())})"
         )
 
 
@@ -2355,14 +2361,14 @@ def config_set(
     except KeyError:
         raise UnknownSettingError(name) from None
 
+    if setting.tier == "C" and agent_caller():
+        raise AgentSettingRefusal(name)
+
     # MINOR-4 (review r1 2026-09-01): this used to be a bare `assert`
     # AFTER value-parsing -- checked first now, both because "can this
     # setting even be written" is more fundamental than "is this value
     # valid for it", and because an `assert` is not a refusal a caller
     # (the CLI, the UI route) can catch and print cleanly.
-    if setting.tier == "C" and agent_caller():
-        raise AgentSettingRefusal(name)
-
     if setting.config_section is None or setting.config_key is None:
         raise NoConfigRungError(name)
 

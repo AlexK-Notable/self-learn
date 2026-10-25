@@ -42,9 +42,10 @@ def test_each_tier_c_refused_before_lock(setting, operation, tmp_path, monkeypat
     assert git(home, "rev-parse", "HEAD").stdout == head
 
 
-@pytest.mark.parametrize("marker", MARKERS)
+@pytest.mark.parametrize("markers", [(m,) for m in MARKERS] + [MARKERS, ("AI_AGENT", "CLAUDECODE")])
+@pytest.mark.parametrize("marker_value", ["", "synthetic-private-value"])
 @pytest.mark.parametrize("operation", ["set", "unset"])
-def test_each_marker_cli_refuses(marker, operation, tmp_path, monkeypatch, capsys):
+def test_each_marker_cli_refuses(markers, marker_value, operation, tmp_path, monkeypatch, capsys):
     home = make_home(tmp_path)
     monkeypatch.setenv("SELF_LEARN_HOME", str(home))
     args = ["config", operation, "miner.engine"]
@@ -60,12 +61,17 @@ def test_each_marker_cli_refuses(marker, operation, tmp_path, monkeypatch, capsy
     original = (home / "config.yaml").read_bytes()
     head = git(home, "rev-parse", "HEAD").stdout
     capsys.readouterr()
-    monkeypatch.setenv(marker, "")
+    for marker in markers:
+        monkeypatch.setenv(marker, marker_value)
     assert cli.main(args) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "miner.engine is the human's switch" in captured.err
-    assert "run the same command in your own terminal (not through an agent)" in captured.err
+    detected = ", ".join(marker for marker in MARKERS if marker in markers)
+    assert captured.err == (
+        f"self-learn config {operation}: miner.engine is the human's switch; "
+        "run the same command in your own terminal (not through an agent) "
+        f"(agent shell detected: {detected})\n"
+    )
     assert (home / "config.yaml").read_bytes() == original
     assert git(home, "rev-parse", "HEAD").stdout == head
 
