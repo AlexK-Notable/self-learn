@@ -963,10 +963,8 @@ MEASURED: dict[str, Measured] = {
         value=24,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-10-24 test audit L1/L2, per §4.5/§4.7: 25 -> 24; "
-            "measured at unchanged ANCHOR 2c8f8f5 after authorized deletions. "
-            "2026-10-24 test audit L1/L2, per §4.5/§4.7: 0 -> 25; "
-            "measured at unchanged ANCHOR 2c8f8f5 after authorized deletions. "
+            "2026-10-24 test audit L1/L2, per §4.5/§4.7: 0 -> 24; "
+            "measured at unchanged ANCHOR 2c8f8f5 after the authorized deletions. "
             "2026-09-11, transcribed at ANCHOR a41ddb3 from this module's own "
             "STALE refusal (Sprint 3 landing): 2 -> 0. test_invocation_sdk.py's "
             "`assign:_FS_CALLS` and `assign:_PL3_ALLOWED` (M-V, 1737499) are absent "
@@ -979,10 +977,8 @@ MEASURED: dict[str, Measured] = {
         value=4,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-10-24 test audit L1/L2, per §4.5/§4.7: 4 -> 4; "
-            "measured at unchanged ANCHOR 2c8f8f5 after authorized deletions. "
             "2026-10-24 test audit L1/L2, per §4.5/§4.7: 0 -> 4; "
-            "measured at unchanged ANCHOR 2c8f8f5 after authorized deletions. "
+            "measured at unchanged ANCHOR 2c8f8f5 after the authorized edits. "
             "2026-09-28, transcribed at ANCHOR 9940b03 from this module's own STALE "
             "refusal (followups-0928 landing): 2 -> 0, both batch-0928 doors dropped as "
             "VACUOUS (their edits are at the anchor). Previous entry: "
@@ -1024,10 +1020,8 @@ MEASURED: dict[str, Measured] = {
         value=91,
         scope=_SCOPE_HEAD,
         reason=(
-            "2026-10-24 test audit L1/L2, per §4.5/§4.7: 92 -> 91; "
-            "measured at unchanged ANCHOR 2c8f8f5 after authorized deletions. "
-            "2026-10-24 test audit L1/L2, per §4.5/§4.7: 68 -> 92; "
-            "measured at unchanged ANCHOR 2c8f8f5 after authorized deletions. "
+            "2026-10-24 test audit L1/L2, per §4.5/§4.7: 68 -> 91; "
+            "HEAD measured against the retired control anchor c3b48e7. "
             "2026-09-04 Sprint 2 integration, per §5.1's STALE remediation: 66 -> 68 "
             "against the RETIRED control anchor c3b48e7 (HEAD-scoped; moves whenever "
             "HEAD does): the two test_invocation_sdk.py constants M-V deleted "
@@ -1040,10 +1034,8 @@ MEASURED: dict[str, Measured] = {
         value=178,
         scope=_SCOPE_HEAD,
         reason=(
-            "2026-10-24 test audit L1/L2, per §4.5/§4.7: 177 -> 178; "
-            "measured at unchanged ANCHOR 2c8f8f5 after authorized deletions. "
-            "2026-10-24 test audit L1/L2, per §4.5/§4.7: 194 -> 177; "
-            "measured at unchanged ANCHOR 2c8f8f5 after authorized deletions. "
+            "2026-10-24 test audit L1/L2, per §4.5/§4.7: 194 -> 178; "
+            "HEAD measured against the retired control anchor c3b48e7. "
             "2026-09-28 batch 0928 part 3 (`13-hosting-and-separation.md` §6): "
             "193 -> 194 -- `test_invocation_sdk.py`'s `test_op14_...` (the option "
             "set gains `thinking`) now also differs from c3b48e7. Previous entry: "
