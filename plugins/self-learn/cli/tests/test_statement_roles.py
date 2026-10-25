@@ -550,6 +550,60 @@ def test_encoded_clicked_labels_are_refused(tmp_path, kind):
     assert (home / "user-statements.jsonl").read_bytes() == before
 
 
+@pytest.mark.parametrize("kind", ["single-double-space", "single-tab", "multi-double-space"])
+def test_displayed_clicked_labels_are_refused(tmp_path, kind):
+    # Claude Code records a clicked label as displayed: whitespace runs
+    # collapse to one space (gate-stmt-r3 MINOR D, probes D1, D4, D2).
+    home, path, rows, question = encoded_question_control(tmp_path)
+    label = {"single-tab": "Ship it\tnow"}.get(kind, "Ship it  now")
+    shown = "Ship it now"
+    question["options"][1]["label"] = label
+    if kind.startswith("multi"):
+        question["multiSelect"] = True
+        label = "Long,  scenic route"
+        question["options"][1]["label"] = label
+        shown = "Long, scenic route"
+        answer = cc_multi_answer(["Short route", shown])
+    else:
+        answer = shown
+    rows[2]["toolUseResult"]["answers"][question["question"]] = answer
+    write_question_exchange(path, rows)
+    before = (home / "user-statements.jsonl").read_bytes()
+    with pytest.raises(statements.StatementUsageError, match="not typed by the user"):
+        add(home, "transcript:synthetic-stmt#L3", shown)
+    assert (home / "user-statements.jsonl").read_bytes() == before
+
+
+@pytest.mark.parametrize("quote, typed_by_user", [
+    ("My own words", True), ("(Image attached)", False), ("words (Image attached)", False)])
+def test_single_select_image_suffix_is_not_typed(tmp_path, quote, typed_by_user):
+    # Claude Code appends " (Image attached)" to a typed single-select answer
+    # when an image was pasted (gate-stmt-r3 NIT 1).
+    home, path, rows, question = encoded_question_control(tmp_path)
+    rows[2]["toolUseResult"]["answers"][question["question"]] = "My own words (Image attached)"
+    write_question_exchange(path, rows)
+    if typed_by_user:
+        sid = add(home, "transcript:synthetic-stmt#L3", quote)
+        assert statements.list_statements(home)[-1]["id"] == sid
+        return
+    before = (home / "user-statements.jsonl").read_bytes()
+    with pytest.raises(statements.StatementUsageError, match="not typed by the user"):
+        add(home, "transcript:synthetic-stmt#L3", quote)
+    assert (home / "user-statements.jsonl").read_bytes() == before
+
+
+@pytest.mark.parametrize("typed", ['Say "hi" now', '"Fast" is what I said'])
+def test_legacy_typed_other_with_quotes_is_accepted(tmp_path, typed):
+    # Older transcripts joined multi-select items unquoted; a typed leftover
+    # that is not one whole JSON string stays the user's words.
+    home, path, rows, question = encoded_question_control(tmp_path)
+    question["multiSelect"] = True
+    rows[2]["toolUseResult"]["answers"][question["question"]] = "Short route, " + typed
+    write_question_exchange(path, rows)
+    sid = add(home, "transcript:synthetic-stmt#L3", typed)
+    assert statements.list_statements(home)[-1]["id"] == sid
+
+
 @pytest.mark.parametrize("kind", ["quote", "comma", "quoted-prefix"])
 def test_encoded_other_answers_are_accepted(tmp_path, kind):
     home, path, rows, question = encoded_question_control(tmp_path)

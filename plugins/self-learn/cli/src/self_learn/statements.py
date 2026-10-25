@@ -89,6 +89,14 @@ def _new_stmt_id(existing: list[dict]) -> str:
     raise StatementError("statement add: could not allocate a unique id")  # pragma: no cover
 
 
+def _displayed_label(label: str) -> str:
+    """The label as Claude Code shows and records it (2.1.310, `G9`): tabs
+    become spaces, the text is cut at 2000 characters, line breaks become
+    U+FFFD, whitespace runs collapse to one space, the ends are trimmed."""
+    text = re.sub(r"[\n\r\u2028\u2029]", "\ufffd", label.replace("\t", " ")[:2000])
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _free_answer(answer: str, question: dict) -> str:
     """Remove clicked labels from CC's comma-separated multi-select answer.
 
@@ -103,7 +111,10 @@ def _free_answer(answer: str, question: dict) -> str:
         return ""
     if any(not isinstance(o, dict) or not isinstance(o.get("label"), str) for o in options):
         return ""
-    labels = [o["label"] for o in options if o["label"]]
+    raw = [o["label"] for o in options if o["label"]]
+    # The clicked value is written as displayed, so the displayed spelling
+    # counts as clicked too (gate-stmt-r3 MINOR D).
+    labels = list(dict.fromkeys(raw + [_displayed_label(label) for label in raw]))
     spellings = labels + [json.dumps(label, ensure_ascii=False) for label in labels]
     if answer in spellings:
         return ""
@@ -132,7 +143,9 @@ def _free_answer(answer: str, question: dict) -> str:
                 if isinstance(decoded, str):
                     return decoded
         return leftover
-    return answer
+    # A single-select Other answer with a pasted image is recorded as
+    # `<typed> (Image attached)` (2.1.310); the suffix is Claude Code's.
+    return answer.removesuffix(" (Image attached)")
 
 
 def _question_signature(questions: object) -> list[tuple[str, tuple[str, ...]]] | None:
