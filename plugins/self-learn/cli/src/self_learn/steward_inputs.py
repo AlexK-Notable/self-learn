@@ -659,6 +659,9 @@ def fire_pack(events: list[dict], *, roots: Sequence[Path], budget: int) -> tupl
     """The suspected-violation events of one routed record: each event's
     nonce (what a sheet item names as ``event``), its pointer resolved, and
     an excerpt around it."""
+    from .miner import _OriginIndex
+
+    origin_index = _OriginIndex(roots=roots)
     shown = events[-FIRE_EVENTS_SHOWN:]
     lines = [
         f"[suspected violations] {len(events)} unhandled miner fire(s) with outcome "
@@ -679,7 +682,7 @@ def fire_pack(events: list[dict], *, roots: Sequence[Path], budget: int) -> tupl
                 f"    (the recurrence-suspect the miner raised for fire {event['fire_nonce']}; "
                 "deciding it also clears the review's card)"
             )
-        m = _ORIGIN_RE.match(origin.strip())
+        m = _ORIGIN_RE.match(origin_index.event(event, legacy_only=True).strip())
         if not m:
             lines.append("    the pointer is not a transcript line; nothing here checks it")
             continue

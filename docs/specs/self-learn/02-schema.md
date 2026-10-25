@@ -2040,7 +2040,10 @@ the old-count fallback (`check_quote(stored=False)`). A quote found on another
 row is a moved quote, subject to the speaker and judged-range checks. It can
 never be recorded as `exact` on the originally cited row. Steward evidence
 uses `verbatim` when `quote` is null or blank; fire packs follow the event's
-`moment` UUID, since fire events do not carry a quote.
+`moment` UUID, since fire events do not carry a quote. Without a `moment`,
+fire packs use the same event-origin index as miner landing: an unmarked
+event has an old `splitlines()` position, while `line_format: newline-v1`
+keeps its LF position. Translation is read-only and uses the pack's roots.
 
 **Transcript roots.** Registry setting `refs.transcript_roots`
 (`SELF_LEARN_TRANSCRIPT_ROOTS`, `config.yaml` `refs.transcript_roots`),
@@ -2308,7 +2311,16 @@ record's `inputs` with a `kind`:
 |---|---|---|
 | `lesson` | a queued record (pending, not deferred) whose version no committed run has decided — **with or without an analyst proposal** | the record file's committed blob; `legacy_version` carries the proposal file's blob when there is one |
 | `reconsider` | a record a later observation brought back (unchanged) | `observation:<obs-id>` |
-| `suspected-violation` | a ROUTED record that unhandled `fire` events with outcome `suspected-violation` name (a legacy `violated` reads as it, §4.3 of `11-telemetry-and-lifecycle.md`); the row carries the events (`nonce`, `ts`, `outcome`, `origin`) | `fires:<nonce>,<nonce>…`, sorted |
+| `suspected-violation` | a ROUTED record that unhandled `fire` events with outcome `suspected-violation` name (a legacy `violated` reads as it, §4.3 of `11-telemetry-and-lifecycle.md`); the row carries the events (`nonce`, `ts`, `outcome`, `origin`, optional `moment`, optional `line_format`) | `fires:<nonce>,<nonce>…`, sorted |
+
+For `fire` and `recurrence-suspect` event payloads, `moment` is the cited
+entry UUID, emitted by session landing when available. `line_format:
+newline-v1` identifies LF-numbered origins; both engines' new event writers
+and the legacy-fire-to-suspect bridge write it. An event with neither a
+`moment` nor this marker is an old `splitlines()` position. The shared
+event-origin index translates it only in transcripts whose counts differ;
+a supplied `moment` takes precedence. Existing events remain unchanged
+(doc 12 Phase 0; doc 11 §4.3).
 
 A record edited after selection is a new version. A move is such an edit
 *(2026-10-06, S-78)*: its `moved` history entry makes the lesson a new

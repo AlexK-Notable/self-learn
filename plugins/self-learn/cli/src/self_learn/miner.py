@@ -1429,8 +1429,9 @@ class _OriginIndex:
     record's independent raw evidence remains a dedupe key.
     """
 
-    def __init__(self, home: Path | None = None, sent: provenance.SentIndex | None = None):
-        self.roots = [transcripts_root(home)]
+    def __init__(self, home: Path | None = None, sent: provenance.SentIndex | None = None,
+                 *, roots: Sequence[Path] | None = None):
+        self.roots = list(roots) if roots is not None else [transcripts_root(home)]
         self.sent = sent if sent is not None else provenance.SentIndex()
         self._affected: dict[tuple[str, str | None], bool] = {}
         self._copies: dict[str, list[Path]] = {}
@@ -1478,11 +1479,15 @@ class _OriginIndex:
         return self.origin(origin, quote=quote if isinstance(quote, str) else None,
                            uuid=uid if isinstance(uid, str) else None)
 
-    def event(self, event: dict) -> str:
+    def event(self, event: dict, *, legacy_only: bool = False) -> str:
+        """Follow event positions; packs can leave modern refs to their resolver."""
         origin = str(event.get("origin"))
         uid = event.get("moment")
+        legacy = not uid and event.get("line_format") != transcript_lines.FORMAT
+        if legacy_only and not legacy:
+            return origin
         return self.origin(origin, uuid=uid if isinstance(uid, str) else None,
-                           legacy=not uid and event.get("line_format") != transcript_lines.FORMAT)
+                           legacy=legacy)
 
 
 def _known_mining_origins(home: Path, *, index: _OriginIndex | None = None,

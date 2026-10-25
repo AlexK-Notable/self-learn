@@ -293,9 +293,20 @@ plane, fixes the mechanism.
 | `capture` | teach/import (CLI) | source, bucket |
 | `card-shown` / `card-decided` | CLI/TUI code paths; tolerated-absent in the slash-review era (prompt-driven surface) | recommendation, decision, overridden: bool, dest-delta |
 | `fire` | worker harness (CLI) from miner candidates; read by the steward as evidence, never auto-decided — since 2026-09-27 (U3a, `02-schema.md` §3a.8) an unhandled `suspected-violation` fire (legacy `violated`) is a steward INPUT about the routed record it names, decided with `confirm-recurrence` / `dismiss-suspect` on its nonce; before that nothing read it (the 2026-09-26 audit) | **non-textual anchor only: (transcript-id, line-number) or content-hash — never a phrase or span** (audit v2; transcript text is the least-trusted text in the system), confidence, `outcome: suspected-compliance \| suspected-violation \| cannot-tell` (new field, v2 of this kind; `outcome` is the miner's categorical reading, per `12-transcript-miner.md` §1 and §7 — `confidence` is unchanged and continues to carry whatever numeric signal it always did) |
-| `recurrence-suspect` | worker harness (CLI) | matched record id, origin id, similarity basis label |
+| `recurrence-suspect` | worker harness (CLI) | matched record id, origin id, similarity basis label, optional `moment` (entry UUID), `line_format: newline-v1` on new miner events |
 | `staleness-flag` | env sweep (CLI) | component, from-version, to-version |
 | `surface-budget` | compilers (CLI, inside verb flow) | target, words, cap, overflow: bool |
+
+**Transcript event positions (2026-10-24).** The `fire` payload also carries
+optional `moment` (entry UUID) and `line_format: newline-v1`. Session landing
+writes `moment` when the cited entry has a UUID. All four miner event paths
+write `line_format`: session landing, digest fire, digest recurrence-suspect,
+and the legacy-fire-to-suspect bridge. A supplied `moment` is authoritative;
+without it, `newline-v1` means an LF-numbered origin. An event with neither
+field is an old `splitlines()` position. Miner landing and the steward's
+fire pack share the event-origin index, which translates old positions in
+transcripts whose counts differ before resolving them. Read-time translation
+does not rewrite events (doc 12 Phase 0; doc 02 §3a.8).
 
 *Amended 2026-09-13 (steward build, U6):* this is the version bump this
 section's own heading requires. `schema_version` for the `fire` kind

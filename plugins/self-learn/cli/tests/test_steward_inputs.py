@@ -50,6 +50,41 @@ THIRD = "99999999-8888-7777-6666-555555555555"
 PROJ = "-work-repo"
 
 
+@pytest.mark.parametrize('metadata, expected', [({}, 2), ({'line_format': 'newline-v1'}, 3),
+                                               ({'moment': 'target'}, 2)])
+def test_fire_pack_uses_shared_event_line_counts(tmp_path, monkeypatch, metadata, expected):
+    # Supply roots explicitly: the steward may read an archive outside the miner root.
+    root = tmp_path / 'archive'
+    monkeypatch.setenv('SELF_LEARN_TRANSCRIPTS_DIR', str(tmp_path / 'absent'))
+    path = root / 'project' / 'fire-session.jsonl'
+    path.parent.mkdir(parents=True)
+
+    def pack(separator, line):
+        rows = [
+            {'type': 'user', 'message': {'content': 'before' + separator + 'action'}},
+            {'type': 'assistant', 'uuid': 'target', 'message': {'content': 'observed action'}},
+            {'type': 'assistant', 'uuid': 'later', 'message': {'content': 'later action'}},
+        ]
+        path.write_text(''.join(json.dumps(row, ensure_ascii=False) + '\n' for row in rows))
+        event = dict(nonce='synthetic-fire', origin=f'transcript:fire-session#L{line}',
+                     outcome='suspected-violation', **metadata)
+        before = dict(event)
+        rendered, stats = steward_inputs.fire_pack([event], roots=[root], budget=10000)
+        assert stats['excerpted'] == 1 and 'event synthetic-fire' in rendered
+        assert event == before
+        return rendered
+
+    # Positive control first: every format selects the same row in a clean file.
+    clean = pack(' ', 2)
+    assert '| line 2 | uuid target' in clean
+    assert 'L2 assistant:  <- this line observed action' in clean
+    affected = pack('\u2028', 3)
+    assert f'| line {expected} |' in affected
+    marked = [line.strip() for line in affected.splitlines() if '<- this line' in line]
+    text = 'observed action' if expected == 2 else 'later action'
+    assert marked == [f'L{expected} assistant:  <- this line {text}']
+
+
 # ------------------------------------------------------------ fixtures
 
 
