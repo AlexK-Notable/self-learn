@@ -212,7 +212,7 @@ def test_retired_unset_uses_normal_refusal_and_lock_order(tmp_path, monkeypatch)
     assert events == ["scan", "dirty", "present", "lock", "unset", "commit"]
 
 
-@pytest.mark.parametrize("refusal,expected", [("dirty", "dirty"),
+@pytest.mark.parametrize("refusal,expected", [("dirty", "uncommitted changes"),
                                             ("malformed", "not a mapping"),
                                             ("note", "secret scan")])
 def test_retired_unset_refuses_before_lock_without_changes(tmp_path, monkeypatch, capsys, refusal, expected):
