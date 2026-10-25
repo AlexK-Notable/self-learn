@@ -163,7 +163,7 @@ def test_followup_done_refuses_after_status_leaves_routed(env, capsys):
     written, the follow_up block untouched."""
     rid = seed_pending(env)
     assert cli.main(["route", rid, "--follow-up", "upgrade-to-hook"]) == 0
-    assert cli.main(["graduate", rid]) == 0
+    assert cli.main(["retire", rid, "--covered-by", "skill-md:canon"]) == 0
     record = resolved_record(env)
     assert record.status == "superseded"
     assert record.follow_up == {"action": "upgrade-to-hook"}  # survives graduate

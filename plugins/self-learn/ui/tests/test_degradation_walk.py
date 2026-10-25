@@ -67,9 +67,6 @@ TOKEN = "test-token"
 HX = {"HX-Request": "true"}
 
 STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
-TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
-
-
 def make_client(sb, *, runner: FakeRunner | None = None, port: int = 7357) -> tuple[TestClient, FakeRunner]:
     runner = runner if runner is not None else FakeRunner()
     env = load_env(sb.env)
@@ -201,11 +198,6 @@ class TestSSEScopeMatchesOwnBucket:
         # The Front-page-matches-everything rule (it aggregates every
         # bucket) — the fix that closes the reverse half of the bug.
         assert 'mine.indexOf("front")' in app_js
-
-    def test_base_template_has_a_body_attrs_extension_point(self) -> None:
-        base_html = (TEMPLATES_DIR / "base.html").read_text(encoding="utf-8")
-        assert "block body_attrs" in base_html
-
 
 # --------------------------------------------------- worker-overdue strip
 

@@ -102,7 +102,7 @@ __all__ = [
 #: U3 (S-54 as amended / 02-schema.md §3a.1 rule 5): ``by`` is added to
 #: every STATUS-changing (resolution) verb's set -- ``route`` already
 #: had it, ``revise`` (U4) already carries it -- widened here to
-#: ``reject``/``defer``/``undefer``/``reopen``/``graduate``/
+#: ``reject``/``defer``/``undefer``/``reopen``/``retire``/
 #: ``supersede``/``rehome``/``rescope``. The six ANNOTATION verbs
 #: (``note``, ``confirm-recurrence``, ``dismiss-suspect``,
 #: ``confirm-held``, ``link-contradicts``, ``followup-done``) never
@@ -139,10 +139,7 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
     "reopen": frozenset({"note", "by"}),
     # S-67: `retire`'s own key set requires `covered_by` (REQUIRED_KEYS,
     # below — refused before item 1 runs, like `supersede`'s `new_id`).
-    # `graduate` stays the alias's key set, `covered_by` now OPTIONAL —
-    # a pre-rename sheet (no `covered_by` at all) still applies.
     "retire": frozenset({"covered_by", "note", "by"}),
-    "graduate": frozenset({"covered_by", "note", "by"}),
     "supersede": frozenset({"new_id", "note", "by"}),
     "rehome": frozenset({"to", "note", "by"}),
     "rescope": frozenset({"to", "note", "by"}),
@@ -171,12 +168,9 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
     ),
 }
 PERMITTED_VERBS = frozenset(PERMITTED_KEYS)
-#: Verbs that are only a second spelling of another verb (S-67:
-#: `graduate` is `retire`'s pre-rename alias). Still accepted on a sheet;
-#: named here, in the module that owns the alias, so a reader that lists
-#: the verbs for a model (`steward_prompt._sheet_verb_lines`) can leave
-#: the second spelling out without spelling it itself.
-SHEET_VERB_ALIASES = frozenset({"graduate"})
+#: No sheet aliases remain after graduate was removed on 2026-10-24.
+#: Prompt readers retain this empty alias set.
+SHEET_VERB_ALIASES: frozenset[str] = frozenset()
 
 #: The subset of each verb's permitted keys that must actually be PRESENT
 #: on a sheet item -- caught at BAT1's whole-sheet validation, same as an
@@ -239,7 +233,7 @@ HOOK_ROUTING_ACTORS = frozenset({"overseer", "steward"})
 #: `_dispatch` and `dry_run` both read this ONE set, so a run and its
 #: preview cannot disagree; the overseer's formats list what it refuses.
 #: 2026-10-07 (the user: "yes, makes sense"): the SAME set refuses a
-#: `retire` / `graduate` whose `covered_by` names a shelf
+#: `retire` whose `covered_by` names a shelf
 #: (`reference:<file>`) -- the same two actors, for the same measurement:
 #: a shelf nothing reads covers no lesson (`_refuse_agent_shelf_cover`).
 REFERENCE_REFUSED_ACTORS = frozenset({"overseer", "steward"})
@@ -296,7 +290,7 @@ def _refuse_agent_reference(
 
 
 def _refuse_agent_shelf_cover(item: "SheetItem", actor: str) -> None:
-    """Raise the refusal of a `retire` / `graduate` line whose `covered_by`
+    """Raise the refusal of a `retire` line whose `covered_by`
     names a reference shelf (`reference:<file>`, or a bare `reference`)
     when *actor* is one :data:`REFERENCE_REFUSED_ACTORS` names -- a
     :class:`verbs.SheetLineError`, so the kind is `bad-line` and the steward
@@ -305,7 +299,7 @@ def _refuse_agent_shelf_cover(item: "SheetItem", actor: str) -> None:
     `records.build_covered_by` reads it (the text before the first colon),
     so a line the parser would read as a shelf is refused by name here
     first. The ONE sentence `_dispatch` and `dry_run` both show."""
-    if actor not in REFERENCE_REFUSED_ACTORS or item.verb not in ("retire", "graduate"):
+    if actor not in REFERENCE_REFUSED_ACTORS or item.verb != "retire":
         return
     covered_by = item.fields.get("covered_by")
     if isinstance(covered_by, str) and covered_by.partition(":")[0] == "reference":
@@ -1020,21 +1014,6 @@ def classify(
         except RecordValidationError:
             return False  # malformed sheet value: not this function's refusal
         return record.superseded_by == surface
-    if verb == "graduate":
-        # S-67: the alias. A sheet item naming `covered_by` is already-
-        # applied under the SAME rule `retire` uses; one that omits it
-        # (the pre-rename shape) is already-applied iff the record
-        # carries the legacy literal.
-        if record.status != "superseded":
-            return False
-        covered_by = f.get("covered_by")
-        if covered_by is None:
-            return record.superseded_by == "canon"
-        try:
-            surface = build_covered_by(covered_by)
-        except RecordValidationError:
-            return False
-        return record.superseded_by == surface
     if verb == "supersede":
         return (
             record.status == "superseded"
@@ -1142,7 +1121,7 @@ _RECONSIDER_FORWARDING_VERBS = frozenset(
     # U3b (S-72): `route` joins -- under a valid reconsider case over a
     # ROUTED lesson, a route line is that lesson's re-decision, and
     # `_dispatch_reroute` moves it (`verbs.reroute`).
-    {"reject", "defer", "retire", "graduate", "supersede", "route"}
+    {"reject", "defer", "retire", "supersede", "route"}
 )
 
 
@@ -1325,7 +1304,7 @@ def _dispatch_reroute(
     )
 
 
-def _dispatch_retire_or_graduate(
+def _dispatch_retire(
     home: Path,
     item: SheetItem,
     f: dict,
@@ -1334,47 +1313,12 @@ def _dispatch_retire_or_graduate(
     verb: str,
     execution: execution_evidence.ExecutionRef | None,
 ) -> "verbs.VerbResult":
-    """S-67 (U13): the ``retire``/``graduate`` leg of :func:`_dispatch`,
-    factored out for the SAME reason :func:`_dispatch_hook_activation`
-    already was (its own docstring: "pyright's own complexity limit
-    flagged ``_dispatch`` once this logic was inlined there too") — a
-    plain two-branch ``elif verb == "retire": ... elif verb ==
-    "graduate": ...`` split, and even a single merged ``elif verb in
-    (...)"`` branch with an inline ternary, both measured to push
-    ``_dispatch`` itself over pyright's per-function CFG complexity
-    ceiling ("Code is too complex to analyze",
-    ``reportGeneralTypeIssues``); only moving the branch OUT into its
-    own function cleared it.
-
-    *verb* is ``"retire"`` or ``"graduate"`` — the caller's own ``elif``
-    guard already narrowed it, so this trusts it rather than re-
-    checking. ``retire``'s ``covered_by`` is REQUIRED (``REQUIRED_KEYS``
-    — ``f["covered_by"]`` is always present here); ``graduate``'s stays
-    OPTIONAL (``f.get("covered_by")``, the alias's own legacy-canon path
-    when omitted) — kept as two separate calls (not one polymorphic
-    ``retire_fn = ... if ... else ...`` picking between the two
-    functions) so each call site's own ``covered_by`` keeps its own
-    correctly-narrowed static type: a shared variable typed ``str |
-    None`` fed to :func:`verbs.retire`'s required, non-optional
-    ``covered_by: str`` is itself a fresh pyright error
-    (``reportArgumentType`` — measured while fixing the complexity
-    error above; the FIRST attempt at this extraction hit exactly this).
-
-    2026-10-07: an agent's line covered by a shelf is refused first
-    (:func:`_refuse_agent_shelf_cover`, which `dry_run` runs too)."""
+    """Dispatch retirement with its required covering surface and actor checks.
+    Kept separate to bound the parent dispatcher's type-checking complexity."""
     _refuse_agent_shelf_cover(item, actor)
-    if verb == "retire":
-        return verbs.retire(
-            home, item.id, covered_by=f["covered_by"],
-            note=f.get("note"), by=(f.get("by") or actor),
-            no_push=True,
-            reconsider_case=_reconsider_case_for(home, item.id, case, verb),
-            execution=execution,
-        )
-    return verbs.graduate(
-        home, item.id, covered_by=f.get("covered_by"),
-        note=f.get("note"), by=(f.get("by") or actor),
-        no_push=True,
+    return verbs.retire(
+        home, item.id, covered_by=f["covered_by"],
+        note=f.get("note"), by=(f.get("by") or actor), no_push=True,
         reconsider_case=_reconsider_case_for(home, item.id, case, verb),
         execution=execution,
     )
@@ -1640,19 +1584,10 @@ def _dispatch(
                 no_push=True,
                 execution=execution,
             )
-        elif verb in ("retire", "graduate"):
-            # S-67 (U13): pulled out to `_dispatch_retire_or_graduate`
-            # (below) -- a straight two-branch elif split here (one
-            # `retire`, one `graduate`, mirroring every other verb's own
-            # branch) pushed `_dispatch` itself over pyright's CFG
-            # complexity ceiling (measured: "Code is too complex to
-            # analyze" reportGeneralTypeIssues); MERGING the two
-            # branches into one `elif verb in (...)` with an inline
-            # ternary was not enough on its own -- the node count that
-            # trips the ceiling is per-FUNCTION, so only moving the
-            # branch OUT of `_dispatch` entirely (a real subroutine, not
-            # a same-function merge) actually clears it.
-            result = _dispatch_retire_or_graduate(
+        elif verb == "retire":
+            # Keep retirement dispatch in a helper to stay within pyright's
+            # per-function control-flow complexity limit.
+            result = _dispatch_retire(
                 home, item, f, actor, case, verb, execution
             )
         elif verb == "supersede":
@@ -1796,7 +1731,7 @@ _STOP_CODES = frozenset({5, 6, 7})
 # effects. Their owner-returned result must be receipted before a dependent
 # item starts; a mutation trailer proves only the ledger leg.
 _HOST_OUTCOME_VERBS = frozenset(
-    {"route", "reject", "retire", "graduate", "supersede", "replace"}
+    {"route", "reject", "retire", "supersede", "replace"}
 )
 
 
@@ -1987,13 +1922,8 @@ def _preview_reopen(
 def _preview_retire(
     home: Path, item: SheetItem, by: str | None, rc: str | None
 ) -> None:
-    # `retire` always names `covered_by`; `graduate` may omit it (the
-    # legacy alias), and is `retire` itself when it names one.
-    covered_by = item.fields.get("covered_by")
-    verb_word = "graduate"
-    if covered_by is not None:
-        verbs._covered_by_surface(covered_by)
-        verb_word = "retire"
+    verbs._covered_by_surface(item.fields["covered_by"])
+    verb_word = "retire"
     path, record, warnings = verbs._preflight_retire(
         home, item.id, verb_word=verb_word, note=item.fields.get("note"),
         by=by, reconsider_case=rc,
@@ -2109,7 +2039,6 @@ _PREVIEW_CHECKS: dict[str, _PreviewCheck] = {
     "undefer": _preview_undefer,
     "reopen": _preview_reopen,
     "retire": _preview_retire,
-    "graduate": _preview_retire,
     "supersede": _preview_supersede,
     "rehome": _preview_move,
     "rescope": _preview_move,

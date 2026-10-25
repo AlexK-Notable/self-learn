@@ -223,8 +223,6 @@ def _route_again(home: Path, host: Path, rid: str) -> None:
 def _leg(home: Path, host: Path, leg: str) -> None:
     if leg == "retire":
         verbs.retire(home, RID, covered_by="claude-md:CLAUDE.md", no_push=True)
-    elif leg == "graduate":
-        verbs.graduate(home, RID, no_push=True)
     elif leg == "supersede":
         _lesson(home, host, NEW)
         verbs.supersede(home, RID, NEW, no_push=True)
@@ -241,7 +239,7 @@ def _leg(home: Path, host: Path, leg: str) -> None:
 
 @pytest.mark.parametrize("mode", ["git", "plain"])
 @pytest.mark.parametrize(
-    "leg", ["retire", "graduate", "supersede", "reroute", "route-supersedes"]
+    "leg", ["retire", "supersede", "reroute", "route-supersedes"]
 )
 def test_the_last_entry_leaving_takes_the_pointer_and_the_shelf(tmp_path, leg, mode):
     home = make_env(tmp_path).ledger
@@ -893,7 +891,7 @@ def test_the_pointer_file_gets_its_ignore_line_back_before_the_pointer_leaves(tm
     assert not _ignored(host, "CLAUDE.md")  # control
     head = _head(host)
 
-    verbs.graduate(home, RID, no_push=True)
+    verbs.retire(home, RID, covered_by="skill-md:canon", no_push=True)
 
     assert (host / "CLAUDE.md").read_text(encoding="utf-8") == CLAUDE_MD_SEED
     assert not _shelf(host).exists()
@@ -917,12 +915,12 @@ def test_the_last_entry_leaving_a_shelf_whose_pointer_file_git_tracks_takes_the_
     claude = host / "CLAUDE.md"
     assert SHELF_LINE.encode() in claude.read_bytes()  # control: the pointer is there
     head = _head(host)
-    sheet = _sheet(tmp_path, [{"id": RID, "verb": "graduate"}])
+    sheet = _sheet(tmp_path, [{"id": RID, "verb": "retire", "covered_by": "skill-md:canon"}])
 
     preview = batch.dry_run(home, sheet, actor="human")
     (pitem,) = preview.items
     assert (pitem.state, pitem.kind) == ("would-apply", None), pitem.detail
-    result = verbs.graduate(home, RID, no_push=True)
+    result = verbs.retire(home, RID, covered_by="skill-md:canon", no_push=True)
 
     assert not [w for w in result.warnings if "FAILED" in w], result.warnings
     (left,) = [w for w in result.warnings if "left the change uncommitted" in w]
@@ -955,7 +953,7 @@ def test_a_shelf_write_that_would_add_to_a_tracked_pointer_file_is_put_back(
 
     monkeypatch.setattr(verbs, "retire_empty_shelf", retire_and_add)
 
-    failed = _failure(verbs.graduate(home, RID, no_push=True))
+    failed = _failure(verbs.retire(home, RID, covered_by="skill-md:canon", no_push=True))
 
     assert "would gain or change lines" in failed
     assert "nothing was written" in failed
@@ -977,7 +975,7 @@ def test_a_shelf_git_tracks_is_refused_when_it_would_be_deleted(tmp_path):
     claude_bytes = (host / "CLAUDE.md").read_bytes()
 
     with pytest.raises(verbs.NeedsPerson) as caught:
-        verbs.graduate(home, RID, no_push=True)
+        verbs.retire(home, RID, covered_by="skill-md:canon", no_push=True)
 
     assert "LEARNINGS.md is tracked by git" in str(caught.value)
     assert _record(home, RID).status == "routed"
@@ -995,7 +993,7 @@ def test_a_shelf_git_tracks_loses_only_the_entry_when_another_is_left(tmp_path):
     claude_bytes = (host / "CLAUDE.md").read_bytes()
     head = _head(host)
 
-    result = verbs.graduate(home, RID, no_push=True)
+    result = verbs.retire(home, RID, covered_by="skill-md:canon", no_push=True)
 
     assert not [w for w in result.warnings if "FAILED" in w], result.warnings
     assert any("left the change uncommitted" in w for w in result.warnings)
@@ -1021,7 +1019,7 @@ def test_an_emptied_shelf_git_does_not_track_is_deleted_even_when_the_repo_re_ad
     _track(host, ".gitignore")
     assert not _ignored(host, "references/LEARNINGS.md")  # control: the repo re-admits it
 
-    result = verbs.graduate(home, RID, no_push=True)
+    result = verbs.retire(home, RID, covered_by="skill-md:canon", no_push=True)
 
     assert not [w for w in result.warnings if "FAILED" in w], result.warnings
     assert not _shelf(host).exists()
@@ -1051,7 +1049,7 @@ def test_a_shelf_tracked_after_the_pre_flight_leaves_the_record_true(
 
     monkeypatch.setattr(verbs, "resolve_record", track_then_resolve)
 
-    result = verbs.graduate(home, RID, no_push=True)
+    result = verbs.retire(home, RID, covered_by="skill-md:canon", no_push=True)
 
     assert _record(home, RID).status == "superseded"  # the ledger commit stands
     (failed,) = [w for w in result.warnings if "REFERENCE RETIREMENT FAILED" in w]
@@ -1243,7 +1241,7 @@ def test_a_file_tracked_after_the_prediction_is_repaired_by_the_adopt_it_names(
         return real_phase(*args, **kwargs)
 
     monkeypatch.setattr(verbs, "_retire_reference_host_phase", track_then_write)
-    failed = _failure(verbs.graduate(home, RID, no_push=True))
+    failed = _failure(verbs.retire(home, RID, covered_by="skill-md:canon", no_push=True))
     monkeypatch.setattr(verbs, "_retire_reference_host_phase", real_phase)
 
     assert f"— {RID}" in shelf.read_text(encoding="utf-8")  # nothing was written
@@ -1301,7 +1299,7 @@ def test_a_file_tracked_before_the_prediction_is_finished_by_hand_as_the_warning
         return real_resolve(*args, **kwargs)
 
     monkeypatch.setattr(verbs, "resolve_record", track_then_resolve)
-    failed = _failure(verbs.graduate(home, RID, no_push=True))
+    failed = _failure(verbs.retire(home, RID, covered_by="skill-md:canon", no_push=True))
     monkeypatch.setattr(verbs, "resolve_record", real_resolve)
 
     own = _own_words(failed)
@@ -1523,7 +1521,7 @@ def test_a_shelf_tracked_after_the_pre_flight_is_never_deleted(tmp_path, monkeyp
         return real_resolve(*args, **kwargs)
 
     monkeypatch.setattr(verbs, "resolve_record", track_then_resolve)
-    result = verbs.graduate(home, RID, no_push=True)
+    result = verbs.retire(home, RID, covered_by="skill-md:canon", no_push=True)
     monkeypatch.setattr(verbs, "resolve_record", real_resolve)
 
     assert _record(home, RID).status == "superseded"  # control: the ledger commit stands

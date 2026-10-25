@@ -462,8 +462,8 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   nothing branches on the display word. A legacy record still carrying the
   bare literal `superseded_by: "canon"` is read as a retirement whose
   covering surface is unrecorded — never invented, never blocking the read.
-  `self-learn graduate <id>` stays callable, unchanged, for one release as a
-  hidden alias for `self-learn retire <id> --covered-by <surface>`;
+  The `graduate` alias was removed on 2026-10-24; use
+  `self-learn retire <id> --covered-by <surface>`;
   `self-learn supersede`/`--supersedes` are untouched by this rename (they
   were never the ambiguous word). `reopen` widens to admit a wrong
   **retire** back to `pending`; it stays refused for a **replaced** record,
@@ -2753,7 +2753,7 @@ Run           = { "contract": "miner-shadow-run/1", "run_id": str, "mode": "test
 *Amended by R2 (2026-10-19):* the session engine adds optional keys, each
 validated when present (`contract.RUN_OPTIONAL_KEYS`,
 `SESSION_ROW_OPTIONAL_KEYS`): `"preview": bool` (a `mine run --preview`);
-`"counts": { "quote_redacted", "cut_to_limit", "checker_errors",
+`"counts": { "quote_redacted", "cut_to_limit", "prose_before_json", "checker_errors",
 "call_failures", "bad_output", "deferred": int, "flag_modes": { mode: int } }`;
 `"judged_uuids": { "state": "ok" | "locked" | "rebuilt" | "damaged",
 "loaded": int, "aside"?: str | null, "pruned"?: int, "added"?: int,
@@ -2876,6 +2876,9 @@ lesson becomes a pending record, its evidence items `{ref, quote,
 session, ts: ref.entry_ts, origin}` (a resurfaced copy's also carry
 `resurfaces: <rejected id>`, R2 fix round 7); R2 lands it (`12-transcript-miner.md`
 §13.3).
+
+The offline comparison module `mining/compare.py` and its command were removed
+on 2026-10-24; the following records the historical output format.
 
 **The comparison — `miner-compare/1`** (`runs/<run_id>/compare/report.json`,
 written by `python -m self_learn.mining.compare report`, which writes only

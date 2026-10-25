@@ -217,9 +217,6 @@ def _retire_rows():
         Row("retire-routed-retirement-preflight",
             routed_host_busy("retire", "skill-md:s"),
             verbs.GITOPS_DIRTY_MARKER, "target-busy"),
-        Row("graduate-routed-retirement-preflight",
-            routed_host_busy("graduate", None),
-            verbs.GITOPS_DIRTY_MARKER, "target-busy"),
     ]
 
 

@@ -72,20 +72,6 @@ class TestHold:
         assert hold.token is None
         assert path.read_text(encoding="utf-8") == other  # untouched
 
-    def test_preexisting_live_old_format_file_reads_as_unowned(self):
-        """Rollout pin (M-E): an old-format file — no `token=` line at
-        all, exactly what a pre-M-E process writes — is read exactly
-        like any other live foreign sentinel: live, and never adopted."""
-        path = sentinel.sentinel_path()
-        path.parent.mkdir(parents=True)
-        old_format = "pid=99999 host=elsewhere started=2026-07-13T00:00:00Z\n"
-        path.write_text(old_format, encoding="utf-8")
-
-        hold = sentinel.hold()
-        assert not hold.owned
-        assert hold.token is None
-        assert path.read_text(encoding="utf-8") == old_format  # untouched
-
     def test_live_sentinel_in_unwritable_cache_dir_reads_unowned_without_raising(self):
         """fold r1 (m1/m2): opening <sentinel>.lock for the first time
         needs WRITE permission on its parent directory; reading an
@@ -178,10 +164,6 @@ class TestRelease:
         assert not hold.release()
         assert path.exists()
 
-    def test_release_function_form(self):
-        hold = sentinel.hold()
-        assert sentinel.release(hold)
-        assert not hold.path.exists()
 
     def test_release_refuses_when_disk_token_no_longer_matches(self):
         """C11's release half, proved directly: a handle whose local

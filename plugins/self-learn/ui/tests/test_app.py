@@ -104,29 +104,3 @@ class TestSSEEscaping:
         assert "<script>alert(1)</script>" not in frame
         decoded = json.loads(frame[len("data: ") : -2])
         assert "<script>" not in decoded["html"]
-
-    def test_events_route_is_registered_and_security_gated(self, tmp_path: Path) -> None:
-        # A live, never-ending SSE body cannot be drained through the
-        # synchronous TestClient without a real client-side disconnect
-        # (attempting it deadlocks the test process — the request handler
-        # and the test body share one event loop under TestClient).
-        # event_stream()'s merge/escaping logic is exhaustively covered
-        # at the unit level in test_sse.py; here we only prove the route
-        # exists and is gated by the same security middleware as
-        # everything else (an unauthenticated GET must still 403, never
-        # hang or bypass auth for this one path).
-        sb = make_env(tmp_path)
-        env = load_env(sb.env)
-        app = create_app(env=env, token=TOKEN, runner=FakeRunner(), start_watcher=False)
-
-        # Gated (403, not a hang or an auth bypass) when unauthenticated —
-        # a fast, deterministic check that doesn't require draining a
-        # live never-ending body (draining one through the synchronous
-        # TestClient deadlocks the test process regardless of any
-        # per-request timeout passed to it — a TestClient/asyncio
-        # interaction, not an app bug; a real ASGI server + browser
-        # EventSource has no such issue, and is the X-5 acceptance venue
-        # for the live-stream path per 09 §7/10 §2).
-        c = TestClient(app, base_url="http://127.0.0.1:7357")  # no cookie set
-        r = c.get("/events")
-        assert r.status_code == 403

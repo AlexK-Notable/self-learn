@@ -480,43 +480,8 @@ def _apply_failure_env(kind: str, param: str, *, scratch: Path, monkeypatch) -> 
 # ===================================================================== #
 
 
-def test_pb1_backend_identity_per_param(backend, tmp_path):
-    from self_learn.invocation_sdk import SdkBackend as _IndependentSdkBackend
-
-    # U-cleanup-A COLLAPSE + RE-BASELINE (§8.4b): MAJOR-3's original
-    # first clause read the `backend` fixture's `params=("cli", "sdk")`
-    # marker off `_fixture_function_marker` -- CV2/CB-3 collapsed the
-    # fixture to unparametrized-sdk-only (see `backend`'s own
-    # docstring), so there is no `params` marker left to read; a plain
-    # `@pytest.fixture()` carries no `_fixture_function_marker` at all,
-    # so the old clause would now raise `AttributeError`, not just fail
-    # an assertion. Rebaselined to the surviving half of PB1's intent --
-    # that the fixture yields exactly one identity, sdk, no other pole
-    # reachable through it -- checked directly against `backend.param`
-    # rather than against marker metadata that no longer exists.
-    assert backend.param == "sdk"
-
-    home = tmp_path / "pb1-home"
-    home.mkdir()
-    assert type(invocation.backend_for("worker", home=home)) is _IndependentSdkBackend
-    assert type(invocation.backend_for("worker-repair", home=home)) is _IndependentSdkBackend
 
 
-def test_pb2_driven_outcome_backend_asymmetry(backend, tmp_path, monkeypatch):
-    home = tmp_path / "pb2-home"
-    home.mkdir()
-    spec = _spec_for("worker", home=home, prompt="ok_text")
-    outcome = invocation.write_session(spec)
-    if backend.param == "sdk":
-        assert isinstance(outcome, SdkOutcome)
-    else:
-        assert not isinstance(outcome, SdkOutcome)
-
-
-def test_pb3_sdk_param_always_uses_the_shipped_fake(backend):
-    if backend.param != "sdk":
-        pytest.skip("sdk-param-only criterion")
-    assert os.environ.get("SELF_LEARN_SDK_CLI_PATH") == str(FAKE_CLI)
 
 
 # `test_pb4_cli_param_shim_actually_reached` DELETED (code gate r1
@@ -850,40 +815,6 @@ def test_rp1a_repair_round_writes_no_settings_artifact_under_cache_dir(request, 
     )
 
 
-def test_rp2_repair_reaches_same_backend(backend, env, monkeypatch, tmp_path):
-    assert (
-        invocation.SELECTOR_FOR_SURFACE["worker-repair"]
-        == invocation.SELECTOR_FOR_SURFACE["worker"]
-        == "WORKER"
-    )
-    resolved: list[tuple[str, type]] = []
-    real_backend_for = invocation.registry.backend_for
-
-    def spy(surface, **kw):
-        b = real_backend_for(surface, **kw)
-        resolved.append((surface, type(b)))
-        return b
-
-    monkeypatch.setattr(invocation.registry, "backend_for", spy)
-
-    rid = _next_rid()
-    seed_pending(env, rid=rid)
-    # U-cleanup-B DELETE (§8.3): the `if backend.param == "cli":` branch
-    # (bash-shim `CLAUDE_SHIM_SCRIPT_1`/`_2` scripting) is unreachable
-    # dead code -- only the sdk branch's body remains, unconditional.
-    target = worker.stage_dir() / f"{rid}.yaml"
-    counter_file = tmp_path / "rp2-calls"
-    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_write_real")
-    monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(target))
-    monkeypatch.setenv("FAKE_CLAUDE_CALLS", str(counter_file))
-    monkeypatch.setenv("FAKE_CLAUDE_WRITE_BODY_1", _dump_yaml(_t4_missing_target(env, rid)))
-    monkeypatch.setenv("FAKE_CLAUDE_WRITE_BODY_2", _dump_yaml(_t4_target_fixed(env, rid)))
-
-    worker.run(env.home)
-    worker_calls = [b for s, b in resolved if s == "worker"]
-    repair_calls = [b for s, b in resolved if s == "worker-repair"]
-    assert worker_calls and repair_calls
-    assert worker_calls[-1] is repair_calls[-1]
 
 
 def test_rp3_repair_surface_direct_drive(backend, tmp_path, monkeypatch):
@@ -1257,48 +1188,6 @@ def test_ha1_hatch_open_omits_default_mode(env, sdk_fake_worker, monkeypatch):
     assert not (worker.cache_dir() / "worker.repair.settings.json").exists()
 
 
-def test_ha2_sdk_hatch_open_three_legs(env, sdk_cli_path, monkeypatch):
-    # leg (i): driven end-to-end from the real variable.
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
-    monkeypatch.setenv("SELF_LEARN_STAGE", "0")
-    monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
-    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_write")
-    outside = env.home.parent / "ha2-outside.md"
-    monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(outside))
-    captured = _spy_write_session(monkeypatch)
-
-    seed_pending(env, rid=_next_rid())
-    monkeypatch.setenv("SELF_LEARN_ENFORCE_SCOPE", "0")
-    captured.clear()
-    worker.run(env.home)
-    open_outcome = [c.outcome for c in captured if c.spec.surface == "worker"][-1]
-    assert open_outcome.denials == ()
-
-    seed_pending(env, rid=_next_rid())
-    monkeypatch.setenv("SELF_LEARN_ENFORCE_SCOPE", "1")
-    captured.clear()
-    worker.run(env.home)
-    closed_outcome = [c.outcome for c in captured if c.spec.surface == "worker"][-1]
-    assert len(closed_outcome.denials) == 1
-
-    # leg (ii): Bash still denied under the hatch.
-    c_open = invocation.containment_for(
-        "worker", allowed_tools=worker.ALLOWED_TOOLS, disallowed_tools=worker.DISALLOWED_TOOLS,
-        home=str(env.home), stage_dir=worker.stage_dir(), stage_on=True, enforce=False,
-    )
-    cb = charter_mod.build_can_use_tool(c_open)
-    assert isinstance(_call_cb(cb, "Bash", {}), PermissionResultDeny)
-
-    # leg (iii): the repair surface opens too, driven directly with a
-    # non-empty write_exact.
-    repair_open = invocation.containment_for(
-        "worker-repair", allowed_tools=worker.ALLOWED_TOOLS, disallowed_tools=worker.DISALLOWED_TOOLS,
-        write_exact=(str(env.home / "pending" / "lrn-x.md"),), enforce=False,
-    )
-    cb2 = charter_mod.build_can_use_tool(repair_open)
-    assert isinstance(_call_cb(cb2, "Write", {"file_path": "/anywhere.md"}), PermissionResultAllow)
-
-
 def test_ha3_hatch_closed_negative_controls(env, monkeypatch, backend):
     # `FL-c`/`FR2`: declared `(T2 + T3)`, parametrized over `backend`
     # (replacing direct `sdk_fake_worker`/`sdk_cli_path` fixture
@@ -1489,33 +1378,6 @@ def test_ev2_events_file_carries_tool_events(env, sdk_cli_path, monkeypatch, tmp
     assert tool_result
 
 
-def test_ev3_denial_pair_both_directions(env, sdk_cli_path, monkeypatch, tmp_path):
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
-    monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
-    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_write")
-
-    outside = tmp_path / "ev3-outside.md"
-    monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(outside))
-    seed_pending(env, rid=_next_rid())
-    worker.run(env.home)
-    events = _latest_worker_events()
-    denials = [e for e in events if e.get("type") == "denial"]
-    assert len(denials) == 1
-    assert denials[0]["source"] == "charter" and denials[0]["tool"] == "Write"
-    tool_result = [e for e in events if e.get("kind") == "tool_result"][0]
-    assert tool_result["is_error"] is True
-
-    inside = worker.stage_dir() / "ev3b.yaml"
-    monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(inside))
-    seed_pending(env, rid=_next_rid())
-    worker.run(env.home)
-    events2 = _latest_worker_events()
-    denials2 = [e for e in events2 if e.get("type") == "denial"]
-    assert denials2 == []
-    tool_result2 = [e for e in events2 if e.get("kind") == "tool_result"][0]
-    assert tool_result2["content"] == "ok"
-
-
 #: gate r1 B-1: the literal FW-107 log line, byte-pinned. This is
 #: worker.py's ONLY permitted occurrence of the substring "tool-events"
 #: -- see `test_ev4_tool_events_string_confined_to_events_module`.
@@ -1601,64 +1463,10 @@ def test_ev4_tool_events_string_confined_to_events_module():
 # below.
 
 
-def test_fr3_default_is_now_sdk(tmp_path, monkeypatch, sdk_absent):
-    # U-flip: this criterion was `test_fr3_default_stays_cli` -- the
-    # worker/worker-repair default flipped from "cli" to "sdk" (same
-    # in-code table rung the analyst flip (U-sdka) used). `sdk_absent`
-    # forces the SDK import to fail so the resolved backend is asserted
-    # by the failure mode (`BackendUnavailable`), not by a real
-    # `SdkBackend` construction depending on the host's installed extra.
-    for var in ("SELF_LEARN_BACKEND", "SELF_LEARN_BACKEND_WORKER", "SELF_LEARN_BACKEND_MINER", "SELF_LEARN_BACKEND_ANALYST"):
-        monkeypatch.delenv(var, raising=False)
-    home = tmp_path / "fr3-home"
-    home.mkdir()
-
-    with pytest.raises(invocation.BackendUnavailable):
-        invocation.backend_for("worker", home=home)
-    with pytest.raises(invocation.BackendUnavailable):
-        invocation.backend_for("worker-repair", home=home)
-    # U-cleanup-B: KNOWN_BACKENDS has one member now (§8.1) -- "cli" is
-    # deleted, not merely a second choice this surface avoids.
-    assert invocation.KNOWN_BACKENDS == ("sdk",)
     # instrument half: `git diff 89f8ef7..HEAD -- .../registry.py` empty
     # -- recorded in the build report, not asserted here (`FL-b`).
 
 
-def test_fr4_selector_mapping_does_not_cross_govern(tmp_path, monkeypatch):
-    home = tmp_path / "fr4-home"
-    home.mkdir()
-    for var in ("SELF_LEARN_BACKEND", "SELF_LEARN_BACKEND_WORKER", "SELF_LEARN_BACKEND_MINER", "SELF_LEARN_BACKEND_ANALYST"):
-        monkeypatch.delenv(var, raising=False)
-
-    from self_learn.invocation_sdk import SdkBackend as _IndependentSdkBackend
-
-    # U-flip flipped worker/worker-repair/miner-reader's product default
-    # to sdk (same table rung the analyst flip, U-sdka, used). The
-    # scoping claim (the MINER/ANALYST selectors do not govern WORKER)
-    # needs the foreign stimulus INVERTED to "cli": a leak would then
-    # flip worker to CliBackend and redden, while the correct behavior
-    # keeps its own sdk default. (Stimulus "sdk" would be tautological --
-    # leak and no-leak both resolve SdkBackend; gate blessing-read catch.)
-    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
-    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")
-    assert type(invocation.backend_for("worker", home=home)) is _IndependentSdkBackend
-    assert type(invocation.backend_for("worker-repair", home=home)) is _IndependentSdkBackend
-    monkeypatch.delenv("SELF_LEARN_BACKEND_MINER")
-    monkeypatch.delenv("SELF_LEARN_BACKEND_ANALYST")
-
-    # Same inversion for the WORKER -> miner-reader leg: miner-reader's
-    # own default is now sdk too, so the foreign stimulus is "cli".
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
-    assert type(invocation.backend_for("miner-reader", home=home)) is _IndependentSdkBackend
-    # U-sdka flipped the analyst's product default to sdk. The scoping
-    # claim (the WORKER selector does not govern the analyst) needs the
-    # foreign stimulus INVERTED to "cli": a leak would then flip the
-    # analyst to CliBackend and redden, while the correct behavior keeps
-    # its own sdk default. (Stimulus "sdk" would be tautological -- leak
-    # and no-leak both resolve SdkBackend; gate blessing-read catch.)
-    # `SELF_LEARN_BACKEND_WORKER` is already "cli" from the miner-reader
-    # leg above -- same foreign stimulus serves both legs.
-    assert type(invocation.backend_for("analyst", home=home)) is _IndependentSdkBackend
 
 
 # ===================================================================== #

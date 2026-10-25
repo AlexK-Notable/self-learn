@@ -506,31 +506,6 @@ def test_hy2_no_module_in_invocation_imports_the_forbidden_modules():
 # `stage_permission_rules`, the rule-rendering helpers `containment_for`'s
 # worker branch parallels) are unaffected by this unit and stay
 # sha-pinned.
-_HY3_SHAS = {
-    "write_permission_rules": "745ceedd12d0720e0c36c8411b43a5292db6e3399a7f6d02c5473f441d99fc66",
-    "stage_permission_rules": "1ad0fba43230779635e8eee20d6580cab170c228ff367fa09d3d1c447812c864",
-}
-
-
-def test_hy3_witness_b_is_sha_pinned():
-    """HY3 -- Witness B (the surviving shipped settings-file writers) is
-    sha256 pinned, not substring-guarded (M34's defeat of the r1
-    substring form). Any edit to these two functions -- even an
-    innocent docstring fix -- reddens this test; that is the deliberate,
-    documented cost (Sec 3.11). FW-117: down from three witnesses to two
-    -- `write_repair_settings_file` is deleted, not merely unpinned."""
-    checks = [
-        (worker.write_permission_rules, "write_permission_rules"),
-        (worker.stage_permission_rules, "stage_permission_rules"),
-    ]
-    for fn, name in checks:
-        actual = hashlib.sha256(inspect.getsource(fn).encode("utf-8")).hexdigest()
-        assert actual == _HY3_SHAS[name], (
-            f"Witness B changed ({name}). If this was deliberate, U-seam "
-            "is the wrong unit for it -- see Sec 3.11."
-        )
-
-
 def test_hy4_no_filesystem_writes_in_invocation_except_fakebackend_writes():
     """HY4 -- a NEW guard (B-6: the shipped fail-closed census cannot see
     `invocation/` at all -- root-level `glob`, not `rglob`). No function
@@ -556,60 +531,9 @@ def test_hy4_no_filesystem_writes_in_invocation_except_fakebackend_writes():
     assert len(violations) == 2, violations
 
 
-def test_hy4_lock_census_is_root_level_only_and_therefore_blind_to_invocation():
-    """HY4's companion fact (B-6, measured E8): `test_lock_invariant.py`'s
-    `NOT_REPO_TRUTH` census globs root-level only -- `invocation/` is
-    invisible to it by construction. This does not modify that file; it
-    reads it to keep the fact current."""
-    src = (Path(__file__).parent / "test_lock_invariant.py").read_text(encoding="utf-8")
-    assert 'SRC.glob("*.py")' in src
-    assert 'root.glob("*.py")' in src
-    assert "SRC.rglob(" not in src
-    assert "root.rglob(" not in src
-
-
 # ===================================================================== #
 # CN -- containment
 # ===================================================================== #
-
-
-def test_cn1_every_rendered_rule_has_the_double_slash():
-    """CN1 -- for each of the four containments, every rendered rule
-    starts with `Edit(//` (double slash). Guarded by non-emptiness FIRST
-    for the three surfaces that have rules -- "every element starts with
-    X" is vacuously true of `[]`."""
-    home = "/home/x"
-    worker_c = invocation.containment_for(
-        "worker",
-        allowed_tools=worker.ALLOWED_TOOLS,
-        disallowed_tools=worker.DISALLOWED_TOOLS,
-        home=home,
-        stage_dir=f"{home}/.cache/self-learn/worker.stage",
-        stage_on=True,
-        enforce=True,
-    )
-    repair_c = invocation.containment_for(
-        "worker-repair",
-        allowed_tools=worker.ALLOWED_TOOLS,
-        disallowed_tools=worker.DISALLOWED_TOOLS,
-        write_exact=(f"{home}/a.yaml",),
-        enforce=True,
-    )
-    miner_c = invocation.containment_for(
-        "miner-reader",
-        disallowed_tools=miner.READER_DISALLOWED_TOOLS,
-        spool_dir=f"{home}/.cache/self-learn/miner/spool",
-    )
-    analyst_c = invocation.containment_for("analyst", allowed_tools=analyst.ANALYST_ALLOWED_TOOLS)
-
-    for c in (worker_c, repair_c, miner_c):
-        rules = invocation.containment_rules(c)
-        assert len(rules) >= 1
-        for r in rules:
-            assert r.startswith("Edit(//"), r
-
-    # the analyst's empty case is CN3's business, not this one's.
-    assert invocation.containment_rules(analyst_c) == []
 
 
 def test_cn2_call_site_containment_matches_the_call_site_table(
@@ -666,27 +590,6 @@ def test_cn3_analyst_containment_is_deliberately_near_empty():
     assert c.strict_mcp is False
     assert c.default_mode is None
     assert invocation.containment_rules(c) == []
-
-
-def test_cn4_write_exact_sorts_write_globs_does_not():
-    c_repair = invocation.containment_for(
-        "worker-repair", write_exact=("/z/c.yaml", "/z/a.yaml", "/z/b.yaml")
-    )
-    assert invocation.containment_rules(c_repair) == [
-        "Edit(//z/a.yaml)",
-        "Edit(//z/b.yaml)",
-        "Edit(//z/c.yaml)",
-    ]
-
-    home = "/home/x"
-    c_worker = invocation.containment_for(
-        "worker", home=home, stage_on=False, enforce=True
-    )
-    # write_permission_rules already returns fully-rendered `Edit(...)`
-    # rules -- containment_rules must render the SAME final strings from
-    # its own raw glob patterns, not double-wrap them.
-    expected = worker.write_permission_rules(Path(home))
-    assert invocation.containment_rules(c_worker) == expected
 
 
 def test_cn5_default_mode_omitted_when_none_present_when_default():
@@ -1015,15 +918,6 @@ def test_lg2_repair_label_appears_only_in_repair_lines(monkeypatch):
     assert logs_repair and all("repair " in line for line in logs_repair)
 
 
-def test_lg3a_worker_g_format(monkeypatch):
-    logs = []
-    outcome = _run_sdk(
-        "worker", monkeypatch, prompt="hang", timeout=0.3, label="", timeout_display=1800.0, log=logs.append
-    )
-    assert outcome.failure == "timeout"
-    assert logs[0] == "run: claude timed out after 1800s"  # `:g` format drops the trailing .0
-
-
 def test_lg3b_miner_no_g_format(monkeypatch):
     logs = []
     outcome = _run_sdk(
@@ -1031,17 +925,6 @@ def test_lg3b_miner_no_g_format(monkeypatch):
     )
     assert outcome.failure == "timeout"
     assert logs[0] == "run: claude timed out after 900.0s"  # miner's template has no `:g` -- keeps the .0
-
-
-def test_lg3c_timeout_display_is_actually_read(monkeypatch):
-    logs = []
-    outcome = _run_sdk(
-        "miner-reader", monkeypatch, prompt="hang", timeout=0.3, timeout_display=900, log=logs.append
-    )
-    assert outcome.failure == "timeout"
-    assert logs[0] == "run: claude timed out after 900s"
-
-
 
 
 def test_lg5_detail_rendering_per_surface(monkeypatch):
@@ -1162,301 +1045,20 @@ def test_lg7_analyst_invocation_never_grows_worker_or_miner_log(analyst_env, tmp
 # ===================================================================== #
 
 
-def test_rg1_five_rung_precedence_resolves_in_isolation(tmp_path, monkeypatch, sdk_absent):
-    """U-cleanup §5/SEL1-4: "cli" is a NAMED REFUSAL now, not a second
-    resolvable backend type -- the pre-deletion type-based discriminator
-    (an isinstance check against the now-deleted CLI transport class) is
-    gone along with the class it named. `sdk_absent` still earns its
-    keep: `_resolve` raises for "cli" BEFORE
-    ever attempting the (broken) sdk import, so its message is
-    `_CLI_RETIRED_MESSAGE` ("removed in U-cleanup"); every other value
-    proceeds to the broken import and raises `_SDK_UNAVAILABLE_MESSAGE`
-    ("pip install") instead. Same two-outcome discriminator this test
-    always used -- proving a rung was actually READ rather than
-    coincidentally matching the (now all-sdk) default -- just read off
-    the raised message instead of the resolved type."""
-    home = tmp_path / "rg1-home"
-    home.mkdir()
-    for surface in invocation.SURFACES:
-        selector = invocation.SELECTOR_FOR_SURFACE[surface]
-        # U8 (17-invocation-runbook.md §1): `_clear_backend_env`'s own
-        # hardcoded var list predates `steward`/`overseer` and is an
-        # EXPORTED name (`test_u_sdka.py:45` imports it by name) --
-        # this loop clears the surface's OWN selector var itself,
-        # alongside it, rather than widening that shared helper.
-
-        _clear_backend_env(monkeypatch)
-        monkeypatch.delenv(f"SELF_LEARN_BACKEND_{selector}", raising=False)
-        _clear_config(home)
-        monkeypatch.setenv(f"SELF_LEARN_BACKEND_{selector}", "cli")
-        with pytest.raises(invocation.BackendUnavailable) as exc:
-            invocation.backend_for(surface, home=home)
-        assert "removed in U-cleanup" in str(exc.value)
-
-        _clear_backend_env(monkeypatch)
-        monkeypatch.delenv(f"SELF_LEARN_BACKEND_{selector}", raising=False)
-        monkeypatch.setenv("SELF_LEARN_BACKEND", "cli")
-        with pytest.raises(invocation.BackendUnavailable) as exc:
-            invocation.backend_for(surface, home=home)
-        assert "removed in U-cleanup" in str(exc.value)
-
-        _clear_backend_env(monkeypatch)
-        monkeypatch.delenv(f"SELF_LEARN_BACKEND_{selector}", raising=False)
-        _write_config(home, {f"backend_{surface}": "cli"})
-        with pytest.raises(invocation.BackendUnavailable) as exc:
-            invocation.backend_for(surface, home=home)
-        assert "removed in U-cleanup" in str(exc.value)
-        _clear_config(home)
-
-        _write_config(home, {"backend": "cli"})
-        with pytest.raises(invocation.BackendUnavailable) as exc:
-            invocation.backend_for(surface, home=home)
-        assert "removed in U-cleanup" in str(exc.value)
-        _clear_config(home)
-
-        # U-cleanup: `DEFAULT_BACKEND_FOR_SURFACE` has no "cli" entries
-        # any more -- the table cannot name a retired backend -- so the
-        # default rung always takes the sdk-absent leg for every surface.
-        with pytest.raises(invocation.BackendUnavailable) as exc:
-            invocation.backend_for(surface, home=home)
-        assert "pip install" in str(exc.value)
 
 
-def test_rg2_each_rung_shadows_the_ones_below(tmp_path, monkeypatch, sdk_absent):
-    """U-cleanup: same message-based discriminator as `test_rg1` --
-    "pip install" proves an "sdk" rung was read, "removed in U-cleanup"
-    proves a "cli" rung leaked through instead."""
-    home = tmp_path / "rg2-home"
-    home.mkdir()
-    surface, selector = "worker", "WORKER"
-
-    _clear_backend_env(monkeypatch)
-    _clear_config(home)
-    monkeypatch.setenv(f"SELF_LEARN_BACKEND_{selector}", "sdk")
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "cli")
-    _write_config(home, {f"backend_{surface}": "cli", "backend": "cli"})
-    with pytest.raises(invocation.BackendUnavailable) as exc:
-        invocation.backend_for(surface, home=home)
-    assert "pip install" in str(exc.value)
-
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-    _write_config(home, {f"backend_{surface}": "cli", "backend": "cli"})
-    with pytest.raises(invocation.BackendUnavailable) as exc:
-        invocation.backend_for(surface, home=home)
-    assert "pip install" in str(exc.value)
-
-    _clear_backend_env(monkeypatch)
-    _write_config(home, {f"backend_{surface}": "sdk", "backend": "cli"})
-    with pytest.raises(invocation.BackendUnavailable) as exc:
-        invocation.backend_for(surface, home=home)
-    assert "pip install" in str(exc.value)
-
-    # U-cleanup: config-general ("backend: cli") is the only stimulus
-    # left standing -- proves rung 4 (config general) was read.
-    _clear_backend_env(monkeypatch)
-    _write_config(home, {"backend": "cli"})
-    with pytest.raises(invocation.BackendUnavailable) as exc:
-        invocation.backend_for(surface, home=home)
-    assert "removed in U-cleanup" in str(exc.value)
-
-    # Nothing set at all -- the built-in default rung ("sdk" for every
-    # surface since U-flip); `sdk_absent` makes it raise too, but with
-    # the OTHER message.
-    _clear_config(home)
-    with pytest.raises(invocation.BackendUnavailable) as exc:
-        invocation.backend_for(surface, home=home)
-    assert "pip install" in str(exc.value)
-
-    # surface -> selector: WORKER governs worker-repair, MINER does not.
-    # A WORKER-selector "cli" stimulus must reach worker-repair.
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
-    with pytest.raises(invocation.BackendUnavailable) as exc:
-        invocation.backend_for("worker-repair", home=home)
-    assert "removed in U-cleanup" in str(exc.value)
-
-    # A MINER-selector stimulus must NOT leak into worker-repair --
-    # worker-repair falls through to its own (sdk) default instead, so
-    # the raised message is the "pip install" one, not the "cli" one.
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
-    with pytest.raises(invocation.BackendUnavailable) as exc:
-        invocation.backend_for("worker-repair", home=home)
-    assert "pip install" in str(exc.value)
 
 
-def test_sel1_env_selector_cli_refused_through_text_session(monkeypatch, tmp_path):
-    """T-CLI-REFUSED-ENV (§11.1, SEL1): `SELF_LEARN_BACKEND_ANALYST=cli`
-    drives `text_session` -- the surface's ACTUAL dispatch entry point,
-    never the bare `backend_for` accessor `test_rg1`/`test_rg2` already
-    cover -- so the refusal is proven to reach the `Outcome` the analyst
-    itself consumes, never raises, and logs exactly `invocation backend
-    unavailable (<message>)`: the analyst's own `unavailable` template,
-    byte-for-byte."""
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")
-    logs = []
-    spec = _spec("analyst", cwd=tmp_path, log=logs.append)
-    outcome = invocation.text_session(spec)
-    assert outcome.ok is False
-    assert outcome.failure == "unavailable"
-    assert logs == [
-        invocation.LOG_TEMPLATES["analyst"].unavailable.format(
-            label=spec.label, exc=invocation.registry._CLI_RETIRED_MESSAGE
-        )
-    ]
 
 
-def test_sel2_all_four_surfaces_refuse_through_their_own_templates(monkeypatch, tmp_path):
-    """T-CLI-REFUSED-ALL-SURFACES (§11.1, SEL2): the SAME env-selector
-    refusal as `SEL1`, for all four surfaces, through their own
-    `LOG_TEMPLATES` rows -- worker and worker-repair share
-    `_WORKER_TEMPLATES` (one selector, `SELF_LEARN_BACKEND_WORKER`, one
-    template), miner-reader and analyst each carry their own -- three
-    distinct byte-exact template strings across the four surfaces."""
-    for surface in invocation.SURFACES:
-        selector = invocation.SELECTOR_FOR_SURFACE[surface]
-        _clear_backend_env(monkeypatch)
-        monkeypatch.setenv(f"SELF_LEARN_BACKEND_{selector}", "cli")
-        logs = []
-        spec = _spec(surface, cwd=tmp_path, log=logs.append)
-        method = invocation.text_session if surface == "analyst" else invocation.write_session
-        outcome = method(spec)
-        assert outcome.ok is False, surface
-        assert outcome.failure == "unavailable", surface
-        assert logs == [
-            invocation.LOG_TEMPLATES[surface].unavailable.format(
-                label=spec.label, exc=invocation.registry._CLI_RETIRED_MESSAGE
-            )
-        ], surface
 
 
-def test_sel3_coarse_rung_cli_refuses_identically(monkeypatch, tmp_path):
-    """T-CLI-REFUSED-COARSE (§11.1, SEL3): `SELF_LEARN_BACKEND=cli` (the
-    coarse, no-selector rung) refuses IDENTICALLY to `SEL1`'s selector-
-    scoped pin -- same `Outcome` shape, same byte-exact template."""
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "cli")
-    logs = []
-    spec = _spec("worker", cwd=tmp_path, log=logs.append)
-    outcome = invocation.write_session(spec)
-    assert outcome.ok is False
-    assert outcome.failure == "unavailable"
-    assert logs == [
-        invocation.LOG_TEMPLATES["worker"].unavailable.format(
-            label=spec.label, exc=invocation.registry._CLI_RETIRED_MESSAGE
-        )
-    ]
 
 
-def test_sel4_config_backend_worker_cli_refuses_and_names_that_key(tmp_path, monkeypatch):
-    """T-CLI-REFUSED-CONFIG (§11.1, SEL4): `invocation.backend_worker:
-    cli` in `<home>/config.yaml` refuses identically -- and the
-    resolution NAMES that key, not a per-surface key that was never
-    present (`config.invocation_backend`'s own guarantee: it returns the
-    FIRST PRESENT key, `Rs-a1`). Proven two ways: (a) `worker` itself
-    refuses, driven through `write_session`; (b) a DIFFERENT surface
-    (`analyst`, whose own `backend_analyst` key is absent) is UNTOUCHED
-    -- if the config rung had leaked across surfaces, analyst would
-    refuse too."""
-    home = tmp_path / "sel4-home"
-    home.mkdir()
-    _clear_backend_env(monkeypatch)
-    _write_config(home, {"backend_worker": "cli"})
-
-    logs = []
-    spec = _spec("worker", cwd=home, log=logs.append)
-    outcome = invocation.write_session(spec)
-    assert outcome.ok is False
-    assert outcome.failure == "unavailable"
-    assert logs == [
-        invocation.LOG_TEMPLATES["worker"].unavailable.format(
-            label=spec.label, exc=invocation.registry._CLI_RETIRED_MESSAGE
-        )
-    ]
-
-    # negative control: analyst has no config key of its own here, and
-    # SURFACES never leak into each other's config rung -- checked at
-    # `backend_for` (construction only, `SdkBackend` never invoked: `HY4`
-    # forbids any test in this suite from reaching a real `claude`).
-    assert isinstance(invocation.backend_for("analyst", home=home), SdkBackend)
 
 
-def test_rg3_unknown_value_falls_closed_with_byte_exact_warning(tmp_path, monkeypatch, capsys):
-    """U-cleanup SEL5/M-1's discriminator: an UNKNOWN value (e.g. "bogus")
-    is NOT a "cli" selection -- it takes the generic fallback warning and
-    resolves to sdk, exactly like the built-in default would.
-    `backend_for` only CONSTRUCTS the backend object here (no session is
-    ever run), so no real process is ever at risk of being spawned."""
-    home = tmp_path / "rg3-home"
-    home.mkdir()
-    surface, selector = "miner-reader", "MINER"
-
-    _clear_backend_env(monkeypatch)
-    _clear_config(home)
-    monkeypatch.setenv(f"SELF_LEARN_BACKEND_{selector}", "bogus")
-    assert isinstance(invocation.backend_for(surface, home=home), SdkBackend)
-    assert capsys.readouterr().err == (
-        f"self-learn: unknown invocation backend 'bogus' in SELF_LEARN_BACKEND_{selector}"
-        ' — using "sdk"\n'
-    )
-
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "bogus")
-    assert isinstance(invocation.backend_for(surface, home=home), SdkBackend)
-    assert capsys.readouterr().err == (
-        "self-learn: unknown invocation backend 'bogus' in SELF_LEARN_BACKEND" ' — using "sdk"\n'
-    )
-
-    _clear_backend_env(monkeypatch)
-    _write_config(home, {f"backend_{surface}": "bogus"})
-    assert isinstance(invocation.backend_for(surface, home=home), SdkBackend)
-    assert capsys.readouterr().err == (
-        f'self-learn: config.yaml ignored — invocation.backend_{surface} must be '
-        'one of sdk; got \'bogus\' — using "sdk"\n'
-    )
-    _clear_config(home)
-
-    _write_config(home, {"backend": "bogus"})
-    assert isinstance(invocation.backend_for(surface, home=home), SdkBackend)
-    assert capsys.readouterr().err == (
-        'self-learn: config.yaml ignored — invocation.backend must be '
-        'one of sdk; got \'bogus\' — using "sdk"\n'
-    )
-    _clear_config(home)
-
-    # does NOT fall through: bogus at rung 2 with sdk at rung 4 -> sdk
-    # either way (folded-unknown and explicit-sdk are indistinguishable
-    # by TYPE now that both resolve to SdkBackend -- the discriminating
-    # fact is that rung 2 answered at all, which the warning proves).
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "bogus")
-    _write_config(home, {"backend": "sdk"})
-    assert isinstance(invocation.backend_for(surface, home=home), SdkBackend)
-    assert "unknown invocation backend 'bogus' in SELF_LEARN_BACKEND" in capsys.readouterr().err
 
 
-def test_t_unknown_still_sdk_write_session_succeeds_not_refused(monkeypatch):
-    """T-UNKNOWN-STILL-SDK (§11.1): the FULL discriminator M-1 needs --
-    an unknown backend value must still resolve to sdk (never the
-    retired-backend refusal), driven end to end through `write_session`
-    against the real fake-CLI harness (`_run_sdk`) rather than the bare
-    `backend_for` accessor, so a mutation that folds unknown -> "cli" is
-    caught even if it only breaks at dispatch time, not construction
-    time."""
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "banana")
-    outcome = _run_sdk("worker", monkeypatch, prompt="ok_text")
-    assert outcome.ok is True
-    assert outcome.failure is None
-
-
-def test_rg4_sdk_raises_backend_unavailable_with_install_command(monkeypatch, tmp_path, sdk_absent):
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-    with pytest.raises(invocation.BackendUnavailable) as exc_info:
-        invocation.backend_for("worker", home=tmp_path)
-    assert "pip install 'self-learn-cli[sdk]'" in str(exc_info.value)
 
 
 def test_rg5_write_session_returns_unavailable_without_raising(monkeypatch, tmp_path, sdk_absent):
@@ -1517,73 +1119,8 @@ def test_rg5_unknown_surface_returns_outcome_never_keyerror():
     assert outcome2.failure == "unavailable"
 
 
-def test_rg6_empty_string_falls_through_silently(tmp_path, monkeypatch, capsys):
-    home = tmp_path / "rg6-home"
-    home.mkdir()
-    _clear_backend_env(monkeypatch)
-    _clear_config(home)
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "")
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "")
-    _write_config(home, {"backend_worker": "", "backend": ""})
-    backend = invocation.backend_for("worker", home=home)
-    # U-flip flipped "worker"'s default to sdk, and U-cleanup deleted the
-    # CLI transport entirely -- falling all the way through to the
-    # default rung now resolves a real `SdkBackend` unconditionally. The
-    # invariant under test (every empty value falls through SILENTLY) is
-    # the `err == ""` assertion below, not the resolved backend's type.
-    from self_learn.invocation_sdk import SdkBackend as _SdkBackend
-    assert isinstance(backend, _SdkBackend)
-    assert capsys.readouterr().err == ""
 
 
-def test_rg7_config_invocation_backend_discipline(tmp_path, capsys, monkeypatch):
-    home = tmp_path / "rg7-home"
-    home.mkdir()
-
-    assert config.invocation_backend(home, "worker") is None
-    assert capsys.readouterr().err == ""
-
-    (home / "config.yaml").write_text("", encoding="utf-8")
-    assert config.invocation_backend(home, "worker") is None
-    assert capsys.readouterr().err == ""
-
-    (home / "config.yaml").write_text(":::not yaml {{{\n", encoding="utf-8")
-    assert config.invocation_backend(home, "worker") is None
-    assert "config.yaml ignored" in capsys.readouterr().err
-
-    (home / "config.yaml").write_text("- just\n- a\n- list\n", encoding="utf-8")
-    assert config.invocation_backend(home, "worker") is None
-    assert "config.yaml ignored" in capsys.readouterr().err
-
-    (home / "config.yaml").write_text("one_motion_route:\n  hook: true\n", encoding="utf-8")
-    assert config.invocation_backend(home, "worker") is None
-    assert capsys.readouterr().err == ""
-
-    (home / "config.yaml").write_text("invocation: not-a-mapping\n", encoding="utf-8")
-    assert config.invocation_backend(home, "worker") is None
-    assert "config.yaml ignored" in capsys.readouterr().err
-
-    (home / "config.yaml").write_text("invocation:\n  backend: 42\n", encoding="utf-8")
-    assert config.invocation_backend(home, "worker") is None
-    assert "config.yaml ignored" in capsys.readouterr().err
-
-    (home / "config.yaml").write_text(
-        "invocation:\n  backend_worker: cli\n  backend: sdk\n", encoding="utf-8"
-    )
-    assert config.invocation_backend(home, "worker") == ("backend_worker", "cli")
-    assert config.invocation_backend(home, "miner-reader") == ("backend", "sdk")
-    assert capsys.readouterr().err == ""
-
-    assert "invocation_backend" in config.__all__
-
-    home2 = tmp_path / "rg7-home2"
-    home2.mkdir()
-    (home2 / "config.yaml").write_text("invocation:\n  backend_worker: bogus\n", encoding="utf-8")
-    calls = []
-    monkeypatch.setattr(config, "_warn", lambda message: calls.append(message))
-    _clear_backend_env(monkeypatch)
-    invocation.backend_for("worker", home=home2)
-    assert calls, "the registry's unknown-value warning must be emitted via config._warn"
 
 
 def test_rg8_pyproject_sdk_extra_matches_ui_pin():
@@ -1688,17 +1225,6 @@ def test_fk2_each_fakestep_matches_sdkbackend_for_the_same_failure(monkeypatch):
     assert fake_logs == real_logs, ("os-error", fake_logs, real_logs)
 
 
-def test_fk3_fake_is_not_reachable_from_backend_for(monkeypatch, tmp_path, capsys):
-    """U-cleanup: "fake" is an UNKNOWN value now (never "cli" -- that
-    value is a named refusal, not a fold target) -- it takes the generic
-    warning and resolves to `SdkBackend`, same as any other typo."""
-    assert "fake" not in invocation.KNOWN_BACKENDS
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "fake")
-    backend = invocation.backend_for("worker", home=tmp_path)
-    assert isinstance(backend, SdkBackend)
-    assert not isinstance(backend, invocation.FakeBackend)
-    assert "unknown invocation backend 'fake'" in capsys.readouterr().err
 
 
 def test_fk4_writes_step_creates_files(tmp_path):

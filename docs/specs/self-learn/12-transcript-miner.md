@@ -140,6 +140,8 @@ checked-pointer resolver (`refs.py`), through the steward's briefs and the
 offline comparison, still reads it when a lesson cites it or a quote is
 searched for. The run log does not count listed skips.
 
+*2026-10-24: the offline comparison harness (`mining/compare.py`) is retired and removed; references above describe its historical role.*
+
 **Cap holds (amended by `U-cursorhold`, FW-73).** A candidate refused at
 Phase 4's per-run landing cap holds its originating session's cursor
 rather than advancing past it, so the refusal costs a re-read, never the
@@ -542,6 +544,8 @@ exported env var — is the only flip that reaches the nightly run;
 `17-invocation-runbook.md` §8 (`invocation-runbook.md`'s own numbered
 §4.1 that this note used to cite is retired along with the rest of the
 old §4).
+
+*2026-10-24: the backend selector keys are retired; the historical flip advice above no longer applies. All miner invocations use SDK; `config unset invocation.backend_miner-reader` removes an obsolete key without changing the backend.*
 
 **User requirements added:**
 
@@ -1003,7 +1007,10 @@ timeout, while retaining document templates and model identity. The shared
 provider's bulk policy is unchanged. This avoids the bulk policy's minutes
 of retries after a caller has timed out. The waiting daemon owns no SQLite
 connection or ledger state; arbitrary injected providers still own their
-transport cancellation behavior.
+transport cancellation behavior. Provider failures preserve their exception class
+across the thread boundary. Fallback notes name that class (including
+`TimeoutError`); provider message text is withheld because it can contain
+credentials or private input, even when it matches no secret-scan pattern.
 
 ### 13.2 Rule-situation flags and method
 
@@ -1017,12 +1024,15 @@ unknown project buckets remain eligible. Skill scope requires a matching
 Skill call or `skills/<name>/` in the session. Superseded rules are excluded.
 
 In-memory FTS5 scores are normalized against the query's own score. If the
-lesson index is hybrid, all work documents are embedded in one batch and
+lesson index is hybrid, non-empty work documents are embedded in one batch and
 compared with the rules' stored vectors, then ranks are fused with RRF.
 No provider or an embedding failure degrades to lexical-only and is
 reported in `FlagResult.mode/note`. A flag needs normalized lexical score
 at least 0.30 or cosine at least 0.75. At most two stretches per rule and
 eight flags per session survive, best first. These bars are provisional.
+Empty or whitespace-only stretches are excluded before embedding and ranking;
+remaining stretches retain their original turn and line positions. An all-empty
+set makes no embedding call and yields no flags, without degrading index mode.
 
 `miner-method.md` starts with `<!-- method-version: 1 -->` and is byte-pinned
 in tests. It carries the four lesson shapes, exclusions, composition,
@@ -1098,6 +1108,18 @@ no cost counts as 0.60); a session not started keeps its cursor.
 the ledger's record ids. Any exception the check raises makes that one
 session `failed` (`error: checker-error`); a failed call, or a call that
 raised, makes it `failed` (`error: call`); neither touches another session.
+
+The final message must be one JSON object, bare or inside exactly one
+triple-backtick fence (optionally labelled `json`) that ends the message.
+Prose before that fence is tolerated; whitespace after it is allowed.
+The closing backticks may follow the object directly or start their own line.
+Multiple fences, trailing prose, prose without a fence, and prose followed
+by an unfenced object are refused: without a fence there is no explicit
+boundary separating commentary from the answer. The extracted object still
+passes the full output contract and evidence checks. `counts.prose_before_json`
+in `run.json` counts contract-valid answers accepted through this tolerance
+(once per answer); bare objects and fence-only answers count zero. The run
+contract validates the optional count as a nonnegative integer, never a bool.
 
 **Save** (fix round 4; the orchestrator laid out options and the user typed
 "go with option 1", replacing round 3's families). When a session's answer

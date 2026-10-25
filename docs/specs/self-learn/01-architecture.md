@@ -389,8 +389,8 @@ decision row S-66.
 
   `graduate` is now `retire` in every human-facing surface, and
   `superseded_by: canon` is now `superseded_by: covered_by:<kind>:<name>`
-  (`02-schema.md` §2 as amended); the CLI verb itself stays callable as
-  `graduate` for one release as a hidden alias.
+  (`02-schema.md` §2 as amended). The hidden `graduate` alias was
+  retired 2026-10-24 and is no longer callable; historical records still read.
 - **`--selftest`** (inherited from ha-note): proves capture path, worker
   spawn (M2+ — M1 has no worker; the check is conditional), and compiler
   dry-run still work — loud, not silent, when dead.

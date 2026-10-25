@@ -399,28 +399,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help_text: str,
         *,
         json_flag: bool = False,
-        hidden: bool = False,
     ) -> argparse.ArgumentParser:
-        # S-67: `hidden=True` (the `graduate` alias) registers the
-        # sub-parser exactly as before -- `self-learn graduate ...` still
-        # runs and `self-learn graduate --help` still shows *help_text*
-        # -- but omits it from `self-learn --help`'s own listing of
-        # commands. `help=argparse.SUPPRESS` on `add_parser()` alone does
-        # NOT do this (measured on Python 3.13.11: the row still prints,
-        # with the literal string "==SUPPRESS==" as its help text --
-        # `_format_action` only skips an action whose `.help is SUPPRESS`
-        # for ordinary arguments, not for a subparsers choice-pseudo-
-        # action). The actual fix strips the pseudo-action `add_parser`
-        # appended to the subparsers action's own choices list, which is
-        # what `HelpFormatter` iterates to build that listing --
-        # `p.add_argument("--covered-by", ...)` runs later and is
-        # unaffected; `self-learn graduate --help` still resolves *p*
-        # directly, never through this list.
-        p = sub.add_parser(name, help=argparse.SUPPRESS if hidden else help_text)
-        if hidden:
-            sub._choices_actions = [  # noqa: SLF001 -- no public API for this
-                a for a in sub._choices_actions if a.dest != name
-            ]
+        # The graduate alias was removed on 2026-10-24.
+        p = sub.add_parser(name, help=help_text)
         p.add_argument("--note", metavar="TEXT", help="resolution note → commit body")
         p.add_argument(
             "--no-push",
@@ -432,12 +413,8 @@ def _build_parser() -> argparse.ArgumentParser:
             # Resolution-evidence unit (§2.1/§3.1): a machine envelope on
             # stdout, populated ONLY on a successful (exit 0) run — never
             # a second outcome channel. Scoped to route/reject/defer/
-            # retire/graduate/reconsider (fold r1, F7: U5 adds
-            # `reconsider` as a fifth `--json` verb; S-67 adds `retire`
-            # as a sixth, `graduate` staying its hidden alias — the
-            # resolution verbs the UI's evidence surface drives) — never
-            # rehome/supersede/confirm-recurrence/confirm-held, which
-            # stay text-only.
+            # retire/reconsider, the resolution verbs the UI evidence
+            # surface drives. Other verbs remain text-only.
             p.add_argument(
                 "--json",
                 action="store_true",
@@ -555,29 +532,6 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="covered_by",
         help="the surface that already covers this lesson — <kind>:<name>, "
         "kind one of claude-md/skill-md/reference/output-style (S-67)",
-    )
-
-    # S-67: `graduate` is `retire`'s deprecated, hidden alias for one
-    # release — `hidden=True` drops it from `self-learn --help`'s own
-    # command list, never from what actually runs. `--covered-by` is
-    # OPTIONAL here (unlike `retire`'s own, required): omitted, the
-    # record is retired against the legacy literal `canon` and the verb
-    # prints a deprecation line; given, this call is byte-identical to
-    # calling `retire` directly (`verbs.graduate`'s own docstring).
-    graduate = _verb(
-        "graduate",
-        "deprecated alias for `retire` (S-67) — kept for one release",
-        json_flag=True,
-        hidden=True,
-    )
-    graduate.add_argument("id", metavar="ID")
-    graduate.add_argument(
-        "--covered-by",
-        metavar="KIND:NAME",
-        default=None,
-        dest="covered_by",
-        help="the same surface `retire --covered-by` accepts; omitted, "
-        "writes the legacy `canon` literal with a deprecation notice",
     )
 
     rehome = _verb(
@@ -2173,24 +2127,9 @@ def _cmd_config_set(args: argparse.Namespace, home: Path) -> int:
         print(json.dumps(row))
         return EXIT_OK
     _print_setting_row(row, prefix="config set: ")
-    # M-S (S-58 code-gate fold r1 nit-3, widened by delta gate r2
-    # nit-1): `config_set` already wrote AND committed this value --
-    # but the row above prints whatever ANSWERS the cascade, which is
-    # the just-written config rung ONLY when nothing else masks it.
-    # nit-3's original fix covered exactly one masking source
-    # ("inactive (provider=...)", value silently reads as the entry's
-    # own default). nit-1 (delta gate r2) named a SECOND, structurally
-    # identical case the fold r1 code introduced: a paired entry
-    # (`invocation.backend_worker`) whose active override, env var, or
-    # GENERAL sibling's own rung outranks the key just written --
-    # `SELF_LEARN_BACKEND=sdk config set invocation.backend_worker sdk`
-    # writes the value, but the printed row shows `env:SELF_LEARN_
-    # BACKEND`, not `config:invocation.backend_worker`, with no
-    # confirmation the write landed at all. Both are one fact --
-    # "the source shown is not this key's own config rung" -- so the
-    # gate is that comparison, source-agnostic, rather than a literal
-    # `startswith("inactive")` check that only ever caught the first
-    # instance of it.
+    # A successful write may be masked by an environment override or an
+    # inactive provider setting. Confirm the committed change separately
+    # when the displayed value comes from somewhere else.
     own_rung_source = f"config:{setting.config_section}.{setting.config_key}"
     if cast(str, row["source"]) != own_rung_source:
         print(
@@ -2228,7 +2167,8 @@ def _cmd_config(args: argparse.Namespace) -> int:
     (`_cmd_host`'s own precedent) — same two documented git failure
     codes (`EXIT_HALF_WRITTEN`/`EXIT_GIT_FAILED`), and the settings-
     registry refusal family (`UnknownSettingError` -> `EXIT_USAGE`,
-    `InvalidSettingValueError` -> 1) alongside `verbs.VerbError`
+    `InvalidSettingValueError` -> 1, `AgentSettingRefusal` -> 1) alongside
+    `verbs.VerbError`
     (`DirtyTargetError`'s own home, raised via a lazy import inside
     `settings.py` to avoid a module cycle — see its docstring) for the
     dirty-config-yaml refusal. `config.ConfigWriteError`/`settings.
@@ -2250,7 +2190,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
     except settings.UnknownSettingError as exc:
         print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    except settings.NoConfigRungError as exc:
+    except (settings.NoConfigRungError, settings.AgentSettingRefusal) as exc:
         print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
         return 1
     except settings.InvalidSettingValueError as exc:
@@ -2562,7 +2502,7 @@ def _outcome_state(result: verbs.VerbResult) -> str:
         # `"drift"` on a fully successful call, telling a consumer to
         # `recompile` canon that `reconsider` never touched.
         return "landed"
-    if result.action in ("retire", "graduate"):
+    if result.action == "retire":
         return "landed" if result.host_commit_sha is not None else "no_op"
     # route: the full 4-state predicate.
     if result.host_commit_sha is not None:
@@ -2809,13 +2749,6 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 no_push=args.no_push,
             )
             return _finish_verb(result, args.covered_by, as_json=args.as_json)
-        if args.command == "graduate":
-            result = verbs.graduate(
-                home, args.id, covered_by=args.covered_by, note=args.note,
-                no_push=args.no_push,
-            )
-            target = args.covered_by if args.covered_by is not None else "canon"
-            return _finish_verb(result, target, as_json=args.as_json)
         if args.command == "rehome":
             result = verbs.rehome(
                 home, args.id, to=args.to, note=args.note, no_push=args.no_push
@@ -4240,7 +4173,6 @@ VERB_COMMANDS = frozenset(
         "reject",
         "defer",
         "retire",
-        "graduate",
         "rehome",
         "rescope",
         "supersede",

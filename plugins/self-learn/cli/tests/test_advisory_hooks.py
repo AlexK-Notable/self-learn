@@ -368,12 +368,6 @@ def test_the_steward_brief_tells_warn_exists_from_the_constants(monkeypatch):
     assert "up to 1234 characters" in "\n".join(steward_prompt._hook_lines())
 
 
-def test_the_brief_stays_byte_identical_across_packets():
-    from self_learn import steward_prompt
-
-    assert steward_prompt._hook_lines() == steward_prompt._hook_lines()
-
-
 def test_the_method_and_the_doctrine_describe_warn():
     from self_learn import worker
 

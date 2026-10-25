@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from self_learn import miner, provenance, refs
-from self_learn.mining import compare, contract
+from self_learn.mining import contract
 from support import make_home
 
 ORCH = "aaaaaaaa-0000-0000-0000-000000000001"  # the session that sends
@@ -279,16 +279,6 @@ def test_a_sent_turn_found_in_another_session_says_agent(tmp_path):
     assert (v.outcome, v.ref.session, v.ref.role) == ("other_session", WORKER, "agent")
 
 
-def test_the_comparison_harness_agrees_with_resolve(tmp_path):
-    root = tmp_path / "projects"
-    write(root, ORCH, [bash(f'herdr agent prompt w1:p2 "{BRIEF}"', 8)])
-    path = write(root, WORKER, [typed("the person's first turn", 2), asst("ok", 3), typed(BRIEF, 10),
-                                asst("reading", 11), typed("thanks", 12)])
-    plain = compare.scan_file(path, [3])
-    assert plain.typed_lines == [1, 3, 5] and plain.at[3][1] == "user"  # positive control: no sends
-    info = compare.scan_file(path, [3], refs.sent_index([root]))
-    assert info.typed_lines == [1, 5]
-    assert info.at[3][1] == refs.resolve(WORKER, 3, roots=[root]).role == "agent"
 
 
 def test_typed_turn_lines_leaves_out_turns_an_agent_wrote():

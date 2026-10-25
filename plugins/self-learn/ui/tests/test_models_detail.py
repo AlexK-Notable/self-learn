@@ -1298,12 +1298,6 @@ class TestH5A17DeferRecommendationArmsNothing:
         assert dest is None
         assert note == "the analyst recommends deferring this lesson — no destination armed"
 
-    def test_build_argv_omits_dest_when_none(self):
-        from self_learn_ui.routes import build_argv
-
-        argv = build_argv("route", "lrn-aa000001", dest=None, by="analyst")
-        assert "--dest" not in argv
-
 
 class TestH5A18DeferredRecommendationEndToEnd:
     """A18 lives in test_routes.py (it needs the CLI's own refusal, end

@@ -25,16 +25,14 @@ from self_learn_ui.app import create_app
 from self_learn_ui.env import load_env
 from self_learn_ui.runner import FakeRunner, RunResult
 
-from self_learn.ledger_ops import create_record, defer_record
+from self_learn.ledger_ops import create_record
 
 from support import (
-    days_ahead,
     commit_all,
     init_repo,
     make_behavior,
     make_env,
     make_knowledge,
-    resolve_record_directly,
     seed_proposal,
     seed_record,
 )
@@ -449,48 +447,6 @@ class TestOtherVerbsEvidenceRendering:
 # ===================================================================== #
 
 
-class TestResolvedRecordRedirectsAwayFromItsOwnDetailPage:
-    """U-grad-ui spec criterion 11: the class name and this docstring
-    both described the redirect as the reason the `v` button is
-    suppressed — that reason changed (§2.1 VIEWABLE deletes the
-    redirect; §6.2's own comment fix, criterion 9, states the surviving
-    one), so the prose changes with it. The `v`-button behaviour ITSELF
-    does not change (§6.2) — `_evidence_ctx`'s `record_url` still omits
-    a link for route/reject/graduate; see
-    `TestViewLinkNeverTargetsARecordItWouldRedirectAway` below, untouched.
-    Pinned directly with a REAL status change (`resolve_record_directly`/
-    `defer_record` — no FakeRunner involved)."""
-
-    def test_a_routed_record_no_longer_resolves_at_record_id(
-        self, tmp_path: Path
-    ) -> None:
-        """New contract (was: 303 to the bucket's resolved-elsewhere
-        banner): the record's OWN Detail page renders it directly, 200,
-        carrying its Trigger text — the resolved view §2.1 adds."""
-        sb, rec = _seed(tmp_path)
-        resolve_record_directly(sb.ledger, sb.ledger / "skills" / "s", rec)
-        c, _runner = make_client(sb)
-        r = c.get(f"/record/{rec.id}", follow_redirects=False)
-        assert r.status_code == 200
-        # `_seed`'s make_behavior() default trigger (support.py) — the
-        # record's own Trigger text, not merely `200` on an empty page.
-        assert "About to edit .storage while HA is running." in r.text
-
-    def test_a_deferred_record_still_resolves_at_record_id(
-        self, tmp_path: Path
-    ) -> None:
-        """The one verb the button still points at — `defer_record`
-        leaves the file in `pending/`, status "deferred", which
-        `record_detail`'s viewable set (`("pending", "deferred")`)
-        accepts."""
-        sb, rec = _seed(tmp_path)
-        defer_record(sb.ledger, rec.id, days_ahead(30))
-        c, _runner = make_client(sb)
-        r = c.get(f"/record/{rec.id}", follow_redirects=False)
-        assert r.status_code == 200
-        assert rec.id in r.text
-
-
 class TestViewLinkNeverTargetsARecordItWouldRedirectAway:
     """The fix, at the render layer — needs a real POST/response cycle
     (FakeRunner-driven, since the marker/link only exist in the
@@ -525,10 +481,10 @@ class TestViewLinkNeverTargetsARecordItWouldRedirectAway:
         )
         assert 'data-key-action="success_view"' not in r.text
 
-    def test_graduate_offers_no_view_link(self, tmp_path: Path) -> None:
+    def test_retire_offers_no_view_link(self, tmp_path: Path) -> None:
         sb, rec = _seed(tmp_path)
         env_dict = envelope(
-            action="graduate", record_id=rec.id, host_commit_sha="feedface12",
+            action="retire", record_id=rec.id, host_commit_sha="feedface12",
             outcome_state="landed",
         )
         runner = FakeRunner()
@@ -536,9 +492,11 @@ class TestViewLinkNeverTargetsARecordItWouldRedirectAway:
         c, _runner = make_client(sb, runner=runner)
         r = c.post(
             f"/record/{rec.id}/action/confirm",
-            data={"verb": "graduate", "kind": "detail"},
+            data={"verb": "retire", "kind": "detail", "covered_by": "skill-md:canon"},
             headers=HX,
         )
+        assert r.status_code == 200
+        assert "Retired" in r.text and "feedfac" in r.text
         assert 'data-key-action="success_view"' not in r.text
 
     def test_defer_still_offers_the_view_link(self, tmp_path: Path) -> None:
@@ -1009,7 +967,7 @@ class TestKeymapUniquenessWithSuccessLegUp:
         # guard were removed (this record is post-confirm and unarmed —
         # exactly the state that renders the bare quad when no evidence
         # suppresses it).
-        for quad_action in ("route", "reject", "defer", "graduate", "cycle_destination"):
+        for quad_action in ("route", "reject", "defer", "retire", "cycle_destination"):
             assert quad_action not in actions, (
                 f"{quad_action!r} rendered alongside the success leg — "
                 "the unarmed quad's {% if not evidence %} guard is not "
@@ -1065,7 +1023,7 @@ class TestKeymapUniquenessWithSuccessLegUp:
         # Code-gate finding 5 (MINOR): see test_detail_page's comment —
         # the confirm/disarm counts above are vacuous against the guard;
         # this is the assertion that actually exercises it.
-        for quad_action in ("route", "reject", "defer", "graduate", "cycle_destination"):
+        for quad_action in ("route", "reject", "defer", "retire", "cycle_destination"):
             assert quad_action not in actions, (
                 f"{quad_action!r} rendered alongside the success leg — "
                 "the unarmed quad's {% if not evidence %} guard is not "

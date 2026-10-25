@@ -16,7 +16,7 @@ from ..index.protocol import EmbedProvider
 from ..index.registry import load_provider
 from ..index.rrf import rrf_fuse
 from ..index.store import FROM_ENV, HYBRID, LEXICAL_ONLY, LessonIndex, _sections
-from ..index.textquery import embed_documents
+from ..index.textquery import embed_documents, embedding_failure_note
 from ..index.vectors import cosine
 from ..ledger import Bucket
 from ..scan import redact
@@ -78,6 +78,9 @@ def flag_rules(index: LessonIndex, stretches: Sequence[Stretch], *, cwd: Path,
                   and _in_scope(bucket, cwd, projects, entries)]
     mode, note = index.mode()
     vectors = index.current_vectors()
+    # Empty stretches are structural boundaries, not semantic documents.
+    # Keep the Stretch objects so ranked positions still point at their source.
+    stretches = [s for s in stretches if s.text.strip()]
     documents = [redact(s.text)[0] for s in stretches]
     embedded: list[list[float]] = []
     if mode == HYBRID and candidates and documents:
@@ -97,7 +100,7 @@ def flag_rules(index: LessonIndex, stretches: Sequence[Stretch], *, cwd: Path,
                     raise ValueError("dimension mismatch")
             except Exception as exc:
                 mode = LEXICAL_ONLY
-                note = "embedding timed out" if isinstance(exc, TimeoutError) else "embedding failed"
+                note = embedding_failure_note(exc)
                 embedded = []
     conn = sqlite3.connect(":memory:")
     flags: list[Flag] = []

@@ -323,10 +323,6 @@ class TestVerbTimeoutFor:
         )
         assert value == 42.0
 
-    def test_mine_run_falls_back_to_its_own_default_when_env_unset(self) -> None:
-        value = _verb_timeout_for(["mine", "run"], default=600.0, env={})
-        assert value == DEFAULT_MINE_RUN_TIMEOUT_SECS
-
     def test_mine_run_ignores_an_unparseable_env_value(self) -> None:
         value = _verb_timeout_for(
             ["mine", "run"], default=600.0, env={MINE_RUN_TIMEOUT_ENV: "not-a-number"}

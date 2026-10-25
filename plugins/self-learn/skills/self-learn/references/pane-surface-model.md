@@ -47,8 +47,7 @@ without that human confirm.
 - **reject** — declines the lesson (with an optional note saying why —
   the note feeds the analyst's future judgment).
 - **defer** — takes it off the queue until a date (default 30 days).
-- **retire** (the verb the specs used to call `graduate`, still accepted
-  as a hidden alias for one release) — records that the lesson already
+- **retire** (the verb the specs used to call `graduate`; that alias was removed on 2026-10-24) — records that the lesson already
   lives in the documentation; the win is acknowledged, nothing is
   written.
 - **rehome** *(added 2026-07-18)* — moves a still-pending lesson to a

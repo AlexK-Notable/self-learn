@@ -22,7 +22,7 @@ or `sdk`) and `provider` (install-wide, `anthropic` or `bedrock`). The
 deleted, `KNOWN_BACKENDS == ("sdk",)`, and every surface runs on the
 Agent SDK unconditionally. There is nothing left to flip a surface
 BETWEEN — `backend` is no longer a real switch, it is a single-valued
-constant with a refusal wired to its old alternative.*
+constant (its former refusal was removed on 2026-10-24).*
 
 Self-learn invokes a model on **seven surfaces**, all of them on the
 Agent SDK. One switch remains live:
@@ -31,36 +31,37 @@ Agent SDK. One switch remains live:
 |---|---|---|---|
 | `provider` | **install-wide** | `anthropic` · `bedrock` | `anthropic` |
 
-`backend` still exists as an env selector / `config.yaml` key **for one
-purpose only: naming the refusal.** Setting `SELF_LEARN_BACKEND[_<SELECTOR>]`
-or `invocation.backend[_<surface>]` to `cli` does not select a second
-transport — there is none — it makes that surface refuse to run at all,
-loudly, through `BackendUnavailable`. The doctor's `switches` row
-renders this as `backend=REFUSED (cli retired) (<source>)`, never as an
-accepted `backend=cli`. Setting it to anything else unknown (a typo, a
-stray capital) folds silently to `sdk`, same as it always has for an
-unrecognized value (`SEL5`). **The only working values now are `sdk` and
-unset**, and both produce the same behavior — there is no live
-distinction left between "pinned to sdk" and "on the default" beyond
-what the doctor's `source` column reports for provenance.
+**2026-10-24:** `invocation.backend` and `invocation.backend_<surface>`
+were removed from the settings registry. All invocations use the SDK.
+Old config keys, `SELF_LEARN_BACKEND[_<SELECTOR>]`, and their
+`SELF_LEARN_OVERRIDE_INVOCATION_BACKEND[_<SURFACE>]` equivalents are
+ignored, regardless of value. Both doctor views name each present retired
+key in a WARN row saying it has no effect; `--selftest` reports WARN for
+such keys, including `cli` pins. WARN is advisory (exit 0 in an otherwise
+healthy selftest); real failures still fail and unmeasured checks still
+exit 9. Diagnostics never rewrite existing files. To remove a retired
+config key, run `self-learn config unset invocation.backend` (or its
+`invocation.backend_<surface>` name); this commits the removal under the
+ordinary unset lock and refusal ordering, and reports names only. Already
+absent keys are a no-op. Environment warnings name the shell `unset`
+command instead; removing a config key cannot remove an exported variable.
 
-`provider=bedrock` no longer has a `backend=cli` staged-rollout carve-out
-to worry about (`S-36`'s "silently inert under `cli`" caveat no longer
-applies — every surface's own default is already `sdk`); the doctor's
-`rollout` row still catches the one way a Bedrock configuration can go
-fully inert today — every surface explicitly refused (§3).
+The unused `live_run_ids` pruning parameter and function-form
+`sentinel.release` wrapper were removed on 2026-10-24; log retention and
+`SentinelHold.release()` remain in use.
 
-The seven surfaces, and the five selector names that address them:
+`provider=bedrock` applies to every surface. Its region, model and
+credential checks remain active even when a retired backend key is present.
 
-| Surface | What it is | Env selector | `config.yaml` key |
-|---|---|---|---|
-| `worker` | the pre-analysis worker's batch invocation | `WORKER` | `backend_worker` |
-| `worker-repair` | the same worker's repair round | `WORKER` (**shared — not independently settable by environment**) | `backend_worker-repair` (**independently settable by config**) |
-| `miner-reader` | the nightly transcript miner's reader | `MINER` (**not `MINER_READER`**) | `backend_miner-reader` |
-| `analyst` | the one-shot `teach --route` analyst | `ANALYST` | `backend_analyst` |
-| `steward` | the steward's nightly decision run | `STEWARD` | `backend_steward` |
-| `overseer` | the overseer's weekly examination run | `OVERSEER` | `backend_overseer` |
-| `miner-session` | the session miner, one transcript per call (§1a) | `MINER` (**shared with `miner-reader`**) | `backend_miner-session` |
+| Surface | What it is | Model/turn selector |
+|---|---|---|
+| `worker` | the pre-analysis worker's batch invocation | `WORKER` |
+| `worker-repair` | the same worker's repair round | `WORKER` |
+| `miner-reader` | the transcript miner's reader | `MINER` |
+| `analyst` | the one-shot `teach --route` analyst | `ANALYST` |
+| `steward` | the steward's decision run | `STEWARD` |
+| `overseer` | the overseer's examination run | `OVERSEER` |
+| `miner-session` | one transcript per call (§1a) | `MINER` |
 
 `steward` and `overseer` (added 2026-09-13) are `Containment` objects in the
 same sense `03-decisions.md` `S-34`/`S-50` already describe: on the `sdk`
@@ -83,11 +84,9 @@ retention and the kept session copies are all per surface. Sharing
 nightly old miner's live child, and one shadow run's many calls would
 push every old-miner event log out of the 20-file retention — the only
 place the old miner's cost is recorded. The new surface shares the
-`MINER` selector, so `models.miner`, `sdk.max_turns.miner` and
-`SELF_LEARN_BACKEND_MINER` apply to both miners alike; only the
-`config.yaml` key `invocation.backend_miner-session` addresses it alone.
-The doctor's `switches`, `models`, `env` and `rollout` rows gain one
-`miner-session` entry each.
+`MINER` selector, so `models.miner` and `sdk.max_turns.miner` apply
+to both miners alike. Its former backend selector was removed on
+2026-10-24. The doctor reports it alongside the other SDK surfaces.
 
 **Its own tools.** A producer gives the session its tools as plain data:
 `SessionSpec.mcp_toolset`, an `McpToolset` (a server name and a tuple of
@@ -230,11 +229,11 @@ The rows, in the order they print:
 
 | Row | What it tells you |
 |---|---|
-| `switches` | **The one you came for.** One INFO line naming every surface's resolved backend *and the rung that decided it*. |
+| `switches` | One INFO line naming every surface with `backend=sdk (built-in)`. Retired selectors get separate WARN rows. |
 | `provider` | Resolved provider and its source. |
 | `config` | Whether `config.yaml`'s `provider:` section contains keys the software does not know. |
 | `sdk` | Whether `claude_agent_sdk` is importable, its version, the bundled vs **operative** `claude` CLI versions, and — since 2026-09-19 (U4) — whether the operative binary is new enough for the models the surfaces actually select. **FAIL** when it is older than the floor for any selected model; **INFO** when the two versions merely differ; **WARN** when a floor exists but could not be checked. See §3a. |
-| `rollout` | SKIP under `anthropic`. Under `bedrock`: FAIL only if **every surface has been explicitly pinned to `cli` and is therefore refused** (`backend=REFUSED (cli retired)`) — the Bedrock configuration then does nothing, because there is no un-refused surface left for it to reach. PASS if no surface is refused, per-surface INFO for the normal mixed state. *(2026-08-25: this state is now RARE rather than the default — every surface's own default is already `sdk`, so hitting it requires actively refusing every one of the four, not simply "not having flipped anything yet.")* |
+| `rollout` | SKIP under `anthropic`; PASS under `bedrock` because every surface uses SDK. Region/model errors remain separate FAIL rows. |
 | `consistency` | Emitted **only** when something is wrong: a `bedrock` surface with no region, or one whose model id is an Anthropic alias. No row means no problem. |
 | `region` / `credentials` / `models` / `env` | Bedrock-side checks; SKIP wholesale under `anthropic`. `credentials` is **presence-only** and reports WARN, never FAIL, when it finds nothing — it cannot see an EC2 instance role (`FW-90`). |
 | `orphans` | Today always SKIP. It is a reserved extension point, **not** an orphan census — see §5.3. |
@@ -335,29 +334,10 @@ the recovery. It refuses to do anything without
 
 ### 3b. Reading the `switches` row
 
-*(this section's text is unchanged; it gained a heading of its own in
-2026-09-19's U4 only because §3a was inserted above it.)*
-
-**Reading the `switches` row is a skill; here is the whole of it.** Each
-surface prints `backend=<value> (<source>)`, where `<value>` is `sdk` or
-`REFUSED (cli retired)` — nothing else is possible post-U-cleanup. The
-source is the rung that answered: `env:SELF_LEARN_BACKEND_ANALYST`,
-`config:invocation.backend_worker`, `default`, and so on.
-
-> **The tell for a rejected UNKNOWN value: a source that names an env
-> var or a config key, next to a value of `sdk` you did not ask for.**
-> An unknown backend value (`SDK`, `Sdk`, `agent-sdk`, a typo) folds
-> silently to `sdk` (`SEL5`) — the only working value, so this is now
-> harmless rather than a downgrade, but the doctor still does **not**
-> warn about it. **The tell for a NAMED refusal is louder and different:**
-> `backend=REFUSED (cli retired) (<source>)` — that is not silent, and it
-> is not a value the doctor folds away; it means the surface will not
-> run at all until you remove whatever set it. Values are lowercase
-> `sdk`, exactly, or the literal string `cli` if you want the refusal.
-
-An **empty** value is different again: it means "no answer" and falls
-through to the next rung, silently and legitimately. With one trap, in
-§7.
+Updated 2026-10-24: every surface prints `backend=sdk (built-in)`.
+Present retired backend settings are listed separately as WARN, by key name
+only, with “retired and has no effect.” Empty, unknown, `sdk`, and `cli`
+values all have the same effect: none. Remove obsolete keys when convenient.
 
 ### 3c. Which ledger a session's settings come from
 
@@ -495,12 +475,9 @@ credentialed session), so no test can be handed the developer's own real
 walk through flipping a surface's `backend` between `cli` and `sdk` —
 which shell an env var reaches (§4.1), the env-var form (§4.2), and the
 `config.yaml` form (§4.3). None of that has a live target left: there is
-one backend, every surface already runs on it, and a `backend`/
-`backend_<surface>` setting now only ever does one of two things —
-select `sdk` (a no-op, since that is already every surface's only
-possible value) or select `cli` (a refusal, §1). If you are debugging why
-a surface behaves the way it does, the `provider` switch below is the
-only one left with two live values to reason about.
+one backend, every surface already runs on it, and all backend selection
+keys were retired on 2026-10-24. `provider` remains the switch with two
+working values.
 
 ```yaml
 provider:
@@ -534,8 +511,7 @@ below are only ever a fallback when `provider=anthropic`:
    all default to `claude-sonnet-5`.
 2. **Run the doctor.** Under `provider=bedrock`, the `consistency` row
    will FAIL loudly on the two mistakes that matter (no region; an
-   Anthropic alias where a Bedrock id belongs), and `rollout` will FAIL
-   if you configured Bedrock and forgot to flip any surface at all. The
+   Anthropic alias where a Bedrock id belongs). All surfaces already use SDK. The
    whole failure class beyond that — IAM denials, model access not
    granted, region not enabled, throttling — **cannot** be reached
    without a live call (`FW-92`). The handoff block at the bottom of the
@@ -793,12 +769,9 @@ try it and get confused by the result.*
 is no `cli` backend left to set `SELF_LEARN_BACKEND[_<SELECTOR>]` back
 to — `CliBackend`, `invocation/cli.py`, the argv builders and settings
 writers are deleted from the package you have installed. Setting
-`SELF_LEARN_BACKEND_ANALYST=cli` (or any selector) today does not roll
-anything back: it makes that surface **refuse to run**, reported through
-the doctor's `switches` row as `backend=REFUSED (cli retired) (<source>)`
-and through the surface's own log as `Outcome(failure="unavailable")`.
-That is a new failure mode, not the old rollback — do not reach for it
-expecting the pre-U-cleanup behavior back.
+`SELF_LEARN_BACKEND_ANALYST=cli` (or any retired selector) has no effect
+as of 2026-10-24. The doctor reports a retirement warning. It does not
+change the transport or prevent a surface from running.
 
 **The actual rollback path, if the Agent SDK transport is broken for
 you:**
@@ -936,34 +909,10 @@ written. *Re-verified against U-cleanup's collapsed `KNOWN_BACKENDS ==
 same collapse that retired `cli` (noted where it happened, not silently
 dropped: a trap that stops mattering is still worth one line saying so).*
 
-1. **`SELF_LEARN_BACKEND_MINER_READER` is not a variable.** The surface
-   is named `miner-reader`; the selector is `MINER`. Setting
-   `SELF_LEARN_BACKEND_MINER_READER=sdk` does **nothing at all** — no
-   warning, exit 0, the surface resolves via its own default (`sdk`),
-   exactly as if you had set nothing. Use `SELF_LEARN_BACKEND_MINER`.
-2. **`worker-repair` cannot be split by environment, only by config.**
-   `SELF_LEARN_BACKEND_WORKER` moves the batch invocation and the repair
-   round together. `config.yaml`'s `backend_worker-repair` moves the
-   repair round alone. With only one working value left, this now
-   matters for **refusal scope**, not backend choice: pinning
-   `SELF_LEARN_BACKEND_WORKER=cli` refuses the repair round too; only
-   `config.yaml`'s `backend_worker-repair` key can refuse one without the
-   other.
-3. **DEFUSED (was live under two backends):** a mis-cased value used to
-   silently downgrade you to `cli`. `SELF_LEARN_BACKEND=SDK` now folds
-   to the only working value, `sdk`, the same as every other unknown
-   string (`SEL5`) — harmless, though still worth lowercasing on
-   principle, since a `cli` value (correctly cased) is a refusal, not a
-   downgrade.
-4. **NEUTERED (was live under two backends):** an empty per-surface
-   config key still does not fall through to the general one — that part
-   of the mechanism is unchanged — but it no longer pins the surface to
-   anything dangerous. Given `backend_analyst: ""` alongside `backend:
-   sdk`, the analyst resolves to `sdk` via its own per-surface default
-   (source `default`), same value as the other three surfaces (source
-   `config:invocation.backend`) — a provenance difference in the doctor's
-   `source` column, not a behavior difference. Still delete keys you do not want
-   rather than blank them; the doctor cannot tell you which one you did.
+1. **Backend selector traps 1–4 were retired on 2026-10-24.** The old
+   environment mapping, repair-selector sharing, unknown-value folding,
+   and empty-key precedence no longer select or refuse any backend.
+   Present old keys warn and have no effect (§1).
 5. **RETIRED — see §4.** A `provider.bedrock.models.*` entry used to be
    inert on a surface still resolved to `cli`; there is no such surface
    left, so this entry is now read unconditionally by every surface once
@@ -1000,9 +949,9 @@ dropped: a trap that stops mattering is still worth one line saying so).*
 
 | Symptom | First read | Likely cause |
 |---|---|---|
-| A surface reports `REFUSED` / `Outcome(failure="unavailable")` instead of running | `switches` row's **source** column | `backend=REFUSED (cli retired) (<source>)` — something set that surface's selector (or the coarse `SELF_LEARN_BACKEND`, or a `config.yaml` key) to `cli`. Unset it; §1. There is no partial state to debug further — a `cli` selection is refused everywhere, identically |
+| WARN retired backend key | §1 | Remove the named obsolete key; it has no effect. SDK installation and provider checks diagnose actual invocation failures. |
 | `the "sdk" invocation backend is not built yet` | §2 | `claude_agent_sdk` is not importable in the environment that ran the surface — a genuinely broken/stale install (it is a hard dependency now, so this should not happen on a normal install). Reinstall rather than reaching for an extra flag |
-| `doctor` exits 1 | the `FAIL` rows | `rollout` FAIL = Bedrock configured but every surface is refused (§3's `rollout` row). `consistency` FAIL = a `bedrock` surface missing a region or carrying an Anthropic alias. `region` FAIL = no region resolved |
+| `doctor` exits 1 | the `FAIL` rows | `consistency` FAIL = a `bedrock` surface missing a region or carrying an Anthropic alias. `region` FAIL = no region resolved |
 | `WARN sdk … versions differ` | §3 | normal on a host that updates Claude Code independently |
 | `WARN credentials — no mechanism found` | `FW-90` | the credential probe is presence-only and never probes IMDS, so an EC2 instance role reads as "nothing found". WARN by design, never FAIL |
 | A `config.yaml` edit did not reach the nightly miner or a UI-kicked worker | §4.1 *(retired numbering — the fact survives: `systemd --user` units do not inherit your login shell's environment; both shipped units pin `SELF_LEARN_HOME` and nothing else)* | you exported an env var instead of editing `config.yaml`; the timer/service does not see your shell |
