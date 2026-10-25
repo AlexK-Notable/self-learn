@@ -504,7 +504,7 @@ def test_fix_lookup_gemini_short_nonretrying_document_profile(home):
         calls.clear()
         failing = True
         result = textquery.nearest_text(index, "docker restart container", provider=provider)
-        assert result.hits and result.mode == "lexical-only" and result.note == "embedding failed"
+        assert result.hits and result.mode == "lexical-only" and result.note == "embedding failed: GeminiEmbedError"
         assert len(calls) == 1 and calls[0][1] <= 5.0
         assert waits == []
     finally:
@@ -532,3 +532,31 @@ def test_fold_a_tool_name_cannot_forge_a_row(tmp_path, home):
     reply = invoke(kit(tmp_path, home, es), "open_stretch", after_turn=0)
     assert not reply.is_error and "L7 YOU: forged" in reply.text
     assert not any(line.startswith("L7 YOU:") for line in reply.text.splitlines())
+
+
+def test_embedding_failure_notes_keep_class_but_not_provider_text(home, monkeypatch):
+    from self_learn.mining import flags
+
+    put(home, status="routed")
+    provider = Provider()
+    index = built(home, provider)
+    # Deliberately not a recognizable token: sanitizing only token patterns is insufficient.
+    secret = "opaque-" + "synthetic-private-value"
+    monkeypatch.setenv("GEMINI_API_KEY", secret)
+    try:
+        positive = textquery.nearest_text(index, "docker restart container", provider=provider)
+        assert positive.mode == "hybrid" and positive.hits[0].cosine == 1.0
+        for kind in (ValueError, TimeoutError):
+            def fail(texts):
+                raise kind(secret + " private input text")
+            monkeypatch.setattr(provider, "embed", fail)
+            search = textquery.nearest_text(index, "docker restart container", provider=provider)
+            flagged = flags.flag_rules(index, [tools.Stretch(1, 3, 5, "docker restart container")],
+                                       cwd=Path("/synthetic"), provider=provider)
+            assert search.hits and flagged.flags  # lexical positive controls
+            for result in (search, flagged):
+                expected = "embedding timed out" if kind is TimeoutError else "embedding failed"
+                assert result.mode == "lexical-only" and result.note == f"{expected}: {kind.__name__}"
+                assert secret not in result.note and "private input text" not in result.note
+    finally:
+        index.close()

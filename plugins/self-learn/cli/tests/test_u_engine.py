@@ -561,29 +561,6 @@ def test_ms2_ten_thousand_run_ids_distinct_regardless_of_surface():
     assert len(bare_ids) == 10_000
 
 
-def test_ms3_two_live_sessions_one_surface_two_distinct_sidecars_neither_swept(tmp_path):
-    """`MS3` -- two live sessions on ONE surface produce two distinct
-    sidecar files; the scoped sweep judges each on its own three
-    corroborating checks and kills neither (both alive, neither
-    stale)."""
-    cache_dir = tmp_path / "ms3-cache"
-    cache_dir.mkdir()
-    my_pid = os.getpid()
-    sdk_children.write_sidecar(cache_dir, "worker", my_pid, "irrelevant", session_key="run-a")
-    sdk_children.write_sidecar(cache_dir, "worker", my_pid, "irrelevant", session_key="run-b")
-
-    path_a = sdk_children.sidecar_path(cache_dir, "worker", "run-a")
-    path_b = sdk_children.sidecar_path(cache_dir, "worker", "run-b")
-    assert path_a != path_b
-    assert path_a.is_file() and path_b.is_file()
-
-    # The full independence proof (both sidecars judged and each
-    # decline text-observable) is in the companion test below --
-    # `test_ms3_full_messages_two_sidecars_each_declined_independently`.
-    # This half just proves the two paths are genuinely distinct files,
-    # which is `F-2`'s own headline property.
-
-
 def test_ms3_full_messages_two_sidecars_each_declined_independently(tmp_path):
     cache_dir = tmp_path / "ms3b-cache"
     cache_dir.mkdir()

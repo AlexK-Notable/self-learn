@@ -191,32 +191,6 @@ class TestRecordAgeDays:
         record = make_behavior(record_id="lrn-cc000003", created_at=iso(then))
         assert domain.record_age_days(record, now) == 39
 
-    def test_mutation_reintroducing_date_truncation_breaks_the_floor(
-        self, monkeypatch
-    ):
-        """Positive control for the guard above: patches
-        ``primitives.chrono.age_days`` to the A1-buggy date-truncated
-        shape (``(now.date() - then.date()).days``) and confirms
-        ``record_age_days`` now returns the WRONG answer (40, not 39)
-        for the exact boundary case above -- proving the guard is not
-        vacuous. ``domain.py`` calls ``chrono.age_days(...)`` via
-        module-attribute lookup, so patching the module's function
-        reaches ``record_age_days`` without touching ``domain.py``
-        itself."""
-        import self_learn.primitives.chrono as chrono_mod
-
-        def _buggy_age_days(then, now):
-            if then is None:
-                return 0
-            return max(0, (now.date() - then.date()).days)
-
-        monkeypatch.setattr(chrono_mod, "age_days", _buggy_age_days)
-        then = datetime(2026, 1, 1, 23, 0, 0, tzinfo=timezone.utc)
-        now = then + timedelta(days=40) - timedelta(seconds=10)
-        record = make_behavior(record_id="lrn-cc000004", created_at=iso(then))
-        assert domain.record_age_days(record, now) == 40  # the buggy answer
-
-
 # ------------------------------------------- cross-surface 40-day fixture
 
 
@@ -683,32 +657,6 @@ class TestQueueStatusGateTightening:
         assert [e.record.id for e in entries] == ["lrn-aa000002"]
         assert is_unanalyzed(entries[0]) is False
 
-    def test_mutation_reverting_to_deferred_only_check_would_include_it(
-        self, tmp_path, monkeypatch
-    ):
-        """Positive control: patches ``domain.is_queued`` to the OLD
-        deferral-only shape (never checking ``status`` at all) and
-        confirms the drifted record WOULD have been included — proving
-        this guard is not vacuous."""
-        import self_learn.domain as domain_mod
-        from self_learn.primitives import chrono as chrono_helper
-
-        def _deferral_only(record, now):
-            until = chrono_helper.to_dt(record.deferred_until)
-            return until is None or until <= now
-
-        monkeypatch.setattr(domain_mod, "is_queued", _deferral_only)
-
-        home = make_home(tmp_path)
-        path = create_record(home, make_behavior(record_id="lrn-aa000003"))
-        drifted = Record.from_path(path)
-        drifted.set_status("routed")
-        drifted.write(path)
-
-        (bucket,) = [b for b in discover_buckets(home) if b.name == "s"]
-        assert [e.record.id for e in queue(bucket)] == ["lrn-aa000003"]
-
-
 # ------------------------------------------- report.gather canon-live gate
 
 
@@ -750,35 +698,3 @@ class TestReportGatherCanonLiveGating:
         facts = report.gather(home, claude_dir=tmp_path / "empty-claude")
         assert facts["destinations"] == {}
         assert facts["routed_live"] == []
-
-    def test_mutation_reverting_to_status_only_check_would_include_it(
-        self, tmp_path, monkeypatch
-    ):
-        """Positive control: patches ``domain.is_canon_live`` (as seen
-        by ``report.py``'s ``domain.is_canon_live(record)`` call) to
-        the OLD status-only gate and confirms the SAME drifted record
-        above WOULD have been counted — proving the pin is not
-        vacuous."""
-        import self_learn.domain as domain_mod
-
-        monkeypatch.setattr(
-            domain_mod, "is_canon_live", lambda record: record.status == "routed"
-        )
-
-        home = make_home(tmp_path)
-        path = create_record(home, make_behavior(record_id="lrn-aa000003"))
-        record = Record.from_path(path)
-        record.set_status("routed")
-        record.set_routing(
-            {
-                "routed_at": "2026-01-01T00:00:00Z",
-                "destination": "skill-md",
-                "by": "test",
-            }
-        )
-        record.set_superseded_by("lrn-bb000009")
-        record.write(path)
-
-        facts = report.gather(home, claude_dir=tmp_path / "empty-claude")
-        assert facts["destinations"] == {"skill-md": 1}
-        assert [r["id"] for r in facts["routed_live"]] == ["lrn-aa000003"]

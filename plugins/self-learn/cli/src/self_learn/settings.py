@@ -278,7 +278,7 @@ class Setting:
     #: docstring). `None` whenever `accepts` is `None`.
     accepts_hint: str | None = None
     #: U-settings Phase 2 (the settings page) — the exposure tier the
-    #: page's editor honors (dispatch's ruling, carrying the ratified
+    #: page's editor and agent-shell write refusal honor (carrying the ratified
     #: `settings-surface-spec.md` §3 table's CATEGORIES onto THIS
     #: registry's actual keys): throughput knobs, cost ceilings, and
     #: timeouts are ``"A"`` (editable inline); the two spawn-containment
@@ -1992,6 +1992,36 @@ class InvalidSettingValueError(SettingsError):
     invocation refused on a business rule, never a usage error."""
 
 
+# Presence, including an empty value, identifies an agent shell. These are
+# harness session markers, not terminal-manager markers (HERDR_ENV also
+# appears in the human's terminals). No override flag: an agent could pass it.
+AGENT_CALLER_MARKERS = (
+    "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "AI_AGENT",
+    "CODEX_THREAD_ID", "CODEX_SESSION_ID", "HERMES_SESSION_ID",
+)
+
+
+def agent_caller_markers() -> tuple[str, ...]:
+    """Detected names only, in stable registry order; never expose env values."""
+    return tuple(marker for marker in AGENT_CALLER_MARKERS if marker in os.environ)
+
+
+def agent_caller() -> bool:
+    """Best-effort shell detection, not a security boundary: env can be unset."""
+    return bool(agent_caller_markers())
+
+
+class AgentSettingRefusal(SettingsError):
+    """A tier-C write from an agent shell; CLI business-rule refusal (exit 1)."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(
+            f"{name} is the human's switch; run the same command in your own "
+            "terminal (not through an agent) "
+            f"(agent shell detected: {', '.join(agent_caller_markers())})"
+        )
+
+
 class NoConfigRungError(SettingsError):
     """`name` resolves through `REGISTRY` but has no `config.yaml` rung
     to write to (`config_section is None` -- currently reserved for a
@@ -2185,6 +2215,9 @@ def config_set(
     except KeyError:
         raise UnknownSettingError(name) from None
 
+    if setting.tier == "C" and agent_caller():
+        raise AgentSettingRefusal(name)
+
     # MINOR-4 (review r1 2026-09-01): this used to be a bare `assert`
     # AFTER value-parsing -- checked first now, both because "can this
     # setting even be written" is more fundamental than "is this value
@@ -2315,6 +2348,9 @@ def config_unset(home: Path | str, name: str, *, note: str | None = None) -> tup
             config_key=name.partition(".")[2], kind="str", default="",
             description="retired backend selector", operator_facing=False,
         )
+    if setting.tier == "C" and agent_caller():
+        raise AgentSettingRefusal(name)
+
     if setting.config_section is None or setting.config_key is None:
         raise NoConfigRungError(name)  # MINOR-4, same fix as config_set
 

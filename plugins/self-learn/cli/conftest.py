@@ -11,5 +11,16 @@ keep reading ``~/.gitconfig`` as before.
 import os
 from pathlib import Path
 
+import pytest
+
+from self_learn.settings import AGENT_CALLER_MARKERS
+
 os.environ["GIT_CONFIG_GLOBAL"] = str(Path(__file__).parent / "tests" / "gitconfig.test")
 os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+
+
+@pytest.fixture(autouse=True)
+def _human_config_caller(monkeypatch):
+    """Ordinary tests model a human; agent-specific tests opt in explicitly."""
+    for marker in AGENT_CALLER_MARKERS:
+        monkeypatch.delenv(marker, raising=False)

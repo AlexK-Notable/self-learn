@@ -2167,7 +2167,8 @@ def _cmd_config(args: argparse.Namespace) -> int:
     (`_cmd_host`'s own precedent) — same two documented git failure
     codes (`EXIT_HALF_WRITTEN`/`EXIT_GIT_FAILED`), and the settings-
     registry refusal family (`UnknownSettingError` -> `EXIT_USAGE`,
-    `InvalidSettingValueError` -> 1) alongside `verbs.VerbError`
+    `InvalidSettingValueError` -> 1, `AgentSettingRefusal` -> 1) alongside
+    `verbs.VerbError`
     (`DirtyTargetError`'s own home, raised via a lazy import inside
     `settings.py` to avoid a module cycle — see its docstring) for the
     dirty-config-yaml refusal. `config.ConfigWriteError`/`settings.
@@ -2189,7 +2190,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
     except settings.UnknownSettingError as exc:
         print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    except settings.NoConfigRungError as exc:
+    except (settings.NoConfigRungError, settings.AgentSettingRefusal) as exc:
         print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
         return 1
     except settings.InvalidSettingValueError as exc:

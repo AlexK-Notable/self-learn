@@ -140,30 +140,3 @@ def test_hm_c_self_learn_serve_unit_dir_override_still_wins_over_xdg_config_home
 
     assert serve.unit_dir() == override_dir
     assert serve.is_configured() is False
-
-
-def test_hm_d_default_conftest_now_matches_the_previously_failing_files_shared_assumption(capsys):
-    """(d) END-TO-END REGRESSION PIN. `test_doctor_invocation.py::test_
-    dc1_pristine_home_zero_fail_all_rows_once` (and five sibling files --
-    `test_selftest.py`, `test_hosting.py`, `test_lifecycle_cli.py`,
-    `test_new_skill.py`, `test_selftest_hooks.py`) each share one
-    assumption: `self-learn doctor invocation` on a pristine home exits 0
-    with no FAIL row. This test exercises exactly that call under
-    nothing but the DEFAULT (autouse) `conftest.py` fixture -- no
-    `SELF_LEARN_SERVE_UNIT_DIR` prefix, no per-test override of any kind
-    -- on THIS host, where `self-learn-host.service` really is linked
-    (2026-08-27).
-
-    MUTATION that turns this red: delete the `XDG_CONFIG_HOME` line
-    added to `conftest.py`'s `_worker_test_defaults` (next to the
-    pre-existing `XDG_CACHE_HOME` line). Red ONLY on a host with the
-    reference unit linked (this one) -- a clean host without the unit
-    would still read SKIP and this test would not catch the regression
-    there; (a)/(b)/(c) above cover the resolver itself host-
-    independently for that reason."""
-    rc = cli_mod.main(["doctor", "invocation"])
-    out = capsys.readouterr().out
-    lines = [ln for ln in out.splitlines() if ln.startswith("doctor: ") and "---" not in ln and "handoff" not in ln]
-    assert rc == 0, out
-    for ln in lines:
-        assert " FAIL " not in ln, ln

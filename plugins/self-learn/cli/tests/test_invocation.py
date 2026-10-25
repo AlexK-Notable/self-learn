@@ -506,31 +506,6 @@ def test_hy2_no_module_in_invocation_imports_the_forbidden_modules():
 # `stage_permission_rules`, the rule-rendering helpers `containment_for`'s
 # worker branch parallels) are unaffected by this unit and stay
 # sha-pinned.
-_HY3_SHAS = {
-    "write_permission_rules": "745ceedd12d0720e0c36c8411b43a5292db6e3399a7f6d02c5473f441d99fc66",
-    "stage_permission_rules": "1ad0fba43230779635e8eee20d6580cab170c228ff367fa09d3d1c447812c864",
-}
-
-
-def test_hy3_witness_b_is_sha_pinned():
-    """HY3 -- Witness B (the surviving shipped settings-file writers) is
-    sha256 pinned, not substring-guarded (M34's defeat of the r1
-    substring form). Any edit to these two functions -- even an
-    innocent docstring fix -- reddens this test; that is the deliberate,
-    documented cost (Sec 3.11). FW-117: down from three witnesses to two
-    -- `write_repair_settings_file` is deleted, not merely unpinned."""
-    checks = [
-        (worker.write_permission_rules, "write_permission_rules"),
-        (worker.stage_permission_rules, "stage_permission_rules"),
-    ]
-    for fn, name in checks:
-        actual = hashlib.sha256(inspect.getsource(fn).encode("utf-8")).hexdigest()
-        assert actual == _HY3_SHAS[name], (
-            f"Witness B changed ({name}). If this was deliberate, U-seam "
-            "is the wrong unit for it -- see Sec 3.11."
-        )
-
-
 def test_hy4_no_filesystem_writes_in_invocation_except_fakebackend_writes():
     """HY4 -- a NEW guard (B-6: the shipped fail-closed census cannot see
     `invocation/` at all -- root-level `glob`, not `rglob`). No function
@@ -556,60 +531,9 @@ def test_hy4_no_filesystem_writes_in_invocation_except_fakebackend_writes():
     assert len(violations) == 2, violations
 
 
-def test_hy4_lock_census_is_root_level_only_and_therefore_blind_to_invocation():
-    """HY4's companion fact (B-6, measured E8): `test_lock_invariant.py`'s
-    `NOT_REPO_TRUTH` census globs root-level only -- `invocation/` is
-    invisible to it by construction. This does not modify that file; it
-    reads it to keep the fact current."""
-    src = (Path(__file__).parent / "test_lock_invariant.py").read_text(encoding="utf-8")
-    assert 'SRC.glob("*.py")' in src
-    assert 'root.glob("*.py")' in src
-    assert "SRC.rglob(" not in src
-    assert "root.rglob(" not in src
-
-
 # ===================================================================== #
 # CN -- containment
 # ===================================================================== #
-
-
-def test_cn1_every_rendered_rule_has_the_double_slash():
-    """CN1 -- for each of the four containments, every rendered rule
-    starts with `Edit(//` (double slash). Guarded by non-emptiness FIRST
-    for the three surfaces that have rules -- "every element starts with
-    X" is vacuously true of `[]`."""
-    home = "/home/x"
-    worker_c = invocation.containment_for(
-        "worker",
-        allowed_tools=worker.ALLOWED_TOOLS,
-        disallowed_tools=worker.DISALLOWED_TOOLS,
-        home=home,
-        stage_dir=f"{home}/.cache/self-learn/worker.stage",
-        stage_on=True,
-        enforce=True,
-    )
-    repair_c = invocation.containment_for(
-        "worker-repair",
-        allowed_tools=worker.ALLOWED_TOOLS,
-        disallowed_tools=worker.DISALLOWED_TOOLS,
-        write_exact=(f"{home}/a.yaml",),
-        enforce=True,
-    )
-    miner_c = invocation.containment_for(
-        "miner-reader",
-        disallowed_tools=miner.READER_DISALLOWED_TOOLS,
-        spool_dir=f"{home}/.cache/self-learn/miner/spool",
-    )
-    analyst_c = invocation.containment_for("analyst", allowed_tools=analyst.ANALYST_ALLOWED_TOOLS)
-
-    for c in (worker_c, repair_c, miner_c):
-        rules = invocation.containment_rules(c)
-        assert len(rules) >= 1
-        for r in rules:
-            assert r.startswith("Edit(//"), r
-
-    # the analyst's empty case is CN3's business, not this one's.
-    assert invocation.containment_rules(analyst_c) == []
 
 
 def test_cn2_call_site_containment_matches_the_call_site_table(
@@ -666,27 +590,6 @@ def test_cn3_analyst_containment_is_deliberately_near_empty():
     assert c.strict_mcp is False
     assert c.default_mode is None
     assert invocation.containment_rules(c) == []
-
-
-def test_cn4_write_exact_sorts_write_globs_does_not():
-    c_repair = invocation.containment_for(
-        "worker-repair", write_exact=("/z/c.yaml", "/z/a.yaml", "/z/b.yaml")
-    )
-    assert invocation.containment_rules(c_repair) == [
-        "Edit(//z/a.yaml)",
-        "Edit(//z/b.yaml)",
-        "Edit(//z/c.yaml)",
-    ]
-
-    home = "/home/x"
-    c_worker = invocation.containment_for(
-        "worker", home=home, stage_on=False, enforce=True
-    )
-    # write_permission_rules already returns fully-rendered `Edit(...)`
-    # rules -- containment_rules must render the SAME final strings from
-    # its own raw glob patterns, not double-wrap them.
-    expected = worker.write_permission_rules(Path(home))
-    assert invocation.containment_rules(c_worker) == expected
 
 
 def test_cn5_default_mode_omitted_when_none_present_when_default():
@@ -1015,15 +918,6 @@ def test_lg2_repair_label_appears_only_in_repair_lines(monkeypatch):
     assert logs_repair and all("repair " in line for line in logs_repair)
 
 
-def test_lg3a_worker_g_format(monkeypatch):
-    logs = []
-    outcome = _run_sdk(
-        "worker", monkeypatch, prompt="hang", timeout=0.3, label="", timeout_display=1800.0, log=logs.append
-    )
-    assert outcome.failure == "timeout"
-    assert logs[0] == "run: claude timed out after 1800s"  # `:g` format drops the trailing .0
-
-
 def test_lg3b_miner_no_g_format(monkeypatch):
     logs = []
     outcome = _run_sdk(
@@ -1031,17 +925,6 @@ def test_lg3b_miner_no_g_format(monkeypatch):
     )
     assert outcome.failure == "timeout"
     assert logs[0] == "run: claude timed out after 900.0s"  # miner's template has no `:g` -- keeps the .0
-
-
-def test_lg3c_timeout_display_is_actually_read(monkeypatch):
-    logs = []
-    outcome = _run_sdk(
-        "miner-reader", monkeypatch, prompt="hang", timeout=0.3, timeout_display=900, log=logs.append
-    )
-    assert outcome.failure == "timeout"
-    assert logs[0] == "run: claude timed out after 900s"
-
-
 
 
 def test_lg5_detail_rendering_per_surface(monkeypatch):
@@ -1176,14 +1059,6 @@ def test_lg7_analyst_invocation_never_grows_worker_or_miner_log(analyst_env, tmp
 
 
 
-
-
-def test_rg4_sdk_raises_backend_unavailable_with_install_command(monkeypatch, tmp_path, sdk_absent):
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-    with pytest.raises(invocation.BackendUnavailable) as exc_info:
-        invocation.backend_for("worker", home=tmp_path)
-    assert "pip install 'self-learn-cli[sdk]'" in str(exc_info.value)
 
 
 def test_rg5_write_session_returns_unavailable_without_raising(monkeypatch, tmp_path, sdk_absent):

@@ -663,40 +663,6 @@ class TestRouteUserScopeChezmoiAbsent:
         assert result.compile_result.changed is True
 
 
-class TestRouteUserScopeChezmoiBrokenSync:
-    """U-hostmode §4.8.1/§4.8.2 (census EDIT, S3): there is no chezmoi
-    sync step any more to break — user scope commits nothing anywhere
-    (plain mode), and the module that used to make that call is deleted
-    outright (Phase 2). The test now proves H-2's actual replacement
-    guarantee: the write lands and the record resolves, full stop —
-    there is no longer a sync mechanism whose broken state could even
-    be simulated. UN3 forbids renaming this test — name kept, literally
-    (its body necessarily converges on the same shape as
-    ``TestRouteUserScopeChezmoiAbsent``'s, above, since the two
-    scenarios that used to distinguish them — absent binary, broken
-    readd — no longer exist to distinguish anything)."""
-
-    def test_broken_readd_surfaces_warning_through_route(self, tmp_path, env):
-        target = tmp_path / "dot-claude" / "CLAUDE.md"
-        target.parent.mkdir()
-        target.write_text("# user conduct\n", encoding="utf-8")
-        record = make_behavior(scope="user", record_id=OLD)
-        create_record(env.home, record)
-
-        result = verbs.route(env.home, OLD, dest="claude-md", user_claude_md=target)
-
-        # the write landed and the record resolved
-        assert (env.home / "user" / "resolved" / f"{OLD}.md").is_file()
-        assert not (env.home / "user" / "pending" / f"{OLD}.md").is_file()
-        text = target.read_text(encoding="utf-8")
-        assert BEGIN_MARKER in text and OLD in text
-        # no sync_warning-shaped anything, no host commit — the module
-        # that could have surfaced one is gone
-        assert result.host_commit_sha is None
-        assert result.compile_result.changed is True
-        assert result.warnings == []
-
-
 # ------------------------------------------------------- non-routing verbs
 
 

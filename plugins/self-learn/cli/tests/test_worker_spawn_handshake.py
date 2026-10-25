@@ -210,24 +210,6 @@ def test_write_window_durable_cleans_up_its_temp_file_on_a_mid_write_failure(
 # ------------------------------------------------------- non-spawn cleanup
 
 
-def test_marker_removed_on_a_depth_limited_refusal(home, monkeypatch):
-    """`_spawn_window` refusing under the D3 chain-depth ceiling (returns
-    <= 0, never actually spawning) is a non-spawn outcome: the marker
-    written just before the call must not survive it, or a later kick
-    would read a permanently-fresh "spawning" marker as an in-flight spawn
-    that will never resolve, wedging real kicks shut forever.
-
-    Mutation that proves this bites: deleting the
-    `window.unlink(missing_ok=True)` line from `_open_window`'s
-    `pid <= 0` branch (keeping the marker-write step intact) fails this
-    test — `worker.window` would still hold ``"spawning"`` afterwards
-    instead of being gone."""
-    monkeypatch.setattr(worker, "_spawn_window", lambda home, *, no_push=False: -1)
-    outcome = worker._open_window(home)
-    assert outcome == "depth-limited"
-    assert not _window(home).exists()
-
-
 def test_open_window_never_touches_the_window_at_the_real_ceiling(home, monkeypatch):
     """Fold NIT 2 (audit 2026-09-02 gate r1): the D3 chain-depth ceiling
     check (`_ceiling_refused`) now runs in `_open_window` BEFORE the

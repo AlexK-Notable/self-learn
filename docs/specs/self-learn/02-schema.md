@@ -2721,7 +2721,7 @@ Run           = { "contract": "miner-shadow-run/1", "run_id": str, "mode": "test
 *Amended by R2 (2026-10-19):* the session engine adds optional keys, each
 validated when present (`contract.RUN_OPTIONAL_KEYS`,
 `SESSION_ROW_OPTIONAL_KEYS`): `"preview": bool` (a `mine run --preview`);
-`"counts": { "quote_redacted", "cut_to_limit", "checker_errors",
+`"counts": { "quote_redacted", "cut_to_limit", "prose_before_json", "checker_errors",
 "call_failures", "bad_output", "deferred": int, "flag_modes": { mode: int } }`;
 `"judged_uuids": { "state": "ok" | "locked" | "rebuilt" | "damaged",
 "loaded": int, "aside"?: str | null, "pruned"?: int, "added"?: int,

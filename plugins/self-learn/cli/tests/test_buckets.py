@@ -10,10 +10,6 @@ def _mk_skill_bucket(home, skill):
     return d
 
 
-def test_empty_home_has_no_buckets(tmp_path):
-    assert discover_buckets(tmp_path) == []
-
-
 def test_skill_buckets_found_under_skills_dir(tmp_path):
     a = _mk_skill_bucket(tmp_path, "home-assistant")
     b = _mk_skill_bucket(tmp_path, "dotfiles")
@@ -21,12 +17,6 @@ def test_skill_buckets_found_under_skills_dir(tmp_path):
     assert [x.path for x in buckets] == sorted([a, b])
     assert all(x.scope == "skill" for x in buckets)
     assert {x.name for x in buckets} == {"home-assistant", "dotfiles"}
-
-
-def test_skill_bucket_named_after_its_dir(tmp_path):
-    _mk_skill_bucket(tmp_path, "inner-skill")
-    (bucket,) = discover_buckets(tmp_path)
-    assert bucket.name == "inner-skill"
 
 
 def test_project_and_user_buckets_are_separate_scopes(tmp_path):

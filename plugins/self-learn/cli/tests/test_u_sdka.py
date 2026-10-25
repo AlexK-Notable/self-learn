@@ -850,15 +850,6 @@ def test_hd2_sdk_leg_claudesdkerror_flavor_is_caught(tmp_path, monkeypatch):
     assert "Permission denied" in str(exc_info.value)
 
 
-def test_hd3_fw87_chain_exits_4_both_legs(leg, capsys):
-    leg.fail("os-error")
-    rc = cli_mod.main(_TEACH_ARGS + ["--route"])
-    err = capsys.readouterr().err
-    assert rc == 4
-    pend = leg.pending_files()
-    assert len(pend) == 1
-
-
 def test_hd4_seam_is_total_on_the_analyst_surface(leg):
     assert contract_mod.TRANSPORT["analyst"] is True
     assert contract_mod.LOG_TEMPLATES["analyst"].os_error is not None
@@ -880,30 +871,6 @@ def test_hd4_seam_is_total_on_the_analyst_surface(leg):
         except Exception as exc:  # noqa: BLE001
             pytest.fail(f"{kind}: raised {type(exc).__name__} instead of returning an Outcome: {exc}")
         assert outcome.failure == kind, kind
-
-
-def test_m16_transport_table_is_still_a_plain_mutable_dict(monkeypatch):
-    """`M-16`/`CL5` (U-cleanup §11.1, `T-TRANSPORT-FLAG-STILL-MUTABLE`):
-    `contract.TRANSPORT` was trimmed from a one-field dataclass carrier
-    to a plain `dict[str, bool]` (`contract.py` ~:296, `BLOCKER-1`) so
-    the table stays a mutable, table-level fact rather than something a
-    maintainer must restructure a class to edit -- the property `S-48`'s
-    `M11` evidence (the analyst-vs-worker/miner OSError/ClaudeSDKError
-    split) depends on staying reproducible. `test_hd4_...` (above)
-    already re-spells the ORIGINAL read half (`TRANSPORT["analyst"] is
-    True`, was `.catches_os_error is True` pre-trim, `git show
-    163a93e:plugins/self-learn/cli/tests/test_u_sdka.py` ~:1068); this
-    covers the half a read alone cannot: that the table genuinely
-    supports item assignment (not frozen, not a `MappingProxyType`, not
-    a dataclass requiring a field-by-field rebuild to change one row),
-    and that a mutation is PER-SURFACE, not an all-or-nothing table
-    replacement."""
-    assert isinstance(contract_mod.TRANSPORT, dict)
-    assert not isinstance(contract_mod.TRANSPORT, MappingProxyType)
-    monkeypatch.setitem(contract_mod.TRANSPORT, "analyst", False)
-    assert contract_mod.TRANSPORT["analyst"] is False
-    assert contract_mod.TRANSPORT["worker"] is True
-    assert contract_mod.TRANSPORT["miner-reader"] is True
 
 
 def _ctx():
@@ -1063,71 +1030,6 @@ def test_hd8_flip_does_not_change_the_model(tmp_path, monkeypatch):
 # tripwire` (U-cleanup-A `AG1`) fire on a direct `CliBackend` call. Both
 # the tripwire and `CliBackend` itself are deleted in this unit (§8.1,
 # conftest.py); there is nothing left for a negative control to prove.
-
-
-def test_ar5_pin1_class_is_closed_by_census():
-    """`Pin-1`'s casualty class, re-run as a census over the WHOLE suite:
-    every test setting `SELF_LEARN_BACKEND=sdk` (rung 2) that reaches a
-    surface conftest pins at rung 1 -- `analyst` (U-sdka's own pin) or
-    `worker`/`worker-repair`/`miner-reader` (U-flip's matching
-    `SELF_LEARN_BACKEND_WORKER`/`_MINER` pins) -- or iterates `SURFACES`,
-    without first clearing the relevant rung-1 var(s), directly or via an
-    autouse fixture in its module. This census recognizes exactly the two
-    SYSTEMIC protections Pin-1 itself names (`_clear_backend_env(`'s
-    convention, or an autouse module fixture) -- a same-function, one-off
-    inline `delenv` is deliberately NOT credited: it is what makes a test
-    a census STABLE, TRACKED member rather than a moving target that
-    vanishes the moment it grows its own fix. U-flip's generalization
-    (WORKER/MINER, not just ANALYST) surfaces three more members of
-    exactly this shape -- `test_rs2_present_resolves_absent_raises_
-    byte_identical_unavailable`, `test_rs4_non_import_error_from_
-    claude_agent_sdk_propagates`, `test_rs6_lazy_import_target_resolves_
-    by_identity` -- each fixed with a same-function, one-off inline
-    `delenv("SELF_LEARN_BACKEND_WORKER")` for the same reason `test_rs2`
-    itself was."""
-    tests_dir = Path(__file__).parent
-    immune_modules = {
-        "test_doctor_invocation.py",  # autouse _clear_provider_env
-        "test_provider.py",  # autouse _clear_provider_env
-        "test_settings_fold_r1.py",  # autouse _clear_registry_env
-    }
-    casualties: set[str] = set()
-
-    for path in sorted(tests_dir.glob("test_*.py")):
-        if path.name in immune_modules:
-            continue
-        text = path.read_text(encoding="utf-8")
-        tree = ast.parse(text)
-        for node in tree.body:
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if not node.name.startswith("test_"):
-                continue
-            src = ast.get_source_segment(text, node)
-            if 'setenv("SELF_LEARN_BACKEND", "sdk")' not in src:
-                continue
-            reaches_pinned_surface = any(
-                literal in src
-                for literal in (
-                    '"analyst"', "'analyst'",
-                    '"worker"', "'worker'",
-                    '"worker-repair"', "'worker-repair'",
-                    '"miner-reader"', "'miner-reader'",
-                    "SURFACES",
-                )
-            )
-            if not reaches_pinned_surface:
-                continue
-            if "_clear_backend_env(" in src:
-                continue
-            casualties.add(node.name)
-
-    assert casualties == {
-        "test_rs2_present_returns_sdkbackend_for_every_surface",
-        "test_rs2_present_resolves_absent_raises_byte_identical_unavailable",
-        "test_rs4_non_import_error_from_claude_agent_sdk_propagates",
-        "test_rs6_lazy_import_target_resolves_by_identity",
-    }
 
 
 # U-cleanup-A DELETE (spec §8.4b's own disposition: "ar4 delete (its

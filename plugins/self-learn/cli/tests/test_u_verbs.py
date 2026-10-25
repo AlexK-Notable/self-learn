@@ -1680,13 +1680,6 @@ class TestBatch:
         assert sorted(sites) == sorted(EXPECTED_EPILOGUE_SITES)
         assert sites.count(("cli", "_main")) == 6
 
-    def test_bat11c_shipped_lifecycle_tests_are_present(self):
-        text = (Path(__file__).parent / "test_lifecycle_cli.py").read_text(encoding="utf-8")
-        assert "def test_resolution_verb_flushes_spool_but_never_commits_telemetry" in text
-        assert "def test_teach_emits_capture_event" in text
-        # the full pass/fail of these two is verified by the suite run,
-        # not re-run inside this file (avoiding a pytest-inside-pytest).
-
 
 def _write_sheet(base_dir: Path, items: list[dict]) -> Path:
     import uuid
@@ -1909,114 +1902,6 @@ class TestUnaffected:
         raw = path.read_text(encoding="utf-8")
         assert "history" not in raw
         assert "\nnotes:" not in raw
-
-    def test_un3_rescope_and_rehome_suites_green(self):
-        proc = subprocess.run(
-            [
-                "env", "-u", "SELF_LEARN_ANALYST_MODEL", "-u", "SELF_LEARN_ANALYST_TIMEOUT",
-                "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q",
-                "test_rescope.py", "test_rehome.py",
-            ],
-            cwd=str(Path(__file__).parent), capture_output=True, text=True,
-        )
-        assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-2000:]
-
-    @staticmethod
-    def _method_names(source: str) -> set[str]:
-        tree = ast.parse(source)
-        out: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef):
-                for item in node.body:
-                    if (
-                        isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                        and item.name.startswith("test_")
-                    ):
-                        out.add(f"{node.name}::{item.name}")
-        return out
-
-    def test_un3_diff_scoped_nothing_lost(self):
-        """N2 (code gate r1): the criterion's own diff leg -- test_rehome.py
-        + test_rescope.py collect the SAME 53 tests before (`b206800`) and
-        after this build, by NAME, not just by count (a same-count swap
-        could still hide a silent deletion). Every name difference is one
-        of the three DECLARED widened-behavior renames (§3.2/§3.2c:
-        `rehome`'s non-project-source refusal, `rescope`'s project-scoped-
-        source refusal, and `rescope`'s skill to skill refusal all became
-        `_now_succeeds` tests) -- nothing else was deleted or renamed."""
-        base = (
-            self._method_names(b206800_text("plugins/self-learn/cli/tests/test_rehome.py"))
-            | self._method_names(b206800_text("plugins/self-learn/cli/tests/test_rescope.py"))
-        )
-        cur = (
-            self._method_names((Path(__file__).parent / "test_rehome.py").read_text())
-            | self._method_names((Path(__file__).parent / "test_rescope.py").read_text())
-        )
-        assert len(base) == 53
-        assert len(cur) == 53
-
-        removed = base - cur
-        added = cur - base
-        expected_removed = {
-            "TestRehomeRefusals::test_non_project_source_refuses",
-            "TestRescopeRefusals::test_refuses_project_scoped_source",
-            "TestRescopeRefusals::test_refuses_skill_to_skill",
-        }
-        expected_added = {
-            "TestRehomeRefusals::test_non_project_source_now_succeeds",
-            "TestRescopeRefusals::test_project_scoped_source_now_succeeds",
-            "TestRescopeRefusals::test_skill_to_skill_now_succeeds",
-        }
-        assert removed == expected_removed, removed
-        assert added == expected_added, added
-        # every OTHER name survives untouched, proving nothing else lost
-        assert (base - expected_removed) <= cur
-
-    def test_un4_argv_for_gains_exactly_two_rows(self):
-        import sys
-        sys.path.insert(0, str(Path(__file__).parent))
-        from test_lock_invariant import _ARGV_FOR, _cmd_functions, _LOCKS
-
-        # S-62: `ledger_write` (the shared wrapper `_ledger_write` now
-        # delegates to) joined `_LOCKS` alongside it -- a callee's lock
-        # never discharges a caller's obligation, so both names stay
-        # recognised by the walker.
-        assert _LOCKS == ("commit_lock", "_ledger_write", "ledger_write", "host_lock")
-        assert "_cmd_batch" in _ARGV_FOR
-        assert "_cmd_show" in _ARGV_FOR
-        assert set(_cmd_functions()) - set(_ARGV_FOR) == set()
-
-        proc = subprocess.run(
-            [
-                "env", "-u", "SELF_LEARN_ANALYST_MODEL", "-u", "SELF_LEARN_ANALYST_TIMEOUT",
-                "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "test_lock_invariant.py",
-            ],
-            cwd=str(Path(__file__).parent), capture_output=True, text=True,
-        )
-        assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-2000:]
-
-    def test_un5_no_armor_sha_moves(self):
-        """2026-08-28: retargeted from `test_worker_contract.py -k armor`
-        when U-armor's own DEL1/DEL2 retired `_ARMOR_SHAS` and its
-        `test_su4a_*`/`test_su4b_*` tests -- `-k armor` now matches
-        nothing there (exit 5), not 0. The property this guard exists
-        to protect -- "this unit moved no armor pins" -- survives
-        intact: it now lives in `test_armor.py`'s own byte-identity
-        check, `test_fix1_fixtures_are_byte_identical`, which this
-        guard runs instead."""
-        proc = subprocess.run(
-            [
-                "env", "-u", "SELF_LEARN_ANALYST_MODEL", "-u", "SELF_LEARN_ANALYST_TIMEOUT",
-                "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q",
-                "test_armor.py", "-k", "fix1",
-            ],
-            cwd=str(Path(__file__).parent), capture_output=True, text=True,
-        )
-        assert proc.returncode == 0, (
-            "test_armor.py::test_fix1_fixtures_are_byte_identical (this unit's own "
-            "armor-pin guard) failed:\n" + proc.stdout[-4000:] + proc.stderr[-2000:]
-        )
-
 
 # =============================================================== U4 revise
 

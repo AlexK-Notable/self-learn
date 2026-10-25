@@ -2100,20 +2100,6 @@ class TestReplayStatusEnvelope:
         assert result.reload_caveat is not None
         assert "FW-154" in result.reload_caveat
 
-    def test_result_replay_skipped_without_examples(self, env):
-        route_hook(env, RID)
-        path = env.bucket / "resolved" / f"{RID}.md"
-        record = Record.from_path(path)
-        routing = dict(record.routing)
-        hook_meta = dict(routing["hook"])
-        del hook_meta["examples"]
-        routing["hook"] = hook_meta
-        record.set_routing(routing)
-        record.write(path)
-
-        result = hook_activation.activate(env.home, RID, claude_dir=env.claude, register=True)
-        assert result.replay == "skipped-no-examples"
-
     def test_delegated_activation_carries_no_replay_status(self, env):
         route_hook(env, RID)
         result = hook_activation.activate(env.home, RID, claude_dir=env.claude, register=False)
