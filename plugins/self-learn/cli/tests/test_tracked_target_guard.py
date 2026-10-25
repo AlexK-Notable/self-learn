@@ -505,7 +505,7 @@ def test_a_plain_skills_root_takes_a_new_hook_script_ignored_and_refuses_a_track
     git(repo, "add", "-f", "--", rel)
     git(repo, "commit", "-q", "-m", "track the guard script")
     with pytest.raises(verbs.NeedsPerson) as removal:
-        verbs.graduate(home, hook, no_push=True)
+        verbs.retire(home, hook, covered_by="skill-md:canon", no_push=True)
     assert f"{rel} is tracked by git" in str(removal.value)
     assert f"switches the skills root at {repo} to git mode" in str(removal.value)
     assert script.is_file()
@@ -567,7 +567,7 @@ def test_recompile_never_deletes_a_retired_hook_script_its_owner_tracks(tmp_path
     script = verbs.route(home, rid, dest="hook", no_push=True).target
     assert script is not None
     text = script.read_text(encoding="utf-8")
-    verbs.graduate(home, rid, no_push=True)
+    verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
     assert not script.exists()  # control: the untracked script was removed
     script.write_text(text, encoding="utf-8")
     rel = script.relative_to(repo).as_posix()
@@ -599,7 +599,7 @@ def test_a_reference_retirement_puts_the_shelf_s_line_back_first(tmp_path):
     _write_operator_lines(host)  # the block is lost
     assert not _ignored(host, "references/LEARNINGS.md")  # control
 
-    verbs.graduate(home, rid, no_push=True)
+    verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
 
     shelf = host / "references" / "LEARNINGS.md"
     text = shelf.read_text(encoding="utf-8")
@@ -703,13 +703,13 @@ def test_a_retirement_out_of_a_tracked_file_takes_its_lines_out_and_leaves_the_c
     before = (host / "CLAUDE.md").read_text(encoding="utf-8")
     assert rid in before and keep in before  # control
     head = _head(host)
-    sheet = _sheet(tmp_path, [{"id": rid, "verb": "graduate"}])
+    sheet = _sheet(tmp_path, [{"id": rid, "verb": "retire", "covered_by": "skill-md:canon"}])
 
     preview = batch.dry_run(home, sheet, actor="human")
     assert (preview.items[0].state, preview.items[0].kind) == ("would-apply", None), (
         preview.items[0].detail
     )
-    result = verbs.graduate(home, rid, no_push=True)
+    result = verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
 
     after = (host / "CLAUDE.md").read_text(encoding="utf-8")
     assert after == "".join(
@@ -738,7 +738,7 @@ def test_a_tracked_rules_file_emptied_by_a_retirement_keeps_its_region(tmp_path)
     git(host, "add", "-f", "--", ".claude/rules/topic.md")
     git(host, "commit", "-q", "-m", "track the rules file")
 
-    result = verbs.graduate(home, rid, no_push=True)
+    result = verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
 
     assert not [w for w in result.warnings if "FAILED" in w], result.warnings
     assert rules.is_file()
@@ -790,7 +790,7 @@ def test_a_removal_whose_write_would_do_more_puts_the_tracked_file_back(
 
     monkeypatch.setattr(verbs, "_apply_target", apply_and_more)
 
-    result = verbs.graduate(home, rid, no_push=True)
+    result = verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
 
     (failed,) = [w for w in result.warnings if "HOST PHASE FAILED" in w]
     why = "would be deleted" if does == "deletes" else "would gain or change lines"
@@ -813,7 +813,7 @@ def test_a_tracked_file_missing_from_disk_is_not_re_created_by_a_removal(tmp_pat
     ledger_head = last_verb_sha(home)
 
     with pytest.raises(verbs.NeedsPerson) as caught:
-        verbs.graduate(home, rid, no_push=True)
+        verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
 
     assert "is tracked by git" in str(caught.value)
     assert "would re-create it" in str(caught.value)
@@ -849,7 +849,7 @@ def test_a_removal_that_would_rewrite_an_adopted_line_is_refused_before_the_comm
     claude_md = claude.read_bytes()
     assert b"(reworded by a person)" in claude_md  # control: the adopted edit is there
     ledger_head = last_verb_sha(home)
-    sheet = _sheet(tmp_path, [{"id": rid, "verb": "graduate"}])
+    sheet = _sheet(tmp_path, [{"id": rid, "verb": "retire", "covered_by": "skill-md:canon"}])
 
     preview = batch.dry_run(home, sheet, actor="human")
     result = batch.run(home, sheet, no_push=True, actor="human")
@@ -889,7 +889,7 @@ def test_a_retiring_lessons_own_adopted_line_still_leaves(tmp_path):
     git(host, "commit", "-q", "-m", "track CLAUDE.md")
     assert b"(reworded by a person)" in claude.read_bytes()  # control
 
-    result = verbs.graduate(home, rid, no_push=True)
+    result = verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
 
     assert not [w for w in result.warnings if "FAILED" in w], result.warnings
     text = claude.read_text(encoding="utf-8")
@@ -968,7 +968,7 @@ def test_a_tracked_rules_file_whose_paths_block_was_restyled_is_refused_before_t
     git(host, "commit", "-q", "-m", "track the restyled rules file")
     rules_bytes = rules.read_bytes()
     ledger_head = last_verb_sha(home)
-    sheet = _sheet(tmp_path, [{"id": rid, "verb": "graduate"}])
+    sheet = _sheet(tmp_path, [{"id": rid, "verb": "retire", "covered_by": "skill-md:canon"}])
 
     preview = batch.dry_run(home, sheet, actor="human")
     result = batch.run(home, sheet, no_push=True, actor="human")
@@ -996,7 +996,7 @@ def test_the_tracked_removal_prediction_leaves_untracked_files_alone(tmp_path):
     _reword_and_adopt(home, claude, other)
     assert b"(reworded by a person)" in claude.read_bytes()  # control
 
-    result = verbs.graduate(home, rid, no_push=True)
+    result = verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
 
     assert not [w for w in result.warnings if "FAILED" in w], result.warnings
     assert _record(home, rid).status == "superseded"
@@ -1018,7 +1018,7 @@ def test_the_tracked_removal_prediction_leaves_git_hosts_alone(tmp_path):
     git(host, "commit", "-q", "-am", "a person rewords a lesson")
     assert git(host, "ls-files", "--", "CLAUDE.md").stdout.strip() == "CLAUDE.md"  # control
 
-    result = verbs.graduate(home, rid, no_push=True)
+    result = verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
 
     assert not [w for w in result.warnings if "FAILED" in w], result.warnings
     assert _record(home, rid).status == "superseded"
@@ -1048,7 +1048,7 @@ def test_a_write_time_refusal_of_a_removal_keeps_the_removal_wording(tmp_path, m
 
     monkeypatch.setattr(verbs, "resolve_record", delete_then_resolve)
 
-    result = verbs.graduate(home, rid, no_push=True)
+    result = verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
 
     (failed,) = [w for w in result.warnings if "HOST PHASE FAILED" in w]
     assert "would re-create it" in failed
@@ -1070,7 +1070,7 @@ def test_a_tracked_file_deletion_is_still_refused_for_a_person(tmp_path):
     shelf = (host / "references" / "LEARNINGS.md").read_bytes()
 
     with pytest.raises(verbs.NeedsPerson) as caught:
-        verbs.graduate(home, rid, no_push=True)
+        verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
 
     assert "LEARNINGS.md is tracked by git" in str(caught.value)
     assert "never deletes a tracked file" in str(caught.value)
@@ -1223,11 +1223,11 @@ def test_deleting_an_untracked_script_needs_no_ignore_line(tmp_path):
     assert not _ignored(repo, rel)  # control: re-admitted ...
     assert f"?? {rel}" in _status(repo)  # ... and untracked, so a deletion is safe
 
-    verbs.graduate(home, rid, no_push=True)
+    verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
 
     assert not script.exists()
     record = _record(home, rid)
-    assert (record.status, record.superseded_by) == ("superseded", "canon")
+    assert (record.status, record.superseded_by) == ("superseded", "covered_by:skill-md:canon")
 
 
 def test_a_host_whose_path_holds_glob_characters_gets_a_line_for_exactly_its_file(
@@ -1404,7 +1404,7 @@ def test_a_reference_retirement_from_a_tracked_shelf_is_refused_for_a_person(tmp
     git(host, "commit", "-q", "-m", "keep the shelf in history")
     shelf = (host / "references" / "LEARNINGS.md").read_bytes()
     assert rid.encode() in shelf  # control
-    sheet = _sheet(tmp_path, [{"id": rid, "verb": "graduate"}])
+    sheet = _sheet(tmp_path, [{"id": rid, "verb": "retire", "covered_by": "skill-md:canon"}])
 
     preview = batch.dry_run(home, sheet, actor="human")
     result = batch.run(home, sheet, no_push=True, actor="human")
@@ -1555,7 +1555,7 @@ def test_a_shelf_retirement_never_judges_the_pointer_file_it_does_not_write(tmp_
     pointer = (host / "CLAUDE.md").read_bytes()
     assert b"references/LEARNINGS.md" in pointer  # control: it names the shelf
 
-    verbs.graduate(home, rid, no_push=True)
+    verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
 
     assert rid not in shelf.read_text(encoding="utf-8")
     assert _record(home, rid).status == "superseded"
@@ -1698,7 +1698,7 @@ def test_a_file_tracked_mid_retirement_is_still_only_a_removal(tmp_path, monkeyp
         verbs, "_refuse_unsafe_plain_write", lambda spec, removal=False: None, raising=False
     )
 
-    result = verbs.graduate(home, rid, no_push=True)
+    result = verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
 
     assert not [w for w in result.warnings if "FAILED" in w], result.warnings
     assert any("left the change uncommitted" in w for w in result.warnings)
@@ -1804,7 +1804,7 @@ def test_a_shelf_retirement_ignores_a_tracked_claude_md_that_no_longer_points_at
     claude_md = (host / "CLAUDE.md").read_bytes()
     assert b"references/LEARNINGS.md" not in claude_md  # control
 
-    verbs.graduate(home, rid, no_push=True)
+    verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
 
     assert not shelf.exists()
     assert _record(home, rid).status == "superseded"

@@ -238,14 +238,17 @@ class TestPhaseBoundary:
         E1 (2026-10-10, D-AUTHOR §2.13, build plan SP-E): 17 grows to 18
         -- `replace` joins, the first sheet verb that writes a NEW lesson
         (a successor that supersedes the named ones). Not a Phase-2 verb;
-        the same membership pin sits beside the count."""
+        the same membership pin sits beside the count.
+
+        2026-10-24 (02-schema §2): 18 returns to 17 when the one-release
+        graduate alias is removed; retire retains its membership pin."""
         phase2_verbs = {"reroute", "followup-add", "reclassify", "host remove", "bucket prune"}
         assert "followup-add" in phase2_verbs  # gate r2 m-2: pins the spelling itself
         assert not (batch.PERMITTED_VERBS & phase2_verbs)
         assert "revise" in batch.PERMITTED_VERBS  # U4: the one deliberate addition
         assert "retire" in batch.PERMITTED_VERBS  # S-67: the other deliberate addition
         assert "replace" in batch.PERMITTED_VERBS  # E1 (2026-10-10): the third
-        assert len(batch.PERMITTED_VERBS) == 18
+        assert len(batch.PERMITTED_VERBS) == 17
 
     def test_phase1_touches_no_host(self, tmp_path, monkeypatch):
         """PH2: a fixture with a registered host (env's ``host_a``) runs
@@ -1104,7 +1107,7 @@ class AllVerbsSheetEnv:
 
     IDS = {
         "route": "lrn-b0000001", "reject": "lrn-b0000002", "defer": "lrn-b0000003",
-        "undefer": "lrn-b0000004", "reopen": "lrn-b0000005", "graduate": "lrn-b0000006",
+        "undefer": "lrn-b0000004", "reopen": "lrn-b0000005", "retire": "lrn-b0000006",
         "supersede_old": "lrn-b0000007", "supersede_new": "lrn-b0000008",
         "rehome": "lrn-b0000009", "rescope": "lrn-b000000a", "note": "lrn-b000000b",
         "confirm_recurrence": "lrn-b000000c", "dismiss_suspect": "lrn-b000000d",
@@ -1141,7 +1144,7 @@ class AllVerbsSheetEnv:
         verbs.reject(home, ids["reopen"], no_push=True)
 
         # graduate: bare pending
-        create_record(home, make_knowledge(scope="skill:a", record_id=ids["graduate"]))
+        create_record(home, make_knowledge(scope="skill:a", record_id=ids["retire"]))
         commit_all(home, "seed graduate")
 
         # supersede: two pending records
@@ -1186,7 +1189,7 @@ class AllVerbsSheetEnv:
         lines.append(f"  - {{id: {ids['defer']}, verb: defer, until: \"{(datetime.now(timezone.utc).date() + timedelta(days=20)).isoformat()}\"}}")
         lines.append(f"  - {{id: {ids['undefer']}, verb: undefer}}")
         lines.append(f"  - {{id: {ids['reopen']}, verb: reopen}}")
-        lines.append(f"  - {{id: {ids['graduate']}, verb: graduate}}")
+        lines.append(f"  - {{id: {ids['retire']}, verb: retire, covered_by: skill-md:canon}}")
         lines.append(f"  - {{id: {ids['supersede_old']}, verb: supersede, new_id: {ids['supersede_new']}}}")
         lines.append(f"  - {{id: {ids['rehome']}, verb: rehome, to: \"{self.e.host_b}\"}}")
         lines.append(f"  - {{id: {ids['rescope']}, verb: rescope, to: \"skill:b\"}}")
@@ -1436,7 +1439,7 @@ class TestBatch:
             )
 
         for fn_name in (
-            "route", "reject", "defer", "undefer", "reopen", "graduate",
+            "route", "reject", "defer", "undefer", "reopen", "retire",
             "supersede", "rehome", "rescope", "note", "confirm_recurrence",
             "dismiss_suspect", "confirm_held", "link_contradicts",
             "followup_done",
@@ -1870,8 +1873,8 @@ class TestUnaffected:
         assert verb_subject(env2.home) == f"self-learn: defer {r_defer.id} until {until}"
 
         r_graduate = env2.seed(scope="skill:a")
-        assert cli.main(["graduate", r_graduate.id, "--no-push"]) == 0
-        assert verb_subject(env2.home) == f"self-learn: graduate {r_graduate.id}"
+        assert cli.main(["retire", r_graduate.id, "--covered-by", "skill-md:canon", "--no-push"]) == 0
+        assert verb_subject(env2.home) == f"self-learn: retire {r_graduate.id}"
 
         r_old = env2.seed(scope="skill:a")
         r_new = env2.seed(scope="skill:a")

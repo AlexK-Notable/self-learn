@@ -760,36 +760,36 @@ class TestDefer:
 class TestGraduate:
     def test_pending_already_canon_flavor(self, env):
         seed(env)
-        result = verbs.graduate(env.home, OLD, note="already covered by canon")
+        result = verbs.retire(env.home, OLD, covered_by="skill-md:canon", note="already covered by canon")
 
-        assert result.commit_message == f"self-learn: graduate {OLD}"
+        assert result.commit_message == f"self-learn: retire {OLD}"
         record = Record.from_path(env.resolved(OLD))
         assert record.status == "superseded"
-        assert record.superseded_by == "canon"
+        assert record.superseded_by == "covered_by:skill-md:canon"
         assert record.resolution_note == "already covered by canon"
 
     def test_routed_hand_weave_flavor(self, env):
         seed(env)
         verbs.route(env.home, OLD, dest="skill-md")
 
-        result = verbs.graduate(env.home, OLD)
+        result = verbs.retire(env.home, OLD, covered_by="skill-md:canon")
 
         record = Record.from_path(env.resolved(OLD))
         assert record.status == "superseded"
-        assert record.superseded_by == "canon"
-        assert env.remote_subject() == f"self-learn: graduate {OLD}"
+        assert record.superseded_by == "covered_by:skill-md:canon"
+        assert env.remote_subject() == f"self-learn: retire {OLD}"
         assert result.push.ok
 
     def test_deferred_flavor_accepted(self, env):
         seed(env)
         verbs.defer(env.home, OLD, until="2099-01-01")
 
-        result = verbs.graduate(env.home, OLD)
+        result = verbs.retire(env.home, OLD, covered_by="skill-md:canon")
 
         record = Record.from_path(env.resolved(OLD))
         assert record.status == "superseded"
-        assert record.superseded_by == "canon"
-        assert result.commit_message == f"self-learn: graduate {OLD}"
+        assert record.superseded_by == "covered_by:skill-md:canon"
+        assert result.commit_message == f"self-learn: retire {OLD}"
 
     def test_refuses_rejected_source(self, env):
         # FW-51's headline defect: `reject A` then `graduate A` used to
@@ -801,7 +801,7 @@ class TestGraduate:
         before_head = git(env.home, "rev-parse", "HEAD").stdout.strip()
 
         with pytest.raises(verbs.VerbError) as excinfo:
-            verbs.graduate(env.home, OLD)
+            verbs.retire(env.home, OLD, covered_by="skill-md:canon")
         assert excinfo.value.exit_code == 1
         assert "'rejected'" in str(excinfo.value)
 
@@ -814,12 +814,12 @@ class TestGraduate:
         # `supersede B C` with B graduated: refused. Graduating an
         # already-graduated record twice is the same shape.
         seed(env)
-        verbs.graduate(env.home, OLD)
+        verbs.retire(env.home, OLD, covered_by="skill-md:canon")
         before_bytes = env.resolved(OLD).read_bytes()
         before_head = git(env.home, "rev-parse", "HEAD").stdout.strip()
 
         with pytest.raises(verbs.VerbError) as excinfo:
-            verbs.graduate(env.home, OLD)
+            verbs.retire(env.home, OLD, covered_by="skill-md:canon")
         assert excinfo.value.exit_code == 1
         assert "'superseded'" in str(excinfo.value)
         assert env.resolved(OLD).read_bytes() == before_bytes

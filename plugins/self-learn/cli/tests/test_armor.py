@@ -116,7 +116,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "99dae24"
+ANCHOR = "b1bd8cb"
 
 
 # ===================================================================== #
@@ -292,6 +292,19 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_invocation.py": Behaviour(
         nodes=86, dump_sha="8e56cf5d5e00491ec8134084b745a0518008fca4da2dd52e910b785e271ac225",
+        missing={
+            "func:test_rg1_five_rung_precedence_resolves_in_isolation": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_rg2_each_rung_shadows_the_ones_below": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_sel1_env_selector_cli_refused_through_text_session": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_sel2_all_four_surfaces_refuse_through_their_own_templates": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_sel3_coarse_rung_cli_refuses_identically": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_sel4_config_backend_worker_cli_refuses_and_names_that_key": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_rg3_unknown_value_falls_closed_with_byte_exact_warning": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_t_unknown_still_sdk_write_session_succeeds_not_refused": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_rg6_empty_string_falls_through_silently": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_rg7_config_invocation_backend_discipline": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_fk3_fake_is_not_reachable_from_backend_for": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+        },
     ),
     # 2026-08-30, ANCHOR ee62df0: RS8's `edited` exemption was dropped as
     # VACUOUS by this landing's refusal -- U-xdist landed, so the widened
@@ -309,6 +322,9 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # were dropped as VACUOUS by this landing's own refusal; they are anchor-side now.
     "test_invocation_sdk.py": Behaviour(
         nodes=139, dump_sha="3681b7d89f5cc50f98117a1ff12eade9c6dd4807f6e267600ee5e4836e262558",
+        edited={
+            "assign:_SIM_2_NINE": "2026-10-24 17-invocation-runbook.md §1: remove the two deleted backend precedence tests from the SDK-absent fixture census.",
+        },
     ),
     "test_worker.py": Behaviour(
         nodes=83, dump_sha="0d4ac5f2300dc2f265566bc14b258c0086d7d6b23fd16b0c421d3d995d8e7a46"
@@ -327,6 +343,9 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     ),
     "test_route_cli.py": Behaviour(
         nodes=59, dump_sha="c61c80a0b91bc6e10dfc53e81e91549f6c7642f32b3c4a9ea91cbe9bbbd3eaa6",
+        edited={
+            "func:test_graduate_cli": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+        },
     ),
     # 2026-09-20, ANCHOR 1a0220b (liveness landing): A12's `edited` door (U7's cases block in the
     # batch prompt) was dropped as VACUOUS by this landing's own refusal; U7
@@ -889,9 +908,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_export_total,
     ),
     "EXM3.census_missing": Measured(
-        value=0,
+        value=11,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-24 audit-retire after merging master at ANCHOR 99dae24 (17-invocation-runbook.md §1; 02-schema.md §2): 0 -> 11, the eleven `missing` doors on test_invocation.py (deleted backend-selector tests). "
+            "Previous entry: "
             "2026-10-24, transcribed at ANCHOR 9f50345 from this module's own "
             "STALE refusal (engine-fix landing): 24 -> 0; the test audit's "
             "deletions are anchor-side now. Previous entry: "
@@ -906,9 +927,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=2,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-24 audit-retire after merging master at ANCHOR 99dae24 (17-invocation-runbook.md §1; 02-schema.md §2): 0 -> 2, the `edited` doors on test_invocation_sdk.py `_SIM_2_NINE` and test_route_cli.py `test_graduate_cli`. "
+            "Previous entry: "
             "2026-10-24, transcribed at ANCHOR 99dae24 from this module's own "
             "STALE refusal (cfg-tier-c): 1 -> 0; kl8's exec-wait helper and its test edit "
             "are anchor-side now. Previous entry: "
@@ -957,9 +980,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_edited,
     ),
     "BEH1.control_missing": Measured(
-        value=91,
+        value=97,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-10-24 audit-retire after merging master at ANCHOR 99dae24 (17-invocation-runbook.md §1; 02-schema.md §2): 91 -> 97, the deleted backend-selector tests, counted against the retired control anchor c3b48e7. "
+            "Previous entry: "
             "2026-10-24 test audit L1/L2, per §4.5/§4.7: 68 -> 91; "
             "HEAD measured against the retired control anchor c3b48e7. "
             "2026-09-04 Sprint 2 integration, per §5.1's STALE remediation: 66 -> 68 "
@@ -971,9 +996,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=179,
+        value=175,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-10-24 audit-retire after merging master at ANCHOR 99dae24 (17-invocation-runbook.md §1; 02-schema.md §2): 179 -> 175, the retirement's edits counted against c3b48e7 (nodes it deleted no longer count as edited). "
+            "Previous entry: "
             "2026-10-24 kl8 exec race (drafts/u-sdk-backend-spec.md §3.7): 178 -> 179; "
             "test_kl8 gains an `edited` door (both legs wait for exec). Previous entry: "
             "2026-10-24 test audit L1/L2, per §4.5/§4.7: 194 -> 178; "

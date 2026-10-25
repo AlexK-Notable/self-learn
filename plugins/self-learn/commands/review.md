@@ -260,8 +260,7 @@ card, the right resolution is retirement, not routing: replace Apply with
 surface that already covers it (a `claude-md`, a `SKILL.md`, a reference
 file, or an output style), and showing `already_canon_reason`. Never
 reject an already-canon record for being redundant — the lesson won.
-(`graduate` is the old name for this verb and stays a hidden alias for
-one release; `superseded_by` now carries `covered_by:<kind>:<name>` in
+(`graduate` was removed on 2026-10-24; `superseded_by` now carries `covered_by:<kind>:<name>` in
 place of the old literal `"canon"`.) For compatibility, `report --json`
 keeps its existing `graduated` machine key even though human-facing
 report text says "retired."
@@ -599,8 +598,8 @@ marker are projections and never recovery authority.
   does not erase a committed prefix or prevent a later independent packet
   from being decided; a ledger STOP (exit 5, 6 or 7) or a bookkeeping halt
   does stop every later case, packet and maintenance operation. A sheet item
-  the ledger refused with nothing written — a route, reject, retire,
-  graduate or supersede turned away at preflight included — is receipted
+  the ledger refused with nothing written — a route, reject, defer,
+  retire or supersede turned away at preflight included — is receipted
   `refused` and the rest of the sheet, the later cases and maintenance carry
   on; only a host-outcome verb that failed AFTER its ledger commit landed
   halts, because that is a real half-state with a host obligation

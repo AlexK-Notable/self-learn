@@ -51,7 +51,7 @@ this is what happens on the nights and weeks nobody opens either one.
 | `telemetry note <kind> [--reason …]` | Spool one offer-ledger event (`offer-made` \| `offer-declined`, reason enum: not-durable\|wrong\|duplicate\|private\|later\|other). Cache-only — no repo write, no commit |
 | `telemetry flush` | Spool → tracked `telemetry/` files in the ledger home (scan-at-flush; the flush commits them — every producer commits its own writes, H-5). Teach/import/resolution verbs flush automatically |
 | `report [--json]` | Facts layer v1: lifecycle counts, open follow-ups, deferred aging, offer ledger (capture rate labeled as a ceiling — declined-offer logging is best-effort) |
-| `reject <id>` / `defer <id> [--until D]` / `retire <id> --covered-by <surface>` | Resolve without routing: rejected / hidden until date (default +30 d) / woven into already-loaded canon, the surface named (`graduate` is the old name, kept as a hidden alias for one release) |
+| `reject <id>` / `defer <id> [--until D]` / `retire <id> --covered-by <surface>` | Resolve without routing: rejected / hidden until date (default +30 d) / woven into already-loaded canon, the surface named (`graduate` was removed on 2026-10-24) |
 | `supersede <old> <new>` | Mark a lesson corrected by a newer one (metadata + recompile) |
 | `route <survivor> --collapse <cluster-id>` | Collapse a worker-proposed duplicate cluster in ONE commit: evidence merged, sightings summed, losers superseded by the survivor |
 | `confirm-recurrence <id> --event <nonce> [--tolerate --note …]` | A routed rule was sighted failing again: append the dated recurrence (facts copied from the telemetry event). Tolerate = the rule stays, with the why |

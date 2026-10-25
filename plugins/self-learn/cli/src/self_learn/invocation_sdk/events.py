@@ -59,8 +59,7 @@ _DEFAULT_EVENT_LOGS = 20
 
 def event_log_name(surface: str, run_id: str) -> str:
     """The file name of one session's event log. EV4: this module is the one
-    definer of the naming convention, so a reader elsewhere (the session
-    miner's comparison, `mining/compare.py`) builds its names here; pass
+    definer of the naming convention; readers build names here. Pass
     ``run_id="*"`` for the glob."""
     return f"{surface}.tool-events.{run_id}.jsonl"
 

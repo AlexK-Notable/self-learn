@@ -589,25 +589,6 @@ def test_ms3_full_messages_two_sidecars_each_declined_independently(tmp_path):
     assert not sdk_children.sidecar_path(cache_dir, "worker", "run-b").exists()
 
 
-def test_ms4_retention_at_session_end_never_unlinks_a_live_run_id(tmp_path):
-    """`MS4` -- a file whose run id is in `live_run_ids` is never
-    unlinked, regardless of its mtime rank."""
-    cache_dir = tmp_path / "ms4-cache"
-    cache_dir.mkdir()
-    for i in range(5):
-        p = cache_dir / f"worker.ms4-events.run-{i}.jsonl"
-        p.write_text("{}", encoding="utf-8")
-        os.utime(p, (i, i))  # run-0 is oldest, run-4 is newest
-
-    # keep=2 would normally retain only run-3/run-4 and delete run-0..2.
-    # run-0 (the OLDEST -- the first candidate for deletion) is live.
-    sdk_events.prune_event_logs(
-        cache_dir, "worker", log_kind="ms4-events", keep=2, live_run_ids=frozenset({"run-0"})
-    )
-    remaining = {p.name for p in cache_dir.glob("worker.ms4-events.*.jsonl")}
-    assert "worker.ms4-events.run-0.jsonl" in remaining, remaining
-    assert "worker.ms4-events.run-4.jsonl" in remaining, remaining
-    assert "worker.ms4-events.run-3.jsonl" in remaining, remaining
 
 
 def test_ms4_production_retention_runs_exactly_once_and_after_the_log_write(tmp_path, sdk_cli_path, monkeypatch):

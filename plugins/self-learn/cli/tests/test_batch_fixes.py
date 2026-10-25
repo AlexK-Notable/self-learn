@@ -1299,7 +1299,7 @@ class TestRepairCommandsHomeGate:
             ["reject", "lrn-12345678"],
             ["route", "lrn-12345678", "--dest", "skill-md"],
             ["defer", "lrn-12345678"],
-            ["graduate", "lrn-12345678"],
+            ["retire", "lrn-12345678", "--covered-by", "skill-md:canon"],
             ["supersede", "lrn-11111111", "lrn-22222222"],
             ["confirm-held", "lrn-12345678"],
             ["followup", "done", "lrn-12345678"],

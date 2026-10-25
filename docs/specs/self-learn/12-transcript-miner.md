@@ -140,6 +140,8 @@ checked-pointer resolver (`refs.py`), through the steward's briefs and the
 offline comparison, still reads it when a lesson cites it or a quote is
 searched for. The run log does not count listed skips.
 
+*2026-10-24: the offline comparison harness (`mining/compare.py`) is retired and removed; references above describe its historical role.*
+
 **Cap holds (amended by `U-cursorhold`, FW-73).** A candidate refused at
 Phase 4's per-run landing cap holds its originating session's cursor
 rather than advancing past it, so the refusal costs a re-read, never the
@@ -542,6 +544,8 @@ exported env var — is the only flip that reaches the nightly run;
 `17-invocation-runbook.md` §8 (`invocation-runbook.md`'s own numbered
 §4.1 that this note used to cite is retired along with the rest of the
 old §4).
+
+*2026-10-24: the backend selector keys are retired; the historical flip advice above no longer applies. All miner invocations use SDK; `config unset invocation.backend_miner-reader` removes an obsolete key without changing the backend.*
 
 **User requirements added:**
 

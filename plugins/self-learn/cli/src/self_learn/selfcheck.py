@@ -144,12 +144,15 @@ EXIT_SCAN_HIT = 2
 
 
 class Verdict(enum.Enum):
-    """M-K: every `--selftest` check row is one of three states, never a
+    """M-K: every `--selftest` check row is one of four states, never a
     plain bool. `PASS` and `FAIL` mean what they always meant; `UNMEASURED`
     is the new, first-class third state for a check that could not
     exercise anything (a missing prerequisite the check cannot supply,
     e.g. `hosts.yaml` absent) — it must never render, count, or exit as
     though the thing it didn't check came back clean.
+
+    WARN (2026-10-24) reports retired configuration without marking the
+    check passed or changing an otherwise healthy exit code.
 
     `__bool__` intentionally raises: a bare `if verdict:` / `assert
     verdict` compiles and silently reads `FAIL` and `UNMEASURED` alike as
@@ -159,12 +162,13 @@ class Verdict(enum.Enum):
 
     PASS = "PASS"
     FAIL = "FAIL"
+    WARN = "WARN"
     UNMEASURED = "UNMEASURED"
 
     def __bool__(self) -> NoReturn:
         raise TypeError(
             f"{self!r} has no truth value — compare explicitly against "
-            "Verdict.PASS / .FAIL / .UNMEASURED"
+            "Verdict.PASS / .FAIL / .UNMEASURED / .WARN"
         )
 
 
@@ -1350,12 +1354,16 @@ def _check_invocation(home: Path) -> tuple[Verdict, str]:
     printed text. FAIL iff the doctor produced at least one FAIL row
     (unchanged). M-K: absent a FAIL, PASS requires the doctor to have
     positively measured at least one PASS row — a preflight whose rows
-    are all WARN/SKIP/INFO decided nothing, and UNMEASURED says so,
-    rather than reading a silent, uninformative sweep as certification."""
+    are all SKIP/INFO or ordinary WARN decided nothing, and UNMEASURED says so,
+    rather than reading a silent, uninformative sweep as certification.
+    Retired selectors are advisory WARN, unless a real FAIL takes precedence."""
     rows = provider.preflight(home)
     if any(row.verdict == "FAIL" for row in rows):
         failing = ", ".join(sorted({row.name for row in rows if row.verdict == "FAIL"}))
         return Verdict.FAIL, f"FAIL row(s): {failing} — run `self-learn doctor invocation` for details"
+    retired = [row.detail for row in rows if row.name == "retired" and row.verdict == "WARN"]
+    if retired:
+        return Verdict.WARN, "; ".join(retired)
     if not any(row.verdict == "PASS" for row in rows):
         return Verdict.UNMEASURED, (
             "no PASS/FAIL preflight row — run `self-learn doctor invocation` "
@@ -1410,15 +1418,19 @@ def run_selftest(home: Path) -> int:
         ("invocation", *_check_invocation(home)),
     ]
 
-    passed = failed = unmeasured = 0
+    passed = failed = unmeasured = warned = 0
     for name, verdict, reason in results:
         print(f"selftest: {verdict.value} {name} — {reason}")
         if verdict is Verdict.PASS:
             passed += 1
         elif verdict is Verdict.FAIL:
             failed += 1
+        elif verdict is Verdict.WARN:
+            warned += 1
         else:
             unmeasured += 1
+    if warned:
+        print(f"selftest: {warned} warning(s)")
     print(f"selftest: {passed} passed, {unmeasured} unmeasured, {failed} failed")
 
     if failed:

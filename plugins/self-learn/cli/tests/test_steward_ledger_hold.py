@@ -234,8 +234,6 @@ def _row_retire(env, tmp):
     return {"id": _routed(env, A), "verb": "retire", "covered_by": "skill-md:s"}, A, None
 
 
-def _row_graduate(env, tmp):
-    return {"id": _routed(env, A), "verb": "graduate"}, A, None
 
 
 def _row_supersede_old(env, tmp):
@@ -324,7 +322,6 @@ _ROWS = {
     "undefer": _row_undefer,
     "reopen": _row_reopen,
     "retire": _row_retire,
-    "graduate": _row_graduate,
     "supersede-old": _row_supersede_old,
     "supersede-new": _row_supersede_new,
     "rehome": _row_rehome,
@@ -351,7 +348,6 @@ _DISPATCH_FN_ROWS = {
     "undefer": ["undefer"],
     "reopen": ["reopen"],
     "retire": ["retire"],
-    "graduate": ["graduate"],
     "supersede": ["supersede-old", "supersede-new"],
     "rehome": ["rehome"],
     "rescope": ["rescope"],

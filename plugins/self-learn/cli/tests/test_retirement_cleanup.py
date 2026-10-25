@@ -187,7 +187,7 @@ class TestGraduateCleansTarget:
         seed_routed(env)
         assert OLD_MARK in env.skill_md.read_text(encoding="utf-8")
 
-        verbs.graduate(env.ledger, OLD_ID, no_push=True)
+        verbs.retire(env.ledger, OLD_ID, covered_by="skill-md:canon", no_push=True)
 
         text = env.skill_md.read_text(encoding="utf-8")
         assert OLD_MARK not in text, (
@@ -197,7 +197,7 @@ class TestGraduateCleansTarget:
         old = Record.from_path(
             env.ledger / "skills/s/resolved" / f"{OLD_ID}.md"
         )
-        assert old.superseded_by == "canon"
+        assert old.superseded_by == "covered_by:skill-md:canon"
 
 
 # ----------------------------------------------------------- recompile
@@ -441,7 +441,7 @@ class TestSharedClaudeMdUnion:
 
     def test_retiring_one_scope_keeps_the_other(self, env):
         claude_md = self._seed_both(env)
-        verbs.graduate(env.ledger, OLD_ID, no_push=True)
+        verbs.retire(env.ledger, OLD_ID, covered_by="skill-md:canon", no_push=True)
         text = claude_md.read_text(encoding="utf-8")
         assert OLD_MARK not in text
         assert NEW_MARK in text

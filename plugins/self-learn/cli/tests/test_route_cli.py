@@ -878,12 +878,12 @@ def test_defer_cli_bad_date_is_usage_error(env, capsys):
 
 def test_graduate_cli(env, capsys):
     record = seed_pending(env)
-    rc = cli.main(["graduate", record.id])
+    rc = cli.main(["retire", record.id, "--covered-by", "skill-md:canon"])
     assert rc == 0
     after = Record.from_path(env.resolved(record.id))
     assert after.status == "superseded"
-    assert after.superseded_by == "canon"
-    assert env.local_subject() == f"self-learn: graduate {record.id}"
+    assert after.superseded_by == "covered_by:skill-md:canon"
+    assert env.local_subject() == f"self-learn: retire {record.id}"
 
 
 def test_supersede_cli(env, capsys):

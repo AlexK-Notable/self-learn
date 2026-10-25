@@ -318,7 +318,7 @@ def test_confirm_held_writes_last_confirmed(env):
 
 def test_confirm_held_refuses_non_routed(env):
     rid = seed_routed(env)
-    assert cli.main(["graduate", rid, "--no-push"]) == 0
+    assert cli.main(["retire", rid, "--covered-by", "skill-md:canon", "--no-push"]) == 0
     rc = cli.main(["confirm-held", rid, "--no-push"])
     assert rc == 1
 
@@ -334,7 +334,7 @@ def test_confirm_recurrence_refuses_non_routed(env, capsys):
     shape for the same reason on the neighbouring verb."""
     rid = seed_routed(env)
     nonce = spool_suspect(env, rid)
-    assert cli.main(["graduate", rid, "--no-push"]) == 0
+    assert cli.main(["retire", rid, "--covered-by", "skill-md:canon", "--no-push"]) == 0
     capsys.readouterr()
     rc = cli.main(["confirm-recurrence", rid, "--event", nonce, "--no-push"])
     assert rc == 1

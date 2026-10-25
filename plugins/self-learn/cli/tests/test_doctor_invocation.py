@@ -103,6 +103,7 @@ def test_dc1_pristine_home_zero_fail_all_rows_once(capsys):
     rc, out = _run(["doctor", "invocation"], capsys)
     assert rc == 0
     lines = [ln for ln in out.splitlines() if ln.startswith("doctor: ") and "---" not in ln and "handoff" not in ln]
+    assert _rows_by_name(out, "switches")
     for ln in lines:
         assert " FAIL " not in ln
     single_line_rows = ("switches", "provider", "config", "sdk", "rollout", "region", "credentials", "orphans", "ui", "sessions")
@@ -121,106 +122,26 @@ def test_dc1_pristine_home_zero_fail_all_rows_once(capsys):
         if not seen_order or seen_order[-1] != name:
             seen_order.append(name)
     # consistency never appears (0 lines); every other row does, in order
-    expected = [r for r in provider.DOCTOR_ROWS if r != "consistency"]
+    expected = [r for r in provider.DOCTOR_ROWS if r not in ("consistency", "retired")]
     assert seen_order == expected
 
 
-def test_dc2_switches_names_all_surfaces_and_changes_with_rung(monkeypatch, capsys):
-    rc, out = _run(["doctor", "invocation"], capsys)
-    (line,) = _rows_by_name(out, "switches")
-    # U-sdka flipped the analyst's default to sdk (§9 E7); U-flip flipped
-    # the remaining three (worker/worker-repair/miner-reader) the same
-    # way -- every surface now shows "sdk (default)".
-    for surface in ("worker", "worker-repair", "miner-reader", "analyst"):
-        assert f"{surface}: backend=sdk (default)" in line
-
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
-    rc, out = _run(["doctor", "invocation"], capsys)
-    (line,) = _rows_by_name(out, "switches")
-    assert "worker: backend=sdk (env:SELF_LEARN_BACKEND_WORKER)" in line
-    monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER")
-
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-    rc, out = _run(["doctor", "invocation"], capsys)
-    (line,) = _rows_by_name(out, "switches")
-    assert "worker: backend=sdk (env:SELF_LEARN_BACKEND)" in line
-    monkeypatch.delenv("SELF_LEARN_BACKEND")
 
 
 def test_dc3_rollout_four_states(monkeypatch, capsys, _home):
-    # wholly-inert -> FAIL. U-sdka flipped the analyst's default to sdk;
-    # U-flip flipped the remaining three the same way, so every surface
-    # now defaults to sdk. This state must now be CONSTRUCTED by pinning
-    # ALL FOUR surfaces back to cli -- the general env rung does that in
-    # one shot (no more specific selector pin is set) -- without it no
-    # surface is cli by default, and the rollout is no longer wholly
-    # inert (see DR3, test_u_sdka.py).
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "cli")
-    _write_provider_yaml(_home, name="bedrock")
+    """A retired general pin warns without disabling any SDK surface."""
+    _write_provider_yaml(_home, name="anthropic")
     rc, out = _run(["doctor", "invocation"], capsys)
-    (line,) = _rows_by_name(out, "rollout")
-    assert line.startswith("FAIL")
-    monkeypatch.delenv("SELF_LEARN_BACKEND")
-
-    # mixed -> no FAIL row anywhere, exit 0. worker/worker-repair/
-    # miner-reader/steward/overseer (U8: joins this pin -- its sdk
-    # default would otherwise FAIL the "models" row too, same reason as
-    # worker/miner below) are pinned back to cli so only the analyst
-    # resolves sdk, matching the bedrock config below (which names a
-    # model for "analyst" only).
-    _write_provider_yaml(
-        _home,
-        name="bedrock",
-        bedrock={"region": "us-east-1", "models": {"analyst": BEDROCK_ID}},
-    )
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
-    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
-    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
-    monkeypatch.setenv("SELF_LEARN_BACKEND_STEWARD", "cli")
-    monkeypatch.setenv("SELF_LEARN_BACKEND_OVERSEER", "cli")
+    assert rc == 0 and _rows_by_name(out, "switches")
+    assert not _rows_by_name(out, "retired")
+    monkeypatch.setenv("SELF_LEARN_BACKEND", "cli")
     rc, out = _run(["doctor", "invocation"], capsys)
     assert rc == 0
-    body_lines = [ln for ln in out.splitlines() if ln.startswith("doctor: ") and "handoff" not in ln]
-    assert not any(" FAIL " in ln for ln in body_lines)
-    monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER")
-    monkeypatch.delenv("SELF_LEARN_BACKEND_MINER")
-    monkeypatch.delenv("SELF_LEARN_BACKEND_ANALYST")
-    monkeypatch.delenv("SELF_LEARN_BACKEND_STEWARD")
-    monkeypatch.delenv("SELF_LEARN_BACKEND_OVERSEER")
+    (row,) = _rows_by_name(out, "retired")
+    assert row.startswith("WARN")
+    assert "SELF_LEARN_BACKEND" in row and "retired and has no effect" in row
+    assert all(provider.resolve(_home, s).backend == "sdk" for s in provider.SURFACES)
 
-    # all-sdk -> PASS
-    _write_provider_yaml(
-        _home,
-        name="bedrock",
-        bedrock={
-            "region": "us-east-1",
-            "models": {
-                "worker": BEDROCK_ID,
-                "miner": BEDROCK_ID,
-                "analyst": BEDROCK_ID,
-                "steward": BEDROCK_ID,
-                "overseer": BEDROCK_ID,
-            },
-        },
-    )
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-    rc, out = _run(["doctor", "invocation"], capsys)
-    (line,) = _rows_by_name(out, "rollout")
-    assert line.startswith("PASS")
-    # U8 fold r1 (gate S1): the detail text counts and names every surface —
-    # a stale "four" survived the widening to six because only the verdict
-    # prefix was asserted here.
-    assert f"all {len(provider.SURFACES)} surfaces resolve backend=sdk" in line
-    for s in provider.SURFACES:
-        assert s in line, s
-    monkeypatch.delenv("SELF_LEARN_BACKEND")
-
-    # anthropic -> SKIP regardless of backend
-    _write_provider_yaml(_home, name="anthropic")
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-    rc, out = _run(["doctor", "invocation"], capsys)
-    (line,) = _rows_by_name(out, "rollout")
-    assert line.startswith("SKIP")
 
 
 def test_dc4_sdk_row_injected_importer(monkeypatch):
@@ -672,10 +593,9 @@ def test_dc6_id_shapes_and_doc_i_gating(monkeypatch, capsys, _home):
 
     for cli_surface in ("worker", "worker-repair", "miner-reader"):
         cli_row = next(r for r in rows if r.name == "models" and r.surface == cli_surface)
-        assert cli_row.verdict == "INFO"
+        assert cli_row.verdict == "FAIL"
         # U-cleanup-B (§8.1, MAJOR-5 extension): "backend=cli" corrected
         # to the SEL6 pattern ("REFUSED (cli retired)") in provider.py.
-        assert "backend=REFUSED (cli retired)" in cli_row.detail
 
     verdict, note = provider._id_verdict(ALIAS)
     assert verdict == "FAIL" and "Anthropic alias, not a Bedrock id" in note
@@ -878,93 +798,36 @@ def test_dc10_no_network_no_extra_spawn(monkeypatch, capsys, _home, tmp_path):
 
 def test_dc11_selftest_row(monkeypatch, capsys, _home, tmp_path):
     from self_learn import selfcheck
-
-    rows = provider.preflight(_home)
-    assert not any(r.verdict == "FAIL" for r in rows)
-    ok, reason = selfcheck._check_invocation(_home)
-    assert ok is selfcheck.Verdict.PASS
-    assert "self-learn doctor invocation" in reason
-
-    _write_provider_yaml(_home, name="bedrock")
-    ok2, reason2 = selfcheck._check_invocation(_home)
-    assert ok2 is selfcheck.Verdict.FAIL
-    assert "self-learn doctor invocation" in reason2
-
-    # `M27`'s target: a healthy MID-ROLLOUT install (one surface flipped
-    # to sdk with a real id, the rest still on cli with correct aliases)
-    # must stay green -- `Doc-i`'s gating is what keeps it so. U-flip
-    # flipped worker/worker-repair/miner-reader's default to sdk too, so
-    # "the rest still on cli" is now CONSTRUCTED by an explicit pin --
-    # without it their unset models would FAIL under an sdk default.
-    _write_provider_yaml(
-        _home,
-        name="bedrock",
-        bedrock={"region": "us-east-1", "models": {"analyst": BEDROCK_ID}},
-    )
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
-    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
-    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
-    # U8: steward/overseer join the "rest still on cli" pin too -- their
-    # sdk default would otherwise FAIL here the same way worker/miner
-    # would without their own pin above.
-    monkeypatch.setenv("SELF_LEARN_BACKEND_STEWARD", "cli")
-    monkeypatch.setenv("SELF_LEARN_BACKEND_OVERSEER", "cli")
-    ok3, reason3 = selfcheck._check_invocation(_home)
-    assert ok3 is selfcheck.Verdict.PASS, reason3
-    monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER")
-    monkeypatch.delenv("SELF_LEARN_BACKEND_MINER")
-    monkeypatch.delenv("SELF_LEARN_BACKEND_ANALYST")
-    monkeypatch.delenv("SELF_LEARN_BACKEND_STEWARD")
-    monkeypatch.delenv("SELF_LEARN_BACKEND_OVERSEER")
-    _write_provider_yaml(_home, name="anthropic")
-
-    # the printed selftest output, end to end (DC11's "PASS invocation" leg)
     import support
 
     env = support.make_env(tmp_path / "dc11")
     monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
-    rc = cli_mod.main(["--selftest"])
+    assert cli_mod.main(["--selftest"]) == 0
+    assert "PASS invocation" in capsys.readouterr().out
+    (env.ledger / "config.yaml").write_text("invocation:\n  backend: cli\n")
+    verdict, reason = selfcheck._check_invocation(env.ledger)
+    assert verdict is selfcheck.Verdict.WARN
+    assert "invocation.backend" in reason and "retired and has no effect" in reason
+    assert cli_mod.main(["--selftest"]) == 0
     out = capsys.readouterr().out
-    # fold r1, 2026-09-04: no worker placeholder row -- this fresh env's
-    # 9 real checks all PASS, so the run exits 0.
-    assert rc == 0
-    assert "PASS invocation" in out
+    assert "WARN invocation" in out and "1 warning(s)" in out
+    assert "PASS invocation" not in out
+
 
 
 def test_dc12_mixed_rollout_info_lines_per_surface(monkeypatch, _home):
-    _write_provider_yaml(
-        _home,
-        name="bedrock",
-        bedrock={
-            "region": "us-east-1",
-            "models": {"analyst": BEDROCK_ID, "miner": BEDROCK_ID_2},
-        },
-    )
-    # U-flip flipped worker/worker-repair's default to sdk alongside
-    # miner-reader/analyst's; pin them back to cli explicitly to keep
-    # this "mixed" fixture's shape (two surfaces cli, two sdk).
-    # U8: steward/overseer also default to sdk with no model configured
-    # here -- pinned to cli too, same reason as worker/worker-repair, so
-    # this fixture's "no FAIL anywhere" bar still holds with six surfaces.
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
-    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
-    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "sdk")
-    monkeypatch.setenv("SELF_LEARN_BACKEND_STEWARD", "cli")
-    monkeypatch.setenv("SELF_LEARN_BACKEND_OVERSEER", "cli")
-    rows = provider.preflight(_home)
-    rollout_rows = {r.surface: r for r in rows if r.name == "rollout"}
-    assert len(rollout_rows) == 7  # U4-seam: +miner-session (shares MINER, pinned sdk here)
-    # U-cleanup-B (§8.1, MAJOR-5 extension): the rollout row's non-sdk
-    # wording was "backend=cli" (a value that can no longer be literally
-    # true post-collapse) -- corrected to the SEL6 pattern, matching the
-    # switches row.
-    assert rollout_rows["worker"].detail == "worker: backend=REFUSED (cli retired) — provider does not apply"
-    assert rollout_rows["worker-repair"].detail == "worker-repair: backend=REFUSED (cli retired) — provider does not apply"
-    assert "backend=sdk provider=bedrock" in rollout_rows["analyst"].detail
-    assert "backend=sdk provider=bedrock" in rollout_rows["miner-reader"].detail
-    assert rollout_rows["steward"].detail == "steward: backend=REFUSED (cli retired) — provider does not apply"
-    assert rollout_rows["overseer"].detail == "overseer: backend=REFUSED (cli retired) — provider does not apply"
-    assert not any(r.verdict == "FAIL" for r in rows)
+    """Each present retired selector gets its own named warning."""
+    baseline = provider.preflight(_home)
+    assert any(r.name == "switches" for r in baseline)
+    assert not any(r.name == "retired" for r in baseline)
+    names = ["SELF_LEARN_BACKEND_WORKER", "SELF_LEARN_BACKEND_MINER", "SELF_LEARN_BACKEND_ANALYST"]
+    for name in names:
+        monkeypatch.setenv(name, "cli")
+    rows = [r for r in provider.preflight(_home) if r.name == "retired"]
+    assert len(rows) == len(names)
+    for name in names:
+        assert any(r.verdict == "WARN" and name in r.detail and "retired and has no effect" in r.detail for r in rows)
+
 
 
 def test_dc13_argv_byte_pinned_and_degrades_to_skip(monkeypatch):
@@ -1034,7 +897,7 @@ def test_dc14_env_row_per_surface_and_catches_refusal(monkeypatch, capsys, _home
     rows = provider.preflight(_home)
     env_rows = {r.surface: r for r in rows if r.name == "env"}
     assert len(env_rows) == 7  # U4-seam: +miner-session
-    assert env_rows["worker"].verdict == "SKIP"
+    assert env_rows["worker"].verdict == "FAIL"
     assert env_rows["analyst"].verdict == "PASS"
 
     # the catch: refusing config on an sdk surface -> FAIL row, never raises
@@ -1071,7 +934,7 @@ def test_dc16_credentials_warn_not_fail_and_dc3_coupling(monkeypatch, _home, tmp
     _write_provider_yaml(
         _home,
         name="bedrock",
-        bedrock={"region": "us-east-1", "models": {"analyst": BEDROCK_ID, "miner": BEDROCK_ID_2}},
+        bedrock={"region": "us-east-1", "models": {"analyst": BEDROCK_ID, "miner": BEDROCK_ID_2, "worker": BEDROCK_ID, "steward": BEDROCK_ID, "overseer": BEDROCK_ID}},
     )
     # U-flip flipped worker/worker-repair's default to sdk too; pin them
     # back to cli so their unset model does not refuse -- this leg's
@@ -1121,45 +984,6 @@ def test_dc16_credentials_warn_not_fail_and_dc3_coupling(monkeypatch, _home, tmp
     assert not any(r.verdict == "FAIL" for r in rows2)
 
 
-def test_dc17_switches_row_reports_cli_selection_as_refused(monkeypatch, capsys):
-    """`SEL6` (U-cleanup §11.1, `T-DOCTOR-SWITCHES`) -- the `switches` row
-    (`provider.py:621-623`) prints `backend=sdk (…)` for all four
-    surfaces on a clean env (dc2 already covers this half; repeated here
-    as the negative control against the same line the positive half
-    reads), and reports a `cli` selection as REFUSED, spelled out as
-    `backend=REFUSED (cli retired) (...)`, never folded into an accepted
-    `backend=cli` or silently absorbed into `backend=sdk`.
-    """
-    # clean env: every surface sdk (default), never REFUSED.
-    rc, out = _run(["doctor", "invocation"], capsys)
-    (line,) = _rows_by_name(out, "switches")
-    for surface in ("worker", "worker-repair", "miner-reader", "analyst"):
-        assert f"{surface}: backend=sdk (default)" in line
-    assert "REFUSED" not in line
-    assert "backend=cli" not in line
-
-    # a single selector pinned to "cli" -- SELECTOR_FOR_SURFACE maps BOTH
-    # worker and worker-repair to WORKER, so setting it flips both of
-    # their cells to REFUSED; miner-reader/analyst (different selectors)
-    # stay sdk (default).
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
-    rc, out = _run(["doctor", "invocation"], capsys)
-    (line,) = _rows_by_name(out, "switches")
-    for surface in ("worker", "worker-repair"):
-        assert f"{surface}: backend=REFUSED (cli retired) (env:SELF_LEARN_BACKEND_WORKER)" in line
-    assert "backend=cli" not in line
-    for surface in ("miner-reader", "analyst"):
-        assert f"{surface}: backend=sdk (default)" in line
-    monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER")
-
-    # the coarse rung: SELF_LEARN_BACKEND=cli refuses every surface at once.
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "cli")
-    rc, out = _run(["doctor", "invocation"], capsys)
-    (line,) = _rows_by_name(out, "switches")
-    for surface in ("worker", "worker-repair", "miner-reader", "analyst"):
-        assert f"{surface}: backend=REFUSED (cli retired) (env:SELF_LEARN_BACKEND)" in line
-    assert "backend=cli" not in line
-    assert "backend=sdk" not in line
 
 
 def test_p2_bare_doctor_is_byte_identical_to_doctor_invocation(capsys):

@@ -540,8 +540,9 @@ def test_no_by_string_literal_at_a_call_site():
     Two must-stay-green controls against UNMUTATED code, in this same
     test (§ criterion 25's own pin):
 
-    - `superseded_by="canon"` (graduate()'s call to resolve_record) is a
-      REAL keyword-arg-with-string-constant in this file today — a
+    - `superseded_by="canon"` (graduate()'s call to resolve_record, a
+      snippet since graduate's removal on 2026-10-24) is a
+      keyword-arg-with-string-constant — a
       guard written as `arg.endswith("by")` would flag it (reviewer's
       INV-4, "trains relax the guard"); matching the keyword name
       EXACTLY must leave it green. Asserted against the source, not a
@@ -558,9 +559,12 @@ def test_no_by_string_literal_at_a_call_site():
     violations = _by_literal_violations(tree)
     assert violations == []
 
-    # must-stay-green control 1: the real superseded_by="canon" call site
-    # is present (so the guard had a real chance to false-positive on it).
-    assert 'superseded_by="canon"' in source
+    # must-stay-green control 1: a keyword whose name merely ENDS in "by"
+    # carrying a string constant. The real site (graduate()'s
+    # superseded_by="canon") went with the graduate alias on 2026-10-24
+    # (audit-retire), so the control is a snippet now: a guard relaxed to
+    # `arg.endswith("by")` would flag it.
+    assert _by_literal_violations(ast.parse('resolve_record(r, superseded_by="canon")')) == []
 
     # must-stay-green control 2: a docstring mentions by="..." as prose
     # (route_direct's own docstring, added by this unit) and stays green.

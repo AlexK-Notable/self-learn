@@ -64,6 +64,8 @@ the `superseded_by: canon` domain the table below pins — is renamed
 release. The pins below are historical record of what this plan built
 and are not rewritten.)*
 
+*2026-10-24: the one-release `graduate` alias is retired; the historical pins below do not make it callable.*
+
 These pins close the implementability review's gaps. The schema-level ones
 also live in the corpus (cited); the rest live here. **Do not re-derive
 them; do not silently change them.**

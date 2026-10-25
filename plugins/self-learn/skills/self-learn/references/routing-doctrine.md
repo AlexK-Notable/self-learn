@@ -872,8 +872,7 @@ overseer, or the steward under the case that covers it makes (S-85):
 - **Propose only. The human, the steward, or the overseer routes, under
   S-29 as amended.** You never call `route`, `reject`,
   `defer`, or
-`retire` (the verb the specs used to call `graduate`, still accepted as
-a hidden alias for one release) —
+`retire` (the verb the specs used to call `graduate`; that alias was removed on 2026-10-24) —
 *(2026-07-18: nor `rehome`; a re-home is
   proposable where you have the proposal tool, and executes only off
   the human's own confirm)* — you never edit canon; you never edit the record

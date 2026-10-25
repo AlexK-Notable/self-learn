@@ -147,6 +147,8 @@ def _record(home: Path, rid: str) -> Record:
 def _sheet(tmp_path: Path, rid: str, verb: str, dest: str | None = None) -> batch.Sheet:
     path = tmp_path / f"sheet-{rid}-{verb}.yaml"
     item = f"  - id: {rid}\n    verb: {verb}\n" + (f"    dest: {dest}\n" if dest else "")
+    if verb == "retire":
+        item += "    covered_by: skill-md:canon\n"
     path.write_text(f"version: 1\nitems:\n{item}", encoding="utf-8")
     return batch.load_sheet(path)
 
@@ -604,7 +606,7 @@ def test_f_a_project_write_into_a_tracked_claude_md_is_refused_and_a_skill_md_co
     with pytest.raises(verbs.DestinationUnavailable, match="CLAUDE.md is tracked by git"):
         verbs.route(home, added, dest="claude-md", no_push=True)
     assert (repo / "CLAUDE.md").read_bytes() == claude_md
-    graduated = verbs.graduate(home, placed, no_push=True)
+    graduated = verbs.retire(home, placed, covered_by="skill-md:canon", no_push=True)
     assert any("left the change uncommitted" in w for w in graduated.warnings)
     assert placed not in (repo / "CLAUDE.md").read_text(encoding="utf-8")
     assert _record(home, placed).status == "superseded"
@@ -672,7 +674,7 @@ def test_retiring_a_committed_hook_script_in_the_git_root_deletes_and_commits_it
     assert git(repo, "ls-files", "--", rel).stdout.strip() == rel  # control: tracked
     head = _head(repo)
 
-    verbs.graduate(home, rid, no_push=True)
+    verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
 
     assert _record(home, rid).status == "superseded"
     assert not routed.target.exists()
@@ -883,7 +885,7 @@ def test_a_stranded_lesson_can_be_graduated_off_the_refused_destination(tmp_path
     home, repo = env.ledger, env.host
     head = _head(repo)
 
-    verbs.graduate(home, rid, no_push=True)
+    verbs.retire(home, rid, covered_by="skill-md:canon", no_push=True)
 
     assert _record(home, rid).status == "superseded"
     assert rid not in (repo / "CLAUDE.md").read_text(encoding="utf-8")
@@ -896,7 +898,7 @@ def test_a_steward_sheet_retiring_a_stranded_lesson_applies(tmp_path):
     refused `destination-unavailable` (preview and run). Red on 6a27412."""
     env, rid = _lesson_left_on_the_root_claude_md(tmp_path)
     home, repo = env.ledger, env.host
-    sheet = _sheet(tmp_path, rid, "graduate")
+    sheet = _sheet(tmp_path, rid, "retire")
 
     preview = batch.dry_run(home, sheet, actor="steward")
     result = batch.run(home, sheet, no_push=True, actor="steward")

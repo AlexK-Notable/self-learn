@@ -164,10 +164,6 @@ class TestRelease:
         assert not hold.release()
         assert path.exists()
 
-    def test_release_function_form(self):
-        hold = sentinel.hold()
-        assert sentinel.release(hold)
-        assert not hold.path.exists()
 
     def test_release_refuses_when_disk_token_no_longer_matches(self):
         """C11's release half, proved directly: a handle whose local

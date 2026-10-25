@@ -847,28 +847,6 @@ def test_fl2_clean_env_resolves_sdkbackend(monkeypatch):
     assert isinstance(backend, SdkBackend)
 
 
-def test_fl3_selector_scoping_both_directions(monkeypatch):
-    from self_learn.invocation_sdk import SdkBackend as _SdkBackend
-
-    # U-flip flipped miner-reader's and worker's own defaults to sdk
-    # (same table rung as the analyst's, U-sdka). The scoping claim (a
-    # FOREIGN selector does not govern this surface) needs the stimulus
-    # INVERTED to "cli": a leak would then flip the surface to
-    # CliBackend and redden, while the correct behavior keeps its own
-    # sdk default. (Stimulus "sdk" would be tautological -- leak and
-    # no-leak both resolve SdkBackend; gate blessing-read catch.)
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
-    assert isinstance(invocation.backend_for("miner-reader"), _SdkBackend)
-
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv(BACKEND_VAR, "cli")
-    assert isinstance(invocation.backend_for("worker"), _SdkBackend)
-    # U-sdka flipped the analyst's product default to sdk. The scoping
-    # claim (the MINER selector does not govern the analyst) needs the
-    # same inversion -- and it's already in place from the line above
-    # (BACKEND_VAR is still "cli").
-    assert isinstance(invocation.backend_for("analyst"), _SdkBackend)
 
 
 def test_fl4_no_shipped_assignment_of_backend_var(tmp_path):

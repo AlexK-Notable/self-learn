@@ -338,9 +338,9 @@ class TestGraduateEnvelope:
         seed_skill_record(env)
         assert cli.main(["route", RID, "--dest", "skill-md"]) == 0
         capsys.readouterr()
-        code, envelope = run_json(["graduate", RID, "--json"], capsys)
+        code, envelope = run_json(["retire", RID, "--covered-by", "skill-md:canon", "--json"], capsys)
         assert code == 0
-        assert envelope["action"] == "graduate"
+        assert envelope["action"] == "retire"
         assert envelope["canon_path"] is None  # §3.2: graduate carries no target
         assert envelope["destination"] is None
         assert envelope["variant"] is None
@@ -365,12 +365,11 @@ class TestGraduateEnvelope:
         too (`_finish_verb`'s own contract — `warnings` is never a
         second success/failure channel, §4's `--json` pin untouched)."""
         seed_skill_record(env)
-        code, envelope = run_json(["graduate", RID, "--json"], capsys)
+        code, envelope = run_json(["retire", RID, "--covered-by", "skill-md:canon", "--json"], capsys)
         assert code == 0
         assert envelope["host_commit_sha"] is None
         assert envelope["outcome_state"] == "no_op"
-        assert len(envelope["warnings"]) == 1
-        assert "--covered-by" in envelope["warnings"][0]
+        assert envelope["warnings"] == []
 
 
 # ===================================================================== #

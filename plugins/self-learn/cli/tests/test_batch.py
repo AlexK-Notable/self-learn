@@ -1047,7 +1047,7 @@ class TestU5MutationErrorRefusedNotRaised:
             tmp_path,
             "version: 1\nitems:\n"
             f"  - id: {other_id}\n    verb: reject\n"
-            f"  - id: {routed_id}\n    verb: graduate\n    note: a new why\n",
+            f"  - id: {routed_id}\n    verb: retire\n    covered_by: skill-md:canon\n    note: a new why\n",
         )
         items = batch.load_sheet(sheet, home=home)
         result = batch.run(home, items, no_push=True)  # must NOT raise
