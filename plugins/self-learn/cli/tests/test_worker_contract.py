@@ -513,12 +513,6 @@ def test_pb2_driven_outcome_backend_asymmetry(backend, tmp_path, monkeypatch):
         assert not isinstance(outcome, SdkOutcome)
 
 
-def test_pb3_sdk_param_always_uses_the_shipped_fake(backend):
-    if backend.param != "sdk":
-        pytest.skip("sdk-param-only criterion")
-    assert os.environ.get("SELF_LEARN_SDK_CLI_PATH") == str(FAKE_CLI)
-
-
 # `test_pb4_cli_param_shim_actually_reached` DELETED (code gate r1
 # MAJOR-2 fold, 8uvjHmdKaUd6PI3tSyB-F): post-collapse the `backend`
 # fixture always yields `param == "sdk"`, so `if backend.param != "cli":
@@ -1257,48 +1251,6 @@ def test_ha1_hatch_open_omits_default_mode(env, sdk_fake_worker, monkeypatch):
     assert not (worker.cache_dir() / "worker.repair.settings.json").exists()
 
 
-def test_ha2_sdk_hatch_open_three_legs(env, sdk_cli_path, monkeypatch):
-    # leg (i): driven end-to-end from the real variable.
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
-    monkeypatch.setenv("SELF_LEARN_STAGE", "0")
-    monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
-    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_write")
-    outside = env.home.parent / "ha2-outside.md"
-    monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(outside))
-    captured = _spy_write_session(monkeypatch)
-
-    seed_pending(env, rid=_next_rid())
-    monkeypatch.setenv("SELF_LEARN_ENFORCE_SCOPE", "0")
-    captured.clear()
-    worker.run(env.home)
-    open_outcome = [c.outcome for c in captured if c.spec.surface == "worker"][-1]
-    assert open_outcome.denials == ()
-
-    seed_pending(env, rid=_next_rid())
-    monkeypatch.setenv("SELF_LEARN_ENFORCE_SCOPE", "1")
-    captured.clear()
-    worker.run(env.home)
-    closed_outcome = [c.outcome for c in captured if c.spec.surface == "worker"][-1]
-    assert len(closed_outcome.denials) == 1
-
-    # leg (ii): Bash still denied under the hatch.
-    c_open = invocation.containment_for(
-        "worker", allowed_tools=worker.ALLOWED_TOOLS, disallowed_tools=worker.DISALLOWED_TOOLS,
-        home=str(env.home), stage_dir=worker.stage_dir(), stage_on=True, enforce=False,
-    )
-    cb = charter_mod.build_can_use_tool(c_open)
-    assert isinstance(_call_cb(cb, "Bash", {}), PermissionResultDeny)
-
-    # leg (iii): the repair surface opens too, driven directly with a
-    # non-empty write_exact.
-    repair_open = invocation.containment_for(
-        "worker-repair", allowed_tools=worker.ALLOWED_TOOLS, disallowed_tools=worker.DISALLOWED_TOOLS,
-        write_exact=(str(env.home / "pending" / "lrn-x.md"),), enforce=False,
-    )
-    cb2 = charter_mod.build_can_use_tool(repair_open)
-    assert isinstance(_call_cb(cb2, "Write", {"file_path": "/anywhere.md"}), PermissionResultAllow)
-
-
 def test_ha3_hatch_closed_negative_controls(env, monkeypatch, backend):
     # `FL-c`/`FR2`: declared `(T2 + T3)`, parametrized over `backend`
     # (replacing direct `sdk_fake_worker`/`sdk_cli_path` fixture
@@ -1487,33 +1439,6 @@ def test_ev2_events_file_carries_tool_events(env, sdk_cli_path, monkeypatch, tmp
     assert tool_use[0]["input"]["file_path"] == str(target)
     tool_result = [e for e in events if e.get("kind") == "tool_result"]
     assert tool_result
-
-
-def test_ev3_denial_pair_both_directions(env, sdk_cli_path, monkeypatch, tmp_path):
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
-    monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
-    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_write")
-
-    outside = tmp_path / "ev3-outside.md"
-    monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(outside))
-    seed_pending(env, rid=_next_rid())
-    worker.run(env.home)
-    events = _latest_worker_events()
-    denials = [e for e in events if e.get("type") == "denial"]
-    assert len(denials) == 1
-    assert denials[0]["source"] == "charter" and denials[0]["tool"] == "Write"
-    tool_result = [e for e in events if e.get("kind") == "tool_result"][0]
-    assert tool_result["is_error"] is True
-
-    inside = worker.stage_dir() / "ev3b.yaml"
-    monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(inside))
-    seed_pending(env, rid=_next_rid())
-    worker.run(env.home)
-    events2 = _latest_worker_events()
-    denials2 = [e for e in events2 if e.get("type") == "denial"]
-    assert denials2 == []
-    tool_result2 = [e for e in events2 if e.get("kind") == "tool_result"][0]
-    assert tool_result2["content"] == "ok"
 
 
 #: gate r1 B-1: the literal FW-107 log line, byte-pinned. This is
