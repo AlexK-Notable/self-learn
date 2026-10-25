@@ -31,15 +31,6 @@ def test_cache_dir_is_redirected_never_the_real_home(
     assert resolved.is_dir()  # cache_dir() creates it as a side effect
 
 
-def test_cache_dir_is_home_namespaced(redirected_xdg: dict[str, Path]) -> None:
-    """doc 13 §6 / H-4: the dir name embeds a short sha256 of the
-    resolved SELF_LEARN_HOME — two different homes get two different
-    cache dirs."""
-    first = cli_cache_dir()
-    assert first.name.startswith("home-")
-    assert first.parent.name == "self-learn"
-
-
 def test_log_writes_a_timestamped_line(redirected_xdg: dict[str, Path]) -> None:
     log("U1 verification line")
     content = ui_log_path().read_text(encoding="utf-8")

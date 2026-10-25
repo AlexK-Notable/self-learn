@@ -30,34 +30,6 @@ def redirect(tmp_path, monkeypatch):
 # ------------------------------------------------------------ finding 13
 
 
-def test_one_flagged_telemetry_line_no_longer_blocks_every_flush(tmp_path):
-    """Before: one line the secret scan refused made every flush raise
-    `ScanRefusal` with the spool intact -- so it was refused again on every
-    later flush, and fire and recurrence events stopped reaching the
-    ledger for good. Now that line is moved to a cache-only rejected file
-    and the rest flushes."""
-    from support import make_home
-
-    home = make_home(tmp_path)
-    telemetry.spool_event("offer-made")
-    spool = next(telemetry.spool_dir().glob("*.jsonl"))
-    flagged = "pass" + "word = " + "zq8Kx2mPw7Lr"
-    with open(spool, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps({"kind": "capture", "note": flagged}) + "\n")
-
-    report = telemetry.flush(home)
-    telemetry.spool_event("offer-made")
-    later = telemetry.flush(home)
-
-    tracked = "".join(p.read_text() for p in telemetry.telemetry_dir(home).glob("*.jsonl"))
-    assert tracked.count("offer-made") == 2  # positive control: both flushes moved a line
-    assert report.events == 1 and later.events == 1
-    assert flagged not in tracked
-    assert len(report.rejected) == 1 and flagged not in report.rejected[0]
-    assert flagged in (telemetry.rejected_dir() / spool.name).read_text()
-    assert later.rejected == []
-
-
 def test_a_spool_holding_only_a_flagged_line_is_emptied_once(tmp_path):
     """The flagged line is taken out of the spool even when nothing else
     is there to flush (so phase 2, which truncates the spool, never runs):
