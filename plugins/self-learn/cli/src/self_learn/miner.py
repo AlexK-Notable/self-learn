@@ -56,6 +56,7 @@ from typing import NamedTuple, cast
 
 from . import gitops, intents, invocation, provenance, provider, refs, sentinel, settings, steward_prompt, telemetry, worker
 from .primitives import chrono, fsops
+from . import transcript_lines
 from . import reconcile as reconcile_mod
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
 from .hosts import HostsError, capture_host_path, load_hosts
@@ -434,15 +435,23 @@ def _complete_lines(path: Path) -> list[str] | None:
     mid-append at walk time must not have its torn tail consumed by the
     cursor — the partial line is left for the next run)."""
     try:
-        text = path.read_text(encoding="utf-8")
+        with path.open(encoding="utf-8", newline="") as fh:
+            text = fh.read()
     except (OSError, UnicodeDecodeError):
         return None
-    if not text:
-        return []
-    if not text.endswith("\n"):
-        cut = text.rfind("\n")
-        text = text[: cut + 1] if cut >= 0 else ""
-    return text.splitlines()
+    return transcript_lines.split(text, complete=True)
+
+
+def _newline_cursor(entry: dict, lines: Sequence[str]) -> dict:
+    """Translate a legacy count in memory; never mutate a saved answer.
+
+    Both engines share this conversion. Persist the marker only when the
+    caller saves a cursor; unchanged files retain the cheap size check.
+    """
+    if entry.get("line_format") == transcript_lines.FORMAT:
+        return dict(entry)
+    count = transcript_lines.legacy_cursor(lines, int(entry.get("lines", 0)))
+    return {**entry, "lines": count, "line_format": transcript_lines.FORMAT}
 
 
 def _contains_self_learn(text: str) -> bool:
@@ -513,8 +522,7 @@ def _first_user_text(path: Path) -> str:
     is skipped (:func:`_first_user_text_of`). A file that cannot be
     opened or read raises :class:`OSError`; what that means is the caller's to
     say (bytes that are not UTF-8 are read as replacement characters instead)."""
-    with path.open(encoding="utf-8", errors="replace") as fh:
-        return _first_user_text_of(fh)
+    return _first_user_text_of(transcript_lines.iter_file(path, errors="replace"))
 
 
 #: The cursor file's record of which header list its tracked sessions were
@@ -638,7 +646,7 @@ def initialize_cursors(mined_scheduled: frozenset[str] = frozenset()) -> int:
             lines = _complete_lines(path)
             if lines is None:
                 continue
-            entry: dict = {"lines": len(lines), "size": size}
+            entry: dict = {"lines": len(lines), "size": size, "line_format": transcript_lines.FORMAT}
             if _contains_self_learn("\n".join(lines)) or _is_skipped_scheduled_job(
                 _first_user_text_of(lines), mined_scheduled
             ):
@@ -702,7 +710,11 @@ def walk(since: str | None = None) -> list[SessionSlice]:
     slices: list[SessionSlice] = []
     for _mtime, path, start, size in sorted(candidates, key=lambda t: t[0]):
         lines = _complete_lines(path)
-        if lines is None or len(lines) <= start:
+        if lines is None:
+            continue
+        if since_ts is None:
+            start = _newline_cursor(cursors.get(str(path), {}), lines)["lines"]
+        if len(lines) <= start:
             continue
         slices.append(
             SessionSlice(
@@ -731,18 +743,29 @@ def _settle_waiting_cursors(answers: Iterable["mining_waiting.Answer"]) -> int:
         lines, size = entry.get("lines"), entry.get("size")
         if not isinstance(lines, int) or not isinstance(size, int):
             continue
-        current = cursors.get(path, {})
-        have = current.get("lines") if isinstance(current, dict) else None
-        if isinstance(have, int) and have >= lines:
-            continue
         try:
             if Path(path).stat().st_size < size:
                 continue
         except OSError:
             continue
-        new: dict = {"lines": lines, "size": size}
+        current = cursors.get(path, {})
+        if not isinstance(current, dict):
+            current = {}
+        if (entry.get("line_format") == transcript_lines.FORMAT
+                and (not current or current.get("line_format") == transcript_lines.FORMAT)):
+            new, have = dict(entry), current.get("lines")
+        else:
+            rows = _complete_lines(Path(path))
+            if rows is None:
+                continue
+            new = _newline_cursor(entry, rows)
+            have = _newline_cursor(current, rows).get("lines")
+        if isinstance(have, int) and have >= new["lines"]:
+            continue
         if entry.get("halt") or (isinstance(current, dict) and current.get("halt")):
             new["halt"] = True
+        else:
+            new.pop("halt", None)
         cursors[path] = new
         moved += 1
     if moved:
@@ -757,7 +780,8 @@ def _advance_cursors(processed: list[tuple[SessionSlice, bool]]) -> None:
     splits — it was slice-local before)."""
     cursors = _load_cursors()
     for s, halt in processed:
-        entry: dict = {"lines": s.start_line + len(s.lines), "size": s.stat_size}
+        entry: dict = {"lines": s.start_line + len(s.lines), "size": s.stat_size,
+                       "line_format": transcript_lines.FORMAT}
         if halt or cursors.get(str(s.path), {}).get("halt"):
             entry["halt"] = True
         cursors[str(s.path)] = entry
@@ -1359,6 +1383,134 @@ def _find_record(home: Path, rid: str) -> tuple[Record, str] | None:
     return None
 
 
+def _origin_parts(origin: str) -> tuple[str, int, str | None] | None:
+    from .steward_inputs import _SUBAGENT_WHERE_RE
+
+    match = re.fullmatch(r"transcript:([^#]+)#L([0-9]+)", origin)
+    if match is None:
+        return None
+    where, line = match.group(1), int(match.group(2))
+    sub = _SUBAGENT_WHERE_RE.match(where)
+    return (sub.group(1), line, sub.group(2)) if sub else (where, line, None)
+
+
+def _follow_origin(origin: str, *, quote: str | None = None, uuid: str | None = None,
+                   legacy: bool = False, roots: Sequence[Path] | None = None,
+                   sent: provenance.SentIndex | None = None) -> refs.Ref | None:
+    """Resolve a stored witness, or an explicitly legacy cache position.
+
+    Dedupe needs position/UUID, not a new provenance sweep. Landing passes
+    its run's sends; standalone cache calls use an empty sends index.
+    """
+    parts = _origin_parts(origin)
+    if parts is None:
+        return None
+    session, line, subagent = parts
+    roots = list(roots) if roots is not None else [transcripts_root()]
+    sent = sent if sent is not None else provenance.SentIndex()
+    try:
+        if legacy:
+            first = refs.resolve(session, 1, subagent_file=subagent, roots=roots, sent=sent)
+            rows = refs._lines(refs.locate(first, roots=roots))
+            translated = transcript_lines.legacy_line(rows, line)
+            if translated is None:
+                return None
+            line = translated
+        return refs.resolve(session, line, uuid, quote=quote, subagent_file=subagent, roots=roots, sent=sent)
+    except (refs.RefError, OSError, ValueError):
+        return None
+
+
+class _OriginIndex:
+    """One landing's translation policy for records and tracked/spooled events.
+
+    Stream each referenced copy once to detect count differences. Clean files
+    never call the resolver. No raw origins are globally discarded: a corrupt
+    record's independent raw evidence remains a dedupe key.
+    """
+
+    def __init__(self, home: Path | None = None, sent: provenance.SentIndex | None = None,
+                 *, roots: Sequence[Path] | None = None):
+        self.roots = list(roots) if roots is not None else [transcripts_root(home)]
+        self.sent = sent if sent is not None else provenance.SentIndex()
+        self._affected: dict[tuple[str, str | None], bool] = {}
+        self._copies: dict[str, list[Path]] = {}
+        self._projects: list[Path] = []
+        for root in self.roots:
+            if root.is_dir():
+                self._projects.extend(p for p in root.iterdir() if p.is_dir())
+        for project in self._projects:
+            for path in project.glob("*.jsonl"):
+                self._copies.setdefault(path.stem, []).append(path)
+
+    def affected(self, session: str, subagent: str | None) -> bool:
+        key = (session, subagent)
+        if key not in self._affected:
+            paths = ([p / session / subagent for p in self._projects] if subagent
+                     else self._copies.get(session, []))
+            differs = False
+            for path in paths:
+                try:
+                    if any(len((row + "\n").splitlines()) != 1
+                           for row in transcript_lines.iter_file(path, errors="replace")):
+                        differs = True
+                        break
+                except OSError:
+                    continue
+            self._affected[key] = differs
+        return self._affected[key]
+
+    def origin(self, origin: str, *, quote: str | None = None, uuid: str | None = None,
+               legacy: bool = False) -> str:
+        parts = _origin_parts(origin)
+        if parts is None or not self.affected(parts[0], parts[2]):
+            return origin
+        found = _follow_origin(origin, quote=quote, uuid=uuid, legacy=legacy,
+                               roots=self.roots, sent=self.sent)
+        return _ref_origin(found.to_dict()) if found else origin
+
+    def item(self, item: dict) -> str | None:
+        origin = item.get("origin")
+        if not isinstance(origin, str):
+            return None
+        raw = item.get("ref")
+        uid = raw.get("uuid") if isinstance(raw, dict) else item.get("uuid")
+        quote = item.get("quote")
+        return self.origin(origin, quote=quote if isinstance(quote, str) else None,
+                           uuid=uid if isinstance(uid, str) else None)
+
+    def event(self, event: dict, *, legacy_only: bool = False) -> str:
+        """Follow event positions; packs can leave modern refs to their resolver."""
+        origin = str(event.get("origin"))
+        uid = event.get("moment")
+        legacy = not uid and event.get("line_format") != transcript_lines.FORMAT
+        if legacy_only and not legacy:
+            return origin
+        return self.origin(origin, uuid=uid if isinstance(uid, str) else None,
+                           legacy=legacy)
+
+
+def _known_mining_origins(home: Path, *, index: _OriginIndex | None = None,
+                          sent: provenance.SentIndex | None = None) -> set[str]:
+    """Both engines' followed evidence, with raw fallback per corrupt record."""
+    index = index if index is not None else _OriginIndex(home, sent)
+    return existing_origins(home, follow=index.item)
+
+
+def _sighting_key(origin: str, *, legacy: bool = False) -> str:
+    # Mark newly written keys even when the transcript is unavailable: a later
+    # read must never reinterpret a new LF count as an old splitlines count.
+    prefix = f"{transcript_lines.FORMAT}:"
+    if origin.startswith(prefix):
+        return _sighting_key(origin[len(prefix):])
+    if not origin.startswith("transcript:"):
+        return origin
+    found = _follow_origin(origin, legacy=legacy)
+    if found is None:
+        return origin if legacy else f"{transcript_lines.FORMAT}:{origin}"
+    return f"uuid:{found.uuid}" if found.uuid else f"{transcript_lines.FORMAT}:{_ref_origin(found.to_dict())}"
+
+
 def _rejected_counter_bump(rid: str, origin: str) -> int:
     """Q4 resurfacing counter (cache-side). Returns fresh-sighting count;
     -1 once the resurfaced candidate has already landed."""
@@ -1370,8 +1522,9 @@ def _rejected_counter_bump(rid: str, origin: str) -> int:
     entry = data.get(rid)
     if entry == "landed":
         return -1
-    sightings = set(entry or [])
-    sightings.add(origin)
+    sightings = {_sighting_key(old, legacy=True) for old in (entry or [])}
+    if origin not in sightings:
+        sightings.add(_sighting_key(origin))
     data[rid] = sorted(sightings)
     fsops.atomic_write(path, json.dumps(data, indent=0, sort_keys=True))  # whole or not at all
     return len(sightings)
@@ -1521,7 +1674,7 @@ _FIRE_VIOLATED_BASIS = "fire-suspected-violation"
 
 
 def _event_seen(
-    home: Path,
+    home: Path, index: _OriginIndex | None = None,
 ) -> tuple[set[tuple[str, str, str]], list[tuple[str, str]]]:
     """(kind, record, origin) for fire/recurrence-suspect events —
     replay dedup (audit: crash-replay and the DOCUMENTED --since replay
@@ -1554,7 +1707,8 @@ def _event_seen(
         if kind not in ("fire", "recurrence-suspect"):
             continue
         record = e.get("record")
-        origin = e.get("origin")
+        origin = (index.event(e) if index is not None and isinstance(e.get("origin"), str)
+                  else e.get("origin"))
         seen.add((kind, str(record), str(origin)))
         if (
             kind == "fire"
@@ -1588,7 +1742,7 @@ def _raise_recurrence_suspect(
     if key in seen_events:
         return
     telemetry.spool_quiet(
-        "recurrence-suspect", record=rid, origin=origin, basis=basis
+        "recurrence-suspect", record=rid, origin=origin, basis=basis, line_format=transcript_lines.FORMAT
     )
     seen_events.add(key)
     result.recurrences.append(rid)
@@ -1762,6 +1916,7 @@ def _reconcile_and_land(
     cap: int,
     cwds: dict[str, str] | None = None,
     digested: dict[str, bool] | None = None,
+    *, sent: provenance.SentIndex | None = None,
 ) -> None:
     """``cwds`` maps session id → that session's transcript ``cwd``; a
     project-scoped candidate lands in the bucket for THAT path (doc 13
@@ -1774,8 +1929,10 @@ def _reconcile_and_land(
     the function stays callable from a test without it."""
     cwds = cwds or {}
     digested = digested or {}
-    origins = existing_origins(home)
-    seen_events, violated_fires = _event_seen(home)
+    origin_index = _OriginIndex(home, sent)
+    origins = _known_mining_origins(home, index=origin_index)
+    seen_events, violated_fires = _event_seen(home, origin_index)
+    seen_events |= _spooled_seen(origin_index)
     candidates = parsed.get("candidates") or []
     if not isinstance(candidates, list):
         candidates = []
@@ -1841,7 +1998,7 @@ def _reconcile_and_land(
                         "recurrence-suspect",
                         record=record.id,
                         origin=origin,
-                        basis="miner-match",
+                        basis="miner-match", line_format=transcript_lines.FORMAT,
                     )
                     seen_events.add(key)
                     result.recurrences.append(record.id)
@@ -2013,7 +2170,7 @@ def _reconcile_and_land(
             if key in seen_events:
                 continue
             telemetry.spool_quiet(
-                "fire", record=rid, origin=origin, outcome=outcome
+                "fire", record=rid, origin=origin, outcome=outcome, line_format=transcript_lines.FORMAT
             )
             seen_events.add(key)
             result.fires += 1
@@ -2193,6 +2350,7 @@ class _Landing:
     cap: int
     origins: set[str]
     seen_events: set[tuple[str, str, str]]
+    origin_index: _OriginIndex = field(default_factory=_OriginIndex)
     moments: set[tuple] = field(default_factory=set)
     #: records what an item is about to write before it writes (the
     #: drain sets it per item; None outside a drain)
@@ -2441,10 +2599,11 @@ def _resurface(st: _Landing, rejected: Record, items: list[dict], n: int, cwd: s
     return LANDED
 
 
-def _record_moments(record: Record) -> tuple[set[tuple], set[str]]:
+def _record_moments(record: Record, index: _OriginIndex | None = None) -> tuple[set[tuple], set[str]]:
     """The transcript moments and origins ``record``'s evidence already
     holds: a sighting replayed after a crash, or reported by a fork, is
     found here, per record."""
+    index = index if index is not None else _OriginIndex()
     moments: set[tuple] = set()
     origins: set[str] = set()
     for entry in record.evidence:
@@ -2452,7 +2611,7 @@ def _record_moments(record: Record) -> tuple[set[tuple], set[str]]:
         if isinstance(ref, dict) and (ref.get("uuid") or ref.get("session")):
             moments.add(_ref_moment(ref))
         if isinstance(entry.get("origin"), str):
-            origins.add(entry["origin"])
+            origins.add(index.item(entry) or entry["origin"])
     return moments, origins
 
 
@@ -2500,7 +2659,7 @@ def _write_event(st: _Landing, kind: str, rid: str, origin: str, moment: str | N
     _intend(st, kind, rid, origin)
     if moment:
         payload["moment"] = moment
-    _spool_output(kind, record=rid, origin=origin, **payload)
+    _spool_output(kind, record=rid, origin=origin, line_format=transcript_lines.FORMAT, **payload)
     st.seen_events.add((kind, rid, origin))
     if moment:
         st.seen_moments.add((kind, rid, moment))
@@ -2576,7 +2735,7 @@ def _land_sighting(st: _Landing, sighting: dict, cwd: str | None) -> str:
     st.moments.update(("sighting", record.id, _ref_moment(e["ref"])) for e in items)
     origin = _ref_origin(items[0]["ref"])
     if record.status == "pending":
-        held_moments, held_origins = _record_moments(record)
+        held_moments, held_origins = _record_moments(record, st.origin_index)
         fresh = [e for e in items
                  if _ref_moment(e["ref"]) not in held_moments and _ref_origin(e["ref"]) not in held_origins]
         if not fresh:
@@ -2709,7 +2868,7 @@ def _finish_intent(st: _Landing, intent: dict, kind: str, item: dict, cwd: str |
             _outcome(result, origin, "dropped-invalid", record=rid, reason="the record it folds into is gone")
             return DROPPED
         record, path = found
-        held_moments, held_origins = _record_moments(record)
+        held_moments, held_origins = _record_moments(record, st.origin_index)
         # already written only when every one of its moments is there: one
         # matching origin is not the whole fold (fix round 6)
         fresh = [e for e in item["evidence"]
@@ -2749,12 +2908,12 @@ def _finish_intent(st: _Landing, intent: dict, kind: str, item: dict, cwd: str |
     return LANDED
 
 
-def _spooled_seen() -> set[tuple[str, str, str]]:
+def _spooled_seen(index: _OriginIndex | None = None) -> set[tuple[str, str, str]]:
     """(kind, record, origin) of the fire and recurrence-suspect events
     still in the spool: written by a run that stopped before its flush.
     Replay dedupes against these as well as the tracked plane."""
     return {
-        (str(e.get("kind")), str(e.get("record")), str(e.get("origin")))
+        (str(e.get("kind")), str(e.get("record")), index.event(e) if index is not None else str(e.get("origin")))
         for e in telemetry.read_spooled(("fire", "recurrence-suspect"))
     }
 
@@ -2790,7 +2949,8 @@ class DrainReport:
 
 
 def _drain_waiting(
-    home: Path, answers: list[mining_waiting.Answer], result: MineResult, cap: int, run_id: str
+    home: Path, answers: list[mining_waiting.Answer], result: MineResult, cap: int, run_id: str,
+    *, sent: provenance.SentIndex | None = None,
 ) -> DrainReport:
     """Land the waiting answers, oldest first, one item at a time. **The
     caller holds the ledger lock** (`intents.ledger_write`). Before an
@@ -2802,9 +2962,11 @@ def _drain_waiting(
     that fails, or an item held for a reason outside it, leaves the item
     unfinished with its failure counted (the model is never asked again);
     the cap holds an item without counting."""
-    seen_events, _legacy = _event_seen(home)
-    st = _Landing(home=home, result=result, cap=cap, origins=existing_origins(home),
-                  seen_events=seen_events | _spooled_seen(), seen_moments=_event_moments(home))
+    origin_index = _OriginIndex(home, sent)
+    seen_events, _legacy = _event_seen(home, origin_index)
+    st = _Landing(home=home, result=result, cap=cap, origins=_known_mining_origins(home, index=origin_index),
+                  origin_index=origin_index, seen_events=seen_events | _spooled_seen(origin_index),
+                  seen_moments=_event_moments(home))
     report = DrainReport(drained=True)
     for answer in answers:
         earlier = answer.run_id != run_id
@@ -3569,7 +3731,7 @@ def _run_locked(
                 )
             for intent_id in recovered.restored:
                 log(f"run {run_id}: recovered {intent_id} (restored: its mutation was undone)")
-            _reconcile_and_land(home, parsed, result, cap, cwds, digested)
+            _reconcile_and_land(home, parsed, result, cap, cwds, digested, sent=sent)
             _commit_landing(home, result, run_id, no_push=no_push)
     except gitops.GitOpsError as exc:
         # BLOCKER B: every GitOpsError is caught — including a lock
@@ -3851,7 +4013,7 @@ def _run_session_engine(
                         )
                     for intent_id in recovered.restored:
                         log(f"run {run_id}: recovered {intent_id} (restored: its mutation was undone)")
-                    landed = _drain_waiting(home, answers, result, cap, run_id)
+                    landed = _drain_waiting(home, answers, result, cap, run_id, sent=sent)
                     report.landed_earlier, report.landed_this_run = landed.landed_earlier, landed.landed_this_run
                     report.terminal = landed.terminal
                     _commit_landing(home, result, run_id, no_push=no_push, folds_alone=True,
@@ -4064,7 +4226,8 @@ def _run_session_engine(
                 saved[sid] = mining_waiting.save(
                     mdir, session=sid, transcript=str(s.path), run_id=run_id, method_version=method_version,
                     halted=halt, cwd=_slice_cwd(s),
-                    cursor={"lines": s.start_line + len(s.lines), "size": s.stat_size, "halt": bool(halt)},
+                    cursor={"lines": s.start_line + len(s.lines), "size": s.stat_size, "halt": bool(halt),
+                            "line_format": transcript_lines.FORMAT},
                     learn=learn, checked=res.checked,
                 )
             except OSError as exc:

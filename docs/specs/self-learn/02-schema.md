@@ -2040,6 +2040,42 @@ A ref serialises to a plain mapping with exactly these keys
 (`subagent_file` only when set). Its legacy form is
 `transcript:<session>#L<line>`.
 
+**Line numbering (2026-10-24).** `#L<n>` and `Ref.line` count LF (`\n`)
+boundaries only, starting at one, as `grep -n` does. CRLF is accepted (the
+CR is JSON whitespace); bare CR, U+0085, U+2028 and U+2029 never add a row.
+Readers retain a final unterminated row; the miner consumes only terminated
+rows. This applies to subagent files as well as main transcripts.
+
+**Following old citations.** Stored history is never rewritten. A supplied
+entry UUID remains authoritative, including across transcript copies. Without
+a UUID, confirm the newline-numbered row using the stored quote (a statement's
+`verbatim`, a lesson's `evidence[].quote`, or a case's evidence quote). If it
+does not match, map the old Python `splitlines()` position to its containing
+physical row and follow that row only if the quote matches there. Matching
+uses the existing exact/normalised quote comparison. If both match, prefer
+the newline row; if neither matches or no quote is stored, use newline
+numbering (an absent row remains unresolvable). Excerpts, entry text and quote
+checks follow stored structured refs by UUID too. `role_of` classifies the
+selected entry; it does not itself accept or resolve citations.
+
+The selected transcript copy travels with the resolved row during a read,
+including the steward pack's check and excerpt. This file path is transient;
+it is not part of the serialized ref. Following fills the selected row's UUID
+even when its line number stays unchanged. A supplied UUID absent from the
+available copies is unresolvable: entry text, excerpts and quote checks never
+substitute a line or quote match for it. `locate` requires the numbered row to
+exist; `follow` relocates historical refs first, including those past EOF.
+
+Fresh model pointers from the session engine's LF-numbered spine do not use
+the old-count fallback (`check_quote(stored=False)`). A quote found on another
+row is a moved quote, subject to the speaker and judged-range checks. It can
+never be recorded as `exact` on the originally cited row. Steward evidence
+uses `verbatim` when `quote` is null or blank; fire packs follow the event's
+`moment` UUID, since fire events do not carry a quote. Without a `moment`,
+fire packs use the same event-origin index as miner landing: an unmarked
+event has an old `splitlines()` position, while `line_format: newline-v1`
+keeps its LF position. Translation is read-only and uses the pack's roots.
+
 **Transcript roots.** Registry setting `refs.transcript_roots`
 (`SELF_LEARN_TRANSCRIPT_ROOTS`, `config.yaml` `refs.transcript_roots`),
 `os.pathsep`-separated, each entry `~`-expanded at run time. Default: the
@@ -2307,7 +2343,16 @@ record's `inputs` with a `kind`:
 |---|---|---|
 | `lesson` | a queued record (pending, not deferred) whose version no committed run has decided — **with or without an analyst proposal** | the record file's committed blob; `legacy_version` carries the proposal file's blob when there is one |
 | `reconsider` | a record a later observation brought back (unchanged) | `observation:<obs-id>` |
-| `suspected-violation` | a ROUTED record that unhandled `fire` events with outcome `suspected-violation` name (a legacy `violated` reads as it, §4.3 of `11-telemetry-and-lifecycle.md`); the row carries the events (`nonce`, `ts`, `outcome`, `origin`) | `fires:<nonce>,<nonce>…`, sorted |
+| `suspected-violation` | a ROUTED record that unhandled `fire` events with outcome `suspected-violation` name (a legacy `violated` reads as it, §4.3 of `11-telemetry-and-lifecycle.md`); the row carries the events (`nonce`, `ts`, `outcome`, `origin`, optional `moment`, optional `line_format`) | `fires:<nonce>,<nonce>…`, sorted |
+
+For `fire` and `recurrence-suspect` event payloads, `moment` is the cited
+entry UUID, emitted by session landing when available. `line_format:
+newline-v1` identifies LF-numbered origins; both engines' new event writers
+and the legacy-fire-to-suspect bridge write it. An event with neither a
+`moment` nor this marker is an old `splitlines()` position. The shared
+event-origin index translates it only in transcripts whose counts differ;
+a supplied `moment` takes precedence. Existing events remain unchanged
+(doc 12 Phase 0; doc 11 §4.3).
 
 A record edited after selection is a new version. A move is such an edit
 *(2026-10-06, S-78)*: its `moved` history entry makes the lesson a new
@@ -2809,7 +2854,8 @@ written (fix round 5):
 Waiting       = { "contract": "miner-waiting/1", "session": str, "transcript": str, "run_id": str,
                   "method_version": str, "saved_ns": int, "saved_at": iso, "halted": bool,
                   "cwd": str | null,
-                  "cursor": { "lines": int, "size": int, "halt": bool },   # the entry the session's cursor takes
+                  "cursor": { "lines": int, "size": int, "halt": bool,
+                              "line_format": "newline-v1" },   # absent on legacy answers; see doc 12 Phase 0
                   "learn": [ uuid ],                                       # what the judged-uuid store learns
                   "checked": Checked,                                      # miner-output/1, verbatim
                   "items": [ { "kind": "lessons" | "sightings" | "rule_checks", "index": int,

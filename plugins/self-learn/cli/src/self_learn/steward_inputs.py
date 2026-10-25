@@ -120,13 +120,14 @@ _ORIGIN_RE = re.compile(r"^transcript:([^#\s]+)#L(\d+)$")
 _SUBAGENT_WHERE_RE = re.compile(r"^([^/\s]+)/(subagents/agent-[^/\s]+\.jsonl)$")
 
 
-def _resolve_origin(where: str, line: int, roots: Sequence[Path]) -> refs.Ref:
+def _resolve_origin(where: str, line: int, roots: Sequence[Path], *, quote: str | None = None,
+                    uuid: str | None = None) -> refs.Ref:
     """``refs.resolve`` for an origin's ``<where>`` and line: a session id,
     or a session's subagent log (:data:`_SUBAGENT_WHERE_RE`)."""
     sub = _SUBAGENT_WHERE_RE.match(where)
     if sub:
-        return refs.resolve(sub.group(1), line, subagent_file=sub.group(2), roots=roots)
-    return refs.resolve(where, line, roots=roots)
+        return refs.resolve(sub.group(1), line, uuid, quote=quote, subagent_file=sub.group(2), roots=roots)
+    return refs.resolve(where, line, uuid, quote=quote, roots=roots)
 _CORRECTED = frozenset({"nearby", "elsewhere_in_file", "other_session"})
 
 #: What each verdict means, in the words the steward reads.
@@ -488,8 +489,16 @@ class _Item:
     omitted: str = ""
 
 
+def _stored_quote(item: dict) -> str | None:
+    quote = item.get("quote")
+    if not isinstance(quote, str) or not quote.strip():
+        quote = item.get("verbatim")
+    return quote if isinstance(quote, str) else None
+
+
 def _cited_ref(item: dict, roots: Sequence[Path]) -> tuple[str, refs.Ref | None, str]:
     """``(what the record cites, the resolved ref or None, verdict if not resolvable)``."""
+    quote = _stored_quote(item)
     raw = item.get("ref")
     if isinstance(raw, dict):
         try:
@@ -500,22 +509,26 @@ def _cited_ref(item: dict, roots: Sequence[Path]) -> tuple[str, refs.Ref | None,
             try:
                 return given.origin, refs.resolve(
                     given.session, given.line, given.uuid,
-                    subagent_file=given.subagent_file, roots=roots,
+                    subagent_file=given.subagent_file, roots=roots, quote=quote,
                 ), ""
             except (refs.RefError, OSError) as exc:
                 return given.origin, None, f"{UNRESOLVABLE}:{exc}"
-    origin = item.get("origin")
+    source = item.get("source")
+    origin = (item.get("origin") or (raw if isinstance(raw, str) else None)
+              or (source.get("message_ref") if isinstance(source, dict) else None))
     m = _ORIGIN_RE.match(str(origin or "").strip())
     if not m:
         return str(origin or "(no pointer)"), None, NOT_A_TRANSCRIPT
     try:
-        return m.group(0), _resolve_origin(m.group(1), int(m.group(2)), roots), ""
+        uuid = item.get("uuid")
+        return m.group(0), _resolve_origin(m.group(1), int(m.group(2)), roots, quote=quote,
+                                         uuid=uuid if isinstance(uuid, str) else None), ""
     except (refs.RefError, OSError, ValueError) as exc:
         return m.group(0), None, f"{UNRESOLVABLE}:{exc}"
 
 
 def _check(item: dict, ref: refs.Ref, roots: Sequence[Path]) -> tuple[str, refs.Ref, str]:
-    quote = item.get("quote")
+    quote = _stored_quote(item)
     if not isinstance(quote, str) or not quote.strip():
         return NO_QUOTE, ref, ""
     try:
@@ -541,7 +554,7 @@ def evidence_pack(
     left = budget
     for n, raw in enumerate((e for e in record.evidence if isinstance(e, dict)), start=1):
         cited, ref, failed = _cited_ref(raw, roots)
-        quote = raw.get("quote") if isinstance(raw.get("quote"), str) else None
+        quote = _stored_quote(raw)
         if ref is None:
             verdict = failed.split(":", 1)[0]
             detail = failed.split(":", 1)[1] if ":" in failed else ""
@@ -646,6 +659,9 @@ def fire_pack(events: list[dict], *, roots: Sequence[Path], budget: int) -> tupl
     """The suspected-violation events of one routed record: each event's
     nonce (what a sheet item names as ``event``), its pointer resolved, and
     an excerpt around it."""
+    from .miner import _OriginIndex
+
+    origin_index = _OriginIndex(roots=roots)
     shown = events[-FIRE_EVENTS_SHOWN:]
     lines = [
         f"[suspected violations] {len(events)} unhandled miner fire(s) with outcome "
@@ -666,12 +682,14 @@ def fire_pack(events: list[dict], *, roots: Sequence[Path], budget: int) -> tupl
                 f"    (the recurrence-suspect the miner raised for fire {event['fire_nonce']}; "
                 "deciding it also clears the review's card)"
             )
-        m = _ORIGIN_RE.match(origin.strip())
+        m = _ORIGIN_RE.match(origin_index.event(event, legacy_only=True).strip())
         if not m:
             lines.append("    the pointer is not a transcript line; nothing here checks it")
             continue
         try:
-            ref = _resolve_origin(m.group(1), int(m.group(2)), roots)
+            moment = event.get("moment")
+            ref = _resolve_origin(m.group(1), int(m.group(2)), roots,
+                                  uuid=moment if isinstance(moment, str) else None)
         except (refs.RefError, OSError, ValueError) as exc:
             lines.append(f"    the cited transcript could not be read: {_one_line(exc)}")
             continue

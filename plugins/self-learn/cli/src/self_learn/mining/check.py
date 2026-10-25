@@ -431,15 +431,16 @@ class _Checker:
         elif refs.fold(quote) and refs.fold(quote) in refs.fold(shown):
             verdict = "normalised"
         else:
-            v = refs.check_quote(ref, quote, roots=self.roots, other_session_cap=0, sent=self.sent)
-            if v.outcome in _KEEP:
+            v = refs.check_quote(ref, quote, roots=self.roots, other_session_cap=0, sent=self.sent, stored=False)
+            moved = v.ref.line != ref.line or v.ref.subagent_file != ref.subagent_file
+            if v.outcome in _KEEP and not moved:
                 verdict = v.outcome
-            elif v.outcome in _MOVED:
+            elif v.outcome in _MOVED or (v.outcome in _KEEP and moved):
                 if v.ref.role != ref.role:
                     # the words are on a line of another speaker: what the model
                     # cited as one party's words is never moved onto another's
                     raise _Fail("quote-not-found", f"line {ref.line}; found only on a line of another role")
-                verdict, corrected_from = v.outcome, ref.line
+                verdict, corrected_from = ("nearby" if v.outcome in _KEEP else v.outcome), ref.line
                 ref = v.ref
                 self.after_end(ref)
                 if moments and self.judged(ref):

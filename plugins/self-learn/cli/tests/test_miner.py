@@ -425,6 +425,48 @@ def test_run_dedupes_by_origin_across_runs(home, transcripts, monkeypatch):
     assert len(pending_ids(home)) == 1
 
 
+@pytest.mark.parametrize("with_uuid", [False, True])
+def test_since_backfill_recognises_historical_origin(home, transcripts, monkeypatch, with_uuid):
+    rows = [{"type": "user", "message": {"content": text}} for text in
+            ("opening\u2028turn", "stored evidence words", "a genuinely new observation")]
+    if with_uuid:
+        for n, row in enumerate(rows):
+            row["uuid"] = f"backfill-{n}"
+    write_transcript(transcripts, "sess-old-count", [json.dumps(row, ensure_ascii=False) for row in rows])
+    record = miner._build_record(home, candidate(session="sess-old-count", line=3, quote="stored evidence words"))
+    record.append_evidence({"origin": "transcript:sess-old-count#L3", "quote": "stored evidence words"})
+    create_record(home, record)
+    path = home / "skills/s/pending" / f"{record.id}.md"
+    before = path.read_bytes()
+    assert Record.from_path(path).evidence[0]["origin"] == "transcript:sess-old-count#L3"
+    shim_reader(monkeypatch, {"candidates": [candidate(session="sess-old-count", line=2,
+                quote="stored evidence words", match={"record": record.id, "status": "pending"})], "fires": []})
+    result = miner.run(home, since="2000-01-01")
+    assert result.status == "ok" and result.outcomes[0]["outcome"] == "skipped-known-origin"
+    assert result.landed == result.folded == [] and path.read_bytes() == before
+    # L3 now denotes a different moment. The old string must not suppress it.
+    shim_reader(monkeypatch, {"candidates": [candidate(session="sess-old-count", line=3,
+                quote="a genuinely new observation")], "fires": []})
+    assert len(miner.run(home, since="2000-01-01").landed) == 1
+
+
+@pytest.mark.parametrize("with_uuid", [False, True])
+def test_rejected_old_sighting_does_not_count_again(home, transcripts, with_uuid):
+    rows = [{"type": "user", "message": {"content": text}} for text in
+            ("opening\u2028turn", "already observed", "new observation")]
+    if with_uuid:
+        for n, row in enumerate(rows):
+            row["uuid"] = f"rejected-{n}"
+    write_transcript(transcripts, "sess-rejected-old", [json.dumps(row, ensure_ascii=False) for row in rows])
+    path = miner.miner_dir() / "rejected-sightings.json"
+    path.write_text(json.dumps({"lrn-11111111": ["transcript:sess-rejected-old#L3"]}))
+    assert json.loads(path.read_text())["lrn-11111111"] == ["transcript:sess-rejected-old#L3"]
+    assert miner._rejected_counter_bump("lrn-11111111", "transcript:sess-rejected-old#L2") == 1
+    assert miner._rejected_counter_bump("lrn-11111111", "transcript:sess-rejected-old#L2") == 1
+    assert miner._rejected_counter_bump("lrn-11111111", "transcript:sess-rejected-old#L3") == 2
+    assert miner._rejected_counter_bump("lrn-11111111", "transcript:sess-rejected-old#L3") == 2
+
+
 # --------------------------------------------- episode briefs (12 §11 / U18)
 
 

@@ -71,11 +71,62 @@ the one judgment layer, and it is an LLM, not a similarity metric (§5).
 ### Phase 0 — walk and cursors
 
 Enumerate `~/.claude/projects/<slug>/*.jsonl` newer than the per-file
-cursor (session id + byte offset, stored in
-`${XDG_CACHE_HOME}/claude-skills/self-learn/miner/cursors.json` — cache,
+cursor (transcript path + consumed line count + observed byte size, stored in
+`${XDG_CACHE_HOME}/self-learn/home-<hash>/miner/cursors.json` — cache,
 never repo). Scope of `<slug>` is a ratification item (§6 Q2: all
 projects vs allowlist). Transcript retention (`cleanupPeriodDays`) plus a
 daily cadence means the cursor never races deletion.
+
+**Newline numbering and legacy cursors (2026-10-24).** Both engines count
+only LF boundaries, agreeing with `#L<n>` in 02-schema §3a.6. A trailing CR
+is retained as JSON whitespace; an unterminated tail stays unread. New cursor
+entries, including the cursor saved inside a session engine waiting answer,
+carry `line_format: newline-v1`. An entry without that marker counts the old
+Python `splitlines()` pieces: on reading a grown file, translate its consumed
+prefix to the equivalent number of physical rows before slicing. Persist the
+new count and marker on the normal cursor advance. Unchanged/skipped files
+keep their cheap size/skip checks and migrate lazily on their next cursor advance.
+Waiting-answer replay converts both its saved cursor and the current cursor
+before the forward-only comparison; it never rewrites the saved answer for
+migration. Preview/backfill reads do not migrate files on disk. A malformed
+old count inside a physical row leaves that row unread; a count beyond a
+truncated file preserves the overrun rather than rewinding to its end.
+Quotes/UUIDs follow old citations at read time as specified in 02-schema
+§3a.6; the ledger's historical origin strings remain unchanged.
+
+When both waiting and current cursors are already marked, replay compares
+their counts without reading the transcript body (existence/size checks
+remain). Cursor writes omit `halt` when false. The first-user opening scan
+and captured-session entry counts also stream by LF, retaining replacement
+decoding for malformed UTF-8.
+
+Both engines' nightly and backfill landing use one in-memory origin index
+that follows stored evidence quotes/UUIDs before comparing LF-numbered
+candidates. The same translation serves lesson dedupe, a sighted record's
+held evidence, and tracked/spooled recurrence-event keys. History is never
+rewritten. Each corrupt record independently retains its raw-origin fallback,
+even when a parsed record translates the same string.
+
+The index streams each referenced transcript copy once per drain to check
+whether its counts differ. Only affected files invoke resolution, reusing the
+run's provenance sends rather than sweeping per user row. The exact test is
+whether any physical row plus LF produces more than one `splitlines()` piece:
+bare CR, VT, FF, U+001C–001E, U+0085, U+2028 or U+2029 can do so; CRLF alone
+cannot. Missing copies keep their raw keys. Subagent origins identify their
+own log and preserve that subagent path when followed.
+
+New miner fire/recurrence events carry `line_format: newline-v1`; event keys
+use `moment` UUIDs when present, otherwise unmarked affected-file positions
+use the legacy count. Marked UUID-less event positions are never translated
+again. No historical telemetry is rewritten.
+
+Rejected-sighting cache lists migrate old origin positions when their source
+is available, replacing each with `uuid:<entry uuid>` or, for UUID-less rows,
+`newline-v1:transcript:<session>#L<n>`. Newly written keys always carry one of
+these markers, so later reads cannot translate them twice. Unavailable old
+origins remain raw and are retried later; their exact-origin dedupe remains.
+The terminal `landed` mark is unchanged. The same moment does not add another
+sighting merely because its old line count differs from its LF count.
 
 **Loop exclusions (M-5):** skip transcripts whose opening prompt matches
 one of the system's own prompt openings (the system must not mine its

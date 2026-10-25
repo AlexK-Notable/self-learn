@@ -1787,6 +1787,47 @@ def test_a_preview_s_tools_read_its_own_copy_of_the_lesson_index(home, root, tmp
     assert live.read_bytes() == before
 
 
+@pytest.mark.parametrize("chosen", ["digest", "session"])
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\u0085", ""])
+def test_newline_cursor_continues_both_engines(home, root, backend, tmp_path, monkeypatch, chosen, separator):
+    sid = "newline-migration"
+    rows = session_rows(sid, host(tmp_path))
+    rows[0]["message"]["content"][0]["text"] += separator + "previously processed"
+    path = write_session(root, sid, [])
+    prefix = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows[:2])
+    path.write_text(prefix)
+    cursors = miner._load_cursors()
+    cursors[str(path)] = {"lines": len(prefix.splitlines()), "size": path.stat().st_size}
+    miner._save_cursors(cursors)
+    with path.open("a") as fh:
+        fh.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows[2:]))
+    seen = []
+    original_walk = miner.walk
+
+    def walk(*args, **kwargs):
+        result = original_walk(*args, **kwargs)
+        seen.extend((s.start_line, [json.loads(x)["uuid"] for x in s.lines]) for s in result)
+        return result
+
+    def reader(_home, prompt):
+        out = miner.spool_dir() / miner.OUTPUT_BASENAME
+        out.write_text(json.dumps({"candidates": []}))
+        return out
+
+    monkeypatch.setattr(miner, "walk", walk)
+    monkeypatch.setattr(miner, "_invoke_reader", reader)
+    assert miner.run(home, no_push=True, engine=chosen).status == "ok"
+    assert seen == [(2, [r["uuid"] for r in rows[2:]])]
+    assert cursor(path)["lines"] == 7 and cursor(path)["line_format"] == "newline-v1"
+    if chosen == "session":
+        assert len(backend.specs) == 1
+    # A new physical row after a migrated cursor is neither skipped nor replayed.
+    with path.open("a") as fh:
+        fh.write(json.dumps(typed(sid, 8, "next turn", host(tmp_path))) + "\n")
+    (part,) = original_walk()
+    assert part.start_line == 7 and len(part.lines) == 1 and json.loads(part.lines[0])["uuid"] == f"{sid}-u-8"
+
+
 def test_final_fence_count_reaches_run_contract(home, root, backend, tmp_path):
     for sid, prefix in (("s1fence-0000", "Summary.\n"), ("s2fence-0000", "")):
         write_session(root, sid, session_rows(sid, host(tmp_path)))

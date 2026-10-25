@@ -97,7 +97,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Sequence, cast
 
-from . import provenance, settings
+from . import provenance, settings, transcript_lines
 from .ledger import resolve_home
 from .scan import redact
 
@@ -115,6 +115,7 @@ __all__ = [
     "entry_text",
     "excerpt",
     "fold",
+    "follow",
     "is_compact_provenance_note",
     "is_sdk",
     "locate",
@@ -184,6 +185,9 @@ class Ref:
     cwd: str | None
     role: str
     subagent_file: str | None = None
+    # A read's selected copy, never serialized into ledger evidence. Equality
+    # still describes the public pointer, not this machine's filesystem.
+    _path: Path | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.role not in ROLES:
@@ -262,8 +266,8 @@ def _lines_cached(
     path: str, _mtime_ns: int, _size: int, strict: bool = False,
     _ctime_ns: int = 0, _mode: int = 0,
 ) -> tuple[str, ...]:
-    with open(path, encoding="utf-8", errors="strict" if strict else "replace") as fh:
-        return tuple(fh.read().splitlines())
+    with open(path, encoding="utf-8", errors="strict" if strict else "replace", newline="") as fh:
+        return tuple(transcript_lines.split(fh.read()))
 
 
 def _lines(path: Path, *, strict: bool = False) -> tuple[str, ...]:
@@ -338,8 +342,9 @@ def _raw_text(entry: dict) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def entry_text(ref: Ref, *, roots: Sequence[Path | str] | None = None) -> str:
+def entry_text(ref: Ref, *, roots: Sequence[Path | str] | None = None, quote: str | None = None) -> str:
     """The ref's entry text (module docstring), redacted."""
+    ref = follow(ref, quote=quote, roots=roots)
     path = locate(ref, roots=roots)
     e = _entry(_lines(path)[ref.line - 1])
     return redact(_raw_text(e))[0] if e else ""
@@ -452,7 +457,11 @@ def _subagent_files(session: str, roots: list[Path], only: str | None) -> list[t
     return out
 
 
-def _uuid_line(lines: Sequence[str], uuid: str) -> int | None:
+def _uuid_line(lines: Sequence[str], uuid: str, preferred: int | None = None) -> int | None:
+    if preferred is not None and 1 <= preferred <= len(lines):
+        e = _entry(lines[preferred - 1])
+        if e is not None and e.get("uuid") == uuid:
+            return preferred
     needle = f'"{uuid}"'
     for i, raw in enumerate(lines, 1):
         if needle in raw:
@@ -490,6 +499,7 @@ def _ref_at(
         cwd=cwd if isinstance(cwd, str) else None,
         role=_role(e, subagent_file is not None, roots, sent),
         subagent_file=subagent_file,
+        _path=path,
     )
 
 
@@ -510,6 +520,7 @@ def resolve(
     line: int | None = None,
     uuid: str | None = None,
     *,
+    quote: str | None = None,
     subagent_file: str | None = None,
     roots: Sequence[Path | str] | None = None,
     sent: provenance.SentIndex | None = None,
@@ -524,7 +535,10 @@ def resolve(
     ``line``; with neither, line 1 of the largest copy. A uuid missing
     from every top-level copy is looked for in the session's subagent
     files. Raises :class:`RefError` when nothing matches. ``sent`` is the
-    caller's sends for rule 10 (swept from ``roots`` when omitted)."""
+    caller's sends for rule 10 (swept from ``roots`` when omitted).
+    Without a uuid, ``quote`` confirms the newline row before trying the
+    legacy splitlines position; a match outranks unmatched transcript copies.
+    With neither matching row, newline numbering remains the truth."""
     if line is None and uuid is None:
         line = 1
     rs = _roots(roots)
@@ -537,20 +551,23 @@ def resolve(
         best: tuple | None = None
         for ri, path in pool:
             lines = _lines(path)
-            at = _uuid_line(lines, uuid) if uuid is not None else None
+            at = _uuid_line(lines, uuid, line) if uuid is not None else None
             if uuid is not None and at is None:
                 continue
-            if uuid is None and line is not None and line > len(lines):
+            selected = at if at is not None else _follow_line(lines, line if line is not None else 1, quote)
+            if not 1 <= selected <= len(lines):
                 continue
+            e = _entry(lines[selected - 1])
             key = (
                 at is not None and at == line,
                 at is not None,
+                bool(quote and e and _match(quote, _raw_text(e))),
                 len(lines),
                 path.stat().st_size,
                 -ri,
             )
             if best is None or key > best[0] or (key == best[0] and str(path) < str(best[1])):
-                best = (key, path, at if at is not None else line)
+                best = (key, path, selected)
         if best is not None:
             _key, path, found_line = best
             sub = None
@@ -560,13 +577,51 @@ def resolve(
     raise RefError(f"no transcript holds session {session} (line={line}, uuid={uuid})")
 
 
-def locate(ref: Ref, *, roots: Sequence[Path | str] | None = None) -> Path:
+def _follow_line(lines: Sequence[str], line: int, quote: str | None) -> int:
+    """Prefer the physical row; try the old count only with matching text."""
+    if not quote or not quote.strip():
+        return line
+    e = _entry(lines[line - 1]) if 1 <= line <= len(lines) else None
+    if e and _match(quote, _raw_text(e)):
+        return line
+    old = transcript_lines.legacy_line(lines, line)
+    e = _entry(lines[old - 1]) if old is not None else None
+    return old if old is not None and e and _match(quote, _raw_text(e)) else line
+
+
+def follow(ref: Ref, *, quote: str | None = None, roots: Sequence[Path | str] | None = None) -> Ref:
+    """Follow a stored ref without changing it; retain its project folder.
+
+    UUID remains authoritative (as in resolve). Without one, only a matching
+    quote permits an old-count fallback. No match means newline numbering.
+    """
+    path = _locate(ref, roots=roots, quote=quote, relocate=True)
+    lines = _lines(path)
+    line = _uuid_line(lines, ref.uuid, ref.line) if ref.uuid else None
+    line = line if line is not None else _follow_line(lines, ref.line, quote)
+    entry = _entry(lines[line - 1]) if 1 <= line <= len(lines) else None
+    if line == ref.line and ref._path == path and entry is not None and entry.get("uuid") == ref.uuid:
+        # Already resolved in this read. Keep its caller-supplied provenance
+        # classification instead of sweeping the transcript roots again.
+        return ref
+    return _ref_at(path, line, session=ref.session, subagent_file=ref.subagent_file, roots=_roots(roots))
+
+
+def locate(ref: Ref, *, roots: Sequence[Path | str] | None = None, quote: str | None = None) -> Path:
     """The file a ref points into: ``<root>/<project_dir>/<session>.jsonl``
     (or the subagent file) under any root. Among the copies that have
     ``ref.line``, ranked as :func:`resolve` ranks: the entry at that line
     carries ``ref.uuid`` > more lines > larger file > earlier root. A
     shorter stub copy in an earlier root therefore never wins, with or
-    without a uuid."""
+    without a uuid. A previously selected copy stays selected; a supplied
+    uuid must exist, and the numbered row must be in bounds. Use ``follow``
+    to relocate a historical pointer before indexing its row."""
+    return _locate(ref, roots=roots, quote=quote)
+
+
+def _locate(ref: Ref, *, roots: Sequence[Path | str] | None = None,
+            quote: str | None = None, relocate: bool = False) -> Path:
+    """Keep a read's chosen copy; only follow may relocate a row past EOF."""
     rs = _roots(roots)
     rel = Path(ref.project_dir) / (
         Path(ref.session) / ref.subagent_file if ref.subagent_file else f"{ref.session}.jsonl"
@@ -574,14 +629,23 @@ def locate(ref: Ref, *, roots: Sequence[Path | str] | None = None) -> Path:
     best: tuple[tuple, Path] | None = None
     for ri, root in enumerate(rs):
         p = root / rel
+        if ref._path is not None and p != ref._path:
+            continue
         if not p.is_file():
             continue
         lines = _lines(p)
-        if ref.line > len(lines):
+        at = _uuid_line(lines, ref.uuid, ref.line) if ref.uuid else None
+        if ref.uuid is not None and at is None:
             continue
-        e = _entry(lines[ref.line - 1])
-        holds = ref.uuid is not None and e is not None and e.get("uuid") == ref.uuid
-        key = (holds, len(lines), p.stat().st_size, -ri)
+        if not relocate and not 1 <= ref.line <= len(lines):
+            continue
+        selected = at if at is not None else _follow_line(lines, ref.line, quote)
+        if not 1 <= selected <= len(lines):
+            continue
+        holds = at is not None
+        e = _entry(lines[selected - 1])
+        key = (holds and at == ref.line, holds, bool(quote and e and _match(quote, _raw_text(e))),
+               len(lines), p.stat().st_size, -ri)
         if best is None or key > best[0]:
             best = (key, p)
     if best is not None:
@@ -699,6 +763,7 @@ def check_quote(
     nearby_lines: int = NEARBY_LINES,
     other_session_cap: int = OTHER_SESSION_CAP,
     sent: provenance.SentIndex | None = None,
+    stored: bool = True,
 ) -> Verdict:
     """Where is ``quote`` relative to ``ref``? Tried in :data:`VERDICTS`
     order: ``exact`` (verbatim substring of the ref's entry text),
@@ -717,8 +782,12 @@ def check_quote(
     the user's typo matched only a later session's listing of the
     pending queue). Within the ref's own file every role counts. ``sent``
     is the caller's sends for the roles of the refs it returns (swept from
-    ``roots`` when omitted)."""
+    ``roots`` when omitted). ``stored=False`` checks a fresh LF-numbered
+    pointer without historical following: a quote on another row is moved,
+    never exact on the cited row."""
     rs = _roots(roots)
+    if stored:
+        ref = follow(ref, quote=quote, roots=rs)
     path = locate(ref, roots=rs)
     lines = _lines(path)
     e = _entry(lines[ref.line - 1])
@@ -800,6 +869,7 @@ def excerpt(
     entry_chars: int = 2_000,
     total_chars: int = 12_000,
     roots: Sequence[Path | str] | None = None,
+    quote: str | None = None,
 ) -> list[tuple[Ref, str]]:
     """The ref's entry plus up to ``before`` entries before it and
     ``after`` after it, counting only entries with non-empty entry text,
@@ -809,6 +879,7 @@ def excerpt(
     dropped first until the texts total at most ``total_chars``. The
     ref's own entry is always kept."""
     rs = _roots(roots)
+    ref = follow(ref, quote=quote, roots=rs)
     path = locate(ref, roots=rs)
     lines = _lines(path)
 
