@@ -1574,6 +1574,28 @@ def test_kl7_pid_sidecar_present_during_and_absent_after(tmp_path, sdk_cli_path,
         assert not lifecycle_mod._sidecar_path("worker").exists(), prompt
 
 
+def _wait_until_execd(pid: int, name: str, deadline: float) -> None:
+    """`Popen` can return BEFORE its child has finished `exec`: the
+    kernel wakes a `posix_spawn`/vfork parent (`exec_mm_release`) before
+    the child switches to its new memory map, and that map's argv is
+    filled in later still -- so `/proc/<pid>/cmdline` briefly reads as
+    the PARENT's argv (shared mm) and then as empty. A sweep run in that
+    window rightly declines with "cmdline mismatch" (measured
+    2026-10-24: 8 of 40 runs under CPU load). Real orphans are long
+    past exec; poll until argv[0]'s basename is `name` so the sweep
+    judges the process the test meant to start."""
+    while True:
+        try:
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            raw = b""
+        if os.path.basename(raw.split(b"\x00")[0].decode("utf-8", "replace")) == name:
+            return
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"pid {pid} never finished exec as {name!r}: cmdline={raw[:80]!r}")
+        time.sleep(0.01)
+
+
 def test_kl8_orphan_sweep_kills_matching_and_spares_non_matching(tmp_path, sdk_cli_path, monkeypatch):
     """A shebang'd script's `/proc/<pid>/cmdline[0]` gets rewritten by
     the kernel to the INTERPRETER, not the script path -- so the
@@ -1596,6 +1618,7 @@ def test_kl8_orphan_sweep_kills_matching_and_spares_non_matching(tmp_path, sdk_c
     # literally "claude" is killed.
     proc = subprocess.Popen([str(claude_bin), "60"])
     try:
+        _wait_until_execd(proc.pid, "claude", time.monotonic() + 5.0)
         lifecycle_mod.write_sidecar("worker", proc.pid, str(claude_bin))
         sidecar = lifecycle_mod._sidecar_path("worker")
         data = json.loads(sidecar.read_text())
@@ -1615,6 +1638,7 @@ def test_kl8_orphan_sweep_kills_matching_and_spares_non_matching(tmp_path, sdk_c
     # the sidecar's own recorded cli basename) is spared.
     sleeper = subprocess.Popen(["sleep", "30"])
     try:
+        _wait_until_execd(sleeper.pid, "sleep", time.monotonic() + 5.0)
         lifecycle_mod.write_sidecar("worker", sleeper.pid, str(claude_bin))
         sidecar = lifecycle_mod._sidecar_path("worker")
         data = json.loads(sidecar.read_text())
