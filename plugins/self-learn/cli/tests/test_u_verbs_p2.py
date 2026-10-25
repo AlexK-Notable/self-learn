@@ -320,6 +320,7 @@ class TestRER6GraduateAndSupersedeRetireReference:
 class TestRER7ReferenceRetirementWritesCompileRecord:
     def test_reference_retirement_writes_compile_record(self, env2):
         import hashlib
+        from self_learn import compiled
 
         rid = "lrn-0000aaaa"
         _keep_the_shelf(env2.home)
@@ -340,8 +341,13 @@ class TestRER7ReferenceRetirementWritesCompileRecord:
         compiled_dir = env2.home / "compiled"
         matches = []
         for f in compiled_dir.glob("*.yaml"):
-            text = f.read_text(encoding="utf-8")
-            if "region: reference" in text and post_removal_sha in text:
+            data = compiled.load_record(env2.home, f.stem)
+            key = compiled.region_key(data["host"], ref_path, "reference")
+            entry = compiled.entry_for(data, key, region="reference")
+            # The old file can contain the post-removal hash as its
+            # based_on_sha256. Require this target's CURRENT hash and writer.
+            if (entry is not None and entry["sha256"] == post_removal_sha
+                    and entry["by"] == f"retire {rid}"):
                 matches.append(f)
         assert matches, (
             "no compiled/<slug>.yaml entry carries the post-removal "
