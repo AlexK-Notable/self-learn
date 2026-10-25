@@ -183,13 +183,9 @@ def override_env_var(name: str) -> str:
     name embeds the surface `worker-repair` verbatim, so this is not a
     hypothetical.
 
-    Lives here, not in `settings.py`, so `invocation/registry.py` can
-    compute the SAME override-var name for its own runtime-dispatch
-    override rungs (`resolve_backend_raw`) without importing
-    `settings.py` at all (`I-b`'s one-permitted-upward-import rule
-    would otherwise be violated) -- `settings.py`'s own `_override_env_
-    var` is now a thin call-through to this function, so the two
-    channels can never drift apart under one operator-visible name."""
+    The shared spelling remains here for the settings override channel.
+    The backend selector that originally also used it was removed on
+    2026-10-24."""
     return "SELF_LEARN_OVERRIDE_" + name.upper().replace(".", "_").replace("-", "_")
 
 

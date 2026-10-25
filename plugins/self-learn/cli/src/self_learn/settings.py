@@ -22,8 +22,7 @@ entry that predates this amendment) resolves **override > config.yaml
 > env > default** -- the committed config is the single source of
 truth, and an env var only fills a gap config.yaml leaves silent.
 ``"env-first"`` (the provider/backend-selection entries below --
-``provider.name``, ``provider.bedrock.*``, ``invocation.backend``
-and its per-surface siblings, ``sdk.cli_path``, ``models.*``)
+``provider.name``, ``provider.bedrock.*``, ``sdk.cli_path``, ``models.*``)
 resolves **override > env > config.yaml > default** -- these are
 emergency-rollback switches, and an operator must be able to override
 one from a live shell without waiting on a commit+sync round-trip. The
@@ -34,16 +33,10 @@ own hand-rolled resolvers, ``invocation/registry.py``'s own backend
 cascade), that second mechanism is now RETIRED: every one of those
 keys resolves through THIS registry's ONE :func:`resolve_setting`,
 with its own ``direction`` field choosing the rung order. The one
-exception, by design, is the runtime DISPATCH path for backend
-selection (:func:`invocation.registry.resolve_backend_raw`,
-:func:`provider.resolve_backend_name`) and for ``provider.name``
-(:func:`provider._resolve_provider`) -- both keep their own
-hand-written cascades because they must keep emitting the SAME
-existing, unpinned stderr warnings on an unknown live value that this
-registry's silent ``validate`` clamp does not reproduce (the fold is
-visible there only via this registry's ``note`` field, below); see
-each function's own docstring for why (03-decisions.md row S-58's
-MAJOR-2 text: "the same split" the backend family already used).
+exception is the runtime provider-name resolver (:func:`provider._resolve_provider`),
+which preserves its stderr warnings for unknown live values. Backend selectors
+were removed on 2026-10-24: runtime dispatch always uses SDK, and diagnostics
+name retired keys without reading their values as choices.
 
 **``enabled_when`` (M-S).** An optional predicate over the resolved
 ``provider.name``, evaluated BEFORE even the override rung: ``False``

@@ -5,11 +5,10 @@ sibling; `rehome` stays project<->project only).
 
 S-67 (2026-09-14): `graduate` is renamed `retire` — a lesson is retired
 because guidance already loaded elsewhere covers it, and the covering
-surface is named (`--covered-by <kind>:<name>`). `graduate` stays a
-thin, hidden alias for one release (`covered_by` optional; absent, it
-writes the legacy `superseded_by: canon` and prints a deprecation
-line). `supersede` is unchanged in code; its outcome displays as
-`replaced` (:func:`self_learn.records.supersession_display`).
+surface is named (`--covered-by <kind>:<name>`). The one-release
+`graduate` alias was removed on 2026-10-24. Historical `canon` retirements
+remain readable. `supersede` displays as `replaced`
+(:func:`self_learn.records.supersession_display`).
 
 Function layer only — T8 wires these into the CLI. Public signatures:
 
@@ -18,7 +17,6 @@ Function layer only — T8 wires these into the CLI. Public signatures:
     reject(home, record_id, *, note=None, no_push=False) -> VerbResult
     defer(home, record_id, *, until=None, note=None, no_push=False) -> VerbResult
     retire(home, record_id, *, covered_by, note=None, no_push=False) -> VerbResult
-    graduate(home, record_id, *, covered_by=None, note=None, no_push=False) -> VerbResult
     supersede(home, old_id, new_id, *, note=None, no_push=False) -> VerbResult
     rehome(home, record_id, *, to, note=None, no_push=False) -> VerbResult
     rescope(home, record_id, *, to, note=None, no_push=False) -> VerbResult
@@ -9541,7 +9539,7 @@ def _preflight_retire(
     by: str | None,
     reconsider_case: str | None,
 ) -> tuple[Path, Record, list[str]]:
-    """S-71 §6: `retire`'s and `graduate`'s checks before any lock — moved here
+    """S-71 §6: `retire`'s checks before any lock — moved here
     verbatim so the verb and `batch.dry_run` run the SAME checks, in the
     same order."""
     path = find_record_path(home, record_id)  # pending OR resolved
@@ -9575,15 +9573,9 @@ def _retire_impl(
     reconsider_case: str | None = None,
     execution: execution_evidence.ExecutionRef | None = None,
 ) -> VerbResult:
-    """Shared mechanics for :func:`retire` and the pre-rename-shaped leg
-    of :func:`graduate` (S-67 — one operation on one record;
-    `batch.classify`/`_dispatch` treat both verb names identically).
-    *verb_word* (``"retire"`` or ``"graduate"``) names the commit
-    subject, the `VerbResult.action`, and `require_status`'s refusal
-    message — the two entry points differ ONLY in *superseded_by* (a
-    `covered_by:` surface vs the legacy ``"canon"``) and *verb_word*;
-    everything below is byte-identical to what ``graduate`` alone used
-    to do (02 §2/§4). Works on a routed record (the hand-weave) or a
+    """Mechanics for :func:`retire` (02 §2/§4). The covering surface
+    becomes `superseded_by`; `verb_word` supplies the commit subject,
+    result action and refusal wording. Works on a routed record or a
     pending already-canon one (the bulk-acknowledge door). A ROUTED
     record's host presence is cleaned in the same motion — its
     managed-section entry drops (or its hook script is removed, M3-4)
