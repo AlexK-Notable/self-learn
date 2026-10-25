@@ -178,6 +178,9 @@ class Ref:
     cwd: str | None
     role: str
     subagent_file: str | None = None
+    # A read's selected copy, never serialized into ledger evidence. Equality
+    # still describes the public pointer, not this machine's filesystem.
+    _path: Path | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.role not in ROLES:
@@ -478,6 +481,7 @@ def _ref_at(
         cwd=cwd if isinstance(cwd, str) else None,
         role=_role(e, subagent_file is not None, roots, sent),
         subagent_file=subagent_file,
+        _path=path,
     )
 
 
@@ -573,11 +577,14 @@ def follow(ref: Ref, *, quote: str | None = None, roots: Sequence[Path | str] | 
     UUID remains authoritative (as in resolve). Without one, only a matching
     quote permits an old-count fallback. No match means newline numbering.
     """
-    path = locate(ref, roots=roots, quote=quote)
+    path = _locate(ref, roots=roots, quote=quote, relocate=True)
     lines = _lines(path)
     line = _uuid_line(lines, ref.uuid, ref.line) if ref.uuid else None
     line = line if line is not None else _follow_line(lines, ref.line, quote)
-    if line == ref.line:
+    entry = _entry(lines[line - 1]) if 1 <= line <= len(lines) else None
+    if line == ref.line and ref._path == path and entry is not None and entry.get("uuid") == ref.uuid:
+        # Already resolved in this read. Keep its caller-supplied provenance
+        # classification instead of sweeping the transcript roots again.
         return ref
     return _ref_at(path, line, session=ref.session, subagent_file=ref.subagent_file, roots=_roots(roots))
 
@@ -588,7 +595,15 @@ def locate(ref: Ref, *, roots: Sequence[Path | str] | None = None, quote: str | 
     ``ref.line``, ranked as :func:`resolve` ranks: the entry at that line
     carries ``ref.uuid`` > more lines > larger file > earlier root. A
     shorter stub copy in an earlier root therefore never wins, with or
-    without a uuid."""
+    without a uuid. A previously selected copy stays selected; a supplied
+    uuid must exist, and the numbered row must be in bounds. Use ``follow``
+    to relocate a historical pointer before indexing its row."""
+    return _locate(ref, roots=roots, quote=quote)
+
+
+def _locate(ref: Ref, *, roots: Sequence[Path | str] | None = None,
+            quote: str | None = None, relocate: bool = False) -> Path:
+    """Keep a read's chosen copy; only follow may relocate a row past EOF."""
     rs = _roots(roots)
     rel = Path(ref.project_dir) / (
         Path(ref.session) / ref.subagent_file if ref.subagent_file else f"{ref.session}.jsonl"
@@ -596,10 +611,16 @@ def locate(ref: Ref, *, roots: Sequence[Path | str] | None = None, quote: str | 
     best: tuple[tuple, Path] | None = None
     for ri, root in enumerate(rs):
         p = root / rel
+        if ref._path is not None and p != ref._path:
+            continue
         if not p.is_file():
             continue
         lines = _lines(p)
         at = _uuid_line(lines, ref.uuid, ref.line) if ref.uuid else None
+        if ref.uuid is not None and at is None:
+            continue
+        if not relocate and not 1 <= ref.line <= len(lines):
+            continue
         selected = at if at is not None else _follow_line(lines, ref.line, quote)
         if not 1 <= selected <= len(lines):
             continue
@@ -724,6 +745,7 @@ def check_quote(
     nearby_lines: int = NEARBY_LINES,
     other_session_cap: int = OTHER_SESSION_CAP,
     sent: provenance.SentIndex | None = None,
+    stored: bool = True,
 ) -> Verdict:
     """Where is ``quote`` relative to ``ref``? Tried in :data:`VERDICTS`
     order: ``exact`` (verbatim substring of the ref's entry text),
@@ -742,9 +764,12 @@ def check_quote(
     the user's typo matched only a later session's listing of the
     pending queue). Within the ref's own file every role counts. ``sent``
     is the caller's sends for the roles of the refs it returns (swept from
-    ``roots`` when omitted)."""
+    ``roots`` when omitted). ``stored=False`` checks a fresh LF-numbered
+    pointer without historical following: a quote on another row is moved,
+    never exact on the cited row."""
     rs = _roots(roots)
-    ref = follow(ref, quote=quote, roots=rs)
+    if stored:
+        ref = follow(ref, quote=quote, roots=rs)
     path = locate(ref, roots=rs)
     lines = _lines(path)
     e = _entry(lines[ref.line - 1])

@@ -18,13 +18,13 @@ def split(text: str, *, complete: bool = False) -> list[str]:
     return rows
 
 
-def iter_file(path: Path, *, end: int | None = None) -> Iterator[str]:
+def iter_file(path: Path, *, end: int | None = None, errors: str = "strict") -> Iterator[str]:
     """Stream LF-delimited rows through the same splitter, with a read bound."""
     with path.open("rb") as stream:
         for number, raw in enumerate(stream, 1):
             if end is not None and number > end:
                 break
-            yield split(raw.decode("utf-8"))[0]
+            yield split(raw.decode("utf-8", errors=errors))[0]
 
 
 def legacy_line(rows: Sequence[str], number: int) -> int | None:

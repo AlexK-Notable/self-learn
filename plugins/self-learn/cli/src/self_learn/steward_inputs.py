@@ -489,10 +489,16 @@ class _Item:
     omitted: str = ""
 
 
+def _stored_quote(item: dict) -> str | None:
+    quote = item.get("quote")
+    if not isinstance(quote, str) or not quote.strip():
+        quote = item.get("verbatim")
+    return quote if isinstance(quote, str) else None
+
+
 def _cited_ref(item: dict, roots: Sequence[Path]) -> tuple[str, refs.Ref | None, str]:
     """``(what the record cites, the resolved ref or None, verdict if not resolvable)``."""
-    quote = item.get("quote", item.get("verbatim"))
-    quote = quote if isinstance(quote, str) else None
+    quote = _stored_quote(item)
     raw = item.get("ref")
     if isinstance(raw, dict):
         try:
@@ -522,7 +528,7 @@ def _cited_ref(item: dict, roots: Sequence[Path]) -> tuple[str, refs.Ref | None,
 
 
 def _check(item: dict, ref: refs.Ref, roots: Sequence[Path]) -> tuple[str, refs.Ref, str]:
-    quote = item.get("quote")
+    quote = _stored_quote(item)
     if not isinstance(quote, str) or not quote.strip():
         return NO_QUOTE, ref, ""
     try:
@@ -548,7 +554,7 @@ def evidence_pack(
     left = budget
     for n, raw in enumerate((e for e in record.evidence if isinstance(e, dict)), start=1):
         cited, ref, failed = _cited_ref(raw, roots)
-        quote = raw.get("quote") if isinstance(raw.get("quote"), str) else None
+        quote = _stored_quote(raw)
         if ref is None:
             verdict = failed.split(":", 1)[0]
             detail = failed.split(":", 1)[1] if ":" in failed else ""
@@ -678,9 +684,9 @@ def fire_pack(events: list[dict], *, roots: Sequence[Path], budget: int) -> tupl
             lines.append("    the pointer is not a transcript line; nothing here checks it")
             continue
         try:
-            quote = event.get("quote")
+            moment = event.get("moment")
             ref = _resolve_origin(m.group(1), int(m.group(2)), roots,
-                                  quote=quote if isinstance(quote, str) else None)
+                                  uuid=moment if isinstance(moment, str) else None)
         except (refs.RefError, OSError, ValueError) as exc:
             lines.append(f"    the cited transcript could not be read: {_one_line(exc)}")
             continue

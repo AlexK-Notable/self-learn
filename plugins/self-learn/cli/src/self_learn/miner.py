@@ -522,8 +522,7 @@ def _first_user_text(path: Path) -> str:
     is skipped (:func:`_first_user_text_of`). A file that cannot be
     opened or read raises :class:`OSError`; what that means is the caller's to
     say (bytes that are not UTF-8 are read as replacement characters instead)."""
-    with path.open(encoding="utf-8", errors="replace") as fh:
-        return _first_user_text_of(fh)
+    return _first_user_text_of(transcript_lines.iter_file(path, errors="replace"))
 
 
 #: The cursor file's record of which header list its tracked sessions were
@@ -749,16 +748,24 @@ def _settle_waiting_cursors(answers: Iterable["mining_waiting.Answer"]) -> int:
                 continue
         except OSError:
             continue
-        rows = _complete_lines(Path(path))
-        if rows is None:
-            continue
-        new = _newline_cursor(entry, rows)
         current = cursors.get(path, {})
-        have = _newline_cursor(current, rows).get("lines") if isinstance(current, dict) else None
+        if not isinstance(current, dict):
+            current = {}
+        if (entry.get("line_format") == transcript_lines.FORMAT
+                and (not current or current.get("line_format") == transcript_lines.FORMAT)):
+            new, have = dict(entry), current.get("lines")
+        else:
+            rows = _complete_lines(Path(path))
+            if rows is None:
+                continue
+            new = _newline_cursor(entry, rows)
+            have = _newline_cursor(current, rows).get("lines")
         if isinstance(have, int) and have >= new["lines"]:
             continue
         if entry.get("halt") or (isinstance(current, dict) and current.get("halt")):
             new["halt"] = True
+        else:
+            new.pop("halt", None)
         cursors[path] = new
         moved += 1
     if moved:
@@ -1376,6 +1383,73 @@ def _find_record(home: Path, rid: str) -> tuple[Record, str] | None:
     return None
 
 
+def _follow_origin(origin: str, *, quote: str | None = None, uuid: str | None = None,
+                   legacy: bool = False) -> refs.Ref | None:
+    """Resolve a stored witness, or an explicitly legacy cache position."""
+    match = re.fullmatch(r"transcript:([^#]+)#L([0-9]+)", origin)
+    if match is None:
+        return None
+    session, line = match.group(1), int(match.group(2))
+    roots = [transcripts_root()]
+    try:
+        if legacy:
+            first = refs.resolve(session, 1, roots=roots)
+            rows = refs._lines(refs.locate(first, roots=roots))
+            translated = transcript_lines.legacy_line(rows, line)
+            if translated is None:
+                return None
+            line = translated
+        return refs.resolve(session, line, uuid, quote=quote, roots=roots)
+    except (refs.RefError, OSError, ValueError):
+        return None
+
+
+def _known_mining_origins(home: Path) -> set[str]:
+    """Read-time aliases for witnessed historical evidence; never edit it.
+
+    Keep the raw-origin fallback for corrupt/unavailable records. A witnessed
+    row replaces its old number so the now-different physical row is not
+    mistaken for evidence already landed.
+    """
+    origins = existing_origins(home)
+    translated: dict[str, set[str]] = {}
+    for bucket in discover_buckets(home):
+        for sub in ("pending", "resolved"):
+            for path in (bucket.path / sub).glob("*.md"):
+                try:
+                    record = Record.from_path(path)
+                except (RecordError, OSError, UnicodeDecodeError):
+                    continue
+                for item in record.evidence:
+                    origin = item.get("origin")
+                    if not isinstance(origin, str) or not origin.startswith("transcript:"):
+                        continue
+                    raw = item.get("ref")
+                    uid = raw.get("uuid") if isinstance(raw, dict) else item.get("uuid")
+                    quote = item.get("quote")
+                    found = _follow_origin(origin, quote=quote if isinstance(quote, str) else None,
+                                           uuid=uid if isinstance(uid, str) else None)
+                    translated.setdefault(origin, set()).add(found.origin if found else origin)
+    for old, followed in translated.items():
+        origins.discard(old)
+        origins.update(followed)
+    return origins
+
+
+def _sighting_key(origin: str, *, legacy: bool = False) -> str:
+    # Mark newly written keys even when the transcript is unavailable: a later
+    # read must never reinterpret a new LF count as an old splitlines count.
+    prefix = f"{transcript_lines.FORMAT}:"
+    if origin.startswith(prefix):
+        return _sighting_key(origin[len(prefix):])
+    if not origin.startswith("transcript:"):
+        return origin
+    found = _follow_origin(origin, legacy=legacy)
+    if found is None:
+        return origin if legacy else f"{transcript_lines.FORMAT}:{origin}"
+    return f"uuid:{found.uuid}" if found.uuid else f"{transcript_lines.FORMAT}:{found.origin}"
+
+
 def _rejected_counter_bump(rid: str, origin: str) -> int:
     """Q4 resurfacing counter (cache-side). Returns fresh-sighting count;
     -1 once the resurfaced candidate has already landed."""
@@ -1387,8 +1461,9 @@ def _rejected_counter_bump(rid: str, origin: str) -> int:
     entry = data.get(rid)
     if entry == "landed":
         return -1
-    sightings = set(entry or [])
-    sightings.add(origin)
+    sightings = {_sighting_key(old, legacy=True) for old in (entry or [])}
+    if origin not in sightings:
+        sightings.add(_sighting_key(origin))
     data[rid] = sorted(sightings)
     fsops.atomic_write(path, json.dumps(data, indent=0, sort_keys=True))  # whole or not at all
     return len(sightings)
@@ -1791,7 +1866,7 @@ def _reconcile_and_land(
     the function stays callable from a test without it."""
     cwds = cwds or {}
     digested = digested or {}
-    origins = existing_origins(home)
+    origins = _known_mining_origins(home)
     seen_events, violated_fires = _event_seen(home)
     candidates = parsed.get("candidates") or []
     if not isinstance(candidates, list):

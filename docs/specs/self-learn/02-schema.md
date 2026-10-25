@@ -2027,6 +2027,21 @@ numbering (an absent row remains unresolvable). Excerpts, entry text and quote
 checks follow stored structured refs by UUID too. `role_of` classifies the
 selected entry; it does not itself accept or resolve citations.
 
+The selected transcript copy travels with the resolved row during a read,
+including the steward pack's check and excerpt. This file path is transient;
+it is not part of the serialized ref. Following fills the selected row's UUID
+even when its line number stays unchanged. A supplied UUID absent from the
+available copies is unresolvable: entry text, excerpts and quote checks never
+substitute a line or quote match for it. `locate` requires the numbered row to
+exist; `follow` relocates historical refs first, including those past EOF.
+
+Fresh model pointers from the session engine's LF-numbered spine do not use
+the old-count fallback (`check_quote(stored=False)`). A quote found on another
+row is a moved quote, subject to the speaker and judged-range checks. It can
+never be recorded as `exact` on the originally cited row. Steward evidence
+uses `verbatim` when `quote` is null or blank; fire packs follow the event's
+`moment` UUID, since fire events do not carry a quote.
+
 **Transcript roots.** Registry setting `refs.transcript_roots`
 (`SELF_LEARN_TRANSCRIPT_ROOTS`, `config.yaml` `refs.transcript_roots`),
 `os.pathsep`-separated, each entry `~`-expanded at run time. Default: the

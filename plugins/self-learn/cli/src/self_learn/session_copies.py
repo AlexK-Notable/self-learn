@@ -44,7 +44,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from . import settings, worker
+from . import settings, transcript_lines, worker
 
 __all__ = [
     "SETTING",
@@ -129,28 +129,27 @@ def _counts(path: Path) -> tuple[dict[str, int], dict[str, int]]:
     ``type``. A line that does not parse counts under ``unparsed``."""
     entries: Counter[str] = Counter()
     blocks: Counter[str] = Counter()
-    with path.open("r", encoding="utf-8", errors="replace") as fh:
-        for raw in fh:
-            if not raw.strip():
-                continue
-            try:
-                entry = json.loads(raw)
-            except ValueError:
-                entries["unparsed"] += 1
-                continue
-            if not isinstance(entry, dict):
-                entries["unparsed"] += 1
-                continue
-            kind = entry.get("type")
-            entries[kind if isinstance(kind, str) else "untyped"] += 1
-            if kind != "assistant":
-                continue
-            message = entry.get("message")
-            content = message.get("content") if isinstance(message, dict) else None
-            if isinstance(content, list):
-                for block in content:
-                    block_type = block.get("type") if isinstance(block, dict) else None
-                    blocks[block_type if isinstance(block_type, str) else "untyped"] += 1
+    for raw in transcript_lines.iter_file(path, errors="replace"):
+        if not raw.strip():
+            continue
+        try:
+            entry = json.loads(raw)
+        except ValueError:
+            entries["unparsed"] += 1
+            continue
+        if not isinstance(entry, dict):
+            entries["unparsed"] += 1
+            continue
+        kind = entry.get("type")
+        entries[kind if isinstance(kind, str) else "untyped"] += 1
+        if kind != "assistant":
+            continue
+        message = entry.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            for block in content:
+                block_type = block.get("type") if isinstance(block, dict) else None
+                blocks[block_type if isinstance(block_type, str) else "untyped"] += 1
     return dict(sorted(entries.items())), dict(sorted(blocks.items()))
 
 
