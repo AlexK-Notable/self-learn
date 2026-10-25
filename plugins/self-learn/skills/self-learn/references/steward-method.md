@@ -52,8 +52,7 @@ speaking (`agent` is another agent's text typed into the session as if the
 user typed it: a brief handed over by an orchestrating session, or a
 suggested prompt the user accepted), and an assistant's prediction is not
 an outcome. A statement’s `transcript:` ref must point to a line whose evidence
-role is `user`. Exception: a matched `AskUserQuestion` tool result may supply only
-words typed in an Other answer or added note, never clicked option text. Two items marked as the same
+role is `user`. Exception: a matched interactive `AskUserQuestion` tool result may supply human-provided Other/text/number answers, freeform responses or added notes, never clicked option text, SDK/model answers or agent-written text. Two items marked as the same
 transcript moment are one sighting, not two.
 
 **Reading the closest lessons.** They are the lessons nearest in words (and

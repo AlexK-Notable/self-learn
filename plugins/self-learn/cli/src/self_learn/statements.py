@@ -21,7 +21,7 @@ import re
 import uuid
 from pathlib import Path
 
-from . import gitops, intents, refs, sentinel
+from . import gitops, intents, provenance, refs, sentinel
 from .primitives import chrono, fsops
 from .scan import attach_hits, format_refusal
 from .scan import scan as secret_scan
@@ -96,6 +96,8 @@ def _free_answer(answer: str, question: dict) -> str:
     field. For overlapping labels, keep only the suffix left by every
     possible parsing of the selected-label prefixes.
     """
+    if question.get("kind") in ("text", "number"):
+        return answer
     options = question.get("options")
     if not isinstance(options, list) or not options:
         return ""
@@ -123,69 +125,152 @@ def _free_answer(answer: str, question: dict) -> str:
     return answer
 
 
-def _typed_answer_contains(evidence: refs.Ref, verbatim: str, roots: list[Path]) -> bool:
-    """Only a linked AskUserQuestion's answer/notes can supply typed words.
+def _question_signature(questions: object) -> list[tuple[str, tuple[str, ...]]] | None:
+    """Compare question text and labels; UI-only fields may be dropped/added."""
+    if not isinstance(questions, list):
+        return None
+    out = []
+    for question in questions:
+        if not isinstance(question, dict) or not isinstance(question.get("question"), str):
+            return None
+        options = question.get("options", [])
+        if not isinstance(options, list) or any(
+            not isinstance(o, dict) or not isinstance(o.get("label"), str) for o in options
+        ):
+            return None
+        out.append((question["question"], tuple(o["label"] for o in options)))
+    return out
 
-    Stream the selected file up to the pointed-at physical row; never infer
-    authorship from the human-readable tool-result wrapper or preview text.
+
+def _typed_answer_contains(
+    evidence: refs.Ref, verbatim: str, roots: list[Path], *,
+    lines: tuple[str, ...] | None = None, sent: provenance.SentIndex | None = None,
+) -> bool:
+    """Only human answers from a linked interactive question can be quoted.
+
+    Use refs' reader, including its line splitting; strict decoding refuses
+    damaged files instead of attributing replacement-decoded text to a person.
     """
+    if lines is None:
+        lines = refs._lines(refs.locate(evidence, roots=roots), strict=True)
     calls: dict[str, dict] = {}
     entry = None
-    with refs.locate(evidence, roots=roots).open(encoding="utf-8") as stream:
-        for number, raw in enumerate(stream, 1):
-            try:
-                row = json.loads(raw)
-            except ValueError:
-                row = None
-            if number == evidence.line:
-                entry = row
-                break
-            if not isinstance(row, dict) or row.get("type") != "assistant":
-                continue
-            content = row.get("message", {}).get("content")
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if (isinstance(block, dict) and block.get("type") == "tool_use"
-                        and block.get("name") == "AskUserQuestion"
-                        and isinstance(block.get("id"), str)
-                        and isinstance(block.get("input"), dict)):
-                    calls[block["id"]] = block["input"]
-    if not isinstance(entry, dict):
+    for number, raw in enumerate(lines, 1):
+        row = refs._entry(raw)
+        if row is None:
+            continue
+        if refs.is_sdk(row):
+            return False  # a marker anywhere in this session makes it SDK-driven
+        if number > evidence.line:
+            continue
+        if row.get("type") in ("assistant", "user") and not isinstance(row.get("message"), dict):
+            raise StatementUsageError("statement add: malformed transcript message (expected object)")
+        if number == evidence.line:
+            entry = row
+            continue
+        if row.get("type") != "assistant":
+            continue
+        for block in refs._blocks(row):
+            if (block.get("type") == "tool_use" and block.get("name") == "AskUserQuestion"
+                    and isinstance(block.get("id"), str) and isinstance(block.get("input"), dict)):
+                calls[block["id"]] = block["input"]
+    if entry is None:
+        raise StatementUsageError("statement add: corrupt target row")
+    if entry.get("promptSource") == "system":
         return False
-    content = entry.get("message", {}).get("content")
     result = entry.get("toolUseResult")
-    if not isinstance(content, list) or not isinstance(result, dict):
+    if not isinstance(result, dict) or "afkTimeoutMs" in result:
         return False
     answers = result.get("answers")
-    if not isinstance(answers, dict):
-        return False
+    answers = answers if isinstance(answers, dict) else {}
     quote = " ".join(verbatim.split())
-    for block in content:
-        if (not isinstance(block, dict) or block.get("type") != "tool_result"
-                or block.get("is_error") or not isinstance(block.get("tool_use_id"), str)):
+    for block in refs._blocks(entry):
+        if (block.get("type") != "tool_result" or block.get("is_error")
+                or not isinstance(block.get("tool_use_id"), str)):
             continue
         call = calls.get(block["tool_use_id"])
-        if call is None:
+        if call is None or "answers" in call or "annotations" in call:
             continue
         questions = call.get("questions")
-        if not isinstance(questions, list) or result.get("questions") != questions:
+        signature = _question_signature(questions)
+        if (not isinstance(questions, list) or signature is None
+                or _question_signature(result.get("questions")) != signature):
             continue
+        typed = []
+        if isinstance(result.get("response"), str):
+            typed.append(result["response"])
         for question in questions:
-            if not isinstance(question, dict) or not isinstance(question.get("question"), str):
-                continue
             key = question["question"]
             answer = answers.get(key)
-            if not isinstance(answer, str):
-                continue
-            typed = [_free_answer(answer, question)]
+            if isinstance(answer, str):
+                typed.append(_free_answer(answer, question))
             annotations = result.get("annotations")
             annotation = annotations.get(key) if isinstance(annotations, dict) else None
             if isinstance(annotation, dict) and isinstance(annotation.get("notes"), str):
                 typed.append(annotation["notes"])
-            if quote and any(quote in " ".join(text.split()) for text in typed):
-                return True
+        sender_entry = {**entry, "sessionId": entry.get("sessionId") or evidence.session}
+        for text in typed:
+            if quote and quote in " ".join(text.split()):
+                if sent is None:
+                    sent = refs.sent_index(roots)
+                if not provenance.agent_written(sender_entry, text, sent):
+                    return True
     return False
+
+
+def _transcript_problem(error: Exception) -> StatementUsageError:
+    if isinstance(error, UnicodeError):
+        cause = "invalid UTF-8"
+    elif isinstance(error, PermissionError):
+        cause = "permission denied reading transcript"
+    elif isinstance(error, (FileNotFoundError, refs.RefError)):
+        cause = "transcript disappeared or became unavailable between reads"
+    else:
+        cause = f"transcript read failed ({type(error).__name__})"
+    return StatementUsageError(f"statement add: {cause}")
+
+
+def _check_evidence(
+    home: Path, message_ref: str, verbatim: str, *, sent: provenance.SentIndex | None = None,
+) -> None:
+    """Stateless transcript validation, outside the ledger commit lock."""
+    if not message_ref.startswith("transcript:"):
+        return
+    session, number = message_ref[len("transcript:"):].rsplit("#L", 1)
+    roots = refs.transcript_roots(home)
+    try:
+        evidence = refs.resolve(session, line=int(number), roots=roots, sent=sent)
+    except refs.CorruptRefError as error:
+        raise StatementUsageError("statement add: corrupt target row") from error
+    except refs.RefError:
+        return  # absent session / line out of range remain compatible
+    except (OSError, UnicodeError) as error:
+        raise _transcript_problem(error) from error
+    try:
+        lines = refs._lines(refs.locate(evidence, roots=roots), strict=True)
+        if not 1 <= evidence.line <= len(lines):
+            raise StatementUsageError("statement add: transcript row disappeared between reads")
+        target = refs._entry(lines[evidence.line - 1])
+        if target is None:
+            raise StatementUsageError("statement add: corrupt target row")
+        if target.get("type") in ("user", "assistant") and not isinstance(target.get("message"), dict):
+            raise StatementUsageError("statement add: malformed transcript message (expected object)")
+        if evidence.role in ("user", "tool_result") and refs.role_of(target) != evidence.role:
+            raise StatementUsageError("statement add: transcript row changed between reads")
+        if evidence.role == "user":
+            return
+        if evidence.role == "tool_result" and _typed_answer_contains(
+            evidence, verbatim, roots, lines=lines, sent=sent
+        ):
+            return
+    except (refs.RefError, OSError, UnicodeError) as error:
+        raise _transcript_problem(error) from error
+    raise StatementUsageError(
+        "statement add: transcript evidence role must be user, "
+        f"found {evidence.role}"
+        + ("; quoted words were not typed by the user in a matched AskUserQuestion answer"
+           if evidence.role == "tool_result" else "")
+    )
 
 
 def add(
@@ -248,6 +333,23 @@ def add(
     if hits:
         raise attach_hits(StatementError(format_refusal(hits)), hits)
 
+    # A duplicate is a read: skip transcript I/O only after a locked recheck.
+    # The optimistic lookup saves this extra lock span for ordinary new writes.
+    if any(row.get("source", {}).get("message_ref") == message_ref
+           and row.get("verbatim") == verbatim for row in _read_lines(home)):
+        with intents.ledger_write(home) as recovered:
+            intents.announce_recovered(recovered)
+            for row in _read_lines(home):
+                if (row.get("source", {}).get("message_ref") == message_ref
+                        and row.get("verbatim") == verbatim):
+                    return row["id"]
+    evidence_error = None
+    try:
+        _check_evidence(home, message_ref, verbatim)
+    except StatementUsageError as error:
+        # A concurrent writer may have recorded the same pair; dedupe wins.
+        evidence_error = error
+
     # Astra 4/10 (item 6): the dedupe check, the amends-existence check,
     # and id allocation are all state-dependent — they must read the
     # store AFTER the lock is held, not before, or a peer's write landing
@@ -272,28 +374,9 @@ def add(
                     f"statement add: amends references unknown statement {amends}"
                 )
 
-            # Only new writes are checked: dedupe/recovery must remain reads.
-            if message_ref.startswith("transcript:"):
-                session, line_number = message_ref[len("transcript:"):].rsplit("#L", 1)
-                roots = refs.transcript_roots(home)
-                try:
-                    evidence = refs.resolve(
-                        session, line=int(line_number), roots=roots
-                    )
-                except refs.RefError:
-                    # Old session files disappear; preserve recording from them.
-                    pass
-                else:
-                    if evidence.role != "user" and not (
-                        evidence.role == "tool_result"
-                        and _typed_answer_contains(evidence, verbatim, roots)
-                    ):
-                        raise StatementUsageError(
-                            "statement add: transcript evidence role must be user, "
-                            f"found {evidence.role}"
-                            + ("; quoted words were not typed by the user in a matched "
-                               "AskUserQuestion answer" if evidence.role == "tool_result" else "")
-                        )
+            # Only a new write enforces the precomputed evidence verdict.
+            if evidence_error is not None:
+                raise evidence_error
 
             stmt_id = _new_stmt_id(existing)
             row = {

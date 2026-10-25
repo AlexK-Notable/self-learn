@@ -264,5 +264,253 @@ def test_question_non_typed_words_are_refused_after_typed_control(tmp_path, kind
 def test_typed_question_exception_is_in_steward_contract():
     contract = steward_prompt._render_output_contract()
     assert "statements.yaml --" in contract
-    assert ("Exception: a matched `AskUserQuestion` tool result may supply only words typed "
-            "in an Other answer or added note, never clicked option text.") in contract
+    assert 'Exception: a matched interactive `AskUserQuestion` tool result may supply human-provided Other/text/number answers, freeform responses or added notes, never clicked option text, SDK/model answers or agent-written text.' in contract
+
+
+@pytest.mark.parametrize("kind", [
+    "sdk-result", "sdk-session", "sdk-later", "sdk-prompt-result", "sdk-prompt-session",
+    "model-answers", "model-annotations", "agent-answer", "agent-note", "agent-response",
+    "suggestion", "herdr-answer", "herdr-note", "system-result", "afk",
+])
+def test_question_author_must_be_human_after_positive_control(tmp_path, kind):
+    home = make_home(tmp_path)
+    path, rows, question = question_exchange(home, tmp_path)
+    rows[2].update(sessionId="synthetic-stmt", timestamp="2026-10-24T12:00:01Z")
+    write_question_exchange(path, rows)
+    control = add(home, "transcript:synthetic-stmt#L3", "Keep typed words.")
+    assert statements.list_statements(home)[-1]["id"] == control
+    quote = "New typed words."
+    result = rows[2]["toolUseResult"]
+    result["answers"][question["question"]] = quote
+    if kind == "sdk-result":
+        rows[2]["entrypoint"] = "sdk-py"
+    elif kind == "sdk-session":
+        rows[0]["entrypoint"] = "sdk-cli"
+    elif kind == "sdk-later":
+        rows.append({"type": "system", "entrypoint": "sdk-py"})
+    elif kind == "sdk-prompt-result":
+        rows[2]["promptSource"] = "sdk"
+    elif kind == "sdk-prompt-session":
+        rows[0]["promptSource"] = "sdk"
+    elif kind in ("model-answers", "model-annotations"):
+        key = kind.removeprefix("model-")
+        rows[1]["message"]["content"][0]["input"][key] = result[key]
+    elif kind.startswith("agent-"):
+        tagged = f"<agent-message>{quote}</agent-message>"
+        if kind == "agent-answer":
+            result["answers"][question["question"]] = tagged
+        elif kind == "agent-note":
+            result["answers"][question["question"]] = "Short route"
+            result["annotations"][question["question"]] = {"notes": tagged}
+        else:
+            result["answers"] = {}
+            result["response"] = tagged
+    elif kind == "suggestion":
+        rows[2]["promptSource"] = "suggestion_accepted"
+    elif kind.startswith("herdr-"):
+        if kind == "herdr-note":
+            result["answers"][question["question"]] = "Short route"
+            result["annotations"][question["question"]] = {"notes": quote}
+        sender = {"type": "assistant", "sessionId": "sender", "timestamp": "2026-10-24T12:00:00Z",
+                  "message": {"content": [{"type": "tool_use", "id": "send", "name": "Bash",
+                      "input": {"command": f'herdr pane send-text pane "{quote}"'}}]}}
+        (path.parent / "sender.jsonl").write_text(json.dumps(sender) + "\n")
+    elif kind == "system-result":
+        rows[2]["promptSource"] = "system"
+    else:
+        result["afkTimeoutMs"] = 1000
+    write_question_exchange(path, rows)
+    before = (home / "user-statements.jsonl").read_bytes()
+    with pytest.raises(statements.StatementUsageError, match="found tool_result.*not typed by the user"):
+        add(home, "transcript:synthetic-stmt#L3", quote)
+    assert (home / "user-statements.jsonl").read_bytes() == before
+
+
+@pytest.mark.parametrize("kind", ["overlap-min", "join-free-note"])
+def test_question_gate_surviving_mutants_are_killed(tmp_path, kind):
+    home = make_home(tmp_path)
+    path, rows, question = question_exchange(home, tmp_path)
+    result = rows[2]["toolUseResult"]
+    if kind == "overlap-min":
+        question["multiSelect"] = True
+        question["options"] = [{"label": "A"}, {"label": "A, B"}]
+        result["answers"][question["question"]] = "A, B, typed"
+        accepted_quote, refused_quote = "typed", "B, typed"
+    else:
+        result["answers"][question["question"]] = "Typed answer"
+        result["annotations"][question["question"]] = {"notes": "Typed note"}
+        accepted_quote, refused_quote = "Typed answer", "answer Typed note"
+    write_question_exchange(path, rows)
+    control = add(home, "transcript:synthetic-stmt#L3", accepted_quote)
+    assert statements.list_statements(home)[-1]["id"] == control
+    with pytest.raises(statements.StatementUsageError, match="not typed by the user"):
+        add(home, "transcript:synthetic-stmt#L3", refused_quote)
+
+
+@pytest.mark.parametrize("kind", [
+    "permission-user", "permission-result", "utf8-user", "utf8-result", "null-before",
+    "null-target", "vanish-locate", "vanish-read", "corrupt-json", "corrupt-scalar", "changed-role",
+])
+def test_transcript_damage_is_a_named_refusal_after_positive_control(tmp_path, monkeypatch, kind):
+    home = make_home(tmp_path)
+    path, rows, question = question_exchange(home, tmp_path)
+    write_question_exchange(path, rows)
+    control = add(home, "transcript:synthetic-stmt#L3", "Keep typed words.")
+    assert statements.list_statements(home)[-1]["id"] == control
+    rows[2]["toolUseResult"]["answers"][question["question"]] = "New typed words."
+    write_question_exchange(path, rows)
+    line = 1 if kind.endswith("user") or kind == "changed-role" else 3
+    cause = ""
+    if kind.startswith("permission"):
+        statements._check_evidence(home, f"transcript:synthetic-stmt#L{line}", "New typed words.")
+        path.chmod(0)
+        cause = "permission denied"
+    elif kind.startswith("utf8"):
+        path.write_bytes(path.read_bytes() + b'\xff\n')
+        cause = "invalid UTF-8"
+    elif kind == "null-before":
+        rows[1:1] = [{"type": "assistant", "message": None}]
+        write_question_exchange(path, rows)
+        line, cause = 4, "malformed transcript message"
+    elif kind == "null-target":
+        rows[2]["message"] = None
+        write_question_exchange(path, rows)
+        cause = "malformed transcript message"
+    elif kind in ("vanish-locate", "vanish-read", "changed-role"):
+        resolve = refs.resolve
+        def after_resolve(*args, **kwargs):
+            ref = resolve(*args, **kwargs)
+            if kind == "changed-role":
+                rows[line - 1] = {"type": "assistant", "message": {"content": "Changed."}}
+                write_question_exchange(path, rows)
+            elif kind == "vanish-locate":
+                path.unlink()
+            return ref
+        monkeypatch.setattr(refs, "resolve", after_resolve)
+        if kind == "vanish-read":
+            locate = refs.locate
+            def after_locate(*args, **kwargs):
+                found = locate(*args, **kwargs)
+                found.unlink()
+                return found
+            monkeypatch.setattr(refs, "locate", after_locate)
+        cause = "changed between reads" if kind == "changed-role" else "disappeared"
+    else:
+        lines = path.read_text().splitlines()
+        lines[2] = "{broken" if kind == "corrupt-json" else "null"
+        path.write_text("\n".join(lines) + "\n")
+        cause = "corrupt target row"
+    before = (home / "user-statements.jsonl").read_bytes()
+    try:
+        with pytest.raises(statements.StatementUsageError, match=cause):
+            add(home, f"transcript:synthetic-stmt#L{line}", "New typed words.")
+        assert (home / "user-statements.jsonl").read_bytes() == before
+    finally:
+        if path.exists():
+            path.chmod(0o600)
+
+
+@pytest.mark.parametrize("kind", ["note-no-answer", "text", "number", "response", "preview-dropped", "kind-added"])
+def test_supported_human_question_shapes_are_accepted(tmp_path, kind):
+    home = make_home(tmp_path)
+    path, rows, question = question_exchange(home, tmp_path)
+    write_question_exchange(path, rows)
+    control = add(home, "transcript:synthetic-stmt#L3", "Keep typed words.")
+    assert statements.list_statements(home)[-1]["id"] == control
+    result = rows[2]["toolUseResult"]
+    quote = "New typed words."
+    if kind == "note-no-answer":
+        result["answers"][question["question"]] = None
+        result["annotations"][question["question"]] = {"notes": quote}
+    elif kind in ("text", "number"):
+        question["kind"] = kind
+        question["options"] = []
+        if kind == "number":
+            question.update(min=0, max=100)
+            quote = "42"
+        result["answers"][question["question"]] = quote
+    elif kind == "response":
+        result["answers"] = {}
+        result["response"] = quote
+    else:
+        result["answers"][question["question"]] = quote
+        result["questions"] = json.loads(json.dumps(result["questions"]))
+        if kind == "preview-dropped":
+            question["options"][0]["preview"] = "A model-generated preview."
+        else:
+            result["questions"][0]["kind"] = "choice"
+    write_question_exchange(path, rows)
+    sid = add(home, "transcript:synthetic-stmt#L3", quote)
+    assert statements.list_statements(home)[-1]["id"] == sid
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\r"], ids=["unicode", "carriage-return"])
+def test_question_reader_uses_refs_line_boundaries(tmp_path, separator):
+    home = make_home(tmp_path)
+    path, rows, question = question_exchange(home, tmp_path)
+    write_question_exchange(path, rows)
+    assert add(home, "transcript:synthetic-stmt#L3", "Keep typed words.")
+    # The Unicode separator is a line boundary in this branch's refs reader;
+    # after the lineno merge refs will keep it inside the JSON string.
+    rows[0]["message"]["content"] = "Before" + separator + "after"
+    rows[2]["toolUseResult"]["answers"][question["question"]] = "New typed words."
+    read_row = {"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "read", "content": "New typed words."}]},
+        "toolUseResult": {"type": "text"}}
+    rows.insert(2 if separator == "\u2028" else 3, read_row)
+    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows).replace("\\r", "\r"))
+    # Ask refs which row holds each result rather than implementing line splitting.
+    logical = refs._lines(path)
+    result_line = next(i for i, raw in enumerate(logical, 1) if '"type": "text"' in raw)
+    assert refs.resolve("synthetic-stmt", line=result_line, roots=[path.parent.parent]).role == "tool_result"
+    with pytest.raises(statements.StatementUsageError, match="not typed by the user"):
+        add(home, f"transcript:synthetic-stmt#L{result_line}", "New typed words.")
+
+
+def test_statement_evidence_resolution_runs_without_commit_lock(tmp_path, monkeypatch):
+    from self_learn import gitops
+    home = make_home(tmp_path)
+    transcript(home, tmp_path)
+    resolve = refs.resolve
+    seen = []
+    def outside_lock(*args, **kwargs):
+        assert str(gitops.commit_lock_path(home)) not in gitops._held_locks
+        seen.append(True)
+        return resolve(*args, **kwargs)
+    monkeypatch.setattr(refs, "resolve", outside_lock)
+    sid = add(home, "transcript:synthetic-stmt#L1")
+    assert statements.list_statements(home)[-1]["id"] == sid
+    assert seen == [True]
+
+
+def test_concurrent_duplicate_wins_over_deferred_evidence_failure(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    transcript(home, tmp_path)
+    ref = "transcript:synthetic-stmt#L1"
+    real_check = statements._check_evidence
+    recorded = []
+    def concurrent_check(*args, **kwargs):
+        monkeypatch.setattr(statements, "_check_evidence", real_check)
+        recorded.append(add(home, ref))
+        raise statements.StatementUsageError("deferred evidence failure")
+    monkeypatch.setattr(statements, "_check_evidence", concurrent_check)
+    assert add(home, ref) == recorded[0]
+    assert [r["id"] for r in statements.list_statements(home)] == recorded
+
+
+@pytest.mark.parametrize("kind", ["question-text", "option-label"])
+def test_question_binding_requires_question_text_and_labels(tmp_path, kind):
+    home = make_home(tmp_path)
+    path, rows, question = question_exchange(home, tmp_path)
+    write_question_exchange(path, rows)
+    assert add(home, "transcript:synthetic-stmt#L3", "Keep typed words.")
+    result = rows[2]["toolUseResult"]
+    result["answers"][question["question"]] = "New typed words."
+    result["questions"] = json.loads(json.dumps(result["questions"]))
+    if kind == "question-text":
+        result["questions"][0]["question"] = "A different question?"
+    else:
+        result["questions"][0]["options"][0]["label"] = "A different option"
+    write_question_exchange(path, rows)
+    with pytest.raises(statements.StatementUsageError, match="not typed by the user"):
+        add(home, "transcript:synthetic-stmt#L3", "New typed words.")
