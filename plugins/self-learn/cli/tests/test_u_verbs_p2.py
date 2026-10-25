@@ -328,9 +328,13 @@ class TestRER7ReferenceRetirementWritesCompileRecord:
         commit_all(env2.home, "pending")
         r1 = verbs.route(env2.home, rid, dest="reference", no_push=True)
         ref_path = r1.compile_result.path
+        before_removal = ref_path.read_bytes()
+        assert rid.encode() in before_removal
 
         verbs.retire(env2.home, rid, covered_by="skill-md:canon", no_push=True)
         post_removal_bytes = ref_path.read_bytes()
+        assert post_removal_bytes != before_removal
+        assert rid.encode() not in post_removal_bytes
         post_removal_sha = hashlib.sha256(post_removal_bytes).hexdigest()
 
         compiled_dir = env2.home / "compiled"

@@ -85,8 +85,8 @@ class TestMetrics:
         assert m["pending_total"] == 2
 
     def test_routed_and_corrected_excludes_graduations(self, env):
-        # corrective supersession of a ROUTED record counts; graduation
-        # (superseded_by: canon) is a success and must NOT (04 metric).
+        # Corrective supersession of a ROUTED record counts; retirement
+        # covered elsewhere is a success and must NOT (04 metric).
         seed_record(env, "lrn-aa000001", age_days=3)
         seed_record(env, "lrn-aa000002", age_days=3)
         seed_record(env, "lrn-aa000003", age_days=3)
@@ -94,6 +94,12 @@ class TestMetrics:
         verbs.route(env.ledger, "lrn-aa000002", dest="skill-md", no_push=True)
         verbs.route(env.ledger, "lrn-aa000003", dest="skill-md", no_push=True)
         verbs.retire(env.ledger, "lrn-aa000002", covered_by="skill-md:canon", no_push=True)
+        # Positive control: a no-op retirement must not satisfy exclusion.
+        from self_learn.ledger_ops import find_record_path
+        from self_learn.records import Record
+        retired = Record.from_path(find_record_path(env.ledger, "lrn-aa000002"))
+        assert retired.status == "superseded"
+        assert retired.superseded_by == "covered_by:skill-md:canon"
         replacement = make_behavior(scope="skill:s", record_id="lrn-aa000009")
         create_record(env.ledger, replacement)
         verbs.supersede(env.ledger, "lrn-aa000001", "lrn-aa000009", no_push=True)
