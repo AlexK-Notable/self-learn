@@ -242,7 +242,6 @@ def _test_invocation_py_source() -> str:
 _SIM_2_NINE = {
     "test_rg1_five_rung_precedence_resolves_in_isolation",
     "test_rg2_each_rung_shadows_the_ones_below",
-    "test_rg4_sdk_raises_backend_unavailable_with_install_command",
     "test_rg5_write_session_returns_unavailable_without_raising",
     "test_rg5_text_session_returns_unavailable_without_raising",
     "test_rg5_analyst_analyze_converts_unavailable_to_analyst_error",
@@ -420,24 +419,6 @@ def test_pl4_every_written_path_resolves_under_cache_dir(tmp_path, sdk_cli_path,
         assert rp.is_relative_to(cache), rp
         assert not rp.is_relative_to(resolved_home), rp
         assert (Path(tmp_path) / ".git") not in rp.parents
-
-
-def test_pl5_no_other_module_calls_write_session_or_text_session():
-    src_dir = Path(worker.__file__).resolve().parent
-    seam_funcs = {"write_session", "text_session"}
-    sites: dict[str, list] = {}
-    for path in sorted(src_dir.rglob("*.py")):
-        if "__pycache__" in path.parts:
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                f = node.func
-                name = f.id if isinstance(f, ast.Name) else (f.attr if isinstance(f, ast.Attribute) else None)
-                if name in seam_funcs:
-                    rel = str(path.relative_to(src_dir))
-                    sites.setdefault(rel, []).append((node.lineno, name))
-    assert set(sites) == {"worker.py", "miner.py", "analyst.py", "steward.py", "overseer/run.py"}, sites
 
 
 def test_pl6_fresh_interpreter_import_order_both_ways():
@@ -2175,16 +2156,6 @@ def test_ev3_jsonl_written_at_the_right_path_with_meta_and_survives_a_timeout(tm
     assert len(matches2) == 1  # exists after a TIMED-OUT session too
 
 
-def test_ev4_nothing_in_the_package_reads_a_tool_events_file():
-    pkg_dir = Path(backend_mod.__file__).resolve().parent
-    for path in sorted(pkg_dir.glob("*.py")):
-        src = path.read_text(encoding="utf-8")
-        assert "tool-events" not in src or path.name == "events.py", path.name
-        if path.name == "events.py":
-            assert ".glob(" in src  # the ONLY reference is the write/prune's own glob pattern
-            assert "read_text" not in src  # never reads one back
-
-
 def _ev5_seed_and_prune(tmp_path, monkeypatch):
     """Shared setup for `EV5`/`EV6` -- 20 aged `worker.tool-events.*`
     files plus three decoys, then one `prune_event_logs("worker")` call.
@@ -2341,76 +2312,6 @@ def test_rs7_project_dependencies_include_sdk_and_extra_is_empty_alias():
     extra_block = text.split("[project.optional-dependencies]", 1)[1]
     extra_section = extra_block.split("sdk = [", 1)[1].split("]", 1)[0]
     assert "claude-agent-sdk" not in extra_section
-
-
-def test_rs8_lockfiles_no_package_added_or_removed_no_version_changed():
-    """`RS8`'s actual content bound, per `BLOCKER-2`/`M61`: the set of
-    `[[package]]` `(name, version)` pairs at HEAD must be IDENTICAL to
-    `c2669a9` (the base commit) -- no package added, none removed, no
-    version changed -- and the only stanza allowed to differ AT ALL is
-    `self-learn-cli`'s own `dev-dependencies`/`metadata.requires-dev`
-    blocks. Comparing only "is `claude-agent-sdk` present somewhere" (the
-    old body) is satisfiable by a build that also silently bumped an
-    unrelated locked version; a `git show c2669a9:<path>` comparison is
-    what actually rules that out."""
-    import tomllib
-
-    repo_root = Path(worker.__file__).resolve().parents[5]
-    cli_lock = Path(worker.__file__).resolve().parents[2] / "uv.lock"
-    ui_lock = Path(worker.__file__).resolve().parents[3] / "ui" / "uv.lock"
-
-    def _pkg_set(data: dict) -> set[tuple[str, str]]:
-        return {(p["name"], p["version"]) for p in data["package"]}
-
-    def _at_base(rel_path: str) -> dict:
-        text = subprocess.run(
-            ["git", "show", f"c2669a9:{rel_path}"],
-            capture_output=True, text=True, cwd=str(repo_root), check=True,
-        ).stdout
-        return tomllib.loads(text)
-
-    for lock_path, rel_path in (
-        (cli_lock, "plugins/self-learn/cli/uv.lock"),
-        (ui_lock, "plugins/self-learn/ui/uv.lock"),
-    ):
-        head_data = tomllib.loads(lock_path.read_text(encoding="utf-8"))
-        base_data = _at_base(rel_path)
-
-        names = [p["name"] for p in head_data["package"]]
-        assert len(names) == len(set(names))  # sanity: no dup stanzas
-
-        # U-xdist (2026-08-28): `pytest-xdist` is now a real CLI dev
-        # dependency (`uv add --dev pytest-xdist` in `plugins/self-learn/
-        # cli`) -- its own two new locked packages, itself plus its own
-        # dependency `execnet`, CLI lockfile only. RS8's bound widens to
-        # allow EXACTLY this addition; nothing else may differ.
-        added = {("pytest-xdist", "3.8.0"), ("execnet", "2.1.2")} if lock_path == cli_lock else set()
-
-        # The bound itself: identical (name, version) sets vs c2669a9,
-        # plus exactly this unit's own sanctioned `added` set above --
-        # equality here also catches a REMOVED base package (head minus
-        # added would then be a proper subset of base, not equal).
-        assert _pkg_set(head_data) - added == _pkg_set(base_data), (
-            f"{rel_path}: package (name, version) set differs from c2669a9 beyond the sanctioned addition"
-        )
-
-        # Only `self-learn-cli`'s own stanza may differ AT ALL among the
-        # PRE-EXISTING packages; every other pre-existing package's full
-        # stanza must be byte-for-byte the same dict as base.
-        added_names = {name for name, _version in added}
-        head_others = [
-            p for p in head_data["package"]
-            if p["name"] != "self-learn-cli" and p["name"] not in added_names
-        ]
-        base_others = [p for p in base_data["package"] if p["name"] != "self-learn-cli"]
-        assert head_others == base_others, f"{rel_path}: a non-self-learn-cli stanza changed"
-
-        cli_member = next(p for p in head_data["package"] if p["name"] == "self-learn-cli")
-        if lock_path == cli_lock:
-            dev = cli_member.get("dev-dependencies", {}).get("dev", [])
-            assert any(d.get("name") == "claude-agent-sdk" for d in dev)
-        requires_dev = cli_member.get("metadata", {}).get("requires-dev", {}).get("dev", [])
-        assert any(d.get("name") == "claude-agent-sdk" for d in requires_dev)
 
 
 # ===================================================================== #

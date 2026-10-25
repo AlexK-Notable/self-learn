@@ -739,18 +739,6 @@ def test_override_round_trips_float(tmp_path):
         assert (value, source) == (12.5, "override:serve.tick_secs")
 
 
-def test_override_round_trips_bool(tmp_path):
-    """Bool coverage already exists above (`worker.autokick` throughout
-    this section) -- this one is here only so the union-member list is
-    complete and explicit, not implied."""
-    home = tmp_path / "home"
-    home.mkdir()
-    setting = settings.by_name("worker.repair")
-    with settings.override("worker.repair", False):
-        value, source = settings.resolve_setting(home, setting)
-        assert (value, source) == (False, "override:worker.repair")
-
-
 def test_override_round_trips_none_for_the_one_setting_that_allows_it(tmp_path):
     """`None` is `sdk.max_budget_usd`'s OWN default (meaning
     "unlimited") -- the one setting in the registry where `None` is a

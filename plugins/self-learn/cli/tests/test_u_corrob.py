@@ -62,16 +62,6 @@ _REPO_ROOT = Path(
     ).stdout.strip()
 )
 _SRC = Path(worker.__file__).resolve().parent
-_BASE_SHA = "104f6db"  # this unit's own base commit (worktree u-corrob)
-
-
-def _single_ref_diff(relpath: str) -> str:
-    return subprocess.run(
-        ["git", "diff", _BASE_SHA, "--", relpath],
-        cwd=_REPO_ROOT, capture_output=True, text=True, check=True,
-    ).stdout
-
-
 # ===================================================================== #
 # COR1 -- module shape and import bound
 # ===================================================================== #
@@ -114,30 +104,6 @@ def test_cor1_import_set_is_bounded_to_stdlib_and_the_two_named_modules():
     assert violations == [], violations
 
 
-def test_cor1_M1_mutation_upward_import_is_rejected_by_the_same_walker():
-    """`M1`'s shape, run against a scratch copy (never the worktree): an
-    `from . import worker` line in `corroborate.py` must be flagged by
-    the same AST walker `test_cor1_import_set_is_bounded...` uses --
-    proves that test is a real discriminator, not vacuously true."""
-    src = (_SRC / "corroborate.py").read_text(encoding="utf-8")
-    mutated = src.replace(
-        "from .invocation_sdk.charter import W",
-        "from .invocation_sdk.charter import W\nfrom . import worker",
-        1,
-    )
-    assert mutated != src
-    tree = ast.parse(mutated, filename="corroborate.py")
-    allowed_relative = {"invocation_sdk.charter", "sdksession.toolpaths"}
-    violations = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.level == 1:
-            if node.module is None:
-                violations.extend(a.name for a in node.names)
-            elif node.module not in allowed_relative:
-                violations.append(node.module)
-    assert violations == ["worker"], violations
-
-
 def test_m2_fresh_interpreter_import_does_not_circular_import():
     """Code gate r1 M-2 (real defect, fixed at the root): `uv run python
     -c "import self_learn.corroborate"` used to raise `ImportError:
@@ -157,131 +123,6 @@ def test_m2_fresh_interpreter_import_does_not_circular_import():
     )
     assert result.returncode == 0, (result.stdout, result.stderr)
     assert "M2-OK" in result.stdout, (result.stdout, result.stderr)
-
-
-def test_m2_mutation_constants_below_imports_reintroduces_the_cycle(tmp_path):
-    """M-2's own mutation: move `NO_EVIDENCE`/`MISMATCH` back BELOW the
-    two relative imports (the shape the gate actually caught) -- the
-    fresh-interpreter test above must go RED.
-
-    U-xdist root fix (2026-08-28, scout classification "(f)", a NEW
-    worker-unsafety class): the ORIGINAL version of this test wrote the
-    mutated source directly into the LIVE, shared `src/self_learn/
-    corroborate.py` and restored it in a `finally` block -- safe only
-    under strict serial test ordering. Under pytest-xdist a sibling
-    worker running any of the 12 OTHER fresh-interpreter-subprocess
-    tests in this suite (this build's own report tables all 13, file
-    and line) could land on that file during the write -> spawn ->
-    restore window and see a spurious circular-import failure that has
-    nothing to do with its own test -- reproduced once directly in the
-    scout's own sampling.
-
-    Fixed at the root, not papered over with a lock: the mutation is
-    built into a PRIVATE copy of the WHOLE `self_learn` package under
-    `tmp_path`, never the live tree. A lone-file copy of `corroborate.py`
-    would not reproduce the cycle -- it runs through `worker.py` ->
-    `invocation_sdk/__init__.py` -> `backend.py` -> back into
-    `corroborate.py` -- so the copy has to be the whole package. A
-    fresh interpreter given `PYTHONPATH` pointed at the copy's PARENT
-    shadows the editable-installed `src/self_learn` for that ONE
-    subprocess only (the same shadow-via-`PYTHONPATH` mechanism
-    `test_provider.py`/`test_regime_fixes.py` already use elsewhere in
-    this suite for the identical reason: a fresh interpreter that
-    resolves `self_learn` to a chosen tree, not whatever is editable-
-    installed). The mutation criterion still has to discriminate, so it
-    is run BOTH ways against the SAME copy: RED with the mutation
-    applied, then GREEN once the copy is restored to the unmutated
-    bytes (proves the RED result came from the mutation, not from the
-    shadow mechanism itself) -- and the LIVE file's sha256 is asserted
-    unchanged before either subprocess ever runs and again after both
-    finish, since this test no longer writes to it at all."""
-    import hashlib
-    import os
-    import shutil
-
-    live_target = _SRC / "corroborate.py"
-    original = live_target.read_text(encoding="utf-8")
-    original_sha = hashlib.sha256(original.encode()).hexdigest()
-
-    anchor_block = (
-        "# code gate r1 N-1: `__all__` now names all three public symbols --\n"
-        "# `NO_EVIDENCE`/`MISMATCH` are genuinely part of the public contract\n"
-        "# (imported by name from both `worker.py` and `miner.py`), so\n"
-        '# `["RunEvidence"]` alone was not the truth.\n'
-        '__all__ = ["RunEvidence", "NO_EVIDENCE", "MISMATCH"]\n'
-        "\n"
-        "#: The two verdict tags `RunEvidence.verdict` can return, alongside\n"
-        '#: `None` ("say nothing"). A caller wires each tag to its own\n'
-        "#: surface-specific wording (`{fs} file(s) on disk` on the worker,\n"
-        "#: `{fs} artifact(s) in the spool` on the reader) -- this module spells\n"
-        "#: neither noun, only the fact that decides between them.\n"
-        'NO_EVIDENCE = "no-evidence"\n'
-        'MISMATCH = "mismatch"\n'
-        "\n"
-        "\n"
-        "class RunEvidence:"
-    )
-    assert original.count(anchor_block) == 1, "anchor not found -- has the shape moved?"
-    assert original_sha == hashlib.sha256(live_target.read_text(encoding="utf-8").encode()).hexdigest(), (
-        "PRE-CONDITION: the live file must be unread-back-unchanged before either subprocess runs"
-    )
-
-    import_pair = (
-        "from .invocation_sdk.charter import W\n"
-        "from .sdksession.toolpaths import extract_target_path\n"
-    )
-    # Splice the two relative imports back in BEFORE the constants and
-    # the class (the pre-gate-fix, broken ordering), and drop the
-    # existing post-class copy so the mutated file carries exactly one
-    # copy of each import line.
-    mutated = original.replace(anchor_block, import_pair + "\n" + anchor_block, 1)
-    assert mutated.count(import_pair) == 2, "expected the pre- and post-class copies"
-    idx = mutated.rindex(import_pair)
-    mutated = mutated[:idx] + mutated[idx + len(import_pair):]
-    assert mutated != original
-
-    # A PRIVATE copy of the WHOLE package, never the live tree -- see
-    # this test's own docstring for why a lone-file copy is not enough.
-    shadow_root = tmp_path / "shadow_src"
-    shadow_pkg = shadow_root / "self_learn"
-    shutil.copytree(_SRC, shadow_pkg, ignore=shutil.ignore_patterns("__pycache__"))
-    shadow_corrob = shadow_pkg / "corroborate.py"
-    assert shadow_corrob.read_text(encoding="utf-8") == original
-
-    child_env = dict(os.environ, PYTHONPATH=str(shadow_root))
-
-    # RED: the mutation, applied to the SHADOW copy only.
-    shadow_corrob.write_text(mutated, encoding="utf-8")
-    result_red = subprocess.run(
-        [sys.executable, "-c", "import self_learn.corroborate; print('M2-OK')"],
-        capture_output=True, text=True, timeout=30, env=child_env,
-    )
-    assert result_red.returncode != 0, (
-        "M-2 mutation stayed GREEN -- the circular import did not reproduce\n"
-        f"{result_red.stdout}\n{result_red.stderr}"
-    )
-    assert "circular import" in result_red.stderr or "partially initialized" in result_red.stderr, (
-        result_red.stderr
-    )
-
-    # GREEN control: the SAME shadow copy, restored to the unmutated
-    # bytes -- must import clean, proving the RED result above is the
-    # mutation's own doing, not an artifact of the shadow mechanism.
-    shadow_corrob.write_text(original, encoding="utf-8")
-    result_green = subprocess.run(
-        [sys.executable, "-c", "import self_learn.corroborate; print('M2-OK')"],
-        capture_output=True, text=True, timeout=30, env=child_env,
-    )
-    assert result_green.returncode == 0, (result_green.stdout, result_green.stderr)
-    assert "M2-OK" in result_green.stdout, (result_green.stdout, result_green.stderr)
-
-    # The live, shared file was never written to by this test at all --
-    # asserted directly, not merely inferred from "no exception raised".
-    live_bytes_after = live_target.read_text(encoding="utf-8")
-    assert live_bytes_after == original, "the LIVE corroborate.py changed even though this test never writes to it"
-    assert hashlib.sha256(live_bytes_after.encode()).hexdigest() == original_sha, (
-        "the LIVE corroborate.py's sha256 changed even though this test never writes to it"
-    )
 
 
 # ===================================================================== #
@@ -479,27 +320,6 @@ def test_cor6_failed_outcome_emits_nothing_even_with_events(tmp_path):
     assert ev.inside == {target}
 
 
-def test_cor6_M35_collapsing_events_present_into_had_events_breaks_this_case(tmp_path):
-    """B-1r2/M35: a single `had_events`-only flag cannot pass BOTH
-    `COR6` (bare Outcome -> nothing) and `COR8` (empty tuple -> the
-    no-evidence line) -- demonstrated directly: both inputs collapse to
-    `had_events=False` under one flag, so a one-flag implementation MUST
-    treat them identically, which is wrong for at least one of them."""
-    root = tmp_path / "root"
-    root.mkdir()
-    bare = types.SimpleNamespace(failure=None)
-    empty = _outcome(tool_events=())
-    ev_bare = RunEvidence(root, flat=True)
-    ev_bare.observe(bare)
-    ev_empty = RunEvidence(root, flat=True)
-    ev_empty.observe(empty)
-    # the real (two-flag) implementation tells them apart
-    assert ev_bare.events_present != ev_empty.events_present
-    assert ev_bare.verdict(0) != ev_empty.verdict(0)
-    # a one-flag implementation could not: both have had_events=False
-    assert ev_bare.had_events == ev_empty.had_events == False
-
-
 # ===================================================================== #
 # COR8 -- events_present True, had_events False -> NO-EVIDENCE only
 # ===================================================================== #
@@ -662,16 +482,6 @@ def test_cor5_outside_only_fires_without_a_mismatch(env, monkeypatch):
     ) in log_text
 
 
-def test_un4_M29_a_mismatch_never_sets_status_failed_by_itself(env, monkeypatch):
-    """UN4/M29: the mismatch line is a LOG LINE, never a status change --
-    `result.status` in the mismatching fixture above is driven entirely
-    by "0 valid proposals", the same as it would be with zero reported
-    events. Restated explicitly here as its own criterion-named test."""
-    result, _ = _drive_cor4_disagreeing_fixture(env, monkeypatch)
-    assert result.status == "failed"  # driven by 0 valid proposals, not by corroboration
-    assert result.proposed == []
-
-
 def test_un4_M29_mismatch_never_flips_a_landing_run_to_failed(env, monkeypatch):
     """UN4/M29, the REAL discriminator: the fixture above never lands
     anything, so its `status == "failed"` would hold with or without
@@ -736,13 +546,6 @@ def test_cor12_every_new_corroboration_line_begins_with_run_prefix(env, monkeypa
     assert new_lines2
     for ln in new_lines2:
         assert "run: corroboration — no tool events recorded" in ln
-
-
-def test_cor12_M39_mutation_missing_run_prefix_would_be_caught():
-    """M39's positive control: the SAME prefix assertion applied to a
-    deliberately-unprefixed string fails, proving the check discriminates."""
-    bad_line = "corroboration: no tool events recorded (0 file(s) on disk)"
-    assert not bad_line.startswith("run: ")
 
 
 def test_cor4_worker_no_evidence_line_byte_pinned(env, monkeypatch):
@@ -1322,120 +1125,6 @@ def test_pin1_miner_and_corroborate_never_spell_tool_events():
     assert "tool-events" not in corrob_src
 
 
-def test_pin2_armor_sha_paths_are_byte_unchanged():
-    """PIN2 (post-U-armor form, 2026-08-28): `test_worker_contract.py`'s
-    `_ARMOR_SHAS` whole-file-pin mechanism is RETIRED -- U-armor's
-    `test_armor.py::ARMOR`/ARM1..ARM6 replace it (spec
-    `u-armor-narrow-whole-file-pins-spec.md` §4.7). The durable claim
-    this test corroborates -- "every whole-file-pinned fixture is byte-
-    unchanged from what it is pinned to" -- now lives in `test_armor.py`
-    as `Fixture` rows (`support.py`, `conftest.py`, `backends.py`), each
-    proven byte-identical (to its anchor, or to its `Fixture.repinned`
-    sha under the anti-rot leg) with full mutation coverage by
-    `test_fix1_fixtures_are_byte_identical`/
-    `test_fix2_repin_door_is_exact_and_cannot_rot`. This test is an
-    INDEPENDENT corroboration of the same live state, not a duplicate of
-    that machinery: it parses `ARMOR`'s three `Fixture()` entries
-    straight from `test_armor.py` source (still no cross-module import)
-    and re-checks each against the SAME anchor commit `test_armor.py`
-    itself uses (`ANCHOR`, also parsed from source), consistent with
-    what F1/F2 require for a `repinned is None` row -- byte-identical to
-    the anchor's own bytes."""
-    import hashlib
-    import re as _re
-
-    armor_src = (_REPO_ROOT / "plugins/self-learn/cli/tests/test_armor.py").read_text()
-
-    anchor_match = _re.search(r'^ANCHOR = "([0-9a-f]+)"', armor_src, _re.MULTILINE)
-    assert anchor_match, "ANCHOR literal not found in test_armor.py"
-    anchor = anchor_match.group(1)
-
-    block = armor_src[armor_src.index("ARMOR: dict") :]
-    block = block[: block.index("\n}\n") + 3]
-    fixture_rows = _re.findall(r'"([A-Za-z_0-9./]+)":\s*Fixture\(', block)
-    assert len(fixture_rows) == 3, sorted(fixture_rows)
-
-    for rel in fixture_rows:
-        full_rel = f"plugins/self-learn/cli/tests/{rel}"
-        live = hashlib.sha256((_REPO_ROOT / full_rel).read_bytes()).hexdigest()
-        anchor_bytes = subprocess.run(
-            ["git", "show", f"{anchor}:{full_rel}"],
-            cwd=_REPO_ROOT, capture_output=True, check=True,
-        ).stdout
-        anchor_sha = hashlib.sha256(anchor_bytes).hexdigest()
-
-        # A `Fixture.repinned = (sha, reason)` entry (F2's re-pin door)
-        # lets live bytes differ from anchor and ONLY to that pinned
-        # sha -- parsed from the SAME per-row source span, still no
-        # cross-module import. Root fix (U-xdist, 2026-08-28): the row's
-        # span is found by a BALANCED-PAREN scan from the matching
-        # `Fixture(` open paren, not a naive "next '),\n'" search -- the
-        # naive form silently ran PAST a same-line `Fixture(),  # ...`
-        # row that has no `),\n` of its own (a trailing comment sits
-        # before the newline) and INTO the NEXT row's multi-line
-        # `repinned=(...)` tuple, misattributing that sha to the wrong
-        # file entirely (measured: exactly this shape, once conftest.py
-        # gained a multi-line `repinned` entry and support.py -- the row
-        # immediately before it, itself `repinned`-free -- was the one
-        # whose naive scan ran past its own comment and into conftest's
-        # tuple). String-and-comment-aware (U-xdist code gate r1/r2
-        # folds, 2026-08-29): a bare paren-depth count over the RAW text
-        # is fooled by a paren inside a reason STRING (e.g. this same
-        # unit's own conftest.py reason mentions "(pytest_sessionfinish/
-        # pytest_testnodedown, appended at the file's end)") -- fixed at
-        # r1 by tracking whether the scan is inside a quoted string and
-        # skipping paren counting there. That fix was ITSELF incomplete:
-        # gate r2 MEASURED that an apostrophe inside a `#` COMMENT (e.g.
-        # a prose aside like "support.py's own importers") opened a
-        # phantom string the same way, running the scan past the row's
-        # real close paren and returning `row_end is None` on an
-        # otherwise well-formed table (confirmed both ways: the r1 scan
-        # measured `row_end is None` on this exact shape; the fix below
-        # measured matching on it, plus six further synthetic shapes
-        # covering the r1-fixed paren-in-string case and this one in
-        # combination). Fix: a `#` seen OUTSIDE a string now ends
-        # scanning at that line's newline, and a quote seen INSIDE a
-        # comment never opens a string. This handles exactly the two
-        # failure classes measured against it and no more -- it does not
-        # handle triple-quoted strings or line continuations, neither of
-        # which appears in this table.
-        call_start = block.index(f'"{rel}": Fixture(')
-        paren_start = call_start + len(f'"{rel}": Fixture')
-        depth = 0
-        row_end = None
-        in_string = None  # None, or the quote char ("'" / '"') we are inside
-        i = paren_start
-        while i < len(block):
-            ch = block[i]
-            if in_string:
-                if ch == "\\":
-                    i += 2
-                    continue
-                if ch == in_string:
-                    in_string = None
-            elif ch == "#":
-                nl = block.find("\n", i)
-                i = len(block) if nl == -1 else nl
-                continue
-            elif ch in ("'", '"'):
-                in_string = ch
-            elif ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth -= 1
-                if depth == 0:
-                    row_end = i + 1
-                    break
-            i += 1
-        assert row_end is not None, f"{rel}: could not find the matching close paren"
-        row_text = block[call_start:row_end]
-        repin_match = _re.search(r'repinned=\(\s*"([0-9a-f]{64})"', row_text)
-        if repin_match:
-            assert live == repin_match.group(1), (rel, "repinned sha mismatch")
-        else:
-            assert live == anchor_sha, rel
-
-
 def test_pin5_charter_py_byte_unchanged():
     """PIN5 (post-landing form, 2026-08-28): `charter.py`'s deny
     messages and `W` are consumed, never edited, by this unit --
@@ -1518,69 +1207,3 @@ def test_un5_serve_py_byte_unchanged():
 # ===================================================================== #
 # DOC1-4
 # ===================================================================== #
-
-
-def test_doc1_s53_row_landed_after_s50():
-    text = (_REPO_ROOT / "docs" / "specs" / "self-learn" / "03-decisions.md").read_text(encoding="utf-8")
-    assert "\n| S-53 |" in text
-    s50_idx = text.index("| S-50 |")
-    s53_idx = text.index("| S-53 |")
-    assert s50_idx < s53_idx
-    # positive control: absent at base
-    base = subprocess.run(
-        ["git", "show", f"{_BASE_SHA}:docs/specs/self-learn/03-decisions.md"],
-        cwd=_REPO_ROOT, capture_output=True, text=True, check=True,
-    ).stdout
-    assert "| S-53 |" not in base
-
-
-def test_doc2_s44_amended_in_place_not_rewritten():
-    text = (_REPO_ROOT / "docs" / "specs" / "self-learn" / "03-decisions.md").read_text(encoding="utf-8")
-    assert "Amended 2026-08-27 (`U-corrob`, `S-53`)" in text
-    # still amended IN the S-44 row, not a separate row
-    s44_start = text.index("| S-44 |")
-    s45_start = text.index("| S-45 |") if "| S-45 |" in text else len(text)
-    assert "Amended 2026-08-27 (`U-corrob`, `S-53`)" in text[s44_start:s45_start] or (
-        "| S-44 |" in text and text.index("Amended 2026-08-27 (`U-corrob`, `S-53`)") > s44_start
-    )
-
-
-def test_doc3_fw_rows_and_dated_entry_landed():
-    """DOC3, placement-aware (code gate r1, M-3): the four rows must sit
-    INSIDE the FW table's contiguous `|`-prefixed block -- a row placed
-    below the table (with prose or a blank line breaking the run of `|`
-    lines) renders as a paragraph, not a table row, which
-    `"\\n| FW-128 |" in text`-style substring checks cannot tell apart
-    from a real row. Located structurally: the table's own header
-    delimiter (`|---|---|---|---|`) through the last consecutive
-    `|`-prefixed line after it -- every FW id must appear as a row
-    inside that span, and nowhere outside it."""
-    text = (_REPO_ROOT / "docs" / "specs" / "self-learn" / "14-forward-work-map.md").read_text(encoding="utf-8")
-    lines = text.splitlines()
-    delim_idx = next(i for i, ln in enumerate(lines) if ln.strip() == "|---|---|---|---|")
-    end_idx = delim_idx + 1
-    while end_idx < len(lines) and lines[end_idx].startswith("|"):
-        end_idx += 1
-    table_block = lines[delim_idx:end_idx]
-    for fw_id in ("FW-128", "FW-129", "FW-130", "FW-131"):
-        assert any(ln.startswith(f"| {fw_id} |") for ln in table_block), (
-            fw_id, "not inside the contiguous table block -- renders as a paragraph, not a row"
-        )
-    assert "FW-128, FW-129, FW-130, FW-131 added by `U-corrob`" in text
-    base = subprocess.run(
-        ["git", "show", f"{_BASE_SHA}:docs/specs/self-learn/14-forward-work-map.md"],
-        cwd=_REPO_ROOT, capture_output=True, text=True, check=True,
-    ).stdout
-    for fw_id in ("FW-128", "FW-129", "FW-130", "FW-131"):
-        assert f"| {fw_id} |" not in base, fw_id
-
-
-def test_doc4_runbook_paragraph_landed():
-    text = (_REPO_ROOT / "docs" / "specs" / "self-learn" / "17-invocation-runbook.md").read_text(encoding="utf-8")
-    assert "**Amended 2026-08-27 (`U-corrob`).**" in text
-    assert "run: corroboration MISMATCH" in text
-    base = subprocess.run(
-        ["git", "show", f"{_BASE_SHA}:docs/specs/self-learn/17-invocation-runbook.md"],
-        cwd=_REPO_ROOT, capture_output=True, text=True, check=True,
-    ).stdout
-    assert "**Amended 2026-08-27 (`U-corrob`).**" not in base

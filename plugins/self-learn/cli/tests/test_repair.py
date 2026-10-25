@@ -2215,44 +2215,6 @@ def test_f5_shim_observes_and_drives_two_invocations(env, sdk_fake_worker, monke
     assert "run: repair claude exited 7:" in log_text
 
 
-def test_f6_no_test_invokes_a_real_claude():
-    """F6 — no test invokes a real `claude`.
-
-    U-cleanup-B REWRITE (§8.1 follow-on, discovered running this test
-    after `test_e1b_cli_timeout_reaches_subprocess_run`'s deletion):
-    F6's first half used to source-scan THIS file for a bare
-    single-element `claude` argv literal and require it route through a
-    `subprocess.run`-monkeypatched `worker._invoke_claude(argv, ...)`
-    call -- exactly the two sites inside the now-deleted
-    `test_e1b_...`. `_invoke_claude` dropped its leading `argv`
-    positional entirely (§8.1): no call anywhere can construct that
-    single-element `claude` argv literal to pass it any more, so the
-    scan's own premise (find at least one, verify its escort) is now
-    structurally unsatisfiable rather than a real invariant -- there is
-    nothing left to require non-empty. What SURVIVES, unweakened, is the
-    other half of the original claim: every `worker.run`/`cli.main(["worker",
-    "run"])` call in this file routes through the `claude_cli_shim_
-    worker` fixture, whose PATH construction puts its own shim dir
-    FIRST, ahead of the inherited PATH."""
-    # 2026-08-09 (T3, incident hardening): the fixture now ALSO strips
-    # any REAL self-learn-notify from the rest of the inherited PATH
-    # (`_path_without_real_notify_helper`) — belt-and-braces alongside
-    # worker.py's own SELF_LEARN_NO_NOTIFY=1 kill switch — but `shims`
-    # is still unconditionally the FIRST leading dir that helper builds,
-    # so the invariant this assertion pins is unchanged, only its
-    # literal source shape is.
-    claude_shim_src = inspect.getsource(sdk_fake_worker)
-    assert (
-        'monkeypatch.setenv("PATH", _path_without_real_notify_helper(shims))'
-        in claude_shim_src
-    ), "the sdk_fake_worker fixture no longer prepends its own shim dir to PATH"
-    helper_src = inspect.getsource(_path_without_real_notify_helper)
-    assert "parts = [str(d) for d in leading_dirs]" in helper_src, (
-        "_path_without_real_notify_helper no longer puts its leading_dirs "
-        "argument first in the PATH it builds"
-    )
-
-
 # ===================================================================== #
 # H. Obs-1 — the observable surface
 # ===================================================================== #

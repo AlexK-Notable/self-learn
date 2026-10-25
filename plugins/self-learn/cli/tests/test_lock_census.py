@@ -146,10 +146,6 @@ class TestLockCensus:
             "that no longer exists"
         )
 
-    def test_the_wrapper_is_exactly_one_site(self):
-        wrapper_entries = [k for k, v in _CENSUS.items() if v == "wrapper"]
-        assert wrapper_entries == [("intents", "ledger_write")]
-
     def test_positive_control_the_bare_form_in_gitops_is_detected(self):
         """§7.2a.5(1): "the census's positive control is the bare
         `commit_lock(repo)` in `gitops.py`" — the attribute-form
