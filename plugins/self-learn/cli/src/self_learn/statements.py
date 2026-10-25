@@ -96,7 +96,7 @@ def _free_answer(answer: str, question: dict) -> str:
     field. For overlapping labels, keep only the suffix left by every
     possible parsing of the selected-label prefixes.
     """
-    if question.get("kind") in ("text", "number"):
+    if question.get("kind") in ("text", "number") and not question.get("options"):
         return answer
     options = question.get("options")
     if not isinstance(options, list) or not options:
@@ -104,7 +104,8 @@ def _free_answer(answer: str, question: dict) -> str:
     if any(not isinstance(o, dict) or not isinstance(o.get("label"), str) for o in options):
         return ""
     labels = [o["label"] for o in options if o["label"]]
-    if answer in labels:
+    spellings = labels + [json.dumps(label, ensure_ascii=False) for label in labels]
+    if answer in spellings:
         return ""
     if question.get("multiSelect") is True:
         pending, seen, suffixes = [0], set(), []
@@ -114,14 +115,23 @@ def _free_answer(answer: str, question: dict) -> str:
                 continue
             seen.add(offset)
             rest = answer[offset:]
-            if rest in labels:
+            if rest in spellings:
                 return ""
-            prefixes = [s for s in labels if rest.startswith(s + ", ")]
+            prefixes = [s for s in spellings if rest.startswith(s + ", ")]
             if prefixes:
                 pending.extend(offset + len(s) + 2 for s in prefixes)
             else:
                 suffixes.append(rest)
-        return min(suffixes, key=len, default="")
+        leftover = min(suffixes, key=len, default="")
+        if leftover.startswith('"'):
+            try:
+                decoded = json.loads(leftover)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if isinstance(decoded, str):
+                    return decoded
+        return leftover
     return answer
 
 
@@ -189,7 +199,7 @@ def _typed_answer_contains(
                 or not isinstance(block.get("tool_use_id"), str)):
             continue
         call = calls.get(block["tool_use_id"])
-        if call is None or "answers" in call or "annotations" in call:
+        if call is None or any(key in call for key in ("answers", "annotations", "response", "followUp")):
             continue
         questions = call.get("questions")
         signature = _question_signature(questions)
@@ -210,6 +220,8 @@ def _typed_answer_contains(
                 typed.append(annotation["notes"])
         sender_entry = {**entry, "sessionId": entry.get("sessionId") or evidence.session}
         for text in typed:
+            if text in ("(notes only)", "(Image attached)", "__other__"):
+                continue
             if quote and quote in " ".join(text.split()):
                 if sent is None:
                     sent = refs.sent_index(roots)

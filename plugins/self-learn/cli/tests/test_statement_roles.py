@@ -514,3 +514,109 @@ def test_question_binding_requires_question_text_and_labels(tmp_path, kind):
     write_question_exchange(path, rows)
     with pytest.raises(statements.StatementUsageError, match="not typed by the user"):
         add(home, "transcript:synthetic-stmt#L3", "New typed words.")
+
+
+def encoded_question_control(tmp_path):
+    home = make_home(tmp_path)
+    path, rows, question = question_exchange(home, tmp_path)
+    write_question_exchange(path, rows)
+    sid = add(home, "transcript:synthetic-stmt#L3", "Keep typed words.")
+    assert statements.list_statements(home)[-1]["id"] == sid
+    return home, path, rows, question
+
+
+def cc_multi_answer(items):
+    # Claude Code 2.1.310 ODt: JSON-quote items holding a comma-space or quote.
+    return ", ".join(json.dumps(item, ensure_ascii=False)
+                     if ', ' in item or '"' in item else item for item in items)
+
+
+@pytest.mark.parametrize("kind", ["pair", "single", "quote", "prefix", "unicode"])
+def test_encoded_clicked_labels_are_refused(tmp_path, kind):
+    home, path, rows, question = encoded_question_control(tmp_path)
+    question["multiSelect"] = True
+    label = {"quote": 'Use the "fast" path', "unicode": "Long, café route"}.get(
+        kind, "Long, scenic route")
+    question["options"][1]["label"] = label
+    items = ["Short route", label] if kind == "pair" else [label]
+    if kind == "prefix":
+        items.append("A fresh typed answer.")
+    rows[2]["toolUseResult"]["answers"][question["question"]] = cc_multi_answer(items)
+    write_question_exchange(path, rows)
+    quote = 'Use the' if kind == "quote" else label
+    before = (home / "user-statements.jsonl").read_bytes()
+    with pytest.raises(statements.StatementUsageError, match="not typed by the user"):
+        add(home, "transcript:synthetic-stmt#L3", quote)
+    assert (home / "user-statements.jsonl").read_bytes() == before
+
+
+@pytest.mark.parametrize("kind", ["quote", "comma", "quoted-prefix"])
+def test_encoded_other_answers_are_accepted(tmp_path, kind):
+    home, path, rows, question = encoded_question_control(tmp_path)
+    question["multiSelect"] = True
+    typed = 'Say "hello" first' if kind == "quote" else "Go north, then east"
+    prefix = "Long, scenic route" if kind == "quoted-prefix" else "Short route"
+    rows[2]["toolUseResult"]["answers"][question["question"]] = cc_multi_answer([prefix, typed])
+    write_question_exchange(path, rows)
+    sid = add(home, "transcript:synthetic-stmt#L3", typed)
+    assert statements.list_statements(home)[-1]["id"] == sid
+
+
+@pytest.mark.parametrize("field", ["response", "followUp"])
+def test_host_supplied_call_fields_are_refused(tmp_path, field):
+    home, path, rows, question = encoded_question_control(tmp_path)
+    typed = "New host supplied words."
+    rows[1]["message"]["content"][0]["input"][field] = typed if field == "response" else True
+    rows[2]["toolUseResult"]["answers"] = {}
+    rows[2]["toolUseResult"]["response"] = typed
+    write_question_exchange(path, rows)
+    before = (home / "user-statements.jsonl").read_bytes()
+    with pytest.raises(statements.StatementUsageError, match="not typed by the user"):
+        add(home, "transcript:synthetic-stmt#L3", typed)
+    assert (home / "user-statements.jsonl").read_bytes() == before
+
+
+@pytest.mark.parametrize("kind", ["text", "number"])
+def test_text_number_kind_with_options_cannot_authorize_clicked_label(tmp_path, kind):
+    home, path, rows, question = encoded_question_control(tmp_path)
+    call_question = json.loads(json.dumps(question))
+    call_question["kind"] = kind
+    rows[1]["message"]["content"][0]["input"]["questions"] = [call_question]
+    rows[2]["toolUseResult"]["answers"][question["question"]] = "Short route"
+    write_question_exchange(path, rows)
+    before = (home / "user-statements.jsonl").read_bytes()
+    with pytest.raises(statements.StatementUsageError, match="not typed by the user"):
+        add(home, "transcript:synthetic-stmt#L3", "Short route")
+    assert (home / "user-statements.jsonl").read_bytes() == before
+
+
+@pytest.mark.parametrize("placeholder", ["(notes only)", "(Image attached)", "__other__"])
+@pytest.mark.parametrize("field", ["answer", "multi-answer", "notes", "response"])
+def test_question_placeholders_are_not_typed(tmp_path, placeholder, field):
+    home, path, rows, question = encoded_question_control(tmp_path)
+    result = rows[2]["toolUseResult"]
+    result["answers"] = {}
+    if field in ("answer", "multi-answer"):
+        question["multiSelect"] = field == "multi-answer"
+        result["answers"][question["question"]] = (
+            cc_multi_answer(["Short route", placeholder]) if question["multiSelect"] else placeholder)
+    elif field == "notes":
+        result["annotations"][question["question"]] = {"notes": placeholder}
+    else:
+        result["response"] = placeholder
+    write_question_exchange(path, rows)
+    before = (home / "user-statements.jsonl").read_bytes()
+    with pytest.raises(statements.StatementUsageError, match="not typed by the user"):
+        add(home, "transcript:synthetic-stmt#L3", placeholder)
+    assert (home / "user-statements.jsonl").read_bytes() == before
+
+
+def test_question_call_after_target_cannot_authorize_answer(tmp_path):
+    home, path, rows, question = encoded_question_control(tmp_path)
+    rows[2]["toolUseResult"]["answers"][question["question"]] = "Fresh future call words."
+    rows.append(rows.pop(1))
+    write_question_exchange(path, rows)
+    before = (home / "user-statements.jsonl").read_bytes()
+    with pytest.raises(statements.StatementUsageError, match="not typed by the user"):
+        add(home, "transcript:synthetic-stmt#L2", "Fresh future call words.")
+    assert (home / "user-statements.jsonl").read_bytes() == before
