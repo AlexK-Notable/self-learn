@@ -545,6 +545,8 @@ exported env var — is the only flip that reaches the nightly run;
 §4.1 that this note used to cite is retired along with the rest of the
 old §4).
 
+*2026-10-24: the backend selector keys are retired; the historical flip advice above no longer applies. All miner invocations use SDK; `config unset invocation.backend_miner-reader` removes an obsolete key without changing the backend.*
+
 **User requirements added:**
 
 - **R1 · 24-hour watchdog, three layers:** `Persistent=true` on the
