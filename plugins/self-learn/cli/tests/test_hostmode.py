@@ -1211,7 +1211,7 @@ class TestPlain11HookRetirementUnlinkNoGit:
         assert script.is_file()
         calls.clear()
 
-        verbs.graduate(ledger, rid)
+        verbs.retire(ledger, rid, covered_by="skill-md:canon")
 
         assert not script.exists()
         plain_calls = [c for c in calls if c[0] == str(skills_root)]
@@ -1384,7 +1384,7 @@ class TestD3CompletionEveryVerbEveryKindResync:
         before_entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
         assert before_entry is not None
 
-        verbs.graduate(env.ledger, rid)
+        verbs.retire(env.ledger, rid, covered_by="skill-md:canon")
 
         assert not script.exists()
         after_entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
@@ -1684,7 +1684,6 @@ class TestD3RegionResyncCoverageWalker:
         # `route_direct` already used above). `retire` is the NEW verb
         # this merge set exists for just as much as `graduate` -- both
         # delegate their entire body into the one function.
-        "graduate": ("_retire_impl",),
         "retire": ("_retire_impl",),
     }
 
@@ -1819,14 +1818,6 @@ class TestD3RegionResyncCoverageWalker:
             frozenset({"managed", "script"}),
         ),
         (
-            "graduate",
-            ("_retirement_host_phase",),
-            frozenset({"managed", "script"}),
-        ),
-        (
-            # S-67 (U13): `retire`'s own mechanics are `_retire_impl`,
-            # the SAME shared core `graduate` delegates into above --
-            # identical delegate list, identical kind coverage.
             "retire",
             ("_retirement_host_phase",),
             frozenset({"managed", "script"}),
@@ -4425,7 +4416,6 @@ class TestRec12HostLockDiscipline:
         # adapter, shared core" shape `route`/`route_direct` already use
         # above via `_execute_route`.
         "retire": ("_retire_impl",),
-        "graduate": ("_retire_impl",),
     }
 
     @staticmethod
@@ -4607,17 +4597,6 @@ class TestRec12HostLockDiscipline:
                 ("push_if_remote", "_push_ledger"),
             ),
             (
-                "graduate",
-                (
-                    "_observe_retirement_region",
-                    "resolve_record",
-                    "_retirement_host_phase",
-                ),
-                ("push_if_remote", "_push_ledger"),
-            ),
-            (
-                # S-67 (U13): `retire`'s mechanics ARE `_retire_impl`,
-                # the same shared core `graduate` delegates into above.
                 "retire",
                 (
                     "_observe_retirement_region",
@@ -4698,7 +4677,7 @@ class TestRec12HostLockDiscipline:
         )
 
     @pytest.mark.parametrize(
-        "verb_name", ["route", "route_direct", "supersede", "graduate", "retire"]
+        "verb_name", ["route", "route_direct", "supersede", "retire"]
     )
     def test_leg_e_ledger_lock_is_acquired_before_the_host_lock(self, verb_name):
         """M-1 (code gate r2): §4.5b pins ONE order — ledger first, host

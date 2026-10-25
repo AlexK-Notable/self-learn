@@ -254,7 +254,6 @@ __all__ = [
     "dismiss_suspect",
     "one_motion_allowed",
     "followup_done",
-    "graduate",
     "link_contradicts",
     "managed_target_for",
     "note",
@@ -9515,8 +9514,7 @@ def retire(
     :func:`_retire_impl` — see its docstring for the mechanics (host
     cleanup, locking, the retirement compile record); this function only
     owns parsing *covered_by* and refusing an unknown kind or empty name
-    BY NAME before any lock. ``graduate`` (below) is a thin, hidden-alias
-    entry point onto the SAME implementation."""
+    BY NAME before any lock. The graduate alias was removed on 2026-10-24."""
     surface = _covered_by_surface(covered_by)
     return _retire_impl(
         home,
@@ -9532,61 +9530,6 @@ def retire(
     )
 
 
-def graduate(
-    home: Path | str,
-    record_id: str,
-    *,
-    covered_by: str | None = None,
-    note: str | None = None,
-    by: str | None = None,
-    no_push: bool = False,
-    user_claude_md: Path | str | None = None,
-    reconsider_case: str | None = None,
-    execution: execution_evidence.ExecutionRef | None = None,
-) -> VerbResult:
-    """Deprecated alias for :func:`retire` (S-67), kept for one release
-    so a pre-rename `graduate` sheet or script still applies unchanged.
-    *covered_by*, when given, makes this call BYTE-IDENTICAL to calling
-    :func:`retire` directly (same commit subject, same
-    ``action="retire"`` result) — a caller may adopt the new surface
-    argument without renaming the verb yet. Omitted (the exact
-    pre-rename calling convention), the record is retired against the
-    LEGACY literal ``superseded_by: canon`` exactly as ``graduate``
-    always did — same commit subject (``self-learn: graduate <id>``),
-    same ``action="graduate"`` — plus ONE new deprecation line appended
-    to the result's ``warnings`` (never ``post_notes``: `_finish_verb`
-    prints ``warnings`` to stderr under BOTH ``--json`` and plain text,
-    so the notice surfaces either way without disturbing §4's
-    stdout-is-the-envelope pin for `--json`)."""
-    if covered_by is not None:
-        return retire(
-            home,
-            record_id,
-            covered_by=covered_by,
-            note=note,
-            by=by,
-            no_push=no_push,
-            user_claude_md=user_claude_md,
-            reconsider_case=reconsider_case,
-            execution=execution,
-        )
-    result = _retire_impl(
-        home,
-        record_id,
-        superseded_by="canon",
-        verb_word="graduate",
-        note=note,
-        by=by,
-        no_push=no_push,
-        user_claude_md=user_claude_md,
-        reconsider_case=reconsider_case,
-        execution=execution,
-    )
-    result.warnings = result.warnings + [
-        "`graduate` is `retire` now; covering surface unrecorded — "
-        "name it with --covered-by"
-    ]
-    return result
 
 
 def _preflight_retire(

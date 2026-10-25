@@ -103,7 +103,7 @@ def test_report_counts_each_terminal_status(env, capsys):
     for rid, args in [
         ("lrn-0000aaaa", ["route", "lrn-0000aaaa"]),
         ("lrn-0000bbbb", ["reject", "lrn-0000bbbb"]),
-        ("lrn-0000cccc", ["graduate", "lrn-0000cccc"]),
+        ("lrn-0000cccc", ["retire", "lrn-0000cccc", "--covered-by", "skill-md:canon"]),
         # U-verbs STATE1: `defer --until` in the past now REFUSES at the
         # CLI (a human-typo guard) — defer to a future date here, then
         # force the state an ELAPSED deferral reaches below, same as a

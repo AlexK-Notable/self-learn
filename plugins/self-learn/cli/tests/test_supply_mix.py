@@ -93,7 +93,7 @@ class TestMetrics:
         verbs.route(env.ledger, "lrn-aa000001", dest="skill-md", no_push=True)
         verbs.route(env.ledger, "lrn-aa000002", dest="skill-md", no_push=True)
         verbs.route(env.ledger, "lrn-aa000003", dest="skill-md", no_push=True)
-        verbs.graduate(env.ledger, "lrn-aa000002", no_push=True)
+        verbs.retire(env.ledger, "lrn-aa000002", covered_by="skill-md:canon", no_push=True)
         replacement = make_behavior(scope="skill:s", record_id="lrn-aa000009")
         create_record(env.ledger, replacement)
         verbs.supersede(env.ledger, "lrn-aa000001", "lrn-aa000009", no_push=True)

@@ -285,7 +285,7 @@ def test_dismissed_then_confirm_allowed(env):
 def test_not_routed_refused(env, capsys):
     rid = seed_routed(env)
     nonce, _ = spool_suspect(env, rid)
-    assert cli.main(["graduate", rid, "--no-push"]) == 0
+    assert cli.main(["retire", rid, "--covered-by", "skill-md:canon", "--no-push"]) == 0
     capsys.readouterr()
     rc = cli.main(
         ["dismiss-suspect", rid, "--event", nonce, "--why", "rule-followed", "--no-push"]

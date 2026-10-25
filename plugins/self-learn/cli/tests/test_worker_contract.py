@@ -1624,41 +1624,6 @@ def test_fr3_default_is_now_sdk(tmp_path, monkeypatch, sdk_absent):
     # -- recorded in the build report, not asserted here (`FL-b`).
 
 
-def test_fr4_selector_mapping_does_not_cross_govern(tmp_path, monkeypatch):
-    home = tmp_path / "fr4-home"
-    home.mkdir()
-    for var in ("SELF_LEARN_BACKEND", "SELF_LEARN_BACKEND_WORKER", "SELF_LEARN_BACKEND_MINER", "SELF_LEARN_BACKEND_ANALYST"):
-        monkeypatch.delenv(var, raising=False)
-
-    from self_learn.invocation_sdk import SdkBackend as _IndependentSdkBackend
-
-    # U-flip flipped worker/worker-repair/miner-reader's product default
-    # to sdk (same table rung the analyst flip, U-sdka, used). The
-    # scoping claim (the MINER/ANALYST selectors do not govern WORKER)
-    # needs the foreign stimulus INVERTED to "cli": a leak would then
-    # flip worker to CliBackend and redden, while the correct behavior
-    # keeps its own sdk default. (Stimulus "sdk" would be tautological --
-    # leak and no-leak both resolve SdkBackend; gate blessing-read catch.)
-    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
-    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")
-    assert type(invocation.backend_for("worker", home=home)) is _IndependentSdkBackend
-    assert type(invocation.backend_for("worker-repair", home=home)) is _IndependentSdkBackend
-    monkeypatch.delenv("SELF_LEARN_BACKEND_MINER")
-    monkeypatch.delenv("SELF_LEARN_BACKEND_ANALYST")
-
-    # Same inversion for the WORKER -> miner-reader leg: miner-reader's
-    # own default is now sdk too, so the foreign stimulus is "cli".
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
-    assert type(invocation.backend_for("miner-reader", home=home)) is _IndependentSdkBackend
-    # U-sdka flipped the analyst's product default to sdk. The scoping
-    # claim (the WORKER selector does not govern the analyst) needs the
-    # foreign stimulus INVERTED to "cli": a leak would then flip the
-    # analyst to CliBackend and redden, while the correct behavior keeps
-    # its own sdk default. (Stimulus "sdk" would be tautological -- leak
-    # and no-leak both resolve SdkBackend; gate blessing-read catch.)
-    # `SELF_LEARN_BACKEND_WORKER` is already "cli" from the miner-reader
-    # leg above -- same foreign stimulus serves both legs.
-    assert type(invocation.backend_for("analyst", home=home)) is _IndependentSdkBackend
 
 
 # ===================================================================== #

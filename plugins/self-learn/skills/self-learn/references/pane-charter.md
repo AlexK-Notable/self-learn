@@ -63,8 +63,7 @@ occasion.** Concretely:
   answer is "ask the human," not "find another way to do it."
 
 **You have no path to `route`, `reject`, `defer`, or `retire` — ever.**
-(`retire` is the verb the specs used to call `graduate`, still accepted
-as a hidden alias for one release.) Those are the CLI verbs that
+(`retire` is the verb the specs used to call `graduate`; that alias was removed on 2026-10-24.) Those are the CLI verbs that
 actually file a decision, and none of them
 are tools you can call. The human presses a key in the surface; that
 keypress is the only thing that ever calls a resolution verb. You

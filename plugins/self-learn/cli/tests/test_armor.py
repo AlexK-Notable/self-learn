@@ -290,6 +290,19 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # anchor-side content and nothing is owed (section 4.7 FW-140).
     "test_invocation.py": Behaviour(
         nodes=94, dump_sha="21ac729b38c2304637bc6e4412c75dd39b37fa405b2ce7377f6142b34f5e7448",
+        missing={
+            "func:test_rg1_five_rung_precedence_resolves_in_isolation": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_rg2_each_rung_shadows_the_ones_below": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_sel1_env_selector_cli_refused_through_text_session": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_sel2_all_four_surfaces_refuse_through_their_own_templates": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_sel3_coarse_rung_cli_refuses_identically": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_sel4_config_backend_worker_cli_refuses_and_names_that_key": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_rg3_unknown_value_falls_closed_with_byte_exact_warning": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_t_unknown_still_sdk_write_session_succeeds_not_refused": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_rg6_empty_string_falls_through_silently": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_rg7_config_invocation_backend_discipline": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+            "func:test_fk3_fake_is_not_reachable_from_backend_for": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+        },
     ),
     # 2026-08-30, ANCHOR ee62df0: RS8's `edited` exemption was dropped as
     # VACUOUS by this landing's refusal -- U-xdist landed, so the widened
@@ -303,6 +316,9 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # this landing's own refusal -- those edits are now at the anchor.
     "test_invocation_sdk.py": Behaviour(
         nodes=141, dump_sha="8927c9911327f00d16d4a4c31e08b806bd3e5e32ec33b78d8f90f3e8f4f3850d",
+        edited={
+            "assign:_SIM_2_NINE": "2026-10-24 17-invocation-runbook.md §1: remove the two deleted backend precedence tests from the SDK-absent fixture census.",
+        },
     ),
     "test_worker.py": Behaviour(
         nodes=83, dump_sha="0d4ac5f2300dc2f265566bc14b258c0086d7d6b23fd16b0c421d3d995d8e7a46"
@@ -317,6 +333,9 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     ),
     "test_route_cli.py": Behaviour(
         nodes=59, dump_sha="c61c80a0b91bc6e10dfc53e81e91549f6c7642f32b3c4a9ea91cbe9bbbd3eaa6",
+        edited={
+            "func:test_graduate_cli": "2026-10-24 17-invocation-runbook.md §1; 02-schema.md §2: retire selectors and graduate alias.",
+        },
     ),
     # 2026-09-20, ANCHOR 1a0220b (liveness landing): A12's `edited` door (U7's cases block in the
     # batch prompt) was dropped as VACUOUS by this landing's own refusal; U7
@@ -863,9 +882,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_export_total,
     ),
     "EXM3.census_missing": Measured(
-        value=0,
+        value=11,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-24 17-invocation-runbook.md §1 and 02-schema.md §2: "
+            "measured 11 after selector-test deletions and the retire CLI conversion. "
             "2026-09-11, transcribed at ANCHOR a41ddb3 from this module's own "
             "STALE refusal (Sprint 3 landing): 2 -> 0. test_invocation_sdk.py's "
             "`assign:_FS_CALLS` and `assign:_PL3_ALLOWED` (M-V, 1737499) are absent "
@@ -875,9 +896,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=2,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
+            "2026-10-24 17-invocation-runbook.md §1: SDK fixture census adjusted; now 2. "
+            "2026-10-24 17-invocation-runbook.md §1 and 02-schema.md §2: "
+            "measured 1 after selector-test deletions and the retire CLI conversion. "
             "2026-09-28, transcribed at ANCHOR 9940b03 from this module's own STALE "
             "refusal (followups-0928 landing): 2 -> 0, both batch-0928 doors dropped as "
             "VACUOUS (their edits are at the anchor). Previous entry: "
@@ -916,9 +940,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_edited,
     ),
     "BEH1.control_missing": Measured(
-        value=68,
+        value=74,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-10-24 17-invocation-runbook.md §1 and 02-schema.md §2: "
+            "measured 74 after selector-test deletions and the retire CLI conversion. "
             "2026-09-04 Sprint 2 integration, per §5.1's STALE remediation: 66 -> 68 "
             "against the RETIRED control anchor c3b48e7 (HEAD-scoped; moves whenever "
             "HEAD does): the two test_invocation_sdk.py constants M-V deleted "
@@ -928,9 +954,12 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=194,
+        value=190,
         scope=_SCOPE_HEAD,
         reason=(
+            "2026-10-24 17-invocation-runbook.md §1: SDK fixture census adjusted; now 190. "
+            "2026-10-24 17-invocation-runbook.md §1 and 02-schema.md §2: "
+            "measured 190 after selector-test deletions and the retire CLI conversion. "
             "2026-09-28 batch 0928 part 3 (`13-hosting-and-separation.md` §6): "
             "193 -> 194 -- `test_invocation_sdk.py`'s `test_op14_...` (the option "
             "set gains `thinking`) now also differs from c3b48e7. Previous entry: "

@@ -372,7 +372,7 @@ class TestT5RetirementCrossesTheBoundary:
         skill_md_id = "lrn-54000003"
         skill_md = build_fixture(env, new_skill_ids=ns_ids, skill_md_id=skill_md_id)
 
-        verbs.graduate(env.home, ns_ids[0], no_push=True)
+        verbs.retire(env.home, ns_ids[0], covered_by="skill-md:canon", no_push=True)
 
         ids = set(entry_ids(skill_md.read_text(encoding="utf-8")))
         assert ns_ids[0] not in ids

@@ -89,72 +89,6 @@ def test_blocker1_provider_name_four_states_agree_across_both_faces(tmp_path, mo
         assert runtime == ("bedrock", "override:provider.name")
 
 
-@pytest.mark.parametrize("state", ["absent", "empty", "unknown", "valid"])
-def test_blocker1_invocation_backend_worker_four_states_agree_across_both_faces(
-    tmp_path, monkeypatch, capsys, state
-):
-    """Fold r2 (gap-2): made precise instead of asserting "differ" for
-    `unknown`. SOURCE agreement (which rung answered) holds across ALL
-    FOUR states, including `unknown` -- both faces are fed the same raw
-    string by the same override var and always agree on where it came
-    from. VALUE agreement holds for absent/empty/valid, where there is
-    nothing to clamp. For `unknown` specifically the two resolvers have a
-    DELIBERATE VALUE split, verified as exactly three things:
-
-    (a) `resolve_backend_raw` is pure by spec-gate ruling r3 -- it never
-    clamps, warns, or prints; it returns the unknown string UNCHANGED.
-    (b) `settings.resolve_setting`'s `validate` DOES clamp inline (this
-    is the registry/display face), and the clamp is never silent from
-    that face alone: `setting_row`'s `note` names exactly what was
-    folded to what (`_fold_note`, S-58 r5-m1(b)).
-    (c) `registry.backend_for` -- the actual invocation-time resolver
-    `worker.run`/`doctor invocation` call -- is a WARN-and-clamp
-    channel, not a raise-based refusal: verified live (see this
-    module's probe history) that only the retired `"cli"` value raises
-    `BackendUnavailable` in `_resolve`; an ordinary unknown string
-    prints `self-learn: unknown invocation backend <value!r> in
-    <source> — using "sdk"` to stderr and returns a working
-    `SdkBackend`. Asserted here by name (naming the raw value in the
-    printed text) rather than by exception, matching what the code
-    actually does rather than assuming a raise."""
-    home = tmp_path / "home"
-    _write_config(home, "invocation", "backend_worker", "sdk")
-    var = "SELF_LEARN_OVERRIDE_INVOCATION_BACKEND_WORKER"
-    if state == "absent":
-        monkeypatch.delenv(var, raising=False)
-    elif state == "empty":
-        monkeypatch.setenv(var, "")
-    elif state == "unknown":
-        monkeypatch.setenv(var, "not-a-real-backend")
-    else:
-        monkeypatch.setenv(var, "sdk")
-
-    runtime = registry.resolve_backend_raw(home, "worker")
-    reg = settings.resolve_setting(home, settings.by_name("invocation.backend_worker"))
-
-    assert runtime[1] == reg[1], (
-        f"state={state}: source disagreement — runtime={runtime[1]!r} "
-        f"registry={reg[1]!r}"
-    )
-
-    if state == "unknown":
-        assert runtime == ("not-a-real-backend", "override:invocation.backend_worker")
-        assert reg == ("sdk", "override:invocation.backend_worker")
-        row = settings.setting_row(home, settings.by_name("invocation.backend_worker"))
-        assert row["note"] == "'not-a-real-backend' folded to 'sdk'"
-
-        from self_learn.invocation_sdk.backend import SdkBackend
-
-        backend = registry.backend_for("worker", home=home)
-        assert isinstance(backend, SdkBackend)
-        err = capsys.readouterr().err
-        assert "not-a-real-backend" in err
-        assert 'using "sdk"' in err
-        return
-
-    assert runtime == reg, f"state={state}: runtime={runtime!r} registry={reg!r}"
-    if state in ("absent", "empty"):
-        assert runtime == ("sdk", "config:invocation.backend_worker")
 
 
 def test_blocker1_case_b_valid_bedrock_ledger_survives_empty_override_var(tmp_path, monkeypatch):
@@ -178,16 +112,6 @@ def test_blocker1_case_b_valid_bedrock_ledger_survives_empty_override_var(tmp_pa
     assert env["AWS_REGION"] == "us-east-1"
 
 
-def test_blocker1_deliberate_empty_override_still_round_trips_for_a_paired_entry(tmp_path):
-    """The OTHER half of BLOCKER-1's fix: a DELIBERATE `override(name,
-    "")` (settings' own programmatic escape hatch, `config.
-    OVERRIDE_EMPTY_MARKER`) must still be preserved -- distinct from the
-    ambient-empty case above, which reads as no-answer instead."""
-    home = tmp_path / "home"
-    setting = settings.by_name("miner.transcripts_dir")
-    with settings.override("miner.transcripts_dir", ""):
-        value, source = settings.resolve_setting(home, setting)
-        assert (value, source) == ("", "override:miner.transcripts_dir")
 
 
 # ===================================================================== #
@@ -198,202 +122,20 @@ def test_blocker1_deliberate_empty_override_still_round_trips_for_a_paired_entry
 # ===================================================================== #
 
 
-def test_major1_four_case_table_registry_and_runtime_agree(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-
-    def both(surface="worker"):
-        reg = settings.resolve_setting(home, settings.by_name(f"invocation.backend_{surface}"))
-        run = registry.resolve_backend_raw(home, surface)
-        assert reg == run, f"registry={reg!r} runtime={run!r}"
-        return reg
-
-    # [1] only the GENERAL env var set.
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-    assert both() == ("sdk", "env:SELF_LEARN_BACKEND")
-    monkeypatch.delenv("SELF_LEARN_BACKEND")
-
-    # [2] only the GENERAL config key set.
-    _write_config(home, "invocation", "backend", "sdk")
-    assert both() == ("sdk", "config:invocation.backend")
-
-    # [3] general config key + a GENERAL override.
-    monkeypatch.setenv("SELF_LEARN_OVERRIDE_INVOCATION_BACKEND", "sdk")
-    assert both() == ("sdk", "override:invocation.backend")
-    monkeypatch.delenv("SELF_LEARN_OVERRIDE_INVOCATION_BACKEND")
-
-    # [4] Rs-a1: an EMPTY per-surface config key beside a present
-    # general key terminates at DEFAULT -- never consults the general
-    # key at all.
-    _write_config(home, "invocation", "backend_worker", "")
-    assert both() == ("sdk", "default")
 
 
-def test_major4_six_rung_full_tuple_table(tmp_path, monkeypatch):
-    """Every rung of `resolve_backend_raw`'s six-rung cascade, reachable
-    on its own, asserting the FULL `(value, source)` tuple at each --
-    the gate's MAJOR-4 finding: a census that only checks rung COUNT or
-    ORDER, not the full tuple each rung actually returns, would miss a
-    rung silently returning the wrong value alongside the right label
-    (or vice versa)."""
-    home = tmp_path / "home"
-    surface = "worker"
-    name = f"invocation.backend_{surface}"
-
-    def resolved():
-        reg = settings.resolve_setting(home, settings.by_name(name))
-        run = registry.resolve_backend_raw(home, surface)
-        assert reg == run
-        return reg
-
-    # default -- nothing set anywhere.
-    assert resolved() == ("sdk", "default")
-
-    # config-general.
-    _write_config(home, "invocation", "backend", "sdk")
-    assert resolved() == ("sdk", "config:invocation.backend")
-
-    # config-specific beats config-general.
-    _write_config(home, "invocation", "backend_worker", "sdk")
-    assert resolved() == ("sdk", "config:invocation.backend_worker")
-
-    # env-general beats config (both specific and general config keys).
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-    assert resolved() == ("sdk", "env:SELF_LEARN_BACKEND")
-
-    # env-specific beats env-general.
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
-    assert resolved() == ("sdk", "env:SELF_LEARN_BACKEND_WORKER")
-
-    # override-general beats every env/config rung.
-    monkeypatch.setenv("SELF_LEARN_OVERRIDE_INVOCATION_BACKEND", "sdk")
-    assert resolved() == ("sdk", "override:invocation.backend")
-
-    # override-specific beats override-general.
-    monkeypatch.setenv("SELF_LEARN_OVERRIDE_INVOCATION_BACKEND_WORKER", "sdk")
-    assert resolved() == ("sdk", "override:invocation.backend_worker")
 
 
-def test_major1_mutation_a1_a2_stay_killed_rs_a1_termination(tmp_path):
-    """The gate's own mutations (a1)/(a2): an EMPTY per-surface config
-    key must terminate at default (never fall through to a present
-    general key) -- (a1) an ABSENT per-surface key must still consult
-    the general key (a2). Both faces, both cases."""
-    home = tmp_path / "home"
-    _write_config(home, "invocation", "backend", "sdk")
-    _write_config(home, "invocation", "backend_worker", "")
-    reg = settings.resolve_setting(home, settings.by_name("invocation.backend_worker"))
-    run = registry.resolve_backend_raw(home, "worker")
-    assert reg == run == ("sdk", "default")  # (a1): empty specific terminates
-
-    home2 = tmp_path / "home2"
-    _write_config(home2, "invocation", "backend", "sdk")
-    reg2 = settings.resolve_setting(home2, settings.by_name("invocation.backend_worker"))
-    run2 = registry.resolve_backend_raw(home2, "worker")
-    assert reg2 == run2 == ("sdk", "config:invocation.backend")  # (a2): absent falls through
 
 
-def test_doctor_settings_backend_worker_row_under_general_env_var(tmp_path, monkeypatch):
-    """The coordinator's own expected result: `doctor settings` under
-    `SELF_LEARN_BACKEND=sdk` names `invocation.backend_worker`'s row
-    with the GENERAL env var in the source label -- not `"default"`."""
-    home = tmp_path / "home"
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-    rows = {row.name: row.detail for row in settings.preflight(home)}
-    assert "invocation.backend_worker = 'sdk' (env:SELF_LEARN_BACKEND)" in rows["invocation.backend_worker"]
 
 
-def test_gap4_malformed_backend_worker_config_value_warns_identically_on_both_faces(
-    tmp_path, capsys
-):
-    """Fold r2 (gap-4): `invocation.registry.resolve_backend_raw` (the
-    runtime face) and `settings.resolve_setting` (the registry/display
-    face, via `_try_paired`) both walk the SAME specific/general config
-    pair through `config.paired_leaf` for a malformed value -- before
-    this fold they passed DIFFERENT `label` strings to that shared
-    walk (`_try_paired` used `setting.description`, a per-surface
-    phrase; `resolve_backend_raw` hardcoded a different literal), so a
-    non-string `invocation.backend_worker` value warned with two
-    different sentences depending on which face triggered it, unpinned
-    by any test. Both now pass `config.INVOCATION_BACKEND_LABEL`, the
-    ONE shared constant -- pinned here as the literal, identical stderr
-    line from both call sites."""
-    home = tmp_path / "home"
-    _write_config(home, "invocation", "backend_worker", 123)
-
-    capsys.readouterr()  # drop anything printed by fixture setup
-    registry.resolve_backend_raw(home, "worker")
-    runtime_err = capsys.readouterr().err.strip()
-
-    settings.resolve_setting(home, settings.by_name("invocation.backend_worker"))
-    registry_err = capsys.readouterr().err.strip()
-
-    expected = (
-        "self-learn: config.yaml ignored — invocation.backend_worker "
-        "must be a string, got 123; invocation backend selection ignored"
-    )
-    assert runtime_err == expected, f"runtime face: {runtime_err!r}"
-    assert registry_err == expected, f"registry face: {registry_err!r}"
-    assert runtime_err == registry_err
 
 
-def test_gap5_every_paired_entry_is_env_first_with_a_real_general_sibling():
-    """Fold r2 (gap-5): registration-time guard, test only -- no
-    registry-builder change. `_try_paired` (this module) hardcodes the
-    rung order override -> env -> config regardless of `setting.
-    direction`; every CURRENT `general_name`-bearing entry happens to be
-    `env-first`, so the walk is correct today, but nothing stops a
-    future config-first paired entry from being silently miswalked by
-    the same hardcoded order. This test is that guard, made a test
-    instead of an `assert` at REGISTRY construction time (asked for
-    explicitly): a future paired entry that is `config-first`, or whose
-    `general_name` doesn't name a REAL registry entry (`by_name` would
-    raise `UnknownSettingError`), fails here rather than silently
-    misresolving or blowing up somewhere downstream."""
-    paired = [s for s in settings.REGISTRY if s.general_name is not None]
-    assert paired, "no paired entries -- this guard would vacuously pass"
-    for setting in paired:
-        assert setting.direction == "env-first", (
-            f"{setting.name}: paired entries must be env-first -- "
-            f"_try_paired hardcodes override -> env -> config and does "
-            f"not consult `direction` at all"
-        )
-        general = settings.by_name(setting.general_name)  # raises if not a real entry
-        assert general.general_name is None, (
-            f"{setting.name}'s general sibling {general.name!r} is ITSELF "
-            f"paired -- _try_paired does not support a chain"
-        )
 
 
-def test_delta_r2_major1_preflight_warn_names_the_general_override_var(tmp_path, monkeypatch):
-    """M-S delta gate r2, MAJOR-1: `_answering_setting` (settings.py:613)
-    has no witness at either call site. This is the `preflight` call
-    site (:1512): when the GENERAL override (`SELF_LEARN_OVERRIDE_
-    INVOCATION_BACKEND`) is the one that actually answered for a
-    per-surface row (`invocation.backend_worker`), the WARN detail's
-    "Unset <VAR> to stop overriding" text must name the GENERAL var --
-    the one the operator actually exported -- not the per-surface var,
-    which was never set and whose unsetting would change nothing."""
-    monkeypatch.setenv("SELF_LEARN_OVERRIDE_INVOCATION_BACKEND", "sdk")
-    home = tmp_path / "home"
-    rows = {row.name: row.detail for row in settings.preflight(home)}
-    detail = rows["invocation.backend_worker"]
-    assert "Unset SELF_LEARN_OVERRIDE_INVOCATION_BACKEND to stop overriding." in detail
-    assert "SELF_LEARN_OVERRIDE_INVOCATION_BACKEND_WORKER" not in detail
 
 
-def test_delta_r2_major1_fold_note_reports_the_general_config_key_fold(tmp_path):
-    """M-S delta gate r2, MAJOR-1: the `_fold_note` call site (:1435).
-    When the GENERAL config key (`invocation.backend`) holds a
-    malformed value and no per-surface key is present, the per-surface
-    row's `note` must report THAT fold -- re-reading through the
-    general entry's own config key, not the per-surface key that was
-    never present."""
-    home = tmp_path / "home"
-    _write_config(home, "invocation", "backend", "not-a-real-backend")
-    row = settings.setting_row(home, settings.by_name("invocation.backend_worker"))
-    assert row["value"] == "sdk"
-    assert row["source"] == "config:invocation.backend"
-    assert row["note"] == "'not-a-real-backend' folded to 'sdk'"
 
 
 # ===================================================================== #
@@ -415,14 +157,6 @@ _LITERAL_ENV_FIRST_NAMES = frozenset(
         "provider.bedrock.models.steward",  # U8 (17-invocation-runbook.md §1)
         "provider.bedrock.models.overseer",  # U8
         "provider.bedrock.models.small_fast",
-        "invocation.backend",
-        "invocation.backend_worker",
-        "invocation.backend_worker-repair",
-        "invocation.backend_miner-reader",
-        "invocation.backend_analyst",
-        "invocation.backend_steward",  # U8
-        "invocation.backend_overseer",  # U8
-        "invocation.backend_miner-session",  # U4-seam
         "sdk.cli_path",
         "models.worker",
         "models.miner",
@@ -503,7 +237,7 @@ _LITERAL_ENABLED_WHEN_NAMES = frozenset(
 def test_major2_env_first_literal_16_names_match_the_registry_exactly():
     actual = frozenset(s.name for s in settings.REGISTRY if s.direction == "env-first")
     assert actual == _LITERAL_ENV_FIRST_NAMES
-    assert len(_LITERAL_ENV_FIRST_NAMES) == 23  # U8: 16 -> 22 (+6); U4-seam: +1 (invocation.backend_miner-session)
+    assert len(_LITERAL_ENV_FIRST_NAMES) == 15  # U8: 16 -> 22 (+6); U4-seam: +1 (invocation.backend_miner-session)
 
 
 def test_major2_config_first_literal_complement_27_names_match_the_registry_exactly():

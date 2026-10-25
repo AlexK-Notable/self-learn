@@ -134,8 +134,6 @@ from pathlib import Path
 from typing import Literal, cast
 
 from . import config, gitops, intents, ledger
-from .invocation.contract import DEFAULT_BACKEND_FOR_SURFACE, SELECTOR_FOR_SURFACE, SURFACES
-from .invocation.registry import KNOWN_BACKENDS
 
 __all__ = [
     "Kind",
@@ -306,22 +304,6 @@ class Setting:
     #: override would otherwise switch the engine with no flip of the
     #: user's. :func:`override` refuses such an entry outright.
     override_channel: bool = True
-    #: M-S (S-58 MAJOR-1, code-gate fold r1): the dotted name of this
-    #: entry's GENERAL sibling in a specific/general config.yaml pair
-    #: (currently only the `invocation.backend_<surface>` entries,
-    #: pointing at `"invocation.backend"`) -- `None` (every entry
-    #: above this comment) means this entry resolves through the
-    #: ordinary single-key sequence above. When set, `resolve_setting`
-    #: consults `config.paired_cascade` instead: the specific entry's
-    #: own override/env/config rungs, THEN the general sibling's same
-    #: three rungs, before falling to this entry's own default --
-    #: fixing the gate's MAJOR-1 (the registry face used to report
-    #: `"default"` even when the general sibling actually answered,
-    #: because this single-key sequence never looked at it at all).
-    #: The general entry's OWN resolution (`by_name("invocation.
-    #: backend")`) is unaffected -- it has no `general_name` of its
-    #: own, so it always resolves through the ordinary sequence.
-    general_name: str | None = None
 
 
 def sizing_knob(
@@ -599,97 +581,8 @@ def _try_env(setting: Setting, *, next_rung: str | None) -> tuple[SettingValue, 
     return None
 
 
-def _try_paired(home: Path | str | None, setting: Setting, general: Setting) -> tuple[SettingValue, str]:
-    """M-S (MAJOR-1/MAJOR-4, code-gate fold r1): resolves a specific/
-    general pair (`setting.general_name is not None`) through the ONE
-    shared pure cascade, `config.paired_cascade` -- called here AND by
-    `invocation.registry.resolve_backend_raw`, fixing MAJOR-1 (the
-    registry face used to report `"default"` even when the general
-    sibling actually answered, because the ordinary single-key
-    sequence in `resolve_setting` below never looked at the sibling at
-    all).
-
-    `paired_cascade` itself is kind-agnostic; this function re-applies
-    THIS module's own kind-aware parse + validate + warn machinery to
-    whichever raw value won, and builds the source label in this
-    module's established vocabulary (`override:<name>`, `env:
-    <env_var>`, `config:<section>.<key>`) naming whichever entry --
-    `setting` or `general` -- actually answered.
-
-    Simplification, stated as a decision (every current pair is
-    `kind="str"` with a CLAMPING `validate`, per `Setting.validate`'s
-    own docstring): a clamping validate never rejects (`_apply_
-    validate` never returns `(None, True)`) and `str`-kind parsing
-    never fails, so no CURRENT pair can hit the "malformed/rejected at
-    the winning rung" branches below -- they exist defensively (warn +
-    default, NOT a resumed walk past the winning rung to the next one)
-    for a FUTURE non-str or rejecting paired entry, and are untested
-    against today's registry for exactly that reason."""
-    found = config.paired_cascade(
-        home,
-        specific_name=setting.name,
-        general_name=general.name,
-        specific_env_var=setting.env_var,
-        general_env_var=general.env_var,
-        section=cast(str, setting.config_section),
-        specific_config_key=cast(str, setting.config_key),
-        general_config_key=cast(str, general.config_key),
-        # Fold r2 (gap-4): was `setting.description` (a per-surface
-        # phrase), which produced a DIFFERENT warn sentence than
-        # `invocation.registry.resolve_backend_raw`'s hardcoded literal
-        # for the exact same malformed-value walk. Both now pass the
-        # ONE shared constant `config.INVOCATION_BACKEND_LABEL` — see
-        # its own docstring for why it lives in `config.py` and why
-        # it's backend-specific rather than generic.
-        label=config.INVOCATION_BACKEND_LABEL,
-    )
-    if found is None:
-        return _default_value(setting), "default"
-    raw, rung, matched = found
-    answering = setting if rung.endswith("-specific") else general
-    if rung.startswith("config"):
-        parsed = _parse_config_value(raw, answering.kind)
-    else:
-        parsed = _parse_env_value(raw, answering.kind)
-    if parsed is None:
-        _warn(
-            f"{matched}={raw!r} is not a valid {answering.kind} for "
-            f"{answering.name} — using the default"
-        )
-        return _default_value(setting), "default"
-    final, rejected = _apply_validate(parsed, answering.validate)
-    if final is not None:
-        if rung.startswith("override"):
-            return final, f"override:{matched}"
-        if rung.startswith("env"):
-            return final, f"env:{matched}"
-        return final, f"config:{matched}"
-    if rejected:
-        _warn(f"{matched}={raw!r} is out of range for {answering.name} — using the default")
-    return _default_value(setting), "default"
 
 
-def _answering_setting(setting: Setting, source: str) -> Setting:
-    """M-S (code-gate fold r1): for a paired entry, `source` may name
-    the GENERAL sibling's OWN rung instead of `setting`'s own (MAJOR-1)
-    -- every consumer that re-derives a raw value FROM `source`
-    (`_fold_note`, `preflight`'s override-warn text) must re-read using
-    whichever entry the label actually identifies, not always `setting`
-    itself, or it re-reads the wrong (possibly-absent) var/key. Returns
-    `setting` unchanged for every non-paired entry, and for a paired
-    entry whose OWN rung (not the general's) answered."""
-    if setting.general_name is None:
-        return setting
-    general = by_name(setting.general_name)
-    if source.startswith("override:"):
-        return general if source == f"override:{general.name}" else setting
-    if source.startswith("config:") and general.config_section is not None:
-        if source == f"config:{general.config_section}.{general.config_key}":
-            return general
-        return setting
-    if source.startswith("env:") and general.env_var is not None:
-        return general if source == f"env:{general.env_var}" else setting
-    return setting
 
 
 def resolve_setting(home: Path | str, setting: Setting) -> tuple[SettingValue, str]:
@@ -735,14 +628,6 @@ def resolve_setting(home: Path | str, setting: Setting) -> tuple[SettingValue, s
         provider_value, _ = resolve_setting(home, by_name("provider.name"))
         if not setting.enabled_when(cast(str, provider_value)):
             return _default_value(setting), f"inactive (provider={provider_value})"
-
-    if setting.general_name is not None:
-        # M-S (MAJOR-1, code-gate fold r1): a paired entry resolves
-        # through the shared six-rung cascade instead of the ordinary
-        # single-key sequence below -- `_try_paired` already covers
-        # this entry's own override/env/config rungs AND its general
-        # sibling's, in the correct specific-before-general order.
-        return _try_paired(home, setting, by_name(setting.general_name))
 
     hit = _try_override(home, setting)
     if hit is not None:
@@ -1516,56 +1401,6 @@ REGISTRY: tuple[Setting, ...] = (
         direction="env-first",
         enabled_when=_bedrock_active,
     ),
-    # ----------------------------------------------------- invocation
-    # M-S: `invocation.backend` + one `invocation.backend_<surface>`
-    # per surface `backend_for` serves -- the registry's reporting/
-    # write face for the backend-selection family. Code-gate fold r1
-    # (MAJOR-1) corrects r3-M1/r3-M2's original claim: the specific/
-    # general CASCADE these keys participate in is now ONE shared pure
-    # function, `config.paired_cascade`, called by BOTH this module's
-    # `resolve_setting` (via each per-surface entry's `general_name`)
-    # AND `invocation.registry.resolve_backend_raw` -- not two
-    # independent transcriptions of the same six rungs. Each carries
-    # BOTH `validate` (folds an off-whitelist value in place on read,
-    # same as any other clamping entry) and `accepts` (refuses an
-    # off-whitelist `config set` outright, MAJOR-3).
-    Setting(
-        name="invocation.backend",
-        env_var="SELF_LEARN_BACKEND",
-        config_section="invocation",
-        config_key="backend",
-        kind="str",
-        default="sdk",
-        description="the general invocation backend selection (per-surface keys take precedence)",
-        direction="env-first",
-        validate=lambda v: cast(str, v) if cast(str, v) in KNOWN_BACKENDS else "sdk",
-        accepts=lambda v: cast(str, v) in KNOWN_BACKENDS,
-        accepts_hint=f"must be one of {', '.join(KNOWN_BACKENDS)}",
-        # nit-4: the whole `invocation.backend` family is one emergency-
-        # rollback lever -- tier "C" for the general key too, matching
-        # each per-surface sibling (splitting the general key's tier
-        # from its own per-surface siblings would make no sense: it is
-        # the SAME lever, just aimed at every surface at once).
-        tier="C",
-    ),
-    *(
-        Setting(
-            name=f"invocation.backend_{_surface}",
-            env_var=f"SELF_LEARN_BACKEND_{SELECTOR_FOR_SURFACE.get(_surface, _surface)}",
-            config_section="invocation",
-            config_key=f"backend_{_surface}",
-            kind="str",
-            default=DEFAULT_BACKEND_FOR_SURFACE.get(_surface, "sdk"),
-            description=f"the invocation backend selection for the {_surface!r} surface",
-            direction="env-first",
-            validate=lambda v: cast(str, v) if cast(str, v) in KNOWN_BACKENDS else "sdk",
-            accepts=lambda v: cast(str, v) in KNOWN_BACKENDS,
-            accepts_hint=f"must be one of {', '.join(KNOWN_BACKENDS)}",
-            general_name="invocation.backend",
-            tier="C",
-        )
-        for _surface in SURFACES
-    ),
     # ----------------------------------------------------------- sdk
     Setting(
         name="sdk.cli_path",
@@ -1853,6 +1688,32 @@ def override(name: str, value: SettingValue) -> Iterator[None]:
             os.environ[env_var] = prior
 
 
+def retired_keys(home: Path | str) -> list[str]:
+    """Present retired backend selectors, by name only; never expose values."""
+    from ruamel.yaml import YAML, YAMLError
+
+    try:
+        data = YAML(typ="safe").load(config.config_path(home).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, YAMLError):
+        data = None
+    section = data.get("invocation") if isinstance(data, dict) else None
+    found = [
+        f"invocation.{key}" for key in section
+        if isinstance(key, str) and (key == "backend" or key.startswith("backend_"))
+    ] if isinstance(section, dict) else []
+    found.extend(
+        key for key in os.environ
+        if key == "SELF_LEARN_BACKEND" or key.startswith("SELF_LEARN_BACKEND_")
+        or key == "SELF_LEARN_OVERRIDE_INVOCATION_BACKEND"
+        or key.startswith("SELF_LEARN_OVERRIDE_INVOCATION_BACKEND_")
+    )
+    return sorted(found)
+
+
+def retired_key_detail(key: str) -> str:
+    return f"{key} is retired and has no effect; every invocation uses sdk"
+
+
 def unknown_keys(home: Path | str) -> list[str]:
     """`K-c` parity for the settings registry (`config.provider_
     unknown_keys`'s template): every dotted `section.key` present under
@@ -1888,6 +1749,8 @@ def unknown_override_vars() -> list[str]:
     return sorted(
         k for k in os.environ
         if k.startswith("SELF_LEARN_OVERRIDE_") and k not in legal
+        and not (k == "SELF_LEARN_OVERRIDE_INVOCATION_BACKEND"
+                 or k.startswith("SELF_LEARN_OVERRIDE_INVOCATION_BACKEND_"))
     )
 
 
@@ -1934,16 +1797,8 @@ def _fold_note(home: Path | str, setting: Setting, source: str) -> str | None:
     hatch, `"default"`, and `f"inactive (provider=...)"` (`enabled_when`
     gating never reaches a rung to re-read).
 
-    M-S (code-gate fold r1): for a PAIRED entry (`setting.general_name
-    is not None`), `source` may name the GENERAL sibling's own rung
-    instead of `setting`'s -- re-derives via `_answering_setting`
-    first, so this never re-reads the wrong (possibly-absent) var/key
-    (the same bug MAJOR-1 named on the resolve path, found here too on
-    the display path). Also reads the override rung through `config.
-    read_override` (not a raw `os.environ.get`), so a deliberate
-    `override(name, "")` (`config.OVERRIDE_EMPTY_MARKER`) is decoded
-    correctly instead of re-parsed as the literal marker text."""
-    entry = _answering_setting(setting, source)
+    Override markers are decoded through config.read_override."""
+    entry = setting
     if entry.validate is None:
         return None
     if source.startswith("override:"):
@@ -2020,7 +1875,7 @@ def preflight(home: Path | str) -> list[SettingRow]:
                     verdict="WARN",
                     detail=(
                         f"{setting.name} = {value!r} ({source}){note_suffix} -- "
-                        f"{_override_warn_text(_answering_setting(setting, source))}"
+                        f"{_override_warn_text(setting)}"
                     ),
                 )
             )
@@ -2044,6 +1899,8 @@ def preflight(home: Path | str) -> list[SettingRow]:
                 detail=f"unrecognized override env var (typo or wrong case?): {var}",
             )
         )
+    rows.extend(SettingRow(name="retired", verdict="WARN", detail=retired_key_detail(key))
+                for key in retired_keys(home))
     rows.extend(_intents_preflight_rows(home))
     return rows
 

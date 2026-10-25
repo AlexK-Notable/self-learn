@@ -512,7 +512,7 @@ class TestGitOpsErrorIsHandledEverywhere:
         [
             ["reject", "lrn-cccc0001"],
             ["defer", "lrn-cccc0001"],
-            ["graduate", "lrn-cccc0001"],
+            ["retire", "lrn-cccc0001", "--covered-by", "skill-md:canon"],
         ],
     )
     def test_a_held_lock_is_a_clean_exit_not_a_traceback(
@@ -934,7 +934,7 @@ class TestNoRemoteGuardCoversEveryVerb:
     def test_graduate(self, tmp_path, monkeypatch):
         env = self._home(tmp_path, monkeypatch)
         rid = self._pending(env.ledger)
-        self._assert_skipped(verbs.graduate(env.ledger, rid))
+        self._assert_skipped(verbs.retire(env.ledger, rid, covered_by="skill-md:canon"))
 
     def test_route(self, tmp_path, monkeypatch):
         env = self._home(tmp_path, monkeypatch)

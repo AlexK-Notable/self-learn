@@ -187,18 +187,15 @@ def test_cli_help_hides_graduate_but_shows_retire():
     assert re.search(r"(?m)^\s+retire\s", text), f"retire must be listed:\n{text}"
 
 
-def test_cli_graduate_subcommand_still_resolves_directly(capsys):
-    """The alias is HIDDEN from the listing, not GONE: `self-learn
-    graduate --help` still resolves straight to its own sub-parser --
-    that resolution never goes through the stripped `_choices_actions`
-    list, which only feeds the PARENT listing."""
+def test_cli_graduate_subcommand_is_unknown(capsys):
     parser = cli._build_parser()
-    with pytest.raises(SystemExit) as excinfo:
-        parser.parse_args(["graduate", "--help"])
-    assert excinfo.value.code == 0
-    out = capsys.readouterr().out
-    assert "--covered-by" in out
-    assert "graduate" in out  # usage: self-learn graduate ...
+    args = parser.parse_args(["retire", "lrn-12345678", "--covered-by", "skill-md:canon"])
+    assert args.command == "retire"
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["graduate", "lrn-12345678"])
+    assert exc.value.code == 2
+    assert "invalid choice: 'graduate'" in capsys.readouterr().err
+
 
 
 # =================================================================== reopen
@@ -242,7 +239,7 @@ class TestReopenWidening:
         home = make_home(tmp_path)
         monkeypatch.setenv("SELF_LEARN_HOME", str(home))
         _seed_pending_r(home, OLD_R)
-        verbs.graduate(home, OLD_R, no_push=True)  # legacy: no covered_by
+        ledger_ops.supersede_record(home, OLD_R, "canon")  # legacy: no covered_by
         before = Record.from_path(home / "skills" / "s" / "resolved" / f"{OLD_R}.md")
         assert before.superseded_by == "canon"  # positive control: really legacy-retired
 
@@ -381,7 +378,7 @@ def test_show_uses_the_display_helper_for_legacy_and_pending_supersessions(
     monkeypatch.setenv("SELF_LEARN_HOME", str(home))
 
     _seed_pending_r(home, OLD_R)
-    verbs.graduate(home, OLD_R, no_push=True)
+    ledger_ops.supersede_record(home, OLD_R, "canon")
 
     pending_id = "lrn-0000d003"
     _seed_pending_r(home, pending_id)

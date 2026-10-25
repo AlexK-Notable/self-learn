@@ -240,8 +240,6 @@ def _test_invocation_py_source() -> str:
 #: named fixture to get there. `wr2` stays in the set (single-leg, sdk_absent
 #: for its whole body, no conflict).
 _SIM_2_NINE = {
-    "test_rg1_five_rung_precedence_resolves_in_isolation",
-    "test_rg2_each_rung_shadows_the_ones_below",
     "test_rg4_sdk_raises_backend_unavailable_with_install_command",
     "test_rg5_write_session_returns_unavailable_without_raising",
     "test_rg5_text_session_returns_unavailable_without_raising",
