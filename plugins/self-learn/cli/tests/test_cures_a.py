@@ -40,6 +40,7 @@ from self_learn import (
     settings,
     statements,
     teach,
+    telemetry,
     verbs,
 )
 from self_learn import batch
@@ -423,6 +424,48 @@ class TestAgentShellAttribution:
         _as_agent(monkeypatch)
         assert cli.main(["note", rid, "--append", "seen again on the 29th"]) == 0
         assert git(home, "log", "-1", "--format=%B").stdout.rstrip().endswith("By: agent")
+
+    def test_reconsider_and_followup_add_need_a_note_though_they_carry_their_own_text(
+        self, env2, tmp_path, monkeypatch, capsys
+    ):
+        """Integration 2026-10-31, decision 7: `--case` and `--action` say what
+        is done, not why, so they do not count as the stated reason. From an
+        agent shell both need `--note`; it rides the commit body with `By:
+        agent`. A person's terminal needs none (the control, first)."""
+        rid = seed_routed(env2.home, "lrn-0000c0e1")
+        old_case = _u5_case(tmp_path, env2.home, records=[rid], kind="resolution", outcome="route")
+        case = _u5_case(
+            tmp_path, env2.home, records=[rid], kind="reconsider", outcome="reject",
+            supersedes=old_case,
+        )
+        add = ["followup", "add", rid, "--action", "bind the unit", "--no-push"]
+        reconsider = ["reconsider", rid, "--case", case, "--no-push"]
+        # control: a person's terminal gives no reason and is not refused
+        assert not settings.agent_caller()
+        assert cli.main(add) == 0
+        capsys.readouterr()
+
+        _as_agent(monkeypatch)
+        assert cli.main(reconsider) == cli.EXIT_USAGE
+        assert "needs --note" in capsys.readouterr().err
+        rid2 = seed_routed(env2.home, "lrn-0000c0e2")
+        telemetry.flush(env2.home, push=False)  # the setup's spooled events, so HEAD is still
+        head = _head(env2.home)
+        assert cli.main(["followup", "add", rid2, "--action", "bind the unit"]) == cli.EXIT_USAGE
+        err = capsys.readouterr().err
+        assert "needs --note" in err and "followup add" in err
+        assert _head(env2.home) == head  # refused before any write
+        assert Record.from_path(next(env2.home.glob(f"skills/a/resolved/{rid2}.md"))).follow_up is None
+
+        assert cli.main(reconsider + ["--note", "the user said the placement was wrong"]) == 0
+        body = git(env2.home, "log", "-1", "--format=%B").stdout
+        assert "the user said the placement was wrong" in body
+        assert body.rstrip().endswith("By: agent")
+        record = Record.from_path(next(env2.home.glob(f"skills/a/resolved/{rid}.md")))
+        assert record.history[-1]["event"] == "reconsidered"
+        assert cli.main(["followup", "add", rid2, "--action", "bind the unit", "--note", "asked for"]) == 0
+        assert git(env2.home, "log", "-1", "--format=%B").stdout.rstrip().endswith("By: agent")
+        assert Record.from_path(next(env2.home.glob(f"skills/a/resolved/{rid2}.md"))).follow_up
 
     def test_an_agent_shell_route_and_reroute_are_stamped(self, env2, monkeypatch):
         rid = "lrn-0000aaaa"

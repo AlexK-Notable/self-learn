@@ -2866,8 +2866,15 @@ def _routed_destination(result: verbs.VerbResult) -> str:
 #: Attributes of a verb's parsed arguments that carry its stated reason. Most
 #: verbs say it in ``--note``; a few have a required text of their own that
 #: plays the same part (``replace``/``revise`` ``--because``, ``note``
-#: ``--append``, ``reconsider`` ``--case``, ``followup add`` ``--action``).
+#: ``--append``, ``reconsider`` ``--case``, ``followup add`` ``--action``;
+#: the last two are in :data:`_NOTE_REQUIRED_SURFACES`).
 _REASON_ATTRS = ("note", "because", "append", "case", "action")
+
+#: Surfaces whose own required text (`reconsider --case`, `followup add
+#: --action`) names WHAT is done, not WHY: from an agent shell they need
+#: `--note` all the same (integration 2026-10-31, decision 7). Only the
+#: note counts as their stated reason.
+_NOTE_REQUIRED_SURFACES = frozenset({"reconsider", "followup add"})
 
 
 def _agent_attribution(args: argparse.Namespace, surface: str) -> tuple[str | None, int | None]:
@@ -2886,9 +2893,10 @@ def _agent_attribution(args: argparse.Namespace, surface: str) -> tuple[str | No
     a security boundary)."""
     if not settings.agent_caller():
         return None, None
+    attrs = ("note",) if surface in _NOTE_REQUIRED_SURFACES else _REASON_ATTRS
     if any(
         isinstance(getattr(args, attr, None), str) and getattr(args, attr).strip()
-        for attr in _REASON_ATTRS
+        for attr in attrs
     ):
         return "agent", None
     print(
@@ -3092,7 +3100,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         if args.command == "reconsider":
             result = verbs.reconsider(
                 home, args.id, case=args.case, by=args.by or runner,
-                no_push=args.no_push,
+                note=args.note, no_push=args.no_push,
             )
             return _finish_verb(result, "reconsidered", as_json=args.as_json)
         if args.command == "note":

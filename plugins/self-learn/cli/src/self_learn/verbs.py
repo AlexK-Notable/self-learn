@@ -9422,6 +9422,7 @@ def reconsider(
     *,
     case: str,
     by: str | None = None,
+    note: str | None = None,
     no_push: bool = False,
     any_status: bool = False,
 ) -> VerbResult:
@@ -9465,10 +9466,15 @@ def reconsider(
     lesson whose earlier decision failed to apply (still ``pending``), which
     the status checks refuse; the pointer is a trace, and whether the sheet's
     line then changes the lesson is that line's own preview. The case check
-    (:func:`cases.require_reconsider_case`) and the idempotence read still run."""
+    (:func:`cases.require_reconsider_case`) and the idempotence read still run.
+
+    Integration 2026-10-31 (decision 7): *note* is the stated reason an agent
+    shell must give (`cli._agent_attribution`); it rides the commit body
+    only, secret-scanned like every verb's note."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _by_trailer(by)  # validates `by` before any lock/mutation
+    _scan_or_refuse([], note)  # the note only; a clean or absent note passes
     if not cases.CASE_ID_RE.match(case or ""):
         raise VerbError(f"reconsider: not a case id: {case!r}")
     try:
@@ -9514,7 +9520,7 @@ def reconsider(
             )
             record.write(path)
             staged, sha = _commit_ledger(
-                home, [path], message, _body_with_by_trailer(None, by)
+                home, [path], message, _body_with_by_trailer(note, by)
             )
         push = _push_ledger(home, no_push)
         return VerbResult(
