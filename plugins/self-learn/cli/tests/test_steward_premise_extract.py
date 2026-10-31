@@ -477,7 +477,13 @@ def test_the_contract_and_the_method_say_the_same():
     )
     assert "**Writing premises.** With every `route`, put a `premises` line" in method
     assert "**A `premise-extract` input** is a placed lesson with no premises recorded" in method
-    assert "`source: <case id>#what_would_change[<n>]`" in method
+    # integration 2026-10-31 (u6 gate MINOR): at route time the case id is
+    # not minted yet, so the method no longer asks for `source: <case id>#...`;
+    # the "What would change" line names the premise instead.
+    assert "write that condition as a premise and name the premise's id in the line" in method
+    assert "`source: <case id>#what_would_change[<n>]`" not in method
+    # and premises about where the lesson sits are left to code (design M3)
+    assert "Do not write premises about where the lesson sits" in method
     assert "You can try a probe first with the `premise_probe` tool" in method
 
 
