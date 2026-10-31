@@ -50,27 +50,30 @@ def _write_config(env, text):
     commit_all(env.ledger, "config")
 
 
+# integration 2026-10-31: a row keys its lesson as ``record`` and its time as
+# ``observed_at``, as ``premise_sweep._row`` writes it (``read_history`` skips
+# a row with no ``record``); these rows said ``id`` and ``at``.
 def _probe_row(rid, sweep, state, premise=WATCHED, reason="no such file"):
     return {
-        "sweep": sweep, "id": rid, "premise": premise["id"], "kind": "probe",
+        "sweep": sweep, "record": rid, "premise": premise["id"], "kind": "probe",
         "psha": premise_sweep._premise_sig(premises.normalize_premises([premise], record_id=rid)[0]),
         "state": state, "value_sha": None, "shown": "", "claim": "unjudged", "reason": reason,
-        "at": sweep, "failing": None, "detail": "", "group": None,
+        "observed_at": sweep, "failing": None, "detail": "", "group": None,
     }
 
 
 def _placement_row(rid, pid, sweep, *, failing=True):
     return {
-        "sweep": sweep, "id": rid, "premise": pid, "kind": "placement", "psha": "",
+        "sweep": sweep, "record": rid, "premise": pid, "kind": "placement", "psha": "",
         "state": "ok", "value_sha": "feedface", "shown": "unreachable", "claim": "unjudged",
-        "reason": "", "at": sweep, "failing": failing, "detail": "", "group": None,
+        "reason": "", "observed_at": sweep, "failing": failing, "detail": "", "group": None,
     }
 
 
 def _store(cache, rows):
     history: dict = {}
     for row in rows:
-        history.setdefault((row["id"], row["premise"]), []).append(row)
+        history.setdefault((row["record"], row["premise"]), []).append(row)
     premise_sweep._store_history(cache, history)
 
 
@@ -195,12 +198,16 @@ def test_a_refresh_whose_changes_trip_the_secret_scan_is_withheld(env):
 
 def test_the_weeks_code_only_refreshes_are_listed_and_older_ones_are_not(env, tmp_path):
     _seed(env, A, [WATCHED])
+    # integration 2026-10-31: the commits are made oldest first, as a ledger's
+    # are. Made after A's, the nine-day-old commit was the child of a newer one,
+    # and git log --since stops its walk at the first commit older than the cut,
+    # so it hid A's refresh behind it.
+    _commit(env.ledger, f"self-learn: premises refresh {B} p1", days_ago=9, note="old\np1: 1 -> 2")
     _commit(
         env.ledger, f"self-learn: premises refresh {A} p1", days_ago=2,
         note="Re-baselined by the premise sweep (code only, no model call): these premises "
              "are marked on_change: refresh.\np1: 1.4 -> 1.5",
     )
-    _commit(env.ledger, f"self-learn: premises refresh {B} p1", days_ago=9, note="old\np1: 1 -> 2")
     _commit(env.ledger, f"self-learn: reject {C}", days_ago=1)  # not a refresh
     refreshes = health.premise_refreshes(env.ledger, now=NOW)
     assert refreshes["state"] == "ok" and refreshes["total"] == 1

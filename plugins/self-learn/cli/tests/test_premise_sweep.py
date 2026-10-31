@@ -353,7 +353,14 @@ class TestTwoSweepDetection:
         seed(env, A, [premise])
         sw.sweep()
         assert sw.moves("p1") == []  # control: B is still routed
-        other.unlink()
+        # integration 2026-10-31: B is replaced, as a ledger verb would do. It
+        # used to be deleted, but since 84fc940 an id the ledger does not hold
+        # is `unavailable` (02 §3a.10.2: lessons are never deleted), not a move.
+        record = Record.from_path(other)
+        record.set_status("superseded")
+        record.set_superseded_by(C)
+        record.write(other)
+        commit_all(env.ledger, f"replace {B}")
         sw.sweep()
         (move,) = sw.moves("p1")
         assert move.kind == "ledger"

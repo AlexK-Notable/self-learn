@@ -638,6 +638,13 @@ def moved_followups(home: Path) -> list[MovedFollowup]:
 PROBE_REDECIDE_DAYS = 7
 
 
+def _calendar_days(earlier: date, later: date) -> int:
+    """Whole calendar days from *earlier* to *later*, by day number: the
+    repo's scan (``test_domain.TestDaysAfterSubtractionScan``) refuses
+    ``.days`` after a subtraction, the shape behind the A1 truncation bug."""
+    return later.toordinal() - earlier.toordinal()
+
+
 def probe_words(probe: object) -> str:
     """A probe as one short line for a brief: its kind and its fields."""
     if not isinstance(probe, Mapping):
@@ -712,7 +719,7 @@ def _waits_a_week(how: str, today: date, decided: datetime | None) -> bool:
     asked for exactly this look) do not wait."""
     if how != "probe":
         return False
-    return decided is not None and (today - decided.date()).days < PROBE_REDECIDE_DAYS
+    return decided is not None and _calendar_days(decided.date(), today) < PROBE_REDECIDE_DAYS
 
 
 def placed_with_premises(home: Path) -> list[tuple[Any, Record]]:
@@ -1003,9 +1010,9 @@ def placement_moves(home: Path, *, today: date | None = None) -> dict[str, Place
             decided, _label = last_decision(home, record)
         items: list[dict] = []
         for move in found:
-            if move.premise_id in _PLACEMENT_WAITS and decided is not None and (
-                today - decided.date()
-            ).days < PROBE_REDECIDE_DAYS:
+            if move.premise_id in _PLACEMENT_WAITS and decided is not None and _calendar_days(
+                decided.date(), today
+            ) < PROBE_REDECIDE_DAYS:
                 continue  # D7.5: decided less than a week ago; it waits
             if move.premise_id == "@intact":
                 basis = _intact_basis(home, record_id, move.value_sha)

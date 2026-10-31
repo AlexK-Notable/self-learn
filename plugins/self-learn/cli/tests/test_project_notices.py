@@ -681,6 +681,10 @@ def _notice_run(tmp_path, monkeypatch, entries, *, dry_run=False, before=None):
 
     def invoke(spec):
         stage = spec.cwd
+        if spec.label == "phase-s":
+            # integration 2026-10-31 (SK4): skill discovery runs in its own
+            # workspace, which holds no projects.yaml; nothing to stage here.
+            return _ok()
         if spec.label == "phase-a":
             _phase_a(stage)
         else:
