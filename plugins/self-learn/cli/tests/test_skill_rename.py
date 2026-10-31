@@ -417,6 +417,40 @@ def test_an_interrupted_rename_is_finished_by_running_it_again(env, monkeypatch,
     assert env.status(env.home) == "" and env.status(env.root) == ""
 
 
+def test_a_record_filed_in_the_old_bucket_after_a_crash_refuses_the_rerun(env, monkeypatch):
+    """Gate M8 (d3e5dc6): the bucket check runs on a RESUMED rename too. A
+    lesson filed under `skills/<old>/` between the crash and the rerun would
+    be stranded on a folder that no longer exists, so the rerun is refused
+    `needs-person` and changes nothing."""
+    assert env.write().ok
+    real_move = skill_writer._move_plugin
+
+    def crash(*_args, **_kwargs):
+        raise _Crash()
+
+    monkeypatch.setattr(skill_writer, "_move_plugin", crash)
+    with pytest.raises(_Crash):
+        _rename(env)
+    # the rename began: the new row names the old one, the old row is still live
+    registry = skill_registry.load(env.home)
+    assert registry.is_owned(NAME) and NAME in registry.row(NEW)["renamed_from"]
+    monkeypatch.setattr(skill_writer, "_move_plugin", real_move)
+    create_record(
+        env.home,
+        make_behavior(scope=f"skill:{NAME}", record_id=RID_HELD, trigger="About to press a side button."),
+    )
+    commit_all(env.home, "a lesson filed under the old bucket after the crash")
+    assert (env.home / "skills" / NAME / "pending" / f"{RID_HELD}.md").is_file()  # control
+    before = env.snapshot()
+
+    refused = _rename(env)
+
+    assert not refused.ok and refused.kind == "needs-person"
+    assert f"skills/{NAME}/" in refused.problems[0] and RID_HELD in refused.problems[0]
+    assert env.snapshot() == before
+    assert env.skill_md().is_file() and not env.plugin_dir(NEW).exists()
+
+
 def test_a_failed_move_commit_puts_the_skills_root_and_the_row_back(env, monkeypatch):
     assert env.write().ok
     real_commit = gitops.commit
