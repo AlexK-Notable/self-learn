@@ -44,9 +44,15 @@ Rules the file is held to (each refusal names the key and the skill):
 - every ``case`` is a case id, every ``statement`` a statement id, every
   ``by`` is ``overseer`` or ``human``, every ``authored_sha256`` is 64 lowercase
   hex digits, every ``at`` is a timestamp;
-- ``plugin`` is ``plugins/<kebab name>``: a relative path that cannot climb
-  out of the skills root, because the retire and rename steps delete and
-  move what it names.
+- ``plugin`` is exactly ``plugins/<the row's own name>``: a relative path
+  that cannot climb out of the skills root and cannot name another skill's
+  folder or one two rows share, because the retire and rename steps delete
+  and move what it names.
+
+A retired row stays in the file with its ``retired`` stamp. Rows are keyed by
+name, so writing a row for a retired name replaces the retired row (git keeps
+it); whether ``skill write`` may reuse a retired name is SK1's rule, not this
+module's.
 
 **Writing.** :func:`with_update` is the ONLY writer. It opens
 :func:`self_learn.intents.ledger_write` (the same ledger lock
@@ -63,9 +69,22 @@ without any ``NOT_REPO_TRUTH`` entry.
 **The authored hash.** :func:`authored_sha256` is what the compare-and-swap
 in ``skill write`` (D4) uses to tell "the files are as self-learn last wrote
 them" from "a person edited them since". It covers everything a person or
-the overseer authors (SKILL.md outside the managed section, and every
-reference file) and nothing the compilers own (the managed section), so the
-lessons moving in and out of the skill never change it.
+the overseer authors and nothing the compilers own, so the lessons moving in
+and out of the skill never change it. The compilers own three things, and
+all three are left out:
+
+- the managed section of SKILL.md (``BEGIN_MARKER`` through ``END_MARKER``);
+- the pointer block of SKILL.md that a skill-scoped ``reference`` route adds
+  (``POINTER_BEGIN_MARKER`` through ``POINTER_END_MARKER``);
+- the reference shelf, ``references/LEARNINGS.md``, which a ``reference``
+  route creates and appends to (``compilers.compile_reference``). The shelf's
+  own header says it is never hand-edited, and no authored file may use the
+  name: pass it or leave it out, it is not hashed either way.
+
+Every other reference file counts in full. A lesson routed with an explicit
+``--dest`` into one of those files appends an entry to it, and that entry
+counts as authored text; SK1 decides whether ``skill write`` accepts such a
+route into an owned skill.
 """
 
 from __future__ import annotations
@@ -83,7 +102,13 @@ from ruamel.yaml.error import YAMLError
 
 from . import gitops, intents, sentinel
 from .cases import CASE_ID_RE
-from .compilers import BEGIN_MARKER, END_MARKER
+from .compilers import (
+    BEGIN_MARKER,
+    DEFAULT_REFERENCE_BASENAME,
+    END_MARKER,
+    POINTER_BEGIN_MARKER,
+    POINTER_END_MARKER,
+)
 from .compiled import sha256_hex
 from .primitives import chrono, fsops, yamlio
 from .skill_scaffold import SKILL_ENTRY_FILE, SKILL_NAME_MAX_CHARS, SKILL_NAME_RE
@@ -123,6 +148,10 @@ _WRITE_KEYS = ("at", "case", "by", "authored_sha256")
 _VETO_KEYS = ("name", "at", "statement")
 
 _PLUGIN_RE = re.compile(r"plugins/[a-z0-9][a-z0-9-]*")
+
+#: The reference shelf the compilers own, as a key of ``authored_sha256``'s
+#: file map (a path under the skill's directory).
+_SHELF_KEY = f"references/{DEFAULT_REFERENCE_BASENAME}"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
@@ -239,6 +268,13 @@ def _check_row(name: str, value: object) -> dict:
         raise SkillRegistryError(
             f"{where}.plugin: {plugin!r} must be plugins/<kebab-case name>, relative to the "
             "skills root"
+        )
+    if plugin != f"plugins/{name}":
+        # Retire and rename delete and move the folder this names, so a row
+        # may only name its own skill's folder, never another's.
+        raise SkillRegistryError(
+            f"{where}.plugin: {plugin!r} must be plugins/{name}, the folder of the skill "
+            "the row is for"
         )
     out: dict = {
         "status": status,
@@ -479,21 +515,28 @@ def _update_locked(
 # --------------------------------------------------------------- authored hash
 
 
-def _outside_managed(text: str) -> str:
-    """*text* with the managed section (begin marker through end marker)
-    taken out. When the markers are not exactly one intact pair, in order,
-    the whole text counts as authored: a damaged section can then never
-    match a hash taken from a healthy file."""
-    begins = text.count(BEGIN_MARKER)
-    ends = text.count(END_MARKER)
-    if begins == 1 and ends == 1:
-        begin_at = text.index(BEGIN_MARKER)
-        end_at = text.index(END_MARKER)
+def _without_one_pair(text: str, begin: str, end: str) -> str:
+    """*text* with the section from *begin* through *end* taken out, when the
+    markers are exactly one intact pair, in order. Otherwise *text* as it is,
+    so a damaged section counts as authored and can never match a hash taken
+    from a healthy file."""
+    if text.count(begin) == 1 and text.count(end) == 1:
+        begin_at = text.index(begin)
+        end_at = text.index(end)
         if begin_at < end_at:
-            text = text[:begin_at] + text[end_at + len(END_MARKER) :]
+            return text[:begin_at] + text[end_at + len(end) :]
+    return text
+
+
+def _outside_managed(text: str) -> str:
+    """*text* with both compiler-owned sections taken out: the managed
+    section and the pointer block, each when it is exactly one intact pair of
+    markers, in order (see :func:`_without_one_pair`)."""
+    text = _without_one_pair(text, BEGIN_MARKER, END_MARKER)
+    text = _without_one_pair(text, POINTER_BEGIN_MARKER, POINTER_END_MARKER)
     # Trailing whitespace is not authored: the compiler puts one blank line
-    # before the section it adds, and a draft hashed before the section
-    # existed must hash the same as the deployed file after it does.
+    # before each section it adds, and a draft hashed before the sections
+    # existed must hash the same as the deployed file after they do.
     return text.rstrip()
 
 
@@ -517,9 +560,10 @@ def _reference_key(key: object) -> str:
 
 
 def authored_sha256(skill_md_text: str, reference_files: Mapping[str, str] | None = None) -> str:
-    """The sha256 (hex) of everything outside the managed section: SKILL.md
-    with its managed section and trailing whitespace taken out, and every
-    reference file in full, in path order. *reference_files* maps a path
+    """The sha256 (hex) of everything the compilers do not own: SKILL.md
+    with its managed section, its pointer block and trailing whitespace taken
+    out, and every reference file in full except the shelf
+    ``references/LEARNINGS.md``, in path order. *reference_files* maps a path
     relative to the skill's directory (``references/x.md``) to its text,
     the same keys ``skill_scaffold.check_skill`` uses, without ``SKILL.md``.
 
@@ -530,6 +574,8 @@ def authored_sha256(skill_md_text: str, reference_files: Mapping[str, str] | Non
     parts: list[tuple[str, str]] = [(SKILL_ENTRY_FILE, _outside_managed(skill_md_text))]
     files = reference_files or {}
     for key in sorted(_reference_key(k) for k in files):
+        if key == _SHELF_KEY:
+            continue  # the compilers' shelf: lessons moving in must not count
         content = files[key]
         if not isinstance(content, str):
             raise SkillRegistryError(f"authored_sha256: {key} must be text")
