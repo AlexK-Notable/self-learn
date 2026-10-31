@@ -1344,12 +1344,11 @@ def _check_hosts(home: Path) -> tuple[Verdict, str]:
                 "a plain skills root's SKILL.md takes no lesson while git "
                 "tracks it (S-80), so a reroute is refused too; switch the "
                 f"skills root to git mode (`self-learn host set-mode "
-                f"{resolved_root} git --skills-root`, in your own terminal), "
+                f"{resolved_root} git --skills-root`; from an agent's shell "
+                "add `--note \"<why>\"`, under the user's standing grant), "
                 "after which the two modes agree and the destination is no "
-                "longer refused (self-learn never removes a line from "
-                ".git/info/exclude, and the command says so: if git should "
-                "now track a file self-learn wrote while the root was plain, "
-                "remove that file's line there yourself)"
+                "longer refused (the switch also takes self-learn's own "
+                ".git/info/exclude lines for the files git mode now commits)"
             )
         return Verdict.FAIL, (
             f"{shown} — {len(stranded)} routed skill lesson(s) on the skills "

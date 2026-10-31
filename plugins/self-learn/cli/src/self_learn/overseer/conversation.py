@@ -1250,7 +1250,7 @@ def _skill_target(home: Path, action: str, name: str, flag: str) -> list[tuple[s
             raise ConversationError(
                 f"overseer respond: {flag} {name}: a person made that skill without a case, so "
                 "there is nothing here to attach your words to; run self-learn skill rename or "
-                "skill retire in your own terminal"
+                "skill retire (from an agent's shell with --note, under the user's standing grant)"
             )
         raise ConversationError(
             f"overseer respond: {flag} {name}: overseer open has not shown that skill "
