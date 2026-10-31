@@ -520,9 +520,10 @@ def _writable_fact(
     host, mode = placed
     if verdict.destination == "new-skill":
         # Judged as the writer judges it (skill_writer: self-learn writes the
-        # skills it owns only into a git-mode skills root). A new-skill write
-        # skips the tracked-file refusal (verbs: ``spec.destination ==
-        # "new-skill"``), so ``_plain_write_check`` is never the question.
+        # skills it owns only into a git-mode skills root). In a plain root the
+        # route verb's G1 check would refuse the tracked SKILL.md too, so the
+        # answer is the same; the writer's own sentence is the clearer reason,
+        # so ``_plain_write_check`` is not asked here.
         if mode == "git":
             return _Fact(rid, WRITABLE, "holds", "git-host", "git-mode skills root")
         reason = (
