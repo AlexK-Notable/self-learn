@@ -258,7 +258,7 @@ def test_the_readers_report_the_project_registration_s_own_mode(tmp_path, monkey
 
     assert cli.main(["host", "list"]) == 0
     out = capsys.readouterr().out
-    assert f"skills_root: {repo}\n" in out  # git: no suffix, nothing broken
+    assert f"skills_root: {repo}  [mode=git]\n" in out  # git states its mode, nothing broken
     assert f"  - {repo}  [mode=plain]\n" in out
 
     (row,) = report._resolve_project_rows(home)
@@ -284,7 +284,7 @@ def test_the_plain_project_is_gated_by_its_marker_while_the_root_is_git(
 
     assert cli.main(["host", "list"]) == 0
     out = capsys.readouterr().out
-    assert f"skills_root: {repo}\n" in out  # control: the git root is sound
+    assert f"skills_root: {repo}  [mode=git]\n" in out  # control: the git root is sound
     assert f"  - {repo}  [mode=plain]  ⚠ BROKEN — " in out
     assert f"carries no {MARKER_FILENAME} marker" in out
     with pytest.raises(verbs.NeedsPerson, match="carries no .* marker"):
