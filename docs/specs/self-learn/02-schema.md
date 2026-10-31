@@ -1421,9 +1421,10 @@ lesson was parked for the overseer and the steward's decision was lost
 (run `run-85e1b89015c0`).
 
 *(Amended 2026-10-31, S-NEXT-premise.)* A ROUTED lesson that comes to the
-steward as a `premise-moved` or `premise-extract` input (§3a.10.7) and that
-no case a reconsider may supersede covers is decided the same way, with a
-`kind: resolution` case. Such a case may hold, for that routed lesson, the
+steward as a `premise-moved` input (§3a.10.7) and that no case a reconsider
+may supersede covers is decided the same way, with a `kind: resolution`
+case; a `premise-extract` input is always decided with a `kind: resolution`
+case that supersedes nothing. Such a case may hold, for that routed lesson, the
 items a reconsider could: `replace` (narrowing included, the one place
 outside a reconsider where the steward may replace a placed lesson),
 `retire`, `route` (applied as `reroute`) and `premises`, plus a `no-action`
@@ -3344,12 +3345,21 @@ lines of the case that covers the lesson; any `env` pins; every probe
 `unavailable` three sweeps running; and, for `@intact`, the two regions and
 their diff (3a.10.3).
 
-**The case.** A `kind: reconsider` case superseding the newest case that
-covers the lesson, when that case is one a reconsider may supersede (S-88's
-test, §3a.2). Otherwise a `kind: resolution` case: S-88's rule for a deferred
-lesson no case covers, extended to a routed lesson on a `premise-moved` or
-`premise-extract` input (46 of the 149 placed lessons had no covering case on
-2026-10-30). No new `trigger` value. The outcomes:
+**The case.** For `premise-moved`: a `kind: reconsider` case superseding the
+newest case that covers the lesson, when that case is one a reconsider may
+supersede (S-88's test, §3a.2). Otherwise a `kind: resolution` case: S-88's
+rule for a deferred lesson no case covers, extended to a routed lesson on
+this input (46 of the 149 placed lessons had no covering case on
+2026-10-30). For `premise-extract`: a `kind: resolution` case with outcome
+`no-action` and no `supersedes`, holding the `premises set` line; the
+placement decision stands, and this case only records what the lesson rests
+on (a steward who finds the lesson already false decides it as a moved
+premise instead). The `premise-moved` brief shows the `what_would_change`
+lines of every case covering the lesson that is not superseded, so an
+extract case never hides the routing case's prediction. A lesson with a
+`premise-moved` input waiting under the nightly cap is not offered for
+`premise-extract`. No new `trigger` value. The outcomes of a
+`premise-moved` case:
 
 - `no-action`: the lesson stands. The sheet must `rebaseline` every moved
   premise the lesson keeps, or the runner refuses the case (otherwise the same
