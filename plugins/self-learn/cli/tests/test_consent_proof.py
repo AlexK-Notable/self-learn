@@ -169,8 +169,8 @@ def test_a_question_named_two_typed_rows_back_must_be_restated(tmp_path, monkeyp
     session = _transcript(home, tmp_path, [
         _typed("anything?"),
         _naming(ask["id"], new),
-        _typed("what is plain mode?"),
-        _said("Plain mode means self-learn never commits there."),
+        _typed("what does that do?"),
+        _said("It lets self-learn commit its lessons there."),
         _typed("yes"),
     ])
     _agent(monkeypatch, session)
