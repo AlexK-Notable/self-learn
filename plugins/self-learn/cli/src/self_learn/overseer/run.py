@@ -57,6 +57,19 @@ _REPORT_SECTIONS = (
     "Questions for you",
     "Refused / could not do",
 )
+#: S-NEXT-u7c (hand-maintenance cures, lane C): the eighth heading. It is
+#: OPTIONAL in the model's report (a report without it is still valid, so a
+#: model that forgets it costs nothing) and, when present, sits directly
+#: after "Catalogue health". The runner adds it to the published report when
+#: the week's census was staged (:func:`_finalize_model_report`), so a hand
+#: step never goes unlisted because the model skipped the section.
+HAND_STEPS_SECTION = "Hand steps this week"
+_HAND_STEPS_AFTER = "Catalogue health"
+_REPORT_SECTIONS_WITH_HAND_STEPS = (
+    *_REPORT_SECTIONS[: _REPORT_SECTIONS.index(_HAND_STEPS_AFTER) + 1],
+    HAND_STEPS_SECTION,
+    *_REPORT_SECTIONS[_REPORT_SECTIONS.index(_HAND_STEPS_AFTER) + 1 :],
+)
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 #: 2026-09-24: the report's length is GUIDANCE, not a refusal (the user
 #: asked "do we need a size limit at all?"; the orchestrator answered no).
@@ -723,6 +736,20 @@ resolved -- say so and move on rather than treating it as an error.
 A parked case whose parked_reason is ledger-refused means the steward decided the lesson and the
 ledger refused its line for a reason only a person or a different decision can fix; the case
 quotes the ledger's words.
+health.yaml's catalogue_health also holds two rows the runner measured from the ledger and its
+history, and you report on both. premise-check: how many placed lessons record no premises yet,
+written probes with no reading on three sweeps in a row, placement premises that are failing, and
+the baselines the premise sweep re-recorded this week by code alone (no model, no decision); say
+under Catalogue health which of these needs a person, and read the week's code-only refreshes as
+you would a decision. A list in that row is empty when the sweep has not run as well as when
+nothing is wrong: check its sweep.last_finished_at first. hand-steps-this-week: every ledger change
+this week made from a person's or an agent's shell instead of by a job; a state of unavailable means
+the history could not be read, so say that and list nothing. In a section headed Hand steps this
+week, directly after Catalogue health, write one line per step, as
+- <commit> <what was done>: <the gap in self-learn that made the hand step necessary>.
+Read the step's note first, and the record in lessons/ when the step names a lesson. A step only the
+user may take (a setting only they set, an answer they typed) is by design: say so instead of
+naming a gap. When the evidence does not show what the gap was, say that.
 Write report.md, findings.yaml, questions.yaml, user-model-delta.yaml, and either sheet.yaml or paired
 case-<name>.yaml plus sheet-<name>.yaml files. One successor case must supersede each parked
 case you decide. To correct a case that is not parked (for example a decision whose line the
@@ -779,8 +806,8 @@ system readings only. A lapse must name exactly one changed condition, contrary 
 report.md should stay under about 60 lines: it is the summary, not the record. Its
 "Questions for you" section lists each question as - <id>: <a few words>; the full text lives
 in questions.yaml. It has these headings, in this exact order: Examined; Decided in the user's
-stead; Hooks; User model; Catalogue health; Questions for you; Refused / could not do. Use
-``- none`` for an empty section.
+stead; Hooks; User model; Catalogue health; Hand steps this week; Questions for you; Refused /
+could not do. Use ``- none`` for an empty section.
 {_journal_block("B")}"""
 
 
@@ -1244,7 +1271,7 @@ def _validate_model_report(path: Path) -> list[str]:
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
     headings = [line[3:].partition(" (")[0] for line in lines if line.startswith("## ")]
-    if headings != list(_REPORT_SECTIONS):
+    if headings not in (list(_REPORT_SECTIONS), list(_REPORT_SECTIONS_WITH_HAND_STEPS)):
         raise OverseerError("report.md: section headings are missing or out of order")
     return lines
 
@@ -1273,11 +1300,11 @@ def _repair_report_headings(path: Path) -> list[str]:
     lines = path.read_text(encoding="utf-8").splitlines()
     starts = [i for i, line in enumerate(lines) if line.startswith("## ")]
     names = [_heading_name(lines[i]) for i in starts]
-    if names == list(_REPORT_SECTIONS):
+    if names in (list(_REPORT_SECTIONS), list(_REPORT_SECTIONS_WITH_HAND_STEPS)):
         return []
     if (
         not names
-        or any(name not in _REPORT_SECTIONS for name in names)
+        or any(name not in _REPORT_SECTIONS_WITH_HAND_STEPS for name in names)
         or len(set(names)) != len(names)
     ):
         _validate_model_report(path)  # raises: not a heading-only problem
@@ -1285,15 +1312,20 @@ def _repair_report_headings(path: Path) -> list[str]:
     sections = {names[k]: lines[bounds[k]:bounds[k + 1]] for k in range(len(names))}
     out = lines[: starts[0]]
     notes: list[str] = []
+    # The optional eighth heading is kept, in its place, when the model wrote
+    # it, and never reported missing when it did not (S-NEXT-u7c).
+    order = (
+        _REPORT_SECTIONS_WITH_HAND_STEPS if HAND_STEPS_SECTION in sections else _REPORT_SECTIONS
+    )
     missing = [name for name in _REPORT_SECTIONS if name not in sections]
-    present = [name for name in names if name in _REPORT_SECTIONS]
-    for name in _REPORT_SECTIONS:
+    present = [name for name in names if name in order]
+    for name in order:
         out.extend(sections.get(name) or [f"## {name}", _EMPTY_SECTION])
     notes.extend(
         f"report: the heading \"{name}\" was missing; the runner added it, empty"
         for name in missing
     )
-    if present != [name for name in _REPORT_SECTIONS if name in sections]:
+    if present != [name for name in order if name in sections]:
         notes.append("report: the headings were out of order; the runner put them back in order")
     _write_stage(path.parent, path, "\n".join(out) + "\n")
     _validate_model_report(path)
@@ -1316,6 +1348,90 @@ def _drop_bare_none(lines: list[str], section_start: int) -> None:
         lines.pop(bare_none)
 
 
+#: The packet row phase B's `health.yaml` carries the census in
+#: (`health.hand_steps_row`), read back by :func:`_staged_hand_steps`.
+HAND_STEPS_ROW_KIND = "hand-steps-this-week"
+#: What the runner writes for a hand step the overseer did not name a gap for.
+_GAP_NOT_NAMED = "the overseer did not name the gap"
+
+
+def _staged_hand_steps(stage: Path) -> dict[str, Any]:
+    """The week's census of hand steps as phase B was given it: the
+    ``hand-steps-this-week`` row of the staged ``health.yaml`` (S-NEXT-u7c).
+    A stage with no such row, or a file that does not read, answers a census
+    of state ``unavailable`` -- which the report says in words -- and never
+    an empty week: an unread packet must not read as "nothing happened"."""
+    try:
+        data = _yaml_mapping(stage / "health.yaml")
+    except (OSError, OverseerError):
+        data = None
+    rows = data.get("catalogue_health") if isinstance(data, dict) else None
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and row.get("kind") == HAND_STEPS_ROW_KIND:
+            return {
+                key: row.get(key)
+                for key in ("window_days", "since", "state", "reason", "total", "steps")
+            }
+    return {"state": "unavailable", "reason": "this run's inputs carried no census", "steps": []}
+
+
+def _hand_step_line(step: dict[str, Any], gap: str | None = None) -> str:
+    note = str(step.get("note") or "").strip()
+    # The census's own stubs ("(no reason recorded)", "(withheld: ...)") are
+    # already in parentheses.
+    shown = note if note.startswith("(") else f"({note})"
+    tail = f" — {gap}" if gap else ""
+    return (
+        f"- {step.get('commit')} {step.get('at')} by {step.get('by')}: "
+        f"{step.get('subject')} {shown}{tail}"
+    )
+
+
+def _put_hand_steps_section(lines: list[str], census: dict[str, Any]) -> None:
+    """Make the published report carry every hand step of the census
+    (S-NEXT-u7c). The overseer's own section, when it wrote one, stays as it
+    is; for each step of the census whose commit the section does not name,
+    the runner adds one line saying the overseer did not name the gap, so no
+    step goes unlisted. When the overseer wrote no section the runner writes
+    it, directly after "Catalogue health". Edits *lines* in place."""
+    start = next(
+        (i for i, line in enumerate(lines)
+         if line.startswith("## ") and _heading_name(line) == HAND_STEPS_SECTION),
+        None,
+    )
+    if start is None:
+        after = next(i for i, line in enumerate(lines) if line.startswith(f"## {_HAND_STEPS_AFTER}"))
+        end = next((i for i in range(after + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+        lines[end:end] = [f"## {HAND_STEPS_SECTION}"]
+        start = end
+    body_at = start + 1
+    end = next((i for i in range(body_at, len(lines)) if lines[i].startswith("## ")), len(lines))
+    written = "\n".join(lines[body_at:end])
+    added: list[str] = []
+    if census.get("state") != "ok":
+        reason = str(census.get("reason") or "no reason given")
+        added.append(
+            f"- the census of hand steps could not be read ({reason}); "
+            "nothing is claimed about this week's hand steps"
+        )
+    else:
+        steps = [row for row in census.get("steps") or [] if isinstance(row, dict)]
+        for step in steps:
+            if str(step.get("commit")) not in written:
+                added.append(_hand_step_line(step, _GAP_NOT_NAMED))
+        total = int(census.get("total") or 0)
+        if total > len(steps):
+            added.append(
+                f"- {total - len(steps)} more hand step(s) this week were not in the packet "
+                f"(it carries the newest {len(steps)})"
+            )
+    if added:
+        lines[end:end] = added
+        _drop_bare_none(lines, body_at)
+    elif not [line for line in lines[body_at:end] if line.strip()]:
+        lines[end:end] = ["- none"]
+
+
 def _finalize_model_report(
     path: Path, *, date: str, run_id: str, model: str, selected: tuple[str, ...],
     population_count: int, excluded: int, model_calls: int, guard: int,
@@ -1324,6 +1440,7 @@ def _finalize_model_report(
     questions: list[str] | None = None,
     notes: list[str] | None = None,
     decided: list[str] | None = None,
+    hand_steps: dict[str, Any] | None = None,
 ) -> str:
     """The published report: the model's own text, whole, with the
     runner's factual lines added. *notes* are runner lines for "Refused /
@@ -1357,6 +1474,8 @@ def _finalize_model_report(
     if refusals or runner_notes:
         lines[refused_at:refused_at] = [f"- {item}" for item in [*refusals, *runner_notes]]
         _drop_bare_none(lines, refused_at)
+    if hand_steps is not None:
+        _put_hand_steps_section(lines, hand_steps)
     if hooks:
         hooks_at = next(i for i, line in enumerate(lines) if line.startswith("## Hooks")) + 1
         lines[hooks_at:hooks_at] = [f"- {item}" for item in hooks]
@@ -3187,6 +3306,12 @@ def _prepare_manifest(
         # a resume can put it back in the rebuilt stage the way the report
         # is put back. `None` when it holds only its header line.
         "journal": journal_text,
+        # S-NEXT-u7c: the week's census of hand steps, as phase B was given
+        # it (`health.yaml`'s `hand-steps-this-week` row), so a resume's
+        # published report lists the same steps the overseer read. The rebuilt
+        # stage of a resume has no `health.yaml`. A record made before this
+        # field has none and its report is left as the model wrote it.
+        "hand_steps": _staged_hand_steps(stage),
         "findings": findings,
         "case_order": order,
         "cases": recipes,
@@ -4169,6 +4294,7 @@ def _execute_manifest(
             questions=questions,
             notes=runner_notes,
             decided=decided_lines,
+            hand_steps=cast("dict[str, Any] | None", manifest.get("hand_steps")),
         )
         manifest, report_path, latest = _write_manifest_truth(
             home, manifest, report_text=text, complete=not halted, closed=closed,
