@@ -132,7 +132,6 @@ def _deferred_case(home: Path, tmp_path: Path) -> tuple[str, str]:
     _dump_yaml(stage, case)
     case_id = cases.record(home, stage, actor="overseer")
     verbs.defer(home, rid, until="2099-01-01", by="steward", no_push=True)
-    commit_all(home, "deferred")
     return rid, case_id
 
 
@@ -162,7 +161,6 @@ def test_an_answer_does_not_bring_back_a_case_that_did_not_defer(tmp_path):
     _dump_yaml(stage, case)
     case_id = cases.record(home, stage, actor="overseer")
     verbs.reject(home, rid, by="steward", no_push=True)
-    commit_all(home, "rejected")
 
     _report_and_index(home, [_ask("q-diagram-skill", [case_id])], ["- q-diagram-skill: scaffold it?"])
     conversation.open_questions(home, out=io.StringIO())

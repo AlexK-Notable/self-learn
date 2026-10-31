@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .ledger import resolve_home
+from .primitives import fsops
 
 __all__ = [
     "HOME_POINTER",
@@ -112,7 +113,7 @@ def record_home(cache: Path, home: Path | str) -> None:
                 return
         except OSError:
             pass
-        pointer.write_text(want + "\n", encoding="utf-8")
+        fsops.atomic_write(pointer, want + "\n")
     except OSError:
         pass
 

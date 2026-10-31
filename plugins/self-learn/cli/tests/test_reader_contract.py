@@ -910,7 +910,9 @@ def test_hy4_no_real_claude_reachable():
     setenv_pattern = re.compile(r'\.setenv\(\s*"SELF_LEARN_SDK_CLI_PATH"')
     for lineno, line in enumerate(src.splitlines(), start=1):
         if setenv_pattern.search(line):
-            assert "FAKE_CLI" in line, (lineno, line)
+            # A deliberately missing path or a non-executable scratch file is
+            # not a real claude either (test_sw1's not-found and os-error legs).
+            assert any(ok in line for ok in ("FAKE_CLI", "/nonexistent/", "str(nonexec)")), (lineno, line)
 
 
 def test_hy5_which_claude_resolves_exclusively_into_the_leg_shim_dir(reader_leg):

@@ -1028,7 +1028,7 @@ def _stage_lessons(home: Path, stage: Path) -> int:
 
     A record is copied byte for byte unless the secret scan matches it; the
     whole stage is scanned after phase B and a hit in an input file would
-    refuse the run, so such a record is replaced by a stub naming the rule."""
+    refuse the run, so such a record is swapped for a stub naming the rule."""
     lessons = stage / LESSONS_DIR
     lessons.mkdir(parents=True, exist_ok=True)
     staged: set[str] = set()
