@@ -58,7 +58,6 @@ from self_learn import (
     steward_inputs,
     steward_prompt,
     verbs,
-    worker,
 )
 from self_learn.overseer import formats as overseer_formats
 from support import commit_all, make_env
@@ -131,32 +130,38 @@ def _restore(rid: str, **extra) -> dict:
             "because": "the edit contradicts the lesson", **extra}
 
 
-def _input(rid: str, group: str, *, premise: str = "@intact") -> dict:
+def _input(
+    rid: str, group: str, *, premise: str = "@intact", predecessor: str | None = None
+) -> dict:
     item = {"source": "placement", "premise": premise, "value_sha": "0" * 32}
     if premise == "@intact":
         item["group"] = group
-    return {"record": rid, "kind": steward_inputs.INPUT_PREMISE_MOVED, "moved": [item]}
+    row = {"record": rid, "kind": steward_inputs.INPUT_PREMISE_MOVED, "moved": [item]}
+    if predecessor:
+        row["predecessor"] = predecessor
+    return row
 
 
 # ============================ 1. the steward reads what the sweep writes
 
 
-def test_the_steward_reads_the_sweeps_own_cache_rows(tmp_path):
+def test_the_steward_reads_the_sweeps_own_cache_rows(tmp_path, monkeypatch):
+    """Fix round 1: U2's rows name the lesson `record` and the time
+    `observed_at` (U2 gate round 2); a confirmed placement move reads its
+    time from the row the sweep actually wrote, never a stale key."""
     env = make_env(tmp_path)
     home = env.ledger
-    cache = premise_sweep.default_cache_dir(home)
-    # the same file, by both modules' reckoning
-    assert steward_inputs.observations_path(home) == premise_sweep.observations_path(cache)
-    obs = premises.observation_from_value("bound", observed_at="2026-10-30T03:30:00Z")
-    row = premise_sweep._row("2026-10-30T03:30:00Z", A, "p1", premise_sweep.KIND_PROBE, obs)
-    path = premise_sweep.observations_path(cache)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
-    assert "record" not in row and "observed_at" not in row  # the sweep's flat shape
+    _routed(env, A)
+    _edit_line(env, A)
+    _sweeps(env, monkeypatch, tmp_path, [A])
+    rows = premise_sweep.read_history(premise_sweep.default_cache_dir(home))[(A, "@intact")]
+    assert rows and all("record" in row and "observed_at" in row for row in rows)  # the shape
 
-    (seen,) = steward_inputs.read_observations(home)[(A, "p1")]
-    assert seen.value_sha == obs.value_sha
-    assert seen.observed_at == "2026-10-30T03:30:00Z"
+    (move,) = [m for m in premise_sweep.confirmed_placement_moves(home) if m.record_id == A]
+    assert move.premise_id == "@intact"
+    assert move.observed_at == rows[-1]["observed_at"] and move.observed_at != "None"
+    (item,) = steward_inputs.placement_moves(home)[A].items
+    assert item["now_at"] == rows[-1]["observed_at"]
 
 
 # ======================================== 2. placement movers and groups
@@ -504,6 +509,300 @@ def test_every_hand_edited_lesson_of_the_block_is_decided_in_one_case(tmp_path):
         stage, _pair(stage, "parked", parked, [_restore(A)]), home, inputs) is None
 
 
+# ============== 5a. a block whose lessons separate cases placed (fix round 1)
+#
+# Gate round 1, MAJOR 1: the lessons of one block are often placed by
+# different cases (each route has its own). A `kind: reconsider` case
+# supersedes one case, so such a group is decided in one `kind: resolution`
+# case; before this round the runner raised on it and the whole steward run
+# died, on every run, until the attempt cap.
+
+
+def test_a_block_two_cases_placed_is_decided_in_one_resolution_case(tmp_path):
+    env = make_env(tmp_path)
+    home = env.ledger
+    _routed(env, A)
+    _routed(env, B)
+    _edit_line(env, A)
+    _edit_line(env, B, " (another note)")
+    stage = tmp_path / "stage"
+    group = str(env.skill_md.resolve())
+    quotes = verbs.edited_region_lines(verbs.lesson_region(home, A))
+    split = {A: _input(A, group, predecessor="case-0000a001"),
+             B: _input(B, group, predecessor="case-0000b002")}
+    shared = {A: _input(A, group, predecessor="case-0000a001"),
+              B: _input(B, group, predecessor="case-0000a001")}
+    mixed = {A: _input(A, group, predecessor="case-0000a001"), B: _input(B, group)}
+    lines = [_replace_line(A, adopt_region=True), _restore(B)]
+    assert steward._split_intact_members(split) == {A, B}
+    assert steward._split_intact_members(mixed) == {A, B}  # covered and uncovered differ
+    assert steward._split_intact_members(shared) == frozenset()
+
+    reconsider = _steward_case([A, B], kind="reconsider")
+    reconsider["evidence"] = [{"ref": "SKILL.md#managed", "quote": q} for q in quotes]
+    pair = _pair(stage, "reconsider", reconsider, lines)
+    assert "a `kind: reconsider` case supersedes exactly one" in (
+        steward._pair_problem(stage, pair, home, split) or "")
+
+    resolution = _pair(stage, "resolution", _fold_case([A, B], quotes), lines)
+    assert steward._pair_problem(stage, resolution, home, split) is None
+    assert steward._pair_problem(stage, resolution, home, mixed) is None
+    # control: lessons one case placed keep the reconsider case 02 §3a.10.7
+    # names, and a resolution case may not fold a covered lesson
+    assert "only through a kind: reconsider case" in (
+        steward._pair_problem(stage, resolution, home, shared) or "")
+    assert steward._pair_problem(stage, pair, home, shared) is None
+    # only the fold: any other replace of a covered lesson still needs its own case
+    plain = _pair(stage, "plain", _fold_case([A, B], quotes),
+                  [_replace_line(A), _restore(B)])
+    assert "only through a kind: reconsider case" in (
+        steward._pair_problem(stage, plain, home, split) or "")
+
+
+def test_a_reconsider_case_over_two_cases_is_refused_alone_not_raised():
+    refusal = steward._spanning_reconsider_refusal(
+        "block.yaml", {"kind": "reconsider"}, {"case-0000a001", "case-0000b002"}
+    )
+    assert refusal is not None and "supersedes exactly one" in refusal
+    assert "case-0000a001, case-0000b002" in refusal
+    # any other kind records with no predecessor; one predecessor is the fill's
+    for kind in ("resolution", "parked"):
+        assert steward._spanning_reconsider_refusal(
+            "block.yaml", {"kind": kind}, {"case-0000a001", "case-0000b002"}) is None
+    assert steward._spanning_reconsider_refusal(
+        "block.yaml", {"kind": "reconsider"}, {"case-0000a001"}) is None
+
+
+def _unit_row(rid: str, predecessor: str | None) -> tuple[str, dict]:
+    item = {"source": "placement", "premise": "@intact", "group": "/x/SKILL.md",
+            "value_sha": "0" * 32, "since": "2026-10-29T03:30:00Z"}
+    row: dict = {"record": rid, "version": f"premise:{rid[-6:]}", "moved": [item]}
+    if predecessor:
+        row["predecessor"] = predecessor
+    return "2026-10-29T03:30:00Z", row
+
+
+@pytest.mark.parametrize("predecessors, differ", [
+    (("case-0000a001", "case-0000b002"), True),
+    (("case-0000a001", None), True),
+    (("case-0000a001", "case-0000a001"), False),
+])
+def test_the_brief_says_when_no_one_case_covers_the_block(predecessors, differ):
+    rows = {A: _unit_row(A, predecessors[0]), B: _unit_row(B, predecessors[1])}
+    placement = {
+        rid: steward_inputs.PlacementMoves(rid, list(row["moved"]), since)
+        for rid, (since, row) in rows.items()
+    }
+    offered = steward._premise_moved_units(rows, placement, set(), [])
+    assert sorted(row["record"] for row in offered) == [A, B]
+    for row in offered:
+        (item,) = row["moved"]
+        assert sorted(item["members"]) == [A, B]
+        assert bool(item.get("cases_differ")) is differ
+    told = "\n".join(steward_inputs._placement_decide_lines(
+        predecessors[0], ["@intact"], cases_differ=differ))
+    resolution = "ONE `kind: resolution` case with no `supersedes`"
+    assert (resolution in told) is differ
+    assert ("`kind: reconsider` case (the runner fills in" in told) is not differ
+
+
+def test_a_run_decides_a_block_two_cases_placed_in_one_resolution_case(tmp_path, monkeypatch):
+    """End to end through `steward.run`, a fake session, the real stage
+    check, recipe, batch and post-run recompile. Each lesson was placed by
+    its own case; the packet size is 1, so only `keep_groups_together`
+    (gate MINOR 2: nothing ran its call in `_run`) puts the two in the one
+    packet whose session sees both. Before this round `_prepared_recipe`
+    raised on the case and the run died."""
+    from self_learn import cases
+    from self_learn.invocation.contract import Outcome
+    from test_steward import _configure_steward, _dump_yaml, _stage_dir
+    from test_u3b_steward_authority import _route_through_a_case
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    setup = tmp_path / "setup"
+    setup.mkdir()
+    placed_a = _route_through_a_case(home, setup, A)
+    placed_b = _route_through_a_case(home, setup, B)
+    assert placed_a != placed_b
+    _edit_line(env, A)
+    _edit_line(env, B, " (another note)")
+    _sweeps(env, monkeypatch, tmp_path, [A, B])
+    rows = {row["record"]: row for row in _intact_rows(home)}
+    assert {rid: row.get("predecessor") for rid, row in rows.items()} == {A: placed_a, B: placed_b}
+    quotes = verbs.edited_region_lines(verbs.lesson_region(home, A))
+    assert len(quotes) == 2
+    _configure_steward(home, packet_size=1)
+    seen: list[str] = []
+
+    def session(spec):
+        seen.append(spec.prompt)
+        briefs = set(re.findall(r"^### brief: (lrn-[0-9a-f]{8})$", spec.prompt, re.M))
+        if briefs == {A, B}:
+            stage = _stage_dir(spec)
+            case = _fold_case([A, B], quotes)
+            case["question"] = "a person edited these lessons' block: fold it in or put it back?"
+            _dump_yaml(stage / "cases" / "block.yaml", case)
+            _dump_yaml(stage / "sheets" / "block.yaml", {
+                "version": 1, "case": "$CASE_ID",
+                "items": [_replace_line(A, adopt_region=True), _restore(B)],
+            })
+        return Outcome(ok=True, rc=0, stdout="", detail="", failure=None)
+
+    monkeypatch.setattr(steward.invocation, "write_session", session)
+    result = steward.run(home)
+
+    assert result.status == "applied", result
+    assert len(seen) == 1, "the group was split across packets"
+    assert "ONE `kind: resolution` case with no `supersedes`" in seen[0]
+    old = _rec(home, A)
+    assert old.status == "superseded" and old.superseded_by
+    text = env.skill_md.read_text(encoding="utf-8")
+    assert NEW_INSTRUCTION in text and f"({B})" in text and f"({A})" not in text
+    assert EDIT not in text and "(another note)" not in text
+    assert verbs.lesson_region(home, B).verdict == "clean"
+    (decided,) = [c for c in cases.list_cases(home, record_id=B) if c["case"] != placed_b]
+    assert decided["kind"] == "resolution" and not decided.get("supersedes")
+    # decided: neither block edit is offered again
+    assert _intact_rows(home) == []
+
+
+# ============================== 5b. where a whole-block write is refused
+
+
+def test_a_block_write_is_refused_on_a_dirty_git_target(tmp_path, monkeypatch):
+    """Gate MINOR 3: a person's uncommitted work in a git host's target is
+    never overwritten by a fold or a restore (`verbs._refuse_block_write`)."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _routed(env, A)
+    _edit_line(env, A)
+    _sweeps(env, monkeypatch, tmp_path, [A])
+    # outside the managed block, uncommitted: the block itself is the confirmed one
+    draft = env.skill_md.read_text(encoding="utf-8") + "\nA person's draft, not committed.\n"
+    env.skill_md.write_text(draft, encoding="utf-8")
+    head = gitops.head_sha(home)
+
+    for line in (_restore(A), _replace_line(A, adopt_region=True)):
+        got = _apply(home, tmp_path, [line])
+        assert (got.state, got.kind) == ("refused", "bad-line"), (line, got)
+        assert "uncommitted changes" in str(got.detail), got
+    assert gitops.head_sha(home) == head
+    assert env.skill_md.read_text(encoding="utf-8") == draft
+
+    commit_all(env.host, "the person commits the draft")  # control
+    got = _apply(home, tmp_path, [_restore(A)])
+    assert (got.state, got.rc) == ("applied", 0), got
+    text = env.skill_md.read_text(encoding="utf-8")
+    assert EDIT not in text and "A person's draft, not committed." in text
+
+
+def test_a_block_write_is_refused_on_a_file_git_tracks_in_a_plain_host(tmp_path, monkeypatch):
+    """Gate MINOR 3: a plain host's file git tracks is never written (S-80)."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _routed(env, A)
+    _edit_line(env, A)
+    _sweeps(env, monkeypatch, tmp_path, [A])
+    hosts = (home / "hosts.yaml").read_text(encoding="utf-8")
+    (home / "hosts.yaml").write_text(
+        f"skills_root:\n  path: {env.host}\n  mode: plain\nprojects:\n  - path: {env.host}\n",
+        encoding="utf-8",
+    )
+    commit_all(home, "the skills root is a plain host")
+    head, text = gitops.head_sha(home), env.skill_md.read_text(encoding="utf-8")
+
+    for line in (_restore(A), _replace_line(A, adopt_region=True)):
+        got = _apply(home, tmp_path, [line])
+        assert got.state == "refused", (line, got)
+    assert gitops.head_sha(home) == head
+    assert env.skill_md.read_text(encoding="utf-8") == text
+
+    (home / "hosts.yaml").write_text(hosts, encoding="utf-8")  # control: a git host again
+    commit_all(home, "the skills root is a git host again")
+    assert _apply(home, tmp_path, [_restore(A)]).state == "applied"
+
+
+# ======================= 5c. a heading a person wrote survives (fix round 1)
+
+
+def test_a_heading_a_person_wrote_is_quoted_by_its_words(tmp_path):
+    """Gate MINOR 4: the runner drops an evidence item with a line that
+    starts with `## ` before the case is recorded, so a check that accepted
+    that quote let the person's heading go unrecorded."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _routed(env, A)
+    lines = env.skill_md.read_text(encoding="utf-8").split("\n")
+    edited = [line + "\n## Notes from a person" if f"({A})" in line else line for line in lines]
+    env.skill_md.write_text("\n".join(edited), encoding="utf-8")
+    commit_all(env.host, "a person added a heading inside the block")
+    assert "## Notes from a person" in verbs.edited_region_lines(verbs.lesson_region(home, A))
+    stage = tmp_path / "stage"
+    inputs = {A: _input(A, str(env.skill_md.resolve()))}
+    cited = {"ref": "transcript:fake#L1", "quote": "status: pending"}
+
+    verbatim = _pair(stage, "verbatim", _case([A], outcome="no-action", evidence=[
+        cited, {"ref": "SKILL.md#managed", "quote": "## Notes from a person"}]), [_restore(A)])
+    assert "does not quote what a person wrote" in (
+        steward._pair_problem(stage, verbatim, home, inputs) or "")
+
+    words = _pair(stage, "words", _case([A], outcome="no-action", evidence=[
+        cited, {"ref": "SKILL.md#managed", "quote": "Notes from a person"}]), [_restore(A)])
+    assert steward._pair_problem(stage, words, home, inputs) is None
+    assert steward_inputs.quotable_line("## Notes from a person") == "Notes from a person"
+    assert steward_inputs.quotable_line("- a line (lrn-a8000001)") == "- a line (lrn-a8000001)"
+
+
+# ===================== 5d. a restore that crashed before its host write
+
+
+def test_a_restore_that_crashed_before_its_host_write_is_finished_on_recovery(
+    tmp_path, monkeypatch
+):
+    """Gate MINOR 1: a `restore-region` line commits the ledger, then writes
+    the block. A run that died in between left a `stale` block -- the
+    person's words the case chose to overwrite, still loaded -- which the
+    daily check reads as intact, so nothing offered it again. Recovery now
+    proves the line by its commit subject and finishes the host write."""
+    from self_learn import execution_evidence
+
+    env = make_env(tmp_path)
+    home = env.ledger
+    _routed(env, A)
+    before = env.skill_md.read_text(encoding="utf-8")
+    _edit_line(env, A)
+    _sweeps(env, monkeypatch, tmp_path, [A])
+    start = gitops.head_sha(home)
+    with monkeypatch.context() as crash:
+        crash.setattr(verbs, "_host_phase", lambda *a, **k: None)  # dies before the block
+        verbs.restore_region(home, A, because="the edit contradicts the lesson", no_push=True)
+    restored = gitops.head_sha(home)
+    assert restored != start
+    assert EDIT in env.skill_md.read_text(encoding="utf-8")  # the half-state
+    assert verbs.lesson_region(home, A).verdict == "stale"
+
+    sheet = _sheet(tmp_path, [_restore(A)], name="recover")
+    monkeypatch.setattr(steward, "_committed_receipts", lambda *a, **k: {})
+    monkeypatch.setattr(execution_evidence, "validate_manifest_ref", lambda *a, **k: None)
+    found = {"sha": start}
+    monkeypatch.setattr(execution_evidence, "find_mutation_commit", lambda *a, **k: found["sha"])
+    manifest = {"run_id": "run-0000u8re", "start_head": start}
+    recipe = {"sheet_sha": "a" * 8, "sheet_digest": "b" * 64}
+
+    # control: a commit that is not this lesson's restore proves nothing
+    assert steward._recovered_items(home, manifest, "case-0000abcd", recipe, sheet) == {}
+    assert EDIT in env.skill_md.read_text(encoding="utf-8")
+
+    found["sha"] = restored
+    done = steward._recovered_items(home, manifest, "case-0000abcd", recipe, sheet)
+
+    assert done[1].state == "applied", (done[1].state, done[1].detail)
+    assert env.skill_md.read_text(encoding="utf-8") == before
+    assert verbs.lesson_region(home, A).verdict == "clean"
+    assert verbs.host_result_ids([done[1]], home) == [A]
+
+
 # ================================================================ 6. the brief
 
 
@@ -541,22 +840,24 @@ def test_a_lesson_that_cannot_be_written_is_told_how_to_move(tmp_path):
     body = _brief(home, row)
     assert "placement @writable moved: self-learn may no longer write where this lesson sits" in body
     assert "[how to decide where it sits]" in body
-    assert f"`text_from: {A}`" in body  # no case covers it: the same words, placed again
+    # no case covers it: S-NEXT-u4-steward's resolution reroute moves it
+    assert "a `route` line with the `dest` it should have (applied as a reroute)" in body
+    assert "text_from" not in body
     assert "[how to decide the hand edit]" not in body  # control
 
 
 # ============================================ 7. what the steward is told
 
 
-def test_the_contract_the_method_and_the_overseer_formats_agree(tmp_path):
+def test_the_contract_and_the_overseer_formats_agree(tmp_path):
+    """The method's text (steward-method section 17) is the premise-spec
+    lane's, as it is for U4 (S-NEXT-u4-steward's fix round 1): this lane
+    writes none of its own, so only the contract and the overseer's formats
+    are pinned here."""
     contract = " ".join(steward_prompt._render_output_contract().split())
     assert "adopt_region" in contract and "restore-region" in contract
     assert "A PLACEMENT premise (`@reach`, `@writable`, `@intact`; method section 17)" in contract
-    method = " ".join(
-        (worker.package_skill_refs() / "steward-method.md").read_text(encoding="utf-8").split()
-    )
-    assert "### Where the lesson sits: the placement premises" in method
-    assert "a `premises` line `action: restore-region`" in method
+    assert "that one case is `kind: resolution` with no `supersedes`" in contract
     root = overseer_formats.write(tmp_path / "ws", "B")
     sets = YAML(typ="safe").load((root / "closed-sets.yaml").read_text(encoding="utf-8"))
     replace_keys = sets["sheet"]["verbs"]["replace"]["keys"]

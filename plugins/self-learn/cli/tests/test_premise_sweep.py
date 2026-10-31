@@ -27,6 +27,7 @@ import pytest
 from self_learn import (
     cli,
     compiled,
+    intents,
     premise_sweep,
     premises,
     reachability,
@@ -34,9 +35,11 @@ from self_learn import (
     serve,
     settings,
     steward,
+    steward_inputs,
 )
 from self_learn.compilers import compile_managed_file
 from self_learn.hosts import host_slug
+from self_learn.ledger import Bucket
 from self_learn.premise_sweep import Movement
 from self_learn.premises import CommandResult, ProbeEnv
 from self_learn.records import Record
@@ -266,6 +269,18 @@ class TestDue:
         assert again.status == "too-soon"
         assert premise_sweep.observations_path(sw.cache).read_text(encoding="utf-8") == before
 
+    def test_a_future_dated_marker_does_not_hold_the_sweep_off(self, env, sw):
+        """S-68's failure for the other jobs: a stamp from a clock that was
+        wrong once must not keep the job away until that date."""
+        seed(env, A)
+        premise_sweep._store_state(sw.cache, {"last_attempt_at": "2099-01-01T00:00:00Z"})
+        assert premise_sweep.is_due(env.ledger, sw.cache, T0) is True
+        result = premise_sweep.run(env.ledger, sw.cache, now=T0, env=sw.probe_env(), claude_dir=sw.claude)
+        assert result.status == "ok"
+        marker = premise_sweep.read_state(sw.cache)["last_attempt_at"]
+        assert marker.startswith("2026-10-31")  # rewritten with the real time
+        assert premise_sweep.is_due(env.ledger, sw.cache, T0 + 3600) is False  # control: now it waits its day
+
     def test_a_sweep_that_dies_still_leaves_its_attempt_marker(self, env, sw, monkeypatch):
         """Else a sweep that crashes would be due again on the very next tick."""
         seed(env, A)
@@ -351,6 +366,18 @@ class TestTwoSweepDetection:
         sw.sweep()  # one sweep after the baseline was written
         assert len(sw.moves("p1")) == 1
 
+    def test_a_baseline_that_contradicts_does_not_count_on_the_sweep_of_the_same_day(self, env, sw):
+        sw.runner.out = b"dbus-broker.service\n"
+        # written at 01:00 on the day of the first sweep (03:30): the steward counts it
+        # only from the next calendar day, so the sweep must not count it earlier
+        premise = with_baseline(systemd_premise(), sw, at="2026-11-01T01:00:00Z")
+        assert premise["baseline"]["state"] == "contradicts-claim"
+        seed(env, A, [premise])
+        sw.sweep()
+        assert sw.moves("p1") == []  # same day: the ordinary two-sweep rule applies
+        sw.sweep()
+        assert len(sw.moves("p1")) == 1  # control: the same value on a second sweep counts
+
     def test_a_probe_rewritten_by_the_steward_forgets_the_old_observations(self, env, sw):
         path = seed(env, A, [with_baseline(systemd_premise(), sw)])
         sw.runner.out = b"dbus-broker.service\n"
@@ -377,6 +404,105 @@ class TestTwoSweepDetection:
         assert sw.runner.calls, "control: the probe did run"
         for argv in sw.runner.calls:
             assert argv[0] == "systemctl" and argv[2] == "show"
+
+
+class TestAFailedNightKeepsTheHistory:
+    def test_a_lesson_that_did_not_parse_keeps_its_earlier_rows(self, env, sw):
+        watched = sw.probe_home / "watched.txt"
+        watched.write_text("x", encoding="utf-8")
+        path = seed(env, A, [with_baseline(file_premise(watched), sw)])
+        original = path.read_bytes()
+        watched.unlink()
+        sw.sweep()
+        before = sw.history()[(A, "p1")]
+        assert len(before) == 1  # control: there is a reading to lose
+        path.write_text("not a record at all\n", encoding="utf-8")
+        result = sw.sweep()
+        assert any("did not parse" in e for e in result.errors)
+        assert sw.history()[(A, "p1")] == before
+        path.write_bytes(original)
+        sw.sweep()
+        assert len(sw.history()[(A, "p1")]) == 2
+
+    def test_probes_that_raise_are_written_down_as_unavailable_and_the_history_stays(self, env, sw, monkeypatch):
+        watched = sw.probe_home / "watched.txt"
+        watched.write_text("x", encoding="utf-8")
+        seed(env, A, [with_baseline(file_premise(watched), sw)])
+        sw.sweep()
+
+        def boom(*a, **k):
+            raise RuntimeError("synthetic")
+
+        monkeypatch.setattr(premise_sweep, "_written_rows", boom)
+        result = sw.sweep()
+        assert any("probes failed" in e for e in result.errors)
+        rows = sw.history()[(A, "p1")]
+        assert [r["state"] for r in rows] == ["ok", "unavailable"]
+
+    def test_a_lesson_re_homed_away_from_a_failing_placement_stops_being_reported(self, env, sw, monkeypatch):
+        path = seed(env, A)
+        fake_reach(monkeypatch, env, [A], state="unreachable", reason="plugin-disabled")
+        sw.sweep()
+        sw.sweep()
+        assert [m.premise_id for m in sw.moves("@reach")] == ["@reach"]  # control: it is failing and counted
+        assert (A, "@intact") in sw.history()  # control: a managed-region lesson has the third premise too
+        rows = {r.name: r for r in premise_sweep.doctor_rows(env.ledger, sw.cache, now=T0 + 2 * DAY)}
+        assert f"{A}@reach" in rows["placement-failing"].detail
+        # the steward re-homes it to a hook: no managed region any more, so no @intact row
+        record = Record.from_path(path)
+        record.set_routing({"routed_at": "2026-09-22T06:24:50Z", "destination": "hook", "by": "human"})
+        record.write(path)
+        fake_reach(monkeypatch, env, [A], destination="hook", state="reachable", reason="registered")
+        sw.sweep()
+        history = sw.history()
+        assert (A, "@intact") not in history  # its old reading is not the last word
+        assert history[(A, "@reach")][-1]["failing"] is False  # control: the premise it still has is measured afresh
+        # and then to `reference`, which is outside the reachability domain: nothing is measured
+        record = Record.from_path(path)
+        record.set_routing({"routed_at": "2026-09-22T06:24:50Z", "destination": "reference", "by": "human"})
+        record.write(path)
+        fake_reach(monkeypatch, env, [])
+        sw.sweep()
+        assert not any(key[0] == A and key[1].startswith("@") for key in sw.history())
+        assert sw.moves("@reach") == [] and sw.moves("@writable") == []
+        rows = {r.name: r for r in premise_sweep.doctor_rows(env.ledger, sw.cache, now=T0 + 4 * DAY)}
+        assert "placement-failing" not in rows
+
+    def test_a_premise_taken_off_a_lesson_drops_its_rows_while_its_other_rows_stay(self, env, sw):
+        watched = sw.probe_home / "watched.txt"
+        watched.write_text("x", encoding="utf-8")
+        keep = file_premise(watched)
+        gone = file_premise(watched, id="p2")
+        path = seed(env, A, [with_baseline(keep, sw), with_baseline(gone, sw)])
+        sw.sweep()
+        assert {(A, "p1"), (A, "p2")} <= set(sw.history())  # control: both were read
+        record = Record.from_path(path)
+        record.set_premises([with_baseline(keep, sw)])
+        record.write(path)
+        sw.sweep()
+        history = sw.history()
+        assert (A, "p2") not in history
+        assert len(history[(A, "p1")]) == 2
+
+    def test_when_reachability_cannot_be_measured_a_failing_placement_stops_counting(self, env, sw, monkeypatch):
+        seed(env, A)
+        fake_reach(monkeypatch, env, [A], state="unreachable", reason="plugin-disabled")
+        sw.sweep()
+        sw.sweep()
+        assert [m.premise_id for m in sw.moves("@reach")] == ["@reach"]  # control: counted
+
+        def broken(*a, **k):
+            raise RuntimeError("synthetic")
+
+        monkeypatch.setattr(reachability, "reachability_rows", broken)
+        sw.sweep()
+        assert sw.moves("@reach") == []  # last night's failure is not carried as today's
+        history = sw.history()
+        assert history[(A, "@reach")][-1]["state"] == "unavailable"
+        # the region premise too: and it says WHY, which an @intact that was
+        # merely "no compile record yet" on the earlier nights would not
+        intact = history[(A, "@intact")][-1]
+        assert intact["state"] == "unavailable" and "reachability could not be measured" in intact["reason"]
 
 
 class TestUnavailableNeverCounts:
@@ -436,7 +562,73 @@ def with_baseline_ledger(premise, sw, env):
     return out
 
 
+class TestOlderThanTheBaseline:
+    def test_an_observation_from_before_the_baseline_never_counts(self, env, sw):
+        """The steward re-records a baseline from an apply-time probe that
+        flapped ("file" again, for a moment). The reading of the night before,
+        made against the old baseline, must not pair with the next night's:
+        two sweeps in a row means two made AFTER the baseline."""
+        watched = sw.probe_home / "watched.txt"
+        watched.write_text("x", encoding="utf-8")
+        path = seed(env, A, [with_baseline(file_premise(watched), sw)])
+        sw.sweep()
+        watched.unlink()
+        sw.sweep()  # day 2: "missing", first sight
+        assert sw.moves("p1") == []
+        # the re-recorded baseline says "file", written between day 2 and day 3
+        watched.write_text("x", encoding="utf-8")
+        again = with_baseline(file_premise(watched), sw, at="2026-11-02T12:00:00Z")
+        watched.unlink()
+        record = Record.from_path(path)
+        record.set_premises([again])
+        record.write(path)
+        sw.sweep()  # day 3: "missing" again, the first made after the baseline
+        assert sw.moves("p1") == []  # not confirmed by the day-2 reading
+        sw.sweep()  # control: day 4 is the second after the baseline
+        assert len(sw.moves("p1")) == 1
+
+
 # ====================================================================== cache
+
+
+class TestTheSeamWithTheSteward:
+    """The steward reads this cache file itself, by name
+    (`steward_inputs.read_observations`). A key renamed on one side makes a
+    confirmed probe move silently stop reaching it, and no test of either
+    side alone would notice."""
+
+    def _moved_two_sweeps(self, env, sw):
+        watched = sw.probe_home / "watched.txt"
+        watched.write_text("x", encoding="utf-8")
+        path = seed(env, A, [with_baseline(file_premise(watched), sw)])
+        watched.unlink()
+        sw.sweep()
+        sw.sweep()
+        return path
+
+    def test_every_line_has_the_keys_the_steward_reads(self, env, sw):
+        self._moved_two_sweeps(env, sw)
+        raw = premise_sweep.observations_path(sw.cache).read_text(encoding="utf-8").splitlines()
+        rows = [json.loads(line) for line in raw]
+        assert any(r["record"] == A and r["premise"] == "p1" for r in rows)  # control: a probe row is there
+        for row in rows:
+            assert {"record", "premise", "state", "value_sha", "shown", "claim", "reason", "observed_at"} <= set(row)
+            assert row["record"].startswith("lrn-")
+            assert datetime.fromisoformat(row["observed_at"].replace("Z", "+00:00"))
+
+    def test_the_steward_reader_reads_what_the_sweep_wrote(self, env, sw, monkeypatch):
+        if not hasattr(steward_inputs, "read_observations"):
+            pytest.skip("the steward lane (U4) is not part of this checkout; the landing run covers the seam")
+        path = self._moved_two_sweeps(env, sw)
+        monkeypatch.setattr(
+            steward_inputs, "observations_path", lambda home: premise_sweep.observations_path(sw.cache)
+        )
+        seen = steward_inputs.read_observations(env.ledger)
+        assert [o.state for o in seen[(A, "p1")]] == ["ok", "ok"]
+        assert [o.shown for o in seen[(A, "p1")]] == ["missing", "missing"]
+        (premise,) = reload_premises(path)
+        assert steward_inputs.confirmed_move(premise, seen[(A, "p1")]) is not None
+        assert len(sw.moves("p1")) == 1  # both sides call it confirmed
 
 
 class TestCache:
@@ -543,7 +735,13 @@ class TestRefresh:
         stale_a = [sw.history()[(A, "p1")][-1]]
         stale_b = [sw.history()[(B, "p1")][-1]]
         record = Record.from_path(path_a)
-        other = file_premise(sw.probe_home / "elsewhere.txt", on_change="refresh")
+        # The steward's new question has a baseline of its OWN that differs from
+        # the stale reading ("missing"): its file exists. So the only thing that
+        # can refuse the stale update is the same-question check, not the
+        # equal-baseline clause (a missing file here would make both refuse).
+        elsewhere = sw.probe_home / "elsewhere.txt"
+        elsewhere.write_text("y", encoding="utf-8")
+        other = file_premise(elsewhere, on_change="refresh")
         record.set_premises([with_baseline(other, sw)])
         record.write(path_a)
         commit_all(env.ledger, "steward rewrote A's probe")
@@ -551,9 +749,31 @@ class TestRefresh:
         assert premise_sweep._refresh_record(env.ledger, A, stale_a) is None
         assert git(env.ledger, "rev-parse", "HEAD").stdout == head
         assert reload_premises(path_a)[0]["probe"]["path"].endswith("elsewhere.txt")
+        assert reload_premises(path_a)[0]["baseline"]["shown"] == "file"  # not overwritten with "missing"
         assert premise_sweep._refresh_record(env.ledger, B, stale_b) == "p1"  # control
         assert git(env.ledger, "rev-parse", "HEAD").stdout != head
         assert reload_premises(path_b)[0]["baseline"]["shown"] == "missing"
+
+    def test_a_refresh_refused_by_a_stopped_intent_is_named_for_serve(self, env, sw, monkeypatch):
+        """02 7.2a.7: the intent id must reach serve's own output, not only
+        sweep.json."""
+        watched = sw.probe_home / "watched.txt"
+        watched.write_text("x", encoding="utf-8")
+        seed(env, A, [with_baseline(file_premise(watched, on_change="refresh"), sw)])
+        sw.sweep()
+        watched.unlink()
+        sw.sweep()
+        stopped = intents.RecoverResult()
+        stopped._stop("int-synthetic", "a half-written ledger write")
+
+        def refuse(*a, **k):
+            raise intents.LedgerStoppedError(stopped)
+
+        monkeypatch.setattr(premise_sweep, "_refresh_record", refuse)
+        result = sw.sweep()
+        assert result.stopped == ["int-synthetic: a half-written ledger write"]
+        assert any("the ledger is stopped" in e for e in result.errors)
+        assert result.refreshed == []
 
     def test_a_failed_refresh_is_recorded_and_the_sweep_carries_on(self, env, sw, monkeypatch):
         watched = sw.probe_home / "watched.txt"
@@ -646,6 +866,36 @@ class TestWritable:
         sw.sweep()
         assert sw.moves("@writable") == []
         assert sw.history()[(A, "@writable")][-1]["shown"] == "git-mode host"
+
+    def test_a_user_lesson_is_placed_under_the_sandbox_claude_dir_not_the_operators(self, env, sw):
+        """N-8: the user-scope host is the directory of the CLAUDE.md the
+        sweep was told about; without the override it would be the real
+        ~/.claude and the check would read the operator's machine."""
+        bucket = Bucket(path=env.ledger / "user", scope="user", name="user")
+        record = make_behavior(scope="user", record_id=A)
+        verdict = reachability.Verdict(
+            record_id=A, bucket="user", scope="user", destination="claude-md", variant=None,
+            target=str(sw.claude / "CLAUDE.md"), state="reachable", reason="registered", detail="",
+        )
+        assert premise_sweep._host_for(env.ledger, bucket, record, verdict, sw.claude) == (sw.claude, "plain")
+
+    def test_a_project_lesson_is_placed_in_its_registered_project_host(self, env, sw):
+        project = env.ledger / "projects" / "p"
+        project.mkdir(parents=True)
+        bucket = Bucket(path=project, scope="project", name="p")
+        record = make_behavior(scope="project", record_id=A)
+        verdict = reachability.Verdict(
+            record_id=A, bucket="projects/p", scope="project", destination="claude-md", variant=None,
+            target=str(env.host / "CLAUDE.md"), state="reachable", reason="registered", detail="",
+        )
+        # no project path is recorded for this bucket: unresolved, said so, not a crash
+        assert premise_sweep._host_for(env.ledger, bucket, record, verdict, sw.claude) is None
+        fact = premise_sweep._writable_fact(env.ledger, bucket, record, verdict, sw.claude)
+        assert fact.state == "unavailable" and "not registered" in fact.detail
+        # control: once the bucket records its project path, the host resolves
+        (project / "meta.yaml").write_text(f"path: {env.host}\n", encoding="utf-8")
+        assert premise_sweep._host_for(env.ledger, bucket, record, verdict, sw.claude) == (env.host, "git")
+        assert premise_sweep._writable_fact(env.ledger, bucket, record, verdict, sw.claude).state == "holds"
 
     def test_an_unresolved_target_is_unavailable_not_failing(self, env, sw, monkeypatch):
         seed(env, A)
@@ -764,7 +1014,7 @@ class TestIntact:
 
 class TestJudging:
     def test_a_placement_row_that_holds_judges_as_holds(self):
-        rows = [{"state": "ok", "value_sha": "a" * 32, "failing": False, "at": "t1", "sweep": "t1"}]
+        rows = [{"state": "ok", "value_sha": "a" * 32, "failing": False, "observed_at": "t1", "sweep": "t1"}]
         assert premise_sweep.judge_placement(rows).verdict == "holds"
 
     def test_no_history_is_not_a_verdict(self):
@@ -842,7 +1092,10 @@ class TestCheck:
         make a value that flaps look stable."""
         self._moved_lesson(env, sw)
         head = git(env.ledger, "rev-parse", "HEAD").stdout
-        self._check(env, sw)
+        rows = self._check(env, sw)
+        # control: the check really ran and saw the moved premise, so the
+        # absences below are not "it saw nothing"
+        assert [(r.premise_id, r.verdict) for r in rows if r.premise_id == "p1"] == [("p1", "moved")]
         self._check(env, sw)
         assert git(env.ledger, "rev-parse", "HEAD").stdout == head
         assert git(env.ledger, "status", "--porcelain").stdout == ""
@@ -909,6 +1162,30 @@ class TestCheck:
 
 
 class TestDoctorAndSelftest:
+    def test_a_failing_placement_premise_is_named_once_it_counts(self, env, sw, monkeypatch):
+        seed(env, A)
+        fake_reach(monkeypatch, env, [A], state="unreachable", reason="plugin-disabled")
+        sw.sweep()
+        one = {r.name for r in premise_sweep.doctor_rows(env.ledger, sw.cache, now=T0 + DAY)}
+        assert "placement-failing" not in one  # control: one sight is not enough
+        sw.sweep()
+        rows = {r.name: r for r in premise_sweep.doctor_rows(env.ledger, sw.cache, now=T0 + 2 * DAY)}
+        assert f"{A}@reach" in rows["placement-failing"].detail
+        assert rows["placement-failing"].verdict == "INFO"
+
+    def test_placement_premises_that_could_not_be_measured_are_counted_not_failed(self, env, sw, monkeypatch):
+        seed(env, A)
+        fake_reach(monkeypatch, env, [A], state="unmeasurable", reason="claude-dir-absent")
+        sw.sweep()
+        measured_not = sum(
+            1 for (_rid, pid), rows in sw.history().items() if pid.startswith("@") and rows[-1]["state"] == "unavailable"
+        )
+        assert measured_not >= 1  # control: the history really has such premises
+        rows = {r.name: r for r in premise_sweep.doctor_rows(env.ledger, sw.cache, now=T0 + DAY)}
+        assert f"{measured_not} placement premise(s) could not be measured" in rows["placement-unavailable"].detail
+        assert rows["placement-unavailable"].verdict == "INFO"
+        assert "placement-failing" not in rows
+
     def test_the_row_reports_coverage_and_the_last_sweep(self, env, sw):
         seed(env, A)
         seed(env, B, [{"id": "p1", "claim": "a behaviour", "probe": None}])
@@ -973,6 +1250,27 @@ class TestServeJob:
         )
         assert [r.name for r in records] == ["premises", "steward"]
         assert order == ["premises", "steward"]
+
+    def test_a_stopped_refresh_is_printed_on_serves_own_output(self, tmp_path, monkeypatch, capsys):
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        self._quiet(monkeypatch)
+        monkeypatch.setattr(serve, "_premises_is_due", lambda *a, **k: True)
+        monkeypatch.setattr(serve, "_steward_is_due", lambda *a, **k: False)
+        result = premise_sweep.SweepResult("ok")
+        result.stopped.append("int-synthetic: a half-written ledger write")
+        monkeypatch.setattr(serve, "_run_premises_job", lambda home, cache, now: result)
+        serve._run_tick(tmp_path / "home", cache_dir, now=time.time(), pid=os.getpid(), tick_secs=60.0)
+        err = capsys.readouterr().err
+        assert "serve: premises job refused" in err and "int-synthetic" in err
+        assert "--clear-intent int-synthetic" in err
+
+    def test_a_held_premises_check_is_named_in_the_heartbeat_text(self, tmp_path):
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        assert serve._holds_text(cache_dir, T0) == ""  # control: nothing held
+        serve._write_holds(cache_dir, {"premises": {"at": T0, "cause": "wedged read", "notified_cause": "wedged read"}})
+        assert "holding: premises (wedged read)" in serve._holds_text(cache_dir, T0 + 1)
 
     def test_a_crashed_sweep_costs_that_job_only(self, tmp_path, monkeypatch, capsys):
         cache_dir = tmp_path / "cache"

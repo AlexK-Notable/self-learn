@@ -546,7 +546,7 @@ def _holds_text(cache_dir: Path, now: float) -> str:
     job currently held by a failing due check."""
     held = [
         f"{job} ({_held_cause(cache_dir, job, now)})"
-        for job in ("mine", "steward", "overseer")
+        for job in ("mine", "premises", "steward", "overseer")
         if _held_cause(cache_dir, job, now) is not None
     ]
     return f"; holding: {', '.join(held)}" if held else ""
@@ -806,7 +806,7 @@ def _steward_is_due(home: Path, cache_dir: Path, now: float) -> bool:
     # S-NEXT-u3-followup: a placed lesson whose follow-up closed after it was
     # last decided is an input too, due like a reconsider input once the
     # cooldown has passed (the premise-check design, U3).
-    premise_moved = steward._premise_moved_inputs(home)
+    premise_moved = steward._premise_moved_inputs(home, manifests=manifests)
     if (
         not unfinished and not reconsider and not input_paths
         and not violations and not premise_moved
@@ -1201,6 +1201,9 @@ def _run_tick(home: Path, cache_dir: Path, *, now: float, pid: int, tick_secs: f
                 home=home,
             )
             ran.append(premises_record)
+            _log_stopped_refusal(
+                "premises", getattr(premises_record.result, "stopped", None) or []
+            )
         if _due_or_hold(
             "steward", home, cache_dir, now, lambda: _steward_is_due(home, cache_dir, now)
         ):

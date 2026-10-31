@@ -11,9 +11,9 @@ run and sent as the appended system prompt; then the PER-PACKET part --
 user message. Each part keeps §4.1's relative order.
 
 **The briefs (U3a, 2026-09-27).** A brief is no longer the analyst's card.
-Each input -- a pending lesson, a reconsider input, or a suspected rule
-violation -- is rendered by :mod:`steward_inputs`: the record's own lesson
-sections, an evidence pack built by code (every quote checked against its
+Each input -- a pending lesson, a reconsider input, a suspected rule
+violation, or a routed lesson whose premise moved -- is rendered by
+:mod:`steward_inputs`: the record's own lesson sections, an evidence pack built by code (every quote checked against its
 transcript, a bounded excerpt around it), the closest existing lessons and
 the links that batched it. The runner builds those (it holds the index and
 the packet's group) and passes them as ``briefs``; a caller that passes
@@ -26,9 +26,11 @@ ledger, takes no lock, and never reads ``hosts.yaml`` or ``settings.json``
 **Input shape.** Each dict in ``inputs`` carries ``"id"`` (the record id)
 and optionally ``"kind"`` (:data:`steward_inputs.INPUT_KINDS`, default
 ``lesson``), ``"reason"`` (a reconsider input's; since S-88 also a
-deferred lesson's that no case covers) and ``"events"`` (a
-suspected violation's fire events). **Ordering is the caller's job.**
-``assemble`` renders ``inputs`` in the exact order the caller passes
+deferred lesson's that no case covers), ``"events"`` (a suspected
+violation's fire events), ``"moved"`` (a ``premise-moved`` input's facts,
+for instance a closed follow-up) and ``"predecessor"`` (the case whose own
+"what would change this decision" that brief quotes). **Ordering is the
+caller's job.** ``assemble`` renders ``inputs`` in the exact order the caller passes
 them -- it never sorts or reorders.
 
 **"Later observations", evidence-only view, and the blind default
@@ -1282,11 +1284,15 @@ def _premise_lines() -> list[str]:
         "  A PREMISE-MOVED INPUT (method section 17) is a placed lesson where something it rests",
         "  on changed. Decide it in a `kind: reconsider` case superseding the case that covers it",
         "  (the runner fills it in), or, when its brief says no case covers it, in a `kind:",
-        "  resolution` case: on this input, and only here, a `replace` or `retire` of a placed",
-        "  lesson in a resolution case is yours. A `no-action` decision, or a `replace`, needs a",
-        "  `premises` line on the lesson re-recording every moved premise the brief names --",
-        "  before the `replace` line -- or the runner refuses the case: the same change would",
-        "  come back every night.",
+        "  resolution` case: on this input, and only here, a `replace`, `retire` or `route` (a",
+        "  move, applied as a reroute; give `dest`) of a placed lesson in a resolution case is",
+        "  yours. Outcomes: `no-action`, `replaced`, `retire`, `route`, or park. A `no-action`",
+        "  decision needs a `premises` line on the lesson re-recording every moved premise the",
+        "  brief names, or the runner refuses the case: the same change would come back every",
+        "  night. `rebaseline` re-records a premise judged by its value (`holds_if: changed`); a",
+        "  premise judged by its claim moved because the claim is false now, and a rebaseline of",
+        "  it is refused: rewrite or drop it with `set`. A `replace` carries the lesson's",
+        "  premises to the new lesson; put a `premises` line BEFORE it when they change too.",
         f"  `premises` takes `action`: {_words(verbs.PREMISES_ACTIONS)}. `action: set` with `premises:`, the",
         "  whole list (`[]` for a lesson that rests on no fact about the machine), at most",
         f"  {premises.MAX_PREMISES} entries and at most {premises.MAX_PROBED} with a probe. An entry: `id` "
@@ -1309,10 +1315,10 @@ def _premise_lines() -> list[str]:
         "  `adopt_region: true` (fold the edit into the lesson; no also, to, dest or",
         "  rules_paths) or a `premises` line `action: restore-region` (no other key but",
         "  because and note: put the ledger's text back), and the case's `evidence` quotes",
-        "  every line the brief lists as written by a person. Both lines are refused on any",
-        "  other input. On an `@reach` or `@writable` input the lesson moves with a `route`",
-        "  line (a reconsider case) or a `replace` with `text_from` its own id and a `dest`",
-        "  (a resolution case), or is retired.",
+        "  every line the brief lists as written by a person. When those lessons were not all",
+        "  placed by one case, that one case is `kind: resolution` with no `supersedes`. Both",
+        "  lines are refused on any other input. On an `@reach` or `@writable` input the",
+        "  lesson moves with a `route` line (applied as a reroute), or is retired.",
     ]
 
 

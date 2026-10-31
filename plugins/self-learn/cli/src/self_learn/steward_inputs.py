@@ -80,18 +80,16 @@ __all__ = [
     "fires_version",
     "last_decision",
     "moved_followups",
+    "open_followup_ids",
     "packet_stats",
     "plan_packets",
     "premise_moved_version",
-    "premise_moves",
     "premises_enabled",
     "PremiseMoves",
-    "confirmed_move",
+    "broken_probes",
     "moved_premises",
-    "observations_path",
+    "placed_with_premises",
     "probe_words",
-    "read_observations",
-    "routed_with_premises",
     "refresh_index",
     "suspected_violations",
     "tool_reads",
@@ -101,6 +99,8 @@ __all__ = [
     "intact_groups",
     "keep_groups_together",
     "placement_moves",
+    "quotable_line",
+    "scan_hit",
 ]
 
 INPUT_LESSON = "lesson"
@@ -434,68 +434,89 @@ def premises_enabled(home: Path) -> bool:
     return bool(value)
 
 
+def _done_day(value: object) -> str:
+    """A follow-up's ``done_at`` as the day it names (``YYYY-MM-DD``): a date
+    value from hand-edited YAML and its text give the same day."""
+    when = chrono.to_dt(value)
+    return when.date().isoformat() if when is not None else str(value or "")
+
+
 def premise_moved_version(
     *,
     followup_done: Mapping[str, Any] | None = None,
-    moved: Iterable[tuple[str, str]] = (),
+    moved: Iterable[Sequence[str]] = (),
 ) -> str:
-    """The identity of a ``premise-moved`` input: a hash of what moved. The
-    closed follow-up (its action, gate, notes and ``done_at``) and, when the
-    premise sweep adds them, the ``(premise id, new value hash)`` pairs.
-    A run that decided this identity (applied, parked, refused, abandoned)
-    is never offered it again; a follow-up closed again, or a premise that
-    moves again, is a new version. The same pattern as :func:`fires_version`."""
+    """The identity of a ``premise-moved`` input (02 section 3a.10.7): a hash
+    of what moved, ``premise:<12 hex>``. The closed follow-up (its action,
+    gate, notes and ``done_at``) and, when the premise sweep adds them, the
+    sorted moved-premise tuples. A run that decided this identity (applied,
+    parked, refused, abandoned) is never offered it again; a follow-up
+    closed again with other words, or a premise that moves again, is a new
+    version. The same pattern as :func:`fires_version`. U3 passes
+    ``followup_done=``.
+
+    S-NEXT-u4-steward passes ``(premise id, current value hash, baseline
+    observed_at)`` for each written premise (gate round 1 on c82e783,
+    MINOR): with the value alone, a value that went A to B (decided, the
+    baseline re-recorded as B), then back to A (decided), then to B again
+    made the first input's version once more, already decided, and the
+    third move was never offered. Every decision that keeps a premise
+    re-records its baseline at a new time, so the third move is a new
+    version; a park or a refusal leaves the baseline, and so the version,
+    as it was. A two-element pair hashes exactly as before."""
     block = None
     if followup_done is not None:
         block = {
             key: str(followup_done.get(key) or "")
             for key in ("action", "unblocks_on", "note", "done_at", "done_note")
         }
-    pairs = sorted([str(pid), str(value)] for pid, value in moved)
+    pairs = sorted([str(part) for part in entry] for entry in moved)
     blob = json.dumps({"followup": block, "moved": pairs}, sort_keys=True)
     return "premise:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
 
 
 #: The case outcomes that placed, moved, rewrote or retired a lesson: what
-#: counts as "decided" when asking whether a follow-up closed AFTER the last
-#: decision. A case that deferred, parked or only recorded a recurrence
-#: (`no-action`) did not look at the lesson's premises.
+#: counts as a decision of it when asking whether a follow-up closed AFTER
+#: the last one (02 section 3a.10.4, event 2). A case that deferred, parked
+#: or only recorded a recurrence or dismissed a suspect (`no-action`) did
+#: not look at what the lesson rests on.
 _DECIDING_OUTCOMES = frozenset({"route", "reject", "retire", "replaced", "rehome", "revise"})
-#: ... and the history entries a verb writes when a lesson's placement was
-#: displaced or the overseer reconsidered it.
-_DECIDING_HISTORY = frozenset({"routing", "reconsidered"})
 
 
 def last_decision(home: Path, record: Record) -> tuple[datetime | None, str]:
-    """When a ROUTED lesson was last decided, and by what evidence, from the
-    ledger alone: ``(time, label)`` with the newest of its ``routed_at``, a
-    ``routing`` or ``reconsidered`` history entry, a ``last_confirmed`` date
-    (a person observed the rule working), and the ``opened_at`` of a case
-    that placed, moved, rewrote or retired it (:data:`_DECIDING_OUTCOMES`).
-    ``(None, "")`` when nothing is dated. A case index that cannot be read
-    contributes nothing: the answer then errs toward OFFERING the lesson."""
+    """When a ROUTED lesson was last decided, from the ledger alone: ``(time,
+    label)``, the newest of its ``routing.routed_at`` and the ``opened_at``
+    of a case that is not parked, whose ``records`` name the lesson, and
+    whose outcome placed, moved, rewrote or retired it
+    (:data:`_DECIDING_OUTCOMES`). ``(None, "")`` when nothing is dated.
+
+    Not counted, on purpose: a parked case, a ``no-action`` case (a dismissed
+    suspect, a recorded recurrence) and a deferring case: none of them
+    decided what the lesson rests on, and a closed follow-up must stay in
+    front of the steward until one does. Neither a ``routing`` or
+    ``reconsidered`` history entry (the case that wrote it is counted, at the
+    time it froze its facts; the entry is dated when it APPLIED, which can be
+    weeks later) nor ``last_confirmed`` (a person saw the rule working; that
+    says nothing about the facts a follow-up closed on). A case whose file
+    fails its freeze-hash check, or an index that cannot be read, contributes
+    nothing: the answer then errs toward OFFERING the lesson."""
     from . import cases  # late: cases pulls the cache and the worker
 
     found: list[tuple[datetime, str]] = []
-
-    def add(value: object, label: str) -> None:
-        when = chrono.to_dt(value)
-        if when is not None:
-            found.append((when, label))
-
     routing = record.routing if isinstance(record.routing, dict) else {}
-    add(routing.get("routed_at"), "routed_at")
-    for entry in record.history:
-        if isinstance(entry, dict) and entry.get("event") in _DECIDING_HISTORY:
-            add(entry.get("at"), f"history:{entry.get('event')}")
-    add(record.last_confirmed, "last_confirmed")
+    routed = chrono.to_dt(routing.get("routed_at"))
+    if routed is not None:
+        found.append((routed, "routed_at"))
     try:
-        rows = cases.list_cases(home, record_id=record.id)
+        rows = cases.list_cases(home, record_id=record.id, only_ok=True)
     except (cases.CaseError, OSError, ValueError):
         rows = []
     for row in rows:
-        if row.get("kind") != "parked" and row.get("outcome") in _DECIDING_OUTCOMES:
-            add(row.get("opened_at"), f"case:{row.get('case')}")
+        if row.get("kind") == "parked" or row.get("outcome") not in _DECIDING_OUTCOMES:
+            continue
+        when = chrono.to_dt(row.get("opened_at"))
+        if when is not None:
+            found.append((when, f"case:{row.get('case')}"))
     if not found:
         return None, ""
     return max(found, key=lambda item: item[0])
@@ -512,6 +533,20 @@ class MovedFollowup:
     decided_by: str
 
 
+def _followup_is_open(home: Path, record: Record) -> MovedFollowup | None:
+    """The lesson as a :class:`MovedFollowup` when its closed follow-up is
+    not earlier than the day of its last decision, else ``None``. The one
+    test :func:`moved_followups` and :func:`open_followup_ids` share."""
+    done = record.follow_up_done or {}
+    done_when = chrono.to_dt(done.get("done_at"))
+    if done_when is None:
+        return None
+    decided_at, decided_by = last_decision(home, record)
+    if decided_at is not None and decided_at.date() > done_when.date():
+        return None
+    return MovedFollowup(record.id, done, done_when.date(), decided_at, decided_by)
+
+
 def moved_followups(home: Path) -> list[MovedFollowup]:
     """Every ROUTED lesson whose ``follow_up_done.done_at`` is not earlier
     than the day it was last decided (:func:`last_decision`), oldest closing
@@ -524,19 +559,21 @@ def moved_followups(home: Path) -> list[MovedFollowup]:
     ``done_at`` is a DATE (the verb writes the day), so the comparison is by
     day, and the same day counts as after: a lesson decided and closed on one
     day is offered once rather than missed. The input's own version
-    (:func:`premise_moved_version`) keeps it from being offered twice."""
+    (:func:`premise_moved_version`) keeps it from being offered twice.
+
+    Only a case that decided what the lesson says takes the lesson out of
+    this list (:func:`last_decision`): a suspected-violation case that
+    dismissed its events, a recurrence case and a parked case leave it
+    offered, because the method gives them no authority to narrow or retire a
+    placed lesson. A brief that reaches the lesson while the follow-up is
+    undecided still shows it (:func:`open_followup_ids`), as context."""
     from . import ledger_ops  # late: ledger_ops imports far more
 
-    out: list[MovedFollowup] = []
-    for record in ledger_ops.closed_followups(home):
-        done = record.follow_up_done or {}
-        done_when = chrono.to_dt(done.get("done_at"))
-        if done_when is None:
-            continue
-        decided_at, decided_by = last_decision(home, record)
-        if decided_at is not None and decided_at.date() > done_when.date():
-            continue
-        out.append(MovedFollowup(record.id, done, done_when.date(), decided_at, decided_by))
+    out = [
+        item for item in
+        (_followup_is_open(home, record) for record in ledger_ops.closed_followups(home))
+        if item is not None
+    ]
     out.sort(key=lambda item: (item.done_on, item.record_id))
     return out
 
@@ -544,134 +581,29 @@ def moved_followups(home: Path) -> list[MovedFollowup]:
 # --------------------------------- moved premises (U4, S-NEXT-u4-steward)
 #
 # 02 §3a.10.4 events 1 and 3: a WRITTEN premise of a placed lesson moved.
-# Three ways, each read here from the record and the cache, never by a model:
+# The daily sweep (U2, `premise_sweep`) is the one judge of that: it keeps
+# the observations and its :func:`premise_sweep.confirmed_moves` says which
+# moves count -- a probe premise that fails its `holds_if` against the
+# recorded baseline on two sweeps in a row made after that baseline, the
+# two agreeing on the value; a `contradicts-claim` baseline from the first
+# sweep after it was written; a `ledger` premise on first sight. This
+# module reads that answer and never re-judges the cache: one debounce,
+# one reader (gate round 1 on c82e783, BLOCKER).
 #
-# * a probe premise the daily sweep (U2) saw fail its `holds_if` against the
-#   recorded baseline on its last two observations, both made after that
-#   baseline was recorded and agreeing on the value (two sweeps in a row);
-# * a premise recorded as `contradicts-claim` (its first value already said
-#   the claim was false), from the night after it was recorded;
-# * a `ledger` premise, checked here and now (a ledger read, no command):
-#   a lesson it names was retired or replaced, a statement it names was
-#   corrected, a follow-up it names was closed. These wait for no sweep.
+# What it adds on top is the steward's own rate rule (design D7.5, 02
+# §3a.10.5 (5)): a move a probe triggers waits until the premise was
+# decided at least seven days ago. A `ledger` or `contradicts-claim` move
+# does not wait. The placement premises (`@reach`, `@writable`, `@intact`)
+# the sweep also confirms are U8's steward half and are left out here.
 #
-# `unavailable` never makes a move (`premises.verdict` reads it as neither
-# holds nor moved); three in a row is a broken probe the brief shows.
+# `unavailable` never makes a move (`premises.verdict`); three in a row is a
+# broken probe (:func:`broken_probes`), which every brief of the lesson
+# shows and which is never an input by itself.
 
-#: Where the premise sweep (U2) keeps its observations, under the cache
-#: (02 §3a.10.6; ``NOT_REPO_TRUTH``): JSON lines, oldest first, each
-#: ``{"record": "lrn-…", "premise": "p1", "observation": {…}}`` with the
-#: observation as :meth:`premises.Observation.as_dict` writes it (its keys
-#: may also sit at the top level of the line). A missing or unreadable
-#: file is "no observations": a probe premise then waits, and nothing else.
-OBSERVATIONS_FILE = Path("premises") / "observations.jsonl"
 #: Design D7.5: a re-decision a probe triggers waits until the premise was
 #: decided (written or re-baselined) at least this many days ago. Follow-up,
 #: ledger and `contradicts-claim` events do not wait.
 PROBE_REDECIDE_DAYS = 7
-#: Design D7.3: this many `unavailable` observations in a row is a broken
-#: probe, shown in the lesson's brief for the steward to fix or drop.
-BROKEN_PROBE_SWEEPS = 3
-
-
-def observations_path(home: Path) -> Path:
-    """The sweep's observation file for *home*'s cache namespace (the path
-    `worker.cache_dir` resolves, computed without creating anything)."""
-    from .serve import cache_dir_readonly  # late: serve imports the steward
-
-    return cache_dir_readonly(home) / OBSERVATIONS_FILE
-
-
-def _as_observation(row: Mapping[str, Any]) -> Any:
-    """One stored observation as a :class:`premises.Observation`, or
-    ``None`` when the row is not one."""
-    from . import premises
-
-    state = row.get("state")
-    if state not in (premises.OBS_OK, premises.OBS_UNAVAILABLE):
-        return None
-    sha = row.get("value_sha")
-    return premises.Observation(
-        state=str(state),
-        value_sha=str(sha) if isinstance(sha, str) and sha else None,
-        shown=str(row.get("shown") or ""),
-        claim=str(row.get("claim") or premises.CLAIM_UNJUDGED),
-        reason=str(row.get("reason") or ""),
-        # S-NEXT-u8-placement (merging U2 and U4): the sweep's own rows
-        # (`premise_sweep._row`) name the time `at`, and the sweep's run
-        # `sweep`; the nested shape names it `observed_at`.
-        observed_at=str(row.get("observed_at") or row.get("at") or row.get("sweep") or ""),
-    )
-
-
-def read_observations(home: Path) -> dict[tuple[str, str], list[Any]]:
-    """``(record id, premise id) -> [Observation, ...]``, oldest first, from
-    the sweep's cache file (:data:`OBSERVATIONS_FILE`)."""
-    try:
-        text = observations_path(home).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return {}
-    out: dict[tuple[str, str], list[Any]] = {}
-    for line in text.splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(row, dict):
-            continue
-        # S-NEXT-u8-placement (merging U2 and U4): the sweep writes its rows
-        # flat, the lesson id under `id` (`premise_sweep._row`); the nested
-        # shape names it `record`. Both are read, so the steward sees what
-        # the sweep actually wrote.
-        rid, pid = row.get("record") or row.get("id"), row.get("premise")
-        if not isinstance(rid, str) or not isinstance(pid, str):
-            continue
-        body = row.get("observation")
-        observation = _as_observation(body if isinstance(body, dict) else row)
-        if observation is not None:
-            out.setdefault((rid, pid), []).append(observation)
-    for rows in out.values():
-        # stable: equal or unreadable times keep the file's order
-        rows.sort(key=lambda o: chrono.to_dt(o.observed_at) or datetime.min.replace(tzinfo=timezone.utc))
-    return out
-
-
-def confirmed_move(premise: Mapping[str, Any], observations: Sequence[Any]) -> tuple[Any, Any] | None:
-    """The two observations that confirm *premise* moved, or ``None``: the
-    last two made after its baseline was recorded both judge it ``moved``
-    (`premises.verdict`) and agree on the value. Older observations, made
-    before a decision re-recorded the baseline, never count: a decided
-    change does not come back from a stale cache line."""
-    from . import premises
-
-    baseline = premise.get("baseline")
-    if not isinstance(baseline, Mapping):
-        return None
-    since = chrono.to_dt(baseline.get("observed_at"))
-    after = []
-    for observation in observations:
-        when = chrono.to_dt(observation.observed_at)
-        if when is not None and (since is None or when > since):
-            after.append(observation)
-    if len(after) < 2:
-        return None
-    first, last = after[-2], after[-1]
-    if any(premises.verdict(premise, o) != premises.VERDICT_MOVED for o in (first, last)):
-        return None
-    if first.value_sha != last.value_sha:
-        return None
-    return first, last
-
-
-def _broken_reason(observations: Sequence[Any]) -> str | None:
-    """Why a probe is broken -- its last :data:`BROKEN_PROBE_SWEEPS`
-    observations all `unavailable` -- or ``None``."""
-    from . import premises
-
-    last = list(observations)[-BROKEN_PROBE_SWEEPS:]
-    if len(last) < BROKEN_PROBE_SWEEPS or any(o.state != premises.OBS_UNAVAILABLE for o in last):
-        return None
-    return last[-1].reason or "unavailable"
 
 
 def probe_words(probe: object) -> str:
@@ -687,24 +619,27 @@ def probe_words(probe: object) -> str:
 @dataclass(frozen=True)
 class PremiseMoves:
     """What moved for one placed lesson's written premises: ``items`` (the
-    brief's ``moved`` entries, ``source: premise``), ``broken`` (probes
-    `unavailable` three sweeps running), and ``since`` (when the oldest
-    move was first seen, for the oldest-first order)."""
+    input's ``moved`` entries, ``source: premise``) and ``since`` (when the
+    oldest move was first seen, for the oldest-first order)."""
 
     record_id: str
     items: list[dict]
-    broken: list[dict]
     since: str
 
 
-def _premise_item(
-    premise: Mapping[str, Any], how: str, now: Any | None, since: str
-) -> dict:
-    """One ``moved`` entry (``source: premise``) as the brief and the run
-    record carry it: claim, probe, recorded value and today's, all short
-    and scan-clean (`premises` stores nothing else)."""
+def _premise_item(premise: Mapping[str, Any], move: Any) -> dict:
+    """One ``moved`` entry (``source: premise``) from a confirmed
+    :class:`premise_sweep.Movement`, as the brief and the run record carry
+    it: claim, probe, recorded value and today's, all short and scan-clean
+    (the sweep stores nothing else)."""
     baseline = premise.get("baseline") if isinstance(premise.get("baseline"), Mapping) else {}
     assert isinstance(baseline, Mapping)
+    if move.kind == "ledger":
+        how = "ledger"
+    elif baseline.get("state") == "contradicts-claim":
+        how = "contradicts-claim"
+    else:
+        how = "probe"
     item: dict = {
         "source": "premise",
         "premise": str(premise.get("id")),
@@ -715,89 +650,39 @@ def _premise_item(
         "recorded": str(baseline.get("shown", "")),
         "recorded_state": str(baseline.get("state") or ""),
         "recorded_at": str(baseline.get("observed_at") or ""),
-        "since": since,
+        "now": str(move.shown),
+        "now_at": str(move.observed_at),
+        "since": str(move.since),
+        "value_sha": str(move.value_sha),
     }
     if premise.get("match") is not None:
         item["match"] = _one_line(premise.get("match"))
-    if now is not None:
-        item["now"] = now.shown
-        item["now_at"] = now.observed_at
-        item["value_sha"] = now.value_sha or ""
-    else:
-        item["now"] = item["recorded"]
-        item["now_at"] = item["recorded_at"]
-        item["value_sha"] = str(baseline.get("value_sha") or "")
     return item
 
 
-def premise_moves(
-    home: Path,
-    record: Record,
-    *,
-    observations: Mapping[tuple[str, str], Sequence[Any]] | None = None,
-    today: date | None = None,
-) -> PremiseMoves | None:
-    """The moves of *record*'s written premises (see the block comment
-    above), or ``None`` when nothing moved and no probe is broken. A
-    premise with ``on_change: refresh`` is never a move: code re-records
-    it (the sweep's refresh) without asking the steward."""
-    from . import premises
-
-    observations = observations if observations is not None else {}
-    today = today or datetime.now(timezone.utc).date()
-    env = premises.ProbeEnv(ledger_home=home)
-    items: list[dict] = []
-    broken: list[dict] = []
-    for premise in record.premises or []:
-        probe = premise.get("probe")
-        baseline = premise.get("baseline")
-        if not isinstance(probe, Mapping) or not isinstance(baseline, Mapping):
-            continue
-        pid = str(premise.get("id"))
-        rows = list(observations.get((record.id, pid), ()))
-        reason = _broken_reason(rows)
-        if reason is not None:
-            broken.append({"premise": pid, "probe": probe_words(probe), "reason": _one_line(reason)})
-        if premise.get("on_change") == "refresh":
-            continue
-        recorded_at = chrono.to_dt(baseline.get("observed_at"))
-        if baseline.get("state") == "contradicts-claim":
-            # Counts from the night after it was recorded (02 §3a.10.4 (1)).
-            if recorded_at is not None and recorded_at.date() < today:
-                later = [o for o in rows if o.state == premises.OBS_OK and o.value_sha]
-                items.append(_premise_item(
-                    premise, "contradicts-claim", later[-1] if later else None,
-                    str(baseline.get("observed_at")),
-                ))
-            continue
-        if probe.get("kind") == "ledger":
-            observation = premises.observe(premise, env)
-            if premises.verdict(premise, observation) == premises.VERDICT_MOVED:
-                assert observation is not None
-                items.append(_premise_item(premise, "ledger", observation, observation.observed_at))
-            continue
-        pair = confirmed_move(premise, rows)
-        if pair is None:
-            continue
-        decided = chrono.to_dt(premise.get("decided_at"))
-        if decided is not None and (today - decided.date()).days < PROBE_REDECIDE_DAYS:
-            continue  # D7.5: it was decided less than a week ago; it waits
-        items.append(_premise_item(premise, "probe", pair[1], pair[0].observed_at))
-    if not items and not broken:
-        return None
-    since = min((item["since"] for item in items), default="")
-    return PremiseMoves(record.id, items, broken, since)
+def _waits_a_week(premise: Mapping[str, Any], how: str, today: date) -> bool:
+    """D7.5: a probe-triggered move of a premise decided less than
+    :data:`PROBE_REDECIDE_DAYS` ago waits. A `ledger` move (an act by a
+    person or a ledger verb) and a `contradicts-claim` baseline (the
+    decision that wrote it asked for exactly this look) do not."""
+    if how != "probe":
+        return False
+    decided = chrono.to_dt(premise.get("decided_at"))
+    return decided is not None and (today - decided.date()).days < PROBE_REDECIDE_DAYS
 
 
-def routed_with_premises(home: Path) -> list[Record]:
-    """Every ROUTED record that carries a written ``premises`` list, in
-    bucket and file order. Like `ledger_ops.closed_followups` it reads the
-    file text first and parses only a file that names the field, because
-    the steward's due check calls this on every scheduler tick."""
+def placed_with_premises(home: Path) -> list[tuple[Any, Record]]:
+    """Every live placed lesson (`domain.is_canon_live`: routed, not
+    superseded) that carries a non-empty ``premises`` list, with its bucket,
+    in bucket and file order. It reads the file text first and parses only a
+    file that names the field, because the steward's due check calls this
+    on every scheduler tick (`premise_sweep.routed_lessons` parses every
+    placed lesson)."""
+    from . import domain
     from .ledger import discover_buckets
     from .records import RecordError
 
-    out: list[Record] = []
+    out: list[tuple[Any, Record]] = []
     for bucket in discover_buckets(home):
         resolved = bucket.path / "resolved"
         if not resolved.is_dir():
@@ -809,24 +694,111 @@ def routed_with_premises(home: Path) -> list[Record]:
                 record = Record.from_path(path)
             except (RecordError, OSError, UnicodeDecodeError):
                 continue
-            if record.status == "routed" and record.premises:
-                out.append(record)
+            if domain.is_canon_live(record) and record.premises:
+                out.append((bucket, record))
     return out
 
 
-def moved_premises(home: Path, *, today: date | None = None) -> dict[str, PremiseMoves]:
-    """``record id -> PremiseMoves`` for every placed lesson whose written
-    premises moved or whose probe is broken (:func:`premise_moves`)."""
-    records = routed_with_premises(home)
-    if not records:
+def moved_premises(
+    home: Path,
+    *,
+    today: date | None = None,
+    placed: list[tuple[Any, Record]] | None = None,
+    history: dict | None = None,
+) -> dict[str, PremiseMoves]:
+    """``record id -> PremiseMoves`` for every placed lesson one of whose
+    written premises the sweep confirms moved
+    (:func:`premise_sweep.confirmed_moves`), less the moves that wait a week
+    (:func:`_waits_a_week`). Placement premises are not here (U8). Reads
+    only; an empty or missing cache gives ``{}``. *placed* and *history*
+    are for a caller that already read them."""
+    from . import premise_sweep  # late: the sweep imports serve, serve the steward
+
+    placed = placed if placed is not None else placed_with_premises(home)
+    if not placed:
         return {}
-    observations = read_observations(home)
-    out: dict[str, PremiseMoves] = {}
-    for record in records:
-        found = premise_moves(home, record, observations=observations, today=today)
-        if found is not None:
-            out[record.id] = found
+    today = today or datetime.now(timezone.utc).date()
+    moves = premise_sweep.confirmed_moves(home, placed=placed, history=history)
+    by_record = {record.id: record for _bucket, record in placed}
+    found: dict[str, list[dict]] = {}
+    for move in moves:
+        if move.kind not in (premise_sweep.KIND_PROBE, premise_sweep.KIND_LEDGER):
+            continue  # a placement premise: U8's steward half
+        record = by_record.get(move.record_id)
+        premise = next(
+            (p for p in (record.premises or []) if str(p.get("id")) == move.premise_id), None
+        ) if record is not None else None
+        if premise is None:
+            continue
+        item = _premise_item(premise, move)
+        if _waits_a_week(premise, str(item["how"]), today):
+            continue
+        found.setdefault(move.record_id, []).append(item)
+    return {
+        rid: PremiseMoves(rid, items, min(str(item["since"]) for item in items))
+        for rid, items in found.items()
+    }
+
+
+def broken_probes(
+    home: Path,
+    *,
+    placed: list[tuple[Any, Record]] | None = None,
+    history: dict | None = None,
+) -> dict[str, list[dict]]:
+    """``record id -> [{premise, probe, reason}, ...]``: the written probes
+    the sweep saw `unavailable` on its last
+    :data:`premise_sweep.BROKEN_PROBE_SWEEPS` sweeps in a row, under the
+    premise's current question (02 §3a.10.5 (3); the same rule as
+    :func:`premise_sweep.doctor_rows`). Every brief of the lesson shows
+    them, whatever brought it to the steward, so the steward can fix or drop
+    the probe with ``premises set``. Never an input by itself. Placement
+    premises are never "broken" (02 §3a.10.3)."""
+    from . import premise_sweep, premises
+
+    placed = placed if placed is not None else placed_with_premises(home)
+    if not placed:
+        return {}
+    if history is None:
+        history = premise_sweep.read_history(premise_sweep.default_cache_dir(home))
+    out: dict[str, list[dict]] = {}
+    for _bucket, record in placed:
+        for premise in record.premises or []:
+            if premise.get("probe") is None:
+                continue
+            pid = str(premise.get("id"))
+            sig = premise_sweep._premise_sig(premise)
+            tail = [r for r in history.get((record.id, pid), []) if r.get("psha") == sig]
+            tail = tail[-premise_sweep.BROKEN_PROBE_SWEEPS:]
+            if len(tail) == premise_sweep.BROKEN_PROBE_SWEEPS and all(
+                r.get("state") == premises.OBS_UNAVAILABLE for r in tail
+            ):
+                out.setdefault(record.id, []).append({
+                    "premise": pid,
+                    "probe": probe_words(premise.get("probe")),
+                    "reason": _one_line(tail[-1].get("reason") or "unavailable"),
+                })
     return out
+
+
+def open_followup_ids(home: Path) -> set[str]:
+    """The ids of the routed lessons whose closed follow-up is still
+    undecided: :func:`moved_followups`, minus a lesson whose ``premise-moved``
+    input for the follow-up as it stands was already decided by a committed
+    steward run (applied, parked, refused or abandoned). Only these show the
+    ``[closed follow-up]`` block in their other briefs: once the question
+    was settled it is not put back in front of the steward on an unrelated
+    input. Empty, and cheap, when no routed lesson has a closed follow-up."""
+    found = moved_followups(home)
+    if not found:
+        return set()
+    from . import steward  # late: steward imports this module
+
+    terminal = steward._terminal_versions(home)
+    return {
+        item.record_id for item in found
+        if (item.record_id, premise_moved_version(followup_done=item.done)) not in terminal
+    }
 
 
 # --------------------------- placement premises (U8, S-NEXT-u8-placement)
@@ -1078,6 +1050,55 @@ def _cited_block(
     return out
 
 
+def _followup_fact_lines(item: Mapping[str, Any]) -> list[str]:
+    """The closed follow-up's facts, one labelled line each."""
+    lines = [f"  the follow-up on this lesson was closed on {item.get('done_at')}"]
+    for key, label in _FOLLOWUP_LABELS:
+        if item.get(key):
+            lines.append(f"    {label}: {_clip(item[key])}")
+    return lines
+
+
+def _followup_cite_lines(record: Record, *, path: str | None, head: str | None) -> list[str]:
+    """The closed follow-up as the record file holds it, line by line, with
+    the ledger ref a case cites (empty when the file has no such block)."""
+    block = _done_block_lines(record)
+    if block is None:
+        return []
+    first, body = block
+    span = f"L{first}-{body[-1][0]}" if len(body) > 1 else f"L{first}"
+    cite = f"ledger@{(head or 'HEAD')[:12]}:{path}#{span}" if path else f"the record's {span}"
+    return [
+        f"  the closed follow-up as the record holds it ({cite}):",
+        # indentation kept: it is the block's structure; only a very long line is cut
+        *(f"    L{n}: {_cut(text, 400)}" for n, text in body),
+    ]
+
+
+def render_closed_followup(record: Record, *, path: str | None, head: str | None) -> str:
+    """What a brief of a ROUTED lesson shows while its closed follow-up is
+    undecided (:func:`open_followup_ids`): the facts and the record's own
+    lines to cite, or ``""`` when the lesson has no closed follow-up. The
+    ``premise-moved`` brief carries the same facts in its own block
+    (:func:`render_premise_moved`) and does not use this. It is context for
+    a decision about something else (a dismissed suspect, a recurrence): it
+    is not what keeps the lesson in front of the steward, and it gives that
+    decision no new authority over the lesson (:func:`last_decision`)."""
+    done = record.follow_up_done
+    if not isinstance(done, Mapping) or not done:
+        return ""
+    lines = [
+        "[closed follow-up] this lesson was placed while it waited on a condition, and "
+        "its follow-up has since been closed; what it waited on has happened. This is "
+        "context for this decision; the lesson itself comes to you again on its own "
+        "`premise-moved` input, which is where a sentence that rested on that wait is "
+        "checked."
+    ]
+    lines += _followup_fact_lines({**done, "done_at": _done_day(done.get("done_at"))})
+    lines += _followup_cite_lines(record, path=path, head=head)
+    return "\n".join(lines)
+
+
 def _would_change_lines(home: Path, case_id: str) -> list[str]:
     """The bullets under "What would change this decision:" in a case's
     Decision section (the one place a case says what its own facts would
@@ -1165,10 +1186,12 @@ def _lesson_premise_lines(record: Record) -> list[str]:
 
 
 def _decide_lines(
-    predecessor: object, moved_ids: list[str], followup_only: bool
+    predecessor: object, moved: Sequence[Mapping[str, Any]], followup_only: bool
 ) -> list[str]:
-    """The brief's [how to decide it] block: which case kind, which
-    outcomes, and the rebaseline a decision that keeps the lesson owes."""
+    """The brief's [how to decide it] block: which case kind, the outcomes
+    02 section 3a.10.7 and method section 17 give this input (`no-action`,
+    `replace`, `retire`, `route`, park; never `reject`), and what a
+    decision that keeps the lesson owes each moved premise."""
     if predecessor:
         kind = (
             "a `kind: reconsider` case (the runner fills in `supersedes: "
@@ -1186,46 +1209,56 @@ def _decide_lines(
             "which sentence you checked against which cited line;"
         )
     else:
-        ids = ", ".join(moved_ids)
+        # A premise judged by its claim (`holds_if` other than `changed`)
+        # that moved has a claim that is false now: re-recording it would
+        # record a false claim, so the runner refuses that rebaseline and the
+        # premise is rewritten or dropped with `set` instead.
+        changed = [str(m.get("premise")) for m in moved if m.get("holds_if") in (None, "", "changed")]
+        claimed = [str(m.get("premise")) for m in moved if str(m.get("premise")) not in changed]
+        owed = []
+        if changed:
+            owed.append(f"`action: rebaseline`, `ids: [{', '.join(changed)}]`")
+        if claimed:
+            owed.append(
+                f"`action: set` with a list in which {', '.join(claimed)} says what is true now, "
+                "or is dropped (its claim is false now, and the runner refuses to rebaseline a "
+                "false claim)"
+            )
         out.append(
             "  - every sentence still true: outcome `no-action` with a `premises` line "
-            f"`action: rebaseline`, `ids: [{ids}]` (every moved premise the lesson keeps; the "
-            "runner refuses a `no-action` case that leaves one out, because the same change "
-            "would come back every night);"
+            + " and ".join(owed)
+            + " (every moved premise the lesson keeps; the runner refuses a `no-action` case "
+            "that leaves one out, because the same change would come back every night);"
         )
     out.append(
         "  - a sentence now false but the lesson's point stands: a `replace` line that narrows "
         "or corrects the words, every idea of the old text in `decision.rewrite`"
         + (
             "" if followup_only else
-            ", and the `premises` rebaseline (or a `set`) on this lesson BEFORE the `replace` "
-            "line, so the new lesson starts from today's values"
+            "; the new lesson carries this lesson's premises, so when they change too, put a "
+            "`premises` line on this lesson BEFORE the `replace` line (a moved premise left as "
+            "it is brings the new lesson back to you)"
         )
         + ";"
     )
     out.append(
-        "  - all of it false, or loaded text now covers it: `retire` with `covered_by`"
-        + (
-            "; what it asked for is now done by the system itself: `reject` with a `note`;"
-            if predecessor else ";"
-        )
+        "  - all of it false now, or something else now covers it: `retire` with `covered_by`;"
+    )
+    out.append(
+        "  - it no longer belongs where it sits: `route` with an explicit `dest` (applied as a "
+        "reroute: the old placement leaves, the new one is written);"
     )
     if not followup_only:
         out.append(
             "  - the probe is wrong, not the lesson: fix or drop it with a `premises` line "
             "`action: set` (the whole list), and decide the lesson on what you find;"
         )
-    if predecessor:
-        out.append("  - you cannot tell: park it.")
-    else:
-        out.append(
-            "  - it must move to another destination, or you cannot tell: park it "
-            "(`authority-unclear`) with your tentative answer; with no case to supersede, a "
-            "placed lesson cannot be moved or rejected here."
-        )
     out.append(
-        "  Narrowing, rewriting or retiring this placed lesson is yours here without the "
-        "overseer (method section 17); merging it with another placed lesson is not."
+        "  - you cannot tell: park it (`authority-unclear`) with your tentative answer."
+    )
+    out.append(
+        "  Narrowing, rewriting, moving or retiring this placed lesson is yours here without "
+        "the overseer (method section 17); merging it with another placed lesson is not."
     )
     return out
 
@@ -1244,6 +1277,15 @@ _REGION_DIFF_LINES = 150
 #: What stands in for a line the secret scan matched (never shown, and the
 #: case need not quote it: its evidence is scanned too).
 WITHHELD_LINE = "[withheld: the line matched the secret scan]"
+
+
+def quotable_line(line: str) -> str:
+    """S-NEXT-u8-placement, fix round 1: the words of a hand-written line a
+    case's evidence must quote. A line that starts with `## ` cannot start a
+    quoted line (`cases.split_runner_evidence` drops that evidence item
+    before the case is recorded), so for it the words after `## ` are asked
+    for; every other line is asked for as it stands."""
+    return line[3:] if line.startswith("## ") else line
 
 
 def scan_hit(line: str) -> bool:
@@ -1277,6 +1319,11 @@ def _intact_region_lines(home: Path, record_id: str) -> list[str]:
             f"word (one item, ref `{region.target}#managed`), so they survive whatever you decide:"
         )
         out += [f"      | {_shown_line(line)}" for line in edited]
+        if any(quotable_line(line) != line for line in edited):
+            out.append(
+                "    (a line that starts with `## ` is quoted by its words after the `## `: a "
+                "quoted line that starts with `## ` is dropped from the case's evidence)"
+            )
     else:
         out.append("    no line was added or changed: the edit only removed or reordered lines")
     diff = verbs.region_diff(region)
@@ -1326,9 +1373,12 @@ def _placement_item_lines(home: Path, record: Record, item: Mapping[str, Any]) -
 
 
 def _placement_decide_lines(
-    record_id: str, predecessor: object, placement_ids: list[str]
+    predecessor: object, placement_ids: list[str], *, cases_differ: bool = False
 ) -> list[str]:
-    """The [how to decide it] lines for a placement mover (02 §3a.10.7)."""
+    """The [how to decide it] lines for a placement mover (02 §3a.10.7).
+    *cases_differ*: the lessons of this block's `@intact` group are not all
+    covered by one case, so their one case is a `kind: resolution` case
+    (fix round 1, gate MAJOR 1; `steward._split_intact_members`)."""
     case = (
         f"a `kind: reconsider` case (the runner fills in `supersedes: {predecessor}`)"
         if predecessor else
@@ -1336,8 +1386,13 @@ def _placement_decide_lines(
     )
     out: list[str] = []
     if "@intact" in placement_ids:
+        edit_case = (
+            "ONE `kind: resolution` case with no `supersedes` (the lessons of this block were "
+            "not all placed by one case, and a reconsider case supersedes only one)"
+            if cases_differ else case
+        )
         out += [
-            f"[how to decide the hand edit] in {case} naming every lesson of the block listed "
+            f"[how to decide the hand edit] in {edit_case} naming every lesson of the block listed "
             "above in `records`, each with its own line; `no-action` alone is not an answer, "
             "because an edited block refuses every later write to its file:",
             "  - the edit is consistent with the lesson (usually a correction): fold it into "
@@ -1353,12 +1408,10 @@ def _placement_decide_lines(
             "  - you cannot tell: park it.",
         ]
     if {"@reach", "@writable"} & set(placement_ids):
-        move = (
-            "a `route` line with the `dest` it should have (a reroute)"
-            if predecessor else
-            f"a `replace` line with `text_from: {record_id}` and the `dest` it should have "
-            "(the same words, placed again; `decision.rewrite` keeps every idea)"
-        )
+        # S-NEXT-u4-steward's fix round 1 lets a resolution case move a
+        # placed lesson no case covers (`batch._resolution_reroute_for`), so
+        # both shapes move it with a `route` line.
+        move = "a `route` line with the `dest` it should have (applied as a reroute)"
         out += [
             f"[how to decide where it sits] in {case}:",
             f"  - the lesson should live where a session loads it, or where self-learn may "
@@ -1382,11 +1435,13 @@ def render_premise_moved(
     """The part of a ``premise-moved`` brief that is not the lesson itself:
     what moved -- a closed follow-up (U3), a written premise (U4: its claim,
     probe, recorded value and today's), or a mover another unit adds (U8's
-    placement premises), each with the record lines to cite -- the lesson's
-    premises, its `env` pins, broken probes, what the cases that cover it
-    said would change them, and how to decide. Code never judges whether
-    the lesson is still true: the brief gives the steward the facts and the
-    deciding case's own prediction."""
+    placement premises), each with the record lines to cite -- its `env`
+    pins, what the cases that cover it said would change it, and how to
+    decide. The lesson's premises and any broken probe are in the lesson
+    block (:func:`render_record`), as on every brief. Code never judges
+    whether the lesson is still true: the brief gives the steward the facts
+    and the deciding case's own prediction. The decision rules are those of
+    02 section 3a.10.7 and steward-method section 17."""
     lines = [
         "[what moved] something this lesson rested on has changed since it was last "
         "decided; the facts below are recorded, not guessed"
@@ -1395,10 +1450,7 @@ def render_premise_moved(
     followups = [m for m in items if m.get("source") == "follow-up-done"]
     written = [m for m in items if m.get("source") == "premise"]
     for item in followups:
-        lines.append(f"  the follow-up on this lesson was closed on {item.get('done_at')}")
-        for key, label in _FOLLOWUP_LABELS:
-            if item.get(key):
-                lines.append(f"    {label}: {_clip(item[key])}")
+        lines += _followup_fact_lines(item)
     for item in written:
         lines += _premise_item_lines(item)
     placed = [m for m in items if m.get("source") == "placement"]
@@ -1413,25 +1465,12 @@ def render_premise_moved(
         )
         lines.append(f"  moved ({item.get('source') or 'unknown source'}): {detail}")
     if followups:
-        lines += _cited_block(
-            record, "follow_up_done", "the closed follow-up as the record holds it",
-            path=path, head=head,
-        )
+        lines += _followup_cite_lines(record, path=path, head=head)
     if record.premises:
         # each premise is listed with the lesson itself (`render_record`)
         lines += _cited_block(
             record, "premises", "the premises as the record holds them", path=path, head=head,
         )
-    broken = [b for b in row.get("broken") or [] if isinstance(b, dict)]
-    if broken:
-        lines.append(
-            f"[broken probes] could not observe on {BROKEN_PROBE_SWEEPS} checks running: fix "
-            "or drop each with `premises` `action: set`"
-        )
-        lines += [
-            f"  {b.get('premise')}: {_clip(b.get('probe'), 300)} ({_clip(b.get('reason'), 200)})"
-            for b in broken
-        ]
     if record.env:
         pins = ", ".join(f"{key} {value}" for key, value in sorted(record.env.items()))
         lines.append(
@@ -1448,12 +1487,12 @@ def render_premise_moved(
         if others:
             lines.append(f"[what another case that covers it ({case_id}) said would change it]")
             lines += [f"  - {_clip(w, 600)}" for w in others]
-    moved_ids = [str(m.get("premise")) for m in written]
     if written or followups or not placed:
-        lines += _decide_lines(predecessor, moved_ids, followup_only=not written)
+        lines += _decide_lines(predecessor, written, followup_only=not written)
     if placed:
         lines += _placement_decide_lines(
-            record.id, predecessor, [str(m.get("premise")) for m in placed],
+            predecessor, [str(m.get("premise")) for m in placed],
+            cases_differ=any(m.get("cases_differ") for m in placed),
         )
     stats = {"items": 0, "excerpted": 0, "excerpt_chars": 0, "verdicts": {}, "moved": len(items)}
     return "\n".join(lines), stats
@@ -1491,10 +1530,24 @@ def _one_line(text: object) -> str:
     return " ".join(str(text).split())
 
 
-def render_record(record: Record, *, path: str | None, head: str | None, bucket: str) -> str:
+def render_record(
+    record: Record, *, path: str | None, head: str | None, bucket: str,
+    closed_followup: bool = False, broken: Sequence[Mapping[str, Any]] = (),
+) -> str:
     """The lesson as the steward reads it: its facts on one line, then its
     lesson sections with their file lines (citable as
-    ``ledger@<commit>:<path>#L<a>-<b>``)."""
+    ``ledger@<commit>:<path>#L<a>-<b>``), then, when its follow-up was
+    closed and not yet decided, what that says
+    (:func:`render_closed_followup`; ``closed_followup`` is off by default and
+    for a ``premise-moved`` brief, which carries the same facts in its own
+    block; :func:`build_briefs` turns it on for a lesson in
+    :func:`open_followup_ids`).
+
+    S-NEXT-u4-steward (02 section 3a.10.2 and 3a.10.5 (3)): every brief, of
+    any input kind, lists the lesson's premises (a premise with no probe, a
+    behaviour, is read nowhere else) and *broken*, the probes the sweep saw
+    `unavailable` three times running (:func:`broken_probes`), so the
+    steward fixes or drops them whenever the lesson comes up."""
     lines = [
         f"[lesson] {record.type}, scope {record.scope}, bucket {bucket}, "
         f"status {record.status}, sightings {record.sightings}, created {record.created_at}"
@@ -1529,6 +1582,21 @@ def render_record(record: Record, *, path: str | None, head: str | None, bucket:
     elif record.premises:
         lines.append("  premises (what it rests on):")
         lines += [f"  {line}" for line in _lesson_premise_lines(record)]
+    shown_broken = [b for b in broken if isinstance(b, Mapping)]
+    if shown_broken:
+        lines.append(
+            "  [broken probes] the daily check could not observe these on its last three "
+            "checks: fix or drop each with a `premises` line `action: set` (the whole list) "
+            "in this decision's sheet"
+        )
+        lines += [
+            f"    {b.get('premise')}: {_clip(b.get('probe'), 300)} ({_clip(b.get('reason'), 200)})"
+            for b in shown_broken
+        ]
+    if closed_followup:
+        shown = render_closed_followup(record, path=path, head=head)
+        if shown:
+            lines.append(shown)
     return "\n".join(lines)
 
 
@@ -1921,6 +1989,12 @@ def build_briefs(
         except Exception:  # noqa: BLE001 -- a missing record is shown as missing
             return None
 
+    # The routed lessons whose closed follow-up is still undecided: their
+    # briefs of any kind but `premise-moved` show it as context.
+    undecided = open_followup_ids(home)
+    # S-NEXT-u4-steward: probes broken three sweeps running, shown on every
+    # brief of their lesson whatever its input kind (02 section 3a.10.5 (3)).
+    broken = broken_probes(home)
     out: dict[str, LessonBrief] = {}
     for row in inputs:
         rid = str(row.get("id"))
@@ -1943,7 +2017,11 @@ def build_briefs(
         # deferral came due, and the card says how it is decided.
         if kind in (INPUT_RECONSIDER, INPUT_LESSON, INPUT_PREMISE_MOVED) and row.get("reason"):
             parts.append(f"[why it is back] {_one_line(row['reason'])}")
-        parts.append(render_record(record, path=rel, head=head, bucket=_bucket_of(home, path)))
+        parts.append(render_record(
+            record, path=rel, head=head, bucket=_bucket_of(home, path),
+            closed_followup=kind != INPUT_PREMISE_MOVED and rid in undecided,
+            broken=broken.get(rid, ()),
+        ))
         if kind == INPUT_SUSPECTED_VIOLATION:
             events = [e for e in row.get("events") or [] if isinstance(e, dict)]
             text, pack_stats = fire_pack(events, roots=resolved_roots, budget=share)

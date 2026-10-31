@@ -10483,6 +10483,23 @@ def _premise_summary(pid: object, old: object, new: dict) -> str:
     return f"{pid}: was {was!r}, now {now!r} ({new.get('state')})"
 
 
+def _false_claim_refusal(record_id: str, pid: object, baseline: dict) -> str:
+    """Why a ``rebaseline`` of a premise whose claim is false now is refused
+    (gate round 1 on c82e783, MINOR): a premise judged by its claim
+    (``holds_if`` absent, present, equals or version) would be re-recorded
+    as ``contradicts-claim``, and the lesson would stand on a premise that
+    says its own claim is false, for good. Rewriting the claim, or dropping
+    it, is ``set``'s job. A first value against the claim through ``set`` is
+    still recorded, as 02 §3a.10.1 says: that is how a lesson already false
+    is brought back to the steward."""
+    seen = repr(baseline.get("shown")) if baseline.get("shown") is not None else "a value"
+    return (
+        f"premises {record_id}: {pid}'s claim is false now (its probe sees {seen}, which "
+        "contradicts it), so a rebaseline would keep a false premise; rewrite the claim as "
+        "what is true now, or drop it, with action set"
+    )
+
+
 def _preflight_premises(
     home: Path,
     record_id: str,
@@ -10565,9 +10582,37 @@ def _preflight_premises(
         premise = by_id[pid]
         old_baseline = premise.get("baseline")
         premise["baseline"] = _premise_observed(record_id, premise, env)
+        if premise["baseline"].get("state") == "contradicts-claim":
+            raise SheetLineError(_false_claim_refusal(record_id, pid, premise["baseline"]))
         premise["decided_at"] = today
         lines.append(_premise_summary(pid, old_baseline, premise["baseline"]))
     return path, record, current, lines
+
+
+def _premises_record_under_lock(
+    home: Path, record_id: str, path: Path, before: Record
+) -> Record:
+    """The lesson as it stands NOW, read inside the commit lock, that the
+    ``premises`` line writes onto (gate round 1 on c82e783, MINOR). The
+    probes run before the lock (up to three, five seconds each), and a
+    person's sheet or CLI write to the same record in that window used to be
+    overwritten by the copy read before it. Now every other field keeps
+    what that write left; only the ``premises`` field is this line's. When
+    the ``premises`` field itself changed meanwhile, or the lesson left the
+    statuses the verb accepts, the line is refused and writes nothing: its
+    values were taken against a list that no longer stands."""
+    current = read_record_or_refuse(path)
+    if current.premises != before.premises:
+        raise VerbError(
+            f"premises {record_id}: the lesson's premises changed while its probes ran; "
+            "nothing was written -- decide it again against the list as it stands now"
+        )
+    if current.status not in RESOLVABLE_STATUSES:
+        raise VerbError(
+            f"premises {record_id}: the lesson became {current.status!r} while its probes "
+            "ran; nothing was written"
+        )
+    return current
 
 
 def premises(
@@ -10606,20 +10651,22 @@ def premises(
         home, record_id, action=action, premises=premises, ids=ids,
         because=because, note=note,
     )
+    try:
+        premises_mod.normalize_premises(new_list, record_id=record_id)
+    except premises_mod.PremiseError as exc:
+        raise SheetLineError(f"premises {record_id}: {exc}") from None
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
-        try:
-            record.set_premises(new_list)
-        except RecordError as exc:
-            raise SheetLineError(f"premises {record_id}: {exc}") from exc
         message = f"self-learn: premises {action} {record_id}"
         body = "\n\n".join(
             part.strip() for part in (because, note, "\n".join(lines)) if part and part.strip()
         )
         with _ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
-            record.write(path)
+            current = _premises_record_under_lock(home, record_id, path, record)
+            current.set_premises(new_list)
+            current.write(path)
             staged, sha = _stage_and_commit(
                 home, [path], message,
                 _body_with_by_trailer(body or None, None, execution),

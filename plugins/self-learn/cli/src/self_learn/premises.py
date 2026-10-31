@@ -32,51 +32,79 @@ probe::
         probe: null               # behavioural: written down, never probed
 
 The shape follows 02 §3a.10.1 as the spec lane drafted it, with the
-deviations this module's report names: literal matchers instead of
-regular expressions, and a readably absent target as a value rather than
-``unavailable``.
+deviations this module's report names (literal matchers instead of
+regular expressions; ``present``/``absent`` instead of ``true``/``false``;
+``git rev-parse`` + ``git cat-file`` by object id instead of ``git show``;
+``shown`` left out rather than ``""`` when there is nothing to show).
 
 It is a metadata field (the ``env``/``follow_up`` class): mutable in every
 status, carried over by ``replace`` (``cases.REWRITE_FIELDS``), and
 validated by :meth:`records.Record.validate` through
-:func:`validate_premises`. A record that breaks it does not load, like
-any other field.
+:func:`validate_premises`. The checks come in two layers. The
+**structure** (keys, kinds, shapes, limits) is checked on every load, and
+a record that breaks it does not load, like any other field. The
+**policy** (the secret scan, the credential-path rules, the refused key
+names and systemd properties) is checked whenever premises are written
+(:meth:`records.Record.set_premises`) and again before every probe runs.
+A record written under an older, looser policy therefore still loads;
+its refused probe is simply ``unavailable`` until a decision rewrites it.
 
 **The probe catalog is closed** (:data:`PROBE_KINDS`). Every probe obeys,
 by construction of this module rather than by convention:
 
 - It never acts on the system. Only three programs are ever run --
   ``systemctl`` (``show`` only), ``pacman`` (``-Q`` only) and ``git``
-  (``cat-file blob HEAD:<path>`` only) -- from argv lists built here from
-  validated fields, and :func:`_check_argv` refuses any argv outside those
-  three exact shapes before the command runner is called, whatever runner
-  is injected. No sudo, no pkexec, no ``busctl``/D-Bus method call, no
-  network (``GIT_NO_LAZY_FETCH``), no shell, no running the tool a lesson
-  is about. ``systemctl`` carries ``--no-ask-password`` so it can never
-  start a polkit conversation.
-- stdin is ``/dev/null`` and every command has a :data:`PROBE_TIMEOUT`
-  (5 s) bound, enforced through :func:`procs.run_bounded` (the whole
-  process group dies on expiry): a probe that blocks is ``unavailable``,
-  never a hang (lrn-373f59d9). Children get a scrubbed environment
-  (:func:`_child_env`): ``LC_ALL=C``, ``PATH``, ``HOME``,
+  (``rev-parse --verify --quiet HEAD:<path>``, then ``cat-file -s`` and
+  ``cat-file blob`` on the object id it printed) -- from argv lists built
+  here from validated fields, and :func:`_check_argv` refuses any argv
+  outside those exact shapes before the command runner is called,
+  whatever runner is injected. No sudo, no pkexec, no ``busctl``/D-Bus
+  method call, no network (``GIT_NO_LAZY_FETCH``), no shell, no running
+  the tool a lesson is about. ``systemctl`` carries ``--no-ask-password``
+  so it can never start a polkit conversation.
+- stdin is ``/dev/null`` and every probe has a :data:`PROBE_TIMEOUT`
+  (5 s) bound: a probe that blocks is ``unavailable``, never a hang
+  (lrn-373f59d9). A command is bounded through :func:`procs.run_bounded`
+  (the whole process group dies on expiry). A probe that reads the
+  filesystem in this process (``path``, the file and key kinds, ``which``,
+  ``git-file``'s repository lookup, ``ledger``) runs on a daemon worker
+  thread that the caller stops waiting for at the bound
+  (:func:`_call_bounded`): a stale NFS mount or a hung FUSE daemon can
+  block a system call forever, and no thread can be killed, so the
+  blocked thread is left behind and counted; at
+  :data:`MAX_BLOCKED_PROBES` left-behind threads, further in-process
+  probes are ``unavailable`` without starting. Children get a scrubbed
+  environment (:func:`_child_env`): ``LC_ALL=C``, ``PATH``, ``HOME``,
   ``XDG_RUNTIME_DIR`` and the git safety switches -- no session bus
   address, no display, no agent sockets.
 - Paths that look like credentials are refused when the premise is
-  validated and again, on the resolved path, when the probe runs
-  (:func:`credential_path_problem`; lrn-19abaf40). File reads never follow
-  a FIFO or device (``O_NONBLOCK`` + a regular-file check) and stop at
-  :data:`READ_LIMIT`; a larger file is ``unavailable``, never a partial
-  answer.
+  written and again, on the resolved path, when the probe runs
+  (:func:`credential_path_problem`; lrn-19abaf40). The resolved path is
+  checked BEFORE anything is opened, whether or not the target exists, so
+  a probe cannot tell a present credential file from an absent one. File
+  reads never follow a FIFO or device (``O_NONBLOCK`` + a regular-file
+  check) and stop at :data:`READ_LIMIT`; a larger file is
+  ``unavailable``, never a partial answer. A key probe may not name a key
+  that marks a credential (``password``, ``api_key``, ``token`` ...), and
+  a ``systemd-show`` probe may not read a property that carries an
+  environment, a credential or a command line (``Environment``,
+  ``LoadCredential``, ``ExecStart`` ...).
 - File text is never stored or returned: a file probe yields a token
-  (``present``/``absent``/``missing``) or a hash of a line range, and an
+  (``present``/``absent``) or a hash of a line range, and an
   :class:`Observation` carries only a value hash plus a short display
-  string that passed the secret scan.
+  string that passed the secret scan and does not look like a random
+  token (:func:`_shown`).
 - A probe that cannot read its target yields ``unavailable``, which
   :func:`verdict` never reads as unchanged or as moved (the
-  ``conditions.py`` fail-closed rule; lrn-6d21607e). A target that is
-  readably ABSENT (no such file, no such key, package not installed) is
-  a real observation with its own value, so its disappearance is a
-  change, never a silent "unchanged".
+  ``conditions.py`` fail-closed rule; lrn-6d21607e; design D3; 02
+  §3a.10.2 rule 4). That includes a file that is gone, a ``git-file``
+  path that is not in ``HEAD``, and a ``~/`` path when the home directory
+  itself is missing: a wrong home or an unmounted filesystem must never
+  look like a moved premise. Three answers ARE values, because the probe
+  read its whole target and the absence is the observation: a ``path``
+  probe's ``missing`` (the kind exists to report existence), a key that is
+  not in a file that parsed (``<missing-key>``), and a package pacman
+  reports as not installed.
 
 **Placement premises (unit U8).** ``@reach``, ``@writable`` and
 ``@intact`` (:data:`PLACEMENT_PREMISE_IDS`) are implicit on every routed
@@ -98,6 +126,8 @@ import re
 import shutil
 import stat
 import subprocess
+import threading
+import time
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -125,6 +155,7 @@ __all__ = [
     "CommandRunner",
     "HOLDS_IF_DEFAULT",
     "HOLDS_IF_VALUES",
+    "MAX_BLOCKED_PROBES",
     "MAX_PREMISES",
     "MAX_PROBED",
     "ON_CHANGE_VALUES",
@@ -145,6 +176,7 @@ __all__ = [
     "VERDICT_NO_BASELINE",
     "VERDICT_NO_PROBE",
     "VERDICT_UNAVAILABLE",
+    "blocked_probe_count",
     "check_record",
     "credential_path_problem",
     "default_runner",
@@ -155,6 +187,7 @@ __all__ = [
     "normalize_value",
     "observation_from_value",
     "observe",
+    "plain_value",
     "run_probe",
     "unavailable_observation",
     "validate_premises",
@@ -182,6 +215,15 @@ PROBE_KINDS = frozenset(
 #: value equals ``match``. ``version`` (``package`` probes only): while the
 #: version satisfies ``match``, up to four comma-separated
 #: ``<op><version>`` clauses compared in pacman's vercmp order.
+#:
+#: **Key probes compare against canonical JSON.** A ``json-key`` /
+#: ``yaml-key`` / ``toml-key`` value is the found node written as compact,
+#: sorted-key JSON (:func:`_canonical`), so a string keeps its quotes: for
+#: ``mode: plain``, ``equals`` needs ``match: '"plain"'`` -- ``match:
+#: plain`` never equals it and records a ``contradicts-claim`` baseline at
+#: once. ``present`` / ``absent`` look for ``match`` inside that JSON text.
+#: The quotes are deliberate: a found string can then never collide with
+#: the ``<missing-key>`` token.
 HOLDS_IF_VALUES = frozenset({"changed", "present", "absent", "equals", "version"})
 HOLDS_IF_DEFAULT = "changed"
 #: ``re-decide``: a stable change puts the lesson in front of the steward.
@@ -225,6 +267,12 @@ MAX_PROBED = 3
 #: Per-probe wall-clock bound in seconds. A caller may ask for less
 #: (:attr:`ProbeEnv.timeout`), never more.
 PROBE_TIMEOUT = 5.0
+#: In-process probes whose worker thread outlived its bound (a system call
+#: blocked on a dead mount) and is still alive. At this many, further
+#: in-process probes are ``unavailable`` without starting a thread, so a
+#: dead mount costs at most this many stuck threads, never one per probe
+#: per night.
+MAX_BLOCKED_PROBES = 4
 #: The most a file probe reads, and the most command output kept.
 READ_LIMIT = 256 * 1024
 #: Display strings longer than this are not stored (the hash still is).
@@ -253,6 +301,9 @@ VERDICTS = frozenset(
 #: Tokens a probe yields for an observed absence or a match result. They
 #: are never quoted, so no JSON-serialized key value can collide with
 #: them (a found string value is always quoted by the canonical form).
+#: ``missing`` is the ``path`` kind's answer for "nothing there"; the
+#: kinds that read a file's content are ``unavailable`` instead when the
+#: file is gone (02 §3a.10.2 rule 4).
 MISSING = "missing"
 PRESENT = "present"
 ABSENT = "absent"
@@ -280,6 +331,16 @@ _COMMAND_NAME_RE = re.compile(r"^[A-Za-z0-9_+][A-Za-z0-9._+-]{0,63}$")
 _LINES_RE = re.compile(r"^([1-9][0-9]{0,6})(?:-([1-9][0-9]{0,6}))?$")
 _DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$")
 _VERSION_CLAUSE_RE = re.compile(r"^(>=|<=|==|!=|>|<)\s*([A-Za-z0-9:._+~-]{1,64})$")
+#: A git object id (sha1 or sha256 repositories).
+_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+#: Display-string screens (:func:`_shown`). A run of 16+ letters, digits,
+#: ``+`` or ``=`` holding both a letter and a digit looks like a key, a
+#: hash or a random password; a URL with a user part can carry a password.
+#: ``_``, ``-``, ``.`` and ``/`` end a run, so ordinary paths and names
+#: (``x86_64-linux-gnu``, ``test_name0``) still show.
+_TOKEN_RUN_RE = re.compile(r"[A-Za-z0-9+=]{16,}")
+_URL_USERINFO_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s@]*@")
+_LINES_TOKEN_RE = re.compile(r"^sha256:[0-9a-f]{%d}$" % VALUE_SHA_CHARS)
 
 _CLAIM_LIMIT = 200
 _TEXT_LIMIT = 200
@@ -315,15 +376,18 @@ class ProbeRefused(PremiseError):
 # --------------------------------------------------------- text and paths
 
 
-def _text_problem(value: object, what: str, *, limit: int = _TEXT_LIMIT) -> str | None:
-    """One line of printable text, scan-clean, at most *limit* characters."""
+def _text_problem(
+    value: object, what: str, *, limit: int = _TEXT_LIMIT, policy: bool = True
+) -> str | None:
+    """One line of printable text, at most *limit* characters, and (with
+    *policy*) scan-clean."""
     if not isinstance(value, str) or not value.strip():
         return f"{what} must be non-empty text"
     if len(value) > limit:
         return f"{what} is longer than {limit} characters"
     if not value.isprintable():
         return f"{what} must be one line of printable text (no newline, tab or control character)"
-    if scan.scan(value):
+    if policy and scan.scan(value):
         return f"{what} looks like it holds a secret (the secret scan matched it)"
     return None
 
@@ -338,6 +402,15 @@ _CREDENTIAL_COMPONENTS = frozenset(
         ".npmrc", ".pypirc", ".htpasswd", ".credentials.json", "credentials",
         "credentials.json", "hosts.yml", "hosts.yaml", "auth.json", "shadow",
         "gshadow", "sudoers", "authorized_keys", "known_hosts", "keys.txt",
+        # Browser profiles and their stores: saved logins, cookies, keys.
+        ".mozilla", "firefox", "librewolf", ".librewolf", "thunderbird", ".thunderbird",
+        "google-chrome", "google-chrome-beta", "google-chrome-unstable", "chromium",
+        "bravesoftware", "vivaldi", "microsoft-edge", "opera", "logins.json", "key3.db",
+        "key4.db", "cert9.db", "login data", "login data for account", "web data",
+        "cookies", "cookies.sqlite",
+        # Network and cloud secrets: Wi-Fi keys, VPN profiles, CLI logins.
+        "system-connections", "wpa_supplicant", "iwd", "gcloud", "doctl", ".terraform.d",
+        "op", "kwalletd",
     }
 )
 #: A component starting with one of these (``id_rsa``, ``id_ed25519``,
@@ -348,10 +421,13 @@ _CREDENTIAL_SUFFIXES = (
     ".env", ".pem", ".key", ".p12", ".pfx", ".kdbx", ".age", ".gpg", ".asc",
     ".keystore", ".jks", ".ovpn",
 )
-#: A component containing one of these words anywhere.
+#: A component containing one of these words anywhere. ``history`` covers
+#: shell and REPL histories (``.zsh_history``, ``fish_history``), which
+#: hold whatever was once typed, passwords included.
 _CREDENTIAL_WORDS = (
     "token", "secret", "credential", "password", "passwd", "apikey", "api_key",
-    "api-key", "private", "bitwarden", "keepass", "1password",
+    "api-key", "private", "bitwarden", "keepass", "1password", "history", "cookie",
+    "wallet",
 )
 #: Absolute trees no probe reads: process and device views (an
 #: ``environ`` file, a tty that blocks), runtime sockets and agent
@@ -390,9 +466,12 @@ def credential_path_problem(path: str, *, reads_content: bool = True) -> str | N
     return None
 
 
-def _path_problem(value: object, what: str, *, reads_content: bool) -> str | None:
+def _path_problem(
+    value: object, what: str, *, reads_content: bool, policy: bool = True
+) -> str | None:
     """An absolute or ``~/`` path: printable, no ``.``/``..``/empty
-    segments, no ``~user`` form, not a credential location."""
+    segments, no ``~user`` form, and (with *policy*) not a credential
+    location and scan-clean."""
     if not isinstance(value, str) or not value:
         return f"{what} must be a non-empty path"
     if len(value) > _PATH_LIMIT:
@@ -408,6 +487,8 @@ def _path_problem(value: object, what: str, *, reads_content: bool) -> str | Non
     segments = rest.split("/")
     if any(seg in ("", ".", "..") for seg in segments):
         return f"{what} may not hold empty, '.' or '..' segments (got {value!r})"
+    if not policy:
+        return None
     problem = credential_path_problem(value, reads_content=reads_content)
     if problem is not None:
         return f"{what} is refused: {problem}"
@@ -416,9 +497,10 @@ def _path_problem(value: object, what: str, *, reads_content: bool) -> str | Non
     return None
 
 
-def _repo_relative_problem(value: object, what: str) -> str | None:
+def _repo_relative_problem(value: object, what: str, *, policy: bool = True) -> str | None:
     """A path inside a repository, as git names it: relative, no
-    ``.``/``..``/empty segments, not a credential location."""
+    ``.``/``..``/empty segments, and (with *policy*) not a credential
+    location and scan-clean."""
     if not isinstance(value, str) or not value:
         return f"{what} must be a non-empty repository path"
     if len(value) > _PATH_LIMIT:
@@ -431,6 +513,8 @@ def _repo_relative_problem(value: object, what: str) -> str | None:
         return f"{what} may not hold empty, '.' or '..' segments (got {value!r})"
     if value.startswith("-"):
         return f"{what} may not start with '-'"
+    if not policy:
+        return None
     problem = credential_path_problem(value, reads_content=True)
     if problem is not None:
         return f"{what} is refused: {problem}"
@@ -446,12 +530,75 @@ def _expand(path: str, home: Path) -> str:
     return path
 
 
+#: Words that mark a config key as holding a credential, matched against
+#: the key part's words (split on punctuation and camelCase): ``api_key``,
+#: ``accessKey``, ``client_secret``, ``db.password``. A key part that is
+#: one of these words, or holds one of :data:`_SECRET_KEY_STEMS` anywhere,
+#: is refused, because a key probe's value could be stored as ``shown``
+#: and the secret scan cannot recognise a short password or a bare hex
+#: key once the key name is gone.
+_SECRET_KEY_WORDS = frozenset(
+    {
+        "password", "passwords", "passwd", "passphrase", "pass", "pwd", "pw", "secret",
+        "secrets", "token", "tokens", "credential", "credentials", "creds", "apikey",
+        "key", "keys", "privkey", "private", "auth", "authorization", "cookie",
+        "cookies", "bearer", "signature", "salt", "otp", "totp", "pin", "cert",
+        "certificate", "dsn", "webhook",
+    }
+)
+#: Stems matched inside the key part with punctuation removed
+#: (``clientSecret``, ``db-password``, ``x_api_key``). ``auth`` is a whole
+#: word only (above): as a stem it would refuse ``author``.
+_SECRET_KEY_STEMS = (
+    "password", "passwd", "passphrase", "secret", "token", "credential", "apikey",
+    "privatekey", "accesskey", "secretkey", "cookie", "bearer",
+)
+_KEY_WORD_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+
+
+def _secret_key_word(part: str) -> str | None:
+    """The word in a key part that marks a credential, or ``None``."""
+    for word in _KEY_WORD_RE.findall(part):
+        if word.lower() in _SECRET_KEY_WORDS:
+            return word.lower()
+    flat = re.sub(r"[^a-z0-9]", "", part.lower())
+    for stem in _SECRET_KEY_STEMS:
+        if stem in flat:
+            return stem
+    return None
+
+
+#: systemd properties a ``systemd-show`` probe may never read: they carry
+#: an environment (``Environment=API_KEY=...``), a credential
+#: (``SetCredential=``, ``LoadCredential=``) or a command line that may
+#: hold a token (``ExecStart=``), or raw input data. A lesson about a
+#: unit's command line probes the unit FILE with ``file-match`` instead.
+_SYSTEMD_REFUSED_PREFIXES = ("Exec", "StandardInput")
+_SYSTEMD_REFUSED_PARTS = ("Environment", "Credential", "LogExtraFields")
+_SYSTEMD_REFUSED_WORDS = ("password", "passwd", "passphrase", "secret", "token")
+
+
+def _systemd_property_problem(prop: str) -> str | None:
+    """Why a ``systemd-show`` probe may not read *prop*, or ``None``."""
+    if (
+        prop.startswith(_SYSTEMD_REFUSED_PREFIXES)
+        or any(part in prop for part in _SYSTEMD_REFUSED_PARTS)
+        or any(word in prop.lower() for word in _SYSTEMD_REFUSED_WORDS)
+    ):
+        return (
+            f"systemd-show probe property {prop!r} is refused: it can carry an "
+            "environment, a credential or a command line"
+        )
+    return None
+
+
 # ------------------------------------------------------- probe validation
 
 
-def _key_path(value: object) -> list[str | int] | None:
-    """The key path as a list, or ``None`` when malformed. A string is
-    split on ``.`` (a key that itself holds a dot needs the list form)."""
+def _key_parts(value: object) -> list[str | int] | None:
+    """The key path as a list, or ``None`` when malformed (structure only;
+    :func:`_key_problem` adds the policy). A string is split on ``.`` (a
+    key that itself holds a dot needs the list form)."""
     if isinstance(value, str):
         parts: list[Any] = value.split(".")
     elif isinstance(value, list):
@@ -469,12 +616,35 @@ def _key_path(value: object) -> list[str | int] | None:
                 return None
             out.append(int(part))
         elif isinstance(part, str):
-            if _text_problem(part, "key", limit=_KEY_PART_LIMIT) is not None:
+            if _text_problem(part, "key", limit=_KEY_PART_LIMIT, policy=False) is not None:
                 return None
             out.append(str(part))
         else:
             return None
     return out
+
+
+def _key_problem(value: object, kind: str, *, policy: bool) -> str | None:
+    parts = _key_parts(value)
+    if parts is None:
+        return (
+            f"{kind} probe key must be a dotted string or a list of 1-"
+            f"{_KEY_DEPTH_LIMIT} names and indexes"
+        )
+    if not policy:
+        return None
+    for part in parts:
+        if not isinstance(part, str):
+            continue
+        if scan.scan(part):
+            return f"{kind} probe key looks like it holds a secret (the secret scan matched it)"
+        word = _secret_key_word(part)
+        if word is not None:
+            return (
+                f"{kind} probe key {part!r} is refused: {word!r} marks a credential, "
+                "and its value could be stored"
+            )
+    return None
 
 
 def _line_span(value: object) -> tuple[int, int] | None:
@@ -494,7 +664,7 @@ def _line_span(value: object) -> tuple[int, int] | None:
     return (first, last)
 
 
-def _matcher_problem(probe: Mapping, kind: str) -> str | None:
+def _matcher_problem(probe: Mapping, kind: str, *, policy: bool = True) -> str | None:
     """A file-reading probe names exactly one of ``contains`` (a literal
     anywhere in the file), ``line`` (a line equal to it, ignoring the
     whitespace around it) or ``lines`` (``A`` or ``A-B``: the hash of that
@@ -512,7 +682,7 @@ def _matcher_problem(probe: Mapping, kind: str) -> str | None:
                 f"and at most {_MAX_LINE_SPAN} lines"
             )
         return None
-    return _text_problem(probe[key], f"{kind} probe {key}")
+    return _text_problem(probe[key], f"{kind} probe {key}", policy=policy)
 
 
 _PROBE_FIELDS: dict[str, frozenset[str]] = {
@@ -529,7 +699,13 @@ _PROBE_FIELDS: dict[str, frozenset[str]] = {
 }
 
 
-def _probe_problem(probe: object, *, record_id: str | None = None) -> str | None:
+def _probe_problem(
+    probe: object, *, record_id: str | None = None, policy: bool = True
+) -> str | None:
+    """Why *probe* is not a catalog probe, or ``None``. *policy* adds the
+    secret scan, the credential-path rules, the refused key names and the
+    refused systemd properties to the structural checks (module
+    docstring: structure at load, policy at write and before a run)."""
     if not isinstance(probe, Mapping):
         return f"probe must be a mapping or null, got {type(probe).__name__}"
     kind = probe.get("kind")
@@ -544,21 +720,20 @@ def _probe_problem(probe: object, *, record_id: str | None = None) -> str | None
     if unknown:
         return f"{kind} probe does not take {unknown} (allowed: {sorted(_PROBE_FIELDS[kind])})"
     if kind == "path":
-        return _path_problem(probe.get("path"), "path probe path", reads_content=False)
+        return _path_problem(
+            probe.get("path"), "path probe path", reads_content=False, policy=policy
+        )
     if kind == "file-match":
         return _path_problem(
-            probe.get("path"), "file-match probe path", reads_content=True
-        ) or _matcher_problem(probe, kind)
+            probe.get("path"), "file-match probe path", reads_content=True, policy=policy
+        ) or _matcher_problem(probe, kind, policy=policy)
     if kind in ("json-key", "yaml-key", "toml-key"):
-        problem = _path_problem(probe.get("path"), f"{kind} probe path", reads_content=True)
+        problem = _path_problem(
+            probe.get("path"), f"{kind} probe path", reads_content=True, policy=policy
+        )
         if problem is not None:
             return problem
-        if _key_path(probe.get("key")) is None:
-            return (
-                f"{kind} probe key must be a dotted string or a list of 1-"
-                f"{_KEY_DEPTH_LIMIT} names and indexes"
-            )
-        return None
+        return _key_problem(probe.get("key"), kind, policy=policy)
     if kind == "systemd-show":
         if probe.get("scope") not in ("user", "system"):
             return f"systemd-show probe scope must be user or system, got {probe.get('scope')!r}"
@@ -568,7 +743,7 @@ def _probe_problem(probe: object, *, record_id: str | None = None) -> str | None
         prop = probe.get("property")
         if not isinstance(prop, str) or not _PROPERTY_RE.match(prop):
             return f"systemd-show probe property is not a property name: {prop!r}"
-        return None
+        return _systemd_property_problem(prop) if policy else None
     if kind == "package":
         name = probe.get("name")
         if not isinstance(name, str) or not _PACKAGE_RE.match(name):
@@ -581,9 +756,11 @@ def _probe_problem(probe: object, *, record_id: str | None = None) -> str | None
         return None
     if kind == "git-file":
         return (
-            _path_problem(probe.get("repo"), "git-file probe repo", reads_content=True)
-            or _repo_relative_problem(probe.get("path"), "git-file probe path")
-            or _matcher_problem(probe, kind)
+            _path_problem(
+                probe.get("repo"), "git-file probe repo", reads_content=True, policy=policy
+            )
+            or _repo_relative_problem(probe.get("path"), "git-file probe path", policy=policy)
+            or _matcher_problem(probe, kind, policy=policy)
         )
     # kind == "ledger"
     ref = _ledger_ref(probe.get("ref"))
@@ -613,11 +790,15 @@ def _ledger_ref(value: object) -> tuple[str, str | None] | None:
     return None
 
 
-def validate_probe(probe: object, *, record_id: str | None = None) -> None:
+def validate_probe(
+    probe: object, *, record_id: str | None = None, policy: bool = True
+) -> None:
     """Raise :class:`PremiseError` unless *probe* is one well-formed probe
     of the catalog. The steward's probe tool (U5) checks a probe it is
-    writing with this same function."""
-    problem = _probe_problem(probe, record_id=record_id)
+    writing with this same function. *policy* (the default) includes the
+    secret scan and the credential rules; only a record load leaves it
+    off."""
+    problem = _probe_problem(probe, record_id=record_id, policy=policy)
     if problem is not None:
         raise PremiseError(problem)
 
@@ -635,7 +816,7 @@ def _version_clauses(match: str) -> list[tuple[str, str]] | None:
     return out
 
 
-def _baseline_problem(baseline: object) -> str | None:
+def _baseline_problem(baseline: object, *, policy: bool = True) -> str | None:
     if not isinstance(baseline, Mapping):
         return "baseline must be a mapping"
     unknown = sorted(str(k) for k in baseline if k not in _BASELINE_KEYS)
@@ -646,7 +827,9 @@ def _baseline_problem(baseline: object) -> str | None:
         return f"baseline value_sha must be {VALUE_SHA_CHARS} lowercase hex characters"
     if "shown" in baseline:
         # Absent when the value was not short and scan-clean (02 §3a.10.1).
-        problem = _text_problem(baseline.get("shown"), "baseline shown", limit=SHOWN_LIMIT)
+        problem = _text_problem(
+            baseline.get("shown"), "baseline shown", limit=SHOWN_LIMIT, policy=policy
+        )
         if problem is not None:
             return problem
     observed_at = baseline.get("observed_at")
@@ -660,7 +843,7 @@ def _baseline_problem(baseline: object) -> str | None:
     return None
 
 
-def _premise_problem(premise: object, *, record_id: str | None) -> str | None:
+def _premise_problem(premise: object, *, record_id: str | None, policy: bool) -> str | None:
     if not isinstance(premise, Mapping):
         return f"each premise must be a mapping, got {type(premise).__name__}"
     unknown = sorted(str(k) for k in premise if k not in _PREMISE_KEYS)
@@ -675,7 +858,7 @@ def _premise_problem(premise: object, *, record_id: str | None) -> str | None:
     if not isinstance(pid, str) or not _PREMISE_ID_RE.match(pid):
         return f"premise id must be p1..p{MAX_PREMISES}, got {pid!r}"
     claim = premise.get("claim")
-    problem = _text_problem(claim, f"premise {pid} claim", limit=_CLAIM_LIMIT)
+    problem = _text_problem(claim, f"premise {pid} claim", limit=_CLAIM_LIMIT, policy=policy)
     if problem is not None:
         return problem
     if str(claim).lstrip().startswith("#"):
@@ -684,7 +867,7 @@ def _premise_problem(premise: object, *, record_id: str | None) -> str | None:
         return f"premise {pid} claim may not start with '#' (a heading-shaped line)"
     probe = premise.get("probe")
     if probe is not None:
-        problem = _probe_problem(probe, record_id=record_id)
+        problem = _probe_problem(probe, record_id=record_id, policy=policy)
         if problem is not None:
             return f"premise {pid}: {problem}"
     holds_if = premise.get("holds_if")
@@ -699,7 +882,7 @@ def _premise_problem(premise: object, *, record_id: str | None) -> str | None:
             if match is not None:
                 return f"premise {pid}: holds_if changed takes no match"
         else:
-            problem = _text_problem(match, f"premise {pid} match")
+            problem = _text_problem(match, f"premise {pid} match", policy=policy)
             if problem is not None:
                 return problem
         if effective == "version":
@@ -721,14 +904,14 @@ def _premise_problem(premise: object, *, record_id: str | None) -> str | None:
             return f"premise {pid}: on_change refresh is only for holds_if changed"
     source = premise.get("source")
     if source is not None:
-        problem = _text_problem(source, f"premise {pid} source")
+        problem = _text_problem(source, f"premise {pid} source", policy=policy)
         if problem is not None:
             return problem
     baseline = premise.get("baseline")
     if baseline is not None:
         if probe is None:
             return f"premise {pid}: a premise with no probe has no baseline"
-        problem = _baseline_problem(baseline)
+        problem = _baseline_problem(baseline, policy=policy)
         if problem is not None:
             return f"premise {pid}: {problem}"
     decided_at = premise.get("decided_at")
@@ -740,11 +923,20 @@ def _premise_problem(premise: object, *, record_id: str | None) -> str | None:
     return None
 
 
-def validate_premises(value: object, *, record_id: str | None = None) -> None:
+def validate_premises(
+    value: object, *, record_id: str | None = None, policy: bool = True
+) -> None:
     """Raise :class:`PremiseError` unless *value* is a well-formed
     ``premises`` list. An empty list is valid: it says "this lesson rests
     on nothing checkable", so the backfill (U6) does not offer it again.
-    *record_id*, when given, refuses a ledger probe on the lesson itself."""
+    *record_id*, when given, refuses a ledger probe on the lesson itself.
+
+    *policy* (the default) adds the secret scan, the credential-path rules
+    and the refused key names and systemd properties. Every write checks
+    with it on. :meth:`records.Record.validate` checks with it OFF, so a
+    record written under an older, looser policy still loads after the
+    policy tightens; :func:`run_probe` checks with it on before running, so
+    such a probe is ``unavailable`` rather than run."""
     if not isinstance(value, list):
         raise PremiseError(f"premises must be a list, got {type(value).__name__}")
     if len(value) > MAX_PREMISES:
@@ -755,7 +947,7 @@ def validate_premises(value: object, *, record_id: str | None = None) -> None:
     seen: set[str] = set()
     probed = 0
     for premise in value:
-        problem = _premise_problem(premise, record_id=record_id)
+        problem = _premise_problem(premise, record_id=record_id, policy=policy)
         if problem is not None:
             raise PremiseError(problem)
         pid = premise["id"]
@@ -770,13 +962,13 @@ def validate_premises(value: object, *, record_id: str | None = None) -> None:
         )
 
 
-def _plain(value: Any) -> Any:
+def plain_value(value: Any) -> Any:
     """A plain-Python deep copy of a loaded YAML value: mappings, lists,
     str/int/float/bool/None, and dates as ISO text."""
     if isinstance(value, Mapping):
-        return {str(k): _plain(v) for k, v in value.items()}
+        return {str(k): plain_value(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_plain(v) for v in value]
+        return [plain_value(v) for v in value]
     if isinstance(value, bool) or value is None:
         return value
     if isinstance(value, datetime):
@@ -801,7 +993,7 @@ def normalize_premises(value: object, *, record_id: str | None = None) -> list[d
     validate_premises(value, record_id=record_id)
     out: list[dict] = []
     for premise in value:  # type: ignore[union-attr]  # validated a list above
-        plain = _plain(premise)
+        plain = plain_value(premise)
         out.append({k: plain[k] for k in _PREMISE_KEYS if k in plain})
     return out
 
@@ -1025,19 +1217,52 @@ def _pacman_argv(name: str) -> list[str]:
     return ["pacman", "-Q", "--", name]
 
 
-def _git_argv(repo: str, path: str) -> list[str]:
-    return [
-        "git", "--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false",
-        "-C", repo, "cat-file", "blob", f"HEAD:{path}",
-    ]
+_GIT_PREFIX = ("--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C")
+
+
+def _git_resolve_argv(repo: str, path: str) -> list[str]:
+    """``git rev-parse``: the object id of ``HEAD:<path>`` (exit 1, silent,
+    when there is none)."""
+    return ["git", *_GIT_PREFIX, repo, "rev-parse", "--verify", "--quiet", f"HEAD:{path}"]
+
+
+def _git_size_argv(repo: str, oid: str) -> list[str]:
+    """``git cat-file -s``: an object's size, asked before its bytes are
+    read, so a large committed file is never loaded into memory."""
+    return ["git", *_GIT_PREFIX, repo, "cat-file", "-s", oid]
+
+
+def _git_blob_argv(repo: str, oid: str) -> list[str]:
+    """``git cat-file blob`` by object id: the same immutable object whose
+    size was just checked, so nothing can grow between the two calls."""
+    return ["git", *_GIT_PREFIX, repo, "cat-file", "blob", oid]
+
+
+def _git_shape_ok(args: list[str]) -> bool:
+    if len(args) < 8 or tuple(args[1:6]) != _GIT_PREFIX:
+        return False
+    repo, tail = args[6], args[7:]
+    if not repo.startswith("/") or not repo.isprintable():
+        return False
+    if credential_path_problem(repo, reads_content=True) is not None:
+        return False
+    if len(tail) == 4 and tail[:3] == ["rev-parse", "--verify", "--quiet"]:
+        return tail[3].startswith("HEAD:") and (
+            _repo_relative_problem(tail[3][len("HEAD:"):], "path") is None
+        )
+    if len(tail) == 3 and tail[0] == "cat-file" and tail[1] in ("-s", "blob"):
+        return bool(_OID_RE.match(tail[2]))
+    return False
 
 
 def _check_argv(argv: Sequence[str]) -> None:
-    """Refuse every argv that is not exactly one of the three catalog
-    shapes. This is the gate; argv builders above are only conveniences.
-    Raises :class:`ProbeRefused`, so nothing outside the catalog -- a
-    ``systemctl start``, a ``sudo``, a ``busctl call``, a ``git fetch`` --
-    can reach any runner, injected or not."""
+    """Refuse every argv that is not exactly one of the catalog shapes
+    (``systemctl show``, ``pacman -Q``, and git's ``rev-parse`` /
+    ``cat-file -s`` / ``cat-file blob``). This is the gate; argv builders
+    above are only conveniences. Raises :class:`ProbeRefused`, so nothing
+    outside the catalog -- a ``systemctl start``, a ``sudo``, a ``busctl
+    call``, a ``git fetch``, a ``systemctl show`` of ``Environment`` -- can
+    reach any runner, injected or not."""
     args = list(argv)
     if not args or not all(isinstance(a, str) for a in args):
         raise ProbeRefused("a probe command must be a non-empty list of strings")
@@ -1055,6 +1280,7 @@ def _check_argv(argv: Sequence[str]) -> None:
             and args[2] == "show"
             and args[3:6] == ["--no-pager", "--no-ask-password", "--property"]
             and bool(_PROPERTY_RE.match(args[6]))
+            and _systemd_property_problem(args[6]) is None
             and args[7:9] == ["--value", "--"]
             and bool(_UNIT_RE.match(args[9]))
         )
@@ -1065,26 +1291,27 @@ def _check_argv(argv: Sequence[str]) -> None:
             and bool(_PACKAGE_RE.match(args[3]))
         )
     else:  # git
-        ok = (
-            len(args) == 10
-            and args[1:5] == ["--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false"]
-            and args[5] == "-C"
-            and args[6].startswith("/")
-            and args[7:9] == ["cat-file", "blob"]
-            and args[9].startswith("HEAD:")
-            and _repo_relative_problem(args[9][len("HEAD:"):], "path") is None
-        )
+        ok = _git_shape_ok(args)
     if not ok:
         raise ProbeRefused(f"{program} argv is not the catalog's read-only shape: {args!r}")
 
 
-def _run_command(argv: list[str], env: ProbeEnv) -> CommandResult | str:
+def _run_command(
+    argv: list[str], env: ProbeEnv, *, timeout: float | None = None
+) -> CommandResult | str:
     """Gate, then run. Returns the result, or an ``unavailable`` reason
     (timeout, missing program, output over :data:`READ_LIMIT`). A refused
-    argv raises :class:`ProbeRefused` before the runner is touched."""
+    argv raises :class:`ProbeRefused` before the runner is touched.
+    *timeout* (what is left of a probe's bound when it runs several
+    commands) can only shorten :meth:`ProbeEnv.bounded_timeout`."""
     _check_argv(argv)
+    bound = env.bounded_timeout()
+    if timeout is not None:
+        if timeout <= 0:
+            return "timed out"
+        bound = min(bound, timeout)
     try:
-        result = env.runner(list(argv), _child_env(env), env.bounded_timeout())
+        result = env.runner(list(argv), _child_env(env), bound)
     except subprocess.TimeoutExpired:
         return "timed out"
     except FileNotFoundError:
@@ -1117,12 +1344,30 @@ def value_sha(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:VALUE_SHA_CHARS]
 
 
+def _token_shaped(value: str) -> bool:
+    """True when *value* holds a run of 16+ letters, digits, ``+`` or
+    ``=`` with both a letter and a digit (a key, a hash, a random
+    password), or a URL with a user part. The secret scan's own runs start at 40 (base64) and 48
+    (hex) characters, so a 32-hex API key would pass it."""
+    if _URL_USERINFO_RE.search(value):
+        return True
+    for m in _TOKEN_RUN_RE.finditer(value):
+        run = m.group(0)
+        if any(c.isdigit() for c in run) and any(c.isalpha() for c in run):
+            return True
+    return False
+
+
 def _shown(value: str) -> str:
-    """The value itself when it is short, one printable line and
-    scan-clean; otherwise the empty string (the hash still records it)."""
+    """The value itself when it is short, one printable line, scan-clean
+    and not token-shaped (:func:`_token_shaped`); otherwise the empty
+    string (the hash still records it). This module's own line-range
+    token (``sha256:<32 hex>``) is shown as it is."""
     if not value or len(value) > SHOWN_LIMIT or not value.isprintable():
         return ""
-    if scan.scan(value):
+    if _LINES_TOKEN_RE.match(value):
+        return value
+    if scan.scan(value) or _token_shaped(value):
         return ""
     return value
 
@@ -1147,7 +1392,7 @@ def _canonical(value: Any) -> str:
         if isinstance(node, bool) or node is None:
             return node
         if isinstance(node, (datetime, date)):
-            return _plain(node)
+            return plain_value(node)
         if isinstance(node, str):
             return str(node)
         if isinstance(node, int):
@@ -1167,27 +1412,47 @@ class _Unavailable:
     reason: str
 
 
-def _read_file(path: str, env: ProbeEnv) -> bytes | _Unavailable | None:
-    """The bytes of a regular file, ``None`` when it does not exist, or
-    ``_Unavailable``. The resolved path is checked against the credential
-    rules again (a symlink can point anywhere); FIFOs, devices and
-    directories are refused without blocking; a file over
-    :data:`READ_LIMIT` is unavailable rather than half-read."""
-    expanded = _expand(path, env.home)
-    try:
-        real = os.path.realpath(expanded, strict=True)
-    except (FileNotFoundError, NotADirectoryError):
-        return None
-    except OSError as exc:
-        return _Unavailable(f"cannot resolve the path ({type(exc).__name__})")
-    problem = credential_path_problem(real, reads_content=True)
+def _home_problem(path: str, env: ProbeEnv) -> _Unavailable | None:
+    """A ``~/`` path when the home directory itself is not there: a wrong
+    :attr:`ProbeEnv.home` or an unmounted home must never read as "the
+    file is gone" (and, for a ``path`` probe, never as ``missing``)."""
+    if path.startswith("~/") and not os.path.isdir(env.home):
+        return _Unavailable("the home directory does not exist")
+    return None
+
+
+def _resolved_problem(real: str, *, reads_content: bool) -> _Unavailable | None:
+    problem = credential_path_problem(real, reads_content=reads_content)
     if problem is not None:
         return _Unavailable(f"the path resolves to a refused location: {problem}")
+    return None
+
+
+def _read_file(path: str, env: ProbeEnv) -> bytes | _Unavailable:
+    """The bytes of a regular file, or ``_Unavailable`` -- a file that is
+    gone included (02 §3a.10.2 rule 4). The path is resolved WITHOUT
+    requiring it to exist (``realpath`` non-strict follows every link it
+    can) and the resolved path is checked against the credential rules
+    before anything is opened, so a link into ``~/.ssh`` is refused the
+    same way whether or not its target exists. FIFOs, devices and
+    directories are refused without blocking; a file over
+    :data:`READ_LIMIT` is unavailable rather than half-read."""
+    home = _home_problem(path, env)
+    if home is not None:
+        return home
+    expanded = _expand(path, env.home)
+    try:
+        real = os.path.realpath(expanded)
+    except (OSError, ValueError) as exc:
+        return _Unavailable(f"cannot resolve the path ({type(exc).__name__})")
+    refused = _resolved_problem(real, reads_content=True)
+    if refused is not None:
+        return refused
     flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC | os.O_NOFOLLOW
     try:
         fd = os.open(real, flags)
     except (FileNotFoundError, NotADirectoryError):
-        return None
+        return _Unavailable("the file does not exist")
     except OSError as exc:
         return _Unavailable(f"cannot open the file ({type(exc).__name__})")
     try:
@@ -1234,16 +1499,33 @@ def _match_bytes(data: bytes, probe: Mapping) -> str:
 
 
 def _probe_path(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
-    expanded = _expand(str(probe["path"]), env.home)
+    """Type and link target of a path, or ``missing``. Every directory on
+    the way is resolved first and the result checked against the
+    credential rules, so ``~/link/config`` with ``link`` pointing into
+    ``~/.ssh`` is refused rather than reporting whether that file exists.
+    The last component itself is not followed: a symlink is reported as
+    one."""
+    raw = str(probe["path"])
+    home = _home_problem(raw, env)
+    if home is not None:
+        return home
+    parent, name = os.path.split(_expand(raw, env.home))
     try:
-        st = os.lstat(expanded)
+        target = os.path.join(os.path.realpath(parent), name)
+    except (OSError, ValueError) as exc:
+        return _Unavailable(f"cannot resolve the path ({type(exc).__name__})")
+    refused = _resolved_problem(target, reads_content=False)
+    if refused is not None:
+        return refused
+    try:
+        st = os.lstat(target)
     except (FileNotFoundError, NotADirectoryError):
         return MISSING
     except OSError as exc:
         return _Unavailable(f"cannot stat the path ({type(exc).__name__})")
     if stat.S_ISLNK(st.st_mode):
         try:
-            return "symlink:" + os.readlink(expanded)
+            return "symlink:" + os.readlink(target)
         except OSError as exc:
             return _Unavailable(f"cannot read the link ({type(exc).__name__})")
     if stat.S_ISREG(st.st_mode):
@@ -1255,8 +1537,6 @@ def _probe_path(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
 
 def _probe_file_match(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
     data = _read_file(str(probe["path"]), env)
-    if data is None:
-        return MISSING
     if isinstance(data, _Unavailable):
         return data
     return _match_bytes(data, probe)
@@ -1285,8 +1565,6 @@ def _walk_key(doc: Any, key: list[str | int]) -> tuple[bool, Any]:
 
 def _probe_key(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
     data = _read_file(str(probe["path"]), env)
-    if data is None:
-        return MISSING
     if isinstance(data, _Unavailable):
         return data
     try:
@@ -1307,7 +1585,7 @@ def _probe_key(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
         return _Unavailable("the file nests too deeply to parse")
     except Exception as exc:  # noqa: BLE001 -- any parse failure is the same answer
         return _Unavailable(f"the file does not parse ({type(exc).__name__})")
-    key = _key_path(probe["key"])
+    key = _key_parts(probe["key"])
     assert key is not None  # validated
     found, node = _walk_key(doc, key)
     if not found:
@@ -1318,13 +1596,33 @@ def _probe_key(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
         return _Unavailable("the value is too large to compare")
 
 
-def _probe_systemd(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
-    argv = _systemctl_argv(str(probe["scope"]), str(probe["unit"]), str(probe["property"]))
-    result = _run_command(argv, env)
+def _systemd_step(argv: list[str], env: ProbeEnv, deadline: float) -> CommandResult | _Unavailable:
+    result = _run_command(argv, env, timeout=deadline - time.monotonic())
     if isinstance(result, str):
         return _Unavailable(result)
     if result.returncode != 0:
         return _Unavailable(f"systemctl exited {result.returncode}")
+    return result
+
+
+def _probe_systemd(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
+    """A unit property's value. ``systemctl show`` prints an empty value
+    and exits 0 for a unit it does not know, so the unit's ``LoadState``
+    is read first (same command shape, same probe bound): a unit that is
+    ``not-found`` is ``unavailable`` (02 §3a.10.2 rule 4, "unit unknown"),
+    never an empty value that could read as a moved premise. A probe that
+    asks for ``LoadState`` itself gets ``not-found`` as its value."""
+    deadline = time.monotonic() + env.bounded_timeout()
+    scope, unit, prop = str(probe["scope"]), str(probe["unit"]), str(probe["property"])
+    if prop != "LoadState":
+        loaded = _systemd_step(_systemctl_argv(scope, unit, "LoadState"), env, deadline)
+        if isinstance(loaded, _Unavailable):
+            return loaded
+        if loaded.stdout.decode("utf-8", errors="replace").strip() == "not-found":
+            return _Unavailable("the unit is not known to systemd")
+    result = _systemd_step(_systemctl_argv(scope, unit, prop), env, deadline)
+    if isinstance(result, _Unavailable):
+        return result
     return result.stdout.decode("utf-8", errors="replace")
 
 
@@ -1350,24 +1648,64 @@ def _probe_which(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
     return found if found else NOT_FOUND
 
 
+def _git_step(argv: list[str], env: ProbeEnv, deadline: float) -> CommandResult | _Unavailable:
+    """One git command of a ``git-file`` probe, with what is left of the
+    probe's bound."""
+    result = _run_command(argv, env, timeout=deadline - time.monotonic())
+    if isinstance(result, str):
+        return _Unavailable(result)
+    return result
+
+
 def _probe_git_file(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
-    repo = _expand(str(probe["repo"]), env.home)
+    """A file as committed at ``HEAD``, in three bounded commands that
+    share one probe bound: ``rev-parse`` names the object, ``cat-file -s``
+    sizes it, and only an object within :data:`READ_LIMIT` is read
+    (``cat-file blob`` by the same id). A path that is not in ``HEAD`` is
+    ``unavailable`` (02 §3a.10.2 rule 4), like a file that is gone."""
+    deadline = time.monotonic() + env.bounded_timeout()
+    raw_repo = str(probe["repo"])
+    home = _home_problem(raw_repo, env)
+    if home is not None:
+        return home
     try:
-        real_repo = os.path.realpath(repo, strict=True)
-    except OSError:
-        return _Unavailable("the repository path does not resolve")
+        real_repo = os.path.realpath(_expand(raw_repo, env.home))
+    except (OSError, ValueError) as exc:
+        return _Unavailable(f"cannot resolve the repository path ({type(exc).__name__})")
     problem = credential_path_problem(real_repo, reads_content=True)
     if problem is not None:
         return _Unavailable(f"the repository resolves to a refused location: {problem}")
-    result = _run_command(_git_argv(real_repo, str(probe["path"])), env)
-    if isinstance(result, str):
-        return _Unavailable(result)
-    if result.returncode != 0:
-        err = result.stderr.decode("utf-8", errors="replace")
-        if "does not exist in 'HEAD'" in err or "but not in 'HEAD'" in err:
-            return MISSING
-        return _Unavailable(f"git exited {result.returncode}")
-    return _match_bytes(result.stdout, probe)
+    if not os.path.isdir(real_repo):
+        return _Unavailable("the repository path is not a directory")
+    resolved = _git_step(_git_resolve_argv(real_repo, str(probe["path"])), env, deadline)
+    if isinstance(resolved, _Unavailable):
+        return resolved
+    if resolved.returncode == 1:
+        return _Unavailable("the file is not in HEAD")
+    if resolved.returncode != 0:
+        return _Unavailable(f"git rev-parse exited {resolved.returncode}")
+    oid = resolved.stdout.decode("ascii", errors="replace").strip()
+    if not _OID_RE.match(oid):
+        return _Unavailable("git rev-parse printed something other than an object id")
+    sized = _git_step(_git_size_argv(real_repo, oid), env, deadline)
+    if isinstance(sized, _Unavailable):
+        return sized
+    if sized.returncode != 0:
+        return _Unavailable(f"git cat-file -s exited {sized.returncode}")
+    size = sized.stdout.decode("ascii", errors="replace").strip()
+    if not size.isdigit():
+        return _Unavailable("git cat-file -s printed something other than a size")
+    if int(size) > READ_LIMIT:
+        return _Unavailable("file larger than the read limit")
+    blob = _git_step(_git_blob_argv(real_repo, oid), env, deadline)
+    if isinstance(blob, _Unavailable):
+        return blob
+    if blob.returncode != 0:
+        # A directory at that path names a tree, which is not a blob.
+        return _Unavailable(f"git cat-file blob exited {blob.returncode} (not a file?)")
+    if len(blob.stdout) > READ_LIMIT:
+        return _Unavailable("file larger than the read limit")
+    return _match_bytes(blob.stdout, probe)
 
 
 def _probe_ledger(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
@@ -1407,7 +1745,7 @@ def _probe_ledger(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
             return "open"
         done = record.follow_up_done
         if done is not None:
-            return f"done:{_plain(done.get('done_at'))}"
+            return f"done:{plain_value(done.get('done_at'))}"
         return "none"
     if record.status == "superseded":
         return f"superseded:{record.superseded_by}"
@@ -1426,6 +1764,91 @@ _EXECUTORS: dict[str, Callable[[Mapping, ProbeEnv], str | _Unavailable]] = {
     "git-file": _probe_git_file,
     "ledger": _probe_ledger,
 }
+
+#: The kinds that touch the filesystem in this process (``git-file``
+#: resolves its repository here before its bounded commands). They run on
+#: a worker thread with the probe's bound (:func:`_call_bounded`); the
+#: command-only kinds are bounded by :func:`procs.run_bounded` alone.
+_IN_PROCESS_KINDS = frozenset(
+    {"path", "file-match", "json-key", "yaml-key", "toml-key", "which", "git-file", "ledger"}
+)
+_blocked_lock = threading.Lock()
+#: Worker threads that outlived their bound. Pruned of finished threads
+#: on every call; never more than :data:`MAX_BLOCKED_PROBES` alive.
+_blocked_threads: list[threading.Thread] = []
+
+
+class _Outcome:
+    """What a worker thread hands back: the executor's answer or its
+    exception, and an event set when either is in place."""
+
+    __slots__ = ("value", "error", "done")
+
+    def __init__(self) -> None:
+        self.value: str | _Unavailable | None = None
+        self.error: Exception | None = None
+        self.done = threading.Event()
+
+
+def _run_outcome(
+    executor: Callable[[Mapping, ProbeEnv], str | _Unavailable],
+    probe: Mapping,
+    env: ProbeEnv,
+    outcome: _Outcome,
+) -> None:
+    try:
+        outcome.value = executor(probe, env)
+    except Exception as exc:  # noqa: BLE001 -- handed back to the caller
+        outcome.error = exc
+    finally:
+        outcome.done.set()
+
+
+def blocked_probe_count() -> int:
+    """Worker threads still stuck past their bound (for doctor rows and
+    tests). Finished threads are dropped first."""
+    with _blocked_lock:
+        _blocked_threads[:] = [t for t in _blocked_threads if t.is_alive()]
+        return len(_blocked_threads)
+
+
+def _call_bounded(
+    executor: Callable[[Mapping, ProbeEnv], str | _Unavailable],
+    probe: Mapping,
+    env: ProbeEnv,
+) -> str | _Unavailable:
+    """Run *executor* on a daemon worker thread and wait at most the
+    probe's bound (02 §3a.10.2 rule 2: a probe that blocks fails, it never
+    hangs the sweep). A system call blocked on a stale NFS mount, an
+    unreachable automount or a hung FUSE daemon cannot be interrupted, so
+    a thread that does not answer in time is left behind (a daemon thread
+    never holds the process open at exit) and counted; at
+    :data:`MAX_BLOCKED_PROBES` such threads, no new one is started and the
+    probe is ``unavailable`` at once. An exception in the executor is
+    raised here, in the caller."""
+    timeout = env.bounded_timeout()
+    with _blocked_lock:
+        _blocked_threads[:] = [t for t in _blocked_threads if t.is_alive()]
+        if len(_blocked_threads) >= MAX_BLOCKED_PROBES:
+            return _Unavailable(
+                f"{len(_blocked_threads)} earlier probes are still blocked on the "
+                "filesystem; not starting another"
+            )
+    outcome = _Outcome()
+    worker = threading.Thread(
+        target=_run_outcome, args=(executor, probe, env, outcome),
+        name="self-learn-premise-probe", daemon=True,
+    )
+    worker.start()
+    if not outcome.done.wait(timeout):
+        with _blocked_lock:
+            _blocked_threads.append(worker)
+        return _Unavailable(f"timed out after {timeout:g} s (the filesystem did not answer)")
+    if outcome.error is not None:
+        raise outcome.error
+    if outcome.value is None:
+        return _Unavailable("probe failed (no answer)")
+    return outcome.value
 
 
 # ------------------------------------------------------------ observations
@@ -1503,14 +1926,21 @@ def observation_from_value(
 
 
 def run_probe(probe: Mapping, env: ProbeEnv, *, premise: Mapping | None = None) -> Observation:
-    """Validate *probe* (raising :class:`PremiseError` when it is not a
-    catalog probe), run it, and return the observation. Every failure to
-    observe -- timeout, missing program, unreadable file, a refused argv --
-    is an ``unavailable`` observation, never an exception."""
+    """Validate *probe* with the full policy (raising :class:`PremiseError`
+    when it is not a catalog probe, or is one the current policy refuses),
+    run it within :data:`PROBE_TIMEOUT`, and return the observation. Every
+    failure to observe -- timeout, missing program, unreadable or missing
+    file, a refused argv -- is an ``unavailable`` observation, never an
+    exception."""
     validate_probe(probe)
     at = env.now()
+    kind = str(probe["kind"])
+    executor = _EXECUTORS[kind]
     try:
-        raw = _EXECUTORS[str(probe["kind"])](probe, env)
+        if kind in _IN_PROCESS_KINDS:
+            raw = _call_bounded(executor, probe, env)
+        else:
+            raw = executor(probe, env)
     except ProbeRefused as exc:
         return unavailable_observation(f"refused: {exc}", observed_at=at)
     except Exception as exc:  # noqa: BLE001 -- a probe never takes a sweep down
