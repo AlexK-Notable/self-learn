@@ -174,7 +174,7 @@ of rationale prose; §8 declares this schema addition honestly).
 | `confirm-held <id> [--note …]` | `last_confirmed` | `self-learn: confirmed holding lrn-<id>` |
 | `dismiss-suspect <id> --event <ref> --why <reason> [--note …]` | `dismissed_suspects[]` append | `self-learn: suspect dismissed on lrn-<id>` |
 | `link contradicts <id> <target>` | `links.contradicts` append | `self-learn: link lrn-<id> contradicts <target>` |
-| `followup done <id> [--note …]` | clears `routing.follow_up` (moves it to a dated `follow_up_done` block) | `self-learn: follow-up done on lrn-<id>` |
+| `followup done <id> [--note …]` | clears `routing.follow_up` (moves it to a dated `follow_up_done` block); *since 2026-10-31 (S-NEXT-premise, 02 §3a.10.4) a `follow_up_done` later than the lesson's last decision makes it a `premise-moved` input for the steward* | `self-learn: follow-up done on lrn-<id>` |
 | `undefer <id> [--note …]` | `status: pending`, clears `deferred_until` (keeps `deferred_count`) *(U-verbs Phase 1, §4.2 — pulled forward from D1's Phase-2 sweep, code gate r1: shipping without a row here left the doc table three verbs short of the code it documents)* | `self-learn: undefer lrn-<id>` |
 | `reopen <id> [--note …]` | `status: pending`, displaces `resolution_note` into `history` (event: `resolution`), sweeps stale proposal/merge siblings *(U-verbs Phase 1, §4.2 — pulled forward, code gate r1)* | `self-learn: reopen lrn-<id>` |
 | `note <id> --append <text> [--key <token>]` | `notes[]` append *(ANY status — never touches `resolution_note`; U-verbs Phase 1, §4.2 — pulled forward, code gate r1)* | `self-learn: note lrn-<id>` |
