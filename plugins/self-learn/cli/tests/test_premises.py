@@ -948,16 +948,26 @@ class TestWhichAndLedger:
         env = ProbeEnv(home=tmp_path, ledger_home=home, now=lambda: "2026-10-30T00:00:00Z")
         shown = {
             target: premises.run_probe({"kind": "ledger", "ref": target}, env).shown
-            for target in ("lrn-0000000b", "lrn-0000000e", "stmt-0000000b", "stmt-0000000c",
-                           "stmt-0000000e")
+            for target in ("lrn-0000000b", "stmt-0000000b", "stmt-0000000c")
         }
         assert shown == {
             "lrn-0000000b": "pending",
-            "lrn-0000000e": premises.NOT_FOUND,
             "stmt-0000000b": "amended-by:stmt-0000000c",
             "stmt-0000000c": "current",
-            "stmt-0000000e": premises.NOT_FOUND,
         }
+        # integration 2026-10-31 (u1 gate MINOR): an id the ledger does not
+        # hold is `unavailable`, never a value -- lessons and statements are
+        # never deleted, so it means the probe read the wrong ledger. A wrong
+        # ledger home is `unavailable` for every ref, the present one included.
+        for target in ("lrn-0000000e", "stmt-0000000e"):
+            gone = premises.run_probe({"kind": "ledger", "ref": target}, env)
+            assert gone.state == premises.OBS_UNAVAILABLE, target
+            assert "not in this ledger" in gone.reason, target
+        wrong = ProbeEnv(home=tmp_path, ledger_home=tmp_path / "no-ledger-here",
+                         now=lambda: "2026-10-30T00:00:00Z")
+        assert premises.run_probe(
+            {"kind": "ledger", "ref": "lrn-0000000b"}, wrong
+        ).state == premises.OBS_UNAVAILABLE
         follow = premises.run_probe(
             {"kind": "ledger", "ref": "lrn-0000000b#follow_up"}, env
         )

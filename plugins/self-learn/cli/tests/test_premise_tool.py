@@ -330,8 +330,10 @@ def test_the_ledger_probe_reads_this_tools_ledger(tmp_path):
     tool = _tool(tmp_path, ledger=home)
     text = _ok(tool.dispatch({"probe": {"kind": "ledger", "ref": "lrn-0000000b"}}))
     assert 'value: "pending"' in text
+    # integration 2026-10-31 (u1 gate MINOR): an id the ledger does not hold is
+    # `unavailable` (it means the wrong ledger), not the value `not-found`.
     missing = _ok(tool.dispatch({"probe": {"kind": "ledger", "ref": "lrn-0000000e"}}))
-    assert "not-found" in missing
+    assert "state: unavailable" in missing and "not in this ledger" in missing
     # An injected environment cannot point the tool at another ledger.
     other = PremiseProbeTool(home, env=dataclasses.replace(_env(tmp_path),
                                                             ledger_home=tmp_path / "elsewhere"))

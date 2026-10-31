@@ -100,11 +100,15 @@ by construction of this module rather than by convention:
   §3a.10.2 rule 4). That includes a file that is gone, a ``git-file``
   path that is not in ``HEAD``, and a ``~/`` path when the home directory
   itself is missing: a wrong home or an unmounted filesystem must never
-  look like a moved premise. Three answers ARE values, because the probe
+  look like a moved premise. Four answers ARE values, because the probe
   read its whole target and the absence is the observation: a ``path``
   probe's ``missing`` (the kind exists to report existence), a key that is
-  not in a file that parsed (``<missing-key>``), and a package pacman
-  reports as not installed.
+  not in a file that parsed (``<missing-key>``), a package pacman
+  reports as not installed, and a ``which`` name not on the probe's PATH
+  (``not-found``). A ``ledger`` reference that is not in the ledger is
+  ``unavailable`` (lessons and statements are never deleted, so it means
+  the wrong ledger), and so is a missing ``systemctl``, ``pacman`` or
+  ``git`` (02 §3a.10.2 rule 4's "command missing").
 
 **Placement premises (unit U8).** ``@reach``, ``@writable`` and
 ``@intact`` (:data:`PLACEMENT_PREMISE_IDS`) are implicit on every routed
@@ -1708,8 +1712,17 @@ def _probe_git_file(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
     return _match_bytes(blob.stdout, probe)
 
 
+#: Why a ledger reference that is not there is `unavailable`, not a value
+#: (integration 2026-10-31, the u1 gate's MINOR): lessons are never
+#: deleted and statements are append-only, so an id that cannot be found
+#: almost always means the probe read the wrong ledger (a wrong or missing
+#: home). As a value it would move every ledger premise at once (the
+#: lrn-6d21607e class design D3 rules out for files).
+_LEDGER_REF_GONE = "{ref} is not in this ledger (lessons and statements are never deleted)"
+
+
 def _probe_ledger(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
-    if env.ledger_home is None:
+    if env.ledger_home is None or not Path(env.ledger_home).is_dir():
         return _Unavailable("no ledger to read")
     ref = _ledger_ref(probe.get("ref"))
     assert ref is not None  # validated
@@ -1722,7 +1735,7 @@ def _probe_ledger(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
         except (OSError, ValueError) as exc:
             return _Unavailable(f"cannot read the statements ({type(exc).__name__})")
         if not any(isinstance(r, Mapping) and r.get("id") == target for r in rows):
-            return NOT_FOUND
+            return _Unavailable(_LEDGER_REF_GONE.format(ref=target))
         amended = sorted(
             str(r.get("id")) for r in rows if isinstance(r, Mapping) and r.get("amends") == target
         )
@@ -1733,7 +1746,7 @@ def _probe_ledger(probe: Mapping, env: ProbeEnv) -> str | _Unavailable:
     try:
         path = ledger_ops.find_record_path(env.ledger_home, target)
     except ledger_ops.RecordNotFound:
-        return NOT_FOUND
+        return _Unavailable(_LEDGER_REF_GONE.format(ref=target))
     except (ledger_ops.LedgerOpsError, OSError) as exc:
         return _Unavailable(f"cannot find the lesson ({type(exc).__name__})")
     try:

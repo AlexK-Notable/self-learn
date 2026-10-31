@@ -570,9 +570,13 @@ def _followup_is_open(home: Path, record: Record) -> MovedFollowup | None:
     if done_when is None:
         return None
     decided_at, decided_by = last_decision(home, record)
-    if decided_at is not None and decided_at.date() > done_when.date():
+    # Both sides are read as UTC calendar days (02 §3a.10.4 (2)): `done_at`
+    # is the UTC day the verb wrote (`now_iso()[:10]`), and a timestamp
+    # written with another offset is moved to UTC before its day is taken.
+    done_on = done_when.astimezone(timezone.utc).date()
+    if decided_at is not None and decided_at.astimezone(timezone.utc).date() > done_on:
         return None
-    return MovedFollowup(record.id, done, done_when.date(), decided_at, decided_by)
+    return MovedFollowup(record.id, done, done_on, decided_at, decided_by)
 
 
 def moved_followups(home: Path) -> list[MovedFollowup]:
