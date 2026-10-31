@@ -2299,6 +2299,96 @@ def _resolve_rules_target(
     return spec
 
 
+def _owned_skills(home: Path):
+    """The ledger's owned-skills registry (:mod:`self_learn.skill_registry`),
+    or :class:`NeedsPerson` when ``owned-skills.yaml`` does not read back --
+    a damaged registry is a person's to fix, and no route guesses past it
+    (SK2, S-NEXT-sk2-routes)."""
+    from . import skill_registry  # local: kept off verbs' import-time graph
+
+    try:
+        return skill_registry.load(home)
+    except skill_registry.SkillRegistryError as exc:
+        raise NeedsPerson(
+            f"{skill_registry.REGISTRY_FILENAME} cannot be read ({exc}) -- a person "
+            "must repair it before a lesson can be routed into a skill self-learn owns"
+        ) from exc
+
+
+def owned_skill_refusal(home: Path | str, name: str | None) -> VerbError | None:
+    """SK2 (S-NEXT-sk2-routes; skill-writing plan D5): why ``new-skill:<name>``
+    cannot take a lesson from the steward or the overseer, or by a
+    ``reroute`` -- or ``None`` when it can.
+
+    It can when *name* is a skill self-learn owns (a live row in the
+    ledger's ``owned-skills.yaml``) and that skill's ``SKILL.md`` is in the
+    skills root with self-learn's managed section. A route there then only
+    adds the lesson's line to a skill that exists; it never scaffolds one.
+    ``self-learn skill write`` is the only way an agent creates a skill.
+
+    The refusal is returned, not raised, so each caller can name itself in
+    the message (the batch's actor, ``reroute``'s RER4). Its class is its
+    S-71 kind: :class:`SheetLineError` (``bad-line``) for no name or a
+    skill self-learn does not own -- the line is the mistake;
+    :class:`DestinationUnavailable` for an owned skill whose files are
+    missing (an interrupted ``skill write``, which a rerun finishes);
+    :class:`NeedsPerson` for an unreadable registry or ``hosts.yaml``."""
+    home = Path(home)
+    if not name:
+        return SheetLineError(
+            "new-skill needs a name -- new-skill:<name>, naming a skill self-learn owns"
+        )
+    try:
+        registry = _owned_skills(home)
+    except VerbError as exc:
+        return exc
+    if not registry.is_owned(name):
+        return SheetLineError(
+            f"new-skill:{name} is not a skill self-learn owns (no live row in "
+            "owned-skills.yaml), and a route never creates a skill for an agent: "
+            "`self-learn skill write` does. A lesson for a skill self-learn does not "
+            "own goes to that skill's skill-md; a group of lessons that should become "
+            "a skill is a proposal for the overseer"
+        )
+    try:
+        hosts = _load_hosts_or_refuse(home)
+    except VerbError as exc:
+        return exc
+    if hosts.skills_root is None:
+        return DestinationUnavailable(
+            "no skills root registered — self-learn host add <path> --skills-root"
+        )
+    target = hosts.skills_root / "plugins" / name / "skills" / name / "SKILL.md"
+    try:
+        deployed = target.is_file() and BEGIN_MARKER in target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        deployed = False
+    if not deployed:
+        return DestinationUnavailable(
+            f"new-skill:{name} is a skill self-learn owns, but {target} is missing or "
+            "has no self-learn managed section -- an interrupted `skill write` is "
+            "finished by running it again (the selftest names the skill); a route "
+            "never scaffolds a skill self-learn owns"
+        )
+    return None
+
+
+def _refuse_rescaffolding_an_owned_skill(home: Path, name: str) -> None:
+    """SK2: a ``new-skill`` write about to SCAFFOLD (its ``SKILL.md`` is not
+    there) under the name of a skill self-learn owns refuses instead. The
+    scaffold's seed text would stand in for the skill's authored text and
+    its ``skill write`` could no longer finish; a person's scaffold of any
+    other name goes ahead as before (D5). Raises
+    :class:`DestinationUnavailable`, or :class:`NeedsPerson` for a registry
+    that does not read back."""
+    if _owned_skills(home).is_owned(name):
+        raise DestinationUnavailable(
+            f"new-skill:{name} is a skill self-learn owns and its SKILL.md is missing "
+            "-- a route never scaffolds it; run its `skill write` again to finish the "
+            "interrupted write"
+        )
+
+
 def _resolve_target(
     home: Path,
     bucket_dir: Path,
@@ -2325,7 +2415,10 @@ def _resolve_target(
     plain-host refusal a ``needs-person``; it also lets a lesson leave the skills root's own
     ``claude-md`` while that destination refuses additions (S-82). Pure —
     writes nothing; ``check_dirty=False`` (recompile, ``list --json``,
-    commit-drift) resolves exactly as before and runs its own checks."""
+    commit-drift) resolves exactly as before and runs its own checks. One
+    gate runs in both modes (SK2, S-NEXT-sk2-routes): a ``new-skill``
+    target that would scaffold the name of a skill self-learn owns is
+    refused, with ``check_dirty`` or without."""
     spec = _resolve_target_unguarded(
         home, bucket_dir, scope, destination, ref_name,
         user_claude_md=user_claude_md, project_path=project_path,
@@ -2499,6 +2592,18 @@ def _resolve_target_unguarded(
             )
         plugin_dir = root / "plugins" / name
         target = plugin_dir / "skills" / name / "SKILL.md"
+        if not removal and not target.is_file():
+            # SK2 (S-NEXT-sk2-routes): this write would scaffold. Ahead of
+            # M3-9, so an owned skill that lost its SKILL.md is named as
+            # such, not as a foreign plugin. Not gated on `check_dirty`
+            # (fix round 1, 2026-10-31): `recompile` resolves with
+            # `check_dirty=False`, and must skip such a target with this
+            # sentence (its resolve-time `except VerbError` does), never
+            # reach `_apply_new_skill` with it. The read-only callers that
+            # also pass `check_dirty=False` (`replace_route_preview`,
+            # `commit-drift`) already treat a refusal here as "cannot
+            # resolve", as they do M3-9's.
+            _refuse_rescaffolding_an_owned_skill(home, name)
         if plugin_dir.exists():
             # M3-9 collision rule: append only into a self-learn-scaffolded
             # skill (its SKILL.md carries a managed section); anything else
@@ -4700,6 +4805,13 @@ class NewSkillApplyResult:
     #: scaffold — `None` on a route into an EXISTING skill (charges 0,
     #: §5.2's dedup rule; the description is never rewritten there).
     description_words: int | None = None
+    #: SK2 (S-NEXT-sk2-routes, D7): what the route did to the skill's
+    #: ``~/.claude/skills/<name>`` link once its host write landed --
+    #: ``created`` / ``replaced`` / ``unchanged`` (:func:`skill_writer.link_skill`)
+    #: -- or ``None`` when no link was attempted (a removal, a recompile, a
+    #: failed host write) or it was refused (``link_problem`` says why).
+    linked: str | None = None
+    link_problem: str | None = None
 
     @property
     def word_count(self):
@@ -4737,6 +4849,12 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
 
     changed = False
     scaffolded = False
+    if name and not target.is_file():
+        # SK2: also checked when the target is resolved (route and recompile
+        # alike); here it is the last stop, for a SKILL.md that went missing
+        # between that check and this write, so no path re-seeds an owned
+        # skill. Recompile's git leg catches the refusal per target.
+        _refuse_rescaffolding_an_owned_skill(home, name)
     if not manifest.is_file():
         manifest.parent.mkdir(parents=True, exist_ok=True)
         # Sprint 3 M-I wave 3 (D6): host canon -- follow_symlinks=True.
@@ -4787,6 +4905,67 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
     )
     # SKILL.md first: the pinned apply subject names host_paths[0].
     return result, [target, manifest, marketplace]
+
+
+def _tilde(path: Path) -> str:
+    """*path* as ``~/…`` when it is under the home directory (a note may be
+    pasted into a public issue, NIT N4's reason), else as it is."""
+    try:
+        return "~/" + str(path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
+
+
+def _link_routed_skill(spec: TargetSpec, compile_result: object, warnings: list[str]) -> object:
+    """SK2 (S-NEXT-sk2-routes; skill-writing plan D7): after a route into a
+    ``new-skill`` destination has written (and, in git mode, committed) the
+    skill, make ``~/.claude/skills/<name>`` the link
+    ``claude-skills/install.sh`` would make, so the skill loads without
+    anyone running that script (:func:`skill_writer.link_skill`, which takes
+    the skills root's lock -- re-entrant here). Idempotent: a link already
+    in place reads ``unchanged``. A link it may not make (a real folder or
+    another skill's link already at that path) is a warning naming it, never
+    a failure: the lesson is routed and its line written either way.
+
+    Returns *compile_result* with ``linked`` / ``link_problem`` set; any
+    other result type comes back unchanged."""
+    from . import skill_writer  # local: skill_writer reads verbs lazily too
+
+    name = spec.new_skill
+    if not name or not isinstance(compile_result, NewSkillApplyResult):
+        return compile_result
+    try:
+        outcome = skill_writer.link_skill(spec.host_path, name)
+    except Exception as exc:  # noqa: BLE001 -- the write stood; nothing here may undo it
+        # Broad on purpose: this runs inside `_host_phase`'s try, AFTER the
+        # host commit, and an error escaping here would be reported as a
+        # failed host phase and drop the commit's sha (and so its push).
+        warnings.append(
+            f"new skill {name}: {_tilde(skill_writer.link_path(name))} was not linked "
+            f"({exc}); the skill does not load until that path links to "
+            f"{_tilde(skill_writer.skill_dir(spec.host_path, name))}"
+        )
+        return replace(compile_result, link_problem=str(exc))
+    return replace(compile_result, linked=outcome)
+
+
+def _new_skill_scaffold_note(spec: TargetSpec, compile_result: object) -> str:
+    """The one line a person's ``new-skill`` scaffold prints (M3-11, as SK2
+    changed it): where the skill is and whether it is linked. No manual
+    step: the route made the link itself (D7); a link it could not make is
+    in the warnings, with its reason."""
+    from . import skill_writer  # local, as above
+
+    name = spec.new_skill or ""
+    link = _tilde(skill_writer.link_path(name))
+    if getattr(compile_result, "linked", None) is not None:
+        where = f"linked at {link}, so new sessions load it"
+    else:
+        where = f"NOT linked at {link} (see the warning)"
+    return (
+        f"new skill scaffolded at plugins/{name}, {where}; enrich the prose "
+        "post-hoc whenever you like"
+    )
 
 
 #: Host-phase failure classes: loud drift warning, never a LEDGER rollback
@@ -5354,6 +5533,11 @@ def _host_phase(
                         # refusal costs -- never the user's repo state.
                         undone = _undo_host_write(spec.host_path, snapshot, host_paths)
                         raise gitops.GitOpsError(f"{exc} — {undone}") from exc
+            if spec.destination == "new-skill" and routed_record is not None and not removal:
+                # SK2 (D7): only after the write (and its commit) stood, so a
+                # refused commit, whose undo removes a fresh scaffold, never
+                # leaves a link to a missing folder.
+                compile_result = _link_routed_skill(spec, compile_result, warnings)
         return compile_result, host_sha
     except _HOST_PHASE_ERRORS as exc:
         warning = (
@@ -6618,11 +6802,9 @@ def _execute_route(
     post_notes = (
         _hook_manual_steps(hook_route.snippet, spec.target.name)
         if hook_route is not None
-        else [
-            f"new skill scaffolded at plugins/{spec.new_skill} — run "
-            "./install.sh to symlink it into ~/.claude/skills "
-            "(M3-11); enrich the prose post-hoc whenever you like"
-        ]
+        # SK2 (D7): no "run ./install.sh" step any more -- the route made
+        # the ~/.claude/skills link itself.
+        else [_new_skill_scaffold_note(spec, compile_result)]
         if spec.destination == "new-skill" and getattr(compile_result, "scaffolded", False)
         else []
     ) + retire_notes
@@ -9714,6 +9896,19 @@ def _reroute_plan(
     hook_route: _HookRoute | None = None
     if destination == "hook" and hook_input is not None:
         hook_route = _prepare_sheet_hook(home, bucket_dir, record, hook_input, by=by)
+    elif destination == "new-skill" and resolved_dest.ref_name:
+        # SK2 (S-NEXT-sk2-routes; plan D5): RER4 is lifted for a skill
+        # self-learn owns -- the reroute adds a line to a skill that exists
+        # and scaffolds nothing. Any other new-skill name stays refused; a
+        # nameless one falls to the unchanged refusal below.
+        refusal = owned_skill_refusal(home, resolved_dest.ref_name)
+        if refusal is not None:
+            raise type(refusal)(
+                f"reroute --dest {destination}: a one-motion destination — "
+                "rerouting INTO it is a fresh `route` decision on a fresh "
+                "record, not a correction (S-54), unless it names a skill "
+                f"self-learn owns: {refusal}"
+            ) from refusal
     elif destination in ONE_MOTION_UNROUTABLE:
         raise VerbError(
             f"reroute --dest {destination}: a one-motion destination — "
@@ -9814,7 +10009,10 @@ def reroute(
     new-skill`` (RER4 — both are ``ONE_MOTION_UNROUTABLE``: rerouting
     INTO either is a fresh ``route`` decision on a fresh record, not a
     correction; rerouting AWAY FROM either is supported — the retirement
-    half already exists for both).
+    half already exists for both). SK2 (S-NEXT-sk2-routes): rerouting INTO
+    ``new-skill:<name>`` is admitted when ``<name>`` is a skill self-learn
+    owns and is deployed (:func:`owned_skill_refusal`) -- the lesson moves
+    into that skill's managed section and nothing is scaffolded.
 
     U3b (S-72, 2026-09-28): rerouting INTO a hook is admitted when the
     caller carries the hook's compile input (*hook_input* — the steward's
@@ -9861,15 +10059,16 @@ def reroute(
         # `_routing_dest_label` is the ONE place that vocabulary is
         # already spelled out (RER3's own same-destination refusal
         # message uses it for the OLD side; this is the NEW side).
-        # `new-skill` never reaches here (ONE_MOTION_UNROUTABLE already
-        # refused it), and a `hook` (U3b, sheet-carried compile input) has
-        # no qualifier, so only reference/claude-md carry one worth naming.
+        # `new-skill` reaches here only for a skill self-learn owns (SK2:
+        # `_reroute_plan` refused every other name) and carries its name;
+        # a `hook` (U3b, sheet-carried compile input) has no qualifier.
         message_target = _routing_dest_label(
             {
                 "destination": destination,
                 "reference_file": spec.ref_name if destination == "reference" else None,
                 "variant": spec.variant,
                 "rules_topic": spec.rules_topic,
+                "new_skill": spec.new_skill if destination == "new-skill" else None,
             }
         )
         message = f"self-learn: reroute {record_id} → {message_target}"
@@ -9894,6 +10093,7 @@ def reroute(
                 allow_empty_glob=spec.glob_bypass,
                 glob_bypass_reason=spec.glob_bypass_reason,
                 hook=hook_route.meta if hook_route is not None else None,
+                new_skill=spec.new_skill if destination == "new-skill" else None,
             )
             routed_record = Record.from_path(path)  # AS RESOLVED — routed_at now set
 
@@ -12837,7 +13037,13 @@ def recompile(
                         home, spec, None, notes=result.warnings,
                         keep_empty_rules=keep_rules,
                     )
-                except (CompileError, OSError) as exc:
+                except (CompileError, OSError, VerbError) as exc:
+                    # SK2 fix round 1 (2026-10-31): `VerbError` too -- e.g.
+                    # `_apply_new_skill`'s refusal to re-seed an owned skill.
+                    # A refusal costs THIS target only; every later target
+                    # still repairs, and the steward's and the overseer's
+                    # recovery recompile (`only_records`) does not raise.
+                    # The plain leg already gets this from `_host_phase`.
                     result.entries.append(
                         RecompileEntry(target=target, changed=False, skipped=str(exc))
                     )
