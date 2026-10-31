@@ -370,6 +370,43 @@ def test_the_steward_due_check_sees_an_extract_input_and_not_a_paused_one(tmp_pa
     assert serve._steward_is_due(home, cache, now) is True
 
 
+def test_an_extract_input_alone_makes_a_steward_with_an_earlier_run_due_past_its_cooldown(
+    tmp_path,
+):
+    """Integration mutation gap (item 33): the test above has no earlier run, so
+    `last_iso is None` returns True before the extract check is reached. Here a
+    run finished long ago, and the ONLY thing waiting is a premise-extract input:
+    past the cooldown that alone makes the steward due; inside the cooldown, or
+    with the backfill paused, it does not."""
+    env = make_env(tmp_path)
+    home = env.ledger
+    _routed(env, A)
+    cache = tmp_path / "cache"
+    now = time.time()
+    marker = steward.steward_dir(home) / "steward.last-run"
+    marker.write_text("2020-01-01T00:00:00+00:00\n", encoding="utf-8")
+    assert steward.last_run_iso(home) == "2020-01-01T00:00:00+00:00"  # the run exists
+    _configure_steward(home, premise_backfill=10)
+    # the extract input is the only input (the positive control for the rest)
+    assert steward._premise_extract_inputs(home, limit=1, ordered=False)
+    assert steward.committed_manifests(home) == []
+    assert steward._reconsider_proposals(home)[0] == []
+    assert serve._eligible_input_paths(home) == []
+    assert steward._suspected_violation_inputs(home) == []
+    assert steward._premise_moved_inputs(home, manifests=[]) == []
+
+    assert serve._steward_is_due(home, cache, now) is True
+    # inside the cooldown it waits, so the True above comes from the old run
+    marker.write_text(
+        time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(now)) + "\n", encoding="utf-8"
+    )
+    assert serve._steward_is_due(home, cache, now) is False
+    # a paused backfill leaves nothing waiting, whatever the age of the run
+    marker.write_text("2020-01-01T00:00:00+00:00\n", encoding="utf-8")
+    _configure_steward(home, premise_backfill=0)
+    assert serve._steward_is_due(home, cache, now) is False
+
+
 # ========================================================= 5. the brief
 
 
