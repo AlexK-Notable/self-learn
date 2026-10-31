@@ -274,6 +274,21 @@ revert). Doc 13 promotes that to the general rule:
    emptied before this change only when its region is exactly what the
    compile record says self-learn wrote (`clean`). `CLAUDE.md` and
    `CLAUDE.local.md` keep their marker pair.
+   *Amended 2026-10-31 (S-NEXT-self-maint):* `recompile` revisits a retired
+   lesson's target so a stale line leaves it; when that target is gone from
+   disk there is no line left anywhere, and the run no longer warns about it
+   (before, every steward run's post-run recompile warned "host not
+   registered — self-learn host add …" and "no skill named …" for two
+   superseded lessons, `lrn-4c75079e` and `lrn-98d42215`). Gone means: a
+   project lesson whose host is not registered and whose bucket's recorded path
+   no longer exists; a `skill-md` lesson whose skill folder
+   (`plugins/*/skills/<name>`) is gone from a registered skills root that is on
+   disk; a `new-skill` lesson whose `plugins/<name>` folder is gone. Such a
+   lesson is skipped and counted once in the result (`gone`; the CLI prints
+   one line, the post-run recompile's journal row carries the count). A
+   retired lesson whose unregistered path still exists still warns (its file
+   may hold the line), and so does a registered host whose path vanished
+   (`host rebind` repairs it).
 3. **The rejected-proposal digest moves its grep to the ledger repo**
    (resolution commits live there now).
 4. **The sentinel contract SHRINKS.** The ledger repo has no watcher
@@ -562,6 +577,53 @@ pushed the way a steward run pushes; `serve` itself still never stages,
 commits or pushes. It needs no model call, no new unit and no timer.
 `premises.enabled` (tier C, default true) gates it; `_steward_is_due` counts
 the `premise-moved` and `premise-extract` inputs it makes selectable.
+
+**The host process picks up new code itself, between jobs** *(Added
+2026-10-31, `03-decisions.md` S-NEXT-self-maint)*. A landing used to need a
+hand restart of `self-learn-host.service`, and on 2026-10-31 at 03:45 that
+restart killed the nightly mine nine seconds in. Now `serve` records, at start,
+a hash of every Python source file of the `self_learn` package it imported
+(path and content, so a landing and an uncommitted edit both change it, and a
+commit that changes no file does not). At the end of every tick, when no job
+is running (each job is counted while it runs and the check refuses while the
+count is above zero), it hashes again. A changed hash that reads the same on
+two consecutive checks, so a merge still writing files is not caught half-way,
+is first imported in a fresh interpreter (`python -P -c "import
+self_learn.cli, self_learn.serve"`); if that fails, `serve` stays on the code
+it runs and does not try that hash again (`reexec-refused`). Otherwise it
+writes the heartbeat ("restarting on new code") and a `reexec` row in
+`serve.journal.jsonl`, and replaces itself with the same command line
+(`os.execve` of `sys.orig_argv`): same pid, so systemd sees no restart, and
+the new image loads the new code. A job is never interrupted, so a landing can
+never kill a running mine. `serve.restart_on_new_code` (tier A, default
+`true`) is the rollback switch. What a re-exec cannot pick up is the unit file
+itself: when the host unit file changed after the process started (read only
+under systemd, `INVOCATION_ID` set, and only when the unit is linked), `serve`
+writes one project notice (§7.5, source `code`) for the checkout the unit file
+lives in, naming `systemctl --user daemon-reload && systemctl --user restart
+self-learn-host.service`, and marks it done once the service has been
+restarted onto that file. A dependency change in the venv still needs `uv
+sync`; the re-exec runs the interpreter directly, not `uv run`.
+
+**A daily maintenance recompile joins the tick** *(Added 2026-10-31,
+S-NEXT-self-maint)*. A `maintenance` job, due once a day (marker in
+`<cache>/maintenance/recompile.json`, written when an attempt starts) when
+`hosts.yaml` exists, runs after the premises job and before the steward. It
+asks the drift check's own computation (`selfcheck.unrecorded_targets`) which
+managed targets carry self-learn's markers with no compile record (verdict
+`unknown`) and runs one `recompile` narrowed to the live lessons on them
+(`only_records`, never `--adopt`). Where the region on disk is what the ledger
+renders, that writes the missing record (S-102 M2.4) in one `recompile resync
+record(s)` ledger commit, which the job pushes once, the way a steward run
+publishes. A target the recompile refuses (a plain host's tracked file, S-80;
+a hand edit; two registrations under two modes, S-82) is left as it is, and
+named with its reason on stderr and in the cache file, once a day, for the
+host policy or the steward's `@writable` input. While the host process runs
+(its heartbeat is fresh), `--selftest`'s drift row says the daily maintenance
+recompile records such targets instead of telling a person to run `self-learn
+recompile`, and names `recompile --adopt <target>` only for a target the last
+run could not record. The job never calls a model. Its two cache writes (the
+marker file and the re-exec rows) are `NOT_REPO_TRUTH`.
 
 **The overseer's catch-up rule and the same-week guard** *(Added 2026-09-19,
 `03-decisions.md` S-68)*. The weekly job is due on the first tick at or after
@@ -1735,7 +1797,11 @@ relaxation of the batch refusal above.
 
 **The gate.** `overseer.hook_activation` is a committed-config key (the
 S-10 opt-in pattern), **default `false`, fail-closed on anything but YAML
-`true`.** It governs only the overseer's own automatic path, never a
+`true`.** *(Amended 2026-10-31, S-NEXT-self-maint: it is a registered setting,
+tier C, config only — no env var, no override channel — so `doctor settings`
+shows it instead of warning "unknown settings config key" on every read;
+`config.hook_activation_enabled` stays its reader and agrees with the
+registry on every value.)* It governs only the overseer's own automatic path, never a
 human's: with it `false`, the overseer applies an approved hook route only
 as far as step 1 below (placed) and then parks it, with a receipt saying
 activation is delegated but switched off — the same two-manual-steps state
