@@ -619,6 +619,27 @@ def test_a_changed_lock_file_syncs_the_venv_before_the_re_exec(tmp_path, monkeyp
     assert len(calls) == 1
 
 
+def test_a_failed_sync_keeps_the_running_code(tmp_path, monkeypatch):
+    """The lock changed and `uv sync` failed: the import check could still
+    pass on the old venv (a lazy import of the new dependency), so the
+    re-exec is refused on the sync failure itself."""
+    project, pkg = _project_tree(tmp_path)
+    monkeypatch.setattr(serve, "_code_root", lambda: pkg)
+    monkeypatch.setattr(serve, "_sync_venv", lambda p, timeout=600.0: (False, "error: no network"))
+    monkeypatch.setattr(serve, "_new_code_imports", lambda timeout=120.0: (True, ""))
+    calls: list = []
+    _stub_exec(monkeypatch, calls)
+    cache = tmp_path / "cache"
+    watch = _watch_now()
+    (project / "uv.lock").write_text("version = 1\n# a new dependency\n", encoding="utf-8")
+    for _ in range(3):
+        serve._consider_reexec(tmp_path / "h", cache, watch, pid=os.getpid(), tick_secs=60.0)
+    assert calls == []
+    rows = [json.loads(line) for line in (cache / serve.SERVE_JOURNAL_FILENAME).read_text().splitlines()]
+    assert [r["status"] for r in rows] == ["reexec-refused"]
+    assert rows[0]["error"] == "uv sync failed: error: no network"
+
+
 def test_a_code_only_change_does_not_sync(tmp_path, monkeypatch):
     """Control for the test above: same tree, a Python edit only."""
     project, pkg = _project_tree(tmp_path)
