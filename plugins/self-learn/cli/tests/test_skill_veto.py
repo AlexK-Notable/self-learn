@@ -4,8 +4,9 @@ the user's veto.
 Skill-writing plan, unit SK7, decision D15 (except the rename itself, SK8):
 
 (a) ``overseer open`` prints each skill built, changed, retired or kept as a
-    draft that week, after the questions. On master it prints the questions
-    only, so every positive assertion below is red there;
+    draft that week, and every live skill it has never shown, after the
+    questions. On master it prints the questions only, so every positive
+    assertion below is red there;
 (b) ``overseer respond --veto-skill <name>`` records the user's typed words
     through the answer path (S-94: the statement is anchored to a
     presentation ``open`` recorded, never to an agent's words) and adds the
@@ -14,7 +15,8 @@ Skill-writing plan, unit SK7, decision D15 (except the rename itself, SK8):
 (c) ``--retire-skill <name>`` records the request for the next run and
     changes nothing else;
 (d) a veto or retirement naming a skill that self-learn does not own is
-    refused by name, and nothing is recorded.
+    refused by name, and nothing is recorded. A veto may also name a draft
+    ``open`` showed (the drafts-only week); a retirement may not.
 
 Written under the user's 2026-10-30 rule (tests run only for a significant
 change): the orchestrator runs these once over the combined landing. Every
@@ -26,7 +28,9 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +38,7 @@ from types import SimpleNamespace
 import pytest
 
 from self_learn import cases, skill_registry, skill_scaffold, statements
+from self_learn.primitives import chrono
 from self_learn.overseer import cli as overseer_cli
 from self_learn.overseer import conversation
 from support import commit_all, git, make_home
@@ -56,6 +61,13 @@ RETIRE_WORDS = "Retire it, I do not want this skill."
 @pytest.fixture(autouse=True)
 def redirect(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    # The overseer's week starts at Sunday 04:15 LOCAL time; pin the zone so
+    # the week the section covers does not depend on the machine's.
+    monkeypatch.setenv("TZ", "UTC")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
 
 
 # ------------------------------------------------------------------ helpers
@@ -125,6 +137,14 @@ def _section(text: str) -> str:
     return text.split("## Skills this week\n", 1)[1]
 
 
+def _old_case(home: Path, tmp_path: Path, monkeypatch, suffix: str = "e5") -> str:
+    """A case opened long ago: the ledger's oldest, so the case a draft with
+    no live skill is presented on (`conversation.draft_anchor_case`)."""
+    with monkeypatch.context() as patch:
+        patch.setattr(chrono, "now_iso", lambda: "2026-01-01T00:00:00Z")
+        return _case(home, tmp_path, suffix, {})
+
+
 def _observations(home: Path, case_id: str) -> str:
     return cases.show(home, case_id, evidence_only=False).sections["Later observations"]
 
@@ -139,16 +159,17 @@ def _vetoed_commits(home: Path, name: str) -> int:
 
 
 @pytest.fixture
-def world(tmp_path: Path) -> SimpleNamespace:
+def world(tmp_path: Path, monkeypatch) -> SimpleNamespace:
     """A ledger with a report dated 2026-10-25 and four registry rows: one
-    built this week, one rewritten this week, one built last month and left
-    alone, one retired this week; plus drafts for this week and for an old
-    week."""
+    built this week, one rewritten this week, one built last month and never
+    shown, one retired this week; plus drafts for this week and for an old
+    week, and an old case for the draft of a name nobody owns."""
     home = make_home(tmp_path)
     ids = {
         key: _case(home, tmp_path, suffix, {})
         for key, suffix in (("new", "a1"), ("changed", "b2"), ("early", "d4"), ("retired", "c3"))
     }
+    ids["anchor"] = _old_case(home, tmp_path, monkeypatch)
     _seed(
         home,
         {
@@ -187,16 +208,20 @@ class TestOpenListsTheWeeksSkills:
         )
         assert f"- skill {GONE}: [skill retired] retired 2026-10-26 by overseer (case {ids['retired']})\n" in section
         assert (
-            f"- skill {DRAFT_NEW}: [new skill draft] kept as a draft, nothing deployed; description: "
-            "Summarises a pull request for a reviewer. Use when asked for a PR summary.\n"
+            f"- skill {DRAFT_NEW}: [skill drafted] would build it; kept as a draft, nothing deployed; "
+            "description: Summarises a pull request for a reviewer. Use when asked for a PR summary.\n"
         ) in section
         # A draft of a skill that is already live is a draft of a change.
         assert (
-            f"- skill {CHANGED}: [skill change draft] kept as a draft, nothing deployed; description: "
-            "A rewrite of the flaky-test skill.\n"
+            f"- skill {CHANGED}: [skill drafted] would change it; kept as a draft, nothing deployed; "
+            "description: A rewrite of the flaky-test skill.\n"
         ) in section
+        # A live skill whose week went by unshown is listed once, with its own date.
+        assert f"- skill {EARLY}: [new skill] built 2026-09-20 by overseer (case {ids['early']})\n" in section
 
-    def test_a_skill_untouched_since_the_report_and_an_old_weeks_draft_are_not_listed(self, world):
+    def test_a_skill_already_shown_and_untouched_since_and_an_old_weeks_draft_are_not_listed(self, world):
+        first = _open(world.home)
+        assert f"- skill {EARLY}: [new skill]" in first  # control: shown the first time
         text = _open(world.home)
         # Control: the same output does list this week's skills, so the
         # absences below are not an empty section.
@@ -217,13 +242,17 @@ class TestOpenListsTheWeeksSkills:
         assert _open(home) == "## Questions for you\n- none\n"
         assert not (home / skill_registry.REGISTRY_FILENAME).exists()
 
-    def test_skills_that_moved_before_the_report_print_nothing(self, tmp_path):
+    def test_skills_that_moved_before_the_report_print_nothing_once_they_were_shown(self, tmp_path):
         home = make_home(tmp_path)
         early = _case(home, tmp_path, "d4", {})
         _seed(home, {EARLY: _row(EARLY, created=(LAST_MONTH, early))})
         _write_report(home)
         commit_all(home, "seed")
         assert skill_registry.load(home).is_owned(EARLY)  # control: there is a live skill
+        # Never shown, it is listed (the week it moved went by unseen) ...
+        assert f"- skill {EARLY}: [new skill] built 2026-09-20" in _open(home)
+        assert len(_presented(home, early)) == 1
+        # ... and once shown it is quiet until it moves again.
         assert _open(home) == "## Questions for you\n- none\n"
 
     def test_a_built_or_changed_skill_is_recorded_as_shown_and_a_retired_one_is_not(self, world):
@@ -241,11 +270,20 @@ class TestOpenListsTheWeeksSkills:
             f"overseer presented: - skill {BUILT}: [new skill] built 2026-10-26 by overseer "
             f"(case {world.ids['new']})"
         ) in _observations(world.home, world.ids["new"])
-        assert len(_presented(world.home, world.ids["changed"])) == 1
+        # The rewrite, and the draft of a further rewrite (recorded on the
+        # live skill's own case): two distinct lines.
+        assert len(_presented(world.home, world.ids["changed"])) == 2
         # A retired skill can be neither vetoed nor retired, so it is shown
-        # and not recorded; the early case belongs to rows that did not move.
+        # and not recorded.
         assert _presented(world.home, world.ids["retired"]) == []
-        assert _presented(world.home, world.ids["early"]) == []
+        # A live skill that did not move this week but was never shown is
+        # recorded as shown the first time it is listed.
+        assert len(_presented(world.home, world.ids["early"])) == 1
+        # A draft of a name nobody owns is recorded on the ledger's oldest case.
+        assert conversation.draft_anchor_case(world.home) == world.ids["anchor"]
+        assert (
+            f"overseer presented: - skill {DRAFT_NEW}: [skill drafted] would build it; kept as a draft"
+        ) in _observations(world.home, world.ids["anchor"])
 
     def test_opening_again_records_the_same_line_once(self, world):
         _open(world.home)
@@ -305,8 +343,8 @@ class TestTheDraftsWindow:
         _write_draft(home, REPORT_DATE, "always-there", description="Control draft.")
         commit_all(home, "seed")
         text = _open(home)
-        assert "- skill always-there: [new skill draft]" in text  # control: the section renders
-        assert (f"- skill {DRAFT_NEW}: [new skill draft]" in text) is listed
+        assert "- skill always-there: [skill drafted]" in text  # control: the section renders
+        assert (f"- skill {DRAFT_NEW}: [skill drafted]" in text) is listed
 
     def test_a_draft_that_cannot_be_read_is_listed_without_a_description(self, tmp_path):
         home = make_home(tmp_path)
@@ -315,8 +353,11 @@ class TestTheDraftsWindow:
         _write_draft(home, REPORT_DATE, "described", description="Has words.")
         commit_all(home, "seed")
         section = _section(_open(home))
-        assert "- skill described: [new skill draft] kept as a draft, nothing deployed; description: Has words.\n" in section
-        assert "- skill no-skill-md: [new skill draft] kept as a draft, nothing deployed\n" in section
+        assert (
+            "- skill described: [skill drafted] would build it; kept as a draft, nothing deployed; "
+            "description: Has words.\n"
+        ) in section
+        assert "- skill no-skill-md: [skill drafted] would build it; kept as a draft, nothing deployed\n" in section
 
     def test_a_long_description_is_cut_to_one_bounded_line(self, tmp_path):
         home = make_home(tmp_path)
@@ -328,8 +369,25 @@ class TestTheDraftsWindow:
 
 
 class TestTheReportsStart:
-    """The week is the latest report's: the UTC date in its first line, else
-    the day its file was written."""
+    """The window is the overseer's week the latest report belongs to (the
+    Sunday 04:15 boundary at or before the end of the report's UTC day), or
+    the report's own day when that is later; the report's day is the UTC date
+    in its first line, else the day its file was written."""
+
+    @staticmethod
+    def _changed_line(home: Path, at: str, tmp_path: Path, *, header: str | None = None) -> bool:
+        """Whether `open` lists a rewrite made at *at* as this week's change.
+        The skill was built last month, so when the rewrite is outside the
+        window the only line about it is the never-shown `[new skill]` one."""
+        case_id = _case(home, tmp_path, "a1", {})
+        _seed(home, {BUILT: _row(BUILT, created=(LAST_MONTH, case_id), changed=(at, case_id))})
+        _write_report(home, header=header)
+        _write_draft(home, REPORT_DATE, "always-there", description="Control draft.")
+        commit_all(home, "seed")
+        text = _open(home)
+        assert "- skill always-there: [skill drafted]" in text  # control: the section renders
+        assert f"- skill {BUILT}: [new skill] built 2026-09-20" in text or f"- skill {BUILT}: [skill changed]" in text
+        return f"- skill {BUILT}: [skill changed] changed" in text
 
     @pytest.mark.parametrize(
         ("at", "listed"),
@@ -338,16 +396,23 @@ class TestTheReportsStart:
             ("2026-10-24T23:59:59Z", False),  # a second before it
         ],
     )
-    def test_the_window_opens_at_midnight_of_the_reports_date(self, tmp_path, at, listed):
+    def test_a_report_on_the_boundary_day_opens_the_window_at_midnight(self, tmp_path, at, listed):
+        assert self._changed_line(make_home(tmp_path), at, tmp_path) is listed
+
+    @pytest.mark.parametrize(
+        ("at", "listed"),
+        [
+            ("2026-10-25T04:15:00Z", True),   # the Sunday boundary that opened the report's week
+            ("2026-10-25T04:14:59Z", False),  # the week before
+        ],
+    )
+    def test_a_mid_week_report_still_covers_the_whole_week(self, tmp_path, at, listed):
+        # 2026-10-28 is the Wednesday after: a manual run replaced the
+        # scheduled run's report, and what the scheduled run built on Sunday
+        # morning must not fall out of the section.
+        header = "# Overseer report — 2026-10-28   run 6d38cdd1   actor overseer   model m"
         home = make_home(tmp_path)
-        case_id = _case(home, tmp_path, "a1", {})
-        _seed(home, {BUILT: _row(BUILT, created=(at, case_id))})
-        _write_report(home)
-        _write_draft(home, REPORT_DATE, "always-there", description="Control draft.")
-        commit_all(home, "seed")
-        text = _open(home)
-        assert "- skill always-there: [new skill draft]" in text  # control: the section renders
-        assert (f"- skill {BUILT}: [new skill]" in text) is listed
+        assert self._changed_line(home, at, tmp_path, header=header) is listed
 
     def test_a_report_without_a_date_uses_the_day_its_file_was_written(self, tmp_path):
         home = make_home(tmp_path)
@@ -450,7 +515,7 @@ class TestVeto:
         (waiting,) = conversation.pending_renames(home)
         assert (waiting["name"], waiting["statement"]) == (BUILT, result.statement_id)
         shown = _section(_open(home))
-        assert f"- skill {BUILT}: [name vetoed] waits for the next overseer run" in shown
+        assert f"- skill {BUILT}: [name vetoed] waits for a new name" in shown
         assert result.statement_id in shown
 
         # The skill is renamed (as skill rename will leave the registry): the
@@ -503,7 +568,7 @@ class TestRetireRequest:
         _open(home)
         result = conversation.respond_skill(home, action="retire", name=BUILT, scope="user", text=RETIRE_WORDS)
         shown = _section(_open(home))
-        assert f"- skill {BUILT}: [retirement requested] waits for the next overseer run" in shown
+        assert f"- skill {BUILT}: [retirement requested] waits for an overseer run that writes skills" in shown
         assert result.statement_id in shown
 
     def test_the_newest_request_for_a_skill_is_the_one_pending(self, world):
@@ -567,13 +632,14 @@ class TestRefusals:
         assert statements.list_statements(home) == []
         assert (home / skill_registry.REGISTRY_FILENAME).read_bytes() == registry_before
 
-    @pytest.mark.parametrize("action", ["veto", "retire"])
     @pytest.mark.parametrize(
-        "name",
+        ("action", "name"),
         [
-            "no-such-skill",  # unknown
-            GONE,             # a retired skill is not owned
-            DRAFT_NEW,        # a draft was never deployed, so it is not owned
+            ("veto", "no-such-skill"),    # unknown
+            ("retire", "no-such-skill"),
+            ("veto", GONE),               # a retired skill is not owned
+            ("retire", GONE),
+            ("retire", DRAFT_NEW),        # a draft was never deployed: nothing to retire
         ],
     )
     def test_a_skill_self_learn_does_not_own_is_refused_by_name(self, world, action, name):
@@ -614,13 +680,16 @@ class TestRefusals:
         _open(home)
         conversation.respond_skill(home, action="veto", name=BUILT, scope="user", text=VETO_WORDS)
 
-    def test_a_skill_that_did_not_move_this_week_was_never_shown(self, world):
+    def test_a_veto_of_a_name_no_draft_showed_is_refused(self, world):
         home = world.home
-        _open(home)
         registry_before = (home / skill_registry.REGISTRY_FILENAME).read_bytes()
-        with pytest.raises(conversation.ConversationError, match="has not shown that skill"):
-            conversation.respond_skill(home, action="retire", name=EARLY, scope="user", text="Retire it.")
+        # `open` has not run, so no draft was shown: the draft's name is
+        # refused like any name self-learn does not own.
+        with pytest.raises(conversation.ConversationError, match=f"{DRAFT_NEW} is not a skill self-learn owns"):
+            conversation.respond_skill(home, action="veto", name=DRAFT_NEW, scope="user", text=VETO_WORDS)
         self._nothing_recorded(home, registry_before)
+        _open(home)  # control: once shown, the same call is accepted
+        conversation.respond_skill(home, action="veto", name=DRAFT_NEW, scope="user", text=VETO_WORDS)
 
     @pytest.mark.parametrize("scope", ["", "project:", "everywhere"])
     def test_a_missing_or_bad_scope_records_nothing(self, world, scope):
@@ -661,6 +730,165 @@ class TestRefusals:
         (home / skill_registry.REGISTRY_FILENAME).write_text("version: 1\nbogus: 1\n", encoding="utf-8")
         with pytest.raises(conversation.ConversationError, match="bogus"):
             conversation.respond_skill(home, action="veto", name=BUILT, scope="user", text="No.")
+        assert statements.list_statements(home) == []
+
+
+# ======================================= a skill is never out of reach of the veto
+
+
+class TestASkillOpenNeverShownCanStillBeVetoed:
+    """The window is the report's week, but the veto has no time limit: a
+    live skill `open` has not shown before is shown (and recorded) the next
+    time `open` runs, whenever the skill moved."""
+
+    def test_the_week_the_skill_moved_went_by_unseen(self, world):
+        home = world.home
+        # Before `open` has run the skill was never shown (control: the
+        # refusal that the old rule gave for every skill outside the week).
+        with pytest.raises(conversation.ConversationError, match="has not shown that skill"):
+            conversation.respond_skill(home, action="veto", name=EARLY, scope="user", text=VETO_WORDS)
+
+        assert f"- skill {EARLY}: [new skill] built 2026-09-20" in _open(home)  # built last month
+
+        result = conversation.respond_skill(home, action="veto", name=EARLY, scope="user", text=VETO_WORDS)
+        assert skill_registry.load(home).vetoed_names() == [EARLY]
+        assert result.observed_cases == (world.ids["early"],)
+
+    def test_the_skill_is_shown_once_and_the_veto_still_works_in_a_later_week(self, world):
+        home = world.home
+        assert f"- skill {EARLY}:" in _open(home)
+        assert f"- skill {EARLY}:" not in _open(home)  # not listed a second time
+        # A later weekly report moves the window past everything.
+        _write_report(home, header="# Overseer report — 2026-11-15   run 77aa77aa   actor overseer   model m")
+        assert f"- skill {BUILT}:" not in _open(home)  # control: the window did move
+        conversation.respond_skill(home, action="retire", name=EARLY, scope="user", text=RETIRE_WORDS)
+        assert [r["name"] for r in conversation.pending_retire_requests(home)] == [EARLY]
+
+    def test_a_renamed_skill_is_shown_under_its_new_name(self, tmp_path):
+        home = make_home(tmp_path)
+        case_id = _case(home, tmp_path, "a1", {})
+        row = _row("better-name", created=(LAST_MONTH, case_id))
+        row["renamed_from"] = [BUILT]
+        _seed(home, {"better-name": row})
+        _write_report(home)
+        commit_all(home, "seed")
+
+        text = _open(home)
+
+        assert (
+            f"- skill better-name: [skill renamed] renamed 2026-09-20 by overseer (case {case_id}); was {BUILT}"
+        ) in text
+        conversation.respond_skill(home, action="veto", name="better-name", scope="user", text=VETO_WORDS)
+
+    def test_a_stamp_with_no_case_names_no_case_and_has_nothing_to_record_on(self):
+        # The registry as it stands on this branch refuses a null case, so the
+        # shape a person's CLI step without --case will leave (S-NEXT-skills,
+        # part 2) is checked on the pure helpers: such a stamp prints "no case"
+        # and names none to attach the user's words to.
+        stamp = {"at": LAST_MONTH, "case": None, "by": "human"}
+        row = {"created": stamp, "last_write": dict(stamp, authored_sha256=SHA)}
+        assert conversation._stamp_cases(row) == []
+        assert conversation._case_of(stamp, row) is None
+        line = conversation._moved_line(BUILT, "[new skill]", "built", stamp)
+        assert line == f"- skill {BUILT}: [new skill] built 2026-09-20 by human (no case)"
+        # Control: with a case on the row, the same stamp is recorded there.
+        with_case = {"created": stamp, "last_write": {**stamp, "case": "case-0badc0de"}}
+        assert conversation._case_of(stamp, with_case) == "case-0badc0de"
+
+    def test_a_line_with_no_case_to_be_recorded_on_is_named_on_stderr(self, tmp_path, capsys):
+        home = make_home(tmp_path)
+        conversation._present_skill(home, None, BUILT, f"- skill {BUILT}: [new skill] built")
+        assert f"skill {BUILT}: not recorded as shown" in capsys.readouterr().err
+
+
+# ================================== a draft's name can be vetoed before anything is deployed
+
+
+class TestVetoOfADraftsName:
+    def test_the_name_is_banned_before_a_skill_exists_under_it(self, world):
+        home = world.home
+        _open(home)
+        registry_before = skill_registry.load(home)
+        assert not registry_before.is_owned(DRAFT_NEW)  # control: nothing is deployed under it
+        draft_files = valid_skill_files(front={"name": json.dumps(DRAFT_NEW)})
+        assert skill_scaffold.check_skill(
+            draft_files, loaded_names=(), vetoed_names=[], expected_name=DRAFT_NEW
+        ).ok  # control: the template check accepts the name before the veto
+
+        result = conversation.respond_skill(home, action="veto", name=DRAFT_NEW, scope="user", text=VETO_WORDS)
+
+        stored = next(row for row in statements.list_statements(home) if row["id"] == result.statement_id)
+        assert stored["answers"]["ref"] == f"veto-skill:{DRAFT_NEW}"
+        assert stored["answers"]["kind"] == "instruction"
+        assert stored["recorded_by"] == "human"
+        assert stored["answers"]["text"].startswith(f"- skill {DRAFT_NEW}: [skill drafted] would build it;")
+        # Anchored to the presentation recorded on the ledger's oldest case.
+        (shown,) = [
+            p for p in _presented(home, world.ids["anchor"]) if f"conversation:{p['id']}" == stored["source"]["message_ref"]
+        ]
+        assert shown["covering"] == "dependencies"
+        assert result.observed_cases == (world.ids["anchor"],)
+        assert f"user vetoed the name of skill {DRAFT_NEW}" in _observations(home, world.ids["anchor"])
+
+        registry = skill_registry.load(home)
+        assert [(v["name"], v["statement"]) for v in registry.vetoed] == [(DRAFT_NEW, result.statement_id)]
+        assert not registry.is_owned(DRAFT_NEW)  # a veto does not create a skill
+        after = skill_scaffold.check_skill(
+            draft_files, loaded_names=(), vetoed_names=registry.vetoed_names(), expected_name=DRAFT_NEW
+        )
+        assert after.problem_rules == (skill_scaffold.RULE_NAME_VETOED,)
+
+    def test_open_then_shows_the_draft_as_needing_another_name(self, world):
+        home = world.home
+        _open(home)
+        conversation.respond_skill(home, action="veto", name=DRAFT_NEW, scope="user", text=VETO_WORDS)
+        section = _section(_open(home))
+        assert (
+            f"- skill {DRAFT_NEW}: [skill drafted] would build it, but the name is vetoed; "
+            "the next overseer run must give the draft another name or not build it\n"
+        ) in section
+        assert f"- skill {DRAFT_NEW}: [skill drafted] would build it; kept" not in section
+        # It is not a pending rename: nothing is live under the name.
+        assert conversation.pending_renames(home) == []
+
+    def test_saying_it_again_changes_nothing(self, world):
+        home = world.home
+        _open(home)
+        first = conversation.respond_skill(home, action="veto", name=DRAFT_NEW, scope="user", text=VETO_WORDS)
+        again = conversation.respond_skill(home, action="veto", name=DRAFT_NEW, scope="user", text=VETO_WORDS)
+        assert again.statement_id == first.statement_id
+        assert _vetoed_commits(home, DRAFT_NEW) == 1
+        assert _observations(home, world.ids["anchor"]).count(f"user vetoed the name of skill {DRAFT_NEW}") == 1
+
+    def test_the_anchor_does_not_move_when_newer_cases_are_opened(self, world, tmp_path):
+        home = world.home
+        _open(home)
+        _case(home, tmp_path, "f6", {})  # a case opened after the draft was shown
+        assert conversation.draft_anchor_case(home) == world.ids["anchor"]
+        # The presentation is still found where it was recorded.
+        conversation.respond_skill(home, action="veto", name=DRAFT_NEW, scope="user", text=VETO_WORDS)
+
+    def test_a_draft_of_a_live_skill_is_presented_on_the_skills_own_case(self, world):
+        home = world.home
+        _open(home)
+        assert (
+            f"overseer presented: - skill {CHANGED}: [skill drafted] would change it;"
+            in _observations(home, world.ids["changed"])
+        )
+        assert f"- skill {CHANGED}: [skill drafted]" not in _observations(home, world.ids["anchor"])
+
+    def test_a_ledger_with_no_case_cannot_record_a_draft_and_says_so(self, tmp_path, capsys):
+        home = make_home(tmp_path)
+        _write_report(home)
+        _write_draft(home, REPORT_DATE, DRAFT_NEW, description="Summarises pull requests.")
+        commit_all(home, "seed")
+
+        text = _open(home)
+
+        assert f"- skill {DRAFT_NEW}: [skill drafted] would build it;" in text  # control: it is shown
+        assert f"skill {DRAFT_NEW}: not recorded as shown" in capsys.readouterr().err
+        with pytest.raises(conversation.ConversationError, match="has not shown a draft"):
+            conversation.respond_skill(home, action="veto", name=DRAFT_NEW, scope="user", text=VETO_WORDS)
         assert statements.list_statements(home) == []
 
 
@@ -709,7 +937,7 @@ class TestCli:
         assert overseer_cli.dispatch(args) == 0
 
         out = capsys.readouterr().out
-        assert f"retirement of {BUILT} is asked of the next overseer run" in out
+        assert f"retirement of {BUILT} is asked of the overseer" in out
         assert [r["name"] for r in conversation.pending_retire_requests(world.home)] == [BUILT]
         assert skill_registry.load(world.home).vetoed == []
 
@@ -723,6 +951,35 @@ class TestCli:
         )
         assert overseer_cli.dispatch(args) == 1
         assert "no-such-skill is not a skill self-learn owns" in capsys.readouterr().err
+        assert statements.list_statements(world.home) == []
+
+    def test_veto_of_a_drafts_name(self, world, monkeypatch, capsys):
+        monkeypatch.setenv("SELF_LEARN_HOME", str(world.home))
+        parser = _parser()
+        overseer_cli.dispatch(parser.parse_args(["overseer", "open"]))
+        capsys.readouterr()
+        args = parser.parse_args(
+            ["overseer", "respond", "--veto-skill", DRAFT_NEW, "--scope", "user", "--text", VETO_WORDS]
+        )
+        assert overseer_cli.dispatch(args) == 0
+        assert skill_registry.load(world.home).vetoed_names() == [DRAFT_NEW]
+        # The promise names what really happens in each case: a rename waits
+        # for a run that writes skills, or the person's own command.
+        out = capsys.readouterr().out
+        assert "renamed by the next overseer run that writes skills" in out
+        assert "self-learn skill rename" in out
+
+    def test_an_empty_skill_name_is_a_usage_error_and_not_the_proposition_path(
+        self, world, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("SELF_LEARN_HOME", str(world.home))
+        args = _parser().parse_args(
+            ["overseer", "respond", "--veto-skill", "", "--scope", "user", "--text", "No."]
+        )
+        assert overseer_cli.dispatch(args) == 1
+        err = capsys.readouterr().err
+        assert "needs a skill name" in err
+        assert "None" not in err
         assert statements.list_statements(world.home) == []
 
     def test_decline_does_not_apply_to_a_skill(self, world, monkeypatch, capsys):

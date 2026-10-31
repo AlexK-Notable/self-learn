@@ -34,12 +34,12 @@ def add_parser(subparsers) -> argparse.ArgumentParser:
     )
     target.add_argument(
         "--veto-skill", metavar="NAME",
-        help="ban the name of a skill self-learn built, for ever; the next overseer run "
-        "gives the skill a new name (needs --text and --scope)",
+        help="ban a skill's name for ever: a skill self-learn built, or a draft `overseer open` "
+        "showed (needs --text and --scope)",
     )
     target.add_argument(
         "--retire-skill", metavar="NAME",
-        help="ask the next overseer run to retire a skill self-learn built "
+        help="ask the overseer to retire a skill self-learn built "
         "(needs --text and --scope)",
     )
     reply = respond_parser.add_mutually_exclusive_group(required=True)
@@ -94,13 +94,13 @@ def dispatch(args) -> int:
             conversation.open_questions(home)
             return 0
         if command == "respond":
-            if args.veto_skill or args.retire_skill:
+            if args.veto_skill is not None or args.retire_skill is not None:
                 if args.decline:
                     raise conversation.ConversationUsageError(
                         "overseer respond: --decline answers a question; it does not apply to "
                         "--veto-skill or --retire-skill"
                     )
-                vetoing = bool(args.veto_skill)
+                vetoing = args.veto_skill is not None
                 skill = args.veto_skill if vetoing else args.retire_skill
                 result = conversation.respond_skill(
                     home,
@@ -113,12 +113,14 @@ def dispatch(args) -> int:
                 if vetoing:
                     print(
                         f"self-learn overseer: recorded {result.statement_id}; the name {skill} "
-                        "is vetoed for ever, and the next overseer run gives that skill a new name"
+                        "is vetoed for ever: no skill is written under it again, and a live skill "
+                        "under it is renamed by the next overseer run that writes skills, or at "
+                        "once by you with self-learn skill rename"
                     )
                 else:
                     print(
                         f"self-learn overseer: recorded {result.statement_id}; retirement of "
-                        f"{skill} is asked of the next overseer run"
+                        f"{skill} is asked of the overseer; the request stays until the skill is retired"
                     )
                 return 0
             if args.decline:

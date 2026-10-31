@@ -13,18 +13,35 @@ limit on how many are shown.
 
 Skills (S-NEXT-sk7-veto, skill-writing plan SK7 / decision D15). After the
 questions, ``open`` prints a "Skills this week" section: every skill
-self-learn built, changed or retired since the latest report began, every
-skill kept as a draft that week, and the skills still waiting on the user's
-word (a vetoed name with no new name yet, a retirement the user asked for).
-The user can then veto a skill's NAME or ask for its RETIREMENT with
-``respond --veto-skill`` / ``--retire-skill``. Both go through the same
-answer path as a question (the typed words are a statement, S-94 holds, and
-the statement is anchored to a presentation ``open`` recorded): a veto adds
-the name to the registry's ``vetoed`` list, so every later ``skill write``
-refuses it; a retirement request is only recorded, as a statement
-(``answers.kind: instruction``, ``answers.ref: retire-skill:<name>``), and
-:func:`pending_retire_requests` is how the overseer's runner reads it back.
-Only a skill self-learn owns (a live registry row) can be named.
+self-learn built, changed or retired in the latest report's overseer week,
+every live skill ``open`` has never shown before (however long ago it moved:
+a week the user skipped, a manual mid-week run or a rename must not make a
+skill unvetoable), every skill kept as a draft that week, and the skills
+still waiting on the user's word (a vetoed name with no new name yet, a
+retirement the user asked for). The user can then veto a skill's NAME or ask
+for its RETIREMENT with ``respond --veto-skill`` / ``--retire-skill``. Both
+go through the same answer path as a question (the typed words are a
+statement, S-94 holds, and the statement is anchored to a presentation
+``open`` recorded): a veto adds the name to the registry's ``vetoed`` list,
+so every later ``skill write`` refuses it; a retirement request is only
+recorded, as a statement (``answers.kind: instruction``, ``answers.ref:
+retire-skill:<name>``).
+
+A veto may name a live skill self-learn owns or a name ``open`` showed as a
+draft (the drafts-only week of ``overseer.skill_writing: auto``); a
+retirement request only a live skill. A draft has no case of its own, so
+its presentation is recorded on the ledger's oldest intact case
+(:func:`draft_anchor_case`, stable as cases are added); a draft of a live
+skill is recorded on that skill's own case.
+
+For the overseer's runner (SK3, SK4), which stages ``vetoes.yaml`` from them:
+:func:`pending_renames` (live skills under a vetoed name) and
+:func:`pending_retire_requests` (each live skill's newest request since it was
+created). Both stay true until the skill is renamed or retired, by the spec:
+a request met with "would retire", or an answer to the question the overseer
+asked instead, does not clear them. The names of drafts and of ``build``
+dispositions that were vetoed are read from the registry's ``vetoed`` list
+(``skill write`` and the template check refuse them).
 """
 
 from __future__ import annotations
@@ -244,17 +261,34 @@ def _one_line(text: str) -> str:
     return " ".join(text.split())
 
 
-def _report_floor(report_path: Path, report_text: str) -> datetime:
-    """When the latest report's run began, to the day: the UTC date in the
-    report's first line, else the day the file was last written."""
+def _week_start(day: datetime) -> datetime:
+    """When the overseer's week that contains the end of UTC day *day* began:
+    the most recent Sunday 04:15 local (`run.week_boundary`, S-68). The end of
+    the day is used so a host east of UTC, whose Sunday run is dated the
+    Saturday before in UTC, still lands in the week the run belongs to."""
+    from . import run as overseer_run  # run imports this module
+
+    end_of_day = (day + timedelta(days=1)).timestamp() - 1
+    return datetime.fromtimestamp(overseer_run.week_boundary(end_of_day), tz=timezone.utc)
+
+
+def _report_window(report_path: Path, report_text: str) -> tuple[datetime, datetime]:
+    """``(day, floor)`` for the latest report: *day* is the UTC date in its
+    first line (else the day the file was last written), and *floor* is when
+    the overseer's week that contains it began, or *day* when that is later.
+    The week and not the day, because a manual mid-week run replaces
+    ``latest-report.md`` and must not push what the scheduled run built out of
+    the section."""
     first = report_text.splitlines()[0] if report_text else ""
     found = _REPORT_DATE_RE.match(first)
-    if found is not None:
-        stamp = chrono.to_dt(found.group(1))
-        if stamp is not None:
-            return stamp
-    written = datetime.fromtimestamp(int(report_path.stat().st_mtime), tz=timezone.utc)
-    return written.replace(hour=0, minute=0, second=0, microsecond=0)
+    day = chrono.to_dt(found.group(1)) if found is not None else None
+    if day is None:
+        written = datetime.fromtimestamp(int(report_path.stat().st_mtime), tz=timezone.utc)
+        day = written.replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        return day, min(day, _week_start(day))
+    except (OverflowError, OSError, ValueError):
+        return day, day
 
 
 def _week_event(row: dict, floor: datetime) -> tuple[str, str, dict] | None:
@@ -273,10 +307,10 @@ def _week_event(row: dict, floor: datetime) -> tuple[str, str, dict] | None:
     return None
 
 
-def _draft_folders(home: Path, floor: datetime) -> list[Path]:
+def _draft_folders(home: Path, day: datetime) -> list[Path]:
     """The skills the overseer kept as drafts for the report's week."""
     root = home / "overseer" / "skills"
-    report_day = floor.date()
+    report_day = day.date()
     found: list[Path] = []
     try:
         week_dirs = sorted(p for p in root.iterdir() if p.is_dir() and _DATE_DIR_RE.fullmatch(p.name))
@@ -356,48 +390,149 @@ def pending_retire_requests(home: Path | str) -> list[dict]:
     ]
 
 
+def _stamp_cases(row: dict) -> list[str]:
+    """The cases a registry row names, in the order created, last write,
+    retired. A stamp made by a person's CLI step without ``--case`` names
+    none (`null`)."""
+    found: list[str] = []
+    for key in ("created", "last_write", "retired"):
+        stamp = row.get(key)
+        case_id = stamp.get("case") if isinstance(stamp, dict) else None
+        if isinstance(case_id, str) and case_id not in found:
+            found.append(case_id)
+    return found
+
+
+def _case_of(stamp: dict, row: dict) -> str | None:
+    """The case to record a line about *stamp* on: the stamp's own, else the
+    row's first case, else none."""
+    case_id = stamp.get("case")
+    if isinstance(case_id, str):
+        return case_id
+    others = _stamp_cases(row)
+    return others[0] if others else None
+
+
+def _moved_line(name: str, label: str, verb: str, stamp: dict, *, note: str = "") -> str:
+    case_id = stamp.get("case")
+    where = f"case {case_id}" if isinstance(case_id, str) else "no case"
+    return f"- skill {name}: {label} {verb} {str(stamp['at'])[:10]} by {stamp['by']} ({where}){note}"
+
+
+def draft_anchor_case(home: Path | str) -> str | None:
+    """The case a draft's presentation is recorded on, when the draft has no
+    live skill to be recorded against: the ledger's oldest intact case (its
+    ``opened_at``, then its id), so that the answer to a later ``open`` finds
+    the presentation where it was put even as newer cases are opened. ``None``
+    when the ledger has no case or its index cannot be read."""
+    try:
+        rows = cases.list_cases(home, only_ok=True)
+    except (cases.CaseError, OSError):
+        return None
+    dated = sorted(
+        (str(row["opened_at"]), str(row["case"])) for row in rows if row.get("opened_at")
+    )
+    return dated[0][1] if dated else None
+
+
+def _draft_line(name: str, owned: bool, vetoed: bool, description: str) -> str:
+    """One draft's line. A draft is shown as what the overseer WOULD do, as
+    the report words it: ``[skill drafted] would build it`` (a name self-learn
+    does not own yet) or ``would change it`` (a live skill's rewrite)."""
+    verb = "would change it" if owned else "would build it"
+    if vetoed:
+        return (
+            f"- skill {name}: [skill drafted] {verb}, but the name is vetoed; the next overseer "
+            "run must give the draft another name or not build it"
+        )
+    text = f"- skill {name}: [skill drafted] {verb}; kept as a draft, nothing deployed"
+    return f"{text}; description: {description}" if description else text
+
+
+def _draft_prefix(name: str) -> str:
+    """What every line a new-name draft was shown as starts with; a veto of a
+    draft's name looks for a presentation of it."""
+    return f"- skill {name}: [skill drafted] would build it;"
+
+
 def _skills_view(
     home: Path, report_path: Path, report_text: str
-) -> tuple[list[str], list[tuple[str, str, str]]]:
+) -> tuple[list[str], list[tuple[str | None, str, str]]]:
     """The "Skills this week" section as lines, and the presentations to
-    record once it is shown, as (case id, skill name, displayed line).
+    record once it is shown, as (case id or None, skill name, displayed line);
+    ``None`` is a line with no case to be recorded on.
 
     Every line is ``- skill <name>: <what>`` so that the line shown is the
-    line recorded and the line a veto or retirement is anchored to. Only a
-    live skill built or changed this week is recorded as shown, against the
-    case that made that change: it is the only kind of line the user can act
-    on. A registry that cannot be read is one line saying so, never a failure
-    of the questions above it. Nothing is printed when there is nothing to
-    say, so a ledger without skills sees the same output as before."""
-    floor = _report_floor(report_path, report_text)
+    line recorded and the line a veto or retirement is anchored to. A line is
+    recorded as shown, against a case, when the user can act on it: a live
+    skill built or changed this overseer week, a live skill ``open`` has never
+    shown (the week it moved passed, or a rename gave it a new name), and a
+    draft (a draft of a live skill on that skill's case, any other draft on
+    :func:`draft_anchor_case`). A registry that cannot be read is one line
+    saying so, never a failure of the questions above it. Nothing is printed
+    when there is nothing to say, so a ledger without skills sees the same
+    output as before."""
+    day, floor = _report_window(report_path, report_text)
     try:
         registry = skill_registry.load(home)
     except skill_registry.SkillRegistryError as exc:
         return [_SKILLS_HEADING, f"- skills not shown: {_one_line(str(exc))}"], []
     lines: list[str] = []
-    marks: list[tuple[str, str, str]] = []
+    marks: list[tuple[str | None, str, str]] = []
+
+    def mark(case_id: str | None, name: str, text: str) -> None:
+        marks.append((case_id, name, text))
+
     for name in sorted(registry.skills):
         row = registry.skills[name]
+        live = row["status"] == skill_registry.STATUS_LIVE
+        own_cases = _stamp_cases(row)
         event = _week_event(row, floor)
-        if event is None:
-            continue
-        label, verb, stamp = event
-        text = (
-            f"- skill {name}: {label} {verb} {str(stamp['at'])[:10]} "
-            f"by {stamp['by']} (case {stamp['case']})"
+        if event is not None:
+            label, verb, stamp = event
+            text = _moved_line(name, label, verb, stamp)
+            lines.append(text)
+            if live:
+                mark(_case_of(stamp, row), name, text)
+        elif live and own_cases and not _skill_presentations(home, name, row):
+            # Never shown: its week went by unseen, or a rename gave it a new
+            # name. Shown once, it can be vetoed from then on. (A skill a
+            # person made without a case is left out: it has no case to
+            # attach the user's words to, and they made it themselves.)
+            renamed = row.get("renamed_from")
+            if renamed:
+                stamp = row["last_write"]
+                text = _moved_line(
+                    name, "[skill renamed]", "renamed", stamp, note=f"; was {', '.join(renamed)}"
+                )
+            else:
+                stamp = row["created"]
+                text = _moved_line(name, "[new skill]", "built", stamp)
+            lines.append(text)
+            mark(_case_of(stamp, row), name, text)
+    vetoed = {veto.casefold() for veto in registry.vetoed_names()}
+    drafts = _draft_folders(home, day)
+    anchor = draft_anchor_case(home) if drafts else None
+    for folder in drafts:
+        owned = registry.is_owned(folder.name)
+        text = _draft_line(
+            folder.name, owned, folder.name.casefold() in vetoed, _draft_description(folder)
         )
         lines.append(text)
-        if row["status"] == skill_registry.STATUS_LIVE:
-            marks.append((stamp["case"], name, text))
-    for folder in _draft_folders(home, floor):
-        label = "[skill change draft]" if registry.is_owned(folder.name) else "[new skill draft]"
-        text = f"- skill {folder.name}: {label} kept as a draft, nothing deployed"
-        description = _draft_description(folder)
-        lines.append(f"{text}; description: {description}" if description else text)
+        if folder.name.casefold() not in vetoed:
+            # A draft of a live skill goes on that skill's newest case; any
+            # other draft on the ledger's oldest case.
+            live_row = registry.skills[folder.name] if owned else None
+            mark(
+                _case_of(live_row["last_write"], live_row) if live_row is not None else anchor,
+                folder.name,
+                text,
+            )
     for waiting in pending_renames(home):
         lines.append(
-            f"- skill {waiting['name']}: [name vetoed] waits for the next overseer run to give "
-            f"it a new name (your words {waiting['statement']})"
+            f"- skill {waiting['name']}: [name vetoed] waits for a new name: the next overseer run "
+            "that writes skills gives it one, or you can with self-learn skill rename "
+            f"(your words {waiting['statement']})"
         )
     try:
         requests = pending_retire_requests(home)
@@ -405,27 +540,36 @@ def _skills_view(
         requests = []  # an unreadable store: the line is missing, the questions are not
     for request in requests:
         lines.append(
-            f"- skill {request['name']}: [retirement requested] waits for the next overseer run "
+            f"- skill {request['name']}: [retirement requested] waits for an overseer run that "
+            "writes skills: it retires the skill or asks you why not "
             f"(your words {request['statement']})"
         )
     if not lines:
         return [], []
-    if registry.live():
+    if registry.live() or drafts:
         lines.append(
-            "To veto a built skill's name: self-learn overseer respond --veto-skill <name> "
-            "--scope user --text \"<your words>\"; to ask for its retirement: --retire-skill <name>."
+            "To veto a skill's name (a live skill's, or a draft's): self-learn overseer respond "
+            "--veto-skill <name> --scope user --text \"<your words>\"; to ask for a live "
+            "skill's retirement: --retire-skill <name>."
         )
     return [_SKILLS_HEADING, *lines], marks
 
 
-def _present_skill(home: Path, case_id: str, name: str, text: str) -> None:
+def _present_skill(home: Path, case_id: str | None, name: str, text: str) -> None:
     """Record that *text* was shown to the human, against the case that made
     the skill change it describes (a presentation observation, as an ask
     gets: it claims only that the dependencies were shown, never the
     case's decision). Once per distinct line: showing the same line again
     adds nothing. A case that cannot be observed is named on stderr, and the
     skill then cannot be vetoed or retired from the conversation until it
-    can."""
+    can. A line with no case to be recorded on is named the same way."""
+    if case_id is None:
+        print(
+            f"self-learn: skill {name}: not recorded as shown (the ledger has no case to record it "
+            "on); it cannot be vetoed or retired from the conversation until it has one",
+            file=sys.stderr,
+        )
+        return
     try:
         seen = cases.show(home, case_id, evidence_only=False).sections.get("Later observations", "")
         if any(line.endswith(f" presented: {text}") for line in seen.splitlines()):
@@ -732,34 +876,20 @@ def _skill_name(value: str, flag: str) -> str:
     return value
 
 
-def _owned_skill_row(home: Path, name: str) -> dict:
-    """The registry row of a skill self-learn owns (a live row). Any other
-    name -- unknown, retired, a skill someone else wrote -- is refused by
-    name, with the skills that could have been meant."""
-    try:
-        registry = skill_registry.load(home)
-    except skill_registry.SkillRegistryError as exc:
-        raise ConversationError(f"overseer respond: {_one_line(str(exc))}") from exc
-    row = registry.row(name) if registry.is_owned(name) else None
-    if row is None:
-        live = ", ".join(registry.live()[:20]) or "none"
-        raise ConversationError(
-            f"overseer respond: {name} is not a skill self-learn owns (live skills: {live})"
-        )
-    return row
-
-
 def _skill_presentations(home: Path, name: str, row: dict) -> list[tuple[str, str, str]]:
-    """What ``overseer open`` has shown about skill *name*, oldest first, as
-    (case id, observation id, displayed line). The line is looked for on each
-    case the registry row names, because the line was recorded against the
-    case that made the change it describes."""
-    prefix = f"- skill {name}: "
-    case_ids: list[str] = []
-    for key in ("created", "last_write", "retired"):
-        stamp = row.get(key)
-        if isinstance(stamp, dict) and stamp.get("case") not in case_ids:
-            case_ids.append(stamp["case"])
+    """What ``overseer open`` has shown about the live or retired skill *name*,
+    oldest first, as (case id, observation id, displayed line). The line is
+    looked for on each case the registry row names, because the line was
+    recorded against the case that made the change it describes (or, for a
+    skill never shown before, its first case)."""
+    return _presentations_on(home, _stamp_cases(row), f"- skill {name}: ")
+
+
+def _presentations_on(
+    home: Path, case_ids: list[str], prefix: str
+) -> list[tuple[str, str, str]]:
+    """The ``overseer-conversation`` presentations on *case_ids* whose
+    displayed line starts with *prefix*, oldest first."""
     oldest = datetime.min.replace(tzinfo=timezone.utc)
     found: list[tuple[datetime, str, str, str]] = []
     for case_id in case_ids:
@@ -784,6 +914,47 @@ def _skill_presentations(home: Path, name: str, row: dict) -> list[tuple[str, st
     return [(case_id, obs_id, shown) for _at, case_id, obs_id, shown in found]
 
 
+def _skill_target(home: Path, action: str, name: str, flag: str) -> list[tuple[str, str, str]]:
+    """What the user's words about *name* are anchored to: the presentations
+    ``open`` recorded for it. A live skill self-learn owns qualifies for both
+    actions; a name ``open`` showed as a new draft qualifies for a veto
+    only (a draft is not a skill, so there is nothing to retire). Any other
+    name -- unknown, retired, a skill someone else wrote -- is refused by
+    name, with the skills that could have been meant."""
+    try:
+        registry = skill_registry.load(home)
+    except skill_registry.SkillRegistryError as exc:
+        raise ConversationError(f"overseer respond: {_one_line(str(exc))}") from exc
+    row = registry.row(name) if registry.is_owned(name) else None
+    if row is not None:
+        presentations = _skill_presentations(home, name, row)
+        if presentations:
+            return presentations
+        if not _stamp_cases(row):
+            raise ConversationError(
+                f"overseer respond: {flag} {name}: a person made that skill without a case, so "
+                "there is nothing here to attach your words to; run self-learn skill rename or "
+                "skill retire in your own terminal"
+            )
+        raise ConversationError(
+            f"overseer respond: {flag} {name}: overseer open has not shown that skill "
+            "(run it: it lists every skill it has not shown yet, and the week's changes)"
+        )
+    live = ", ".join(registry.live()[:20]) or "none"
+    if action == "veto":
+        anchor = draft_anchor_case(home)
+        drafted = _presentations_on(home, [anchor] if anchor else [], _draft_prefix(name))
+        if drafted:
+            return drafted
+        raise ConversationError(
+            f"overseer respond: {name} is not a skill self-learn owns, and overseer open has not "
+            f"shown a draft of that name (live skills: {live})"
+        )
+    raise ConversationError(
+        f"overseer respond: {name} is not a skill self-learn owns (live skills: {live})"
+    )
+
+
 def _add_skill_veto(
     registry: skill_registry.Registry, *, name: str, at: str, statement: str
 ) -> None:
@@ -800,17 +971,17 @@ def respond_skill(
     as_asked: str | None = None,
 ) -> ResponseResult:
     """The user's reply about a skill ``overseer open`` showed: ``action``
-    ``veto`` bans the skill's name for ever, ``retire`` asks for the skill to
-    be retired by the next overseer run.
+    ``veto`` bans the name for ever (a live skill's, or a draft's), ``retire``
+    asks for a live skill to be retired by an overseer run that writes skills.
 
-    Refused by name, with nothing recorded, when the skill is not one
-    self-learn owns, when ``open`` never showed it, or when the words or the
-    scope are missing. The words are recorded as typed (a statement,
+    Refused by name, with nothing recorded, when the name is not a live skill
+    self-learn owns (nor, for a veto, a draft ``open`` showed), when ``open``
+    never showed it, or when the words or the scope are missing. The words are recorded as typed (a statement,
     ``answers.kind: instruction``, ``answers.ref: veto-skill:<name>`` or
     ``retire-skill:<name>``), anchored to the presentation ``open`` recorded,
     exactly as an answer to an ask is. A veto then adds the name to the
-    registry's ``vetoed`` list (one ledger commit) and the case that made the
-    skill gets a ``statement`` observation; a retirement request only gets
+    registry's ``vetoed`` list (one ledger commit) and the case the presentation
+    is on gets a ``statement`` observation; a retirement request only gets
     the observation (the overseer reads it with
     :func:`pending_retire_requests`). Every step is idempotent, so a reply
     that stopped half-way is finished by saying it again."""
@@ -822,13 +993,7 @@ def respond_skill(
     if not text or not text.strip():
         raise ConversationUsageError("overseer respond: --text is required")
     name = _skill_name(name, flag)
-    row = _owned_skill_row(resolved, name)
-    presentations = _skill_presentations(resolved, name, row)
-    if not presentations:
-        raise ConversationError(
-            f"overseer respond: {flag} {name}: overseer open has not shown that skill "
-            "(it lists the skills built or changed since the latest report)"
-        )
+    presentations = _skill_target(resolved, action, name, flag)
     case_id, observation_id, displayed = presentations[-1]
     ref = (SKILL_VETO_REF if action == "veto" else SKILL_RETIRE_REF) + name
     statement_id = statements.add(
@@ -864,19 +1029,21 @@ def respond_skill(
             )
         except skill_registry.SkillRegistryError as exc:
             raise ConversationError(f"overseer respond: {_one_line(str(exc))}") from exc
-    if f"(ref: {statement_id})" not in cases.show(
-        resolved, case_id, evidence_only=False
-    ).sections.get("Later observations", ""):
-        cases.observe(
-            resolved,
-            case_id,
-            "statement",
-            text=(
-                f"user vetoed the name of skill {name}"
-                if action == "veto"
-                else f"user asked for skill {name} to be retired"
-            ),
-            by="overseer",
-            ref=statement_id,
-        )
+    _observe_skill_statement(
+        resolved, case_id, statement_id,
+        f"user vetoed the name of skill {name}"
+        if action == "veto"
+        else f"user asked for skill {name} to be retired",
+    )
     return ResponseResult(statement_id, (case_id,))
+
+
+def _observe_skill_statement(home: Path, case_id: str, statement_id: str, text: str) -> None:
+    """Tell *case_id* about the statement, once. The look and the write are
+    one span under the ledger's commit lock (re-entrant for ``cases.observe``),
+    so two replies made together cannot both add the observation."""
+    with intents.ledger_write(home) as recovered:
+        intents.announce_recovered(recovered)
+        seen = cases.show(home, case_id, evidence_only=False).sections.get("Later observations", "")
+        if f"(ref: {statement_id})" not in seen:
+            cases.observe(home, case_id, "statement", text=text, by="overseer", ref=statement_id)
