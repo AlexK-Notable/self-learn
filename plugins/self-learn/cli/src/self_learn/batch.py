@@ -166,6 +166,12 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
             "type", "kind", "to", "dest", "rules_paths", "because", "note", "by",
         }
     ),
+    # S-NEXT-u4-steward (02 §3a.10.7): a lesson's `premises` -- `action:
+    # set` writes the whole list (`premises`), `action: rebaseline` re-records
+    # the premises named in `ids`. An annotation, like `note`: no `by` (the
+    # runner's execution trailer names who ran it). The line's shape is
+    # `verbs.premises_line_problem`'s, checked with the rest of the sheet.
+    "premises": frozenset({"action", "premises", "ids", "because", "note"}),
 }
 PERMITTED_VERBS = frozenset(PERMITTED_KEYS)
 #: No sheet aliases remain after graduate was removed on 2026-10-24.
@@ -203,6 +209,8 @@ REQUIRED_KEYS: dict[str, frozenset[str]] = {
     # E1: `because` plays revise's role (the commit body); the one-of check
     # on the text keys is the verb's (`verbs._replace_text_sections`).
     "replace": frozenset({"because"}),
+    # S-NEXT-u4-steward: which list the line carries depends on the action.
+    "premises": frozenset({"action"}),
 }
 
 #: S-29 / Y-17: never accepted inside a sheet, by name — a hook route
@@ -764,6 +772,8 @@ def load_sheet(path: Path | str, *, home: Path | str | None = None) -> Sheet:
         shape = (
             _route_shape_problem(raw) if verb == "route"
             else _replace_shape_problem(raw) if verb == "replace"
+            else verbs.premises_line_problem(raw.get("action"), raw.get("premises"), raw.get("ids"))
+            if verb == "premises"
             else None
         )
         if shape is not None:
@@ -1049,6 +1059,15 @@ def classify(
         return target in record.contradicts
     if verb == "followup-done":
         return record.follow_up is None and record.follow_up_done is not None
+    if verb == "premises":
+        # S-NEXT-u4-steward: every `set` or `rebaseline` runs its probes
+        # and records what they saw NOW, so its effect is not derivable from
+        # state (like a key-less `note`), with one exception: `set` of `[]`
+        # on a lesson that already records `[]` has nothing left to write.
+        return (
+            f.get("action") == "set" and f.get("premises") == []
+            and record.premises == []
+        )
     if verb == "replace":
         # E1 (D-AUTHOR §2.2): applied iff the line's lesson reads
         # `superseded_by` a lesson that `supersedes` it with this line's
@@ -1375,6 +1394,27 @@ def _dispatch_replace(
     )
 
 
+def _dispatch_record_metadata(
+    home: Path, item: SheetItem, execution: execution_evidence.ExecutionRef | None
+) -> "verbs.VerbResult":
+    """The ``followup-done`` and ``premises`` legs of :func:`_dispatch`
+    (S-NEXT-u4-steward), kept out of it for pyright's per-function
+    complexity ceiling, as its siblings were: adding the ``premises`` branch
+    inline tipped it over. Both write a placed lesson's metadata and take no
+    ``by``. A refusal raises to :func:`_dispatch`, which maps it."""
+    f = item.fields
+    if item.verb == "followup-done":
+        return verbs.followup_done(
+            home, item.id, note=f.get("note"), no_push=True,
+            execution=execution,
+        )
+    return verbs.premises(
+        home, item.id, action=f["action"], premises=f.get("premises"),
+        ids=f.get("ids"), because=f.get("because"), note=f.get("note"),
+        no_push=True, execution=execution,
+    )
+
+
 def _sheet_follow_up(f: dict) -> dict | None:
     """A route line's follow-up keys as the verb's ``follow_up`` mapping
     (moved out of :func:`_dispatch` unchanged, E1: its `replace` branch
@@ -1641,11 +1681,8 @@ def _dispatch(
                 home, item.id, f["target"], note=f.get("note"), no_push=True,
                 execution=execution,
             )
-        elif verb == "followup-done":
-            result = verbs.followup_done(
-                home, item.id, note=f.get("note"), no_push=True,
-                execution=execution,
-            )
+        elif verb in ("followup-done", "premises"):
+            result = _dispatch_record_metadata(home, item, execution)
         elif verb == "replace":
             return _dispatch_replace(home, item, actor=actor, execution=execution)
         elif verb == "revise":
@@ -1997,6 +2034,19 @@ def _preview_followup_done(
     verbs._preflight_followup_done(home, item.id, note=item.fields.get("note"))
 
 
+def _preview_premises(
+    home: Path, item: SheetItem, by: str | None, rc: str | None
+) -> None:
+    """S-NEXT-u4-steward: the verb's own pre-lock checks, which run the
+    line's probes (read-only by construction) -- so a probe that cannot
+    observe is a `would-refuse` here exactly as it is a refusal at apply."""
+    f = item.fields
+    verbs._preflight_premises(
+        home, item.id, action=f.get("action"), premises=f.get("premises"),
+        ids=f.get("ids"), because=f.get("because"), note=f.get("note"),
+    )
+
+
 def _preview_revise(
     home: Path, item: SheetItem, by: str | None, rc: str | None,
     record_override: Record | None = None,
@@ -2048,6 +2098,7 @@ _PREVIEW_CHECKS: dict[str, _PreviewCheck] = {
     "confirm-held": _preview_confirm_held,
     "link-contradicts": _preview_link_contradicts,
     "followup-done": _preview_followup_done,
+    "premises": _preview_premises,
     "revise": _preview_revise,
     "replace": _preview_replace,
 }

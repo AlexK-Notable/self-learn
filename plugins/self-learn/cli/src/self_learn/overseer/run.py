@@ -3371,6 +3371,10 @@ def _candidate_establishes(
         return item.get("target") in record.contradicts
     if verb == "followup-done":
         return record.follow_up is None and record.follow_up_done is not None
+    if verb == "premises":
+        # S-NEXT-u4-steward: the commit wrote the field; what values its
+        # probes saw is the commit's own, not something to compare again.
+        return record.premises is not None
     if verb in {"rehome", "rescope"}:
         try:
             _scope, bucket, _project = verbs._resolve_move_target(

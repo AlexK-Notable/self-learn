@@ -164,6 +164,9 @@ decided with a `kind: resolution` case too (its `reject`, `defer` or `route`
 line takes a deferred lesson); its card says so. The runner refuses a
 reconsider case that names a pending lesson, or whose `supersedes` names no
 case that covers the lesson, and the repair turn tells you so.
+A placed lesson that comes to you because a premise moved, or for its
+premises to be written, and that no case covers, is also decided with a
+`kind: resolution` case (§17).
 
 ## 7. Refine wording at adjudication
 
@@ -346,7 +349,8 @@ excerpt. Decide each event, one sheet item per event, in a case whose
   shortening a placed lesson the fire does not show to be wrong, or
   merging it with another placed lesson, is the overseer's. When no case
   covers the lesson, or the change you would make is one of those, park
-  the case (`authority-unclear`) with your tentative answer.
+  the case (`authority-unclear`) with your tentative answer. (A lesson
+  that comes to you because a premise moved is different: §17.)
 
 `cannot-tell` is an answer too: when neither the excerpt nor the
 transcript shows whether the rule was loaded and applied, write a
@@ -546,44 +550,80 @@ Never retire a lesson as covered by a shelf (`covered_by: reference:<file>`):
 the runner refuses that line from you as well, since a shelf nothing reads
 covers nothing.
 
-## 17. A premise-moved input
+## 17. A premise that moved
 
-(`03-decisions.md` S-NEXT-u3-followup; the premise-check design's unit U3.) Some briefs
-are a ROUTED lesson that something it rested on has moved for. Today the one
-mover is a closed follow-up: the lesson was placed while it waited on a
-condition (a drop-in written, a guard built), the follow-up was closed after
-the lesson was last decided, and the closing note says what happened. The
-brief's `[what moved]` block gives the follow-up as recorded, with the record's
-own lines to cite, and, when a case decided the lesson, the bullets under
-"What would change this decision" from that case. Those bullets are the
-earlier decision's own prediction; read them, and read the lesson's words as a
-session would meet them now.
+(`03-decisions.md` S-NEXT-u3-followup and S-NEXT-u4-steward; the
+premise-check design's units U3 and U4.) A placed lesson rests on facts
+about the machine: a unit is or is not bound to another, a file holds a
+line, a package is at a version. When those facts change, the lesson can
+become false while it stays loaded in every session. Each placed lesson can
+therefore record its **premises**: up to four one-line claims, up to three
+of them with a **probe**, a read-only check from a closed catalog (`path`,
+`file-match`, `json-key`, `yaml-key`, `toml-key`, `systemd-show`,
+`package`, `which`, `git-file`, `ledger`) that code runs every day. You
+never run a probe; the runner does, and records what it saw. The output
+contract shows every field.
 
-The question is not whether the lesson was right. It is whether each sentence
-of it is still true. Decide it in a `kind: reconsider` case whose `supersedes`
-names the covering case (the runner fills it in), one sheet line on the lesson:
+**A `premise-moved` input** is a placed lesson where something it rests on
+changed. Its brief's `[what moved]` block says what, with the record's own
+lines to cite:
 
-- what moved leaves every sentence true: outcome `no-action`, the sheet one
-  `note` item on the lesson saying which sentence you checked and against which
-  cited line;
-- a sentence is now false but the diagnosis and the instruction stand: a
-  `replace` line that keeps the idea and drops or narrows the false sentence,
-  with the decision's `rewrite` accounting for every idea of the old text;
-- loaded text now covers the lesson: a `retire` line, `covered_by` naming that
-  text (§9). What the lesson asked for is now done by the system itself, in a
-  unit file, a hook or a config, so a session gains nothing from the line:
-  a `reject` line (a `retire` has to name text that covers it, and none does)
-  with a `note` saying what now does it and where you read it.
+- its follow-up was closed after the lesson was last decided (the lesson was
+  placed while it waited on a condition, and the closing note says what
+  happened);
+- a premise moved: its claim, its probe, the value recorded when it was last
+  decided and today's value, with when each was seen. A probe's change
+  counts only when the daily check saw the same new value twice running; a
+  `ledger` premise moves when the entry it names changed; a premise whose
+  first recorded value already said its claim was false comes to you the
+  night after it was written.
 
-This is the one input where narrowing, rewriting or retiring a placed lesson
-is yours without waiting for the overseer, because the evidence is a fact
-that was recorded about the system, not your judgment of its wording
-(`§10`'s "shortening a placed lesson the fire does not show to be wrong" is
-about a fire, and is unchanged). Merging it with another placed lesson is
-still the overseer's: park that. When no case covers the lesson there is no
-predecessor for a `kind: reconsider` case to supersede, and a placed lesson is
-changed only through one (the runner refuses a `replace` of it in any other
-case): say what you found in a `no-action` case with one `note` item, or park
-the case (`authority-unclear`) with your tentative answer. Never decide it on the closing note alone: the
-note says what someone did, and the lesson may rest on more than that one
-fact; check the lesson's other sentences against what the brief shows.
+The brief also lists every premise of the lesson, a premise with no probe
+(a behaviour, which no check can see) included, any probe that could not
+observe on three checks running, the tool versions the lesson was taught
+under (context, not a reason to change it), and the "What would change this
+decision" bullets of the cases that cover the lesson. Those bullets are the
+earlier decision's own prediction, and they often predicted exactly this.
+
+The question is not whether the lesson was right. It is whether each
+sentence of it is still true. Read its words as a session would meet them
+now, and check every sentence against what the brief shows, not only the
+one that moved: the closing note or the new value says what changed, and the
+lesson may rest on more than that one fact.
+
+Decide it in a `kind: reconsider` case whose `supersedes` names the newest
+case that covers the lesson (the runner fills it in). When the brief says no
+case covers it (a lesson placed before cases existed), decide it in a
+`kind: resolution` case that supersedes nothing: there is no earlier case to
+correct, and on this input a resolution case may change the placed lesson.
+
+- **Every sentence is still true:** outcome `no-action`. When a premise
+  moved, add a `premises` line with `action: rebaseline` naming every moved
+  premise the lesson keeps; the runner refuses a `no-action` case that
+  leaves one out, because the same change would come back every night. When
+  only a follow-up was closed, one `note` item says which sentence you
+  checked against which cited line.
+- **Part of it is now false, but its point stands:** a `replace` line that
+  narrows or corrects the words, with every idea of the old text accounted
+  for in the decision's `rewrite`. When a premise moved, put the `premises`
+  rebaseline (or a `set`) on the lesson BEFORE the `replace` line: the new
+  lesson carries the old one's premises, and should start from today's
+  values.
+- **All of it is now false, or loaded text now covers it:** a `retire` line,
+  `covered_by` naming that text (§9). When what the lesson asked for is now
+  done by the system itself (a unit file, a hook, a config), so a session
+  gains nothing from the line, a `reject` line with a `note` saying what now
+  does it and where you read it: in a reconsider case only, since with no
+  case to supersede a placed lesson cannot be rejected; park instead.
+- **The probe is wrong, not the lesson** (it reads the wrong file, it judges
+  the wrong way, it cannot observe): fix or drop it with a `premises` line,
+  `action: set`, the whole list as it should be, and decide the lesson on
+  what you find.
+- **You cannot tell**, or the lesson must move elsewhere and no case covers
+  it: park the case with your tentative answer.
+
+Here, unlike §10, narrowing, rewriting and retiring a placed lesson are
+yours without waiting for the overseer, because the evidence is an observed
+fact about the machine, not your judgement of its wording (the user accepted
+this on 2026-10-30). Merging placed lessons stays the overseer's: park that.
+The overseer reviews every such case afterwards, in its weekly sample.

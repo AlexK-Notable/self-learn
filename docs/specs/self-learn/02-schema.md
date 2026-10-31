@@ -2412,10 +2412,34 @@ case covers the lesson, the bullets under that case's "What would change this de
 decision, then `[how to decide it]`. No transcript evidence pack is built (what moved is the evidence). With a
 covering case the row's `predecessor` is the newest unsuperseded case that `kind: reconsider` could take
 (`steward._premise_predecessor`, the apply-time test), and the runner fills in `supersedes` as for a reconsider
-input; the outcomes are `no-action` (one `note` item), `replace`, `retire` or `reject`. With none, a placed lesson cannot be changed here:
-`no-action` with a `note`, or parked (`authority-unclear`). The steward may narrow, rewrite or retire a placed
+input; the outcomes are `no-action` (one `note` item), `replace`, `retire` or `reject`. With none
+*(S-NEXT-u4-steward, design D6)*, the lesson is decided in a `kind: resolution` case that supersedes nothing
+(S-88's rule for a deferred lesson no case covers, extended to this input): `no-action`, `replace` or `retire`
+(a `reject` or a move needs a case to supersede, so those are parked). The steward may narrow, rewrite or retire a placed
 lesson on this input without waiting for the overseer, because the evidence is a recorded fact (the user, 2026-10-30,
 the premise design's Q2: yes); merging it with another placed lesson stays the overseer's. Steward method §17.
+
+**`premise-moved` from a written premise, and the `premises` sheet verb** *(S-NEXT-u4-steward; unit U4; the
+field and its catalog are `premises.py`, S-NEXT-u1-premises).* A routed record's written premise moves in three
+ways, all read by code: a probe premise whose last two observations by the daily sweep (U2's
+`<cache>/premises/observations.jsonl`, one JSON line per observation `{record, premise, observation}`), both made
+after its baseline was recorded, judge it moved and agree on the value; a baseline recorded as
+`contradicts-claim`, from the night after it was recorded; a `ledger` premise, read at selection time. An
+`unavailable` observation moves nothing; three in a row are a broken probe the brief shows. A probe move waits
+until the premise was decided at least seven days ago (D7.5); the others do not. A premise with `on_change:
+refresh` never reaches the steward. A lesson is ONE input whatever moved: its `moved` list carries the closed
+follow-up (while the rule above holds) and one `{source: premise, premise, how, claim, probe, holds_if, match?,
+recorded, recorded_state, recorded_at, now, now_at, since, value_sha}` per moved premise, its version hashes both,
+and the rows are offered oldest move first, ten per run. The brief adds each moved premise, the lesson's premises
+(shown on every brief), the record's `premises:` block with a citable span, broken probes, the `env` pins as
+context, and the "What would change this decision" bullets of every covering case still standing. A decision
+that KEEPS the lesson -- `no-action`, or a `replace` (the new lesson carries the premises) -- must re-record every
+moved written premise with a `premises` line on the lesson (before the `replace`), or the runner refuses the pair
+(`steward._premise_decision_problem`). The sheet verb `premises` takes `action` (required): `set` with `premises`
+(the whole list, `[]` allowed) or `rebaseline` with `ids`; the runner runs each probe once and writes `baseline`
+and `decided_at` (a line that writes either is refused when the sheet loads), a probe that cannot observe refuses
+the line (`bad-line`), and each line is one commit, `self-learn: premises <action> lrn-<id>`, under the commit
+lock. It is open to the steward, the overseer and a person's `batch`; there is no CLI writer.
 
 For `fire` and `recurrence-suspect` event payloads, `moment` is the cited
 entry UUID, emitted by session landing when available. `line_format:
