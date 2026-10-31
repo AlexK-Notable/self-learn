@@ -461,7 +461,11 @@ def _commit_subject(subject: str) -> str:
 
 
 def with_update(
-    home: Path | str, fn: Callable[[Registry], Registry | None], *, subject: str
+    home: Path | str,
+    fn: Callable[[Registry], Registry | None],
+    *,
+    subject: str,
+    body: str | None = None,
 ) -> str | None:
     """Change the registry under the ledger lock and commit it once.
 
@@ -471,7 +475,10 @@ def with_update(
     is written. Returns the commit's sha, or ``None`` when *fn* left the data
     unchanged (no write, no commit; a missing file stays missing). The
     commit subject is *subject*, with ``self-learn: `` put in front when it
-    is not already there."""
+    is not already there; *body*, when given, is the commit body (``skill
+    write`` and ``skill retire`` pass their ``By: <actor>`` trailer, so the
+    overseer's weekly census of hand steps can tell its own commits from a
+    person's)."""
     home = Path(home)
     message = _commit_subject(subject)
     hold = sentinel.hold()
@@ -479,13 +486,16 @@ def with_update(
     try:
         with intents.ledger_write(home) as recovered:
             intents.announce_recovered(recovered)
-            return _update_locked(home, fn, message)
+            return _update_locked(home, fn, message, body)
     finally:
         hold.release()
 
 
 def _update_locked(
-    home: Path, fn: Callable[[Registry], Registry | None], message: str
+    home: Path,
+    fn: Callable[[Registry], Registry | None],
+    message: str,
+    body: str | None = None,
 ) -> str | None:
     """The locked half of :func:`with_update`. The caller holds the ledger
     lock; this function writes and commits and must only be reached from
@@ -505,7 +515,7 @@ def _update_locked(
     intent = intents.begin(home, "skill-registry", [path], message)
     fsops.atomic_write(path, text, fsync=True)
     intents.complete(intent)
-    sha = gitops.stage_and_commit(home, [path], message, None)
+    sha = gitops.stage_and_commit(home, [path], message, body)
     if sha is None:  # pragma: no cover -- the data changed, so the file did
         raise SkillRegistryError("with_update: internal -- the commit produced nothing")
     intents.finish(intent)
